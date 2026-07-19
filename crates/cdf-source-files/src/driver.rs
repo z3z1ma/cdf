@@ -99,6 +99,22 @@ impl SourceDriver for FileSourceDriver {
         &self.option_schema
     }
 
+    fn validate_portable_plan(&self, plan: &CompiledSourcePlan) -> Result<()> {
+        plan.validate()?;
+        let physical: FilePhysicalPlan = serde_json::from_value(plan.physical_plan.clone())
+            .map_err(|error| CdfError::contract(format!("invalid file source plan: {error}")))?;
+        physical.validate()?;
+        let scheme = file_transport_scheme(&physical.source.root)?;
+        if matches!(scheme, Some(FileTransportScheme::File))
+            || (scheme.is_none() && std::path::Path::new(&physical.source.root).is_absolute())
+        {
+            return Err(CdfError::contract(
+                "portable file source plan cannot reference a coordinator-local absolute root; stage it as a typed input artifact or use a remote transport",
+            ));
+        }
+        Ok(())
+    }
+
     fn validate_project_options(&self, options: &serde_json::Value) -> Result<()> {
         decode_file_project_options(options).map(|_| ())
     }
@@ -1692,7 +1708,9 @@ mod tests {
             second.schema_binding_stable_hash().unwrap()
         );
 
-        let physical: FilePhysicalPlan = serde_json::from_value(first.physical_plan).unwrap();
+        driver.validate_portable_plan(&first).unwrap();
+        let physical: FilePhysicalPlan =
+            serde_json::from_value(first.physical_plan.clone()).unwrap();
         assert_eq!(physical.source.root, "data");
         assert_eq!(physical.source.spool_mode, crate::FileSpoolMode::Complete);
         assert_eq!(
@@ -1715,6 +1733,15 @@ mod tests {
                 .unwrap()
                 .root,
             "/tmp/second-project/data"
+        );
+
+        let absolute = driver.compile(compile_request()).unwrap();
+        assert!(
+            driver
+                .validate_portable_plan(&absolute)
+                .unwrap_err()
+                .message
+                .contains("coordinator-local absolute root")
         );
     }
 

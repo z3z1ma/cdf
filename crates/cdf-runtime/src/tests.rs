@@ -992,6 +992,10 @@ impl SourceDriver for MockSourceDriver {
         &self.option_schema
     }
 
+    fn validate_portable_plan(&self, plan: &CompiledSourcePlan) -> Result<()> {
+        plan.validate()
+    }
+
     fn health(
         &self,
         request: SourceHealthRequest,
@@ -1432,7 +1436,9 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
     registry
         .validate_portable_source_binding(&portable_source)
         .unwrap();
-    portable_source.validate_reconstructed(&plan).unwrap();
+    registry
+        .validate_portable_source_plan(&portable_source, &plan)
+        .unwrap();
     let mut stale_portable_source = portable_source.clone();
     stale_portable_source.driver_version = "2.0.0".to_owned();
     assert!(

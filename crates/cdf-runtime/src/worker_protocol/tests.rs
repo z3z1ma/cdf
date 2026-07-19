@@ -1,0 +1,998 @@
+use std::{cell::RefCell, collections::BTreeMap, sync::Arc};
+
+use arrow_schema::Schema;
+use cdf_kernel::{
+    CompiledScanIntent, ErrorKind, PartitionPlan, PartitionRetrySafety, ResourceCapabilities,
+    ResourceDescriptor, SchemaSource, TrustLevel, TypePolicyAllowances, WriteDisposition,
+};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+
+use super::*;
+use crate::{
+    CompiledSourcePlan, CompiledSourcePlanInput, SourceAttestationStrength,
+    SourceBatchMemoryContract, SourceCompileRequest, SourceDiscoverySession, SourceDriver,
+    SourceDriverDescriptor, SourceExecutionCapabilities, SourceExecutorClass, SourceHealthRequest,
+    SourceHealthSink, SourceRateLimit, SourceRegistry, SourceResolutionContext,
+    SourceRetryGranularity, SourceRetryPolicy,
+};
+
+struct PortableMockDriver {
+    descriptor: SourceDriverDescriptor,
+    option_schema: serde_json::Value,
+}
+
+impl SourceDriver for PortableMockDriver {
+    fn descriptor(&self) -> &SourceDriverDescriptor {
+        &self.descriptor
+    }
+
+    fn option_schema(&self) -> &serde_json::Value {
+        &self.option_schema
+    }
+
+    fn compile(&self, _request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
+        Err(CdfError::internal(
+            "portable protocol test does not compile sources",
+        ))
+    }
+
+    fn validate_portable_plan(&self, plan: &CompiledSourcePlan) -> Result<()> {
+        plan.validate()
+    }
+
+    fn health(
+        &self,
+        _request: SourceHealthRequest,
+        _context: &SourceResolutionContext<'_>,
+        _output: &mut dyn SourceHealthSink,
+    ) -> Result<()> {
+        Err(CdfError::internal(
+            "portable protocol test does not probe source health",
+        ))
+    }
+
+    fn discovery_session(
+        &self,
+        _plan: &CompiledSourcePlan,
+        _context: &SourceResolutionContext<'_>,
+    ) -> Result<Box<dyn SourceDiscoverySession>> {
+        Err(CdfError::internal(
+            "portable protocol test does not discover sources",
+        ))
+    }
+
+    fn resolve(
+        &self,
+        _plan: &CompiledSourcePlan,
+        _context: &SourceResolutionContext<'_>,
+    ) -> Result<Arc<dyn cdf_kernel::QueryableResource>> {
+        Err(CdfError::internal(
+            "portable protocol test does not resolve sources",
+        ))
+    }
+}
+
+fn hash(seed: u8) -> String {
+    format!("sha256:{}", format!("{seed:02x}").repeat(32))
+}
+
+fn position(value: u64) -> SourcePosition {
+    SourcePosition::Cursor(CursorPosition {
+        version: PORTABLE_SOURCE_POSITION_VERSION,
+        field: "offset".to_owned(),
+        value: CursorValue::U64(value),
+    })
+}
+
+fn compatibility() -> WorkerCompatibility {
+    WorkerCompatibility {
+        cdf_version: "0.1.0".to_owned(),
+        artifact_version: "package-v2".to_owned(),
+        arrow_version: "59.1.0".to_owned(),
+        relational_engine: WorkerComponentVersion {
+            component: "datafusion".to_owned(),
+            version: "51.0.0".to_owned(),
+        },
+        normalizer_version: "namecase-v1".to_owned(),
+    }
+}
+
+fn control_budget() -> WorkerControlBudget {
+    WorkerControlBudget {
+        maximum_task_bytes: 128 * 1024,
+        maximum_attempt_bytes: 32 * 1024,
+        maximum_result_bytes: 128 * 1024,
+        maximum_input_artifacts: 32,
+        maximum_output_artifacts: 16,
+        maximum_secret_references: 8,
+    }
+}
+
+fn worker_capabilities() -> WorkerRuntimeCapabilities {
+    WorkerRuntimeCapabilities {
+        host: ExecutionHostCapabilities {
+            logical_cpu_slots: 4,
+            io_workers: 2,
+            blocking_lanes: Vec::new(),
+        },
+        memory_bytes: 512 * 1024 * 1024,
+        disk_bytes: 4 * 1024 * 1024 * 1024,
+        control: control_budget(),
+        services: vec![
+            "artifact-reader-v1".to_owned(),
+            "source-registry-v1".to_owned(),
+        ],
+    }
+}
+
+fn mock_option_schema() -> serde_json::Value {
+    serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "source": {"type": "object", "additionalProperties": false, "properties": {}},
+        "resource": {"type": "object", "additionalProperties": false, "properties": {}}
+    })
+}
+
+fn source_plan() -> CompiledSourcePlan {
+    let option_schema = mock_option_schema();
+    let driver = SourceDriverDescriptor {
+        driver_id: SourceDriverId::new("mock_source").unwrap(),
+        driver_version: "1.0.0".to_owned(),
+        option_schema_hash: artifact_hash(&option_schema).unwrap(),
+        kinds: vec!["mock".to_owned()],
+        schemes: vec!["mock".to_owned()],
+    };
+    CompiledSourcePlan::new(
+        driver,
+        ResourceCapabilities::default(),
+        SourceExecutionCapabilities {
+            minimum_poll_bytes: 1,
+            maximum_poll_bytes: 1024,
+            minimum_decode_bytes: 1,
+            maximum_decode_bytes: 4096,
+            maximum_concurrency: 2,
+            useful_concurrency: 2,
+            executor_class: SourceExecutorClass::Io,
+            blocking_lane: None,
+            pausable: true,
+            spillable: false,
+            idempotent_reads: true,
+            reopenable: true,
+            resumable: false,
+            speculative_safe: false,
+            retry_granularity: SourceRetryGranularity::Partition,
+            retryable_errors: vec![ErrorKind::Transient],
+            retry_policy: Some(SourceRetryPolicy::default()),
+            attestation: SourceAttestationStrength::ImmutableContent,
+            rate_limit: Some(SourceRateLimit {
+                operations: 100,
+                interval_ms: 1_000,
+            }),
+            quota_authority: Some("mock-account".to_owned()),
+            canonical_order: true,
+            bounded: true,
+            batch_memory: SourceBatchMemoryContract::Preaccounted,
+            telemetry_version: "v1".to_owned(),
+        },
+        CompiledSourcePlanInput {
+            descriptor: ResourceDescriptor {
+                resource_id: ResourceId::new("mock.events").unwrap(),
+                schema_source: SchemaSource::Declared {
+                    schema_hash: SchemaHash::new(hash(90)).unwrap(),
+                    source: "mock://events".to_owned(),
+                },
+                primary_key: Vec::new(),
+                merge_key: Vec::new(),
+                cursor: None,
+                write_disposition: WriteDisposition::Append,
+                deduplication: None,
+                contract: None,
+                state_scope: ScopeKey::Resource,
+                freshness: None,
+                trust_level: TrustLevel::Governed,
+            },
+            schema: Schema::empty(),
+            type_policy_allowances: TypePolicyAllowances::default(),
+            effective_schema_runtime: None,
+            baseline_observation_schema_catalog: Vec::new(),
+            redacted_options: serde_json::json!({"token": "secret://env/MOCK_TOKEN"}),
+            physical_plan: serde_json::json!({"partitions": 1}),
+        },
+    )
+    .unwrap()
+}
+
+fn partition_plan() -> PartitionPlan {
+    PartitionPlan {
+        partition_id: PartitionId::new("partition-00000003").unwrap(),
+        scope: ScopeKey::Partition {
+            partition_id: PartitionId::new("partition-00000003").unwrap(),
+        },
+        planned_position: Some(position(150)),
+        start_position: Some(position(100)),
+        scan_intent: CompiledScanIntent::full_scan(),
+        retry_safety: PartitionRetrySafety::ImmutableContent,
+        metadata: BTreeMap::new(),
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecordedSemanticArtifact {
+    semantic_hash: String,
+}
+
+#[derive(Default)]
+struct MockArtifactStore {
+    values: RefCell<BTreeMap<(WorkerArtifactKind, String), serde_json::Value>>,
+}
+
+impl MockArtifactStore {
+    fn insert<T: Serialize>(
+        &self,
+        kind: WorkerArtifactKind,
+        key: &str,
+        value: &T,
+    ) -> WorkerArtifactReference {
+        let content_sha256 = artifact_hash(value).unwrap();
+        let value = serde_json::to_value(value).unwrap();
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let reference = WorkerArtifactReference {
+            kind,
+            store_namespace: ContentStoreNamespace::new("worker-fixtures").unwrap(),
+            object_key: ContentObjectKey::new(key).unwrap(),
+            byte_count: u64::try_from(bytes.len()).unwrap(),
+            content_sha256,
+            provider_generation: Some(ContentProviderGeneration::new("generation-7").unwrap()),
+        };
+        self.values
+            .borrow_mut()
+            .insert((kind, key.to_owned()), value);
+        reference
+    }
+
+    fn insert_semantic(
+        &self,
+        kind: WorkerArtifactKind,
+        key: &str,
+        semantic_hash: String,
+    ) -> WorkerArtifactReference {
+        self.insert(kind, key, &RecordedSemanticArtifact { semantic_hash })
+    }
+
+    fn load<T: DeserializeOwned>(&self, reference: &WorkerArtifactReference) -> T {
+        serde_json::from_value(
+            self.values
+                .borrow()
+                .get(&(reference.kind, reference.object_key.as_str().to_owned()))
+                .unwrap()
+                .clone(),
+        )
+        .unwrap()
+    }
+
+    fn tamper(&self, reference: &WorkerArtifactReference) {
+        self.values.borrow_mut().insert(
+            (reference.kind, reference.object_key.as_str().to_owned()),
+            serde_json::json!({"tampered": true}),
+        );
+    }
+}
+
+impl WorkerAdmissionVerifier for MockArtifactStore {
+    fn verify_artifact(&self, reference: &WorkerArtifactReference) -> Result<()> {
+        reference.validate()?;
+        let values = self.values.borrow();
+        let value = values
+            .get(&(reference.kind, reference.object_key.as_str().to_owned()))
+            .ok_or_else(|| CdfError::contract("mock artifact is missing"))?;
+        let bytes = serde_json::to_vec(value).unwrap();
+        let decode_error =
+            |error| CdfError::contract(format!("mock artifact decode failed: {error}"));
+        let observed_hash = match reference.kind {
+            WorkerArtifactKind::CompiledSourcePlan => artifact_hash(
+                &serde_json::from_value::<CompiledSourcePlan>(value.clone())
+                    .map_err(decode_error)?,
+            )?,
+            WorkerArtifactKind::PartitionPlan => artifact_hash(
+                &serde_json::from_value::<PartitionPlan>(value.clone()).map_err(decode_error)?,
+            )?,
+            _ => artifact_hash(
+                &serde_json::from_value::<RecordedSemanticArtifact>(value.clone())
+                    .map_err(decode_error)?,
+            )?,
+        };
+        if observed_hash != reference.content_sha256
+            || u64::try_from(bytes.len()).unwrap() != reference.byte_count
+            || reference
+                .provider_generation
+                .as_ref()
+                .map(|value| value.as_str())
+                != Some("generation-7")
+        {
+            return Err(CdfError::contract(
+                "mock artifact bytes/hash/generation do not match reference",
+            ));
+        }
+        Ok(())
+    }
+
+    fn verify_source_authority(
+        &self,
+        _task: &PortablePartitionTask,
+        authority: &ReconstructedWorkerTaskAuthority<'_>,
+        attestation: &WorkerSourceAttestation,
+        observations: &[WorkerProcessedObservation],
+    ) -> Result<()> {
+        let planned = authority
+            .partition
+            .planned_position
+            .as_ref()
+            .ok_or_else(|| {
+                CdfError::contract("mock partition lacks planned source-position authority")
+            })?;
+        let WorkerPosition::Inline {
+            position: processed,
+        } = &attestation.processed_position
+        else {
+            return Err(CdfError::contract(
+                "mock source does not admit external foreign positions",
+            ));
+        };
+        if processed != planned
+            || attestation.physical_schema_hash != authority.execution.output_schema_hash
+            || observations.iter().any(|observation| {
+                !matches!(
+                    &observation.source_position,
+                    WorkerPosition::Inline { position } if position == planned
+                )
+            })
+        {
+            return Err(CdfError::contract(
+                "worker source attestation exceeds reconstructed position/schema authority",
+            ));
+        }
+        Ok(())
+    }
+}
+
+struct Fixture {
+    task: PortablePartitionTask,
+    store: MockArtifactStore,
+}
+
+impl Fixture {
+    fn new() -> Self {
+        let store = MockArtifactStore::default();
+        let source = source_plan();
+        let partition = partition_plan();
+        let source_reference = store.insert(
+            WorkerArtifactKind::CompiledSourcePlan,
+            "plans/source.json",
+            &source,
+        );
+        let partition_reference = store.insert(
+            WorkerArtifactKind::PartitionPlan,
+            "plans/partition-00000003.json",
+            &partition,
+        );
+        let project_identity_hash = hash(30);
+        let output_schema_hash = SchemaHash::new(hash(31)).unwrap();
+        let validation_program_hash = hash(32);
+        let normalization_policy_hash = hash(33);
+        let compiled_expression_plan_hash = hash(34);
+        let operator_graph_hash = hash(35);
+        let segmentation_policy_hash = hash(36);
+        let execution_extent_hash = hash(37);
+        let unit_authority_hash = hash(38);
+        let segment_authority_hash = hash(39);
+        let artifacts = WorkerExecutionArtifacts {
+            project_plan: store.insert_semantic(
+                WorkerArtifactKind::ProjectPlan,
+                "plans/project.json",
+                project_identity_hash.clone(),
+            ),
+            output_schema: store.insert_semantic(
+                WorkerArtifactKind::OutputSchema,
+                "plans/output-schema.json",
+                output_schema_hash.as_str().to_owned(),
+            ),
+            validation_program: store.insert_semantic(
+                WorkerArtifactKind::ValidationProgram,
+                "plans/validation.json",
+                validation_program_hash.clone(),
+            ),
+            normalization_policy: store.insert_semantic(
+                WorkerArtifactKind::NormalizationPolicy,
+                "plans/normalization.json",
+                normalization_policy_hash.clone(),
+            ),
+            compiled_expression_plan: store.insert_semantic(
+                WorkerArtifactKind::CompiledExpressionPlan,
+                "plans/expressions.json",
+                compiled_expression_plan_hash.clone(),
+            ),
+            operator_graph: store.insert_semantic(
+                WorkerArtifactKind::OperatorGraph,
+                "plans/operator-graph.json",
+                operator_graph_hash.clone(),
+            ),
+            segmentation_policy: store.insert_semantic(
+                WorkerArtifactKind::SegmentationPolicy,
+                "plans/segmentation.json",
+                segmentation_policy_hash.clone(),
+            ),
+            execution_extent: store.insert_semantic(
+                WorkerArtifactKind::ExecutionExtent,
+                "plans/extent.json",
+                execution_extent_hash.clone(),
+            ),
+            decode_unit_plan: store.insert_semantic(
+                WorkerArtifactKind::DecodeUnitPlan,
+                "plans/decode-unit.json",
+                unit_authority_hash.clone(),
+            ),
+            segment_plan: store.insert_semantic(
+                WorkerArtifactKind::SegmentPlan,
+                "plans/segment-plan.json",
+                segment_authority_hash.clone(),
+            ),
+        };
+        let input = store.insert_semantic(
+            WorkerArtifactKind::InputPayload,
+            "inputs/events.bin",
+            hash(40),
+        );
+        let task = PortablePartitionTask::new(PortablePartitionTaskInput {
+            compatibility: compatibility(),
+            pipeline_id: PipelineId::new("pipeline-fixture").unwrap(),
+            resource_id: source.descriptor.resource_id.clone(),
+            plan_id: PlanId::new("plan-fixture").unwrap(),
+            source: PortableSourceBinding {
+                driver_id: source.driver.driver_id.clone(),
+                driver_version: source.driver.driver_version.clone(),
+                option_schema_hash: source.driver.option_schema_hash.clone(),
+                compiled_source_plan: source_reference,
+                redacted_options_hash: source.redacted_options_hash.clone(),
+                physical_plan_hash: source.physical_plan_hash.clone(),
+                source_semantics_hash: source.schema_binding_stable_hash().unwrap(),
+                execution_capabilities_hash: artifact_hash(&source.execution_capabilities).unwrap(),
+            },
+            partition: PortablePartitionBinding {
+                partition_id: partition.partition_id.clone(),
+                scope: partition.scope.clone(),
+                canonical_partition_ordinal: 3,
+                epoch_ordinal: Some(9),
+                partition_plan: partition_reference,
+                source_identity_hash: partition_source_identity_binding(&partition).unwrap(),
+                unit_authority_hash,
+                segment_authority_hash,
+            },
+            execution: PortableExecutionBinding {
+                project_identity_hash,
+                artifacts,
+                output_schema_hash,
+                validation_program_hash,
+                normalization_policy_hash,
+                compiled_expression_plan_hash,
+                operator_graph_hash,
+                segmentation_policy_hash,
+                execution_extent_hash,
+            },
+            input_checkpoint: Some(WorkerInputCheckpointBinding {
+                checkpoint_id: CheckpointId::new("checkpoint-8").unwrap(),
+                scope: ScopeKey::Resource,
+                state_version: PORTABLE_CHECKPOINT_STATE_VERSION,
+                position: WorkerPosition::inline(position(100)).unwrap(),
+                content_sha256: hash(41),
+            }),
+            secret_references: vec![SecretReference::new("secret://env/MOCK_TOKEN").unwrap()],
+            input_artifacts: vec![input],
+            resources: WorkerResourceBudget {
+                memory_bytes: 256 * 1024 * 1024,
+                disk_bytes: 2 * 1024 * 1024 * 1024,
+                cpu_slots: 2,
+                io_slots: 1,
+                control: control_budget(),
+            },
+            attempt_policy: WorkerAttemptPolicy {
+                maximum_attempts: 3,
+                maximum_attempt_duration_ms: 30_000,
+            },
+            capabilities: WorkerCapabilityRequirements {
+                required_blocking_lanes: Vec::new(),
+                services: vec![
+                    "artifact-reader-v1".to_owned(),
+                    "source-registry-v1".to_owned(),
+                ],
+            },
+            output_policy: WorkerOutputPolicy {
+                allowed_kinds: vec![
+                    WorkerArtifactKind::CanonicalSegment,
+                    WorkerArtifactKind::Quarantine,
+                    WorkerArtifactKind::Residual,
+                    WorkerArtifactKind::Verdict,
+                    WorkerArtifactKind::Lineage,
+                ],
+                maximum_artifact_bytes: 1024 * 1024 * 1024,
+            },
+        })
+        .unwrap();
+        Self { task, store }
+    }
+
+    fn reconstruct(
+        &self,
+        task: &PortablePartitionTask,
+    ) -> (
+        CompiledSourcePlan,
+        PartitionPlan,
+        ReconstructedExecutionAuthority,
+    ) {
+        let source = self.store.load(&task.source.compiled_source_plan);
+        let partition = self.store.load(&task.partition.partition_plan);
+        let load_hash = |reference: &WorkerArtifactReference| {
+            self.store
+                .load::<RecordedSemanticArtifact>(reference)
+                .semantic_hash
+        };
+        let authority = ReconstructedExecutionAuthority {
+            project_identity_hash: load_hash(&task.execution.artifacts.project_plan),
+            output_schema_hash: SchemaHash::new(load_hash(&task.execution.artifacts.output_schema))
+                .unwrap(),
+            validation_program_hash: load_hash(&task.execution.artifacts.validation_program),
+            normalization_policy_hash: load_hash(&task.execution.artifacts.normalization_policy),
+            compiled_expression_plan_hash: load_hash(
+                &task.execution.artifacts.compiled_expression_plan,
+            ),
+            operator_graph_hash: load_hash(&task.execution.artifacts.operator_graph),
+            segmentation_policy_hash: load_hash(&task.execution.artifacts.segmentation_policy),
+            execution_extent_hash: load_hash(&task.execution.artifacts.execution_extent),
+            unit_authority_hash: load_hash(&task.execution.artifacts.decode_unit_plan),
+            segment_authority_hash: load_hash(&task.execution.artifacts.segment_plan),
+        };
+        (source, partition, authority)
+    }
+
+    fn attempt(&self) -> PartitionAttemptEnvelope {
+        PartitionAttemptEnvelope {
+            version: PARTITION_ATTEMPT_VERSION,
+            attempt_id: "attempt-4".to_owned(),
+            retry_ordinal: 0,
+            trace_id: "trace-4".to_owned(),
+            write_permit: WorkerArtifactWritePermit {
+                task_sha256: self.task.task_sha256.clone(),
+                lease_authority_domain_id: LeaseAuthorityDomainId::new("local-test-domain")
+                    .unwrap(),
+                lease_scope: self.task.partition.scope.clone(),
+                fencing_token: FencingToken::new(4).unwrap(),
+                issued_at_ms: 1_000,
+                expires_at_ms: 10_000,
+                output: WorkerArtifactWriteScope {
+                    store_namespace: ContentStoreNamespace::new("worker-fixtures").unwrap(),
+                    object_key_prefix: "attempts/attempt-4/".to_owned(),
+                    maximum_bytes: 1024 * 1024 * 1024,
+                },
+                generation_precondition: WorkerObjectGenerationPrecondition::CreateOrVerifyContent,
+            },
+        }
+    }
+
+    fn lease(&self) -> WorkerLeaseState {
+        WorkerLeaseState {
+            lease_authority_domain_id: LeaseAuthorityDomainId::new("local-test-domain").unwrap(),
+            lease_scope: self.task.partition.scope.clone(),
+            fencing_token: FencingToken::new(4).unwrap(),
+            expires_at_ms: 10_000,
+        }
+    }
+
+    fn result(&self, attempt: &PartitionAttemptEnvelope) -> PartitionWorkerResult {
+        let segment = self.store.insert_semantic(
+            WorkerArtifactKind::CanonicalSegment,
+            "attempts/attempt-4/data/p00000003-s00000000.arrow",
+            hash(50),
+        );
+        let artifact_bytes = segment.byte_count;
+        PartitionWorkerResult::new(
+            attempt,
+            PartitionWorkerResultInput {
+                status: WorkerTerminalStatus::Succeeded,
+                source_attestation: Some(WorkerSourceAttestation {
+                    processed_position: WorkerPosition::inline(position(150)).unwrap(),
+                    physical_schema_hash: self.task.execution.output_schema_hash.clone(),
+                }),
+                processed_observations: vec![
+                    WorkerProcessedObservation::new(
+                        "partition-00000003",
+                        ProcessedObservationOutcome::Admitted,
+                        WorkerPosition::inline(position(150)).unwrap(),
+                    )
+                    .unwrap(),
+                ],
+                artifacts: vec![WorkerArtifactReceipt {
+                    role: WorkerArtifactRole::CanonicalSegment {
+                        segment_id: SegmentId::new("p00000003-s00000000").unwrap(),
+                        partition_ordinal: 3,
+                        segment_ordinal: 0,
+                        row_count: 50,
+                    },
+                    artifact: segment,
+                }],
+                counts: WorkerResultCounts {
+                    input_rows: 50,
+                    output_rows: 50,
+                    quarantined_rows: 0,
+                    source_bytes: 4096,
+                    artifact_bytes,
+                },
+                telemetry: WorkerTelemetry {
+                    elapsed_ns: 100,
+                    cpu_ns: 80,
+                    peak_memory_bytes: 1024,
+                    spill_bytes: 0,
+                },
+            },
+        )
+        .unwrap()
+    }
+}
+
+fn admission<'a>(
+    fixture: &'a Fixture,
+    task: &'a PortablePartitionTask,
+    source: &'a CompiledSourcePlan,
+    partition: &'a PartitionPlan,
+    execution: &'a ReconstructedExecutionAuthority,
+) -> ReconstructedWorkerTaskAuthority<'a> {
+    let _ = fixture;
+    let _ = task;
+    ReconstructedWorkerTaskAuthority {
+        source,
+        partition,
+        execution,
+    }
+}
+
+#[test]
+fn canonical_task_attempt_and_result_fixtures_round_trip() {
+    let fixture = Fixture::new();
+    let attempt = fixture.attempt();
+    let result = fixture.result(&attempt);
+    let task_json = serde_json::to_string_pretty(&fixture.task).unwrap();
+    let attempt_json = serde_json::to_string_pretty(&attempt).unwrap();
+    let result_json = serde_json::to_string_pretty(&result).unwrap();
+    if std::env::var_os("CDF_PRINT_WORKER_GOLDENS").is_some() {
+        eprintln!("TASK\n{task_json}\nATTEMPT\n{attempt_json}\nRESULT\n{result_json}");
+    }
+    assert_eq!(
+        task_json,
+        include_str!("../../tests/fixtures/portable_partition_task_v1.json").trim_end()
+    );
+    assert_eq!(
+        attempt_json,
+        include_str!("../../tests/fixtures/partition_attempt_v1.json").trim_end()
+    );
+    assert_eq!(
+        result_json,
+        include_str!("../../tests/fixtures/partition_worker_result_v1.json").trim_end()
+    );
+    assert_eq!(
+        PortablePartitionTask::decode_bounded(
+            task_json.as_bytes(),
+            &compatibility(),
+            &worker_capabilities(),
+        )
+        .unwrap(),
+        fixture.task
+    );
+    assert_eq!(
+        PartitionAttemptEnvelope::decode_bounded(
+            attempt_json.as_bytes(),
+            &fixture.task,
+            &worker_capabilities(),
+        )
+        .unwrap(),
+        attempt
+    );
+    assert_eq!(
+        PartitionWorkerResult::decode_bounded(
+            result_json.as_bytes(),
+            &fixture.task,
+            &worker_capabilities(),
+        )
+        .unwrap(),
+        result
+    );
+}
+
+#[test]
+fn isolated_worker_reconstructs_every_authority_from_artifacts() {
+    let fixture = Fixture::new();
+    let task_bytes = serde_json::to_vec(&fixture.task).unwrap();
+    let task = PortablePartitionTask::decode_bounded(
+        &task_bytes,
+        &compatibility(),
+        &worker_capabilities(),
+    )
+    .unwrap();
+    let mut registry = SourceRegistry::new();
+    registry
+        .register(PortableMockDriver {
+            descriptor: source_plan().driver,
+            option_schema: mock_option_schema(),
+        })
+        .unwrap();
+    registry
+        .validate_portable_source_binding(&task.source)
+        .unwrap();
+    let (source, partition, execution) = fixture.reconstruct(&task);
+    registry
+        .validate_portable_source_plan(&task.source, &source)
+        .unwrap();
+    let authority = admission(&fixture, &task, &source, &partition, &execution);
+    task.validate_reconstructed_authority(&authority, &fixture.store)
+        .unwrap();
+
+    let attempt = fixture.attempt();
+    let result = fixture.result(&attempt);
+    result
+        .validate_for_admission(
+            &task,
+            &attempt,
+            &authority,
+            &fixture.lease(),
+            &fixture.store,
+            2_000,
+        )
+        .unwrap();
+}
+
+#[test]
+fn forged_execution_artifact_and_semantic_authority_fail_closed() {
+    let fixture = Fixture::new();
+    let (source, partition, mut execution) = fixture.reconstruct(&fixture.task);
+    execution.operator_graph_hash = hash(99);
+    let authority = admission(&fixture, &fixture.task, &source, &partition, &execution);
+    assert!(
+        fixture
+            .task
+            .validate_reconstructed_authority(&authority, &fixture.store)
+            .unwrap_err()
+            .message
+            .contains("execution program")
+    );
+
+    let (_, _, execution) = fixture.reconstruct(&fixture.task);
+    fixture
+        .store
+        .tamper(&fixture.task.execution.artifacts.operator_graph);
+    let authority = admission(&fixture, &fixture.task, &source, &partition, &execution);
+    assert!(
+        fixture
+            .task
+            .validate_reconstructed_authority(&authority, &fixture.store)
+            .unwrap_err()
+            .message
+            .contains("mock artifact")
+    );
+}
+
+#[test]
+fn write_permit_is_checked_before_every_object_write() {
+    let fixture = Fixture::new();
+    let attempt = fixture.attempt();
+    let segment = WorkerArtifactReference {
+        kind: WorkerArtifactKind::CanonicalSegment,
+        store_namespace: ContentStoreNamespace::new("worker-fixtures").unwrap(),
+        object_key: ContentObjectKey::new("attempts/attempt-4/data/segment.arrow").unwrap(),
+        byte_count: 4096,
+        content_sha256: hash(70),
+        provider_generation: None,
+    };
+    attempt
+        .write_permit
+        .validate_before_write(
+            &fixture.task,
+            &fixture.lease(),
+            &segment,
+            &WorkerArtifactObjectState::Absent,
+            2_000,
+        )
+        .unwrap();
+
+    let stale = WorkerLeaseState {
+        fencing_token: FencingToken::new(5).unwrap(),
+        ..fixture.lease()
+    };
+    assert!(
+        attempt
+            .write_permit
+            .validate_before_write(
+                &fixture.task,
+                &stale,
+                &segment,
+                &WorkerArtifactObjectState::Absent,
+                2_000,
+            )
+            .unwrap_err()
+            .message
+            .contains("stale")
+    );
+    let conflicting = WorkerArtifactObjectState::Present {
+        content_sha256: hash(71),
+        provider_generation: ContentProviderGeneration::new("generation-old").unwrap(),
+    };
+    assert!(
+        attempt
+            .write_permit
+            .validate_before_write(
+                &fixture.task,
+                &fixture.lease(),
+                &segment,
+                &conflicting,
+                2_000,
+            )
+            .unwrap_err()
+            .message
+            .contains("generation precondition")
+    );
+}
+
+#[test]
+fn semantically_rehashed_bad_result_still_fails_admission() {
+    let fixture = Fixture::new();
+    let attempt = fixture.attempt();
+    let mut result = fixture.result(&attempt);
+    result.counts.output_rows = 49;
+    result.result_sha256 = result.compute_semantic_hash().unwrap();
+    assert!(
+        result
+            .validate()
+            .unwrap_err()
+            .message
+            .contains("segment rows")
+    );
+
+    let mut result = fixture.result(&attempt);
+    result
+        .source_attestation
+        .as_mut()
+        .unwrap()
+        .processed_position = WorkerPosition::inline(position(151)).unwrap();
+    result.result_sha256 = result.compute_semantic_hash().unwrap();
+    let (source, partition, execution) = fixture.reconstruct(&fixture.task);
+    let authority = admission(&fixture, &fixture.task, &source, &partition, &execution);
+    assert!(
+        result
+            .validate_for_admission(
+                &fixture.task,
+                &attempt,
+                &authority,
+                &fixture.lease(),
+                &fixture.store,
+                2_000,
+            )
+            .unwrap_err()
+            .message
+            .contains("position/schema authority")
+    );
+}
+
+#[test]
+fn externally_configured_control_ceiling_precedes_deserialization() {
+    let fixture = Fixture::new();
+    let mut worker = worker_capabilities();
+    worker.control.maximum_task_bytes = 8;
+    let oversized_invalid = br#"{\"not_even\":\"valid enough to decode\"}"#;
+    assert!(
+        PortablePartitionTask::decode_bounded(oversized_invalid, &compatibility(), &worker)
+            .unwrap_err()
+            .message
+            .contains("externally admitted")
+    );
+
+    let mut self_widened = fixture.task.clone();
+    self_widened.resources.control.maximum_result_bytes =
+        worker_capabilities().control.maximum_result_bytes + 1;
+    self_widened.task_sha256 = self_widened.compute_hash().unwrap();
+    let bytes = serde_json::to_vec(&self_widened).unwrap();
+    assert!(
+        PortablePartitionTask::decode_bounded(&bytes, &compatibility(), &worker_capabilities(),)
+            .unwrap_err()
+            .message
+            .contains("externally configured ceiling")
+    );
+}
+
+#[test]
+fn positions_are_exact_version_portable_and_foreign_state_is_external() {
+    let absolute = SourcePosition::FileManifest(cdf_kernel::FileManifest {
+        version: PORTABLE_SOURCE_POSITION_VERSION,
+        files: vec![cdf_kernel::FilePosition {
+            path: "/coordinator/private/events.parquet".to_owned(),
+            size_bytes: 1,
+            source_generation: Some("generation-1".to_owned()),
+            etag: None,
+            object_version: None,
+            sha256: None,
+        }],
+    });
+    assert!(WorkerPosition::inline(absolute).is_err());
+
+    let foreign = SourcePosition::ForeignState(cdf_kernel::ForeignState {
+        version: PORTABLE_SOURCE_POSITION_VERSION,
+        protocol: "python".to_owned(),
+        opaque_blob: vec![1, 2, 3],
+        blob_sha256: hash(80),
+    });
+    assert!(
+        WorkerPosition::inline(foreign)
+            .unwrap_err()
+            .message
+            .contains("externalize foreign state")
+    );
+    let external = WorkerPosition::ExternalForeign {
+        version: PORTABLE_SOURCE_POSITION_VERSION,
+        protocol: "python".to_owned(),
+        artifact: WorkerArtifactReference {
+            kind: WorkerArtifactKind::ForeignState,
+            store_namespace: ContentStoreNamespace::new("worker-fixtures").unwrap(),
+            object_key: ContentObjectKey::new("positions/python-state.json").unwrap(),
+            byte_count: 3,
+            content_sha256: hash(80),
+            provider_generation: Some(ContentProviderGeneration::new("generation-7").unwrap()),
+        },
+    };
+    external.validate().unwrap();
+}
+
+#[test]
+fn runtime_resolved_lane_stays_portable_until_worker_admission() {
+    let fixture = Fixture::new();
+    let mut task = fixture.task;
+    let portable_lane = BlockingLaneSpec {
+        lane_id: "python".to_owned(),
+        binding: BlockingLaneBinding::RuntimeResolvedRequired,
+        maximum_concurrency: 8,
+        cpu_slot_cost: 1,
+        native_internal_parallelism: 1,
+        affinity: crate::LaneAffinity::Shared,
+        interruption: crate::InterruptionSafety::CooperativeOnly,
+    };
+    task.capabilities.required_blocking_lanes = vec![portable_lane.clone()];
+    task.task_sha256 = task.compute_hash().unwrap();
+    task.validate().unwrap();
+
+    let mut worker = worker_capabilities();
+    worker.host.blocking_lanes = vec![BlockingLaneSpec {
+        binding: BlockingLaneBinding::RuntimeResolved,
+        maximum_concurrency: 1,
+        ..portable_lane
+    }];
+    task.validate_for_worker(&compatibility(), &worker).unwrap();
+
+    task.capabilities.required_blocking_lanes[0].binding = BlockingLaneBinding::RuntimeResolved;
+    task.task_sha256 = task.compute_hash().unwrap();
+    assert!(
+        task.validate()
+            .unwrap_err()
+            .message
+            .contains("runtime-resolved")
+    );
+}
+
+#[test]
+fn protocol_contains_no_payload_secret_or_coordinator_commit_authority() {
+    let fixture = Fixture::new();
+    let attempt = fixture.attempt();
+    let result = fixture.result(&attempt);
+    let task_json = serde_json::to_string(&fixture.task).unwrap();
+    let result_json = serde_json::to_string(&result).unwrap();
+    assert!(!task_json.contains("/Users/"));
+    assert!(!task_json.contains("plain-text-secret"));
+    assert!(!task_json.contains("opaque_blob"));
+    assert!(!result_json.contains("package_hash"));
+    assert!(!result_json.contains("destination_receipt"));
+    assert!(!result_json.contains("checkpoint_id"));
+}

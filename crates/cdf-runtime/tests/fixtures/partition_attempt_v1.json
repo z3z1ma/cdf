@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "attempt_id": "attempt-4",
+  "retry_ordinal": 0,
+  "trace_id": "trace-4",
+  "write_permit": {
+    "task_sha256": "sha256:a0bb8ac13b94da60feb8c1b5e7ade39b6b72b20f1d30507b23f0f3a39e12128b",
+    "lease_authority_domain_id": "local-test-domain",
+    "lease_scope": {
+      "kind": "partition",
+      "partition_id": "partition-00000003"
+    },
+    "fencing_token": 4,
+    "issued_at_ms": 1000,
+    "expires_at_ms": 10000,
+    "output": {
+      "store_namespace": "worker-fixtures",
+      "object_key_prefix": "attempts/attempt-4/",
+      "maximum_bytes": 1073741824
+    },
+    "generation_precondition": {
+      "kind": "create_or_verify_content"
+    }
+  }
+}

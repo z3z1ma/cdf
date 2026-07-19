@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-11
-Updated: 2026-07-16
+Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-11-p0-sx1-source-extension-boundary.md, .10x/tickets/done/2026-07-11-p0-dx1-neutral-runtime-crate.md, .10x/tickets/done/2026-07-11-p0-bx1-kernel-stream-extent-artifacts.md, .10x/specs/portable-partition-task-protocol.md
 
@@ -46,6 +46,9 @@ None. SX1, DX1, and BX1 are done; this ticket is executable.
 - 2026-07-19: Tightened the reconstruction boundary before review: explicit redacted-options identity; exact reconstructed source/partition hash, driver, resource, scope, and source-position binding; rejection of coordinator-absolute local file positions; exact declared worker services plus CPU/I/O/memory/disk and runtime-resolved lane capabilities; portable relative artifact keys; and unique contiguous per-partition segment ordinals/ids. The task's secret-reference list must exactly equal the references found after the compiled source artifact is reconstructed.
 - 2026-07-19: Completed the task authority tuple with explicit decode-unit and segment authority hashes plus a task-recorded retry/duration policy enforced by attempt envelopes. Empty immutable input artifacts remain legal; message/reference and byte limits are configurable task authority rather than implicit constants. Replaced the positional task constructor with one named input structure so C5 and future hosts cannot silently transpose protocol fields.
 - 2026-07-19: Corrected the embedded-interpreter lane lifecycle before closure: portable tasks admit `RuntimeResolvedRequired` ceilings and reject host-resolved values; worker admission requires a `RuntimeResolved` lane that is a validated tightening. This preserves one portable task hash across GIL and free-threaded hosts while making the executable ceiling exact at attachment time. Reconstructed partition scopes and metadata now also reject coordinator-absolute local paths recursively.
+- 2026-07-19: Reworked the protocol after adversarial review rather than patching individual symptoms. Execution authority is now reconstructed from ten typed, content-addressed compiler artifacts (project, schema, validation, normalization, compiled expressions, operator graph, segmentation policy, extent, decode-unit plan, and segment plan) and compared against the task's project/unit/segment tuple. The isolated-worker fixture decodes only serialized task bytes, resolves the exact source driver through the ordinary registry, loads every artifact through an injected reader, and reconstructs all authority before result admission.
+- 2026-07-19: Replaced the flat attempt fence with a task-bound `WorkerArtifactWritePermit`: exact lease domain/scope/token/liveness, portable namespace/prefix/byte authority, and explicit create/content/generation precondition are checked before every object write. Result admission rechecks the current lease, verifies actual stored artifact bytes/hash/generation through an injected verifier, sums segment rows against reported output rows, and delegates physical-schema/processed-position bounds to the reconstructed source authority. Results bind the write-permit hash and still carry no package, receipt, destination, or checkpoint-commit authority.
+- 2026-07-19: Removed inline foreign-state blobs from task/result positions in favor of typed external artifacts, made every inline position/checkpoint version exact at v1, and added externally configured worker control ceilings checked before JSON deserialization so a task cannot self-authorize oversized allocation. Driver-owned portable-plan validation now runs in two registry phases: exact driver/version/schema before artifact fetch and source-specific plan validation after reconstruction. Existing file, REST, Postgres, and Python drivers opt in; unknown drivers fail closed, and coordinator-local absolute file roots require staging as typed artifacts.
 
 ## Evidence
 
@@ -54,3 +57,15 @@ None. SX1, DX1, and BX1 are done; this ticket is executable.
 - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-runtime --all-targets --locked -- -D warnings` — passed.
 - `CARGO_BUILD_JOBS=12 cargo test -p cdf-runtime --lib --locked` — 93 passed, 1 explicit performance test ignored.
 - `cargo fmt --all` and `git diff --check` — passed.
+- `CARGO_BUILD_JOBS=12 cargo test -p cdf-runtime worker_protocol::tests --locked` — 9/9 passed after review repair. Covers canonical task/attempt/result goldens, ordinary-registry plus typed-artifact isolated reconstruction, semantic and stored-artifact forgery, pre-write fence/generation checks, rehashed row/position lies, externally bounded decoding, exact portable positions/foreign-state externalization, runtime-resolved lanes, and absence of payload/commit authority.
+- `CARGO_BUILD_JOBS=12 cargo test -p cdf-runtime source_registry_compiles_hashes_and_resolves_mock_without_order_authority --locked` — passed with both portable source-registry admission phases.
+- `CARGO_BUILD_JOBS=12 cargo test -p cdf-source-files compiled_relative_file_plan_is_portable_across_project_roots --locked` — passed; relative roots remain portable across hosts and coordinator-local absolute roots fail with staging remediation.
+- `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-runtime -p cdf-source-files -p cdf-source-postgres -p cdf-source-rest -p cdf-python --all-targets --locked -- -D warnings` — passed.
+
+## Review
+
+- 2026-07-19 — adversarial protocol/authority review: **fail**. Critical findings were that semantic execution/unit/segment hashes were not reconstructed from ordinary artifacts; result admission trusted unverified artifact/source claims; and the attempt fence was checked after, rather than before, external writes. Significant findings covered inline/absolute/foreign position state, self-authorized decode bounds, unchecked attempt decoding/version looseness, and an incomplete isolated-worker fixture. The repair above addresses the findings as one protocol-boundary change. Follow-up verdict pending.
+
+## Retrospective
+
+Pending follow-up review and closure judgment.

@@ -226,6 +226,25 @@ impl SourceRegistry {
         Ok(())
     }
 
+    /// Revalidates the fetched compiled plan through its owning driver before isolated execution.
+    /// Driver/version admission intentionally remains a separate pre-fetch step above.
+    pub fn validate_portable_source_plan(
+        &self,
+        binding: &crate::PortableSourceBinding,
+        plan: &CompiledSourcePlan,
+    ) -> Result<()> {
+        self.validate_portable_source_binding(binding)?;
+        binding.validate_reconstructed(plan)?;
+        let driver = self.drivers.get(&binding.driver_id).ok_or_else(|| {
+            CdfError::contract(format!(
+                "portable partition task requires unregistered source driver `{}`",
+                binding.driver_id.as_str()
+            ))
+        })?;
+        self.verify_plan_driver(plan, driver.descriptor())?;
+        driver.validate_portable_plan(plan)
+    }
+
     pub fn option_schemas(&self) -> BTreeMap<String, serde_json::Value> {
         self.drivers
             .iter()

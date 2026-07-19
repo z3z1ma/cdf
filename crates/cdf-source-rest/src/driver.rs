@@ -69,6 +69,13 @@ impl SourceDriver for RestSourceDriver {
         &self.option_schema
     }
 
+    fn validate_portable_plan(&self, plan: &CompiledSourcePlan) -> Result<()> {
+        plan.validate()?;
+        let physical: RestPhysicalPlan = serde_json::from_value(plan.physical_plan.clone())
+            .map_err(|error| CdfError::contract(format!("invalid REST source plan: {error}")))?;
+        physical.to_runtime_plan().map(drop)
+    }
+
     fn add_planner(&self) -> Option<&dyn SourceAddPlanner> {
         Some(self)
     }

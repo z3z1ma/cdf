@@ -1868,6 +1868,19 @@ pub trait SourceDriver: Send + Sync {
         }
     }
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan>;
+    /// Validates the driver-owned portion of a compiled plan for isolated execution.
+    ///
+    /// Drivers must opt in because only the owner can distinguish portable source identifiers
+    /// (for example an HTTP path) from coordinator-local paths or opaque host state. The default
+    /// fails closed while allowing newly added drivers to compile before they claim support for
+    /// the portable-worker protocol.
+    fn validate_portable_plan(&self, plan: &CompiledSourcePlan) -> Result<()> {
+        plan.validate()?;
+        Err(CdfError::contract(format!(
+            "source driver `{}` has not declared portable-plan validation",
+            self.descriptor().driver_id.as_str()
+        )))
+    }
     fn reference_compiler(&self) -> Option<&dyn SourceReferenceCompiler> {
         None
     }

@@ -98,6 +98,27 @@ impl SourceDriver for PythonSourceDriver {
         &self.option_schema
     }
 
+    fn validate_portable_plan(&self, plan: &CompiledSourcePlan) -> Result<()> {
+        plan.validate()?;
+        let physical = physical_plan(plan)?;
+        let module = std::path::Path::new(&physical.module_relative);
+        if module.is_absolute()
+            || module
+                .components()
+                .any(|component| component == std::path::Component::ParentDir)
+        {
+            return Err(CdfError::contract(
+                "portable Python source plan requires a project-relative module without `..`",
+            ));
+        }
+        if physical.callable.is_empty() || physical.callable.contains(['#', '/', '\\']) {
+            return Err(CdfError::contract(
+                "portable Python source plan requires an unambiguous nonempty callable name",
+            ));
+        }
+        Ok(())
+    }
+
     fn validate_project_options(&self, options: &serde_json::Value) -> Result<()> {
         decode_project_options(options).map(drop)
     }

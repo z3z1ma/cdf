@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "task_sha256": "sha256:a0bb8ac13b94da60feb8c1b5e7ade39b6b72b20f1d30507b23f0f3a39e12128b",
+  "attempt_id": "attempt-4",
+  "write_permit_sha256": "sha256:2ef15bbbfe9b642af037f22aee7f651189087b81130815cdca0518ba63c86100",
+  "status": {
+    "kind": "succeeded"
+  },
+  "source_attestation": {
+    "processed_position": {
+      "kind": "inline",
+      "position": {
+        "kind": "cursor",
+        "version": 1,
+        "field": "offset",
+        "value": {
+          "kind": "u64",
+          "value": 150
+        }
+      }
+    },
+    "physical_schema_hash": "sha256:1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f"
+  },
+  "processed_observations": [
+    {
+      "observation_id": "partition-00000003",
+      "outcome": "admitted",
+      "source_position": {
+        "kind": "inline",
+        "position": {
+          "kind": "cursor",
+          "version": 1,
+          "field": "offset",
+          "value": {
+            "kind": "u64",
+            "value": 150
+          }
+        }
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "role": {
+        "kind": "canonical_segment",
+        "segment_id": "p00000003-s00000000",
+        "partition_ordinal": 3,
+        "segment_ordinal": 0,
+        "row_count": 50
+      },
+      "artifact": {
+        "kind": "canonical_segment",
+        "store_namespace": "worker-fixtures",
+        "object_key": "attempts/attempt-4/data/p00000003-s00000000.arrow",
+        "byte_count": 91,
+        "content_sha256": "sha256:34f0866417960c42b6445077102ff89719d4b05260abaa209d1d5a57dc37623e",
+        "provider_generation": "generation-7"
+      }
+    }
+  ],
+  "counts": {
+    "input_rows": 50,
+    "output_rows": 50,
+    "quarantined_rows": 0,
+    "source_bytes": 4096,
+    "artifact_bytes": 91
+  },
+  "telemetry": {
+    "elapsed_ns": 100,
+    "cpu_ns": 80,
+    "peak_memory_bytes": 1024,
+    "spill_bytes": 0
+  },
+  "result_sha256": "sha256:7f6f67e2cd683774170f825a5b9271cfa853b5291851ce0ab96c1b62da8a255c"
+}

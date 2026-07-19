@@ -68,6 +68,17 @@ impl SourceDriver for PostgresSourceDriver {
         &self.option_schema
     }
 
+    fn validate_portable_plan(&self, plan: &CompiledSourcePlan) -> Result<()> {
+        plan.validate()?;
+        let physical: PostgresPhysicalPlan = serde_json::from_value(plan.physical_plan.clone())
+            .map_err(|error| {
+                CdfError::contract(format!("invalid Postgres source plan: {error}"))
+            })?;
+        SecretUri::new(physical.connection)?;
+        PostgresTarget::parse(&physical.target)?;
+        Ok(())
+    }
+
     fn add_planner(&self) -> Option<&dyn SourceAddPlanner> {
         Some(self)
     }
