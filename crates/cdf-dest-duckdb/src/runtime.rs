@@ -11,7 +11,8 @@ use cdf_runtime::{
 };
 
 use crate::{
-    DUCKDB_BULK_PATH_APPENDER, DUCKDB_BULK_PATH_NANOARROW, DuckDbDestination,
+    DUCKDB_BULK_PATH_APPENDER, DUCKDB_BULK_PATH_NANOARROW, DUCKDB_FINAL_BINDING_LANE,
+    DUCKDB_STAGED_INGRESS_LANE, DuckDbDestination,
     package::{field_plan, validate_user_schema_fields},
 };
 
@@ -171,18 +172,26 @@ impl DestinationRuntime for DuckDbDestination {
             native_internal_parallelism,
         ));
         DestinationRuntimeCapabilities {
-            blocking_lanes: vec![cdf_runtime::BlockingLaneSpec {
-                lane_id: "duckdb.connection".to_owned(),
-                maximum_concurrency: 1,
-                cpu_slot_cost: 1,
-                native_internal_parallelism: native_internal_parallelism_u16(
-                    self.native_resources.internal_threads,
-                ),
-                affinity: cdf_runtime::LaneAffinity::Pinned,
-                interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
-            }],
-            staged_ingress_lane: Some("duckdb.connection".to_owned()),
-            final_binding_lane: Some("duckdb.connection".to_owned()),
+            blocking_lanes: vec![
+                cdf_runtime::BlockingLaneSpec {
+                    lane_id: DUCKDB_STAGED_INGRESS_LANE.to_owned(),
+                    maximum_concurrency: 1,
+                    cpu_slot_cost: 1,
+                    native_internal_parallelism: 1,
+                    affinity: cdf_runtime::LaneAffinity::Pinned,
+                    interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
+                },
+                cdf_runtime::BlockingLaneSpec {
+                    lane_id: DUCKDB_FINAL_BINDING_LANE.to_owned(),
+                    maximum_concurrency: 1,
+                    cpu_slot_cost: 1,
+                    native_internal_parallelism,
+                    affinity: cdf_runtime::LaneAffinity::Pinned,
+                    interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
+                },
+            ],
+            staged_ingress_lane: Some(DUCKDB_STAGED_INGRESS_LANE.to_owned()),
+            final_binding_lane: Some(DUCKDB_FINAL_BINDING_LANE.to_owned()),
             ingress_mode: DestinationIngressMode::StagedDurableSegments,
             staged_ingress: Some(cdf_runtime::StagedIngressCapabilities {
                 recovery: cdf_runtime::StagingRecoveryMode::RollbackRedrive,
@@ -266,7 +275,7 @@ fn duckdb_nanoarrow_bulk_path_descriptor(
             maximum: 64 * 1024 * 1024,
         },
         max_useful_writers: 1,
-        blocking_lane: Some("duckdb.connection".to_owned()),
+        blocking_lane: Some(DUCKDB_FINAL_BINDING_LANE.to_owned()),
         native_internal_parallelism,
         external_staging: true,
         fallback: cdf_runtime::BulkFallbackMode::Forbidden,
@@ -276,7 +285,7 @@ fn duckdb_nanoarrow_bulk_path_descriptor(
 }
 
 fn duckdb_appender_bulk_path_descriptor(
-    native_internal_parallelism: u16,
+    _native_internal_parallelism: u16,
 ) -> cdf_runtime::BulkPathDescriptor {
     cdf_runtime::BulkPathDescriptor {
         path_id: DUCKDB_BULK_PATH_APPENDER.to_owned(),
@@ -295,8 +304,8 @@ fn duckdb_appender_bulk_path_descriptor(
             maximum: 64 * 1024 * 1024,
         },
         max_useful_writers: 1,
-        blocking_lane: Some("duckdb.connection".to_owned()),
-        native_internal_parallelism,
+        blocking_lane: Some(DUCKDB_STAGED_INGRESS_LANE.to_owned()),
+        native_internal_parallelism: 1,
         external_staging: true,
         fallback: cdf_runtime::BulkFallbackMode::Forbidden,
         schema_preflight_version: "duckdb-arrow-mapping@1".to_owned(),

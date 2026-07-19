@@ -48,6 +48,8 @@ const DUCKDB_TEMP_BUDGET_ENV: &str = "CDF_DUCKDB_TEMP_BUDGET";
 const DUCKDB_THREADS_ENV: &str = "CDF_DUCKDB_THREADS";
 const DUCKDB_BULK_PATH_APPENDER: &str = "arrow_record_batch_appender";
 const DUCKDB_BULK_PATH_NANOARROW: &str = "nanoarrow_0_8_0_lz4";
+const DUCKDB_STAGED_INGRESS_LANE: &str = "duckdb.staged_ingress";
+const DUCKDB_FINAL_BINDING_LANE: &str = "duckdb.final_binding";
 pub const CDF_ROW_KEY_COLUMN: &str = "_cdf_row_key";
 const CDF_STAGE_ORDER_COLUMN: &str = "_cdf_stage_order";
 

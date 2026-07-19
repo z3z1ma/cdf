@@ -643,6 +643,45 @@ fn sheet_declares_duckdb_destination_contract() {
 }
 
 #[test]
+fn duckdb_reserves_native_parallelism_only_for_final_binding() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut destination = destination(&temp.path().join("parallel.duckdb"));
+    destination.native_resources.internal_threads = 16;
+
+    let capabilities = destination.runtime_capabilities();
+    let staged = capabilities
+        .blocking_lanes
+        .iter()
+        .find(|lane| lane.lane_id == DUCKDB_STAGED_INGRESS_LANE)
+        .unwrap();
+    let final_binding = capabilities
+        .blocking_lanes
+        .iter()
+        .find(|lane| lane.lane_id == DUCKDB_FINAL_BINDING_LANE)
+        .unwrap();
+
+    assert_eq!(
+        capabilities.staged_ingress_lane.as_deref(),
+        Some(DUCKDB_STAGED_INGRESS_LANE)
+    );
+    assert_eq!(
+        capabilities.final_binding_lane.as_deref(),
+        Some(DUCKDB_FINAL_BINDING_LANE)
+    );
+    assert_eq!(staged.claimed_cpu_slots(), 1);
+    assert_eq!(final_binding.claimed_cpu_slots(), 16);
+    assert_eq!(
+        capabilities
+            .bulk_paths
+            .iter()
+            .find(|path| path.path_id == DUCKDB_BULK_PATH_APPENDER)
+            .unwrap()
+            .native_internal_parallelism,
+        1
+    );
+}
+
+#[test]
 fn reusable_destination_conformance_suite_accepts_duckdb_sheet_and_plans() {
     let temp = tempfile::tempdir().unwrap();
     let dest = destination(&temp.path().join("local.duckdb"));
