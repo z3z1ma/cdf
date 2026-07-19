@@ -546,8 +546,19 @@ impl Stream for ForeignBatchStream {
                     }
                 }
                 std::task::Poll::Ready(Some(Err(error))) => {
-                    self.completed = true;
-                    return std::task::Poll::Ready(Some(Err(error)));
+                    if self.terminal.is_some() {
+                        self.completed = true;
+                        return std::task::Poll::Ready(Some(Err(CdfError::data(
+                            "foreign stream failed after its terminal status",
+                        ))));
+                    }
+                    self.terminal = Some(ForeignTerminalStatus::Failed {
+                        retryable: matches!(
+                            error.kind,
+                            cdf_kernel::ErrorKind::Transient | cdf_kernel::ErrorKind::RateLimited
+                        ),
+                        message: error.message,
+                    });
                 }
                 std::task::Poll::Ready(None) => {
                     self.completed = true;
@@ -807,6 +818,15 @@ mod tests {
             block_on(batch_stream_from_foreign_events(duplicate_terminal).try_collect::<Vec<_>>())
                 .is_err()
         );
+
+        let task_failure = Box::pin(stream::iter(vec![Err(CdfError::transient(
+            "producer task failed",
+        ))])) as ForeignEventStream;
+        let error =
+            block_on(batch_stream_from_foreign_events(task_failure).try_collect::<Vec<_>>())
+                .unwrap_err();
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Transient);
+        assert_eq!(error.message, "producer task failed");
     }
 
     #[test]

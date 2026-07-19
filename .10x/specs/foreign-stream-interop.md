@@ -18,7 +18,7 @@ Schema changes pass through shared discovery/reconciliation/contract policy; the
 
 ## Ownership, memory, and backpressure
 
-Every payload and decoder window holds a global memory lease until consumer ownership transfers/releases. Foreign-native scratch is calibrated headroom; children inherit/enforce process-tree budgets. Control/state/stderr/progress queues are separately bounded and cannot deadlock payload draining.
+Every admitted payload and decoder window holds a global memory lease until consumer ownership transfers/releases. A foreign C Data candidate whose retained size is not knowable before import remains producer-native and pre-admission: it MUST emit no outcome unless it fits the reserved payload window, and oversized candidates are dropped. Foreign-native scratch and transient pre-admission retention are calibrated headroom; children inherit/enforce process-tree budgets. Control/state/stderr/progress queues are separately bounded and cannot deadlock payload draining.
 
 Cancellation is structured: stop admission/polling, request cooperative termination, drain/reap within a bounded grace period, then force termination where authorized. Subprocess process groups/descendants cannot survive the run. Python exceptions/panics and child signals/exits produce redacted typed errors and no receipt/checkpoint advancement.
 
