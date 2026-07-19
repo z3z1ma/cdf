@@ -126,6 +126,20 @@ impl Default for FileCompressionDeclaration {
     }
 }
 
+/// Selects how finite remote payloads become seekable for format decoders.
+///
+/// `Auto` preserves download/decode overlap for a single object and favors a completed local
+/// spool for multi-file scans, where concurrent growing-spool reads otherwise contend with the
+/// same disk writes. Both explicit modes remain bounded by the shared spill authority.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileSpoolMode {
+    #[default]
+    Auto,
+    Overlap,
+    Complete,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileResourcePlan {
     pub source: String,
@@ -136,6 +150,7 @@ pub struct FileResourcePlan {
     pub format_options: serde_json::Value,
     pub schema_discovery: Option<cdf_runtime::FormatDiscoveryKind>,
     pub compression: FileCompressionDeclaration,
+    pub spool_mode: FileSpoolMode,
     pub auth: Option<AuthScheme>,
     pub credentials: Option<SecretUri>,
     pub allowlist: EgressAllowlist,

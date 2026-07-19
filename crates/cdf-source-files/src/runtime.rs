@@ -1027,7 +1027,7 @@ impl ResourceStream for FileResource {
             move |cancellation| {
                 cancellation.check()?;
                 let control = FileTransportControl::new(cancellation.clone(), None);
-                let resolved = dependencies.with_transport(|transport, egress| {
+                let (resolved, _) = dependencies.with_transport(|transport, egress| {
                     validate_partition(
                         &descriptor,
                         &plan,
@@ -1793,6 +1793,8 @@ struct PreparedFilePartition {
     hash_sweep_source: Option<Arc<dyn ByteSource>>,
     payload_retention: Option<PayloadRetention>,
     payload_cache_key: Option<crate::payload_cache::FilePayloadCacheKey>,
+    spool_mode: crate::FileSpoolMode,
+    match_count: usize,
 }
 
 struct PreparedFilePayloadKeyInput<'a> {
@@ -2117,22 +2119,23 @@ fn prepare_file_partition(
     preparation: FilePartitionPreparation<'_>,
 ) -> Result<PreparedFilePartition> {
     partition.scan_intent.validate()?;
-    let resolved = preparation
-        .dependencies
-        .with_transport(|transport, egress| {
-            validate_partition(
-                descriptor,
-                plan,
-                partition,
-                FileResolutionContext {
-                    transport,
-                    egress,
-                    formats: preparation.dependencies.formats(),
-                    transforms: preparation.dependencies.transforms(),
-                    control: preparation.control,
-                },
-            )
-        })?;
+    let (resolved, match_count) =
+        preparation
+            .dependencies
+            .with_transport(|transport, egress| {
+                validate_partition(
+                    descriptor,
+                    plan,
+                    partition,
+                    FileResolutionContext {
+                        transport,
+                        egress,
+                        formats: preparation.dependencies.formats(),
+                        transforms: preparation.dependencies.transforms(),
+                        control: preparation.control,
+                    },
+                )
+            })?;
     let planned_physical_schema_hash = preparation
         .effective_schema_runtime
         .and_then(|runtime| {
@@ -2187,6 +2190,8 @@ fn prepare_file_partition(
         hash_sweep_source: prepared_input.hash_sweep_source,
         payload_retention: prepared_input.payload_retention,
         payload_cache_key: prepared_input.payload_cache_key,
+        spool_mode: plan.spool_mode,
+        match_count,
     })
 }
 
@@ -2462,6 +2467,8 @@ async fn stream_prepared_file_match(
         hash_sweep_source: _,
         payload_retention,
         payload_cache_key,
+        spool_mode,
+        match_count,
     } = prepared;
     let position = Some(SourcePosition::FileManifest(cdf_kernel::FileManifest {
         version: 1,
@@ -2492,145 +2499,17 @@ async fn stream_prepared_file_match(
                     "prepared source payload cannot request a second spool",
                 ));
             }
-            if let Some(size_bytes) = size_bytes
-                && source.identity().strength != GenerationStrength::Weak
-                && source.capabilities().exact_ranges
-            {
-                let cache_staging_root = payload_cache_key
-                    .as_ref()
-                    .and_then(|_| dependencies.payload_cache())
-                    .map(crate::FilePayloadCache::staging_root);
-                let growing = start_growing_spool(
-                    Arc::clone(&source),
-                    size_bytes,
-                    dependencies.max_spool_bytes(),
-                    dependencies.execution().spill(),
-                    dependencies.execution().memory(),
-                    cache_staging_root.as_deref(),
-                    cancellation.clone(),
-                )?;
-                if let Some(growing) = growing {
-                    source_io.set_mode(SourceReadMode::GrowingSpool)?;
-                    let source_identity = growing.source.identity().clone();
-                    let observed_sha256 = growing
-                        .cache_staged
-                        .then(|| Arc::new(std::sync::Mutex::new(None)));
-                    let completion =
-                        growing_spool_completion(growing.completion, observed_sha256.clone());
-                    let post_decode_completion = match (
-                        growing.cache_staged,
-                        dependencies.payload_cache().cloned(),
-                        payload_cache_key.clone(),
-                        observed_sha256,
-                    ) {
-                        (true, Some(cache), Some(cache_key), Some(observed_sha256)) => {
-                            Some(payload_cache_post_decode_completion(
-                                PayloadCachePromotionRequest {
-                                    spool_path: growing.spool_path,
-                                    identity: source_identity,
-                                    size_bytes,
-                                    sha256: None,
-                                    cache,
-                                    cache_key,
-                                    execution: dependencies.execution().clone(),
-                                    cancellation: cancellation.clone(),
-                                    _retention: growing.retention.clone(),
-                                },
-                                observed_sha256,
-                            ))
-                        }
-                        _ => None,
-                    };
-                    ReadyFileInput {
-                        source: growing.source,
-                        payload_retention: Some(growing.retention),
-                        source_completion: Some(completion),
-                        post_decode_completion,
-                    }
-                } else {
-                    let evicting = start_evicting_spool(
-                        Arc::clone(&source),
-                        size_bytes,
-                        dependencies.max_spool_bytes(),
-                        dependencies.execution().spill(),
-                        dependencies.execution().memory(),
-                        cancellation.clone(),
-                    )?;
-                    if let Some(evicting) = evicting {
-                        source_io.set_mode(SourceReadMode::EvictingSpool)?;
-                        ReadyFileInput {
-                            source: evicting.source,
-                            payload_retention: Some(evicting.retention),
-                            source_completion: Some(evicting.completion),
-                            post_decode_completion: None,
-                        }
-                    } else {
-                        source_io.set_mode(SourceReadMode::ExactRanges)?;
-                        ReadyFileInput {
-                            source,
-                            payload_retention: None,
-                            source_completion: None,
-                            post_decode_completion: None,
-                        }
-                    }
-                }
-            } else {
-                source_io.set_mode(SourceReadMode::FullSpool)?;
-                let source_identity = source.identity().clone();
-                let cache_staging_root = payload_cache_key
-                    .as_ref()
-                    .and_then(|_| dependencies.payload_cache())
-                    .map(crate::FilePayloadCache::staging_root);
-                let spool = Arc::new(
-                    spool_byte_source_async(
-                        source,
-                        size_bytes,
-                        cache_staging_root.as_deref(),
-                        dependencies,
-                        cancellation.clone(),
-                    )
-                    .await?,
-                );
-                let materialized_identity =
-                    materialized_spool_identity(source_identity, spool.bytes())?;
-                let retention = retain_spool(&spool, spool.bytes())?;
-                let cache_promotion = match (
-                    spool.cache_staged,
-                    dependencies.payload_cache().cloned(),
-                    payload_cache_key,
-                    spool.sha256(),
-                ) {
-                    (true, Some(cache), Some(cache_key), Some(sha256)) => {
-                        Some(payload_cache_promotion_completion(
-                            PayloadCachePromotionRequest {
-                                spool_path: spool.path().to_path_buf(),
-                                identity: materialized_identity.clone(),
-                                size_bytes: spool.bytes(),
-                                sha256: None,
-                                cache,
-                                cache_key,
-                                execution: dependencies.execution().clone(),
-                                cancellation: cancellation.clone(),
-                                _retention: retention.clone(),
-                            }
-                            .with_sha256(sha256.to_owned()),
-                        ))
-                    }
-                    _ => None,
-                };
-                let local = crate::local_byte_source::open_identity_preserving_local_source(
-                    spool.path(),
-                    materialized_identity,
-                    spool.bytes(),
-                    dependencies.execution().memory(),
-                )?;
-                ReadyFileInput {
-                    source: local,
-                    payload_retention: Some(retention),
-                    source_completion: None,
-                    post_decode_completion: cache_promotion,
-                }
-            }
+            ready_spooled_file_input(SpoolInputRequest {
+                source,
+                size_bytes,
+                mode: spool_mode,
+                match_count,
+                source_io,
+                payload_cache_key,
+                dependencies,
+                cancellation,
+            })
+            .await?
         }
     };
 
@@ -2652,6 +2531,215 @@ async fn stream_prepared_file_match(
         batches,
         source_completion,
         post_decode_completion,
+    })
+}
+
+struct SpoolInputRequest<'a> {
+    source: Arc<dyn ByteSource>,
+    size_bytes: Option<u64>,
+    mode: crate::FileSpoolMode,
+    match_count: usize,
+    source_io: SourceIoObserver,
+    payload_cache_key: Option<crate::payload_cache::FilePayloadCacheKey>,
+    dependencies: &'a FileRuntimeDependencies,
+    cancellation: cdf_runtime::RunCancellation,
+}
+
+async fn ready_spooled_file_input(request: SpoolInputRequest<'_>) -> Result<ReadyFileInput> {
+    let SpoolInputRequest {
+        source,
+        size_bytes,
+        mode,
+        match_count,
+        source_io,
+        payload_cache_key,
+        dependencies,
+        cancellation,
+    } = request;
+    let cache_staging_root = payload_cache_key
+        .as_ref()
+        .and_then(|_| dependencies.payload_cache())
+        .map(crate::FilePayloadCache::staging_root);
+    let strong_seekable = size_bytes.is_some()
+        && source.identity().strength != GenerationStrength::Weak
+        && source.capabilities().exact_ranges;
+    let prefer_complete = mode == crate::FileSpoolMode::Complete
+        || (mode == crate::FileSpoolMode::Auto && match_count > 1);
+
+    if strong_seekable && prefer_complete {
+        let spool = if mode == crate::FileSpoolMode::Complete {
+            Some(
+                spool_byte_source_async(
+                    Arc::clone(&source),
+                    size_bytes,
+                    cache_staging_root.as_deref(),
+                    dependencies,
+                    cancellation.clone(),
+                )
+                .await?,
+            )
+        } else {
+            try_spool_byte_source_async(
+                Arc::clone(&source),
+                size_bytes,
+                cache_staging_root.as_deref(),
+                dependencies,
+                cancellation.clone(),
+            )
+            .await?
+        };
+        if let Some(spool) = spool {
+            source_io.set_mode(SourceReadMode::FullSpool)?;
+            return ready_materialized_spool(
+                spool,
+                source.identity().clone(),
+                payload_cache_key,
+                dependencies,
+                cancellation,
+            );
+        }
+    }
+
+    if let Some(size_bytes) = size_bytes
+        && strong_seekable
+    {
+        let growing = start_growing_spool(
+            Arc::clone(&source),
+            size_bytes,
+            dependencies.max_spool_bytes(),
+            dependencies.execution().spill(),
+            dependencies.execution().memory(),
+            cache_staging_root.as_deref(),
+            cancellation.clone(),
+        )?;
+        if let Some(growing) = growing {
+            source_io.set_mode(SourceReadMode::GrowingSpool)?;
+            let source_identity = growing.source.identity().clone();
+            let observed_sha256 = growing
+                .cache_staged
+                .then(|| Arc::new(std::sync::Mutex::new(None)));
+            let completion = growing_spool_completion(growing.completion, observed_sha256.clone());
+            let post_decode_completion = match (
+                growing.cache_staged,
+                dependencies.payload_cache().cloned(),
+                payload_cache_key,
+                observed_sha256,
+            ) {
+                (true, Some(cache), Some(cache_key), Some(observed_sha256)) => {
+                    Some(payload_cache_post_decode_completion(
+                        PayloadCachePromotionRequest {
+                            spool_path: growing.spool_path,
+                            identity: source_identity,
+                            size_bytes,
+                            sha256: None,
+                            cache,
+                            cache_key,
+                            execution: dependencies.execution().clone(),
+                            cancellation: cancellation.clone(),
+                            _retention: growing.retention.clone(),
+                        },
+                        observed_sha256,
+                    ))
+                }
+                _ => None,
+            };
+            return Ok(ReadyFileInput {
+                source: growing.source,
+                payload_retention: Some(growing.retention),
+                source_completion: Some(completion),
+                post_decode_completion,
+            });
+        }
+        let evicting = start_evicting_spool(
+            Arc::clone(&source),
+            size_bytes,
+            dependencies.max_spool_bytes(),
+            dependencies.execution().spill(),
+            dependencies.execution().memory(),
+            cancellation,
+        )?;
+        if let Some(evicting) = evicting {
+            source_io.set_mode(SourceReadMode::EvictingSpool)?;
+            return Ok(ReadyFileInput {
+                source: evicting.source,
+                payload_retention: Some(evicting.retention),
+                source_completion: Some(evicting.completion),
+                post_decode_completion: None,
+            });
+        }
+        source_io.set_mode(SourceReadMode::ExactRanges)?;
+        return Ok(ReadyFileInput {
+            source,
+            payload_retention: None,
+            source_completion: None,
+            post_decode_completion: None,
+        });
+    }
+
+    source_io.set_mode(SourceReadMode::FullSpool)?;
+    let source_identity = source.identity().clone();
+    let spool = spool_byte_source_async(
+        source,
+        size_bytes,
+        cache_staging_root.as_deref(),
+        dependencies,
+        cancellation.clone(),
+    )
+    .await?;
+    ready_materialized_spool(
+        spool,
+        source_identity,
+        payload_cache_key,
+        dependencies,
+        cancellation,
+    )
+}
+
+fn ready_materialized_spool(
+    spool: AccountedSpool,
+    source_identity: ContentIdentity,
+    payload_cache_key: Option<crate::payload_cache::FilePayloadCacheKey>,
+    dependencies: &FileRuntimeDependencies,
+    cancellation: cdf_runtime::RunCancellation,
+) -> Result<ReadyFileInput> {
+    let spool = Arc::new(spool);
+    let materialized_identity = materialized_spool_identity(source_identity, spool.bytes())?;
+    let retention = retain_spool(&spool, spool.bytes())?;
+    let cache_promotion = match (
+        spool.cache_staged,
+        dependencies.payload_cache().cloned(),
+        payload_cache_key,
+        spool.sha256(),
+    ) {
+        (true, Some(cache), Some(cache_key), Some(sha256)) => {
+            Some(payload_cache_promotion_completion(
+                PayloadCachePromotionRequest {
+                    spool_path: spool.path().to_path_buf(),
+                    identity: materialized_identity.clone(),
+                    size_bytes: spool.bytes(),
+                    sha256: None,
+                    cache,
+                    cache_key,
+                    execution: dependencies.execution().clone(),
+                    cancellation,
+                    _retention: retention.clone(),
+                }
+                .with_sha256(sha256.to_owned()),
+            ))
+        }
+        _ => None,
+    };
+    let local = crate::local_byte_source::open_identity_preserving_local_source(
+        spool.path(),
+        materialized_identity,
+        spool.bytes(),
+        dependencies.execution().memory(),
+    )?;
+    Ok(ReadyFileInput {
+        source: local,
+        payload_retention: Some(retention),
+        source_completion: None,
+        post_decode_completion: cache_promotion,
     })
 }
 
@@ -2810,6 +2898,8 @@ fn stream_file_match_blocking(
         hash_sweep_source: prepared_input.hash_sweep_source,
         payload_retention: prepared_input.payload_retention,
         payload_cache_key: prepared_input.payload_cache_key,
+        spool_mode: crate::FileSpoolMode::Auto,
+        match_count: 1,
     };
     let dependencies = dependencies.clone();
     let execution = dependencies.execution().clone();
@@ -2868,7 +2958,7 @@ async fn spool_byte_source_async(
         )));
     }
     let initially_reserved = size_bytes.unwrap_or(1).max(1);
-    let mut reservation = dependencies
+    let reservation = dependencies
         .execution()
         .spill()
         .try_reserve(initially_reserved)?
@@ -2879,6 +2969,55 @@ async fn spool_byte_source_async(
                 snapshot.current_bytes, snapshot.budget_bytes
             ))
         })?;
+    spool_byte_source_with_reservation(
+        source,
+        size_bytes,
+        cache_staging_root,
+        dependencies,
+        cancellation,
+        reservation,
+    )
+    .await
+}
+
+async fn try_spool_byte_source_async(
+    source: Arc<dyn ByteSource>,
+    size_bytes: Option<u64>,
+    cache_staging_root: Option<&Path>,
+    dependencies: &FileRuntimeDependencies,
+    cancellation: cdf_runtime::RunCancellation,
+) -> Result<Option<AccountedSpool>> {
+    if size_bytes.is_some_and(|bytes| bytes > dependencies.max_spool_bytes()) {
+        return Ok(None);
+    }
+    let initially_reserved = size_bytes.unwrap_or(1).max(1);
+    let Some(reservation) = dependencies
+        .execution()
+        .spill()
+        .try_reserve(initially_reserved)?
+    else {
+        return Ok(None);
+    };
+    spool_byte_source_with_reservation(
+        source,
+        size_bytes,
+        cache_staging_root,
+        dependencies,
+        cancellation,
+        reservation,
+    )
+    .await
+    .map(Some)
+}
+
+async fn spool_byte_source_with_reservation(
+    source: Arc<dyn ByteSource>,
+    size_bytes: Option<u64>,
+    cache_staging_root: Option<&Path>,
+    dependencies: &FileRuntimeDependencies,
+    cancellation: cdf_runtime::RunCancellation,
+    mut reservation: cdf_runtime::SpillReservation,
+) -> Result<AccountedSpool> {
     let (file, cache_staged) = if let Some(staging_root) = cache_staging_root {
         match tempfile::NamedTempFile::new_in(staging_root) {
             Ok(file) => (file, true),
@@ -3293,7 +3432,7 @@ fn validate_partition(
     plan: &FileResourcePlan,
     partition: &PartitionPlan,
     context: FileResolutionContext<'_>,
-) -> Result<ResolvedFileMatch> {
+) -> Result<(ResolvedFileMatch, usize)> {
     let (path, match_count) = validate_partition_plan_shape(descriptor, plan, partition)?;
     let resolved = resolve_planned_file_match(descriptor, plan, path, context)?;
     let planned = partition.planned_file()?.ok_or_else(|| {
@@ -3313,7 +3452,7 @@ fn validate_partition(
     cdf_kernel::merge_file_position_evidence(planned, &observed)?;
     debug_assert!(match_count > 0);
     validate_resolved_partition_metadata(partition, &resolved, plan, path)?;
-    Ok(resolved)
+    Ok((resolved, match_count))
 }
 
 fn validate_partition_plan_shape<'a>(
@@ -5477,6 +5616,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
+            spool_mode: crate::FileSpoolMode::Auto,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -5526,6 +5666,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::auto(),
+            spool_mode: crate::FileSpoolMode::Auto,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -5767,6 +5908,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
+            spool_mode: crate::FileSpoolMode::Auto,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -6079,6 +6221,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::auto(),
+            spool_mode: crate::FileSpoolMode::Auto,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -6193,6 +6336,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
+            spool_mode: crate::FileSpoolMode::Auto,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -6241,6 +6385,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
+            spool_mode: crate::FileSpoolMode::Auto,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -6325,6 +6470,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
+            spool_mode: crate::FileSpoolMode::Auto,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -6374,6 +6520,44 @@ mod tests {
             .input,
             PreparedFileInput::SpoolSource { .. }
         ));
+
+        let prepared = prepare_file_input(PrepareFileInputRequest {
+            resource_id: &resource_id,
+            resolved: &resolved[0],
+            source_access: cdf_runtime::FormatSourceAccess::Adaptive,
+            access_coverage: PlannedFileAccessCoverage::Full,
+            driver: driver.as_ref(),
+            canonical_format_options: &canonical_options,
+            dependencies: &dependencies,
+            cancellation: &cdf_runtime::RunCancellation::default(),
+        })
+        .unwrap();
+        let source_io = prepared.source_io.clone();
+        let PreparedFileInput::SpoolSource { source, size_bytes } = prepared.input else {
+            panic!("full remote Parquet scan must select a seekable spool input")
+        };
+        let dependencies_for_auto = dependencies.clone();
+        dependencies
+            .execution()
+            .run_io(async move {
+                ready_spooled_file_input(SpoolInputRequest {
+                    source,
+                    size_bytes,
+                    mode: crate::FileSpoolMode::Auto,
+                    match_count: 2,
+                    source_io: source_io.clone(),
+                    payload_cache_key: None,
+                    dependencies: &dependencies_for_auto,
+                    cancellation: cdf_runtime::RunCancellation::default(),
+                })
+                .await
+                .map(|ready| (ready, source_io))
+            })
+            .map(|(ready, source_io)| {
+                assert_eq!(source_io.snapshot().mode, Some(SourceReadMode::FullSpool));
+                assert!(ready.source_completion.is_none());
+            })
+            .unwrap();
 
         struct WeakHttpTransport {
             path: PathBuf,
@@ -6467,6 +6651,8 @@ mod tests {
             hash_sweep_source: weak_input.hash_sweep_source,
             payload_retention: weak_input.payload_retention,
             payload_cache_key: weak_input.payload_cache_key,
+            spool_mode: crate::FileSpoolMode::Auto,
+            match_count: 1,
         };
         let dependencies_for_weak = weak_dependencies.clone();
         let weak_stream = weak_dependencies
@@ -6724,6 +6910,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
+            spool_mode: crate::FileSpoolMode::Auto,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -6902,6 +7089,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
+            spool_mode: crate::FileSpoolMode::Auto,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -7030,6 +7218,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
+            spool_mode: crate::FileSpoolMode::Auto,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -7082,6 +7271,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::auto(),
+            spool_mode: crate::FileSpoolMode::Auto,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -7136,6 +7326,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
+            spool_mode: crate::FileSpoolMode::Auto,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -7264,6 +7455,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::auto(),
+            spool_mode: crate::FileSpoolMode::Auto,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -7360,6 +7552,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
+            spool_mode: crate::FileSpoolMode::Auto,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -7456,6 +7649,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: Some(cdf_runtime::FormatDiscoveryKind::FullContent),
             compression: FileCompressionDeclaration::none(),
+            spool_mode: crate::FileSpoolMode::Auto,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -7748,6 +7942,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
+            spool_mode: crate::FileSpoolMode::Auto,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -7832,6 +8027,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
+            spool_mode: crate::FileSpoolMode::Auto,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),

@@ -187,6 +187,7 @@ impl SourceDriver for FileSourceDriver {
             format_options: resource.format_options.clone(),
             schema_discovery: resource.schema_discovery,
             compression: resource.compression.clone(),
+            spool_mode: source.spool_mode,
             auth: source
                 .auth
                 .as_ref()
@@ -964,6 +965,11 @@ fn option_schema() -> serde_json::Value {
             "required": ["root"],
             "properties": {
                 "root": {"type": "string", "minLength": 1},
+                "spool_mode": {
+                    "type": "string",
+                    "enum": ["auto", "overlap", "complete"],
+                    "default": "auto"
+                },
                 "auth": auth,
                 "credentials": {"type": "string", "pattern": "^secret://"},
                 "egress_allowlist": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
@@ -991,6 +997,8 @@ fn option_schema() -> serde_json::Value {
 #[serde(deny_unknown_fields)]
 struct FileSourceOptions {
     root: String,
+    #[serde(default)]
+    spool_mode: crate::FileSpoolMode,
     #[serde(default)]
     auth: Option<AuthOptions>,
     #[serde(default)]
@@ -1062,6 +1070,7 @@ impl FilePhysicalPlan {
             format_options: self.resource.format_options.clone(),
             schema_discovery: Some(self.resource.schema_discovery),
             compression: self.resource.compression.clone(),
+            spool_mode: self.source.spool_mode,
             auth: self
                 .source
                 .auth
@@ -1666,6 +1675,10 @@ mod tests {
             "root".to_owned(),
             serde_json::Value::String("data".to_owned()),
         );
+        first.source_options.insert(
+            "spool_mode".to_owned(),
+            serde_json::Value::String("complete".to_owned()),
+        );
         first.context.project_root = Some("/tmp/first-project".into());
         let mut second = first.clone();
         second.context.project_root = Some("/tmp/second-project".into());
@@ -1681,12 +1694,20 @@ mod tests {
 
         let physical: FilePhysicalPlan = serde_json::from_value(first.physical_plan).unwrap();
         assert_eq!(physical.source.root, "data");
+        assert_eq!(physical.source.spool_mode, crate::FileSpoolMode::Complete);
         assert_eq!(
             physical
                 .to_runtime_plan(std::path::Path::new("/tmp/first-project"))
                 .unwrap()
                 .root,
             "/tmp/first-project/data"
+        );
+        assert_eq!(
+            physical
+                .to_runtime_plan(std::path::Path::new("/tmp/first-project"))
+                .unwrap()
+                .spool_mode,
+            crate::FileSpoolMode::Complete
         );
         assert_eq!(
             physical
@@ -1787,6 +1808,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::auto(),
+            spool_mode: crate::FileSpoolMode::Auto,
             auth: None,
             credentials: None,
             allowlist: EgressAllowlist::allow_any(),
