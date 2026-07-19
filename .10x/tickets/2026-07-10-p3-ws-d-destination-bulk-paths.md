@@ -28,7 +28,7 @@ Split by destination; no shared generic branch may name a concrete destination.
 - `.10x/tickets/cancelled/2026-07-18-p3-d13-duckdb-parquet-handoff-ingress.md`
 - `.10x/tickets/done/2026-07-18-p3-d14-duckdb-nanoarrow-080-lz4-revalidation.md`
 - `.10x/tickets/done/2026-07-18-p3-d15-canonical-package-row-ordinal.md`
-- `.10x/tickets/2026-07-19-p3-d16-postgres-package-copy-amortization.md`
+- `.10x/tickets/cancelled/2026-07-19-p3-d16-postgres-package-copy-amortization.md`
 
 ## Acceptance criteria
 
@@ -38,7 +38,7 @@ Split by destination; no shared generic branch may name a concrete destination.
 
 ## Blockers
 
-D8, D14, and D15 are complete. DuckDB now has one stock-library canonical-segment scanner, and canonical package row order is shared across all first-party destinations. D9 remains active for generic immutable-content claim/root/reclamation authority. D16 is open because the controlled full-product Postgres cell exposed a `102.70s` / `400,862` rows/s lifecycle despite a `1,375,614` rows/s direct current binary-COPY control. WS-D stays open until D9 and D16 close; no DuckDB or provenance blocker remains.
+D8, D14, and D15 are complete. DuckDB now has one stock-library canonical-segment scanner, and canonical package row order is shared across all first-party destinations. D16 retained the faster direct-target Postgres append/replace path but closed cancelled because its measured `1.346x` comparable indexed-append improvement did not meet the ticket's 2x stretch criterion. D9 is the sole active child and owns generic immutable-content claim/root/reclamation authority; no DuckDB, Postgres lifecycle, or provenance blocker remains.
 
 ## Evidence
 
@@ -56,6 +56,7 @@ D8, D14, and D15 are complete. DuckDB now has one stock-library canonical-segmen
 - 2026-07-18: D14 corrected D11's artifact-specific LZ4 conclusion. A pinned DuckDB nanoarrow extension built against Apache nanoarrow `0.8.0` with `NANOARROW_IPC_WITH_LZ4=ON` directly read all 215 current canonical CDF full-year TLC segments and materialized 41,169,720 rows in median `4.558788174s`, `9,030,847` rows/s, with `2.289 GiB` peak process RSS and no cgroup pressure or spill event. This no-duplicate-handoff path is now the retained DuckDB product candidate; D12 and D13 remain cancelled because their separate duplicate handoffs failed full-CDF evidence.
 - 2026-07-19: D14 and D15 closed on the leaner stock-library architecture. The sole DuckDB product path uses a destination-local public-C-API parallel table function over canonical LZ4 IPC segments; the custom DuckDB runtime, nanoarrow extension lifecycle, appender, bridges, feature branches, and unused dependencies are deleted. The clean full-product three-sample median is `10.255642670s` / `4,014,348` rows/s for 41,169,720 rows at the default budget, versus the old appender's approximately `34s`. Canonical `_cdf_package_row_ord` supplies destination-neutral row order to DuckDB and Postgres while Parquet strips it from visible payloads.
 - 2026-07-19: Opened D16 from honest cross-destination macro evidence. Postgres remains correct and its direct binary COPY control remains `3.33x` CSV, but the full package path pays 215 segment-scoped COPY/publication cycles and reaches only `400,862` rows/s. D16 owns amortizing that lifecycle without text fallback, full-package materialization, generic runtime branches, or regenerated provenance.
+- 2026-07-19: D16 closed with an honest partial-performance outcome. One package-wide COPY alone was neutral because append still staged and rewrote the payload; deleting append/replace staging reduced the comparable indexed-append cell from `103.399s` to `76.809s` (`1.346x`) and a corrected standalone fresh-target cell completed in `61.216s` / `672,531` rows/s with exact rows and one provenance index. The direct binary-vs-CSV control remains `3.33x`, but the comparable full-product result is not 2x, so D16 is cancelled rather than falsely marked done. The faster path remains because it deletes a redundant full-table write without weakening transaction, receipt, provenance, or merge semantics.
 
 ## Review
 
