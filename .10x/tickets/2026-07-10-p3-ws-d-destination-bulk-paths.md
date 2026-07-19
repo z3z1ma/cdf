@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-10
-Updated: 2026-07-18
+Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
 Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md, .10x/tickets/2026-07-11-p0-destination-extension-boundary.md, .10x/tickets/done/2026-07-11-p3-a1-staged-ingress-final-binding.md, .10x/tickets/done/2026-07-07-duckdb-arrow-bulk-load-triage.md, .10x/tickets/done/2026-07-07-native-parquet-streaming-write-triage.md
 
@@ -26,8 +26,9 @@ Split by destination; no shared generic branch may name a concrete destination.
 - `.10x/tickets/done/2026-07-18-p3-d11-duckdb-arrow-ipc-handoff-falsification.md`
 - `.10x/tickets/cancelled/2026-07-18-p3-d12-duckdb-arrow-ipc-handoff-ingress.md`
 - `.10x/tickets/cancelled/2026-07-18-p3-d13-duckdb-parquet-handoff-ingress.md`
-- `.10x/tickets/2026-07-18-p3-d14-duckdb-nanoarrow-080-lz4-revalidation.md`
-- `.10x/tickets/2026-07-18-p3-d15-canonical-package-row-ordinal.md`
+- `.10x/tickets/done/2026-07-18-p3-d14-duckdb-nanoarrow-080-lz4-revalidation.md`
+- `.10x/tickets/done/2026-07-18-p3-d15-canonical-package-row-ordinal.md`
+- `.10x/tickets/2026-07-19-p3-d16-postgres-package-copy-amortization.md`
 
 ## Acceptance criteria
 
@@ -37,7 +38,7 @@ Split by destination; no shared generic branch may name a concrete destination.
 
 ## Blockers
 
-D8 is complete. D9 remains active shaping for the generic immutable-content claim/root/reclamation authority. D10 is cancelled as a measured no-go: the attempted DuckDB stream-scan staged-ingress product path timed out under EC2 promotion evidence and is not exposed by runtime capabilities. D11 is done for the community extension artifact it measured, but D14 is active because upstream nanoarrow `0.8.0` supports LZ4 and the artifact tested by D11 embedded a pre-LZ4 revision. D12 is cancelled because its full-CDF uncompressed duplicate-handoff path measured slower than the appender baseline or timed out; that result does not falsify direct reads of canonical LZ4 package segments. D13 is cancelled because full-CDF Parquet handoff product variants measured `37.55–38.83s`, worse than the retained appender baseline. D15 now owns the canonical `_cdf_package_row_ord` prerequisite and its cross-destination removal of duplicated row enumeration; D14 resumes product integration after D15. WS-D stays open until D9, D15, and the D14 DuckDB envelope path close under retained evidence.
+D8, D14, and D15 are complete. DuckDB now has one stock-library canonical-segment scanner, and canonical package row order is shared across all first-party destinations. D9 remains active for generic immutable-content claim/root/reclamation authority. D16 is open because the controlled full-product Postgres cell exposed a `102.70s` / `400,862` rows/s lifecycle despite a `1,375,614` rows/s direct current binary-COPY control. WS-D stays open until D9 and D16 close; no DuckDB or provenance blocker remains.
 
 ## Evidence
 
@@ -53,6 +54,8 @@ D8 is complete. D9 remains active shaping for the generic immutable-content clai
 - 2026-07-18: D12 failed its own product-retention threshold and was cancelled. Full-CDF EC2 local TLC measured `38.624s` for opt-in Arrow IPC `INSERT ... read_arrow`, `37.274s` for CTAS with full nullability restoration, `37.205s` for CTAS with row-key-only nullability restoration, and a `179s` timeout with `CDF_DUCKDB_THREADS=16`; all are worse than the appender baseline. The prototype code was removed before commit. D13 was opened for the tuned Parquet handoff fallback because its generated same-host evidence was the only then-retained materialization branch near the `8–12s` roofline; D13 was later cancelled by full-CDF product evidence.
 - 2026-07-18: D13 failed its own product-retention threshold and was cancelled. Full-CDF EC2 local TLC measured `37.546s` for the opt-in Parquet handoff CTAS variant and `38.828s` for the simplified planned-table + `INSERT ... read_parquet(...)` variant; both are worse than the appender baseline despite local semantic tests passing. The prototype code, Parquet dependency, runtime capability, and tests were removed before commit.
 - 2026-07-18: D14 corrected D11's artifact-specific LZ4 conclusion. A pinned DuckDB nanoarrow extension built against Apache nanoarrow `0.8.0` with `NANOARROW_IPC_WITH_LZ4=ON` directly read all 215 current canonical CDF full-year TLC segments and materialized 41,169,720 rows in median `4.558788174s`, `9,030,847` rows/s, with `2.289 GiB` peak process RSS and no cgroup pressure or spill event. This no-duplicate-handoff path is now the retained DuckDB product candidate; D12 and D13 remain cancelled because their separate duplicate handoffs failed full-CDF evidence.
+- 2026-07-19: D14 and D15 closed on the leaner stock-library architecture. The sole DuckDB product path uses a destination-local public-C-API parallel table function over canonical LZ4 IPC segments; the custom DuckDB runtime, nanoarrow extension lifecycle, appender, bridges, feature branches, and unused dependencies are deleted. The clean full-product three-sample median is `10.255642670s` / `4,014,348` rows/s for 41,169,720 rows at the default budget, versus the old appender's approximately `34s`. Canonical `_cdf_package_row_ord` supplies destination-neutral row order to DuckDB and Postgres while Parquet strips it from visible payloads.
+- 2026-07-19: Opened D16 from honest cross-destination macro evidence. Postgres remains correct and its direct binary COPY control remains `3.33x` CSV, but the full package path pays 215 segment-scoped COPY/publication cycles and reaches only `400,862` rows/s. D16 owns amortizing that lifecycle without text fallback, full-package materialization, generic runtime branches, or regenerated provenance.
 
 ## Review
 

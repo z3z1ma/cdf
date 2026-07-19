@@ -20,7 +20,7 @@ Can CDF make nanoarrow `0.8.0` with Arrow IPC LZ4 support the zero-configuration
 - Apache nanoarrow `0.8.0` revision `a579fbf5d192e85b6249935e117de7d02a6dc4e9`: <https://github.com/apache/arrow-nanoarrow/releases/tag/apache-arrow-nanoarrow-0.8.0>
 - `libduckdb-sys 1.10504.0` linked/prebuilt library behavior: <https://docs.rs/crate/libduckdb-sys/1.10504.0>
 - Built and inspected both loadable and statically linked variants on the controlled P3 EC2 host against DuckDB `v1.5.4` revision `08e34c447bae34eaee3723cac61f2878b6bdf787`. The extension source was patched only to pin nanoarrow `0.8.0` by archive SHA-256 and enable `NANOARROW_IPC_WITH_LZ4=ON`.
-- Compared exact library sizes, dynamic dependencies, extension discovery, and the full CDF path. Product performance evidence is owned by `.10x/tickets/2026-07-18-p3-d14-duckdb-nanoarrow-080-lz4-revalidation.md`.
+- Compared exact library sizes, dynamic dependencies, extension discovery, and the full CDF path. Product performance evidence is owned by `.10x/tickets/done/2026-07-18-p3-d14-duckdb-nanoarrow-080-lz4-revalidation.md`.
 
 ## Findings
 

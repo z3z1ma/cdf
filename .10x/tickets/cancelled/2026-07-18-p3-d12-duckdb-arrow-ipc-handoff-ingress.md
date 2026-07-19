@@ -81,4 +81,4 @@ D11's generated `CREATE TABLE AS SELECT read_arrow(...)` result was a useful fal
 
 ## Corrective follow-up
 
-- 2026-07-18: D12 remains correctly cancelled because its duplicate uncompressed handoff failed its own full-CDF threshold. Its claim that direct canonical LZ4 segment reads were unavailable is superseded by `.10x/tickets/2026-07-18-p3-d14-duckdb-nanoarrow-080-lz4-revalidation.md`: a DuckDB nanoarrow extension built against nanoarrow `0.8.0` with `NANOARROW_IPC_WITH_LZ4=ON` reads those segments directly. D14 is a materially different no-duplicate-handoff path, not a revival of D12.
+- 2026-07-18: D12 remains correctly cancelled because its duplicate uncompressed handoff failed its own full-CDF threshold. Its claim that direct canonical LZ4 segment reads were unavailable is superseded by `.10x/tickets/done/2026-07-18-p3-d14-duckdb-nanoarrow-080-lz4-revalidation.md`: a DuckDB nanoarrow extension built against nanoarrow `0.8.0` with `NANOARROW_IPC_WITH_LZ4=ON` reads those segments directly. D14 is a materially different no-duplicate-handoff path, not a revival of D12.

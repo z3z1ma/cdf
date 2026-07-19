@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-18
 Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md
@@ -34,7 +34,7 @@ Implement `.10x/specs/canonical-package-row-ordinal.md` as the one destination-n
 - `.10x/decisions/compact-lossless-destination-row-provenance.md`
 - `.10x/specs/canonical-segmentation-adaptive-batching.md`
 - `.10x/specs/destination-bulk-path-runtime.md`
-- `.10x/tickets/2026-07-18-p3-d14-duckdb-nanoarrow-080-lz4-revalidation.md`
+- `.10x/tickets/done/2026-07-18-p3-d14-duckdb-nanoarrow-080-lz4-revalidation.md`
 
 ## Assumptions
 
@@ -57,6 +57,9 @@ Implement `.10x/specs/canonical-package-row-ordinal.md` as the one destination-n
 - 2026-07-18: The current ordinal-bearing full-year Parquet destination completed all 41,169,720 rows in `8.310422833s`, `4,953,986` rows/s, at `1,703,108,608` bytes peak process RSS on the controlled EC2 host. This proves the internal ordinal is stripped without imposing a retained Parquet regression at the end-to-end scale; DuckDB and Postgres remain separately owned acceptance cells.
 - 2026-07-19: D14's final stock-scanner gate exposed a second nondeterministic nested-frontier deadlock before DuckDB final binding: the 4 GiB default stopped at 84/215 durable segments with partitions 0–4 present, every source/CPU/staging worker asleep, and no further I/O. The same revision completed in `9.199782961s` when the diagnostic budget was raised to 8 GiB, proving a bounded-admission cycle rather than scanner throughput. Static tracing found the exact cycle: a decode-unit task retained a shared run-work permit for the lifetime of its output stream, including waits on its bounded publication channel. A later canonical partition could therefore occupy every run slot with ready output that the outer frontier intentionally would not consume, preventing the head partition from decoding the batch needed to advance.
 - 2026-07-19: Corrected run-work lifetime at the generic format boundary. Preparation and each physical-batch decode acquire shared run work only while active; the permit is released before bounded publication. No format, source, or destination identity enters the scheduler. A deterministic two-stream/one-slot regression test fills the first stream's bounded channels and proves the second stream still publishes within two seconds; the old lifetime blocks indefinitely. All 82 active file-source tests and strict all-target Clippy pass. The 4 GiB controlled full-year rerun remains the acceptance gate.
+- 2026-07-19: The corrected default-budget EC2 smoke completed all `41,169,720` rows in `10.306850923s`, `3,994,403` rows/s, at `3,908,952,064` bytes peak process RSS and `6,236,815,360` bytes peak cgroup memory with zero pressure/OOM events or spill. D14's following three-sample stock-scanner cell measured a `10.255642670s` median and `30.030883ms` MAD, proving the generic publication-lifetime repair is stable rather than an 8 GiB diagnostic escape.
+- 2026-07-19: Completed the controlled cross-destination matrix. DuckDB's sole stock scanner materialized the ordinal-bearing full-year package at `4,014,348` rows/s; Parquet completed at `4,953,986` rows/s while stripping the internal field; Postgres loaded the exact `41,169,720` rows through binary COPY in `102.702915347s` (`400,862` rows/s) with zero spill or cgroup pressure. The same current Postgres encoder/server control measured `1,375,614` binary rows/s versus `413,563` CSV rows/s (`3.33x`), proving D15 did not regress the vectorized encoder. The full-product Postgres gap is the 215-segment COPY/publication shape and is now owned by D16; it is not a reason to restore destination-local row enumeration.
+- 2026-07-19: Fresh DuckDB cleanup review found two unused direct dependencies left after removing the appender/extension implementations. Removed `serde` and `proptest`; `cargo machete` now reports no unused `cdf-dest-duckdb` dependency, all 29 destination tests and strict all-target Clippy pass, and no appender, nanoarrow, loadable-extension, custom-runtime, or compatibility branch remains in the product crate.
 
 ## Blockers
 
@@ -73,15 +76,19 @@ None.
 - `.10x/evidence/.storage/2026-07-18-p3-d15-ec2-canonical-row-ord-local-tlc.json` records the failed controlled EC2 gate at clean revision `bc5a7f66`: no samples completed before the 119-second timeout. Live process inspection localized the stall to deterministic ledger/backpressure at 88/215 segments; this is regression evidence, not performance-retention evidence.
 - `cargo test -p cdf-engine canonical_segment_releases_construction_peak_before_durable_ingress --locked` and `cargo test -p cdf-engine parallel_segment_encoding_is_identical_to_inline_canonical_registration --locked` pass after the lease reconciliation. The first test inspects the lease at the durable frontier and proves that only exact output bytes, not transient construction peak bytes, survive into ingress.
 - `.10x/evidence/.storage/2026-07-18-p3-d15-ec2-canonical-row-ord-local-tlc-fixed-smoke.json` records the clean controlled-host repair run at `79b4d441`: 37.565 seconds, 41,169,720 rows, 1,095,965 rows/s, 2,517,692,416 bytes peak child RSS, and no spill. Comparison with `.10x/evidence/.storage/2026-07-18-p3-g4-ec2-local-default-measured.json` proves completion but rejects the current appender combination as a retained default.
-- Performance retention remains the open acceptance gate; D14's direct-segment product path must pass the controlled full-CDF EC2 comparison before D15 closes.
+- `.10x/evidence/.storage/2026-07-19-p3-d15-default-publication-release-smoke.json` records the repaired default 4 GiB controlled-host smoke; `.10x/evidence/.storage/2026-07-19-p3-d14-stock-default-full-year-three-sample.json` records the stable three-sample confirmation.
 - `.10x/evidence/.storage/2026-07-18-p3-d15-ec2-parquet-full-year-current.json` records the current full-year Parquet destination cell.
-- Controlled-host diagnostic at `c4b0759a`: the default 4 GiB D14 run was terminated after 84/215 segments and several minutes at zero useful CPU/I/O; the same exact release/workspace with `CDF_MEMORY_BUDGET=8GiB` completed 41,169,720 rows in `9.199782961s` with zero memory events. This supports the nested-admission diagnosis but is not retained promotion evidence.
+- `.10x/evidence/.storage/2026-07-19-p3-d15-memory-8g-diagnostic.json` records the controlled-host diagnostic at `c4b0759a`: the default 4 GiB D14 run was terminated after 84/215 segments and several minutes at zero useful CPU/I/O; the same exact release/workspace with `CDF_MEMORY_BUDGET=8GiB` completed 41,169,720 rows in `9.199782961s` with zero memory events. This supports the nested-admission diagnosis but is not retained promotion evidence.
 - `CARGO_BUILD_JOBS=12 cargo test -p cdf-source-files --lib --locked -j 12 --no-fail-fast` passed 82 active tests (one slow listing test ignored), including `blocked_decode_publication_releases_shared_run_work`; `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-source-files --all-targets --locked -j 12 -- -D warnings` passed.
+- `.10x/evidence/.storage/2026-07-19-p3-d15-postgres-full-year-current.json` records the current full-product Postgres cell at clean revision `8408bac1`; the command completed exact row output with zero spill and zero cgroup memory events. On that same host/revision, `cargo test --release -p cdf-dest-postgres live_binary_copy_is_at_least_twice_csv --locked -- --ignored --nocapture` passed at `1,375,614` binary rows/s versus `413,563` CSV rows/s (`3.33x`).
+- `CARGO_BUILD_JOBS=12 cargo test -p cdf-dest-duckdb --lib --locked -j 12 --no-fail-fast` passed all 29 tests; strict all-target Clippy passed; `cargo machete` reports no unused dependency for the crate after deleting the final two unused manifest edges.
 
 ## Review
 
-Pending.
+Verdict: pass.
+
+Fresh review traced the persisted ordinal from post-verdict canonical assembly through manifest continuity verification, replay, DuckDB row-key derivation, Postgres binary COPY, and Parquet stripping. It found no destination-local enumeration or generic destination identity branch. The significant performance finding is not a D15 semantic failure: Postgres's current per-segment COPY lifecycle leaves the full product at `400,862` rows/s despite a `1,375,614` rows/s direct server-inclusive path. D16 owns that measured gap. Residual risk is bounded to provider/server/network variability outside the loopback EC2 cell; the current package identity, transaction, receipt, and jobs-invariance laws are green.
 
 ## Retrospective
 
-Pending.
+Moving row order into canonical evidence removed three competing destination premises and enabled DuckDB's scanner to schedule segments freely. The difficult failures were both lease-lifetime bugs revealed only at full scale: construction-peak memory surviving into durable ingress, then a run-work permit surviving while awaiting bounded publication. The durable rule is that leases name active ownership, never channel waiting. The Postgres full-product measurement also reinforced that a fast codec does not prove a fast destination lifecycle; segment/session amortization requires its own macro cell.

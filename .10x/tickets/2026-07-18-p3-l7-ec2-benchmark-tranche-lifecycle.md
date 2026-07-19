@@ -35,7 +35,7 @@ Own the lifecycle of the currently running dedicated EC2 benchmark host for the 
 
 - User-ratified: one EC2 instance should be reused for a benchmark tranche and terminated when the tranche completes.
 - Record-backed: the active host is `i-05011a85b7f2a33fe`, instance type `c7i.4xlarge`, current unbounded performance host class `host-class-649c6f28be3544c8`, with gp3 storage tuned to `16000` IOPS / `1000` MiB/s.
-- Record-backed: as of the D11 Arrow IPC/nanoarrow probe, the full lab is synchronized and built at dirty revision `48dd7d6d3ef265064b382624e18543046346ac95+dirty`; clean refresh is required after this tranche commit before product promotion evidence.
+- Record-backed: the measured-command release is synchronized and built at clean revision `8408bac1be95190e8cc37e3e7944f2e19ff6d281` with `duckdb_linkage=downloaded-prebuilt`; this build produced the final D14/D15 promotion cells. Later local changes are record-only until the next product refresh.
 
 ## Journal
 
@@ -62,7 +62,8 @@ Own the lifecycle of the currently running dedicated EC2 benchmark host for the 
 - 2026-07-18: For the D11 Arrow IPC/nanoarrow falsification slice, refreshed the full lab at dirty revision `48dd7d6d3ef265064b382624e18543046346ac95+dirty` with `tools/p3-ec2-benchmark-host.sh sync-repo && tools/p3-ec2-benchmark-host.sh build && tools/p3-ec2-benchmark-host.sh preflight`. Release `cdf` was already built, release `cdf-p3-lab` relinked and wrote build marker `2026-07-18T20:40:51Z`, and strict full-lab preflight passed with tuned gp3 storage, host class `host-class-649c6f28be3544c8`, workspace present, and `155563855872` free bytes. Current markers were fetched into `.10x/evidence/.storage/2026-07-18-p3-l7-ec2-after-arrow-ipc-probe-revision.env` and `.10x/evidence/.storage/2026-07-18-p3-l7-ec2-after-arrow-ipc-probe-build.env`. The host remains intentionally active for D12/G4 product promotion measurements.
 - 2026-07-18: For the D12 Arrow IPC handoff product-retention slice, refreshed the measured-command build at dirty revision `d584cb10c66627e738a7c85d60729f20b7b111a4+dirty` with `tools/p3-ec2-benchmark-host.sh sync-repo && tools/p3-ec2-benchmark-host.sh build-measure && tools/p3-ec2-benchmark-host.sh preflight-measure`. Release `cdf` relinked for each prototype edit and the final preflight passed with tuned gp3 storage, host class `host-class-649c6f28be3544c8`, workspace present, and `145819602944` free bytes. Current markers were fetched into `.10x/evidence/.storage/2026-07-18-p3-d12-ec2-arrow-ipc-handoff-revision.env` and `.10x/evidence/.storage/2026-07-18-p3-d12-ec2-arrow-ipc-handoff-build.env`. The host remains intentionally active for D13/G4 follow-on measurements.
 - 2026-07-18: D13 follow-on measurements used the same active host and dirty measured-command build lineage. Both Parquet handoff product variants failed retention (`37.546s` CTAS, `38.828s` planned-table insert), so D13 was cancelled and the host remains active for the next G4 materialization candidate.
-- 2026-07-18: Hardened both EC2 build modes against an accidental DuckDB C++ source build. `sync-repo` already carries the tracked `.cargo/config.toml`; the remote `build` and `build-measure` commands now additionally set `DUCKDB_DOWNLOAD_LIB=1` explicitly and record `duckdb_linkage=downloaded-prebuilt` in their authority markers. `bash -n` and dry-run command inspection passed. D14's intentional custom statically linked nanoarrow library is a separately labeled release-artifact build and does not weaken this ordinary benchmark-build default.
+- 2026-07-18: Hardened both EC2 build modes against an accidental DuckDB C++ source build. `sync-repo` already carries the tracked `.cargo/config.toml`; the remote `build` and `build-measure` commands now additionally set `DUCKDB_DOWNLOAD_LIB=1` explicitly and record `duckdb_linkage=downloaded-prebuilt` in their authority markers. `bash -n` and dry-run command inspection passed. D14 temporarily used a separately labeled custom runtime for comparison; that machinery was later superseded and deleted.
+- 2026-07-19: The host was synchronized and the measured-command release built at clean revision `8408bac1be95190e8cc37e3e7944f2e19ff6d281` with the downloaded stock DuckDB library. It produced D14's three-sample full-year DuckDB median (`10.255642670s`), D15's default-budget publication-lifetime smoke (`10.306850923s`), and D15's one-sample Postgres full-year cell (`102.702915347s`). A disposable Postgres 16 cluster was stopped and deleted after validation, returning the root volume to approximately 119 GiB free. The EC2 instance remains intentionally active for G4's current-stock remote mirror cell and the next performance tranche.
 
 ## Blockers
 
@@ -119,6 +120,9 @@ The active P3 benchmark tranche still needs the host for G4 and follow-on perfor
 - `.10x/evidence/.storage/2026-07-18-p3-f1-ec2-cgroup-memory-sample-smoke.systemd.log` records the same-`MemoryMax` host-class probe and run-cell transient unit results.
 - `.10x/evidence/.storage/2026-07-18-p3-f1-ec2-cgroup-local-tlc-run.json` records the full-year local TLC-to-DuckDB run under `MemoryMax=6G`.
 - `.10x/evidence/.storage/2026-07-18-p3-f1-ec2-cgroup-local-tlc-run.systemd.log` records the same-`MemoryMax` host-class probe and run-cell transient unit results for the full-year local TLC run.
+- `.10x/evidence/.storage/2026-07-19-p3-d14-stock-default-full-year-three-sample.json` records the final stock-DuckDB D14 promotion cell.
+- `.10x/evidence/.storage/2026-07-19-p3-d15-default-publication-release-smoke.json` records the repaired default-budget D15 smoke.
+- `.10x/evidence/.storage/2026-07-19-p3-d15-postgres-full-year-current.json` records the D15 full-product Postgres cell that opened D16.
 
 ## Review
 

@@ -89,4 +89,4 @@ The important correction was separating three Arrow IPC questions that sounded l
 
 ## Corrective follow-up
 
-- 2026-07-18: `.10x/tickets/2026-07-18-p3-d14-duckdb-nanoarrow-080-lz4-revalidation.md` supersedes D11's overbroad LZ4 conclusion. D11 accurately measured the then-installed community extension artifact, but that artifact vendors pre-LZ4 nanoarrow. Apache nanoarrow `0.8.0` includes LZ4 IPC decompression, and the corrected pinned build directly reads current canonical CDF LZ4 segments. Preserve D11 as historical evidence for the old artifact; do not treat its incompatibility conclusion as current authority.
+- 2026-07-18: `.10x/tickets/done/2026-07-18-p3-d14-duckdb-nanoarrow-080-lz4-revalidation.md` supersedes D11's overbroad LZ4 conclusion. D11 accurately measured the then-installed community extension artifact, but that artifact vendors pre-LZ4 nanoarrow. Apache nanoarrow `0.8.0` includes LZ4 IPC decompression, and the corrected pinned build directly reads current canonical CDF LZ4 segments. Preserve D11 as historical evidence for the old artifact; do not treat its incompatibility conclusion as current authority.
