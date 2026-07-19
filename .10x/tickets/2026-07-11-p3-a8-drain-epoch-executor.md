@@ -1,6 +1,6 @@
-Status: open
+Status: active
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-a7-stream-policy-compilation.md, .10x/tickets/done/2026-07-11-p3-c2-parallel-frontier-execution.md, .10x/tickets/done/2026-07-11-p3-a1-staged-ingress-final-binding.md
 
@@ -30,7 +30,11 @@ No resident daemon, concrete CDC connector, `cdc_apply`, or arbitrary event-time
 
 ## Blockers
 
-Blocked on A7, C2, and staged ingress.
+None. A7, C2, and A1 staged ingress are done.
+
+## Journal
+
+- 2026-07-19: Activated after A7 closure. The implementation lane is confined to kernel/runtime/engine/project drain-epoch authority and mock-stream conformance; the concurrent Iceberg/object-access/dependency lane remains out of scope. The first slice will replace the explicit drain execution rejection with one reusable finite-epoch state machine, then integrate package/receipt/checkpoint gating without source- or destination-specific orchestration.
 
 ## References
 
