@@ -29,7 +29,7 @@ Own the lifecycle of the currently running dedicated EC2 benchmark host for the 
 
 - `.10x/specs/performance-lab-and-envelope.md`
 - `.10x/tickets/done/2026-07-18-p3-l6-ec2-benchmark-host.md`
-- `.10x/tickets/2026-07-11-p3-g4-tlc-remote-io-envelope.md`
+- `.10x/tickets/done/2026-07-11-p3-g4-tlc-remote-io-envelope.md`
 
 ## Assumptions
 
@@ -64,6 +64,8 @@ Own the lifecycle of the currently running dedicated EC2 benchmark host for the 
 - 2026-07-18: D13 follow-on measurements used the same active host and dirty measured-command build lineage. Both Parquet handoff product variants failed retention (`37.546s` CTAS, `38.828s` planned-table insert), so D13 was cancelled and the host remains active for the next G4 materialization candidate.
 - 2026-07-18: Hardened both EC2 build modes against an accidental DuckDB C++ source build. `sync-repo` already carries the tracked `.cargo/config.toml`; the remote `build` and `build-measure` commands now additionally set `DUCKDB_DOWNLOAD_LIB=1` explicitly and record `duckdb_linkage=downloaded-prebuilt` in their authority markers. `bash -n` and dry-run command inspection passed. D14 temporarily used a separately labeled custom runtime for comparison; that machinery was later superseded and deleted.
 - 2026-07-19: The host was synchronized and the measured-command release built at clean revision `8408bac1be95190e8cc37e3e7944f2e19ff6d281` with the downloaded stock DuckDB library. It produced D14's three-sample full-year DuckDB median (`10.255642670s`), D15's default-budget publication-lifetime smoke (`10.306850923s`), and D15's one-sample Postgres full-year cell (`102.702915347s`). A disposable Postgres 16 cluster was stopped and deleted after validation, returning the root volume to approximately 119 GiB free. The EC2 instance remains intentionally active for G4's current-stock remote mirror cell and the next performance tranche.
+
+- 2026-07-19: Refreshed the measured-command host to clean record/build authority `bf46c16469325e1e93f5d8ce642e4ab14dd4eb9c` after narrowing G4's spool surface. Release `cdf` and `cdf-p3-measure` were cache hits after the source relink, preflight passed on host class `host-class-649c6f28be3544c8`, and the explicit `spool_mode = "complete"` Hugging Face full-year TLC cell completed in `15.783324269s` with exact rows and zero pressure/OOM/spill events. The benchmark workspace was restored to its default overlap configuration after the cell. Markers: `.10x/evidence/.storage/2026-07-19-p3-g4-final-revision.env`, `.10x/evidence/.storage/2026-07-19-p3-g4-final-build.env`; run evidence: `.10x/evidence/.storage/2026-07-19-p3-g4-hf-complete-final-clean.json`. G4 and WS-G are terminal; the host remains intentionally active for D16 Postgres package-COPY amortization.
 
 ## Blockers
 
@@ -123,6 +125,9 @@ The active P3 benchmark tranche still needs the host for G4 and follow-on perfor
 - `.10x/evidence/.storage/2026-07-19-p3-d14-stock-default-full-year-three-sample.json` records the final stock-DuckDB D14 promotion cell.
 - `.10x/evidence/.storage/2026-07-19-p3-d15-default-publication-release-smoke.json` records the repaired default-budget D15 smoke.
 - `.10x/evidence/.storage/2026-07-19-p3-d15-postgres-full-year-current.json` records the D15 full-product Postgres cell that opened D16.
+- `.10x/evidence/.storage/2026-07-19-p3-g4-final-revision.env` records the clean G4 terminal revision authority.
+- `.10x/evidence/.storage/2026-07-19-p3-g4-final-build.env` records the matching downloaded-prebuilt DuckDB release build.
+- `.10x/evidence/.storage/2026-07-19-p3-g4-hf-complete-final-clean.json` records the final explicit-complete live TLC cell.
 
 ## Review
 

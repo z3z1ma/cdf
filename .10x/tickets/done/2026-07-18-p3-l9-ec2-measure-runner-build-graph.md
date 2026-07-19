@@ -30,7 +30,7 @@ Split the EC2 `measure-cdf` path away from the heavyweight all-in-one `cdf-p3-la
 - `.10x/specs/performance-lab-and-envelope.md`
 - `.10x/tickets/done/2026-07-18-p3-l6-ec2-benchmark-host.md`
 - `.10x/tickets/2026-07-18-p3-l7-ec2-benchmark-tranche-lifecycle.md`
-- `.10x/tickets/2026-07-11-p3-g4-tlc-remote-io-envelope.md`
+- `.10x/tickets/done/2026-07-11-p3-g4-tlc-remote-io-envelope.md`
 
 ## Assumptions
 

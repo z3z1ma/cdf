@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-10
 Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
@@ -15,7 +15,7 @@ Build on the P2 transport facade with parallel ranged Parquet GETs, bounded read
 - `.10x/tickets/done/2026-07-11-p3-g1-streaming-transport-byte-sources.md`
 - `.10x/tickets/done/2026-07-11-p3-g2-range-readahead-spool-controller.md`
 - `.10x/tickets/done/2026-07-11-p3-g3-codec-download-decode-overlap.md`
-- `.10x/tickets/2026-07-11-p3-g4-tlc-remote-io-envelope.md`
+- `.10x/tickets/done/2026-07-11-p3-g4-tlc-remote-io-envelope.md`
 
 ## Acceptance criteria
 
@@ -26,7 +26,7 @@ Build on the P2 transport facade with parallel ranged Parquet GETs, bounded read
 
 ## Blockers
 
-No immediate execution blocker. G1 and G2 are terminal; G3 builds on their provider/controller contracts and the completed lab, execution-host, operator-graph, scheduler-admission, and memory-ledger foundations. Program closure depends on G3 codec/pipeline overlap and the G4 live/recorded envelope.
+None. All four children are terminal. G4 closed with an explicitly accepted residual against the original composite ceiling and separate live-provider breadth.
 
 ## References
 
@@ -39,4 +39,12 @@ No immediate execution blocker. G1 and G2 are terminal; G3 builds on their provi
 - 2026-07-16: G2 closed at `.10x/tickets/done/2026-07-11-p3-g2-range-readahead-spool-controller.md`. The terminal controller now covers origin-shared adaptive/fixed range admission, exact retries, bounded coalescing/readahead, full/growing/evicting spools, cancellation, telemetry, and opt-in generation-revalidated cache promotion without adding payload work to the disabled or oversized paths. G3 owns end-to-end codec/network backpressure and jobs parity; G4 owns the live provider/TLC envelope and default tuning.
 - 2026-07-16: B5 closed at `.10x/tickets/done/2026-07-11-p3-b5-json-codecs.md`; G3's four direct dependencies are now terminal. Remote row codecs already stream and REST page fetch overlaps tape decode. G3 can execute its remaining transport-to-graph backpressure, cancellation-chaos, jobs-equivalence, and timeline/profile acceptance surface without another codec prerequisite.
 - 2026-07-16: G3 closed at `.10x/tickets/done/2026-07-11-p3-g3-codec-download-decode-overlap.md`. Recorded HTTP gzip NDJSON now permanently proves causal downstream-to-network backpressure, bounded cancellation, managed-memory release, observed multi-file remote overlap, and jobs-invariant package identity. The 2.147 GB FineWeb 1.10x curl floor remains the measured performance floor. G4 is now the only open child and owns live provider breadth plus the full TLC remote-I/O envelope.
-- 2026-07-19: G4's final spool experiment found a useful operator-selected strategy but rejected automatic scan-shape inference: inventory match count cannot prove the current incremental execution set. Commit `4686d5c6` preserves overlap as the default and exposes only explicit `spool_mode = "complete"` for measured finite multi-file workloads under the shared spill authority. The 12-file Hugging Face TLC draft improved from `19.580s` to `16.511s` while the local control remained within `0.6%` of its prior median; exact rows and memory safety held. The ticket is awaiting only a clean explicit-complete remeasurement and terminal record. The user explicitly directed the workstream to accept the remaining roofline delta rather than continue product-logic iteration.
+- 2026-07-19: G4's final spool experiment found a useful operator-selected strategy but rejected automatic scan-shape inference: inventory match count cannot prove the current incremental execution set. Commit `4686d5c6` preserves overlap as the default and exposes only explicit `spool_mode = "complete"` for measured finite multi-file workloads under the shared spill authority. The clean 12-file Hugging Face TLC cell improved from `19.580053641s` to `15.783324269s` (`19.4%`) with exact rows and zero pressure/OOM/spill events. G4 closed at `.10x/tickets/done/2026-07-11-p3-g4-tlc-remote-io-envelope.md`; the user explicitly accepted the remaining composite-ceiling and live-provider residuals rather than continue product-logic iteration.
+
+## Review
+
+Verdict: pass with the G4 residual explicitly accepted by the user. G1-G3 establish the generic transport, range/readahead/spool, codec overlap, backpressure, cancellation, identity, and deterministic-fixture laws. G4's final review removed a speculative default heuristic before closure and retained only an explicit, spill-budgeted performance knob. No destination identity or transport-specific branch leaked into generic orchestration.
+
+## Retrospective
+
+The workstream succeeded when policy followed capabilities and measured workload shape; it thrashed when public-endpoint behavior or inventory cardinality was promoted into a default. The lasting boundary is transport- and codec-owned capability truth with operator-tunable strategy, while generic orchestration consumes those facts without naming a provider or format. Live public-provider cells are useful falsification tools, but deterministic controller/backpressure/identity fixtures remain the durable CI authority.

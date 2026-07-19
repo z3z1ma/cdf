@@ -2,7 +2,7 @@ Status: cancelled
 Created: 2026-07-18
 Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md
-Depends-On: .10x/tickets/done/2026-07-18-p3-d11-duckdb-arrow-ipc-handoff-falsification.md, .10x/tickets/2026-07-11-p3-g4-tlc-remote-io-envelope.md, .10x/tickets/2026-07-15-p3-d9-content-reachability-authority.md
+Depends-On: .10x/tickets/done/2026-07-18-p3-d11-duckdb-arrow-ipc-handoff-falsification.md, .10x/tickets/done/2026-07-11-p3-g4-tlc-remote-io-envelope.md, .10x/tickets/2026-07-15-p3-d9-content-reachability-authority.md
 
 # P3 D12: DuckDB Arrow IPC handoff ingress
 
@@ -37,7 +37,7 @@ The implementation may initially be selected by an explicit documented knob so t
 ## References
 
 - `.10x/tickets/done/2026-07-18-p3-d11-duckdb-arrow-ipc-handoff-falsification.md`
-- `.10x/tickets/2026-07-11-p3-g4-tlc-remote-io-envelope.md`
+- `.10x/tickets/done/2026-07-11-p3-g4-tlc-remote-io-envelope.md`
 - `.10x/specs/destination-bulk-path-runtime.md`
 - `.10x/specs/constant-memory-proof.md`
 - `.10x/decisions/destination-runtime-composition-boundary.md`

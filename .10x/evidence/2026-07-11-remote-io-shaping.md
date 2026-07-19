@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Relates-To: .10x/decisions/generation-bound-overlapped-io.md, .10x/specs/remote-local-io-overlap.md, .10x/tickets/2026-07-10-p3-ws-g-remote-io-overlap.md
+Relates-To: .10x/decisions/generation-bound-overlapped-io.md, .10x/specs/remote-local-io-overlap.md, .10x/tickets/done/2026-07-10-p3-ws-g-remote-io-overlap.md
 
 # Remote I/O shaping evidence
 

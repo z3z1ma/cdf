@@ -31,7 +31,7 @@ Implement and record the operating procedure/tooling for P3 performance measurem
 
 - `.10x/specs/performance-lab-and-envelope.md`
 - `.10x/knowledge/runtime-conformance-throughput-rule.md`
-- `.10x/tickets/2026-07-11-p3-g4-tlc-remote-io-envelope.md`
+- `.10x/tickets/done/2026-07-11-p3-g4-tlc-remote-io-envelope.md`
 - `.10x/tickets/2026-07-11-p3-z1-envelope-evidence-reconciliation.md`
 
 ## Assumptions

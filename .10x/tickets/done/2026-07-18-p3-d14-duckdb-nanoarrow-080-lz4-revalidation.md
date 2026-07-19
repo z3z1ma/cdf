@@ -32,7 +32,7 @@ Correct D11's overbroad LZ4 conclusion by building the DuckDB nanoarrow extensio
 
 - `.10x/tickets/done/2026-07-18-p3-d11-duckdb-arrow-ipc-handoff-falsification.md`
 - `.10x/tickets/cancelled/2026-07-18-p3-d12-duckdb-arrow-ipc-handoff-ingress.md`
-- `.10x/tickets/2026-07-11-p3-g4-tlc-remote-io-envelope.md`
+- `.10x/tickets/done/2026-07-11-p3-g4-tlc-remote-io-envelope.md`
 - `.10x/specs/destination-bulk-path-runtime.md`
 - `.10x/specs/constant-memory-proof.md`
 - `.10x/decisions/destination-runtime-composition-boundary.md`

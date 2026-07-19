@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-11
 Updated: 2026-07-16
-Parent: .10x/tickets/2026-07-10-p3-ws-g-remote-io-overlap.md
+Parent: .10x/tickets/done/2026-07-10-p3-ws-g-remote-io-overlap.md
 Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md, .10x/tickets/done/2026-07-11-p0-sx1-source-extension-boundary.md, .10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md, .10x/tickets/done/2026-07-11-p3-a4-injected-execution-host.md, .10x/specs/remote-local-io-overlap.md
 
 # P3 G1: async streaming local/HTTP/cloud byte sources
@@ -76,7 +76,7 @@ Verdict: **pass** for G1 closure; no critical or significant G1 finding remains.
 
 The consolidated review found and the repair closed production `block_on` calls in file planning/listing, uncancellable object-store waits, per-resource object-store client construction, erased listing termination, unaccounted in-flight metadata, legal oversized provider frames, ETag-only range inference, and the closed cloud-scheme dispatch. The first static-gate correction was itself falsified because it flagged individually attributed test helpers; the final gate strips each `#[cfg(test)]` item and still scans later production code.
 
-Residual work is explicitly transferred rather than hidden: `.10x/tickets/done/2026-07-11-p3-b5-json-codecs.md` closed deletion of the final blocking REST client/runtime and async REST decode; `.10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md` owns downstream candidate/partition cardinality and spill-backed ordering; `.10x/tickets/done/2026-07-11-p3-g2-range-readahead-spool-controller.md` owns adaptive range/readahead/cache control; and `.10x/tickets/2026-07-11-p3-g4-tlc-remote-io-envelope.md` owns the live S3/GCS/Azure matrix, provider pagination semantics, retry/waste measurements, and end-to-end envelope. Those are separate acceptance surfaces with durable owners, not reasons to keep the provider contract open.
+Residual work is explicitly transferred rather than hidden: `.10x/tickets/done/2026-07-11-p3-b5-json-codecs.md` closed deletion of the final blocking REST client/runtime and async REST decode; `.10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md` owns downstream candidate/partition cardinality and spill-backed ordering; `.10x/tickets/done/2026-07-11-p3-g2-range-readahead-spool-controller.md` owns adaptive range/readahead/cache control; and `.10x/tickets/done/2026-07-11-p3-g4-tlc-remote-io-envelope.md` owns the live S3/GCS/Azure matrix, provider pagination semantics, retry/waste measurements, and end-to-end envelope. Those are separate acceptance surfaces with durable owners, not reasons to keep the provider contract open.
 
 ## Retrospective
 

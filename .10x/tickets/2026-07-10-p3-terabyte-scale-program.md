@@ -46,7 +46,7 @@ This parent is an aggregate plan. Workstream records own sequencing and integrat
 - `.10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md`
 - `.10x/tickets/2026-07-10-p3-ws-e-hashing-package-io.md`
 - `.10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md`
-- `.10x/tickets/2026-07-10-p3-ws-g-remote-io-overlap.md`
+- `.10x/tickets/done/2026-07-10-p3-ws-g-remote-io-overlap.md`
 - `.10x/tickets/2026-07-10-p3-ws-h-interop-boundaries.md`
 - `.10x/tickets/2026-07-11-p3-ws-v-vectorized-validation.md`
 - `.10x/tickets/2026-07-12-p3-ws-j-datafusion-currency-bridges.md`

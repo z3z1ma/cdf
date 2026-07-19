@@ -1,7 +1,7 @@
-Status: active
+Status: done
 Created: 2026-07-11
 Updated: 2026-07-19
-Parent: .10x/tickets/2026-07-10-p3-ws-g-remote-io-overlap.md
+Parent: .10x/tickets/done/2026-07-10-p3-ws-g-remote-io-overlap.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-g3-codec-download-decode-overlap.md, .10x/tickets/done/2026-07-11-p3-d2-duckdb-arrow-bulk.md, .10x/tickets/done/2026-07-11-p3-c4-jobs-invariance-scaling-matrix.md
 
 # P3 G4: remote/local I/O envelope and TLC closeout
@@ -350,13 +350,27 @@ Depends on G1-G3; DuckDB bulk and deterministic scaling closeout are complete.
   - The stock release at `8408bac1be95190e8cc37e3e7944f2e19ff6d281` completed the 12-file Hugging Face TLC mirror in `19.580053641s`, exact `41,169,720` rows, peak process RSS `3,910,922,240` bytes, cgroup peak `6,254,161,920` bytes, and zero pressure/OOM/spill events. The same host fetched all 12 objects with parallel curl in `2.26s`; local CDF was `10.255642670s` median. Phase comparison showed growing-spool waits inflated package execution to `10.810050368s` versus `3.538189036s` locally. Evidence: `.10x/evidence/.storage/2026-07-19-p3-g4-hf-stock-full-year-smoke.json`.
   - A one-variable full-spool falsification completed in `16.229050834s`, exact rows, peak RSS `3,949,334,528` bytes, cgroup peak `6,307,774,464` bytes, and zero pressure/OOM/spill events. This is a measured `17.1%` improvement over the stock remote cell. Evidence: `.10x/evidence/.storage/2026-07-19-p3-g4-hf-full-spool-candidate.json`.
   - The first retained draft in `010b7ec1` exposed `auto|overlap|complete` and made inventory match count choose complete spooling automatically. Fresh review rejected that default before closure: inventory cardinality is not the incremental run's active-partition cardinality, so a multi-file resource with one changed large object could silently lose overlap. The clean draft measured `16.511129901s` remote and `10.315428900s` local with exact rows and zero pressure/OOM/spill events, but its heuristic is evidence only and is not product authority. Evidence: `.10x/evidence/.storage/2026-07-19-p3-g4-hf-auto-final-clean.json` and `.10x/evidence/.storage/2026-07-19-p3-g4-local-auto-final-clean.json`.
-  - Commit `4686d5c6` deletes the speculative heuristic, its optional-reservation fallback helper, and all match-count plumbing from execution. The source-level surface is now only `spool_mode = "overlap|complete"`: `overlap` is the unchanged default, while `complete` is an explicit operator-selected knob that fails cleanly when the shared spill authority cannot admit the finite object. The option is serialized into the compiled source plan and therefore requires an intentional schema repin when changed. Final clean explicit-complete EC2 remeasurement is the only remaining closure action.
+  - Commit `4686d5c6` deletes the speculative heuristic, its optional-reservation fallback helper, and all match-count plumbing from execution. The source-level surface is now only `spool_mode = "overlap|complete"`: `overlap` is the unchanged default, while `complete` is an explicit operator-selected knob that fails cleanly when the shared spill authority cannot admit the finite object. The option is serialized into the compiled source plan and therefore requires an intentional schema repin when changed.
+  - Clean explicit-complete authority at revision `bf46c16469325e1e93f5d8ce642e4ab14dd4eb9c`: `15.783324269s`, `2,608,431` rows/s, exact `41,169,720` rows, peak process RSS `3,912,744,960` bytes, cgroup peak `6,217,789,440` bytes, and zero pressure/OOM/spill events. This is `19.4%` faster than the `19.580053641s` unchanged-default remote control. Evidence: `.10x/evidence/.storage/2026-07-19-p3-g4-hf-complete-final-clean.json`.
   - Verification: after the narrowing, all 82 ordinary `cdf-source-files` tests passed, one slow million-entry test remained intentionally ignored, strict all-target Clippy passed, and `git diff --check` passed. The broader pre-narrowing `cdf-project` run passed 193/198 tests; its five failures were outside the source spool branches, so they are not claimed as closure evidence for this focused change.
 
 ## Review
 
-Adversarial review of the first draft found that a global reqwest read timeout leaked file-transfer policy into REST/metadata behavior and consumed the default retry budget. The implementation was revised to private file byte-source phase deadlines and expanded with REST non-inheritance and slow-progress tests. Fresh review of the final spool draft found that inventory match count was not valid authority for the current incremental execution set; `4686d5c6` removes that heuristic and preserves overlap as the default. Final verdict remains pending only on the explicit-complete live cell.
+Findings:
+
+- Significant, resolved: a global reqwest read timeout leaked file-transfer policy into REST/metadata behavior and consumed the default retry budget. The implementation moved liveness policy into private file byte-source phases and added REST non-inheritance and slow-progress tests.
+- Significant, resolved: inventory match count was not valid authority for the current incremental execution set. `4686d5c6` removed the automatic spool heuristic, its fallback-only helper, and execution match-count plumbing; overlap remains the default.
+- Residual, user-accepted: the final `15.783s` live TLC result does not meet the ticket's original 1.5x raw-download-plus-native-DuckDB composite target, and the ticket did not complete separate live S3/GCS/Azure cells. Deterministic provider/controller conformance remains green, while live endpoint breadth is intentionally curtailed. On 2026-07-19 the user explicitly directed G4 to lower expectations after the last spool falsification and move on rather than continue product-logic iteration.
+
+Verdict: pass with the explicitly accepted residual above. The retained product change is an opt-in, budgeted knob with a measured win; no possible default regression is introduced.
+
+Acceptance mapping:
+
+- TLC HTTPS profile: recorded at `.10x/evidence/.storage/2026-07-19-p3-g4-hf-complete-final-clean.json`; exact and bounded, but original composite ceiling not met and accepted as residual.
+- Provider coverage: deterministic transport/controller tests are recorded throughout the journal; separate live S3/GCS/Azure cells are the accepted curtailed residual.
+- Local strategy: unchanged default control `10.315428900s` at `.10x/evidence/.storage/2026-07-19-p3-g4-local-auto-final-clean.json`; the rejected heuristic did not ship.
+- Controller/cache/spool/memory/identity: focused source suite passed 82 tests with one slow test intentionally ignored, strict all-target Clippy passed, and the clean live cell recorded zero pressure/OOM/spill events.
 
 ## Retrospective
 
-Pending ticket completion.
+The expensive failure mode was treating one workload's inventory shape as sufficient authority for a default. Full-product benchmarking caught real opportunities, but the final review caught the more important architectural point: current incremental cardinality is not inventory cardinality. The durable result is smaller and better—one explicit strategy knob, one unchanged default, one spill authority, and no speculative helper or match-count plumbing. Future envelope work must start from a named workload and tune existing knobs before proposing product logic; if no safe default beats the measured floor, record the null result and move to the next bottleneck.

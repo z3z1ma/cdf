@@ -94,7 +94,7 @@ The EC2 instance was intentionally left running for reuse across the current ben
 
 The baseline report is a smoke-scale machine-evidence proof, not a claim that the P3 throughput envelope is met. Large TLC/TPC-H/stress cells remain owned by their P3 performance tickets and must reuse the same host-labeled path.
 
-The TLC `measure-cdf` observation is also a smoke of the measured-command path, not the full-year G4 envelope. It exercised one selected TLC partition from the synced workspace and proves row/phase extraction plus runtime-state reset behavior. G4's full-year target remains owned by `.10x/tickets/2026-07-11-p3-g4-tlc-remote-io-envelope.md`.
+The TLC `measure-cdf` observation is also a smoke of the measured-command path, not the full-year G4 envelope. It exercised one selected TLC partition from the synced workspace and proves row/phase extraction plus runtime-state reset behavior. G4's full-year target remains owned by `.10x/tickets/done/2026-07-11-p3-g4-tlc-remote-io-envelope.md`.
 
 Any storage-sensitive measurement recorded before the gp3 tuning is diagnostic only, because the host was capped at the default 125 MiB/s gp3 throughput at that time.
 
