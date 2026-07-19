@@ -1,8 +1,8 @@
 Status: open
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-10-p3-ws-h-interop-boundaries.md
-Depends-On: .10x/tickets/2026-07-11-p3-h2-python-incremental-arrow-boundary.md, .10x/tickets/2026-07-11-p3-h3-subprocess-stream-supervision.md, .10x/tickets/2026-07-11-p3-h4-wasm-cost-interface-model.md, .10x/tickets/2026-07-11-p3-f3-stress-generators-laws.md
+Depends-On: .10x/tickets/done/2026-07-11-p3-h2-python-incremental-arrow-boundary.md, .10x/tickets/2026-07-11-p3-h3-subprocess-stream-supervision.md, .10x/tickets/2026-07-11-p3-h4-wasm-cost-interface-model.md, .10x/tickets/2026-07-11-p3-f3-stress-generators-laws.md
 
 # P3 H5: interop conformance and envelope closeout
 

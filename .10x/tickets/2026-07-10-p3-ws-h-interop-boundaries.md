@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-10
-Updated: 2026-07-18
+Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
 Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md, .10x/tickets/done/2026-07-07-interop-boundary-overhead-triage.md
 
@@ -13,7 +13,7 @@ Measure and document Python PyCapsule/C Data Interface, subprocess Arrow IPC fra
 ## Activated children
 
 - `.10x/tickets/done/2026-07-11-p3-h1-interop-measurement-copy-proof.md`
-- `.10x/tickets/2026-07-11-p3-h2-python-incremental-arrow-boundary.md`
+- `.10x/tickets/done/2026-07-11-p3-h2-python-incremental-arrow-boundary.md`
 - `.10x/tickets/2026-07-11-p3-h3-subprocess-stream-supervision.md`
 - `.10x/tickets/2026-07-11-p3-h4-wasm-cost-interface-model.md`
 - `.10x/tickets/2026-07-11-p3-h5-interop-envelope-closeout.md`
@@ -28,10 +28,14 @@ Measure and document Python PyCapsule/C Data Interface, subprocess Arrow IPC fra
 
 ## Blockers
 
-Blocked until WS-L supplies comparable measurement/reporting. No WASM implementation is authorized.
+H2 is done. Remaining closure depends on H3, H4, and H5; no Wasmtime implementation is authorized by this workstream.
 
 ## References
 
 - `.10x/decisions/neutral-foreign-stream-boundary.md`
 - `.10x/research/2026-07-11-foreign-interop-boundary-audit.md`
 - `.10x/specs/foreign-stream-interop.md`
+
+## Journal
+
+- 2026-07-19 — H2 closed after real GIL/free-threaded and PyArrow matrices, constant-memory/backpressure evidence, neutral `ForeignProducer` production integration, explicit runtime-resolved lane admission, and a final independent pass. H3/H4/H5 remain the active children; H5 owns the calibrated native-memory/copy/release envelope rather than H2 overstating it.

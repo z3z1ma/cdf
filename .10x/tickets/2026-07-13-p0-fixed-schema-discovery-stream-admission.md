@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-13
-Updated: 2026-07-18
+Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
 
 # P0 fixed-schema discovery and stream-admission program
@@ -49,10 +49,11 @@ No same-run typed schema epoch, implicit promotion, or cache-as-authority behavi
 - 2026-07-14: SA3 closed after the closure audit repaired one transport accounting regression and corrected the child boundary rather than falsely absorbing still-open engines. Sequential file codecs and REST now retain exact discovery input through the final-plan barrier; materialized transformed/weak Parquet spools are consumed once; pinned physical drift follows compiled residual/quarantine behavior without mutating snapshots. Selective Parquet planning remains B2/G2, and full-content JSON inference remains B5. SA4 is the next implementation child; SA5 remains blocked on SA4.
 - 2026-07-18: Graph audit marked SA4 blocked on H1/H2/H4/WIT because the neutral incremental foreign-stream producer boundary did not yet exist. This is a real architecture blocker, not a reason to add Python/WASM-specific discovery hacks. SA5 remains blocked through SA4.
 - 2026-07-18: IX1 and H1 are now done. SA4 remains blocked on H2/H4/WIT: the neutral contract and measurement harness exist, but concrete Python/WASM dynamic producer execution does not.
+- 2026-07-19: H2 closed the concrete Python neutral producer path. SA4 remains blocked on H4/WIT before the bootstrap-barrier law can be language-neutral; no Python-specific workaround is needed or authorized.
 
 ## Blockers
 
-SA4 is blocked on the foreign-stream/language-runtime graph: `.10x/tickets/2026-07-11-p3-h2-python-incremental-arrow-boundary.md`, `.10x/tickets/2026-07-11-p3-h4-wasm-cost-interface-model.md`, and `.10x/tickets/2026-07-08-wasm-wit-interface-foundation.md`. IX1 and H1 are done; children own the remaining implementation graph; no source-specific workaround is authorized.
+SA4 is blocked on the remaining foreign-stream/language-runtime graph: `.10x/tickets/2026-07-11-p3-h4-wasm-cost-interface-model.md` and `.10x/tickets/2026-07-08-wasm-wit-interface-foundation.md`. IX1, H1, and H2 are done; children own the remaining implementation graph; no source-specific workaround is authorized.
 
 ## Evidence
 

@@ -24,4 +24,4 @@ This removes another production parser-facade consumer and eliminates whole-iter
 
 ## Limits
 
-This does not close P3 H2: `PythonBatchRead` and Arrow C stream import still collect batches, row conversion is not yet ledger-accounted, and real zero-copy/lane/cancellation evidence remains open under `.10x/tickets/2026-07-11-p3-h2-python-incremental-arrow-boundary.md`.
+This did not close P3 H2 at the time: `PythonBatchRead` and Arrow C stream import still collected batches, row conversion was not yet ledger-accounted, and real zero-copy/lane/cancellation evidence remained open. That later work is terminal at `.10x/tickets/done/2026-07-11-p3-h2-python-incremental-arrow-boundary.md`.
