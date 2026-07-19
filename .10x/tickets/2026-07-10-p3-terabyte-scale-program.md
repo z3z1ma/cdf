@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-10
-Updated: 2026-07-18
+Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-08-p2-data-onramp-program.md
 
@@ -43,7 +43,7 @@ This parent is an aggregate plan. Workstream records own sequencing and integrat
 - `.10x/tickets/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md`
 - `.10x/tickets/2026-07-10-p3-ws-b-format-decode-engines.md`
 - `.10x/tickets/2026-07-10-p3-ws-c-deterministic-parallelism.md`
-- `.10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md`
+- `.10x/tickets/done/2026-07-10-p3-ws-d-destination-bulk-paths.md`
 - `.10x/tickets/2026-07-10-p3-ws-e-hashing-package-io.md`
 - `.10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md`
 - `.10x/tickets/done/2026-07-10-p3-ws-g-remote-io-overlap.md`
@@ -103,6 +103,7 @@ P3 does not implement a distributed scheduler, remote worker leases, resident st
 - 2026-07-18: Ratified dedicated-host benchmark evidence for P3 performance promotion. Developer-laptop timings remain useful for smoke, triage, and rejecting risky defaults, but P3 envelope closeout/default promotion now uses a reusable AWS EC2 benchmark host in the FQ12 environment, with optimized release builds performed on-host from a synchronized repo/workspace and explicit teardown after each tranche. The governing protocol is in `.10x/specs/performance-lab-and-envelope.md`; `.10x/tickets/done/2026-07-18-p3-l6-ec2-benchmark-host.md` proves the provisioning/sync/run/teardown procedure.
 - 2026-07-18: Closed L6 as the dedicated-host protocol/tooling owner after a clean `a37a4d8645bfcc1919c04e22615e5364542ad238` preflight refresh. L7 now owns the intentionally running benchmark-tranche host lifecycle and eventual teardown evidence, so the active backlog tracks real remaining work rather than keeping a completed protocol ticket open as a reminder.
 - 2026-07-18: Closed L9 after splitting measured-command EC2 runs from the heavyweight `cdf-p3-lab` binary. The new `cdf-bench-core` crate owns shared measurement primitives; `cdf-bench-measure` produces a 606K/734K `cdf-p3-measure` runner; EC2 `build-measure` completed in `10.27s` without rebuilding `cdf-p3-lab`; and both tiny-control and full-year TLC measured-command cells are recorded in `.10x/evidence/.storage/`.
+- 2026-07-19: Reclosed WS-D after its reopened destination performance/lifecycle tail became terminal. DuckDB now materializes canonical LZ4 IPC segments through one stock-libduckdb parallel scan path at a 10.256-second full-product median for 41.17M TLC rows; Parquet preserves 0.919x raw local-write roofline with generic immutable-content reachability; Postgres retains binary COPY and deletes redundant append/replace staging. No destination-specific generic-runtime branch or superseded product path remains.
 
 ## Blockers
 

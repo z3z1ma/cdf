@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-18
 Updated: 2026-07-19
-Parent: .10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md
+Parent: .10x/tickets/done/2026-07-10-p3-ws-d-destination-bulk-paths.md
 
 # P3 D15: canonical package row ordinal
 

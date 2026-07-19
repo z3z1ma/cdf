@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-18
 Updated: 2026-07-19
-Parent: .10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md
+Parent: .10x/tickets/done/2026-07-10-p3-ws-d-destination-bulk-paths.md
 Depends-On: .10x/tickets/done/2026-07-18-p3-d11-duckdb-arrow-ipc-handoff-falsification.md, .10x/tickets/done/2026-07-18-p3-d15-canonical-package-row-ordinal.md
 
 # P3 D14: direct canonical-segment DuckDB ingress

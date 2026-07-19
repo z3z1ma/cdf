@@ -1,7 +1,7 @@
 Status: cancelled
 Created: 2026-07-18
 Updated: 2026-07-18
-Parent: .10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md
+Parent: .10x/tickets/done/2026-07-10-p3-ws-d-destination-bulk-paths.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-d2-duckdb-arrow-bulk.md, .10x/tickets/done/2026-07-11-p3-g4-tlc-remote-io-envelope.md
 
 # P3 D10: DuckDB stream-scan staged ingress

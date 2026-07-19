@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-14
 Updated: 2026-07-14
-Parent: .10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md
+Parent: .10x/tickets/done/2026-07-10-p3-ws-d-destination-bulk-paths.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-d1-bulk-path-contract.md, .10x/tickets/done/2026-07-11-p3-d2-duckdb-arrow-bulk.md, .10x/tickets/done/2026-07-11-p3-a5c-durable-segment-stream.md
 
 # P3 D7: persistent staged-ingress stream

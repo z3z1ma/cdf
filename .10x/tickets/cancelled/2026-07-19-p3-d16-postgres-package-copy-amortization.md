@@ -1,7 +1,7 @@
 Status: cancelled
 Created: 2026-07-19
 Updated: 2026-07-19
-Parent: .10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md
+Parent: .10x/tickets/done/2026-07-10-p3-ws-d-destination-bulk-paths.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-d3-postgres-binary-copy.md, .10x/tickets/done/2026-07-18-p3-d15-canonical-package-row-ordinal.md
 
 # P3 D16: amortize Postgres package COPY ingestion

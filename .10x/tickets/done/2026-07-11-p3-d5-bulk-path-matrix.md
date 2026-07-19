@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-11
 Updated: 2026-07-13
-Parent: .10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md
+Parent: .10x/tickets/done/2026-07-10-p3-ws-d-destination-bulk-paths.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-d2-duckdb-arrow-bulk.md, .10x/tickets/done/2026-07-11-p3-d3-postgres-binary-copy.md, .10x/tickets/done/2026-07-11-p3-d4-parquet-streaming-writer.md
 
 # P3 D5: destination bulk-path conformance and envelope matrix
