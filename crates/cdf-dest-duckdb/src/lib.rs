@@ -47,6 +47,7 @@ const DUCKDB_MEMORY_LIMIT_ENV: &str = "CDF_DUCKDB_MEMORY_LIMIT";
 const DUCKDB_TEMP_BUDGET_ENV: &str = "CDF_DUCKDB_TEMP_BUDGET";
 const DUCKDB_THREADS_ENV: &str = "CDF_DUCKDB_THREADS";
 const DUCKDB_BULK_PATH_APPENDER: &str = "arrow_record_batch_appender";
+const DUCKDB_BULK_PATH_NANOARROW: &str = "nanoarrow_0_8_0_lz4";
 pub const CDF_ROW_KEY_COLUMN: &str = "_cdf_row_key";
 const CDF_STAGE_ORDER_COLUMN: &str = "_cdf_stage_order";
 
@@ -57,6 +58,7 @@ mod arrow_bridge;
 mod commit;
 mod corrections;
 mod mirrors;
+mod nanoarrow;
 mod package;
 mod planning;
 mod receipts;
