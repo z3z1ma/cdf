@@ -48,7 +48,7 @@ This parent is an aggregate plan. Workstream records own sequencing and integrat
 - `.10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md`
 - `.10x/tickets/done/2026-07-10-p3-ws-g-remote-io-overlap.md`
 - `.10x/tickets/2026-07-10-p3-ws-h-interop-boundaries.md`
-- `.10x/tickets/2026-07-11-p3-ws-v-vectorized-validation.md`
+- `.10x/tickets/done/2026-07-11-p3-ws-v-vectorized-validation.md`
 - `.10x/tickets/2026-07-12-p3-ws-j-datafusion-currency-bridges.md`
 - `.10x/tickets/2026-07-13-p0-fixed-schema-discovery-stream-admission.md`
 - `.10x/tickets/done/2026-07-18-p3-l6-ec2-benchmark-host.md`
@@ -104,6 +104,7 @@ P3 does not implement a distributed scheduler, remote worker leases, resident st
 - 2026-07-18: Closed L6 as the dedicated-host protocol/tooling owner after a clean `a37a4d8645bfcc1919c04e22615e5364542ad238` preflight refresh. L7 now owns the intentionally running benchmark-tranche host lifecycle and eventual teardown evidence, so the active backlog tracks real remaining work rather than keeping a completed protocol ticket open as a reminder.
 - 2026-07-18: Closed L9 after splitting measured-command EC2 runs from the heavyweight `cdf-p3-lab` binary. The new `cdf-bench-core` crate owns shared measurement primitives; `cdf-bench-measure` produces a 606K/734K `cdf-p3-measure` runner; EC2 `build-measure` completed in `10.27s` without rebuilding `cdf-p3-lab`; and both tiny-control and full-year TLC measured-command cells are recorded in `.10x/evidence/.storage/`.
 - 2026-07-19: Reclosed WS-D after its reopened destination performance/lifecycle tail became terminal. DuckDB now materializes canonical LZ4 IPC segments through one stock-libduckdb parallel scan path at a 10.256-second full-product median for 41.17M TLC rows; Parquet preserves 0.919x raw local-write roofline with generic immutable-content reachability; Postgres retains binary COPY and deletes redundant append/replace staging. No destination-specific generic-runtime branch or superseded product path remains.
+- 2026-07-19: Closed WS-V after the dedicated-host 64k matrix passed all 12 ratified single-core hot-kernel cells at 3.016-7.254 GB/s against a 1 GB/s/core threshold. The permanent scheduled gate separates kernel masks, selected-row evidence, and full-product validation/normalization costs, and its slim runner avoids linking unrelated source/destination graphs.
 
 ## Blockers
 

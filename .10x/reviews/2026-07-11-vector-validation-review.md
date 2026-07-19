@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Target: .10x/decisions/vectorized-bitmap-validation.md, .10x/specs/vectorized-contract-validation.md, .10x/tickets/2026-07-11-p3-ws-v-vectorized-validation.md
+Target: .10x/decisions/vectorized-bitmap-validation.md, .10x/specs/vectorized-contract-validation.md, .10x/tickets/done/2026-07-11-p3-ws-v-vectorized-validation.md
 Verdict: pass
 
 # Vector validation architecture review

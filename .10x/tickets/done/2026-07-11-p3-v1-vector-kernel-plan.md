@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-11
 Updated: 2026-07-11
-Parent: .10x/tickets/2026-07-11-p3-ws-v-vectorized-validation.md
+Parent: .10x/tickets/done/2026-07-11-p3-ws-v-vectorized-validation.md
 Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md
 
 # P3 V1: typed vector kernel plan and scalar oracle
