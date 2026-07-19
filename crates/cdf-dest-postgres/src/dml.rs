@@ -2,29 +2,36 @@ use crate::{ddl::system_target_columns, *};
 
 pub(crate) fn write_statements(
     input: &PostgresLoadPlanInput,
-    stage_table: &PostgresIdentifier,
+    stage_table: Option<&PostgresIdentifier>,
 ) -> Result<Vec<PostgresStatement>> {
-    let mut statements = vec![PostgresStatement::execute(
-        "create_stage",
-        create_stage_sql(stage_table, &input.columns),
-    )];
-
     match input.disposition {
-        WriteDisposition::Append => statements.push(PostgresStatement::execute(
-            "append_from_stage",
-            append_insert_sql(&input.target, &input.columns, stage_table),
-        )),
-        WriteDisposition::Replace => {
-            statements.push(PostgresStatement::execute(
+        WriteDisposition::Append => Ok(vec![PostgresStatement::copy_binary(
+            "copy_target_binary",
+            binary_copy_sql(&input.target.sql(), &input.columns),
+        )]),
+        WriteDisposition::Replace => Ok(vec![
+            PostgresStatement::execute(
                 "truncate_target_for_replace",
                 format!("TRUNCATE TABLE {}", input.target.sql()),
-            ));
-            statements.push(PostgresStatement::execute(
-                "replace_from_stage",
-                append_insert_sql(&input.target, &input.columns, stage_table),
-            ));
-        }
+            ),
+            PostgresStatement::copy_binary(
+                "copy_target_binary",
+                binary_copy_sql(&input.target.sql(), &input.columns),
+            ),
+        ]),
         WriteDisposition::Merge => {
+            let stage_table = stage_table
+                .ok_or_else(|| CdfError::internal("Postgres merge plan omits its stage table"))?;
+            let mut statements = vec![
+                PostgresStatement::execute(
+                    "create_stage",
+                    create_stage_sql(stage_table, &input.columns),
+                ),
+                PostgresStatement::copy_binary(
+                    "copy_stage_binary",
+                    binary_copy_sql(&stage_table.quoted(), &input.columns),
+                ),
+            ];
             if input.dedup == MergeDedupPolicy::Fail {
                 statements.push(PostgresStatement::query(
                     "merge_duplicate_key_guard",
@@ -36,11 +43,19 @@ pub(crate) fn write_statements(
                 "merge_from_stage",
                 merge_sql(input, stage_table)?,
             ));
+            Ok(statements)
         }
         WriteDisposition::CdcApply => unreachable!("validated before write planning"),
     }
+}
 
-    Ok(statements)
+pub(crate) fn binary_copy_sql(destination: &str, columns: &[PostgresColumn]) -> String {
+    let mut names = quoted_column_names(columns);
+    names.extend(quoted_system_target_column_names());
+    format!(
+        "COPY {destination} ({}) FROM STDIN WITH (FORMAT binary)",
+        names.join(", ")
+    )
 }
 
 pub(crate) fn create_stage_sql(
@@ -61,26 +76,6 @@ pub(crate) fn create_stage_sql(
         "CREATE TEMP TABLE {} (\n  {}\n) ON COMMIT DROP",
         stage_table.quoted(),
         definitions.join(",\n  ")
-    )
-}
-
-pub(crate) fn append_insert_sql(
-    target: &PostgresTarget,
-    columns: &[PostgresColumn],
-    stage_table: &PostgresIdentifier,
-) -> String {
-    let mut target_columns = quoted_column_names(columns);
-    target_columns.extend(quoted_system_target_column_names());
-
-    let mut selected_columns = quoted_column_names(columns);
-    selected_columns.extend(quoted_system_target_column_names());
-
-    format!(
-        "INSERT INTO {} ({})\nSELECT {} FROM {}",
-        target.sql(),
-        target_columns.join(", "),
-        selected_columns.join(", "),
-        stage_table.quoted()
     )
 }
 

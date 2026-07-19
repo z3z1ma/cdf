@@ -9,7 +9,9 @@ pub fn plan_postgres_load(
     validate_columns(&input.columns)?;
     validate_merge_shape(&input)?;
 
-    let stage_table = stage_table_name(&input.package_hash)?;
+    let stage_table = (input.disposition == WriteDisposition::Merge)
+        .then(|| stage_table_name(&input.package_hash))
+        .transpose()?;
     let target_name = input.target.target_name()?;
     let no_data = input.segments.is_empty();
     let migrations = if no_data {
@@ -17,8 +19,17 @@ pub fn plan_postgres_load(
     } else {
         target_migrations(&input)?
     };
+    let post_write_ddl = if no_data {
+        Vec::new()
+    } else {
+        vec![provenance_unique_index_statement(&input.target)?]
+    };
     let mut kernel_migrations = system_table_migrations();
     kernel_migrations.extend(migrations.iter().map(|statement| MigrationRecord {
+        migration_id: format!("postgres.{}", statement.name),
+        description: statement.sql.clone(),
+    }));
+    kernel_migrations.extend(post_write_ddl.iter().map(|statement| MigrationRecord {
         migration_id: format!("postgres.{}", statement.name),
         description: statement.sql.clone(),
     }));
@@ -49,7 +60,7 @@ pub fn plan_postgres_load(
     let write_sql = if no_data {
         Vec::new()
     } else {
-        write_statements(&input, &stage_table)?
+        write_statements(&input, stage_table.as_ref())?
     };
     let mirror_sql = mirror_statements(&input, &verify);
 
@@ -64,6 +75,7 @@ pub fn plan_postgres_load(
         state_delta: input.state_delta,
         system_ddl: system_table_ddl(),
         target_ddl: migrations,
+        post_write_ddl,
         idempotency_check: idempotency_check_statement(),
         xid_probe: PostgresStatement::query(
             "capture_xid",

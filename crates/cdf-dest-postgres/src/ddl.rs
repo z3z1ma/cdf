@@ -104,7 +104,6 @@ pub(crate) fn target_migrations(input: &PostgresLoadPlanInput) -> Result<Vec<Pos
                     ));
                 }
             }
-            migrations.push(provenance_unique_index_statement(&input.target)?);
             Ok(migrations)
         }
     }
@@ -142,11 +141,6 @@ pub(crate) fn create_target_table_sql(
                 .join(", ")
         ));
     }
-    definitions.push(format!(
-        "UNIQUE ({})",
-        quote_identifier_unchecked(CDF_ROW_KEY_COLUMN)
-    ));
-
     format!(
         "CREATE TABLE IF NOT EXISTS {} (\n  {}\n)",
         target.sql(),

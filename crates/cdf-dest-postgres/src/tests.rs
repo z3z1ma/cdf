@@ -152,7 +152,7 @@ fn sheet_declares_postgres_capabilities_and_full_mapping_fidelity() {
         .find(|statement| statement.name == "create_target")
         .unwrap();
     assert!(create_target.sql.contains(CDF_ROW_KEY_COLUMN));
-    assert!(create_target.sql.contains("UNIQUE (\"_cdf_row_key\")"));
+    assert!(!create_target.sql.contains("UNIQUE (\"_cdf_row_key\")"));
     let decimal = sheet
         .type_mappings
         .iter()
@@ -426,12 +426,16 @@ fn append_replace_and_merge_plans_include_transactional_sql() {
             .sql
             .contains("CREATE TABLE IF NOT EXISTS")
     );
-    assert!(
-        append
-            .write_sql
-            .iter()
-            .any(|statement| statement.sql.contains("INSERT INTO \"raw\".\"orders\""))
-    );
+    assert!(append.stage_table.is_none());
+    assert!(append.write_sql.iter().any(|statement| {
+        statement.name == "copy_target_binary"
+            && statement.expectation == StatementExpectation::CopyBinary
+            && statement.sql.contains("COPY \"raw\".\"orders\"")
+    }));
+    assert!(append.post_write_ddl.iter().any(|statement| {
+        statement.sql.contains("CREATE UNIQUE INDEX IF NOT EXISTS")
+            && statement.sql.contains(CDF_ROW_KEY_COLUMN)
+    }));
     assert_eq!(
         append.kernel.delivery_guarantee,
         DeliveryGuarantee::EffectivelyOncePerPackage
@@ -440,12 +444,17 @@ fn append_replace_and_merge_plans_include_transactional_sql() {
     let replace = destination
         .plan_load(input(WriteDisposition::Replace, MergeDedupPolicy::Last))
         .unwrap();
+    assert!(replace.stage_table.is_none());
     assert!(
         replace
             .write_sql
             .iter()
             .any(|statement| statement.sql == "TRUNCATE TABLE \"raw\".\"orders\"")
     );
+    assert!(replace.write_sql.iter().any(|statement| {
+        statement.name == "copy_target_binary"
+            && statement.expectation == StatementExpectation::CopyBinary
+    }));
     assert_eq!(
         replace.kernel.delivery_guarantee,
         DeliveryGuarantee::EffectivelyOncePerTarget
@@ -454,6 +463,7 @@ fn append_replace_and_merge_plans_include_transactional_sql() {
     let merge = destination
         .plan_load(input(WriteDisposition::Merge, MergeDedupPolicy::Last))
         .unwrap();
+    assert!(merge.stage_table.is_some());
     let merge_sql = merge
         .write_sql
         .iter()
@@ -464,6 +474,10 @@ fn append_replace_and_merge_plans_include_transactional_sql() {
     assert!(merge_sql.contains("ROW_NUMBER() OVER"));
     assert!(merge_sql.contains("ORDER BY \"_cdf_row_key\" DESC"));
     assert!(merge_sql.contains("ON CONFLICT (\"id\") DO UPDATE SET"));
+    assert!(merge.write_sql.iter().any(|statement| {
+        statement.name == "copy_stage_binary"
+            && statement.expectation == StatementExpectation::CopyBinary
+    }));
     assert_eq!(
         merge.kernel.delivery_guarantee,
         DeliveryGuarantee::EffectivelyOncePerKey

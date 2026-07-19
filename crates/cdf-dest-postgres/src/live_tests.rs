@@ -1291,7 +1291,7 @@ fn live_decimal128_values_preserve_exact_numeric_text() {
 }
 
 #[test]
-fn live_rollback_after_stage_copy_leaves_no_target_or_mirror_partial_commit() {
+fn live_rollback_after_direct_copy_leaves_no_target_or_mirror_partial_commit() {
     let Some(env) = LivePostgres::start() else {
         return;
     };

@@ -20,7 +20,7 @@ pub struct PostgresLoadPlanInput {
 pub struct PostgresLoadPlan {
     pub kernel: CommitPlan,
     pub target: PostgresTarget,
-    pub stage_table: PostgresIdentifier,
+    pub stage_table: Option<PostgresIdentifier>,
     pub columns: Vec<PostgresColumn>,
     pub merge_keys: Vec<PostgresIdentifier>,
     pub dedup: MergeDedupPolicy,
@@ -28,6 +28,7 @@ pub struct PostgresLoadPlan {
     pub state_delta: Option<StateDelta>,
     pub system_ddl: Vec<PostgresStatement>,
     pub target_ddl: Vec<PostgresStatement>,
+    pub post_write_ddl: Vec<PostgresStatement>,
     pub idempotency_check: PostgresStatement,
     pub xid_probe: PostgresStatement,
     pub write_sql: Vec<PostgresStatement>,
@@ -44,6 +45,7 @@ impl PostgresLoadPlan {
         statements.push(self.idempotency_check.clone());
         statements.push(self.xid_probe.clone());
         statements.extend(self.write_sql.clone());
+        statements.extend(self.post_write_ddl.clone());
         statements.extend(self.mirror_sql.clone());
         statements.push(PostgresStatement::execute("commit", "COMMIT"));
         statements
@@ -80,12 +82,22 @@ impl PostgresStatement {
             expectation,
         }
     }
+
+    pub fn copy_binary(name: impl Into<String>, sql: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            sql: sql.into(),
+            dry_run_safe: true,
+            expectation: StatementExpectation::CopyBinary,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StatementExpectation {
     Execute,
+    CopyBinary,
     ReturnsXid,
     ReturnsDuplicateReceiptIfPresent,
     ReturnsZeroRows,

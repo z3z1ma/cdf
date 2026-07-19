@@ -168,7 +168,7 @@ impl PostgresCommitSession {
             .map_err(|error| postgres_error("abort Postgres transaction", error))
     }
 
-    fn write_accepted_segments(&mut self) -> Result<()> {
+    fn write_accepted_segments(&mut self, copied_rows: u64, deleted_rows: u64) -> Result<()> {
         if self.duplicate_receipt.is_some() {
             self.phase = PostgresCommitSessionPhase::Written;
             return Ok(());
@@ -183,9 +183,9 @@ impl PostgresCommitSession {
         let counts = if self.expected_segments.is_empty() {
             CommitCounts::default()
         } else {
-            execute_statements(&mut client, &self.plan.target_ddl)?;
-            apply_write_plan_after_stage(&mut client, &self.plan)?
+            apply_write_plan_after_payload(&mut client, &self.plan, copied_rows, deleted_rows)?
         };
+        execute_statements(&mut client, &self.plan.post_write_ddl)?;
         let receipt = build_receipt(
             &self.plan,
             PostgresReceiptInput {
@@ -226,7 +226,7 @@ impl CommitSession for PostgresCommitSession {
         self.duplicate_receipt = find_duplicate_receipt(&mut client, &self.plan)?;
         if self.duplicate_receipt.is_none() && !self.expected_segments.is_empty() {
             execute_statements(&mut client, &self.plan.target_ddl)?;
-            create_stage_table(&mut client, &self.plan)?;
+            create_stage_table_if_required(&mut client, &self.plan)?;
             let package_rows =
                 self.expected_segments
                     .values()
@@ -240,7 +240,7 @@ impl CommitSession for PostgresCommitSession {
         self.client = Some(client);
         self.phase = PostgresCommitSessionPhase::MigrationsApplied;
         if self.expected_segments.is_empty() {
-            self.write_accepted_segments()?;
+            self.write_accepted_segments(0, 0)?;
         }
         Ok(())
     }
@@ -266,13 +266,23 @@ impl CommitSession for PostgresCommitSession {
         }
 
         let mut accepted_segments = BTreeSet::new();
-        let acknowledgements = if self.duplicate_receipt.is_some() {
-            validate_package_segments(
+        let outcome = if self.duplicate_receipt.is_some() {
+            let acknowledgements = validate_package_segments(
                 segments,
                 &self.expected_segments,
                 &self.plan,
                 &mut accepted_segments,
-            )?
+            )?;
+            let copied_rows = acknowledgements.iter().try_fold(0_u64, |total, ack| {
+                total
+                    .checked_add(ack.row_count)
+                    .ok_or_else(|| CdfError::data("Postgres duplicate row count overflowed"))
+            })?;
+            PayloadWriteOutcome {
+                copied_rows,
+                deleted_rows: 0,
+                acknowledgements,
+            }
         } else {
             let package_row_key_start = self.first_row_key.ok_or_else(|| {
                 CdfError::internal("Postgres package row-key allocator is not initialized")
@@ -281,7 +291,7 @@ impl CommitSession for PostgresCommitSession {
                 .client
                 .as_mut()
                 .ok_or_else(|| CdfError::internal("Postgres commit session has no transaction"))?;
-            copy_package_rows(
+            prepare_and_copy_package_rows(
                 client,
                 &self.plan,
                 segments,
@@ -292,8 +302,8 @@ impl CommitSession for PostgresCommitSession {
         };
         require_complete_package_segments(&accepted_segments, &self.expected_segments)?;
         self.accepted_segments = accepted_segments;
-        self.write_accepted_segments()?;
-        Ok(acknowledgements)
+        self.write_accepted_segments(outcome.copied_rows, outcome.deleted_rows)?;
+        Ok(outcome.acknowledgements)
     }
 
     fn finalize(self: Box<Self>) -> Result<Receipt> {
@@ -474,39 +484,36 @@ fn query_xid(client: &mut Client, plan: &PostgresLoadPlan) -> Result<String> {
         .map_err(|error| postgres_error("query Postgres xid", error))
 }
 
-fn create_stage_table(client: &mut Client, plan: &PostgresLoadPlan) -> Result<()> {
-    let statement = plan
+fn create_stage_table_if_required(client: &mut Client, plan: &PostgresLoadPlan) -> Result<()> {
+    let Some(statement) = plan
         .write_sql
         .iter()
         .find(|statement| statement.name == "create_stage")
-        .ok_or_else(|| CdfError::internal("Postgres write plan omits create_stage"))?;
+    else {
+        return Ok(());
+    };
     client
         .batch_execute(&statement.sql)
         .map_err(|error| postgres_error("create Postgres stage table", error))
 }
 
-fn apply_write_plan_after_stage(
+fn apply_write_plan_after_payload(
     client: &mut Client,
     plan: &PostgresLoadPlan,
+    copied_rows: u64,
+    deleted_rows: u64,
 ) -> Result<CommitCounts> {
-    let mut rows_deleted = Some(0_u64);
+    let rows_deleted = Some(deleted_rows);
     let mut rows_inserted = None;
     let mut rows_updated = Some(0_u64);
     let mut rows_written = 0_u64;
 
     for statement in &plan.write_sql {
         match statement.name.as_str() {
-            "create_stage" => {}
-            "truncate_target_for_replace" => {
-                rows_deleted = Some(count_target_rows(client, &plan.target)?);
-                client
-                    .batch_execute(&statement.sql)
-                    .map_err(|error| postgres_error("truncate Postgres target", error))?;
-            }
-            "append_from_stage" | "replace_from_stage" => {
-                let inserted = execute_count(client, statement)?;
-                rows_inserted = Some(inserted);
-                rows_written = inserted;
+            "create_stage" | "copy_stage_binary" | "truncate_target_for_replace" => {}
+            "copy_target_binary" => {
+                rows_inserted = Some(copied_rows);
+                rows_written = copied_rows;
             }
             "merge_duplicate_key_guard" => {
                 let duplicates = client.query(&statement.sql, &[]).map_err(|error| {
@@ -542,24 +549,29 @@ fn apply_write_plan_after_stage(
     })
 }
 
-fn copy_package_rows(
+struct PayloadWriteOutcome {
+    acknowledgements: Vec<SegmentAck>,
+    copied_rows: u64,
+    deleted_rows: u64,
+}
+
+fn prepare_and_copy_package_rows(
     client: &mut Client,
     plan: &PostgresLoadPlan,
     segments: cdf_kernel::CommitSegmentIterator,
     expected_segments: &BTreeMap<SegmentId, PostgresExpectedSegment>,
     accepted_segments: &mut BTreeSet<SegmentId>,
     package_row_key_start: i64,
-) -> Result<Vec<SegmentAck>> {
-    let mut columns = quoted_column_names(&plan.columns);
-    columns.extend(quoted_system_target_column_names());
-    let copy_sql = format!(
-        "COPY {} ({}) FROM STDIN WITH (FORMAT binary)",
-        plan.stage_table.quoted(),
-        columns.join(", ")
-    );
+) -> Result<PayloadWriteOutcome> {
+    let deleted_rows = prepare_payload_target(client, plan)?;
+    let copy = plan
+        .write_sql
+        .iter()
+        .find(|statement| statement.expectation == StatementExpectation::CopyBinary)
+        .ok_or_else(|| CdfError::internal("Postgres write plan omits binary COPY"))?;
     let writer = client
-        .copy_in(&copy_sql)
-        .map_err(|error| postgres_error("open Postgres COPY into stage", error))?;
+        .copy_in(&copy.sql)
+        .map_err(|error| postgres_error(format!("open Postgres {}", copy.name), error))?;
     let mut encoder = BinaryCopyEncoder::new(writer, plan.columns.len())?;
     let mut acknowledgements = Vec::with_capacity(expected_segments.len());
     let mut segment_ranges = Vec::with_capacity(expected_segments.len());
@@ -587,7 +599,7 @@ fn copy_package_rows(
     let (writer, encoded_rows) = encoder.finish()?;
     let copied = writer
         .finish()
-        .map_err(|error| postgres_error("finish Postgres COPY into stage", error))?;
+        .map_err(|error| postgres_error(format!("finish Postgres {}", copy.name), error))?;
     if copied != encoded_rows {
         return Err(CdfError::destination(format!(
             "Postgres binary COPY accepted {copied} rows but encoded {encoded_rows}"
@@ -606,7 +618,27 @@ fn copy_package_rows(
     for (segment_id, row_key_start, row_count) in segment_ranges {
         insert_segment_range(client, plan, &segment_id, row_key_start, row_count)?;
     }
-    Ok(acknowledgements)
+    Ok(PayloadWriteOutcome {
+        acknowledgements,
+        copied_rows: copied,
+        deleted_rows,
+    })
+}
+
+fn prepare_payload_target(client: &mut Client, plan: &PostgresLoadPlan) -> Result<u64> {
+    if plan.kernel.disposition != WriteDisposition::Replace {
+        return Ok(0);
+    }
+    let deleted_rows = count_target_rows(client, &plan.target)?;
+    let truncate = plan
+        .write_sql
+        .iter()
+        .find(|statement| statement.name == "truncate_target_for_replace")
+        .ok_or_else(|| CdfError::internal("Postgres replace plan omits target truncation"))?;
+    client
+        .batch_execute(&truncate.sql)
+        .map_err(|error| postgres_error("truncate Postgres target", error))?;
+    Ok(deleted_rows)
 }
 
 fn validate_package_segments(
@@ -739,24 +771,26 @@ fn count_target_rows(client: &mut Client, target: &PostgresTarget) -> Result<u64
 }
 
 fn count_merge_source_rows(client: &mut Client, plan: &PostgresLoadPlan) -> Result<u64> {
+    let stage_table = merge_stage_table(plan)?;
     let sql = match plan.dedup {
         MergeDedupPolicy::First | MergeDedupPolicy::Last => format!(
             "{}SELECT COUNT(*)::bigint FROM \"_cdf_dedup\"",
-            merge_dedup_cte(plan)
+            merge_dedup_cte(plan)?
         ),
         MergeDedupPolicy::Fail => {
-            format!("SELECT COUNT(*)::bigint FROM {}", plan.stage_table.quoted())
+            format!("SELECT COUNT(*)::bigint FROM {}", stage_table.quoted())
         }
     };
     query_count(client, &sql, "count Postgres merge source rows")
 }
 
 fn count_merge_updates(client: &mut Client, plan: &PostgresLoadPlan) -> Result<u64> {
+    let stage_table = merge_stage_table(plan)?;
     let (cte, source) = match plan.dedup {
         MergeDedupPolicy::First | MergeDedupPolicy::Last => {
-            (merge_dedup_cte(plan), "\"_cdf_dedup\"".to_owned())
+            (merge_dedup_cte(plan)?, "\"_cdf_dedup\"".to_owned())
         }
-        MergeDedupPolicy::Fail => (String::new(), plan.stage_table.quoted()),
+        MergeDedupPolicy::Fail => (String::new(), stage_table.quoted()),
     };
     let sql = format!(
         "{cte}SELECT COUNT(*)::bigint FROM {} AS \"target\" WHERE EXISTS (SELECT 1 FROM {source} AS \"stage\" WHERE {})",
@@ -774,21 +808,28 @@ fn query_count(client: &mut Client, sql: &str, context: &str) -> Result<u64> {
     u64::try_from(count).map_err(|_| CdfError::internal("Postgres count was negative"))
 }
 
-fn merge_dedup_cte(plan: &PostgresLoadPlan) -> String {
+fn merge_dedup_cte(plan: &PostgresLoadPlan) -> Result<String> {
+    let stage_table = merge_stage_table(plan)?;
     let conflict_columns = plan
         .merge_keys
         .iter()
         .map(PostgresIdentifier::quoted)
         .collect::<Vec<_>>()
         .join(", ");
-    format!(
+    Ok(format!(
         "WITH \"_cdf_ranked\" AS (\n  SELECT {}, ROW_NUMBER() OVER (PARTITION BY {} ORDER BY {}, {}) AS \"_cdf_rank\"\n  FROM {}\n), \"_cdf_dedup\" AS (\n  SELECT * FROM \"_cdf_ranked\" WHERE \"_cdf_rank\" = 1\n)\n",
         stage_select_list(&plan.columns),
         conflict_columns,
         order_expression(CDF_ROW_KEY_COLUMN, &plan.dedup),
         order_expression(CDF_LOADED_AT_COLUMN, &plan.dedup),
-        plan.stage_table.quoted()
-    )
+        stage_table.quoted()
+    ))
+}
+
+fn merge_stage_table(plan: &PostgresLoadPlan) -> Result<&PostgresIdentifier> {
+    plan.stage_table
+        .as_ref()
+        .ok_or_else(|| CdfError::internal("Postgres merge plan omits its stage table"))
 }
 
 fn merge_match_predicate(keys: &[PostgresIdentifier]) -> String {
