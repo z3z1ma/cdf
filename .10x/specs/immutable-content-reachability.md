@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-18
-Updated: 2026-07-18
+Updated: 2026-07-19
 
 # Immutable content reachability and reclamation
 
@@ -47,6 +47,8 @@ Claims MUST be renewed by the generic staging-lease supervisor, not by destinati
 
 Final destination binding MUST monotonically convert every still-needed claim into committed reachability evidence before releasing the claim. The committed root write MUST be fenced by destination commit authority and provider CAS/readback where the store permits it.
 
+Because an object store cannot atomically publish a destination manifest and update CDF's reachability index, settlement MUST use a prepared root intent. Preparing the root and its reverse membership index MUST be atomic and MUST occur before manifest publication. A prepared root protects its exact content identities from reclamation but is not committed evidence. After the destination manifest is durably published and verified, committing the prepared root and settling its claims MUST be one atomic reachability-store transition. Recovery MUST inspect the exact destination manifest named by the attempt record and either commit the matching prepared root or abort it; an unresolved prepared root fails safe by retaining content.
+
 After settlement:
 
 - The committed root, not the original attempt claim, protects retained content.
@@ -66,6 +68,8 @@ A content object generation may be deleted only when all of the following hold:
 3. No committed root within retention policy references that identity.
 4. The provider delete is conditional on the same object generation that was checked.
 5. A racing new claim or root write fails the cleanup CAS/readback proof or makes deletion ineligible.
+
+After proving eligibility, cleanup MUST atomically install a durable reclamation reservation for the exact content address and consulted claim/root generations. Claim installation and root preparation MUST reject an active reservation. Cleanup MUST remove the reservation only after an exact-generation delete is confirmed or after recording an inconclusive/failed delete; a crash with a reservation in place retains the object and blocks reuse until exact provider-state recovery resolves the reservation.
 
 Cleanup MUST prefer false negatives over false positives. If a provider cannot prove the checked generation at delete time, cleanup MUST retain the object and record an inconclusive candidate.
 

@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 use crate::{
     CdfError, CommittedContentRootId, ContentClaimAttemptId, ContentDigestAlgorithm,
     ContentDigestValue, ContentObjectKey, ContentProviderGeneration, ContentPublicationClaimId,
-    ContentReclamationCandidateSource, ContentRootShardRef, ContentStoreNamespace, DestinationId,
-    FencingToken, LeaseAuthorityDomainId, Result, TargetName,
+    ContentReclamationCandidateSource, ContentReclamationReservationId, ContentRootShardRef,
+    ContentStoreNamespace, DestinationId, FencingToken, LeaseAuthorityDomainId, Result, ScopeLease,
+    TargetName,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -74,6 +75,24 @@ impl ImmutableContentIdentity {
         }
         Ok(())
     }
+
+    /// Whether two observations name the same immutable content address and bytes.
+    /// Provider generation is deliberately excluded because it is learned only after publication.
+    pub fn same_content_object(&self, other: &Self) -> bool {
+        self.store_namespace == other.store_namespace
+            && self.object_key == other.object_key
+            && self.byte_count == other.byte_count
+            && self.digest == other.digest
+            && self.grouping == other.grouping
+    }
+
+    pub fn with_provider_generation(
+        mut self,
+        provider_generation: ContentProviderGeneration,
+    ) -> Self {
+        self.provider_generation = Some(provider_generation);
+        self
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,7 +116,7 @@ pub struct ContentPublicationClaim {
     pub target: TargetName,
     pub attempt_id: ContentClaimAttemptId,
     pub lease_authority_domain_id: LeaseAuthorityDomainId,
-    pub lease_fencing_token: FencingToken,
+    pub lease: ScopeLease,
     pub content: ImmutableContentIdentity,
     pub claim_id: ContentPublicationClaimId,
     pub claim_generation: u64,
@@ -111,7 +130,7 @@ impl ContentPublicationClaim {
         target: TargetName,
         attempt_id: ContentClaimAttemptId,
         lease_authority_domain_id: LeaseAuthorityDomainId,
-        lease_fencing_token: FencingToken,
+        lease: ScopeLease,
         content: ImmutableContentIdentity,
         claim_id: ContentPublicationClaimId,
         claim_generation: u64,
@@ -122,7 +141,7 @@ impl ContentPublicationClaim {
             target,
             attempt_id,
             lease_authority_domain_id,
-            lease_fencing_token,
+            lease,
             content,
             claim_id,
             claim_generation,
@@ -136,6 +155,11 @@ impl ContentPublicationClaim {
         if self.claim_generation == 0 {
             return Err(CdfError::contract(
                 "content publication claim generation must be positive",
+            ));
+        }
+        if self.lease.expires_at_ms <= self.lease.acquired_at_ms {
+            return Err(CdfError::contract(
+                "content publication claim lease expiry must follow acquisition",
             ));
         }
         self.content.validate()
@@ -211,6 +235,30 @@ impl CommittedContentRoot {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentRootState {
+    Prepared,
+    Committed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContentRootIntent {
+    pub root: CommittedContentRoot,
+    pub claim_ids: Vec<ContentPublicationClaimId>,
+    pub state: ContentRootState,
+}
+
+impl ContentRootIntent {
+    pub fn validate(&self) -> Result<()> {
+        self.root.validate()?;
+        reject_duplicates(
+            self.claim_ids.iter(),
+            "content root intent publication claim ids",
+        )
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentReclamationCandidate {
     pub content: ImmutableContentIdentity,
@@ -244,7 +292,7 @@ pub struct ExpiredContentPublicationClaim {
     pub claim_id: ContentPublicationClaimId,
     pub claim_generation: u64,
     pub lease_authority_domain_id: LeaseAuthorityDomainId,
-    pub lease_fencing_token: FencingToken,
+    pub lease: ScopeLease,
     pub cleanup_fencing_token: FencingToken,
     pub proven_at_ms: i64,
 }
@@ -254,7 +302,7 @@ impl ExpiredContentPublicationClaim {
         self.claim_id == claim.claim_id
             && self.claim_generation == claim.claim_generation
             && self.lease_authority_domain_id == claim.lease_authority_domain_id
-            && self.lease_fencing_token == claim.lease_fencing_token
+            && self.lease == claim.lease
     }
 }
 
@@ -270,6 +318,115 @@ pub struct ContentReclamationProof {
     pub candidate: ContentReclamationCandidate,
     pub expired_claims: Vec<ExpiredContentPublicationClaim>,
     pub checked_roots: Vec<CommittedContentRootCheck>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContentReclamationSnapshot {
+    pub candidate: ContentReclamationCandidate,
+    pub same_content_claims: Vec<ContentPublicationClaim>,
+    pub checked_roots: Vec<CommittedContentRootCheck>,
+}
+
+impl ContentReclamationSnapshot {
+    pub fn validate(&self) -> Result<()> {
+        self.candidate.validate()?;
+        let claims = self
+            .same_content_claims
+            .iter()
+            .map(|claim| &claim.claim_id)
+            .collect::<BTreeSet<_>>();
+        let consulted_claims = self
+            .candidate
+            .consulted_claims
+            .iter()
+            .collect::<BTreeSet<_>>();
+        if claims != consulted_claims {
+            return Err(CdfError::contract(
+                "content reclamation snapshot claims differ from its consulted index positions",
+            ));
+        }
+        let roots = self
+            .checked_roots
+            .iter()
+            .map(|root| &root.root_id)
+            .collect::<BTreeSet<_>>();
+        let consulted_roots = self
+            .candidate
+            .consulted_roots
+            .iter()
+            .collect::<BTreeSet<_>>();
+        if roots != consulted_roots {
+            return Err(CdfError::contract(
+                "content reclamation snapshot roots differ from its consulted index positions",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContentReclamationReservation {
+    pub reservation_id: ContentReclamationReservationId,
+    pub reservation_generation: u64,
+    pub proof: ContentReclamationProof,
+}
+
+impl ContentReclamationReservation {
+    pub fn validate(&self) -> Result<()> {
+        if self.reservation_generation == 0 {
+            return Err(CdfError::contract(
+                "content reclamation reservation generation must be positive",
+            ));
+        }
+        self.proof.candidate.validate()
+    }
+}
+
+/// Durable, bounded index for destination-neutral immutable-content lifetime authority.
+/// Implementations must make each method atomic with respect to other methods on the same store.
+pub trait ContentReachabilityStore: Send + Sync {
+    fn install_claim(&self, claim: ContentPublicationClaim) -> Result<ContentPublicationClaim>;
+
+    fn publish_claim(
+        &self,
+        claim_id: &ContentPublicationClaimId,
+        expected_generation: u64,
+        content: ImmutableContentIdentity,
+    ) -> Result<ContentPublicationClaim>;
+
+    fn release_claim(
+        &self,
+        claim_id: &ContentPublicationClaimId,
+        expected_generation: u64,
+    ) -> Result<()>;
+
+    fn prepare_root(&self, intent: ContentRootIntent) -> Result<ContentRootIntent>;
+
+    fn commit_root(
+        &self,
+        root_id: &CommittedContentRootId,
+        expected_generation: u64,
+    ) -> Result<CommittedContentRoot>;
+
+    fn abort_root(&self, root_id: &CommittedContentRootId, expected_generation: u64) -> Result<()>;
+
+    fn release_root(
+        &self,
+        root_id: &CommittedContentRootId,
+        expected_generation: u64,
+    ) -> Result<()>;
+
+    fn reclamation_candidates(&self, limit: u32) -> Result<Vec<ContentReclamationSnapshot>>;
+
+    fn reserve_reclamation(
+        &self,
+        proof: ContentReclamationProof,
+        reservation_id: ContentReclamationReservationId,
+    ) -> Result<Option<ContentReclamationReservation>>;
+
+    fn complete_reclamation(&self, reservation: &ContentReclamationReservation) -> Result<()>;
+
+    fn release_reclamation(&self, reservation: &ContentReclamationReservation) -> Result<()>;
 }
 
 impl ContentReclamationProof {
@@ -306,7 +463,7 @@ impl ContentReclamationProof {
 
         for claim in &same_identity_claims {
             claim.validate()?;
-            if claim.content != candidate.content {
+            if !claim.content.same_content_object(&candidate.content) {
                 return Err(CdfError::contract(
                     "content reclamation proof received a claim for a different content identity",
                 ));
@@ -400,7 +557,15 @@ mod tests {
             TargetName::new("target").unwrap(),
             ContentClaimAttemptId::new(format!("attempt-{name}")).unwrap(),
             LeaseAuthorityDomainId::new("lease-domain").unwrap(),
-            FencingToken::new(7).unwrap(),
+            ScopeLease {
+                scope: crate::ScopeKey::Stream {
+                    name: format!("claim-{name}"),
+                },
+                owner: crate::LeaseOwnerId::new(format!("owner-{name}")).unwrap(),
+                fencing_token: FencingToken::new(7).unwrap(),
+                acquired_at_ms: 1,
+                expires_at_ms: 9,
+            },
             id(),
             ContentPublicationClaimId::new(format!("claim-{name}")).unwrap(),
             1,
@@ -424,7 +589,7 @@ mod tests {
             claim_id: claim.claim_id.clone(),
             claim_generation: claim.claim_generation,
             lease_authority_domain_id: claim.lease_authority_domain_id.clone(),
-            lease_fencing_token: claim.lease_fencing_token,
+            lease: claim.lease.clone(),
             cleanup_fencing_token: FencingToken::new(8).unwrap(),
             proven_at_ms: 10,
         }

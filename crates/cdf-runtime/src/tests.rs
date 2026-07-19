@@ -2268,7 +2268,7 @@ fn staging_lease_builds_fenced_content_publication_claim() {
     assert_eq!(claim.target, lease.identity.target);
     assert_eq!(claim.attempt_id.as_str(), attempt.as_str());
     assert_eq!(claim.lease_authority_domain_id, lease.authority_domain_id);
-    assert_eq!(claim.lease_fencing_token, lease.scope_lease.fencing_token);
+    assert_eq!(claim.lease, lease.scope_lease);
     assert_eq!(claim.content, content);
 }
 

@@ -52,6 +52,7 @@ string_id!(ContentObjectKey);
 string_id!(ContentProviderGeneration);
 string_id!(ContentPublicationClaimId);
 string_id!(ContentReclamationCandidateSource);
+string_id!(ContentReclamationReservationId);
 string_id!(ContentRootShardRef);
 string_id!(ContentStoreNamespace);
 string_id!(DiscoveryManifestHash);

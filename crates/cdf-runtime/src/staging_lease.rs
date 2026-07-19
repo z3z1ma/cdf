@@ -93,7 +93,7 @@ impl StagingLease {
             self.identity.target.clone(),
             ContentClaimAttemptId::new(self.identity.attempt_id.as_str())?,
             self.authority_domain_id.clone(),
-            self.scope_lease.fencing_token,
+            self.scope_lease.clone(),
             content,
             claim_id,
             claim_generation,

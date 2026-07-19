@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-15
-Updated: 2026-07-18
+Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md
 Depends-On: .10x/tickets/done/2026-07-14-p3-d8-parquet-staged-parallel-ingress.md
 
@@ -43,6 +43,7 @@ Specify and implement one destination-neutral authority for reclaiming immutable
 - 2026-07-15 ownership: D8 eliminated whole-run attempt staging and final-copy amplification by immediately publishing create-or-verify immutable group objects. That architecture makes shared object lifetime independent of one attempt lease. This ticket owns the required generic reachability/claim protocol; D8 must not reintroduce Parquet-specific cleanup to hide the gap.
 - 2026-07-18 shaping: Added `.10x/specs/immutable-content-reachability.md`, which defines destination-neutral content identity, publication claim, committed root, reclamation candidate, settlement, and cleanup semantics. The ticket is now behaviorally shaped; implementation still remains open and must not begin by adding a Parquet-owned cleanup loop or heartbeat.
 - 2026-07-18 implementation slice: Added destination-neutral kernel records for immutable content identity, publication claims, committed roots, reclamation candidates, expired-claim evidence, root checks, and reclamation proofs. Added a runtime `StagingLease::content_publication_claim` helper so adapters derive claims from the existing fenced lease generation instead of inventing destination-local liveness metadata. The proof validator rejects deletion without exact provider-generation evidence, rejects live same-content claims without matching expired-lease proof, rejects other concurrent same-content live claims, and rejects any consulted committed root that still references the candidate. This is the generic boundary needed by Parquet/object-store enrollment, but D9 remains active until storage/index enrollment and destination conformance exist.
+- 2026-07-19 durable-index slice: Added the current-only `ContentReachabilityStore` protocol and SQLite v1 implementation. Claims retain their complete source `ScopeLease`, so cleanup can re-prove the exact lease generation rather than guessing from an attempt id and token. The indexed store atomically installs/plans/publishes/releases claims, prepares roots before destination-manifest publication, commits roots and settles claims in one transaction, and emits bounded candidates from reverse indexes rather than scanning objects or manifests. An atomic reclamation reservation blocks racing claims/root intents until deletion is completed or explicitly released. Prepared roots protect the manifest-publication crash window; the governing spec now records that monotonic settlement explicitly. No destination code or hot-path behavior changed in this slice.
 
 ## Blockers
 
@@ -55,6 +56,10 @@ None. The focused claim/root/reclamation protocol is now governed by `.10x/specs
   - `CARGO_BUILD_JOBS=12 cargo test -p cdf-runtime staging_lease_builds_fenced_content_publication_claim --locked -j 12 -- --nocapture` — passed, 1 passed. Proves runtime-owned `StagingLease` generations can construct content publication claims without destination-specific heartbeat or liveness fields.
   - `cargo fmt --all -- --check` — passed.
   - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-kernel -p cdf-runtime --all-targets --locked -j 12 -- -D warnings` — passed.
+- 2026-07-19 durable index:
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-state-sqlite content_reachability --locked -j 12` — passed, 2 passed. Proves prepared and committed roots both protect content, retained-root release exposes a bounded candidate, and an atomic reclamation reservation rejects a racing same-address publisher until released.
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-runtime staging_lease_builds_fenced_content_publication_claim --locked -j 12` — passed, 1 passed after strengthening the record to retain the complete `ScopeLease`.
+  - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-kernel -p cdf-state-sqlite -p cdf-runtime --all-targets --locked -j 12 -- -D warnings` — passed.
 
 ## Review
 
