@@ -182,6 +182,10 @@ impl PortablePartitionBinding {
                 "reconstructed partition plan does not match portable task authority",
             ));
         }
+        validate_portable_scope(&plan.scope)?;
+        for value in plan.metadata.values() {
+            validate_no_absolute_coordinator_path(value)?;
+        }
         validate_portable_partition_position(plan.planned_position.as_ref())?;
         validate_portable_partition_position(plan.start_position.as_ref())
     }
@@ -320,9 +324,9 @@ impl WorkerCapabilityRequirements {
         let mut lanes = BTreeSet::new();
         for lane in &self.required_blocking_lanes {
             lane.validate()?;
-            if lane.binding == BlockingLaneBinding::RuntimeResolvedRequired {
+            if lane.binding == BlockingLaneBinding::RuntimeResolved {
                 return Err(CdfError::contract(format!(
-                    "portable worker requirement `{}` is still awaiting runtime resolution",
+                    "portable worker requirement `{}` contains a host-resolved lane",
                     lane.lane_id
                 )));
             }
@@ -331,6 +335,15 @@ impl WorkerCapabilityRequirements {
                     "portable worker blocking-lane requirements must be unique",
                 ));
             }
+        }
+        if self
+            .required_blocking_lanes
+            .windows(2)
+            .any(|pair| pair[0].lane_id >= pair[1].lane_id)
+        {
+            return Err(CdfError::contract(
+                "portable worker blocking-lane requirements must be sorted by id",
+            ));
         }
         validate_sorted_unique_tokens("portable worker service", &self.services)
     }
@@ -364,13 +377,7 @@ impl WorkerCapabilityRequirements {
                         required.lane_id
                     ))
                 })?;
-            if available.maximum_concurrency < required.maximum_concurrency
-                || available.cpu_slot_cost != required.cpu_slot_cost
-                || available.native_internal_parallelism != required.native_internal_parallelism
-                || available.affinity != required.affinity
-                || available.interruption != required.interruption
-                || available.binding != required.binding
-            {
+            if available.validate_tightening_of(required).is_err() {
                 return Err(CdfError::contract(format!(
                     "execution host blocking lane `{}` does not satisfy the portable task requirement",
                     required.lane_id
@@ -1256,14 +1263,7 @@ fn validate_portable_partition_position(position: Option<&SourcePosition>) -> Re
     match position {
         SourcePosition::FileManifest(manifest) => {
             for file in &manifest.files {
-                let path = file.path.as_str();
-                let windows_absolute = path.as_bytes().get(1) == Some(&b':')
-                    && path.as_bytes().first().is_some_and(u8::is_ascii_alphabetic);
-                if path.starts_with('/') || path.starts_with("file://") || windows_absolute {
-                    return Err(CdfError::contract(
-                        "portable partition plan cannot contain an absolute coordinator file path",
-                    ));
-                }
+                validate_no_absolute_coordinator_path(&file.path)?;
             }
         }
         SourcePosition::Composite(composite) => {
@@ -1272,6 +1272,33 @@ fn validate_portable_partition_position(position: Option<&SourcePosition>) -> Re
             }
         }
         _ => {}
+    }
+    Ok(())
+}
+
+fn validate_portable_scope(scope: &ScopeKey) -> Result<()> {
+    match scope {
+        ScopeKey::File { path } => validate_no_absolute_coordinator_path(path),
+        ScopeKey::Composite { parts } => {
+            for part in parts {
+                validate_portable_scope(part)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_no_absolute_coordinator_path(value: &str) -> Result<()> {
+    let windows_absolute = value.as_bytes().get(1) == Some(&b':')
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic);
+    if value.starts_with('/') || value.starts_with("file://") || windows_absolute {
+        return Err(CdfError::contract(
+            "portable partition plan cannot contain an absolute coordinator file path",
+        ));
     }
     Ok(())
 }
@@ -1604,6 +1631,55 @@ mod tests {
                 .unwrap_err()
                 .message
                 .contains("missing required service")
+        );
+    }
+
+    #[test]
+    fn runtime_resolved_lane_stays_portable_until_worker_admission() {
+        let mut task = task();
+        let portable_lane = BlockingLaneSpec {
+            lane_id: "python".to_owned(),
+            binding: BlockingLaneBinding::RuntimeResolvedRequired,
+            maximum_concurrency: 8,
+            cpu_slot_cost: 1,
+            native_internal_parallelism: 1,
+            affinity: crate::LaneAffinity::Shared,
+            interruption: crate::InterruptionSafety::CooperativeOnly,
+        };
+        task.capabilities.required_blocking_lanes = vec![portable_lane.clone()];
+        task.task_sha256 = task.compute_hash().unwrap();
+        task.validate().unwrap();
+
+        let resolved_lane = BlockingLaneSpec {
+            binding: BlockingLaneBinding::RuntimeResolved,
+            maximum_concurrency: 1,
+            ..portable_lane
+        };
+        let worker = WorkerRuntimeCapabilities {
+            host: ExecutionHostCapabilities {
+                logical_cpu_slots: 4,
+                io_workers: 2,
+                blocking_lanes: vec![resolved_lane],
+            },
+            memory_bytes: 512 * 1024 * 1024,
+            disk_bytes: 4 * 1024 * 1024 * 1024,
+            services: vec![
+                "artifact-reader-v1".to_owned(),
+                "source-registry-v1".to_owned(),
+            ],
+        };
+        task.validate_for_worker(&compatibility(), &worker).unwrap();
+
+        let mut host_bound_task = task;
+        host_bound_task.capabilities.required_blocking_lanes[0].binding =
+            BlockingLaneBinding::RuntimeResolved;
+        host_bound_task.task_sha256 = host_bound_task.compute_hash().unwrap();
+        assert!(
+            host_bound_task
+                .validate()
+                .unwrap_err()
+                .message
+                .contains("host-resolved")
         );
     }
 
