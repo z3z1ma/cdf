@@ -197,6 +197,7 @@ pub enum ReferenceWorkload {
         path: PathBuf,
         batch_rows: usize,
         has_header: bool,
+        infer_rows: usize,
     },
     ArrowNdjson {
         path: PathBuf,
@@ -422,11 +423,18 @@ pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurem
             path,
             batch_rows,
             has_header,
+            infer_rows,
         } => {
             require_batch(*batch_rows)?;
+            if *infer_rows == 0 {
+                return Err(bench_error("CSV reference infer_rows must be positive"));
+            }
             let physical_bytes = fs::metadata(path)?.len();
             let format = CsvFormat::default().with_header(*has_header);
-            let (schema, _) = format.infer_schema(fs::File::open(path)?, None)?;
+            // The CDF comparison path decodes against an already-pinned schema. Keep the
+            // reference's inference bounded as discovery would be, rather than charging it a
+            // hidden full-file pass before the measured decode.
+            let (schema, _) = format.infer_schema(fs::File::open(path)?, Some(*infer_rows))?;
             let reader = CsvReaderBuilder::new(Arc::new(schema))
                 .with_format(format)
                 .with_batch_size(*batch_rows)
