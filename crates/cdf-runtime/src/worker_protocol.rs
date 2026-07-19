@@ -888,10 +888,24 @@ pub struct VerifiedWorkerArtifactFacts {
 impl VerifiedWorkerArtifactFacts {
     pub fn new(reference: WorkerArtifactReference, row_count: Option<u64>) -> Result<Self> {
         reference.validate()?;
-        if reference.kind == WorkerArtifactKind::CanonicalSegment && row_count == Some(0) {
-            return Err(CdfError::contract(
-                "verified canonical segment must contain at least one row",
-            ));
+        match (reference.kind, row_count) {
+            (WorkerArtifactKind::CanonicalSegment, None | Some(0)) => {
+                return Err(CdfError::contract(
+                    "verified canonical segment must contain an observed nonzero row count",
+                ));
+            }
+            (WorkerArtifactKind::Quarantine, None) => {
+                return Err(CdfError::contract(
+                    "verified quarantine artifact must contain an observed row count",
+                ));
+            }
+            (WorkerArtifactKind::CanonicalSegment | WorkerArtifactKind::Quarantine, Some(_)) => {}
+            (_, Some(_)) => {
+                return Err(CdfError::contract(
+                    "verified row count is only valid for canonical segment or quarantine artifacts",
+                ));
+            }
+            (_, None) => {}
         }
         Ok(Self {
             reference,
@@ -1406,6 +1420,12 @@ impl<'a> WorkerArtifactWriteSession<'a> {
             ));
         }
 
+        // Reserve authority before mutation and never roll it back: a provider error can be
+        // ambiguous after bytes reached external storage. Retrying consumes a new object/key under
+        // the remaining permit instead of laundering writes through an uncharged error path.
+        self.artifact_count = next_count;
+        self.artifact_bytes = next_bytes;
+        self.artifacts.insert(receipt.artifact.clone());
         let facts = sink.write_authorized(WorkerArtifactWriteAuthorization {
             permit: self.permit,
             receipt,
@@ -1418,9 +1438,6 @@ impl<'a> WorkerArtifactWriteSession<'a> {
                 "written canonical segment row count does not match its receipt",
             ));
         }
-        self.artifact_count = next_count;
-        self.artifact_bytes = next_bytes;
-        self.artifacts.insert(receipt.artifact.clone());
         Ok(facts)
     }
 }
@@ -1962,7 +1979,11 @@ impl PartitionWorkerResult {
                 }
                 WorkerArtifactRole::Quarantine => {
                     verified_quarantined_rows = verified_quarantined_rows
-                        .checked_add(facts.row_count().unwrap_or(0))
+                        .checked_add(facts.row_count().ok_or_else(|| {
+                            CdfError::contract(
+                                "verified quarantine artifact is missing an observed row count",
+                            )
+                        })?)
                         .ok_or_else(|| {
                             CdfError::contract("verified worker quarantine rows overflowed u64")
                         })?;

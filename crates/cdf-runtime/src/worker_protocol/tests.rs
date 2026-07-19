@@ -409,6 +409,7 @@ struct Fixture {
 #[derive(Default)]
 struct CountingArtifactSink {
     writes: usize,
+    fail_after_write: bool,
 }
 
 impl WorkerAuthorizedArtifactSink for CountingArtifactSink {
@@ -417,6 +418,9 @@ impl WorkerAuthorizedArtifactSink for CountingArtifactSink {
         authorization: WorkerArtifactWriteAuthorization<'_>,
     ) -> Result<VerifiedWorkerArtifactFacts> {
         self.writes += 1;
+        if self.fail_after_write {
+            return Err(CdfError::transient("mock ambiguous provider failure"));
+        }
         let receipt = authorization.receipt();
         let row_count = match receipt.role {
             WorkerArtifactRole::CanonicalSegment { row_count, .. } => Some(row_count),
@@ -860,6 +864,41 @@ fn write_permit_is_checked_before_every_object_write() {
     );
     assert_eq!(sink.writes, 1, "rejected write must not reach the sink");
 
+    let mut ambiguous_sink = CountingArtifactSink {
+        writes: 0,
+        fail_after_write: true,
+    };
+    let mut ambiguous_session =
+        WorkerArtifactWriteSession::new(&fixture.task, &attempt, &lease, 2_000).unwrap();
+    assert!(
+        ambiguous_session
+            .write(
+                &receipt,
+                &WorkerArtifactObjectState::Absent,
+                2_000,
+                &mut ambiguous_sink,
+            )
+            .unwrap_err()
+            .message
+            .contains("ambiguous")
+    );
+    assert!(
+        ambiguous_session
+            .write(
+                &second,
+                &WorkerArtifactObjectState::Absent,
+                2_000,
+                &mut ambiguous_sink,
+            )
+            .unwrap_err()
+            .message
+            .contains("cumulative")
+    );
+    assert_eq!(
+        ambiguous_sink.writes, 1,
+        "ambiguous provider failure must consume permit authority"
+    );
+
     let stale = WorkerLeaseState {
         fencing_token: FencingToken::new(5).unwrap(),
         ..fixture.lease()
@@ -931,6 +970,24 @@ fn semantically_rehashed_bad_result_still_fails_admission() {
             .unwrap_err()
             .message
             .contains("position/schema authority")
+    );
+}
+
+#[test]
+fn quarantine_artifacts_require_independently_observed_rows() {
+    let reference = WorkerArtifactReference {
+        kind: WorkerArtifactKind::Quarantine,
+        store_namespace: ContentStoreNamespace::new("worker-fixtures").unwrap(),
+        object_key: ContentObjectKey::new("attempts/attempt-4/quarantine.arrow").unwrap(),
+        byte_count: 1024,
+        content_sha256: hash(72),
+        provider_generation: Some(ContentProviderGeneration::new("generation-7").unwrap()),
+    };
+    assert!(
+        VerifiedWorkerArtifactFacts::new(reference, None)
+            .unwrap_err()
+            .message
+            .contains("observed row count")
     );
 }
 
