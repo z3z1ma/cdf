@@ -728,7 +728,13 @@ dependencies = [
 name = "cdf-bench-measure"
 version = "0.1.0"
 dependencies = [
+ "arrow-array 59.1.0",
+ "arrow-buffer 59.1.0",
+ "arrow-schema 59.1.0",
  "cdf-bench-core",
+ "cdf-contract",
+ "cdf-kernel",
+ "serde",
  "serde_json",
 ]
 
@@ -737,7 +743,6 @@ name = "cdf-benchmarks"
 version = "0.1.0"
 dependencies = [
  "arrow-array 59.1.0",
- "arrow-buffer 59.1.0",
  "arrow-csv",
  "arrow-ipc",
  "arrow-json",

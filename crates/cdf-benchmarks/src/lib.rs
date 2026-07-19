@@ -11,7 +11,6 @@ mod profiling;
 mod references;
 mod resource;
 mod runners;
-mod validation;
 
 pub use baseline::{PreoptimizationBaselineConfig, run_preoptimization_baseline};
 pub use catalog::{FixtureCatalog, FixtureSpec, fixture_catalog, fixture_spec};
@@ -37,8 +36,4 @@ pub use runners::{
     PreparedFileFormat, PreparedFilePackageRun, PreparedFilePackageWorkload,
     StartupControlWorkload, run_case, run_prepared_file_to_destination,
     run_prepared_file_to_package, run_startup_control_workload,
-};
-pub use validation::{
-    ValidationEnvelopeConfig, ValidationEnvelopeReport, run_validation_envelope,
-    validation_envelope_passes,
 };

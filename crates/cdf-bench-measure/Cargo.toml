@@ -11,5 +11,11 @@ name = "cdf-p3-measure"
 path = "src/main.rs"
 
 [dependencies]
+arrow-array = "59.1.0"
+arrow-buffer = "59.1.0"
+arrow-schema = "59.1.0"
 cdf-bench-core = { path = "../cdf-bench-core" }
+cdf-contract = { path = "../cdf-contract" }
+cdf-kernel = { path = "../cdf-kernel" }
+serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"

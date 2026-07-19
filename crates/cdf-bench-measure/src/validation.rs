@@ -15,7 +15,7 @@ use cdf_contract::{
 use cdf_kernel::TrustLevel;
 use serde::{Deserialize, Serialize};
 
-use crate::{BenchResult, HostFingerprint, bench_error};
+use cdf_bench_core::{BenchResult, HostFingerprint, bench_error};
 
 pub const VALIDATION_ENVELOPE_SCHEMA_VERSION: u16 = 1;
 pub const VALIDATION_TARGET_BYTES_PER_SECOND: u64 = 1_000_000_000;
@@ -884,7 +884,7 @@ fn prepare_selected_evidence(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Capability;
+    use cdf_bench_core::{Capability, OsFingerprint};
 
     fn host() -> HostFingerprint {
         HostFingerprint {
@@ -917,7 +917,7 @@ mod tests {
                 method: "fixture".to_owned(),
                 provider_version: "fixture-v1".to_owned(),
             },
-            os: crate::OsFingerprint {
+            os: OsFingerprint {
                 family: "test".to_owned(),
                 version: "test".to_owned(),
                 kernel: None,

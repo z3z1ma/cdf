@@ -54,7 +54,7 @@ jobs:
       - name: Vector validation envelope
         run: |
           mkdir -p target/cdf-benchmarks
-          cargo run --release -p cdf-benchmarks --bin cdf-p3-lab --locked -- \
+          cargo run --release -p cdf-bench-measure --bin cdf-p3-measure --locked -- \
             validation-envelope 5 8388608 \
             > target/cdf-benchmarks/validation-envelope.json
 

@@ -5,6 +5,10 @@ use cdf_bench_core::{
     canonical_json_bytes, host_class, run_cdf_command_workload,
 };
 
+mod validation;
+
+use validation::{ValidationEnvelopeConfig, run_validation_envelope, validation_envelope_passes};
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("cdf-p3-measure: {error}");
@@ -32,8 +36,22 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
         [command] if command == "host-class" => {
             write_stdout(host_class(&provider().fingerprint()?)?.as_bytes())
         }
+        [command, samples, target_rows] if command == "validation-envelope" => {
+            let report = run_validation_envelope(
+                provider().fingerprint()?,
+                ValidationEnvelopeConfig {
+                    samples: samples.parse()?,
+                    target_rows_per_sample: target_rows.parse()?,
+                },
+            )?;
+            write_stdout(&canonical_json_bytes(&report)?)?;
+            if !validation_envelope_passes(&report) {
+                std::process::exit(3);
+            }
+            Ok(())
+        }
         _ => Err(format!(
-            "usage: {} cdf-command-worker REQUEST.json | run-cell REQUEST.json | host | host-class",
+            "usage: {} cdf-command-worker REQUEST.json | run-cell REQUEST.json | host | host-class | validation-envelope SAMPLES TARGET_ROWS",
             executable_name()
         )
         .into()),

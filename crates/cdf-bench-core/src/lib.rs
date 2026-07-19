@@ -239,7 +239,7 @@ fn write_canonical_value(value: &Value, output: &mut Vec<u8>) -> BenchResult<()>
         Value::Object(map) => {
             output.push(b'{');
             let mut entries = map.iter().collect::<Vec<_>>();
-            entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+            entries.sort_unstable_by_key(|(key, _)| *key);
             for (index, (key, value)) in entries.into_iter().enumerate() {
                 if index > 0 {
                     output.push(b',');

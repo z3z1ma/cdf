@@ -328,7 +328,7 @@ Run timing only in the dedicated scheduled/manual performance tier, never as a p
 ```bash
 CDF_BENCH_SUITE=smoke cargo bench -p cdf-benchmarks --bench baseline --locked
 CDF_BENCH_SUITE=full cargo bench -p cdf-benchmarks --bench baseline --locked
-cargo run --release -p cdf-benchmarks --bin cdf-p3-lab --locked -- \
+cargo run --release -p cdf-bench-measure --bin cdf-p3-measure --locked -- \
   validation-envelope 5 8388608 > target/cdf-benchmarks/validation-envelope.json
 CDF_A5_FUSION_BENCH_ITERATIONS=200 cargo test --release -p cdf-engine \
   fused_transform_hot_path_benchmark --lib --locked -- --ignored --nocapture
