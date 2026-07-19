@@ -4,12 +4,13 @@ use std::{
     hint::black_box,
     io::{BufReader, BufWriter, Read, Write},
     mem::{ManuallyDrop, align_of, size_of},
-    os::raw::c_char,
+    os::raw::{c_char, c_void},
+    panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
     ptr,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -21,6 +22,7 @@ use arrow_array::{
 use arrow_csv::reader::{Format as CsvFormat, ReaderBuilder as CsvReaderBuilder};
 use arrow_ipc::{
     CompressionType as IpcCompressionType,
+    reader::FileReader as IpcFileReader,
     writer::{FileWriter as IpcFileWriter, IpcWriteOptions},
 };
 use arrow_json::reader::{ReaderBuilder as JsonReaderBuilder, infer_json_schema};
@@ -247,6 +249,15 @@ pub enum ReferenceWorkload {
         #[serde(default)]
         row_key_not_null: bool,
         checkpoint: bool,
+    },
+    DuckDbArrowIpcTableFunctionIngest {
+        paths: Vec<PathBuf>,
+        output: PathBuf,
+        row_key_start: u64,
+        checkpoint: bool,
+        duckdb_threads: Option<usize>,
+        duckdb_memory_limit_bytes: Option<u64>,
+        duckdb_temp_directory_budget_bytes: Option<u64>,
     },
     DuckDbArrowIpcHandoffIngest {
         output: PathBuf,
@@ -527,6 +538,23 @@ pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurem
             *row_key_start,
             *row_key_not_null,
             *checkpoint,
+        ),
+        ReferenceWorkload::DuckDbArrowIpcTableFunctionIngest {
+            paths,
+            output,
+            row_key_start,
+            checkpoint,
+            duckdb_threads,
+            duckdb_memory_limit_bytes,
+            duckdb_temp_directory_budget_bytes,
+        } => run_duckdb_arrow_ipc_table_function_ingest(
+            paths,
+            output,
+            *row_key_start,
+            *checkpoint,
+            *duckdb_threads,
+            *duckdb_memory_limit_bytes,
+            *duckdb_temp_directory_budget_bytes,
         ),
         ReferenceWorkload::DuckDbArrowIpcHandoffIngest {
             output,
@@ -815,7 +843,7 @@ fn run_duckdb_arrow_stream_scan_ingest(
     let reader = TlcArrowBatchReader::new(rows, batch_rows, include_row_key, logical_bytes.clone());
     let mut stream = FFI_ArrowArrayStream::new(Box::new(reader));
     let mut connection = RawDuckDbConnection::open(output)?;
-    configure_duckdb_arrow_stream_scan(
+    configure_duckdb_parallel_scan(
         &mut connection,
         duckdb_threads,
         duckdb_memory_limit_bytes,
@@ -944,6 +972,115 @@ fn run_duckdb_arrow_ipc_existing_read(
         physical_input_bytes,
         physical_input_bytes.saturating_add(duckdb_database_bytes(output)?),
     )
+}
+
+fn run_duckdb_arrow_ipc_table_function_ingest(
+    paths: &[PathBuf],
+    output: &Path,
+    row_key_start: u64,
+    checkpoint: bool,
+    duckdb_threads: Option<usize>,
+    duckdb_memory_limit_bytes: Option<u64>,
+    duckdb_temp_directory_budget_bytes: Option<u64>,
+) -> BenchResult<WorkerMeasurement> {
+    if paths.is_empty() {
+        return Err(bench_error(
+            "DuckDB Arrow IPC table-function reference requires at least one input path",
+        ));
+    }
+    let physical_input_bytes = input_bytes(paths)?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    remove_if_exists(output)?;
+    remove_if_exists(&duckdb_wal_path(output))?;
+
+    let first_reader = IpcFileReader::try_new_buffered(fs::File::open(&paths[0])?, None)?;
+    let schema = first_reader.schema();
+    drop(first_reader);
+    cdf_package_contract::logical_output_schema(schema.as_ref())?;
+    let resolved_threads = match duckdb_threads {
+        Some(0) => {
+            return Err(bench_error(
+                "DuckDB Arrow IPC table-function duckdb_threads must be positive",
+            ));
+        }
+        Some(threads) => threads,
+        None => std::thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1),
+    };
+
+    let mut connection = RawDuckDbConnection::open(output)?;
+    configure_duckdb_parallel_scan(
+        &mut connection,
+        Some(i64::try_from(resolved_threads)?),
+        duckdb_memory_limit_bytes,
+        duckdb_temp_directory_budget_bytes,
+    )?;
+    let telemetry = register_duckdb_arrow_ipc_table_function(
+        connection.handle(),
+        "cdf_arrow_ipc_scan",
+        paths,
+        schema,
+        resolved_threads,
+    )?;
+    connection.query(&format!(
+        "CREATE TABLE arrow_ipc_table_function AS \
+         SELECT * EXCLUDE ({}), \
+         CAST({row_key_start} + {} AS UBIGINT) AS {} \
+         FROM cdf_arrow_ipc_scan()",
+        duckdb_ident(cdf_package_contract::CDF_PACKAGE_ROW_ORD_FIELD),
+        duckdb_ident(cdf_package_contract::CDF_PACKAGE_ROW_ORD_FIELD),
+        duckdb_ident(cdf_dest_duckdb::CDF_ROW_KEY_COLUMN),
+    ))?;
+    if checkpoint {
+        connection.query("CHECKPOINT")?;
+    }
+    let logical_bytes = telemetry.logical_bytes.load(Ordering::Relaxed);
+    let decoded_rows = telemetry.rows.load(Ordering::Relaxed);
+    drop(connection);
+
+    let connection = duckdb::Connection::open(output)?;
+    let (rows, minimum, maximum) = connection.query_row(
+        "SELECT count(*), min(_cdf_row_key), max(_cdf_row_key) \
+         FROM arrow_ipc_table_function",
+        [],
+        |row| {
+            Ok((
+                row.get::<_, u64>(0)?,
+                row.get::<_, Option<u64>>(1)?,
+                row.get::<_, Option<u64>>(2)?,
+            ))
+        },
+    )?;
+    if rows != decoded_rows {
+        return Err(bench_error(format!(
+            "DuckDB Arrow IPC table-function row count mismatch: decoded {decoded_rows}, materialized {rows}"
+        )));
+    }
+    let expected_maximum = rows
+        .checked_sub(1)
+        .map(|last| {
+            row_key_start
+                .checked_add(last)
+                .ok_or_else(|| bench_error("DuckDB Arrow IPC table-function row key overflow"))
+        })
+        .transpose()?;
+    if minimum != rows.checked_sub(1).map(|_| row_key_start) || maximum != expected_maximum {
+        return Err(bench_error(format!(
+            "DuckDB Arrow IPC table-function row-key verification failed: min={minimum:?}, max={maximum:?}, expected start={row_key_start}, expected max={expected_maximum:?}, rows={rows}"
+        )));
+    }
+
+    Ok(WorkerMeasurement {
+        timed_wall_time_ns: None,
+        rows,
+        logical_bytes,
+        physical_bytes: physical_input_bytes.saturating_add(duckdb_database_bytes(output)?),
+        spill_bytes: 0,
+        phases: Vec::new(),
+    })
 }
 
 fn run_duckdb_arrow_ipc_handoff_ingest(
@@ -1592,6 +1729,10 @@ impl DuckDbArrowConvertedSchema {
     fn handle(&mut self) -> duckdb::ffi::duckdb_arrow_converted_schema {
         self.schema
     }
+
+    fn shared_handle(&self) -> duckdb::ffi::duckdb_arrow_converted_schema {
+        self.schema
+    }
 }
 
 impl Drop for DuckDbArrowConvertedSchema {
@@ -1725,7 +1866,7 @@ fn append_arrow_batch_as_duckdb_data_chunk(
     }
 }
 
-fn configure_duckdb_arrow_stream_scan(
+fn configure_duckdb_parallel_scan(
     connection: &mut RawDuckDbConnection,
     threads: Option<i64>,
     memory_limit_bytes: Option<u64>,
@@ -1734,7 +1875,7 @@ fn configure_duckdb_arrow_stream_scan(
     if let Some(threads) = threads {
         if threads <= 0 {
             return Err(bench_error(
-                "DuckDB Arrow stream-scan reference duckdb_threads must be positive",
+                "DuckDB parallel-scan reference duckdb_threads must be positive",
             ));
         }
         connection.query(&format!("SET threads = {threads}"))?;
@@ -1742,7 +1883,7 @@ fn configure_duckdb_arrow_stream_scan(
     if let Some(bytes) = memory_limit_bytes {
         if bytes == 0 {
             return Err(bench_error(
-                "DuckDB Arrow stream-scan reference duckdb_memory_limit_bytes must be positive",
+                "DuckDB parallel-scan reference duckdb_memory_limit_bytes must be positive",
             ));
         }
         connection.query(&format!("SET memory_limit = '{}B'", bytes))?;
@@ -1750,12 +1891,518 @@ fn configure_duckdb_arrow_stream_scan(
     if let Some(bytes) = temp_directory_budget_bytes {
         if bytes == 0 {
             return Err(bench_error(
-                "DuckDB Arrow stream-scan reference duckdb_temp_directory_budget_bytes must be positive",
+                "DuckDB parallel-scan reference duckdb_temp_directory_budget_bytes must be positive",
             ));
         }
         connection.query(&format!("SET max_temp_directory_size = '{}B'", bytes))?;
     }
     connection.query("SET preserve_insertion_order = false")
+}
+
+struct DuckDbIpcTableFunctionTelemetry {
+    rows: AtomicU64,
+    logical_bytes: AtomicU64,
+}
+
+struct DuckDbIpcTableFunctionContext {
+    paths: Vec<PathBuf>,
+    schema: SchemaRef,
+    connection: duckdb::ffi::duckdb_connection,
+    converted_schema: DuckDbArrowConvertedSchema,
+    next_path: AtomicUsize,
+    max_threads: usize,
+    telemetry: Arc<DuckDbIpcTableFunctionTelemetry>,
+}
+
+struct DuckDbIpcTableFunctionLocalState {
+    reader: Option<IpcFileReader<BufReader<fs::File>>>,
+    batch: Option<arrow_array::RecordBatch>,
+    batch_offset: usize,
+}
+
+impl DuckDbIpcTableFunctionLocalState {
+    fn new() -> Self {
+        Self {
+            reader: None,
+            batch: None,
+            batch_offset: 0,
+        }
+    }
+
+    fn next_slice(
+        &mut self,
+        context: &DuckDbIpcTableFunctionContext,
+        vector_rows: usize,
+    ) -> BenchResult<Option<arrow_array::RecordBatch>> {
+        loop {
+            if let Some(batch) = self.batch.as_ref() {
+                if self.batch_offset < batch.num_rows() {
+                    let rows = vector_rows.min(batch.num_rows() - self.batch_offset);
+                    let slice = batch.slice(self.batch_offset, rows);
+                    self.batch_offset += rows;
+                    return Ok(Some(slice));
+                }
+                self.batch = None;
+                self.batch_offset = 0;
+            }
+
+            if let Some(reader) = self.reader.as_mut() {
+                match reader.next() {
+                    Some(Ok(batch)) => {
+                        if batch.schema().as_ref() != context.schema.as_ref() {
+                            return Err(bench_error(
+                                "DuckDB Arrow IPC table-function encountered a segment batch schema that differs from the bound canonical schema",
+                            ));
+                        }
+                        let batch_rows = u64::try_from(batch.num_rows())?;
+                        let batch_bytes = u64::try_from(batch.get_array_memory_size())?;
+                        context
+                            .telemetry
+                            .rows
+                            .fetch_add(batch_rows, Ordering::Relaxed);
+                        context
+                            .telemetry
+                            .logical_bytes
+                            .fetch_add(batch_bytes, Ordering::Relaxed);
+                        self.batch = Some(batch);
+                        continue;
+                    }
+                    Some(Err(error)) => return Err(error.into()),
+                    None => self.reader = None,
+                }
+            }
+
+            let path_index = context.next_path.fetch_add(1, Ordering::Relaxed);
+            let Some(path) = context.paths.get(path_index) else {
+                return Ok(None);
+            };
+            let reader = IpcFileReader::try_new_buffered(fs::File::open(path)?, None)?;
+            if reader.schema().as_ref() != context.schema.as_ref() {
+                return Err(bench_error(format!(
+                    "DuckDB Arrow IPC table-function segment {} does not match the bound canonical schema",
+                    path.display()
+                )));
+            }
+            self.reader = Some(reader);
+        }
+    }
+}
+
+struct DuckDbLogicalType {
+    handle: duckdb::ffi::duckdb_logical_type,
+}
+
+impl DuckDbLogicalType {
+    fn from_arrow(data_type: &DataType) -> BenchResult<Self> {
+        use duckdb::ffi::{
+            DUCKDB_TYPE_DUCKDB_TYPE_BIGINT, DUCKDB_TYPE_DUCKDB_TYPE_BLOB,
+            DUCKDB_TYPE_DUCKDB_TYPE_BOOLEAN, DUCKDB_TYPE_DUCKDB_TYPE_DATE,
+            DUCKDB_TYPE_DUCKDB_TYPE_DOUBLE, DUCKDB_TYPE_DUCKDB_TYPE_FLOAT,
+            DUCKDB_TYPE_DUCKDB_TYPE_INTEGER, DUCKDB_TYPE_DUCKDB_TYPE_SMALLINT,
+            DUCKDB_TYPE_DUCKDB_TYPE_TIME, DUCKDB_TYPE_DUCKDB_TYPE_TIME_NS,
+            DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP, DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_MS,
+            DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_NS, DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_S,
+            DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_TZ, DUCKDB_TYPE_DUCKDB_TYPE_TINYINT,
+            DUCKDB_TYPE_DUCKDB_TYPE_UBIGINT, DUCKDB_TYPE_DUCKDB_TYPE_UINTEGER,
+            DUCKDB_TYPE_DUCKDB_TYPE_USMALLINT, DUCKDB_TYPE_DUCKDB_TYPE_UTINYINT,
+            DUCKDB_TYPE_DUCKDB_TYPE_VARCHAR,
+        };
+
+        let primitive = match data_type {
+            DataType::Boolean => Some(DUCKDB_TYPE_DUCKDB_TYPE_BOOLEAN),
+            DataType::Int8 => Some(DUCKDB_TYPE_DUCKDB_TYPE_TINYINT),
+            DataType::Int16 => Some(DUCKDB_TYPE_DUCKDB_TYPE_SMALLINT),
+            DataType::Int32 => Some(DUCKDB_TYPE_DUCKDB_TYPE_INTEGER),
+            DataType::Int64 => Some(DUCKDB_TYPE_DUCKDB_TYPE_BIGINT),
+            DataType::UInt8 => Some(DUCKDB_TYPE_DUCKDB_TYPE_UTINYINT),
+            DataType::UInt16 => Some(DUCKDB_TYPE_DUCKDB_TYPE_USMALLINT),
+            DataType::UInt32 => Some(DUCKDB_TYPE_DUCKDB_TYPE_UINTEGER),
+            DataType::UInt64 => Some(DUCKDB_TYPE_DUCKDB_TYPE_UBIGINT),
+            DataType::Float32 => Some(DUCKDB_TYPE_DUCKDB_TYPE_FLOAT),
+            DataType::Float64 => Some(DUCKDB_TYPE_DUCKDB_TYPE_DOUBLE),
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
+                Some(DUCKDB_TYPE_DUCKDB_TYPE_VARCHAR)
+            }
+            DataType::Binary
+            | DataType::LargeBinary
+            | DataType::BinaryView
+            | DataType::FixedSizeBinary(_) => Some(DUCKDB_TYPE_DUCKDB_TYPE_BLOB),
+            DataType::Date32 => Some(DUCKDB_TYPE_DUCKDB_TYPE_DATE),
+            DataType::Time32(_) | DataType::Time64(TimeUnit::Microsecond) => {
+                Some(DUCKDB_TYPE_DUCKDB_TYPE_TIME)
+            }
+            DataType::Time64(TimeUnit::Nanosecond) => Some(DUCKDB_TYPE_DUCKDB_TYPE_TIME_NS),
+            DataType::Timestamp(unit, timezone) => Some(if timezone.is_some() {
+                DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_TZ
+            } else {
+                match unit {
+                    TimeUnit::Second => DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_S,
+                    TimeUnit::Millisecond => DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_MS,
+                    TimeUnit::Microsecond => DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP,
+                    TimeUnit::Nanosecond => DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_NS,
+                }
+            }),
+            DataType::Decimal128(precision, scale) | DataType::Decimal256(precision, scale) => {
+                if *precision > 38 || *scale < 0 || *scale > i8::try_from(*precision)? {
+                    return Err(bench_error(format!(
+                        "DuckDB Arrow IPC table-function cannot bind Arrow decimal({precision},{scale})"
+                    )));
+                }
+                // SAFETY: validated DuckDB decimal width/scale are passed by value;
+                // the returned logical type is owned by this wrapper.
+                let handle = unsafe {
+                    duckdb::ffi::duckdb_create_decimal_type(*precision, u8::try_from(*scale)?)
+                };
+                return Self::from_handle(handle, data_type);
+            }
+            _ => None,
+        };
+        let primitive = primitive.ok_or_else(|| {
+            bench_error(format!(
+                "DuckDB Arrow IPC table-function does not support Arrow type {data_type:?} in this falsification"
+            ))
+        })?;
+        // SAFETY: `primitive` is a supported primitive DuckDB type; the
+        // returned logical type is owned by this wrapper.
+        let handle = unsafe { duckdb::ffi::duckdb_create_logical_type(primitive) };
+        Self::from_handle(handle, data_type)
+    }
+
+    fn from_handle(
+        handle: duckdb::ffi::duckdb_logical_type,
+        data_type: &DataType,
+    ) -> BenchResult<Self> {
+        if handle.is_null() {
+            Err(bench_error(format!(
+                "DuckDB logical type creation returned null for Arrow type {data_type:?}"
+            )))
+        } else {
+            Ok(Self { handle })
+        }
+    }
+}
+
+impl Drop for DuckDbLogicalType {
+    fn drop(&mut self) {
+        // SAFETY: this wrapper owns the logical type and destroys it once.
+        unsafe {
+            if !self.handle.is_null() {
+                duckdb::ffi::duckdb_destroy_logical_type(&mut self.handle);
+            }
+        }
+    }
+}
+
+fn register_duckdb_arrow_ipc_table_function(
+    connection: duckdb::ffi::duckdb_connection,
+    name: &str,
+    paths: &[PathBuf],
+    schema: SchemaRef,
+    max_threads: usize,
+) -> BenchResult<Arc<DuckDbIpcTableFunctionTelemetry>> {
+    assert_arrow_duckdb_c_data_layout();
+    let telemetry = Arc::new(DuckDbIpcTableFunctionTelemetry {
+        rows: AtomicU64::new(0),
+        logical_bytes: AtomicU64::new(0),
+    });
+    let converted_schema = DuckDbArrowConvertedSchema::from_arrow(connection, schema.as_ref())?;
+    let context = Box::new(DuckDbIpcTableFunctionContext {
+        paths: paths.to_vec(),
+        schema,
+        connection,
+        converted_schema,
+        next_path: AtomicUsize::new(0),
+        max_threads,
+        telemetry: telemetry.clone(),
+    });
+    let name = CString::new(name)?;
+    // SAFETY: all callback pointers have the C ABI and remain valid for the
+    // process lifetime. The table-function object owns `context` through its
+    // registered destructor. DuckDB copies the registered function into its
+    // catalog before the temporary registration object is destroyed.
+    unsafe {
+        let mut table_function = duckdb::ffi::duckdb_create_table_function();
+        if table_function.is_null() {
+            return Err(bench_error("DuckDB table-function creation returned null"));
+        }
+        duckdb::ffi::duckdb_table_function_set_name(table_function, name.as_ptr());
+        duckdb::ffi::duckdb_table_function_set_extra_info(
+            table_function,
+            Box::into_raw(context).cast::<c_void>(),
+            Some(drop_duckdb_ipc_table_function_context),
+        );
+        duckdb::ffi::duckdb_table_function_set_bind(
+            table_function,
+            Some(bind_duckdb_ipc_table_function),
+        );
+        duckdb::ffi::duckdb_table_function_set_init(
+            table_function,
+            Some(init_duckdb_ipc_table_function),
+        );
+        duckdb::ffi::duckdb_table_function_set_local_init(
+            table_function,
+            Some(local_init_duckdb_ipc_table_function),
+        );
+        duckdb::ffi::duckdb_table_function_set_function(
+            table_function,
+            Some(scan_duckdb_ipc_table_function),
+        );
+        let state = duckdb::ffi::duckdb_register_table_function(connection, table_function);
+        duckdb::ffi::duckdb_destroy_table_function(&mut table_function);
+        if state != duckdb::ffi::DuckDBSuccess {
+            return Err(bench_error("DuckDB table-function registration failed"));
+        }
+    }
+    Ok(telemetry)
+}
+
+unsafe extern "C" fn drop_duckdb_ipc_table_function_context(data: *mut c_void) {
+    if !data.is_null() {
+        // SAFETY: `data` came from exactly one `Box::into_raw` call during
+        // table-function registration and DuckDB invokes this destructor once.
+        unsafe {
+            drop(Box::from_raw(data.cast::<DuckDbIpcTableFunctionContext>()));
+        }
+    }
+}
+
+unsafe extern "C" fn drop_duckdb_ipc_table_function_local_state(data: *mut c_void) {
+    if !data.is_null() {
+        // SAFETY: `data` came from exactly one `Box::into_raw` call in the
+        // local-init callback and DuckDB invokes this destructor once.
+        unsafe {
+            drop(Box::from_raw(
+                data.cast::<DuckDbIpcTableFunctionLocalState>(),
+            ));
+        }
+    }
+}
+
+unsafe extern "C" fn bind_duckdb_ipc_table_function(info: duckdb::ffi::duckdb_bind_info) {
+    let result = catch_unwind(AssertUnwindSafe(|| -> BenchResult<()> {
+        // SAFETY: DuckDB passes the extra-info pointer installed at
+        // registration and keeps it alive for this callback.
+        let context = unsafe {
+            duckdb_ipc_table_function_context(duckdb::ffi::duckdb_bind_get_extra_info(info))?
+        };
+        for field in context.schema.fields() {
+            let name = CString::new(field.name().as_str())?;
+            let logical_type = DuckDbLogicalType::from_arrow(field.data_type())?;
+            // SAFETY: `info` is live for this callback; DuckDB copies the
+            // column name and logical type into the bind result.
+            unsafe {
+                duckdb::ffi::duckdb_bind_add_result_column(
+                    info,
+                    name.as_ptr(),
+                    logical_type.handle,
+                );
+            }
+        }
+        Ok(())
+    }));
+    if let Err(message) = ffi_callback_result(result) {
+        set_duckdb_bind_error(info, &message);
+    }
+}
+
+unsafe extern "C" fn init_duckdb_ipc_table_function(info: duckdb::ffi::duckdb_init_info) {
+    let result = catch_unwind(AssertUnwindSafe(|| -> BenchResult<()> {
+        // SAFETY: DuckDB passes the registered extra-info pointer and keeps it
+        // alive for this callback.
+        let context = unsafe {
+            duckdb_ipc_table_function_context(duckdb::ffi::duckdb_init_get_extra_info(info))?
+        };
+        let threads = context.max_threads.min(context.paths.len()).max(1);
+        // SAFETY: `info` is live for this callback and the value is positive.
+        unsafe {
+            duckdb::ffi::duckdb_init_set_max_threads(info, u64::try_from(threads)?);
+        }
+        Ok(())
+    }));
+    if let Err(message) = ffi_callback_result(result) {
+        set_duckdb_init_error(info, &message);
+    }
+}
+
+unsafe extern "C" fn local_init_duckdb_ipc_table_function(info: duckdb::ffi::duckdb_init_info) {
+    let result = catch_unwind(AssertUnwindSafe(|| -> BenchResult<()> {
+        let state = Box::new(DuckDbIpcTableFunctionLocalState::new());
+        // SAFETY: DuckDB owns the boxed local state after this call and uses
+        // the matching destructor exactly once.
+        unsafe {
+            duckdb::ffi::duckdb_init_set_init_data(
+                info,
+                Box::into_raw(state).cast::<c_void>(),
+                Some(drop_duckdb_ipc_table_function_local_state),
+            );
+        }
+        Ok(())
+    }));
+    if let Err(message) = ffi_callback_result(result) {
+        set_duckdb_init_error(info, &message);
+    }
+}
+
+unsafe extern "C" fn scan_duckdb_ipc_table_function(
+    info: duckdb::ffi::duckdb_function_info,
+    output: duckdb::ffi::duckdb_data_chunk,
+) {
+    let result = catch_unwind(AssertUnwindSafe(|| -> BenchResult<()> {
+        // SAFETY: DuckDB supplies both registered pointers for the duration of
+        // the callback; each worker receives its own local state.
+        let context = unsafe {
+            duckdb_ipc_table_function_context(duckdb::ffi::duckdb_function_get_extra_info(info))?
+        };
+        let local_state = unsafe {
+            duckdb_ipc_table_function_local_state(
+                duckdb::ffi::duckdb_function_get_local_init_data(info),
+            )?
+        };
+        // SAFETY: this process is linked against DuckDB and the returned
+        // vector size is its active output-chunk capacity.
+        let vector_rows = usize::try_from(unsafe { duckdb::ffi::duckdb_vector_size() })?;
+        let Some(batch) = local_state.next_slice(context, vector_rows)? else {
+            // SAFETY: `output` is the live output chunk for this callback.
+            unsafe {
+                duckdb::ffi::duckdb_data_chunk_set_size(output, 0);
+            }
+            return Ok(());
+        };
+        reference_arrow_batch_into_duckdb_output(context, batch, output)
+    }));
+    if let Err(message) = ffi_callback_result(result) {
+        set_duckdb_function_error(info, &message);
+    }
+}
+
+fn reference_arrow_batch_into_duckdb_output(
+    context: &DuckDbIpcTableFunctionContext,
+    batch: arrow_array::RecordBatch,
+    output: duckdb::ffi::duckdb_data_chunk,
+) -> BenchResult<()> {
+    assert_arrow_duckdb_c_data_layout();
+    let rows = batch.num_rows();
+    let struct_array = StructArray::from(batch);
+    let mut arrow_array = ManuallyDrop::new(FFI_ArrowArray::new(&struct_array.to_data()));
+    let mut converted_chunk = ptr::null_mut();
+    // SAFETY: Arrow and DuckDB C Data structs are ABI-checked above. DuckDB
+    // takes ownership of the exported Arrow array on successful conversion;
+    // `converted_chunk` is destroyed after its vectors are referenced.
+    let error = unsafe {
+        duckdb::ffi::duckdb_data_chunk_from_arrow(
+            context.connection,
+            (&mut *arrow_array as *mut FFI_ArrowArray).cast::<duckdb::ffi::ArrowArray>(),
+            context.converted_schema.shared_handle(),
+            &mut converted_chunk,
+        )
+    };
+    match duckdb_error_data_result(error, "DuckDB table-function Arrow conversion") {
+        Ok(()) => {}
+        Err(error) => {
+            // SAFETY: conversion failed before DuckDB accepted ownership.
+            unsafe {
+                ManuallyDrop::drop(&mut arrow_array);
+            }
+            return Err(error);
+        }
+    }
+    if converted_chunk.is_null() {
+        return Err(bench_error(
+            "DuckDB table-function Arrow conversion returned a null chunk",
+        ));
+    }
+    // SAFETY: both chunks are live and DuckDB returns their column counts.
+    let input_columns = unsafe { duckdb::ffi::duckdb_data_chunk_get_column_count(converted_chunk) };
+    let output_columns = unsafe { duckdb::ffi::duckdb_data_chunk_get_column_count(output) };
+    if input_columns != output_columns {
+        // SAFETY: this function owns the converted chunk.
+        unsafe {
+            duckdb::ffi::duckdb_destroy_data_chunk(&mut converted_chunk);
+        }
+        return Err(bench_error(format!(
+            "DuckDB table-function Arrow conversion produced {input_columns} columns for a {output_columns}-column output"
+        )));
+    }
+    for column in 0..input_columns {
+        // SAFETY: `column` is within both chunks' verified column counts.
+        unsafe {
+            let source = duckdb::ffi::duckdb_data_chunk_get_vector(converted_chunk, column);
+            let destination = duckdb::ffi::duckdb_data_chunk_get_vector(output, column);
+            duckdb::ffi::duckdb_vector_reference_vector(destination, source);
+        }
+    }
+    // SAFETY: vector references retain shared ownership after the source chunk
+    // is destroyed; the output row count does not exceed DuckDB vector size.
+    unsafe {
+        duckdb::ffi::duckdb_data_chunk_set_size(output, u64::try_from(rows)?);
+        duckdb::ffi::duckdb_destroy_data_chunk(&mut converted_chunk);
+    }
+    Ok(())
+}
+
+unsafe fn duckdb_ipc_table_function_context<'a>(
+    pointer: *mut c_void,
+) -> BenchResult<&'a DuckDbIpcTableFunctionContext> {
+    // SAFETY: callers obtain `pointer` from DuckDB's registered extra-info
+    // accessor, and the registration owns it for the callback lifetime.
+    unsafe { pointer.cast::<DuckDbIpcTableFunctionContext>().as_ref() }.ok_or_else(|| {
+        bench_error("DuckDB Arrow IPC table-function callback received null context")
+    })
+}
+
+unsafe fn duckdb_ipc_table_function_local_state<'a>(
+    pointer: *mut c_void,
+) -> BenchResult<&'a mut DuckDbIpcTableFunctionLocalState> {
+    // SAFETY: callers obtain `pointer` from DuckDB's thread-local init-data
+    // accessor; DuckDB gives each worker exclusive callback access.
+    unsafe { pointer.cast::<DuckDbIpcTableFunctionLocalState>().as_mut() }.ok_or_else(|| {
+        bench_error("DuckDB Arrow IPC table-function callback received null local state")
+    })
+}
+
+fn ffi_callback_result(
+    result: Result<BenchResult<()>, Box<dyn std::any::Any + Send>>,
+) -> Result<(), String> {
+    match result {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(payload) => Err(if let Some(message) = payload.downcast_ref::<&str>() {
+            format!("DuckDB Arrow IPC table-function callback panicked: {message}")
+        } else if let Some(message) = payload.downcast_ref::<String>() {
+            format!("DuckDB Arrow IPC table-function callback panicked: {message}")
+        } else {
+            "DuckDB Arrow IPC table-function callback panicked".to_owned()
+        }),
+    }
+}
+
+fn callback_error_message(message: &str) -> CString {
+    CString::new(message.replace('\0', "\\0"))
+        .expect("replacing NUL bytes produces a valid DuckDB callback error")
+}
+
+fn set_duckdb_bind_error(info: duckdb::ffi::duckdb_bind_info, message: &str) {
+    let message = callback_error_message(message);
+    // SAFETY: `info` is live for the callback and DuckDB copies the message.
+    unsafe {
+        duckdb::ffi::duckdb_bind_set_error(info, message.as_ptr());
+    }
+}
+
+fn set_duckdb_init_error(info: duckdb::ffi::duckdb_init_info, message: &str) {
+    let message = callback_error_message(message);
+    // SAFETY: `info` is live for the callback and DuckDB copies the message.
+    unsafe {
+        duckdb::ffi::duckdb_init_set_error(info, message.as_ptr());
+    }
+}
+
+fn set_duckdb_function_error(info: duckdb::ffi::duckdb_function_info, message: &str) {
+    let message = callback_error_message(message);
+    // SAFETY: `info` is live for the callback and DuckDB copies the message.
+    unsafe {
+        duckdb::ffi::duckdb_function_set_error(info, message.as_ptr());
+    }
 }
 
 fn register_duckdb_arrow_stream_scan(
@@ -2266,6 +2913,73 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rows, (2048, 2048, 0, 2047));
+    }
+
+    #[test]
+    fn duckdb_arrow_ipc_table_function_materializes_canonical_segments() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut paths = Vec::new();
+        for (index, package_row_ord_start) in [0_u64, 1024].into_iter().enumerate() {
+            let path = temp.path().join(format!("segment-{index}.arrow"));
+            let batch = tlc_arrow_batch(1024, package_row_ord_start + 1, false).unwrap();
+            let batch =
+                cdf_package_contract::append_package_row_ord(vec![batch], package_row_ord_start)
+                    .unwrap()
+                    .pop()
+                    .unwrap();
+            let mut writer = IpcFileWriter::try_new_with_options(
+                fs::File::create(&path).unwrap(),
+                batch.schema().as_ref(),
+                IpcWriteOptions::default()
+                    .try_with_compression(Some(IpcCompressionType::LZ4_FRAME))
+                    .unwrap(),
+            )
+            .unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+            paths.push(path);
+        }
+        let output = temp.path().join("arrow-ipc-table-function.duckdb");
+
+        let measurement = run_reference(&ReferenceWorkload::DuckDbArrowIpcTableFunctionIngest {
+            paths,
+            output: output.clone(),
+            row_key_start: 1,
+            checkpoint: true,
+            duckdb_threads: Some(2),
+            duckdb_memory_limit_bytes: None,
+            duckdb_temp_directory_budget_bytes: None,
+        })
+        .unwrap();
+
+        assert_eq!(measurement.rows, 2048);
+        assert!(measurement.logical_bytes > 0);
+        assert!(measurement.physical_bytes > 0);
+        let connection = duckdb::Connection::open(output).unwrap();
+        let observed = connection
+            .query_row(
+                "SELECT count(*), min(_cdf_row_key), max(_cdf_row_key) \
+                 FROM arrow_ipc_table_function",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, u64>(0)?,
+                        row.get::<_, u64>(1)?,
+                        row.get::<_, u64>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(observed, (2048, 1, 2048));
+        let leaked_ordinal = connection
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('arrow_ipc_table_function') \
+                 WHERE name = '_cdf_package_row_ord'",
+                [],
+                |row| row.get::<_, u64>(0),
+            )
+            .unwrap();
+        assert_eq!(leaked_ordinal, 0);
     }
 
     #[test]
