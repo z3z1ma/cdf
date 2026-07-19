@@ -889,6 +889,7 @@ mod tests {
     fn arrow_ipc_package_writer_roofline() {
         const ROWS_PER_BATCH: usize = 64 * 1024;
         const BATCHES: usize = 32;
+        const PARALLEL_BATCHES: usize = 8;
         const COLUMNS: usize = 8;
         const SAMPLES: usize = 5;
         const RAW_CHUNK_BYTES: usize = 1024 * 1024;
@@ -967,6 +968,37 @@ mod tests {
         );
 
         let jobs = std::thread::available_parallelism().unwrap().get();
+        let parallel_batches = (0..jobs)
+            .map(|job| {
+                (0..PARALLEL_BATCHES)
+                    .map(|batch_index| {
+                        let columns = (0..COLUMNS)
+                            .map(|column| {
+                                let stream = ((job as u64) << 56)
+                                    ^ ((batch_index as u64) << 48)
+                                    ^ ((column as u64) << 40);
+                                Arc::new(UInt64Array::from_iter_values(
+                                    (0..ROWS_PER_BATCH).map(|row| splitmix64(stream ^ row as u64)),
+                                )) as ArrayRef
+                            })
+                            .collect::<Vec<_>>();
+                        RecordBatch::try_new(Arc::clone(&schema), columns).unwrap()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let mut parallel_encoded_bytes = Vec::with_capacity(jobs);
+        let mut raw_payloads = Vec::with_capacity(jobs);
+        for (job, job_batches) in parallel_batches.iter().enumerate() {
+            let path = directory.path().join(format!("parallel-warm-{job}.arrow"));
+            let receipt = write_arrow_ipc_file(&path, schema.as_ref(), job_batches).unwrap();
+            let bytes = fs::read(&path).unwrap();
+            assert_eq!(receipt.artifact.byte_count, bytes.len() as u64);
+            parallel_encoded_bytes.push(receipt.artifact.byte_count);
+            raw_payloads.push(bytes);
+            fs::remove_file(path).unwrap();
+        }
+        sync_directory(directory.path()).unwrap();
         let mut parallel_plain_samples = Vec::with_capacity(SAMPLES);
         let mut parallel_hashed_samples = Vec::with_capacity(SAMPLES);
         let mut parallel_raw_samples = Vec::with_capacity(SAMPLES);
@@ -977,8 +1009,8 @@ mod tests {
                     sample,
                     jobs,
                     schema.as_ref(),
-                    &batches,
-                    encoded_bytes,
+                    &parallel_batches,
+                    &parallel_encoded_bytes,
                 )
             };
             let run_hashed = || {
@@ -987,8 +1019,8 @@ mod tests {
                     sample,
                     jobs,
                     schema.as_ref(),
-                    &batches,
-                    encoded_bytes,
+                    &parallel_batches,
+                    &parallel_encoded_bytes,
                 )
             };
             if sample % 2 == 0 {
@@ -1002,8 +1034,7 @@ mod tests {
                 directory.path(),
                 sample,
                 jobs,
-                encoded_bytes,
-                &raw_chunk,
+                &raw_payloads,
             ));
             remove_parallel_outputs(directory.path(), sample, jobs);
         }
@@ -1021,12 +1052,13 @@ mod tests {
             (parallel_hashed_ns as f64 - parallel_plain_ns as f64).max(0.0) * 100.0
                 / parallel_hashed_ns as f64;
         let parallel_writer_roofline_ratio = parallel_raw_ns as f64 / parallel_hashed_ns as f64;
-        let parallel_physical_mib = physical_mib * jobs as f64;
+        let total_parallel_encoded_bytes = parallel_encoded_bytes.iter().sum::<u64>();
+        let parallel_physical_mib = total_parallel_encoded_bytes as f64 / (1024.0 * 1024.0);
         let parallel_hashed_mib_per_second =
             parallel_physical_mib / (parallel_hashed_ns as f64 / 1_000_000_000.0);
         eprintln!(
             "jobs={jobs} total_encoded_bytes={} parallel_plain_samples_ns={parallel_plain_observations:?} parallel_hashed_samples_ns={parallel_hashed_observations:?} parallel_raw_samples_ns={parallel_raw_observations:?} parallel_plain_ipc_median_ns={parallel_plain_ns} parallel_hashed_ipc_median_ns={parallel_hashed_ns} parallel_raw_durable_median_ns={parallel_raw_ns} parallel_hash_share_percent={parallel_hash_share_percent:.2} parallel_writer_roofline_ratio={parallel_writer_roofline_ratio:.3} parallel_hashed_mib_per_second={parallel_hashed_mib_per_second:.1}",
-            encoded_bytes * jobs as u64,
+            total_parallel_encoded_bytes,
         );
     }
 
@@ -1035,8 +1067,8 @@ mod tests {
         sample: usize,
         jobs: usize,
         schema: &Schema,
-        batches: &[RecordBatch],
-        expected_bytes: u64,
+        batches: &[Vec<RecordBatch>],
+        expected_bytes: &[u64],
     ) -> u128 {
         let started = Instant::now();
         std::thread::scope(|scope| {
@@ -1044,7 +1076,7 @@ mod tests {
                 .map(|job| {
                     let path = directory.join(format!("parallel-plain-{sample}-{job}.arrow"));
                     scope.spawn(move || {
-                        write_plain_arrow_ipc(&path, schema, batches, expected_bytes)
+                        write_plain_arrow_ipc(&path, schema, &batches[job], expected_bytes[job])
                     })
                 })
                 .collect::<Vec<_>>();
@@ -1060,8 +1092,8 @@ mod tests {
         sample: usize,
         jobs: usize,
         schema: &Schema,
-        batches: &[RecordBatch],
-        expected_bytes: u64,
+        batches: &[Vec<RecordBatch>],
+        expected_bytes: &[u64],
     ) -> u128 {
         let started = Instant::now();
         std::thread::scope(|scope| {
@@ -1069,8 +1101,8 @@ mod tests {
                 .map(|job| {
                     let path = directory.join(format!("parallel-hashed-{sample}-{job}.arrow"));
                     scope.spawn(move || {
-                        let receipt = write_arrow_ipc_file(&path, schema, batches).unwrap();
-                        assert_eq!(receipt.artifact.byte_count, expected_bytes);
+                        let receipt = write_arrow_ipc_file(&path, schema, &batches[job]).unwrap();
+                        assert_eq!(receipt.artifact.byte_count, expected_bytes[job]);
                     })
                 })
                 .collect::<Vec<_>>();
@@ -1085,15 +1117,14 @@ mod tests {
         directory: &std::path::Path,
         sample: usize,
         jobs: usize,
-        bytes: u64,
-        chunk: &[u8],
+        payloads: &[Vec<u8>],
     ) -> u128 {
         let started = Instant::now();
         std::thread::scope(|scope| {
             let handles = (0..jobs)
                 .map(|job| {
                     let path = directory.join(format!("parallel-raw-{sample}-{job}.bin"));
-                    scope.spawn(move || write_raw_durable(&path, bytes, chunk))
+                    scope.spawn(move || write_raw_durable_bytes(&path, &payloads[job]))
                 })
                 .collect::<Vec<_>>();
             for handle in handles {
@@ -1151,6 +1182,17 @@ mod tests {
             file.write_all(&chunk[..write_len]).unwrap();
             remaining -= write_len as u64;
         }
+        file.flush().unwrap();
+        file.sync_all().unwrap();
+        fs::rename(temp_path, path).unwrap();
+        sync_directory(path.parent().unwrap()).unwrap();
+        started.elapsed().as_nanos()
+    }
+
+    fn write_raw_durable_bytes(path: &std::path::Path, bytes: &[u8]) -> u128 {
+        let started = Instant::now();
+        let (temp_path, mut file) = create_temp_sibling(path).unwrap();
+        file.write_all(bytes).unwrap();
         file.flush().unwrap();
         file.sync_all().unwrap();
         fs::rename(temp_path, path).unwrap();
