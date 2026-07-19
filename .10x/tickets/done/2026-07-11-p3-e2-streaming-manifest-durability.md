@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-11
 Updated: 2026-07-11
-Parent: .10x/tickets/2026-07-10-p3-ws-e-hashing-package-io.md
+Parent: .10x/tickets/done/2026-07-10-p3-ws-e-hashing-package-io.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-e1-hashing-artifact-sink.md, .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md, .10x/tickets/done/2026-07-11-p3-a5a-graph-edge-contracts.md
 
 # P3 E2: bounded draft index, trace, and streaming manifest finalizer

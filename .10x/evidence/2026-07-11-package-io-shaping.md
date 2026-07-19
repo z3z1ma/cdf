@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Relates-To: .10x/decisions/hash-while-write-and-durability-barriers.md, .10x/specs/package-io-hashing-durability.md, .10x/tickets/2026-07-10-p3-ws-e-hashing-package-io.md
+Relates-To: .10x/decisions/hash-while-write-and-durability-barriers.md, .10x/specs/package-io-hashing-durability.md, .10x/tickets/done/2026-07-10-p3-ws-e-hashing-package-io.md
 
 # Package I/O shaping evidence
 

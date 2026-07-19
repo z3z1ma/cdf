@@ -1,0 +1,21 @@
+ Downloading crates ...
+  Downloaded untrusted v0.7.1
+   Compiling aws-lc-sys v0.42.0
+   Compiling aws-lc-rs v1.17.1
+   Compiling getrandom v0.2.17
+   Compiling untrusted v0.7.1
+   Compiling sha2 v0.10.9
+   Compiling ring v0.17.14
+   Compiling cdf-kernel v0.1.0 (/home/ec2-user/cdf-bench/repo/crates/cdf-kernel)
+   Compiling cdf-memory v0.1.0 (/home/ec2-user/cdf-bench/repo/crates/cdf-memory)
+   Compiling cdf-package-contract v0.1.0 (/home/ec2-user/cdf-bench/repo/crates/cdf-package-contract)
+   Compiling cdf-package v0.1.0 (/home/ec2-user/cdf-bench/repo/crates/cdf-package)
+    Finished `release` profile [optimized] target(s) in 1m 43s
+     Running unittests src/lib.rs (target/release/deps/cdf_package-debfb7bced5c990b)
+
+running 1 test
+bytes=536870912 sha2_gib_s=1.453 aws_lc_gib_s=1.453 ring_gib_s=1.453 sha2_elapsed_ns=344100658 aws_lc_elapsed_ns=344090722 ring_elapsed_ns=344087550
+test storage::tests::sha256_backend_rates ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 63 filtered out; finished in 1.03s
+

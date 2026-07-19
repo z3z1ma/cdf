@@ -1,0 +1,12 @@
+    Finished `release` profile [optimized] target(s) in 0.14s
+     Running unittests src/lib.rs (target/release/deps/cdf_package-b6f464d5208850f3)
+
+running 1 test
+encoded_bytes=134285122 rows=2097152 plain_samples_ns=[154344761, 158401407, 161454754, 157719144, 156879618] hashed_samples_ns=[264946303, 247210813, 245803692, 243194233, 245335787] raw_samples_ns=[83281937, 84459588, 79769347, 81083051, 82699165] plain_ipc_median_ns=157719144 hashed_ipc_median_ns=245803692 raw_durable_median_ns=82699165 hash_share_percent=35.84 writer_roofline_ratio=0.336 hashed_mib_per_second=521.0
+jobs=16 total_encoded_bytes=537153568 parallel_plain_samples_ns=[275919758, 448117393, 416568075, 508723571, 414429445] parallel_hashed_samples_ns=[290102569, 287052192, 507484583, 415435508, 509647715] parallel_raw_samples_ns=[227688363, 509577769, 510942385, 508800572, 510495200] parallel_plain_ipc_median_ns=416568075 parallel_hashed_ipc_median_ns=415435508 parallel_raw_durable_median_ns=509577769 parallel_hash_share_percent=0.00 parallel_writer_roofline_ratio=1.227 parallel_hashed_mib_per_second=1233.1
+test storage::tests::arrow_ipc_package_writer_roofline has been running for over 60 seconds
+sustained_jobs=16 sustained_waves=64 sustained_bytes_per_sample=34377828352 sustained_plain_samples_ns=[32526160215, 31695912041, 31689500048] sustained_hashed_samples_ns=[31738702592, 31698634493, 31714295798] sustained_plain_median_ns=31695912041 sustained_hashed_median_ns=31714295798 sustained_hash_share_percent=0.06 sustained_hashed_mib_per_second=1033.8
+test storage::tests::arrow_ipc_package_writer_roofline ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 62 filtered out; finished in 208.93s
+

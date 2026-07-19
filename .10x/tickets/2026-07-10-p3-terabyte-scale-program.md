@@ -44,7 +44,7 @@ This parent is an aggregate plan. Workstream records own sequencing and integrat
 - `.10x/tickets/2026-07-10-p3-ws-b-format-decode-engines.md`
 - `.10x/tickets/2026-07-10-p3-ws-c-deterministic-parallelism.md`
 - `.10x/tickets/done/2026-07-10-p3-ws-d-destination-bulk-paths.md`
-- `.10x/tickets/2026-07-10-p3-ws-e-hashing-package-io.md`
+- `.10x/tickets/done/2026-07-10-p3-ws-e-hashing-package-io.md`
 - `.10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md`
 - `.10x/tickets/done/2026-07-10-p3-ws-g-remote-io-overlap.md`
 - `.10x/tickets/2026-07-10-p3-ws-h-interop-boundaries.md`
@@ -105,6 +105,7 @@ P3 does not implement a distributed scheduler, remote worker leases, resident st
 - 2026-07-18: Closed L9 after splitting measured-command EC2 runs from the heavyweight `cdf-p3-lab` binary. The new `cdf-bench-core` crate owns shared measurement primitives; `cdf-bench-measure` produces a 606K/734K `cdf-p3-measure` runner; EC2 `build-measure` completed in `10.27s` without rebuilding `cdf-p3-lab`; and both tiny-control and full-year TLC measured-command cells are recorded in `.10x/evidence/.storage/`.
 - 2026-07-19: Reclosed WS-D after its reopened destination performance/lifecycle tail became terminal. DuckDB now materializes canonical LZ4 IPC segments through one stock-libduckdb parallel scan path at a 10.256-second full-product median for 41.17M TLC rows; Parquet preserves 0.919x raw local-write roofline with generic immutable-content reachability; Postgres retains binary COPY and deletes redundant append/replace staging. No destination-specific generic-runtime branch or superseded product path remains.
 - 2026-07-19: Closed WS-V after the dedicated-host 64k matrix passed all 12 ratified single-core hot-kernel cells at 3.016-7.254 GB/s against a 1 GB/s/core threshold. The permanent scheduled gate separates kernel masks, selected-row evidence, and full-product validation/normalization costs, and its slim runner avoids linking unrelated source/destination graphs.
+- 2026-07-19: Closed WS-E after sustained package persistence reached 1,033.8 MiB/s, 0.903x the dedicated host's direct-I/O write roofline, with 0.06% hash-on versus hash-off wall across three alternating 32 GiB samples. E1-E4 leave one hash-while-write receipt path, bounded streaming manifests and verification, retained opened-object consumption, zero production content rereads, and no speculative hash backend or mmap path.
 
 ## Blockers
 

@@ -1,0 +1,63 @@
+   Compiling typenum v1.20.1
+   Compiling hashbrown v0.17.1
+   Compiling libc v0.2.186
+   Compiling serde_core v1.0.228
+   Compiling cc v1.2.66
+   Compiling linux-raw-sys v0.12.1
+   Compiling num-traits v0.2.19
+   Compiling slab v0.4.12
+   Compiling io-lifetimes v2.0.4
+   Compiling io-lifetimes v3.0.1
+   Compiling zerocopy v0.8.52
+   Compiling memchr v2.8.2
+   Compiling maybe-owned v0.3.4
+   Compiling ambient-authority v0.0.2
+   Compiling base64 v0.22.1
+   Compiling io-extras v0.19.0
+   Compiling futures-util v0.3.32
+   Compiling rustix v1.1.4
+   Compiling getrandom v0.3.4
+   Compiling getrandom v0.4.3
+   Compiling num-integer v0.1.46
+   Compiling chrono v0.4.45
+   Compiling num-complex v0.4.6
+   Compiling generic-array v0.14.7
+   Compiling sha2-asm v0.6.4
+   Compiling num-bigint v0.4.8
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling digest v0.10.7
+   Compiling sha2 v0.10.9
+   Compiling serde v1.0.228
+   Compiling serde_json v1.0.150
+   Compiling arrow-schema v59.1.0
+   Compiling fs-set-times v0.20.3
+   Compiling rustix-linux-procfs v0.1.1
+   Compiling tempfile v3.27.0
+   Compiling cap-primitives v4.0.2
+   Compiling half v2.7.1
+   Compiling ahash v0.8.12
+   Compiling cap-std v4.0.2
+   Compiling cap-fs-ext v4.0.2
+   Compiling arrow-buffer v59.1.0
+   Compiling arrow-data v59.1.0
+   Compiling arrow-array v59.1.0
+   Compiling arrow-arith v59.1.0
+   Compiling arrow-select v59.1.0
+   Compiling cdf-kernel v0.1.0 (/home/ec2-user/cdf-bench/repo/crates/cdf-kernel)
+   Compiling arrow-ipc v59.1.0
+   Compiling parquet v59.1.0
+   Compiling cdf-package-contract v0.1.0 (/home/ec2-user/cdf-bench/repo/crates/cdf-package-contract)
+   Compiling cdf-memory v0.1.0 (/home/ec2-user/cdf-bench/repo/crates/cdf-memory)
+   Compiling cdf-package v0.1.0 (/home/ec2-user/cdf-bench/repo/crates/cdf-package)
+    Finished `release` profile [optimized] target(s) in 2m 06s
+     Running unittests src/lib.rs (target/release/deps/cdf_package-b6f464d5208850f3)
+
+running 2 tests
+sha256_rate_gib_s=1.453 bytes=536870912 elapsed_ns=344164100
+test storage::tests::hashing_writer_sha256_rate ... ok
+plain_atomic_median_ns=73926317 hash_atomic_median_ns=242087182 hashing_overhead_percent=227.47 bytes_per_sample=268435456 samples=5
+test storage::tests::hashing_writer_disk_overhead ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 60 filtered out; finished in 1.59s
+

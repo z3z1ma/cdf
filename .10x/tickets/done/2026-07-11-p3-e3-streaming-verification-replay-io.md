@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-11
 Updated: 2026-07-19
-Parent: .10x/tickets/2026-07-10-p3-ws-e-hashing-package-io.md
+Parent: .10x/tickets/done/2026-07-10-p3-ws-e-hashing-package-io.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-e2-streaming-manifest-durability.md, .10x/tickets/done/2026-07-11-p3-a5-streaming-operator-graph.md
 
 # P3 E3: bounded verification and replay I/O

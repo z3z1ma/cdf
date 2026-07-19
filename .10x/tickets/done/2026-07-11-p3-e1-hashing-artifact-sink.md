@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-11
 Updated: 2026-07-11
-Parent: .10x/tickets/2026-07-10-p3-ws-e-hashing-package-io.md
+Parent: .10x/tickets/done/2026-07-10-p3-ws-e-hashing-package-io.md
 Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md, .10x/specs/package-io-hashing-durability.md
 
 # P3 E1: hashing artifact sink and writer receipts
