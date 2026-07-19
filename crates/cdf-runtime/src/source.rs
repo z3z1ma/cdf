@@ -1068,7 +1068,31 @@ fn duration_millis(duration: Duration) -> u64 {
 #[derive(Clone, Debug)]
 pub struct SourceHealthRequest {
     pub compiled_plans: Vec<CompiledSourcePlan>,
+    pub configured_resource_ids: Vec<ResourceId>,
     pub budget: SourceHealthBudget,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceHealthTarget {
+    resource_id: ResourceId,
+    driver_id: SourceDriverId,
+}
+
+impl SourceHealthTarget {
+    pub fn new(resource_id: ResourceId, driver_id: SourceDriverId) -> Self {
+        Self {
+            resource_id,
+            driver_id,
+        }
+    }
+
+    pub fn resource_id(&self) -> &ResourceId {
+        &self.resource_id
+    }
+
+    pub fn driver_id(&self) -> &SourceDriverId {
+        &self.driver_id
+    }
 }
 
 /// Registry-owned admission boundary for source health output.

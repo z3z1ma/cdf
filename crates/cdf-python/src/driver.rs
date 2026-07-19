@@ -65,7 +65,9 @@ impl PythonSourceDriver {
                 "additionalProperties": false,
                 "required": ["uri"],
                 "properties": {
-                    "uri": {"type": "string", "pattern": "^python://"}
+                    "uri": {"type": "string", "pattern": "^python://"},
+                    "dict_batch_rows": {"type": "integer", "minimum": 1},
+                    "max_boundary_bytes": {"type": "integer", "minimum": 1}
                 }
             },
             "resource": {
@@ -112,6 +114,8 @@ impl SourceDriver for PythonSourceDriver {
             &options.uri,
             request.descriptor.resource_id.clone(),
             request.descriptor.trust_level.clone(),
+            options.dict_batch_rows,
+            options.max_boundary_bytes,
         )?;
         validate_declarative_metadata(&request, &resource)?;
         let physical_plan = serde_json::to_value(resource.physical_plan()).map_err(|error| {
@@ -126,7 +130,11 @@ impl SourceDriver for PythonSourceDriver {
                 type_policy_allowances: request.type_policy_allowances,
                 effective_schema_runtime: request.effective_schema_runtime,
                 baseline_observation_schema_catalog: request.baseline_observation_schema_catalog,
-                redacted_options: serde_json::json!({"uri": options.uri}),
+                redacted_options: serde_json::json!({
+                    "scheme": "python",
+                    "dict_batch_rows": options.dict_batch_rows,
+                    "max_boundary_bytes": options.max_boundary_bytes,
+                }),
                 physical_plan,
             },
         )
@@ -194,12 +202,13 @@ impl SourceReferenceCompiler for PythonSourceDriver {
         request: SourceReferenceCompileRequest,
     ) -> Result<CompiledSourcePlan> {
         request.validate()?;
-        validate_project_options(&request.project_root, Some(&request.project_options))?;
         let resource = PythonResource::load(
             &request.project_root,
             &request.uri,
             request.resource_id.clone(),
             request.trust_level,
+            crate::DEFAULT_DICT_BATCH_ROWS,
+            crate::DEFAULT_BOUNDARY_CHANNEL_BYTES,
         )?;
         let mut descriptor = resource.descriptor().clone();
         descriptor.freshness = request.freshness;
@@ -216,7 +225,11 @@ impl SourceReferenceCompiler for PythonSourceDriver {
                 type_policy_allowances: TypePolicyAllowances::default(),
                 effective_schema_runtime: None,
                 baseline_observation_schema_catalog: Vec::new(),
-                redacted_options: serde_json::json!({"uri": request.uri}),
+                redacted_options: serde_json::json!({
+                    "scheme": "python",
+                    "dict_batch_rows": crate::DEFAULT_DICT_BATCH_ROWS,
+                    "max_boundary_bytes": crate::DEFAULT_BOUNDARY_CHANNEL_BYTES,
+                }),
                 physical_plan,
             },
         )
@@ -230,7 +243,7 @@ impl PythonSourceDriver {
         context: &SourceResolutionContext<'_>,
     ) -> Result<SourceHealthResult> {
         request.budget.consume_work(1)?;
-        let resource_count = request.compiled_plans.len();
+        let resource_count = request.configured_resource_ids.len();
         let Some(options) = context.driver_options(&self.descriptor.driver_id) else {
             let (status, message) = if resource_count == 0 {
                 (
@@ -327,6 +340,7 @@ fn compile_resource_plan(
         execution_capabilities(
             capabilities.partitioning.parallel_partitions,
             physical.bounded,
+            physical.max_boundary_bytes,
         ),
         input,
     )
@@ -360,6 +374,18 @@ fn physical_plan(plan: &CompiledSourcePlan) -> Result<PythonPhysicalPlan> {
 #[serde(deny_unknown_fields)]
 struct PythonSourceOptions {
     uri: String,
+    #[serde(default = "default_dict_batch_rows")]
+    dict_batch_rows: usize,
+    #[serde(default = "default_max_boundary_bytes")]
+    max_boundary_bytes: u64,
+}
+
+const fn default_dict_batch_rows() -> usize {
+    crate::DEFAULT_DICT_BATCH_ROWS
+}
+
+const fn default_max_boundary_bytes() -> u64 {
+    crate::DEFAULT_BOUNDARY_CHANNEL_BYTES
 }
 
 #[derive(Debug, Deserialize)]
@@ -600,13 +626,18 @@ mod health_tests {
     }
 }
 
-fn execution_capabilities(parallel: bool, bounded: bool) -> SourceExecutionCapabilities {
+fn execution_capabilities(
+    parallel: bool,
+    bounded: bool,
+    maximum_boundary_bytes: u64,
+) -> SourceExecutionCapabilities {
     let concurrency = if parallel { 64 } else { 1 };
+    let minimum_window_bytes = maximum_boundary_bytes.min(8 * 1024);
     SourceExecutionCapabilities {
-        minimum_poll_bytes: 8 * 1024,
-        maximum_poll_bytes: crate::DEFAULT_BOUNDARY_CHANNEL_BYTES,
-        minimum_decode_bytes: 8 * 1024,
-        maximum_decode_bytes: crate::DEFAULT_BOUNDARY_CHANNEL_BYTES,
+        minimum_poll_bytes: minimum_window_bytes,
+        maximum_poll_bytes: maximum_boundary_bytes,
+        minimum_decode_bytes: minimum_window_bytes,
+        maximum_decode_bytes: maximum_boundary_bytes,
         maximum_concurrency: concurrency,
         useful_concurrency: concurrency,
         executor_class: SourceExecutorClass::BlockingLane,
@@ -673,5 +704,39 @@ impl SourceDiscoverySession for PythonDiscoverySession {
             0,
             0,
         )
+    }
+}
+
+#[cfg(test)]
+mod option_tests {
+    use super::*;
+
+    #[test]
+    fn boundary_tuning_defaults_and_explicit_values_are_compiled_inputs() {
+        let defaults: PythonSourceOptions = decode_options(BTreeMap::from([(
+            "uri".to_owned(),
+            serde_json::json!("python://resource.py#rows"),
+        )]))
+        .unwrap();
+        assert_eq!(defaults.dict_batch_rows, crate::DEFAULT_DICT_BATCH_ROWS);
+        assert_eq!(
+            defaults.max_boundary_bytes,
+            crate::DEFAULT_BOUNDARY_CHANNEL_BYTES
+        );
+
+        let explicit: PythonSourceOptions = decode_options(BTreeMap::from([
+            (
+                "uri".to_owned(),
+                serde_json::json!("python://resource.py#rows"),
+            ),
+            ("dict_batch_rows".to_owned(), serde_json::json!(65_536)),
+            (
+                "max_boundary_bytes".to_owned(),
+                serde_json::json!(128 * 1024 * 1024_u64),
+            ),
+        ]))
+        .unwrap();
+        assert_eq!(explicit.dict_batch_rows, 65_536);
+        assert_eq!(explicit.max_boundary_bytes, 128 * 1024 * 1024);
     }
 }

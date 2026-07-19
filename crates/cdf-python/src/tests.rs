@@ -654,6 +654,73 @@ fn real_pyarrow_c_stream_propagates_an_error_between_batches() {
 }
 
 #[test]
+#[ignore = "slow H2 constant-memory evidence"]
+fn million_row_dict_stream_keeps_boundary_memory_constant() {
+    let maximum_boundary_bytes = 8 * 1024 * 1024;
+    let bridge = PythonResourceBridge::new(
+        PythonBridgeOptions::new(
+            ResourceId::new("python.memory").unwrap(),
+            PartitionId::new("python-000001").unwrap(),
+        )
+        .with_dict_batch_rows(1_024)
+        .unwrap()
+        .with_max_boundary_bytes(maximum_boundary_bytes)
+        .unwrap(),
+    );
+    let summary = bridge
+        .visit_json_dict_rows(
+            (0..1_000_000_u64).map(|id| serde_json::json!({"id": id, "active": true})),
+            |_outcome, _kind| Ok(()),
+        )
+        .unwrap();
+
+    assert_eq!(summary.row_count, 1_000_000);
+    assert!(summary.outcome_count > 900);
+    assert!(summary.peak_boundary_bytes <= maximum_boundary_bytes);
+    assert!(
+        summary.byte_count > summary.peak_boundary_bytes.saturating_mul(100),
+        "total={} peak={}",
+        summary.byte_count,
+        summary.peak_boundary_bytes
+    );
+}
+
+#[test]
+#[ignore = "slow H2 release-mode batch-size curve"]
+fn dict_row_batch_curve_reports_throughput_without_changing_defaults() {
+    use std::time::Instant;
+
+    const ROWS: u64 = 1_000_000;
+    for batch_rows in [1_024, 8_192, 65_536] {
+        let bridge = PythonResourceBridge::new(
+            PythonBridgeOptions::new(
+                ResourceId::new("python.batch-curve").unwrap(),
+                PartitionId::new("python-000001").unwrap(),
+            )
+            .with_dict_batch_rows(batch_rows)
+            .unwrap(),
+        );
+        let started = Instant::now();
+        let summary = bridge
+            .visit_json_dict_rows(
+                (0..ROWS).map(|id| serde_json::json!({"id": id, "name": "cdf"})),
+                |_outcome, _kind| Ok(()),
+            )
+            .unwrap();
+        let elapsed = started.elapsed();
+        let rows_per_second = ROWS as f64 / elapsed.as_secs_f64();
+        eprintln!(
+            "h2_dict_curve batch_rows={batch_rows} elapsed_ms={} rows_per_second={rows_per_second:.0} outcomes={} peak_boundary_bytes={}",
+            elapsed.as_millis(),
+            summary.outcome_count,
+            summary.peak_boundary_bytes
+        );
+        assert_eq!(summary.row_count, ROWS);
+        assert!(summary.peak_boundary_bytes <= DEFAULT_BOUNDARY_CHANNEL_BYTES);
+    }
+}
+
+#[test]
 fn interpreter_report_checks_version_path_and_gil_state() {
     Python::attach(|py| {
         let report = inspect_interpreter(py).unwrap();

@@ -584,6 +584,7 @@ fn external_source_inherits_registry_schema_add_discovery_and_doctor_laws() {
         .health_checks(
             &context,
             &[compiled.source_plan().clone()],
+            &[],
             cdf_runtime::SourceHealthLimits::default(),
             cdf_runtime::RunCancellation::default(),
         )

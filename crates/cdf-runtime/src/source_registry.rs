@@ -6,14 +6,16 @@ use std::{
 use cdf_kernel::{
     CdfError, EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, PartitionAttestationAttempt,
     PartitionOpenAttempt, PartitionPlan, QueryableResource, ResourceCapabilities,
-    ResourceDescriptor, ResourceStream, Result, ScanPlan, ScanRequest, TypePolicyAllowances,
+    ResourceDescriptor, ResourceId, ResourceStream, Result, ScanPlan, ScanRequest,
+    TypePolicyAllowances,
 };
 
 use crate::{
     CompiledSourcePlan, PlannedSourceAdd, SourceAddRequest, SourceCompileRequest,
     SourceDiscoveryCandidate, SourceDiscoveryKind, SourceDiscoveryRequest, SourceDiscoverySession,
     SourceDriver, SourceDriverDescriptor, SourceDriverId, SourceHealthRequest, SourceHealthResult,
-    SourceReferenceCompileRequest, SourceResolutionContext, SourceSchemaObservation, artifact_hash,
+    SourceHealthTarget, SourceReferenceCompileRequest, SourceResolutionContext,
+    SourceSchemaObservation, artifact_hash,
 };
 
 #[derive(Default)]
@@ -290,18 +292,36 @@ impl SourceRegistry {
         &self,
         context: &SourceResolutionContext<'_>,
         compiled_plans: &[CompiledSourcePlan],
+        configured_resources: &[SourceHealthTarget],
         limits: crate::SourceHealthLimits,
         cancellation: crate::RunCancellation,
     ) -> Result<Vec<SourceHealthResult>> {
         let budget =
             crate::SourceHealthBudget::new(limits, context.execution().clone(), cancellation)?;
         let mut plans = BTreeMap::<SourceDriverId, Vec<CompiledSourcePlan>>::new();
+        let mut configured_by_driver = BTreeMap::<SourceDriverId, BTreeSet<ResourceId>>::new();
         for plan in compiled_plans {
             let driver = self.driver_for_plan(plan)?;
             plans
                 .entry(driver.descriptor().driver_id.clone())
                 .or_default()
                 .push(plan.clone());
+            configured_by_driver
+                .entry(driver.descriptor().driver_id.clone())
+                .or_default()
+                .insert(plan.descriptor.resource_id.clone());
+        }
+        for target in configured_resources {
+            if !self.drivers.contains_key(target.driver_id()) {
+                return Err(CdfError::contract(format!(
+                    "source health target requires unregistered driver `{}`",
+                    target.driver_id().as_str()
+                )));
+            }
+            configured_by_driver
+                .entry(target.driver_id().clone())
+                .or_default()
+                .insert(target.resource_id().clone());
         }
         let mut results = Vec::new();
         let mut probe_ids = BTreeSet::new();
@@ -326,6 +346,11 @@ impl SourceRegistry {
             driver.health(
                 SourceHealthRequest {
                     compiled_plans: driver_plans,
+                    configured_resource_ids: configured_by_driver
+                        .remove(driver_id)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .collect(),
                     budget: budget.clone(),
                 },
                 context,

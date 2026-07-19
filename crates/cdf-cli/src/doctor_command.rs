@@ -1,4 +1,4 @@
-use cdf_project::{FileResourceSourceResolver, validate_project};
+use cdf_project::{FileResourceSourceResolver, ResourceSourceKind, validate_project};
 use serde::Serialize;
 use serde_json::json;
 
@@ -150,6 +150,32 @@ fn source_driver_health_checks(
         .iter()
         .map(|resource| resource.source_plan().clone())
         .collect::<Vec<_>>();
+    let configured_resources = context
+        .config
+        .resources
+        .iter()
+        .filter_map(|(resource_id, mapping)| match mapping.source_kind() {
+            ResourceSourceKind::Reference { uri } => Some(
+                cdf_kernel::ResourceId::new(resource_id.clone()).and_then(|resource_id| {
+                    let driver = registry.driver_for_uri(&uri)?;
+                    Ok(cdf_runtime::SourceHealthTarget::new(
+                        resource_id,
+                        driver.descriptor().driver_id.clone(),
+                    ))
+                }),
+            ),
+            ResourceSourceKind::DeclarativeFile { .. } => None,
+        })
+        .collect::<Result<Vec<_>, _>>();
+    let configured_resources = match configured_resources {
+        Ok(resources) => resources,
+        Err(error) => {
+            return vec![DoctorCheck::failed(
+                "source_health",
+                format!("source health inventory is invalid: {}", error.message),
+            )];
+        }
+    };
     let resolution = cdf_runtime::SourceResolutionContext::new(
         &context.root,
         std::sync::Arc::new(context.secret_provider()),
@@ -160,6 +186,7 @@ fn source_driver_health_checks(
     match registry.health_checks(
         &resolution,
         &plans,
+        &configured_resources,
         cdf_runtime::SourceHealthLimits::default(),
         cdf_runtime::RunCancellation::default(),
     ) {

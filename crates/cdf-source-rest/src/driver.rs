@@ -1185,6 +1185,7 @@ mod tests {
             .health_checks(
                 &context,
                 std::slice::from_ref(&plan),
+                &[],
                 cdf_runtime::SourceHealthLimits::default(),
                 cdf_runtime::RunCancellation::default(),
             )

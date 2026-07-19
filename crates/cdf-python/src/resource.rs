@@ -25,9 +25,7 @@ use pyo3::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{
-    DEFAULT_BOUNDARY_CHANNEL_BYTES, PythonBridgeOptions, PythonResourceBridge, internal::py_error,
-};
+use crate::{PythonBridgeOptions, PythonResourceBridge, internal::py_error};
 
 const PARTITION_ID: &str = "python-000001";
 
@@ -41,6 +39,8 @@ pub struct PythonResource {
     callable: String,
     content_hash: String,
     bounded: bool,
+    dict_batch_rows: usize,
+    max_boundary_bytes: u64,
     execution: Option<cdf_runtime::ExecutionServices>,
     blocking_lane: Option<String>,
     compiled_source_plan_hash: Option<String>,
@@ -55,6 +55,8 @@ pub(crate) struct PythonPhysicalPlan {
     pub(crate) callable: String,
     pub(crate) content_hash: String,
     pub(crate) bounded: bool,
+    pub(crate) dict_batch_rows: usize,
+    pub(crate) max_boundary_bytes: u64,
 }
 
 impl PythonResource {
@@ -63,7 +65,14 @@ impl PythonResource {
         uri: &str,
         resource_id: ResourceId,
         trust_level: TrustLevel,
+        dict_batch_rows: usize,
+        max_boundary_bytes: u64,
     ) -> Result<Self> {
+        if dict_batch_rows == 0 || max_boundary_bytes == 0 {
+            return Err(cdf_kernel::CdfError::contract(
+                "Python source dict_batch_rows and max_boundary_bytes must be greater than zero",
+            ));
+        }
         let (module_relative, callable) = parse_python_uri(uri)?;
         let module_path = resolve_module_path(project_root, &module_relative)?;
         let source = fs::read_to_string(&module_path).map_err(|error| {
@@ -151,6 +160,8 @@ impl PythonResource {
             callable,
             content_hash,
             bounded: metadata.bounded,
+            dict_batch_rows,
+            max_boundary_bytes,
             execution: None,
             blocking_lane: None,
             compiled_source_plan_hash: None,
@@ -165,6 +176,8 @@ impl PythonResource {
             callable: self.callable.clone(),
             content_hash: self.content_hash.clone(),
             bounded: self.bounded,
+            dict_batch_rows: self.dict_batch_rows,
+            max_boundary_bytes: self.max_boundary_bytes,
         }
     }
 
@@ -174,6 +187,11 @@ impl PythonResource {
         physical: PythonPhysicalPlan,
         compiled_source_plan_hash: String,
     ) -> Result<Self> {
+        if physical.dict_batch_rows == 0 || physical.max_boundary_bytes == 0 {
+            return Err(cdf_kernel::CdfError::contract(
+                "compiled Python source dict_batch_rows and max_boundary_bytes must be greater than zero",
+            ));
+        }
         let module_path = resolve_module_path(project_root, &physical.module_relative)?;
         Ok(Self {
             descriptor: plan.descriptor.clone(),
@@ -184,6 +202,8 @@ impl PythonResource {
             callable: physical.callable,
             content_hash: physical.content_hash,
             bounded: physical.bounded,
+            dict_batch_rows: physical.dict_batch_rows,
+            max_boundary_bytes: physical.max_boundary_bytes,
             execution: None,
             blocking_lane: None,
             compiled_source_plan_hash: Some(compiled_source_plan_hash),
@@ -272,7 +292,10 @@ impl PythonResource {
         let opaque_blob = format!("{}#{}", self.content_hash, self.callable).into_bytes();
         let blob_sha256 = format!("sha256:{}", hex::encode(Sha256::digest(&opaque_blob)));
         let cursor = self.descriptor.cursor.clone();
-        let mut reservation = Some(reserve_python_batch(Arc::clone(&memory))?);
+        let mut reservation = Some(reserve_python_batch(
+            Arc::clone(&memory),
+            self.max_boundary_bytes,
+        )?);
         Python::attach(|py| -> Result<_> {
             let module = load_module(py, &source, &self.module_relative)?;
             let callable = module.getattr(self.callable.as_str()).map_err(|_| {
@@ -290,7 +313,9 @@ impl PythonResource {
             PythonResourceBridge::new(PythonBridgeOptions::new(
                 self.descriptor.resource_id.clone(),
                 partition.partition_id.clone(),
-            ))
+            )
+            .with_dict_batch_rows(self.dict_batch_rows)?
+            .with_max_boundary_bytes(self.max_boundary_bytes)?)
             .visit_python_foreign_iterable(&iterable, |outcome, _kind| {
                 let mut batch = outcome.batch;
                 cancellation.check()?;
@@ -315,9 +340,10 @@ impl PythonResource {
                     .ok_or_else(|| {
                         cdf_kernel::CdfError::data("Python batch retained memory exceeds u64")
                     })?;
-                if retained_bytes == 0 || retained_bytes > DEFAULT_BOUNDARY_CHANNEL_BYTES {
+                if retained_bytes == 0 || retained_bytes > self.max_boundary_bytes {
                     return Err(cdf_kernel::CdfError::data(format!(
-                        "Python source batch retains {retained_bytes} bytes outside its compiled 1..={DEFAULT_BOUNDARY_CHANNEL_BYTES}-byte limit; emit smaller Arrow batches or lower dict_batch_rows"
+                        "Python source batch retains {retained_bytes} bytes outside its compiled 1..={}-byte limit; emit smaller Arrow batches, lower dict_batch_rows, or raise max_boundary_bytes",
+                        self.max_boundary_bytes
                     )));
                 }
                 let lease = reservation.take().ok_or_else(|| {
@@ -332,7 +358,10 @@ impl PythonResource {
                 )?)?;
                 sender.send(batch)?;
                 cancellation.check()?;
-                reservation = Some(reserve_python_batch(Arc::clone(&memory))?);
+                reservation = Some(reserve_python_batch(
+                    Arc::clone(&memory),
+                    self.max_boundary_bytes,
+                )?);
                 Ok(())
             })?;
             Ok(())
@@ -343,12 +372,13 @@ impl PythonResource {
 
 fn reserve_python_batch(
     memory: Arc<dyn cdf_memory::MemoryCoordinator>,
+    maximum_boundary_bytes: u64,
 ) -> Result<cdf_memory::MemoryLease> {
     cdf_memory::reserve_blocking(
         memory,
         &cdf_memory::ReservationRequest::new(
             cdf_memory::ConsumerKey::new("python-source-batch", cdf_memory::MemoryClass::Source)?,
-            DEFAULT_BOUNDARY_CHANNEL_BYTES,
+            maximum_boundary_bytes,
         )?,
     )
 }

@@ -12585,6 +12585,18 @@ fn python_resource_plan_preview_run_and_replay_use_the_product_spine() {
     assert_eq!(report["result"]["writes"]["checkpoint"], true);
     let package = run_package_dir(&project, &run_result);
     assert!(package.join("manifest.json").is_file());
+    if let Ok(path) = std::env::var("CDF_PYTHON_PACKAGE_DATA_HASH_OUTPUT") {
+        let manifest = cdf_package::read_manifest(&package).unwrap();
+        let mut hasher = Sha256::new();
+        hasher.update(b"cdf-python-package-data-v1");
+        for segment in &manifest.identity.segments {
+            hasher.update(segment.segment_id.as_str().as_bytes());
+            hasher.update(segment.package_row_ord_start.to_le_bytes());
+            hasher.update(segment.row_count.to_le_bytes());
+            hasher.update(segment.sha256.as_bytes());
+        }
+        fs::write(path, format!("sha256:{:x}\n", hasher.finalize())).unwrap();
+    }
     assert!(marker.is_file());
 
     fs::write(

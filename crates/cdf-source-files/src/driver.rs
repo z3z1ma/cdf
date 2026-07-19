@@ -1874,6 +1874,7 @@ mod tests {
             .health(
                 SourceHealthRequest {
                     compiled_plans: vec![plan.clone()],
+                    configured_resource_ids: vec![plan.descriptor.resource_id.clone()],
                     budget: cdf_runtime::SourceHealthBudget::new(
                         cdf_runtime::SourceHealthLimits::default(),
                         execution.clone(),
@@ -1910,6 +1911,7 @@ mod tests {
         driver
             .health(
                 SourceHealthRequest {
+                    configured_resource_ids: vec![plan.descriptor.resource_id.clone()],
                     compiled_plans: vec![plan],
                     budget: cdf_runtime::SourceHealthBudget::new(
                         cdf_runtime::SourceHealthLimits {
