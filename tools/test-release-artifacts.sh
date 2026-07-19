@@ -30,7 +30,6 @@ echo "fake cdf"
 FAKE_CDF
 chmod +x "${fake_bin_dir}/cdf"
 printf 'fixture DuckDB shared library\n' >"${fake_bin_dir}/libduckdb.so"
-printf '{"nanoarrow":{"version":"0.8.0","ipc_lz4":true}}\n' >"${fake_bin_dir}/duckdb-nanoarrow-build.json"
 printf 'complete -c cdf\n' >"${generated_dir}/completions/cdf.bash"
 printf '.TH cdf 1\n' >"${generated_dir}/man/cdf.1"
 
@@ -44,7 +43,6 @@ tools/package-release-artifact.sh \
   --target "$target" \
   --binary "${fake_bin_dir}/cdf" \
   --duckdb-library "${fake_bin_dir}/libduckdb.so" \
-  --duckdb-build-metadata "${fake_bin_dir}/duckdb-nanoarrow-build.json" \
   --out-dir "$dist_dir" \
   --completions-dir "${generated_dir}/completions" \
   --man-dir "${generated_dir}/man" >"${test_root}/package.out"
@@ -60,7 +58,6 @@ tools/package-release-artifact.sh \
   --target "$target" \
   --binary "${fake_bin_dir}/cdf" \
   --duckdb-library "${fake_bin_dir}/libduckdb.so" \
-  --duckdb-build-metadata "${fake_bin_dir}/duckdb-nanoarrow-build.json" \
   --out-dir "$repro_dist_a" \
   --completions-dir "${generated_dir}/completions" \
   --man-dir "${generated_dir}/man" >/dev/null
@@ -70,7 +67,6 @@ tools/package-release-artifact.sh \
   --target "$target" \
   --binary "${fake_bin_dir}/cdf" \
   --duckdb-library "${fake_bin_dir}/libduckdb.so" \
-  --duckdb-build-metadata "${fake_bin_dir}/duckdb-nanoarrow-build.json" \
   --out-dir "$repro_dist_b" \
   --completions-dir "${generated_dir}/completions" \
   --man-dir "${generated_dir}/man" >/dev/null
@@ -86,7 +82,6 @@ tar -xzf "${dist_dir}/cdf-${version}-${target}.tar.gz" -C "$extract_dir"
 [[ -f "${extract_dir}/cdf-${version}-${target}/generated/completions/cdf.bash" ]] || fail 'completion artifact was not packaged'
 [[ -f "${extract_dir}/cdf-${version}-${target}/generated/man/cdf.1" ]] || fail 'man artifact was not packaged'
 [[ -f "${extract_dir}/cdf-${version}-${target}/bin/libduckdb.so" ]] || fail 'DuckDB shared library was not packaged'
-[[ -f "${extract_dir}/cdf-${version}-${target}/duckdb-nanoarrow-build.json" ]] || fail 'DuckDB nanoarrow build metadata was not packaged'
 printf 'ok generated completions and man pages are packaged when present\n'
 
 missing_generated_dist="${test_root}/dist-missing-generated"
@@ -95,7 +90,6 @@ tools/package-release-artifact.sh \
   --target "$target" \
   --binary "${fake_bin_dir}/cdf" \
   --duckdb-library "${fake_bin_dir}/libduckdb.so" \
-  --duckdb-build-metadata "${fake_bin_dir}/duckdb-nanoarrow-build.json" \
   --out-dir "$missing_generated_dist" >"${test_root}/package-missing-generated.out"
 tools/verify-release-artifacts.sh "$version" "$missing_generated_dist" "$target" >/dev/null
 tar -xzf "${missing_generated_dist}/cdf-${version}-${target}.tar.gz" -C "$extract_dir"

@@ -49,7 +49,7 @@ impl std::fmt::Debug for DuckDbNativeResources {
 }
 
 #[derive(Debug)]
-pub(crate) struct DuckDbArrowWriter {
+pub(crate) struct DuckDbCommitWriter {
     pub(crate) conn: Connection,
     pub(crate) segment_scan: DuckDbSegmentScanRuntime,
     _lock: WriterLock,
@@ -253,7 +253,7 @@ impl DuckDbDestination {
         &self,
         request: &cdf_runtime::StagedIngressRequest,
         files: Vec<PathBuf>,
-    ) -> Result<(DuckDbArrowWriter, Vec<MigrationRecord>)> {
+    ) -> Result<(DuckDbCommitWriter, Vec<MigrationRecord>)> {
         validate_user_schema_fields(request.output_schema())?;
         let user_fields = request
             .output_schema()
@@ -274,7 +274,7 @@ impl DuckDbDestination {
         let conn = segment_scan.connection()?;
         ensure_mirror_tables(&conn)?;
         conn.execute_batch("BEGIN TRANSACTION")
-            .map_err(|error| duckdb_error("begin staged Arrow transaction", error))?;
+            .map_err(|error| duckdb_error("begin DuckDB commit transaction", error))?;
         let table_plan = plan_table(
             &conn,
             target,
@@ -315,7 +315,7 @@ impl DuckDbDestination {
         let first_row_key = next_row_key(&conn)?;
         let duckdb_version = duckdb_version(&conn).unwrap_or_else(|_| "unknown".to_owned());
         Ok((
-            DuckDbArrowWriter {
+            DuckDbCommitWriter {
                 conn,
                 segment_scan,
                 _lock: lock,
@@ -803,7 +803,7 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
                 rows_updated: Some(0),
                 rows_deleted: Some(0),
             },
-            WriteDisposition::Merge => finalize_arrow_merge(
+            WriteDisposition::Merge => finalize_merge(
                 &writer.conn,
                 &writer.target,
                 &writer.write_target,
@@ -863,7 +863,7 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
         writer
             .conn
             .execute_batch("COMMIT")
-            .map_err(|error| duckdb_error("commit staged Arrow transaction", error))?;
+            .map_err(|error| duckdb_error("commit DuckDB transaction", error))?;
         Ok(cdf_runtime::DestinationCommitOutcome::new(
             receipt,
             cdf_runtime::DestinationReceiptReportingPolicy::DestinationCommit { duplicate: false },
@@ -875,7 +875,7 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
     }
 }
 
-fn rollback_staged_writer(writer: &mut DuckDbArrowWriter, context: &str) -> Result<()> {
+fn rollback_staged_writer(writer: &mut DuckDbCommitWriter, context: &str) -> Result<()> {
     writer
         .conn
         .execute_batch("ROLLBACK")

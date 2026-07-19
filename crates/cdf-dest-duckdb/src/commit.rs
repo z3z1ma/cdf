@@ -18,7 +18,7 @@ pub(crate) fn apply_table_plan(
     Ok(())
 }
 
-pub(crate) fn finalize_arrow_merge(
+pub(crate) fn finalize_merge(
     conn: &Connection,
     target: &TargetRef,
     staging: &TargetRef,
@@ -47,7 +47,7 @@ pub(crate) fn finalize_arrow_merge(
             [],
             |row| row.get(0),
         )
-        .map_err(|error| duckdb_error("validate DuckDB Arrow merge null keys", error))?;
+        .map_err(|error| duckdb_error("validate DuckDB merge null keys", error))?;
     if has_null {
         return Err(CdfError::data("DuckDB merge key values cannot be NULL"));
     }
@@ -89,7 +89,7 @@ pub(crate) fn finalize_arrow_merge(
             [],
             |row| row.get(0),
         )
-        .map_err(|error| duckdb_error("validate DuckDB Arrow merge duplicate keys", error))?;
+        .map_err(|error| duckdb_error("validate DuckDB merge duplicate keys", error))?;
     if conflicting {
         return Err(CdfError::data(
             "DuckDB merge package contains conflicting duplicate merge keys; no winner policy is ratified",
@@ -118,7 +118,7 @@ pub(crate) fn finalize_arrow_merge(
         order = quote_ident(CDF_STAGE_ORDER_COLUMN),
         stage = staging.sql_name(),
     ))
-    .map_err(|error| duckdb_error("deduplicate DuckDB Arrow merge staging", error))?;
+    .map_err(|error| duckdb_error("deduplicate DuckDB merge staging", error))?;
 
     let written: u64 = conn
         .query_row(
@@ -126,7 +126,7 @@ pub(crate) fn finalize_arrow_merge(
             [],
             |row| row.get(0),
         )
-        .map_err(|error| duckdb_error("count DuckDB Arrow merge rows", error))?;
+        .map_err(|error| duckdb_error("count DuckDB merge rows", error))?;
     let predicate = merge_predicate(merge_keys)?;
     let updated: u64 = conn
         .query_row(
@@ -139,7 +139,7 @@ pub(crate) fn finalize_arrow_merge(
             [],
             |row| row.get(0),
         )
-        .map_err(|error| duckdb_error("count DuckDB Arrow merge updates", error))?;
+        .map_err(|error| duckdb_error("count DuckDB merge updates", error))?;
     conn.execute_batch(&format!(
         "DELETE FROM {} AS target USING {} AS stage WHERE {}; INSERT INTO {} ({}) SELECT {} FROM {}",
         target.sql_name(),
@@ -150,7 +150,7 @@ pub(crate) fn finalize_arrow_merge(
         column_list,
         dedup.sql_name(),
     ))
-    .map_err(|error| duckdb_error("apply DuckDB Arrow merge", error))?;
+    .map_err(|error| duckdb_error("apply DuckDB merge", error))?;
     Ok(CommitCounts {
         rows_written: written,
         rows_inserted: Some(written.saturating_sub(updated)),

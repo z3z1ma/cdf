@@ -238,8 +238,6 @@ install_dir="${prefix}/bin"
 target_path="${install_dir}/cdf"
 duckdb_name="$(duckdb_library_name "$target")"
 duckdb_target_path="${install_dir}/${duckdb_name}"
-metadata_dir="${prefix}/share/cdf"
-duckdb_metadata_target_path="${metadata_dir}/duckdb-nanoarrow-build.json"
 
 if [[ "$dry_run" -eq 1 ]]; then
   cat <<DRYRUN
@@ -251,7 +249,6 @@ checksum: ${checksum_source}
 prefix: ${prefix}
 install path: ${target_path}
 DuckDB library: ${duckdb_target_path}
-DuckDB build metadata: ${duckdb_metadata_target_path}
 No files written.
 DRYRUN
   exit 0
@@ -280,36 +277,24 @@ fi
 tar -xzf "$artifact_file" -C "$extract_dir" || die "failed to extract artifact: $artifact_source"
 binary_path="$(find "$extract_dir" -type f -name cdf -print -quit)"
 duckdb_path="$(find "$extract_dir" -type f -name "$duckdb_name" -print -quit)"
-duckdb_metadata_path="$(find "$extract_dir" -type f -name duckdb-nanoarrow-build.json -print -quit)"
 [[ -n "$binary_path" ]] || die 'artifact does not contain a cdf binary'
 [[ -x "$binary_path" ]] || die 'artifact cdf binary is not executable'
 [[ -n "$duckdb_path" ]] || die "artifact does not contain ${duckdb_name}"
-[[ -n "$duckdb_metadata_path" ]] || die 'artifact does not contain duckdb-nanoarrow-build.json'
 
 installed_version="$("$binary_path" version 2>/dev/null)" || die 'artifact cdf binary did not print a version'
 [[ -n "$installed_version" ]] || die 'artifact cdf binary printed an empty version'
 
 install -d "$install_dir" || die "failed to create install directory: $install_dir"
-install -d "$metadata_dir" || die "failed to create metadata directory: $metadata_dir"
 tmp_target="${install_dir}/.cdf.tmp.$$"
 tmp_duckdb_target="${install_dir}/.${duckdb_name}.tmp.$$"
-tmp_duckdb_metadata_target="${metadata_dir}/.duckdb-nanoarrow-build.json.tmp.$$"
-rm -f "$tmp_target" "$tmp_duckdb_target" "$tmp_duckdb_metadata_target"
+rm -f "$tmp_target" "$tmp_duckdb_target"
 if ! install -m 0755 "$binary_path" "$tmp_target"; then
   rm -f "$tmp_target" "$tmp_duckdb_target"
   die "failed to stage cdf binary in $install_dir"
 fi
 if ! install -m 0755 "$duckdb_path" "$tmp_duckdb_target"; then
-  rm -f "$tmp_target" "$tmp_duckdb_target" "$tmp_duckdb_metadata_target"
+  rm -f "$tmp_target" "$tmp_duckdb_target"
   die "failed to stage ${duckdb_name} in $install_dir"
-fi
-if ! install -m 0644 "$duckdb_metadata_path" "$tmp_duckdb_metadata_target"; then
-  rm -f "$tmp_target" "$tmp_duckdb_target" "$tmp_duckdb_metadata_target"
-  die "failed to stage DuckDB build metadata in $metadata_dir"
-fi
-if ! mv "$tmp_duckdb_metadata_target" "$duckdb_metadata_target_path"; then
-  rm -f "$tmp_target" "$tmp_duckdb_target" "$tmp_duckdb_metadata_target"
-  die "failed to install DuckDB build metadata at $duckdb_metadata_target_path"
 fi
 if ! mv "$tmp_duckdb_target" "$duckdb_target_path"; then
   rm -f "$tmp_target" "$tmp_duckdb_target"

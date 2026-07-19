@@ -12,7 +12,7 @@ Package a built CDF binary into a checksummed release archive.
 
 Usage:
   package-release-artifact.sh --version VERSION --target TARGET --binary PATH
-                              --duckdb-library PATH --duckdb-build-metadata PATH
+                              --duckdb-library PATH
                               --out-dir DIR
                               [--completions-dir DIR] [--man-dir DIR]
                               [--skip-binary-run REASON]
@@ -73,7 +73,6 @@ version=""
 target=""
 binary=""
 duckdb_library=""
-duckdb_build_metadata=""
 out_dir=""
 completions_dir=""
 man_dir=""
@@ -99,11 +98,6 @@ while [[ $# -gt 0 ]]; do
     --duckdb-library)
       [[ -n "${2:-}" && "${2:-}" != --* ]] || die '--duckdb-library requires a value'
       duckdb_library="$2"
-      shift 2
-      ;;
-    --duckdb-build-metadata)
-      [[ -n "${2:-}" && "${2:-}" != --* ]] || die '--duckdb-build-metadata requires a value'
-      duckdb_build_metadata="$2"
       shift 2
       ;;
     --out-dir)
@@ -140,12 +134,10 @@ done
 [[ -n "$target" ]] || die '--target is required'
 [[ -n "$binary" ]] || die '--binary is required'
 [[ -n "$duckdb_library" ]] || die '--duckdb-library is required'
-[[ -n "$duckdb_build_metadata" ]] || die '--duckdb-build-metadata is required'
 [[ -n "$out_dir" ]] || die '--out-dir is required'
 [[ -f "$binary" ]] || die "binary does not exist: $binary"
 [[ -x "$binary" ]] || die "binary is not executable: $binary"
 [[ -f "$duckdb_library" ]] || die "DuckDB library does not exist: $duckdb_library"
-[[ -f "$duckdb_build_metadata" ]] || die "DuckDB build metadata does not exist: $duckdb_build_metadata"
 [[ -f LICENSE ]] || die 'LICENSE is required'
 [[ -f CHANGELOG.md ]] || die 'CHANGELOG.md is required'
 [[ -f tools/write-reproducible-targz.py ]] || die 'tools/write-reproducible-targz.py is required'
@@ -185,7 +177,6 @@ esac
 cp "$binary" "${stage_dir}/bin/${binary_name}"
 chmod 0755 "${stage_dir}/bin/${binary_name}"
 cp "$duckdb_library" "${stage_dir}/bin/${duckdb_library_name}"
-cp "$duckdb_build_metadata" "${stage_dir}/duckdb-nanoarrow-build.json"
 cp LICENSE "${stage_dir}/LICENSE"
 
 tools/verify-release-metadata.sh "$version" --write-changelog-excerpt "${stage_dir}/CHANGELOG-excerpt.md" >/dev/null
@@ -202,7 +193,7 @@ target: ${target}
 archive: ${archive_base}.tar.gz
 binary: bin/${binary_name}
 duckdb_library: bin/${duckdb_library_name}
-duckdb_linkage: dynamic runtime with statically linked nanoarrow; see duckdb-nanoarrow-build.json
+duckdb_linkage: pinned stock dynamic runtime
 binary_version_probe: ${version_output}
 license: Apache-2.0
 crates_io_publication: disabled while the DataFusion git pin is active

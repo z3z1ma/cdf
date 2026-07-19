@@ -71,7 +71,7 @@ pub(crate) fn duckdb_type(data_type: &DataType) -> Result<String> {
         }
         DataType::Decimal256(_, _) => {
             return Err(CdfError::contract(
-                "DuckDB's pinned Arrow appender maps Decimal256 through DOUBLE and cannot preserve it losslessly",
+                "DuckDB DECIMAL precision is limited to 38; Decimal256 cannot be preserved losslessly",
             ));
         }
         DataType::Date32 => "DATE",

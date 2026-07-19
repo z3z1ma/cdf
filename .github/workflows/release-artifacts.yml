@@ -163,33 +163,10 @@ jobs:
         shell: bash
         run: tools/verify-release-metadata.sh "${{ needs.metadata.outputs.version }}"
 
-      - name: Build pinned DuckDB nanoarrow runtime
-        shell: bash
-        run: |
-          tools/build-duckdb-nanoarrow-runtime.sh \
-            --target "${{ matrix.target }}" \
-            --out-dir "target/cdf-duckdb-runtime/${{ matrix.target }}" \
-            --jobs "$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 1)"
-
-      - name: Verify pinned DuckDB nanoarrow runtime
-        shell: bash
-        run: |
-          target="${{ matrix.target }}"
-          case "$target" in
-            *-apple-darwin) duckdb_library="target/cdf-duckdb-runtime/${target}/lib/libduckdb.dylib" ;;
-            *-unknown-linux-gnu) duckdb_library="target/cdf-duckdb-runtime/${target}/lib/libduckdb.so" ;;
-            x86_64-pc-windows-msvc) duckdb_library="target/cdf-duckdb-runtime/${target}/lib/duckdb.dll" ;;
-            *) echo "unsupported release target: $target" >&2; exit 1 ;;
-          esac
-          python3 tools/verify-duckdb-nanoarrow-runtime.py --library "$duckdb_library"
-
       - name: Build cdf
         shell: bash
         run: |
-          runtime="$PWD/target/cdf-duckdb-runtime/${{ matrix.target }}"
-          DUCKDB_LIB_DIR="$runtime/lib" \
-          DUCKDB_INCLUDE_DIR="$runtime/include" \
-          CDF_DUCKDB_NANOARROW_STATIC_LINK=1 \
+          DUCKDB_DOWNLOAD_LIB=1 \
             cargo build -p cdf-cli --release --locked --target "${{ matrix.target }}"
 
       - name: Download canonical CLI artifacts
@@ -204,21 +181,28 @@ jobs:
           target="${{ matrix.target }}"
           version="${{ needs.metadata.outputs.version }}"
           binary="target/${target}/release/${{ matrix.binary }}"
-          runtime="target/cdf-duckdb-runtime/${target}"
           case "$target" in
             *-apple-darwin)
-              duckdb_library="${runtime}/lib/libduckdb.dylib"
-              export DYLD_FALLBACK_LIBRARY_PATH="$PWD/${runtime}/lib${DYLD_FALLBACK_LIBRARY_PATH:+:${DYLD_FALLBACK_LIBRARY_PATH}}"
+              duckdb_name="libduckdb.dylib"
               ;;
             *-unknown-linux-gnu)
-              duckdb_library="${runtime}/lib/libduckdb.so"
-              export LD_LIBRARY_PATH="$PWD/${runtime}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+              duckdb_name="libduckdb.so"
               ;;
             x86_64-pc-windows-msvc)
-              duckdb_library="${runtime}/lib/duckdb.dll"
-              export PATH="$PWD/${runtime}/lib:${PATH}"
+              duckdb_name="duckdb.dll"
               ;;
             *) echo "unsupported release target: $target" >&2; exit 1 ;;
+          esac
+          duckdb_library="$(find "target/duckdb-download/${target}" -type f -name "$duckdb_name" -print -quit)"
+          if [[ -z "$duckdb_library" ]]; then
+            echo "downloaded DuckDB library is absent for ${target}" >&2
+            exit 1
+          fi
+          duckdb_dir="$(dirname "$duckdb_library")"
+          case "$target" in
+            *-apple-darwin) export DYLD_FALLBACK_LIBRARY_PATH="$PWD/${duckdb_dir}${DYLD_FALLBACK_LIBRARY_PATH:+:${DYLD_FALLBACK_LIBRARY_PATH}}" ;;
+            *-unknown-linux-gnu) export LD_LIBRARY_PATH="$PWD/${duckdb_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" ;;
+            x86_64-pc-windows-msvc) export PATH="$PWD/${duckdb_dir}:${PATH}" ;;
           esac
           host="$(rustc -vV | awk '/^host:/ { print $2 }')"
           args=(
@@ -226,7 +210,6 @@ jobs:
             --target "$target"
             --binary "$binary"
             --duckdb-library "$duckdb_library"
-            --duckdb-build-metadata "${runtime}/duckdb-nanoarrow-build.json"
             --out-dir "dist"
           )
           if [[ -d target/generated/completions ]]; then

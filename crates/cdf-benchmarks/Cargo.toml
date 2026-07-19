@@ -36,7 +36,7 @@ cdf-source-files = { path = "../cdf-source-files" }
 cdf-source-rest = { path = "../cdf-source-rest" }
 cdf-state-sqlite = { path = "../cdf-state-sqlite" }
 datafusion = { git = "https://github.com/apache/datafusion.git", rev = "7ff7278edc1bf7446303bff51e5883a38414bbdf", default-features = false }
-duckdb.workspace = true
+duckdb = { workspace = true, features = ["appender-arrow"] }
 futures-executor = "0.3.32"
 futures-util = "0.3.32"
 hex = "0.4.3"

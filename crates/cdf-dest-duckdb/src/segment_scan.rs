@@ -19,14 +19,14 @@ use arrow_schema::{DataType, Schema, SchemaRef, TimeUnit, ffi::FFI_ArrowSchema};
 use cdf_kernel::{CdfError, Result};
 
 use crate::{
-    CDF_ROW_KEY_COLUMN, CDF_STAGE_ORDER_COLUMN, DuckDbArrowWriter, DuckDbNativeResources,
+    CDF_ROW_KEY_COLUMN, CDF_STAGE_ORDER_COLUMN, DuckDbCommitWriter, DuckDbNativeResources,
     package::duckdb_type, sql::quote_ident,
 };
 
 pub(crate) const SEGMENT_SCAN_FUNCTION: &str = "__cdf_canonical_segments";
 
 pub(crate) fn ingest_canonical_segments(
-    writer: &mut DuckDbArrowWriter,
+    writer: &mut DuckDbCommitWriter,
     expected_rows: u64,
     merge: bool,
 ) -> Result<()> {
