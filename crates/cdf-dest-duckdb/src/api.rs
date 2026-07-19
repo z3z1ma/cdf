@@ -161,6 +161,7 @@ pub(crate) struct ReceiptBuildContext<'a> {
     pub(crate) duckdb_version: &'a str,
     pub(crate) database_path: &'a Path,
     pub(crate) lock_path: &'a Path,
+    pub(crate) nanoarrow_linkage: Option<&'a str>,
     pub(crate) nanoarrow_sha256: Option<&'a str>,
 }
 
@@ -215,7 +216,8 @@ impl DuckDbDestination {
         mut self,
         execution: &cdf_runtime::ExecutionServices,
     ) -> Result<Self> {
-        self.native_resources = DuckDbNativeResources::for_execution(execution)?;
+        self.native_resources =
+            DuckDbNativeResources::for_execution(execution, self.nanoarrow.is_some())?;
         Ok(self)
     }
 
@@ -496,22 +498,20 @@ impl DuckDbNativeResources {
         }
     }
 
-    fn for_execution(execution: &cdf_runtime::ExecutionServices) -> Result<Self> {
-        Self::for_budgets(
-            execution.memory().snapshot().budget_bytes,
-            execution.spill(),
-        )
-    }
-
-    fn for_budgets(
-        managed_budget: u64,
-        spill: Arc<dyn cdf_runtime::SpillBudgetCoordinator>,
+    fn for_execution(
+        execution: &cdf_runtime::ExecutionServices,
+        final_binding_bulk: bool,
     ) -> Result<Self> {
-        Self::for_budgets_with_overrides(
-            managed_budget,
-            spill,
-            DuckDbNativeResourceOverrides::from_env()?,
-        )
+        let managed_budget = execution.memory().snapshot().budget_bytes;
+        let mut overrides = DuckDbNativeResourceOverrides::from_env()?;
+        if overrides.internal_threads.is_none() {
+            overrides.internal_threads =
+                Some(i64::from(execution.capabilities().logical_cpu_slots.max(1)));
+        }
+        if overrides.memory_limit_bytes.is_none() && final_binding_bulk {
+            overrides.memory_limit_bytes = Some(managed_budget);
+        }
+        Self::for_budgets_with_overrides(managed_budget, execution.spill(), overrides)
     }
 
     fn for_budgets_with_overrides(
@@ -681,6 +681,7 @@ impl DuckDbStagedIngressSession {
                 duckdb_version: &duckdb_version,
                 database_path: &self.destination.database_path,
                 lock_path: &self.destination.lock_path(),
+                nanoarrow_linkage: None,
                 nanoarrow_sha256: None,
             },
         )?;
@@ -960,6 +961,9 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
             })
             .collect::<Vec<_>>();
         let committed_at_ms = now_ms()?;
+        let nanoarrow = used_nanoarrow
+            .then_some(self.destination.nanoarrow.as_ref())
+            .flatten();
         let receipt = build_receipt(
             binding.commit(),
             binding.schema_hash(),
@@ -971,10 +975,8 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
                 duckdb_version: &writer.duckdb_version,
                 database_path: &self.destination.database_path,
                 lock_path: &self.destination.lock_path(),
-                nanoarrow_sha256: used_nanoarrow
-                    .then_some(self.destination.nanoarrow.as_ref())
-                    .flatten()
-                    .map(DuckDbNanoarrowExtension::sha256),
+                nanoarrow_linkage: nanoarrow.map(DuckDbNanoarrowExtension::linkage),
+                nanoarrow_sha256: nanoarrow.and_then(DuckDbNanoarrowExtension::sha256),
             },
         )?;
         advance_row_key_allocator(
@@ -1105,6 +1107,16 @@ impl DestinationProtocol for DuckDbDestination {
 mod native_resource_tests {
     use super::*;
     use cdf_runtime::SpillBudgetCoordinator as _;
+
+    #[test]
+    fn execution_defaults_use_available_host_parallelism() {
+        let services = cdf_conformance::test_execution_services();
+        let resources = DuckDbNativeResources::for_execution(&services, false).unwrap();
+        assert_eq!(
+            resources.internal_threads,
+            i64::from(services.capabilities().logical_cpu_slots)
+        );
+    }
 
     #[test]
     fn execution_resources_reserve_and_release_bounded_scratch_capacity() {
