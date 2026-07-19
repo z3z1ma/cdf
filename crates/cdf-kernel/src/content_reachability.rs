@@ -402,6 +402,8 @@ pub trait ContentReachabilityStore: Send + Sync {
 
     fn prepare_root(&self, intent: ContentRootIntent) -> Result<ContentRootIntent>;
 
+    fn root_intent(&self, root_id: &CommittedContentRootId) -> Result<Option<ContentRootIntent>>;
+
     fn commit_root(
         &self,
         root_id: &CommittedContentRootId,
@@ -416,13 +418,23 @@ pub trait ContentReachabilityStore: Send + Sync {
         expected_generation: u64,
     ) -> Result<()>;
 
-    fn reclamation_candidates(&self, limit: u32) -> Result<Vec<ContentReclamationSnapshot>>;
+    fn reclamation_candidates(
+        &self,
+        store_namespace: &ContentStoreNamespace,
+        limit: u32,
+    ) -> Result<Vec<ContentReclamationSnapshot>>;
 
     fn reserve_reclamation(
         &self,
         proof: ContentReclamationProof,
         reservation_id: ContentReclamationReservationId,
     ) -> Result<Option<ContentReclamationReservation>>;
+
+    fn reclamation_reservations(
+        &self,
+        store_namespace: &ContentStoreNamespace,
+        limit: u32,
+    ) -> Result<Vec<ContentReclamationReservation>>;
 
     fn complete_reclamation(&self, reservation: &ContentReclamationReservation) -> Result<()>;
 

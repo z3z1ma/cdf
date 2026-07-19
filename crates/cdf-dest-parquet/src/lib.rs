@@ -12,8 +12,8 @@ use std::{
 use arrow_array::RecordBatch;
 use cdf_kernel::{
     CapabilitySupport, CdfError, CommitCounts, CommitPlan, ConcurrencyLimit,
-    CorrectionCommitSession, CorrectionStrategy, CorrectionStrategyCapability,
-    DESTINATION_CORRECTION_RECEIPT_EVIDENCE_KEY,
+    ContentProviderGeneration, ContentStoreNamespace, CorrectionCommitSession, CorrectionStrategy,
+    CorrectionStrategyCapability, DESTINATION_CORRECTION_RECEIPT_EVIDENCE_KEY,
     DESTINATION_CORRECTION_SIDECAR_RECEIPT_EVIDENCE_KEY, DeliveryGuarantee,
     DestinationCommitRequest, DestinationCorrectionCommitPlan, DestinationCorrectionCommitRequest,
     DestinationCorrectionOperation, DestinationCorrectionReceiptEvidence,

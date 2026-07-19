@@ -3,12 +3,19 @@ use std::{
     sync::mpsc,
 };
 
-use cdf_kernel::{CdfError, DestinationProtocol, Result, SchemaHash, SegmentId, StateSegment};
+use cdf_kernel::{
+    CdfError, CommittedContentMembership, CommittedContentRoot, CommittedContentRootId,
+    ContentDigest, ContentDigestAlgorithm, ContentDigestValue, ContentObjectKey,
+    ContentPublicationClaim, ContentPublicationClaimId, ContentPublicationClaimState,
+    ContentRootIntent, ContentRootState, DestinationProtocol, Result, SchemaHash, SegmentId,
+    StateSegment,
+};
 use cdf_runtime::{
     DestinationCommitOutcome, DestinationReceiptReportingPolicy, StagedIngressRequest,
     StagedIngressSession, StagedSegmentIdentity, StagedSegmentRequest, StagedSegmentStream,
     StagingRecoveryMode, StagingSnapshot, VerifiedFinalBinding,
 };
+use sha2::Digest;
 
 use crate::{
     ParquetCommitRequest, ParquetDestination,
@@ -36,6 +43,7 @@ pub(crate) struct ParquetStagedIngressSession {
     request: StagedIngressRequest,
     accepted: BTreeMap<u32, StagedSegmentIdentity>,
     objects: BTreeMap<u32, StagedParquetObject>,
+    prepared_root: Option<(CommittedContentRootId, u64)>,
     physical_plan: ParquetPhysicalWritePlan,
 }
 
@@ -101,6 +109,9 @@ pub(crate) struct StagingAttemptMetadata {
 pub(crate) struct PublicationAttemptMetadata {
     version: u16,
     pub(crate) staging_lease: cdf_runtime::StagingLease,
+    pub(crate) root_id: CommittedContentRootId,
+    pub(crate) root_generation: u64,
+    pub(crate) manifest_key: String,
 }
 
 struct StagedParquetObject {
@@ -109,6 +120,7 @@ struct StagedParquetObject {
     object_key: String,
     stored: StoredObject,
     sha256: String,
+    claim: ContentPublicationClaim,
 }
 
 struct ActiveParquetGroup {
@@ -171,6 +183,7 @@ impl ParquetStagedIngressSession {
             request,
             accepted: BTreeMap::new(),
             objects: BTreeMap::new(),
+            prepared_root: None,
             physical_plan,
         })
     }
@@ -238,13 +251,68 @@ impl ParquetStagedIngressSession {
                 mutation_guard.assert_current()?;
                 let sha256 = group.encoded.sha256.clone();
                 let object_key = physical_plan.content_key(&sha256);
-                let stored = destination.store().put_encoded_file(
+                let planned_content = cdf_kernel::ImmutableContentIdentity::new(
+                    destination.store().namespace().clone(),
+                    ContentObjectKey::new(object_key.clone())?,
+                    group.encoded.byte_count,
+                    ContentDigest::new(
+                        ContentDigestAlgorithm::new("sha256")?,
+                        ContentDigestValue::new(sha256.clone())?,
+                    )?,
+                    None,
+                )?;
+                let claim_id = publication_claim_id(
+                    &attempt_id,
+                    mutation_guard.assert_current()?.fencing_token(),
+                    object_ordinal,
+                    &object_key,
+                )?;
+                let planned_claim = destination
+                    .execution()
+                    .content_reachability_store()?
+                    .install_claim(mutation_guard.assert_current()?.content_publication_claim(
+                        planned_content.clone(),
+                        claim_id,
+                        1,
+                        ContentPublicationClaimState::Planned,
+                    )?)?;
+                let stored = match destination.store().put_encoded_file(
                     destination.execution(),
                     &object_key,
                     group.encoded,
                     &mutation_guard,
                     &cancellation,
-                )?;
+                ) {
+                    Ok(stored) => stored,
+                    Err(error) => {
+                        let release = destination
+                            .execution()
+                            .content_reachability_store()?
+                            .release_claim(&planned_claim.claim_id, planned_claim.claim_generation);
+                        return Err(match release {
+                            Ok(()) => error,
+                            Err(release) => attach_secondary(
+                                error,
+                                "failed to release unpublished content claim",
+                                release,
+                            ),
+                        });
+                    }
+                };
+                let published_content = match stored.provider_generation.clone() {
+                    Some(provider_generation) => {
+                        planned_content.with_provider_generation(provider_generation)
+                    }
+                    None => planned_content,
+                };
+                let claim = destination
+                    .execution()
+                    .content_reachability_store()?
+                    .publish_claim(
+                        &planned_claim.claim_id,
+                        planned_claim.claim_generation,
+                        published_content,
+                    )?;
                 mutation_guard.assert_current()?;
                 Ok(StagedParquetObject {
                     object_ordinal,
@@ -252,6 +320,7 @@ impl ParquetStagedIngressSession {
                     object_key,
                     stored,
                     sha256,
+                    claim,
                 })
             },
         )?;
@@ -398,6 +467,27 @@ impl ParquetStagedIngressSession {
     fn cleanup(&mut self) -> Result<()> {
         self.request.mutation_guard().assert_current()?;
         let mut failure = None;
+        if let Some((root_id, generation)) = self.prepared_root.take() {
+            if let Err(error) = self
+                .destination
+                .execution()
+                .content_reachability_store()?
+                .abort_root(&root_id, generation)
+            {
+                append_failure(&mut failure, "prepared content root abort", error);
+            }
+        } else {
+            for object in self.objects.values() {
+                if let Err(error) = self
+                    .destination
+                    .execution()
+                    .content_reachability_store()?
+                    .release_claim(&object.claim.claim_id, object.claim.claim_generation)
+                {
+                    append_failure(&mut failure, "content publication claim release", error);
+                }
+            }
+        }
         self.objects.clear();
         self.request.mutation_guard().assert_current()?;
         let prefix = crate::store::staged_attempt_prefix(
@@ -418,6 +508,57 @@ impl ParquetStagedIngressSession {
             Some(error) => Err(error),
             None => Ok(()),
         }
+    }
+
+    fn prepare_content_root(
+        &mut self,
+        request: &ParquetCommitRequest,
+    ) -> Result<ContentRootIntent> {
+        let mut identities = self
+            .objects
+            .values()
+            .map(|object| object.claim.content.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        identities.sort();
+        let claim_ids = self
+            .objects
+            .values()
+            .map(|object| object.claim.claim_id.clone())
+            .collect::<Vec<_>>();
+        let root_id = publication_root_id(request, self.destination.store().namespace())?;
+        let intent = ContentRootIntent {
+            root: CommittedContentRoot {
+                destination_id: self.destination.sheet().destination.clone(),
+                target: request.commit.target.clone(),
+                root_id: root_id.clone(),
+                root_generation: 1,
+                retained_until_ms: None,
+                membership: CommittedContentMembership::Inline { identities },
+            },
+            claim_ids,
+            state: ContentRootState::Prepared,
+        };
+        let intent = self
+            .destination
+            .execution()
+            .content_reachability_store()?
+            .prepare_root(intent)?;
+        self.prepared_root = Some((root_id, intent.root.root_generation));
+        Ok(intent)
+    }
+
+    fn commit_prepared_root(&mut self) -> Result<()> {
+        let (root_id, generation) = self.prepared_root.as_ref().ok_or_else(|| {
+            CdfError::internal("Parquet publication has no prepared content root")
+        })?;
+        self.destination
+            .execution()
+            .content_reachability_store()?
+            .commit_root(root_id, *generation)?;
+        self.prepared_root = None;
+        Ok(())
     }
 }
 
@@ -580,18 +721,7 @@ impl StagedIngressSession for ParquetStagedIngressSession {
                     "Parquet staged final binding commit plan differs from destination planning",
                 ));
             }
-            if let Some(existing) = self.destination.existing_verified_manifest(
-                &request,
-                &plan,
-                self.request.mutation_guard(),
-            )? {
-                self.cleanup()?;
-                let receipt = duplicate_parquet_receipt(request, plan, existing)?;
-                return Ok(DestinationCommitOutcome::new(
-                    receipt,
-                    DestinationReceiptReportingPolicy::DestinationCommit { duplicate: true },
-                ));
-            }
+            let root_intent = self.prepare_content_root(&request)?;
 
             let publication_key = package_publication_metadata_key(
                 self.destination.object_key_encoder(),
@@ -608,9 +738,31 @@ impl StagedIngressSession for ParquetStagedIngressSession {
                 canonical_json_bytes(&PublicationAttemptMetadata {
                     version: STAGING_METADATA_VERSION,
                     staging_lease: self.request.staging_lease().clone(),
+                    root_id: root_intent.root.root_id.clone(),
+                    root_generation: root_intent.root.root_generation,
+                    manifest_key: plan.manifest_key.clone(),
                 })?,
             )?;
             self.request.mutation_guard().assert_current()?;
+
+            if let Some(existing) = self.destination.existing_verified_manifest(
+                &request,
+                &plan,
+                self.request.mutation_guard(),
+            )? {
+                validate_existing_manifest_content(&existing.manifest, &root_intent.root)?;
+                self.commit_prepared_root()?;
+                self.objects.clear();
+                self.destination
+                    .store()
+                    .delete(self.destination.execution(), &publication_key)?;
+                self.cleanup()?;
+                let receipt = duplicate_parquet_receipt(request, plan, existing)?;
+                return Ok(DestinationCommitOutcome::new(
+                    receipt,
+                    DestinationReceiptReportingPolicy::DestinationCommit { duplicate: true },
+                ));
+            }
 
             let mut objects = Vec::with_capacity(object_layouts.len());
             let staged = std::mem::take(&mut self.objects);
@@ -660,6 +812,7 @@ impl StagedIngressSession for ParquetStagedIngressSession {
                 objects,
                 self.request.mutation_guard(),
             )?;
+            self.commit_prepared_root()?;
             self.request.mutation_guard().assert_current()?;
             self.destination
                 .store()
@@ -687,6 +840,80 @@ impl StagedIngressSession for ParquetStagedIngressSession {
 
     fn abort(mut self: Box<Self>) -> Result<()> {
         self.cleanup()
+    }
+}
+
+fn publication_claim_id(
+    attempt_id: &cdf_runtime::LoadAttemptId,
+    fencing_token: u64,
+    object_ordinal: u32,
+    object_key: &str,
+) -> Result<ContentPublicationClaimId> {
+    let digest = sha2::Sha256::digest(
+        format!(
+            "{}\0{fencing_token}\0{object_ordinal}\0{object_key}",
+            attempt_id.as_str()
+        )
+        .as_bytes(),
+    );
+    ContentPublicationClaimId::new(format!("parquet-{}", hex::encode(digest)))
+}
+
+fn publication_root_id(
+    request: &ParquetCommitRequest,
+    namespace: &cdf_kernel::ContentStoreNamespace,
+) -> Result<CommittedContentRootId> {
+    let digest = sha2::Sha256::digest(
+        format!(
+            "{}\0{}\0{}\0{}",
+            namespace.as_str(),
+            request.commit.target.as_str(),
+            request.commit.package_hash.as_str(),
+            request.commit.idempotency_token.as_str()
+        )
+        .as_bytes(),
+    );
+    CommittedContentRootId::new(format!("parquet-{}", hex::encode(digest)))
+}
+
+fn validate_existing_manifest_content(
+    manifest: &crate::manifest::ParquetObjectManifest,
+    root: &CommittedContentRoot,
+) -> Result<()> {
+    let expected = match &root.membership {
+        CommittedContentMembership::Inline { identities } => identities
+            .iter()
+            .map(|identity| {
+                (
+                    identity.object_key.as_str(),
+                    identity.byte_count,
+                    identity.digest.value.as_str(),
+                )
+            })
+            .collect::<BTreeSet<_>>(),
+        CommittedContentMembership::Shard { .. } => {
+            return Err(CdfError::internal(
+                "Parquet content root unexpectedly uses sharded membership",
+            ));
+        }
+    };
+    let observed = manifest
+        .objects
+        .iter()
+        .map(|object| {
+            (
+                object.key.as_str(),
+                object.parquet_byte_count,
+                object.sha256.as_str(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    if observed == expected {
+        Ok(())
+    } else {
+        Err(CdfError::destination(
+            "existing Parquet manifest content differs from its prepared reachability root",
+        ))
     }
 }
 

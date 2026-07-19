@@ -59,7 +59,7 @@ pub(crate) fn resume(
             }
         },
     };
-    let execution = context.execution_with_staging_leases(execution)?;
+    let execution = context.execution_with_state_authorities(execution)?;
     resume_run(
         destinations,
         &context,

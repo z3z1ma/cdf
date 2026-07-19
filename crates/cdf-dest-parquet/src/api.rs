@@ -81,12 +81,13 @@ impl ParquetDestination {
     }
 
     pub fn new_object_store(
+        namespace: cdf_kernel::ContentStoreNamespace,
         store: Arc<dyn ObjectStore>,
         root_prefix: impl Into<String>,
         execution: cdf_runtime::ExecutionServices,
     ) -> Result<Self> {
         Self::from_store(
-            StoreClient::new_object_store(store, root_prefix)?,
+            StoreClient::new_object_store(namespace, store, root_prefix)?,
             execution,
         )
     }
@@ -157,6 +158,14 @@ impl ParquetDestination {
 
     pub(crate) fn object_key_encoder(&self) -> ObjectKeyEncoder {
         self.object_key_encoder
+    }
+
+    pub fn reclaim_unreachable_content(
+        &self,
+        limit: u32,
+    ) -> Result<cdf_runtime::ContentReclamationReport> {
+        self.execution
+            .reclaim_unreachable_content(limit, &self.store.content_deleter())
     }
 
     pub(crate) fn staging_cleanup_candidates(
@@ -291,6 +300,33 @@ impl ParquetDestination {
             return Err(CdfError::contract(
                 "Parquet publication marker changed after cleanup candidacy",
             ));
+        }
+        let reachability = self.execution().content_reachability_store()?;
+        let root = reachability
+            .root_intent(&metadata.root_id)?
+            .ok_or_else(|| {
+                CdfError::data("Parquet publication marker references a missing content root")
+            })?;
+        if root.root.root_generation != metadata.root_generation {
+            return Err(CdfError::data(
+                "Parquet publication marker references a different content root generation",
+            ));
+        }
+        match root.state {
+            cdf_kernel::ContentRootState::Committed => {}
+            cdf_kernel::ContentRootState::Prepared
+                if !self
+                    .store
+                    .exists(self.execution(), &metadata.manifest_key)? =>
+            {
+                reachability.abort_root(&metadata.root_id, metadata.root_generation)?;
+            }
+            cdf_kernel::ContentRootState::Prepared => {
+                // The manifest exists, but only the destination's normal replay path has enough
+                // typed commit authority to verify it and settle this root. Retain both rather
+                // than guessing from object presence during cleanup.
+                return Ok(0);
+            }
         }
         proof.assert_cleanup_guard(mutation_guard)?;
         self.store.delete(self.execution(), marker)?;

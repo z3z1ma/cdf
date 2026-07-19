@@ -89,6 +89,9 @@ fn test_execution_services() -> cdf_runtime::ExecutionServices {
             scopes,
         )))
         .unwrap()
+        .with_content_reachability_store(Arc::new(
+            cdf_state_sqlite::SqliteContentReachabilityStore::open_in_memory().unwrap(),
+        ))
 }
 
 struct RejectMockStagingSubmissionHost {
@@ -213,6 +216,9 @@ fn rejecting_mock_staging_submission_services() -> cdf_runtime::ExecutionService
             scopes,
         )))
         .unwrap()
+        .with_content_reachability_store(Arc::new(
+            cdf_state_sqlite::SqliteContentReachabilityStore::open_in_memory().unwrap(),
+        ))
 }
 
 async fn run_project(request: ProjectRunRequest<'_>) -> Result<ProjectRunReport> {

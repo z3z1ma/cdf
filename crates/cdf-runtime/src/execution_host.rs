@@ -656,6 +656,7 @@ pub struct ExecutionServices {
     host: Arc<dyn ExecutionHost>,
     run_work: Option<Arc<RunWorkAdmission>>,
     staging_leases: Option<Arc<crate::StagingLeaseSupervisor>>,
+    content_reachability: Option<Arc<dyn cdf_kernel::ContentReachabilityStore>>,
     task_reports: Option<Arc<Mutex<TaskScopeReport>>>,
     source_rate_gates: Arc<SourceRateGateRegistry>,
     source_io_controllers: Arc<SourceIoControllerRegistry>,
@@ -1036,6 +1037,7 @@ impl ExecutionServices {
             host,
             run_work: None,
             staging_leases: None,
+            content_reachability: None,
             task_reports: None,
             source_rate_gates: Arc::new(SourceRateGateRegistry::default()),
             source_io_controllers: Arc::new(SourceIoControllerRegistry::default()),
@@ -1062,6 +1064,7 @@ impl ExecutionServices {
                 }),
             })),
             staging_leases: self.staging_leases.clone(),
+            content_reachability: self.content_reachability.clone(),
             task_reports: None,
             source_rate_gates: Arc::clone(&self.source_rate_gates),
             source_io_controllers: Arc::clone(&self.source_io_controllers),
@@ -1079,9 +1082,35 @@ impl ExecutionServices {
                 authority,
                 Arc::clone(&self.host),
             )?),
+            content_reachability: self.content_reachability.clone(),
             task_reports: self.task_reports.clone(),
             source_rate_gates: Arc::clone(&self.source_rate_gates),
             source_io_controllers: Arc::clone(&self.source_io_controllers),
+        })
+    }
+
+    pub fn with_content_reachability_store(
+        &self,
+        store: Arc<dyn cdf_kernel::ContentReachabilityStore>,
+    ) -> Self {
+        Self {
+            host: Arc::clone(&self.host),
+            run_work: self.run_work.clone(),
+            staging_leases: self.staging_leases.clone(),
+            content_reachability: Some(store),
+            task_reports: self.task_reports.clone(),
+            source_rate_gates: Arc::clone(&self.source_rate_gates),
+            source_io_controllers: Arc::clone(&self.source_io_controllers),
+        }
+    }
+
+    pub fn content_reachability_store(
+        &self,
+    ) -> Result<&Arc<dyn cdf_kernel::ContentReachabilityStore>> {
+        self.content_reachability.as_ref().ok_or_else(|| {
+            CdfError::contract(
+                "immutable content publication requires an injected reachability store",
+            )
         })
     }
 
@@ -1423,6 +1452,7 @@ impl ExecutionServices {
             host: Arc::clone(&self.host),
             run_work: self.run_work.clone(),
             staging_leases: self.staging_leases.clone(),
+            content_reachability: self.content_reachability.clone(),
             task_reports: match (enabled, &self.task_reports) {
                 (true, Some(reports)) => Some(Arc::clone(reports)),
                 (true, None) => Some(Arc::new(Mutex::new(TaskScopeReport::default()))),
@@ -1876,6 +1906,7 @@ mod tests {
                 host: Arc::new(TestHost),
                 run_work: Some(Arc::clone(&admission)),
                 staging_leases: None,
+                content_reachability: None,
                 task_reports: Some(Arc::new(Mutex::new(TaskScopeReport::default()))),
                 source_rate_gates: Arc::new(SourceRateGateRegistry::default()),
                 source_io_controllers: Arc::new(SourceIoControllerRegistry::default()),

@@ -90,6 +90,9 @@ async fn run_project_with_context(
     let services = services.with_staging_lease_authority(Arc::new(
         cdf_runtime::ScopeStagingLeaseAuthority::new(staging_scopes),
     ))?;
+    let services = services.with_content_reachability_store(Arc::new(
+        cdf_state_sqlite::SqliteContentReachabilityStore::open(&state_store_path)?,
+    ));
     destination.bind_execution_services(services.clone())?;
     let run_ledger = SqliteRunLedger::open(&state_store_path)?;
     let run = run_ledger.create_run(run_id)?;

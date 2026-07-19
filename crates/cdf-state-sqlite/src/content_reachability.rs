@@ -100,11 +100,6 @@ impl ContentReachabilityStore for SqliteContentReachabilityStore {
         content: ImmutableContentIdentity,
     ) -> Result<ContentPublicationClaim> {
         content.validate()?;
-        if content.provider_generation.is_none() {
-            return Err(CdfError::contract(
-                "published content claim requires exact provider generation evidence",
-            ));
-        }
         let mut conn = self.lock()?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -166,38 +161,65 @@ impl ContentReachabilityStore for SqliteContentReachabilityStore {
             ));
         }
         let identities = inline_members(&intent.root)?;
-        if identities.len() != intent.claim_ids.len() {
-            return Err(CdfError::contract(
-                "content root intent must bind one publication claim per inline identity",
-            ));
-        }
         let mut conn = self.lock()?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sqlite_error)?;
-        if let Some(existing) = root_by_id(&tx, &intent.root.root_id)? {
-            if existing != intent {
-                return Err(CdfError::contract(format!(
-                    "content root {} already exists with different authority",
-                    intent.root.root_id
-                )));
-            }
-            tx.commit().map_err(sqlite_error)?;
-            return Ok(existing);
-        }
-        for (identity, claim_id) in identities.iter().zip(&intent.claim_ids) {
+        for identity in identities {
             ensure_unreserved(&tx, identity)?;
+        }
+        let mut claimed_identities = std::collections::BTreeSet::new();
+        for claim_id in &intent.claim_ids {
             let claim = claim_by_id(&tx, claim_id)?.ok_or_else(|| stale_claim(claim_id))?;
             if !matches!(
                 claim.state,
                 ContentPublicationClaimState::Published | ContentPublicationClaimState::Settled
-            ) || !claim.content.eq(identity)
+            ) || !identities.contains(&claim.content)
             {
                 return Err(CdfError::contract(format!(
                     "content root {} does not match published claim {claim_id}",
                     intent.root.root_id
                 )));
             }
+            claimed_identities.insert(claim.content.clone());
+        }
+        if claimed_identities.len() != identities.len() {
+            return Err(CdfError::contract(
+                "content root intent must cover every inline identity with a published claim",
+            ));
+        }
+        if let Some(mut existing) = root_by_id(&tx, &intent.root.root_id)? {
+            if existing.root != intent.root {
+                return Err(CdfError::contract(format!(
+                    "content root {} already exists with different authority",
+                    intent.root.root_id
+                )));
+            }
+            match existing.state {
+                ContentRootState::Prepared => {
+                    existing.claim_ids.extend(intent.claim_ids);
+                    existing.claim_ids.sort();
+                    existing.claim_ids.dedup();
+                    tx.execute(
+                        "UPDATE cdf_content_roots SET root_intent_json = ? WHERE root_id = ?",
+                        params![encode_json(&existing)?, existing.root.root_id.as_str()],
+                    )
+                    .map_err(sqlite_error)?;
+                }
+                ContentRootState::Committed => {
+                    for claim_id in &intent.claim_ids {
+                        let mut claim =
+                            claim_by_id(&tx, claim_id)?.ok_or_else(|| stale_claim(claim_id))?;
+                        if claim.state == ContentPublicationClaimState::Published {
+                            claim.claim_generation = next_generation(claim.claim_generation)?;
+                            claim.state = ContentPublicationClaimState::Settled;
+                            update_claim(&tx, &claim)?;
+                        }
+                    }
+                }
+            }
+            tx.commit().map_err(sqlite_error)?;
+            return Ok(existing);
         }
         tx.execute(
             "INSERT INTO cdf_content_roots \
@@ -269,6 +291,11 @@ impl ContentReachabilityStore for SqliteContentReachabilityStore {
         Ok(intent.root)
     }
 
+    fn root_intent(&self, root_id: &CommittedContentRootId) -> Result<Option<ContentRootIntent>> {
+        let conn = self.lock()?;
+        root_by_id(&conn, root_id)
+    }
+
     fn abort_root(&self, root_id: &CommittedContentRootId, expected_generation: u64) -> Result<()> {
         let mut conn = self.lock()?;
         let tx = conn
@@ -311,14 +338,18 @@ impl ContentReachabilityStore for SqliteContentReachabilityStore {
         tx.commit().map_err(sqlite_error)
     }
 
-    fn reclamation_candidates(&self, limit: u32) -> Result<Vec<ContentReclamationSnapshot>> {
+    fn reclamation_candidates(
+        &self,
+        store_namespace: &cdf_kernel::ContentStoreNamespace,
+        limit: u32,
+    ) -> Result<Vec<ContentReclamationSnapshot>> {
         if limit == 0 {
             return Err(CdfError::contract(
                 "content reclamation candidate limit must be positive",
             ));
         }
         let conn = self.lock()?;
-        candidate_snapshots(&conn, limit)
+        candidate_snapshots(&conn, store_namespace, limit)
     }
 
     fn reserve_reclamation(
@@ -397,6 +428,32 @@ impl ContentReachabilityStore for SqliteContentReachabilityStore {
         .map_err(sqlite_error)?;
         delete_reservation(&tx, reservation)?;
         tx.commit().map_err(sqlite_error)
+    }
+
+    fn reclamation_reservations(
+        &self,
+        store_namespace: &cdf_kernel::ContentStoreNamespace,
+        limit: u32,
+    ) -> Result<Vec<ContentReclamationReservation>> {
+        if limit == 0 {
+            return Err(CdfError::contract(
+                "content reclamation reservation limit must be positive",
+            ));
+        }
+        let conn = self.lock()?;
+        let mut statement = conn
+            .prepare(
+                "SELECT reservation_json FROM cdf_content_reclamation_reservations \
+                 WHERE store_namespace = ? ORDER BY object_key LIMIT ?",
+            )
+            .map_err(sqlite_error)?;
+        let rows = statement
+            .query_map(params![store_namespace.as_str(), i64::from(limit)], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(sqlite_error)?;
+        rows.map(|row| decode_json(&row.map_err(sqlite_error)?, 1))
+            .collect()
     }
 
     fn release_reclamation(&self, reservation: &ContentReclamationReservation) -> Result<()> {
@@ -651,7 +708,11 @@ fn snapshot_for_identity(
     Ok(Some(snapshot))
 }
 
-fn candidate_snapshots(conn: &Connection, limit: u32) -> Result<Vec<ContentReclamationSnapshot>> {
+fn candidate_snapshots(
+    conn: &Connection,
+    store_namespace: &cdf_kernel::ContentStoreNamespace,
+    limit: u32,
+) -> Result<Vec<ContentReclamationSnapshot>> {
     let mut statement = conn
         .prepare(
             "SELECT DISTINCT c.store_namespace, c.object_key \
@@ -660,12 +721,12 @@ fn candidate_snapshots(conn: &Connection, limit: u32) -> Result<Vec<ContentRecla
                ON m.store_namespace = c.store_namespace AND m.object_key = c.object_key \
              LEFT JOIN cdf_content_reclamation_reservations q \
                ON q.store_namespace = c.store_namespace AND q.object_key = c.object_key \
-             WHERE m.root_id IS NULL AND q.reservation_id IS NULL \
-             ORDER BY c.store_namespace, c.object_key LIMIT ?",
+             WHERE c.store_namespace = ? AND m.root_id IS NULL AND q.reservation_id IS NULL \
+             ORDER BY c.object_key LIMIT ?",
         )
         .map_err(sqlite_error)?;
     let rows = statement
-        .query_map(params![i64::from(limit)], |row| {
+        .query_map(params![store_namespace.as_str(), i64::from(limit)], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .map_err(sqlite_error)?;
@@ -884,11 +945,64 @@ mod tests {
                 state: ContentRootState::Prepared,
             })
             .unwrap();
-        assert!(store.reclamation_candidates(8).unwrap().is_empty());
+        let namespace = ContentStoreNamespace::new("store").unwrap();
+        assert!(
+            store
+                .reclamation_candidates(&namespace, 8)
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(store.commit_root(&root.root_id, 1).unwrap(), root);
-        assert!(store.reclamation_candidates(8).unwrap().is_empty());
+        assert!(
+            store
+                .reclamation_candidates(&namespace, 8)
+                .unwrap()
+                .is_empty()
+        );
         store.release_root(&root.root_id, 1).unwrap();
-        assert_eq!(store.reclamation_candidates(8).unwrap().len(), 1);
+        assert_eq!(
+            store.reclamation_candidates(&namespace, 8).unwrap().len(),
+            1
+        );
+    }
+
+    #[test]
+    fn one_root_settles_concurrent_same_content_publishers() {
+        let store = SqliteContentReachabilityStore::open_in_memory().unwrap();
+        let first = published(&store, "first");
+        let second = published(&store, "second");
+        let root = CommittedContentRoot {
+            destination_id: DestinationId::new("parquet").unwrap(),
+            target: TargetName::new("events").unwrap(),
+            root_id: CommittedContentRootId::new("root-shared").unwrap(),
+            root_generation: 1,
+            retained_until_ms: None,
+            membership: CommittedContentMembership::Inline {
+                identities: vec![first.content.clone()],
+            },
+        };
+        store
+            .prepare_root(ContentRootIntent {
+                root: root.clone(),
+                claim_ids: vec![first.claim_id],
+                state: ContentRootState::Prepared,
+            })
+            .unwrap();
+        let merged = store
+            .prepare_root(ContentRootIntent {
+                root: root.clone(),
+                claim_ids: vec![second.claim_id],
+                state: ContentRootState::Prepared,
+            })
+            .unwrap();
+        assert_eq!(merged.claim_ids.len(), 2);
+        assert_eq!(store.commit_root(&root.root_id, 1).unwrap(), root);
+        assert!(
+            store
+                .reclamation_candidates(&ContentStoreNamespace::new("store").unwrap(), 8)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -898,7 +1012,11 @@ mod tests {
         store
             .release_claim(&published_claim.claim_id, published_claim.claim_generation)
             .unwrap();
-        let snapshot = store.reclamation_candidates(8).unwrap().pop().unwrap();
+        let snapshot = store
+            .reclamation_candidates(&ContentStoreNamespace::new("store").unwrap(), 8)
+            .unwrap()
+            .pop()
+            .unwrap();
         let expired = cdf_kernel::ExpiredContentPublicationClaim {
             claim_id: snapshot.same_content_claims[0].claim_id.clone(),
             claim_generation: snapshot.same_content_claims[0].claim_generation,

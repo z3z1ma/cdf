@@ -193,16 +193,21 @@ impl ProjectContext {
         SqliteCheckpointStore::open(self.state_store_path()?)
     }
 
-    pub fn execution_with_staging_leases(
+    pub fn execution_with_state_authorities(
         &self,
         execution: &cdf_runtime::ExecutionServices,
     ) -> CdfResult<cdf_runtime::ExecutionServices> {
         let scopes: std::sync::Arc<dyn cdf_kernel::ScopeLeaseStore> = std::sync::Arc::new(
             cdf_state_sqlite::SqliteScopeLeaseStore::open(self.state_store_path()?)?,
         );
-        execution.with_staging_lease_authority(std::sync::Arc::new(
+        let execution = execution.with_staging_lease_authority(std::sync::Arc::new(
             cdf_runtime::ScopeStagingLeaseAuthority::new(scopes),
-        ))
+        ))?;
+        Ok(
+            execution.with_content_reachability_store(std::sync::Arc::new(
+                cdf_state_sqlite::SqliteContentReachabilityStore::open(self.state_store_path()?)?,
+            )),
+        )
     }
 
     pub fn destination_runtime(

@@ -161,6 +161,9 @@ fn test_execution() -> cdf_runtime::ExecutionServices {
                     )),
                 ))
                 .unwrap()
+                .with_content_reachability_store(Arc::new(
+                    cdf_state_sqlite::SqliteContentReachabilityStore::open_in_memory().unwrap(),
+                ))
         })
         .clone()
 }
@@ -173,7 +176,13 @@ fn test_object_store(
     store: Arc<dyn ObjectStore>,
     root_prefix: impl Into<String>,
 ) -> Result<ParquetDestination> {
-    ParquetDestination::new_object_store(store, root_prefix, test_execution())
+    let root_prefix = root_prefix.into();
+    ParquetDestination::new_object_store(
+        cdf_kernel::ContentStoreNamespace::new(format!("test-store:{root_prefix}")).unwrap(),
+        store,
+        root_prefix,
+        test_execution(),
+    )
 }
 
 fn sample_batch(ids: Vec<i64>, names: Vec<Option<&str>>) -> RecordBatch {
@@ -877,6 +886,8 @@ fn assert_staged_abort_cleans_destination(
         .list_prefix(dest.execution(), "targets/orders/objects/sha256/")
         .unwrap();
     assert_eq!(content_before.len(), 1);
+    let retained_live = dest.reclaim_unreachable_content(8).unwrap();
+    assert_eq!(retained_live.retained_live, 1);
     staged.session.abort().unwrap();
     assert!(
         !dest
@@ -1588,9 +1599,70 @@ fn staged_segment_abort_cleans_local_and_object_store_attempts() {
 
     let mut local = test_filesystem(temp.path().join("lake")).unwrap();
     assert_staged_abort_cleans_destination(&mut local, &package_dir, commit.clone());
+    let reachability = local.execution().content_reachability_store().unwrap();
+    let snapshot = reachability
+        .reclamation_candidates(local.store().namespace(), 8)
+        .unwrap()
+        .pop()
+        .unwrap();
+    let proof = cdf_kernel::ContentReclamationProof::prove(
+        snapshot.candidate,
+        snapshot.same_content_claims,
+        Vec::new(),
+        snapshot.checked_roots,
+    )
+    .unwrap();
+    reachability
+        .reserve_reclamation(
+            proof,
+            cdf_kernel::ContentReclamationReservationId::new("crash-before-delete").unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+    let reclaimed = local.reclaim_unreachable_content(8).unwrap();
+    assert_eq!(reclaimed.objects_deleted, 1);
+    assert_eq!(reclaimed.recovered_reservations, 1);
+    assert!(
+        local
+            .store()
+            .list_prefix(local.execution(), "targets/orders/objects/sha256/")
+            .unwrap()
+            .is_empty()
+    );
 
     let mut object_store = test_object_store(Arc::new(InMemory::default()), "remote").unwrap();
     assert_staged_abort_cleans_destination(&mut object_store, &package_dir, commit);
+    let retained = object_store.reclaim_unreachable_content(8).unwrap();
+    assert_eq!(retained.unsupported, 1);
+}
+
+#[test]
+fn content_reclamation_retains_a_replaced_local_generation() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-reclamation-generation");
+    let built = build_package(
+        &package_dir,
+        "pkg-reclamation-generation",
+        vec![(
+            "seg-000001",
+            vec![sample_batch(vec![1, 2], vec![Some("left"), Some("right")])],
+        )],
+    );
+    let commit = request(&package_dir, &built, WriteDisposition::Append);
+    let lake = temp.path().join("lake-generation");
+    let mut destination = test_filesystem(&lake).unwrap();
+    assert_staged_abort_cleans_destination(&mut destination, &package_dir, commit);
+    let object = destination
+        .store()
+        .list_prefix(destination.execution(), "targets/orders/objects/sha256/")
+        .unwrap()
+        .pop()
+        .unwrap();
+    fs::write(lake.join(&object.key), b"replacement-generation").unwrap();
+
+    let report = destination.reclaim_unreachable_content(8).unwrap();
+    assert_eq!(report.generation_conflicts, 1);
+    assert!(lake.join(object.key).exists());
 }
 
 #[test]

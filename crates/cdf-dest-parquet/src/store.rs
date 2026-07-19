@@ -13,6 +13,7 @@ const VERIFY_RANGE_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) struct StoredObject {
     pub(crate) byte_count: u64,
     pub(crate) e_tag: Option<String>,
+    pub(crate) provider_generation: Option<ContentProviderGeneration>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,8 +49,58 @@ pub(crate) enum CompareAndSwapOutcome {
 #[derive(Clone)]
 pub(crate) struct StoreClient {
     store: Arc<dyn ObjectStore>,
+    namespace: ContentStoreNamespace,
     root_prefix: String,
     local_root: Option<PathBuf>,
+}
+
+pub(crate) struct StoreContentDeleter<'a> {
+    store: &'a StoreClient,
+}
+
+impl cdf_runtime::ConditionalContentDeleter for StoreContentDeleter<'_> {
+    fn store_namespace(&self) -> &cdf_kernel::ContentStoreNamespace {
+        self.store.namespace()
+    }
+
+    fn delete_if_generation(
+        &self,
+        content: &cdf_kernel::ImmutableContentIdentity,
+    ) -> Result<cdf_runtime::ConditionalContentDeleteOutcome> {
+        if &content.store_namespace != self.store.namespace() {
+            return Err(CdfError::contract(
+                "conditional content delete crossed object-store namespaces",
+            ));
+        }
+        let Some(root) = &self.store.local_root else {
+            // object_store 0.12 has no conditional-delete contract. Remote providers must inject
+            // an exact-generation capability rather than emulating it with HEAD then DELETE.
+            return Ok(cdf_runtime::ConditionalContentDeleteOutcome::Unsupported);
+        };
+        if content.digest.algorithm.as_str() != "sha256" {
+            return Ok(cdf_runtime::ConditionalContentDeleteOutcome::Unsupported);
+        }
+        let path = root.join(self.store.path(content.object_key.as_str())?.as_ref());
+        let _lock = lock_content_path(root, &path)?;
+        if !path.exists() {
+            return Ok(cdf_runtime::ConditionalContentDeleteOutcome::AlreadyAbsent);
+        }
+        let actual = sha256_file(&path)?;
+        let expected_generation = format!("sha256:{actual}");
+        if content
+            .provider_generation
+            .as_ref()
+            .map(|value| value.as_str())
+            != Some(expected_generation.as_str())
+            || content.digest.value.as_str() != actual
+        {
+            return Ok(cdf_runtime::ConditionalContentDeleteOutcome::GenerationMismatch);
+        }
+        fs::remove_file(&path).map_err(|error| {
+            CdfError::destination(format!("delete {}: {error}", path.display()))
+        })?;
+        Ok(cdf_runtime::ConditionalContentDeleteOutcome::Deleted)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,21 +144,35 @@ impl StoreClient {
             })?;
         Ok(Self {
             store: Arc::new(store),
+            namespace: ContentStoreNamespace::new(format!(
+                "parquet-filesystem-sha256:{}",
+                hex::encode(Sha256::digest(canonical_root.to_string_lossy().as_bytes()))
+            ))?,
             root_prefix: String::new(),
             local_root: Some(canonical_root.clone()),
         })
     }
 
     pub(crate) fn new_object_store(
+        namespace: ContentStoreNamespace,
         store: Arc<dyn ObjectStore>,
         root_prefix: impl Into<String>,
     ) -> Result<Self> {
         let root_prefix = normalize_prefix(root_prefix.into())?;
         Ok(Self {
             store,
+            namespace,
             root_prefix,
             local_root: None,
         })
+    }
+
+    pub(crate) fn namespace(&self) -> &ContentStoreNamespace {
+        &self.namespace
+    }
+
+    pub(crate) fn content_deleter(&self) -> StoreContentDeleter<'_> {
+        StoreContentDeleter { store: self }
     }
 
     pub(crate) fn staging_file(&self) -> Result<tempfile::NamedTempFile> {
@@ -146,9 +211,11 @@ impl StoreClient {
                 .await
                 .map_err(|error| store_error(operation, error))
         })?;
+        let provider_generation = provider_generation(&put.e_tag, &put.version)?;
         Ok(StoredObject {
             byte_count,
             e_tag: put.e_tag,
+            provider_generation,
         })
     }
 
@@ -224,10 +291,14 @@ impl StoreClient {
             .await
         })?;
         match put {
-            Ok(put) => Ok(StoredObject {
-                byte_count,
-                e_tag: put.e_tag,
-            }),
+            Ok(put) => {
+                let provider_generation = provider_generation(&put.e_tag, &put.version)?;
+                Ok(StoredObject {
+                    byte_count,
+                    e_tag: put.e_tag,
+                    provider_generation,
+                })
+            }
             Err(object_store::Error::AlreadyExists { .. })
             | Err(object_store::Error::Precondition { .. }) => {
                 mutation_guard.assert_current()?;
@@ -238,9 +309,11 @@ impl StoreClient {
                         "immutable Parquet object {key} already exists with different bytes"
                     )));
                 }
+                let metadata = self.object_metadata(execution, key)?;
                 Ok(StoredObject {
                     byte_count,
-                    e_tag: self.etag(execution, key)?,
+                    e_tag: metadata.e_tag.clone(),
+                    provider_generation: provider_generation(&metadata.e_tag, &metadata.version)?,
                 })
             }
             Err(error) => Err(store_error(operation, error)),
@@ -269,6 +342,7 @@ impl StoreClient {
         fs::create_dir_all(parent).map_err(|error| {
             CdfError::destination(format!("create {}: {error}", parent.display()))
         })?;
+        let _content_lock = lock_content_path(root, &destination)?;
         mutation_guard.assert_current()?;
         let byte_count = encoded.byte_count;
         let expected_hash = encoded.sha256.clone();
@@ -311,6 +385,9 @@ impl StoreClient {
         Ok(StoredObject {
             byte_count,
             e_tag: self.etag(execution, key)?,
+            provider_generation: Some(ContentProviderGeneration::new(format!(
+                "sha256:{expected_hash}"
+            ))?),
         })
     }
 
@@ -333,10 +410,14 @@ impl StoreClient {
                 .put_opts(&path, PutPayload::from(bytes), options)
                 .await)
         })? {
-            Ok(put) => Ok(CreateObjectOutcome::Created(StoredObject {
-                byte_count,
-                e_tag: put.e_tag,
-            })),
+            Ok(put) => {
+                let provider_generation = provider_generation(&put.e_tag, &put.version)?;
+                Ok(CreateObjectOutcome::Created(StoredObject {
+                    byte_count,
+                    e_tag: put.e_tag,
+                    provider_generation,
+                }))
+            }
             Err(object_store::Error::AlreadyExists { .. })
             | Err(object_store::Error::Precondition { .. }) => {
                 Ok(CreateObjectOutcome::AlreadyExists)
@@ -364,6 +445,7 @@ impl StoreClient {
                 Ok(StoredObject {
                     byte_count,
                     e_tag: self.etag(execution, key)?,
+                    provider_generation: None,
                 })
             }
         }
@@ -463,10 +545,14 @@ impl StoreClient {
                 .put_opts(&path, PutPayload::from(replacement), options)
                 .await)
         })? {
-            Ok(put) => Ok(CompareAndSwapOutcome::Written(StoredObject {
-                byte_count,
-                e_tag: put.e_tag,
-            })),
+            Ok(put) => {
+                let provider_generation = provider_generation(&put.e_tag, &put.version)?;
+                Ok(CompareAndSwapOutcome::Written(StoredObject {
+                    byte_count,
+                    e_tag: put.e_tag,
+                    provider_generation,
+                }))
+            }
             Err(object_store::Error::AlreadyExists { .. })
             | Err(object_store::Error::Precondition { .. })
             | Err(object_store::Error::NotFound { .. }) => Ok(CompareAndSwapOutcome::Conflict),
@@ -570,6 +656,7 @@ impl StoreClient {
         Ok(CompareAndSwapOutcome::Written(StoredObject {
             byte_count,
             e_tag: None,
+            provider_generation: None,
         }))
     }
 
@@ -674,6 +761,22 @@ impl StoreClient {
                     .map_err(|error| store_error(operation, error))
             })
             .map(|meta| meta.e_tag)
+    }
+
+    fn object_metadata(
+        &self,
+        execution: &cdf_runtime::ExecutionServices,
+        key: &str,
+    ) -> Result<object_store::ObjectMeta> {
+        let path = self.path(key)?;
+        let store = Arc::clone(&self.store);
+        let operation = format!("head {key}");
+        execution.run_io(async move {
+            store
+                .head(&path)
+                .await
+                .map_err(|error| store_error(operation, error))
+        })
     }
 
     pub(crate) fn delete(
@@ -1055,6 +1158,18 @@ fn store_error(action: impl Into<String>, error: object_store::Error) -> CdfErro
     CdfError::destination(format!("{}: {error}", action.into()))
 }
 
+fn provider_generation(
+    e_tag: &Option<String>,
+    version: &Option<String>,
+) -> Result<Option<ContentProviderGeneration>> {
+    version
+        .as_ref()
+        .map(|value| format!("version:{value}"))
+        .or_else(|| e_tag.as_ref().map(|value| format!("etag:{value}")))
+        .map(ContentProviderGeneration::new)
+        .transpose()
+}
+
 async fn await_fenced<T, F>(
     cancellation: &cdf_runtime::RunCancellation,
     mutation_guard: &cdf_runtime::StagingMutationGuard,
@@ -1088,6 +1203,25 @@ fn sha256_file(path: &Path) -> Result<String> {
         hash.update(&buffer[..read]);
     }
     Ok(hex::encode(hash.finalize()))
+}
+
+fn lock_content_path(root: &Path, path: &Path) -> Result<fs::File> {
+    let lock_dir = root.join(".cdf-locks/content");
+    fs::create_dir_all(&lock_dir).map_err(|error| {
+        CdfError::destination(format!("create {}: {error}", lock_dir.display()))
+    })?;
+    let lock_name = hex::encode(Sha256::digest(path.to_string_lossy().as_bytes()));
+    let lock_path = lock_dir.join(format!("{lock_name}.lock"));
+    let lock = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|error| CdfError::destination(format!("open {}: {error}", lock_path.display())))?;
+    lock.lock()
+        .map_err(|error| CdfError::destination(format!("lock {}: {error}", lock_path.display())))?;
+    Ok(lock)
 }
 
 pub(crate) fn now_ms() -> Result<i64> {

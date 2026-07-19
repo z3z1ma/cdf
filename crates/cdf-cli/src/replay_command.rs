@@ -602,7 +602,9 @@ pub(crate) fn replay_package(
     destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
     let package = load_package_replay_context(cli, &args.package_dir)?;
-    let execution = package.project.execution_with_staging_leases(execution)?;
+    let execution = package
+        .project
+        .execution_with_state_authorities(execution)?;
     let mut replay_destination = build_replay_destination(
         destinations,
         &package.project,

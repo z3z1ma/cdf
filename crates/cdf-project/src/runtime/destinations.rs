@@ -106,6 +106,9 @@ impl ResolvedProjectDestination {
         let services = base_services.with_staging_lease_authority(std::sync::Arc::new(
             cdf_runtime::ScopeStagingLeaseAuthority::new(scopes),
         ))?;
+        let services = services.with_content_reachability_store(std::sync::Arc::new(
+            cdf_state_sqlite::SqliteContentReachabilityStore::open_in_memory()?,
+        ));
         Self::new(
             Box::new(
                 cdf_dest_parquet::FilesystemParquetRuntime::with_execution_services(
