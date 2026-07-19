@@ -10,7 +10,7 @@ use serde::Serialize;
 
 use cdf_cli_core::render::{
     RenderDocument,
-    humanize::humanize_rows,
+    humanize::{humanize_bytes, humanize_rows},
     primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine},
     redaction::redact_uri_userinfo,
 };
@@ -118,6 +118,7 @@ pub(crate) struct RunCliReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     file_manifest: Option<RunFileManifestReport>,
     terminal_schema_quarantines: Vec<TerminalSchemaObservationQuarantine>,
+    memory: RunMemoryReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     adhoc: Option<AdhocRunReport>,
     ledger_events: RunLedgerSummary,
@@ -129,6 +130,7 @@ impl RunCliReport {
         report: &ProjectRunReport,
         destination: RunDestinationReport,
         schema_snapshot: Option<SchemaSnapshotActionReport>,
+        memory: RunMemoryReport,
     ) -> Self {
         let receipt_source_kind = destination.receipt_source_kind;
         Self {
@@ -160,6 +162,7 @@ impl RunCliReport {
                 .as_ref()
                 .map(RunFileManifestReport::from_project),
             terminal_schema_quarantines: report.terminal_schema_quarantines.clone(),
+            memory,
             adhoc: None,
             ledger_events: RunLedgerSummary::from_snapshot(&report.ledger_snapshot),
             writes: run_write_effects(&report.receipt_source),
@@ -171,7 +174,7 @@ impl RunCliReport {
         self
     }
 
-    pub(crate) fn render_document(&self) -> RenderDocument {
+    pub(crate) fn render_document(&self, explain_memory: bool) -> RenderDocument {
         let document = RenderDocument::new()
             .push(SectionRule::new())
             .push(StatusLine::new(
@@ -230,6 +233,11 @@ impl RunCliReport {
         );
         let document = if let Some(panel) = file_manifest_panel(self.file_manifest.as_ref()) {
             document.blank_line().push(panel)
+        } else {
+            document
+        };
+        let document = if explain_memory {
+            document.blank_line().push(self.memory.panel())
         } else {
             document
         };
@@ -324,6 +332,74 @@ impl RunCliReport {
             )
             .blank_line()
             .push(NextCommand::new(format!("cdf inspect run {}", self.run_id)))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct RunMemoryReport {
+    budget: crate::runtime_budget::RuntimeBudgetReport,
+    managed: cdf_memory::MemorySnapshot,
+}
+
+impl RunMemoryReport {
+    pub(crate) fn capture(
+        budget: crate::runtime_budget::RuntimeBudgetReport,
+        managed: cdf_memory::MemorySnapshot,
+    ) -> Self {
+        Self { budget, managed }
+    }
+
+    fn panel(&self) -> KeyValuePanel {
+        let resolution = &self.budget.resolution;
+        let authority = &self.budget.memory_authority;
+        let mut panel = KeyValuePanel::new("Memory")
+            .row(
+                "process budget",
+                humanize_bytes(resolution.process_budget_bytes),
+            )
+            .row(
+                "native headroom",
+                humanize_bytes(resolution.native_headroom_bytes),
+            )
+            .row(
+                "managed pool",
+                humanize_bytes(resolution.managed_pool_bytes),
+            )
+            .row("managed peak", humanize_bytes(self.managed.peak_bytes))
+            .row(
+                "spill budget",
+                humanize_bytes(resolution.spill_budget_bytes),
+            )
+            .row("spilled", humanize_bytes(self.managed.spill_bytes))
+            .row("flushes", self.managed.flushes.to_string())
+            .row(
+                "enforcement",
+                match authority.enforcement {
+                    crate::runtime_budget::MemoryEnforcement::LinuxCgroupV2 => "linux cgroup v2",
+                    crate::runtime_budget::MemoryEnforcement::Unavailable => "unavailable",
+                },
+            );
+        if let Some(cgroup) = &authority.cgroup_v2 {
+            panel = panel
+                .row(
+                    "cgroup limit",
+                    cgroup
+                        .max_bytes
+                        .map(humanize_bytes)
+                        .unwrap_or_else(|| "unbounded".to_owned()),
+                )
+                .row(
+                    "cgroup peak",
+                    cgroup
+                        .peak_bytes
+                        .map(humanize_bytes)
+                        .unwrap_or_else(|| "unavailable".to_owned()),
+                );
+        }
+        if !authority.caveats.is_empty() {
+            panel = panel.row("caveat", authority.caveats.join("; "));
+        }
+        panel
     }
 }
 
@@ -883,6 +959,18 @@ impl WriteEffects {
 mod tests {
     use super::*;
 
+    fn test_memory_report() -> RunMemoryReport {
+        let cli = cdf_cli_core::args::Cli::parse(["cdf", "version"].map(std::ffi::OsString::from))
+            .unwrap();
+        let budget = crate::runtime_budget::resolve(&cli).unwrap();
+        let managed = cdf_memory::MemorySnapshot {
+            budget_bytes: budget.resolution.managed_pool_bytes,
+            peak_bytes: 1024,
+            ..cdf_memory::MemorySnapshot::default()
+        };
+        RunMemoryReport::capture(budget, managed)
+    }
+
     #[test]
     fn run_rendering_redacts_secret_like_destination_uri_userinfo() {
         let report = RunCliReport {
@@ -942,13 +1030,14 @@ mod tests {
             segment_count: 1,
             file_manifest: None,
             terminal_schema_quarantines: Vec::new(),
+            memory: test_memory_report(),
             adhoc: None,
             ledger_events: RunLedgerSummary::default(),
             writes: WriteEffects::all(),
         };
 
         let rendered = report
-            .render_document()
+            .render_document(false)
             .render(&cdf_cli_core::render::RenderConfig::headless_for_width(96));
 
         assert!(!rendered.contains("secret-value"));

@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    fs::{File, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
@@ -246,6 +246,8 @@ impl PackageBuilder {
         }
 
         create_layout(&package_dir)?;
+        let package_dir = fs::canonicalize(&package_dir)
+            .map_err(|error| io_error("canonicalize package directory", error))?;
         let manifest = build_manifest(
             package_id.clone(),
             collect_identity_file_entries(&package_dir)?,

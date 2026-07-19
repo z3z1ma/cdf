@@ -108,6 +108,7 @@ pub struct RunArgs {
     pub destination_uri: Option<String>,
     pub jobs: Option<u16>,
     pub stats_profile: bool,
+    pub explain_memory: bool,
     pub loop_mode: bool,
 }
 
@@ -548,6 +549,7 @@ fn parse_run(matches: &ArgMatches) -> Result<RunArgs, CliError> {
             .map(|value| parse_nonzero_u16("--jobs", &value))
             .transpose()?,
         stats_profile: matches.get_flag("stats_profile"),
+        explain_memory: matches.get_flag("explain_memory"),
         loop_mode: matches.get_flag("loop"),
     })
 }
@@ -947,6 +949,7 @@ fn run_command() -> ClapCommand {
         .arg(option("to", "to", "DEST"))
         .arg(option("jobs", "jobs", "N"))
         .arg(flag("stats_profile", "stats-profile"))
+        .arg(flag("explain_memory", "explain-memory"))
         .arg(flag("loop", "loop"))
 }
 
@@ -1598,5 +1601,22 @@ mod run_jobs_tests {
             panic!("expected run command");
         };
         assert!(args.stats_profile);
+    }
+
+    #[test]
+    fn run_memory_explanation_is_explicit_opt_in() {
+        let ordinary = Cli::parse(["cdf", "run", "local.events"].map(OsString::from)).unwrap();
+        let Command::Run(ordinary) = ordinary.command else {
+            panic!("expected run command");
+        };
+        assert!(!ordinary.explain_memory);
+
+        let explained =
+            Cli::parse(["cdf", "run", "local.events", "--explain-memory"].map(OsString::from))
+                .unwrap();
+        let Command::Run(explained) = explained.command else {
+            panic!("expected run command");
+        };
+        assert!(explained.explain_memory);
     }
 }

@@ -328,7 +328,8 @@ fn load_verified_segment<T>(
 
 impl PackageReader {
     pub fn open(package_dir: impl AsRef<Path>) -> Result<Self> {
-        let package_dir = package_dir.as_ref().to_path_buf();
+        let package_dir = fs::canonicalize(package_dir.as_ref())
+            .map_err(|error| crate::storage::io_error("canonicalize package directory", error))?;
         let manifest = read_manifest(&package_dir)?;
         Ok(Self {
             package_dir,

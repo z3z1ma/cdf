@@ -3,7 +3,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
     io::Write,
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -23,6 +23,20 @@ use cdf_memory::{
     record_batch_retained_bytes,
 };
 use cdf_package_contract::*;
+
+#[test]
+fn package_local_authority_is_absolute_for_relative_roots() {
+    let relative = PathBuf::from(format!(
+        "target/cdf-package-relative-authority-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&relative);
+    let builder = PackageBuilder::create(&relative, "pkg-relative-authority").unwrap();
+    assert!(builder.package_dir().is_absolute());
+    builder.finish().unwrap();
+    PackageReader::open(&relative).unwrap();
+    fs::remove_dir_all(&relative).unwrap();
+}
 
 #[cfg(unix)]
 #[test]

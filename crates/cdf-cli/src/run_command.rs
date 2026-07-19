@@ -27,7 +27,7 @@ use crate::{
     output::{CliError, CommandOutput},
     progress::human_progress_sink,
     project_run_resource::prepare_runtime_resource_for_cli,
-    reports::{AdhocRunReport, RunCliReport, RunDestinationReport},
+    reports::{AdhocRunReport, RunCliReport, RunDestinationReport, RunMemoryReport},
     scan_command::{build_engine_plan_for_resource, default_target_for_resource},
 };
 
@@ -48,6 +48,7 @@ pub(crate) fn run(
             error_catalog::RUN_LOOP_NOT_SUPPORTED,
         ));
     }
+    let explain_memory = args.explain_memory;
     let mut args = args;
     let requested = args.resource_id.clone().ok_or_else(|| {
         CliError::usage_with("run requires RESOURCE", error_catalog::RUN_ARGUMENT)
@@ -154,12 +155,20 @@ pub(crate) fn run(
             return Err(error);
         }
     };
-    let mut cli_report =
-        RunCliReport::from_report(&report, destination_report, prepared.schema_snapshot);
+    let memory = RunMemoryReport::capture(
+        crate::runtime_budget::resolve(cli)?,
+        run_services.memory().snapshot(),
+    );
+    let mut cli_report = RunCliReport::from_report(
+        &report,
+        destination_report,
+        prepared.schema_snapshot,
+        memory,
+    );
     if let Some(adhoc) = adhoc {
         cli_report = cli_report.with_adhoc(adhoc);
     }
-    let document = cli_report.render_document();
+    let document = cli_report.render_document(explain_memory);
     match progress {
         Some(progress) => {
             CommandOutput::rendered_with_progress("run", document, cli_report, progress.snapshot())

@@ -7380,6 +7380,20 @@ fn run_command_commits_package_rows_mirrors_and_checkpoint() {
     assert_eq!(report["row_count"], 2);
     assert_eq!(report["segment_count"], 1);
     assert_eq!(
+        report["memory"]["budget"]["resolution"]["process_budget_bytes"],
+        4 * 1024 * 1024 * 1024_u64
+    );
+    assert_eq!(
+        report["memory"]["managed"]["budget_bytes"],
+        report["memory"]["budget"]["resolution"]["managed_pool_bytes"]
+    );
+    assert!(report["memory"]["managed"]["peak_bytes"].as_u64().is_some());
+    assert!(
+        report["memory"]["budget"]["memory_authority"]["enforcement"]
+            .as_str()
+            .is_some()
+    );
+    assert_eq!(
         report["ledger_events"]["event_count"],
         report["ledger_events"]["events"].as_array().unwrap().len()
     );
@@ -8073,6 +8087,7 @@ fn run_human_rich_render_uses_checkpoint_gate_panel() {
             destination_uri: None,
             jobs: None,
             stats_profile: false,
+            explain_memory: true,
             loop_mode: false,
         },
         host.as_ref(),
@@ -8089,6 +8104,7 @@ fn run_human_rich_render_uses_checkpoint_gate_panel() {
         "\u{1b}[36mRun\u{1b}[0m",
         "\u{1b}[36mPackage\u{1b}[0m",
         "\u{1b}[36mRows\u{1b}[0m",
+        "\u{1b}[36mMemory\u{1b}[0m",
         "\u{1b}[36mVerdicts\u{1b}[0m",
         "\u{1b}[36mReceipt\u{1b}[0m",
         "\u{1b}[36mGate\u{1b}[0m",
