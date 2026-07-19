@@ -19,8 +19,7 @@ use sha2::{Digest, Sha256};
 pub const ARROW_C_ARRAY_METHOD: &str = "__arrow_c_array__";
 pub const ARROW_C_STREAM_METHOD: &str = "__arrow_c_stream__";
 pub const DEFAULT_DICT_BATCH_ROWS: usize = 8 * 1024;
-pub const DEFAULT_BOUNDARY_CHANNEL_BYTES: u64 = 64 * 1024 * 1024;
-pub const DEFAULT_WATCHDOG_MS: u64 = 300_000;
+pub const DEFAULT_MAX_BOUNDARY_BYTES: u64 = 64 * 1024 * 1024;
 
 mod bridge;
 mod context;
@@ -29,7 +28,6 @@ mod driver;
 mod internal;
 mod interpreter;
 mod resource;
-mod runtime;
 #[cfg(test)]
 mod tests;
 
@@ -39,4 +37,3 @@ pub use dlt::*;
 pub use driver::*;
 pub use interpreter::*;
 pub use resource::*;
-pub use runtime::*;

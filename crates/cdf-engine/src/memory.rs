@@ -289,16 +289,22 @@ impl LeaseAccount for DataFusionLeaseAccount {
     }
 
     fn release(&self, bytes: u64) {
-        self.reservation.free();
         if let Some(coordinator) = self.coordinator.upgrade() {
             let waiters = {
                 let mut state = coordinator.state.lock().unwrap();
+                // Keep pool capacity and the CDF snapshot under the same coordinator lock. If
+                // pool capacity becomes visible first, a waiter can reserve it while the old
+                // lease is still present in the snapshot, producing an impossible peak above
+                // the finite budget even though resident reservations never exceeded it.
+                self.reservation.free();
                 apply_release(&mut state.snapshot, &self.request, bytes);
                 state.waiters.take_all()
             };
             for waiter in waiters {
                 waiter.wake();
             }
+        } else {
+            self.reservation.free();
         }
     }
 }

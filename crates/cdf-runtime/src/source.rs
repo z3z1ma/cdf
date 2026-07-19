@@ -1883,6 +1883,18 @@ pub trait SourceDriver: Send + Sync {
         plan: &CompiledSourcePlan,
         context: &SourceResolutionContext<'_>,
     ) -> Result<Box<dyn SourceDiscoverySession>>;
+    /// Binds a compiled blocking-lane ceiling to the concrete execution host.
+    ///
+    /// The default is the recorded declaration. Drivers whose safe concurrency depends on a
+    /// runtime fact (for example an attached foreign interpreter) may only tighten that
+    /// declaration; the registry validates the refinement before installing the lane.
+    fn bind_blocking_lane(
+        &self,
+        plan: &CompiledSourcePlan,
+        _context: &SourceResolutionContext<'_>,
+    ) -> Result<Option<BlockingLaneSpec>> {
+        Ok(plan.execution_capabilities.blocking_lane.clone())
+    }
     fn resolve(
         &self,
         plan: &CompiledSourcePlan,

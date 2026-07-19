@@ -29,6 +29,10 @@ No Wasmtime host or native-speed guarantee for compatibility rows.
 
 Depends on H2–H4 and F3.
 
+## Journal
+
+- 2026-07-19: H2's adversarial review assigned two program-level conformance cells here rather than hiding them at the Python adapter: preserve `ForeignBatchOutcome` transfer/copy telemetry through ordinary runtime batches into explain/run evidence, and prove Arrow C release callbacks execute exactly once across producer deletion, cancellation, downstream-thread destruction, and error paths. H2 supplies real >2 MiB PyArrow alias/lifetime/cross-thread evidence but does not claim these remaining shared telemetry/release cells.
+
 ## References
 
 - `.10x/specs/foreign-stream-interop.md`

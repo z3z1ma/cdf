@@ -315,13 +315,17 @@ impl RuntimeSchedulerResolution {
         source: &SourceExecutionCapabilities,
     ) -> Result<()> {
         source.validate()?;
-        let expected_lane = source
+        let compiled_lane = source
             .blocking_lane
             .as_ref()
             .map(|lane| lane.maximum_concurrency);
         if self.source_maximum_concurrency != source.maximum_concurrency
             || self.source_useful_concurrency != source.useful_concurrency
-            || self.source_lane_concurrency != expected_lane
+            || match (compiled_lane, self.source_lane_concurrency) {
+                (None, None) => false,
+                (Some(compiled), Some(bound)) => bound == 0 || bound > compiled,
+                _ => true,
+            }
             || self.source_rate_limit != source.rate_limit
             || self.source_quota_authority != source.quota_authority
             || self.source_bounded != source.bounded
@@ -340,7 +344,7 @@ impl RuntimeSchedulerResolution {
             return Ok(());
         }
         let partition_ceiling = u16::try_from(partition_count).unwrap_or(u16::MAX);
-        let lane_ceiling = expected_lane.unwrap_or(u16::MAX);
+        let lane_ceiling = self.source_lane_concurrency.unwrap_or(u16::MAX);
         if jobs == 0
             || jobs > partition_ceiling
             || jobs > source.maximum_concurrency
@@ -484,6 +488,19 @@ pub fn resolve_runtime_scheduler(
     // local source cannot overdrive a single-writer staged destination into low-progress waits.
     // An explicit --jobs/configured_jobs value remains the operator knob for deliberate
     // overdrive experiments; explicit configuration is still bounded by source, CPU, and memory.
+    let lane_concurrency = source
+        .blocking_lane
+        .as_ref()
+        .map(|compiled| {
+            let bound = host
+                .blocking_lanes
+                .iter()
+                .find(|lane| lane.lane_id == compiled.lane_id)
+                .unwrap_or(compiled);
+            bound.validate_tightening_of(compiled)?;
+            Ok::<u16, CdfError>(bound.maximum_concurrency)
+        })
+        .transpose()?;
     let ceilings = AdmissionCeilings {
         configured_jobs,
         container_cpu_slots: host.logical_cpu_slots,
@@ -491,10 +508,7 @@ pub fn resolve_runtime_scheduler(
         transport_connections: None,
         destination_writers: None,
         staged_destination_in_flight: default_staged_destination_pressure,
-        lane_concurrency: source
-            .blocking_lane
-            .as_ref()
-            .map(|lane| lane.maximum_concurrency),
+        lane_concurrency,
         scope_concurrency: None,
     };
     Ok(RuntimeSchedulerResolution {

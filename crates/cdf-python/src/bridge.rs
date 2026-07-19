@@ -13,7 +13,6 @@ pub struct PythonBridgeOptions {
     pub batch_id_prefix: String,
     pub dict_batch_rows: usize,
     pub max_boundary_bytes: u64,
-    pub watchdog_ms: u64,
 }
 
 impl PythonBridgeOptions {
@@ -28,8 +27,7 @@ impl PythonBridgeOptions {
             partition_id,
             batch_id_prefix,
             dict_batch_rows: DEFAULT_DICT_BATCH_ROWS,
-            max_boundary_bytes: DEFAULT_BOUNDARY_CHANNEL_BYTES,
-            watchdog_ms: DEFAULT_WATCHDOG_MS,
+            max_boundary_bytes: DEFAULT_MAX_BOUNDARY_BYTES,
         }
     }
 
@@ -46,20 +44,10 @@ impl PythonBridgeOptions {
     pub fn with_max_boundary_bytes(mut self, max_boundary_bytes: u64) -> Result<Self> {
         if max_boundary_bytes == 0 {
             return Err(CdfError::contract(
-                "boundary channel byte limit must be greater than zero",
+                "Python boundary byte limit must be greater than zero",
             ));
         }
         self.max_boundary_bytes = max_boundary_bytes;
-        Ok(self)
-    }
-
-    pub fn with_watchdog_ms(mut self, watchdog_ms: u64) -> Result<Self> {
-        if watchdog_ms == 0 {
-            return Err(CdfError::contract(
-                "python watchdog must be greater than zero milliseconds",
-            ));
-        }
-        self.watchdog_ms = watchdog_ms;
         Ok(self)
     }
 
@@ -350,7 +338,15 @@ impl PythonResourceBridge {
                 ));
             }
             let row = serde_json::to_string(&row).map_err(json_error)?;
-            self.push_json_row(&mut window, &mut state, &row, &mut emit)?;
+            self.push_json_row_with(
+                &mut window,
+                &mut state,
+                &row,
+                &mut emit,
+                &mut |window, state, transient_bytes, emit| {
+                    self.flush_json_rows(window, state, transient_bytes, emit)
+                },
+            )?;
         }
 
         self.flush_json_rows(&mut window, &mut state, 0, &mut emit)?;
@@ -377,42 +373,53 @@ impl PythonResourceBridge {
             let item = item.map_err(py_error)?;
             match arrow_boundary_for(&item)? {
                 Some(boundary) if boundary.kind == PythonYieldKind::ArrowCStream => {
-                    self.flush_json_rows(&mut window, &mut state, 0, &mut |outcome, kind| {
-                        py.detach(|| emit(outcome, kind))
-                    })?;
+                    py.detach(|| self.flush_json_rows(&mut window, &mut state, 0, &mut emit))?;
                     let reader = import_arrow_stream(&item)?;
                     for batch in reader {
-                        state.emit_record_batch(
-                            batch.map_err(CdfError::from)?,
-                            PythonYieldKind::ArrowCStream,
-                            None,
-                            &self.options,
-                            &mut |outcome, kind| py.detach(|| emit(outcome, kind)),
-                        )?;
+                        let batch = batch.map_err(|_| {
+                            CdfError::data(
+                                "Python Arrow C stream failed while producing a batch; inspect the Python resource locally for exception details",
+                            )
+                        })?;
+                        py.detach(|| {
+                            state.emit_record_batch(
+                                batch,
+                                PythonYieldKind::ArrowCStream,
+                                None,
+                                &self.options,
+                                &mut emit,
+                            )
+                        })?;
                     }
                 }
                 Some(boundary) if boundary.kind == PythonYieldKind::ArrowCArray => {
-                    self.flush_json_rows(&mut window, &mut state, 0, &mut |outcome, kind| {
-                        py.detach(|| emit(outcome, kind))
-                    })?;
+                    py.detach(|| self.flush_json_rows(&mut window, &mut state, 0, &mut emit))?;
                     let batch = item
                         .extract::<PyRecordBatch>()
                         .map(PyRecordBatch::into_inner)
                         .map_err(py_error)?;
-                    state.emit_record_batch(
-                        batch,
-                        PythonYieldKind::ArrowCArray,
-                        None,
-                        &self.options,
-                        &mut |outcome, kind| py.detach(|| emit(outcome, kind)),
-                    )?;
+                    py.detach(|| {
+                        state.emit_record_batch(
+                            batch,
+                            PythonYieldKind::ArrowCArray,
+                            None,
+                            &self.options,
+                            &mut emit,
+                        )
+                    })?;
                 }
                 Some(_) => unreachable!("arrow boundary kinds are exhausted"),
                 None if item.cast::<PyDict>().is_ok() => {
                     let row = python_dict_to_json(py, &item)?;
-                    self.push_json_row(&mut window, &mut state, &row, &mut |outcome, kind| {
-                        py.detach(|| emit(outcome, kind))
-                    })?;
+                    self.push_json_row_with(
+                        &mut window,
+                        &mut state,
+                        &row,
+                        &mut emit,
+                        &mut |window, state, transient_bytes, emit| {
+                            py.detach(|| self.flush_json_rows(window, state, transient_bytes, emit))
+                        },
+                    )?;
                 }
                 None => {
                     return Err(CdfError::data(
@@ -422,9 +429,7 @@ impl PythonResourceBridge {
             }
         }
 
-        self.flush_json_rows(&mut window, &mut state, 0, &mut |outcome, kind| {
-            py.detach(|| emit(outcome, kind))
-        })?;
+        py.detach(|| self.flush_json_rows(&mut window, &mut state, 0, &mut emit))?;
         Ok(state.finish())
     }
 
@@ -603,15 +608,17 @@ impl PythonResourceBridge {
         )
     }
 
-    fn push_json_row<F>(
+    fn push_json_row_with<F, G>(
         &self,
         window: &mut DictRowWindow,
         state: &mut PythonBridgeState,
         row: &str,
         emit: &mut F,
+        flush: &mut G,
     ) -> Result<()>
     where
         F: FnMut(ForeignBatchOutcome, PythonYieldKind) -> Result<()>,
+        G: FnMut(&mut DictRowWindow, &mut PythonBridgeState, u64, &mut F) -> Result<()>,
     {
         if !window.try_push(row, self.options.max_boundary_bytes)? {
             if window.rows == 0 {
@@ -624,7 +631,7 @@ impl PythonResourceBridge {
             }
             let row_bytes = u64::try_from(row.len())
                 .map_err(|_| CdfError::data("Python dict row length exceeds u64"))?;
-            self.flush_json_rows(window, state, row_bytes, emit)?;
+            flush(window, state, row_bytes, emit)?;
             if !window.try_push(row, self.options.max_boundary_bytes)? {
                 return Err(CdfError::internal(
                     "Python dict row did not fit an empty admitted conversion window",
@@ -634,7 +641,7 @@ impl PythonResourceBridge {
         if window.rows == self.options.dict_batch_rows {
             let row_bytes = u64::try_from(row.len())
                 .map_err(|_| CdfError::data("Python dict row length exceeds u64"))?;
-            self.flush_json_rows(window, state, row_bytes, emit)?;
+            flush(window, state, row_bytes, emit)?;
         }
         Ok(())
     }

@@ -212,24 +212,6 @@ impl PythonResource {
         })
     }
 
-    pub fn with_execution_services(
-        mut self,
-        execution: cdf_runtime::ExecutionServices,
-    ) -> Result<Self> {
-        let host = execution.capabilities();
-        let interpreter = crate::attached_interpreter_report()?;
-        let semantics = crate::execution_semantics(
-            &interpreter,
-            self.capabilities.partitioning.parallel_partitions,
-            usize::from(host.logical_cpu_slots),
-        );
-        let lane = crate::python_execution_lane_spec(&semantics);
-        execution.ensure_blocking_lanes(std::slice::from_ref(&lane))?;
-        self.execution = Some(execution);
-        self.blocking_lane = Some(lane.lane_id);
-        Ok(self)
-    }
-
     pub(crate) fn with_execution_services_and_lane(
         mut self,
         execution: cdf_runtime::ExecutionServices,

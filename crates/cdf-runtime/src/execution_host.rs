@@ -372,6 +372,25 @@ impl BlockingLaneSpec {
         }
         Ok(())
     }
+
+    /// Verifies that a host-bound lane changes only its concurrency ceiling, and only downward.
+    pub fn validate_tightening_of(&self, compiled: &Self) -> Result<()> {
+        self.validate()?;
+        compiled.validate()?;
+        if self.lane_id != compiled.lane_id
+            || self.maximum_concurrency > compiled.maximum_concurrency
+            || self.cpu_slot_cost != compiled.cpu_slot_cost
+            || self.native_internal_parallelism != compiled.native_internal_parallelism
+            || self.affinity != compiled.affinity
+            || self.interruption != compiled.interruption
+        {
+            return Err(CdfError::contract(format!(
+                "blocking lane `{}` is not a valid tightening of its compiled execution ceiling",
+                self.lane_id
+            )));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

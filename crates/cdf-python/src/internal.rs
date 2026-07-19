@@ -19,13 +19,11 @@ pub(crate) fn python_dict_to_json(py: Python<'_>, object: &Bound<'_, PyAny>) -> 
         .getattr("dumps")
         .and_then(|dumps| dumps.call((object,), Some(&kwargs)))
         .and_then(|value| value.extract::<String>())
-        .map_err(py_error)?;
-    let value: serde_json::Value = serde_json::from_str(&json_text).map_err(json_error)?;
-    if !value.is_object() {
-        return Err(CdfError::data(
-            "Python dict batching accepts JSON objects only",
-        ));
-    }
+        .map_err(|_| {
+            CdfError::data(
+                "Python dict row contains a value that cannot be encoded as JSON; emit Arrow for non-JSON-native values",
+            )
+        })?;
     Ok(json_text)
 }
 
@@ -84,7 +82,16 @@ pub(crate) fn sanitize_id_part(value: &str) -> String {
 }
 
 pub(crate) fn py_error(error: PyErr) -> CdfError {
-    CdfError::data(error.to_string())
+    let exception = Python::attach(|py| {
+        error
+            .get_type(py)
+            .name()
+            .and_then(|name| name.to_str().map(str::to_owned))
+            .unwrap_or_else(|_| "Exception".to_owned())
+    });
+    CdfError::data(format!(
+        "Python execution failed at the foreign boundary ({exception}); inspect the Python resource locally for exception details"
+    ))
 }
 
 pub(crate) fn json_error(error: serde_json::Error) -> CdfError {

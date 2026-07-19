@@ -147,7 +147,9 @@ impl SourceRegistry {
         context: &SourceResolutionContext<'_>,
     ) -> Result<Arc<dyn QueryableResource>> {
         let driver = self.driver_for_plan(plan)?;
-        if let Some(lane) = &plan.execution_capabilities.blocking_lane {
+        let bound_lane = driver.bind_blocking_lane(plan, context)?;
+        verify_bound_blocking_lane(plan, bound_lane.as_ref())?;
+        if let Some(lane) = &bound_lane {
             context
                 .execution()
                 .ensure_blocking_lanes(std::slice::from_ref(lane))?;
@@ -166,7 +168,9 @@ impl SourceRegistry {
         context: &SourceResolutionContext<'_>,
     ) -> Result<Box<dyn SourceDiscoverySession>> {
         let driver = self.driver_for_plan(plan)?;
-        if let Some(lane) = &plan.execution_capabilities.blocking_lane {
+        let bound_lane = driver.bind_blocking_lane(plan, context)?;
+        verify_bound_blocking_lane(plan, bound_lane.as_ref())?;
+        if let Some(lane) = &bound_lane {
             context
                 .execution()
                 .ensure_blocking_lanes(std::slice::from_ref(lane))?;
@@ -394,6 +398,27 @@ impl SourceRegistry {
             )));
         }
         Ok(())
+    }
+}
+
+fn verify_bound_blocking_lane(
+    plan: &CompiledSourcePlan,
+    bound: Option<&crate::BlockingLaneSpec>,
+) -> Result<()> {
+    let compiled = plan.execution_capabilities.blocking_lane.as_ref();
+    match (compiled, bound) {
+        (None, None) => Ok(()),
+        (Some(compiled), Some(bound)) => bound.validate_tightening_of(compiled).map_err(|error| {
+            CdfError::contract(format!(
+                "source driver `{}` produced an invalid host-bound lane: {}",
+                plan.driver.driver_id.as_str(),
+                error.message
+            ))
+        }),
+        _ => Err(CdfError::contract(format!(
+            "source driver `{}` changed whether compiled execution requires a blocking lane",
+            plan.driver.driver_id.as_str()
+        ))),
     }
 }
 

@@ -169,15 +169,29 @@ impl SourceDriver for PythonSourceDriver {
         }))
     }
 
+    fn bind_blocking_lane(
+        &self,
+        _plan: &CompiledSourcePlan,
+        context: &SourceResolutionContext<'_>,
+    ) -> Result<Option<BlockingLaneSpec>> {
+        let options = validate_project_options(
+            context.project_root(),
+            context.driver_options(&self.descriptor.driver_id),
+        )?;
+        let host = context.execution().capabilities();
+        let semantics = crate::execution_semantics(
+            &options.interpreter,
+            true,
+            usize::from(host.logical_cpu_slots),
+        );
+        Ok(Some(crate::python_execution_lane_spec(&semantics)))
+    }
+
     fn resolve(
         &self,
         plan: &CompiledSourcePlan,
         context: &SourceResolutionContext<'_>,
     ) -> Result<Arc<dyn QueryableResource>> {
-        validate_project_options(
-            context.project_root(),
-            context.driver_options(&self.descriptor.driver_id),
-        )?;
         let lane = plan
             .execution_capabilities
             .blocking_lane
@@ -202,13 +216,14 @@ impl SourceReferenceCompiler for PythonSourceDriver {
         request: SourceReferenceCompileRequest,
     ) -> Result<CompiledSourcePlan> {
         request.validate()?;
+        let options = decode_project_options(&request.project_options)?;
         let resource = PythonResource::load(
             &request.project_root,
             &request.uri,
             request.resource_id.clone(),
             request.trust_level,
-            crate::DEFAULT_DICT_BATCH_ROWS,
-            crate::DEFAULT_BOUNDARY_CHANNEL_BYTES,
+            options.dict_batch_rows,
+            options.max_boundary_bytes,
         )?;
         let mut descriptor = resource.descriptor().clone();
         descriptor.freshness = request.freshness;
@@ -227,8 +242,8 @@ impl SourceReferenceCompiler for PythonSourceDriver {
                 baseline_observation_schema_catalog: Vec::new(),
                 redacted_options: serde_json::json!({
                     "scheme": "python",
-                    "dict_batch_rows": crate::DEFAULT_DICT_BATCH_ROWS,
-                    "max_boundary_bytes": crate::DEFAULT_BOUNDARY_CHANNEL_BYTES,
+                    "dict_batch_rows": options.dict_batch_rows,
+                    "max_boundary_bytes": options.max_boundary_bytes,
                 }),
                 physical_plan,
             },
@@ -385,7 +400,7 @@ const fn default_dict_batch_rows() -> usize {
 }
 
 const fn default_max_boundary_bytes() -> u64 {
-    crate::DEFAULT_BOUNDARY_CHANNEL_BYTES
+    crate::DEFAULT_MAX_BOUNDARY_BYTES
 }
 
 #[derive(Debug, Deserialize)]
@@ -398,6 +413,14 @@ struct PythonProjectOptions {
     interpreter: String,
     #[serde(default)]
     require_free_threaded: bool,
+    #[serde(default = "default_dict_batch_rows")]
+    dict_batch_rows: usize,
+    #[serde(default = "default_max_boundary_bytes")]
+    max_boundary_bytes: u64,
+}
+
+struct ValidatedPythonProjectOptions {
+    interpreter: crate::InterpreterReport,
 }
 
 fn decode_options<T: for<'de> Deserialize<'de>>(
@@ -410,7 +433,7 @@ fn decode_options<T: for<'de> Deserialize<'de>>(
 fn validate_project_options(
     project_root: &std::path::Path,
     options: Option<&serde_json::Value>,
-) -> Result<()> {
+) -> Result<ValidatedPythonProjectOptions> {
     let options = options.ok_or_else(|| {
         CdfError::contract("python.interpreter is required for Python plan, preview, and run")
     })?;
@@ -422,13 +445,24 @@ fn validate_project_options(
             configured.display()
         ))
     })?;
-    validate_attached_interpreter(configured, options.require_free_threaded)?;
-    Ok(())
+    let interpreter = validate_attached_interpreter(configured, options.require_free_threaded)?;
+    Ok(ValidatedPythonProjectOptions { interpreter })
 }
 
 fn decode_project_options(options: &serde_json::Value) -> Result<PythonProjectOptions> {
-    serde_json::from_value(options.clone())
-        .map_err(|error| CdfError::contract(format!("Python project options are invalid: {error}")))
+    let options: PythonProjectOptions =
+        serde_json::from_value(options.clone()).map_err(|error| {
+            CdfError::contract(format!("Python project options are invalid: {error}"))
+        })?;
+    if options.interpreter.is_empty()
+        || options.dict_batch_rows == 0
+        || options.max_boundary_bytes == 0
+    {
+        return Err(CdfError::contract(
+            "Python project options require a nonempty interpreter and positive dict_batch_rows/max_boundary_bytes",
+        ));
+    }
+    Ok(options)
 }
 
 fn configured_interpreter_path(project_root: &Path, interpreter: &str) -> PathBuf {
@@ -631,19 +665,19 @@ fn execution_capabilities(
     bounded: bool,
     maximum_boundary_bytes: u64,
 ) -> SourceExecutionCapabilities {
-    let concurrency = if parallel { 64 } else { 1 };
+    let source_concurrency = if parallel { u16::MAX } else { 1 };
     let minimum_window_bytes = maximum_boundary_bytes.min(8 * 1024);
     SourceExecutionCapabilities {
         minimum_poll_bytes: minimum_window_bytes,
         maximum_poll_bytes: maximum_boundary_bytes,
         minimum_decode_bytes: minimum_window_bytes,
         maximum_decode_bytes: maximum_boundary_bytes,
-        maximum_concurrency: concurrency,
-        useful_concurrency: concurrency,
+        maximum_concurrency: source_concurrency,
+        useful_concurrency: source_concurrency,
         executor_class: SourceExecutorClass::BlockingLane,
         blocking_lane: Some(BlockingLaneSpec {
             lane_id: "python.source".to_owned(),
-            maximum_concurrency: concurrency,
+            maximum_concurrency: u16::MAX,
             cpu_slot_cost: 1,
             native_internal_parallelism: 1,
             affinity: LaneAffinity::Shared,
@@ -721,7 +755,7 @@ mod option_tests {
         assert_eq!(defaults.dict_batch_rows, crate::DEFAULT_DICT_BATCH_ROWS);
         assert_eq!(
             defaults.max_boundary_bytes,
-            crate::DEFAULT_BOUNDARY_CHANNEL_BYTES
+            crate::DEFAULT_MAX_BOUNDARY_BYTES
         );
 
         let explicit: PythonSourceOptions = decode_options(BTreeMap::from([

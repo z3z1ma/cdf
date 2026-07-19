@@ -191,14 +191,8 @@ pub fn execution_semantics(
 pub fn python_execution_lane_spec(
     semantics: &PythonExecutionSemantics,
 ) -> cdf_runtime::BlockingLaneSpec {
-    let lane_id = match semantics.mode {
-        PythonConcurrencyMode::FreeThreadedParallel => "python.free_threaded",
-        PythonConcurrencyMode::GilSerialized | PythonConcurrencyMode::ParallelDisabled => {
-            "python.gil"
-        }
-    };
     cdf_runtime::BlockingLaneSpec {
-        lane_id: lane_id.to_owned(),
+        lane_id: "python.source".to_owned(),
         maximum_concurrency: u16::try_from(semantics.effective_parallelism)
             .unwrap_or(u16::MAX)
             .max(1),

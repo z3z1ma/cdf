@@ -1,8 +1,9 @@
 use super::*;
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     ffi::CString,
+    fs,
     io::Cursor,
     path::PathBuf,
     sync::{
@@ -21,8 +22,9 @@ use cdf_http::{EgressAllowlist, HeaderMap, HttpMethod, SecretValue};
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, Checkpoint, CheckpointId, CheckpointStatus, CheckpointStore,
     CursorOrderingClaim, CursorValue, ErrorKind, PackageHash, PageToken, PipelineId, Receipt,
-    RewindReport, RewindRequest, SchemaHash, SegmentId, StateDelta, StateSegment,
+    RewindReport, RewindRequest, ScanRequest, SchemaHash, SegmentId, StateDelta, StateSegment,
 };
+use futures_util::StreamExt;
 use pyo3::types::PyList;
 
 use crate::internal::py_error;
@@ -39,6 +41,88 @@ fn bridge() -> PythonResourceBridge {
 }
 
 const TEST_OUTCOME_CAP: usize = 128;
+static PYTHON_PROJECT_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+struct TestPythonProject {
+    root: PathBuf,
+}
+
+impl TestPythonProject {
+    fn new(parallel: bool, rows: usize) -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "cdf-python-h2-{}-{}",
+            std::process::id(),
+            PYTHON_PROJECT_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/events.py"),
+            format!(
+                r#"
+def raw_events():
+    for value in range({rows}):
+        yield {{"id": value, "name": "cdf"}}
+
+raw_events.__cdf_resource__ = True
+raw_events.__cdf_primary_key__ = ()
+raw_events.__cdf_merge_key__ = ()
+raw_events.__cdf_cursor__ = None
+raw_events.__cdf_parallel__ = {parallel}
+raw_events.__cdf_bounded__ = True
+raw_events.__cdf_schema__ = (("id", "int64", False), ("name", "utf8", False))
+raw_events.__cdf_write_disposition__ = "append"
+"#,
+                parallel = if parallel { "True" } else { "False" }
+            ),
+        )
+        .unwrap();
+        Self { root }
+    }
+}
+
+impl Drop for TestPythonProject {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+struct NoopSecretProvider;
+
+impl SecretProvider for NoopSecretProvider {
+    fn resolve(&self, _uri: &SecretUri) -> Result<SecretValue> {
+        Err(CdfError::auth("test does not resolve secrets"))
+    }
+}
+
+fn python_project_options(
+    report: &InterpreterReport,
+    dict_batch_rows: usize,
+    max_boundary_bytes: u64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "interpreter": report.executable,
+        "require_free_threaded": report.can_parallelize_python(),
+        "dict_batch_rows": dict_batch_rows,
+        "max_boundary_bytes": max_boundary_bytes,
+    })
+}
+
+fn compile_reference_plan(
+    registry: &cdf_runtime::SourceRegistry,
+    project: &TestPythonProject,
+    project_options: serde_json::Value,
+) -> cdf_runtime::CompiledSourcePlan {
+    registry
+        .compile_reference(cdf_runtime::SourceReferenceCompileRequest {
+            uri: "python://src/events.py#raw_events".to_owned(),
+            resource_id: ResourceId::new("events.raw").unwrap(),
+            project_root: project.root.clone(),
+            trust_level: TrustLevel::Governed,
+            freshness: None,
+            project_options,
+        })
+        .unwrap()
+}
 
 struct CollectedPythonStream {
     summary: PythonStreamSummary,
@@ -121,6 +205,11 @@ def broad_batch():
             None,
         ], type=pa.timestamp('us', tz='UTC')),
     ], names=['narrow', 'slice', 'items', 'nested', 'encoded', 'amount', 'observed_at'])
+
+def large_batch():
+    return pa.record_batch([
+        pa.array([b'x' * (2 * 1024 * 1024)], type=pa.binary()),
+    ], names=['payload'])
 
 def mixed_batches():
     yield pa.record_batch([pa.array([1])], names=['id'])
@@ -413,6 +502,27 @@ fn incremental_python_bridge_stops_before_exhausting_the_generator() {
 }
 
 #[test]
+fn python_exception_details_are_redacted_at_the_foreign_boundary() {
+    Python::attach(|py| {
+        let module = PyModule::from_code(
+            py,
+            c"def rows():\n    yield {'id': 1}\n    raise RuntimeError('secret://vault/token super-secret-value')\n",
+            c"redacted_error.py",
+            c"redacted_error",
+        )
+        .unwrap();
+        let iterable = module.getattr("rows").unwrap().call0().unwrap();
+        let error = bridge()
+            .visit_python_foreign_iterable(&iterable, |_outcome, _kind| Ok(()))
+            .unwrap_err();
+
+        assert!(error.message.contains("RuntimeError"));
+        assert!(!error.message.contains("secret://"));
+        assert!(!error.message.contains("super-secret-value"));
+    });
+}
+
+#[test]
 fn arrow_ipc_fixture_speaks_arrow_c_stream_into_kernel_batches() {
     Python::attach(|py| {
         if PyModule::import(py, "pyarrow").is_err() {
@@ -645,12 +755,54 @@ fn real_pyarrow_c_stream_propagates_an_error_between_batches() {
             })
             .unwrap_err();
         assert_eq!(emitted, 1);
+        assert!(error.message.contains("Python Arrow C stream failed"));
         assert!(
-            error
+            !error
                 .message
                 .contains("pyarrow stream failed between batches")
         );
     });
+}
+
+#[test]
+#[ignore = "requires PyArrow 25 in the dedicated H2 evidence environment"]
+fn real_pyarrow_large_array_survives_producer_gc_and_downstream_thread_drop() {
+    let imported = Python::attach(|py| {
+        let module = pyarrow_fixture_module(py);
+        let producer = module.getattr("large_batch").unwrap().call0().unwrap();
+        let producer_ranges = pyarrow_buffer_ranges(&module, "batch_buffer_ranges", &producer);
+        assert!(
+            producer_ranges
+                .iter()
+                .map(|(_, bytes)| bytes)
+                .sum::<usize>()
+                >= 2 * 1024 * 1024
+        );
+        let iterable = module.getattr("one").unwrap().call1((&producer,)).unwrap();
+        let mut imported = collect_python_iterable(&bridge(), &iterable).unwrap();
+        let record_batch = imported.batches.remove(0).record_batch().unwrap().clone();
+        assert!(buffer_ranges_alias(
+            &producer_ranges,
+            &record_batch_buffer_ranges(&record_batch)
+        ));
+        drop(iterable);
+        drop(producer);
+        PyModule::import(py, "gc")
+            .unwrap()
+            .getattr("collect")
+            .unwrap()
+            .call0()
+            .unwrap();
+        record_batch
+    });
+
+    std::thread::spawn(move || {
+        assert_eq!(imported.num_rows(), 1);
+        assert!(cdf_memory::record_batch_retained_bytes(&imported).unwrap() >= 2 * 1024 * 1024);
+        drop(imported);
+    })
+    .join()
+    .unwrap();
 }
 
 #[test]
@@ -686,6 +838,66 @@ fn million_row_dict_stream_keeps_boundary_memory_constant() {
 }
 
 #[test]
+#[ignore = "slow H2 production-spine memory/backpressure evidence"]
+fn million_row_python_resource_uses_the_global_memory_coordinator() {
+    const BOUNDARY_BYTES: u64 = 128 * 1024;
+    let report = attached_interpreter_report().unwrap();
+    let project = TestPythonProject::new(false, 1_000_000);
+    let mut registry = cdf_runtime::SourceRegistry::new();
+    registry
+        .register(PythonSourceDriver::new().unwrap())
+        .unwrap();
+    let project_options = python_project_options(&report, 1_024, BOUNDARY_BYTES);
+    let plan = compile_reference_plan(&registry, &project, project_options.clone());
+    let (host, execution) =
+        cdf_engine::StandaloneExecutionHost::default_services(BOUNDARY_BYTES).unwrap();
+    let context = cdf_runtime::SourceResolutionContext::new(
+        &project.root,
+        Arc::new(NoopSecretProvider),
+        &execution,
+        Arc::new(EgressAllowlist::allow_any()),
+    )
+    .with_driver_options(BTreeMap::from([("python".to_owned(), project_options)]));
+    let resource = registry.resolve(&plan, &context).unwrap();
+    let scan = resource
+        .negotiate(&ScanRequest {
+            resource_id: ResourceId::new("events.raw").unwrap(),
+            projection: None,
+            filters: Vec::new(),
+            limit: None,
+            order_by: Vec::new(),
+            scope: ScopeKey::Resource,
+        })
+        .unwrap();
+    let row_count = host
+        .block_on_root(async {
+            let mut stream = resource.open(scan.partitions[0].clone()).await?;
+            let mut rows = 0_u64;
+            while let Some(batch) = stream.next().await {
+                let batch = batch?;
+                rows = rows.saturating_add(batch.header.row_count);
+                drop(batch);
+            }
+            Result::Ok(rows)
+        })
+        .unwrap();
+    let memory = execution.memory().snapshot();
+    eprintln!("h2_product_memory rows={row_count} snapshot={memory:?}");
+    assert_eq!(row_count, 1_000_000);
+    assert_eq!(memory.current_bytes, 0);
+    assert!(memory.peak_bytes <= BOUNDARY_BYTES, "{memory:?}");
+    assert!(
+        memory
+            .consumers
+            .values()
+            .map(|consumer| consumer.waits)
+            .sum::<u64>()
+            > 0,
+        "the exact one-window budget should backpressure the producer: {memory:?}"
+    );
+}
+
+#[test]
 #[ignore = "slow H2 release-mode batch-size curve"]
 fn dict_row_batch_curve_reports_throughput_without_changing_defaults() {
     use std::time::Instant;
@@ -716,7 +928,7 @@ fn dict_row_batch_curve_reports_throughput_without_changing_defaults() {
             summary.peak_boundary_bytes
         );
         assert_eq!(summary.row_count, ROWS);
-        assert!(summary.peak_boundary_bytes <= DEFAULT_BOUNDARY_CHANNEL_BYTES);
+        assert!(summary.peak_boundary_bytes <= DEFAULT_MAX_BOUNDARY_BYTES);
     }
 }
 
@@ -753,14 +965,54 @@ fn admitted_python_work_is_mode_correct_and_fixture_hash_stable() {
     )
     .unwrap();
     let report = attached_interpreter_report().unwrap();
+    let project = TestPythonProject::new(true, 2);
+    let mut registry = cdf_runtime::SourceRegistry::new();
+    registry
+        .register(PythonSourceDriver::new().unwrap())
+        .unwrap();
+    let project_options = python_project_options(&report, 4_096, 1024 * 1024);
+    let plan = compile_reference_plan(&registry, &project, project_options.clone());
+    assert_eq!(plan.physical_plan["dict_batch_rows"], 4_096);
+    assert_eq!(plan.physical_plan["max_boundary_bytes"], 1024 * 1024);
     let (host, execution) =
         cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024).unwrap();
-    let requested_parallelism = usize::from(execution.capabilities().logical_cpu_slots.min(2));
+    let context = cdf_runtime::SourceResolutionContext::new(
+        &project.root,
+        Arc::new(NoopSecretProvider),
+        &execution,
+        Arc::new(EgressAllowlist::allow_any()),
+    )
+    .with_driver_options(BTreeMap::from([("python".to_owned(), project_options)]));
+    let _resource = registry.resolve(&plan, &context).unwrap();
+    let lane = execution
+        .capabilities()
+        .blocking_lanes
+        .into_iter()
+        .find(|lane| lane.lane_id == "python.source")
+        .expect("registry resolution installs the bound Python lane");
+    let requested_parallelism = usize::from(execution.capabilities().logical_cpu_slots);
     let semantics = execution_semantics(&report, true, requested_parallelism);
-    let lane = python_execution_lane_spec(&semantics);
-    execution
-        .ensure_blocking_lanes(std::slice::from_ref(&lane))
-        .unwrap();
+    assert_eq!(
+        lane.maximum_concurrency,
+        u16::try_from(semantics.effective_parallelism).unwrap()
+    );
+    let scheduler = cdf_runtime::resolve_runtime_scheduler(
+        64,
+        &plan.execution_capabilities,
+        &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        &execution,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        scheduler.source_lane_concurrency,
+        Some(lane.maximum_concurrency)
+    );
+    if report.can_parallelize_python() {
+        assert!(scheduler.effective_jobs.jobs > 1);
+    } else {
+        assert_eq!(scheduler.effective_jobs.jobs, 1);
+    }
 
     let task_count = 2_usize;
     let active = Arc::new(AtomicUsize::new(0));
@@ -872,14 +1124,6 @@ fn context_uses_http_secret_redaction_for_logs_and_traces() {
     EgressAllowlist::AllowHosts(BTreeSet::from(["api.example.test".to_owned()]))
         .check(&request)
         .unwrap();
-}
-
-#[test]
-fn watchdog_reports_timeout_without_panicking() {
-    let watchdog = Watchdog::new(100, 1_000).unwrap();
-    watchdog.check(1_050).unwrap();
-    let error = watchdog.check(1_101).unwrap_err();
-    assert_eq!(error.kind, ErrorKind::Transient);
 }
 
 #[test]
