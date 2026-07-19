@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-11
 Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md
@@ -45,3 +45,18 @@ None. SX1, BX1, and A5 are done; this ticket is executable.
 
 - `.10x/specs/stream-epochs-watermarks.md`
 - `.10x/specs/source-extension-runtime-contract.md`
+
+## Evidence
+
+- **Complete policy before extraction:** declarative test `stream_policy_compiles_before_plan_and_missing_policy_names_the_fix` covers all six required top-level fields plus nested watermark aggregation/idleness omissions; runtime `capability_matrix_fails_before_extraction_with_specific_remediation` covers illegal boundedness, quiescence, idleness, watermark, and recapture joins without opening a source.
+- **Capability-governed frontiers/backpressure/watermarks:** runtime's six-test stream-policy matrix plus `source_watermark_capability_is_bound_to_the_compiled_arrow_schema` and `source_frontier_requires_declared_comparison_kind_and_valid_position` prove exact source schema/domain/authority and cursor-field/log/protocol admission. Engine tests prove final projection, redaction, transform, exact source/policy graph binding, and no driver-id dispatch.
+- **Canonical secret-free evidence:** plan/explain, lock, graph, and package tests validate intrinsic hashes and exact joins. Bounded graph/lock/policy fields are omitted. The 100-run golden is independently stale: detached pre-A7 `ed9bb3de` and final A7 produced the same actual package and three artifact hashes, proving A7 did not alter the current bounded identity.
+- **Extension law:** declarative `streamish` is registered solely through a mock driver descriptor/capabilities and compiles the same policy path. Strict all-target clippy passed for kernel/runtime/declarative/engine/project/CLI; runtime passed 105 tests with one benchmark ignored; declarative passed 22; focused engine/project/CLI gates passed.
+
+## Review
+
+The first adversarial review failed with one critical and five significant findings. The repair closed exact graph authority, bounded serialization, position structure, diagnostics, lock/hash validation, and extent duplication. A focused re-review then found the source watermark and frontier capability descriptions still too coarse plus incomplete nested remediation; those were corrected at the capability artifact boundary. Final independent verdict: **pass**, no critical or significant finding. Residual risk: generic nested-field remediation recognizes serde's current missing-field message format; typed top-level errors remain independent of that text.
+
+## Retrospective
+
+The costly mistake was treating `Preserve` and a position-family enum as sufficient authority. They describe behavior classes, not the exact field/domain/comparator a compiler can safely admit. The durable rule is that capability artifacts must name every semantic dimension used in a plan-time proof, and the compiler must join those claims to independently typed schema/source authority. A second lesson is that compatibility must be measured against the actual pre-ticket tree: the committed bounded golden was already stale, and comparing exact hashes in a detached pre-A7 worktree prevented both an incorrect regeneration and an unnecessary rollback. Finally, graph nodes should carry compact references to one graph-level policy artifact; duplicating full frontiers multiplies artifact size without adding authority.
