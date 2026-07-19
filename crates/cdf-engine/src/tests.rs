@@ -2029,6 +2029,60 @@ fn durable_segment_hook_runs_after_publish_with_exact_entry_and_batch() {
 }
 
 #[test]
+fn canonical_segment_releases_construction_peak_before_durable_ingress() {
+    let resource = MockResource::tier_a(sample_batches());
+    let plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(vec![], None, None, ExecutionExtent::bounded()),
+        )
+        .unwrap();
+    let package_dir = TempDir::new().unwrap();
+    let (_, services) = StandaloneExecutionHost::default_services(64 * 1024 * 1024).unwrap();
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let hook_observed = Arc::clone(&observed);
+    let mut durable_segment = move |_entry: &SegmentEntry, payload: DurableSegmentPayload| {
+        let (_durable_local_file, batches, memory_leases) = payload.into_parts();
+        let output_bytes =
+            batches.iter().try_fold(0_u64, |total, batch| {
+                total
+                    .checked_add(u64::try_from(batch.get_array_memory_size()).map_err(|_| {
+                        cdf_kernel::CdfError::data("durable payload bytes exceed u64")
+                    })?)
+                    .ok_or_else(|| cdf_kernel::CdfError::data("durable payload bytes overflow"))
+            })?;
+        let scratch_bytes = memory_leases
+            .last()
+            .ok_or_else(|| cdf_kernel::CdfError::internal("canonical scratch lease is absent"))?
+            .bytes();
+        hook_observed
+            .lock()
+            .unwrap()
+            .push((scratch_bytes, output_bytes.max(1)));
+        Ok(())
+    };
+    let pre_finalize =
+        |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
+    let mut stream_finalize = || Ok(());
+
+    block_on(execute_to_package_with_streaming_hooks(
+        &plan,
+        &resource,
+        package_dir.path(),
+        &pre_finalize,
+        &mut durable_segment,
+        &mut stream_finalize,
+        EngineExecutionOptions::default().with_execution_services(services.clone()),
+    ))
+    .unwrap();
+
+    let observed = observed.lock().unwrap();
+    assert!(!observed.is_empty());
+    assert!(observed.iter().all(|(scratch, output)| scratch == output));
+    assert_eq!(services.memory().snapshot().current_bytes, 0);
+}
+
+#[test]
 fn resident_execution_plan_is_rejected_until_supervisor_exists() {
     let resource = MockResource::tier_a(sample_batches());
     let input = plan_input(

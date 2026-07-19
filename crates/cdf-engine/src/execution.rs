@@ -4564,7 +4564,7 @@ fn persist_canonical_segments(
             memory_leases: _transform_memory_leases,
             ..
         } = canonical;
-        let _memory_lease = match state.memory.map(Arc::clone) {
+        let mut _memory_lease = match state.memory.map(Arc::clone) {
             Some(memory) => {
                 let ordinal_bytes = row_count
                     .checked_mul(8)
@@ -4680,6 +4680,14 @@ fn persist_canonical_segments(
                 )
                 .ok_or_else(|| CdfError::data("canonical output bytes overflow"))
         })?;
+        // Construction needs the retained input, canonical concat output, and ordinal buffer at
+        // once. Once construction finishes, only the canonical output follows the encode/staged
+        // path; retaining the peak scratch reservation there can starve source-frontier progress
+        // and form a memory/backpressure cycle. Transform leases continue to own any shared input
+        // buffers, while this reconciled lease owns the complete canonical output working set.
+        if let Some(lease) = &_memory_lease {
+            lease.reconcile(normalization_output_bytes.max(1))?;
+        }
         sink.queue.submit(
             SegmentEncodeWork {
                 ordinal: 0,
