@@ -28,7 +28,7 @@ No arbitrary Python execution inside engine operators, untrusted sandbox claim, 
 
 ## Blockers
 
-None. H1, A4, and A2 are done; this ticket is executable.
+None at closure. H1, A4, and A2 were completed prerequisites.
 
 ## References
 
