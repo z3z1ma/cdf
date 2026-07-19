@@ -941,8 +941,6 @@ dependencies = [
  "cdf-package-contract",
  "cdf-runtime",
  "duckdb",
- "proptest",
- "serde",
  "serde_json",
  "tempfile",
 ]

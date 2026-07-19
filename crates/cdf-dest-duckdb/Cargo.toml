@@ -15,12 +15,10 @@ cdf-contract = { path = "../cdf-contract" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-package-contract = { path = "../cdf-package-contract" }
 cdf-runtime = { path = "../cdf-runtime" }
-serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 
 [dev-dependencies]
 cdf-conformance = { path = "../cdf-conformance" }
 cdf-engine = { path = "../cdf-engine" }
 cdf-package = { path = "../cdf-package" }
-proptest = "1.11.0"
 tempfile = "3.27.0"
