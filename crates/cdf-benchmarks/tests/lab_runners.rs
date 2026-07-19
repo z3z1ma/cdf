@@ -245,6 +245,7 @@ fn raw_arrow_duckdb_and_io_references_cross_check_fixture_rows_and_bytes() {
             path: temp.path().join("orders.csv"),
             batch_rows: 1024,
             has_header: true,
+            infer_rows: spec.rows,
         },
         ReferenceWorkload::ArrowNdjson {
             path: temp.path().join("orders.ndjson"),
