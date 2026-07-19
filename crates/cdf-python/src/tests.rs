@@ -1,7 +1,7 @@
 use super::*;
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     ffi::CString,
     io::Cursor,
     path::PathBuf,
@@ -12,7 +12,8 @@ use std::{
     },
 };
 
-use arrow_array::{ArrayRef, Int64Array, StringArray};
+use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch, StringArray};
+use arrow_data::ArrayData;
 use arrow_ipc::{reader::StreamReader, writer::StreamWriter};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_foreign_stream::{ForeignCopyClassification, ForeignTransferMode};
@@ -37,6 +38,238 @@ fn bridge() -> PythonResourceBridge {
     )
 }
 
+const TEST_OUTCOME_CAP: usize = 128;
+
+struct CollectedPythonStream {
+    summary: PythonStreamSummary,
+    batches: Vec<Batch>,
+    yield_kinds: Vec<PythonYieldKind>,
+}
+
+fn collect_json_rows<I>(bridge: &PythonResourceBridge, rows: I) -> Result<CollectedPythonStream>
+where
+    I: IntoIterator<Item = serde_json::Value>,
+{
+    let mut batches = Vec::new();
+    let mut yield_kinds = Vec::new();
+    let summary = bridge.visit_json_dict_rows(rows, |outcome, kind| {
+        if batches.len() == TEST_OUTCOME_CAP {
+            return Err(CdfError::data("test Python outcome cap exceeded"));
+        }
+        batches.push(outcome.batch);
+        yield_kinds.push(kind);
+        Ok(())
+    })?;
+    Ok(CollectedPythonStream {
+        summary,
+        batches,
+        yield_kinds,
+    })
+}
+
+fn collect_python_iterable(
+    bridge: &PythonResourceBridge,
+    iterable: &Bound<'_, PyAny>,
+) -> Result<CollectedPythonStream> {
+    let mut batches = Vec::new();
+    let mut yield_kinds = Vec::new();
+    let summary = bridge.visit_python_foreign_iterable(iterable, |outcome, kind| {
+        if batches.len() == TEST_OUTCOME_CAP {
+            return Err(CdfError::data("test Python outcome cap exceeded"));
+        }
+        batches.push(outcome.batch);
+        yield_kinds.push(kind);
+        Ok(())
+    })?;
+    Ok(CollectedPythonStream {
+        summary,
+        batches,
+        yield_kinds,
+    })
+}
+
+fn pyarrow_fixture_module<'py>(py: Python<'py>) -> Bound<'py, PyModule> {
+    PyModule::from_code(
+        py,
+        c"
+import datetime
+import decimal
+import pyarrow as pa
+
+def one(value):
+    yield value
+
+def primitive_batch():
+    return pa.record_batch([
+        pa.array([1, 2, None], type=pa.int64()),
+        pa.array(['ada', 'grace', None], type=pa.string()),
+    ], names=['id', 'name'])
+
+def broad_batch():
+    return pa.record_batch([
+        pa.array([1, None], type=pa.int32()),
+        pa.array(['drop', 'keep', None], type=pa.string()).slice(1),
+        pa.array([[1, 2], None], type=pa.list_(pa.int64())),
+        pa.StructArray.from_arrays([
+            pa.array([1, None], type=pa.int64()),
+            pa.array(['x', 'y'], type=pa.string()),
+        ], names=['number', 'label']),
+        pa.array(['alpha', None]).dictionary_encode(),
+        pa.array([decimal.Decimal('1.23'), None], type=pa.decimal128(10, 2)),
+        pa.array([
+            datetime.datetime(2026, 7, 18, tzinfo=datetime.timezone.utc),
+            None,
+        ], type=pa.timestamp('us', tz='UTC')),
+    ], names=['narrow', 'slice', 'items', 'nested', 'encoded', 'amount', 'observed_at'])
+
+def mixed_batches():
+    yield pa.record_batch([pa.array([1])], names=['id'])
+    yield pa.record_batch([pa.array([2]), pa.array(['new'])], names=['id', 'name'])
+
+def table_value():
+    first = pa.record_batch([
+        pa.array([1, 2], type=pa.int64()),
+        pa.array(['a', 'b'], type=pa.string()),
+    ], names=['id', 'name'])
+    second = pa.record_batch([
+        pa.array([3, 4], type=pa.int64()),
+        pa.array(['c', 'd'], type=pa.string()),
+    ], names=['id', 'name'])
+    return pa.Table.from_batches([first, second])
+
+stream_pulls = 0
+
+def counted_stream():
+    global stream_pulls
+    schema = pa.schema([('id', pa.int64())])
+    def batches():
+        global stream_pulls
+        stream_pulls += 1
+        yield pa.record_batch([pa.array([1])], schema=schema)
+        stream_pulls += 1
+        yield pa.record_batch([pa.array([2])], schema=schema)
+    yield pa.RecordBatchReader.from_batches(schema, batches())
+
+def failing_stream():
+    schema = pa.schema([('id', pa.int64())])
+    def batches():
+        yield pa.record_batch([pa.array([1])], schema=schema)
+        raise RuntimeError('pyarrow stream failed between batches')
+    yield pa.RecordBatchReader.from_batches(schema, batches())
+
+def array_buffer_ranges(array):
+    ranges = [(buffer.address, buffer.size) for buffer in array.buffers() if buffer is not None and buffer.size]
+    if pa.types.is_dictionary(array.type):
+        ranges.extend(array_buffer_ranges(array.dictionary))
+    return ranges
+
+def batch_buffer_ranges(batch):
+    return sorted({
+        extent
+        for column in batch.columns
+        for extent in array_buffer_ranges(column)
+    })
+
+def table_buffer_ranges(table):
+    return sorted({
+        extent
+        for column in table.columns
+        for chunk in column.chunks
+        for extent in array_buffer_ranges(chunk)
+    })
+",
+        c"h2_pyarrow_fixture.py",
+        c"h2_pyarrow_fixture",
+    )
+    .expect("load real PyArrow H2 fixture")
+}
+
+fn record_batch_buffer_ranges(batch: &RecordBatch) -> BTreeSet<(usize, usize)> {
+    fn visit(data: &ArrayData, ranges: &mut BTreeSet<(usize, usize)>) {
+        ranges.extend(data.buffers().iter().filter_map(|buffer| {
+            (!buffer.is_empty()).then_some((buffer.as_ptr() as usize, buffer.len()))
+        }));
+        if let Some(nulls) = data.nulls() {
+            let buffer = nulls.buffer();
+            if !buffer.is_empty() {
+                ranges.insert((buffer.as_ptr() as usize, buffer.len()));
+            }
+        }
+        for child in data.child_data() {
+            visit(child, ranges);
+        }
+    }
+
+    let mut ranges = BTreeSet::new();
+    for column in batch.columns() {
+        let data = column.to_data();
+        visit(&data, &mut ranges);
+    }
+    ranges
+}
+
+fn pyarrow_buffer_ranges(
+    module: &Bound<'_, PyModule>,
+    method: &str,
+    object: &Bound<'_, PyAny>,
+) -> BTreeSet<(usize, usize)> {
+    module
+        .getattr(method)
+        .unwrap()
+        .call1((object,))
+        .unwrap()
+        .extract::<Vec<(usize, usize)>>()
+        .unwrap()
+        .into_iter()
+        .collect()
+}
+
+fn buffer_ranges_alias(
+    producer: &BTreeSet<(usize, usize)>,
+    imported: &BTreeSet<(usize, usize)>,
+) -> bool {
+    let overlaps = |left: &(usize, usize), right: &(usize, usize)| {
+        let left_end = left.0.saturating_add(left.1);
+        let right_end = right.0.saturating_add(right.1);
+        left.0 < right_end && right.0 < left_end
+    };
+    !producer.is_empty()
+        && !imported.is_empty()
+        && producer
+            .iter()
+            .all(|source| imported.iter().any(|target| overlaps(source, target)))
+        && imported
+            .iter()
+            .all(|target| producer.iter().any(|source| overlaps(source, target)))
+}
+
+fn deterministic_test_stream_hash(read: &CollectedPythonStream) -> Result<String> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"cdf-python-test-stream-v1");
+    if let Some(schema_hash) = read.summary.first_schema_hash() {
+        hasher.update(schema_hash.as_str().as_bytes());
+    }
+    for (batch, kind) in read.batches.iter().zip(&read.yield_kinds) {
+        hasher.update(format!("{kind:?}\n").as_bytes());
+        hasher.update(batch.header.batch_id.as_str().as_bytes());
+        hasher.update(b"\n");
+        hasher.update(batch.header.row_count.to_le_bytes());
+        hasher.update(batch.header.byte_count.to_le_bytes());
+        let record_batch = batch.record_batch().ok_or_else(|| {
+            CdfError::data("deterministic Python test hash requires Arrow batches")
+        })?;
+        let mut bytes = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut bytes, record_batch.schema().as_ref())?;
+            writer.write(record_batch)?;
+            writer.finish()?;
+        }
+        hasher.update((bytes.len() as u64).to_le_bytes());
+        hasher.update(bytes);
+    }
+    Ok(format!("sha256:{}", hex::encode(hasher.finalize())))
+}
+
 #[test]
 fn dict_rows_batch_through_ndjson_into_kernel_batches() {
     let rows = vec![
@@ -44,14 +277,14 @@ fn dict_rows_batch_through_ndjson_into_kernel_batches() {
         serde_json::json!({"id": 2, "name": "grace"}),
         serde_json::json!({"id": 3, "name": "katherine"}),
     ];
-    let read = bridge().batches_from_json_dict_rows(rows).unwrap();
+    let read = collect_json_rows(&bridge(), rows).unwrap();
 
-    assert_eq!(read.row_count(), 3);
+    assert_eq!(read.summary.row_count, 3);
     assert_eq!(read.batches.len(), 2);
     assert_eq!(read.yield_kinds, vec![PythonYieldKind::DictRows; 2]);
     assert_eq!(
         read.batches[0].header.observed_schema_hash,
-        read.schema_hash.clone().unwrap()
+        read.summary.first_schema_hash().cloned().unwrap()
     );
     assert_eq!(read.batches[0].header.batch_id.as_str(), "orders-p0-000001");
 }
@@ -77,7 +310,8 @@ fn python_bridge_emits_neutral_foreign_outcomes() {
             })
             .unwrap();
 
-        assert!(read.batches.is_empty());
+        assert_eq!(read.outcome_count, 1);
+        assert_eq!(read.row_count, 2);
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].sequence, 1);
         assert_eq!(outcomes[0].transfer_mode, ForeignTransferMode::RowCompat);
@@ -123,10 +357,13 @@ fn dict_row_conversion_window_enforces_the_boundary_byte_limit() {
     );
 
     let error = bridge
-        .batches_from_json_dict_rows([serde_json::json!({"payload": "too large"})])
+        .visit_json_dict_rows(
+            [serde_json::json!({"payload": "too large"})],
+            |_outcome, _kind| Ok(()),
+        )
         .unwrap_err();
 
-    assert!(error.message.contains("boundary limit is 8 bytes"));
+    assert!(error.message.contains("8-byte boundary limit"));
 }
 
 #[test]
@@ -140,9 +377,9 @@ fn python_generator_dicts_convert_to_batches() {
             )
             .unwrap();
         let iterable = module.getattr("resource").unwrap().call0().unwrap();
-        let read = bridge().batches_from_python_iterable(&iterable).unwrap();
+        let read = collect_python_iterable(&bridge(), &iterable).unwrap();
 
-        assert_eq!(read.row_count(), 2);
+        assert_eq!(read.summary.row_count, 2);
         assert_eq!(read.yield_kinds, vec![PythonYieldKind::DictRows]);
     });
 }
@@ -203,9 +440,9 @@ def resource(data):
         .unwrap();
         let bytes = pyo3::types::PyBytes::new(py, &ipc);
         let iterable = module.getattr("resource").unwrap().call1((bytes,)).unwrap();
-        let read = bridge().batches_from_python_iterable(&iterable).unwrap();
+        let read = collect_python_iterable(&bridge(), &iterable).unwrap();
 
-        assert_eq!(read.row_count(), 2);
+        assert_eq!(read.summary.row_count, 2);
         assert_eq!(read.yield_kinds, vec![PythonYieldKind::ArrowCStream]);
         assert_eq!(
             read.batches[0].record_batch().unwrap().schema().as_ref(),
@@ -229,29 +466,191 @@ fn arrow_boundary_model_detects_capsule_protocol_methods() {
 
         assert_eq!(boundary, ArrowCapsuleBoundary::for_c_stream());
         assert!(boundary.zero_copy_intent);
+
+        let module = PyModule::from_code(
+            py,
+            c"class Both:\n    def __arrow_c_array__(self):\n        raise RuntimeError('not called')\n    def __arrow_c_stream__(self):\n        raise RuntimeError('not called')\n",
+            c"dual_capsule_model.py",
+            c"dual_capsule_model",
+        )
+        .unwrap();
+        let both = module.getattr("Both").unwrap().call0().unwrap();
+        assert_eq!(
+            arrow_boundary_for(&both).unwrap(),
+            Some(ArrowCapsuleBoundary::for_c_array())
+        );
     });
 }
 
 #[test]
-fn boundary_channel_is_byte_bounded() {
-    let read = bridge()
-        .batches_from_json_dict_rows(vec![serde_json::json!({"id": 1, "name": "ada"})])
-        .unwrap();
-    let batch = read.batches.into_iter().next().unwrap();
-    let batch_bytes = batch.header.byte_count;
-    let mut channel = BoundaryChannel::new(batch_bytes).unwrap();
+#[ignore = "requires PyArrow 25 in the dedicated H2 evidence environment"]
+fn real_pyarrow_c_array_matrix_preserves_buffers_lifetimes_types_and_schema_variance() {
+    Python::attach(|py| {
+        let module = pyarrow_fixture_module(py);
+        let pyarrow = PyModule::import(py, "pyarrow").unwrap();
+        assert_eq!(
+            pyarrow
+                .getattr("__version__")
+                .unwrap()
+                .extract::<String>()
+                .unwrap(),
+            "25.0.0"
+        );
 
-    channel.try_push(batch).unwrap();
-    assert_eq!(channel.queued_bytes(), batch_bytes);
-    let read = bridge()
-        .batches_from_json_dict_rows(vec![serde_json::json!({"id": 1, "name": "ada"})])
-        .unwrap();
-    let error = channel
-        .try_push(read.batches.into_iter().next().unwrap())
-        .unwrap_err();
-    assert_eq!(error.kind, ErrorKind::RateLimited);
-    assert!(channel.pop().is_some());
-    assert_eq!(channel.queued_bytes(), 0);
+        let primitive = module.getattr("primitive_batch").unwrap().call0().unwrap();
+        let source_ranges = pyarrow_buffer_ranges(&module, "batch_buffer_ranges", &primitive);
+        let iterable = module.getattr("one").unwrap().call1((&primitive,)).unwrap();
+        let mut imported = collect_python_iterable(&bridge(), &iterable).unwrap();
+        assert_eq!(imported.yield_kinds, vec![PythonYieldKind::ArrowCArray]);
+        let imported_batch = imported.batches.remove(0);
+        let imported_record_batch = imported_batch.record_batch().unwrap().clone();
+        let imported_ranges = record_batch_buffer_ranges(&imported_record_batch);
+        assert!(buffer_ranges_alias(&source_ranges, &imported_ranges));
+        let measured_copy = if buffer_ranges_alias(&source_ranges, &imported_ranges) {
+            ForeignCopyClassification::PayloadZeroCopyVerified
+        } else {
+            ForeignCopyClassification::CopyUnknown
+        };
+        assert_eq!(
+            measured_copy,
+            ForeignCopyClassification::PayloadZeroCopyVerified
+        );
+
+        drop(iterable);
+        drop(primitive);
+        PyModule::import(py, "gc")
+            .unwrap()
+            .getattr("collect")
+            .unwrap()
+            .call0()
+            .unwrap();
+        let ids = imported_record_batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(ids.value(0), 1);
+        assert_eq!(ids.value(1), 2);
+        assert!(ids.is_null(2));
+
+        let broad = module.getattr("broad_batch").unwrap().call0().unwrap();
+        let broad_ranges = pyarrow_buffer_ranges(&module, "batch_buffer_ranges", &broad);
+        let broad_iterable = module.getattr("one").unwrap().call1((&broad,)).unwrap();
+        let broad_read = collect_python_iterable(&bridge(), &broad_iterable).unwrap();
+        let broad_batch = broad_read.batches[0].record_batch().unwrap();
+        assert_eq!(broad_batch.num_rows(), 2);
+        assert_eq!(broad_batch.num_columns(), 7);
+        let imported_broad_ranges = record_batch_buffer_ranges(broad_batch);
+        assert!(
+            buffer_ranges_alias(&broad_ranges, &imported_broad_ranges),
+            "producer={broad_ranges:?} imported={imported_broad_ranges:?}"
+        );
+        assert!(matches!(
+            broad_batch
+                .schema()
+                .field_with_name("amount")
+                .unwrap()
+                .data_type(),
+            DataType::Decimal128(10, 2)
+        ));
+        assert!(matches!(
+            broad_batch
+                .schema()
+                .field_with_name("observed_at")
+                .unwrap()
+                .data_type(),
+            DataType::Timestamp(_, Some(timezone)) if timezone.as_ref() == "UTC"
+        ));
+
+        let mixed = module.getattr("mixed_batches").unwrap().call0().unwrap();
+        let mixed_read = collect_python_iterable(&bridge(), &mixed).unwrap();
+        assert_eq!(
+            mixed_read.yield_kinds,
+            vec![PythonYieldKind::ArrowCArray, PythonYieldKind::ArrowCArray]
+        );
+        assert_ne!(
+            mixed_read.batches[0].header.observed_schema_hash,
+            mixed_read.batches[1].header.observed_schema_hash
+        );
+    });
+}
+
+#[test]
+#[ignore = "requires PyArrow 25 in the dedicated H2 evidence environment"]
+fn real_pyarrow_c_stream_is_incremental_zero_copy_and_cancellable() {
+    Python::attach(|py| {
+        let module = pyarrow_fixture_module(py);
+        let table = module.getattr("table_value").unwrap().call0().unwrap();
+        let source_ranges = pyarrow_buffer_ranges(&module, "table_buffer_ranges", &table);
+        let iterable = module.getattr("one").unwrap().call1((&table,)).unwrap();
+        let read = collect_python_iterable(&bridge(), &iterable).unwrap();
+        assert_eq!(read.summary.row_count, 4);
+        assert_eq!(
+            read.yield_kinds,
+            vec![PythonYieldKind::ArrowCStream, PythonYieldKind::ArrowCStream]
+        );
+        let imported_ranges = read
+            .batches
+            .iter()
+            .flat_map(|batch| record_batch_buffer_ranges(batch.record_batch().unwrap()))
+            .collect::<BTreeSet<_>>();
+        assert!(buffer_ranges_alias(&source_ranges, &imported_ranges));
+        drop(iterable);
+        drop(table);
+        PyModule::import(py, "gc")
+            .unwrap()
+            .getattr("collect")
+            .unwrap()
+            .call0()
+            .unwrap();
+        let final_ids = read.batches[1]
+            .record_batch()
+            .unwrap()
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(final_ids.value(1), 4);
+
+        let counted = module.getattr("counted_stream").unwrap().call0().unwrap();
+        let error = bridge()
+            .visit_python_foreign_iterable(&counted, |_outcome, _kind| {
+                Err(CdfError::data("downstream cancelled PyArrow stream"))
+            })
+            .unwrap_err();
+        assert_eq!(error.message, "downstream cancelled PyArrow stream");
+        assert_eq!(
+            module
+                .getattr("stream_pulls")
+                .unwrap()
+                .extract::<usize>()
+                .unwrap(),
+            1
+        );
+    });
+}
+
+#[test]
+#[ignore = "requires PyArrow 25 in the dedicated H2 evidence environment"]
+fn real_pyarrow_c_stream_propagates_an_error_between_batches() {
+    Python::attach(|py| {
+        let module = pyarrow_fixture_module(py);
+        let iterable = module.getattr("failing_stream").unwrap().call0().unwrap();
+        let mut emitted = 0;
+        let error = bridge()
+            .visit_python_foreign_iterable(&iterable, |_outcome, kind| {
+                emitted += 1;
+                assert_eq!(kind, PythonYieldKind::ArrowCStream);
+                Ok(())
+            })
+            .unwrap_err();
+        assert_eq!(emitted, 1);
+        assert!(
+            error
+                .message
+                .contains("pyarrow stream failed between batches")
+        );
+    });
 }
 
 #[test]
@@ -278,12 +677,14 @@ fn interpreter_report_checks_version_path_and_gil_state() {
 
 #[test]
 fn admitted_python_work_is_mode_correct_and_fixture_hash_stable() {
-    let read = bridge()
-        .batches_from_json_dict_rows(vec![
+    let read = collect_json_rows(
+        &bridge(),
+        vec![
             serde_json::json!({"id": 1, "name": "ada"}),
             serde_json::json!({"id": 2, "name": "grace"}),
-        ])
-        .unwrap();
+        ],
+    )
+    .unwrap();
     let report = attached_interpreter_report().unwrap();
     let (host, execution) =
         cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024).unwrap();
@@ -348,7 +749,7 @@ fn admitted_python_work_is_mode_correct_and_fixture_hash_stable() {
         PythonConcurrencyMode::FreeThreadedParallel => {}
     }
 
-    let fixture_hash = deterministic_fixture_hash(&read).unwrap();
+    let fixture_hash = deterministic_test_stream_hash(&read).unwrap();
     let mut hasher = Sha256::new();
     hasher.update(b"cdf-python-admitted-concurrency-v1");
     hasher.update(fixture_hash.as_bytes());
@@ -426,7 +827,7 @@ fn python_dict_rows_reject_non_json_values() {
             .unwrap();
         let iterable = module.getattr("resource").unwrap().call0().unwrap();
         let error = bridge()
-            .batches_from_python_iterable(&iterable)
+            .visit_python_foreign_iterable(&iterable, |_outcome, _kind| Ok(()))
             .unwrap_err();
 
         assert_eq!(error.kind, ErrorKind::Data);
@@ -438,7 +839,9 @@ fn python_dict_rows_reject_non_json_values() {
 fn python_lists_are_not_silently_treated_as_rows() {
     Python::attach(|py| {
         let list = PyList::new(py, [1, 2, 3]).unwrap();
-        let error = bridge().batches_from_python_iterable(&list).unwrap_err();
+        let error = bridge()
+            .visit_python_foreign_iterable(&list, |_outcome, _kind| Ok(()))
+            .unwrap_err();
 
         assert_eq!(error.kind, ErrorKind::Data);
     });
@@ -456,16 +859,12 @@ fn sample_batch() -> RecordBatch {
 
 #[test]
 fn deterministic_hash_changes_when_payload_changes() {
-    let first = bridge()
-        .batches_from_json_dict_rows(vec![serde_json::json!({"id": 1})])
-        .unwrap();
-    let second = bridge()
-        .batches_from_json_dict_rows(vec![serde_json::json!({"id": 2})])
-        .unwrap();
+    let first = collect_json_rows(&bridge(), vec![serde_json::json!({"id": 1})]).unwrap();
+    let second = collect_json_rows(&bridge(), vec![serde_json::json!({"id": 2})]).unwrap();
 
     assert_ne!(
-        deterministic_fixture_hash(&first).unwrap(),
-        deterministic_fixture_hash(&second).unwrap()
+        deterministic_test_stream_hash(&first).unwrap(),
+        deterministic_test_stream_hash(&second).unwrap()
     );
 }
 
@@ -487,14 +886,33 @@ fn trace_headers_stay_case_insensitive_and_redacted() {
 }
 
 #[test]
-fn same_schema_is_required_across_python_yields() {
-    let mut rows = Vec::new();
-    let mut first = BTreeMap::new();
-    first.insert("id".to_owned(), serde_json::json!(1));
-    rows.push(serde_json::Value::Object(first.into_iter().collect()));
-    let read = bridge().batches_from_json_dict_rows(rows).unwrap();
+fn schema_variance_crosses_python_as_distinct_physical_observations() {
+    let bridge = PythonResourceBridge::new(
+        PythonBridgeOptions::new(
+            ResourceId::new("orders").unwrap(),
+            PartitionId::new("p0").unwrap(),
+        )
+        .with_dict_batch_rows(1)
+        .unwrap(),
+    );
+    let read = collect_json_rows(
+        &bridge,
+        [
+            serde_json::json!({"id": 1}),
+            serde_json::json!({"id": 2, "name": "grace"}),
+        ],
+    )
+    .unwrap();
 
-    assert!(read.schema_hash.is_some());
+    assert_eq!(read.summary.outcome_count, 2);
+    assert_ne!(
+        read.batches[0].header.observed_schema_hash,
+        read.batches[1].header.observed_schema_hash
+    );
+    assert_eq!(
+        read.summary.first_schema_hash(),
+        Some(&read.batches[0].header.observed_schema_hash)
+    );
 }
 
 #[test]
@@ -511,9 +929,7 @@ fn pycapsule_model_documents_array_boundary_names() {
 
 #[test]
 fn can_read_back_hash_from_arrow_ipc_bytes() {
-    let read = bridge()
-        .batches_from_json_dict_rows([serde_json::json!({"id": 1, "name": "ada"})])
-        .unwrap();
+    let read = collect_json_rows(&bridge(), [serde_json::json!({"id": 1, "name": "ada"})]).unwrap();
     let bytes = {
         let batch = read.batches[0].record_batch().unwrap();
         let mut output = Vec::new();
@@ -558,8 +974,10 @@ orders.__cdf_dlt_metadata__ = {
         )
         .unwrap();
         let resource = module.getattr("orders").unwrap();
-        let preview = bridge().batches_from_dlt_resource(&resource).unwrap();
-        let descriptor = preview.read.descriptor.as_ref().unwrap();
+        let preview = bridge()
+            .visit_dlt_resource(&resource, |_outcome, _kind| Ok(()))
+            .unwrap();
+        let descriptor = preview.stream.descriptor().unwrap();
 
         assert_eq!(descriptor.resource_id.as_str(), "orders");
         assert_eq!(descriptor.primary_key, vec!["id"]);
@@ -579,7 +997,7 @@ orders.__cdf_dlt_metadata__ = {
             "dlt-orders-freeze"
         );
         assert_eq!(descriptor.state_scope, ScopeKey::Resource);
-        assert_eq!(preview.read.row_count(), 1);
+        assert_eq!(preview.stream.row_count, 1);
 
         let snapshot = serde_json::to_string_pretty(&preview.mapping_table).unwrap();
         assert!(snapshot.contains("primary_key"));
@@ -618,25 +1036,18 @@ crm.__cdf_dlt_metadata__ = {
         )
         .unwrap();
         let source = module.getattr("crm").unwrap();
-        let reads = bridge().batches_from_dlt_source(&source).unwrap();
+        let reads = bridge()
+            .visit_dlt_source(&source, |_metadata, _outcome, _kind| Ok(()))
+            .unwrap();
 
         assert_eq!(reads.len(), 1);
         assert_eq!(reads[0].metadata.source_name.as_deref(), Some("crm"));
         assert_eq!(
-            reads[0]
-                .read
-                .descriptor
-                .as_ref()
-                .unwrap()
-                .resource_id
-                .as_str(),
+            reads[0].stream.descriptor().unwrap().resource_id.as_str(),
             "users"
         );
-        assert_eq!(
-            reads[0].read.descriptor.as_ref().unwrap().merge_key,
-            vec!["id"]
-        );
-        assert_eq!(reads[0].read.row_count(), 1);
+        assert_eq!(reads[0].stream.descriptor().unwrap().merge_key, vec!["id"]);
+        assert_eq!(reads[0].stream.row_count, 1);
     });
 }
 
@@ -695,12 +1106,15 @@ def crm():
         .unwrap();
 
         let reads = bridge()
-            .batches_from_dlt_source(&module.getattr("crm").unwrap())
+            .visit_dlt_source(
+                &module.getattr("crm").unwrap(),
+                |_metadata, _outcome, _kind| Ok(()),
+            )
             .unwrap();
 
         assert_eq!(reads.len(), 1);
         let read = &reads[0];
-        let descriptor = read.read.descriptor.as_ref().unwrap();
+        let descriptor = read.stream.descriptor().unwrap();
         assert_eq!(descriptor.resource_id.as_str(), "orders");
         assert_eq!(descriptor.primary_key, vec!["id"]);
         assert_eq!(descriptor.merge_key, vec!["id", "region"]);
@@ -716,7 +1130,7 @@ def crm():
             "dlt-orders-freeze"
         );
         assert_eq!(read.metadata.source_name.as_deref(), Some("crm"));
-        assert_eq!(read.read.row_count(), 1);
+        assert_eq!(read.stream.row_count, 1);
         assert!(read.mapping_table.entries.iter().any(|entry| {
             entry.dlt_feature == "dlt destination delegation"
                 && entry.status == DltBridgeMappingStatus::Unsupported

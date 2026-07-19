@@ -316,11 +316,11 @@ impl DltBridgeMetadata {
     }
 }
 
-#[derive(Debug)]
-pub struct DltBridgeRead {
+#[derive(Clone, Debug)]
+pub struct DltBridgeSummary {
     pub metadata: DltBridgeMetadata,
     pub mapping_table: DltBridgeMappingTable,
-    pub read: PythonBatchRead,
+    pub stream: PythonStreamSummary,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

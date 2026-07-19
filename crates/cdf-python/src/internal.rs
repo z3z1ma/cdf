@@ -29,19 +29,6 @@ pub(crate) fn python_dict_to_json(py: Python<'_>, object: &Bound<'_, PyAny>) -> 
     Ok(json_text)
 }
 
-pub(crate) fn write_ipc_hash(batch: &RecordBatch, hasher: &mut Sha256) -> Result<()> {
-    let mut bytes = Vec::new();
-    {
-        let mut writer =
-            StreamWriter::try_new(&mut bytes, batch.schema().as_ref()).map_err(CdfError::from)?;
-        writer.write(batch).map_err(CdfError::from)?;
-        writer.finish().map_err(CdfError::from)?;
-    }
-    hasher.update((bytes.len() as u64).to_le_bytes());
-    hasher.update(bytes);
-    Ok(())
-}
-
 pub(crate) fn descriptor_for(
     resource_id: ResourceId,
     state_scope: ScopeKey,

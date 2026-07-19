@@ -10,12 +10,14 @@ use arrow_array::{Array, Int64Array, TimestampMicrosecondArray, UInt64Array};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_kernel::{
     BackpressureSupport, Batch, BatchStream, CapabilitySupport, CursorOrderingClaim,
-    CursorPosition, CursorSpec, CursorValue, DeliveryGuarantee, EstimateSupport,
-    FilterCapabilities, ForeignState, IncrementalShape, PartitionId, PartitionPlan,
-    PartitioningCapabilities, PlanId, QueryableResource, ReplaySupport, ResourceCapabilities,
-    ResourceDescriptor, ResourceId, ResourceStream, Result, ScanPlan, ScanRequest, SchemaSource,
-    ScopeKey, SourcePosition, TrustLevel, WriteDisposition, parse_arrow_field_type,
+    CursorPosition, CursorSpec, CursorValue, DeliveryGuarantee, EffectiveSchemaRuntime,
+    EstimateSupport, FilterCapabilities, ForeignState, IncrementalShape, PartitionId,
+    PartitionPlan, PartitioningCapabilities, PlanId, QueryableResource, ReplaySupport,
+    ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result, ScanPlan,
+    ScanRequest, SchemaSource, ScopeKey, SourcePosition, TrustLevel, TypePolicyAllowances,
+    WriteDisposition, parse_arrow_field_type,
 };
+use cdf_runtime::CompiledSourcePlan;
 use pyo3::{
     Python,
     types::{PyAnyMethods, PyModule},
@@ -42,6 +44,8 @@ pub struct PythonResource {
     execution: Option<cdf_runtime::ExecutionServices>,
     blocking_lane: Option<String>,
     compiled_source_plan_hash: Option<String>,
+    effective_schema_runtime: Option<EffectiveSchemaRuntime>,
+    type_policy_allowances: TypePolicyAllowances,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -150,6 +154,8 @@ impl PythonResource {
             execution: None,
             blocking_lane: None,
             compiled_source_plan_hash: None,
+            effective_schema_runtime: None,
+            type_policy_allowances: TypePolicyAllowances::default(),
         })
     }
 
@@ -164,17 +170,15 @@ impl PythonResource {
 
     pub(crate) fn from_compiled(
         project_root: &Path,
-        descriptor: ResourceDescriptor,
-        schema: SchemaRef,
-        capabilities: ResourceCapabilities,
+        plan: &CompiledSourcePlan,
         physical: PythonPhysicalPlan,
         compiled_source_plan_hash: String,
     ) -> Result<Self> {
         let module_path = resolve_module_path(project_root, &physical.module_relative)?;
         Ok(Self {
-            descriptor,
-            schema,
-            capabilities,
+            descriptor: plan.descriptor.clone(),
+            schema: Arc::new(plan.schema.clone()),
+            capabilities: plan.resource_capabilities.clone(),
             module_path,
             module_relative: physical.module_relative,
             callable: physical.callable,
@@ -183,6 +187,8 @@ impl PythonResource {
             execution: None,
             blocking_lane: None,
             compiled_source_plan_hash: Some(compiled_source_plan_hash),
+            effective_schema_runtime: plan.effective_schema_runtime.clone(),
+            type_policy_allowances: plan.type_policy_allowances,
         })
     }
 
@@ -438,6 +444,14 @@ impl ResourceStream for PythonResource {
 
     fn compiled_source_plan_hash(&self) -> Option<&str> {
         self.compiled_source_plan_hash.as_deref()
+    }
+
+    fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
+        self.effective_schema_runtime.as_ref()
+    }
+
+    fn type_policy_allowances(&self) -> TypePolicyAllowances {
+        self.type_policy_allowances
     }
 
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {

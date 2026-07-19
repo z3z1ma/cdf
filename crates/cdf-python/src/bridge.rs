@@ -2,6 +2,7 @@ use crate::internal::*;
 use crate::*;
 use std::{io::Cursor, sync::Arc};
 
+use arrow_array::RecordBatch;
 use arrow_json::reader::{ReaderBuilder as JsonReaderBuilder, infer_json_schema};
 use cdf_foreign_stream::{ForeignBatchOutcome, ForeignCopyClassification, ForeignTransferMode};
 
@@ -73,7 +74,7 @@ impl PythonBridgeOptions {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PythonYieldKind {
     DictRows,
@@ -109,95 +110,215 @@ impl ArrowCapsuleBoundary {
     }
 }
 
-#[derive(Debug)]
-pub struct PythonBatchRead {
-    pub descriptor: Option<ResourceDescriptor>,
-    pub schema_hash: Option<SchemaHash>,
-    pub batches: Vec<Batch>,
-    pub yield_kinds: Vec<PythonYieldKind>,
+#[derive(Clone, Debug)]
+pub struct PythonFirstObservation {
+    pub descriptor: ResourceDescriptor,
+    pub schema_hash: SchemaHash,
 }
 
-impl PythonBatchRead {
-    pub fn empty() -> Self {
-        Self {
-            descriptor: None,
-            schema_hash: None,
-            batches: Vec::new(),
-            yield_kinds: Vec::new(),
-        }
-    }
+#[derive(Clone, Debug, Default)]
+pub struct PythonStreamSummary {
+    pub first_observation: Option<PythonFirstObservation>,
+    pub outcome_count: u64,
+    pub row_count: u64,
+    pub byte_count: u64,
+    pub peak_boundary_bytes: u64,
+    pub dict_row_outcomes: u64,
+    pub arrow_c_array_outcomes: u64,
+    pub arrow_c_stream_outcomes: u64,
+}
 
-    pub fn row_count(&self) -> u64 {
-        self.batches
-            .iter()
-            .map(|batch| batch.header.row_count)
-            .sum()
-    }
-
-    pub fn byte_count(&self) -> u64 {
-        self.batches
-            .iter()
-            .map(|batch| batch.header.byte_count)
-            .sum()
-    }
-
-    fn push_record_batches(
+impl PythonStreamSummary {
+    fn observe(
         &mut self,
-        record_batches: Vec<RecordBatch>,
-        kind: PythonYieldKind,
+        schema_hash: SchemaHash,
         options: &PythonBridgeOptions,
-        next_batch_index: &mut usize,
+        kind: PythonYieldKind,
+        rows: u64,
+        bytes: u64,
+        boundary_bytes: u64,
     ) -> Result<()> {
-        let Some(first_batch) = record_batches.first() else {
-            return Ok(());
+        if self.first_observation.is_none() {
+            self.first_observation = Some(PythonFirstObservation {
+                descriptor: descriptor_for(
+                    options.resource_id.clone(),
+                    ScopeKey::Stream {
+                        name: "python_arrow_capsule".to_owned(),
+                    },
+                    schema_hash.clone(),
+                ),
+                schema_hash,
+            });
+        }
+        self.outcome_count = self
+            .outcome_count
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("Python outcome count exceeds u64"))?;
+        self.row_count = self
+            .row_count
+            .checked_add(rows)
+            .ok_or_else(|| CdfError::data("Python row count exceeds u64"))?;
+        self.byte_count = self
+            .byte_count
+            .checked_add(bytes)
+            .ok_or_else(|| CdfError::data("Python byte count exceeds u64"))?;
+        self.peak_boundary_bytes = self.peak_boundary_bytes.max(boundary_bytes);
+        let counter = match kind {
+            PythonYieldKind::DictRows => &mut self.dict_row_outcomes,
+            PythonYieldKind::ArrowCArray => &mut self.arrow_c_array_outcomes,
+            PythonYieldKind::ArrowCStream => &mut self.arrow_c_stream_outcomes,
         };
-        let schema = first_batch.schema();
-        let observed_schema_hash = cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?;
-        let descriptor = descriptor_for(
-            options.resource_id.clone(),
-            ScopeKey::Stream {
-                name: "python_arrow_capsule".to_owned(),
-            },
-            observed_schema_hash.clone(),
-        );
-        self.remember_descriptor(descriptor, observed_schema_hash.clone())?;
+        *counter = counter
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("Python yield-kind count exceeds u64"))?;
+        Ok(())
+    }
+}
 
-        for record_batch in record_batches {
-            if record_batch.schema().as_ref() != schema.as_ref() {
-                return Err(CdfError::data(
-                    "Python Arrow capsule yielded record batches with different schemas",
-                ));
-            }
-            *next_batch_index += 1;
-            let batch = Batch::from_record_batch(
-                batch_id(options, *next_batch_index)?,
-                options.resource_id.clone(),
-                options.partition_id.clone(),
-                observed_schema_hash.clone(),
-                record_batch,
-            )?;
-            self.batches.push(batch);
-            self.yield_kinds.push(kind.clone());
+#[derive(Default)]
+struct PythonBridgeState {
+    summary: PythonStreamSummary,
+    next_batch_index: usize,
+    next_outcome_sequence: u64,
+}
+
+impl PythonBridgeState {
+    fn emit_record_batch<F>(
+        &mut self,
+        record_batch: RecordBatch,
+        kind: PythonYieldKind,
+        boundary_peak_bytes: Option<u64>,
+        options: &PythonBridgeOptions,
+        emit: &mut F,
+    ) -> Result<()>
+    where
+        F: FnMut(ForeignBatchOutcome, PythonYieldKind) -> Result<()>,
+    {
+        let observed_schema_hash =
+            cdf_kernel::canonical_arrow_schema_hash(record_batch.schema().as_ref())?;
+        let retained_bytes = cdf_memory::record_batch_retained_bytes(&record_batch)?;
+        self.next_batch_index = self
+            .next_batch_index
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("Python batch index exceeds usize"))?;
+        self.next_outcome_sequence = self
+            .next_outcome_sequence
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("Python outcome sequence exceeds u64"))?;
+        let batch = Batch::from_record_batch(
+            batch_id(options, self.next_batch_index)?,
+            options.resource_id.clone(),
+            options.partition_id.clone(),
+            observed_schema_hash.clone(),
+            record_batch,
+        )?;
+        let rows = batch.header.row_count;
+        let bytes = batch.header.byte_count;
+        let outcome = python_foreign_outcome(self.next_outcome_sequence, batch, kind)?;
+        emit(outcome, kind)?;
+        self.summary.observe(
+            observed_schema_hash,
+            options,
+            kind,
+            rows,
+            bytes,
+            boundary_peak_bytes.unwrap_or(retained_bytes),
+        )
+    }
+
+    fn finish(self) -> PythonStreamSummary {
+        self.summary
+    }
+}
+
+#[derive(Default)]
+struct DictRowWindow {
+    rows: usize,
+    bytes: Vec<u8>,
+}
+
+impl DictRowWindow {
+    fn try_push(&mut self, row: &str, maximum_bytes: u64) -> Result<bool> {
+        let row_bytes = u64::try_from(row.len())
+            .map_err(|_| CdfError::data("Python dict row length exceeds u64"))?;
+        let current = u64::try_from(self.bytes.len())
+            .map_err(|_| CdfError::data("Python dict conversion window exceeds u64"))?;
+        let required = current
+            .checked_add(row_bytes)
+            .and_then(|value| value.checked_add(1))
+            .ok_or_else(|| CdfError::data("Python dict conversion window size overflowed"))?;
+        let current_capacity = u64::try_from(self.bytes.capacity())
+            .map_err(|_| CdfError::data("Python dict conversion capacity exceeds u64"))?;
+        let maximum_buffer_capacity = maximum_bytes.saturating_sub(row_bytes);
+        if required > maximum_buffer_capacity {
+            return Ok(false);
+        }
+        let minimum_peak = current_capacity
+            .max(required)
+            .checked_add(row_bytes)
+            .ok_or_else(|| CdfError::data("Python dict conversion peak size overflowed"))?;
+        if minimum_peak > maximum_bytes {
+            return Ok(false);
+        }
+        if required > current_capacity {
+            let geometric = current_capacity
+                .checked_mul(2)
+                .unwrap_or(maximum_buffer_capacity)
+                .max(1);
+            let target_capacity = required.max(geometric).min(maximum_buffer_capacity);
+            self.bytes
+                .try_reserve_exact(target_capacity.saturating_sub(current).try_into().map_err(
+                    |_| CdfError::data("Python dict conversion reservation exceeds usize"),
+                )?)
+                .map_err(|error| {
+                    CdfError::data(format!("reserve Python dict conversion window: {error}"))
+                })?;
+        }
+        let admitted_peak = u64::try_from(self.bytes.capacity())
+            .map_err(|_| CdfError::data("Python dict conversion capacity exceeds u64"))?
+            .checked_add(row_bytes)
+            .ok_or_else(|| CdfError::data("Python dict conversion peak size overflowed"))?;
+        if admitted_peak > maximum_bytes {
+            return Ok(false);
+        }
+        self.bytes.extend_from_slice(row.as_bytes());
+        self.bytes.push(b'\n');
+        self.rows = self
+            .rows
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("Python dict row count exceeds usize"))?;
+        Ok(true)
+    }
+}
+
+impl PythonFirstObservation {
+    fn apply_descriptor_metadata(&mut self, metadata: &DltBridgeMetadata) -> Result<()> {
+        metadata.apply_to_descriptor(&mut self.descriptor)
+    }
+}
+
+impl PythonStreamSummary {
+    fn apply_descriptor_metadata(&mut self, metadata: &DltBridgeMetadata) -> Result<()> {
+        if let Some(observation) = self.first_observation.as_mut() {
+            observation.apply_descriptor_metadata(metadata)?;
         }
         Ok(())
     }
 
-    fn remember_descriptor(
-        &mut self,
-        descriptor: ResourceDescriptor,
-        schema_hash: SchemaHash,
-    ) -> Result<()> {
-        match &self.schema_hash {
-            Some(existing) if existing != &schema_hash => Err(CdfError::data(
-                "Python resource yielded multiple observed schemas in one boundary read",
-            )),
-            Some(_) => Ok(()),
-            None => {
-                self.descriptor = Some(descriptor);
-                self.schema_hash = Some(schema_hash);
-                Ok(())
-            }
-        }
+    pub fn descriptor(&self) -> Option<&ResourceDescriptor> {
+        self.first_observation
+            .as_ref()
+            .map(|observation| &observation.descriptor)
+    }
+
+    pub fn first_schema_hash(&self) -> Option<&SchemaHash> {
+        self.first_observation
+            .as_ref()
+            .map(|observation| &observation.schema_hash)
+    }
+
+    pub fn empty() -> Self {
+        Self { ..Self::default() }
     }
 }
 
@@ -215,125 +336,83 @@ impl PythonResourceBridge {
         &self.options
     }
 
-    pub fn batches_from_json_dict_rows<I>(&self, rows: I) -> Result<PythonBatchRead>
-    where
-        I: IntoIterator<Item = serde_json::Value>,
-    {
-        let mut batches = Vec::new();
-        let mut yield_kinds = Vec::new();
-        let mut read = self.visit_json_dict_rows(rows, |outcome, kind| {
-            batches.push(outcome.batch);
-            yield_kinds.push(kind);
-            Ok(())
-        })?;
-        read.batches = batches;
-        read.yield_kinds = yield_kinds;
-        Ok(read)
-    }
-
-    pub(crate) fn visit_json_dict_rows<I, F>(&self, rows: I, mut emit: F) -> Result<PythonBatchRead>
+    pub fn visit_json_dict_rows<I, F>(&self, rows: I, mut emit: F) -> Result<PythonStreamSummary>
     where
         I: IntoIterator<Item = serde_json::Value>,
         F: FnMut(ForeignBatchOutcome, PythonYieldKind) -> Result<()> + Send,
     {
-        let mut read = PythonBatchRead::empty();
-        let mut json_rows = Vec::new();
-        let mut next_batch_index = 0;
-        let mut next_outcome_sequence = 0;
+        let mut state = PythonBridgeState::default();
+        let mut window = DictRowWindow::default();
         for row in rows {
             if !row.is_object() {
                 return Err(CdfError::data(
                     "Python dict batching accepts JSON objects only",
                 ));
             }
-            json_rows.push(serde_json::to_string(&row).map_err(json_error)?);
-            if json_rows.len() == self.options.dict_batch_rows {
-                self.flush_json_rows(&mut json_rows, &mut read, &mut next_batch_index)?;
-                drain_pending_outcomes(&mut read, &mut emit, &mut next_outcome_sequence)?;
-            }
+            let row = serde_json::to_string(&row).map_err(json_error)?;
+            self.push_json_row(&mut window, &mut state, &row, &mut emit)?;
         }
 
-        self.flush_json_rows(&mut json_rows, &mut read, &mut next_batch_index)?;
-        drain_pending_outcomes(&mut read, &mut emit, &mut next_outcome_sequence)?;
-        Ok(read)
+        self.flush_json_rows(&mut window, &mut state, 0, &mut emit)?;
+        Ok(state.finish())
     }
 
-    pub fn batches_from_python_iterable(
-        &self,
-        iterable: &Bound<'_, PyAny>,
-    ) -> Result<PythonBatchRead> {
-        let mut batches = Vec::new();
-        let mut yield_kinds = Vec::new();
-        let mut read = self.visit_python_foreign_iterable(iterable, |outcome, kind| {
-            batches.push(outcome.batch);
-            yield_kinds.push(kind);
-            Ok(())
-        })?;
-        read.batches = batches;
-        read.yield_kinds = yield_kinds;
-        Ok(read)
-    }
-
-    /// Incrementally imports one Python iterator and emits each bounded Arrow batch before
-    /// advancing the producer. Callbacks run without the GIL so host backpressure and memory
-    /// admission never stall unrelated Python partitions.
-    /// Incrementally imports one Python iterator as neutral foreign-stream outcomes. This is the
-    /// production boundary; compatibility collectors wrap it rather than owning a second Python
-    /// batch semantics.
-    pub(crate) fn visit_python_foreign_iterable<F>(
+    /// Incrementally imports one Python iterator as neutral foreign-stream outcomes.
+    /// Callbacks run without the GIL so host backpressure and memory admission do not stall
+    /// unrelated Python partitions.
+    pub fn visit_python_foreign_iterable<F>(
         &self,
         iterable: &Bound<'_, PyAny>,
         mut emit: F,
-    ) -> Result<PythonBatchRead>
+    ) -> Result<PythonStreamSummary>
     where
         F: FnMut(ForeignBatchOutcome, PythonYieldKind) -> Result<()> + Send,
     {
         let py = iterable.py();
-        let mut read = PythonBatchRead::empty();
-        let mut json_rows = Vec::new();
-        let mut next_batch_index = 0;
-        let mut next_outcome_sequence = 0;
+        let mut state = PythonBridgeState::default();
+        let mut window = DictRowWindow::default();
         let iterator = iterable.try_iter().map_err(py_error)?;
 
         for item in iterator {
             let item = item.map_err(py_error)?;
             match arrow_boundary_for(&item)? {
                 Some(boundary) if boundary.kind == PythonYieldKind::ArrowCStream => {
-                    self.flush_json_rows(&mut json_rows, &mut read, &mut next_batch_index)?;
-                    emit_pending(py, &mut read, &mut emit, &mut next_outcome_sequence)?;
+                    self.flush_json_rows(&mut window, &mut state, 0, &mut |outcome, kind| {
+                        py.detach(|| emit(outcome, kind))
+                    })?;
                     let reader = import_arrow_stream(&item)?;
                     for batch in reader {
-                        read.push_record_batches(
-                            vec![batch.map_err(CdfError::from)?],
+                        state.emit_record_batch(
+                            batch.map_err(CdfError::from)?,
                             PythonYieldKind::ArrowCStream,
+                            None,
                             &self.options,
-                            &mut next_batch_index,
+                            &mut |outcome, kind| py.detach(|| emit(outcome, kind)),
                         )?;
-                        emit_pending(py, &mut read, &mut emit, &mut next_outcome_sequence)?;
                     }
                 }
                 Some(boundary) if boundary.kind == PythonYieldKind::ArrowCArray => {
-                    self.flush_json_rows(&mut json_rows, &mut read, &mut next_batch_index)?;
-                    emit_pending(py, &mut read, &mut emit, &mut next_outcome_sequence)?;
+                    self.flush_json_rows(&mut window, &mut state, 0, &mut |outcome, kind| {
+                        py.detach(|| emit(outcome, kind))
+                    })?;
                     let batch = item
                         .extract::<PyRecordBatch>()
                         .map(PyRecordBatch::into_inner)
                         .map_err(py_error)?;
-                    read.push_record_batches(
-                        vec![batch],
+                    state.emit_record_batch(
+                        batch,
                         PythonYieldKind::ArrowCArray,
+                        None,
                         &self.options,
-                        &mut next_batch_index,
+                        &mut |outcome, kind| py.detach(|| emit(outcome, kind)),
                     )?;
-                    emit_pending(py, &mut read, &mut emit, &mut next_outcome_sequence)?;
                 }
                 Some(_) => unreachable!("arrow boundary kinds are exhausted"),
                 None if item.cast::<PyDict>().is_ok() => {
-                    json_rows.push(python_dict_to_json(py, &item)?);
-                    if json_rows.len() == self.options.dict_batch_rows {
-                        self.flush_json_rows(&mut json_rows, &mut read, &mut next_batch_index)?;
-                        emit_pending(py, &mut read, &mut emit, &mut next_outcome_sequence)?;
-                    }
+                    let row = python_dict_to_json(py, &item)?;
+                    self.push_json_row(&mut window, &mut state, &row, &mut |outcome, kind| {
+                        py.detach(|| emit(outcome, kind))
+                    })?;
                 }
                 None => {
                     return Err(CdfError::data(
@@ -343,12 +422,20 @@ impl PythonResourceBridge {
             }
         }
 
-        self.flush_json_rows(&mut json_rows, &mut read, &mut next_batch_index)?;
-        emit_pending(py, &mut read, &mut emit, &mut next_outcome_sequence)?;
-        Ok(read)
+        self.flush_json_rows(&mut window, &mut state, 0, &mut |outcome, kind| {
+            py.detach(|| emit(outcome, kind))
+        })?;
+        Ok(state.finish())
     }
 
-    pub fn batches_from_dlt_resource(&self, resource: &Bound<'_, PyAny>) -> Result<DltBridgeRead> {
+    pub fn visit_dlt_resource<F>(
+        &self,
+        resource: &Bound<'_, PyAny>,
+        mut emit: F,
+    ) -> Result<DltBridgeSummary>
+    where
+        F: FnMut(ForeignBatchOutcome, PythonYieldKind) -> Result<()> + Send,
+    {
         let metadata = extract_dlt_metadata(resource)?.ok_or_else(|| {
             CdfError::contract(
                 "dlt preview requires cdf dlt bridge metadata on the resource object",
@@ -356,30 +443,35 @@ impl PythonResourceBridge {
         })?;
         if metadata.kind != DltBridgeObjectKind::Resource {
             return Err(CdfError::contract(
-                "dlt preview expected resource metadata; use batches_from_dlt_source for sources",
+                "dlt preview expected resource metadata; use visit_dlt_source for sources",
             ));
         }
         let bridge = self.bridge_for_dlt_metadata(&metadata)?;
         let iterable = materialize_dlt_resource(resource)?;
-        let mut read = bridge.batches_from_python_iterable(&iterable)?;
-        if let Some(descriptor) = read.descriptor.as_mut() {
-            metadata.apply_to_descriptor(descriptor)?;
-        }
-        Ok(DltBridgeRead {
+        let mut stream = bridge.visit_python_foreign_iterable(&iterable, &mut emit)?;
+        stream.apply_descriptor_metadata(&metadata)?;
+        Ok(DltBridgeSummary {
             mapping_table: metadata.mapping_table(),
             metadata,
-            read,
+            stream,
         })
     }
 
-    pub fn batches_from_dlt_source(&self, source: &Bound<'_, PyAny>) -> Result<Vec<DltBridgeRead>> {
+    pub fn visit_dlt_source<F>(
+        &self,
+        source: &Bound<'_, PyAny>,
+        mut emit: F,
+    ) -> Result<Vec<DltBridgeSummary>>
+    where
+        F: FnMut(&DltBridgeMetadata, ForeignBatchOutcome, PythonYieldKind) -> Result<()> + Send,
+    {
         let source_metadata = extract_dlt_metadata(source)?;
         if let Some(metadata) = &source_metadata
             && metadata.kind == DltBridgeObjectKind::Resource
         {
             return self
-                .batches_from_dlt_resource(source)
-                .map(|read| vec![read]);
+                .visit_dlt_resource(source, |outcome, kind| emit(metadata, outcome, kind))
+                .map(|summary| vec![summary]);
         }
         let source_name = source_metadata
             .as_ref()
@@ -391,33 +483,51 @@ impl PythonResourceBridge {
         } else {
             source.clone()
         };
-        if let Some(metadata) = extract_dlt_metadata(&source_output)?
+        if let Some(mut metadata) = extract_dlt_metadata(&source_output)?
             && metadata.kind == DltBridgeObjectKind::Resource
         {
-            let mut read = self.batches_from_dlt_resource(&source_output)?;
-            if read.metadata.source_name.is_none() {
-                read.metadata.source_name.clone_from(&source_name);
+            if metadata.source_name.is_none() {
+                metadata.source_name.clone_from(&source_name);
             }
-            return Ok(vec![read]);
+            let mut summary = self.visit_dlt_resource(&source_output, |outcome, kind| {
+                emit(&metadata, outcome, kind)
+            })?;
+            summary
+                .metadata
+                .source_name
+                .clone_from(&metadata.source_name);
+            return Ok(vec![summary]);
         }
 
-        let mut reads = Vec::new();
+        let mut summaries = Vec::new();
         let iterator = source_output.try_iter().map_err(py_error)?;
         for item in iterator {
             let item = item.map_err(py_error)?;
-            if let Some(metadata) = extract_dlt_metadata(&item)?
-                && metadata.kind == DltBridgeObjectKind::Resource
-                && !metadata.selected_for_source_expansion()
-            {
+            let Some(mut metadata) = extract_dlt_metadata(&item)? else {
+                return Err(CdfError::contract(
+                    "dlt source yielded an object without CDF resource metadata",
+                ));
+            };
+            if metadata.kind != DltBridgeObjectKind::Resource {
+                return Err(CdfError::contract(
+                    "dlt source yielded nested source metadata where resource metadata was required",
+                ));
+            }
+            if !metadata.selected_for_source_expansion() {
                 continue;
             }
-            let mut read = self.batches_from_dlt_resource(&item)?;
-            if read.metadata.source_name.is_none() {
-                read.metadata.source_name.clone_from(&source_name);
+            if metadata.source_name.is_none() {
+                metadata.source_name.clone_from(&source_name);
             }
-            reads.push(read);
+            let mut summary =
+                self.visit_dlt_resource(&item, |outcome, kind| emit(&metadata, outcome, kind))?;
+            summary
+                .metadata
+                .source_name
+                .clone_from(&metadata.source_name);
+            summaries.push(summary);
         }
-        Ok(reads)
+        Ok(summaries)
     }
 
     fn bridge_for_dlt_metadata(&self, metadata: &DltBridgeMetadata) -> Result<Self> {
@@ -431,95 +541,109 @@ impl PythonResourceBridge {
         ))
     }
 
-    fn flush_json_rows(
+    fn flush_json_rows<F>(
         &self,
-        json_rows: &mut Vec<String>,
-        read: &mut PythonBatchRead,
-        next_batch_index: &mut usize,
-    ) -> Result<()> {
-        if json_rows.is_empty() {
+        window: &mut DictRowWindow,
+        state: &mut PythonBridgeState,
+        transient_bytes: u64,
+        emit: &mut F,
+    ) -> Result<()>
+    where
+        F: FnMut(ForeignBatchOutcome, PythonYieldKind) -> Result<()>,
+    {
+        if window.rows == 0 {
             return Ok(());
         }
-
-        let byte_count = json_rows.iter().try_fold(0_u64, |total, row| {
-            total
-                .checked_add(
-                    u64::try_from(row.len())
-                        .map_err(|_| CdfError::data("Python dict row length exceeds u64"))?,
-                )
-                .and_then(|total| total.checked_add(1))
-                .ok_or_else(|| CdfError::data("Python dict conversion window size overflowed"))
-        })?;
-        if byte_count > self.options.max_boundary_bytes {
+        let rows = std::mem::take(&mut window.rows);
+        let bytes = std::mem::take(&mut window.bytes);
+        let input_capacity = u64::try_from(bytes.capacity())
+            .map_err(|_| CdfError::data("Python dict input capacity exceeds u64"))?;
+        let (schema, _) = infer_json_schema(Cursor::new(bytes.as_slice()), Some(rows))
+            .map_err(|error| CdfError::data(format!("infer Python dict-row schema: {error}")))?;
+        let mut reader = JsonReaderBuilder::new(Arc::new(schema))
+            .with_batch_size(rows)
+            .build(Cursor::new(bytes.as_slice()))
+            .map_err(|error| {
+                CdfError::data(format!("initialize Python dict-row decoder: {error}"))
+            })?;
+        let record_batch = reader
+            .next()
+            .transpose()
+            .map_err(|error| CdfError::data(format!("decode Python dict rows: {error}")))?
+            .ok_or_else(|| CdfError::data("Python dict-row decoder emitted no batch"))?;
+        if reader
+            .next()
+            .transpose()
+            .map_err(|error| CdfError::data(format!("decode Python dict rows: {error}")))?
+            .is_some()
+        {
+            return Err(CdfError::internal(
+                "one Python dict conversion window emitted more than one Arrow batch",
+            ));
+        }
+        drop(reader);
+        let output_bytes = cdf_memory::record_batch_retained_bytes(&record_batch)?;
+        let peak_bytes = input_capacity
+            .checked_add(output_bytes)
+            .and_then(|bytes| bytes.checked_add(transient_bytes))
+            .ok_or_else(|| CdfError::data("Python dict boundary peak exceeds u64"))?;
+        if peak_bytes > self.options.max_boundary_bytes {
             return Err(CdfError::data(format!(
-                "Python dict conversion window requires {byte_count} bytes but the boundary limit is {} bytes; lower dict_batch_rows or raise max_boundary_bytes",
+                "Python dict conversion input plus Arrow output requires {peak_bytes} bytes but the boundary limit is {} bytes; lower dict_batch_rows or raise max_boundary_bytes",
                 self.options.max_boundary_bytes
             )));
         }
-        let mut bytes = Vec::with_capacity(
-            usize::try_from(byte_count)
-                .map_err(|_| CdfError::data("Python dict conversion window exceeds usize"))?,
-        );
-        for row in json_rows.drain(..) {
-            bytes.extend_from_slice(row.as_bytes());
-            bytes.push(b'\n');
-        }
-        let record_batches = decode_json_rows_window(&bytes, self.options.dict_batch_rows)?;
-        read.push_record_batches(
-            record_batches,
+        drop(bytes);
+        state.emit_record_batch(
+            record_batch,
             PythonYieldKind::DictRows,
+            Some(peak_bytes),
             &self.options,
-            next_batch_index,
+            emit,
         )
     }
-}
 
-fn emit_pending<F>(
-    py: Python<'_>,
-    read: &mut PythonBatchRead,
-    emit: &mut F,
-    next_outcome_sequence: &mut u64,
-) -> Result<()>
-where
-    F: FnMut(ForeignBatchOutcome, PythonYieldKind) -> Result<()> + Send,
-{
-    if read.batches.len() != read.yield_kinds.len() {
-        return Err(CdfError::internal(
-            "Python bridge batch and boundary-kind counts diverged",
-        ));
+    fn push_json_row<F>(
+        &self,
+        window: &mut DictRowWindow,
+        state: &mut PythonBridgeState,
+        row: &str,
+        emit: &mut F,
+    ) -> Result<()>
+    where
+        F: FnMut(ForeignBatchOutcome, PythonYieldKind) -> Result<()>,
+    {
+        if !window.try_push(row, self.options.max_boundary_bytes)? {
+            if window.rows == 0 {
+                let row_bytes = u64::try_from(row.len())
+                    .map_err(|_| CdfError::data("Python dict row length exceeds u64"))?;
+                return Err(CdfError::data(format!(
+                    "one Python dict row and its serialized conversion require more than the {}-byte boundary limit (serialized row: {row_bytes} bytes); raise max_boundary_bytes",
+                    self.options.max_boundary_bytes
+                )));
+            }
+            let row_bytes = u64::try_from(row.len())
+                .map_err(|_| CdfError::data("Python dict row length exceeds u64"))?;
+            self.flush_json_rows(window, state, row_bytes, emit)?;
+            if !window.try_push(row, self.options.max_boundary_bytes)? {
+                return Err(CdfError::internal(
+                    "Python dict row did not fit an empty admitted conversion window",
+                ));
+            }
+        }
+        if window.rows == self.options.dict_batch_rows {
+            let row_bytes = u64::try_from(row.len())
+                .map_err(|_| CdfError::data("Python dict row length exceeds u64"))?;
+            self.flush_json_rows(window, state, row_bytes, emit)?;
+        }
+        Ok(())
     }
-    drain_pending_outcomes(
-        read,
-        &mut |outcome, kind| py.detach(|| emit(outcome, kind)),
-        next_outcome_sequence,
-    )
-}
-
-fn drain_pending_outcomes<F>(
-    read: &mut PythonBatchRead,
-    emit: &mut F,
-    next_outcome_sequence: &mut u64,
-) -> Result<()>
-where
-    F: FnMut(ForeignBatchOutcome, PythonYieldKind) -> Result<()>,
-{
-    if read.batches.len() != read.yield_kinds.len() {
-        return Err(CdfError::internal(
-            "Python bridge batch and boundary-kind counts diverged",
-        ));
-    }
-    for (batch, kind) in read.batches.drain(..).zip(read.yield_kinds.drain(..)) {
-        *next_outcome_sequence = next_outcome_sequence.saturating_add(1);
-        let outcome = python_foreign_outcome(*next_outcome_sequence, batch, &kind)?;
-        emit(outcome, kind)?;
-    }
-    Ok(())
 }
 
 fn python_foreign_outcome(
     sequence: u64,
     batch: Batch,
-    kind: &PythonYieldKind,
+    kind: PythonYieldKind,
 ) -> Result<ForeignBatchOutcome> {
     let transfer_mode = match kind {
         PythonYieldKind::DictRows => ForeignTransferMode::RowCompat,
@@ -542,21 +666,6 @@ fn python_foreign_outcome(
     ForeignBatchOutcome::new(sequence, batch, transfer_mode, copy)
 }
 
-fn decode_json_rows_window(bytes: &[u8], batch_rows: usize) -> Result<Vec<RecordBatch>> {
-    let (schema, _) = infer_json_schema(Cursor::new(bytes), Some(batch_rows))
-        .map_err(|error| CdfError::data(format!("infer Python dict-row schema: {error}")))?;
-    let mut reader = JsonReaderBuilder::new(Arc::new(schema))
-        .with_batch_size(batch_rows)
-        .build(Cursor::new(bytes))
-        .map_err(|error| CdfError::data(format!("initialize Python dict-row decoder: {error}")))?;
-    reader
-        .by_ref()
-        .map(|batch| {
-            batch.map_err(|error| CdfError::data(format!("decode Python dict rows: {error}")))
-        })
-        .collect()
-}
-
 fn materialize_dlt_resource<'py>(resource: &Bound<'py, PyAny>) -> Result<Bound<'py, PyAny>> {
     if resource.hasattr("__call__").map_err(py_error)? {
         resource.call0().map_err(py_error)
@@ -566,10 +675,10 @@ fn materialize_dlt_resource<'py>(resource: &Bound<'py, PyAny>) -> Result<Bound<'
 }
 
 pub fn arrow_boundary_for(object: &Bound<'_, PyAny>) -> Result<Option<ArrowCapsuleBoundary>> {
-    if object.hasattr(ARROW_C_STREAM_METHOD).map_err(py_error)? {
-        Ok(Some(ArrowCapsuleBoundary::for_c_stream()))
-    } else if object.hasattr(ARROW_C_ARRAY_METHOD).map_err(py_error)? {
+    if object.hasattr(ARROW_C_ARRAY_METHOD).map_err(py_error)? {
         Ok(Some(ArrowCapsuleBoundary::for_c_array()))
+    } else if object.hasattr(ARROW_C_STREAM_METHOD).map_err(py_error)? {
+        Ok(Some(ArrowCapsuleBoundary::for_c_stream()))
     } else {
         Ok(None)
     }

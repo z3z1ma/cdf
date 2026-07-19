@@ -1,4 +1,3 @@
-use crate::internal::*;
 use crate::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,24 +55,4 @@ impl PythonContext {
 pub struct ContextLogEvent {
     pub level: String,
     pub message: String,
-}
-
-pub fn deterministic_fixture_hash(read: &PythonBatchRead) -> Result<String> {
-    let mut hasher = Sha256::new();
-    hasher.update(b"cdf-python-fixture-v1");
-    if let Some(schema_hash) = &read.schema_hash {
-        hasher.update(schema_hash.as_str().as_bytes());
-    }
-    for (batch, kind) in read.batches.iter().zip(&read.yield_kinds) {
-        hasher.update(format!("{kind:?}\n").as_bytes());
-        hasher.update(batch.header.batch_id.as_str().as_bytes());
-        hasher.update(b"\n");
-        hasher.update(batch.header.row_count.to_le_bytes());
-        hasher.update(batch.header.byte_count.to_le_bytes());
-        let record_batch = batch.record_batch().ok_or_else(|| {
-            CdfError::data("deterministic Python fixture hash requires in-memory Arrow batches")
-        })?;
-        write_ipc_hash(record_batch, &mut hasher)?;
-    }
-    Ok(format!("sha256:{}", hex::encode(hasher.finalize())))
 }

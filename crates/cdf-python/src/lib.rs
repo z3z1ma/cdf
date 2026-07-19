@@ -1,12 +1,7 @@
 #![doc = "Optional Python authoring and interchange boundary for cdf."]
 
-use std::{
-    collections::VecDeque,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
-use arrow_array::RecordBatch;
-use arrow_ipc::writer::StreamWriter;
 use cdf_http::{HttpRequest, Redactor, SecretProvider, SecretUri, TraceEvent};
 use cdf_kernel::{
     Batch, BatchId, CdfError, PartitionId, ResourceDescriptor, ResourceId, Result, SchemaHash,
@@ -28,7 +23,6 @@ pub const DEFAULT_BOUNDARY_CHANNEL_BYTES: u64 = 64 * 1024 * 1024;
 pub const DEFAULT_WATCHDOG_MS: u64 = 300_000;
 
 mod bridge;
-mod channel;
 mod context;
 mod dlt;
 mod driver;
@@ -40,7 +34,6 @@ mod runtime;
 mod tests;
 
 pub use bridge::*;
-pub use channel::*;
 pub use context::*;
 pub use dlt::*;
 pub use driver::*;

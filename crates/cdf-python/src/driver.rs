@@ -6,8 +6,7 @@ use std::{
 };
 
 use cdf_kernel::{
-    CdfError, QueryableResource, ResourceDescriptor, ResourceStream, Result, ScopeKey,
-    TypePolicyAllowances,
+    CdfError, QueryableResource, ResourceStream, Result, ScopeKey, TypePolicyAllowances,
 };
 use cdf_runtime::{
     BlockingLaneSpec, CompiledSourcePlan, CompiledSourcePlanInput, LaneAffinity,
@@ -115,13 +114,21 @@ impl SourceDriver for PythonSourceDriver {
             request.descriptor.trust_level.clone(),
         )?;
         validate_declarative_metadata(&request, &resource)?;
+        let physical_plan = serde_json::to_value(resource.physical_plan()).map_err(|error| {
+            CdfError::internal(format!("serialize Python source plan: {error}"))
+        })?;
         compile_resource_plan(
             self.descriptor.clone(),
-            request.descriptor,
-            request.schema,
-            request.type_policy_allowances,
             resource,
-            options.uri,
+            CompiledSourcePlanInput {
+                descriptor: request.descriptor,
+                schema: request.schema,
+                type_policy_allowances: request.type_policy_allowances,
+                effective_schema_runtime: request.effective_schema_runtime,
+                baseline_observation_schema_catalog: request.baseline_observation_schema_catalog,
+                redacted_options: serde_json::json!({"uri": options.uri}),
+                physical_plan,
+            },
         )
     }
 
@@ -172,9 +179,7 @@ impl SourceDriver for PythonSourceDriver {
             })?;
         let resource = PythonResource::from_compiled(
             context.project_root(),
-            plan.descriptor.clone(),
-            Arc::new(plan.schema.clone()),
-            plan.resource_capabilities.clone(),
+            plan,
             physical_plan(plan)?,
             artifact_hash(plan)?,
         )?
@@ -199,13 +204,21 @@ impl SourceReferenceCompiler for PythonSourceDriver {
         let mut descriptor = resource.descriptor().clone();
         descriptor.freshness = request.freshness;
         let schema = resource.schema().as_ref().clone();
+        let physical_plan = serde_json::to_value(resource.physical_plan()).map_err(|error| {
+            CdfError::internal(format!("serialize Python source plan: {error}"))
+        })?;
         compile_resource_plan(
             self.descriptor.clone(),
-            descriptor,
-            schema,
-            TypePolicyAllowances::default(),
             resource,
-            request.uri,
+            CompiledSourcePlanInput {
+                descriptor,
+                schema,
+                type_policy_allowances: TypePolicyAllowances::default(),
+                effective_schema_runtime: None,
+                baseline_observation_schema_catalog: Vec::new(),
+                redacted_options: serde_json::json!({"uri": request.uri}),
+                physical_plan,
+            },
         )
     }
 }
@@ -303,11 +316,8 @@ impl PythonSourceDriver {
 
 fn compile_resource_plan(
     driver: SourceDriverDescriptor,
-    descriptor: ResourceDescriptor,
-    schema: arrow_schema::Schema,
-    type_policy_allowances: TypePolicyAllowances,
     resource: PythonResource,
-    uri: String,
+    input: CompiledSourcePlanInput,
 ) -> Result<CompiledSourcePlan> {
     let capabilities = resource.capabilities().clone();
     let physical = resource.physical_plan();
@@ -318,17 +328,7 @@ fn compile_resource_plan(
             capabilities.partitioning.parallel_partitions,
             physical.bounded,
         ),
-        CompiledSourcePlanInput {
-            descriptor,
-            schema,
-            type_policy_allowances,
-            effective_schema_runtime: None,
-            baseline_observation_schema_catalog: Vec::new(),
-            redacted_options: serde_json::json!({"uri": uri}),
-            physical_plan: serde_json::to_value(physical).map_err(|error| {
-                CdfError::internal(format!("serialize Python source plan: {error}"))
-            })?,
-        },
+        input,
     )
 }
 
