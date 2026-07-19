@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Target: .10x/tickets/2026-07-11-p3-e3-streaming-verification-replay-io.md
+Target: .10x/tickets/done/2026-07-11-p3-e3-streaming-verification-replay-io.md
 Verdict: pass
 
 # Single-pass consumption-verification review

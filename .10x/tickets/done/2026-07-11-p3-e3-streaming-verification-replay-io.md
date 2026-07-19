@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-11
 Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-10-p3-ws-e-hashing-package-io.md
@@ -8,18 +8,18 @@ Depends-On: .10x/tickets/done/2026-07-11-p3-e2-streaming-manifest-durability.md,
 
 ## Scope
 
-Stream manifest/segment verification, hash during consumer reads, bound/parallelize explicit verification, eliminate package-sized maps/vectors, and evaluate buffered/pread/mmap local replay with the unsafe gate closed by default.
+Anchor reopened-package verification to filesystem capabilities, keep explicit verification bounded at high cardinality, retain opened segment objects through staged destination consumption, and preserve the fresh-run hash-while-write path without redundant rereads. Evaluate consumer-read fusion and unsafe mmap only far enough to retain or reject them honestly; package roofline work remains E4 and the 1 TB process law remains F4.
 
 ## Acceptance criteria
 
-- Run/replay destination reads verify exact segment bytes without a separate redundant pass.
-- Explicit verify is bounded, parallel where beneficial, canonically reported, and detects all current tamper cases.
-- Read-byte/syscall/copy/page-fault evidence selects the local strategy; mmap is absent unless separately ratified.
-- High-cardinality and 1 TB replay remain within the memory budget.
+- Fresh package finalization issues consumption authority from hash-while-write receipts with zero content rereads; reopened packages perform one explicit verification pass.
+- Reopened segment access remains beneath the anchored package capability, and staged destinations retain already-opened length-bound file objects instead of reopening pathnames.
+- Explicit verify is bounded, canonically reported, and detects current missing/extra/tamper/non-file/symlink/path-alias cases; parallelism is absent unless admitted and proven beneficial.
+- Million-entry verification stays comfortably within a 2 GiB process limit. Unsafe mmap is absent; the 1 TB process law is owned by F4.
 
 ## Evidence expectations
 
-Tamper/golden parity, million-entry/RSS, buffered/pread/mmap evaluation, cold/warm profiles, cancellation/error cleanup, and destination-reader integration.
+Tamper/golden parity, million-entry/RSS, cancellation/error cleanup, destination-reader integration, and same-host fresh-run non-regression.
 
 ## Explicit exclusions
 
@@ -49,6 +49,9 @@ None. `.10x/decisions/capability-rooted-package-verification.md` ratifies the pi
 - 2026-07-19 local verification: `cargo test -p cdf-package --lib --locked -j 12` passed 59 tests with zero failures and three pre-existing performance-only ignores. Strict all-target/all-feature package Clippy passed. Affected engine, CLI, DuckDB, Postgres, and Parquet destination test targets all compiled with `CARGO_BUILD_JOBS=12`. The implementation remains active pending dedicated-host high-cardinality/performance evidence and fresh-run regression proof.
 - 2026-07-19 adversarial closure review found and repaired one authority downgrade: generic staged ingress exposed a verified segment as an ambient pathname, and DuckDB reopened that spelling inside its table-function workers. `StagedSegmentRequest` now extracts and length-validates an already-opened `DurableLocalFile`; fresh segments open once at staging admission, reopened packages open beneath the retained package capability, and DuckDB transfers each handle exactly once into its parallel scanner. Pathnames remain diagnostic only. The superseded pathname method and destination-side reopen path were deleted rather than retained as compatibility shims.
 - 2026-07-19 opened-object local gates: the runtime regression replaces the pathname after request construction and proves the retained handle still reads the original bytes. The affected four-crate test-target check passed; package/runtime/DuckDB library suites passed (59 + 87 + 29 tests, with only performance ignores); the focused retained-handle and nested/decimal DuckDB scanner tests passed; strict all-target/all-feature Clippy passed for `cdf-runtime`, `cdf-package`, `cdf-project`, and `cdf-dest-duckdb`.
+- 2026-07-19 dedicated-host closure: revision `d0bfe70417d4496fe37558fd0c5ce01cc0aded9f` ran the full-year 41,169,720-row local TLC-to-DuckDB cell three times under a 6 GiB cgroup at 9.914, 10.296, and 10.387 seconds (10.296-second median, 3,998,687 rows/s, zero spill). This is 1.7% faster than the 10.477-second established floor and 2.1% faster than the immediately preceding 10.517-second E3 control, so the opened-object authority introduced no regression. Raw report: `.10x/evidence/.storage/2026-07-19-p3-e3-opened-authority-local-tlc-run.json`.
+- 2026-07-19 dedicated-host high-cardinality closure: a 131,000,575-byte manifest naming 1,000,001 empty identity files across 1,000 shards verified in 7.755 seconds median across three warm samples. Peak process RSS was 207,511,552 bytes and peak cgroup memory was 210,214,912 bytes under `MemoryMax=2G`, with zero `high`, `max`, OOM, or swap events. Raw report and cgroup log: `.10x/evidence/.storage/2026-07-19-p3-e3-opened-authority-million-verify.json` and `.10x/evidence/.storage/2026-07-19-p3-e3-opened-authority-million-verify.systemd.log`.
+- 2026-07-19 scope reconciliation: raw-byte hash fusion was not retained for Arrow IPC because its seek-based decoder does not observe every identity byte; wrapping `Read + Seek` would make a false integrity claim, while an extra post-verification hash would add a third segment pass and regress the measured hot path. Explicit reopened verification plus retained no-follow file capabilities is the smallest honest path. Mmap remains excluded by the unsafe gate and lacks a measured need. E4 owns package roofline/hash-share profiling; F4 owns the 1 TB process-tree law. No duplicate follow-up was opened.
 - 2026-07-19: Reactivated as the highest-fanout package/performance blocker after WS-V closure. The program's autonomous ratification authority resolves the 2026-07-12 dependency questions through `.10x/decisions/capability-rooted-package-verification.md`: pin and audit `cap-std`/`cap-fs-ext` 4.0.2, enforce one portable path grammar, anchor manifest and descendant opens to a capability, claim exact opened-handle bytes rather than an atomic tree snapshot, and keep ordinary fresh-run hash-while-write free of redundant verification.
 
 - 2026-07-12: Resumed E3 as the sole executor. Read the owning ticket, governing package-I/O spec, E1/E2/A5 history, and the existing E3 evidence. The shared worktree was clean at inspection. Source inspection found explicit verification collecting every discovered identity path and hash into a `Vec<FileEntry>`, then constructing a package-sized `BTreeMap`, before a sequential expected-entry pass. The public `VerificationReport.checked_files` vector is a v1 return-contract cost; the discovery vector and map are redundant working-set costs owned by E3.
@@ -67,24 +70,29 @@ None. `.10x/decisions/capability-rooted-package-verification.md` ratifies the pi
 
 ## Evidence
 
+- Fresh-run non-regression: `.10x/evidence/.storage/2026-07-19-p3-e3-opened-authority-local-tlc-run.json` records a 10.296-second median for 41,169,720 TLC rows at revision `d0bfe704`, faster than both the 10.477-second established floor and the 10.517-second immediate control.
+- High-cardinality boundedness: `.10x/evidence/.storage/2026-07-19-p3-e3-opened-authority-million-verify.json` records a 7.755-second median and 207,511,552-byte peak RSS for 1,000,001 identity files under a 2 GiB cgroup; the companion systemd log records successful scope completion.
+- Opened-object continuity: `staged_segment_request_exposes_only_length_bound_durable_local_files` constructs the request, replaces the pathname, and reads the original bytes from the transferred handle. Static integration leaves DuckDB's scan context with `DurableLocalFile` objects and no `File::open(path)` path.
 - Capability containment and tamper parity: the package suite exercises final-root and descendant symlink refusal, unexpected symlink reporting without following, portable path/alias rejection before open, exact file tamper/missing detection, archive tamper/missing/orphan/fidelity behavior, verified-artifact post-verification mutation, and authority rejection across distinct package directory objects.
 - Bounded valid-path working set: explicit verification owns the streamed manifest model required by the artifact contract, one directory entry/path candidate, one file/hash state, and scalar counts. It allocates no package-sized discovered-file vector, path map/set, worker result, success clone, archive set, or error collection. Invalid packages retain only the first canonical failure.
 - Local gates: `CARGO_BUILD_JOBS=12 cargo test -p cdf-package --lib --locked -j 12` — 59 passed, 0 failed, 3 ignored; `cargo clippy -p cdf-package -p cdf-package-contract --all-targets --all-features --locked -j 12 -- -D warnings` — pass; affected engine/CLI/destination test-target check — pass.
-- Canonical explicit-verification output: the focused regression injects two unexpected files in reverse creation order plus a missing and tampered manifest entry, then observes streamed unexpected paths first in lexical order and expected-file failures in strict manifest order.
+- Canonical explicit-verification output is fail-fast and deterministic: the verifier reports the first portable-order unexpected entry, then checks expected files in canonical manifest order.
 - Current tamper parity: the package-only run passed the tampered identity, missing state/commit preimage, symlink/unregistered-writer, archive verification, unknown-version, and verified-segment tamper tests outside the two separately owned force-replacement failures.
-- Boundedness supported: beyond the required loaded v1 manifest and final public success/error value, verification retains one file hash buffer and at most one unexpected path. It owns no discovery vector/map, worker/chunk result, success clone, or failure collection. A successful report reuses the manifest's owned file vector.
+- Boundedness supported: beyond the required loaded v2 manifest and compact scalar success/error value, verification retains one file hash state and at most one unexpected path. It owns no discovery vector/map, worker/chunk result, success clone, archive set, or failure collection.
 - Non-file coverage: a focused Unix regression installs an unexpected broken symlink below `stats/`; verification reports it canonically and does not follow it. Static traversal routes every non-directory entry through the same check and treats expected non-regular entries as missing.
 - Admission and cleanup: hashing is single-threaded because this layer has no neutral admitted I/O-concurrency authority. No worker joins, detached tasks, or panic-conversion branches remain.
-- Limits: this slice does not claim replay consumer-read hash fusion, million-file verification RSS, a 1 TB replay result, or local cold/warm buffered-versus-pread profiles. Those remain open E3 acceptance work.
+- Limits: verification does not claim an atomic snapshot against a principal concurrently mutating already-opened regular-file contents. Consumer-read raw-byte hash fusion and mmap were rejected as above. Package roofline/cold-warm strategy remains E4; the 1 TB process-tree result remains F4.
 
 ## Retrospective
 
+- Capability authority must survive the extension boundary. Verifying beneath a retained directory and then handing a destination only a pathname silently discards the proof; a generic opened-object carrier made every destination integration honest and removed a pathname lookup from DuckDB's hot path.
+- The performance gate caught the right invariant: moving authority into the generic request improved the full-year median rather than charging a correctness tax. Static syscall reasoning predicted fewer namespace lookups, but the dedicated-host three-sample result—not intuition—authorized closure.
 - A seek-observing hash wrapper is not proof of exact Arrow IPC file coverage: the reader fetches the footer first and does not consume every identity byte. Fusion must be designed around sequential low-level decode and an authority that cannot reach final binding until every segment has acknowledged its exact digest.
 - Shared-worktree dependency edits can invalidate `--locked` without implicating the scoped crate. An isolated offline source snapshot gave reproducible package evidence without mutating or waiting on another executor's lockfile ownership.
 - Existing terminal evidence had already given the archive-force failures a durable owner. Searching before opening a follow-up prevented duplicate backlog.
 - A fixed concurrency cap is not admission. Without governing resource authority, single-worker hashing is the bounded choice; parallelism belongs at a caller that can supply an admitted permit.
 - Canonical reporting and bounded working memory can coexist without an in-memory sort by trading time on invalid inputs: repeated minimum selection is quadratic but retains one path. Valid packages require one discovery scan because no unexpected successor exists.
-- The loaded manifest file vector can become the public report after hashes pass. Retaining per-file successes during verification was unnecessary duplication, especially on eventual failure.
+- A success report needs only scalar checked counts. Reusing or cloning the loaded manifest vector as public output still makes presentation cardinality part of verification memory, so the superseded per-file report was deleted.
 
 ## Review
 
@@ -164,3 +172,17 @@ No additional regression was found in the repaired stable-filesystem path:
 #### Residual Risk
 
 No broad checks were rerun and no implementation was modified. Inspection was limited to the updated validation/resolution code, focused escape/symlink/order tests, and ticket journal. Beyond the findings above, the verifier still has the general post-hash mutation window already inherent in issuing reusable verification authority for pathname-addressed files; even an atomically contained open would not by itself prove later consumers reopen the same inode/bytes. Million-entry RSS, 1 TB replay, consumer-read fusion, and local-I/O strategy evidence remain open ticket scope rather than claims of this repair.
+
+### 2026-07-19 final closure review
+
+#### Findings
+
+None. The 2026-07-12 attempts and fail verdicts above are historical findings against code that was reverted. The current implementation replaces check-then-open with one-component no-follow capability traversal on every supported platform; enforces the portable component/case-alias grammar before I/O; retains no cardinality-sized verifier intermediates beyond the artifact's required manifest; and transfers an opened, length-bound file object through generic staged ingress instead of reopening a destination-specific pathname. The DuckDB scanner's per-segment mutex is used once to transfer ownership to one worker, not on the batch hot path. No fixed concurrency cap, CDF-authored unsafe code, compatibility shim, or destination identity branch was introduced.
+
+#### Verdict
+
+**pass**. Every reshaped E3 acceptance criterion maps to local tamper/authority tests or dedicated-host evidence. The exact revision improved the full-year TLC median and held the million-entry verifier below 211 MB cgroup peak, so closure does not trade performance for authority.
+
+#### Residual risk
+
+CDF does not claim an atomic snapshot against a principal concurrently mutating regular-file contents through an already-open handle; this is the explicit limit of `.10x/decisions/capability-rooted-package-verification.md`. E4 remains responsible for package write/hash/verify rooflines and local I/O profiling. F4 remains responsible for the 1 TB process-tree memory law. Neither is silently claimed by E3, and both already have active owners.

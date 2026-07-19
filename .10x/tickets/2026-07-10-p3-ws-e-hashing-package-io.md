@@ -1,6 +1,6 @@
-Status: open
+Status: active
 Created: 2026-07-10
-Updated: 2026-07-11
+Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
 Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md, .10x/tickets/done/2026-07-07-package-io-hashing-overhead-triage.md
 
@@ -14,7 +14,7 @@ Hash segment bytes while writing, remove redundant full data-file rereads, paral
 
 - `.10x/tickets/done/2026-07-11-p3-e1-hashing-artifact-sink.md`
 - `.10x/tickets/done/2026-07-11-p3-e2-streaming-manifest-durability.md`
-- `.10x/tickets/2026-07-11-p3-e3-streaming-verification-replay-io.md`
+- `.10x/tickets/done/2026-07-11-p3-e3-streaming-verification-replay-io.md`
 - `.10x/tickets/2026-07-11-p3-e4-package-io-envelope.md`
 
 ## Acceptance criteria
@@ -30,7 +30,7 @@ No hash algorithm or artifact-spec change without a separate active decision tri
 
 ## Blockers
 
-Blocked until WS-L baseline evidence exists.
+None. WS-L and E1-E3 are complete; E4 is the sole remaining child.
 
 ## References
 

@@ -35,7 +35,7 @@ Extract the canonical package artifact/replay models and verified-access capabil
 - `.10x/decisions/lean-cli-and-package-contract-build-boundaries.md`
 - `.10x/decisions/destination-staged-ingress-final-package-binding.md`
 - `.10x/research/2026-07-12-cargo-product-build-graph-audit.md`
-- `.10x/tickets/2026-07-11-p3-e3-streaming-verification-replay-io.md`
+- `.10x/tickets/done/2026-07-11-p3-e3-streaming-verification-replay-io.md`
 
 ## Assumptions
 

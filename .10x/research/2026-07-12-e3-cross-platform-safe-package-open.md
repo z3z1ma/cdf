@@ -10,7 +10,7 @@ What safe, maintained, cross-platform Rust capability can let package verificati
 
 ## Sources and methods
 
-Inspected active and terminal 10x records before external research, especially `.10x/tickets/2026-07-11-p3-e3-streaming-verification-replay-io.md`, `.10x/specs/package-io-hashing-durability.md`, `.10x/specs/versioning-lts-release-policy.md`, `.10x/research/2026-07-11-package-io-durability-audit.md`, and the E3 parent. Inspected `crates/cdf-package/src/storage.rs`, `crates/cdf-package/Cargo.toml`, `Cargo.lock`, `deny.toml`, and `supply-chain/config.toml`. No build, dependency resolution, or mutation-producing Cargo command was run.
+Inspected active and terminal 10x records before external research, especially `.10x/tickets/done/2026-07-11-p3-e3-streaming-verification-replay-io.md`, `.10x/specs/package-io-hashing-durability.md`, `.10x/specs/versioning-lts-release-policy.md`, `.10x/research/2026-07-11-package-io-durability-audit.md`, and the E3 parent. Inspected `crates/cdf-package/src/storage.rs`, `crates/cdf-package/Cargo.toml`, `Cargo.lock`, `deny.toml`, and `supply-chain/config.toml`. No build, dependency resolution, or mutation-producing Cargo command was run.
 
 Authoritative upstream material inspected on 2026-07-12:
 

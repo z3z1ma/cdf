@@ -1,8 +1,8 @@
-Status: blocked
+Status: active
 Created: 2026-07-11
-Updated: 2026-07-18
+Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-10-p3-ws-e-hashing-package-io.md
-Depends-On: .10x/tickets/2026-07-11-p3-e3-streaming-verification-replay-io.md
+Depends-On: .10x/tickets/done/2026-07-11-p3-e3-streaming-verification-replay-io.md
 
 # P3 E4: package I/O envelope and triage closeout
 
@@ -27,7 +27,7 @@ No hash/artifact semantic change.
 
 ## Blockers
 
-Blocked on `.10x/tickets/2026-07-11-p3-e3-streaming-verification-replay-io.md`, which remains blocked. The existing journal/evidence are retained as partial package-I/O findings, but full E4 roofline/replay/triage closeout cannot complete until streaming verification/replay I/O lands.
+None. E3 is complete with capability-rooted bounded verification, retained opened-object destination ingress, and dedicated-host non-regression/high-cardinality evidence.
 
 ## References
 
@@ -36,6 +36,7 @@ Blocked on `.10x/tickets/2026-07-11-p3-e3-streaming-verification-replay-io.md`, 
 
 ## Journal
 
+- 2026-07-19: Activated after E3 closure. The package envelope now owns only measured build/write/hash/verify rooflines, crash/golden coverage reconciliation, and the original triage closeout; it will not reopen E3's capability or destination-ingress design.
 - 2026-07-14: Corrected the FineWeb critical-path attribution before tuning package I/O. A release run spent 4.118 seconds in the package interval, but sampling showed its main thread blocked on staged-destination backpressure while DuckDB flushed/checkpointed each of 115 segments. Raw warm fsynced write was 6.87 GB/s and SHA-256 was 2.96 GiB/s with 2.01% measured write overhead. The destination regression is owned by `.10x/tickets/done/2026-07-14-p3-d7-persistent-staged-ingress-stream.md`; E4 will remeasure the package-only roofline after D7 removes the confounder.
 - 2026-07-14: Activated with a measured package critical-path improvement. Removing a four-worker encode cap initially failed because completed encoder output and staged destination input independently reserved the same Arrow allocations. Canonical pressure relief plus an owned batch-and-lease handoff completed the 2.147 GB FineWeb-to-DuckDB fixture and reduced package execution from 5.008 to 4.168 seconds (16.8%). Evidence: `.10x/evidence/2026-07-14-p3-f2-accounted-staged-payload-handoff.md`.
 
