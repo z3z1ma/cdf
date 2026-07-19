@@ -2,15 +2,16 @@ use std::{collections::HashMap, path::Path, sync::Arc};
 
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use cdf_kernel::{
-    CdfError, DeduplicationSpec, QueryableResource, ResourceCapabilities, Result, SchemaSource,
-    ScopeKey, TrustLevel, WriteDisposition,
+    CdfError, DeduplicationSpec, ExecutionExtent, OperatorWatermarkBehavior, QueryableResource,
+    ResourceCapabilities, Result, SafeFrontierPolicy, SchemaSource, ScopeKey, TrustLevel,
+    WatermarkPolicy, WriteDisposition,
 };
 use cdf_runtime::{
     CompiledSourcePlan, CompiledSourcePlanInput, SourceAttestationStrength,
     SourceBatchMemoryContract, SourceCompileRequest, SourceDiscoverySession, SourceDriver,
     SourceDriverDescriptor, SourceDriverId, SourceExecutionCapabilities, SourceExecutorClass,
     SourceHealthRequest, SourceHealthResult, SourceHealthStatus, SourceRegistry,
-    SourceResolutionContext, SourceRetryGranularity, artifact_hash,
+    SourceResolutionContext, SourceRetryGranularity, SourceStreamCapabilities, artifact_hash,
 };
 
 use crate::*;
@@ -19,6 +20,7 @@ use crate::*;
 struct TestSourceDriver {
     descriptor: SourceDriverDescriptor,
     option_schema: serde_json::Value,
+    streaming: bool,
 }
 
 impl TestSourceDriver {
@@ -51,6 +53,14 @@ impl TestSourceDriver {
                 schemes: Vec::new(),
             },
             option_schema,
+            streaming: false,
+        }
+    }
+
+    fn streaming(driver_id: &str, kind: &str, source_option: &str, resource_option: &str) -> Self {
+        Self {
+            streaming: true,
+            ..Self::new(driver_id, kind, source_option, resource_option)
         }
     }
 }
@@ -87,10 +97,20 @@ impl SourceDriver for TestSourceDriver {
             "source": request.source_options,
             "resource": request.resource_options,
         });
-        CompiledSourcePlan::new(
+        let mut execution = test_execution_capabilities();
+        execution.bounded = !self.streaming;
+        execution.resumable = self.streaming;
+        execution.idempotent_reads = self.streaming;
+        CompiledSourcePlan::new_with_stream_capabilities(
             self.descriptor.clone(),
             ResourceCapabilities::default(),
-            test_execution_capabilities(),
+            execution,
+            self.streaming.then_some(SourceStreamCapabilities {
+                quiescence: false,
+                watermark_behavior: OperatorWatermarkBehavior::Preserve,
+                safe_frontiers: vec![SafeFrontierPolicy::CanonicalAdmittedSourcePosition],
+                idleness_capabilities: vec!["idle-v1".to_owned()],
+            }),
             CompiledSourcePlanInput {
                 descriptor: request.descriptor,
                 schema: request.schema,
@@ -162,6 +182,14 @@ fn test_registry() -> SourceRegistry {
         ))
         .unwrap();
     registry
+        .register(TestSourceDriver::streaming(
+            "streamish",
+            "streamish",
+            "endpoint",
+            "topic",
+        ))
+        .unwrap();
+    registry
 }
 
 fn compile(input: &str) -> Result<Vec<CompiledResource>> {
@@ -210,6 +238,90 @@ fn registry_compilation_produces_one_compiled_source_plan_and_canonical_id() {
         "/events"
     );
     assert_eq!(resource.source_plan().descriptor, *resource.descriptor());
+}
+
+#[test]
+fn stream_policy_compiles_before_plan_and_missing_policy_names_the_fix() {
+    let missing = r#"
+[source.events]
+kind = "streamish"
+endpoint = "mock://events"
+
+[resource.raw]
+topic = "events"
+trust = "governed"
+"#;
+    let error = compile(missing).unwrap_err();
+    assert!(error.message.contains("declare a complete drain policy"));
+
+    let declared = r#"
+[source.events]
+kind = "streamish"
+endpoint = "mock://events"
+
+[resource.raw]
+topic = "events"
+trust = "governed"
+
+[resource.raw.execution]
+mode = "drain"
+late_data = "quarantine"
+safe_frontier = "canonical_admitted_source_position"
+
+[resource.raw.execution.checkpoint_cadence]
+kind = "rows"
+count = 10000
+
+[resource.raw.execution.package_rotation]
+kind = "bytes"
+count = 67108864
+
+[resource.raw.execution.termination]
+kind = "duration"
+milliseconds = 60000
+
+[resource.raw.execution.watermark]
+mode = "disabled"
+"#;
+    let resource = compile(declared).unwrap().remove(0);
+    assert!(matches!(
+        resource.execution_extent(),
+        ExecutionExtent::Drain {
+            policy,
+            termination: cdf_kernel::DrainTermination::Duration {
+                milliseconds: 60_000
+            },
+            ..
+        } if policy.watermark == WatermarkPolicy::Disabled
+    ));
+    cdf_runtime::CompiledStreamPolicy::compile(resource.execution_extent(), resource.source_plan())
+        .unwrap();
+
+    let source_frontier = declared.replace(
+        "kind = \"duration\"\nmilliseconds = 60000",
+        "kind = \"source_frontier\"\n\n[resource.raw.execution.termination.position]\nkind = \"log\"\nlog = \"events-0\"\noffset = 4242",
+    );
+    let resource = compile(&source_frontier).unwrap().remove(0);
+    assert!(matches!(
+        resource.execution_extent(),
+        ExecutionExtent::Drain {
+            termination: cdf_kernel::DrainTermination::SourceFrontier {
+                position: cdf_kernel::SourcePosition::Log(position)
+            },
+            ..
+        } if position.log == "events-0" && position.offset == 4_242
+    ));
+}
+
+#[test]
+fn declarative_schema_exposes_typed_stream_policy_not_driver_options() {
+    let schema = declarative_json_schema(&test_registry()).unwrap();
+    let encoded = serde_json::to_string(&schema).unwrap();
+    assert!(encoded.contains("ExecutionDeclaration"));
+    assert!(encoded.contains("checkpoint_cadence"));
+    assert!(encoded.contains("partition_aggregation"));
+    assert!(encoded.contains("source_frontier"));
+    assert!(encoded.contains("SourcePositionDeclaration"));
 }
 
 #[test]
@@ -527,12 +639,12 @@ fn schema_rebinding_updates_the_compiled_plan_without_recompiling_the_driver() {
 #[test]
 fn generated_schema_merges_common_and_driver_fields_into_closed_objects() {
     let artifact = declarative_json_schema_artifact(&test_registry()).unwrap();
-    assert_eq!(artifact.version, "cdf-declarative-v3");
+    assert_eq!(artifact.version, "cdf-declarative-v4");
     let definitions = artifact.schema["$defs"].as_object().unwrap();
     let sources = definitions["SourceDeclaration"]["oneOf"]
         .as_array()
         .unwrap();
-    assert_eq!(sources.len(), 2);
+    assert_eq!(sources.len(), 3);
     assert!(sources.iter().all(|variant| variant.get("allOf").is_none()));
     let httpish = sources
         .iter()
@@ -545,7 +657,7 @@ fn generated_schema_merges_common_and_driver_fields_into_closed_objects() {
     let resources = definitions["ResourceDeclaration"]["anyOf"]
         .as_array()
         .unwrap();
-    assert_eq!(resources.len(), 2);
+    assert_eq!(resources.len(), 3);
     assert!(
         resources
             .iter()

@@ -7,7 +7,6 @@ use cdf_declarative::CompiledResource;
 use cdf_engine::{
     EnginePlan, EnginePlanInput, EnginePreviewLimits, EnginePreviewSelectionEvidence, Planner,
 };
-use cdf_kernel::ExecutionExtent;
 use cdf_kernel::{
     CapabilitySupport, CdfError, DeliveryGuarantee, DestinationSheet, IdempotencySupport, OrderBy,
     PartitionPlan, PredicateId, QueryableResource, ResourceStream, ScanPredicate, ScanRequest,
@@ -363,7 +362,7 @@ pub(crate) fn build_engine_plan_for_resource(
     let input = EnginePlanInput {
         request,
         validation_program,
-        execution_extent: ExecutionExtent::bounded(),
+        execution_extent: source.execution_extent().clone(),
         package_id: run_package_id
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| format!("cli-{}", resource.descriptor().resource_id)),
@@ -687,6 +686,10 @@ fn scan_report_document(
                 .row("project", report.project.clone())
                 .row("environment", report.environment.clone())
                 .row("package", report.package_id.clone())
+                .row(
+                    "execution",
+                    execution_extent_name(&report.explain.execution_extent),
+                )
                 .row("partitions", report.will_fetch.partitions.len().to_string())
                 .row("effective jobs", scheduler_jobs)
                 .row("job ceiling", scheduler_limits)
@@ -809,6 +812,14 @@ fn scan_report_document(
             &report.destination.target,
             destination_uri,
         )))
+}
+
+fn execution_extent_name(extent: &cdf_kernel::ExecutionExtent) -> &'static str {
+    match extent {
+        cdf_kernel::ExecutionExtent::Bounded { .. } => "bounded",
+        cdf_kernel::ExecutionExtent::Drain { .. } => "drain",
+        cdf_kernel::ExecutionExtent::Resident { .. } => "resident",
+    }
 }
 
 fn list_or_default(values: &[String], default: &str) -> String {

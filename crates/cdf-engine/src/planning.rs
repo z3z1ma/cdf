@@ -302,6 +302,7 @@ impl Planner {
             compiled_source_execution: None,
             partition_schedule: None,
             operator_graph: None,
+            compiled_stream_policy: None,
             effective_schema_evidence: None,
             final_projection,
             residual_predicates,
@@ -1171,6 +1172,7 @@ fn explain_data(
             })
             .collect(),
         partition_schedule: None,
+        compiled_stream_policy: None,
         estimates: EstimateExplain {
             support: estimate_support,
             rows: scan.estimated_rows,

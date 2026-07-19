@@ -344,15 +344,49 @@ fn engine_plan_requires_recorded_schema_authorities() {
     let source = mock_compiled_source_plan(&resource, None);
     let mut unbounded = source.clone();
     unbounded.execution_capabilities.bounded = false;
+    unbounded.stream_capabilities = Some(cdf_runtime::SourceStreamCapabilities {
+        quiescence: false,
+        watermark_behavior: cdf_kernel::OperatorWatermarkBehavior::Drop,
+        safe_frontiers: vec![SafeFrontierPolicy::CanonicalAdmittedSourcePosition],
+        idleness_capabilities: Vec::new(),
+    });
     assert!(
         plan.clone()
             .bind_compiled_source(&unbounded)
             .unwrap_err()
             .message
-            .contains("requires a source that declares finite completion")
+            .contains("declare a complete drain policy")
     );
     resource.bind_compiled_source(&source);
     plan = plan.bind_compiled_source(&source).unwrap();
+    assert_eq!(
+        plan.compiled_stream_policy,
+        plan.explain.compiled_stream_policy
+    );
+    assert!(plan.compiled_stream_policy.is_some());
+    let serialized = serde_json::to_value(&plan).unwrap();
+    assert_eq!(
+        serialized["compiled_stream_policy"],
+        serialized["explain"]["compiled_stream_policy"]
+    );
+    assert_eq!(
+        serialized["compiled_stream_policy"]["execution_extent"],
+        serialized["execution_extent"]
+    );
+    let mut tampered = plan.clone();
+    tampered
+        .compiled_stream_policy
+        .as_mut()
+        .unwrap()
+        .semantic_hash = format!("sha256:{}", "00".repeat(32));
+    tampered.explain.compiled_stream_policy = tampered.compiled_stream_policy.clone();
+    assert!(
+        tampered
+            .validate_compiled_source_resource(&resource)
+            .unwrap_err()
+            .message
+            .contains("semantic hash")
+    );
     for required in [
         "schema_authority",
         "output_schema",
@@ -2173,7 +2207,12 @@ fn execution_rejects_drain_extent_before_source_contact() {
 
     let temp = TempDir::new().unwrap();
     let error = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap_err();
-    assert!(error.message.contains("drain execution is not enabled"));
+    assert!(
+        error
+            .message
+            .contains("bounded and cannot use drain execution")
+    );
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
     assert!(std::fs::read_dir(temp.path()).unwrap().next().is_none());
 }
 
@@ -2362,6 +2401,12 @@ fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
     };
     assert!(graph.validate_destination_join(&stale_staged).is_err());
     assert_eq!(graph.nodes[0].implementation_version, "mock-v1");
+    assert!(
+        graph
+            .nodes
+            .iter()
+            .all(|node| node.execution_extent == plan.execution_extent)
+    );
     assert!(
         graph
             .nodes
@@ -3128,34 +3173,28 @@ fn execution_rejects_coherently_widened_source_ceiling_and_schedule() {
     let source = mock_compiled_source_plan(&resource, Some(fast_test_retry_policy()));
     resource.bind_compiled_source(&source);
     plan = plan.bind_compiled_source(&source).unwrap();
-    let original = plan.compiled_source_execution.as_ref().unwrap();
-    let mut forged_source = serde_json::to_value(original).unwrap();
-    *forged_source
-        .pointer_mut("/execution_capabilities/retry_policy/max_total_attempts")
-        .unwrap() = serde_json::json!(4);
-    let forged_source_plan_hash = format!("sha256:{}", "a".repeat(64));
-    let forged_source_semantics_hash = format!("sha256:{}", "b".repeat(64));
-    forged_source["compiled_source_plan_hash"] = serde_json::json!(forged_source_plan_hash.clone());
-    forged_source["source_semantics_hash"] =
-        serde_json::json!(forged_source_semantics_hash.clone());
-    let forged_capabilities_hash =
-        cdf_runtime::artifact_hash(&forged_source["execution_capabilities"]).unwrap();
-    let provisional: cdf_runtime::CompiledSourceExecutionPlan =
-        serde_json::from_value(forged_source.clone()).unwrap();
-    let execution_binding_hash = provisional.canonical_binding_hash().unwrap();
-    forged_source["execution_binding_hash"] = serde_json::json!(execution_binding_hash);
-    let forged_source: cdf_runtime::CompiledSourceExecutionPlan =
-        serde_json::from_value(forged_source).unwrap();
-    forged_source.validate().unwrap();
+    let mut forged_compiler_source = source.clone();
+    forged_compiler_source
+        .execution_capabilities
+        .retry_policy
+        .as_mut()
+        .unwrap()
+        .max_total_attempts = 4;
+    forged_compiler_source.validate().unwrap();
+    let forged_source =
+        cdf_runtime::CompiledSourceExecutionPlan::compile(&forged_compiler_source).unwrap();
     let forged_schedule =
         cdf_runtime::CanonicalPartitionSchedule::compile(&forged_source, &plan.scan).unwrap();
-    let admission_source = plan.compiled_schema_admission.source.as_mut().unwrap();
-    admission_source.compiled_source_plan_hash = forged_source_plan_hash;
-    admission_source.source_semantics_hash = forged_source_semantics_hash;
-    admission_source.execution_capabilities_hash = forged_capabilities_hash;
+    plan.compiled_schema_admission.source =
+        Some(cdf_runtime::CompiledSourceCompilerBinding::compile(&forged_compiler_source).unwrap());
+    let forged_policy =
+        cdf_runtime::CompiledStreamPolicy::compile(&plan.execution_extent, &forged_compiler_source)
+            .unwrap();
     plan.compiled_source_execution = Some(forged_source);
     plan.partition_schedule = Some(forged_schedule.clone());
     plan.explain.partition_schedule = Some(forged_schedule);
+    plan.compiled_stream_policy = Some(forged_policy.clone());
+    plan.explain.compiled_stream_policy = Some(forged_policy);
     let package = TempDir::new().unwrap();
 
     let error = block_on(execute_to_package(&plan, &resource, package.path())).unwrap_err();

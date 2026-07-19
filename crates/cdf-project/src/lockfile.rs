@@ -2,8 +2,10 @@ use crate::internal::*;
 use crate::*;
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_resource_validation_program};
 use cdf_kernel::{
-    DestinationProtocolCapabilities, DestinationSheetArtifact, SchemaSnapshotReference,
+    DestinationProtocolCapabilities, DestinationSheetArtifact, ExecutionExtent,
+    SchemaSnapshotReference,
 };
+use cdf_runtime::CompiledStreamPolicy;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectValidationReport {
@@ -73,6 +75,9 @@ pub struct LockedResource {
     pub descriptor: ResourceDescriptor,
     pub capabilities: ResourceCapabilities,
     pub capability_sheet_hash: String,
+    pub execution_extent: ExecutionExtent,
+    pub execution_extent_hash: String,
+    pub compiled_stream_policy: CompiledStreamPolicy,
     pub schema_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_snapshot: Option<SchemaSnapshotReference>,
@@ -184,11 +189,48 @@ pub fn parse_cdf_toml(input: &str) -> Result<ProjectConfig> {
 }
 
 pub fn parse_lock(input: &str) -> Result<CdfLock> {
-    toml::from_str(input).map_err(|error| CdfError::contract(error.to_string()))
+    let lock: CdfLock =
+        toml::from_str(input).map_err(|error| CdfError::contract(error.to_string()))?;
+    validate_lock(&lock)?;
+    Ok(lock)
 }
 
 pub fn lock_to_toml(lock: &CdfLock) -> Result<String> {
+    validate_lock(lock)?;
     toml::to_string_pretty(lock).map_err(|error| CdfError::contract(error.to_string()))
+}
+
+fn validate_lock(lock: &CdfLock) -> Result<()> {
+    for (resource_id, resource) in &lock.resources {
+        resource.descriptor.validate()?;
+        resource.capabilities.validate()?;
+        if resource.descriptor.resource_id.as_str() != resource_id {
+            return Err(CdfError::contract(format!(
+                "locked resource key `{resource_id}` does not match descriptor id `{}`",
+                resource.descriptor.resource_id
+            )));
+        }
+        if semantic_hash(&resource.capabilities)? != resource.capability_sheet_hash {
+            return Err(CdfError::contract(format!(
+                "locked resource `{resource_id}` capability hash does not match its canonical sheet"
+            )));
+        }
+        resource.execution_extent.validate()?;
+        if semantic_hash(&resource.execution_extent)? != resource.execution_extent_hash {
+            return Err(CdfError::contract(format!(
+                "locked resource `{resource_id}` execution-extent hash does not match its canonical policy"
+            )));
+        }
+        resource.compiled_stream_policy.validate_intrinsic()?;
+        if resource.compiled_stream_policy.resource_id != resource.descriptor.resource_id
+            || resource.compiled_stream_policy.execution_extent != resource.execution_extent
+        {
+            return Err(CdfError::contract(format!(
+                "locked resource `{resource_id}` stream policy does not match its resource and execution extent"
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub fn compile_project_declarative_resources(
@@ -412,12 +454,17 @@ pub fn generate_lockfile_with_destination_artifacts(
             Some(snapshot) => snapshot.clone(),
             None => contract_snapshot_for_resource(resource)?,
         });
+        let compiled_stream_policy =
+            CompiledStreamPolicy::compile(resource.execution_extent(), resource.source_plan())?;
         locked_resources.insert(
             resource_id,
             LockedResource {
                 descriptor,
                 capabilities: resource.capabilities().clone(),
                 capability_sheet_hash: semantic_hash(resource.capabilities())?,
+                execution_extent: resource.execution_extent().clone(),
+                execution_extent_hash: semantic_hash(resource.execution_extent())?,
+                compiled_stream_policy,
                 schema_hash,
                 schema_snapshot,
                 contract,
@@ -682,12 +729,17 @@ fn locked_resource_from_current(
     contract: ContractSnapshot,
 ) -> Result<LockedResource> {
     let descriptor = resource.descriptor().clone();
+    let compiled_stream_policy =
+        CompiledStreamPolicy::compile(resource.execution_extent(), resource.source_plan())?;
     Ok(LockedResource {
         schema_hash: schema_hash_from_source(&descriptor.schema_source),
         schema_snapshot: descriptor.schema_source.pinned_snapshot().cloned(),
         descriptor,
         capabilities: resource.capabilities().clone(),
         capability_sheet_hash: semantic_hash(resource.capabilities())?,
+        execution_extent: resource.execution_extent().clone(),
+        execution_extent_hash: semantic_hash(resource.execution_extent())?,
+        compiled_stream_policy,
         contract: Some(contract),
     })
 }

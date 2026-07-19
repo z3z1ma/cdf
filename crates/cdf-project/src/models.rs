@@ -144,6 +144,7 @@ pub struct ProjectResource {
     pub source: String,
     pub trust: Option<TrustPreset>,
     pub freshness: Option<ProjectFreshness>,
+    pub execution: Option<cdf_declarative::ExecutionDeclaration>,
 }
 
 impl ProjectResource {

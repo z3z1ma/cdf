@@ -5,7 +5,7 @@ use cdf_runtime::SourceRegistry;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 
-pub const DECLARATIVE_SCHEMA_VERSION: &str = "cdf-declarative-v3";
+pub const DECLARATIVE_SCHEMA_VERSION: &str = "cdf-declarative-v4";
 pub const DECLARATIVE_SCHEMA_ARTIFACT_PATH: &str = "schemas/cdf-declarative.schema.json";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -42,8 +42,164 @@ pub struct ResourceDeclaration {
     pub schema_mode: Option<SchemaModeDeclaration>,
     pub sample: Option<SampleDeclaration>,
     pub types: Option<TypePolicyDeclaration>,
+    pub execution: Option<ExecutionDeclaration>,
     #[serde(default, flatten)]
     pub options: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ExecutionDeclaration {
+    Bounded,
+    Drain {
+        checkpoint_cadence: EpochClosureDeclaration,
+        package_rotation: EpochClosureDeclaration,
+        termination: DrainTerminationDeclaration,
+        watermark: WatermarkDeclaration,
+        late_data: LateDataDeclaration,
+        safe_frontier: SafeFrontierDeclaration,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EpochClosureDeclaration {
+    Batches { count: u64 },
+    Rows { count: u64 },
+    Bytes { count: u64 },
+    Elapsed { milliseconds: u64 },
+    WatermarkAdvance { units: u64 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DrainTerminationDeclaration {
+    Quiescent,
+    Duration { milliseconds: u64 },
+    Records { count: u64 },
+    Bytes { count: u64 },
+    SourceFrontier { position: SourcePositionDeclaration },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SourcePositionDeclaration {
+    Cursor {
+        field: String,
+        value: CursorValueDeclaration,
+    },
+    Log {
+        log: String,
+        offset: i64,
+        sequence: Option<String>,
+    },
+    FileManifest {
+        files: Vec<FilePositionDeclaration>,
+    },
+    PageToken {
+        token: String,
+    },
+    Composite {
+        positions: BTreeMap<String, SourcePositionDeclaration>,
+    },
+    ForeignState {
+        protocol: String,
+        opaque_blob: Vec<u8>,
+        blob_sha256: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum CursorValueDeclaration {
+    String(String),
+    I64(i64),
+    U64(u64),
+    DecimalString(String),
+    TimestampMicros {
+        micros: i64,
+        timezone: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FilePositionDeclaration {
+    pub path: String,
+    pub size_bytes: u64,
+    pub source_generation: Option<String>,
+    pub etag: Option<String>,
+    pub object_version: Option<String>,
+    pub sha256: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WatermarkDeclaration {
+    Disabled,
+    Enabled {
+        event_time_field: String,
+        domain: EventTimeDomainDeclaration,
+        authority: WatermarkAuthorityDeclaration,
+        partition_aggregation: PartitionWatermarkAggregationDeclaration,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EventTimeDomainDeclaration {
+    SignedInteger,
+    UnsignedInteger,
+    Decimal {
+        precision: u8,
+        scale: i8,
+    },
+    Date32,
+    Date64,
+    Timestamp {
+        unit: TimeUnitDeclaration,
+        timezone: Option<String>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TimeUnitDeclaration {
+    Second,
+    Millisecond,
+    Microsecond,
+    Nanosecond,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WatermarkAuthorityDeclaration {
+    Source,
+    Derived { mapping_id: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PartitionWatermarkAggregationDeclaration {
+    MinimumAll,
+    MinimumEligible {
+        idle_after_milliseconds: u64,
+        capability_id: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LateDataDeclaration {
+    RecaptureNextEpoch,
+    Quarantine,
+    AdmitWithAnnotation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SafeFrontierDeclaration {
+    CanonicalAdmittedSourcePosition,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

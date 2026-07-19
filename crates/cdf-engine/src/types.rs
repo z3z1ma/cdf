@@ -41,6 +41,8 @@ pub struct EnginePlan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator_graph: Option<cdf_runtime::CompiledOperatorGraph>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiled_stream_policy: Option<cdf_runtime::CompiledStreamPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_schema_evidence: Option<EffectiveSchemaPlanEvidence>,
     pub final_projection: Option<Vec<String>>,
     pub residual_predicates: Vec<ScanPredicate>,
@@ -146,6 +148,27 @@ impl EnginePlan {
     where
         R: ResourceStream + ?Sized,
     {
+        if self.compiled_stream_policy != self.explain.compiled_stream_policy {
+            return Err(CdfError::data(
+                "compiled stream policy does not match its recorded explain evidence",
+            ));
+        }
+        match (
+            self.compiled_stream_policy.as_ref(),
+            self.compiled_source_execution.as_ref(),
+        ) {
+            (Some(policy), Some(source))
+                if policy.compiled_source_plan_hash == source.compiled_source_plan_hash()
+                    && policy.execution_extent == self.execution_extent =>
+            {
+                policy.validate_against_execution_plan(source)?;
+            }
+            _ => {
+                return Err(CdfError::data(
+                    "executable engine plan requires one source-bound compiled stream policy",
+                ));
+            }
+        }
         match (
             self.compiled_source_execution.as_ref(),
             resource.compiled_source_plan_hash(),
@@ -175,11 +198,8 @@ impl EnginePlan {
         mut self,
         source: &cdf_runtime::CompiledSourcePlan,
     ) -> Result<Self> {
-        if self.execution_extent.is_bounded() && !source.execution_capabilities.bounded {
-            return Err(CdfError::contract(
-                "bounded execution requires a source that declares finite completion; declare the source bounded or compile a drain/resident extent",
-            ));
-        }
+        let stream_policy =
+            cdf_runtime::CompiledStreamPolicy::compile(&self.execution_extent, source)?;
         self.compiled_schema_admission
             .bind_source(source, &self.scan.request.resource_id)?;
         let compiled_source_execution = cdf_runtime::CompiledSourceExecutionPlan::compile(source)?;
@@ -188,8 +208,10 @@ impl EnginePlan {
             &self.scan,
         )?;
         self.explain.partition_schedule = Some(schedule.clone());
+        self.explain.compiled_stream_policy = Some(stream_policy.clone());
         self.partition_schedule = Some(schedule);
         self.compiled_source_execution = Some(compiled_source_execution);
+        self.compiled_stream_policy = Some(stream_policy);
         Ok(self)
     }
 
@@ -1603,6 +1625,8 @@ pub struct ExplainData {
     pub partitions: Vec<PartitionExplain>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partition_schedule: Option<cdf_runtime::CanonicalPartitionSchedule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiled_stream_policy: Option<cdf_runtime::CompiledStreamPolicy>,
     pub estimates: EstimateExplain,
     pub delivery_guarantee: DeliveryGuarantee,
     pub execution_extent: ExecutionExtent,

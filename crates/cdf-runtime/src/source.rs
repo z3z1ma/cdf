@@ -10,8 +10,9 @@ use arrow_schema::Schema;
 use cdf_http::{EgressAllowlist, HttpMethod, HttpRequest, SecretProvider};
 use cdf_kernel::{
     CdfError, EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, ErrorKind, FreshnessSpec,
-    PayloadRetention, PushdownFidelity, QueryableResource, ResourceCapabilities,
-    ResourceDescriptor, ResourceId, Result, SchemaSource, TrustLevel, TypePolicyAllowances,
+    OperatorWatermarkBehavior, PayloadRetention, PushdownFidelity, QueryableResource,
+    ResourceCapabilities, ResourceDescriptor, ResourceId, Result, SafeFrontierPolicy, SchemaSource,
+    TrustLevel, TypePolicyAllowances,
 };
 use serde::{Deserialize, Serialize};
 
@@ -511,6 +512,85 @@ pub struct SourceExecutionCapabilities {
     pub bounded: bool,
     pub batch_memory: SourceBatchMemoryContract,
     pub telemetry_version: String,
+}
+
+/// Capabilities that exist only for an unbounded source. These claims are part of the compiled
+/// source artifact; generic stream-policy compilation consumes them without matching driver ids.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceStreamCapabilities {
+    pub quiescence: bool,
+    pub watermark_behavior: OperatorWatermarkBehavior,
+    pub safe_frontiers: Vec<SafeFrontierPolicy>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub idleness_capabilities: Vec<String>,
+}
+
+impl SourceStreamCapabilities {
+    pub fn validate(&self) -> Result<()> {
+        self.watermark_behavior.validate()?;
+        if self.safe_frontiers.is_empty() {
+            return Err(CdfError::contract(
+                "unbounded source stream capabilities require at least one safe-frontier policy",
+            ));
+        }
+        if self
+            .safe_frontiers
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(CdfError::contract(
+                "source safe-frontier policies must use canonical sorted order",
+            ));
+        }
+        validate_names(
+            "source stream idleness capability",
+            &self.idleness_capabilities,
+        )?;
+        if self
+            .idleness_capabilities
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(CdfError::contract(
+                "source stream idleness capabilities must use canonical sorted order",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn supports_frontier(&self, policy: SafeFrontierPolicy) -> bool {
+        self.safe_frontiers.contains(&policy)
+    }
+
+    pub fn supports_idleness(&self, capability_id: &str) -> bool {
+        self.idleness_capabilities
+            .binary_search_by(|candidate| candidate.as_str().cmp(capability_id))
+            .is_ok()
+    }
+}
+
+fn validate_source_stream_capabilities(
+    execution: &SourceExecutionCapabilities,
+    stream: Option<&SourceStreamCapabilities>,
+) -> Result<()> {
+    match (execution.bounded, stream) {
+        (true, None) => Ok(()),
+        (true, Some(_)) => Err(CdfError::contract(
+            "bounded source cannot declare unbounded stream capabilities",
+        )),
+        (false, Some(capabilities)) => {
+            capabilities.validate()?;
+            if !execution.pausable && !execution.spillable {
+                return Err(CdfError::contract(
+                    "unbounded non-pausable source must declare spillable execution",
+                ));
+            }
+            Ok(())
+        }
+        (false, None) => Err(CdfError::contract(
+            "unbounded source requires compiled stream capabilities; declare safe-frontier, watermark, idleness, and quiescence support in the source driver",
+        )),
+    }
 }
 
 impl SourceExecutionCapabilities {
@@ -1117,6 +1197,8 @@ pub struct CompiledSourcePlan {
     pub descriptor: ResourceDescriptor,
     pub resource_capabilities: ResourceCapabilities,
     pub execution_capabilities: SourceExecutionCapabilities,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_capabilities: Option<SourceStreamCapabilities>,
     pub schema: Schema,
     pub type_policy_allowances: TypePolicyAllowances,
     pub effective_schema_runtime: Option<EffectiveSchemaRuntime>,
@@ -1182,6 +1264,8 @@ pub struct CompiledSourceExecutionPlan {
     pub(crate) driver: SourceDriverDescriptor,
     pub(crate) physical_plan_hash: String,
     pub(crate) execution_capabilities: SourceExecutionCapabilities,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) stream_capabilities: Option<SourceStreamCapabilities>,
     compiled_source_plan_hash: String,
     source_semantics_hash: String,
     execution_binding_hash: String,
@@ -1197,6 +1281,7 @@ impl CompiledSourceExecutionPlan {
             driver: source.driver.clone(),
             physical_plan_hash: source.physical_plan_hash.clone(),
             execution_capabilities: source.execution_capabilities.clone(),
+            stream_capabilities: source.stream_capabilities.clone(),
             compiled_source_plan_hash,
             source_semantics_hash,
             execution_binding_hash: String::new(),
@@ -1210,6 +1295,10 @@ impl CompiledSourceExecutionPlan {
         ResourceId::new(self.resource_id.as_str())?;
         self.driver.validate()?;
         self.execution_capabilities.validate()?;
+        validate_source_stream_capabilities(
+            &self.execution_capabilities,
+            self.stream_capabilities.as_ref(),
+        )?;
         validate_hash("compiled source physical plan", &self.physical_plan_hash)?;
         validate_hash(
             "complete compiled source plan",
@@ -1248,14 +1337,25 @@ impl CompiledSourceExecutionPlan {
 
     /// Recomputes the canonical self-binding used to validate serialized execution ceilings.
     pub fn canonical_binding_hash(&self) -> Result<String> {
-        artifact_hash(&serde_json::json!({
+        let mut identity = serde_json::json!({
             "resource_id": self.resource_id,
             "driver": self.driver,
             "physical_plan_hash": self.physical_plan_hash,
             "compiled_source_plan_hash": self.compiled_source_plan_hash,
             "execution_capabilities": self.execution_capabilities,
             "source_semantics_hash": self.source_semantics_hash,
-        }))
+        });
+        if let Some(capabilities) = &self.stream_capabilities {
+            identity
+                .as_object_mut()
+                .expect("source execution identity is an object")
+                .insert(
+                    "stream_capabilities".to_owned(),
+                    serde_json::to_value(capabilities)
+                        .map_err(|error| CdfError::internal(error.to_string()))?,
+                );
+        }
+        artifact_hash(&identity)
     }
 
     pub fn compiled_source_plan_hash(&self) -> &str {
@@ -1268,6 +1368,10 @@ impl CompiledSourceExecutionPlan {
 
     pub fn execution_capabilities(&self) -> &SourceExecutionCapabilities {
         &self.execution_capabilities
+    }
+
+    pub fn stream_capabilities(&self) -> Option<&SourceStreamCapabilities> {
+        self.stream_capabilities.as_ref()
     }
 }
 
@@ -1289,6 +1393,22 @@ impl CompiledSourcePlan {
         execution_capabilities: SourceExecutionCapabilities,
         input: CompiledSourcePlanInput,
     ) -> Result<Self> {
+        Self::new_with_stream_capabilities(
+            driver,
+            resource_capabilities,
+            execution_capabilities,
+            None,
+            input,
+        )
+    }
+
+    pub fn new_with_stream_capabilities(
+        driver: SourceDriverDescriptor,
+        resource_capabilities: ResourceCapabilities,
+        execution_capabilities: SourceExecutionCapabilities,
+        stream_capabilities: Option<SourceStreamCapabilities>,
+        input: CompiledSourcePlanInput,
+    ) -> Result<Self> {
         let redacted_options_hash = artifact_hash(&input.redacted_options)?;
         let physical_plan_hash = artifact_hash(&input.physical_plan)?;
         let plan = Self {
@@ -1296,6 +1416,7 @@ impl CompiledSourcePlan {
             descriptor: input.descriptor,
             resource_capabilities,
             execution_capabilities,
+            stream_capabilities,
             schema: input.schema,
             type_policy_allowances: input.type_policy_allowances,
             effective_schema_runtime: input.effective_schema_runtime,
@@ -1314,6 +1435,10 @@ impl CompiledSourcePlan {
         self.descriptor.validate()?;
         self.resource_capabilities.validate()?;
         self.execution_capabilities.validate()?;
+        validate_source_stream_capabilities(
+            &self.execution_capabilities,
+            self.stream_capabilities.as_ref(),
+        )?;
         if !self.redacted_options.is_object() || !self.physical_plan.is_object() {
             return Err(CdfError::contract(
                 "compiled source options and physical plan must be JSON objects",
@@ -1421,7 +1546,7 @@ impl CompiledSourcePlan {
         self.validate()?;
         let mut descriptor = self.descriptor.clone();
         descriptor.schema_source = SchemaSource::Discover;
-        artifact_hash(&serde_json::json!({
+        let mut identity = serde_json::json!({
             "driver": self.driver,
             "descriptor": descriptor,
             "resource_capabilities": self.resource_capabilities,
@@ -1431,7 +1556,18 @@ impl CompiledSourcePlan {
             "redacted_options_hash": self.redacted_options_hash,
             "physical_plan": self.physical_plan,
             "physical_plan_hash": self.physical_plan_hash,
-        }))
+        });
+        if let Some(capabilities) = &self.stream_capabilities {
+            identity
+                .as_object_mut()
+                .expect("source identity is an object")
+                .insert(
+                    "stream_capabilities".to_owned(),
+                    serde_json::to_value(capabilities)
+                        .map_err(|error| CdfError::internal(error.to_string()))?,
+                );
+        }
+        artifact_hash(&identity)
     }
 
     /// Hashes only the source interpretation that can change discovery observations.

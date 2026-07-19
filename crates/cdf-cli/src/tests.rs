@@ -925,6 +925,14 @@ fn validate_deep_reports_source_front_end_checks_without_writes() {
     );
     assert_eq!(resource["validation_program"]["status"], "ok");
     assert_eq!(resource["identifier_normalization"]["status"], "ok");
+    assert_eq!(resource["execution_extent"], "bounded");
+    assert_eq!(resource["stream_policy"]["status"], "ok");
+    assert!(
+        resource["stream_policy"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("sha256:")
+    );
     assert_eq!(resource["destination"]["status"], "ok");
 }
 
@@ -1967,6 +1975,7 @@ fn plan_human_headless_render_uses_operator_panels() {
     for expected in [
         "OK plan local.events -> events",
         "Fetch",
+        "execution                 bounded",
         "effective jobs",
         "managed memory available",
         "Pushdown",
@@ -2086,6 +2095,16 @@ fn explain_json_exposes_destination_plan_without_writes() {
     );
     assert_eq!(report["ddl_preview"]["supported"], true);
     assert_eq!(report["delivery_guarantee"], "effectively_once_per_package");
+    assert_eq!(
+        report["explain"]["compiled_stream_policy"]["execution_extent"],
+        report["explain"]["execution_extent"]
+    );
+    assert!(
+        report["explain"]["compiled_stream_policy"]["semantic_hash"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
 }
 
 #[test]

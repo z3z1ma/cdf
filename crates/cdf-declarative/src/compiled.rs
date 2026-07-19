@@ -7,11 +7,15 @@ use std::{
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use cdf_contract::{IdentifierPolicy, normalize_arrow_schema};
 use cdf_kernel::{
-    CdfError, ContractRef, CursorOrderingClaim, CursorSpec, DeduplicationSpec,
-    EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, FreshnessSpec, PushdownFidelity,
-    ResourceCapabilities, ResourceDescriptor, ResourceId, Result, SchemaHash, SchemaSource,
-    ScopeKey, TrustLevel, TypePolicyAllowances, WriteDisposition, parse_arrow_field_type,
-    with_cdf_metadata,
+    CanonicalArrowTimeUnit, CdfError, CompositePosition, ContractRef, CursorOrderingClaim,
+    CursorPosition, CursorSpec, CursorValue, DeduplicationSpec, DrainTermination,
+    EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, EpochClosureTrigger, EventTimeDomain,
+    ExecutionExtent, FileManifest, FilePosition, ForeignState, FreshnessSpec, LateDataAction,
+    LogPosition, PageToken, PartitionWatermarkAggregation, PushdownFidelity, ResourceCapabilities,
+    ResourceDescriptor, ResourceId, Result, STREAM_EPOCH_POLICY_VERSION, SafeFrontierPolicy,
+    SchemaHash, SchemaSource, ScopeKey, SourcePosition, StreamEpochPolicy, TrustLevel,
+    TypePolicyAllowances, WatermarkAuthority, WatermarkPolicy, WriteDisposition,
+    parse_arrow_field_type, with_cdf_metadata,
 };
 use cdf_runtime::{
     CompiledSourcePlan, SourceCompileContext, SourceCompileRequest, SourceCursorPushdown,
@@ -34,6 +38,7 @@ pub struct CompiledResource {
     baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
     schema_discovery_sample_files: Option<u64>,
     type_policy_allowances: TypePolicyAllowances,
+    execution_extent: ExecutionExtent,
 }
 
 impl CompiledResource {
@@ -43,7 +48,24 @@ impl CompiledResource {
         project_root: Option<PathBuf>,
         source_plan: CompiledSourcePlan,
     ) -> Result<Self> {
+        Self::from_compiled_source_with_execution(
+            source_name,
+            resource_name,
+            project_root,
+            source_plan,
+            ExecutionExtent::bounded(),
+        )
+    }
+
+    pub fn from_compiled_source_with_execution(
+        source_name: impl Into<String>,
+        resource_name: impl Into<String>,
+        project_root: Option<PathBuf>,
+        source_plan: CompiledSourcePlan,
+        execution_extent: ExecutionExtent,
+    ) -> Result<Self> {
         source_plan.validate()?;
+        cdf_runtime::CompiledStreamPolicy::compile(&execution_extent, &source_plan)?;
         let descriptor = source_plan.descriptor.clone();
         let schema = Arc::new(source_plan.schema.clone());
         let capabilities = source_plan.resource_capabilities.clone();
@@ -63,6 +85,7 @@ impl CompiledResource {
             baseline_observation_schema_catalog,
             schema_discovery_sample_files: None,
             type_policy_allowances,
+            execution_extent,
         })
     }
 
@@ -108,6 +131,10 @@ impl CompiledResource {
 
     pub fn type_policy_allowances(&self) -> TypePolicyAllowances {
         self.type_policy_allowances
+    }
+
+    pub fn execution_extent(&self) -> &ExecutionExtent {
+        &self.execution_extent
     }
 
     pub fn with_schema_source_and_schema(
@@ -238,6 +265,7 @@ fn compile_resource(
     let schema_source = compile_schema_source(&resource_id, resource)?;
     let cursor = compile_cursor(resource.cursor.as_ref())?;
     let write_disposition = compile_write_disposition(resource)?;
+    let execution_extent = compile_execution_extent(resource.execution.as_ref())?;
     let deduplication = compile_deduplication(&resource_id, resource, &write_disposition)?;
     let merge_key = compile_merge_key(&resource_id, resource, &write_disposition)?;
     validate_fields(name, resource)?;
@@ -297,6 +325,7 @@ fn compile_resource(
         baseline_observation_schema_catalog: Vec::new(),
     })?;
     let capabilities = source_plan.resource_capabilities.clone();
+    cdf_runtime::CompiledStreamPolicy::compile(&execution_extent, &source_plan)?;
 
     Ok(CompiledResource {
         descriptor,
@@ -310,7 +339,210 @@ fn compile_resource(
         baseline_observation_schema_catalog: Vec::new(),
         schema_discovery_sample_files: resource.sample_files,
         type_policy_allowances,
+        execution_extent,
     })
+}
+
+pub fn compile_execution_extent(
+    execution: Option<&ExecutionDeclaration>,
+) -> Result<ExecutionExtent> {
+    let extent = match execution {
+        None | Some(ExecutionDeclaration::Bounded) => ExecutionExtent::bounded(),
+        Some(ExecutionDeclaration::Drain {
+            checkpoint_cadence,
+            package_rotation,
+            termination,
+            watermark,
+            late_data,
+            safe_frontier,
+        }) => ExecutionExtent::Drain {
+            version: cdf_kernel::EXECUTION_EXTENT_VERSION,
+            policy: StreamEpochPolicy {
+                version: STREAM_EPOCH_POLICY_VERSION,
+                checkpoint_cadence: compile_epoch_trigger(checkpoint_cadence),
+                package_rotation: compile_epoch_trigger(package_rotation),
+                watermark: compile_watermark(watermark),
+                late_data: match late_data {
+                    LateDataDeclaration::RecaptureNextEpoch => LateDataAction::RecaptureNextEpoch,
+                    LateDataDeclaration::Quarantine => LateDataAction::Quarantine,
+                    LateDataDeclaration::AdmitWithAnnotation => LateDataAction::AdmitWithAnnotation,
+                },
+                safe_frontier: match safe_frontier {
+                    SafeFrontierDeclaration::CanonicalAdmittedSourcePosition => {
+                        SafeFrontierPolicy::CanonicalAdmittedSourcePosition
+                    }
+                },
+            },
+            termination: match termination {
+                DrainTerminationDeclaration::Quiescent => DrainTermination::Quiescent,
+                DrainTerminationDeclaration::Duration { milliseconds } => {
+                    DrainTermination::Duration {
+                        milliseconds: *milliseconds,
+                    }
+                }
+                DrainTerminationDeclaration::Records { count } => {
+                    DrainTermination::Records { count: *count }
+                }
+                DrainTerminationDeclaration::Bytes { count } => {
+                    DrainTermination::Bytes { count: *count }
+                }
+                DrainTerminationDeclaration::SourceFrontier { position } => {
+                    DrainTermination::SourceFrontier {
+                        position: compile_source_position(position),
+                    }
+                }
+            },
+        },
+    };
+    extent.validate_for_plan()?;
+    Ok(extent)
+}
+
+fn compile_source_position(position: &SourcePositionDeclaration) -> SourcePosition {
+    match position {
+        SourcePositionDeclaration::Cursor { field, value } => {
+            SourcePosition::Cursor(CursorPosition {
+                version: 1,
+                field: field.clone(),
+                value: match value {
+                    CursorValueDeclaration::String(value) => CursorValue::String(value.clone()),
+                    CursorValueDeclaration::I64(value) => CursorValue::I64(*value),
+                    CursorValueDeclaration::U64(value) => CursorValue::U64(*value),
+                    CursorValueDeclaration::DecimalString(value) => {
+                        CursorValue::DecimalString(value.clone())
+                    }
+                    CursorValueDeclaration::TimestampMicros { micros, timezone } => {
+                        CursorValue::TimestampMicros {
+                            micros: *micros,
+                            timezone: timezone.clone(),
+                        }
+                    }
+                },
+            })
+        }
+        SourcePositionDeclaration::Log {
+            log,
+            offset,
+            sequence,
+        } => SourcePosition::Log(LogPosition {
+            version: 1,
+            log: log.clone(),
+            offset: *offset,
+            sequence: sequence.clone(),
+        }),
+        SourcePositionDeclaration::FileManifest { files } => {
+            SourcePosition::FileManifest(FileManifest {
+                version: 1,
+                files: files
+                    .iter()
+                    .map(|file| FilePosition {
+                        path: file.path.clone(),
+                        size_bytes: file.size_bytes,
+                        source_generation: file.source_generation.clone(),
+                        etag: file.etag.clone(),
+                        object_version: file.object_version.clone(),
+                        sha256: file.sha256.clone(),
+                    })
+                    .collect(),
+            })
+        }
+        SourcePositionDeclaration::PageToken { token } => SourcePosition::PageToken(PageToken {
+            version: 1,
+            token: token.clone(),
+        }),
+        SourcePositionDeclaration::Composite { positions } => {
+            SourcePosition::Composite(CompositePosition {
+                version: 1,
+                positions: positions
+                    .iter()
+                    .map(|(key, position)| (key.clone(), compile_source_position(position)))
+                    .collect(),
+            })
+        }
+        SourcePositionDeclaration::ForeignState {
+            protocol,
+            opaque_blob,
+            blob_sha256,
+        } => SourcePosition::ForeignState(ForeignState {
+            version: 1,
+            protocol: protocol.clone(),
+            opaque_blob: opaque_blob.clone(),
+            blob_sha256: blob_sha256.clone(),
+        }),
+    }
+}
+
+fn compile_epoch_trigger(trigger: &EpochClosureDeclaration) -> EpochClosureTrigger {
+    match trigger {
+        EpochClosureDeclaration::Batches { count } => {
+            EpochClosureTrigger::Batches { count: *count }
+        }
+        EpochClosureDeclaration::Rows { count } => EpochClosureTrigger::Rows { count: *count },
+        EpochClosureDeclaration::Bytes { count } => EpochClosureTrigger::Bytes { count: *count },
+        EpochClosureDeclaration::Elapsed { milliseconds } => EpochClosureTrigger::Elapsed {
+            milliseconds: *milliseconds,
+        },
+        EpochClosureDeclaration::WatermarkAdvance { units } => {
+            EpochClosureTrigger::WatermarkAdvance { units: *units }
+        }
+    }
+}
+
+fn compile_watermark(watermark: &WatermarkDeclaration) -> WatermarkPolicy {
+    match watermark {
+        WatermarkDeclaration::Disabled => WatermarkPolicy::Disabled,
+        WatermarkDeclaration::Enabled {
+            event_time_field,
+            domain,
+            authority,
+            partition_aggregation,
+        } => WatermarkPolicy::Enabled {
+            event_time_field: event_time_field.clone().into_boxed_str(),
+            domain: compile_event_time_domain(domain),
+            authority: match authority {
+                WatermarkAuthorityDeclaration::Source => WatermarkAuthority::Source,
+                WatermarkAuthorityDeclaration::Derived { mapping_id } => {
+                    WatermarkAuthority::Derived {
+                        mapping_id: mapping_id.clone().into_boxed_str(),
+                    }
+                }
+            },
+            partition_aggregation: match partition_aggregation {
+                PartitionWatermarkAggregationDeclaration::MinimumAll => {
+                    PartitionWatermarkAggregation::MinimumAll
+                }
+                PartitionWatermarkAggregationDeclaration::MinimumEligible {
+                    idle_after_milliseconds,
+                    capability_id,
+                } => PartitionWatermarkAggregation::MinimumEligible {
+                    idle_after_milliseconds: *idle_after_milliseconds,
+                    capability_id: capability_id.clone().into_boxed_str(),
+                },
+            },
+        },
+    }
+}
+
+fn compile_event_time_domain(domain: &EventTimeDomainDeclaration) -> EventTimeDomain {
+    match domain {
+        EventTimeDomainDeclaration::SignedInteger => EventTimeDomain::SignedInteger,
+        EventTimeDomainDeclaration::UnsignedInteger => EventTimeDomain::UnsignedInteger,
+        EventTimeDomainDeclaration::Decimal { precision, scale } => EventTimeDomain::Decimal {
+            precision: *precision,
+            scale: *scale,
+        },
+        EventTimeDomainDeclaration::Date32 => EventTimeDomain::Date32,
+        EventTimeDomainDeclaration::Date64 => EventTimeDomain::Date64,
+        EventTimeDomainDeclaration::Timestamp { unit, timezone } => EventTimeDomain::Timestamp {
+            unit: match unit {
+                TimeUnitDeclaration::Second => CanonicalArrowTimeUnit::Second,
+                TimeUnitDeclaration::Millisecond => CanonicalArrowTimeUnit::Millisecond,
+                TimeUnitDeclaration::Microsecond => CanonicalArrowTimeUnit::Microsecond,
+                TimeUnitDeclaration::Nanosecond => CanonicalArrowTimeUnit::Nanosecond,
+            },
+            timezone: timezone.clone().map(String::into_boxed_str),
+        },
+    }
 }
 
 fn compile_deduplication(

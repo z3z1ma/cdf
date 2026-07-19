@@ -1,6 +1,9 @@
 use std::{collections::BTreeSet, sync::Arc};
 
-use cdf_kernel::{CdfError, PartitionId, Result, SchemaHash, SourcePosition};
+use cdf_kernel::{
+    CdfError, ExecutionExtent, OperatorWatermarkBehavior, PartitionId, Result, SchemaHash,
+    SourcePosition, WatermarkAuthority, WatermarkPolicy,
+};
 use cdf_memory::{
     AccountedBatch, AccountedBytes, ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease,
     ReservationRequest, reserve,
@@ -65,6 +68,8 @@ pub struct GraphNodeDescriptor {
     pub maximum_concurrency: u16,
     pub spillable: bool,
     pub ordering: GraphOrdering,
+    pub execution_extent: ExecutionExtent,
+    pub watermark_behavior: OperatorWatermarkBehavior,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fusion_group: Option<String>,
     pub durable_output: bool,
@@ -113,6 +118,8 @@ impl GraphNodeDescriptor {
                 )));
             }
         }
+        self.execution_extent.validate_for_plan()?;
+        self.watermark_behavior.validate()?;
         Ok(())
     }
 }
@@ -288,6 +295,52 @@ impl CompiledOperatorGraph {
                     "compiled graph {label} concurrency {} differs from resolved destination concurrency {expected_concurrency}; rebuild the plan",
                     node.maximum_concurrency
                 )));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn validate_execution_extent(&self, extent: &ExecutionExtent) -> Result<()> {
+        self.validate()?;
+        extent.validate_for_plan()?;
+        if let Some(node) = self
+            .nodes
+            .iter()
+            .find(|node| &node.execution_extent != extent)
+        {
+            return Err(CdfError::contract(format!(
+                "operator `{}` execution extent differs from the compiled plan extent",
+                node.node_id
+            )));
+        }
+        let ExecutionExtent::Drain { policy, .. } = extent else {
+            return Ok(());
+        };
+        let WatermarkPolicy::Enabled { authority, .. } = &policy.watermark else {
+            return Ok(());
+        };
+        for node in &self.nodes {
+            match &node.watermark_behavior {
+                OperatorWatermarkBehavior::Preserve => {}
+                OperatorWatermarkBehavior::Transform { mapping_id }
+                    if matches!(
+                        authority,
+                        WatermarkAuthority::Derived {
+                            mapping_id: expected
+                        } if expected == mapping_id
+                    ) => {}
+                OperatorWatermarkBehavior::Transform { mapping_id } => {
+                    return Err(CdfError::contract(format!(
+                        "operator `{}` transforms watermarks with mapping `{mapping_id}` but the stream policy records a different authority mapping",
+                        node.node_id
+                    )));
+                }
+                OperatorWatermarkBehavior::Drop => {
+                    return Err(CdfError::contract(format!(
+                        "operator `{}` drops the declared watermark; retain the event-time authority, declare its monotone transform, or disable watermarks",
+                        node.node_id
+                    )));
+                }
             }
         }
         Ok(())
@@ -766,7 +819,11 @@ mod tests {
 
     use arrow_array::{Int64Array, RecordBatch};
     use arrow_schema::{DataType, Field, Schema};
-    use cdf_kernel::{PartitionId, SchemaHash, SourcePosition};
+    use cdf_kernel::{
+        DrainTermination, EpochClosureTrigger, PartitionId, PartitionWatermarkAggregation,
+        SafeFrontierPolicy, SchemaHash, SourcePosition, StreamEpochPolicy, WatermarkAuthority,
+        WatermarkPolicy,
+    };
     use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
     use futures_util::{FutureExt, pin_mut};
 
@@ -796,6 +853,8 @@ mod tests {
             maximum_concurrency: 1,
             spillable: false,
             ordering: GraphOrdering::Canonical,
+            execution_extent: ExecutionExtent::bounded(),
+            watermark_behavior: OperatorWatermarkBehavior::Preserve,
             fusion_group: None,
             durable_output,
         }
@@ -889,6 +948,57 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.message.contains("acyclic"));
+    }
+
+    #[test]
+    fn enabled_watermark_fails_at_the_exact_dropping_operator() {
+        let extent = ExecutionExtent::Drain {
+            version: cdf_kernel::EXECUTION_EXTENT_VERSION,
+            policy: StreamEpochPolicy {
+                version: cdf_kernel::STREAM_EPOCH_POLICY_VERSION,
+                checkpoint_cadence: EpochClosureTrigger::Rows { count: 100 },
+                package_rotation: EpochClosureTrigger::Rows { count: 100 },
+                watermark: WatermarkPolicy::Enabled {
+                    event_time_field: "event_time".into(),
+                    domain: cdf_kernel::EventTimeDomain::SignedInteger,
+                    authority: WatermarkAuthority::Source,
+                    partition_aggregation: PartitionWatermarkAggregation::MinimumAll,
+                },
+                late_data: cdf_kernel::LateDataAction::Quarantine,
+                safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+            },
+            termination: DrainTermination::Records { count: 1_000 },
+        };
+        let mut source = node("source", GraphNodeKind::Source, false);
+        source.execution_extent = extent.clone();
+        let mut transform = node("transform", GraphNodeKind::Transform, false);
+        transform.execution_extent = extent.clone();
+        transform.watermark_behavior = OperatorWatermarkBehavior::Drop;
+        let mut sink = node("sink", GraphNodeKind::DestinationBind, false);
+        sink.execution_extent = extent.clone();
+        let graph = CompiledOperatorGraph::new(
+            "graph-v1",
+            vec![source, transform, sink],
+            vec![
+                GraphEdgeDescriptor {
+                    edge_id: "source_to_transform".to_owned(),
+                    producer: "source".to_owned(),
+                    consumer: "transform".to_owned(),
+                    ordering: GraphOrdering::Canonical,
+                    transfer: GraphEdgeTransfer::Accounted,
+                },
+                GraphEdgeDescriptor {
+                    edge_id: "transform_to_sink".to_owned(),
+                    producer: "transform".to_owned(),
+                    consumer: "sink".to_owned(),
+                    ordering: GraphOrdering::Canonical,
+                    transfer: GraphEdgeTransfer::Accounted,
+                },
+            ],
+        )
+        .unwrap();
+        let error = graph.validate_execution_extent(&extent).unwrap_err();
+        assert!(error.message.contains("operator `transform` drops"));
     }
 
     #[test]

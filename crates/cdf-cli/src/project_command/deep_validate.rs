@@ -3,7 +3,6 @@ use std::{collections::BTreeMap, sync::Arc};
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_resource_validation_program};
 use cdf_declarative::CompiledResource;
 use cdf_engine::{EnginePlanInput, Planner};
-use cdf_kernel::ExecutionExtent;
 use cdf_kernel::{ResourceDescriptor, ScanRequest, SchemaSource};
 use cdf_project::{
     FileResourceSourceResolver, ProjectResourceOrigin, ResourceSchemaDiscovery, validate_project,
@@ -173,13 +172,20 @@ fn deep_validate_resource(
     }
     let validation_program = validation_program_check(&working_resource, &mut diagnostics);
     let normalization = normalization_check(&working_resource, &mut diagnostics);
-    let destination = destination_check(
-        destinations,
-        context,
-        &working_resource,
-        runtime_resource.as_ref(),
-        &mut diagnostics,
-    );
+    let stream_policy = stream_policy_check(&working_resource, &mut diagnostics);
+    let destination = if stream_policy.status == "ok" {
+        destination_check(
+            destinations,
+            context,
+            &working_resource,
+            runtime_resource.as_ref(),
+            &mut diagnostics,
+        )
+    } else {
+        DeepValidateDestinationReport::failed(
+            "destination planning skipped because stream policy compilation failed",
+        )
+    };
     let status = if diagnostics
         .iter()
         .any(|diagnostic| diagnostic.severity == "error")
@@ -197,15 +203,56 @@ fn deep_validate_resource(
         mapping_pattern: origin.mapping_pattern.clone(),
         mapping_status: origin.mapping_status.clone(),
         source_kind: resource_kind_name(resource).to_owned(),
+        execution_extent: execution_extent_name(working_resource.execution_extent()).to_owned(),
         schema_source: schema_source_name(&working_resource.descriptor().schema_source).to_owned(),
         field_count: working_resource.schema().fields().len(),
         partitions: partition_report,
         discovery,
         validation_program,
         identifier_normalization: normalization,
+        stream_policy,
         destination,
         diagnostics,
         status: status.to_owned(),
+    }
+}
+
+fn stream_policy_check(
+    resource: &CompiledResource,
+    diagnostics: &mut Vec<DeepValidateDiagnostic>,
+) -> DeepValidateCheckReport {
+    match cdf_runtime::CompiledStreamPolicy::compile(
+        resource.execution_extent(),
+        resource.source_plan(),
+    ) {
+        Ok(policy) => DeepValidateCheckReport {
+            status: "ok".to_owned(),
+            detail: format!(
+                "{} ({})",
+                execution_extent_name(resource.execution_extent()),
+                policy.semantic_hash
+            ),
+        },
+        Err(error) => {
+            diagnostics.push(diagnostic(
+                "error",
+                "stream_policy",
+                error.message,
+                "Declare a complete execution policy supported by this source before plan/run.",
+            ));
+            DeepValidateCheckReport {
+                status: "failed".to_owned(),
+                detail: "stream policy compilation failed".to_owned(),
+            }
+        }
+    }
+}
+
+fn execution_extent_name(extent: &cdf_kernel::ExecutionExtent) -> &'static str {
+    match extent {
+        cdf_kernel::ExecutionExtent::Bounded { .. } => "bounded",
+        cdf_kernel::ExecutionExtent::Drain { .. } => "drain",
+        cdf_kernel::ExecutionExtent::Resident { .. } => "resident",
     }
 }
 
@@ -519,9 +566,16 @@ fn destination_check(
                     EnginePlanInput {
                         request: deep_scan_request(compiled_resource.descriptor())?,
                         validation_program,
-                        execution_extent: ExecutionExtent::bounded(),
+                        execution_extent: compiled_resource.execution_extent().clone(),
                         package_id: format!("deep-validate-{}", resource.descriptor().resource_id),
                     },
+                )
+            })
+            .and_then(|plan| plan.bind_compiled_source(compiled_resource.source_plan()))
+            .and_then(|plan| {
+                plan.bind_operator_graph(
+                    compiled_resource.source_plan(),
+                    &resolved.destination.runtime_capabilities(),
                 )
             });
     let engine_plan = match engine_plan {
@@ -669,12 +723,14 @@ struct DeepValidateResourceReport {
     mapping_pattern: String,
     mapping_status: String,
     source_kind: String,
+    execution_extent: String,
     schema_source: String,
     field_count: usize,
     partitions: DeepValidatePartitionReport,
     discovery: DeepValidateDiscoveryReport,
     validation_program: DeepValidateCheckReport,
     identifier_normalization: DeepValidateCheckReport,
+    stream_policy: DeepValidateCheckReport,
     destination: DeepValidateDestinationReport,
     diagnostics: Vec<DeepValidateDiagnostic>,
     status: String,
@@ -781,6 +837,7 @@ fn document(report: &DeepValidateReport) -> RenderDocument {
             "resource",
             "status",
             "kind",
+            "execution",
             "schema",
             "partitions",
             "destination",
@@ -790,6 +847,7 @@ fn document(report: &DeepValidateReport) -> RenderDocument {
                 resource.resource_id.clone(),
                 resource.status.clone(),
                 resource.source_kind.clone(),
+                resource.execution_extent.clone(),
                 resource.schema_source.clone(),
                 resource.partitions.count.to_string(),
                 resource

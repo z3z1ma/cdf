@@ -1,4 +1,4 @@
-use cdf_kernel::{CdfError, Result};
+use cdf_kernel::{CdfError, ExecutionExtent, OperatorWatermarkBehavior, Result, WatermarkPolicy};
 use cdf_runtime::{
     CompiledOperatorGraph, CompiledSourcePlan, DestinationIngressMode,
     DestinationRuntimeCapabilities, DestinationWriterModel, GraphEdgeDescriptor, GraphEdgeTransfer,
@@ -20,11 +20,12 @@ pub fn compile_operator_graph(
 ) -> Result<CompiledOperatorGraph> {
     source.validate()?;
     destination.validate()?;
+    validate_watermark_projection(plan)?;
     let policy = plan.segmentation_policy()?;
 
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
-    nodes.push(source_node(source)?);
+    nodes.push(source_node(source, &plan.execution_extent)?);
     if !source.execution_capabilities.canonical_order {
         nodes.push(engine_node(
             "canonical_reorder",
@@ -34,6 +35,7 @@ pub fn compile_operator_graph(
             true,
             GraphOrdering::Canonical,
             None,
+            &plan.execution_extent,
         ));
     }
     nodes.push(engine_node(
@@ -44,6 +46,7 @@ pub fn compile_operator_graph(
         false,
         GraphOrdering::PartitionLocal,
         Some("fused_transform_v1"),
+        &plan.execution_extent,
     ));
     nodes.push(engine_node(
         "transform",
@@ -53,6 +56,7 @@ pub fn compile_operator_graph(
         false,
         GraphOrdering::PartitionLocal,
         Some("fused_transform_v1"),
+        &plan.execution_extent,
     ));
     if source.execution_capabilities.canonical_order {
         edge(
@@ -98,6 +102,7 @@ pub fn compile_operator_graph(
             true,
             GraphOrdering::Canonical,
             None,
+            &plan.execution_extent,
         ));
         edge(
             &mut edges,
@@ -117,6 +122,7 @@ pub fn compile_operator_graph(
         false,
         GraphOrdering::Canonical,
         None,
+        &plan.execution_extent,
     ));
     edge(
         &mut edges,
@@ -134,6 +140,7 @@ pub fn compile_operator_graph(
         true,
         GraphOrdering::Canonical,
         PACKAGE_WRITER_VERSION,
+        &plan.execution_extent,
     ));
     edge(
         &mut edges,
@@ -144,7 +151,12 @@ pub fn compile_operator_graph(
     );
 
     if destination.ingress_mode == DestinationIngressMode::StagedDurableSegments {
-        nodes.push(destination_node("staged_ingress", destination, policy)?);
+        nodes.push(destination_node(
+            "staged_ingress",
+            destination,
+            policy,
+            &plan.execution_extent,
+        )?);
         edge(
             &mut edges,
             "segment_persist",
@@ -165,6 +177,7 @@ pub fn compile_operator_graph(
         true,
         GraphOrdering::Canonical,
         PACKAGE_WRITER_VERSION,
+        &plan.execution_extent,
     ));
     edge(
         &mut edges,
@@ -178,7 +191,12 @@ pub fn compile_operator_graph(
         },
     );
 
-    nodes.push(destination_node("destination_bind", destination, policy)?);
+    nodes.push(destination_node(
+        "destination_bind",
+        destination,
+        policy,
+        &plan.execution_extent,
+    )?);
     edge(
         &mut edges,
         "package_finalize",
@@ -194,6 +212,7 @@ pub fn compile_operator_graph(
         false,
         GraphOrdering::Canonical,
         COMMIT_GATE_VERSION,
+        &plan.execution_extent,
     ));
     edge(
         &mut edges,
@@ -202,10 +221,37 @@ pub fn compile_operator_graph(
         GraphOrdering::Canonical,
         GraphEdgeTransfer::Accounted,
     );
-    CompiledOperatorGraph::new(OPERATOR_GRAPH_VERSION, nodes, edges)
+    let graph = CompiledOperatorGraph::new(OPERATOR_GRAPH_VERSION, nodes, edges)?;
+    graph.validate_execution_extent(&plan.execution_extent)?;
+    Ok(graph)
 }
 
-fn source_node(source: &CompiledSourcePlan) -> Result<GraphNodeDescriptor> {
+fn validate_watermark_projection(plan: &EnginePlan) -> Result<()> {
+    let ExecutionExtent::Drain { policy, .. } = &plan.execution_extent else {
+        return Ok(());
+    };
+    let WatermarkPolicy::Enabled {
+        event_time_field, ..
+    } = &policy.watermark
+    else {
+        return Ok(());
+    };
+    if plan.final_projection.as_ref().is_some_and(|projection| {
+        !projection
+            .iter()
+            .any(|field| field == event_time_field.as_ref())
+    }) {
+        return Err(CdfError::contract(format!(
+            "watermark event-time field `{event_time_field}` is removed by the final projection; retain it or disable watermarks"
+        )));
+    }
+    Ok(())
+}
+
+fn source_node(
+    source: &CompiledSourcePlan,
+    execution_extent: &ExecutionExtent,
+) -> Result<GraphNodeDescriptor> {
     let capabilities = &source.execution_capabilities;
     let (executor, blocking_lane) = match capabilities.executor_class {
         SourceExecutorClass::Io => (GraphExecutorClass::Io, None),
@@ -241,6 +287,13 @@ fn source_node(source: &CompiledSourcePlan) -> Result<GraphNodeDescriptor> {
         } else {
             GraphOrdering::Unordered
         },
+        execution_extent: execution_extent.clone(),
+        watermark_behavior: source
+            .stream_capabilities
+            .as_ref()
+            .map_or(OperatorWatermarkBehavior::Drop, |capabilities| {
+                capabilities.watermark_behavior.clone()
+            }),
         fusion_group: None,
         durable_output: false,
     })
@@ -254,6 +307,7 @@ fn engine_node(
     spillable: bool,
     ordering: GraphOrdering,
     fusion_group: Option<&str>,
+    execution_extent: &ExecutionExtent,
 ) -> GraphNodeDescriptor {
     GraphNodeDescriptor {
         node_id: id.to_owned(),
@@ -266,6 +320,8 @@ fn engine_node(
         maximum_concurrency: u16::MAX,
         spillable,
         ordering,
+        execution_extent: execution_extent.clone(),
+        watermark_behavior: OperatorWatermarkBehavior::Preserve,
         fusion_group: fusion_group.map(str::to_owned),
         durable_output: false,
     }
@@ -279,6 +335,7 @@ fn io_node(
     durable_output: bool,
     ordering: GraphOrdering,
     version: &str,
+    execution_extent: &ExecutionExtent,
 ) -> GraphNodeDescriptor {
     GraphNodeDescriptor {
         node_id: id.to_owned(),
@@ -291,6 +348,8 @@ fn io_node(
         maximum_concurrency: u16::MAX,
         spillable: false,
         ordering,
+        execution_extent: execution_extent.clone(),
+        watermark_behavior: OperatorWatermarkBehavior::Preserve,
         fusion_group: None,
         durable_output,
     }
@@ -300,6 +359,7 @@ fn destination_node(
     id: &str,
     destination: &DestinationRuntimeCapabilities,
     policy: &CanonicalSegmentationPolicy,
+    execution_extent: &ExecutionExtent,
 ) -> Result<GraphNodeDescriptor> {
     let declared_lane = if id == "staged_ingress" {
         destination.staged_ingress_lane.as_deref()
@@ -343,6 +403,8 @@ fn destination_node(
         maximum_concurrency,
         spillable: false,
         ordering: GraphOrdering::Canonical,
+        execution_extent: execution_extent.clone(),
+        watermark_behavior: OperatorWatermarkBehavior::Preserve,
         fusion_group: None,
         durable_output: false,
     })

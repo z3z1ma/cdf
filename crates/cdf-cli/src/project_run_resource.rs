@@ -13,16 +13,19 @@ pub(crate) struct PreparedRuntimeResourceForCli {
 pub(crate) struct CliProjectRunSource {
     resource: Arc<dyn QueryableResource>,
     source_plan: cdf_runtime::CompiledSourcePlan,
+    execution_extent: cdf_kernel::ExecutionExtent,
 }
 
 impl CliProjectRunSource {
     fn from_shared(
         resource: Arc<dyn QueryableResource>,
         source_plan: cdf_runtime::CompiledSourcePlan,
+        execution_extent: cdf_kernel::ExecutionExtent,
     ) -> Self {
         Self {
             resource,
             source_plan,
+            execution_extent,
         }
     }
 
@@ -36,6 +39,10 @@ impl CliProjectRunSource {
 
     pub(crate) fn source_plan(&self) -> &cdf_runtime::CompiledSourcePlan {
         &self.source_plan
+    }
+
+    pub(crate) fn execution_extent(&self) -> &cdf_kernel::ExecutionExtent {
+        &self.execution_extent
     }
 }
 
@@ -89,11 +96,12 @@ fn compile_project_source_reference(
             "source reference resource ids must use `<source>.<resource>`",
         ))
     })?;
-    Ok(Some(CompiledResource::from_compiled_source(
+    Ok(Some(CompiledResource::from_compiled_source_with_execution(
         source_name,
         resource_name,
         Some(context.root.clone()),
         source_plan,
+        cdf_declarative::compile_execution_extent(mapping.execution.as_ref())?,
     )?))
 }
 
@@ -182,6 +190,7 @@ pub(crate) fn build_project_run_resource(
     Ok(CliProjectRunSource::from_shared(
         registry.resolve(&source_plan, &resolution)?,
         source_plan,
+        resource.execution_extent().clone(),
     ))
 }
 
