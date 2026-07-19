@@ -80,11 +80,6 @@ impl WorkerArtifactReference {
         ContentStoreNamespace::new(self.store_namespace.as_str())?;
         ContentObjectKey::new(self.object_key.as_str())?;
         validate_object_key(self.object_key.as_str())?;
-        if self.byte_count == 0 {
-            return Err(CdfError::contract(
-                "portable worker artifact references require a nonzero byte count",
-            ));
-        }
         validate_sha256("portable worker artifact", &self.content_sha256)?;
         if let Some(generation) = &self.provider_generation {
             ContentProviderGeneration::new(generation.as_str())?;
@@ -156,6 +151,7 @@ pub struct PortablePartitionBinding {
     pub epoch_ordinal: Option<u64>,
     pub partition_plan: WorkerArtifactReference,
     pub source_identity_hash: String,
+    pub unit_authority_hash: String,
     pub segment_authority_hash: String,
 }
 
@@ -169,6 +165,7 @@ impl PortablePartitionBinding {
             ));
         }
         validate_sha256("partition source identity", &self.source_identity_hash)?;
+        validate_sha256("partition unit authority", &self.unit_authority_hash)?;
         validate_sha256("partition segment authority", &self.segment_authority_hash)
     }
 
@@ -279,6 +276,24 @@ pub struct WorkerResourceBudget {
     pub cpu_slots: u16,
     pub io_slots: u16,
     pub control: WorkerControlBudget,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerAttemptPolicy {
+    pub maximum_attempts: u16,
+    pub maximum_attempt_duration_ms: u64,
+}
+
+impl WorkerAttemptPolicy {
+    pub fn validate(&self) -> Result<()> {
+        if self.maximum_attempts == 0 || self.maximum_attempt_duration_ms == 0 {
+            return Err(CdfError::contract(
+                "portable worker attempt policy requires nonzero attempts and duration",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl WorkerResourceBudget {
@@ -445,6 +460,7 @@ pub struct PortablePartitionTask {
     pub secret_references: Vec<SecretReference>,
     pub input_artifacts: Vec<WorkerArtifactReference>,
     pub resources: WorkerResourceBudget,
+    pub attempt_policy: WorkerAttemptPolicy,
     pub capabilities: WorkerCapabilityRequirements,
     pub output_policy: WorkerOutputPolicy,
     pub task_sha256: String,
@@ -465,6 +481,7 @@ struct UncheckedPortablePartitionTask {
     secret_references: Vec<SecretReference>,
     input_artifacts: Vec<WorkerArtifactReference>,
     resources: WorkerResourceBudget,
+    attempt_policy: WorkerAttemptPolicy,
     capabilities: WorkerCapabilityRequirements,
     output_policy: WorkerOutputPolicy,
     task_sha256: String,
@@ -487,6 +504,7 @@ impl TryFrom<UncheckedPortablePartitionTask> for PortablePartitionTask {
             secret_references: value.secret_references,
             input_artifacts: value.input_artifacts,
             resources: value.resources,
+            attempt_policy: value.attempt_policy,
             capabilities: value.capabilities,
             output_policy: value.output_policy,
             task_sha256: value.task_sha256,
@@ -496,38 +514,42 @@ impl TryFrom<UncheckedPortablePartitionTask> for PortablePartitionTask {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct PortablePartitionTaskInput {
+    pub compatibility: WorkerCompatibility,
+    pub pipeline_id: PipelineId,
+    pub resource_id: ResourceId,
+    pub plan_id: PlanId,
+    pub source: PortableSourceBinding,
+    pub partition: PortablePartitionBinding,
+    pub execution: PortableExecutionBinding,
+    pub input_checkpoint: Option<WorkerInputCheckpointBinding>,
+    pub secret_references: Vec<SecretReference>,
+    pub input_artifacts: Vec<WorkerArtifactReference>,
+    pub resources: WorkerResourceBudget,
+    pub attempt_policy: WorkerAttemptPolicy,
+    pub capabilities: WorkerCapabilityRequirements,
+    pub output_policy: WorkerOutputPolicy,
+}
+
 impl PortablePartitionTask {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        compatibility: WorkerCompatibility,
-        pipeline_id: PipelineId,
-        resource_id: ResourceId,
-        plan_id: PlanId,
-        source: PortableSourceBinding,
-        partition: PortablePartitionBinding,
-        execution: PortableExecutionBinding,
-        input_checkpoint: Option<WorkerInputCheckpointBinding>,
-        secret_references: Vec<SecretReference>,
-        input_artifacts: Vec<WorkerArtifactReference>,
-        resources: WorkerResourceBudget,
-        capabilities: WorkerCapabilityRequirements,
-        output_policy: WorkerOutputPolicy,
-    ) -> Result<Self> {
+    pub fn new(input: PortablePartitionTaskInput) -> Result<Self> {
         let mut task = Self {
             version: PORTABLE_PARTITION_TASK_VERSION,
-            compatibility,
-            pipeline_id,
-            resource_id,
-            plan_id,
-            source,
-            partition,
-            execution,
-            input_checkpoint,
-            secret_references,
-            input_artifacts,
-            resources,
-            capabilities,
-            output_policy,
+            compatibility: input.compatibility,
+            pipeline_id: input.pipeline_id,
+            resource_id: input.resource_id,
+            plan_id: input.plan_id,
+            source: input.source,
+            partition: input.partition,
+            execution: input.execution,
+            input_checkpoint: input.input_checkpoint,
+            secret_references: input.secret_references,
+            input_artifacts: input.input_artifacts,
+            resources: input.resources,
+            attempt_policy: input.attempt_policy,
+            capabilities: input.capabilities,
+            output_policy: input.output_policy,
             task_sha256: String::new(),
         };
         task.task_sha256 = task.compute_hash()?;
@@ -553,6 +575,7 @@ impl PortablePartitionTask {
             checkpoint.validate()?;
         }
         self.resources.validate()?;
+        self.attempt_policy.validate()?;
         self.capabilities.validate()?;
         self.output_policy.validate()?;
         validate_sorted_unique_secret_references(&self.secret_references)?;
@@ -632,6 +655,7 @@ impl PortablePartitionTask {
             &self.secret_references,
             &self.input_artifacts,
             &self.resources,
+            &self.attempt_policy,
             &self.capabilities,
             &self.output_policy,
         ))
@@ -696,6 +720,16 @@ impl PartitionAttemptEnvelope {
         if self.expires_at_ms <= self.issued_at_ms {
             return Err(CdfError::contract(
                 "partition attempt expiry must follow issuance",
+            ));
+        }
+        if self.issued_at_ms < 0
+            || self.retry_ordinal >= task.attempt_policy.maximum_attempts
+            || u64::try_from(self.expires_at_ms.saturating_sub(self.issued_at_ms))
+                .unwrap_or(u64::MAX)
+                > task.attempt_policy.maximum_attempt_duration_ms
+        {
+            return Err(CdfError::contract(
+                "partition attempt exceeds the task retry or duration authority",
             ));
         }
         validate_token("partition attempt trace id", &self.trace_id)?;
@@ -1345,12 +1379,12 @@ mod tests {
     }
 
     fn task() -> PortablePartitionTask {
-        PortablePartitionTask::new(
-            compatibility(),
-            PipelineId::new("pipeline-fixture").unwrap(),
-            ResourceId::new("mock.events").unwrap(),
-            PlanId::new("plan-fixture").unwrap(),
-            PortableSourceBinding {
+        PortablePartitionTask::new(PortablePartitionTaskInput {
+            compatibility: compatibility(),
+            pipeline_id: PipelineId::new("pipeline-fixture").unwrap(),
+            resource_id: ResourceId::new("mock.events").unwrap(),
+            plan_id: PlanId::new("plan-fixture").unwrap(),
+            source: PortableSourceBinding {
                 driver_id: SourceDriverId::new("mock_source").unwrap(),
                 driver_version: "1.0.0".to_owned(),
                 option_schema_hash: hash(1),
@@ -1365,7 +1399,7 @@ mod tests {
                 source_semantics_hash: hash(4),
                 execution_capabilities_hash: hash(5),
             },
-            PortablePartitionBinding {
+            partition: PortablePartitionBinding {
                 partition_id: PartitionId::new("partition-00000003").unwrap(),
                 scope: ScopeKey::Partition {
                     partition_id: PartitionId::new("partition-00000003").unwrap(),
@@ -1379,9 +1413,10 @@ mod tests {
                     6,
                 ),
                 source_identity_hash: hash(7),
+                unit_authority_hash: hash(22),
                 segment_authority_hash: hash(8),
             },
-            PortableExecutionBinding {
+            execution: PortableExecutionBinding {
                 output_schema_hash: SchemaHash::new(hash(9)).unwrap(),
                 validation_program_hash: hash(10),
                 normalization_policy_hash: hash(11),
@@ -1390,21 +1425,21 @@ mod tests {
                 segmentation_policy_hash: hash(14),
                 execution_extent_hash: hash(15),
             },
-            Some(WorkerInputCheckpointBinding {
+            input_checkpoint: Some(WorkerInputCheckpointBinding {
                 checkpoint_id: CheckpointId::new("checkpoint-8").unwrap(),
                 scope: ScopeKey::Resource,
                 state_version: 1,
                 position: position(100),
                 content_sha256: hash(16),
             }),
-            vec![SecretReference::new("secret://env/MOCK_TOKEN").unwrap()],
-            vec![artifact(
+            secret_references: vec![SecretReference::new("secret://env/MOCK_TOKEN").unwrap()],
+            input_artifacts: vec![artifact(
                 WorkerArtifactKind::InputPayload,
                 "inputs/events.bin",
                 4096,
                 17,
             )],
-            WorkerResourceBudget {
+            resources: WorkerResourceBudget {
                 memory_bytes: 256 * 1024 * 1024,
                 disk_bytes: 2 * 1024 * 1024 * 1024,
                 cpu_slots: 2,
@@ -1418,14 +1453,18 @@ mod tests {
                     maximum_secret_references: 4,
                 },
             },
-            WorkerCapabilityRequirements {
+            attempt_policy: WorkerAttemptPolicy {
+                maximum_attempts: 3,
+                maximum_attempt_duration_ms: 30_000,
+            },
+            capabilities: WorkerCapabilityRequirements {
                 required_blocking_lanes: Vec::new(),
                 services: vec![
                     "artifact-reader-v1".to_owned(),
                     "source-registry-v1".to_owned(),
                 ],
             },
-            WorkerOutputPolicy {
+            output_policy: WorkerOutputPolicy {
                 allowed_kinds: vec![
                     WorkerArtifactKind::CanonicalSegment,
                     WorkerArtifactKind::Quarantine,
@@ -1435,7 +1474,7 @@ mod tests {
                 ],
                 maximum_artifact_bytes: 1024 * 1024 * 1024,
             },
-        )
+        })
         .unwrap()
     }
 
@@ -1596,6 +1635,7 @@ mod tests {
                 provider_generation: None,
             },
             source_identity_hash: partition_source_identity_binding(&partition).unwrap(),
+            unit_authority_hash: hash(22),
             segment_authority_hash: hash(20),
         };
         binding.validate_reconstructed(&partition).unwrap();
@@ -1636,6 +1676,7 @@ mod tests {
                 provider_generation: None,
             },
             source_identity_hash: partition_source_identity_binding(&local_file).unwrap(),
+            unit_authority_hash: hash(22),
             segment_authority_hash: hash(21),
         };
         assert!(
@@ -1724,6 +1765,15 @@ mod tests {
 
         let task = task();
         let attempt = attempt(&task);
+        let mut excessive_retry = attempt.clone();
+        excessive_retry.retry_ordinal = task.attempt_policy.maximum_attempts;
+        assert!(
+            excessive_retry
+                .validate_for_task(&task)
+                .unwrap_err()
+                .message
+                .contains("retry or duration")
+        );
         let mut result = result(&task, &attempt);
         result.artifacts[0].artifact.object_key =
             ContentObjectKey::new("another-attempt/data.arrow").unwrap();
@@ -1735,5 +1785,16 @@ mod tests {
                 .message
                 .contains("unauthorized")
         );
+
+        let empty_input = WorkerArtifactReference {
+            byte_count: 0,
+            ..artifact(
+                WorkerArtifactKind::InputPayload,
+                "inputs/empty.ndjson",
+                1,
+                23,
+            )
+        };
+        empty_input.validate().unwrap();
     }
 }

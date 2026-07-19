@@ -47,6 +47,7 @@
       "provider_generation": "generation-7"
     },
     "source_identity_hash": "sha256:0707070707070707070707070707070707070707070707070707070707070707",
+    "unit_authority_hash": "sha256:1616161616161616161616161616161616161616161616161616161616161616",
     "segment_authority_hash": "sha256:0808080808080808080808080808080808080808080808080808080808080808"
   },
   "execution": {
@@ -102,6 +103,10 @@
       "maximum_secret_references": 4
     }
   },
+  "attempt_policy": {
+    "maximum_attempts": 3,
+    "maximum_attempt_duration_ms": 30000
+  },
   "capabilities": {
     "required_blocking_lanes": [],
     "services": [
@@ -119,5 +124,5 @@
     ],
     "maximum_artifact_bytes": 1073741824
   },
-  "task_sha256": "sha256:7397f8a5b388c4610eeb614395d605c5b16149d317ad8e0012215d1e3f9c074c"
+  "task_sha256": "sha256:cf904d8fcb9e68f68687e58e810aefb76d064362940614724b155747dc892f96"
 }
