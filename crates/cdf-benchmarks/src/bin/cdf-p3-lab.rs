@@ -4,11 +4,12 @@ use cdf_benchmarks::{
     BenchmarkReport, ChildCommand, HostCapabilityProvider, HostProbeConfig, InteropFixtureWorkload,
     MacroRunSpec, PreoptimizationBaselineConfig, PreparedFileDestinationWorkload,
     PreparedFilePackageWorkload, ProfileTool, ReferenceWorkload, StartupControlWorkload,
-    SystemHostProvider, WorkerMeasurement, canonical_json_bytes, compare_reports, comparison_fails,
-    host_class, install_baseline, plan_profile, read_package_batches, run_cdf_command_workload,
-    run_interop_fixture_workload, run_preoptimization_baseline, run_prepared_file_to_destination,
-    run_prepared_file_to_package, run_reference, run_startup_control_workload,
-    summarize_package_shape,
+    SystemHostProvider, ValidationEnvelopeConfig, WorkerMeasurement, canonical_json_bytes,
+    compare_reports, comparison_fails, host_class, install_baseline, plan_profile,
+    read_package_batches, run_cdf_command_workload, run_interop_fixture_workload,
+    run_preoptimization_baseline, run_prepared_file_to_destination, run_prepared_file_to_package,
+    run_reference, run_startup_control_workload, run_validation_envelope, summarize_package_shape,
+    validation_envelope_passes,
 };
 
 fn main() {
@@ -99,6 +100,20 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
         [command] if command == "host-class" => {
             write_stdout(host_class(&provider().fingerprint()?)?.as_bytes())
+        }
+        [command, samples, target_rows] if command == "validation-envelope" => {
+            let report = run_validation_envelope(
+                provider().fingerprint()?,
+                ValidationEnvelopeConfig {
+                    samples: samples.parse()?,
+                    target_rows_per_sample: target_rows.parse()?,
+                },
+            )?;
+            write_stdout(&canonical_json_bytes(&report)?)?;
+            if !validation_envelope_passes(&report) {
+                std::process::exit(3);
+            }
+            Ok(())
         }
         [command, package_dir] if command == "package-shape" => {
             write_stdout(&canonical_json_bytes(&summarize_package_shape(package_dir)?)?)
@@ -194,7 +209,7 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             write_stdout(&canonical_json_bytes(&run)?)
         }
         _ => Err(format!(
-            "usage: {} reference-worker REQUEST.json | cdf-command-worker REQUEST.json | host | package-shape PACKAGE | package-read PACKAGE | run-cell REQUEST.json | baseline-run OUTPUT_ROOT REVISION DEPENDENCIES TOOLCHAIN SAMPLES | compare BASELINE.json CURRENT.json",
+            "usage: {} reference-worker REQUEST.json | cdf-command-worker REQUEST.json | host | validation-envelope SAMPLES TARGET_ROWS | package-shape PACKAGE | package-read PACKAGE | run-cell REQUEST.json | baseline-run OUTPUT_ROOT REVISION DEPENDENCIES TOOLCHAIN SAMPLES | compare BASELINE.json CURRENT.json",
             executable_name()
         )
         .into()),

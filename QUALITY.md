@@ -328,7 +328,17 @@ Run timing only in the dedicated scheduled/manual performance tier, never as a p
 ```bash
 CDF_BENCH_SUITE=smoke cargo bench -p cdf-benchmarks --bench baseline --locked
 CDF_BENCH_SUITE=full cargo bench -p cdf-benchmarks --bench baseline --locked
+cargo run --release -p cdf-benchmarks --bin cdf-p3-lab --locked -- \
+  validation-envelope 5 8388608 > target/cdf-benchmarks/validation-envelope.json
+CDF_A5_FUSION_BENCH_ITERATIONS=200 cargo test --release -p cdf-engine \
+  fused_transform_hot_path_benchmark --lib --locked -- --ignored --nocapture
 ```
+
+The validation-envelope command is a scheduled/release gate, not a fast check. It uses a
+single-threaded median-of-N matrix at 8k/16k/64k rows, fails when any ratified 64k native
+kernel cell is clearly below 1 GB/s/core, and records MAD/inconclusive outcomes rather than
+turning noisy timings into false precision. Boundary and selected-evidence cells remain visible
+as trend-only costs and cannot inflate the kernel byte-throughput claim.
 
 P3 macro reports use `cdf-p3-lab run-cell`; cold-cache control is explicit opt-in. Baseline replacement uses `baseline-install` with a `.10x/evidence/` record, and comparisons use `compare` without rewriting baseline history.
 

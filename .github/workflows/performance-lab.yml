@@ -51,6 +51,21 @@ jobs:
       - name: Legacy smoke or full trend compatibility
         run: cargo bench -p cdf-benchmarks --bench baseline --locked
 
+      - name: Vector validation envelope
+        run: |
+          mkdir -p target/cdf-benchmarks
+          cargo run --release -p cdf-benchmarks --bin cdf-p3-lab --locked -- \
+            validation-envelope 5 8388608 \
+            > target/cdf-benchmarks/validation-envelope.json
+
+      - name: Fused validation and normalization trend
+        env:
+          CDF_A5_FUSION_BENCH_ITERATIONS: "200"
+        run: |
+          cargo test --release -p cdf-engine fused_transform_hot_path_benchmark \
+            --lib --locked -- --ignored --nocapture \
+            2>&1 | tee target/cdf-benchmarks/fused-validation-normalization.txt
+
       - name: Upload lab artifacts
         if: always()
         uses: actions/upload-artifact@v4

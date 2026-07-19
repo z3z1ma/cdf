@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-11
 Updated: 2026-07-15
 Parent: .10x/tickets/2026-07-11-p3-ws-v-vectorized-validation.md
@@ -28,6 +28,10 @@ No target weakening without a superseding decision.
 ## Blockers
 
 None. V2 and C4 are complete.
+
+## Journal
+
+- 2026-07-19: Activated after F1 closure because V3 is dependency-ready and converts an already-proven production hot path into a permanent performance law without changing runtime semantics. The existing ignored `cdf-contract` tests prove a 64k mixed kernel and scalar ratio but do not represent the ratified batch/type/density matrix, emit machine-readable host evidence, or enforce a variance-aware threshold. The implementation slice will live in `cdf-benchmarks`, keep timing out of fast checks, count only bytes each rule actually inspects, and retain boundary/evidence-materialization cells as visible non-throughput claims rather than inflating the ≥1 GB/s/core kernel gate.
 
 ## References
 
