@@ -522,6 +522,18 @@ fn python_exception_details_are_redacted_at_the_foreign_boundary() {
         assert!(error.message.contains("RuntimeError"));
         assert!(!error.message.contains("secret://"));
         assert!(!error.message.contains("super-secret-value"));
+
+        let module = PyModule::from_code(
+            py,
+            c"SecretError = type('secret://vault/token_super_secret_value', (Exception,), {})\ndef rows():\n    raise SecretError('redacted')\n",
+            c"redacted_error_type.py",
+            c"redacted_error_type",
+        )
+        .unwrap();
+        let error = crate::internal::py_error(module.getattr("rows").unwrap().call0().unwrap_err());
+        assert!(error.message.contains("Exception"));
+        assert!(!error.message.contains("secret://"));
+        assert!(!error.message.contains("super_secret_value"));
     });
 }
 
@@ -1656,7 +1668,6 @@ fn dlt_current_state_view_reads_committed_checkpoint_heads() {
         write_disposition: None,
         schema_contract: None,
         selected: true,
-        parallelized: false,
     };
     let resource_position = fixture_state_delta_position(
         "updated_at",

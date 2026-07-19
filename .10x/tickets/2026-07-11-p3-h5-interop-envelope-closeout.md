@@ -32,6 +32,7 @@ Depends on H2–H4 and F3.
 ## Journal
 
 - 2026-07-19: H2's adversarial review assigned two program-level conformance cells here rather than hiding them at the Python adapter: preserve `ForeignBatchOutcome` transfer/copy telemetry through ordinary runtime batches into explain/run evidence, and prove Arrow C release callbacks execute exactly once across producer deletion, cancellation, downstream-thread destruction, and error paths. H2 supplies real >2 MiB PyArrow alias/lifetime/cross-thread evidence but does not claim these remaining shared telemetry/release cells.
+- 2026-07-19: H2's closure review assigned the in-process native-memory envelope here. Calibrate PyArrow/CPython native scratch separately from zero-copy producer payload, record isolated process RSS for admitted and hostile oversized batches, populate descriptor/headroom evidence from the measurement, and state plainly that only H3's isolated process boundary can enforce a total memory ceiling over arbitrary producer code before it yields. H2 bounds and leases every CDF-owned/imported payload/conversion window but does not claim control over pre-yield Python allocation.
 
 ## References
 

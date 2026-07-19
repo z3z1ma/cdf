@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
-from typing import Literal, ParamSpec, TypeVar, overload
+from typing import Literal, TypeVar, overload
 
 from .resource import JsonValue, ResourceYield
 
-P = ParamSpec("P")
 R = TypeVar("R", bound=Callable[..., Iterable[ResourceYield]])
 S = TypeVar("S", bound=Callable[..., object])
 
@@ -94,7 +93,6 @@ def resource(
     write_disposition: DltWriteDisposition | Mapping[str, object] | None = None,
     schema_contract: str | Mapping[str, str] | None = None,
     selected: bool = True,
-    parallelized: bool = False,
     incremental: Incremental | None = None,
 ) -> Callable[[R], R]: ...
 
@@ -110,7 +108,6 @@ def resource(
     write_disposition: DltWriteDisposition | Mapping[str, object] | None = None,
     schema_contract: str | Mapping[str, str] | None = None,
     selected: bool = True,
-    parallelized: bool = False,
     incremental: Incremental | None = None,
 ) -> R | Callable[[R], R]:
     def decorate(inner: R) -> R:
@@ -123,7 +120,6 @@ def resource(
             "write_disposition": write_disposition,
             "schema_contract": schema_contract,
             "selected": selected,
-            "parallelized": parallelized,
         }
         if incremental is not None:
             metadata["incremental"] = incremental.to_metadata()
@@ -144,7 +140,6 @@ def source(
     *,
     name: str | None = None,
     schema_contract: str | Mapping[str, str] | None = None,
-    parallelized: bool = False,
 ) -> Callable[[S], S]: ...
 
 
@@ -154,7 +149,6 @@ def source(
     *,
     name: str | None = None,
     schema_contract: str | Mapping[str, str] | None = None,
-    parallelized: bool = False,
 ) -> S | Callable[[S], S]:
     def decorate(inner: S) -> S:
         source_name = name if name is not None else inner.__name__
@@ -162,7 +156,6 @@ def source(
             "kind": "source",
             "name": source_name,
             "schema_contract": schema_contract,
-            "parallelized": parallelized,
         }
         setattr(inner, "__cdf_dlt_metadata__", metadata)
         setattr(inner, "__cdf_dlt_source_name__", source_name)

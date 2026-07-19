@@ -465,7 +465,8 @@ pub struct ForeignStreamSummary {
 pub fn batch_stream_from_foreign_events(events: ForeignEventStream) -> BatchStream {
     Box::pin(ForeignBatchStream {
         events,
-        terminal_seen: false,
+        terminal: None,
+        completed: false,
     })
 }
 
@@ -476,6 +477,11 @@ pub async fn summarize_foreign_events(
 
     let mut summary = ForeignStreamSummary::default();
     while let Some(event) = events.next().await {
+        if summary.terminal.is_some() {
+            return Err(CdfError::data(
+                "foreign stream emitted an event after its terminal status",
+            ));
+        }
         match event? {
             ForeignStreamEvent::Outcome(_) => summary.outcome_count += 1,
             ForeignStreamEvent::Control(_) => summary.control_count += 1,
@@ -498,7 +504,8 @@ pub async fn summarize_foreign_events(
 
 struct ForeignBatchStream {
     events: ForeignEventStream,
-    terminal_seen: bool,
+    terminal: Option<ForeignTerminalStatus>,
+    completed: bool,
 }
 
 impl Stream for ForeignBatchStream {
@@ -508,20 +515,48 @@ impl Stream for ForeignBatchStream {
         mut self: Pin<&mut Self>,
         context: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
+        if self.completed {
+            return std::task::Poll::Ready(None);
+        }
         loop {
             match self.events.as_mut().poll_next(context) {
                 std::task::Poll::Ready(Some(Ok(ForeignStreamEvent::Outcome(outcome)))) => {
+                    if self.terminal.is_some() {
+                        self.completed = true;
+                        return std::task::Poll::Ready(Some(Err(CdfError::data(
+                            "foreign stream emitted an outcome after its terminal status",
+                        ))));
+                    }
                     return std::task::Poll::Ready(Some(Ok(outcome.batch)));
                 }
-                std::task::Poll::Ready(Some(Ok(ForeignStreamEvent::Control(_)))) => continue,
+                std::task::Poll::Ready(Some(Ok(ForeignStreamEvent::Control(_)))) => {
+                    if self.terminal.is_some() {
+                        self.completed = true;
+                        return std::task::Poll::Ready(Some(Err(CdfError::data(
+                            "foreign stream emitted a control event after its terminal status",
+                        ))));
+                    }
+                }
                 std::task::Poll::Ready(Some(Ok(ForeignStreamEvent::Terminal(status)))) => {
-                    if self.terminal_seen {
+                    if self.terminal.replace(status).is_some() {
+                        self.completed = true;
                         return std::task::Poll::Ready(Some(Err(CdfError::data(
                             "foreign stream emitted more than one terminal status",
                         ))));
                     }
-                    self.terminal_seen = true;
-                    match status {
+                }
+                std::task::Poll::Ready(Some(Err(error))) => {
+                    self.completed = true;
+                    return std::task::Poll::Ready(Some(Err(error)));
+                }
+                std::task::Poll::Ready(None) => {
+                    self.completed = true;
+                    let Some(terminal) = self.terminal.take() else {
+                        return std::task::Poll::Ready(Some(Err(CdfError::data(
+                            "foreign stream ended without a terminal status",
+                        ))));
+                    };
+                    match terminal {
                         ForeignTerminalStatus::Succeeded { .. } => {
                             return std::task::Poll::Ready(None);
                         }
@@ -539,17 +574,6 @@ impl Stream for ForeignBatchStream {
                             ))));
                         }
                     }
-                }
-                std::task::Poll::Ready(Some(Err(error))) => {
-                    return std::task::Poll::Ready(Some(Err(error)));
-                }
-                std::task::Poll::Ready(None) => {
-                    if self.terminal_seen {
-                        return std::task::Poll::Ready(None);
-                    }
-                    return std::task::Poll::Ready(Some(Err(CdfError::data(
-                        "foreign stream ended without a terminal status",
-                    ))));
                 }
                 std::task::Poll::Pending => return std::task::Poll::Pending,
             }
@@ -732,6 +756,57 @@ mod tests {
             )),
         ])) as ForeignEventStream;
         assert!(block_on(summarize_foreign_events(duplicate_terminal)).is_err());
+
+        let post_terminal_outcome = Box::pin(stream::iter(vec![
+            Ok(ForeignStreamEvent::Terminal(
+                ForeignTerminalStatus::Succeeded {
+                    final_position: None,
+                },
+            )),
+            Ok(ForeignStreamEvent::Outcome(mock_outcome(
+                2,
+                ForeignTransferMode::ArrowCData,
+            ))),
+        ])) as ForeignEventStream;
+        assert!(block_on(summarize_foreign_events(post_terminal_outcome)).is_err());
+    }
+
+    #[test]
+    fn production_batch_projection_rejects_every_post_terminal_event() {
+        let post_terminal_outcome = Box::pin(stream::iter(vec![
+            Ok(ForeignStreamEvent::Terminal(
+                ForeignTerminalStatus::Succeeded {
+                    final_position: None,
+                },
+            )),
+            Ok(ForeignStreamEvent::Outcome(mock_outcome(
+                2,
+                ForeignTransferMode::ArrowCData,
+            ))),
+        ])) as ForeignEventStream;
+        assert!(
+            block_on(
+                batch_stream_from_foreign_events(post_terminal_outcome).try_collect::<Vec<_>>()
+            )
+            .is_err()
+        );
+
+        let duplicate_terminal = Box::pin(stream::iter(vec![
+            Ok(ForeignStreamEvent::Terminal(
+                ForeignTerminalStatus::Succeeded {
+                    final_position: None,
+                },
+            )),
+            Ok(ForeignStreamEvent::Terminal(
+                ForeignTerminalStatus::Succeeded {
+                    final_position: None,
+                },
+            )),
+        ])) as ForeignEventStream;
+        assert!(
+            block_on(batch_stream_from_foreign_events(duplicate_terminal).try_collect::<Vec<_>>())
+                .is_err()
+        );
     }
 
     #[test]

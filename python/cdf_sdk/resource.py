@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from typing import ParamSpec, Protocol, TypeVar, overload, runtime_checkable
+from typing import Protocol, TypeVar, overload, runtime_checkable
 
 JsonScalar = str | int | float | bool | None
 JsonValue = JsonScalar | Mapping[str, "JsonValue"] | Sequence["JsonValue"]
@@ -24,7 +24,6 @@ class ArrowStreamExport(Protocol):
 
 ResourceYield = Row | ArrowArrayExport | ArrowStreamExport
 
-P = ParamSpec("P")
 R = TypeVar("R", bound=Callable[..., Iterable[ResourceYield]])
 
 
@@ -39,7 +38,6 @@ def resource(
     primary_key: Sequence[str] = (),
     merge_key: Sequence[str] = (),
     cursor: str | None = None,
-    parallel: bool = False,
     bounded: bool = True,
     schema: Mapping[str, str | tuple[str, bool]] | None = None,
     write_disposition: str = "append",
@@ -54,7 +52,6 @@ def resource(
     primary_key: Sequence[str] = (),
     merge_key: Sequence[str] = (),
     cursor: str | None = None,
-    parallel: bool = False,
     bounded: bool = True,
     schema: Mapping[str, str | tuple[str, bool]] | None = None,
     write_disposition: str = "append",
@@ -65,7 +62,6 @@ def resource(
         setattr(inner, "__cdf_primary_key__", tuple(primary_key))
         setattr(inner, "__cdf_merge_key__", tuple(merge_key))
         setattr(inner, "__cdf_cursor__", cursor)
-        setattr(inner, "__cdf_parallel__", parallel)
         setattr(inner, "__cdf_bounded__", bounded)
         setattr(
             inner,

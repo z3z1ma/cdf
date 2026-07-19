@@ -87,11 +87,22 @@ pub(crate) fn py_error(error: PyErr) -> CdfError {
             .get_type(py)
             .name()
             .and_then(|name| name.to_str().map(str::to_owned))
-            .unwrap_or_else(|_| "Exception".to_owned())
+            .ok()
+            .filter(|name| safe_exception_name(name))
+            .unwrap_or_else(|| "Exception".to_owned())
     });
     CdfError::data(format!(
         "Python execution failed at the foreign boundary ({exception}); inspect the Python resource locally for exception details"
     ))
+}
+
+fn safe_exception_name(name: &str) -> bool {
+    let mut characters = name.chars();
+    name.len() <= 128
+        && characters
+            .next()
+            .is_some_and(|character| character.is_ascii_alphabetic() || character == '_')
+        && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
 }
 
 pub(crate) fn json_error(error: serde_json::Error) -> CdfError {

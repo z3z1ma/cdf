@@ -145,7 +145,6 @@ pub struct DltBridgeMetadata {
     pub write_disposition: Option<DltWriteDispositionHint>,
     pub schema_contract: Option<DltSchemaContractHint>,
     pub selected: bool,
-    pub parallelized: bool,
 }
 
 impl DltBridgeMetadata {
@@ -395,7 +394,6 @@ fn parse_dlt_metadata(metadata: &Bound<'_, PyAny>) -> Result<DltBridgeMetadata> 
             .transpose()?,
         schema_contract: raw.schema_contract.map(parse_contract).transpose()?,
         selected: raw.selected.unwrap_or(true),
-        parallelized: raw.parallelized.unwrap_or(false),
     })
 }
 
@@ -418,7 +416,6 @@ fn extract_cdf_resource_metadata(object: &Bound<'_, PyAny>) -> Result<DltBridgeM
         write_disposition: None,
         schema_contract: None,
         selected: true,
-        parallelized: bool_attr(object, "__cdf_parallel__")?.unwrap_or(false),
     })
 }
 
@@ -500,7 +497,6 @@ struct RawDltMetadata {
     write_disposition: Option<Value>,
     schema_contract: Option<Value>,
     selected: Option<bool>,
-    parallelized: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -666,14 +662,6 @@ fn string_attr(object: &Bound<'_, PyAny>, name: &str) -> Result<Option<String>> 
     match object.getattr(name) {
         Ok(value) if value.is_none() => Ok(None),
         Ok(value) => value.extract::<Option<String>>().map_err(py_error),
-        Err(_) => Ok(None),
-    }
-}
-
-fn bool_attr(object: &Bound<'_, PyAny>, name: &str) -> Result<Option<bool>> {
-    match object.getattr(name) {
-        Ok(value) if value.is_none() => Ok(None),
-        Ok(value) => value.extract::<Option<bool>>().map_err(py_error),
         Err(_) => Ok(None),
     }
 }
