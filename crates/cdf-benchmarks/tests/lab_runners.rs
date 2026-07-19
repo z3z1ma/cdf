@@ -245,6 +245,7 @@ fn raw_arrow_duckdb_and_io_references_cross_check_fixture_rows_and_bytes() {
             path: temp.path().join("orders.csv"),
             batch_rows: 1024,
             has_header: true,
+            infer_rows: spec.rows,
         },
         ReferenceWorkload::ArrowNdjson {
             path: temp.path().join("orders.ndjson"),
@@ -302,6 +303,7 @@ fn prepared_cdf_worker_emits_real_phase_breakdown_without_timing_fixture_setup()
             glob: "orders.ndjson".to_owned(),
             package_dir: temp.path().join("packages"),
             format: PreparedFileFormat::Ndjson,
+            format_options: serde_json::json!({}),
             jobs: None,
             execution_host_jobs: 4,
         })
@@ -378,6 +380,7 @@ fn prepared_multi_file_jobs_matrix_preserves_canonical_package_identity() {
                     .path()
                     .join(format!("package-{format_label}-{jobs_label}")),
                 format,
+                format_options: serde_json::json!({}),
                 jobs,
                 execution_host_jobs: 4,
             })
@@ -412,6 +415,47 @@ fn prepared_multi_file_jobs_matrix_preserves_canonical_package_identity() {
 }
 
 #[test]
+fn quote_aware_csv_units_preserve_package_identity_across_jobs() {
+    let temp = tempfile::tempdir().unwrap();
+    let spec = fixture_spec("medium").unwrap();
+    write_all_local_fixture_formats(temp.path(), &spec).unwrap();
+    let source = fs::read(temp.path().join("orders.csv")).unwrap();
+    for ordinal in 0..4 {
+        fs::write(
+            temp.path().join(format!("csv-unit-{ordinal:02}.csv")),
+            &source,
+        )
+        .unwrap();
+    }
+    let format_options = serde_json::json!({
+        "parallel_decode": "auto",
+        "parallel_unit_bytes": 4096,
+        "parallel_max_record_bytes": 4096
+    });
+    let run = |jobs, label: &str| {
+        run_prepared_file_to_package(&PreparedFilePackageWorkload {
+            fixture_name: "medium".to_owned(),
+            source_root: temp.path().to_path_buf(),
+            glob: "csv-unit-*.csv".to_owned(),
+            package_dir: temp.path().join(format!("csv-unit-package-{label}")),
+            format: PreparedFileFormat::Csv,
+            format_options: format_options.clone(),
+            jobs: Some(jobs),
+            execution_host_jobs: 4,
+        })
+        .unwrap()
+    };
+
+    let sequential = run(1, "one");
+    let parallel = run(4, "four");
+    assert_eq!(sequential.effective_jobs, 1);
+    assert_eq!(parallel.effective_jobs, 4);
+    assert_eq!(parallel.package_hash, sequential.package_hash);
+    assert_eq!(parallel.segments, sequential.segments);
+    assert_eq!(parallel.measurement.rows, (spec.rows * 4) as u64);
+}
+
+#[test]
 fn prepared_jobs_zero_is_rejected_before_source_contact() {
     let error = run_prepared_file_to_package(&PreparedFilePackageWorkload {
         fixture_name: "medium".to_owned(),
@@ -419,6 +463,7 @@ fn prepared_jobs_zero_is_rejected_before_source_contact() {
         glob: "*.ndjson".to_owned(),
         package_dir: PathBuf::from("must-not-be-created"),
         format: PreparedFileFormat::Ndjson,
+        format_options: serde_json::json!({}),
         jobs: Some(0),
         execution_host_jobs: 4,
     })
@@ -462,6 +507,7 @@ fn destination_ingress_categories_preserve_jobs_identity() {
                     source_root: temp.path().to_path_buf(),
                     glob: "part-*.parquet".to_owned(),
                     format: PreparedFileFormat::Parquet,
+                    format_options: serde_json::json!({}),
                     output_root: temp
                         .path()
                         .join(format!("destination-{label}-{jobs_label}")),
@@ -549,6 +595,7 @@ fn postgres_destination_preserves_jobs_identity() {
                 source_root: temp.path().to_path_buf(),
                 glob: "part-*.parquet".to_owned(),
                 format: PreparedFileFormat::Parquet,
+                format_options: serde_json::json!({}),
                 output_root: temp.path().join(format!("postgres-{jobs_label}")),
                 destination: PreparedDestinationKind::Postgres {
                     database_url: database_url.clone(),

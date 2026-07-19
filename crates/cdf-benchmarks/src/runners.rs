@@ -88,6 +88,8 @@ pub struct PreparedFilePackageWorkload {
     pub glob: String,
     pub package_dir: PathBuf,
     pub format: PreparedFileFormat,
+    #[serde(default = "empty_format_options")]
+    pub format_options: serde_json::Value,
     pub jobs: Option<u16>,
     pub execution_host_jobs: u16,
 }
@@ -124,10 +126,16 @@ pub struct PreparedFileDestinationWorkload {
     pub source_root: PathBuf,
     pub glob: String,
     pub format: PreparedFileFormat,
+    #[serde(default = "empty_format_options")]
+    pub format_options: serde_json::Value,
     pub output_root: PathBuf,
     pub destination: PreparedDestinationKind,
     pub jobs: Option<u16>,
     pub execution_host_jobs: u16,
+}
+
+fn empty_format_options() -> serde_json::Value {
+    serde_json::json!({})
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -285,9 +293,16 @@ fn benchmark_file_resource(
     source_root: &Path,
     glob: &str,
     format_id: &str,
+    format_options: &serde_json::Value,
     spec: &FixtureSpec,
     execution: &cdf_runtime::ExecutionServices,
 ) -> BenchResult<BenchmarkFileSource> {
+    let format_options = toml::Value::try_from(format_options.clone())?;
+    if !format_options.is_table() {
+        return Err(bench_error(
+            "prepared file format_options must serialize as a TOML table",
+        ));
+    }
     let fields = benchmark_schema_fields(spec);
     let document = parse_toml(&format!(
         r#"
@@ -298,6 +313,7 @@ root = "."
 [resource.orders]
 glob = {}
 format = {}
+format_options = {}
 write_disposition = "append"
 trust = "governed"
 schema = {{ fields = [
@@ -306,6 +322,7 @@ schema = {{ fields = [
 "#,
         serde_json::to_string(glob)?,
         serde_json::to_string(format_id)?,
+        format_options,
         fields.join(",\n")
     ))?;
     let registry = benchmark_source_registry()?;
@@ -464,6 +481,7 @@ pub fn run_prepared_file_to_package(
         &request.source_root,
         &request.glob,
         format_id,
+        &request.format_options,
         &spec,
         &execution,
     )?;
@@ -564,6 +582,7 @@ pub fn run_prepared_file_to_destination(
         &request.source_root,
         &request.glob,
         format_id,
+        &request.format_options,
         &spec,
         &execution,
     )?;
@@ -789,7 +808,14 @@ fn run_file_to_package(
         .file_name()
         .and_then(|value| value.to_str())
         .ok_or_else(|| bench_error("benchmark source file name must be valid UTF-8"))?;
-    let source = benchmark_file_resource(source_root, glob, format.format_id(), spec, &execution)?;
+    let source = benchmark_file_resource(
+        source_root,
+        glob,
+        format.format_id(),
+        &empty_format_options(),
+        spec,
+        &execution,
+    )?;
     let pre_finalize = |_builder: &PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
     let plan = engine_plan(source.resource.as_ref(), "pkg-file-benchmark")?
         .bind_compiled_source(&source.source_plan)?

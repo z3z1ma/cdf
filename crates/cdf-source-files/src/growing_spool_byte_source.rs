@@ -350,6 +350,10 @@ impl ByteSource for GrowingSpoolByteSource {
         &self.capabilities
     }
 
+    fn supports_local_range_replay(&self) -> bool {
+        true
+    }
+
     fn open_sequential(
         &self,
         request: SequentialReadRequest,

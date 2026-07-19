@@ -128,6 +128,10 @@ impl ByteSource for ControlledByteSource {
         self.inner.capabilities()
     }
 
+    fn supports_local_range_replay(&self) -> bool {
+        self.inner.supports_local_range_replay()
+    }
+
     fn exact_range_coalescing_policy(&self) -> ExactRangeCoalescingPolicy {
         self.inner.exact_range_coalescing_policy()
     }
