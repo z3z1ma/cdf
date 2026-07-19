@@ -142,7 +142,6 @@ pub fn attached_interpreter_report() -> Result<InterpreterReport> {
 pub enum PythonConcurrencyMode {
     GilSerialized,
     FreeThreadedParallel,
-    ParallelDisabled,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,19 +155,9 @@ pub struct PythonExecutionSemantics {
 
 pub fn execution_semantics(
     interpreter: &InterpreterReport,
-    resource_parallel: bool,
     requested_parallelism: usize,
 ) -> PythonExecutionSemantics {
     let requested_parallelism = requested_parallelism.max(1);
-    if !resource_parallel {
-        return PythonExecutionSemantics {
-            mode: PythonConcurrencyMode::ParallelDisabled,
-            requested_parallelism,
-            effective_parallelism: 1,
-            holds_python_lock_while_producing: true,
-            rust_conversion_detaches_from_python: true,
-        };
-    }
     if interpreter.can_parallelize_python() {
         PythonExecutionSemantics {
             mode: PythonConcurrencyMode::FreeThreadedParallel,
@@ -193,6 +182,7 @@ pub fn python_execution_lane_spec(
 ) -> cdf_runtime::BlockingLaneSpec {
     cdf_runtime::BlockingLaneSpec {
         lane_id: "python.source".to_owned(),
+        binding: cdf_runtime::BlockingLaneBinding::RuntimeResolved,
         maximum_concurrency: u16::try_from(semantics.effective_parallelism)
             .unwrap_or(u16::MAX)
             .max(1),

@@ -528,7 +528,14 @@ impl SourceExecutionCapabilities {
             ));
         }
         match (&self.executor_class, &self.blocking_lane) {
-            (SourceExecutorClass::BlockingLane, Some(lane)) => lane.validate()?,
+            (SourceExecutorClass::BlockingLane, Some(lane)) => {
+                lane.validate()?;
+                if lane.binding == crate::BlockingLaneBinding::RuntimeResolved {
+                    return Err(CdfError::contract(
+                        "compiled source execution cannot contain an already runtime-resolved blocking lane",
+                    ));
+                }
+            }
             (SourceExecutorClass::BlockingLane, _) => {
                 return Err(CdfError::contract(
                     "blocking source execution requires a declared lane",
@@ -1883,12 +1890,12 @@ pub trait SourceDriver: Send + Sync {
         plan: &CompiledSourcePlan,
         context: &SourceResolutionContext<'_>,
     ) -> Result<Box<dyn SourceDiscoverySession>>;
-    /// Binds a compiled blocking-lane ceiling to the concrete execution host.
+    /// Resolves a portable blocking-lane ceiling against the concrete execution runtime.
     ///
     /// The default is the recorded declaration. Drivers whose safe concurrency depends on a
     /// runtime fact (for example an attached foreign interpreter) may only tighten that
     /// declaration; the registry validates the refinement before installing the lane.
-    fn bind_blocking_lane(
+    fn resolve_blocking_lane(
         &self,
         plan: &CompiledSourcePlan,
         _context: &SourceResolutionContext<'_>,

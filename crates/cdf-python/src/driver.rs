@@ -67,7 +67,7 @@ impl PythonSourceDriver {
                 "properties": {
                     "uri": {"type": "string", "pattern": "^python://"},
                     "dict_batch_rows": {"type": "integer", "minimum": 1},
-                    "max_boundary_bytes": {"type": "integer", "minimum": 1}
+                    "max_boundary_bytes": {"type": "integer", "minimum": 2}
                 }
             },
             "resource": {
@@ -169,7 +169,7 @@ impl SourceDriver for PythonSourceDriver {
         }))
     }
 
-    fn bind_blocking_lane(
+    fn resolve_blocking_lane(
         &self,
         _plan: &CompiledSourcePlan,
         context: &SourceResolutionContext<'_>,
@@ -179,11 +179,8 @@ impl SourceDriver for PythonSourceDriver {
             context.driver_options(&self.descriptor.driver_id),
         )?;
         let host = context.execution().capabilities();
-        let semantics = crate::execution_semantics(
-            &options.interpreter,
-            true,
-            usize::from(host.logical_cpu_slots),
-        );
+        let semantics =
+            crate::execution_semantics(&options.interpreter, usize::from(host.logical_cpu_slots));
         Ok(Some(crate::python_execution_lane_spec(&semantics)))
     }
 
@@ -352,11 +349,7 @@ fn compile_resource_plan(
     CompiledSourcePlan::new(
         driver,
         capabilities.clone(),
-        execution_capabilities(
-            capabilities.partitioning.parallel_partitions,
-            physical.bounded,
-            physical.max_boundary_bytes,
-        ),
+        execution_capabilities(physical.bounded, physical.max_boundary_bytes),
         input,
     )
 }
@@ -456,10 +449,10 @@ fn decode_project_options(options: &serde_json::Value) -> Result<PythonProjectOp
         })?;
     if options.interpreter.is_empty()
         || options.dict_batch_rows == 0
-        || options.max_boundary_bytes == 0
+        || options.max_boundary_bytes < 2
     {
         return Err(CdfError::contract(
-            "Python project options require a nonempty interpreter and positive dict_batch_rows/max_boundary_bytes",
+            "Python project options require a nonempty interpreter, positive dict_batch_rows, and max_boundary_bytes of at least 2",
         ));
     }
     Ok(options)
@@ -661,22 +654,23 @@ mod health_tests {
 }
 
 fn execution_capabilities(
-    parallel: bool,
     bounded: bool,
     maximum_boundary_bytes: u64,
 ) -> SourceExecutionCapabilities {
-    let source_concurrency = if parallel { u16::MAX } else { 1 };
-    let minimum_window_bytes = maximum_boundary_bytes.min(8 * 1024);
+    let poll_bytes = 1;
+    let decode_bytes = maximum_boundary_bytes.saturating_sub(poll_bytes).max(1);
+    let minimum_decode_bytes = decode_bytes.min(8 * 1024);
     SourceExecutionCapabilities {
-        minimum_poll_bytes: minimum_window_bytes,
-        maximum_poll_bytes: maximum_boundary_bytes,
-        minimum_decode_bytes: minimum_window_bytes,
-        maximum_decode_bytes: maximum_boundary_bytes,
-        maximum_concurrency: source_concurrency,
-        useful_concurrency: source_concurrency,
+        minimum_poll_bytes: poll_bytes,
+        maximum_poll_bytes: poll_bytes,
+        minimum_decode_bytes,
+        maximum_decode_bytes: decode_bytes,
+        maximum_concurrency: 1,
+        useful_concurrency: 1,
         executor_class: SourceExecutorClass::BlockingLane,
         blocking_lane: Some(BlockingLaneSpec {
             lane_id: "python.source".to_owned(),
+            binding: cdf_runtime::BlockingLaneBinding::RuntimeResolvedRequired,
             maximum_concurrency: u16::MAX,
             cpu_slot_cost: 1,
             native_internal_parallelism: 1,

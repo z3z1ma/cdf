@@ -9,13 +9,13 @@ use std::{
 use arrow_array::{Array, Int64Array, TimestampMicrosecondArray, UInt64Array};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_kernel::{
-    BackpressureSupport, Batch, BatchStream, CapabilitySupport, CursorOrderingClaim,
-    CursorPosition, CursorSpec, CursorValue, DeliveryGuarantee, EffectiveSchemaRuntime,
-    EstimateSupport, FilterCapabilities, ForeignState, IncrementalShape, PartitionId,
-    PartitionPlan, PartitioningCapabilities, PlanId, QueryableResource, ReplaySupport,
-    ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result, ScanPlan,
-    ScanRequest, SchemaSource, ScopeKey, SourcePosition, TrustLevel, TypePolicyAllowances,
-    WriteDisposition, parse_arrow_field_type,
+    BackpressureSupport, CapabilitySupport, CursorOrderingClaim, CursorPosition, CursorSpec,
+    CursorValue, DeliveryGuarantee, EffectiveSchemaRuntime, ErrorKind, EstimateSupport,
+    FilterCapabilities, ForeignState, IncrementalShape, PartitionId, PartitionPlan,
+    PartitioningCapabilities, PlanId, QueryableResource, ReplaySupport, ResourceCapabilities,
+    ResourceDescriptor, ResourceId, ResourceStream, Result, ScanPlan, ScanRequest, SchemaSource,
+    ScopeKey, SourcePosition, TrustLevel, TypePolicyAllowances, WriteDisposition,
+    parse_arrow_field_type,
 };
 use cdf_runtime::CompiledSourcePlan;
 use pyo3::{
@@ -26,6 +26,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{PythonBridgeOptions, PythonResourceBridge, internal::py_error};
+use cdf_foreign_stream::{
+    ForeignBackpressure, ForeignCancellation, ForeignCancellationContract, ForeignExecutionLane,
+    ForeignLaneCapabilities, ForeignMemoryContract, ForeignProducer, ForeignProducerDescriptor,
+    ForeignProducerId, ForeignProtocolVersion, ForeignSecurityContract, ForeignStartupModel,
+    ForeignStateContract, ForeignStreamEvent, ForeignStreamOpen, ForeignStreamOpenRequest,
+    ForeignTerminalStatus, ForeignTransferMode,
+};
 
 const PARTITION_ID: &str = "python-000001";
 
@@ -46,6 +53,7 @@ pub struct PythonResource {
     compiled_source_plan_hash: Option<String>,
     effective_schema_runtime: Option<EffectiveSchemaRuntime>,
     type_policy_allowances: TypePolicyAllowances,
+    foreign_descriptor: ForeignProducerDescriptor,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -68,9 +76,9 @@ impl PythonResource {
         dict_batch_rows: usize,
         max_boundary_bytes: u64,
     ) -> Result<Self> {
-        if dict_batch_rows == 0 || max_boundary_bytes == 0 {
+        if dict_batch_rows == 0 || max_boundary_bytes < 2 {
             return Err(cdf_kernel::CdfError::contract(
-                "Python source dict_batch_rows and max_boundary_bytes must be greater than zero",
+                "Python source requires positive dict_batch_rows and max_boundary_bytes of at least 2",
             ));
         }
         let (module_relative, callable) = parse_python_uri(uri)?;
@@ -118,6 +126,7 @@ impl PythonResource {
             lag_tolerance_ms: 0,
         });
         let content_hash = format!("sha256:{}", hex::encode(Sha256::digest(source.as_bytes())));
+        let foreign_descriptor = python_foreign_descriptor(max_boundary_bytes)?;
         Ok(Self {
             descriptor: ResourceDescriptor {
                 resource_id,
@@ -142,7 +151,7 @@ impl PythonResource {
                 limits: CapabilitySupport::Unsupported,
                 ordering: CapabilitySupport::Unsupported,
                 partitioning: PartitioningCapabilities {
-                    parallel_partitions: metadata.parallel,
+                    parallel_partitions: false,
                     supported_scopes: vec![cdf_kernel::ScopeKind::Resource],
                 },
                 incremental: if has_cursor {
@@ -167,6 +176,7 @@ impl PythonResource {
             compiled_source_plan_hash: None,
             effective_schema_runtime: None,
             type_policy_allowances: TypePolicyAllowances::default(),
+            foreign_descriptor,
         })
     }
 
@@ -187,12 +197,13 @@ impl PythonResource {
         physical: PythonPhysicalPlan,
         compiled_source_plan_hash: String,
     ) -> Result<Self> {
-        if physical.dict_batch_rows == 0 || physical.max_boundary_bytes == 0 {
+        if physical.dict_batch_rows == 0 || physical.max_boundary_bytes < 2 {
             return Err(cdf_kernel::CdfError::contract(
-                "compiled Python source dict_batch_rows and max_boundary_bytes must be greater than zero",
+                "compiled Python source requires positive dict_batch_rows and max_boundary_bytes of at least 2",
             ));
         }
         let module_path = resolve_module_path(project_root, &physical.module_relative)?;
+        let foreign_descriptor = python_foreign_descriptor(physical.max_boundary_bytes)?;
         Ok(Self {
             descriptor: plan.descriptor.clone(),
             schema: Arc::new(plan.schema.clone()),
@@ -209,6 +220,7 @@ impl PythonResource {
             compiled_source_plan_hash: Some(compiled_source_plan_hash),
             effective_schema_runtime: plan.effective_schema_runtime.clone(),
             type_policy_allowances: plan.type_policy_allowances,
+            foreign_descriptor,
         })
     }
 
@@ -244,13 +256,14 @@ impl PythonResource {
         })
     }
 
-    fn execute_stream(
+    fn produce_foreign_stream(
         &self,
         partition: PartitionPlan,
-        mut sender: cdf_runtime::BlockingTaskStreamSender<Batch>,
-        cancellation: cdf_runtime::RunCancellation,
+        sender: &mut cdf_runtime::BlockingTaskStreamSender<ForeignStreamEvent>,
+        cancellation: &cdf_runtime::RunCancellation,
+        foreign_cancellation: &ForeignCancellation,
         memory: Arc<dyn cdf_memory::MemoryCoordinator>,
-    ) -> Result<()> {
+    ) -> Result<Option<SourcePosition>> {
         if partition.partition_id.as_str() != PARTITION_ID {
             return Err(cdf_kernel::CdfError::contract(format!(
                 "Python resource planned partition `{PARTITION_ID}` but received `{}`",
@@ -274,11 +287,20 @@ impl PythonResource {
         let opaque_blob = format!("{}#{}", self.content_hash, self.callable).into_bytes();
         let blob_sha256 = format!("sha256:{}", hex::encode(Sha256::digest(&opaque_blob)));
         let cursor = self.descriptor.cursor.clone();
+        let execution = self.execution.as_ref().ok_or_else(|| {
+            cdf_kernel::CdfError::contract(
+                "Python foreign producer requires injected execution services",
+            )
+        })?;
         let mut reservation = Some(reserve_python_batch(
+            execution,
+            cancellation,
+            foreign_cancellation,
             Arc::clone(&memory),
             self.max_boundary_bytes,
         )?);
-        Python::attach(|py| -> Result<_> {
+        let mut final_position = None;
+        let produced = Python::attach(|py| -> Result<_> {
             let module = load_module(py, &source, &self.module_relative)?;
             let callable = module.getattr(self.callable.as_str()).map_err(|_| {
                 cdf_kernel::CdfError::contract(format!(
@@ -299,7 +321,13 @@ impl PythonResource {
             .with_dict_batch_rows(self.dict_batch_rows)?
             .with_max_boundary_bytes(self.max_boundary_bytes)?)
             .visit_python_foreign_iterable(&iterable, |outcome, _kind| {
-                let mut batch = outcome.batch;
+                foreign_cancellation.check()?;
+                let cdf_foreign_stream::ForeignBatchOutcome {
+                    sequence,
+                    mut batch,
+                    transfer_mode,
+                    copy,
+                } = outcome;
                 cancellation.check()?;
                 batch.header.source_position = match &cursor {
                     Some(cursor) => batch
@@ -313,6 +341,7 @@ impl PythonResource {
                         blob_sha256: blob_sha256.clone(),
                     })),
                 };
+                final_position.clone_from(&batch.header.source_position);
                 let retained_bytes = batch
                     .record_batch()
                     .map(cdf_memory::record_batch_retained_bytes)
@@ -338,31 +367,49 @@ impl PythonResource {
                     Arc::new(lease),
                     retained_bytes,
                 )?)?;
-                sender.send(batch)?;
+                sender.send(ForeignStreamEvent::Outcome(
+                    cdf_foreign_stream::ForeignBatchOutcome {
+                        sequence,
+                        batch,
+                        transfer_mode,
+                        copy,
+                    },
+                ))?;
                 cancellation.check()?;
+                foreign_cancellation.check()?;
                 reservation = Some(reserve_python_batch(
+                    execution,
+                    cancellation,
+                    foreign_cancellation,
                     Arc::clone(&memory),
                     self.max_boundary_bytes,
                 )?);
                 Ok(())
             })?;
             Ok(())
-        })?;
-        Ok(())
+        });
+        produced?;
+        Ok(final_position)
     }
 }
 
 fn reserve_python_batch(
+    execution: &cdf_runtime::ExecutionServices,
+    cancellation: &cdf_runtime::RunCancellation,
+    foreign_cancellation: &ForeignCancellation,
     memory: Arc<dyn cdf_memory::MemoryCoordinator>,
     maximum_boundary_bytes: u64,
 ) -> Result<cdf_memory::MemoryLease> {
-    cdf_memory::reserve_blocking(
-        memory,
-        &cdf_memory::ReservationRequest::new(
-            cdf_memory::ConsumerKey::new("python-source-batch", cdf_memory::MemoryClass::Source)?,
-            maximum_boundary_bytes,
-        )?,
-    )
+    let request = cdf_memory::ReservationRequest::new(
+        cdf_memory::ConsumerKey::new("python-source-batch", cdf_memory::MemoryClass::Source)?,
+        maximum_boundary_bytes,
+    )?;
+    let cancellation = cancellation.clone();
+    let foreign_cancellation = foreign_cancellation.clone();
+    execution.run_io(async move {
+        let reserve = foreign_cancellation.await_or_cancel(cdf_memory::reserve(memory, request));
+        cancellation.await_or_cancel(reserve).await
+    })
 }
 
 fn cursor_position(
@@ -445,6 +492,126 @@ fn max_u64(array: &UInt64Array, field: &str) -> Result<u64> {
         })
 }
 
+fn python_foreign_descriptor(max_boundary_bytes: u64) -> Result<ForeignProducerDescriptor> {
+    let descriptor = ForeignProducerDescriptor {
+        producer_id: ForeignProducerId::new("cdf.python")?,
+        protocol_version: ForeignProtocolVersion::new("1")?,
+        transfer_modes: vec![
+            ForeignTransferMode::ArrowCData,
+            ForeignTransferMode::RowCompat,
+        ],
+        startup: ForeignStartupModel::InProcessAttached,
+        lanes: ForeignLaneCapabilities {
+            execution_lane: ForeignExecutionLane::Blocking,
+            maximum_internal_parallelism: 1,
+            backpressure: ForeignBackpressure::HostWindow,
+        },
+        memory: ForeignMemoryContract {
+            payload_window_bytes: Some(max_boundary_bytes),
+            control_queue_bytes: None,
+            diagnostic_queue_bytes: None,
+            native_scratch_bytes: None,
+            child_process_bytes: None,
+        },
+        cancellation: ForeignCancellationContract {
+            cooperative_stop: true,
+            interrupt_safe: false,
+            force_termination_authorized: false,
+            drains_on_cancel: false,
+        },
+        state: ForeignStateContract {
+            emits_positions: true,
+            emits_watermarks: false,
+            emits_foreign_state: true,
+            terminal_state_required: true,
+        },
+        security: ForeignSecurityContract {
+            ambient_network: true,
+            ambient_filesystem: true,
+            secret_names: Vec::new(),
+        },
+    };
+    descriptor.validate()?;
+    Ok(descriptor)
+}
+
+impl ForeignProducer for PythonResource {
+    fn descriptor(&self) -> &ForeignProducerDescriptor {
+        &self.foreign_descriptor
+    }
+
+    fn open(
+        &self,
+        request: ForeignStreamOpenRequest,
+    ) -> cdf_kernel::BoxFuture<'_, Result<ForeignStreamOpen>> {
+        let resource = Arc::new(self.clone());
+        Box::pin(async move {
+            if request.resource_id != resource.descriptor.resource_id
+                || request.partition_id.as_str() != PARTITION_ID
+            {
+                return Err(cdf_kernel::CdfError::contract(
+                    "Python foreign stream request does not match the resolved resource partition",
+                ));
+            }
+            request.cancellation.check()?;
+            let execution = resource.execution.clone().ok_or_else(|| {
+                cdf_kernel::CdfError::contract(
+                    "Python foreign producer requires injected execution services",
+                )
+            })?;
+            let lane = resource.blocking_lane.clone().ok_or_else(|| {
+                cdf_kernel::CdfError::contract(
+                    "Python foreign producer requires a resolved blocking lane",
+                )
+            })?;
+            let descriptor = resource.foreign_descriptor.clone();
+            let memory = execution.memory();
+            let partition = resource.partition()?;
+            let events = execution.spawn_blocking_stream(
+                "python-foreign-producer",
+                &lane,
+                1,
+                move |mut sender, cancellation| {
+                    let foreign_cancellation = request.cancellation;
+                    let produced = resource.produce_foreign_stream(
+                        partition,
+                        &mut sender,
+                        &cancellation,
+                        &foreign_cancellation,
+                        memory,
+                    );
+                    let terminal = match produced {
+                        Ok(final_position) => ForeignTerminalStatus::Succeeded { final_position },
+                        Err(_)
+                            if cancellation.is_cancelled()
+                                || foreign_cancellation.is_cancelled() =>
+                        {
+                            ForeignTerminalStatus::Cancelled
+                        }
+                        Err(error) => ForeignTerminalStatus::Failed {
+                            retryable: matches!(
+                                error.kind,
+                                ErrorKind::Transient | ErrorKind::RateLimited
+                            ),
+                            message: error.message,
+                        },
+                    };
+                    match sender.send(ForeignStreamEvent::Terminal(terminal)) {
+                        Err(_) if cancellation.is_cancelled() => Ok(()),
+                        result => result,
+                    }
+                },
+            )?;
+            let termination = events.termination();
+            Ok(ForeignStreamOpen {
+                descriptor,
+                events: Box::pin(events),
+                termination,
+            })
+        })
+    }
+}
+
 impl ResourceStream for PythonResource {
     fn descriptor(&self) -> &ResourceDescriptor {
         &self.descriptor
@@ -476,36 +643,39 @@ impl ResourceStream for PythonResource {
     }
 
     fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
-        let (Some(execution), Some(lane)) = (&self.execution, &self.blocking_lane) else {
+        let Some(execution) = &self.execution else {
             return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async {
                 Err(cdf_kernel::CdfError::contract(
                     "Python source execution requires injected execution services",
                 ))
             }));
         };
-        let resource = self.clone();
-        let memory = execution.memory();
-        let task = match execution.spawn_blocking_stream(
-            "python-source-open",
-            lane,
-            1,
-            move |sender, cancellation| {
-                cancellation.check()?;
-                resource.execute_stream(partition, sender, cancellation.clone(), memory)?;
-                cancellation.check()?;
-                Ok(())
-            },
-        ) {
-            Ok(task) => task,
+        let resource = Arc::new(self.clone());
+        let request = ForeignStreamOpenRequest {
+            resource_id: self.descriptor.resource_id.clone(),
+            partition_id: partition.partition_id.clone(),
+            cancellation: ForeignCancellation::default(),
+        };
+        let opened = match execution
+            .run_io(async move { ForeignProducer::open(resource.as_ref(), request).await })
+        {
+            Ok(opened) => opened,
             Err(error) => {
                 return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move {
                     Err(error)
                 }));
             }
         };
-        let termination = task.termination();
+        if opened.descriptor != self.foreign_descriptor {
+            return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async {
+                Err(cdf_kernel::CdfError::contract(
+                    "Python foreign producer changed its compiled descriptor while opening",
+                ))
+            }));
+        }
+        let termination = opened.termination.clone();
         let opening = Box::pin(async move {
-            let stream = Box::pin(task) as BatchStream;
+            let stream = cdf_foreign_stream::batch_stream_from_foreign_events(opened.events);
             Ok(cdf_kernel::PartitionStreamPayload::new(
                 stream,
                 Box::pin(async { Ok(cdf_kernel::PartitionCompletion::default()) }),
@@ -540,7 +710,6 @@ struct PythonMetadata {
     primary_key: Vec<String>,
     merge_key: Vec<String>,
     cursor: Option<String>,
-    parallel: bool,
     bounded: bool,
     write_disposition: String,
 }
@@ -592,10 +761,6 @@ fn inspect_metadata(source: &str, file_name: &str, callable_name: &str) -> Resul
                 .map_err(py_error)?,
             cursor: callable
                 .getattr("__cdf_cursor__")
-                .and_then(|value| value.extract())
-                .map_err(py_error)?,
-            parallel: callable
-                .getattr("__cdf_parallel__")
                 .and_then(|value| value.extract())
                 .map_err(py_error)?,
             bounded: callable

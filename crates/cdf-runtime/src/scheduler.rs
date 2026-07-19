@@ -492,13 +492,28 @@ pub fn resolve_runtime_scheduler(
         .blocking_lane
         .as_ref()
         .map(|compiled| {
-            let bound = host
+            let installed = host
                 .blocking_lanes
                 .iter()
-                .find(|lane| lane.lane_id == compiled.lane_id)
-                .unwrap_or(compiled);
-            bound.validate_tightening_of(compiled)?;
-            Ok::<u16, CdfError>(bound.maximum_concurrency)
+                .find(|lane| lane.lane_id == compiled.lane_id);
+            let resolved = match (compiled.binding, installed) {
+                (crate::BlockingLaneBinding::Static, None) => compiled,
+                (crate::BlockingLaneBinding::Static, Some(bound))
+                | (crate::BlockingLaneBinding::RuntimeResolvedRequired, Some(bound)) => bound,
+                (crate::BlockingLaneBinding::RuntimeResolvedRequired, None) => {
+                    return Err(CdfError::contract(format!(
+                        "blocking lane `{}` requires source resolution against the execution host before scheduler admission",
+                        compiled.lane_id
+                    )));
+                }
+                (crate::BlockingLaneBinding::RuntimeResolved, _) => {
+                    return Err(CdfError::contract(
+                        "compiled scheduler input cannot contain an already runtime-resolved blocking lane",
+                    ));
+                }
+            };
+            resolved.validate_tightening_of(compiled)?;
+            Ok::<u16, CdfError>(resolved.maximum_concurrency)
         })
         .transpose()?;
     let ceilings = AdmissionCeilings {

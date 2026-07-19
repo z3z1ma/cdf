@@ -340,9 +340,21 @@ pub enum InterruptionSafety {
     SafeToInterrupt,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockingLaneBinding {
+    /// The compiled declaration is directly executable on any conforming host.
+    Static,
+    /// Resolution must replace this declaration with a runtime-specific ceiling.
+    RuntimeResolvedRequired,
+    /// A source driver resolved and validated the declaration against this host.
+    RuntimeResolved,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockingLaneSpec {
     pub lane_id: String,
+    pub binding: BlockingLaneBinding,
     pub maximum_concurrency: u16,
     pub cpu_slot_cost: u16,
     pub native_internal_parallelism: u16,
@@ -373,11 +385,20 @@ impl BlockingLaneSpec {
         Ok(())
     }
 
-    /// Verifies that a host-bound lane changes only its concurrency ceiling, and only downward.
+    /// Verifies that a runtime-resolved lane changes only its concurrency ceiling, and only downward.
     pub fn validate_tightening_of(&self, compiled: &Self) -> Result<()> {
         self.validate()?;
         compiled.validate()?;
+        let binding_is_valid = matches!(
+            (compiled.binding, self.binding),
+            (BlockingLaneBinding::Static, BlockingLaneBinding::Static)
+                | (
+                    BlockingLaneBinding::RuntimeResolvedRequired,
+                    BlockingLaneBinding::RuntimeResolved
+                )
+        );
         if self.lane_id != compiled.lane_id
+            || !binding_is_valid
             || self.maximum_concurrency > compiled.maximum_concurrency
             || self.cpu_slot_cost != compiled.cpu_slot_cost
             || self.native_internal_parallelism != compiled.native_internal_parallelism
@@ -439,6 +460,12 @@ impl ExecutionHostCapabilities {
         }
         for lane in &self.blocking_lanes {
             lane.validate()?;
+            if lane.binding == BlockingLaneBinding::RuntimeResolvedRequired {
+                return Err(CdfError::contract(format!(
+                    "execution host lane `{}` is still awaiting required runtime resolution",
+                    lane.lane_id
+                )));
+            }
             if lane.claimed_cpu_slots() > self.logical_cpu_slots {
                 return Err(CdfError::contract(format!(
                     "blocking lane `{}` claims {} CPU slots but the host provides {}",

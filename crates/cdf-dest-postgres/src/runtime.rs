@@ -337,6 +337,7 @@ fn postgres_runtime_capabilities() -> DestinationRuntimeCapabilities {
     DestinationRuntimeCapabilities {
         blocking_lanes: vec![cdf_runtime::BlockingLaneSpec {
             lane_id: "postgres.sync".to_owned(),
+            binding: cdf_runtime::BlockingLaneBinding::Static,
             maximum_concurrency: 4,
             cpu_slot_cost: 1,
             native_internal_parallelism: 1,

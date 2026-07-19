@@ -2672,6 +2672,7 @@ fn execution_host_capabilities_validate_generic_cpu_and_blocking_lanes() {
         io_workers: 2,
         blocking_lanes: vec![BlockingLaneSpec {
             lane_id: "native-affine".to_owned(),
+            binding: BlockingLaneBinding::Static,
             maximum_concurrency: 1,
             cpu_slot_cost: 2,
             native_internal_parallelism: 2,

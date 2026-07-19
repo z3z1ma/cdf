@@ -1117,6 +1117,7 @@ mod tests {
                 io_workers: 2,
                 blocking_lanes: vec![BlockingLaneSpec {
                     lane_id: "native".to_owned(),
+                    binding: cdf_runtime::BlockingLaneBinding::Static,
                     maximum_concurrency: 1,
                     cpu_slot_cost: 1,
                     native_internal_parallelism: 1,
@@ -1412,6 +1413,7 @@ mod tests {
                 io_workers: 2,
                 blocking_lanes: vec![BlockingLaneSpec {
                     lane_id: "wide-native".to_owned(),
+                    binding: cdf_runtime::BlockingLaneBinding::Static,
                     maximum_concurrency: 1,
                     cpu_slot_cost: 2,
                     native_internal_parallelism: 1,
@@ -2050,6 +2052,7 @@ mod tests {
         let services = cdf_runtime::ExecutionServices::new(host.clone()).unwrap();
         let lane = BlockingLaneSpec {
             lane_id: "mock.adapter".to_owned(),
+            binding: cdf_runtime::BlockingLaneBinding::Static,
             maximum_concurrency: 1,
             cpu_slot_cost: 1,
             native_internal_parallelism: 1,

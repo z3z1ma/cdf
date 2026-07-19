@@ -2463,6 +2463,7 @@ fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
         blocking_lanes: vec![
             cdf_runtime::BlockingLaneSpec {
                 lane_id: "mock.maintenance".to_owned(),
+                binding: cdf_runtime::BlockingLaneBinding::Static,
                 maximum_concurrency: 1,
                 cpu_slot_cost: 1,
                 native_internal_parallelism: 1,
@@ -2471,6 +2472,7 @@ fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
             },
             cdf_runtime::BlockingLaneSpec {
                 lane_id: "mock.commit".to_owned(),
+                binding: cdf_runtime::BlockingLaneBinding::Static,
                 maximum_concurrency: 1,
                 cpu_slot_cost: 1,
                 native_internal_parallelism: 1,

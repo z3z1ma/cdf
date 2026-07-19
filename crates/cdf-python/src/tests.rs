@@ -7,9 +7,8 @@ use std::{
     io::Cursor,
     path::PathBuf,
     sync::{
-        Arc, Barrier,
+        Arc,
         atomic::{AtomicUsize, Ordering},
-        mpsc,
     },
 };
 
@@ -17,7 +16,10 @@ use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_data::ArrayData;
 use arrow_ipc::{reader::StreamReader, writer::StreamWriter};
 use arrow_schema::{DataType, Field, Schema};
-use cdf_foreign_stream::{ForeignCopyClassification, ForeignTransferMode};
+use cdf_foreign_stream::{
+    ForeignCancellation, ForeignCopyClassification, ForeignProducer, ForeignStreamOpenRequest,
+    ForeignTerminalStatus, ForeignTransferMode, summarize_foreign_events,
+};
 use cdf_http::{EgressAllowlist, HeaderMap, HttpMethod, SecretValue};
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, Checkpoint, CheckpointId, CheckpointStatus, CheckpointStore,
@@ -26,8 +28,6 @@ use cdf_kernel::{
 };
 use futures_util::StreamExt;
 use pyo3::types::PyList;
-
-use crate::internal::py_error;
 
 fn bridge() -> PythonResourceBridge {
     PythonResourceBridge::new(
@@ -48,7 +48,7 @@ struct TestPythonProject {
 }
 
 impl TestPythonProject {
-    fn new(parallel: bool, rows: usize) -> Self {
+    fn new(rows: usize) -> Self {
         let root = std::env::temp_dir().join(format!(
             "cdf-python-h2-{}-{}",
             std::process::id(),
@@ -59,7 +59,12 @@ impl TestPythonProject {
             root.join("src/events.py"),
             format!(
                 r#"
+import builtins
+
 def raw_events():
+    barrier = getattr(builtins, "_cdf_h2_foreign_barrier", None)
+    if barrier is not None:
+        barrier.wait(timeout=10)
     for value in range({rows}):
         yield {{"id": value, "name": "cdf"}}
 
@@ -67,12 +72,10 @@ raw_events.__cdf_resource__ = True
 raw_events.__cdf_primary_key__ = ()
 raw_events.__cdf_merge_key__ = ()
 raw_events.__cdf_cursor__ = None
-raw_events.__cdf_parallel__ = {parallel}
 raw_events.__cdf_bounded__ = True
 raw_events.__cdf_schema__ = (("id", "int64", False), ("name", "utf8", False))
 raw_events.__cdf_write_disposition__ = "append"
 "#,
-                parallel = if parallel { "True" } else { "False" }
             ),
         )
         .unwrap();
@@ -523,6 +526,26 @@ fn python_exception_details_are_redacted_at_the_foreign_boundary() {
 }
 
 #[test]
+fn dict_decoder_errors_do_not_publish_offending_values() {
+    let error = bridge()
+        .visit_json_dict_rows(
+            [serde_json::json!({
+                "payload": [1, "secret://vault/token super-secret-value"]
+            })],
+            |_outcome, _kind| Ok(()),
+        )
+        .unwrap_err();
+
+    assert!(
+        error.message.contains("Python dict rows"),
+        "unexpected redacted error: {}",
+        error.message
+    );
+    assert!(!error.message.contains("secret://"));
+    assert!(!error.message.contains("super-secret-value"));
+}
+
+#[test]
 fn arrow_ipc_fixture_speaks_arrow_c_stream_into_kernel_batches() {
     Python::attach(|py| {
         if PyModule::import(py, "pyarrow").is_err() {
@@ -778,6 +801,24 @@ fn real_pyarrow_large_array_survives_producer_gc_and_downstream_thread_drop() {
                 .sum::<usize>()
                 >= 2 * 1024 * 1024
         );
+        let limited = PythonResourceBridge::new(
+            PythonBridgeOptions::new(
+                ResourceId::new("python.oversized-arrow").unwrap(),
+                PartitionId::new("python-000001").unwrap(),
+            )
+            .with_max_boundary_bytes(1024 * 1024)
+            .unwrap(),
+        );
+        let oversized = module.getattr("one").unwrap().call1((&producer,)).unwrap();
+        let mut emitted = 0;
+        let error = limited
+            .visit_python_foreign_iterable(&oversized, |_outcome, _kind| {
+                emitted += 1;
+                Ok(())
+            })
+            .unwrap_err();
+        assert_eq!(emitted, 0);
+        assert!(error.message.contains("emit smaller Arrow batches"));
         let iterable = module.getattr("one").unwrap().call1((&producer,)).unwrap();
         let mut imported = collect_python_iterable(&bridge(), &iterable).unwrap();
         let record_batch = imported.batches.remove(0).record_batch().unwrap().clone();
@@ -842,7 +883,7 @@ fn million_row_dict_stream_keeps_boundary_memory_constant() {
 fn million_row_python_resource_uses_the_global_memory_coordinator() {
     const BOUNDARY_BYTES: u64 = 128 * 1024;
     let report = attached_interpreter_report().unwrap();
-    let project = TestPythonProject::new(false, 1_000_000);
+    let project = TestPythonProject::new(1_000_000);
     let mut registry = cdf_runtime::SourceRegistry::new();
     registry
         .register(PythonSourceDriver::new().unwrap())
@@ -869,6 +910,20 @@ fn million_row_python_resource_uses_the_global_memory_coordinator() {
             scope: ScopeKey::Resource,
         })
         .unwrap();
+    let scheduler = cdf_runtime::resolve_runtime_scheduler(
+        scan.partitions.len(),
+        &plan.execution_capabilities,
+        &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        &execution,
+        None,
+    )
+    .unwrap();
+    assert_eq!(scheduler.effective_jobs.jobs, 1);
+    assert_eq!(
+        plan.execution_capabilities.maximum_poll_bytes
+            + plan.execution_capabilities.maximum_decode_bytes,
+        BOUNDARY_BYTES
+    );
     let row_count = host
         .block_on_root(async {
             let mut stream = resource.open(scan.partitions[0].clone()).await?;
@@ -895,6 +950,129 @@ fn million_row_python_resource_uses_the_global_memory_coordinator() {
             > 0,
         "the exact one-window budget should backpressure the producer: {memory:?}"
     );
+}
+
+#[test]
+fn cancellation_interrupts_python_memory_admission_and_joins_the_producer() {
+    const BOUNDARY_BYTES: u64 = 64 * 1024;
+    let report = attached_interpreter_report().unwrap();
+    let project = TestPythonProject::new(2);
+    let mut registry = cdf_runtime::SourceRegistry::new();
+    registry
+        .register(PythonSourceDriver::new().unwrap())
+        .unwrap();
+    let project_options = python_project_options(&report, 2, BOUNDARY_BYTES);
+    let plan = compile_reference_plan(&registry, &project, project_options.clone());
+    let (host, execution) =
+        cdf_engine::StandaloneExecutionHost::default_services(BOUNDARY_BYTES).unwrap();
+    let context = cdf_runtime::SourceResolutionContext::new(
+        &project.root,
+        Arc::new(NoopSecretProvider),
+        &execution,
+        Arc::new(EgressAllowlist::allow_any()),
+    )
+    .with_driver_options(BTreeMap::from([("python".to_owned(), project_options)]));
+    let resource = registry.resolve(&plan, &context).unwrap();
+    let memory = execution.memory();
+    let blocker = memory
+        .try_reserve(
+            &cdf_memory::ReservationRequest::new(
+                cdf_memory::ConsumerKey::new("h2-test-blocker", cdf_memory::MemoryClass::Control)
+                    .unwrap(),
+                BOUNDARY_BYTES,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+    let partition = resource
+        .negotiate(&ScanRequest {
+            resource_id: ResourceId::new("events.raw").unwrap(),
+            projection: None,
+            filters: Vec::new(),
+            limit: None,
+            order_by: Vec::new(),
+            scope: ScopeKey::Resource,
+        })
+        .unwrap()
+        .partitions
+        .remove(0);
+    let mut stream = host.block_on_root(resource.open(partition)).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while execution
+        .memory()
+        .snapshot()
+        .consumers
+        .get(
+            &cdf_memory::ConsumerKey::new("python-source-batch", cdf_memory::MemoryClass::Source)
+                .unwrap(),
+        )
+        .is_none_or(|consumer| consumer.waits == 0)
+    {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    host.block_on_root(stream.terminate_and_join()).unwrap();
+    drop(blocker);
+    assert_eq!(memory.snapshot().current_bytes, 0);
+}
+
+#[test]
+fn python_resource_opens_the_neutral_foreign_event_protocol() {
+    const BOUNDARY_BYTES: u64 = 256 * 1024;
+    let project = TestPythonProject::new(2);
+    let (host, execution) =
+        cdf_engine::StandaloneExecutionHost::default_services(4 * BOUNDARY_BYTES).unwrap();
+    let semantics = execution_semantics(
+        &attached_interpreter_report().unwrap(),
+        usize::from(execution.capabilities().logical_cpu_slots),
+    );
+    let lane = python_execution_lane_spec(&semantics);
+    execution
+        .ensure_blocking_lanes(std::slice::from_ref(&lane))
+        .unwrap();
+    let resource = PythonResource::load(
+        &project.root,
+        "python://src/events.py#raw_events",
+        ResourceId::new("events.raw").unwrap(),
+        TrustLevel::Governed,
+        2,
+        BOUNDARY_BYTES,
+    )
+    .unwrap()
+    .with_execution_services_and_lane(execution, lane.lane_id)
+    .unwrap();
+    let opened = host
+        .block_on_root(ForeignProducer::open(
+            &resource,
+            ForeignStreamOpenRequest {
+                resource_id: ResourceId::new("events.raw").unwrap(),
+                partition_id: PartitionId::new("python-000001").unwrap(),
+                cancellation: ForeignCancellation::default(),
+            },
+        ))
+        .unwrap();
+    assert_eq!(
+        opened.descriptor.transfer_modes,
+        vec![
+            ForeignTransferMode::ArrowCData,
+            ForeignTransferMode::RowCompat
+        ]
+    );
+    assert!(opened.descriptor.state.terminal_state_required);
+    let termination = opened.termination;
+    let summary = host
+        .block_on_root(summarize_foreign_events(opened.events))
+        .unwrap();
+    host.block_on_root(termination.join()).unwrap();
+    assert_eq!(summary.outcome_count, 1);
+    assert_eq!(summary.control_count, 0);
+    assert!(matches!(
+        summary.terminal,
+        Some(ForeignTerminalStatus::Succeeded {
+            final_position: Some(_)
+        })
+    ));
 }
 
 #[test]
@@ -965,7 +1143,7 @@ fn admitted_python_work_is_mode_correct_and_fixture_hash_stable() {
     )
     .unwrap();
     let report = attached_interpreter_report().unwrap();
-    let project = TestPythonProject::new(true, 2);
+    let project = TestPythonProject::new(2);
     let mut registry = cdf_runtime::SourceRegistry::new();
     registry
         .register(PythonSourceDriver::new().unwrap())
@@ -976,6 +1154,19 @@ fn admitted_python_work_is_mode_correct_and_fixture_hash_stable() {
     assert_eq!(plan.physical_plan["max_boundary_bytes"], 1024 * 1024);
     let (host, execution) =
         cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024).unwrap();
+    let unbound_error = cdf_runtime::resolve_runtime_scheduler(
+        1,
+        &plan.execution_capabilities,
+        &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        &execution,
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        unbound_error
+            .message
+            .contains("requires source resolution against the execution host")
+    );
     let context = cdf_runtime::SourceResolutionContext::new(
         &project.root,
         Arc::new(NoopSecretProvider),
@@ -983,21 +1174,21 @@ fn admitted_python_work_is_mode_correct_and_fixture_hash_stable() {
         Arc::new(EgressAllowlist::allow_any()),
     )
     .with_driver_options(BTreeMap::from([("python".to_owned(), project_options)]));
-    let _resource = registry.resolve(&plan, &context).unwrap();
+    let resource = registry.resolve(&plan, &context).unwrap();
     let lane = execution
         .capabilities()
         .blocking_lanes
         .into_iter()
         .find(|lane| lane.lane_id == "python.source")
-        .expect("registry resolution installs the bound Python lane");
+        .expect("registry resolution installs the runtime-resolved Python lane");
     let requested_parallelism = usize::from(execution.capabilities().logical_cpu_slots);
-    let semantics = execution_semantics(&report, true, requested_parallelism);
+    let semantics = execution_semantics(&report, requested_parallelism);
     assert_eq!(
         lane.maximum_concurrency,
         u16::try_from(semantics.effective_parallelism).unwrap()
     );
     let scheduler = cdf_runtime::resolve_runtime_scheduler(
-        64,
+        1,
         &plan.execution_capabilities,
         &cdf_runtime::DestinationRuntimeCapabilities::default(),
         &execution,
@@ -1008,81 +1199,82 @@ fn admitted_python_work_is_mode_correct_and_fixture_hash_stable() {
         scheduler.source_lane_concurrency,
         Some(lane.maximum_concurrency)
     );
-    if report.can_parallelize_python() {
-        assert!(scheduler.effective_jobs.jobs > 1);
-    } else {
-        assert_eq!(scheduler.effective_jobs.jobs, 1);
-    }
+    assert_eq!(scheduler.effective_jobs.jobs, 1);
 
-    let task_count = 2_usize;
-    let active = Arc::new(AtomicUsize::new(0));
-    let peak = Arc::new(AtomicUsize::new(0));
     let synchronize = matches!(semantics.mode, PythonConcurrencyMode::FreeThreadedParallel)
-        && semantics.effective_parallelism >= task_count;
-    let barrier = synchronize.then(|| Arc::new(Barrier::new(task_count)));
-    let (result_sender, result_receiver) = mpsc::sync_channel(task_count);
-    let mut scope = execution.open_scope("python-concurrency-matrix").unwrap();
-    for index in 0..task_count {
-        let active = Arc::clone(&active);
-        let peak = Arc::clone(&peak);
-        let barrier = barrier.clone();
-        let result_sender = result_sender.clone();
-        let expression = CString::new("sum(i * i for i in range(10000))").unwrap();
-        scope
-            .spawn_blocking(
-                &lane.lane_id,
-                Box::new(move || {
-                    let value = Python::attach(|py| -> Result<u64> {
-                        let current = active.fetch_add(1, Ordering::SeqCst) + 1;
-                        peak.fetch_max(current, Ordering::SeqCst);
-                        if let Some(barrier) = barrier {
-                            barrier.wait();
-                        }
-                        let value = py
-                            .eval(expression.as_c_str(), None, None)
-                            .and_then(|value| value.extract::<u64>())
-                            .map_err(py_error);
-                        active.fetch_sub(1, Ordering::SeqCst);
-                        value
-                    })?;
-                    result_sender.send((index, value)).unwrap();
-                    Ok(())
-                }),
-            )
-            .unwrap();
+        && semantics.effective_parallelism >= 2;
+    if synchronize {
+        Python::attach(|py| {
+            let builtins = py.import("builtins").unwrap();
+            let barrier = py
+                .import("threading")
+                .unwrap()
+                .getattr("Barrier")
+                .unwrap()
+                .call1((2,))
+                .unwrap();
+            builtins
+                .setattr("_cdf_h2_foreign_barrier", barrier)
+                .unwrap();
+        });
     }
-    drop(result_sender);
-    let task_report = host.block_on_root(scope.join()).unwrap();
-    let mut results = result_receiver.into_iter().collect::<Vec<_>>();
-    results.sort_unstable();
-
-    assert_eq!(task_report.completed, task_count as u64);
-    assert_eq!(results.len(), task_count);
-    match semantics.mode {
-        PythonConcurrencyMode::FreeThreadedParallel if synchronize => {
-            assert_eq!(peak.load(Ordering::SeqCst), task_count);
-        }
-        PythonConcurrencyMode::GilSerialized | PythonConcurrencyMode::ParallelDisabled => {
-            assert_eq!(peak.load(Ordering::SeqCst), 1);
-        }
-        PythonConcurrencyMode::FreeThreadedParallel => {}
+    let request = ScanRequest {
+        resource_id: ResourceId::new("events.raw").unwrap(),
+        projection: None,
+        filters: Vec::new(),
+        limit: None,
+        order_by: Vec::new(),
+        scope: ScopeKey::Resource,
+    };
+    let partition = resource.negotiate(&request).unwrap().partitions.remove(0);
+    let production_rows = host
+        .block_on_root(async {
+            async fn rows(mut stream: cdf_kernel::OpenedPartitionStream) -> Result<Vec<i64>> {
+                let mut values = Vec::new();
+                while let Some(batch) = stream.next().await {
+                    let batch = batch?;
+                    let ids = batch
+                        .record_batch()
+                        .unwrap()
+                        .column(0)
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap();
+                    values.extend((0..ids.len()).map(|index| ids.value(index)));
+                }
+                stream.completion().await?;
+                Ok(values)
+            }
+            let left = resource.open(partition.clone()).await?;
+            let right = resource.open(partition).await?;
+            let (left, right) = futures_util::future::join(rows(left), rows(right)).await;
+            Result::Ok((left?, right?))
+        })
+        .unwrap();
+    if synchronize {
+        Python::attach(|py| {
+            py.import("builtins")
+                .unwrap()
+                .delattr("_cdf_h2_foreign_barrier")
+                .unwrap();
+        });
     }
+    assert_eq!(production_rows.0, vec![0, 1]);
+    assert_eq!(production_rows.1, vec![0, 1]);
 
     let fixture_hash = deterministic_test_stream_hash(&read).unwrap();
     let mut hasher = Sha256::new();
     hasher.update(b"cdf-python-admitted-concurrency-v1");
     hasher.update(fixture_hash.as_bytes());
-    for (index, value) in results {
-        hasher.update(index.to_le_bytes());
-        hasher.update(value.to_le_bytes());
+    for rows in [&production_rows.0, &production_rows.1] {
+        for value in rows {
+            hasher.update(value.to_le_bytes());
+        }
     }
     let hash = format!("sha256:{}", hex::encode(hasher.finalize()));
     eprintln!(
-        "python mode={:?} requested={} effective={} observed_peak={} fixture_hash={hash}",
-        semantics.mode,
-        semantics.requested_parallelism,
-        semantics.effective_parallelism,
-        peak.load(Ordering::SeqCst),
+        "python mode={:?} requested={} effective={} production_streams=2 fixture_hash={hash}",
+        semantics.mode, semantics.requested_parallelism, semantics.effective_parallelism,
     );
     if let Ok(path) = std::env::var("CDF_PYTHON_FIXTURE_HASH_OUTPUT") {
         let path = PathBuf::from(path);

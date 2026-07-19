@@ -300,6 +300,7 @@ pub(crate) fn parquet_runtime_capabilities() -> DestinationRuntimeCapabilities {
         blocking_lanes: vec![
             cdf_runtime::BlockingLaneSpec {
                 lane_id: "parquet.ingress".to_owned(),
+                binding: cdf_runtime::BlockingLaneBinding::Static,
                 maximum_concurrency: 1,
                 cpu_slot_cost: 1,
                 native_internal_parallelism: 1,
@@ -308,6 +309,7 @@ pub(crate) fn parquet_runtime_capabilities() -> DestinationRuntimeCapabilities {
             },
             cdf_runtime::BlockingLaneSpec {
                 lane_id: "parquet.encode".to_owned(),
+                binding: cdf_runtime::BlockingLaneBinding::Static,
                 maximum_concurrency: 2,
                 cpu_slot_cost: 1,
                 native_internal_parallelism: 1,

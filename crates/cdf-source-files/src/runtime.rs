@@ -61,6 +61,7 @@ pub const FILE_SOURCE_ADVERTISED_PARALLELISM: u16 = 16;
 pub fn file_source_blocking_lane() -> BlockingLaneSpec {
     BlockingLaneSpec {
         lane_id: FILE_SOURCE_BLOCKING_LANE_ID.to_owned(),
+        binding: cdf_runtime::BlockingLaneBinding::Static,
         maximum_concurrency: FILE_SOURCE_ADVERTISED_PARALLELISM,
         cpu_slot_cost: 1,
         native_internal_parallelism: 1,

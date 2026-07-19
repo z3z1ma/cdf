@@ -42,9 +42,9 @@ impl PythonBridgeOptions {
     }
 
     pub fn with_max_boundary_bytes(mut self, max_boundary_bytes: u64) -> Result<Self> {
-        if max_boundary_bytes == 0 {
+        if max_boundary_bytes < 2 {
             return Err(CdfError::contract(
-                "Python boundary byte limit must be greater than zero",
+                "Python boundary byte limit must be at least 2 bytes",
             ));
         }
         self.max_boundary_bytes = max_boundary_bytes;
@@ -185,6 +185,12 @@ impl PythonBridgeState {
         let observed_schema_hash =
             cdf_kernel::canonical_arrow_schema_hash(record_batch.schema().as_ref())?;
         let retained_bytes = cdf_memory::record_batch_retained_bytes(&record_batch)?;
+        if retained_bytes == 0 || retained_bytes > options.max_boundary_bytes {
+            return Err(CdfError::data(format!(
+                "Python Arrow batch retains {retained_bytes} bytes outside its compiled 1..={}-byte boundary; emit smaller Arrow batches or raise max_boundary_bytes",
+                options.max_boundary_bytes
+            )));
+        }
         self.next_batch_index = self
             .next_batch_index
             .checked_add(1)
@@ -563,23 +569,38 @@ impl PythonResourceBridge {
         let bytes = std::mem::take(&mut window.bytes);
         let input_capacity = u64::try_from(bytes.capacity())
             .map_err(|_| CdfError::data("Python dict input capacity exceeds u64"))?;
-        let (schema, _) = infer_json_schema(Cursor::new(bytes.as_slice()), Some(rows))
-            .map_err(|error| CdfError::data(format!("infer Python dict-row schema: {error}")))?;
+        let (schema, _) = infer_json_schema(Cursor::new(bytes.as_slice()), Some(rows)).map_err(
+            |_| {
+                CdfError::data(
+                    "infer Python dict-row schema failed; inspect the Python resource locally for the offending value",
+                )
+            },
+        )?;
         let mut reader = JsonReaderBuilder::new(Arc::new(schema))
             .with_batch_size(rows)
             .build(Cursor::new(bytes.as_slice()))
-            .map_err(|error| {
-                CdfError::data(format!("initialize Python dict-row decoder: {error}"))
+            .map_err(|_| {
+                CdfError::data(
+                    "initialize Python dict-row decoder failed; inspect the Python resource locally",
+                )
             })?;
         let record_batch = reader
             .next()
             .transpose()
-            .map_err(|error| CdfError::data(format!("decode Python dict rows: {error}")))?
+            .map_err(|_| {
+                CdfError::data(
+                    "decode Python dict rows failed; inspect the Python resource locally for the offending value",
+                )
+            })?
             .ok_or_else(|| CdfError::data("Python dict-row decoder emitted no batch"))?;
         if reader
             .next()
             .transpose()
-            .map_err(|error| CdfError::data(format!("decode Python dict rows: {error}")))?
+            .map_err(|_| {
+                CdfError::data(
+                    "decode Python dict rows failed; inspect the Python resource locally for the offending value",
+                )
+            })?
             .is_some()
         {
             return Err(CdfError::internal(

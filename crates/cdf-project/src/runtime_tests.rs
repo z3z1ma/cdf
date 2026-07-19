@@ -2303,6 +2303,7 @@ impl ProjectDestinationRuntime for MockStagedProjectRuntime {
         cdf_runtime::DestinationRuntimeCapabilities {
             blocking_lanes: vec![cdf_runtime::BlockingLaneSpec {
                 lane_id: "mock.staged".to_owned(),
+                binding: cdf_runtime::BlockingLaneBinding::Static,
                 maximum_concurrency: 1,
                 cpu_slot_cost: 1,
                 native_internal_parallelism: 1,

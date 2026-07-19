@@ -169,6 +169,7 @@ impl DestinationRuntime for DuckDbDestination {
             blocking_lanes: vec![
                 cdf_runtime::BlockingLaneSpec {
                     lane_id: DUCKDB_STAGED_INGRESS_LANE.to_owned(),
+                    binding: cdf_runtime::BlockingLaneBinding::Static,
                     maximum_concurrency: 1,
                     cpu_slot_cost: 1,
                     native_internal_parallelism: 1,
@@ -177,6 +178,7 @@ impl DestinationRuntime for DuckDbDestination {
                 },
                 cdf_runtime::BlockingLaneSpec {
                     lane_id: DUCKDB_FINAL_BINDING_LANE.to_owned(),
+                    binding: cdf_runtime::BlockingLaneBinding::Static,
                     maximum_concurrency: 1,
                     cpu_slot_cost: 1,
                     native_internal_parallelism,

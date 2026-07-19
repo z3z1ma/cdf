@@ -2,15 +2,18 @@
 
 use std::{
     fmt,
+    future::Future,
     pin::Pin,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    task::{Context, Poll, Waker},
 };
 
 use cdf_kernel::{
-    Batch, BatchStream, CdfError, PartitionId, ResourceId, Result, SourcePosition, WatermarkClaim,
+    Batch, BatchStream, CdfError, InvocationTermination, PartitionId, ResourceId, Result,
+    SourcePosition, WatermarkClaim,
 };
 use futures_core::Stream;
 use serde::{Deserialize, Serialize};
@@ -206,6 +209,8 @@ pub struct ForeignStreamOpenRequest {
 pub struct ForeignStreamOpen {
     pub descriptor: ForeignProducerDescriptor,
     pub events: ForeignEventStream,
+    /// Invocation-wide cancellation and join authority retained independently of stream polling.
+    pub termination: InvocationTermination,
 }
 
 impl fmt::Debug for ForeignStreamOpen {
@@ -214,6 +219,7 @@ impl fmt::Debug for ForeignStreamOpen {
             .debug_struct("ForeignStreamOpen")
             .field("descriptor", &self.descriptor)
             .field("events", &"<foreign event stream>")
+            .field("termination", &"<foreign invocation termination>")
             .finish()
     }
 }
@@ -226,18 +232,28 @@ pub trait ForeignProducer: Send + Sync {
     ) -> cdf_kernel::BoxFuture<'_, Result<ForeignStreamOpen>>;
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct ForeignCancellation {
-    cancelled: Arc<AtomicBool>,
+#[derive(Debug, Default)]
+struct ForeignCancellationState {
+    cancelled: AtomicBool,
+    waiters: Mutex<Vec<Waker>>,
 }
+
+#[derive(Clone, Debug, Default)]
+pub struct ForeignCancellation(Arc<ForeignCancellationState>);
 
 impl ForeignCancellation {
     pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::SeqCst);
+        if self.0.cancelled.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let waiters = std::mem::take(&mut *self.0.waiters.lock().unwrap());
+        for waiter in waiters {
+            waiter.wake();
+        }
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::SeqCst)
+        self.0.cancelled.load(Ordering::Acquire)
     }
 
     pub fn check(&self) -> Result<()> {
@@ -245,6 +261,77 @@ impl ForeignCancellation {
             return Err(CdfError::transient("foreign stream was cancelled"));
         }
         Ok(())
+    }
+
+    pub fn cancelled(&self) -> ForeignCancellationFuture {
+        ForeignCancellationFuture {
+            cancellation: self.clone(),
+            registered: None,
+        }
+    }
+
+    pub async fn await_or_cancel<T, F>(&self, operation: F) -> Result<T>
+    where
+        F: Future<Output = Result<T>>,
+    {
+        let cancelled = self.cancelled();
+        futures_util::pin_mut!(operation, cancelled);
+        match futures_util::future::select(operation, cancelled).await {
+            futures_util::future::Either::Left((result, _)) => result,
+            futures_util::future::Either::Right(((), _)) => {
+                Err(CdfError::transient("foreign stream was cancelled"))
+            }
+        }
+    }
+}
+
+pub struct ForeignCancellationFuture {
+    cancellation: ForeignCancellation,
+    registered: Option<Waker>,
+}
+
+impl Future for ForeignCancellationFuture {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.cancellation.is_cancelled() {
+            return Poll::Ready(());
+        }
+        let cancellation = self.cancellation.clone();
+        let mut waiters = cancellation.0.waiters.lock().unwrap();
+        if cancellation.is_cancelled() {
+            return Poll::Ready(());
+        }
+        if let Some(previous) = self.registered.take()
+            && let Some(index) = waiters
+                .iter()
+                .position(|waiter| waiter.will_wake(&previous))
+        {
+            waiters.swap_remove(index);
+        }
+        if !waiters
+            .iter()
+            .any(|waiter| waiter.will_wake(context.waker()))
+        {
+            waiters.push(context.waker().clone());
+        }
+        self.registered = Some(context.waker().clone());
+        Poll::Pending
+    }
+}
+
+impl Drop for ForeignCancellationFuture {
+    fn drop(&mut self) {
+        let Some(registered) = self.registered.take() else {
+            return;
+        };
+        if let Ok(mut waiters) = self.cancellation.0.waiters.lock()
+            && let Some(index) = waiters
+                .iter()
+                .position(|waiter| waiter.will_wake(&registered))
+        {
+            waiters.swap_remove(index);
+        }
     }
 }
 
@@ -520,6 +607,21 @@ mod tests {
         descriptor.validate().unwrap();
         assert!(descriptor.supports_transfer_mode(ForeignTransferMode::ArrowCData));
         assert!(!descriptor.supports_transfer_mode(ForeignTransferMode::RowCompat));
+    }
+
+    #[test]
+    fn cancellation_wakes_and_unregisters_pending_foreign_work() {
+        let cancellation = ForeignCancellation::default();
+        let mut pending = Box::pin(cancellation.cancelled());
+        let mut context = Context::from_waker(futures_util::task::noop_waker_ref());
+        assert!(matches!(pending.as_mut().poll(&mut context), Poll::Pending));
+        assert_eq!(cancellation.0.waiters.lock().unwrap().len(), 1);
+        drop(pending);
+        assert!(cancellation.0.waiters.lock().unwrap().is_empty());
+
+        cancellation.cancel();
+        block_on(cancellation.cancelled());
+        assert!(cancellation.check().is_err());
     }
 
     #[test]

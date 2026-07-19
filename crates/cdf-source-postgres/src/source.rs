@@ -39,6 +39,7 @@ pub(crate) const POSTGRES_MAXIMUM_BATCH_BYTES: u64 = 32 * 1024 * 1024;
 pub fn postgres_source_blocking_lane() -> BlockingLaneSpec {
     BlockingLaneSpec {
         lane_id: POSTGRES_SOURCE_BLOCKING_LANE_ID.to_owned(),
+        binding: cdf_runtime::BlockingLaneBinding::Static,
         maximum_concurrency: 4,
         cpu_slot_cost: 1,
         native_internal_parallelism: 1,
