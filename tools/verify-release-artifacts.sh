@@ -61,9 +61,18 @@ for target in "$@"; do
   case "$target" in
     x86_64-pc-windows-msvc)
       grep -qx "${base}/bin/cdf.exe" "$list_file" || die "archive lacks cdf.exe: $archive"
+      grep -qx "${base}/bin/duckdb.dll" "$list_file" || die "archive lacks duckdb.dll: $archive"
+      ;;
+    *-apple-darwin)
+      grep -qx "${base}/bin/cdf" "$list_file" || die "archive lacks cdf binary: $archive"
+      grep -qx "${base}/bin/libduckdb.dylib" "$list_file" || die "archive lacks libduckdb.dylib: $archive"
+      ;;
+    *-unknown-linux-gnu)
+      grep -qx "${base}/bin/cdf" "$list_file" || die "archive lacks cdf binary: $archive"
+      grep -qx "${base}/bin/libduckdb.so" "$list_file" || die "archive lacks libduckdb.so: $archive"
       ;;
     *)
-      grep -qx "${base}/bin/cdf" "$list_file" || die "archive lacks cdf binary: $archive"
+      die "unsupported release target: $target"
       ;;
   esac
 done

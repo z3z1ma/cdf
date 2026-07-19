@@ -9,7 +9,7 @@ description = "DuckDB destination boundary for cdf."
 [dependencies]
 arrow-array = { version = "59.1.0", features = ["ffi"] }
 arrow-schema = "59.1.0"
-duckdb = { version = "=1.10504.0", features = ["appender-arrow", "bundled"] }
+duckdb.workspace = true
 cdf-contract = { path = "../cdf-contract" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-runtime = { path = "../cdf-runtime" }

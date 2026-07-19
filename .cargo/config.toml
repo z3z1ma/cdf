@@ -5,4 +5,38 @@ rustflags = [
     "target-cpu=native",
     "-C",
     "link-arg=-fuse-ld=/opt/homebrew/opt/lld/bin/ld64.lld",
+    "-C",
+    "link-arg=-Wl,-rpath,@loader_path",
+    "-C",
+    "link-arg=-Wl,-rpath,@loader_path/deps",
 ]
+
+[target.x86_64-apple-darwin]
+rustflags = [
+    "-C",
+    "link-arg=-Wl,-rpath,@loader_path",
+    "-C",
+    "link-arg=-Wl,-rpath,@loader_path/deps",
+]
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = [
+    "-C",
+    "link-arg=-Wl,-rpath,$ORIGIN",
+    "-C",
+    "link-arg=-Wl,-rpath,$ORIGIN/deps",
+]
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = [
+    "-C",
+    "link-arg=-Wl,-rpath,$ORIGIN",
+    "-C",
+    "link-arg=-Wl,-rpath,$ORIGIN/deps",
+]
+
+[env]
+# The exact release follows the pinned `duckdb`/`libduckdb-sys` crate tuple. Upstream caches one
+# target-specific dynamic library under `target/duckdb-download`, adds its rpath, and copies it to
+# the profile deps directory. This avoids rebuilding DuckDB's C++ amalgamation in every profile.
+DUCKDB_DOWNLOAD_LIB = "1"

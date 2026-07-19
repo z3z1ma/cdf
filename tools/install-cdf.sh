@@ -72,6 +72,14 @@ ensure_supported_target() {
   esac
 }
 
+duckdb_library_name() {
+  case "$1" in
+    *-apple-darwin) printf 'libduckdb.dylib\n' ;;
+    *-unknown-linux-gnu) printf 'libduckdb.so\n' ;;
+    *) die "unsupported target: $1" ;;
+  esac
+}
+
 require_value() {
   local flag value
   flag="$1"
@@ -228,6 +236,8 @@ fi
 
 install_dir="${prefix}/bin"
 target_path="${install_dir}/cdf"
+duckdb_name="$(duckdb_library_name "$target")"
+duckdb_target_path="${install_dir}/${duckdb_name}"
 
 if [[ "$dry_run" -eq 1 ]]; then
   cat <<DRYRUN
@@ -238,6 +248,7 @@ artifact: ${artifact_source}
 checksum: ${checksum_source}
 prefix: ${prefix}
 install path: ${target_path}
+DuckDB library: ${duckdb_target_path}
 No files written.
 DRYRUN
   exit 0
@@ -265,18 +276,29 @@ fi
 
 tar -xzf "$artifact_file" -C "$extract_dir" || die "failed to extract artifact: $artifact_source"
 binary_path="$(find "$extract_dir" -type f -name cdf -print -quit)"
+duckdb_path="$(find "$extract_dir" -type f -name "$duckdb_name" -print -quit)"
 [[ -n "$binary_path" ]] || die 'artifact does not contain a cdf binary'
 [[ -x "$binary_path" ]] || die 'artifact cdf binary is not executable'
+[[ -n "$duckdb_path" ]] || die "artifact does not contain ${duckdb_name}"
 
 installed_version="$("$binary_path" version 2>/dev/null)" || die 'artifact cdf binary did not print a version'
 [[ -n "$installed_version" ]] || die 'artifact cdf binary printed an empty version'
 
 install -d "$install_dir" || die "failed to create install directory: $install_dir"
 tmp_target="${install_dir}/.cdf.tmp.$$"
-rm -f "$tmp_target"
+tmp_duckdb_target="${install_dir}/.${duckdb_name}.tmp.$$"
+rm -f "$tmp_target" "$tmp_duckdb_target"
 if ! install -m 0755 "$binary_path" "$tmp_target"; then
-  rm -f "$tmp_target"
+  rm -f "$tmp_target" "$tmp_duckdb_target"
   die "failed to stage cdf binary in $install_dir"
+fi
+if ! install -m 0755 "$duckdb_path" "$tmp_duckdb_target"; then
+  rm -f "$tmp_target" "$tmp_duckdb_target"
+  die "failed to stage ${duckdb_name} in $install_dir"
+fi
+if ! mv "$tmp_duckdb_target" "$duckdb_target_path"; then
+  rm -f "$tmp_target" "$tmp_duckdb_target"
+  die "failed to install DuckDB library at $duckdb_target_path"
 fi
 if ! mv "$tmp_target" "$target_path"; then
   rm -f "$tmp_target"

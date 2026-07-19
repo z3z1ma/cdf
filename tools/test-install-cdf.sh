@@ -74,8 +74,9 @@ fi
 echo "fake cdf"
 FAKE_CDF
   chmod +x "${build_dir}/cdf"
+  printf 'fixture DuckDB shared library\n' >"${build_dir}/libduckdb.so"
 
-  tar -czf "${fixture_dir}/${artifact_name}" -C "$build_dir" cdf
+  tar -czf "${fixture_dir}/${artifact_name}" -C "$build_dir" cdf libduckdb.so
   digest="$(sha256_file "${fixture_dir}/${artifact_name}")"
   if [[ "$checksum_mode" == 'mismatch' ]]; then
     digest="0000000000000000000000000000000000000000000000000000000000000000"
@@ -101,6 +102,7 @@ success_output="${test_root}/success.out"
   --base-url "$valid_fixture" \
   --prefix "$success_prefix" >"$success_output"
 [[ -x "${success_prefix}/bin/cdf" ]] || fail 'success install did not write an executable cdf'
+[[ -f "${success_prefix}/bin/libduckdb.so" ]] || fail 'success install did not write libduckdb.so'
 [[ "$("${success_prefix}/bin/cdf" version)" == 'cdf 0.1.0' ]] || fail 'installed fixture version output mismatch'
 assert_contains "$success_output" "Installed cdf 0.1.0 to ${success_prefix}/bin/cdf"
 printf 'ok success install verifies checksum and prints version\n'

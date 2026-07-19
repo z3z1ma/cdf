@@ -179,11 +179,18 @@ jobs:
           target="${{ matrix.target }}"
           version="${{ needs.metadata.outputs.version }}"
           binary="target/${target}/release/${{ matrix.binary }}"
+          case "$target" in
+            *-apple-darwin) duckdb_library="target/${target}/release/deps/libduckdb.dylib" ;;
+            *-unknown-linux-gnu) duckdb_library="target/${target}/release/deps/libduckdb.so" ;;
+            x86_64-pc-windows-msvc) duckdb_library="target/${target}/release/deps/duckdb.dll" ;;
+            *) echo "unsupported release target: $target" >&2; exit 1 ;;
+          esac
           host="$(rustc -vV | awk '/^host:/ { print $2 }')"
           args=(
             --version "$version"
             --target "$target"
             --binary "$binary"
+            --duckdb-library "$duckdb_library"
             --out-dir "dist"
           )
           if [[ -d target/generated/completions ]]; then

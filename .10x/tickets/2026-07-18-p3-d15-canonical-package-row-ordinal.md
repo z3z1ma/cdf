@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-18
 Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md
@@ -46,6 +46,7 @@ Implement `.10x/specs/canonical-package-row-ordinal.md` as the one destination-n
 
 - 2026-07-18: Opened after D14 proved direct nanoarrow 0.8.0 LZ4 ingestion at 4.56 seconds but destination-side enumeration alternatives cost 4.50–36.76 seconds and introduced adapter-specific ordering premises. The package-global form is selected because a segment-local ordinal would still require per-file constants, while a dense package ordinal makes the destination key one vectorized addition and keeps segment-local logical provenance derivable from manifest starts.
 - 2026-07-18: Renamed the physical field to `_cdf_package_row_ord`: `row_id` would falsely imply identity and `row_num` would suggest one-based SQL numbering. The governing decision/spec now state the unbounded-input contract explicitly: finite package epochs stream durable segments, final binding closes an epoch, and the next package resets the ordinal without buffering an unbounded package in memory.
+- 2026-07-18: Removed DuckDB's bundled-C++ build from all four workspace consumers before starting the ordinal implementation. The workspace now selects the exact `duckdb = 1.10504.0` tuple once and lets `libduckdb-sys` download/cache its matching v1.5.4 dynamic library. A DuckDB crate test build completed in 17.95 seconds with 29 passing tests and one ignored; a warm CLI relink completed in 1.25 seconds. The downloaded cache is 143 MiB versus 455 MiB for each stale bundled build directory. Added loader-relative rpaths plus explicit release/archive/installer carriage of the target library; an actual packaged and reinstalled macOS CLI resolved `@rpath/libduckdb.dylib` and printed `cdf 0.1.0`. This is a prerequisite build-graph correction, not a package-provenance behavior change.
 
 ## Blockers
 

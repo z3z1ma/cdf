@@ -50,6 +50,9 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 
+[workspace.dependencies]
+duckdb = { version = "=1.10504.0", features = ["appender-arrow"] }
+
 [profile.release]
 opt-level = 3
 lto = "fat"

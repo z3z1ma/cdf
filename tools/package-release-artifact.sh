@@ -11,7 +11,8 @@ usage() {
 Package a built CDF binary into a checksummed release archive.
 
 Usage:
-  package-release-artifact.sh --version VERSION --target TARGET --binary PATH --out-dir DIR
+  package-release-artifact.sh --version VERSION --target TARGET --binary PATH
+                              --duckdb-library PATH --out-dir DIR
                               [--completions-dir DIR] [--man-dir DIR]
                               [--skip-binary-run REASON]
 
@@ -29,6 +30,15 @@ sha256_file() {
   else
     die 'SHA-256 tool unavailable: install sha256sum or shasum'
   fi
+}
+
+duckdb_library_name() {
+  case "$1" in
+    *-apple-darwin) printf 'libduckdb.dylib\n' ;;
+    *-unknown-linux-gnu) printf 'libduckdb.so\n' ;;
+    x86_64-pc-windows-msvc) printf 'duckdb.dll\n' ;;
+    *) die "unsupported release target: $1" ;;
+  esac
 }
 
 python_cmd() {
@@ -61,6 +71,7 @@ copy_generated_dir() {
 version=""
 target=""
 binary=""
+duckdb_library=""
 out_dir=""
 completions_dir=""
 man_dir=""
@@ -81,6 +92,11 @@ while [[ $# -gt 0 ]]; do
     --binary)
       [[ -n "${2:-}" && "${2:-}" != --* ]] || die '--binary requires a value'
       binary="$2"
+      shift 2
+      ;;
+    --duckdb-library)
+      [[ -n "${2:-}" && "${2:-}" != --* ]] || die '--duckdb-library requires a value'
+      duckdb_library="$2"
       shift 2
       ;;
     --out-dir)
@@ -116,9 +132,11 @@ done
 [[ -n "$version" ]] || die '--version is required'
 [[ -n "$target" ]] || die '--target is required'
 [[ -n "$binary" ]] || die '--binary is required'
+[[ -n "$duckdb_library" ]] || die '--duckdb-library is required'
 [[ -n "$out_dir" ]] || die '--out-dir is required'
 [[ -f "$binary" ]] || die "binary does not exist: $binary"
 [[ -x "$binary" ]] || die "binary is not executable: $binary"
+[[ -f "$duckdb_library" ]] || die "DuckDB library does not exist: $duckdb_library"
 [[ -f LICENSE ]] || die 'LICENSE is required'
 [[ -f CHANGELOG.md ]] || die 'CHANGELOG.md is required'
 [[ -f tools/write-reproducible-targz.py ]] || die 'tools/write-reproducible-targz.py is required'
@@ -150,12 +168,14 @@ stage_dir="${tmpdir}/${archive_base}"
 mkdir -p "$stage_dir/bin" "$stage_dir/generated" "$out_dir"
 
 binary_name="$(basename "$binary")"
+duckdb_library_name="$(duckdb_library_name "$target")"
 case "$target" in
   x86_64-pc-windows-msvc) binary_name="cdf.exe" ;;
   *) binary_name="cdf" ;;
 esac
 cp "$binary" "${stage_dir}/bin/${binary_name}"
 chmod 0755 "${stage_dir}/bin/${binary_name}"
+cp "$duckdb_library" "${stage_dir}/bin/${duckdb_library_name}"
 cp LICENSE "${stage_dir}/LICENSE"
 
 tools/verify-release-metadata.sh "$version" --write-changelog-excerpt "${stage_dir}/CHANGELOG-excerpt.md" >/dev/null
@@ -171,6 +191,8 @@ version: ${version}
 target: ${target}
 archive: ${archive_base}.tar.gz
 binary: bin/${binary_name}
+duckdb_library: bin/${duckdb_library_name}
+duckdb_linkage: dynamic, exact version selected by the pinned libduckdb-sys crate
 binary_version_probe: ${version_output}
 license: Apache-2.0
 crates_io_publication: disabled while the DataFusion git pin is active

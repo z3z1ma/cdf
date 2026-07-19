@@ -56,6 +56,6 @@ url = "2.5.8"
 [dev-dependencies]
 arrow-ipc = "59.1.0"
 arrow-schema = "59.1.0"
-duckdb = { version = "1.10504.0", features = ["bundled"] }
+duckdb.workspace = true
 flate2 = "1.1.9"
 postgres = "0.19"
