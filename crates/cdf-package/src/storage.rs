@@ -894,7 +894,10 @@ mod tests {
         const SAMPLES: usize = 5;
         const RAW_CHUNK_BYTES: usize = 1024 * 1024;
 
-        let directory = tempfile::tempdir().unwrap();
+        let directory = std::env::var_os("CDF_E4_BENCH_DIR").map_or_else(
+            || tempfile::tempdir().unwrap(),
+            |root| tempfile::tempdir_in(root).unwrap(),
+        );
         let fields = (0..COLUMNS)
             .map(|column| Field::new(format!("value_{column}"), DataType::UInt64, false))
             .collect::<Vec<_>>();
