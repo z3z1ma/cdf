@@ -11,6 +11,8 @@ arrow-array = "59.1.0"
 arrow-ipc = { version = "59.1.0", features = ["lz4"] }
 arrow-schema = "59.1.0"
 bytes = "1.11.0"
+cap-fs-ext = "=4.0.2"
+cap-std = "=4.0.2"
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-memory = { path = "../cdf-memory" }
 cdf-package-contract = { path = "../cdf-package-contract" }

@@ -6,7 +6,7 @@ use std::{
 
 use cdf_kernel::{CdfError, PackageHash};
 use cdf_package::PackageReader;
-use cdf_package_contract::{ArchiveSegmentMetadata, FileEntry, MANIFEST_FILE, PackageStatus};
+use cdf_package_contract::{ArchiveSegmentMetadata, MANIFEST_FILE, PackageStatus};
 use cdf_project::{
     LocalPromotionCollectionAction, LocalPromotionCollectionAssessment,
     assess_local_promotion_collection, inspect_local_package_promotion_availability,
@@ -51,8 +51,8 @@ pub(crate) fn package(cli: &Cli, command: PackageCommand) -> Result<CommandOutpu
             let report = reader.verify()?;
             let cli_report = PackageVerifyReport {
                 package_hash: report.package_hash,
-                checked_files: report.checked_files,
-                checked_archives: report.checked_archives,
+                checked_file_count: report.checked_file_count,
+                checked_archive_count: report.checked_archive_count,
             };
             CommandOutput::rendered("package verify", cli_report.render_document(), cli_report)
         }
@@ -559,35 +559,13 @@ impl PackageGcCounts {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct PackageVerifyReport {
     package_hash: String,
-    checked_files: Vec<FileEntry>,
-    checked_archives: Vec<ArchiveSegmentMetadata>,
+    checked_file_count: usize,
+    checked_archive_count: usize,
 }
 
 impl PackageVerifyReport {
     fn render_document(&self) -> RenderDocument {
-        let file_table = self.checked_files.iter().fold(
-            Table::new(["file", "bytes", "sha256"]),
-            |table, file| {
-                table.row([
-                    redact_uri_userinfo(&file.path),
-                    humanize_bytes(file.byte_count),
-                    file.sha256.clone(),
-                ])
-            },
-        );
-        let archive_table = self.checked_archives.iter().fold(
-            Table::new(["segment", "archive", "rows", "bytes"]),
-            |table, archive| {
-                table.row([
-                    archive.segment_id.clone(),
-                    redact_uri_userinfo(&archive.archive_path),
-                    archive.archive_row_count.to_string(),
-                    humanize_bytes(archive.archive_byte_count),
-                ])
-            },
-        );
-
-        let mut document = RenderDocument::new()
+        RenderDocument::new()
             .push(SectionRule::new())
             .push(StatusLine::new(
                 StatusKind::Success,
@@ -597,18 +575,9 @@ impl PackageVerifyReport {
             .push(
                 KeyValuePanel::new("Integrity")
                     .row("package", self.package_hash.clone())
-                    .row("files", self.checked_files.len().to_string())
-                    .row("archive segments", self.checked_archives.len().to_string()),
-            );
-
-        if !self.checked_files.is_empty() {
-            document = document.blank_line().push(file_table);
-        }
-        if !self.checked_archives.is_empty() {
-            document = document.blank_line().push(archive_table);
-        }
-
-        document
+                    .row("files", self.checked_file_count.to_string())
+                    .row("archive segments", self.checked_archive_count.to_string()),
+            )
             .blank_line()
             .push(NextCommand::new("cdf inspect package <package>"))
     }

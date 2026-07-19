@@ -23,6 +23,7 @@ use cdf_memory::{
     record_batch_retained_bytes,
 };
 use cdf_package_contract::*;
+use sha2::Digest;
 
 #[test]
 fn package_local_authority_is_absolute_for_relative_roots() {
@@ -509,7 +510,7 @@ fn package_layout_manifest_and_verification_cover_identity_files() {
 
     let report = verify_package(temp.path()).unwrap();
     assert_eq!(report.package_hash, manifest.package_hash);
-    assert_eq!(report.checked_files.len(), manifest.identity.files.len());
+    assert_eq!(report.checked_file_count, manifest.identity.files.len());
 }
 
 #[test]
@@ -550,12 +551,7 @@ fn quarantine_records_round_trip_as_parquet_identity_evidence() {
     assert_eq!(reader.read_quarantine_records().unwrap(), records);
 
     let report = verify_package(temp.path()).unwrap();
-    assert!(
-        report
-            .checked_files
-            .iter()
-            .any(|file| file.path == "quarantine/part-000001.parquet")
-    );
+    assert_eq!(report.checked_file_count, manifest.identity.files.len());
     assert!(
         manifest
             .identity
@@ -668,12 +664,9 @@ fn dedup_summary_round_trips_as_json_identity_evidence() {
             .iter()
             .any(|file| file.path == DEDUP_SUMMARY_FILE)
     );
-    assert!(
-        verify_package(temp.path())
-            .unwrap()
-            .checked_files
-            .iter()
-            .any(|file| file.path == DEDUP_SUMMARY_FILE)
+    assert_eq!(
+        verify_package(temp.path()).unwrap().checked_file_count,
+        manifest.identity.files.len()
     );
 
     let mut file = OpenOptions::new()
@@ -1641,6 +1634,100 @@ fn verification_detects_tampered_identity_file() {
 }
 
 #[test]
+fn verification_rejects_nonportable_and_case_alias_manifest_paths_before_open() {
+    for invalid_path in [
+        "stats/../escape.json",
+        "stats/CON.json",
+        "stats/alternate:stream.json",
+        "stats/trailing-dot.",
+        "stats/back\\slash.json",
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut manifest = build_fixture(temp.path());
+        manifest.identity.files.push(FileEntry {
+            path: invalid_path.to_owned(),
+            byte_count: 0,
+            sha256: hex::encode(sha2::Sha256::digest([])),
+        });
+        manifest
+            .identity
+            .files
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        manifest.package_hash = manifest_identity_hash(&manifest.identity).unwrap();
+        manifest.signature.signing_input = manifest.package_hash.clone();
+        fs::write(
+            temp.path().join(MANIFEST_FILE),
+            canonical_json_bytes(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let error = verify_package(temp.path()).unwrap_err();
+        assert!(
+            error.message.contains("package artifact path")
+                || error.message.contains("package path component"),
+            "{invalid_path}: {error}"
+        );
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let mut manifest = build_fixture(temp.path());
+    for path in ["stats/Alias.json", "stats/alias.json"] {
+        manifest.identity.files.push(FileEntry {
+            path: path.to_owned(),
+            byte_count: 0,
+            sha256: hex::encode(sha2::Sha256::digest([])),
+        });
+    }
+    manifest
+        .identity
+        .files
+        .sort_by(|left, right| left.path.cmp(&right.path));
+    manifest.package_hash = manifest_identity_hash(&manifest.identity).unwrap();
+    manifest.signature.signing_input = manifest.package_hash.clone();
+    fs::write(
+        temp.path().join(MANIFEST_FILE),
+        canonical_json_bytes(&manifest).unwrap(),
+    )
+    .unwrap();
+    let error = verify_package(temp.path()).unwrap_err();
+    assert!(error.message.contains("portable case folding"), "{error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn verification_reports_unexpected_symlinks_without_following_them() {
+    let temp = tempfile::tempdir().unwrap();
+    build_fixture(temp.path());
+    let outside = tempfile::NamedTempFile::new().unwrap();
+    fs::write(outside.path(), b"outside-secret").unwrap();
+    std::os::unix::fs::symlink(outside.path(), temp.path().join("stats/unexpected-link")).unwrap();
+
+    let error = verify_package(temp.path()).unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("unexpected non-regular identity entry stats/unexpected-link"),
+        "{error}"
+    );
+    assert!(!error.message.contains("outside-secret"), "{error}");
+}
+
+#[test]
+fn package_writers_reject_nonportable_identity_names() {
+    let temp = tempfile::tempdir().unwrap();
+    let builder = PackageBuilder::create(temp.path(), "pkg-portable-paths").unwrap();
+    for path in [
+        "stats/CON.json",
+        "stats/name:stream",
+        "stats/trailing-space ",
+        "stats/back\\slash",
+    ] {
+        let error = builder.write_identity_artifact(path, b"value").unwrap_err();
+        assert!(error.message.contains("not portable") || error.message.contains("reserved"));
+    }
+}
+
+#[test]
 fn verification_detects_tampered_or_missing_state_and_commit_preimages() {
     for path in [
         STATE_INPUT_CHECKPOINT_FILE,
@@ -1862,7 +1949,7 @@ fn persisted_archive_writes_sidecars_manifest_metadata_and_fidelity_json() {
     assert_eq!(fidelity_bytes, canonical_json_bytes(&fidelity).unwrap());
 
     let verification = verify_package(temp.path()).unwrap();
-    assert_eq!(verification.checked_archives, metadata.segments);
+    assert_eq!(verification.checked_archive_count, metadata.segments.len());
     let reader = PackageReader::open(temp.path()).unwrap();
     assert_eq!(
         reader.replay_view().unwrap().segments[0].path,

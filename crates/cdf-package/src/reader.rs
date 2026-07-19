@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, File},
+    fs::File,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -28,9 +28,10 @@ use sha2::{Digest, Sha256};
 use crate::{
     artifacts::{read_json_artifact, read_optional_json_artifact},
     ops::{
-        append_receipt, read_manifest, read_receipts, read_segment_file, tombstone_package,
-        update_package_status, verify_package,
+        append_receipt, read_manifest_from_root, read_receipts, read_segment_file_from_root,
+        tombstone_package, update_package_status, verify_package_from_root,
     },
+    package_fs::PackageRoot,
     quarantine::quarantine_records_from_package_file,
     storage::{normalize_artifact_path, package_path},
 };
@@ -38,6 +39,7 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct PackageReader {
     package_dir: PathBuf,
+    package_root: Arc<PackageRoot>,
     manifest: PackageManifest,
 }
 
@@ -46,13 +48,14 @@ pub struct PackageReader {
 /// a hash-only assertion for package verification.
 #[derive(Clone, Debug)]
 pub struct VerifiedPackage {
-    package_dir: PathBuf,
     package_hash: String,
+    _package_root: Arc<PackageRoot>,
 }
 
 impl PartialEq for VerifiedPackage {
     fn eq(&self, other: &Self) -> bool {
         self.package_hash == other.package_hash
+            && self._package_root.same_object(&other._package_root)
     }
 }
 
@@ -110,11 +113,15 @@ impl VerifiedPackageReader {
 }
 
 impl VerifiedPackage {
-    pub(crate) fn from_finalization(package_dir: &Path, manifest: &PackageManifest) -> Self {
-        Self {
-            package_dir: package_dir.to_path_buf(),
+    pub(crate) fn from_finalization(
+        package_dir: &Path,
+        manifest: &PackageManifest,
+    ) -> Result<Self> {
+        let package_root = Arc::new(PackageRoot::open(package_dir)?);
+        Ok(Self {
             package_hash: manifest.package_hash.clone(),
-        }
+            _package_root: package_root,
+        })
     }
 
     pub fn package_hash(&self) -> &str {
@@ -139,7 +146,7 @@ pub struct VerifiedSegment<T> {
 pub struct VerifiedSegmentObject<T> {
     pub entry: SegmentEntry,
     pub authority: T,
-    package_dir: PathBuf,
+    package_root: Arc<PackageRoot>,
     local_file: PathBuf,
     _verification: Arc<VerifiedPackage>,
 }
@@ -155,7 +162,7 @@ impl<T> VerifiedSegmentObject<T> {
         maximum_segment_bytes: u64,
     ) -> Result<VerifiedSegment<T>> {
         load_verified_segment(
-            &self.package_dir,
+            self.package_root,
             self.entry,
             self.authority,
             memory,
@@ -188,7 +195,7 @@ impl<T> VerifiedSegment<T> {
 }
 
 pub struct VerifiedSegmentStream<T> {
-    package_dir: PathBuf,
+    package_root: Arc<PackageRoot>,
     segments: std::vec::IntoIter<(SegmentEntry, T)>,
     memory: Arc<dyn MemoryCoordinator>,
     maximum_segment_bytes: u64,
@@ -197,6 +204,7 @@ pub struct VerifiedSegmentStream<T> {
 
 pub struct VerifiedSegmentObjectStream<T> {
     package_dir: PathBuf,
+    package_root: Arc<PackageRoot>,
     verified: Arc<VerifiedPackage>,
     segments: std::vec::IntoIter<(SegmentEntry, T)>,
 }
@@ -208,7 +216,7 @@ impl<T> Iterator for VerifiedSegmentObjectStream<T> {
         let (entry, authority) = self.segments.next()?;
         Some(VerifiedSegmentObject {
             local_file: package_path(&self.package_dir, &entry.path),
-            package_dir: self.package_dir.clone(),
+            package_root: Arc::clone(&self.package_root),
             entry,
             authority,
             _verification: self.verified.clone(),
@@ -217,7 +225,7 @@ impl<T> Iterator for VerifiedSegmentObjectStream<T> {
 }
 
 fn verified_segment_stream<T>(
-    package_dir: &Path,
+    package_root: Arc<PackageRoot>,
     segments: Vec<(SegmentEntry, T)>,
     memory: Arc<dyn MemoryCoordinator>,
     maximum_segment_bytes: u64,
@@ -234,7 +242,7 @@ fn verified_segment_stream<T>(
         )));
     }
     Ok(VerifiedSegmentStream {
-        package_dir: package_dir.to_path_buf(),
+        package_root,
         segments: segments.into_iter(),
         memory,
         maximum_segment_bytes,
@@ -251,7 +259,7 @@ impl<T> Iterator for VerifiedSegmentStream<T> {
         }
         let (entry, authority) = self.segments.next()?;
         let result = load_verified_segment(
-            &self.package_dir,
+            Arc::clone(&self.package_root),
             entry,
             authority,
             Arc::clone(&self.memory),
@@ -265,7 +273,7 @@ impl<T> Iterator for VerifiedSegmentStream<T> {
 }
 
 fn load_verified_segment<T>(
-    package_dir: &Path,
+    package_root: Arc<PackageRoot>,
     entry: SegmentEntry,
     authority: T,
     memory: Arc<dyn MemoryCoordinator>,
@@ -283,7 +291,7 @@ fn load_verified_segment<T>(
     )?
     .as_minimum_working_set();
     let lease = reserve_blocking(Arc::clone(&memory), &request)?;
-    let batches = read_segment_file(package_dir, &entry.path)?;
+    let batches = read_segment_file_from_root(&package_root, &entry.path)?;
     let retained_bytes = batches.iter().try_fold(0u64, |total, batch| {
         total
             .checked_add(record_batch_retained_bytes(batch)?)
@@ -328,11 +336,12 @@ fn load_verified_segment<T>(
 
 impl PackageReader {
     pub fn open(package_dir: impl AsRef<Path>) -> Result<Self> {
-        let package_dir = fs::canonicalize(package_dir.as_ref())
-            .map_err(|error| crate::storage::io_error("canonicalize package directory", error))?;
-        let manifest = read_manifest(&package_dir)?;
+        let package_root = Arc::new(PackageRoot::open(package_dir.as_ref())?);
+        let package_dir = package_root.path().to_path_buf();
+        let manifest = read_manifest_from_root(&package_root)?;
         Ok(Self {
             package_dir,
+            package_root,
             manifest,
         })
     }
@@ -354,14 +363,14 @@ impl PackageReader {
     }
 
     pub fn verify(&self) -> Result<VerificationReport> {
-        verify_package(&self.package_dir)
+        verify_package_from_root(&self.package_root, &self.manifest)
     }
 
     pub fn verify_for_consumption(&self) -> Result<VerifiedPackage> {
         let report = self.verify()?;
         Ok(VerifiedPackage {
-            package_dir: self.package_dir.clone(),
             package_hash: report.package_hash,
+            _package_root: Arc::clone(&self.package_root),
         })
     }
 
@@ -382,7 +391,7 @@ impl PackageReader {
     }
 
     fn require_verification(&self, verified: &VerifiedPackage) -> Result<()> {
-        if verified.package_dir != self.package_dir
+        if !self.package_root.same_object(&verified._package_root)
             || verified.package_hash != self.manifest.package_hash
         {
             return Err(CdfError::data(
@@ -412,9 +421,7 @@ impl PackageReader {
                     "verified package identity does not contain artifact {relative_path}"
                 ))
             })?;
-        let path = package_path(&self.package_dir, &relative_path);
-        let bytes = fs::read(&path)
-            .map_err(|error| CdfError::data(format!("read {}: {error}", path.display())))?;
+        let bytes = self.package_root.read(&relative_path)?;
         let byte_count = u64::try_from(bytes.len())
             .map_err(|_| CdfError::data("identity artifact byte count exceeds u64"))?;
         let sha256 = hex::encode(Sha256::digest(&bytes));
@@ -556,7 +563,7 @@ impl PackageReader {
                     segment_id.as_str()
                 ))
             })?;
-        let batches = read_segment_file(&self.package_dir, &segment.path)?;
+        let batches = read_segment_file_from_root(&self.package_root, &segment.path)?;
         cdf_package_contract::validate_package_row_ord_batches(
             &batches,
             segment.package_row_ord_start,
@@ -571,7 +578,7 @@ impl PackageReader {
             .segments
             .iter()
             .map(|segment| {
-                let batches = read_segment_file(&self.package_dir, &segment.path)?;
+                let batches = read_segment_file_from_root(&self.package_root, &segment.path)?;
                 cdf_package_contract::validate_package_row_ord_batches(
                     &batches,
                     segment.package_row_ord_start,
@@ -599,7 +606,7 @@ impl PackageReader {
     ) -> Result<VerifiedSegmentStream<()>> {
         self.require_verification(verified)?;
         verified_segment_stream(
-            &self.package_dir,
+            Arc::clone(&self.package_root),
             self.manifest
                 .identity
                 .segments
@@ -629,7 +636,7 @@ impl PackageReader {
     ) -> Result<VerifiedSegmentStream<()>> {
         self.require_verification(verified)?;
         verified_segment_stream(
-            &self.package_dir,
+            Arc::clone(&self.package_root),
             self.manifest
                 .identity
                 .segments
@@ -649,6 +656,7 @@ impl PackageReader {
         self.require_verification(verified)?;
         Ok(VerifiedSegmentObjectStream {
             package_dir: self.package_dir.clone(),
+            package_root: Arc::clone(&self.package_root),
             verified: Arc::new(verified.clone()),
             segments: self
                 .manifest
@@ -718,7 +726,12 @@ impl PackageReader {
                 "package manifest segment {segment_id} is missing from destination commit request"
             )));
         }
-        verified_segment_stream(&self.package_dir, ordered, memory, maximum_segment_bytes)
+        verified_segment_stream(
+            Arc::clone(&self.package_root),
+            ordered,
+            memory,
+            maximum_segment_bytes,
+        )
     }
 
     pub fn read_quarantine_records(&self) -> Result<Vec<QuarantineRecord>> {
@@ -846,7 +859,7 @@ impl PackageReader {
                     state.segment_id
                 ))
             })?;
-            let batches = read_segment_file(&self.package_dir, &manifest_segment.path)?;
+            let batches = read_segment_file_from_root(&self.package_root, &manifest_segment.path)?;
             let batch_rows = batches
                 .iter()
                 .map(|batch| batch.num_rows() as u64)
@@ -884,7 +897,7 @@ impl PackageReader {
 
     pub fn tombstone(&mut self) -> Result<TombstoneReport> {
         let report = tombstone_package(&self.package_dir)?;
-        self.manifest = read_manifest(&self.package_dir)?;
+        self.manifest = read_manifest_from_root(&self.package_root)?;
         Ok(report)
     }
 }

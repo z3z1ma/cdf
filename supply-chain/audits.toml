@@ -7,8 +7,84 @@ criteria = "safe-to-deploy"
 version = "0.6.8"
 notes = "Reviewed all source and build code. Runtime capability is limited to CRC32C over caller-owned byte slices and optional Read/Write wrappers. Hardware paths are gated by runtime feature detection and target_feature; aligned u64 views are constructed only after bounded split/alignment checks, preserve slice lifetime, and do not write through shared input. Parallel hardware loops derive three nonempty equal blocks from fixed LONG/SHORT chunk constants. The build script writes generated lookup tables only beneath Cargo OUT_DIR. No network, ambient filesystem, process, environment-secret, or FFI capability. Selected to remove Snappy frame checksum copies while retaining software fallback."
 
+[[audits.maybe-owned]]
+who = "CDF maintainers <maintainers@cdf.invalid>"
+criteria = "safe-to-deploy"
+version = "0.3.4"
+notes = "Reviewed complete 0.3.4 source and manifest. Safe enum/reference ownership utilities and generated operator impls only; no unsafe, FFI, build script, filesystem, network, process, or ambient authority. Used transitively by cap-primitives."
+
 [[audits.sha2-asm]]
 who = "CDF maintainers <maintainers@cdf.invalid>"
 criteria = "safe-to-deploy"
 version = "0.6.4"
 notes = "Reviewed no_std FFI wrapper, build script, and architecture assembly entry points. Safe wrappers pass fixed-size state/block references; assembly accesses only those fixed buffers and bounded stack frames. No runtime filesystem, network, environment, or allocator capability. Enabled for hardware SHA-256 after a measured 5.6x rate improvement on arm64."
+
+[[trusted.cap-fs-ext]]
+criteria = "safe-to-deploy"
+user-id = 6825 # Dan Gohman (sunfishcode)
+start = "2020-12-11"
+end = "2026-07-20"
+notes = "Pinned Bytecode Alliance filesystem capability stack; upstream Bytecode Alliance audit import already trusts this author and CDF requires a safe cross-platform no-follow boundary."
+
+[[trusted.cap-primitives]]
+criteria = "safe-to-deploy"
+user-id = 6825 # Dan Gohman (sunfishcode)
+start = "2020-08-07"
+end = "2026-07-20"
+notes = "Pinned Bytecode Alliance filesystem capability stack; upstream Bytecode Alliance audit import already trusts this author and CDF requires a safe cross-platform no-follow boundary."
+
+[[trusted.cap-std]]
+criteria = "safe-to-deploy"
+user-id = 6825 # Dan Gohman (sunfishcode)
+start = "2020-06-25"
+end = "2026-07-20"
+notes = "Pinned Bytecode Alliance filesystem capability stack; upstream Bytecode Alliance audit import already trusts this author and CDF requires a safe cross-platform no-follow boundary."
+
+[[trusted.fs-set-times]]
+criteria = "safe-to-deploy"
+user-id = 6825 # Dan Gohman (sunfishcode)
+start = "2020-09-15"
+end = "2026-07-20"
+notes = "Pinned Bytecode Alliance filesystem capability stack; upstream Bytecode Alliance audit import already trusts this author and CDF requires a safe cross-platform no-follow boundary."
+
+[[trusted.io-extras]]
+criteria = "safe-to-deploy"
+user-id = 6825 # Dan Gohman (sunfishcode)
+start = "2021-11-09"
+end = "2026-07-20"
+notes = "Pinned Bytecode Alliance filesystem capability stack; upstream Bytecode Alliance audit import already trusts this author and CDF requires a safe cross-platform no-follow boundary."
+
+[[trusted.io-lifetimes]]
+criteria = "safe-to-deploy"
+user-id = 6825 # Dan Gohman (sunfishcode)
+start = "2021-06-12"
+end = "2026-07-20"
+notes = "Pinned Bytecode Alliance filesystem capability stack; upstream Bytecode Alliance audit import already trusts this author and CDF requires a safe cross-platform no-follow boundary."
+
+[[trusted.is-terminal]]
+criteria = "safe-to-deploy"
+user-id = 6825 # Dan Gohman (sunfishcode)
+start = "2022-01-22"
+end = "2026-07-20"
+notes = "Pinned Bytecode Alliance filesystem capability stack; upstream Bytecode Alliance audit import already trusts this author and CDF requires a safe cross-platform no-follow boundary."
+
+[[trusted.linux-raw-sys]]
+criteria = "safe-to-deploy"
+user-id = 6825 # Dan Gohman (sunfishcode)
+start = "2021-06-12"
+end = "2026-07-20"
+notes = "Pinned Bytecode Alliance filesystem capability stack; upstream Bytecode Alliance audit import already trusts this author and CDF requires a safe cross-platform no-follow boundary."
+
+[[trusted.rustix]]
+criteria = "safe-to-deploy"
+user-id = 6825 # Dan Gohman (sunfishcode)
+start = "2021-10-29"
+end = "2026-07-20"
+notes = "Pinned Bytecode Alliance filesystem capability stack; upstream Bytecode Alliance audit import already trusts this author and CDF requires a safe cross-platform no-follow boundary."
+
+[[trusted.winx]]
+criteria = "safe-to-deploy"
+user-id = 6825 # Dan Gohman (sunfishcode)
+start = "2019-08-20"
+end = "2026-07-20"
+notes = "Pinned cap-primitives Windows handle-relative support; Bytecode Alliance import provides the prior-version audit and trusts the same publisher."

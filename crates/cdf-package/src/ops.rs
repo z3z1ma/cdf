@@ -1,8 +1,4 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fs::{self, File},
-    path::Path,
-};
+use std::{fs, io::BufReader, path::Path};
 
 use arrow_array::RecordBatch;
 use arrow_ipc::reader::FileReader;
@@ -15,17 +11,22 @@ use cdf_package_contract::{
 use crate::{
     archive::verify_parquet_archive_metadata,
     json::{canonical_json_bytes, json_error, manifest_identity_hash},
+    package_fs::{PackageEntryKind, PackageRoot},
     storage::{
-        atomic_write, collect_identity_file_entries, io_error, normalize_artifact_path,
-        package_path, write_manifest_atomic,
+        atomic_write, io_error, package_path, validate_manifest_identity_paths,
+        write_manifest_atomic,
     },
 };
 
 pub fn read_manifest(package_dir: impl AsRef<Path>) -> Result<PackageManifest> {
-    let path = package_dir.as_ref().join(MANIFEST_FILE);
-    let bytes =
-        fs::read(&path).map_err(|error| io_error(format!("read {}", path.display()), error))?;
-    let manifest: PackageManifest = serde_json::from_slice(&bytes).map_err(json_error)?;
+    let root = PackageRoot::open(package_dir.as_ref())?;
+    read_manifest_from_root(&root)
+}
+
+pub(crate) fn read_manifest_from_root(root: &PackageRoot) -> Result<PackageManifest> {
+    let file = root.open_regular_file(MANIFEST_FILE)?.into_std();
+    let manifest: PackageManifest =
+        serde_json::from_reader(BufReader::new(file)).map_err(json_error)?;
     if manifest.manifest_version != MANIFEST_VERSION
         || manifest.identity.manifest_version != MANIFEST_VERSION
     {
@@ -79,24 +80,30 @@ pub fn read_receipts(package_dir: impl AsRef<Path>) -> Result<Vec<Receipt>> {
 }
 
 pub fn verify_package(package_dir: impl AsRef<Path>) -> Result<VerificationReport> {
-    let package_dir = package_dir.as_ref();
-    let mut report = verify_package_identity(package_dir)?;
-    let manifest = read_manifest(package_dir)?;
-    verify_contract_evolution_versions(package_dir, &manifest)?;
-    report.checked_archives = verify_parquet_archive_metadata(package_dir, &manifest)?;
+    let root = PackageRoot::open(package_dir.as_ref())?;
+    let manifest = read_manifest_from_root(&root)?;
+    verify_package_from_root(&root, &manifest)
+}
+
+pub(crate) fn verify_package_from_root(
+    root: &PackageRoot,
+    manifest: &PackageManifest,
+) -> Result<VerificationReport> {
+    let mut report = verify_package_identity_with(root, manifest)?;
+    verify_contract_evolution_versions(root, manifest)?;
+    report.checked_archive_count = verify_parquet_archive_metadata(root, manifest)?;
     Ok(report)
 }
 
 fn verify_contract_evolution_versions(
-    package_dir: &Path,
+    root: &PackageRoot,
     manifest: &PackageManifest,
 ) -> Result<()> {
     const PATH: &str = "schema/contract-evolution.json";
     if !manifest.identity.files.iter().any(|file| file.path == PATH) {
         return Ok(());
     }
-    let bytes = fs::read(package_dir.join(PATH))
-        .map_err(|error| io_error(format!("read {PATH}"), error))?;
+    let bytes = root.read(PATH)?;
     let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(json_error)?;
     if value.get("version").and_then(serde_json::Value::as_u64) != Some(1) {
         return Err(CdfError::data(
@@ -127,61 +134,56 @@ fn verify_contract_evolution_versions(
 }
 
 pub fn verify_package_identity(package_dir: impl AsRef<Path>) -> Result<VerificationReport> {
-    let package_dir = package_dir.as_ref();
-    let manifest = read_manifest(package_dir)?;
-    let mut failures = Vec::new();
+    let root = PackageRoot::open(package_dir.as_ref())?;
+    let manifest = read_manifest_from_root(&root)?;
+    verify_package_identity_with(&root, &manifest)
+}
+
+fn verify_package_identity_with(
+    root: &PackageRoot,
+    manifest: &PackageManifest,
+) -> Result<VerificationReport> {
+    validate_manifest_identity_paths(&manifest.identity.files)?;
 
     let actual_hash = manifest_identity_hash(&manifest.identity)?;
     if actual_hash != manifest.package_hash {
-        failures.push(format!(
+        return Err(verification_failure(format!(
             "manifest identity hash mismatch: expected {}, got {}",
             manifest.package_hash, actual_hash
-        ));
+        )));
     }
     if manifest.signature.signing_input != manifest.package_hash {
-        failures.push(format!(
+        return Err(verification_failure(format!(
             "signature signing input {} does not match package hash {}",
             manifest.signature.signing_input, manifest.package_hash
-        ));
+        )));
     }
 
-    let expected_paths: BTreeSet<&str> = manifest
-        .identity
-        .files
-        .iter()
-        .map(|entry| entry.path.as_str())
-        .collect();
-    let actual_files = collect_identity_file_entries(package_dir)?;
-    let actual_paths: BTreeSet<&str> = actual_files
-        .iter()
-        .map(|entry| entry.path.as_str())
-        .collect();
-
-    for unexpected in actual_paths.difference(&expected_paths) {
-        failures.push(format!("unexpected identity file {unexpected}"));
+    if let Some(failure) = first_unexpected_identity_failure(root, &manifest.identity.files)? {
+        return Err(verification_failure(failure));
     }
 
-    let actual_by_path: BTreeMap<&str, &FileEntry> = actual_files
-        .iter()
-        .map(|entry| (entry.path.as_str(), entry))
-        .collect();
-    let mut checked_files = Vec::with_capacity(manifest.identity.files.len());
     for expected in &manifest.identity.files {
-        match actual_by_path.get(expected.path.as_str()) {
+        match root.file_entry(&expected.path)? {
             Some(actual)
-                if actual.byte_count == expected.byte_count && actual.sha256 == expected.sha256 =>
-            {
-                checked_files.push((*actual).clone());
+                if actual.byte_count == expected.byte_count && actual.sha256 == expected.sha256 => {
             }
-            Some(actual) => failures.push(format!(
-                "tampered identity file {}: expected {} bytes sha256 {}, got {} bytes sha256 {}",
-                expected.path,
-                expected.byte_count,
-                expected.sha256,
-                actual.byte_count,
-                actual.sha256
-            )),
-            None => failures.push(format!("missing identity file {}", expected.path)),
+            Some(actual) => {
+                return Err(verification_failure(format!(
+                    "tampered identity file {}: expected {} bytes sha256 {}, got {} bytes sha256 {}",
+                    expected.path,
+                    expected.byte_count,
+                    expected.sha256,
+                    actual.byte_count,
+                    actual.sha256
+                )));
+            }
+            None => {
+                return Err(verification_failure(format!(
+                    "missing identity file {}",
+                    expected.path
+                )));
+            }
         }
     }
 
@@ -189,40 +191,67 @@ pub fn verify_package_identity(package_dir: impl AsRef<Path>) -> Result<Verifica
         match manifest
             .identity
             .files
-            .iter()
-            .find(|entry| entry.path == segment.path)
+            .binary_search_by(|entry| crate::storage::portable_path_cmp(&entry.path, &segment.path))
         {
-            Some(file)
-                if file.byte_count == segment.byte_count && file.sha256 == segment.sha256 => {}
-            Some(file) => failures.push(format!(
-                "segment {} does not match file entry {}: segment {} bytes sha256 {}, file {} bytes sha256 {}",
-                segment.segment_id.as_str(),
-                segment.path,
-                segment.byte_count,
-                segment.sha256,
-                file.byte_count,
-                file.sha256
-            )),
-            None => failures.push(format!(
-                "segment {} references missing file entry {}",
-                segment.segment_id.as_str(),
-                segment.path
-            )),
+            Ok(index) => match &manifest.identity.files[index] {
+                file if file.byte_count == segment.byte_count && file.sha256 == segment.sha256 => {}
+                file => {
+                    return Err(verification_failure(format!(
+                        "segment {} does not match file entry {}: segment {} bytes sha256 {}, file {} bytes sha256 {}",
+                        segment.segment_id.as_str(),
+                        segment.path,
+                        segment.byte_count,
+                        segment.sha256,
+                        file.byte_count,
+                        file.sha256
+                    )));
+                }
+            },
+            Err(_) => {
+                return Err(verification_failure(format!(
+                    "segment {} references missing file entry {}",
+                    segment.segment_id.as_str(),
+                    segment.path
+                )));
+            }
         }
     }
 
-    if !failures.is_empty() {
-        return Err(CdfError::data(format!(
-            "package verification failed: {}",
-            failures.join("; ")
-        )));
-    }
-
     Ok(VerificationReport {
-        package_hash: manifest.package_hash,
-        checked_files,
-        checked_archives: Vec::new(),
+        package_hash: manifest.package_hash.clone(),
+        checked_file_count: manifest.identity.files.len(),
+        checked_archive_count: 0,
     })
+}
+
+fn first_unexpected_identity_failure(
+    root: &PackageRoot,
+    expected: &[FileEntry],
+) -> Result<Option<String>> {
+    let mut first: Option<(String, PackageEntryKind)> = None;
+    root.visit_identity_entries(|path, kind| {
+        let is_expected = expected
+            .binary_search_by(|entry| crate::storage::portable_path_cmp(&entry.path, &path))
+            .is_ok();
+        let is_before_first = first.as_ref().is_none_or(|(candidate, _)| {
+            crate::storage::portable_path_cmp(&path, candidate).is_lt()
+        });
+        if !is_expected && is_before_first {
+            first = Some((path, kind));
+        }
+        Ok(())
+    })?;
+    Ok(first.map(|(path, kind)| {
+        let label = match kind {
+            PackageEntryKind::RegularFile => "unexpected identity file",
+            PackageEntryKind::NonRegular => "unexpected non-regular identity entry",
+        };
+        format!("{label} {path}")
+    }))
+}
+
+fn verification_failure(message: impl std::fmt::Display) -> CdfError {
+    CdfError::data(format!("package verification failed: {message}"))
 }
 
 pub fn tombstone_package(package_dir: impl AsRef<Path>) -> Result<TombstoneReport> {
@@ -247,19 +276,11 @@ pub fn tombstone_package(package_dir: impl AsRef<Path>) -> Result<TombstoneRepor
     })
 }
 
-pub fn read_segment_file(
-    package_dir: impl AsRef<Path>,
-    relative_path: impl AsRef<Path>,
+pub(crate) fn read_segment_file_from_root(
+    root: &PackageRoot,
+    relative_path: &str,
 ) -> Result<Vec<RecordBatch>> {
-    let relative_path = normalize_artifact_path(relative_path.as_ref())?;
-    if !relative_path.starts_with("data/") {
-        return Err(CdfError::data(format!(
-            "segment path must live under data/: {relative_path}"
-        )));
-    }
-    let path = package_path(package_dir.as_ref(), &relative_path);
-    let file =
-        File::open(&path).map_err(|error| io_error(format!("open {}", path.display()), error))?;
+    let file = root.open_regular_file(relative_path)?.into_std();
     let reader = FileReader::try_new(file, None).map_err(CdfError::from)?;
     reader
         .map(|batch| batch.map_err(CdfError::from))

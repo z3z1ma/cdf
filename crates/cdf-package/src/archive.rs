@@ -1,6 +1,5 @@
 use std::{
-    collections::BTreeSet,
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -20,9 +19,13 @@ use sha2::{Digest, Sha256};
 use crate::{
     json::canonical_json_bytes,
     ops::{read_manifest, verify_package, verify_package_identity},
+    package_fs::{PackageEntryKind, PackageRoot},
     parquet::transcode_record_batches_to_bounded_parquet_bytes,
     reader::PackageReader,
-    storage::{io_error, package_path, sync_directory, write_manifest_atomic},
+    storage::{
+        io_error, package_path, portable_path_cmp, sync_directory,
+        validate_canonical_relative_path, write_manifest_atomic,
+    },
 };
 
 pub const ARCHIVE_FIDELITY_STATEMENT: &str = "Arrow IPC remains the canonical package data. Parquet bytes are an archive/interchange projection; Arrow field metadata and other Arrow-only semantics are not promoted to canonical Parquet truth.";
@@ -74,6 +77,7 @@ pub fn persist_package_parquet_archive(
     verify_package_identity(package_dir)?;
 
     let manifest = read_manifest(package_dir)?;
+    let package_root = PackageRoot::open(package_dir)?;
     if !manifest.lifecycle.status.is_archivable() {
         return Err(CdfError::data(format!(
             "package {} at status {} cannot be archived as Parquet",
@@ -82,9 +86,9 @@ pub fn persist_package_parquet_archive(
         )));
     }
 
-    let replacing = has_parquet_archive_state(package_dir, &manifest)?;
+    let replacing = has_parquet_archive_state(&package_root, &manifest)?;
     if !force {
-        match verify_parquet_archive_metadata(package_dir, &manifest) {
+        match verify_parquet_archive_metadata(&package_root, &manifest) {
             Ok(_) if manifest_parquet_archive(&manifest).is_some() => {
                 let metadata = manifest_parquet_archive(&manifest)
                     .expect("checked archive metadata exists")
@@ -251,83 +255,96 @@ pub(crate) fn write_streamed_archive_temp_tree_with_memory(
 }
 
 pub(crate) fn verify_parquet_archive_metadata(
-    package_dir: &Path,
+    package_root: &PackageRoot,
     manifest: &PackageManifest,
-) -> Result<Vec<ArchiveSegmentMetadata>> {
-    let mut failures = Vec::new();
+) -> Result<usize> {
     let Some(metadata) = manifest_parquet_archive(manifest) else {
-        for orphan in collect_parquet_archive_files(package_dir)? {
-            failures.push(format!("orphan archive sidecar {orphan}"));
+        if let Some((path, _)) = first_archive_entry(package_root, |_| false)? {
+            return Err(archive_verification_failure(format!(
+                "orphan archive sidecar {path}"
+            )));
         }
-        return archive_verification_result(failures, Vec::new());
+        return Ok(0);
     };
 
     if metadata.format_version != PARQUET_ARCHIVE_FORMAT_VERSION {
-        failures.push(format!(
+        return Err(archive_verification_failure(format!(
             "archive metadata format_version {} is unsupported",
             metadata.format_version
-        ));
+        )));
     }
     if metadata.fidelity_report_path != FIDELITY_REPORT_PATH {
-        failures.push(format!(
+        return Err(archive_verification_failure(format!(
             "archive fidelity report path {} does not match {FIDELITY_REPORT_PATH}",
             metadata.fidelity_report_path
-        ));
+        )));
     }
     if metadata.fidelity_statement != ARCHIVE_FIDELITY_STATEMENT {
-        failures
-            .push("archive fidelity statement does not match the canonical statement".to_owned());
+        return Err(archive_verification_failure(
+            "archive fidelity statement does not match the canonical statement",
+        ));
     }
 
-    let mut expected_paths = BTreeSet::from([FIDELITY_REPORT_PATH.to_owned()]);
-    let checked_segments =
-        verify_archive_segments(manifest, metadata, &mut expected_paths, &mut failures);
+    verify_archive_segments(manifest, metadata)?;
 
-    for path in &expected_paths {
-        if path == FIDELITY_REPORT_PATH {
-            continue;
-        }
-        let actual = archive_file_entry(package_dir, path);
-        match (
-            metadata
-                .segments
-                .iter()
-                .find(|segment| segment.archive_path == *path),
-            actual,
-        ) {
-            (Some(expected), Ok(actual)) => {
+    for expected in &metadata.segments {
+        match package_root.file_entry(&expected.archive_path) {
+            Ok(Some(actual)) => {
                 if actual.byte_count != expected.archive_byte_count
                     || actual.sha256 != expected.archive_sha256
                 {
-                    failures.push(format!(
+                    return Err(archive_verification_failure(format!(
                         "tampered archive sidecar {}: expected {} bytes sha256 {}, got {} bytes sha256 {}",
                         expected.archive_path,
                         expected.archive_byte_count,
                         expected.archive_sha256,
                         actual.byte_count,
                         actual.sha256
-                    ));
+                    )));
                 }
             }
-            (Some(expected), Err(error)) if missing_file_error(&error) => {
-                failures.push(format!("missing archive sidecar {}", expected.archive_path));
+            Ok(None) => {
+                return Err(archive_verification_failure(format!(
+                    "missing archive sidecar {}",
+                    expected.archive_path
+                )));
             }
-            (Some(expected), Err(error)) => failures.push(format!(
-                "archive sidecar {} could not be read: {}",
-                expected.archive_path, error.message
-            )),
-            (None, _) => {}
+            Err(error) => {
+                return Err(archive_verification_failure(format!(
+                    "archive sidecar {} could not be read: {}",
+                    expected.archive_path, error.message
+                )));
+            }
         }
     }
 
-    verify_fidelity_report(package_dir, manifest, metadata, &mut failures)?;
+    verify_fidelity_report(package_root, manifest, metadata)?;
 
-    let actual_paths = collect_parquet_archive_files(package_dir)?;
-    for orphan in actual_paths.difference(&expected_paths) {
-        failures.push(format!("orphan archive sidecar {orphan}"));
+    let expected_entry_count = metadata
+        .segments
+        .len()
+        .checked_add(1)
+        .ok_or_else(|| CdfError::data("archive expected-entry count overflow"))?;
+    if archive_entry_count(package_root)? != expected_entry_count {
+        if let Some((path, kind)) = first_archive_entry(package_root, |path| {
+            path == FIDELITY_REPORT_PATH
+                || metadata
+                    .segments
+                    .iter()
+                    .any(|segment| segment.archive_path == path)
+        })? {
+            let label = match kind {
+                PackageEntryKind::RegularFile => "orphan archive sidecar",
+                PackageEntryKind::NonRegular => "unexpected non-regular archive entry",
+            };
+            return Err(archive_verification_failure(format!("{label} {path}")));
+        }
+        return Err(archive_verification_failure(format!(
+            "archive contains an unexpected entry count: expected {expected_entry_count}"
+        )));
     }
 
-    archive_verification_result(failures, checked_segments)
+    Ok(metadata.segments.len())
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -412,128 +429,100 @@ fn install_archive_tree(package_dir: &Path, temp_dir: &Path) -> Result<()> {
 fn verify_archive_segments(
     manifest: &PackageManifest,
     metadata: &ParquetArchiveMetadata,
-    expected_paths: &mut BTreeSet<String>,
-    failures: &mut Vec<String>,
-) -> Vec<ArchiveSegmentMetadata> {
-    let mut checked_segments = Vec::new();
+) -> Result<()> {
+    if metadata.segments.len() != manifest.identity.segments.len() {
+        return Err(archive_verification_failure(format!(
+            "archive metadata has {} segments, expected {}",
+            metadata.segments.len(),
+            manifest.identity.segments.len()
+        )));
+    }
     for (index, source) in manifest.identity.segments.iter().enumerate() {
-        let Some(segment) = metadata.segments.get(index) else {
-            failures.push(format!(
-                "archive metadata missing segment {}",
-                source.segment_id.as_str()
-            ));
-            continue;
-        };
+        let segment = &metadata.segments[index];
         if segment.segment_id != source.segment_id.as_str() {
-            failures.push(format!(
+            return Err(archive_verification_failure(format!(
                 "archive metadata segment {} at index {} does not match manifest segment {}",
                 segment.segment_id,
                 index,
                 source.segment_id.as_str()
-            ));
+            )));
         }
-        let expected_path = match archive_segment_path(source.segment_id.as_str()) {
-            Ok(path) => path,
-            Err(error) => {
-                failures.push(error.message);
-                continue;
-            }
-        };
-        expected_paths.insert(expected_path.clone());
+        let expected_path = archive_segment_path(source.segment_id.as_str())?;
+        validate_canonical_relative_path(&segment.archive_path)?;
         if segment.archive_path != expected_path {
-            failures.push(format!(
+            return Err(archive_verification_failure(format!(
                 "archive path for segment {} is {}, expected {}",
                 source.segment_id.as_str(),
                 segment.archive_path,
                 expected_path
-            ));
+            )));
         }
         if segment.source_path != source.path
             || segment.source_byte_count != source.byte_count
             || segment.source_sha256 != source.sha256
             || segment.source_row_count != source.row_count
         {
-            failures.push(format!(
+            return Err(archive_verification_failure(format!(
                 "archive source metadata mismatch for segment {}",
                 source.segment_id.as_str()
-            ));
+            )));
         }
-        checked_segments.push(segment.clone());
     }
-
-    for segment in metadata
-        .segments
-        .iter()
-        .skip(manifest.identity.segments.len())
-    {
-        failures.push(format!(
-            "archive metadata has extra segment {}",
-            segment.segment_id
-        ));
-    }
-
-    checked_segments
+    Ok(())
 }
 
 fn verify_fidelity_report(
-    package_dir: &Path,
+    package_root: &PackageRoot,
     manifest: &PackageManifest,
     metadata: &ParquetArchiveMetadata,
-    failures: &mut Vec<String>,
 ) -> Result<()> {
-    let path = package_path(package_dir, FIDELITY_REPORT_PATH);
-    let bytes = match fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            failures.push(format!(
+    let bytes = match package_root.read_optional(FIDELITY_REPORT_PATH) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => {
+            return Err(archive_verification_failure(format!(
                 "missing archive fidelity report {FIDELITY_REPORT_PATH}"
-            ));
-            return Ok(());
+            )));
         }
         Err(error) => {
-            failures.push(format!(
+            return Err(archive_verification_failure(format!(
                 "archive fidelity report {FIDELITY_REPORT_PATH} could not be read: {}",
-                io_error(format!("read {}", path.display()), error).message
-            ));
-            return Ok(());
+                error.message
+            )));
         }
     };
     let actual: PackageArchiveFidelityReport = match serde_json::from_slice(&bytes) {
         Ok(actual) => actual,
         Err(error) => {
-            failures.push(format!("archive fidelity report mismatch: {error}"));
-            return Ok(());
+            return Err(archive_verification_failure(format!(
+                "archive fidelity report mismatch: {error}"
+            )));
         }
     };
     let expected = fidelity_report(&manifest.package_hash, metadata);
     if actual != expected {
-        failures.push("archive fidelity report mismatch".to_owned());
-        return Ok(());
+        return Err(archive_verification_failure(
+            "archive fidelity report mismatch",
+        ));
     }
     let canonical = canonical_json_bytes(&expected)?;
     if bytes != canonical {
-        failures.push("archive fidelity report is not canonical JSON".to_owned());
+        return Err(archive_verification_failure(
+            "archive fidelity report is not canonical JSON",
+        ));
     }
     Ok(())
 }
 
-fn archive_verification_result(
-    failures: Vec<String>,
-    checked_segments: Vec<ArchiveSegmentMetadata>,
-) -> Result<Vec<ArchiveSegmentMetadata>> {
-    if failures.is_empty() {
-        Ok(checked_segments)
-    } else {
-        Err(CdfError::data(format!(
-            "package archive verification failed: {}",
-            failures.join("; ")
-        )))
-    }
+fn archive_verification_failure(message: impl std::fmt::Display) -> CdfError {
+    CdfError::data(format!("package archive verification failed: {message}"))
 }
 
-fn has_parquet_archive_state(package_dir: &Path, manifest: &PackageManifest) -> Result<bool> {
+fn has_parquet_archive_state(
+    package_root: &PackageRoot,
+    manifest: &PackageManifest,
+) -> Result<bool> {
     Ok(manifest_parquet_archive(manifest).is_some()
-        || package_path(package_dir, PARQUET_ARCHIVE_DIR).exists())
+        || first_archive_entry(package_root, |_| false)?.is_some())
 }
 
 fn manifest_parquet_archive(manifest: &PackageManifest) -> Option<&ParquetArchiveMetadata> {
@@ -557,89 +546,33 @@ fn archive_segment_path(segment_id: &str) -> Result<String> {
     Ok(format!("{PARQUET_DATA_DIR}/{segment_id}.parquet"))
 }
 
-fn collect_parquet_archive_files(package_dir: &Path) -> Result<BTreeSet<String>> {
-    let archive_dir = package_path(package_dir, PARQUET_ARCHIVE_DIR);
-    if !archive_dir.exists() {
-        return Ok(BTreeSet::new());
-    }
-    let mut files = BTreeSet::new();
-    collect_archive_files(package_dir, &archive_dir, &mut files)?;
-    Ok(files)
-}
-
-fn collect_archive_files(
-    package_dir: &Path,
-    directory: &Path,
-    files: &mut BTreeSet<String>,
-) -> Result<()> {
-    let mut entries = fs::read_dir(directory)
-        .map_err(|error| io_error(format!("read directory {}", directory.display()), error))?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|error| io_error(format!("read directory {}", directory.display()), error))?;
-    entries.sort_by_key(|entry| entry.path());
-
-    for entry in entries {
-        let path = entry.path();
-        let file_type = entry
-            .file_type()
-            .map_err(|error| io_error(format!("stat {}", path.display()), error))?;
-        if file_type.is_dir() {
-            collect_archive_files(package_dir, &path, files)?;
-        } else if file_type.is_file() {
-            files.insert(relative_archive_path(package_dir, &path)?);
+fn first_archive_entry(
+    package_root: &PackageRoot,
+    mut is_expected: impl FnMut(&str) -> bool,
+) -> Result<Option<(String, PackageEntryKind)>> {
+    let mut first: Option<(String, PackageEntryKind)> = None;
+    package_root.visit_tree_entries(PARQUET_ARCHIVE_DIR, |path, kind| {
+        if !is_expected(&path)
+            && first
+                .as_ref()
+                .is_none_or(|(candidate, _)| portable_path_cmp(&path, candidate).is_lt())
+        {
+            first = Some((path, kind));
         }
-    }
-    Ok(())
-}
-
-fn relative_archive_path(package_dir: &Path, path: &Path) -> Result<String> {
-    let relative = path.strip_prefix(package_dir).map_err(|error| {
-        CdfError::internal(format!(
-            "path {} is not under {}: {error}",
-            path.display(),
-            package_dir.display()
-        ))
+        Ok(())
     })?;
-    let mut parts = Vec::new();
-    for component in relative.components() {
-        match component {
-            std::path::Component::Normal(part) => {
-                let part = part.to_str().ok_or_else(|| {
-                    CdfError::data(format!("path is not valid UTF-8: {}", path.display()))
-                })?;
-                parts.push(part.to_owned());
-            }
-            _ => {
-                return Err(CdfError::data(format!(
-                    "archive path must stay inside the package: {}",
-                    path.display()
-                )));
-            }
-        }
-    }
-    Ok(parts.join("/"))
+    Ok(first)
 }
 
-fn archive_file_entry(package_dir: &Path, relative_path: &str) -> Result<FileDigest> {
-    file_entry(&package_path(package_dir, relative_path))
-}
-
-fn file_entry(path: &Path) -> Result<FileDigest> {
-    let mut file =
-        File::open(path).map_err(|error| io_error(format!("open {}", path.display()), error))?;
-    let mut hasher = Sha256::new();
-    let byte_count = std::io::copy(&mut file, &mut hasher)
-        .map_err(|error| io_error(format!("hash {}", path.display()), error))?;
-    Ok(FileDigest {
-        byte_count,
-        sha256: hex::encode(hasher.finalize()),
-    })
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct FileDigest {
-    byte_count: u64,
-    sha256: String,
+fn archive_entry_count(package_root: &PackageRoot) -> Result<usize> {
+    let mut count = 0_usize;
+    package_root.visit_tree_entries(PARQUET_ARCHIVE_DIR, |_, _| {
+        count = count
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("archive entry count overflow"))?;
+        Ok(())
+    })?;
+    Ok(count)
 }
 
 fn create_archive_temp_dir(package_dir: &Path) -> Result<PathBuf> {
@@ -676,12 +609,4 @@ fn cleanup_stale_archive_temps(package_dir: &Path) -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(io_error(format!("remove {}", tmp_root.display()), error)),
     }
-}
-
-fn missing_file_error(error: &CdfError) -> bool {
-    error.message.contains(": No such file or directory")
-        || error.message.contains("os error 2")
-        || error
-            .message
-            .contains("The system cannot find the file specified")
 }

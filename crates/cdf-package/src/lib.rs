@@ -5,6 +5,7 @@ mod artifacts;
 mod builder;
 mod json;
 mod ops;
+mod package_fs;
 mod parquet;
 mod quarantine;
 mod reader;

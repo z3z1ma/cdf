@@ -171,8 +171,8 @@ impl TryFrom<&str> for PackageStatus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerificationReport {
     pub package_hash: String,
-    pub checked_files: Vec<FileEntry>,
-    pub checked_archives: Vec<ArchiveSegmentMetadata>,
+    pub checked_file_count: usize,
+    pub checked_archive_count: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -3854,9 +3854,9 @@ fn contract_exec_writes_redacted_quarantine_artifact_and_keeps_accepted_rows() {
     assert!(!String::from_utf8_lossy(&artifact).contains(raw_pii));
     assert!(
         reader
-            .verify()
-            .unwrap()
-            .checked_files
+            .manifest()
+            .identity
+            .files
             .iter()
             .any(|file| file.path == "quarantine/part-000001.parquet")
     );
@@ -4194,9 +4194,9 @@ fn variant_capture_materializes_nested_values_and_contract_evolution_evidence() 
     );
     assert!(
         reader
-            .verify()
-            .unwrap()
-            .checked_files
+            .manifest()
+            .identity
+            .files
             .iter()
             .any(|file| file.path == "schema/contract-evolution.json")
     );

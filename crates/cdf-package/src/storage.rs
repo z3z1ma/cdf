@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering as CmpOrdering,
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Component, Path, PathBuf},
@@ -253,6 +254,7 @@ pub(crate) fn build_manifest(
     segments: Vec<SegmentEntry>,
     status: PackageStatus,
 ) -> Result<PackageManifest> {
+    validate_manifest_identity_paths(&files)?;
     cdf_package_contract::validate_segment_ordinal_manifest(&segments)?;
     let identity = ManifestIdentity {
         manifest_version: MANIFEST_VERSION,
@@ -304,7 +306,7 @@ pub(crate) fn collect_identity_file_paths(package_dir: &Path) -> Result<Vec<Stri
         relative_paths.push(path);
         Ok(())
     })?;
-    relative_paths.sort();
+    relative_paths.sort_by(|left, right| portable_path_cmp(left, right));
     Ok(relative_paths)
 }
 
@@ -479,9 +481,9 @@ pub(crate) fn normalize_artifact_path(relative_path: &Path) -> Result<String> {
         ));
     }
     if relative_path == TRACE_FILE
-        || REQUIRED_DIRECTORIES
-            .iter()
-            .any(|directory| relative_path.starts_with(&format!("{directory}/")))
+        || relative_path
+            .split_once('/')
+            .is_some_and(|(directory, _)| REQUIRED_DIRECTORIES.contains(&directory))
     {
         return Ok(relative_path);
     }
@@ -500,7 +502,7 @@ pub(crate) fn nested_artifact_path(directory: &str, file_name: &Path) -> Result<
     Ok(format!("{directory}/{file_name}"))
 }
 
-fn normalize_relative_path(path: &Path) -> Result<String> {
+pub(crate) fn normalize_relative_path(path: &Path) -> Result<String> {
     let mut parts = Vec::new();
     for component in path.components() {
         match component {
@@ -511,10 +513,13 @@ fn normalize_relative_path(path: &Path) -> Result<String> {
                 if part.is_empty() {
                     return Err(CdfError::data("path component cannot be empty"));
                 }
+                validate_portable_path_component(part)?;
                 parts.push(part.to_owned());
             }
-            Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+            Component::CurDir
+            | Component::ParentDir
+            | Component::RootDir
+            | Component::Prefix(_) => {
                 return Err(CdfError::data(format!(
                     "package artifact path must be relative and stay inside the package: {}",
                     path.display()
@@ -526,6 +531,96 @@ fn normalize_relative_path(path: &Path) -> Result<String> {
         return Err(CdfError::data("package artifact path cannot be empty"));
     }
     Ok(parts.join("/"))
+}
+
+pub(crate) fn validate_manifest_identity_paths(files: &[FileEntry]) -> Result<()> {
+    let mut previous: Option<&str> = None;
+    for entry in files {
+        validate_canonical_artifact_path(&entry.path)?;
+        if let Some(prior) = previous {
+            if portable_casefold_cmp(prior, &entry.path) == CmpOrdering::Equal {
+                return Err(CdfError::data(format!(
+                    "package manifest identity paths collide after portable case folding: {}",
+                    entry.path
+                )));
+            }
+            if portable_path_cmp(prior, &entry.path) != CmpOrdering::Less {
+                return Err(CdfError::data(
+                    "package manifest identity files must be strictly portable-path-sorted",
+                ));
+            }
+        }
+        previous = Some(&entry.path);
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_canonical_relative_path(path: &str) -> Result<()> {
+    if path.is_empty() {
+        return Err(CdfError::data("package artifact path cannot be empty"));
+    }
+    for component in path.split('/') {
+        if component.is_empty() || matches!(component, "." | "..") {
+            return Err(CdfError::data(format!(
+                "package artifact path must use canonical portable spelling: {path}"
+            )));
+        }
+        validate_portable_path_component(component)?;
+    }
+    Ok(())
+}
+
+fn validate_canonical_artifact_path(path: &str) -> Result<()> {
+    validate_canonical_relative_path(path)?;
+    if path == TRACE_FILE
+        || path
+            .split_once('/')
+            .is_some_and(|(directory, _)| REQUIRED_DIRECTORIES.contains(&directory))
+    {
+        Ok(())
+    } else {
+        Err(CdfError::data(format!(
+            "package artifact path must be under required layout directories: {path}"
+        )))
+    }
+}
+
+pub(crate) fn validate_portable_path_component(component: &str) -> Result<()> {
+    if component.contains(['\\', ':'])
+        || component.chars().any(char::is_control)
+        || component.ends_with(['.', ' '])
+    {
+        return Err(CdfError::data(format!(
+            "package path component is not portable: {component:?}"
+        )));
+    }
+    let basename = component.split('.').next().unwrap_or(component);
+    let reserved = ["CON", "PRN", "AUX", "NUL"]
+        .iter()
+        .any(|name| basename.eq_ignore_ascii_case(name))
+        || is_numbered_portable_device(basename, b"COM")
+        || is_numbered_portable_device(basename, b"LPT");
+    if reserved {
+        return Err(CdfError::data(format!(
+            "package path component uses a reserved portable device name: {component:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn is_numbered_portable_device(basename: &str, prefix: &[u8; 3]) -> bool {
+    let bytes = basename.as_bytes();
+    bytes.len() == 4 && bytes[..3].eq_ignore_ascii_case(prefix) && matches!(bytes[3], b'1'..=b'9')
+}
+
+fn portable_casefold_cmp(left: &str, right: &str) -> CmpOrdering {
+    left.chars()
+        .flat_map(char::to_lowercase)
+        .cmp(right.chars().flat_map(char::to_lowercase))
+}
+
+pub(crate) fn portable_path_cmp(left: &str, right: &str) -> CmpOrdering {
+    portable_casefold_cmp(left, right).then_with(|| left.cmp(right))
 }
 
 fn relative_path_string(base: &Path, path: &Path) -> Result<String> {

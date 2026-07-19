@@ -12730,6 +12730,8 @@ fn package_verify_uses_lower_package_reader() {
             .unwrap()
             .starts_with("sha256:")
     );
+    assert_eq!(json["result"]["checked_file_count"], 1);
+    assert_eq!(json["result"]["checked_archive_count"], 0);
 }
 
 #[test]

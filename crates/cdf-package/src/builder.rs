@@ -607,7 +607,7 @@ impl PackageBuilder {
 
     pub fn finish_verified(&self) -> Result<(PackageManifest, crate::VerifiedPackage)> {
         let manifest = self.finish()?;
-        let verified = crate::VerifiedPackage::from_finalization(&self.package_dir, &manifest);
+        let verified = crate::VerifiedPackage::from_finalization(&self.package_dir, &manifest)?;
         Ok((manifest, verified))
     }
 
@@ -658,14 +658,16 @@ impl PackageBuilder {
                 "identity artifact {path} is missing before package finalization"
             )));
         }
-        files.sort_by(|left, right| left.path.cmp(&right.path));
+        files.sort_by(|left, right| crate::storage::portable_path_cmp(&left.path, &right.path));
         let mut segments = Vec::new();
         visit_journal::<SegmentDraft>(
             &self.segment_drafts,
             "package segment draft journal",
             |draft| {
                 let index = files
-                    .binary_search_by(|entry| entry.path.as_str().cmp(draft.path.as_str()))
+                    .binary_search_by(|entry| {
+                        crate::storage::portable_path_cmp(&entry.path, &draft.path)
+                    })
                     .map_err(|_| {
                         CdfError::data(format!(
                             "segment file {} missing before package finalization",
