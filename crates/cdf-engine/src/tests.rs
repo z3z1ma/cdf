@@ -348,8 +348,11 @@ fn engine_plan_requires_recorded_schema_authorities() {
     unbounded.stream_capabilities = Some(cdf_runtime::SourceStreamCapabilities {
         quiescence: false,
         watermark_behavior: cdf_kernel::OperatorWatermarkBehavior::Drop,
+        watermark: None,
         safe_frontiers: vec![SafeFrontierPolicy::CanonicalAdmittedSourcePosition],
-        source_frontier_kinds: vec![cdf_kernel::SourcePositionKind::Cursor],
+        source_frontiers: vec![cdf_runtime::SourceFrontierCapability::Cursor {
+            fields: vec!["id".to_owned()],
+        }],
         idleness_capabilities: Vec::new(),
     });
     assert!(
@@ -2551,8 +2554,15 @@ fn watermark_projection_fails_at_graph_compilation_before_source_contact() {
     source.stream_capabilities = Some(cdf_runtime::SourceStreamCapabilities {
         quiescence: false,
         watermark_behavior: cdf_kernel::OperatorWatermarkBehavior::Preserve,
+        watermark: Some(cdf_runtime::SourceWatermarkCapability {
+            event_time_field: "id".into(),
+            domain: cdf_kernel::EventTimeDomain::SignedInteger,
+            authority: WatermarkAuthority::Source,
+        }),
         safe_frontiers: vec![SafeFrontierPolicy::CanonicalAdmittedSourcePosition],
-        source_frontier_kinds: vec![cdf_kernel::SourcePositionKind::Cursor],
+        source_frontiers: vec![cdf_runtime::SourceFrontierCapability::Cursor {
+            fields: vec!["id".to_owned()],
+        }],
         idleness_capabilities: Vec::new(),
     });
     source.validate().unwrap();
@@ -2592,8 +2602,15 @@ fn watermark_compilation_proves_field_domain_authority_and_column_preservation()
         source.stream_capabilities = Some(cdf_runtime::SourceStreamCapabilities {
             quiescence: false,
             watermark_behavior: cdf_kernel::OperatorWatermarkBehavior::Preserve,
+            watermark: Some(cdf_runtime::SourceWatermarkCapability {
+                event_time_field: "id".into(),
+                domain: cdf_kernel::EventTimeDomain::SignedInteger,
+                authority: WatermarkAuthority::Source,
+            }),
             safe_frontiers: vec![SafeFrontierPolicy::CanonicalAdmittedSourcePosition],
-            source_frontier_kinds: vec![cdf_kernel::SourcePositionKind::Cursor],
+            source_frontiers: vec![cdf_runtime::SourceFrontierCapability::Cursor {
+                fields: vec!["id".to_owned()],
+            }],
             idleness_capabilities: Vec::new(),
         });
         source.validate().unwrap();
@@ -2604,7 +2621,7 @@ fn watermark_compilation_proves_field_domain_authority_and_column_preservation()
 
     let resource = MockResource::tier_b(sample_batches());
     let source = unbounded_source(&resource);
-    let missing = Planner::new()
+    let error = Planner::new()
         .plan_tier_b(
             &resource,
             plan_input(
@@ -2616,17 +2633,14 @@ fn watermark_compilation_proves_field_domain_authority_and_column_preservation()
         )
         .unwrap()
         .bind_compiled_source(&source)
-        .unwrap();
-    let error = missing
-        .bind_operator_graph(&source, &destination)
         .unwrap_err();
     assert!(
         error
             .message
-            .contains("absent from the compiled output schema")
+            .contains("watermark field/domain/authority does not match")
     );
 
-    let mismatch = Planner::new()
+    let error = Planner::new()
         .plan_tier_b(
             &resource,
             plan_input(
@@ -2638,12 +2652,11 @@ fn watermark_compilation_proves_field_domain_authority_and_column_preservation()
         )
         .unwrap()
         .bind_compiled_source(&source)
-        .unwrap();
-    let error = mismatch
-        .bind_operator_graph(&source, &destination)
         .unwrap_err();
     assert!(
-        error.message.contains("compiled Arrow type is Int32"),
+        error
+            .message
+            .contains("watermark field/domain/authority does not match"),
         "{}",
         error.message
     );
@@ -2690,7 +2703,11 @@ fn watermark_compilation_proves_field_domain_authority_and_column_preservation()
         )
         .unwrap();
     let error = derived.bind_compiled_source(&source).unwrap_err();
-    assert!(error.message.contains("no source transform provides it"));
+    assert!(
+        error
+            .message
+            .contains("watermark field/domain/authority does not match")
+    );
     assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
 }
 
@@ -2727,9 +2744,12 @@ fn operator_graph_binds_the_plan_source_and_drain_policy_exactly() {
     drain_source.execution_capabilities.bounded = false;
     drain_source.stream_capabilities = Some(cdf_runtime::SourceStreamCapabilities {
         quiescence: false,
-        watermark_behavior: cdf_kernel::OperatorWatermarkBehavior::Preserve,
+        watermark_behavior: cdf_kernel::OperatorWatermarkBehavior::Drop,
+        watermark: None,
         safe_frontiers: vec![SafeFrontierPolicy::CanonicalAdmittedSourcePosition],
-        source_frontier_kinds: vec![cdf_kernel::SourcePositionKind::Cursor],
+        source_frontiers: vec![cdf_runtime::SourceFrontierCapability::Cursor {
+            fields: vec!["id".to_owned()],
+        }],
         idleness_capabilities: Vec::new(),
     });
     drain_source.validate().unwrap();

@@ -9,10 +9,11 @@ use std::{
 use arrow_schema::Schema;
 use cdf_http::{EgressAllowlist, HttpMethod, HttpRequest, SecretProvider};
 use cdf_kernel::{
-    CdfError, EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, ErrorKind, FreshnessSpec,
-    OperatorWatermarkBehavior, PayloadRetention, PushdownFidelity, QueryableResource,
-    ResourceCapabilities, ResourceDescriptor, ResourceId, Result, SafeFrontierPolicy, SchemaSource,
-    SourcePositionKind, TrustLevel, TypePolicyAllowances,
+    CdfError, EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, ErrorKind, EventTimeDomain,
+    FreshnessSpec, OperatorWatermarkBehavior, PayloadRetention, PushdownFidelity,
+    QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceId, Result,
+    SafeFrontierPolicy, SchemaSource, SourcePosition, SourcePositionKind, TrustLevel,
+    TypePolicyAllowances, WatermarkAuthority,
 };
 use serde::{Deserialize, Serialize};
 
@@ -520,10 +521,12 @@ pub struct SourceExecutionCapabilities {
 pub struct SourceStreamCapabilities {
     pub quiescence: bool,
     pub watermark_behavior: OperatorWatermarkBehavior,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watermark: Option<SourceWatermarkCapability>,
     pub safe_frontiers: Vec<SafeFrontierPolicy>,
-    /// Position families for which the source can compare an authored termination frontier to
-    /// emitted positions and stop without crossing it.
-    pub source_frontier_kinds: Vec<SourcePositionKind>,
+    /// Exact position dimensions for which the source can compare an authored termination
+    /// frontier to emitted positions and stop without crossing it.
+    pub source_frontiers: Vec<SourceFrontierCapability>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub idleness_capabilities: Vec<String>,
 }
@@ -531,6 +534,34 @@ pub struct SourceStreamCapabilities {
 impl SourceStreamCapabilities {
     pub fn validate(&self) -> Result<()> {
         self.watermark_behavior.validate()?;
+        match (&self.watermark_behavior, &self.watermark) {
+            (OperatorWatermarkBehavior::Drop, None) => {}
+            (OperatorWatermarkBehavior::Preserve, Some(capability))
+                if capability.authority == WatermarkAuthority::Source =>
+            {
+                capability.validate()?;
+            }
+            (
+                OperatorWatermarkBehavior::Transform { mapping_id },
+                Some(SourceWatermarkCapability {
+                    authority:
+                        WatermarkAuthority::Derived {
+                            mapping_id: authority_mapping,
+                        },
+                    ..
+                }),
+            ) if mapping_id == authority_mapping => {
+                self.watermark
+                    .as_ref()
+                    .expect("matched source watermark capability")
+                    .validate()?;
+            }
+            _ => {
+                return Err(CdfError::contract(
+                    "source watermark behavior must match one exact field/domain/authority capability; use drop with no capability, preserve with source authority, or transform with the same derived mapping id",
+                ));
+            }
+        }
         if self.safe_frontiers.is_empty() {
             return Err(CdfError::contract(
                 "unbounded source stream capabilities require at least one safe-frontier policy",
@@ -546,13 +577,16 @@ impl SourceStreamCapabilities {
             ));
         }
         if self
-            .source_frontier_kinds
+            .source_frontiers
             .windows(2)
-            .any(|pair| pair[0] >= pair[1])
+            .any(|pair| pair[0].kind() >= pair[1].kind())
         {
             return Err(CdfError::contract(
-                "source-frontier position kinds must use canonical sorted order",
+                "source-frontier capabilities must contain one declaration per kind in canonical sorted order",
             ));
+        }
+        for frontier in &self.source_frontiers {
+            frontier.validate()?;
         }
         validate_names(
             "source stream idleness capability",
@@ -580,9 +614,110 @@ impl SourceStreamCapabilities {
             .is_ok()
     }
 
-    pub fn supports_source_frontier(&self, kind: SourcePositionKind) -> bool {
-        self.source_frontier_kinds.binary_search(&kind).is_ok()
+    pub fn supports_source_frontier(&self, position: &SourcePosition) -> bool {
+        let Some(capability) = self
+            .source_frontiers
+            .iter()
+            .find(|capability| capability.kind() == position.kind())
+        else {
+            return false;
+        };
+        match (capability, position) {
+            (SourceFrontierCapability::Cursor { fields }, SourcePosition::Cursor(position)) => {
+                fields.binary_search(&position.field).is_ok()
+            }
+            (SourceFrontierCapability::Log { logs }, SourcePosition::Log(position)) => {
+                logs.binary_search(&position.log).is_ok()
+            }
+            (SourceFrontierCapability::FileManifest, SourcePosition::FileManifest(_))
+            | (SourceFrontierCapability::PageToken, SourcePosition::PageToken(_)) => true,
+            (SourceFrontierCapability::Composite, SourcePosition::Composite(position)) => position
+                .positions
+                .values()
+                .all(|position| self.supports_source_frontier(position)),
+            (
+                SourceFrontierCapability::ForeignState { protocols },
+                SourcePosition::ForeignState(position),
+            ) => protocols.binary_search(&position.protocol).is_ok(),
+            _ => false,
+        }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceWatermarkCapability {
+    pub event_time_field: Box<str>,
+    pub domain: EventTimeDomain,
+    pub authority: WatermarkAuthority,
+}
+
+impl SourceWatermarkCapability {
+    pub fn validate(&self) -> Result<()> {
+        validate_stream_name("source watermark event-time field", &self.event_time_field)?;
+        self.domain.validate()?;
+        self.authority.validate()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SourceFrontierCapability {
+    Cursor { fields: Vec<String> },
+    Log { logs: Vec<String> },
+    FileManifest,
+    PageToken,
+    Composite,
+    ForeignState { protocols: Vec<String> },
+}
+
+impl SourceFrontierCapability {
+    pub const fn kind(&self) -> SourcePositionKind {
+        match self {
+            Self::Cursor { .. } => SourcePositionKind::Cursor,
+            Self::Log { .. } => SourcePositionKind::Log,
+            Self::FileManifest => SourcePositionKind::FileManifest,
+            Self::PageToken => SourcePositionKind::PageToken,
+            Self::Composite => SourcePositionKind::Composite,
+            Self::ForeignState { .. } => SourcePositionKind::ForeignState,
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        match self {
+            Self::Cursor { fields } => validate_frontier_dimensions("cursor field", fields),
+            Self::Log { logs } => validate_frontier_dimensions("log name", logs),
+            Self::ForeignState { protocols } => {
+                validate_frontier_dimensions("foreign-state protocol", protocols)
+            }
+            Self::FileManifest | Self::PageToken | Self::Composite => Ok(()),
+        }
+    }
+}
+
+fn validate_frontier_dimensions(label: &str, values: &[String]) -> Result<()> {
+    if values.is_empty() {
+        return Err(CdfError::contract(format!(
+            "source-frontier {label} capability requires at least one value"
+        )));
+    }
+    for value in values {
+        validate_stream_name(&format!("source-frontier {label}"), value)?;
+    }
+    if values.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(CdfError::contract(format!(
+            "source-frontier {label} capabilities must be unique and canonically sorted"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_stream_name(label: &str, value: &str) -> Result<()> {
+    if value.is_empty() || value.chars().any(char::is_control) {
+        return Err(CdfError::contract(format!(
+            "{label} must be nonempty and control-free"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_source_stream_capabilities(
@@ -1391,6 +1526,32 @@ impl CompiledSourceExecutionPlan {
     }
 }
 
+fn validate_source_stream_schema(
+    stream: Option<&SourceStreamCapabilities>,
+    schema: &Schema,
+) -> Result<()> {
+    let Some(watermark) = stream.and_then(|stream| stream.watermark.as_ref()) else {
+        return Ok(());
+    };
+    let field = schema
+        .field_with_name(&watermark.event_time_field)
+        .map_err(|_| {
+            CdfError::contract(format!(
+                "source watermark capability field `{}` is absent from the compiled source schema",
+                watermark.event_time_field
+            ))
+        })?;
+    if !watermark.domain.matches_arrow_type(field.data_type()) {
+        return Err(CdfError::contract(format!(
+            "source watermark capability field `{}` declares domain {:?} but its compiled Arrow type is {}; correct the source capability or schema",
+            watermark.event_time_field,
+            watermark.domain,
+            field.data_type()
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CompiledSourcePlanInput {
     pub descriptor: ResourceDescriptor,
@@ -1455,6 +1616,7 @@ impl CompiledSourcePlan {
             &self.execution_capabilities,
             self.stream_capabilities.as_ref(),
         )?;
+        validate_source_stream_schema(self.stream_capabilities.as_ref(), &self.schema)?;
         if !self.redacted_options.is_object() || !self.physical_plan.is_object() {
             return Err(CdfError::contract(
                 "compiled source options and physical plan must be JSON objects",

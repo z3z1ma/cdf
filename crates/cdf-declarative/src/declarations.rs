@@ -395,11 +395,23 @@ pub struct JsonSchemaArtifact {
 }
 
 pub fn parse_toml(input: &str) -> Result<DeclarativeDocument> {
-    toml::from_str(input).map_err(|error| CdfError::contract(error.to_string()))
+    toml::from_str(input).map_err(|error| declarative_parse_error(error.to_string()))
 }
 
 pub fn parse_yaml(input: &str) -> Result<DeclarativeDocument> {
-    serde_yaml::from_str(input).map_err(|error| CdfError::contract(error.to_string()))
+    serde_yaml::from_str(input).map_err(|error| declarative_parse_error(error.to_string()))
+}
+
+fn declarative_parse_error(message: String) -> CdfError {
+    let Some(tail) = message.split("missing field `").nth(1) else {
+        return CdfError::contract(message);
+    };
+    let Some(field) = tail.split('`').next().filter(|field| !field.is_empty()) else {
+        return CdfError::contract(message);
+    };
+    CdfError::contract(format!(
+        "{message}\nremediation: add required `{field}` to the enclosing declarative table and rerun `cdf validate --deep`"
+    ))
 }
 
 pub fn declarative_json_schema(registry: &SourceRegistry) -> Result<serde_json::Value> {

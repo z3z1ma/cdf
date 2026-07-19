@@ -10,8 +10,9 @@ use cdf_runtime::{
     CompiledSourcePlan, CompiledSourcePlanInput, SourceAttestationStrength,
     SourceBatchMemoryContract, SourceCompileRequest, SourceDiscoverySession, SourceDriver,
     SourceDriverDescriptor, SourceDriverId, SourceExecutionCapabilities, SourceExecutorClass,
-    SourceHealthRequest, SourceHealthResult, SourceHealthStatus, SourceRegistry,
-    SourceResolutionContext, SourceRetryGranularity, SourceStreamCapabilities, artifact_hash,
+    SourceFrontierCapability, SourceHealthRequest, SourceHealthResult, SourceHealthStatus,
+    SourceRegistry, SourceResolutionContext, SourceRetryGranularity, SourceStreamCapabilities,
+    artifact_hash,
 };
 
 use crate::*;
@@ -107,11 +108,16 @@ impl SourceDriver for TestSourceDriver {
             execution,
             self.streaming.then_some(SourceStreamCapabilities {
                 quiescence: false,
-                watermark_behavior: OperatorWatermarkBehavior::Preserve,
+                watermark_behavior: OperatorWatermarkBehavior::Drop,
+                watermark: None,
                 safe_frontiers: vec![SafeFrontierPolicy::CanonicalAdmittedSourcePosition],
-                source_frontier_kinds: vec![
-                    cdf_kernel::SourcePositionKind::Cursor,
-                    cdf_kernel::SourcePositionKind::Log,
+                source_frontiers: vec![
+                    SourceFrontierCapability::Cursor {
+                        fields: vec!["id".to_owned()],
+                    },
+                    SourceFrontierCapability::Log {
+                        logs: vec!["events-0".to_owned()],
+                    },
                 ],
                 idleness_capabilities: vec!["idle-v1".to_owned()],
             }),
@@ -365,6 +371,42 @@ mode = "disabled"
             error.message
         );
     }
+
+    let missing_aggregation = declared.replace(
+        "[resource.raw.execution.watermark]\nmode = \"disabled\"",
+        r#"[resource.raw.execution.watermark]
+mode = "enabled"
+event_time_field = "id"
+
+[resource.raw.execution.watermark.domain]
+kind = "signed_integer"
+
+[resource.raw.execution.watermark.authority]
+kind = "source""#,
+    );
+    let error = parse_toml(&missing_aggregation).unwrap_err();
+    assert!(error.message.contains("partition_aggregation"));
+    assert!(error.message.contains("remediation: add required"));
+
+    let missing_idle_after = declared.replace(
+        "[resource.raw.execution.watermark]\nmode = \"disabled\"",
+        r#"[resource.raw.execution.watermark]
+mode = "enabled"
+event_time_field = "id"
+
+[resource.raw.execution.watermark.domain]
+kind = "signed_integer"
+
+[resource.raw.execution.watermark.authority]
+kind = "source"
+
+[resource.raw.execution.watermark.partition_aggregation]
+kind = "minimum_eligible"
+capability_id = "idle-v1""#,
+    );
+    let error = parse_toml(&missing_idle_after).unwrap_err();
+    assert!(error.message.contains("idle_after_milliseconds"));
+    assert!(error.message.contains("remediation: add required"));
 }
 
 #[test]

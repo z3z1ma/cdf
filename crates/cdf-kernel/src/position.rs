@@ -70,6 +70,9 @@ impl SourcePosition {
         match self {
             Self::Cursor(position) => {
                 require_text("cursor field", &position.field)?;
+                if let CursorValue::DecimalString(value) = &position.value {
+                    validate_decimal_string(value)?;
+                }
                 if let CursorValue::TimestampMicros {
                     timezone: Some(timezone),
                     ..
@@ -180,6 +183,24 @@ fn validate_sha256(label: &str, value: &str) -> Result<()> {
         return Err(CdfError::contract(format!(
             "{label} hash must use sha256:<64 lowercase hex>"
         )));
+    }
+    Ok(())
+}
+
+fn validate_decimal_string(value: &str) -> Result<()> {
+    let unsigned = value.strip_prefix('-').unwrap_or(value);
+    let mut parts = unsigned.split('.');
+    let whole = parts.next().unwrap_or_default();
+    let fractional = parts.next();
+    let canonical = !whole.is_empty()
+        && whole.bytes().all(|byte| byte.is_ascii_digit())
+        && fractional
+            .is_none_or(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+        && parts.next().is_none();
+    if !canonical {
+        return Err(CdfError::contract(
+            "cursor decimal string must be canonical digits with an optional leading minus and fractional part",
+        ));
     }
     Ok(())
 }

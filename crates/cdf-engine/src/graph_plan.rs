@@ -1,8 +1,8 @@
-use arrow_schema::{DataType, TimeUnit};
+use arrow_schema::DataType;
 use cdf_contract::{ColumnProgramStep, RedactionDecision};
 use cdf_kernel::{
-    CanonicalArrowTimeUnit, CdfError, EventTimeDomain, ExecutionExtent, OperatorWatermarkBehavior,
-    Result, WatermarkPolicy, source_name,
+    CdfError, EventTimeDomain, ExecutionExtent, OperatorWatermarkBehavior, Result, WatermarkPolicy,
+    source_name,
 };
 use cdf_runtime::{
     CompiledOperatorGraph, CompiledSourcePlan, DestinationIngressMode,
@@ -352,46 +352,12 @@ fn validate_event_time_domain(
     domain: &EventTimeDomain,
     data_type: &DataType,
 ) -> Result<()> {
-    let matches = match (domain, data_type) {
-        (
-            EventTimeDomain::SignedInteger,
-            DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
-        )
-        | (
-            EventTimeDomain::UnsignedInteger,
-            DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64,
-        )
-        | (EventTimeDomain::Date32, DataType::Date32)
-        | (EventTimeDomain::Date64, DataType::Date64) => true,
-        (
-            EventTimeDomain::Decimal { precision, scale },
-            DataType::Decimal128(observed_precision, observed_scale)
-            | DataType::Decimal256(observed_precision, observed_scale),
-        ) => precision == observed_precision && scale == observed_scale,
-        (
-            EventTimeDomain::Timestamp { unit, timezone },
-            DataType::Timestamp(observed_unit, observed_timezone),
-        ) => {
-            canonical_time_unit(observed_unit) == *unit
-                && observed_timezone.as_deref() == timezone.as_deref().map(AsRef::as_ref)
-        }
-        _ => false,
-    };
-    if !matches {
+    if !domain.matches_arrow_type(data_type) {
         return Err(CdfError::contract(format!(
             "watermark event-time field `{field}` declares domain {domain:?} but its compiled Arrow type is {data_type}; change the watermark domain to match the field or choose another field"
         )));
     }
     Ok(())
-}
-
-fn canonical_time_unit(unit: &TimeUnit) -> CanonicalArrowTimeUnit {
-    match unit {
-        TimeUnit::Second => CanonicalArrowTimeUnit::Second,
-        TimeUnit::Millisecond => CanonicalArrowTimeUnit::Millisecond,
-        TimeUnit::Microsecond => CanonicalArrowTimeUnit::Microsecond,
-        TimeUnit::Nanosecond => CanonicalArrowTimeUnit::Nanosecond,
-    }
 }
 
 fn source_node(source: &CompiledSourcePlan) -> Result<GraphNodeDescriptor> {

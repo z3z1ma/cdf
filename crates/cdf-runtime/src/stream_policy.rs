@@ -159,8 +159,8 @@ fn validate_extent_capabilities(
             })?;
             if !capabilities.supports_frontier(policy.safe_frontier) {
                 return Err(CdfError::contract(format!(
-                    "resource `{}` source does not support the declared safe_frontier; choose a capability reported by `cdf inspect resources`",
-                    resource_id
+                    "resource `{}` source does not support the declared safe_frontier; choose a capability reported by `cdf inspect resource {}`",
+                    resource_id, resource_id
                 )));
             }
             validate_termination(termination, resource_id, execution, capabilities)?;
@@ -201,10 +201,10 @@ fn validate_termination(
         }
         DrainTermination::SourceFrontier { position } => {
             position.validate()?;
-            if !capabilities.supports_source_frontier(position.kind()) {
+            if !capabilities.supports_source_frontier(position) {
                 return Err(CdfError::contract(format!(
-                    "resource `{resource_id}` cannot compare a {:?} source_frontier; choose duration, records, or bytes termination, or use one of the source's declared frontier position kinds",
-                    position.kind()
+                    "resource `{resource_id}` cannot compare the declared {:?} source_frontier dimensions; choose duration, records, or bytes termination, or use the exact field/log/protocol reported by `cdf inspect resource {resource_id}`",
+                    position.kind(),
                 )));
             }
             Ok(())
@@ -228,6 +228,32 @@ fn validate_watermark(
     let WatermarkPolicy::Enabled { authority, .. } = watermark else {
         unreachable!("enabled watermark established above")
     };
+    let WatermarkPolicy::Enabled {
+        event_time_field,
+        domain,
+        ..
+    } = watermark
+    else {
+        unreachable!("enabled watermark established above")
+    };
+    if capabilities.watermark_behavior == OperatorWatermarkBehavior::Drop {
+        return Err(CdfError::contract(format!(
+            "resource `{resource_id}` enables watermarks but its source declares watermark behavior drop; disable watermarks or use a source that emits compatible claims"
+        )));
+    }
+    let source_watermark = capabilities.watermark.as_ref().ok_or_else(|| {
+        CdfError::contract(format!(
+            "resource `{resource_id}` enables watermark field `{event_time_field}` but its source declares no watermark authority; disable watermarks or use the exact field/domain reported by `cdf inspect resource {resource_id}`"
+        ))
+    })?;
+    if source_watermark.event_time_field.as_ref() != event_time_field.as_ref()
+        || &source_watermark.domain != domain
+        || &source_watermark.authority != authority
+    {
+        return Err(CdfError::contract(format!(
+            "resource `{resource_id}` watermark field/domain/authority does not match the source capability; use the exact capability reported by `cdf inspect resource {resource_id}` or disable watermarks"
+        )));
+    }
     match (&capabilities.watermark_behavior, authority) {
         (OperatorWatermarkBehavior::Preserve, WatermarkAuthority::Source) => {}
         (
@@ -265,7 +291,7 @@ fn validate_watermark(
 
 #[cfg(test)]
 mod tests {
-    use arrow_schema::Schema;
+    use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use cdf_kernel::{
         CanonicalArrowTimeUnit, CursorPosition, CursorValue, EpochClosureTrigger, EventTimeDomain,
         ResourceCapabilities, ResourceDescriptor, STREAM_EPOCH_POLICY_VERSION, SafeFrontierPolicy,
@@ -277,7 +303,7 @@ mod tests {
     use crate::{
         CompiledSourcePlanInput, SourceAttestationStrength, SourceBatchMemoryContract,
         SourceDriverDescriptor, SourceDriverId, SourceExecutionCapabilities, SourceExecutorClass,
-        SourceRetryGranularity,
+        SourceFrontierCapability, SourceRetryGranularity, SourceWatermarkCapability,
     };
 
     fn source(stream: SourceStreamCapabilities, resumable: bool) -> CompiledSourcePlan {
@@ -335,7 +361,11 @@ mod tests {
                     freshness: None,
                     trust_level: TrustLevel::Governed,
                 },
-                schema: Schema::empty(),
+                schema: Schema::new(vec![Field::new(
+                    "event_time",
+                    DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+                    false,
+                )]),
                 type_policy_allowances: TypePolicyAllowances::default(),
                 effective_schema_runtime: None,
                 baseline_observation_schema_catalog: Vec::new(),
@@ -347,11 +377,37 @@ mod tests {
     }
 
     fn capabilities(watermark_behavior: OperatorWatermarkBehavior) -> SourceStreamCapabilities {
+        let watermark = match &watermark_behavior {
+            OperatorWatermarkBehavior::Preserve => Some(SourceWatermarkCapability {
+                event_time_field: "event_time".into(),
+                domain: EventTimeDomain::Timestamp {
+                    unit: CanonicalArrowTimeUnit::Microsecond,
+                    timezone: Some("UTC".into()),
+                },
+                authority: WatermarkAuthority::Source,
+            }),
+            OperatorWatermarkBehavior::Transform { mapping_id } => {
+                Some(SourceWatermarkCapability {
+                    event_time_field: "event_time".into(),
+                    domain: EventTimeDomain::Timestamp {
+                        unit: CanonicalArrowTimeUnit::Microsecond,
+                        timezone: Some("UTC".into()),
+                    },
+                    authority: WatermarkAuthority::Derived {
+                        mapping_id: mapping_id.clone(),
+                    },
+                })
+            }
+            OperatorWatermarkBehavior::Drop => None,
+        };
         SourceStreamCapabilities {
             quiescence: false,
             watermark_behavior,
+            watermark,
             safe_frontiers: vec![SafeFrontierPolicy::CanonicalAdmittedSourcePosition],
-            source_frontier_kinds: vec![cdf_kernel::SourcePositionKind::Cursor],
+            source_frontiers: vec![SourceFrontierCapability::Cursor {
+                fields: vec!["offset".to_owned()],
+            }],
             idleness_capabilities: vec!["idle-v1".to_owned()],
         }
     }
@@ -527,8 +583,21 @@ mod tests {
         assert!(
             error
                 .message
-                .contains("cannot compare a Log source_frontier")
+                .contains("cannot compare the declared Log source_frontier")
         );
+
+        let wrong_field = drain(
+            WatermarkPolicy::Disabled,
+            DrainTermination::SourceFrontier {
+                position: SourcePosition::Cursor(CursorPosition {
+                    version: cdf_kernel::SOURCE_POSITION_VERSION,
+                    field: "other".to_owned(),
+                    value: CursorValue::U64(42),
+                }),
+            },
+        );
+        let error = CompiledStreamPolicy::compile(&wrong_field, &source).unwrap_err();
+        assert!(error.message.contains("exact field/log/protocol"));
 
         let malformed = drain(
             WatermarkPolicy::Disabled,
@@ -542,6 +611,48 @@ mod tests {
         );
         let error = CompiledStreamPolicy::compile(&malformed, &source).unwrap_err();
         assert!(error.message.contains("cursor field"));
+
+        let malformed_decimal = drain(
+            WatermarkPolicy::Disabled,
+            DrainTermination::SourceFrontier {
+                position: SourcePosition::Cursor(CursorPosition {
+                    version: cdf_kernel::SOURCE_POSITION_VERSION,
+                    field: "offset".to_owned(),
+                    value: CursorValue::DecimalString("not-a-decimal".to_owned()),
+                }),
+            },
+        );
+        let error = CompiledStreamPolicy::compile(&malformed_decimal, &source).unwrap_err();
+        assert!(error.message.contains("cursor decimal string"));
+    }
+
+    #[test]
+    fn source_watermark_capability_is_bound_to_the_compiled_arrow_schema() {
+        let mut invalid_field_source =
+            source(capabilities(OperatorWatermarkBehavior::Preserve), true);
+        invalid_field_source
+            .stream_capabilities
+            .as_mut()
+            .unwrap()
+            .watermark
+            .as_mut()
+            .unwrap()
+            .event_time_field = "missing".into();
+        let error = invalid_field_source.validate().unwrap_err();
+        assert!(error.message.contains("absent from the compiled source schema"));
+
+        let mut invalid_domain_source =
+            source(capabilities(OperatorWatermarkBehavior::Preserve), true);
+        invalid_domain_source
+            .stream_capabilities
+            .as_mut()
+            .unwrap()
+            .watermark
+            .as_mut()
+            .unwrap()
+            .domain = EventTimeDomain::Date32;
+        let error = invalid_domain_source.validate().unwrap_err();
+        assert!(error.message.contains("compiled Arrow type is"));
     }
 
     #[test]

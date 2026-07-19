@@ -1,3 +1,4 @@
+use arrow_schema::{DataType, TimeUnit};
 use serde::{Deserialize, Serialize};
 
 use crate::{CanonicalArrowTimeUnit, CdfError, PartitionId, Result, SourcePosition};
@@ -307,7 +308,7 @@ pub enum EventTimeDomain {
 }
 
 impl EventTimeDomain {
-    fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         if let Self::Decimal { precision, scale } = self {
             if *precision == 0 || *precision > 38 {
                 return Err(CdfError::contract(
@@ -329,6 +330,43 @@ impl EventTimeDomain {
         }
         Ok(())
     }
+
+    pub fn matches_arrow_type(&self, data_type: &DataType) -> bool {
+        match (self, data_type) {
+            (
+                Self::SignedInteger,
+                DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
+            )
+            | (
+                Self::UnsignedInteger,
+                DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64,
+            )
+            | (Self::Date32, DataType::Date32)
+            | (Self::Date64, DataType::Date64) => true,
+            (
+                Self::Decimal { precision, scale },
+                DataType::Decimal128(observed_precision, observed_scale)
+                | DataType::Decimal256(observed_precision, observed_scale),
+            ) => precision == observed_precision && scale == observed_scale,
+            (
+                Self::Timestamp { unit, timezone },
+                DataType::Timestamp(observed_unit, observed_timezone),
+            ) => {
+                canonical_time_unit(observed_unit) == *unit
+                    && observed_timezone.as_deref() == timezone.as_deref()
+            }
+            _ => false,
+        }
+    }
+}
+
+fn canonical_time_unit(unit: &TimeUnit) -> CanonicalArrowTimeUnit {
+    match unit {
+        TimeUnit::Second => CanonicalArrowTimeUnit::Second,
+        TimeUnit::Millisecond => CanonicalArrowTimeUnit::Millisecond,
+        TimeUnit::Microsecond => CanonicalArrowTimeUnit::Microsecond,
+        TimeUnit::Nanosecond => CanonicalArrowTimeUnit::Nanosecond,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -339,7 +377,7 @@ pub enum WatermarkAuthority {
 }
 
 impl WatermarkAuthority {
-    fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         if let Self::Derived { mapping_id } = self {
             require_nonempty("watermark mapping id", mapping_id)?;
         }
