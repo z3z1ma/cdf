@@ -40,6 +40,8 @@ Restore the enforced `cdf-runtime` normal dependency ceiling after generic sourc
 ## Journal
 
 - 2026-07-19 — Opened from H2 broad verification. H2 changed no dependencies; this is an earlier neutral-runtime graph regression that the permanent architecture gate correctly caught. Raising the ceiling is explicitly rejected because it would encode the leak rather than remove it.
+- 2026-07-19 — Activated after H2 closure. Governing records confirm that URI normalization remains one neutral runtime authority, while implementation/client parsers stay in concrete source crates. The repair will first inventory the exact accepted syntax and dependency delta, then eliminate the heavyweight edge without adding a source-specific parser or relaxing the permanent graph gate.
+- 2026-07-19 — Returned to the executable backlog before implementation when the user reprioritized the P3 critical chain (`WX1 -> C5` and `A7 -> A8 -> C5`). No source or dependency changes were made under this ticket; the graph regression remains accurately owned here.
 
 ## Blockers
 

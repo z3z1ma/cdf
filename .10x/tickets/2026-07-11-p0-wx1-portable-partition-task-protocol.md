@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-11
 Updated: 2026-07-16
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
@@ -40,3 +40,4 @@ None. SX1, DX1, and BX1 are done; this ticket is executable.
 ## Progress and notes
 
 - 2026-07-12: `.10x/tickets/2026-07-12-p3-j5-execution-plan-marshaling-metrics.md` will translate native CDF operators into DataFusion plan/metrics shells only after WX1 establishes canonical task authority. DataFusion/Ballista serialization cannot replace the capsule or gain credential, package-finalization, receipt, or checkpoint authority.
+- 2026-07-19: Activated as the P0 half of the critical path to C5. Implementation will establish the smallest neutral canonical capsule/result authority first; A7/A8 can then complete the independent stream-epoch half of the dependency chain before C5 proves isolated-worker equivalence.

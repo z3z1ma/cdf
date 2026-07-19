@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-10
-Updated: 2026-07-11
+Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
 Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md, .10x/tickets/done/2026-07-11-p0-dx1-neutral-runtime-crate.md, .10x/specs/architecture-layering-runtime.md, .10x/tickets/done/2026-07-07-streaming-package-to-destination-commit-triage.md, .10x/tickets/done/2026-07-07-batch-sizing-segment-coalescing-triage.md
 
@@ -40,10 +40,11 @@ No distributed scheduler, resident supervisor, general windowing engine, semanti
 
 ## Blockers
 
-Blocked until WS-L baseline evidence exists. This lane has an exclusive freeze on shared runtime-spine files while active.
+None at the parent level. WS-L is done. The remaining executable chain is A7 -> A8 -> A9; the shared runtime-spine freeze applies only while a child that owns those files is active.
 
 ## Progress and notes
 
 - 2026-07-11: A1 completed the destination-neutral staged-ingress/final-binding contract without provisional package identity or destination-specific runtime branches.
 - 2026-07-11: A2 completed the neutral memory ledger, shared finite DataFusion coordinator, weighted discovery execution, working-set conformance, and versioned headroom policy.
 - 2026-07-11: A3 completed plan-versioned row/byte canonical segmentation across the full Arrow vocabulary, adaptive nonidentity microbatches, typed position joins, source-rechunking invariance, and the fixed package golden.
+- 2026-07-19: Reprioritized the remaining chain as program-critical. A7 and WX1 proceed as independent prerequisites; A8 follows A7, then C5 can close deterministic isolated-worker equivalence against both completed authorities.
