@@ -46,10 +46,10 @@ impl FilePayloadCachePolicy {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct FilePayloadCacheKey(String);
+pub struct FilePayloadCacheKey(String);
 
 impl FilePayloadCacheKey {
-    pub(crate) fn new(value: impl Into<String>) -> Result<Self> {
+    pub fn new(value: impl Into<String>) -> Result<Self> {
         let value = value.into();
         if !valid_sha256(&value) {
             return Err(CdfError::contract(
@@ -101,9 +101,9 @@ struct CacheStateEntry {
     created_ms: u64,
 }
 
-pub(crate) struct FilePayloadCacheHit {
-    pub(crate) source: Arc<dyn ByteSource>,
-    pub(crate) retention: PayloadRetention,
+pub struct FilePayloadCacheHit {
+    pub source: Arc<dyn ByteSource>,
+    pub retention: PayloadRetention,
 }
 
 impl std::fmt::Debug for FilePayloadCacheHit {
@@ -117,13 +117,13 @@ impl std::fmt::Debug for FilePayloadCacheHit {
 }
 
 #[derive(Debug)]
-pub(crate) enum FilePayloadCacheLookup {
+pub enum FilePayloadCacheLookup {
     Hit(FilePayloadCacheHit),
     Miss,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum FilePayloadCachePromotion {
+pub enum FilePayloadCachePromotion {
     Stored,
     AlreadyPresent,
     SkippedCapacity,
@@ -231,11 +231,11 @@ impl FilePayloadCache {
         &self.shared.policy
     }
 
-    pub(crate) fn staging_root(&self) -> PathBuf {
+    pub fn staging_root(&self) -> PathBuf {
         self.shared.staging_root()
     }
 
-    pub(crate) fn lookup(
+    pub fn lookup(
         &self,
         key: &FilePayloadCacheKey,
         expected_stable_id: &str,
@@ -286,7 +286,7 @@ impl FilePayloadCache {
         }))
     }
 
-    pub(crate) fn promote(
+    pub fn promote(
         &self,
         key: &FilePayloadCacheKey,
         source: &Path,
@@ -753,10 +753,7 @@ fn prepare_cache_root(root: PathBuf) -> Result<PathBuf> {
     Ok(root)
 }
 
-pub(crate) fn resolve_project_cache_root(
-    project_root: &Path,
-    configured: &Path,
-) -> Result<PathBuf> {
+pub fn resolve_project_cache_root(project_root: &Path, configured: &Path) -> Result<PathBuf> {
     if configured.is_absolute() {
         return Ok(configured.to_path_buf());
     }

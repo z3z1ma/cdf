@@ -18,6 +18,7 @@ cdf-engine = { path = "../cdf-engine" }
 cdf-format-json = { path = "../cdf-format-json" }
 cdf-http = { path = "../cdf-http" }
 cdf-kernel = { path = "../cdf-kernel" }
+cdf-object-access = { path = "../cdf-object-access" }
 cdf-package = { path = "../cdf-package" }
 cdf-package-contract = { path = "../cdf-package-contract" }
 cdf-project = { path = "../cdf-project" }

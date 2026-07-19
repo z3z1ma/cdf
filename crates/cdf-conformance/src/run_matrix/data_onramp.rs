@@ -292,8 +292,8 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
     P2FrictionRow {
         id: 15,
         closed_tests: &[
-            "crates/cdf-source-files/src/transport.rs::tests::file_transport_http_metadata_uses_headers_only_client",
-            "crates/cdf-source-files/src/transport.rs::tests::file_transport_http_metadata_falls_back_from_head_errors_and_keeps_access_ephemeral",
+            "crates/cdf-object-access/src/transport.rs::tests::file_transport_http_metadata_uses_headers_only_client",
+            "crates/cdf-object-access/src/transport.rs::tests::file_transport_http_metadata_falls_back_from_head_errors_and_keeps_access_ephemeral",
             "crates/cdf-project/src/tests.rs::http_parquet_schema_discovery_uses_bounded_ranges_without_artifacts",
             "crates/cdf-project/src/tests.rs::http_parquet_auto_pin_plan_preview_and_run_use_file_runtime",
         ],

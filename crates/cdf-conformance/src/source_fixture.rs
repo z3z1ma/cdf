@@ -6,11 +6,12 @@ use std::collections::BTreeMap;
 use cdf_declarative::CompiledResource;
 use cdf_http::{SecretProvider, SecretUri, SecretValue};
 use cdf_kernel::{CdfError, QueryableResource, Result};
+use cdf_object_access::FileTransportFacade;
 use cdf_runtime::{
     ByteTransformRegistry, CompiledSourcePlan, FormatRegistry, SourceRegistry,
     SourceResolutionContext,
 };
-use cdf_source_files::{FileRuntimeDependencies, FileSourceDriver, FileTransportFacade};
+use cdf_source_files::{FileRuntimeDependencies, FileSourceDriver, file_source_blocking_lane};
 
 struct NoSecrets;
 
@@ -102,7 +103,8 @@ pub(crate) fn local_file_registry() -> Result<SourceRegistry> {
             Ok(FileRuntimeDependencies::new(
                 FileTransportFacade::new()
                     .with_shared_secret_provider(secrets)
-                    .with_execution_services(execution.clone()),
+                    .with_execution_services(execution.clone())
+                    .with_local_listing_lane(file_source_blocking_lane())?,
                 execution,
                 formats.clone(),
                 Arc::new(ByteTransformRegistry::default()),

@@ -1,9 +1,8 @@
 use cdf_kernel::Result;
+use cdf_object_access::{FileTransportFacade, ObjectStoreClientPool};
 use cdf_python::PythonSourceDriver;
 use cdf_runtime::{ByteTransformRegistry, FormatRegistry, SourceRegistry};
-use cdf_source_files::{
-    FileRuntimeDependencies, FileSourceDriver, FileTransportFacade, ObjectStoreClientPool,
-};
+use cdf_source_files::{FileRuntimeDependencies, FileSourceDriver, file_source_blocking_lane};
 use cdf_source_postgres::PostgresSourceDriver;
 use cdf_source_rest::RestSourceDriver;
 use std::sync::{Arc, OnceLock};
@@ -44,7 +43,8 @@ fn build_builtin_source_registry() -> Result<SourceRegistry> {
                     .with_http_transport(file_http.clone())
                     .with_shared_secret_provider(secrets)
                     .with_shared_object_store_clients(object_store_clients.clone())
-                    .with_execution_services(execution.clone()),
+                    .with_execution_services(execution.clone())
+                    .with_local_listing_lane(file_source_blocking_lane())?,
                 execution,
                 std::sync::Arc::clone(&runtime_formats),
                 builtin_transform_registry()?,

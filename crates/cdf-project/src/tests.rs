@@ -37,15 +37,15 @@ use cdf_kernel::{
 use cdf_memory::{
     AccountedBytes, ConsumerKey, MemoryClass, MemoryCoordinator, ReservationRequest, reserve,
 };
+use cdf_object_access::{
+    FileIdentityMetadata, FileTransportFacade, FileTransportLocation, FileTransportResource,
+    HttpFileRequest, HttpFileResponse, HttpFileTransport,
+};
 use cdf_runtime::{
     AccountedByteStream, ByteExtent, ByteSource, ByteSourceCapabilities, ContentIdentity,
     GenerationStrength, RunCancellation, SequentialReadRequest,
 };
-use cdf_source_files::{
-    FileIdentityMetadata, FileRuntimeDependencies, FileSourceDriver, FileTransportFacade,
-    FileTransportLocation, FileTransportResource, HttpFileRequest, HttpFileResponse,
-    HttpFileTransport,
-};
+use cdf_source_files::{FileRuntimeDependencies, FileSourceDriver};
 use cdf_state_sqlite::InMemoryScopeLeaseStore;
 use flate2::{Compression, write::GzEncoder};
 use futures_util::stream;
@@ -4854,7 +4854,7 @@ impl HttpFileTransport for RecordingHttpFileTransport {
         &self,
         resource: &FileTransportResource,
         expected: &FileIdentityMetadata,
-        _auth: Option<cdf_source_files::ResolvedHttpAuth>,
+        _auth: Option<cdf_object_access::ResolvedHttpAuth>,
         memory: Arc<dyn MemoryCoordinator>,
     ) -> Result<Arc<dyn ByteSource>> {
         Ok(Arc::new(RecordingHttpByteSource::new(

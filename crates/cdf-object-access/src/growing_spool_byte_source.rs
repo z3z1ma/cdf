@@ -21,12 +21,12 @@ const DEFAULT_TRANSFER_CHUNK_BYTES: u64 = 4 * 1024 * 1024;
 const DEFAULT_TAIL_RANGE_BYTES: u64 = 32 * 1024 * 1024;
 const SEQUENTIAL_SPOOL_USEFUL_RANGE_CONCURRENCY: u16 = 1;
 
-pub(crate) struct GrowingSpoolSession {
-    pub(crate) source: Arc<dyn ByteSource>,
-    pub(crate) retention: PayloadRetention,
-    pub(crate) completion: BoxFuture<'static, Result<Option<String>>>,
-    pub(crate) spool_path: std::path::PathBuf,
-    pub(crate) cache_staged: bool,
+pub struct GrowingSpoolSession {
+    pub source: Arc<dyn ByteSource>,
+    pub retention: PayloadRetention,
+    pub completion: BoxFuture<'static, Result<Option<String>>>,
+    pub spool_path: std::path::PathBuf,
+    pub cache_staged: bool,
 }
 
 struct GrowingSpoolStorage {
@@ -71,7 +71,7 @@ struct GrowingSpoolRequest {
     cancellation: RunCancellation,
 }
 
-pub(crate) fn start_growing_spool(
+pub fn start_growing_spool(
     upstream: Arc<dyn ByteSource>,
     size_bytes: u64,
     maximum_spool_bytes: u64,

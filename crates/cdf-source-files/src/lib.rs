@@ -5,13 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 mod driver;
-mod evicting_spool_byte_source;
-mod growing_spool_byte_source;
-mod local_byte_source;
-mod object_store_byte_source;
-mod payload_cache;
 mod runtime;
-mod transport;
 
 pub use runtime::{
     FILE_SOURCE_ADVERTISED_PARALLELISM, FILE_SOURCE_BLOCKING_LANE_ID, file_source_blocking_lane,
@@ -176,11 +170,7 @@ impl FileResourcePlan {
 }
 
 pub use driver::{FileSourceDriver, compile_file_resource_plan};
-pub use local_byte_source::LocalByteSource;
-pub use object_store_byte_source::ObjectStoreByteSource;
-pub use payload_cache::{FilePayloadCache, FilePayloadCachePolicy};
 pub use runtime::*;
-pub use transport::*;
 
 #[cfg(test)]
 pub(crate) fn test_execution_services() -> cdf_runtime::ExecutionServices {

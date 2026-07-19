@@ -156,3 +156,41 @@ fn first_party_source_driver_graphs_are_sibling_isolated() {
         }
     }
 }
+
+#[test]
+fn neutral_object_access_graph_excludes_sources_and_upper_layers() {
+    let tree = cargo_tree("cdf-object-access", "normal");
+    let packages = package_names(&tree);
+    for forbidden in [
+        "cdf-source-files",
+        "cdf-source-rest",
+        "cdf-source-postgres",
+        "cdf-python",
+        "cdf-cli",
+        "cdf-conformance",
+        "cdf-declarative",
+        "cdf-engine",
+        "cdf-project",
+        "cdf-package",
+        "cdf-dest-duckdb",
+        "cdf-dest-parquet",
+        "cdf-dest-postgres",
+    ] {
+        assert!(
+            !packages.contains(forbidden),
+            "neutral object access reaches forbidden package {forbidden}:\n{tree}"
+        );
+    }
+}
+
+#[test]
+fn generic_compiler_and_runtime_graphs_exclude_object_access_implementation() {
+    for root in ["cdf-runtime", "cdf-declarative", "cdf-project"] {
+        let tree = cargo_tree(root, "normal");
+        let packages = package_names(&tree);
+        assert!(
+            !packages.contains("cdf-object-access"),
+            "generic package {root} reaches concrete object access implementation:\n{tree}"
+        );
+    }
+}

@@ -10,14 +10,14 @@ use cdf_kernel::{BoxFuture, CdfError, ErrorKind, Result};
 use cdf_memory::{
     AccountedBytes, ConsumerKey, MemoryClass, MemoryCoordinator, ReservationRequest, reserve,
 };
+use cdf_object_access::{
+    FileIdentityMetadata, FileTransportResource, HttpFileRequest, HttpFileResponse,
+    HttpFileTransport, ResolvedHttpAuth,
+};
 use cdf_runtime::{
     AccountedByteStream, ByteExtent, ByteSource, ByteSourceCapabilities, ContentIdentity,
     ExactRangeCoalescingPolicy, GenerationStrength, REMOTE_RANGE_COALESCING_POLICY,
     RunCancellation, SequentialReadRequest,
-};
-use cdf_source_files::{
-    FileIdentityMetadata, FileTransportResource, HttpFileRequest, HttpFileResponse,
-    HttpFileTransport, ResolvedHttpAuth,
 };
 use futures_util::{Stream, TryStreamExt, stream};
 use sha2::{Digest, Sha256};
@@ -122,7 +122,7 @@ impl HttpFileTransport for ReqwestHttpProvider {
         memory: Arc<dyn MemoryCoordinator>,
     ) -> Result<Arc<dyn ByteSource>> {
         let url = match &resource.location {
-            cdf_source_files::FileTransportLocation::HttpUrl { url } => url.clone(),
+            cdf_object_access::FileTransportLocation::HttpUrl { url } => url.clone(),
             _ => {
                 return Err(CdfError::contract(
                     "HTTP byte source requires an HTTP(S) file resource",

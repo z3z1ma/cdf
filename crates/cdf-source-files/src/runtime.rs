@@ -20,6 +20,18 @@ use cdf_kernel::{
     partition_schema_observation_id, source_name,
 };
 use cdf_memory::{ConsumerKey, MemoryClass};
+#[cfg(test)]
+use cdf_object_access::{
+    AccountedFileIdentity, FILE_IDENTITY_MEMORY_ENVELOPE_BYTES, FileIdentityStream,
+    FileMetadataObservation, FileTransportFacade, HttpFileRequest, HttpFileResponse,
+    HttpFileTransport, ResolvedHttpAuth,
+};
+use cdf_object_access::{
+    FileChecksum, FileIdentityMetadata, FilePayloadCache, FilePayloadCacheKey,
+    FilePayloadCacheLookup, FileTransport, FileTransportControl, FileTransportLocation,
+    FileTransportResource, LocalByteSource, file_url_path, local_source_generation,
+    open_identity_preserving_local_source, start_evicting_spool, start_growing_spool,
+};
 use cdf_runtime::{
     AccountedByteStream, BlockingLaneSpec, ByteExtent, ByteSource, ByteSourceCapabilities,
     ByteTransformId, ByteTransformRegistry, CanonicalStreamCompletion, CanonicalStreamOpener,
@@ -38,16 +50,9 @@ use futures_util::TryStreamExt;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
-#[cfg(test)]
-use crate::FileTransportFacade;
 use crate::{
-    FileCompressionDeclaration, FileFormatDeclaration, FileIdentityMetadata, FileResourcePlan,
-    FileTransport, FileTransportControl, FileTransportLocation, FileTransportResource,
-    LocalByteSource,
+    FileCompressionDeclaration, FileFormatDeclaration, FileResourcePlan,
     driver::{FileTransportScheme, file_transport_scheme},
-    evicting_spool_byte_source::start_evicting_spool,
-    growing_spool_byte_source::start_growing_spool,
-    local_byte_source::local_source_generation,
 };
 
 const NATIVE_TARGET_BATCH_ROWS: usize = 64 * 1024;
@@ -77,7 +82,7 @@ pub struct FileRuntimeDependencies {
     formats: Arc<FormatRegistry>,
     transforms: Arc<ByteTransformRegistry>,
     prepared_payloads: PreparedSourcePayloads,
-    payload_cache: Option<crate::FilePayloadCache>,
+    payload_cache: Option<FilePayloadCache>,
     egress: SourceEgressScope,
     max_spool_bytes: u64,
 }
@@ -119,7 +124,7 @@ impl FileRuntimeDependencies {
         self
     }
 
-    pub fn with_payload_cache(mut self, payload_cache: crate::FilePayloadCache) -> Self {
+    pub fn with_payload_cache(mut self, payload_cache: FilePayloadCache) -> Self {
         self.payload_cache = Some(payload_cache);
         self
     }
@@ -154,7 +159,7 @@ impl FileRuntimeDependencies {
         &self.prepared_payloads
     }
 
-    pub fn payload_cache(&self) -> Option<&crate::FilePayloadCache> {
+    pub fn payload_cache(&self) -> Option<&FilePayloadCache> {
         self.payload_cache.as_ref()
     }
 
@@ -1336,7 +1341,7 @@ struct PreparedInput {
     extraction_content_hash: Option<SourceContentDigest>,
     hash_sweep_source: Option<Arc<dyn ByteSource>>,
     payload_retention: Option<PayloadRetention>,
-    payload_cache_key: Option<crate::payload_cache::FilePayloadCacheKey>,
+    payload_cache_key: Option<FilePayloadCacheKey>,
 }
 
 fn retains_sequential_discovery_payload(
@@ -1793,7 +1798,7 @@ struct PreparedFilePartition {
     extraction_content_hash: Option<SourceContentDigest>,
     hash_sweep_source: Option<Arc<dyn ByteSource>>,
     payload_retention: Option<PayloadRetention>,
-    payload_cache_key: Option<crate::payload_cache::FilePayloadCacheKey>,
+    payload_cache_key: Option<FilePayloadCacheKey>,
     spool_mode: crate::FileSpoolMode,
 }
 
@@ -1856,20 +1861,18 @@ fn file_transform_identity(
 fn file_payload_cache_key(
     resolved: &ResolvedFileMatch,
     dependencies: &FileRuntimeDependencies,
-) -> Result<crate::payload_cache::FilePayloadCacheKey> {
+) -> Result<FilePayloadCacheKey> {
     let transform = file_transform_identity(resolved.compression.mode_name(), dependencies)?;
-    crate::payload_cache::FilePayloadCacheKey::new(cdf_runtime::artifact_hash(
-        &serde_json::json!({
-            "version": 1,
-            "location": &resolved.path_text,
-            "size_bytes": resolved.size_bytes,
-            "source_generation": &resolved.source_generation,
-            "etag": &resolved.etag,
-            "object_version": &resolved.version,
-            "sha256": &resolved.sha256,
-            "transform": transform,
-        }),
-    )?)
+    FilePayloadCacheKey::new(cdf_runtime::artifact_hash(&serde_json::json!({
+        "version": 1,
+        "location": &resolved.path_text,
+        "size_bytes": resolved.size_bytes,
+        "source_generation": &resolved.source_generation,
+        "etag": &resolved.etag,
+        "object_version": &resolved.version,
+        "sha256": &resolved.sha256,
+        "transform": transform,
+    }))?)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2290,7 +2293,7 @@ fn prepare_file_input(request: PrepareFileInputRequest<'_>) -> Result<PreparedIn
             cancellation,
             dependencies.execution().memory(),
         ) {
-            Ok(crate::payload_cache::FilePayloadCacheLookup::Hit(hit)) => {
+            Ok(FilePayloadCacheLookup::Hit(hit)) => {
                 let observed = Arc::new(ObservedByteSource::new(hit.source));
                 let source_io = observed.observer();
                 source_io.set_mode(SourceReadMode::PayloadCache)?;
@@ -2303,7 +2306,7 @@ fn prepare_file_input(request: PrepareFileInputRequest<'_>) -> Result<PreparedIn
                     payload_cache_key: None,
                 });
             }
-            Ok(crate::payload_cache::FilePayloadCacheLookup::Miss) => {}
+            Ok(FilePayloadCacheLookup::Miss) => {}
             Err(error) if cancellation.is_cancelled() => return Err(error),
             Err(_) => {}
         }
@@ -2435,7 +2438,7 @@ fn expected_file_identity(resolved: &ResolvedFileMatch) -> FileIdentityMetadata 
     FileIdentityMetadata {
         location: resolved.path_text.clone(),
         size_bytes: Some(resolved.size_bytes),
-        checksum: resolved.sha256.as_ref().map(|sha256| crate::FileChecksum {
+        checksum: resolved.sha256.as_ref().map(|sha256| FileChecksum {
             algorithm: "sha256".to_owned(),
             value: sha256.clone(),
         }),
@@ -2535,7 +2538,7 @@ struct SpoolInputRequest<'a> {
     size_bytes: Option<u64>,
     mode: crate::FileSpoolMode,
     source_io: SourceIoObserver,
-    payload_cache_key: Option<crate::payload_cache::FilePayloadCacheKey>,
+    payload_cache_key: Option<FilePayloadCacheKey>,
     dependencies: &'a FileRuntimeDependencies,
     cancellation: cdf_runtime::RunCancellation,
 }
@@ -2553,7 +2556,7 @@ async fn ready_spooled_file_input(request: SpoolInputRequest<'_>) -> Result<Read
     let cache_staging_root = payload_cache_key
         .as_ref()
         .and_then(|_| dependencies.payload_cache())
-        .map(crate::FilePayloadCache::staging_root);
+        .map(FilePayloadCache::staging_root);
     let strong_seekable = size_bytes.is_some()
         && source.identity().strength != GenerationStrength::Weak
         && source.capabilities().exact_ranges;
@@ -2674,7 +2677,7 @@ async fn ready_spooled_file_input(request: SpoolInputRequest<'_>) -> Result<Read
 fn ready_materialized_spool(
     spool: AccountedSpool,
     source_identity: ContentIdentity,
-    payload_cache_key: Option<crate::payload_cache::FilePayloadCacheKey>,
+    payload_cache_key: Option<FilePayloadCacheKey>,
     dependencies: &FileRuntimeDependencies,
     cancellation: cdf_runtime::RunCancellation,
 ) -> Result<ReadyFileInput> {
@@ -2705,7 +2708,7 @@ fn ready_materialized_spool(
         }
         _ => None,
     };
-    let local = crate::local_byte_source::open_identity_preserving_local_source(
+    let local = open_identity_preserving_local_source(
         spool.path(),
         materialized_identity,
         spool.bytes(),
@@ -2748,8 +2751,8 @@ struct PayloadCachePromotionRequest {
     identity: ContentIdentity,
     size_bytes: u64,
     sha256: Option<String>,
-    cache: crate::FilePayloadCache,
-    cache_key: crate::payload_cache::FilePayloadCacheKey,
+    cache: FilePayloadCache,
+    cache_key: FilePayloadCacheKey,
     execution: ExecutionServices,
     cancellation: cdf_runtime::RunCancellation,
     _retention: PayloadRetention,
@@ -3822,7 +3825,7 @@ fn resolve_planned_file_match(
         }
         Some(FileTransportScheme::File) => {
             let mut local_plan = plan.clone();
-            local_plan.root = crate::transport::file_url_path(&plan.root)?
+            local_plan.root = file_url_path(&plan.root)?
                 .to_str()
                 .map(str::to_owned)
                 .ok_or_else(|| CdfError::data("file URL path is not valid UTF-8"))?;
@@ -3961,7 +3964,7 @@ fn resolve_file_matches_bounded(
         }
         Some(FileTransportScheme::File) => {
             let mut local_plan = plan.clone();
-            local_plan.root = crate::transport::file_url_path(&plan.root)?
+            local_plan.root = file_url_path(&plan.root)?
                 .to_str()
                 .map(str::to_owned)
                 .ok_or_else(|| CdfError::data("file URL path is not valid UTF-8"))?;
@@ -5441,7 +5444,7 @@ mod tests {
             _egress: &cdf_runtime::SourceEgressScope,
             _resource: &FileTransportResource,
             _control: &FileTransportControl,
-        ) -> Result<crate::FileMetadataObservation> {
+        ) -> Result<FileMetadataObservation> {
             Err(CdfError::internal(
                 "external scheme fixture does not use metadata",
             ))
@@ -5453,7 +5456,7 @@ mod tests {
             resource: &FileTransportResource,
             _maximum_results: usize,
             _control: &FileTransportControl,
-        ) -> Result<crate::FileIdentityStream> {
+        ) -> Result<FileIdentityStream> {
             assert!(matches!(
                 &resource.location,
                 FileTransportLocation::RemoteUrl { url } if url.starts_with("mock://")
@@ -5465,10 +5468,10 @@ mod tests {
                         "external-file-transport-metadata",
                         cdf_memory::MemoryClass::Discovery,
                     )?,
-                    crate::transport::FILE_IDENTITY_MEMORY_ENVELOPE_BYTES,
+                    FILE_IDENTITY_MEMORY_ENVELOPE_BYTES,
                 )?,
             ))?;
-            let identity = crate::AccountedFileIdentity::new(
+            let identity = AccountedFileIdentity::new(
                 FileIdentityMetadata {
                     location: "mock://catalog/data/events.parquet".to_owned(),
                     size_bytes: Some(4),
@@ -5480,7 +5483,7 @@ mod tests {
                 },
                 lease,
             )?;
-            Ok(crate::FileIdentityStream::materialized(
+            Ok(FileIdentityStream::materialized(
                 futures_util::stream::iter([Ok(identity)]),
             ))
         }
@@ -5504,7 +5507,7 @@ mod tests {
             egress: &cdf_runtime::SourceEgressScope,
             resource: &FileTransportResource,
             control: &FileTransportControl,
-        ) -> Result<crate::FileMetadataObservation> {
+        ) -> Result<FileMetadataObservation> {
             self.metadata_reads.fetch_add(1, Ordering::Relaxed);
             self.inner.metadata(egress, resource, control)
         }
@@ -5514,7 +5517,7 @@ mod tests {
             egress: &cdf_runtime::SourceEgressScope,
             resource: &FileTransportResource,
             control: &FileTransportControl,
-        ) -> Result<Option<crate::FileMetadataObservation>> {
+        ) -> Result<Option<FileMetadataObservation>> {
             self.inner.metadata_if_exists(egress, resource, control)
         }
 
@@ -5524,7 +5527,7 @@ mod tests {
             resource: &FileTransportResource,
             maximum_results: usize,
             control: &FileTransportControl,
-        ) -> Result<crate::FileIdentityStream> {
+        ) -> Result<FileIdentityStream> {
             self.listings.fetch_add(1, Ordering::Relaxed);
             self.inner.list(egress, resource, maximum_results, control)
         }
@@ -5546,7 +5549,7 @@ mod tests {
     fn external_remote_scheme_requires_no_file_runtime_dispatch_branch() {
         let coordinator = Arc::new(
             cdf_memory::DeterministicMemoryCoordinator::new(
-                crate::transport::FILE_IDENTITY_MEMORY_ENVELOPE_BYTES,
+                FILE_IDENTITY_MEMORY_ENVELOPE_BYTES,
                 BTreeMap::new(),
             )
             .unwrap(),
@@ -6509,11 +6512,11 @@ mod tests {
             path: PathBuf,
         }
 
-        impl crate::transport::HttpFileTransport for WeakHttpTransport {
+        impl HttpFileTransport for WeakHttpTransport {
             fn send_headers(
                 &self,
-                _request: crate::transport::HttpFileRequest,
-            ) -> BoxFuture<'static, Result<crate::transport::HttpFileResponse>> {
+                _request: HttpFileRequest,
+            ) -> BoxFuture<'static, Result<HttpFileResponse>> {
                 Box::pin(async { Err(CdfError::internal("unused weak HTTP metadata probe")) })
             }
 
@@ -6521,7 +6524,7 @@ mod tests {
                 &self,
                 _resource: &FileTransportResource,
                 _expected: &FileIdentityMetadata,
-                _auth: Option<crate::ResolvedHttpAuth>,
+                _auth: Option<ResolvedHttpAuth>,
                 memory: Arc<dyn cdf_memory::MemoryCoordinator>,
             ) -> Result<Arc<dyn ByteSource>> {
                 Ok(Arc::new(LocalByteSource::open(&self.path, memory)?))
@@ -6839,7 +6842,7 @@ mod tests {
         .with_max_spool_bytes(maximum_object_bytes)
         .unwrap()
         .with_payload_cache(
-            crate::FilePayloadCache::new(
+            FilePayloadCache::new(
                 cache_root.path().join("v1"),
                 4,
                 maximum_object_bytes.saturating_mul(4),
@@ -7075,7 +7078,7 @@ mod tests {
             _egress: &cdf_runtime::SourceEgressScope,
             _resource: &FileTransportResource,
             _control: &FileTransportControl,
-        ) -> Result<crate::FileMetadataObservation> {
+        ) -> Result<FileMetadataObservation> {
             Err(CdfError::internal(
                 "streaming-listing fixture does not support metadata",
             ))
@@ -7087,7 +7090,7 @@ mod tests {
             _resource: &FileTransportResource,
             _maximum_results: usize,
             _control: &FileTransportControl,
-        ) -> Result<crate::FileIdentityStream> {
+        ) -> Result<FileIdentityStream> {
             let memory = Arc::clone(&self.memory);
             let stream = futures_util::stream::iter(self.locations.clone().into_iter().enumerate())
                 .then(move |(index, location)| {
@@ -7100,11 +7103,11 @@ mod tests {
                                     format!("streaming-listing-{index}"),
                                     cdf_memory::MemoryClass::Discovery,
                                 )?,
-                                crate::transport::FILE_IDENTITY_MEMORY_ENVELOPE_BYTES,
+                                FILE_IDENTITY_MEMORY_ENVELOPE_BYTES,
                             )?,
                         )
                         .await?;
-                        crate::AccountedFileIdentity::new(
+                        AccountedFileIdentity::new(
                             FileIdentityMetadata {
                                 location,
                                 size_bytes: Some(4),
@@ -7118,7 +7121,7 @@ mod tests {
                         )
                     }
                 });
-            Ok(crate::FileIdentityStream::materialized(stream))
+            Ok(FileIdentityStream::materialized(stream))
         }
 
         fn open_byte_source(
@@ -7138,7 +7141,7 @@ mod tests {
     fn remote_listing_filters_without_materializing_all_metadata() {
         let memory = Arc::new(
             cdf_memory::DeterministicMemoryCoordinator::new(
-                crate::transport::FILE_IDENTITY_MEMORY_ENVELOPE_BYTES,
+                FILE_IDENTITY_MEMORY_ENVELOPE_BYTES,
                 BTreeMap::new(),
             )
             .unwrap(),

@@ -9,6 +9,7 @@ members = [
     "crates/cdf-runtime",
     "crates/cdf-foreign-stream",
     "crates/cdf-memory",
+    "crates/cdf-object-access",
     "crates/cdf-state-sqlite",
     "crates/cdf-http",
     "crates/cdf-cli-core",

@@ -25,6 +25,7 @@ use cdf_kernel::{
     ScopeKey, SegmentId, SourcePosition, StateSegment, TargetName, WriteDisposition,
     canonical_arrow_schema_hash,
 };
+use cdf_object_access::FileTransportFacade;
 use cdf_package::{PackageBuilder, PackageReader, persist_package_parquet_archive};
 use cdf_package_contract::{DestinationCommitPlanPreimage, PackageStatus, StateDeltaPreimage};
 use cdf_project::{
@@ -33,7 +34,7 @@ use cdf_project::{
     run_project_with_scheduler_and_telemetry,
 };
 use cdf_runtime::{ByteTransformRegistry, FormatRegistry, SourceRegistry, SourceResolutionContext};
-use cdf_source_files::{FileRuntimeDependencies, FileSourceDriver, FileTransportFacade};
+use cdf_source_files::{FileRuntimeDependencies, FileSourceDriver, file_source_blocking_lane};
 use cdf_state_sqlite::InMemoryCheckpointStore;
 use datafusion::prelude::{SessionContext, col, lit};
 use duckdb::{Connection, appender_params_from_iter, types::Value};
@@ -379,7 +380,8 @@ fn benchmark_source_registry() -> BenchResult<SourceRegistry> {
             Ok(FileRuntimeDependencies::new(
                 FileTransportFacade::new()
                     .with_shared_secret_provider(secrets)
-                    .with_execution_services(execution.clone()),
+                    .with_execution_services(execution.clone())
+                    .with_local_listing_lane(file_source_blocking_lane())?,
                 execution,
                 Arc::clone(&runtime_formats),
                 Arc::new(ByteTransformRegistry::default()),

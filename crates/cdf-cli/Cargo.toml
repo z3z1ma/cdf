@@ -26,6 +26,7 @@ cdf-format-parquet = { path = "../cdf-format-parquet" }
 cdf-http = { path = "../cdf-http" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-memory = { path = "../cdf-memory" }
+cdf-object-access = { path = "../cdf-object-access" }
 cdf-package = { path = "../cdf-package" }
 cdf-package-contract = { path = "../cdf-package-contract" }
 cdf-project = { path = "../cdf-project" }

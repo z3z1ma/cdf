@@ -17,7 +17,8 @@ use cdf_memory::{
     ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest, reserve,
 };
 use cdf_runtime::{
-    ByteSource, ExecutionServices, GenerationStrength, RunCancellation, SourceEgressScope,
+    BlockingLaneSpec, ByteSource, ExecutionServices, GenerationStrength, RunCancellation,
+    SourceEgressScope,
 };
 use futures_util::{Stream, TryStreamExt};
 use object_store::{ObjectStore, ObjectStoreExt, path::Path as ObjectPath};
@@ -27,7 +28,7 @@ use url::Url;
 const FILE_LIST_CHANNEL_ENTRIES: usize = 32;
 const MAX_FILE_LOCATION_BYTES: usize = 64 * 1024;
 const MAX_FILE_IDENTITY_FIELD_BYTES: usize = 16 * 1024;
-pub(crate) const FILE_IDENTITY_MEMORY_ENVELOPE_BYTES: u64 = 144 * 1024;
+pub const FILE_IDENTITY_MEMORY_ENVELOPE_BYTES: u64 = 144 * 1024;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct FileTransportResource {
@@ -283,7 +284,7 @@ impl FileMetadataObservation {
         }
     }
 
-    pub(crate) fn access_resource(&self, logical: &FileTransportResource) -> FileTransportResource {
+    pub fn access_resource(&self, logical: &FileTransportResource) -> FileTransportResource {
         let mut resource = logical.clone();
         resource.location = self.access_location.0.clone();
         if !self.forward_auth {
@@ -413,7 +414,7 @@ impl FileTransportControl {
         self.cancellation.clone()
     }
 
-    pub(crate) fn check(&self, execution: Option<&ExecutionServices>) -> Result<()> {
+    pub fn check(&self, execution: Option<&ExecutionServices>) -> Result<()> {
         self.cancellation.check()?;
         if let Some(deadline) = self.deadline {
             let execution = execution.ok_or_else(|| {
@@ -646,6 +647,7 @@ pub struct FileTransportFacade {
     object_stores: BTreeMap<String, Arc<dyn ObjectStore>>,
     object_store_clients: ObjectStoreClientPool,
     execution: Option<cdf_runtime::ExecutionServices>,
+    local_listing_lane: Option<BlockingLaneSpec>,
 }
 
 impl FileTransportFacade {
@@ -692,6 +694,17 @@ impl FileTransportFacade {
         self.execution = Some(execution);
         self
     }
+
+    /// Selects the caller-owned blocking lane used for local directory traversal.
+    ///
+    /// Object access owns the blocking operation, while the source adapter owns its scheduling
+    /// policy. Requiring an injected lane prevents a neutral transport from inventing a hidden
+    /// executor or source-specific concurrency default.
+    pub fn with_local_listing_lane(mut self, lane: BlockingLaneSpec) -> Result<Self> {
+        lane.validate()?;
+        self.local_listing_lane = Some(lane);
+        Ok(self)
+    }
 }
 
 impl fmt::Debug for FileTransportFacade {
@@ -711,6 +724,10 @@ impl fmt::Debug for FileTransportFacade {
                     .ok(),
             )
             .field("execution_services", &self.execution.is_some())
+            .field(
+                "local_listing_lane",
+                &self.local_listing_lane.as_ref().map(|lane| &lane.lane_id),
+            )
             .finish()
     }
 }
@@ -905,10 +922,15 @@ impl FileTransportFacade {
         control: FileTransportControl,
     ) -> Result<FileIdentityStream> {
         let execution = self.execution()?.clone();
-        execution.ensure_blocking_lanes(&[crate::file_source_blocking_lane()])?;
+        let lane = self.local_listing_lane.as_ref().ok_or_else(|| {
+            CdfError::contract(
+                "local object listing requires an injected blocking-lane specification",
+            )
+        })?;
+        execution.ensure_blocking_lanes(std::slice::from_ref(lane))?;
         let stream = execution.clone().spawn_blocking_stream(
             "file-local-list",
-            crate::FILE_SOURCE_BLOCKING_LANE_ID,
+            &lane.lane_id,
             FILE_LIST_CHANNEL_ENTRIES,
             move |output, cancellation| {
                 control.check(Some(&execution))?;
@@ -1470,7 +1492,7 @@ pub(crate) fn verify_generation_identity(
     Ok(())
 }
 
-pub(crate) fn file_url_path(url: &str) -> Result<PathBuf> {
+pub fn file_url_path(url: &str) -> Result<PathBuf> {
     let rest = url
         .strip_prefix("file://")
         .ok_or_else(|| CdfError::contract("file URL must use the file:// scheme"))?;
@@ -1981,6 +2003,33 @@ mod tests {
         assert_eq!(position.etag, None);
         assert_eq!(position.sha256, None);
         assert_eq!(position.source_generation, metadata.modified);
+    }
+
+    #[test]
+    fn local_listing_uses_caller_owned_blocking_lane() {
+        let temp = TempDir::new().unwrap();
+        fs::write(temp.path().join("first.bin"), b"first").unwrap();
+        fs::write(temp.path().join("second.bin"), b"second").unwrap();
+        let resource = FileTransportResource::local_path(temp.path());
+        let control = FileTransportControl::default();
+        let without_lane =
+            FileTransportFacade::new().with_execution_services(crate::test_execution_services());
+        let error =
+            match without_lane.list(&crate::test_egress_scope(), &resource, usize::MAX, &control) {
+                Ok(_) => panic!("local listing must require injected blocking policy"),
+                Err(error) => error,
+            };
+        assert!(error.message.contains("injected blocking-lane"));
+
+        let with_lane = FileTransportFacade::new()
+            .with_execution_services(crate::test_execution_services())
+            .with_local_listing_lane(crate::test_local_listing_lane())
+            .unwrap();
+        let listed = with_lane
+            .list(&crate::test_egress_scope(), &resource, usize::MAX, &control)
+            .and_then(|stream| futures_executor::block_on(stream.try_collect::<Vec<_>>()))
+            .unwrap();
+        assert_eq!(listed.len(), 2);
     }
 
     #[test]

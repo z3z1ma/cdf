@@ -9,6 +9,10 @@ use std::{
 use cdf_http::{AuthScheme, EgressAllowlist, SecretProvider, SecretUri};
 use cdf_kernel::{CdfError, CompiledScanIntent, PayloadRetention, QueryableResource, Result};
 use cdf_memory::{ConsumerKey, MemoryClass, ReservationRequest};
+use cdf_object_access::{
+    FilePayloadCache, FileTransportControl, FileTransportLocation, FileTransportResource,
+    file_url_path, resolve_project_cache_root,
+};
 use cdf_runtime::{
     CompiledFormatBinding, CompiledSourcePlan, ExecutionServices, FormatDiscoveryKind,
     FormatRegistry, PreparedSourcePayload, PreparedSourcePayloadKey, SourceAddPlanner,
@@ -23,8 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     FILE_SOURCE_ADVERTISED_PARALLELISM, FileCompressionDeclaration, FileFormatDeclaration,
-    FilePayloadCache, FileResource, FileResourceDefinition, FileResourcePlan,
-    FileRuntimeDependencies, FileTransportControl, FileTransportLocation, FileTransportResource,
+    FileResource, FileResourceDefinition, FileResourcePlan, FileRuntimeDependencies,
     SchemaDiscoveryRequest, discover_local_binary_schema, discover_transport_binary_schema,
     file_source_blocking_lane,
 };
@@ -703,7 +706,7 @@ fn file_discovery_entries(
     }
     let local_root = match file_transport_scheme(&plan.root)? {
         None => Some(PathBuf::from(&plan.root)),
-        Some(FileTransportScheme::File) => Some(crate::transport::file_url_path(&plan.root)?),
+        Some(FileTransportScheme::File) => Some(file_url_path(&plan.root)?),
         Some(
             FileTransportScheme::Http | FileTransportScheme::Https | FileTransportScheme::Remote(_),
         ) => None,
@@ -940,8 +943,7 @@ fn configure_runtime_dependencies(
         return Ok(dependencies);
     };
     let configured = PathBuf::from(cache.location);
-    let root =
-        crate::payload_cache::resolve_project_cache_root(context.project_root(), &configured)?;
+    let root = resolve_project_cache_root(context.project_root(), &configured)?;
     Ok(dependencies.with_payload_cache(FilePayloadCache::new(
         root.join("v1"),
         cache.max_entries,
@@ -1357,13 +1359,13 @@ fn execution_capabilities() -> SourceExecutionCapabilities {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::FileTransportFacade;
     use arrow_schema::Schema;
     use cdf_http::{SecretProvider, SecretUri, SecretValue};
     use cdf_kernel::{
         ResourceDescriptor, ResourceId, SchemaHash, SchemaSource, ScopeKey, TrustLevel,
         WriteDisposition,
     };
+    use cdf_object_access::FileTransportFacade;
 
     struct NoopSecretProvider;
 

@@ -21,10 +21,10 @@ const DEFAULT_TRANSFER_CHUNK_BYTES: u64 = 4 * 1024 * 1024;
 const DEFAULT_RESIDENCY_BYTES: u64 = 512 * 1024 * 1024;
 const MINIMUM_RESIDENCY_BYTES: u64 = 2 * DEFAULT_TRANSFER_CHUNK_BYTES;
 
-pub(crate) struct EvictingSpoolSession {
-    pub(crate) source: Arc<dyn ByteSource>,
-    pub(crate) retention: PayloadRetention,
-    pub(crate) completion: BoxFuture<'static, Result<()>>,
+pub struct EvictingSpoolSession {
+    pub source: Arc<dyn ByteSource>,
+    pub retention: PayloadRetention,
+    pub completion: BoxFuture<'static, Result<()>>,
     #[cfg(test)]
     spool_path: std::path::PathBuf,
 }
@@ -63,7 +63,7 @@ enum EvictingSpoolTerminal {
     Failed(String),
 }
 
-pub(crate) fn start_evicting_spool(
+pub fn start_evicting_spool(
     upstream: Arc<dyn ByteSource>,
     size_bytes: u64,
     maximum_spool_bytes: u64,

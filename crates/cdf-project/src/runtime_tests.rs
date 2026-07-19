@@ -42,6 +42,7 @@ use cdf_kernel::{
     SchemaHash, SchemaSource, ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta,
     StateSegment, TargetName, TransactionSupport, TrustLevel, VerifyClause, WriteDisposition,
 };
+use cdf_object_access::FileTransportFacade;
 use cdf_package::{PackageBuilder, PackageReader, canonical_json_bytes};
 use cdf_package_contract::{
     DEDUP_SUMMARY_FILE, DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage, MANIFEST_FILE,
@@ -49,7 +50,7 @@ use cdf_package_contract::{
     ProcessedObservationEvidenceArtifact, RECEIPTS_FILE, STATE_INPUT_CHECKPOINT_FILE,
     STATE_PROPOSED_DELTA_FILE, SegmentEntry, StateDeltaPreimage,
 };
-use cdf_source_files::{FileRuntimeDependencies, FileSourceDriver, FileTransportFacade};
+use cdf_source_files::{FileRuntimeDependencies, FileSourceDriver};
 use cdf_source_rest::RestSourceDriver;
 use cdf_state_sqlite::{
     InMemoryScopeLeaseStore, RunEventDetails, RunEventKind, RunEventValue, SecretReference,

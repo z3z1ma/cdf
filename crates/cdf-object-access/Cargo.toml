@@ -1,0 +1,27 @@
+[package]
+name = "cdf-object-access"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Neutral local, HTTP, and object-store access authority for cdf."
+
+[dependencies]
+bytes = "1.11.0"
+cdf-http = { path = "../cdf-http" }
+cdf-kernel = { path = "../cdf-kernel" }
+cdf-memory = { path = "../cdf-memory" }
+cdf-runtime = { path = "../cdf-runtime" }
+futures-util = "0.3.32"
+hex = "0.4.3"
+object_store = { git = "https://github.com/apache/arrow-rs-object-store.git", rev = "c7316d29face118e7409eead0cda098f38589428", features = ["aws", "azure", "gcp"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+sha2 = "0.10.9"
+tempfile = "3.27.0"
+tokio = { version = "=1.52.3", features = ["fs", "io-util"] }
+url = "2.5.8"
+
+[dev-dependencies]
+futures-executor = "0.3.32"
+tokio = { version = "=1.52.3", features = ["rt-multi-thread"] }

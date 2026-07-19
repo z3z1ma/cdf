@@ -810,6 +810,7 @@ dependencies = [
  "cdf-http",
  "cdf-kernel",
  "cdf-memory",
+ "cdf-object-access",
  "cdf-package",
  "cdf-package-contract",
  "cdf-project",
@@ -854,6 +855,7 @@ dependencies = [
  "cdf-http",
  "cdf-kernel",
  "cdf-memory",
+ "cdf-object-access",
  "cdf-package",
  "cdf-package-contract",
  "cdf-project",
@@ -920,6 +922,7 @@ dependencies = [
  "cdf-http",
  "cdf-kernel",
  "cdf-memory",
+ "cdf-object-access",
  "cdf-package",
  "cdf-package-contract",
  "cdf-project",
@@ -1219,6 +1222,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdf-object-access"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "cdf-http",
+ "cdf-kernel",
+ "cdf-memory",
+ "cdf-runtime",
+ "futures-executor",
+ "futures-util",
+ "hex",
+ "object_store 0.14.1",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "cdf-package"
 version = "0.1.0"
 dependencies = [
@@ -1279,6 +1303,7 @@ dependencies = [
  "cdf-http",
  "cdf-kernel",
  "cdf-memory",
+ "cdf-object-access",
  "cdf-package",
  "cdf-package-contract",
  "cdf-runtime",
@@ -1365,6 +1390,7 @@ dependencies = [
  "cdf-http",
  "cdf-kernel",
  "cdf-memory",
+ "cdf-object-access",
  "cdf-package",
  "cdf-runtime",
  "cdf-transform-gzip",
@@ -1573,8 +1599,8 @@ dependencies = [
  "cdf-http",
  "cdf-kernel",
  "cdf-memory",
+ "cdf-object-access",
  "cdf-runtime",
- "cdf-source-files",
  "futures-util",
  "reqwest 0.13.4",
  "sha2 0.10.9",

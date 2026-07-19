@@ -108,7 +108,7 @@ impl LocalByteSource {
     }
 }
 
-pub(crate) fn open_identity_preserving_local_source(
+pub fn open_identity_preserving_local_source(
     path: &Path,
     identity: ContentIdentity,
     size_bytes: u64,
@@ -346,7 +346,7 @@ fn local_change_token(metadata: &std::fs::Metadata) -> String {
     format!("portable-size{}", metadata.len())
 }
 
-pub(crate) fn local_source_generation(path: &Path) -> Result<String> {
+pub fn local_source_generation(path: &Path) -> Result<String> {
     Ok(local_generation(path)?.evidence_token())
 }
 
