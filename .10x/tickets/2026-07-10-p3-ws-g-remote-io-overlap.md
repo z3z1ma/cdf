@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-10
-Updated: 2026-07-16
+Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
 Depends-On: .10x/tickets/done/2026-07-11-p0-sx1-source-extension-boundary.md, .10x/tickets/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md, .10x/tickets/2026-07-10-p3-ws-b-format-decode-engines.md, .10x/specs/data-onramp-file-sources-transports.md
 
@@ -39,3 +39,4 @@ No immediate execution blocker. G1 and G2 are terminal; G3 builds on their provi
 - 2026-07-16: G2 closed at `.10x/tickets/done/2026-07-11-p3-g2-range-readahead-spool-controller.md`. The terminal controller now covers origin-shared adaptive/fixed range admission, exact retries, bounded coalescing/readahead, full/growing/evicting spools, cancellation, telemetry, and opt-in generation-revalidated cache promotion without adding payload work to the disabled or oversized paths. G3 owns end-to-end codec/network backpressure and jobs parity; G4 owns the live provider/TLC envelope and default tuning.
 - 2026-07-16: B5 closed at `.10x/tickets/done/2026-07-11-p3-b5-json-codecs.md`; G3's four direct dependencies are now terminal. Remote row codecs already stream and REST page fetch overlaps tape decode. G3 can execute its remaining transport-to-graph backpressure, cancellation-chaos, jobs-equivalence, and timeline/profile acceptance surface without another codec prerequisite.
 - 2026-07-16: G3 closed at `.10x/tickets/done/2026-07-11-p3-g3-codec-download-decode-overlap.md`. Recorded HTTP gzip NDJSON now permanently proves causal downstream-to-network backpressure, bounded cancellation, managed-memory release, observed multi-file remote overlap, and jobs-invariant package identity. The 2.147 GB FineWeb 1.10x curl floor remains the measured performance floor. G4 is now the only open child and owns live provider breadth plus the full TLC remote-I/O envelope.
+- 2026-07-19: G4's final retained candidate makes finite remote spooling scan-shape-aware and operator-tunable. The 12-file Hugging Face TLC wall improved from `19.580s` to `16.793s` while the local control remained within `1.2%` of its prior median; exact rows and memory safety held. The ticket is awaiting only a clean-label cache-hit remeasurement and terminal record. The user explicitly directed the workstream to accept the remaining roofline delta rather than continue product-logic iteration.
