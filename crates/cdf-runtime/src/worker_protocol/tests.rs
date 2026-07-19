@@ -280,7 +280,46 @@ impl MockArtifactStore {
 }
 
 impl WorkerAdmissionVerifier for MockArtifactStore {
-    fn verify_artifact(&self, reference: &WorkerArtifactReference) -> Result<()> {
+    fn reconstruct_task_authority(
+        &self,
+        task: &PortablePartitionTask,
+    ) -> Result<ReconstructedWorkerTaskAuthority> {
+        for reference in [
+            &task.source.compiled_source_plan,
+            &task.partition.partition_plan,
+        ]
+        .into_iter()
+        .chain(task.execution.artifacts.references())
+        {
+            self.verify_artifact(reference)?;
+        }
+        let source = self.load(&task.source.compiled_source_plan);
+        let partition = self.load(&task.partition.partition_plan);
+        let load_hash = |reference: &WorkerArtifactReference| {
+            self.load::<RecordedSemanticArtifact>(reference)
+                .semantic_hash
+        };
+        let execution = ReconstructedExecutionAuthority::from_verified_compiler_artifacts(
+            load_hash(&task.execution.artifacts.project_plan),
+            SchemaHash::new(load_hash(&task.execution.artifacts.output_schema))?,
+            load_hash(&task.execution.artifacts.validation_program),
+            load_hash(&task.execution.artifacts.normalization_policy),
+            load_hash(&task.execution.artifacts.compiled_expression_plan),
+            load_hash(&task.execution.artifacts.operator_graph),
+            load_hash(&task.execution.artifacts.segmentation_policy),
+            load_hash(&task.execution.artifacts.execution_extent),
+            load_hash(&task.execution.artifacts.decode_unit_plan),
+            load_hash(&task.execution.artifacts.segment_plan),
+        )?;
+        Ok(ReconstructedWorkerTaskAuthority::from_verified_artifacts(
+            source, partition, execution,
+        ))
+    }
+
+    fn verify_artifact(
+        &self,
+        reference: &WorkerArtifactReference,
+    ) -> Result<VerifiedWorkerArtifactFacts> {
         reference.validate()?;
         let values = self.values.borrow();
         let value = values
@@ -314,18 +353,19 @@ impl WorkerAdmissionVerifier for MockArtifactStore {
                 "mock artifact bytes/hash/generation do not match reference",
             ));
         }
-        Ok(())
+        let row_count = (reference.kind == WorkerArtifactKind::CanonicalSegment).then_some(50);
+        VerifiedWorkerArtifactFacts::new(reference.clone(), row_count)
     }
 
     fn verify_source_authority(
         &self,
         _task: &PortablePartitionTask,
-        authority: &ReconstructedWorkerTaskAuthority<'_>,
+        authority: &ReconstructedWorkerTaskAuthority,
         attestation: &WorkerSourceAttestation,
         observations: &[WorkerProcessedObservation],
-    ) -> Result<()> {
+    ) -> Result<VerifiedWorkerSourceFacts> {
         let planned = authority
-            .partition
+            .partition()
             .planned_position
             .as_ref()
             .ok_or_else(|| {
@@ -340,7 +380,7 @@ impl WorkerAdmissionVerifier for MockArtifactStore {
             ));
         };
         if processed != planned
-            || attestation.physical_schema_hash != authority.execution.output_schema_hash
+            || attestation.physical_schema_hash != *authority.execution().output_schema_hash()
             || observations.iter().any(|observation| {
                 !matches!(
                     &observation.source_position,
@@ -352,13 +392,38 @@ impl WorkerAdmissionVerifier for MockArtifactStore {
                 "worker source attestation exceeds reconstructed position/schema authority",
             ));
         }
-        Ok(())
+        VerifiedWorkerSourceFacts::new(
+            WorkerPosition::inline(planned.clone())?,
+            authority.execution().output_schema_hash().clone(),
+            50,
+            4096,
+        )
     }
 }
 
 struct Fixture {
     task: PortablePartitionTask,
     store: MockArtifactStore,
+}
+
+#[derive(Default)]
+struct CountingArtifactSink {
+    writes: usize,
+}
+
+impl WorkerAuthorizedArtifactSink for CountingArtifactSink {
+    fn write_authorized(
+        &mut self,
+        authorization: WorkerArtifactWriteAuthorization<'_>,
+    ) -> Result<VerifiedWorkerArtifactFacts> {
+        self.writes += 1;
+        let receipt = authorization.receipt();
+        let row_count = match receipt.role {
+            WorkerArtifactRole::CanonicalSegment { row_count, .. } => Some(row_count),
+            _ => None,
+        };
+        VerifiedWorkerArtifactFacts::new(receipt.artifact.clone(), row_count)
+    }
 }
 
 impl Fixture {
@@ -521,37 +586,15 @@ impl Fixture {
         Self { task, store }
     }
 
-    fn reconstruct(
-        &self,
-        task: &PortablePartitionTask,
-    ) -> (
-        CompiledSourcePlan,
-        PartitionPlan,
-        ReconstructedExecutionAuthority,
-    ) {
-        let source = self.store.load(&task.source.compiled_source_plan);
-        let partition = self.store.load(&task.partition.partition_plan);
-        let load_hash = |reference: &WorkerArtifactReference| {
-            self.store
-                .load::<RecordedSemanticArtifact>(reference)
-                .semantic_hash
-        };
-        let authority = ReconstructedExecutionAuthority {
-            project_identity_hash: load_hash(&task.execution.artifacts.project_plan),
-            output_schema_hash: SchemaHash::new(load_hash(&task.execution.artifacts.output_schema))
-                .unwrap(),
-            validation_program_hash: load_hash(&task.execution.artifacts.validation_program),
-            normalization_policy_hash: load_hash(&task.execution.artifacts.normalization_policy),
-            compiled_expression_plan_hash: load_hash(
-                &task.execution.artifacts.compiled_expression_plan,
-            ),
-            operator_graph_hash: load_hash(&task.execution.artifacts.operator_graph),
-            segmentation_policy_hash: load_hash(&task.execution.artifacts.segmentation_policy),
-            execution_extent_hash: load_hash(&task.execution.artifacts.execution_extent),
-            unit_authority_hash: load_hash(&task.execution.artifacts.decode_unit_plan),
-            segment_authority_hash: load_hash(&task.execution.artifacts.segment_plan),
-        };
-        (source, partition, authority)
+    fn registry(&self) -> SourceRegistry {
+        let mut registry = SourceRegistry::new();
+        registry
+            .register(PortableMockDriver {
+                descriptor: source_plan().driver,
+                option_schema: mock_option_schema(),
+            })
+            .unwrap();
+        registry
     }
 
     fn attempt(&self) -> PartitionAttemptEnvelope {
@@ -638,22 +681,6 @@ impl Fixture {
     }
 }
 
-fn admission<'a>(
-    fixture: &'a Fixture,
-    task: &'a PortablePartitionTask,
-    source: &'a CompiledSourcePlan,
-    partition: &'a PartitionPlan,
-    execution: &'a ReconstructedExecutionAuthority,
-) -> ReconstructedWorkerTaskAuthority<'a> {
-    let _ = fixture;
-    let _ = task;
-    ReconstructedWorkerTaskAuthority {
-        source,
-        partition,
-        execution,
-    }
-}
-
 #[test]
 fn canonical_task_attempt_and_result_fixtures_round_trip() {
     let fixture = Fixture::new();
@@ -716,22 +743,11 @@ fn isolated_worker_reconstructs_every_authority_from_artifacts() {
         &worker_capabilities(),
     )
     .unwrap();
-    let mut registry = SourceRegistry::new();
-    registry
-        .register(PortableMockDriver {
-            descriptor: source_plan().driver,
-            option_schema: mock_option_schema(),
-        })
-        .unwrap();
+    let registry = fixture.registry();
     registry
         .validate_portable_source_binding(&task.source)
         .unwrap();
-    let (source, partition, execution) = fixture.reconstruct(&task);
-    registry
-        .validate_portable_source_plan(&task.source, &source)
-        .unwrap();
-    let authority = admission(&fixture, &task, &source, &partition, &execution);
-    task.validate_reconstructed_authority(&authority, &fixture.store)
+    task.reconstruct_and_validate_authority(&registry, &fixture.store)
         .unwrap();
 
     let attempt = fixture.attempt();
@@ -740,7 +756,7 @@ fn isolated_worker_reconstructs_every_authority_from_artifacts() {
         .validate_for_admission(
             &task,
             &attempt,
-            &authority,
+            &registry,
             &fixture.lease(),
             &fixture.store,
             2_000,
@@ -750,28 +766,31 @@ fn isolated_worker_reconstructs_every_authority_from_artifacts() {
 
 #[test]
 fn forged_execution_artifact_and_semantic_authority_fail_closed() {
-    let fixture = Fixture::new();
-    let (source, partition, mut execution) = fixture.reconstruct(&fixture.task);
-    execution.operator_graph_hash = hash(99);
-    let authority = admission(&fixture, &fixture.task, &source, &partition, &execution);
+    let mut fixture = Fixture::new();
+    let replacement = fixture.store.insert_semantic(
+        WorkerArtifactKind::OperatorGraph,
+        "plans/operator-graph.json",
+        hash(99),
+    );
+    fixture.task.execution.artifacts.operator_graph = replacement;
+    fixture.task.task_sha256 = fixture.task.compute_hash().unwrap();
     assert!(
         fixture
             .task
-            .validate_reconstructed_authority(&authority, &fixture.store)
+            .reconstruct_and_validate_authority(&fixture.registry(), &fixture.store)
             .unwrap_err()
             .message
             .contains("execution program")
     );
 
-    let (_, _, execution) = fixture.reconstruct(&fixture.task);
+    let fixture = Fixture::new();
     fixture
         .store
         .tamper(&fixture.task.execution.artifacts.operator_graph);
-    let authority = admission(&fixture, &fixture.task, &source, &partition, &execution);
     assert!(
         fixture
             .task
-            .validate_reconstructed_authority(&authority, &fixture.store)
+            .reconstruct_and_validate_authority(&fixture.registry(), &fixture.store)
             .unwrap_err()
             .message
             .contains("mock artifact")
@@ -781,7 +800,8 @@ fn forged_execution_artifact_and_semantic_authority_fail_closed() {
 #[test]
 fn write_permit_is_checked_before_every_object_write() {
     let fixture = Fixture::new();
-    let attempt = fixture.attempt();
+    let mut attempt = fixture.attempt();
+    attempt.write_permit.output.maximum_bytes = 6_000;
     let segment = WorkerArtifactReference {
         kind: WorkerArtifactKind::CanonicalSegment,
         store_namespace: ContentStoreNamespace::new("worker-fixtures").unwrap(),
@@ -790,31 +810,62 @@ fn write_permit_is_checked_before_every_object_write() {
         content_sha256: hash(70),
         provider_generation: None,
     };
-    attempt
-        .write_permit
-        .validate_before_write(
-            &fixture.task,
-            &fixture.lease(),
-            &segment,
+    let receipt = WorkerArtifactReceipt {
+        role: WorkerArtifactRole::CanonicalSegment {
+            segment_id: SegmentId::new("p00000003-s00000000").unwrap(),
+            partition_ordinal: 3,
+            segment_ordinal: 0,
+            row_count: 50,
+        },
+        artifact: segment.clone(),
+    };
+    let mut sink = CountingArtifactSink::default();
+    let lease = fixture.lease();
+    let mut session =
+        WorkerArtifactWriteSession::new(&fixture.task, &attempt, &lease, 2_000).unwrap();
+    session
+        .write(
+            &receipt,
             &WorkerArtifactObjectState::Absent,
             2_000,
+            &mut sink,
         )
         .unwrap();
+    assert_eq!(sink.writes, 1);
+
+    let second = WorkerArtifactReceipt {
+        role: WorkerArtifactRole::CanonicalSegment {
+            segment_id: SegmentId::new("p00000003-s00000001").unwrap(),
+            partition_ordinal: 3,
+            segment_ordinal: 1,
+            row_count: 50,
+        },
+        artifact: WorkerArtifactReference {
+            object_key: ContentObjectKey::new("attempts/attempt-4/data/segment-2.arrow").unwrap(),
+            content_sha256: hash(71),
+            ..segment.clone()
+        },
+    };
+    assert!(
+        session
+            .write(
+                &second,
+                &WorkerArtifactObjectState::Absent,
+                2_000,
+                &mut sink,
+            )
+            .unwrap_err()
+            .message
+            .contains("cumulative")
+    );
+    assert_eq!(sink.writes, 1, "rejected write must not reach the sink");
 
     let stale = WorkerLeaseState {
         fencing_token: FencingToken::new(5).unwrap(),
         ..fixture.lease()
     };
     assert!(
-        attempt
-            .write_permit
-            .validate_before_write(
-                &fixture.task,
-                &stale,
-                &segment,
-                &WorkerArtifactObjectState::Absent,
-                2_000,
-            )
+        WorkerArtifactWriteSession::new(&fixture.task, &attempt, &stale, 2_000)
             .unwrap_err()
             .message
             .contains("stale")
@@ -824,15 +875,8 @@ fn write_permit_is_checked_before_every_object_write() {
         provider_generation: ContentProviderGeneration::new("generation-old").unwrap(),
     };
     assert!(
-        attempt
-            .write_permit
-            .validate_before_write(
-                &fixture.task,
-                &fixture.lease(),
-                &segment,
-                &conflicting,
-                2_000,
-            )
+        session
+            .write(&receipt, &conflicting, 2_000, &mut sink)
             .unwrap_err()
             .message
             .contains("generation precondition")
@@ -845,13 +889,26 @@ fn semantically_rehashed_bad_result_still_fails_admission() {
     let attempt = fixture.attempt();
     let mut result = fixture.result(&attempt);
     result.counts.output_rows = 49;
+    let WorkerArtifactRole::CanonicalSegment { row_count, .. } = &mut result.artifacts[0].role
+    else {
+        unreachable!();
+    };
+    *row_count = 49;
     result.result_sha256 = result.compute_semantic_hash().unwrap();
+    result.validate().unwrap();
     assert!(
         result
-            .validate()
+            .validate_for_admission(
+                &fixture.task,
+                &attempt,
+                &fixture.registry(),
+                &fixture.lease(),
+                &fixture.store,
+                2_000,
+            )
             .unwrap_err()
             .message
-            .contains("segment rows")
+            .contains("stored content")
     );
 
     let mut result = fixture.result(&attempt);
@@ -861,14 +918,12 @@ fn semantically_rehashed_bad_result_still_fails_admission() {
         .unwrap()
         .processed_position = WorkerPosition::inline(position(151)).unwrap();
     result.result_sha256 = result.compute_semantic_hash().unwrap();
-    let (source, partition, execution) = fixture.reconstruct(&fixture.task);
-    let authority = admission(&fixture, &fixture.task, &source, &partition, &execution);
     assert!(
         result
             .validate_for_admission(
                 &fixture.task,
                 &attempt,
-                &authority,
+                &fixture.registry(),
                 &fixture.lease(),
                 &fixture.store,
                 2_000,
@@ -919,6 +974,28 @@ fn positions_are_exact_version_portable_and_foreign_state_is_external() {
         }],
     });
     assert!(WorkerPosition::inline(absolute).is_err());
+    for path in [
+        r"\\server\share\events.parquet",
+        r"\\?\C:\private\events.parquet",
+        "FILE:///private/events.parquet",
+        "File://localhost/private/events.parquet",
+    ] {
+        let position = SourcePosition::FileManifest(cdf_kernel::FileManifest {
+            version: PORTABLE_SOURCE_POSITION_VERSION,
+            files: vec![cdf_kernel::FilePosition {
+                path: path.to_owned(),
+                size_bytes: 1,
+                source_generation: Some("generation-1".to_owned()),
+                etag: None,
+                object_version: None,
+                sha256: None,
+            }],
+        });
+        assert!(
+            WorkerPosition::inline(position).is_err(),
+            "portable authority admitted absolute path {path}"
+        );
+    }
 
     let foreign = SourcePosition::ForeignState(cdf_kernel::ForeignState {
         version: PORTABLE_SOURCE_POSITION_VERSION,

@@ -342,10 +342,7 @@ impl PortableExecutionBinding {
         validate_sha256("execution extent", &self.execution_extent_hash)
     }
 
-    pub fn validate_reconstructed(
-        &self,
-        authority: &ReconstructedExecutionAuthority,
-    ) -> Result<()> {
+    fn validate_reconstructed(&self, authority: &ReconstructedExecutionAuthority) -> Result<()> {
         self.validate()?;
         authority.validate()?;
         if self.project_identity_hash != authority.project_identity_hash
@@ -372,19 +369,52 @@ impl PortableExecutionBinding {
 /// protocol owns proving that execution and coordinator admission used the same frozen semantics.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReconstructedExecutionAuthority {
-    pub project_identity_hash: String,
-    pub output_schema_hash: SchemaHash,
-    pub validation_program_hash: String,
-    pub normalization_policy_hash: String,
-    pub compiled_expression_plan_hash: String,
-    pub operator_graph_hash: String,
-    pub segmentation_policy_hash: String,
-    pub execution_extent_hash: String,
-    pub unit_authority_hash: String,
-    pub segment_authority_hash: String,
+    project_identity_hash: String,
+    output_schema_hash: SchemaHash,
+    validation_program_hash: String,
+    normalization_policy_hash: String,
+    compiled_expression_plan_hash: String,
+    operator_graph_hash: String,
+    segmentation_policy_hash: String,
+    execution_extent_hash: String,
+    unit_authority_hash: String,
+    segment_authority_hash: String,
 }
 
 impl ReconstructedExecutionAuthority {
+    /// Constructs execution authority from identities decoded from the verified compiler
+    /// artifacts. This constructor is intentionally used only by a trusted artifact resolver;
+    /// coordinator admission obtains the value through `WorkerAdmissionVerifier` and never from
+    /// a worker-authored result.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_verified_compiler_artifacts(
+        project_identity_hash: String,
+        output_schema_hash: SchemaHash,
+        validation_program_hash: String,
+        normalization_policy_hash: String,
+        compiled_expression_plan_hash: String,
+        operator_graph_hash: String,
+        segmentation_policy_hash: String,
+        execution_extent_hash: String,
+        unit_authority_hash: String,
+        segment_authority_hash: String,
+    ) -> Result<Self> {
+        let authority = Self {
+            project_identity_hash,
+            output_schema_hash,
+            validation_program_hash,
+            normalization_policy_hash,
+            compiled_expression_plan_hash,
+            operator_graph_hash,
+            segmentation_policy_hash,
+            execution_extent_hash,
+            unit_authority_hash,
+            segment_authority_hash,
+        };
+        authority.validate()?;
+        Ok(authority)
+    }
+
     pub fn validate(&self) -> Result<()> {
         validate_sha256(
             "reconstructed project identity",
@@ -420,6 +450,10 @@ impl ReconstructedExecutionAuthority {
             "reconstructed segment authority",
             &self.segment_authority_hash,
         )
+    }
+
+    pub fn output_schema_hash(&self) -> &SchemaHash {
+        &self.output_schema_hash
     }
 }
 
@@ -806,25 +840,133 @@ pub struct PortablePartitionTaskInput {
     pub output_policy: WorkerOutputPolicy,
 }
 
-pub struct ReconstructedWorkerTaskAuthority<'a> {
-    pub source: &'a crate::CompiledSourcePlan,
-    pub partition: &'a cdf_kernel::PartitionPlan,
-    pub execution: &'a ReconstructedExecutionAuthority,
+#[derive(Clone, Debug)]
+pub struct ReconstructedWorkerTaskAuthority {
+    source: crate::CompiledSourcePlan,
+    partition: cdf_kernel::PartitionPlan,
+    execution: ReconstructedExecutionAuthority,
+}
+
+impl ReconstructedWorkerTaskAuthority {
+    /// Constructs one indivisible authority value from artifacts decoded and content-verified by
+    /// the worker host. The protocol validates every field against the task immediately after the
+    /// verifier returns it.
+    pub fn from_verified_artifacts(
+        source: crate::CompiledSourcePlan,
+        partition: cdf_kernel::PartitionPlan,
+        execution: ReconstructedExecutionAuthority,
+    ) -> Self {
+        Self {
+            source,
+            partition,
+            execution,
+        }
+    }
+
+    pub fn source(&self) -> &crate::CompiledSourcePlan {
+        &self.source
+    }
+
+    pub fn partition(&self) -> &cdf_kernel::PartitionPlan {
+        &self.partition
+    }
+
+    pub fn execution(&self) -> &ReconstructedExecutionAuthority {
+        &self.execution
+    }
+}
+
+/// Facts observed by a trusted content-store implementation while verifying one referenced
+/// artifact. The reference is repeated so admission can prove the facts belong to exactly the
+/// object named by the task or result, rather than another object with convenient metadata.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedWorkerArtifactFacts {
+    reference: WorkerArtifactReference,
+    row_count: Option<u64>,
+}
+
+impl VerifiedWorkerArtifactFacts {
+    pub fn new(reference: WorkerArtifactReference, row_count: Option<u64>) -> Result<Self> {
+        reference.validate()?;
+        if reference.kind == WorkerArtifactKind::CanonicalSegment && row_count == Some(0) {
+            return Err(CdfError::contract(
+                "verified canonical segment must contain at least one row",
+            ));
+        }
+        Ok(Self {
+            reference,
+            row_count,
+        })
+    }
+
+    fn validate_for(&self, reference: &WorkerArtifactReference) -> Result<()> {
+        if &self.reference != reference {
+            return Err(CdfError::contract(
+                "verified artifact facts do not belong to the referenced object",
+            ));
+        }
+        Ok(())
+    }
+
+    fn row_count(&self) -> Option<u64> {
+        self.row_count
+    }
+}
+
+/// Source facts independently observed by the source authority. Result counters and attestations
+/// are compared with these values; agreement among worker-authored claims is never sufficient.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedWorkerSourceFacts {
+    processed_position: WorkerPosition,
+    physical_schema_hash: SchemaHash,
+    input_rows: u64,
+    source_bytes: u64,
+}
+
+impl VerifiedWorkerSourceFacts {
+    pub fn new(
+        processed_position: WorkerPosition,
+        physical_schema_hash: SchemaHash,
+        input_rows: u64,
+        source_bytes: u64,
+    ) -> Result<Self> {
+        processed_position.validate()?;
+        validate_sha256(
+            "verified worker physical schema",
+            physical_schema_hash.as_str(),
+        )?;
+        Ok(Self {
+            processed_position,
+            physical_schema_hash,
+            input_rows,
+            source_bytes,
+        })
+    }
 }
 
 /// Host-injected verification for content-store facts and source-specific admission semantics.
-/// Implementations MUST verify actual object bytes/generation and MUST reject positions or schema
-/// observations outside the reconstructed plan. The worker result itself never gains this power.
+/// Implementations MUST decode compiler artifacts from their verified bytes in
+/// `reconstruct_task_authority`, MUST verify actual object bytes/generation in `verify_artifact`,
+/// and MUST independently observe source counts/positions/schema in `verify_source_authority`.
+/// The worker result itself never gains any of this power.
 pub trait WorkerAdmissionVerifier {
-    fn verify_artifact(&self, reference: &WorkerArtifactReference) -> Result<()>;
+    fn reconstruct_task_authority(
+        &self,
+        task: &PortablePartitionTask,
+    ) -> Result<ReconstructedWorkerTaskAuthority>;
+
+    fn verify_artifact(
+        &self,
+        reference: &WorkerArtifactReference,
+    ) -> Result<VerifiedWorkerArtifactFacts>;
 
     fn verify_source_authority(
         &self,
         task: &PortablePartitionTask,
-        authority: &ReconstructedWorkerTaskAuthority<'_>,
+        authority: &ReconstructedWorkerTaskAuthority,
         attestation: &WorkerSourceAttestation,
         observations: &[WorkerProcessedObservation],
-    ) -> Result<()>;
+    ) -> Result<VerifiedWorkerSourceFacts>;
 }
 
 impl PortablePartitionTask {
@@ -947,43 +1089,46 @@ impl PortablePartitionTask {
         self.capabilities.validate_worker(&self.resources, worker)
     }
 
-    pub fn validate_reconstructed_authority(
+    pub fn reconstruct_and_validate_authority(
         &self,
-        authority: &ReconstructedWorkerTaskAuthority<'_>,
+        registry: &crate::SourceRegistry,
         verifier: &dyn WorkerAdmissionVerifier,
-    ) -> Result<()> {
+    ) -> Result<ReconstructedWorkerTaskAuthority> {
         self.validate()?;
-        self.source.validate_reconstructed(authority.source)?;
-        self.partition.validate_reconstructed(authority.partition)?;
-        self.execution.validate_reconstructed(authority.execution)?;
-        if authority.source.descriptor.resource_id != self.resource_id
-            || self.partition.unit_authority_hash != authority.execution.unit_authority_hash
-            || self.partition.segment_authority_hash != authority.execution.segment_authority_hash
+        registry.validate_portable_source_binding(&self.source)?;
+        let authority = verifier.reconstruct_task_authority(self)?;
+        self.source.validate_reconstructed(authority.source())?;
+        self.partition
+            .validate_reconstructed(authority.partition())?;
+        self.execution
+            .validate_reconstructed(authority.execution())?;
+        registry.validate_portable_source_plan(&self.source, authority.source())?;
+        if authority.source().descriptor.resource_id != self.resource_id
+            || self.partition.unit_authority_hash != authority.execution().unit_authority_hash
+            || self.partition.segment_authority_hash != authority.execution().segment_authority_hash
         {
             return Err(CdfError::contract(
                 "reconstructed source/partition execution authority does not match portable task",
             ));
         }
         let mut observed_secrets = BTreeSet::new();
-        collect_secret_references(&authority.source.redacted_options, &mut observed_secrets)?;
-        collect_secret_references(&authority.source.physical_plan, &mut observed_secrets)?;
+        collect_secret_references(&authority.source().redacted_options, &mut observed_secrets)?;
+        collect_secret_references(&authority.source().physical_plan, &mut observed_secrets)?;
         if observed_secrets.into_iter().collect::<Vec<_>>() != self.secret_references {
             return Err(CdfError::contract(
                 "portable task secret references do not exactly match reconstructed source authority",
             ));
         }
-        for reference in self.control_and_input_artifacts() {
-            verifier.verify_artifact(reference)?;
+        for reference in self.non_compiler_input_artifacts() {
+            verifier
+                .verify_artifact(reference)?
+                .validate_for(reference)?;
         }
-        Ok(())
+        Ok(authority)
     }
 
-    fn control_and_input_artifacts(&self) -> Vec<&WorkerArtifactReference> {
-        let mut references = vec![
-            &self.source.compiled_source_plan,
-            &self.partition.partition_plan,
-        ];
-        references.extend(self.execution.artifacts.references());
+    fn non_compiler_input_artifacts(&self) -> Vec<&WorkerArtifactReference> {
+        let mut references = Vec::new();
         if let Some(reference) = self
             .input_checkpoint
             .as_ref()
@@ -1101,7 +1246,7 @@ impl WorkerArtifactWritePermit {
         self.generation_precondition.validate()
     }
 
-    pub fn validate_before_write(
+    fn validate_reference_before_write(
         &self,
         task: &PortablePartitionTask,
         current_lease: &WorkerLeaseState,
@@ -1168,6 +1313,115 @@ impl WorkerArtifactWritePermit {
 
     fn hash(&self) -> Result<String> {
         artifact_hash(self)
+    }
+}
+
+/// A sink whose mutation primitive consumes a fully validated write authorization. Implementors
+/// MUST apply the generation precondition and fencing token atomically with the object mutation
+/// when the backing store supports conditional writes. Provider-specific atomicity is a storage
+/// substrate concern; cumulative task authority is owned by `WorkerArtifactWriteSession`.
+pub trait WorkerAuthorizedArtifactSink {
+    fn write_authorized(
+        &mut self,
+        authorization: WorkerArtifactWriteAuthorization<'_>,
+    ) -> Result<VerifiedWorkerArtifactFacts>;
+}
+
+pub struct WorkerArtifactWriteAuthorization<'a> {
+    permit: &'a WorkerArtifactWritePermit,
+    receipt: &'a WorkerArtifactReceipt,
+}
+
+impl WorkerArtifactWriteAuthorization<'_> {
+    pub fn permit(&self) -> &WorkerArtifactWritePermit {
+        self.permit
+    }
+
+    pub fn receipt(&self) -> &WorkerArtifactReceipt {
+        self.receipt
+    }
+}
+
+/// Stateful output authority for one partition attempt. Every mutation crosses this object, so
+/// byte and object ceilings are checked cumulatively before the sink can observe a write request.
+#[derive(Debug)]
+pub struct WorkerArtifactWriteSession<'a> {
+    task: &'a PortablePartitionTask,
+    permit: &'a WorkerArtifactWritePermit,
+    lease: &'a WorkerLeaseState,
+    artifact_count: u32,
+    artifact_bytes: u64,
+    artifacts: BTreeSet<WorkerArtifactReference>,
+}
+
+impl<'a> WorkerArtifactWriteSession<'a> {
+    pub fn new(
+        task: &'a PortablePartitionTask,
+        attempt: &'a PartitionAttemptEnvelope,
+        lease: &'a WorkerLeaseState,
+        now_ms: i64,
+    ) -> Result<Self> {
+        attempt.validate_for_task(task)?;
+        lease.validate_permit(&attempt.write_permit, now_ms)?;
+        Ok(Self {
+            task,
+            permit: &attempt.write_permit,
+            lease,
+            artifact_count: 0,
+            artifact_bytes: 0,
+            artifacts: BTreeSet::new(),
+        })
+    }
+
+    pub fn write(
+        &mut self,
+        receipt: &WorkerArtifactReceipt,
+        object_state: &WorkerArtifactObjectState,
+        now_ms: i64,
+        sink: &mut dyn WorkerAuthorizedArtifactSink,
+    ) -> Result<VerifiedWorkerArtifactFacts> {
+        receipt.validate()?;
+        self.permit.validate_reference_before_write(
+            self.task,
+            self.lease,
+            &receipt.artifact,
+            object_state,
+            now_ms,
+        )?;
+        let next_count = self
+            .artifact_count
+            .checked_add(1)
+            .ok_or_else(|| CdfError::contract("worker output artifact count overflowed u32"))?;
+        let next_bytes = self
+            .artifact_bytes
+            .checked_add(receipt.artifact.byte_count)
+            .ok_or_else(|| CdfError::contract("worker output artifact bytes overflowed u64"))?;
+        if next_count > self.task.resources.control.maximum_output_artifacts
+            || next_bytes > self.task.output_policy.maximum_artifact_bytes
+            || next_bytes > self.permit.output.maximum_bytes
+            || self.artifacts.contains(&receipt.artifact)
+        {
+            return Err(CdfError::contract(
+                "worker artifact write exceeds cumulative count/byte authority or repeats an object",
+            ));
+        }
+
+        let facts = sink.write_authorized(WorkerArtifactWriteAuthorization {
+            permit: self.permit,
+            receipt,
+        })?;
+        facts.validate_for(&receipt.artifact)?;
+        if let WorkerArtifactRole::CanonicalSegment { row_count, .. } = receipt.role
+            && facts.row_count() != Some(row_count)
+        {
+            return Err(CdfError::contract(
+                "written canonical segment row count does not match its receipt",
+            ));
+        }
+        self.artifact_count = next_count;
+        self.artifact_bytes = next_bytes;
+        self.artifacts.insert(receipt.artifact.clone());
+        Ok(facts)
     }
 }
 
@@ -1633,14 +1887,14 @@ impl PartitionWorkerResult {
         &self,
         task: &PortablePartitionTask,
         attempt: &PartitionAttemptEnvelope,
-        authority: &ReconstructedWorkerTaskAuthority<'_>,
+        registry: &crate::SourceRegistry,
         current_lease: &WorkerLeaseState,
         verifier: &dyn WorkerAdmissionVerifier,
         now_ms: i64,
     ) -> Result<()> {
         self.validate()?;
         attempt.validate_for_task(task)?;
-        task.validate_reconstructed_authority(authority, verifier)?;
+        let authority = task.reconstruct_and_validate_authority(registry, verifier)?;
         current_lease.validate_permit(&attempt.write_permit, now_ms)?;
         if self.task_sha256 != task.task_sha256
             || self.attempt_id != attempt.attempt_id
@@ -1664,6 +1918,8 @@ impl PartitionWorkerResult {
                 "partition worker result exceeds its artifact control or byte authority",
             ));
         }
+        let mut verified_output_rows = 0_u64;
+        let mut verified_quarantined_rows = 0_u64;
         for receipt in &self.artifacts {
             if !task
                 .output_policy
@@ -1684,17 +1940,58 @@ impl PartitionWorkerResult {
                     "partition worker segment receipt exceeds its canonical partition authority",
                 ));
             }
-            verifier.verify_artifact(&receipt.artifact)?;
+            let facts = verifier.verify_artifact(&receipt.artifact)?;
+            facts.validate_for(&receipt.artifact)?;
+            match receipt.role {
+                WorkerArtifactRole::CanonicalSegment { row_count, .. } => {
+                    let observed_rows = facts.row_count().ok_or_else(|| {
+                        CdfError::contract(
+                            "verified canonical segment is missing an observed row count",
+                        )
+                    })?;
+                    if observed_rows != row_count {
+                        return Err(CdfError::contract(
+                            "worker segment receipt row count does not match stored content",
+                        ));
+                    }
+                    verified_output_rows = verified_output_rows
+                        .checked_add(observed_rows)
+                        .ok_or_else(|| {
+                            CdfError::contract("verified worker output rows overflowed u64")
+                        })?;
+                }
+                WorkerArtifactRole::Quarantine => {
+                    verified_quarantined_rows = verified_quarantined_rows
+                        .checked_add(facts.row_count().unwrap_or(0))
+                        .ok_or_else(|| {
+                            CdfError::contract("verified worker quarantine rows overflowed u64")
+                        })?;
+                }
+                WorkerArtifactRole::Residual
+                | WorkerArtifactRole::Verdict
+                | WorkerArtifactRole::Lineage => {}
+            }
         }
         let attestation = self.source_attestation.as_ref().ok_or_else(|| {
             CdfError::contract("successful partition worker result lacks source attestation")
         })?;
-        verifier.verify_source_authority(
+        let source_facts = verifier.verify_source_authority(
             task,
-            authority,
+            &authority,
             attestation,
             &self.processed_observations,
         )?;
+        if source_facts.processed_position != attestation.processed_position
+            || source_facts.physical_schema_hash != attestation.physical_schema_hash
+            || source_facts.input_rows != self.counts.input_rows
+            || source_facts.source_bytes != self.counts.source_bytes
+            || verified_output_rows != self.counts.output_rows
+            || verified_quarantined_rows != self.counts.quarantined_rows
+        {
+            return Err(CdfError::contract(
+                "worker result counts or source attestation do not match independently verified facts",
+            ));
+        }
         validate_encoded_size(
             "partition worker result",
             self,
@@ -1935,12 +2232,17 @@ fn validate_portable_scope(scope: &ScopeKey) -> Result<()> {
 }
 
 fn validate_no_absolute_coordinator_path(value: &str) -> Result<()> {
+    let lowercase = value.to_ascii_lowercase();
     let windows_absolute = value.as_bytes().get(1) == Some(&b':')
         && value
             .as_bytes()
             .first()
             .is_some_and(u8::is_ascii_alphabetic);
-    if value.starts_with('/') || value.starts_with("file://") || windows_absolute {
+    if value.starts_with('/')
+        || value.starts_with('\\')
+        || lowercase.starts_with("file:")
+        || windows_absolute
+    {
         return Err(CdfError::contract(
             "portable worker authority cannot contain an absolute coordinator file path",
         ));
