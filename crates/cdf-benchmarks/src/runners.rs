@@ -360,6 +360,9 @@ fn benchmark_format_registry() -> BenchResult<Arc<FormatRegistry>> {
     formats.register(Arc::new(
         cdf_format_delimited::DelimitedFormatDriver::custom()?,
     ))?;
+    formats.register(Arc::new(
+        cdf_format_delimited::FixedWidthFormatDriver::new()?
+    ))?;
     formats.register(Arc::new(cdf_format_json::NdjsonFormatDriver::new()?))?;
     formats.register(Arc::new(cdf_format_json::JsonDocumentFormatDriver::new()?))?;
     formats.register(Arc::new(cdf_format_parquet::ParquetFormatDriver::new()?))?;

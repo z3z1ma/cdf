@@ -1128,14 +1128,17 @@ name = "cdf-format-delimited"
 version = "0.1.0"
 dependencies = [
  "arrow-array 59.1.0",
+ "arrow-cast 59.1.0",
  "arrow-csv",
  "arrow-schema 59.1.0",
  "bytes",
  "cdf-kernel",
  "cdf-memory",
  "cdf-runtime",
+ "cdf-transform-character",
  "futures-executor",
  "futures-util",
+ "serde",
  "serde_json",
 ]
 
@@ -1490,6 +1493,7 @@ dependencies = [
  "cdf-runtime",
  "futures-executor",
  "futures-util",
+ "serde",
 ]
 
 [[package]]

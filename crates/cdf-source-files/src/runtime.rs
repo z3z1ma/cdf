@@ -2847,8 +2847,29 @@ fn stream_file_match_blocking(
     admission_schema: SchemaRef,
     physical_schema_authority: PhysicalSchemaAuthority,
 ) -> Result<BatchStream> {
+    stream_file_match_with_options_blocking(
+        resolved,
+        declaration,
+        serde_json::json!({}),
+        options,
+        dependencies,
+        admission_schema,
+        physical_schema_authority,
+    )
+}
+
+#[cfg(test)]
+fn stream_file_match_with_options_blocking(
+    resolved: &ResolvedFileMatch,
+    declaration: &FileFormatDeclaration,
+    format_options: serde_json::Value,
+    options: ReadOptions,
+    dependencies: &FileRuntimeDependencies,
+    admission_schema: SchemaRef,
+    physical_schema_authority: PhysicalSchemaAuthority,
+) -> Result<BatchStream> {
     let driver = dependencies.formats().resolve(declaration.as_str())?;
-    let canonical_format_options = driver.canonical_options(serde_json::json!({}))?;
+    let canonical_format_options = driver.canonical_options(format_options)?;
     let prepared_input = prepare_file_input(PrepareFileInputRequest {
         resource_id: &options.resource_id,
         resolved,
@@ -7540,6 +7561,113 @@ mod tests {
             Some(SourcePosition::FileManifest(_))
         ));
         assert_eq!(dependencies.prepared_payloads().pending_count().unwrap(), 0);
+        drop(batches);
+        assert_eq!(
+            dependencies.execution().memory().snapshot().current_bytes,
+            0
+        );
+    }
+
+    #[test]
+    fn local_fixed_width_streams_through_registered_driver() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("events.fixed"),
+            b"0001 Alice\n0002 Bob  \n",
+        )
+        .unwrap();
+        let dependencies = FileRuntimeDependencies::new(
+            FileTransportFacade::new(),
+            crate::test_execution_services(),
+            crate::test_format_registry(),
+            crate::test_transform_registry(),
+            crate::test_egress_scope(),
+        );
+        let plan = FileResourcePlan {
+            source: "events".to_owned(),
+            root: root.path().to_string_lossy().into_owned(),
+            glob: "events.fixed".to_owned(),
+            format: Some(FileFormatDeclaration::named("fixed_width").unwrap()),
+            format_declared: true,
+            format_options: serde_json::json!({
+                "layout_version": 1,
+                "unit": "bytes",
+                "encoding": "utf8",
+                "line_ending": "lf",
+                "trim": "ascii",
+                "null_tokens": [],
+                "record_width": 10,
+                "fields": [
+                    {"name": "id", "start": 0, "end": 4},
+                    {"name": "name", "start": 5, "end": 10}
+                ],
+                "required_gaps": [{"start": 4, "end": 5}],
+                "max_record_bytes": 1024
+            }),
+            schema_discovery: Some(cdf_runtime::FormatDiscoveryKind::FormatMetadata),
+            compression: FileCompressionDeclaration::none(),
+            spool_mode: crate::FileSpoolMode::Overlap,
+            auth: None,
+            credentials: None,
+            allowlist: cdf_http::EgressAllowlist::allow_any(),
+        };
+        let resource_id = ResourceId::new("events.fixed").unwrap();
+        let resolved = dependencies
+            .with_transport(|transport, egress| {
+                resolve_file_matches(
+                    &resource_id,
+                    &plan,
+                    transport,
+                    egress,
+                    dependencies.formats(),
+                    dependencies.transforms(),
+                )
+            })
+            .unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+        let stream = stream_file_match_with_options_blocking(
+            &resolved[0],
+            plan.resolved_format().unwrap(),
+            plan.format_options.clone(),
+            ReadOptions::new(resource_id, PartitionId::new("fixed-file").unwrap()),
+            &dependencies,
+            schema,
+            PhysicalSchemaAuthority::default(),
+        )
+        .unwrap();
+        let batches = futures_executor::block_on(stream.collect::<Vec<_>>())
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            batches
+                .iter()
+                .map(|batch| batch.header.row_count)
+                .sum::<u64>(),
+            2
+        );
+        let record_batch = batches[0].record_batch().unwrap();
+        assert_eq!(
+            record_batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap()
+                .value(1),
+            2
+        );
+        assert_eq!(
+            record_batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(1),
+            "Bob"
+        );
         drop(batches);
         assert_eq!(
             dependencies.execution().memory().snapshot().current_bytes,

@@ -159,6 +159,11 @@ fn test_format_registry() -> Arc<cdf_runtime::FormatRegistry> {
         .unwrap();
     registry
         .register(Arc::new(
+            cdf_format_delimited::FixedWidthFormatDriver::new().unwrap(),
+        ))
+        .unwrap();
+    registry
+        .register(Arc::new(
             cdf_format_parquet::ParquetFormatDriver::new().unwrap(),
         ))
         .unwrap();

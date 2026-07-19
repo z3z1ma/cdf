@@ -116,6 +116,9 @@ pub(crate) fn builtin_format_registry() -> Result<Arc<FormatRegistry>> {
         cdf_format_delimited::DelimitedFormatDriver::custom()?,
     ))?;
     registry.register(std::sync::Arc::new(
+        cdf_format_delimited::FixedWidthFormatDriver::new()?,
+    ))?;
+    registry.register(std::sync::Arc::new(
         cdf_format_parquet::ParquetFormatDriver::new()?,
     ))?;
     registry.register(std::sync::Arc::new(
@@ -137,5 +140,21 @@ mod tests {
         let second = builtin_source_registry().unwrap();
 
         assert!(std::ptr::eq(first, second));
+    }
+
+    #[test]
+    fn builtin_format_catalog_contains_fixed_width_driver() {
+        let formats = builtin_format_registry().unwrap();
+        let descriptor = formats
+            .descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.format_id.as_str() == "fixed_width")
+            .expect("fixed-width driver in standard product catalog");
+
+        assert_eq!(descriptor.decode_unit_policy, "fixed_width_stream_v1");
+        assert_eq!(
+            descriptor.source_access,
+            cdf_runtime::FormatSourceAccess::Sequential
+        );
     }
 }

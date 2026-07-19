@@ -1,5 +1,9 @@
 #![doc = "Streaming delimited text format drivers for cdf."]
 
+mod fixed_width;
+
+pub use fixed_width::FixedWidthFormatDriver;
+
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;

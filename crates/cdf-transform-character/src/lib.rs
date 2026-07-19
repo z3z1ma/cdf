@@ -9,6 +9,7 @@ use cdf_runtime::{
     TransformExpansionGuard,
 };
 use futures_util::stream;
+use serde::{Deserialize, Serialize};
 
 const UTF8_BOM: &[u8; 3] = b"\xef\xbb\xbf";
 const UTF16_LE_BOM: &[u8; 2] = b"\xff\xfe";
@@ -18,18 +19,24 @@ const DEFAULT_MAXIMUM_WORKING_SET_BYTES: u64 = 16 * 1024 * 1024 + INTERNAL_WORKI
 const DEFAULT_MAXIMUM_EXPANDED_BYTES: u64 = 4 * 1024 * 1024 * 1024 * 1024;
 const DEFAULT_MAXIMUM_EXPANSION_RATIO: u32 = 4;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CharacterEncoding {
+    #[serde(rename = "auto")]
     Auto,
+    #[serde(rename = "utf8")]
     Utf8,
+    #[serde(rename = "utf16le")]
     Utf16Le,
+    #[serde(rename = "utf16be")]
     Utf16Be,
+    #[serde(rename = "windows1252")]
     Windows1252,
+    #[serde(rename = "iso8859_1")]
     Iso8859_1,
 }
 
 impl CharacterEncoding {
-    fn id(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Auto => "text_auto",
             Self::Utf8 => "utf8",
@@ -37,6 +44,83 @@ impl CharacterEncoding {
             Self::Utf16Be => "utf16be",
             Self::Windows1252 => "windows1252",
             Self::Iso8859_1 => "iso8859_1",
+        }
+    }
+
+    pub fn is_utf16(self) -> bool {
+        matches!(self, Self::Utf16Le | Self::Utf16Be)
+    }
+
+    pub fn maximum_utf8_bytes_per_unit(self) -> u64 {
+        match self {
+            Self::Auto | Self::Utf8 | Self::Utf16Le | Self::Utf16Be => 4,
+            Self::Windows1252 | Self::Iso8859_1 => 3,
+        }
+    }
+
+    pub fn encode_ascii(self, value: &str) -> Result<Vec<u8>> {
+        if self == Self::Auto {
+            return Err(CdfError::contract(
+                "auto character encoding cannot encode a pinned delimiter",
+            ));
+        }
+        if !value.is_ascii() {
+            return Err(CdfError::contract(
+                "character delimiter encoding accepts ASCII control text only",
+            ));
+        }
+        if !self.is_utf16() {
+            return Ok(value.as_bytes().to_vec());
+        }
+        Ok(value
+            .encode_utf16()
+            .flat_map(|unit| match self {
+                Self::Utf16Le => unit.to_le_bytes(),
+                Self::Utf16Be => unit.to_be_bytes(),
+                _ => unreachable!("UTF-16 branch checked above"),
+            })
+            .collect())
+    }
+
+    pub fn strip_matching_bom(self, input: &[u8]) -> Result<&[u8]> {
+        let observed = if input.starts_with(UTF8_BOM) {
+            Some((Self::Utf8, UTF8_BOM.len()))
+        } else if input.starts_with(UTF16_LE_BOM) {
+            Some((Self::Utf16Le, UTF16_LE_BOM.len()))
+        } else if input.starts_with(UTF16_BE_BOM) {
+            Some((Self::Utf16Be, UTF16_BE_BOM.len()))
+        } else {
+            None
+        };
+        match (self, observed) {
+            (Self::Auto, Some((_, bytes))) => Ok(&input[bytes..]),
+            (Self::Auto, None) => Ok(input),
+            (configured, Some((observed, bytes))) if configured == observed => Ok(&input[bytes..]),
+            (configured, Some((observed, _))) => Err(CdfError::data(format!(
+                "character encoding conflict: configured {} but input BOM declares {}",
+                configured.as_str(),
+                observed.as_str()
+            ))),
+            (_, None) => Ok(input),
+        }
+    }
+
+    pub fn decode_slice(self, input: &[u8], context: &str) -> Result<String> {
+        match self {
+            Self::Auto => Err(CdfError::contract(
+                "auto character encoding must be resolved before slice decoding",
+            )),
+            Self::Utf8 => std::str::from_utf8(input)
+                .map(str::to_owned)
+                .map_err(|error| {
+                    CdfError::data(format!(
+                        "{context} is invalid UTF-8 at byte {}",
+                        error.valid_up_to()
+                    ))
+                }),
+            Self::Utf16Le | Self::Utf16Be => decode_utf16_slice(input, self, context),
+            Self::Windows1252 => decode_single_byte_slice(input, true, context),
+            Self::Iso8859_1 => decode_single_byte_slice(input, false, context),
         }
     }
 }
@@ -73,7 +157,7 @@ impl CharacterTransformDriver {
         Ok(Self {
             configured,
             descriptor: ByteTransformDescriptor {
-                transform_id: ByteTransformId::new(configured.id())?,
+                transform_id: ByteTransformId::new(configured.as_str())?,
                 semantic_version: "1.0.0".to_owned(),
                 extensions: Vec::new(),
                 magic,
@@ -227,8 +311,8 @@ impl CharacterState {
             (configured, Some((observed, _))) => {
                 return Err(CdfError::data(format!(
                     "character encoding conflict: configured {} but input BOM declares {}",
-                    configured.id(),
-                    observed.id()
+                    configured.as_str(),
+                    observed.as_str()
                 )));
             }
             (configured, None) => configured,
@@ -396,6 +480,48 @@ impl CharacterState {
                 .saturating_add(relative as u64)
         ))
     }
+}
+
+fn decode_utf16_slice(input: &[u8], encoding: CharacterEncoding, context: &str) -> Result<String> {
+    if !input.len().is_multiple_of(2) {
+        return Err(CdfError::data(format!(
+            "{context} ends with an incomplete UTF-16 code unit"
+        )));
+    }
+    let units = input.chunks_exact(2).map(|bytes| match encoding {
+        CharacterEncoding::Utf16Le => u16::from_le_bytes([bytes[0], bytes[1]]),
+        CharacterEncoding::Utf16Be => u16::from_be_bytes([bytes[0], bytes[1]]),
+        _ => unreachable!("UTF-16 slice decoder called only for UTF-16 encoding"),
+    });
+    char::decode_utf16(units)
+        .enumerate()
+        .map(|(index, value)| {
+            value.map_err(|_| {
+                CdfError::data(format!(
+                    "{context} has an invalid UTF-16 surrogate at code unit {index}"
+                ))
+            })
+        })
+        .collect()
+}
+
+fn decode_single_byte_slice(input: &[u8], windows1252: bool, context: &str) -> Result<String> {
+    input
+        .iter()
+        .enumerate()
+        .map(|(index, byte)| {
+            if windows1252 {
+                windows_1252(*byte).ok_or_else(|| {
+                    CdfError::data(format!(
+                        "{context} has undefined Windows-1252 byte 0x{byte:02x} at offset {index}"
+                    ))
+                })
+            } else {
+                char::from_u32(u32::from(*byte))
+                    .ok_or_else(|| CdfError::internal("ISO-8859-1 byte was not a scalar"))
+            }
+        })
+        .collect()
 }
 
 fn read_u16(bytes: &[u8], little_endian: bool) -> u16 {

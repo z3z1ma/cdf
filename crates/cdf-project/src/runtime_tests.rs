@@ -341,6 +341,11 @@ fn test_file_runtime_dependencies() -> FileRuntimeDependencies {
         .unwrap();
     formats
         .register(Arc::new(
+            cdf_format_delimited::FixedWidthFormatDriver::new().unwrap(),
+        ))
+        .unwrap();
+    formats
+        .register(Arc::new(
             cdf_format_json::NdjsonFormatDriver::new().unwrap(),
         ))
         .unwrap();
