@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-19
 Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-10-p3-ws-d-destination-bulk-paths.md
@@ -41,6 +41,9 @@ Remove the full-product gap between Postgres's fast Arrow-to-binary encoder and 
 ## Journal
 
 - 2026-07-19: Opened from D15's controlled cross-destination closeout. The full product completed correctly and without memory pressure, but only at `400,862` rows/s; the direct current binary COPY control proves the encoder/server path is more than three times faster. This ticket owns the lifecycle/amortization gap and must not reintroduce deleted scalar or destination-local provenance code.
+- 2026-07-19: Static tracing found the amortization boundary in the kernel contract, not generic destination identity logic. `CommitSession::write_segment` forces a synchronous Postgres `CopyInWriter` borrow to open and finish once per segment; keeping that writer across calls would require a self-referential adapter or unsafe lifetime extension. The implementation will replace the finalized-package session method with one owned, bounded `CommitSegment` iterator returning per-segment acknowledgements. Generic finalized-package orchestration supplies the verified iterator once; destinations retain control of package-level protocol setup, while staged destinations remain on their separate ingress contract. Postgres can then open one COPY inside one blocking-lane call, consume and release segments sequentially, finish once, insert exact range mirrors, and commit the existing transaction. This is the smallest reusable boundary and deletes the superseded finalized per-segment call surface.
+- 2026-07-19: Implemented the boundary ratified in `.10x/decisions/finalized-commit-session-bounded-segment-iterator.md`. `CommitSession` now accepts one owned verified segment iterator; generic replay constructs it once from the memory-accounted package reader and validates exact acknowledgement cardinality, canonical order, identity, and logical row counts before recording events. Postgres opens one `COPY ... FROM STDIN BINARY`, consumes and releases all segments through the existing bounded encoder, finishes COPY once, then writes exact segment-range mirrors and runs the existing atomic publication/receipt transaction. No destination identity branch, package materialization, callback, self-reference, unsafe code, or compatibility method remains.
+- 2026-07-19: Local verification passed: workspace all-target check; strict touched-graph Clippy; `cdf-dest-postgres` library suite (`26 passed`, `2 ignored`) including append, replace, merge, duplicate replay, rollback, receipt, mirror, correction, and live transaction cells; five focused finalized replay/project tests; the exact generic acknowledgement negative law; and four destination/conformance registry tests. A broad concurrent `cdf-project` run reached `193 passed` and exposed five pre-existing global-fixture/schema-discovery failures unrelated to this diff; it is recorded only as a limit, not claimed as closure evidence.
 
 ## Blockers
 
@@ -48,7 +51,10 @@ None.
 
 ## Evidence
 
-Pending.
+- API and boundedness: `CARGO_BUILD_JOBS=12 cargo check --workspace --all-targets --locked -j 12` passed; source inspection finds one `copy_in` site in the Postgres package payload helper and no finalized `CommitSession::write_segment` method.
+- Correctness: `CARGO_BUILD_JOBS=12 cargo test -p cdf-dest-postgres --lib --locked -j 12 --quiet` passed `26` tests with `2` explicit ignored performance probes. Focused `cdf-project` finalized replay, duplicate, failure/abort, staged-category, and acknowledgement-validation tests all passed. `cdf-conformance` destination laws and fourth-destination bulk enrollment passed.
+- Quality: `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-kernel -p cdf-runtime -p cdf-project -p cdf-conformance -p cdf-cli -p cdf-dest-postgres --all-targets --locked -j 12 -- -D warnings`, `cargo fmt --all -- --check`, and `git diff --check` passed.
+- EC2 macro and direct-control evidence: pending.
 
 ## Review
 

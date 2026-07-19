@@ -13,7 +13,7 @@ What exact source shape, public API surface, caller set, and adapter decision ar
 Read-only inspection covered:
 
 - `.10x/tickets/done/2026-07-07-p0-workstream-b-open-orchestrator-world.md`
-- `.10x/decisions/commit-session-segment-write-api.md`
+- `.10x/decisions/superseded/commit-session-segment-write-api.md`
 - `.10x/specs/run-orchestration-ledger.md`
 - `.10x/specs/destination-receipts-guarantees.md`
 - `.10x/knowledge/rust-crate-organization.md`

@@ -1,6 +1,6 @@
-Status: active
+Status: superseded
 Created: 2026-07-07
-Updated: 2026-07-07
+Updated: 2026-07-19
 
 # CommitSession Segment Write API
 

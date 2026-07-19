@@ -2133,11 +2133,13 @@ fn write_package_segments_to_session(
     hooks: &PackageReplayHooks<'_>,
     verified: &VerifiedPackage,
 ) -> Result<()> {
-    let mut acknowledge = |segment| {
-        let ack = session.write_segment(segment)?;
+    if commit.segments.is_empty() {
+        return Ok(());
+    }
+    let acknowledge = |ack: &SegmentAck| {
         notify_destination_replay_stage(
             hooks,
-            PackageReplayStage::DestinationSegmentAcknowledged { ack: &ack },
+            PackageReplayStage::DestinationSegmentAcknowledged { ack },
         )
     };
     let budget = memory.snapshot().budget_bytes;
@@ -2145,28 +2147,47 @@ fn write_package_segments_to_session(
         .max_in_flight_bytes
         .unwrap_or(64 * 1024 * 1024)
         .min(budget);
-    match capabilities.commit_payload_mode {
-        cdf_runtime::DestinationCommitPayloadMode::SegmentStreaming => {
-            let stream = reader.verified_commit_segment_stream_with(
-                verified,
-                &commit.segments,
-                memory,
-                maximum_segment_bytes,
-            )?;
-            for segment in stream {
-                acknowledge(segment?.into_commit_segment()?)?;
-            }
+    let stream = reader.verified_commit_segment_stream_with(
+        verified,
+        &commit.segments,
+        memory,
+        maximum_segment_bytes,
+    )?;
+    let segments = stream.map(|segment| segment.and_then(|segment| segment.into_commit_segment()));
+    let acknowledgements = session.write_segments(Box::new(segments))?;
+    validate_finalized_segment_acknowledgements(&commit.segments, &acknowledgements)?;
+    for acknowledgement in &acknowledgements {
+        acknowledge(acknowledgement)?;
+    }
+    Ok(())
+}
+
+fn validate_finalized_segment_acknowledgements(
+    expected: &[cdf_kernel::StateSegment],
+    acknowledgements: &[SegmentAck],
+) -> Result<()> {
+    if acknowledgements.len() != expected.len() {
+        return Err(CdfError::destination(format!(
+            "finalized destination acknowledged {} segments but the commit requires {}",
+            acknowledgements.len(),
+            expected.len()
+        )));
+    }
+    for (index, (acknowledgement, segment)) in acknowledgements.iter().zip(expected).enumerate() {
+        if acknowledgement.segment_id != segment.segment_id {
+            return Err(CdfError::destination(format!(
+                "finalized destination acknowledgement {index} names segment {} but the commit requires {}",
+                acknowledgement.segment_id.as_str(),
+                segment.segment_id.as_str()
+            )));
         }
-        cdf_runtime::DestinationCommitPayloadMode::MaterializedPackage => {
-            let stream = reader.verified_commit_segment_stream_with(
-                verified,
-                &commit.segments,
-                memory,
-                maximum_segment_bytes,
-            )?;
-            for segment in stream {
-                acknowledge(segment?.into_commit_segment()?)?;
-            }
+        if acknowledgement.row_count != segment.row_count {
+            return Err(CdfError::destination(format!(
+                "finalized destination acknowledgement for segment {} reports {} rows but the commit requires {}",
+                segment.segment_id.as_str(),
+                acknowledgement.row_count,
+                segment.row_count
+            )));
         }
     }
     Ok(())
@@ -2414,15 +2435,79 @@ mod stream_admission_replay_tests {
 
     use cdf_kernel::{
         CursorPosition, CursorValue, FileManifest, FilePosition, PartitionId, PartitionPlan,
-        ScopeKey, SourcePosition,
+        ScopeKey, SegmentAck, SegmentId, SourcePosition, StateSegment,
     };
 
     use cdf_engine::{LineageInputObservation, LineageSummary};
 
     use super::{
         partial_lineage_matches_exactly, partial_position_matches_partition_scope,
-        validate_stream_admission_lineage_coverage,
+        validate_finalized_segment_acknowledgements, validate_stream_admission_lineage_coverage,
     };
+
+    fn state_segment(id: &str, rows: u64) -> StateSegment {
+        StateSegment {
+            segment_id: SegmentId::new(id).unwrap(),
+            scope: ScopeKey::Resource,
+            output_position: SourcePosition::FileManifest(FileManifest {
+                version: 1,
+                files: Vec::new(),
+            }),
+            row_count: rows,
+            byte_count: 100,
+        }
+    }
+
+    fn acknowledgement(id: &str, rows: u64) -> SegmentAck {
+        SegmentAck {
+            segment_id: SegmentId::new(id).unwrap(),
+            row_count: rows,
+            byte_count: 200,
+        }
+    }
+
+    #[test]
+    fn finalized_acknowledgements_require_exact_order_cardinality_and_rows() {
+        let expected = [
+            state_segment("segment-1", 7),
+            state_segment("segment-2", 11),
+        ];
+        validate_finalized_segment_acknowledgements(
+            &expected,
+            &[
+                acknowledgement("segment-1", 7),
+                acknowledgement("segment-2", 11),
+            ],
+        )
+        .unwrap();
+
+        let missing = validate_finalized_segment_acknowledgements(
+            &expected,
+            &[acknowledgement("segment-1", 7)],
+        )
+        .unwrap_err();
+        assert!(missing.to_string().contains("acknowledged 1 segments"));
+
+        let reordered = validate_finalized_segment_acknowledgements(
+            &expected,
+            &[
+                acknowledgement("segment-2", 11),
+                acknowledgement("segment-1", 7),
+            ],
+        )
+        .unwrap_err();
+        assert!(reordered.to_string().contains("acknowledgement 0"));
+
+        let wrong_rows = validate_finalized_segment_acknowledgements(
+            &expected,
+            &[
+                acknowledgement("segment-1", 8),
+                acknowledgement("segment-2", 11),
+            ],
+        )
+        .unwrap_err();
+        assert!(wrong_rows.to_string().contains("reports 8 rows"));
+    }
 
     #[test]
     fn partial_position_binding_rejects_wrong_file_generation_and_cursor_field() {

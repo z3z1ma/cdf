@@ -43,6 +43,8 @@ pub struct CommitBatchIterator {
     retention: Option<PayloadRetention>,
 }
 
+pub type CommitSegmentIterator = Box<dyn Iterator<Item = Result<CommitSegment>> + Send>;
+
 impl CommitSegment {
     pub fn new(state: StateSegment, package_byte_count: u64, batches: Vec<RecordBatch>) -> Self {
         Self {
@@ -232,7 +234,7 @@ pub struct CommitPlan {
 pub trait CommitSession {
     fn apply_migrations(&mut self) -> Result<()>;
 
-    fn write_segment(&mut self, segment: CommitSegment) -> Result<SegmentAck>;
+    fn write_segments(&mut self, segments: CommitSegmentIterator) -> Result<Vec<SegmentAck>>;
 
     fn finalize(self: Box<Self>) -> Result<Receipt>;
 

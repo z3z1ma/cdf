@@ -8,7 +8,7 @@ Verdict: concerns
 
 ## Target
 
-Current Workstream A diff implementing `.10x/decisions/commit-session-segment-write-api.md`.
+Current Workstream A diff implementing `.10x/decisions/superseded/commit-session-segment-write-api.md`.
 
 ## Assumptions tested
 

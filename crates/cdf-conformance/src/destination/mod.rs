@@ -177,28 +177,33 @@ impl cdf_kernel::CommitSession for MockCommitSession<'_> {
         Ok(())
     }
 
-    fn write_segment(
+    fn write_segments(
         &mut self,
-        segment: cdf_kernel::CommitSegment,
-    ) -> cdf_kernel::Result<cdf_kernel::SegmentAck> {
-        let expected = self
-            .request
-            .segments
-            .iter()
-            .find(|expected| expected.segment_id == segment.state.segment_id)
-            .ok_or_else(|| cdf_kernel::CdfError::data("mock received an undeclared segment"))?;
-        if expected != &segment.state {
-            return Err(cdf_kernel::CdfError::data(
-                "mock segment identity differs from the commit request",
-            ));
+        segments: cdf_kernel::CommitSegmentIterator,
+    ) -> cdf_kernel::Result<Vec<cdf_kernel::SegmentAck>> {
+        let mut acknowledgements = Vec::new();
+        for segment in segments {
+            let segment = segment?;
+            let expected = self
+                .request
+                .segments
+                .iter()
+                .find(|expected| expected.segment_id == segment.state.segment_id)
+                .ok_or_else(|| cdf_kernel::CdfError::data("mock received an undeclared segment"))?;
+            if expected != &segment.state {
+                return Err(cdf_kernel::CdfError::data(
+                    "mock segment identity differs from the commit request",
+                ));
+            }
+            let acknowledgement = cdf_kernel::SegmentAck {
+                segment_id: expected.segment_id.clone(),
+                row_count: expected.row_count,
+                byte_count: expected.byte_count,
+            };
+            self.acknowledgements.push(acknowledgement.clone());
+            acknowledgements.push(acknowledgement);
         }
-        let acknowledgement = cdf_kernel::SegmentAck {
-            segment_id: expected.segment_id.clone(),
-            row_count: expected.row_count,
-            byte_count: expected.byte_count,
-        };
-        self.acknowledgements.push(acknowledgement.clone());
-        Ok(acknowledgement)
+        Ok(acknowledgements)
     }
 
     fn finalize(self: Box<Self>) -> cdf_kernel::Result<cdf_kernel::Receipt> {

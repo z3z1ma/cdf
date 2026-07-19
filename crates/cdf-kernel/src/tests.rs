@@ -300,57 +300,62 @@ impl CommitSession for FakeCommitSession {
         Ok(())
     }
 
-    fn write_segment(&mut self, segment: CommitSegment) -> Result<SegmentAck> {
+    fn write_segments(&mut self, segments: CommitSegmentIterator) -> Result<Vec<SegmentAck>> {
         if !self.migrations_applied {
             return Err(CdfError::destination(
                 "migrations must be applied before writing",
             ));
         }
-        if self
-            .accepted_segments
-            .iter()
-            .any(|ack| ack.segment_id == segment.state.segment_id)
-        {
-            return Err(CdfError::destination(format!(
-                "segment {} was already written",
-                segment.state.segment_id
-            )));
-        }
-        let requested = self
-            .request
-            .segments
-            .iter()
-            .find(|requested| requested.segment_id == segment.state.segment_id)
-            .ok_or_else(|| {
-                CdfError::destination(format!(
-                    "segment {} is not part of the destination request",
+        let mut acknowledgements = Vec::new();
+        for segment in segments {
+            let segment = segment?;
+            if self
+                .accepted_segments
+                .iter()
+                .any(|ack| ack.segment_id == segment.state.segment_id)
+            {
+                return Err(CdfError::destination(format!(
+                    "segment {} was already written",
                     segment.state.segment_id
-                ))
-            })?;
-        if requested != &segment.state {
-            return Err(CdfError::destination(format!(
-                "segment {} state does not match destination request",
-                segment.state.segment_id
-            )));
+                )));
+            }
+            let requested = self
+                .request
+                .segments
+                .iter()
+                .find(|requested| requested.segment_id == segment.state.segment_id)
+                .ok_or_else(|| {
+                    CdfError::destination(format!(
+                        "segment {} is not part of the destination request",
+                        segment.state.segment_id
+                    ))
+                })?;
+            if requested != &segment.state {
+                return Err(CdfError::destination(format!(
+                    "segment {} state does not match destination request",
+                    segment.state.segment_id
+                )));
+            }
+            let batch_rows = segment
+                .batches
+                .iter()
+                .map(|batch| batch.num_rows() as u64)
+                .sum::<u64>();
+            if batch_rows != segment.state.row_count {
+                return Err(CdfError::destination(format!(
+                    "segment {} has {} batch rows but request expects {}",
+                    segment.state.segment_id, batch_rows, segment.state.row_count
+                )));
+            }
+            let ack = SegmentAck {
+                segment_id: segment.state.segment_id,
+                row_count: segment.state.row_count,
+                byte_count: segment.state.byte_count,
+            };
+            self.accepted_segments.push(ack.clone());
+            acknowledgements.push(ack);
         }
-        let batch_rows = segment
-            .batches
-            .iter()
-            .map(|batch| batch.num_rows() as u64)
-            .sum::<u64>();
-        if batch_rows != segment.state.row_count {
-            return Err(CdfError::destination(format!(
-                "segment {} has {} batch rows but request expects {}",
-                segment.state.segment_id, batch_rows, segment.state.row_count
-            )));
-        }
-        let ack = SegmentAck {
-            segment_id: segment.state.segment_id,
-            row_count: segment.state.row_count,
-            byte_count: segment.state.byte_count,
-        };
-        self.accepted_segments.push(ack.clone());
-        Ok(ack)
+        Ok(acknowledgements)
     }
 
     fn finalize(self: Box<Self>) -> Result<Receipt> {
@@ -414,8 +419,11 @@ fn commit_session_api_writes_segments_and_finalizes_to_durable_receipt() {
     session.apply_migrations().unwrap();
     let segment = delta.segments[0].clone();
     let ack = session
-        .write_segment(sample_commit_segment(segment.clone()))
-        .unwrap();
+        .write_segments(Box::new(std::iter::once(Ok(sample_commit_segment(
+            segment.clone(),
+        )))))
+        .unwrap()
+        .remove(0);
     assert_eq!(
         ack,
         SegmentAck {

@@ -1,7 +1,7 @@
 use crate::prelude::*;
 use arrow_schema::{DataType, Field};
 use cdf_kernel::{
-    BatchStream, CommitCounts, CommitSegment, ConcurrencyLimit, DeliveryGuarantee, DestinationId,
+    BatchStream, CommitCounts, ConcurrencyLimit, DeliveryGuarantee, DestinationId,
     EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, ErrorKind, IdempotencySupport,
     IdempotencyToken, IdentifierRules, MigrationRecord, PackageHash, PartitionId, PartitionPlan,
     PlanId, QueryableResource, ReceiptId, ResourceCapabilities, ResourceDescriptor, ResourceId,
@@ -136,37 +136,45 @@ impl CommitSession for MockFinalizedSession {
         Ok(())
     }
 
-    fn write_segment(&mut self, segment: CommitSegment) -> Result<SegmentAck> {
-        let expected = self
-            .request
-            .segments
-            .get(self.acknowledgements.len())
-            .ok_or_else(|| {
-                CdfError::contract("mock finalized session received an extra segment")
+    fn write_segments(
+        &mut self,
+        segments: cdf_kernel::CommitSegmentIterator,
+    ) -> Result<Vec<SegmentAck>> {
+        let mut acknowledgements = Vec::new();
+        for segment in segments {
+            let segment = segment?;
+            let expected = self
+                .request
+                .segments
+                .get(self.acknowledgements.len())
+                .ok_or_else(|| {
+                    CdfError::contract("mock finalized session received an extra segment")
+                })?;
+            if expected != &segment.state {
+                return Err(CdfError::contract(
+                    "mock finalized session segment does not match commit authority",
+                ));
+            }
+            let package_byte_count = segment.package_byte_count;
+            let state = segment.state.clone();
+            let rows = segment.into_batches()?.try_fold(0_u64, |rows, batch| {
+                rows.checked_add(batch.batch.num_rows() as u64)
+                    .ok_or_else(|| CdfError::data("mock finalized row count overflowed"))
             })?;
-        if expected != &segment.state {
-            return Err(CdfError::contract(
-                "mock finalized session segment does not match commit authority",
-            ));
+            if rows != state.row_count {
+                return Err(CdfError::data(
+                    "mock finalized segment rows do not match commit authority",
+                ));
+            }
+            let ack = SegmentAck {
+                segment_id: state.segment_id,
+                row_count: state.row_count,
+                byte_count: package_byte_count,
+            };
+            self.acknowledgements.push(ack.clone());
+            acknowledgements.push(ack);
         }
-        let package_byte_count = segment.package_byte_count;
-        let state = segment.state.clone();
-        let rows = segment.into_batches()?.try_fold(0_u64, |rows, batch| {
-            rows.checked_add(batch.batch.num_rows() as u64)
-                .ok_or_else(|| CdfError::data("mock finalized row count overflowed"))
-        })?;
-        if rows != state.row_count {
-            return Err(CdfError::data(
-                "mock finalized segment rows do not match commit authority",
-            ));
-        }
-        let ack = SegmentAck {
-            segment_id: state.segment_id,
-            row_count: state.row_count,
-            byte_count: package_byte_count,
-        };
-        self.acknowledgements.push(ack.clone());
-        Ok(ack)
+        Ok(acknowledgements)
     }
 
     fn finalize(self: Box<Self>) -> Result<Receipt> {

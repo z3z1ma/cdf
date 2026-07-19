@@ -1,7 +1,7 @@
 Status: active
 Created: 2026-07-12
 Updated: 2026-07-13
-Supersedes: `.10x/decisions/commit-session-segment-write-api.md` and `.10x/decisions/run-ledger-commit-session-spine.md` only where they require every `DestinationProtocol` implementation to expose finalized `begin`; their segment API, receipt verification, ledger, and commit-gate decisions remain active.
+Supersedes: `.10x/decisions/superseded/commit-session-segment-write-api.md` and `.10x/decisions/run-ledger-commit-session-spine.md` only where they require every `DestinationProtocol` implementation to expose finalized `begin`; their segment API, receipt verification, ledger, and commit-gate decisions remain active.
 
 # Destination ingress protocol capability split
 

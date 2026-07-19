@@ -7,11 +7,11 @@ use std::{
 };
 
 use cdf_kernel::{
-    CapabilitySupport, CdfError, CommitCounts, CommitPlan, CommitSegment, CommitSession,
-    ConcurrencyLimit, DeliveryGuarantee, DestinationCommitRequest, DestinationId,
-    DestinationProtocol, DestinationSheet, IdempotencySupport, IdentifierRules, Receipt, ReceiptId,
-    ReceiptVerification, Result, SchemaHash, SegmentAck, TransactionSupport, TypeMapping,
-    TypeMappingFidelity, VerifyClause, WriteDisposition,
+    CapabilitySupport, CdfError, CommitCounts, CommitPlan, CommitSession, ConcurrencyLimit,
+    DeliveryGuarantee, DestinationCommitRequest, DestinationId, DestinationProtocol,
+    DestinationSheet, IdempotencySupport, IdentifierRules, Receipt, ReceiptId, ReceiptVerification,
+    Result, SchemaHash, SegmentAck, TransactionSupport, TypeMapping, TypeMappingFidelity,
+    VerifyClause, WriteDisposition,
 };
 use cdf_runtime::{
     BulkFallbackMode, BulkOrdering, BulkPathDescriptor, BulkSizeRange, DestinationDescription,
@@ -364,30 +364,38 @@ impl CommitSession for FourthCommitSession {
         Ok(())
     }
 
-    fn write_segment(&mut self, segment: CommitSegment) -> Result<SegmentAck> {
+    fn write_segments(
+        &mut self,
+        segments: cdf_kernel::CommitSegmentIterator,
+    ) -> Result<Vec<SegmentAck>> {
         if !self.migrations_applied {
             return Err(CdfError::destination(
                 "fourth destination requires migration application before segment ingress",
             ));
         }
-        let expected = self
-            .request
-            .segments
-            .iter()
-            .find(|expected| expected.segment_id == segment.state.segment_id)
-            .ok_or_else(|| CdfError::data("fourth destination received undeclared segment"))?;
-        if expected != &segment.state {
-            return Err(CdfError::data(
-                "fourth destination segment identity differs from commit authority",
-            ));
+        let mut acknowledgements = Vec::new();
+        for segment in segments {
+            let segment = segment?;
+            let expected = self
+                .request
+                .segments
+                .iter()
+                .find(|expected| expected.segment_id == segment.state.segment_id)
+                .ok_or_else(|| CdfError::data("fourth destination received undeclared segment"))?;
+            if expected != &segment.state {
+                return Err(CdfError::data(
+                    "fourth destination segment identity differs from commit authority",
+                ));
+            }
+            let acknowledgement = SegmentAck {
+                segment_id: expected.segment_id.clone(),
+                row_count: expected.row_count,
+                byte_count: expected.byte_count,
+            };
+            self.acknowledgements.push(acknowledgement.clone());
+            acknowledgements.push(acknowledgement);
         }
-        let acknowledgement = SegmentAck {
-            segment_id: expected.segment_id.clone(),
-            row_count: expected.row_count,
-            byte_count: expected.byte_count,
-        };
-        self.acknowledgements.push(acknowledgement.clone());
-        Ok(acknowledgement)
+        Ok(acknowledgements)
     }
 
     fn finalize(self: Box<Self>) -> Result<Receipt> {

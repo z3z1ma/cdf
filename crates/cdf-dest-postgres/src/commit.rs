@@ -245,7 +245,10 @@ impl CommitSession for PostgresCommitSession {
         Ok(())
     }
 
-    fn write_segment(&mut self, segment: CommitSegment) -> Result<SegmentAck> {
+    fn write_segments(
+        &mut self,
+        segments: cdf_kernel::CommitSegmentIterator,
+    ) -> Result<Vec<SegmentAck>> {
         if self.phase == PostgresCommitSessionPhase::Written {
             return Err(CdfError::destination(
                 "Postgres commit session has already accepted all segments",
@@ -256,63 +259,41 @@ impl CommitSession for PostgresCommitSession {
                 "Postgres commit session must apply migrations before writing",
             ));
         }
-
-        let segment_id = segment.state.segment_id.clone();
-        let expected = self.expected_segments.get(&segment_id).ok_or_else(|| {
-            CdfError::data(format!(
-                "Postgres commit segment {} is not in the planned package request",
-                segment_id.as_str()
-            ))
-        })?;
-        if self.accepted_segments.contains(&segment_id) {
-            return Err(CdfError::data(format!(
-                "Postgres commit session received duplicate segment {}",
-                segment_id.as_str()
-            )));
+        if !self.accepted_segments.is_empty() {
+            return Err(CdfError::destination(
+                "Postgres finalized package segments have already been submitted",
+            ));
         }
-        validate_commit_segment(&segment, expected, &self.plan)?;
 
-        if self.duplicate_receipt.is_none() {
-            let loaded_at_ms = now_ms()?;
+        let mut accepted_segments = BTreeSet::new();
+        let acknowledgements = if self.duplicate_receipt.is_some() {
+            validate_package_segments(
+                segments,
+                &self.expected_segments,
+                &self.plan,
+                &mut accepted_segments,
+            )?
+        } else {
+            let package_row_key_start = self.first_row_key.ok_or_else(|| {
+                CdfError::internal("Postgres package row-key allocator is not initialized")
+            })?;
             let client = self
                 .client
                 .as_mut()
                 .ok_or_else(|| CdfError::internal("Postgres commit session has no transaction"))?;
-            let package_row_key_start = self.first_row_key.ok_or_else(|| {
-                CdfError::internal("Postgres package row-key allocator is not initialized")
-            })?;
-            let segment_row_key_start =
-                package_row_key_start
-                    .checked_add(i64::try_from(expected.package_row_ord_start).map_err(|_| {
-                        CdfError::data("Postgres package row ordinal exceeds BIGINT")
-                    })?)
-                    .ok_or_else(|| CdfError::data("Postgres segment row key overflowed BIGINT"))?;
-            copy_stage_rows(
+            copy_package_rows(
                 client,
                 &self.plan,
-                segment,
+                segments,
+                &self.expected_segments,
+                &mut accepted_segments,
                 package_row_key_start,
-                loaded_at_ms,
-            )?;
-            insert_segment_range(
-                client,
-                &self.plan,
-                &expected.state.segment_id,
-                segment_row_key_start,
-                expected.state.row_count,
-            )?;
-        }
-
-        let ack = SegmentAck {
-            segment_id: expected.state.segment_id.clone(),
-            row_count: expected.state.row_count,
-            byte_count: expected.state.byte_count,
+            )?
         };
-        self.accepted_segments.insert(segment_id);
-        if self.accepted_segments.len() == self.expected_segments.len() {
-            self.write_accepted_segments()?;
-        }
-        Ok(ack)
+        require_complete_package_segments(&accepted_segments, &self.expected_segments)?;
+        self.accepted_segments = accepted_segments;
+        self.write_accepted_segments()?;
+        Ok(acknowledgements)
     }
 
     fn finalize(self: Box<Self>) -> Result<Receipt> {
@@ -329,8 +310,11 @@ impl CommitSession for ManagedPostgresCommitSession {
         self.with_inner(CommitSession::apply_migrations)
     }
 
-    fn write_segment(&mut self, segment: CommitSegment) -> Result<SegmentAck> {
-        self.with_inner(move |inner| CommitSession::write_segment(inner, segment))
+    fn write_segments(
+        &mut self,
+        segments: cdf_kernel::CommitSegmentIterator,
+    ) -> Result<Vec<SegmentAck>> {
+        self.with_inner(move |inner| CommitSession::write_segments(inner, segments))
     }
 
     fn finalize(mut self: Box<Self>) -> Result<Receipt> {
@@ -558,13 +542,14 @@ fn apply_write_plan_after_stage(
     })
 }
 
-fn copy_stage_rows(
+fn copy_package_rows(
     client: &mut Client,
     plan: &PostgresLoadPlan,
-    segment: CommitSegment,
+    segments: cdf_kernel::CommitSegmentIterator,
+    expected_segments: &BTreeMap<SegmentId, PostgresExpectedSegment>,
+    accepted_segments: &mut BTreeSet<SegmentId>,
     package_row_key_start: i64,
-    loaded_at_ms: i64,
-) -> Result<u64> {
+) -> Result<Vec<SegmentAck>> {
     let mut columns = quoted_column_names(&plan.columns);
     columns.extend(quoted_system_target_column_names());
     let copy_sql = format!(
@@ -576,8 +561,28 @@ fn copy_stage_rows(
         .copy_in(&copy_sql)
         .map_err(|error| postgres_error("open Postgres COPY into stage", error))?;
     let mut encoder = BinaryCopyEncoder::new(writer, plan.columns.len())?;
-    for batch in segment.into_batches()? {
-        encoder.write_batch(&batch.batch, package_row_key_start, loaded_at_ms)?;
+    let mut acknowledgements = Vec::with_capacity(expected_segments.len());
+    let mut segment_ranges = Vec::with_capacity(expected_segments.len());
+    for segment in segments {
+        let segment = segment?;
+        let (expected, acknowledgement) =
+            validate_package_segment(&segment, expected_segments, plan, accepted_segments)?;
+        let loaded_at_ms = now_ms()?;
+        for batch in segment.into_batches()? {
+            encoder.write_batch(&batch.batch, package_row_key_start, loaded_at_ms)?;
+        }
+        let segment_row_key_start = package_row_key_start
+            .checked_add(
+                i64::try_from(expected.package_row_ord_start)
+                    .map_err(|_| CdfError::data("Postgres package row ordinal exceeds BIGINT"))?,
+            )
+            .ok_or_else(|| CdfError::data("Postgres segment row key overflowed BIGINT"))?;
+        segment_ranges.push((
+            expected.state.segment_id.clone(),
+            segment_row_key_start,
+            expected.state.row_count,
+        ));
+        acknowledgements.push(acknowledgement);
     }
     let (writer, encoded_rows) = encoder.finish()?;
     let copied = writer
@@ -588,7 +593,85 @@ fn copy_stage_rows(
             "Postgres binary COPY accepted {copied} rows but encoded {encoded_rows}"
         )));
     }
-    Ok(copied)
+    let acknowledged_rows = acknowledgements.iter().try_fold(0_u64, |total, ack| {
+        total
+            .checked_add(ack.row_count)
+            .ok_or_else(|| CdfError::data("Postgres acknowledged row count overflowed"))
+    })?;
+    if copied != acknowledged_rows {
+        return Err(CdfError::destination(format!(
+            "Postgres binary COPY accepted {copied} rows but segment acknowledgements cover {acknowledged_rows}"
+        )));
+    }
+    for (segment_id, row_key_start, row_count) in segment_ranges {
+        insert_segment_range(client, plan, &segment_id, row_key_start, row_count)?;
+    }
+    Ok(acknowledgements)
+}
+
+fn validate_package_segments(
+    segments: cdf_kernel::CommitSegmentIterator,
+    expected_segments: &BTreeMap<SegmentId, PostgresExpectedSegment>,
+    plan: &PostgresLoadPlan,
+    accepted_segments: &mut BTreeSet<SegmentId>,
+) -> Result<Vec<SegmentAck>> {
+    segments
+        .map(|segment| {
+            let segment = segment?;
+            validate_package_segment(&segment, expected_segments, plan, accepted_segments)
+                .map(|(_, acknowledgement)| acknowledgement)
+        })
+        .collect()
+}
+
+fn validate_package_segment<'a>(
+    segment: &CommitSegment,
+    expected_segments: &'a BTreeMap<SegmentId, PostgresExpectedSegment>,
+    plan: &PostgresLoadPlan,
+    accepted_segments: &mut BTreeSet<SegmentId>,
+) -> Result<(&'a PostgresExpectedSegment, SegmentAck)> {
+    let segment_id = &segment.state.segment_id;
+    if accepted_segments.contains(segment_id) {
+        return Err(CdfError::data(format!(
+            "Postgres commit session received duplicate segment {}",
+            segment_id.as_str()
+        )));
+    }
+    let expected = expected_segments.get(segment_id).ok_or_else(|| {
+        CdfError::data(format!(
+            "Postgres commit segment {} is not in the planned package request",
+            segment_id.as_str()
+        ))
+    })?;
+    validate_commit_segment(segment, expected, plan)?;
+    accepted_segments.insert(segment_id.clone());
+    Ok((
+        expected,
+        SegmentAck {
+            segment_id: expected.state.segment_id.clone(),
+            row_count: expected.state.row_count,
+            byte_count: expected.state.byte_count,
+        },
+    ))
+}
+
+fn require_complete_package_segments(
+    accepted_segments: &BTreeSet<SegmentId>,
+    expected_segments: &BTreeMap<SegmentId, PostgresExpectedSegment>,
+) -> Result<()> {
+    if accepted_segments.len() == expected_segments.len() {
+        return Ok(());
+    }
+    let missing = expected_segments
+        .keys()
+        .find(|segment_id| !accepted_segments.contains(*segment_id))
+        .ok_or_else(|| {
+            CdfError::internal("Postgres package segment cardinality is inconsistent")
+        })?;
+    Err(CdfError::data(format!(
+        "Postgres finalized package stream omitted segment {}",
+        missing.as_str()
+    )))
 }
 
 fn allocate_row_key_range(client: &mut Client, row_count: u64) -> Result<i64> {

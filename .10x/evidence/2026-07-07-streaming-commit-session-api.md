@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-07
 Updated: 2026-07-07
-Relates-To: .10x/tickets/done/2026-07-07-p0-workstream-a-streaming-commit-session.md, .10x/decisions/commit-session-segment-write-api.md, .10x/tickets/done/2026-07-07-p0-structural-debt-program.md
+Relates-To: .10x/tickets/done/2026-07-07-p0-workstream-a-streaming-commit-session.md, .10x/decisions/superseded/commit-session-segment-write-api.md, .10x/tickets/done/2026-07-07-p0-structural-debt-program.md
 
 # Streaming CommitSession API
 

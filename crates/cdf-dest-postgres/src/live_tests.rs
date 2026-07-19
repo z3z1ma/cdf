@@ -787,13 +787,15 @@ fn try_session_commit(
         64 * 1024 * 1024,
         BTreeMap::new(),
     )?);
-    for segment in reader.verified_commit_segment_stream_with(
+    let segments = reader.verified_commit_segment_stream_with(
         &verified,
         &request.segments,
         memory,
         64 * 1024 * 1024,
-    )? {
-        let ack = session.write_segment(segment?.into_commit_segment()?)?;
+    )?;
+    let segments =
+        segments.map(|segment| segment.and_then(|segment| segment.into_commit_segment()));
+    for ack in session.write_segments(Box::new(segments))? {
         assert!(manifest.identity.segments.iter().any(|entry| {
             ack.segment_id == entry.segment_id && ack.row_count == entry.row_count
         }));
@@ -829,9 +831,11 @@ fn try_low_level_session_commit(
         segments,
     })?;
     session.apply_migrations()?;
-    for segment in reader.read_commit_segments(&request.segments)? {
-        session.write_segment(segment)?;
-    }
+    let segments = reader
+        .read_commit_segments(&request.segments)?
+        .into_iter()
+        .map(Ok);
+    session.write_segments(Box::new(segments))?;
     Box::new(session).finalize()
 }
 

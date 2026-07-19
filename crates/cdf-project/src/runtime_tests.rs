@@ -29,12 +29,12 @@ use cdf_http::{HttpRequest, HttpResponse, HttpTransport, SecretProvider, SecretU
 use cdf_kernel::ExecutionExtent;
 use cdf_kernel::{
     BackpressureSupport, CHECKPOINT_STATE_VERSION, CapabilitySupport, CdfError, Checkpoint,
-    CheckpointId, CheckpointStatus, CheckpointStore, CommitCounts, CommitPlan, CommitSegment,
-    CommitSession, CompositePosition, ConcurrencyLimit, CursorOrderingClaim, CursorPosition,
-    CursorSpec, CursorValue, DeliveryGuarantee, DestinationCommitRequest, DestinationId,
-    DestinationProtocol, DestinationSheet, EstimateSupport, FileManifest, FilePosition,
-    FilterCapabilities, IdempotencySupport, IdempotencyToken, IdentifierRules, IncrementalShape,
-    LogPosition, MigrationRecord, PackageHash, PageToken, PartitionId, PipelineId, PlanId,
+    CheckpointId, CheckpointStatus, CheckpointStore, CommitCounts, CommitPlan, CommitSession,
+    CompositePosition, ConcurrencyLimit, CursorOrderingClaim, CursorPosition, CursorSpec,
+    CursorValue, DeliveryGuarantee, DestinationCommitRequest, DestinationId, DestinationProtocol,
+    DestinationSheet, EstimateSupport, FileManifest, FilePosition, FilterCapabilities,
+    IdempotencySupport, IdempotencyToken, IdentifierRules, IncrementalShape, LogPosition,
+    MigrationRecord, PackageHash, PageToken, PartitionId, PipelineId, PlanId,
     ProcessedObservationOutcome, ProcessedObservationPosition, PushdownFidelity, QueryableResource,
     Receipt, ReceiptId, ReceiptVerification, ReplaySupport, ResourceCapabilities,
     ResourceDescriptor, ResourceId, ResourceStream, Result, RewindReport, RewindRequest, RunEvent,
@@ -1930,35 +1930,43 @@ impl CommitSession for MockCommitSession<'_> {
         Ok(())
     }
 
-    fn write_segment(&mut self, segment: CommitSegment) -> Result<SegmentAck> {
+    fn write_segments(
+        &mut self,
+        segments: cdf_kernel::CommitSegmentIterator,
+    ) -> Result<Vec<SegmentAck>> {
         if !self.migrations_applied {
             return Err(CdfError::destination(
                 "mock destination migrations must be applied before writing",
             ));
         }
-        let expected = self
-            .request
-            .segments
-            .iter()
-            .find(|state| state.segment_id == segment.state.segment_id)
-            .ok_or_else(|| CdfError::data("unexpected mock segment"))?;
-        if expected.row_count != segment.state.row_count
-            || expected.byte_count != segment.state.byte_count
-        {
-            return Err(CdfError::data("mock segment state mismatch"));
+        let mut acknowledgements = Vec::new();
+        for segment in segments {
+            let segment = segment?;
+            let expected = self
+                .request
+                .segments
+                .iter()
+                .find(|state| state.segment_id == segment.state.segment_id)
+                .ok_or_else(|| CdfError::data("unexpected mock segment"))?;
+            if expected.row_count != segment.state.row_count
+                || expected.byte_count != segment.state.byte_count
+            {
+                return Err(CdfError::data("mock segment state mismatch"));
+            }
+            let ack = SegmentAck {
+                segment_id: expected.segment_id.clone(),
+                row_count: expected.row_count,
+                byte_count: expected.byte_count,
+            };
+            self.destination
+                .writes
+                .lock()
+                .unwrap()
+                .push(ack.segment_id.clone());
+            self.acks.push(ack.clone());
+            acknowledgements.push(ack);
         }
-        let ack = SegmentAck {
-            segment_id: expected.segment_id.clone(),
-            row_count: expected.row_count,
-            byte_count: expected.byte_count,
-        };
-        self.destination
-            .writes
-            .lock()
-            .unwrap()
-            .push(ack.segment_id.clone());
-        self.acks.push(ack.clone());
-        Ok(ack)
+        Ok(acknowledgements)
     }
 
     fn finalize(self: Box<Self>) -> Result<Receipt> {
