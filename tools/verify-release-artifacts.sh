@@ -57,6 +57,7 @@ for target in "$@"; do
   grep -qx "${base}/LICENSE" "$list_file" || die "archive lacks LICENSE: $archive"
   grep -qx "${base}/CHANGELOG-excerpt.md" "$list_file" || die "archive lacks changelog excerpt: $archive"
   grep -qx "${base}/release-metadata.txt" "$list_file" || die "archive lacks release metadata: $archive"
+  grep -qx "${base}/duckdb-nanoarrow-build.json" "$list_file" || die "archive lacks DuckDB nanoarrow build metadata: $archive"
   grep -qx "${base}/generated/ARTIFACTS.txt" "$list_file" || die "archive lacks generated artifact inventory: $archive"
   case "$target" in
     x86_64-pc-windows-msvc)

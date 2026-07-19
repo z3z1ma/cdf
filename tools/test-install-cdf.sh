@@ -75,8 +75,9 @@ echo "fake cdf"
 FAKE_CDF
   chmod +x "${build_dir}/cdf"
   printf 'fixture DuckDB shared library\n' >"${build_dir}/libduckdb.so"
+  printf '{"nanoarrow":{"version":"0.8.0","ipc_lz4":true}}\n' >"${build_dir}/duckdb-nanoarrow-build.json"
 
-  tar -czf "${fixture_dir}/${artifact_name}" -C "$build_dir" cdf libduckdb.so
+  tar -czf "${fixture_dir}/${artifact_name}" -C "$build_dir" cdf libduckdb.so duckdb-nanoarrow-build.json
   digest="$(sha256_file "${fixture_dir}/${artifact_name}")"
   if [[ "$checksum_mode" == 'mismatch' ]]; then
     digest="0000000000000000000000000000000000000000000000000000000000000000"
@@ -103,6 +104,7 @@ success_output="${test_root}/success.out"
   --prefix "$success_prefix" >"$success_output"
 [[ -x "${success_prefix}/bin/cdf" ]] || fail 'success install did not write an executable cdf'
 [[ -f "${success_prefix}/bin/libduckdb.so" ]] || fail 'success install did not write libduckdb.so'
+[[ -f "${success_prefix}/share/cdf/duckdb-nanoarrow-build.json" ]] || fail 'success install did not write DuckDB build metadata'
 [[ "$("${success_prefix}/bin/cdf" version)" == 'cdf 0.1.0' ]] || fail 'installed fixture version output mismatch'
 assert_contains "$success_output" "Installed cdf 0.1.0 to ${success_prefix}/bin/cdf"
 printf 'ok success install verifies checksum and prints version\n'
