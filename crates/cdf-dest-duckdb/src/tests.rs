@@ -5,7 +5,10 @@ use crate::{
 };
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, Int64Array, StringArray};
+use arrow_array::{
+    Array, ArrayRef, Decimal128Array, Int32Array, Int64Array, ListArray, StringArray, StructArray,
+    types::Int32Type,
+};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_conformance::destination::{
     DestinationConformanceCase, DestinationCorrectionConformanceEvidence,
@@ -459,7 +462,7 @@ struct CurrentCommitRequest {
 
 struct TestDurableSegmentReader {
     identity: cdf_runtime::StagedSegmentIdentity,
-    batches: std::vec::IntoIter<RecordBatch>,
+    path: PathBuf,
 }
 
 struct TestStagedSegmentStream {
@@ -483,8 +486,12 @@ impl DurableSegmentReader for TestDurableSegmentReader {
         &self.identity
     }
 
+    fn durable_local_file(&self) -> Option<&Path> {
+        Some(&self.path)
+    }
+
     fn next_batch(&mut self) -> Result<Option<RecordBatch>> {
-        Ok(self.batches.next())
+        panic!("DuckDB canonical segment scan must not decode through DurableSegmentReader")
     }
 }
 
@@ -564,10 +571,10 @@ fn try_commit_current(
                 u32::try_from(ordinal)
                     .map_err(|_| CdfError::data("test package has too many segments"))?,
             )?;
-            let batches = reader.read_segment(&entry.segment_id)?.into_iter();
+            let path = request.package_dir.join(&entry.path);
             cdf_runtime::StagedSegmentRequest::new(
                 identity.clone(),
-                Box::new(TestDurableSegmentReader { identity, batches }),
+                Box::new(TestDurableSegmentReader { identity, path }),
             )
         })
         .collect::<Result<Vec<_>>>()?;
@@ -630,7 +637,7 @@ fn sheet_declares_duckdb_destination_contract() {
     let runtime = &mut dest as &mut dyn cdf_runtime::DestinationRuntime;
     assert_eq!(
         runtime.runtime_capabilities().bulk_path.as_deref(),
-        Some("arrow_record_batch_appender")
+        Some(DUCKDB_BULK_PATH_SEGMENT_SCAN)
     );
     assert_eq!(
         runtime.runtime_capabilities().ingress_mode,
@@ -674,10 +681,10 @@ fn duckdb_reserves_native_parallelism_only_for_final_binding() {
         capabilities
             .bulk_paths
             .iter()
-            .find(|path| path.path_id == DUCKDB_BULK_PATH_APPENDER)
+            .find(|path| path.path_id == DUCKDB_BULK_PATH_SEGMENT_SCAN)
             .unwrap()
             .native_internal_parallelism,
-        1
+        16
     );
 }
 
@@ -815,6 +822,62 @@ fn staged_segment_ingress_returns_verifiable_receipt_and_exact_provenance() {
             (3, "seg-000002".to_owned(), 0),
         ]
     );
+}
+
+#[test]
+fn canonical_segment_scan_preserves_decimal_and_nested_values() {
+    let temp = tempfile::tempdir().unwrap();
+    let package = temp.path().join("pkg-nested");
+    let list = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+        Some(vec![Some(1), Some(2)]),
+        Some(vec![Some(3)]),
+    ]);
+    let struct_fields = vec![
+        Arc::new(Field::new("code", DataType::Int32, false)),
+        Arc::new(Field::new("label", DataType::Utf8, true)),
+    ];
+    let structure = StructArray::new(
+        struct_fields.clone().into(),
+        vec![
+            Arc::new(Int32Array::from(vec![7, 8])),
+            Arc::new(StringArray::from(vec![Some("seven"), None])),
+        ],
+        None,
+    );
+    let decimal = Decimal128Array::from(vec![12_345_i128, -6_789_i128])
+        .with_precision_and_scale(10, 2)
+        .unwrap();
+    let batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("amount", DataType::Decimal128(10, 2), false),
+            Field::new("items", list.data_type().clone(), false),
+            Field::new("detail", DataType::Struct(struct_fields.into()), false),
+        ])),
+        vec![Arc::new(decimal), Arc::new(list), Arc::new(structure)],
+    )
+    .unwrap();
+    let package_hash = build_package(&package, "pkg-nested", &[batch]);
+    let destination = destination(&temp.path().join("nested.duckdb"));
+    commit_current(
+        &destination,
+        request(
+            &package,
+            package_hash,
+            WriteDisposition::Append,
+            Vec::new(),
+            2,
+        ),
+    );
+
+    let connection = Connection::open(destination.database_path()).unwrap();
+    let values: (u64, String, i64, i64, u64) = connection
+        .query_row(
+            "SELECT count(*), sum(amount)::VARCHAR, sum(list_count(items)), sum(detail.code), count(detail.label) FROM orders",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(values, (2, "55.56".to_owned(), 3, 15, 1));
 }
 
 #[test]

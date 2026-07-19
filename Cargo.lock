@@ -931,9 +931,11 @@ name = "cdf-dest-duckdb"
 version = "0.1.0"
 dependencies = [
  "arrow-array 59.1.0",
+ "arrow-ipc",
  "arrow-schema 59.1.0",
  "cdf-conformance",
  "cdf-contract",
+ "cdf-engine",
  "cdf-kernel",
  "cdf-package",
  "cdf-package-contract",
@@ -942,7 +944,6 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "tempfile",
 ]
 

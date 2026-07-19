@@ -3862,14 +3862,14 @@ fn general_project_run_records_ledger_events_in_commit_gate_order() {
     let bulk = &report.ledger_snapshot.events[7].details.attributes;
     assert_eq!(
         bulk.get("bulk_path_id"),
-        Some(&RunEventValue::String(
-            "arrow_record_batch_appender".to_owned()
-        ))
+        Some(&RunEventValue::String("canonical_segment_scan".to_owned()))
     );
     assert_eq!(bulk.get("bulk_path_version"), Some(&RunEventValue::U64(1)));
     assert_eq!(
         bulk.get("bulk_evidence_version"),
-        Some(&RunEventValue::String("p3-f2-2026-07-14-v2".to_owned()))
+        Some(&RunEventValue::String(
+            "p3-d14-stock-scan-2026-07-19-v1".to_owned()
+        ))
     );
     assert!(matches!(
         bulk.get("bulk_rows_per_batch"),

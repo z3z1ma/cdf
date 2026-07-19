@@ -11,8 +11,8 @@ use cdf_runtime::{
 };
 
 use crate::{
-    DUCKDB_BULK_PATH_APPENDER, DUCKDB_BULK_PATH_NANOARROW, DUCKDB_FINAL_BINDING_LANE,
-    DUCKDB_STAGED_INGRESS_LANE, DuckDbDestination,
+    DUCKDB_BULK_PATH_SEGMENT_SCAN, DUCKDB_FINAL_BINDING_LANE, DUCKDB_STAGED_INGRESS_LANE,
+    DuckDbDestination,
     package::{field_plan, validate_user_schema_fields},
 };
 
@@ -162,15 +162,9 @@ impl DestinationRuntime for DuckDbDestination {
     fn runtime_capabilities(&self) -> DestinationRuntimeCapabilities {
         let native_internal_parallelism =
             native_internal_parallelism_u16(self.native_resources.internal_threads);
-        let mut bulk_paths = Vec::with_capacity(2);
-        if self.nanoarrow.is_some() {
-            bulk_paths.push(duckdb_nanoarrow_bulk_path_descriptor(
-                native_internal_parallelism,
-            ));
-        }
-        bulk_paths.push(duckdb_appender_bulk_path_descriptor(
+        let bulk_paths = vec![duckdb_segment_scan_bulk_path_descriptor(
             native_internal_parallelism,
-        ));
+        )];
         DestinationRuntimeCapabilities {
             blocking_lanes: vec![
                 cdf_runtime::BlockingLaneSpec {
@@ -205,16 +199,8 @@ impl DestinationRuntime for DuckDbDestination {
             max_in_flight_segments: Some(2),
             max_in_flight_bytes: Some(128 * 1024 * 1024),
             bulk_paths,
-            bulk_path: Some(if self.nanoarrow.is_some() {
-                DUCKDB_BULK_PATH_NANOARROW.to_owned()
-            } else {
-                DUCKDB_BULK_PATH_APPENDER.to_owned()
-            }),
-            bulk_evidence_version: Some(if self.nanoarrow.is_some() {
-                "p3-d14-2026-07-18-v1".to_owned()
-            } else {
-                "p3-f2-2026-07-14-v2".to_owned()
-            }),
+            bulk_path: Some(DUCKDB_BULK_PATH_SEGMENT_SCAN.to_owned()),
+            bulk_evidence_version: Some("p3-d14-stock-scan-2026-07-19-v1".to_owned()),
             replay_requires_explicit_target: false,
             replay_target_hint: None,
             replay_policy_values: Default::default(),
@@ -255,11 +241,11 @@ impl DestinationRuntime for DuckDbDestination {
     }
 }
 
-fn duckdb_nanoarrow_bulk_path_descriptor(
+fn duckdb_segment_scan_bulk_path_descriptor(
     native_internal_parallelism: u16,
 ) -> cdf_runtime::BulkPathDescriptor {
     cdf_runtime::BulkPathDescriptor {
-        path_id: DUCKDB_BULK_PATH_NANOARROW.to_owned(),
+        path_id: DUCKDB_BULK_PATH_SEGMENT_SCAN.to_owned(),
         version: 1,
         ingress_mode: DestinationIngressMode::StagedDurableSegments,
         writer_model: DestinationWriterModel::SingleWriter,
@@ -279,37 +265,8 @@ fn duckdb_nanoarrow_bulk_path_descriptor(
         native_internal_parallelism,
         external_staging: true,
         fallback: cdf_runtime::BulkFallbackMode::Forbidden,
-        schema_preflight_version: "duckdb-nanoarrow-0.8.0-lz4@1".to_owned(),
-        measured_evidence_version: Some("p3-d14-2026-07-18-v1".to_owned()),
-    }
-}
-
-fn duckdb_appender_bulk_path_descriptor(
-    _native_internal_parallelism: u16,
-) -> cdf_runtime::BulkPathDescriptor {
-    cdf_runtime::BulkPathDescriptor {
-        path_id: DUCKDB_BULK_PATH_APPENDER.to_owned(),
-        version: 1,
-        ingress_mode: DestinationIngressMode::StagedDurableSegments,
-        writer_model: DestinationWriterModel::SingleWriter,
-        ordering: cdf_runtime::BulkOrdering::ManifestOrder,
-        rows: cdf_runtime::BulkSizeRange {
-            minimum: 8 * 1024,
-            preferred: 64 * 1024,
-            maximum: 64 * 1024,
-        },
-        bytes: cdf_runtime::BulkSizeRange {
-            minimum: 1024 * 1024,
-            preferred: 16 * 1024 * 1024,
-            maximum: 64 * 1024 * 1024,
-        },
-        max_useful_writers: 1,
-        blocking_lane: Some(DUCKDB_STAGED_INGRESS_LANE.to_owned()),
-        native_internal_parallelism: 1,
-        external_staging: true,
-        fallback: cdf_runtime::BulkFallbackMode::Forbidden,
-        schema_preflight_version: "duckdb-arrow-mapping@1".to_owned(),
-        measured_evidence_version: Some("p3-f2-2026-07-14-v2".to_owned()),
+        schema_preflight_version: "duckdb-canonical-segment-scan@1".to_owned(),
+        measured_evidence_version: Some("p3-d14-stock-scan-2026-07-19-v1".to_owned()),
     }
 }
 

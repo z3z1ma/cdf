@@ -1,6 +1,6 @@
 use crate::*;
 use crate::{
-    commit::*, corrections::*, mirrors::*, nanoarrow::*, package::*, planning::*, receipts::*,
+    commit::*, corrections::*, mirrors::*, package::*, planning::*, receipts::*, segment_scan::*,
     sheet::*, sql::*, table::*,
 };
 
@@ -9,7 +9,6 @@ pub struct DuckDbDestination {
     database_path: PathBuf,
     sheet: DestinationSheet,
     pub(crate) native_resources: DuckDbNativeResources,
-    pub(crate) nanoarrow: Option<DuckDbNanoarrowExtension>,
     pub(crate) pending_corrections: Arc<Mutex<BTreeMap<PlanId, DuckDbCorrectionContext>>>,
 }
 
@@ -52,6 +51,7 @@ impl std::fmt::Debug for DuckDbNativeResources {
 #[derive(Debug)]
 pub(crate) struct DuckDbArrowWriter {
     pub(crate) conn: Connection,
+    pub(crate) segment_scan: DuckDbSegmentScanRuntime,
     _lock: WriterLock,
     target: TargetRef,
     pub(crate) write_target: TargetRef,
@@ -66,16 +66,8 @@ pub(crate) struct DuckDbArrowWriter {
 struct DuckDbStagedIngressSession {
     destination: DuckDbDestination,
     request: cdf_runtime::StagedIngressRequest,
-    ingress: DuckDbStagedIngress,
-    writer: Option<DuckDbArrowWriter>,
-    migrations: Vec<MigrationRecord>,
+    files: Vec<PathBuf>,
     accepted: Vec<cdf_runtime::StagedSegmentIdentity>,
-}
-
-#[derive(Debug)]
-enum DuckDbStagedIngress {
-    Appender,
-    Nanoarrow { files: Vec<PathBuf> },
 }
 
 #[derive(Debug)]
@@ -161,8 +153,6 @@ pub(crate) struct ReceiptBuildContext<'a> {
     pub(crate) duckdb_version: &'a str,
     pub(crate) database_path: &'a Path,
     pub(crate) lock_path: &'a Path,
-    pub(crate) nanoarrow_linkage: Option<&'a str>,
-    pub(crate) nanoarrow_sha256: Option<&'a str>,
 }
 
 impl TargetRef {
@@ -207,7 +197,6 @@ impl DuckDbDestination {
             database_path,
             sheet: duckdb_sheet()?,
             native_resources: DuckDbNativeResources::conservative(),
-            nanoarrow: DuckDbNanoarrowExtension::from_env()?,
             pending_corrections: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
@@ -216,8 +205,7 @@ impl DuckDbDestination {
         mut self,
         execution: &cdf_runtime::ExecutionServices,
     ) -> Result<Self> {
-        self.native_resources =
-            DuckDbNativeResources::for_execution(execution, self.nanoarrow.is_some())?;
+        self.native_resources = DuckDbNativeResources::for_execution(execution)?;
         Ok(self)
     }
 
@@ -264,7 +252,7 @@ impl DuckDbDestination {
     fn start_staged_writer(
         &self,
         request: &cdf_runtime::StagedIngressRequest,
-        load_nanoarrow: bool,
+        files: Vec<PathBuf>,
     ) -> Result<(DuckDbArrowWriter, Vec<MigrationRecord>)> {
         validate_user_schema_fields(request.output_schema())?;
         let user_fields = request
@@ -277,17 +265,13 @@ impl DuckDbDestination {
         let persisted_fields = persistence_fields(&user_fields);
         let target = parse_target(&request.binding().target)?;
         let lock = self.acquire_writer_lock()?;
-        let conn = self.open_connection()?;
-        if load_nanoarrow {
-            self.nanoarrow
-                .as_ref()
-                .ok_or_else(|| {
-                    CdfError::contract(
-                        "DuckDB nanoarrow bulk path was selected without a configured extension",
-                    )
-                })?
-                .load(&conn)?;
-        }
+        let segment_scan = DuckDbSegmentScanRuntime::open(
+            &self.database_path,
+            &self.native_resources,
+            files,
+            Arc::new(request.segment_schema().clone()),
+        )?;
+        let conn = segment_scan.connection()?;
         ensure_mirror_tables(&conn)?;
         conn.execute_batch("BEGIN TRANSACTION")
             .map_err(|error| duckdb_error("begin staged Arrow transaction", error))?;
@@ -333,6 +317,7 @@ impl DuckDbDestination {
         Ok((
             DuckDbArrowWriter {
                 conn,
+                segment_scan,
                 _lock: lock,
                 target: table_plan.target,
                 write_target,
@@ -360,16 +345,8 @@ impl DuckDbDestination {
                 "DuckDB destination does not support cdc_apply",
             ));
         }
-        let ingress = match request.bulk_path().descriptor.path_id.as_str() {
-            DUCKDB_BULK_PATH_APPENDER => DuckDbStagedIngress::Appender,
-            DUCKDB_BULK_PATH_NANOARROW if self.nanoarrow.is_some() => {
-                DuckDbStagedIngress::Nanoarrow { files: Vec::new() }
-            }
-            DUCKDB_BULK_PATH_NANOARROW => {
-                return Err(CdfError::contract(
-                    "DuckDB nanoarrow bulk path requires an explicitly configured extension",
-                ));
-            }
+        match request.bulk_path().descriptor.path_id.as_str() {
+            DUCKDB_BULK_PATH_SEGMENT_SCAN => {}
             path => {
                 return Err(CdfError::contract(format!(
                     "unsupported prepared DuckDB bulk path {path}"
@@ -379,9 +356,7 @@ impl DuckDbDestination {
         Ok(Box::new(DuckDbStagedIngressSession {
             destination: self.clone(),
             request,
-            ingress,
-            writer: None,
-            migrations: Vec::new(),
+            files: Vec::new(),
             accepted: Vec::new(),
         }))
     }
@@ -457,14 +432,13 @@ impl DuckDbDestination {
     pub(crate) fn open_connection(&self) -> Result<Connection> {
         Connection::open_with_flags(
             &self.database_path,
-            bounded_connection_config(&self.native_resources, false, self.nanoarrow.as_ref())?,
+            bounded_connection_config(&self.native_resources, false)?,
         )
         .map_err(|error| duckdb_error(format!("open {}", self.database_path.display()), error))
     }
 
     pub(crate) fn open_read_only_connection(&self) -> Result<Connection> {
-        let config =
-            bounded_connection_config(&self.native_resources, true, self.nanoarrow.as_ref())?;
+        let config = bounded_connection_config(&self.native_resources, true)?;
         Connection::open_with_flags(&self.database_path, config).map_err(|error| {
             duckdb_error(
                 format!("open {} read-only", self.database_path.display()),
@@ -491,24 +465,21 @@ impl DuckDbDestination {
 impl DuckDbNativeResources {
     fn conservative() -> Self {
         Self {
-            memory_limit_bytes: DUCKDB_MINIMUM_NATIVE_MEMORY_BYTES,
+            memory_limit_bytes: DUCKDB_CONSERVATIVE_MEMORY_BYTES,
             maximum_temp_directory_bytes: DUCKDB_DEFAULT_TEMP_DIRECTORY_BUDGET_CEILING_BYTES,
             internal_threads: DUCKDB_DEFAULT_INTERNAL_THREADS,
             scratch_reservation: None,
         }
     }
 
-    fn for_execution(
-        execution: &cdf_runtime::ExecutionServices,
-        final_binding_bulk: bool,
-    ) -> Result<Self> {
+    fn for_execution(execution: &cdf_runtime::ExecutionServices) -> Result<Self> {
         let managed_budget = execution.memory().snapshot().budget_bytes;
         let mut overrides = DuckDbNativeResourceOverrides::from_env()?;
         if overrides.internal_threads.is_none() {
             overrides.internal_threads =
                 Some(i64::from(execution.capabilities().logical_cpu_slots.max(1)));
         }
-        if overrides.memory_limit_bytes.is_none() && final_binding_bulk {
+        if overrides.memory_limit_bytes.is_none() {
             overrides.memory_limit_bytes = Some(managed_budget);
         }
         Self::for_budgets_with_overrides(managed_budget, execution.spill(), overrides)
@@ -520,16 +491,13 @@ impl DuckDbNativeResources {
         overrides: DuckDbNativeResourceOverrides,
     ) -> Result<Self> {
         let memory_limit_bytes = match overrides.memory_limit_bytes {
-            Some(bytes) if bytes < DUCKDB_MINIMUM_NATIVE_MEMORY_BYTES => {
+            Some(0) => {
                 return Err(CdfError::contract(format!(
-                    "{DUCKDB_MEMORY_LIMIT_ENV} must be at least {DUCKDB_MINIMUM_NATIVE_MEMORY_BYTES} bytes"
+                    "{DUCKDB_MEMORY_LIMIT_ENV} must be greater than zero"
                 )));
             }
             Some(bytes) => bytes,
-            None => (managed_budget / 4).clamp(
-                DUCKDB_MINIMUM_NATIVE_MEMORY_BYTES,
-                DUCKDB_DEFAULT_NATIVE_MEMORY_LIMIT_CEILING_BYTES,
-            ),
+            None => (managed_budget / 4).clamp(1, DUCKDB_DEFAULT_NATIVE_MEMORY_LIMIT_CEILING_BYTES),
         };
         let maximum_temp_directory_bytes =
             overrides.maximum_temp_directory_bytes.unwrap_or_else(|| {
@@ -605,28 +573,35 @@ fn parse_threads(label: &str, value: &str) -> Result<i64> {
     Ok(threads)
 }
 
-fn bounded_connection_config(
-    resources: &DuckDbNativeResources,
-    read_only: bool,
-    nanoarrow: Option<&DuckDbNanoarrowExtension>,
-) -> Result<Config> {
-    let memory_limit = format!("{}B", resources.memory_limit_bytes);
-    let maximum_temp_directory = format!("{}B", resources.maximum_temp_directory_bytes);
-    let mut config = Config::default()
-        .max_memory(&memory_limit)
-        .and_then(|config| config.threads(resources.internal_threads))
-        .and_then(|config| config.with("max_temp_directory_size", &maximum_temp_directory))
-        .and_then(|config| config.with("preserve_insertion_order", "false"))
-        .map_err(|error| duckdb_error("configure bounded DuckDB runtime", error))?;
+fn bounded_connection_config(resources: &DuckDbNativeResources, read_only: bool) -> Result<Config> {
+    let mut config = Config::default();
+    for (name, value) in duckdb_config_options(resources) {
+        config = config
+            .with(&name, &value)
+            .map_err(|error| duckdb_error("configure bounded DuckDB runtime", error))?;
+    }
     if read_only {
         config = config
             .access_mode(AccessMode::ReadOnly)
             .map_err(|error| duckdb_error("configure read-only DuckDB open", error))?;
     }
-    if let Some(nanoarrow) = nanoarrow {
-        config = nanoarrow.configure(config)?;
-    }
     Ok(config)
+}
+
+pub(crate) fn duckdb_config_options(resources: &DuckDbNativeResources) -> Vec<(String, String)> {
+    vec![
+        (
+            "memory_limit".to_owned(),
+            format!("{}B", resources.memory_limit_bytes),
+        ),
+        ("threads".to_owned(), resources.internal_threads.to_string()),
+        (
+            "max_temp_directory_size".to_owned(),
+            format!("{}B", resources.maximum_temp_directory_bytes),
+        ),
+        ("preserve_insertion_order".to_owned(), "false".to_owned()),
+        ("duckdb_api".to_owned(), "rust".to_owned()),
+    ]
 }
 
 impl DuckDbStagedIngressSession {
@@ -681,8 +656,6 @@ impl DuckDbStagedIngressSession {
                 duckdb_version: &duckdb_version,
                 database_path: &self.destination.database_path,
                 lock_path: &self.destination.lock_path(),
-                nanoarrow_linkage: None,
-                nanoarrow_sha256: None,
             },
         )?;
         conn.execute_batch("BEGIN TRANSACTION")
@@ -738,89 +711,7 @@ impl DuckDbStagedIngressSession {
         Ok(())
     }
 
-    fn stage_appender_stream(
-        &mut self,
-        first_segment: cdf_runtime::StagedSegmentRequest,
-        stream: &mut dyn cdf_runtime::StagedSegmentStream,
-    ) -> Result<()> {
-        if self.writer.is_none() {
-            let (writer, migrations) =
-                self.destination.start_staged_writer(&self.request, false)?;
-            self.writer = Some(writer);
-            self.migrations = migrations;
-        }
-        let writer = self
-            .writer
-            .as_mut()
-            .ok_or_else(|| CdfError::internal("DuckDB staged writer is not initialized"))?;
-        let merge = self.request.binding().disposition == WriteDisposition::Merge;
-        let mut column_names = writer
-            .persisted_fields
-            .iter()
-            .map(|field| field.name.clone())
-            .collect::<Vec<_>>();
-        if merge {
-            column_names.push(CDF_STAGE_ORDER_COLUMN.to_owned());
-        }
-        let write_target = writer.write_target.clone();
-        let mut appender = open_arrow_appender(&writer.conn, &write_target, &column_names)?;
-        let mut current = Some(first_segment);
-        while let Some(mut segment) = current {
-            self.request.mutation_guard().assert_current()?;
-            let identity = segment.identity.clone();
-            Self::validate_next_segment(&self.request, &self.accepted, &identity)?;
-            let package_row_key_start = writer.first_row_key.ok_or_else(|| {
-                CdfError::internal("DuckDB staged row-key allocator is not initialized")
-            })?;
-            let segment_rows_before = writer.rows_received;
-            if identity.package_row_ord_start != segment_rows_before {
-                return Err(CdfError::data(format!(
-                    "DuckDB staged segment {} package ordinal starts at {} but canonical ingress requires {segment_rows_before}",
-                    identity.segment_id, identity.package_row_ord_start
-                )));
-            }
-            while let Some(batch) = segment.reader_mut().next_batch()? {
-                if batch.schema().as_ref() != self.request.segment_schema() {
-                    return Err(CdfError::data(format!(
-                        "DuckDB staged segment {} schema differs from the planned canonical segment schema",
-                        identity.segment_id
-                    )));
-                }
-                let batch_rows = u64::try_from(batch.num_rows())
-                    .map_err(|_| CdfError::data("DuckDB staged batch rows exceed u64"))?;
-                cdf_package_contract::validate_package_row_ord_batches(
-                    std::slice::from_ref(&batch),
-                    writer.rows_received,
-                    batch_rows,
-                )?;
-                let persisted = persistence_batch(batch, package_row_key_start, merge)?;
-                self.request.mutation_guard().assert_current()?;
-                append_arrow_batch(&mut appender, &write_target, persisted)?;
-                writer.rows_received = writer
-                    .rows_received
-                    .checked_add(batch_rows)
-                    .ok_or_else(|| CdfError::data("DuckDB staged row count overflowed"))?;
-            }
-            if writer.rows_received.saturating_sub(segment_rows_before) != identity.row_count {
-                return Err(CdfError::data(format!(
-                    "DuckDB staged segment {} row count differs from durable identity",
-                    identity.segment_id
-                )));
-            }
-            stream.acknowledge(cdf_runtime::StagedSegmentAck {
-                attempt_id: self.request.attempt_id().clone(),
-                identity: identity.clone(),
-                external_durable: false,
-            })?;
-            self.accepted.push(identity);
-            drop(segment);
-            current = stream.next_segment()?;
-        }
-        flush_arrow_appender(&mut appender, &write_target)?;
-        Ok(())
-    }
-
-    fn stage_nanoarrow_stream(
+    fn stage_canonical_segments(
         &mut self,
         first_segment: cdf_runtime::StagedSegmentRequest,
         stream: &mut dyn cdf_runtime::StagedSegmentStream,
@@ -832,13 +723,13 @@ impl DuckDbStagedIngressSession {
             Self::validate_next_segment(&self.request, &self.accepted, &identity)?;
             let path = segment.durable_local_file().ok_or_else(|| {
                 CdfError::data(format!(
-                    "DuckDB nanoarrow bulk path requires canonical durable file access for segment {}",
+                    "DuckDB canonical segment scan requires durable file access for segment {}",
                     identity.segment_id
                 ))
             })?;
             if !path.is_absolute() {
                 return Err(CdfError::data(format!(
-                    "DuckDB nanoarrow canonical segment path must be absolute: {}",
+                    "DuckDB canonical segment path must be absolute: {}",
                     path.display()
                 )));
             }
@@ -849,12 +740,7 @@ impl DuckDbStagedIngressSession {
                 external_durable: false,
             })?;
             self.accepted.push(identity);
-            let DuckDbStagedIngress::Nanoarrow { files } = &mut self.ingress else {
-                return Err(CdfError::internal(
-                    "DuckDB nanoarrow stream entered the appender session",
-                ));
-            };
-            files.push(path);
+            self.files.push(path);
             drop(segment);
             current = stream.next_segment()?;
         }
@@ -867,11 +753,7 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
         let Some(first_segment) = stream.next_segment()? else {
             return Ok(());
         };
-        if matches!(&self.ingress, DuckDbStagedIngress::Nanoarrow { .. }) {
-            self.stage_nanoarrow_stream(first_segment, stream)
-        } else {
-            self.stage_appender_stream(first_segment, stream)
-        }
+        self.stage_canonical_segments(first_segment, stream)
     }
 
     fn snapshot(&self) -> Result<cdf_runtime::StagingSnapshot> {
@@ -889,25 +771,12 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
     ) -> Result<cdf_runtime::DestinationCommitOutcome> {
         self.validate_final_binding(&binding)?;
         self.request.mutation_guard().assert_current()?;
-        let nanoarrow_files = match &mut self.ingress {
-            DuckDbStagedIngress::Appender => None,
-            DuckDbStagedIngress::Nanoarrow { files } => Some(std::mem::take(files)),
-        };
-        let used_nanoarrow = nanoarrow_files.is_some();
-        if self.writer.is_none() && !self.accepted.is_empty() {
-            if nanoarrow_files.is_none() {
-                return Err(CdfError::internal(
-                    "DuckDB appender accepted rows without an initialized writer",
-                ));
-            }
-            let (writer, migrations) = self.destination.start_staged_writer(&self.request, true)?;
-            self.writer = Some(writer);
-            self.migrations = migrations;
-        }
-        let Some(writer) = self.writer.take() else {
+        if self.accepted.is_empty() {
             return (*self).bind_empty(binding);
-        };
-        let mut writer = writer;
+        }
+        let files = std::mem::take(&mut self.files);
+        let (mut writer, migrations) =
+            self.destination.start_staged_writer(&self.request, files)?;
         if let Some(receipt) = find_duplicate_receipt(&writer.conn, binding.commit())? {
             rollback_staged_writer(&mut writer, "rollback duplicate staged transaction")?;
             return Ok(cdf_runtime::DestinationCommitOutcome::new(
@@ -917,19 +786,16 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
                 },
             ));
         }
-        if let Some(files) = nanoarrow_files {
-            let expected_rows = self.accepted.iter().try_fold(0_u64, |total, identity| {
-                total
-                    .checked_add(identity.row_count)
-                    .ok_or_else(|| CdfError::data("DuckDB nanoarrow row count overflowed"))
-            })?;
-            ingest_canonical_files(
-                &mut writer,
-                &files,
-                expected_rows,
-                self.request.binding().disposition == WriteDisposition::Merge,
-            )?;
-        }
+        let expected_rows = self.accepted.iter().try_fold(0_u64, |total, identity| {
+            total
+                .checked_add(identity.row_count)
+                .ok_or_else(|| CdfError::data("DuckDB canonical segment row count overflowed"))
+        })?;
+        ingest_canonical_segments(
+            &mut writer,
+            expected_rows,
+            self.request.binding().disposition == WriteDisposition::Merge,
+        )?;
         let counts = match binding.commit().disposition.clone() {
             WriteDisposition::Append | WriteDisposition::Replace => CommitCounts {
                 rows_written: writer.rows_received,
@@ -961,22 +827,17 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
             })
             .collect::<Vec<_>>();
         let committed_at_ms = now_ms()?;
-        let nanoarrow = used_nanoarrow
-            .then_some(self.destination.nanoarrow.as_ref())
-            .flatten();
         let receipt = build_receipt(
             binding.commit(),
             binding.schema_hash(),
             &segment_acks,
             counts,
             &ReceiptBuildContext {
-                migrations: &self.migrations,
+                migrations: &migrations,
                 committed_at_ms,
                 duckdb_version: &writer.duckdb_version,
                 database_path: &self.destination.database_path,
                 lock_path: &self.destination.lock_path(),
-                nanoarrow_linkage: nanoarrow.map(DuckDbNanoarrowExtension::linkage),
-                nanoarrow_sha256: nanoarrow.and_then(DuckDbNanoarrowExtension::sha256),
             },
         )?;
         advance_row_key_allocator(
@@ -1009,11 +870,7 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
         ))
     }
 
-    fn abort(mut self: Box<Self>) -> Result<()> {
-        if let Some(writer) = self.writer.take() {
-            let mut writer = writer;
-            rollback_staged_writer(&mut writer, "rollback staged Arrow transaction")?;
-        }
+    fn abort(self: Box<Self>) -> Result<()> {
         Ok(())
     }
 }
@@ -1110,8 +967,9 @@ mod native_resource_tests {
 
     #[test]
     fn execution_defaults_use_available_host_parallelism() {
-        let services = cdf_conformance::test_execution_services();
-        let resources = DuckDbNativeResources::for_execution(&services, false).unwrap();
+        let (_, services) =
+            cdf_engine::StandaloneExecutionHost::default_services(512 * 1024 * 1024).unwrap();
+        let resources = DuckDbNativeResources::for_execution(&services).unwrap();
         assert_eq!(
             resources.internal_threads,
             i64::from(services.capabilities().logical_cpu_slots)
@@ -1185,7 +1043,7 @@ mod native_resource_tests {
         let held = spill.try_reserve(1024).unwrap().unwrap();
         let coordinator: Arc<dyn cdf_runtime::SpillBudgetCoordinator> = spill.clone();
         let error = DuckDbNativeResources::for_budgets_with_overrides(
-            DUCKDB_MINIMUM_NATIVE_MEMORY_BYTES,
+            DUCKDB_CONSERVATIVE_MEMORY_BYTES,
             coordinator,
             DuckDbNativeResourceOverrides::default(),
         )

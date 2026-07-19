@@ -21,17 +21,10 @@ pub(crate) fn build_receipt(
         "writer_lock".to_owned(),
         context.lock_path.display().to_string(),
     );
-    if let Some(linkage) = context.nanoarrow_linkage {
-        transaction_values.insert(
-            "bulk_path".to_owned(),
-            DUCKDB_BULK_PATH_NANOARROW.to_owned(),
-        );
-        transaction_values.insert("nanoarrow_version".to_owned(), "0.8.0".to_owned());
-        transaction_values.insert("nanoarrow_linkage".to_owned(), linkage.to_owned());
-    }
-    if let Some(sha256) = context.nanoarrow_sha256 {
-        transaction_values.insert("nanoarrow_extension_sha256".to_owned(), sha256.to_owned());
-    }
+    transaction_values.insert(
+        "bulk_path".to_owned(),
+        DUCKDB_BULK_PATH_SEGMENT_SCAN.to_owned(),
+    );
 
     let mut parameters = BTreeMap::new();
     parameters.insert("target".to_owned(), commit.target.as_str().to_owned());
