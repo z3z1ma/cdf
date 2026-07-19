@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-11
 Updated: 2026-07-16
 Parent: .10x/tickets/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md
@@ -28,6 +28,10 @@ No runtime epoch execution or resident lifecycle.
 ## Blockers
 
 None. SX1, BX1, and A5 are done; this ticket is executable.
+
+## Journal
+
+- 2026-07-19: Activated immediately after WX1 closure on the A7 -> A8 -> C5 critical path. Implementation is confined to neutral kernel/runtime capability joins, declarative/project compilation, engine plan evidence, and CLI plan/deep-validation consumption; the concurrent object-access/Iceberg source lane remains out of scope.
 
 ## References
 
