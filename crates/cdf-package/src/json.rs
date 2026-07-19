@@ -54,11 +54,16 @@ fn write_manifest_identity_canonical<W: Write>(
         write_file_entry(writer, entry)?;
     }
     write_bytes(writer, b"],\"layout\":[")?;
-    write_values(writer, &identity.layout)?;
+    for (index, value) in identity.layout.iter().enumerate() {
+        if index > 0 {
+            write_bytes(writer, b",")?;
+        }
+        write_json_string(writer, value)?;
+    }
     write_bytes(writer, b"],\"manifest_version\":")?;
-    write_value(writer, &identity.manifest_version)?;
+    write_display(writer, identity.manifest_version)?;
     write_bytes(writer, b",\"package_id\":")?;
-    write_value(writer, &identity.package_id)?;
+    write_json_string(writer, &identity.package_id)?;
     write_bytes(writer, b",\"segments\":[")?;
     for (index, entry) in identity.segments.iter().enumerate() {
         if index > 0 {
@@ -71,38 +76,37 @@ fn write_manifest_identity_canonical<W: Write>(
 
 fn write_file_entry<W: Write>(writer: &mut W, entry: &FileEntry) -> Result<()> {
     write_bytes(writer, b"{\"byte_count\":")?;
-    write_value(writer, &entry.byte_count)?;
+    write_display(writer, entry.byte_count)?;
     write_bytes(writer, b",\"path\":")?;
-    write_value(writer, &entry.path)?;
+    write_json_string(writer, &entry.path)?;
     write_bytes(writer, b",\"sha256\":")?;
-    write_value(writer, &entry.sha256)?;
+    write_json_string(writer, &entry.sha256)?;
     write_bytes(writer, b"}")
 }
 
 fn write_segment_entry<W: Write>(writer: &mut W, entry: &SegmentEntry) -> Result<()> {
     write_bytes(writer, b"{\"byte_count\":")?;
-    write_value(writer, &entry.byte_count)?;
+    write_display(writer, entry.byte_count)?;
     write_bytes(writer, b",\"package_row_ord_start\":")?;
-    write_value(writer, &entry.package_row_ord_start)?;
+    write_display(writer, entry.package_row_ord_start)?;
     write_bytes(writer, b",\"path\":")?;
-    write_value(writer, &entry.path)?;
+    write_json_string(writer, &entry.path)?;
     write_bytes(writer, b",\"row_count\":")?;
-    write_value(writer, &entry.row_count)?;
+    write_display(writer, entry.row_count)?;
     write_bytes(writer, b",\"segment_id\":")?;
-    write_value(writer, entry.segment_id.as_str())?;
+    write_json_string(writer, entry.segment_id.as_str())?;
     write_bytes(writer, b",\"sha256\":")?;
-    write_value(writer, &entry.sha256)?;
+    write_json_string(writer, &entry.sha256)?;
     write_bytes(writer, b"}")
 }
 
-fn write_values<W: Write, T: Serialize>(writer: &mut W, values: &[T]) -> Result<()> {
-    for (index, value) in values.iter().enumerate() {
-        if index > 0 {
-            write_bytes(writer, b",")?;
-        }
-        write_value(writer, value)?;
-    }
-    Ok(())
+fn write_json_string<W: Write>(writer: &mut W, value: &str) -> Result<()> {
+    serde_json::to_writer(writer, value).map_err(json_error)
+}
+
+fn write_display<W: Write>(writer: &mut W, value: impl std::fmt::Display) -> Result<()> {
+    write!(writer, "{value}")
+        .map_err(|error| CdfError::internal(format!("write canonical JSON: {error}")))
 }
 
 fn write_field_prefix<W: Write>(writer: &mut W, field: &str, wrote: &mut bool) -> Result<()> {
