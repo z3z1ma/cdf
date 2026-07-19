@@ -1373,6 +1373,8 @@ pub struct CompiledSourceCompilerBinding {
     pub compiled_source_plan_hash: String,
     pub source_semantics_hash: String,
     pub execution_capabilities_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_capabilities_hash: Option<String>,
 }
 
 impl CompiledSourceCompilerBinding {
@@ -1386,6 +1388,11 @@ impl CompiledSourceCompilerBinding {
             compiled_source_plan_hash: artifact_hash(source)?,
             source_semantics_hash: source.schema_binding_stable_hash()?,
             execution_capabilities_hash: artifact_hash(&source.execution_capabilities)?,
+            stream_capabilities_hash: source
+                .stream_capabilities
+                .as_ref()
+                .map(artifact_hash)
+                .transpose()?,
         };
         binding.validate()?;
         Ok(binding)
@@ -1405,6 +1412,9 @@ impl CompiledSourceCompilerBinding {
             "compiled source execution capabilities",
             &self.execution_capabilities_hash,
         )?;
+        if let Some(hash) = &self.stream_capabilities_hash {
+            validate_hash("compiled source stream capabilities", hash)?;
+        }
         Ok(())
     }
 }
@@ -1478,6 +1488,12 @@ impl CompiledSourceExecutionPlan {
             || self.compiled_source_plan_hash != binding.compiled_source_plan_hash
             || self.source_semantics_hash != binding.source_semantics_hash
             || artifact_hash(&self.execution_capabilities)? != binding.execution_capabilities_hash
+            || self
+                .stream_capabilities
+                .as_ref()
+                .map(artifact_hash)
+                .transpose()?
+                != binding.stream_capabilities_hash
         {
             return Err(CdfError::data(
                 "compiled source execution ceiling does not match its compiler source binding",
