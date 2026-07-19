@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-12
 Updated: 2026-07-12
 Parent: .10x/tickets/2026-07-12-p3-ws-j-datafusion-currency-bridges.md
-Depends-On: .10x/tickets/2026-07-11-p0-wx1-portable-partition-task-protocol.md, .10x/tickets/done/2026-07-11-p3-a5-streaming-operator-graph.md, .10x/tickets/done/2026-07-11-p3-c2-parallel-frontier-execution.md
+Depends-On: .10x/tickets/done/2026-07-11-p0-wx1-portable-partition-task-protocol.md, .10x/tickets/done/2026-07-11-p3-a5-streaming-operator-graph.md, .10x/tickets/done/2026-07-11-p3-c2-parallel-frontier-execution.md
 
 # P3 J5: ExecutionPlan marshaling and unified metrics
 

@@ -20,7 +20,7 @@ Marshal CDF's existing statistics, memory/object-store authority, expression sem
 - `.10x/tickets/2026-07-12-p3-j4-evidence-catalog-adbc.md`
 - `.10x/tickets/2026-07-12-p3-j5-execution-plan-marshaling-metrics.md`
 - `.10x/tickets/2026-07-12-p3-j6-datafusion-selective-adoption-audit.md`
-- `.10x/tickets/2026-07-11-p0-wx1-portable-partition-task-protocol.md` — canonical task authority reused by J5
+- `.10x/tickets/done/2026-07-11-p0-wx1-portable-partition-task-protocol.md` — canonical task authority reused by J5
 - `.10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md` — neutral driver prerequisite for any optional DataFusion `FileFormat` adapter
 
 ## Sequencing
