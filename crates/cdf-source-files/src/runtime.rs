@@ -3141,26 +3141,41 @@ fn stream_registered_format(
                     cpu,
                     NATIVE_UNIT_STREAM_ITEMS,
                     move |mut unit_sender, unit_cancellation| async move {
-                        let _work = work_execution
-                            .acquire_run_work(unit_cancellation.clone())
-                            .await?;
-                        let mut decoded = session
-                            .decode(PhysicalDecodeRequest {
-                                unit,
-                                resource_id: options.resource_id,
-                                partition_id: options.partition_id,
-                                batch_id_prefix: options.batch_id_prefix,
-                                schema,
-                                source_position,
-                                projection,
-                                predicates,
-                                target_batch_rows: NATIVE_TARGET_BATCH_ROWS,
-                                target_batch_bytes: NATIVE_TARGET_BATCH_BYTES,
-                                memory,
-                                cancellation: unit_cancellation,
-                            })
-                            .await?;
-                        while let Some(batch) = decoded.try_next().await? {
+                        let mut decoded = {
+                            let _work = work_execution
+                                .acquire_run_work(unit_cancellation.clone())
+                                .await?;
+                            session
+                                .decode(PhysicalDecodeRequest {
+                                    unit,
+                                    resource_id: options.resource_id,
+                                    partition_id: options.partition_id,
+                                    batch_id_prefix: options.batch_id_prefix,
+                                    schema,
+                                    source_position,
+                                    projection,
+                                    predicates,
+                                    target_batch_rows: NATIVE_TARGET_BATCH_ROWS,
+                                    target_batch_bytes: NATIVE_TARGET_BATCH_BYTES,
+                                    memory,
+                                    cancellation: unit_cancellation.clone(),
+                                })
+                                .await?
+                        };
+                        loop {
+                            let next = {
+                                let _work = work_execution
+                                    .acquire_run_work(unit_cancellation.clone())
+                                    .await?;
+                                decoded.try_next().await?
+                            };
+                            let Some(batch) = next else {
+                                break;
+                            };
+                            // A run-work permit owns active leaf computation, not bounded-channel
+                            // residence. Releasing it before publication prevents a later
+                            // canonical unit from monopolizing every run slot while its output is
+                            // intentionally held behind an earlier partition.
                             unit_sender.send(batch.into_batch()?).await?;
                         }
                         Ok(())
@@ -5011,6 +5026,7 @@ mod tests {
     #[derive(Debug)]
     struct ExternalMockFormat {
         descriptor: cdf_runtime::FormatDriverDescriptor,
+        batches_per_unit: usize,
     }
 
     impl ExternalMockFormat {
@@ -5048,7 +5064,13 @@ mod tests {
                     minimum_working_set_bytes: 64,
                     maximum_working_set_bytes: 1024 * 1024,
                 },
+                batches_per_unit: 1,
             }
+        }
+
+        fn with_batches_per_unit(mut self, batches_per_unit: usize) -> Self {
+            self.batches_per_unit = batches_per_unit;
+            self
         }
 
         fn schema() -> Arc<Schema> {
@@ -5130,7 +5152,11 @@ mod tests {
                     estimated_working_set_bytes: 64,
                     independently_retryable: true,
                 }];
-                Ok(Arc::new(ExternalMockDecodeSession { source, units })
+                Ok(Arc::new(ExternalMockDecodeSession {
+                    source,
+                    units,
+                    batches_per_unit: self.batches_per_unit,
+                })
                     as Arc<dyn cdf_runtime::FormatDecodeSession>)
             })
         }
@@ -5139,6 +5165,7 @@ mod tests {
     struct ExternalMockDecodeSession {
         source: Arc<dyn cdf_runtime::ByteSource>,
         units: Vec<cdf_runtime::DecodeUnitPlan>,
+        batches_per_unit: usize,
     }
 
     impl cdf_runtime::FormatDecodeSession for ExternalMockDecodeSession {
@@ -5168,39 +5195,110 @@ mod tests {
                 if cursor.read_exact(5, "external mock payload").await? != b"MOCK\n" {
                     return Err(CdfError::data("external mock payload mismatch"));
                 }
-                let record_batch = RecordBatch::try_new(
-                    ExternalMockFormat::schema(),
-                    vec![Arc::new(Int64Array::from(vec![42]))],
-                )
-                .map_err(|error| CdfError::data(format!("external mock batch: {error}")))?;
-                let lease = cdf_memory::reserve(
-                    Arc::clone(&request.memory),
-                    cdf_memory::ReservationRequest::new(
-                        cdf_memory::ConsumerKey::new(
-                            "external-mock-decode",
-                            cdf_memory::MemoryClass::Decode,
-                        )?,
-                        1024,
-                    )?,
-                )
-                .await?;
-                let mut batch = cdf_kernel::Batch::from_record_batch(
-                    cdf_kernel::BatchId::new("external-mock-batch")?,
-                    request.resource_id,
-                    request.partition_id,
-                    cdf_kernel::canonical_arrow_schema_hash(
-                        request.schema.decoder_schema.as_ref(),
-                    )?,
-                    record_batch,
+                let schema_hash = cdf_kernel::canonical_arrow_schema_hash(
+                    request.schema.decoder_schema.as_ref(),
                 )?;
-                batch.header.source_position = request.source_position;
-                let physical = cdf_runtime::AccountedPhysicalBatch::new(batch, lease)?;
-                Ok(
-                    Box::pin(futures_util::stream::once(async move { Ok(physical) }))
-                        as cdf_runtime::PhysicalDecodeStream,
-                )
+                let mut batches = Vec::with_capacity(self.batches_per_unit);
+                for index in 0..self.batches_per_unit {
+                    let record_batch = RecordBatch::try_new(
+                        ExternalMockFormat::schema(),
+                        vec![Arc::new(Int64Array::from(vec![42]))],
+                    )
+                    .map_err(|error| CdfError::data(format!("external mock batch: {error}")))?;
+                    let lease = cdf_memory::reserve(
+                        Arc::clone(&request.memory),
+                        cdf_memory::ReservationRequest::new(
+                            cdf_memory::ConsumerKey::new(
+                                "external-mock-decode",
+                                cdf_memory::MemoryClass::Decode,
+                            )?,
+                            1024,
+                        )?,
+                    )
+                    .await?;
+                    let mut batch = cdf_kernel::Batch::from_record_batch(
+                        cdf_kernel::BatchId::new(format!("external-mock-batch-{index}"))?,
+                        request.resource_id.clone(),
+                        request.partition_id.clone(),
+                        schema_hash.clone(),
+                        record_batch,
+                    )?;
+                    batch.header.source_position = request.source_position.clone();
+                    batches.push(cdf_runtime::AccountedPhysicalBatch::new(batch, lease));
+                }
+                Ok(Box::pin(futures_util::stream::iter(batches))
+                    as cdf_runtime::PhysicalDecodeStream)
             })
         }
+    }
+
+    #[test]
+    fn blocked_decode_publication_releases_shared_run_work() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("events.mock");
+        std::fs::write(&path, b"MOCK\n").unwrap();
+        let mut formats = cdf_runtime::FormatRegistry::default();
+        formats
+            .register(Arc::new(ExternalMockFormat::new().with_batches_per_unit(8)))
+            .unwrap();
+        let services = crate::test_execution_services()
+            .with_run_job_ceiling(1)
+            .unwrap();
+        let dependencies = FileRuntimeDependencies::new(
+            FileTransportFacade::new(),
+            services.clone(),
+            Arc::new(formats),
+            crate::test_transform_registry(),
+            crate::test_egress_scope(),
+        );
+        let driver = dependencies.formats().resolve("external_mock").unwrap();
+        let open = |partition: &str| {
+            stream_registered_format(
+                RegisteredFormatStreamRequest {
+                    source: Arc::new(
+                        LocalByteSource::open(&path, dependencies.execution().memory()).unwrap(),
+                    ),
+                    payload_retention: None,
+                    driver: Arc::clone(&driver),
+                    scan_intent: CompiledScanIntent::full_scan(),
+                    options: ReadOptions::new(
+                        ResourceId::new("events").unwrap(),
+                        PartitionId::new(partition).unwrap(),
+                    ),
+                    admission_schema: ExternalMockFormat::schema(),
+                    canonical_format_options: serde_json::json!({}),
+                    source_position: None,
+                    physical_schema_authority: PhysicalSchemaAuthority::default(),
+                },
+                &dependencies,
+            )
+            .unwrap()
+        };
+        let mut first = open("first");
+        let second = open("second");
+        let first_batch = futures_executor::block_on(first.next())
+            .expect("first stream must publish")
+            .unwrap();
+
+        // Let the first producer fill both bounded publication channels. It may retain decoded
+        // bytes there, but it must not retain the sole run-work permit while waiting for demand.
+        std::thread::sleep(Duration::from_millis(100));
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            sender
+                .send(futures_executor::block_on(second.into_future()).0)
+                .unwrap();
+        });
+        let second_batch = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("a blocked later publication must not monopolize shared run work")
+            .expect("second stream must publish")
+            .unwrap();
+        drop(second_batch);
+        drop(first_batch);
+        drop(first);
+        worker.join().unwrap();
+        assert_eq!(services.run_job_ceiling().unwrap(), Some(1));
     }
 
     #[derive(Debug)]
