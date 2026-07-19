@@ -967,8 +967,8 @@ fn option_schema() -> serde_json::Value {
                 "root": {"type": "string", "minLength": 1},
                 "spool_mode": {
                     "type": "string",
-                    "enum": ["auto", "overlap", "complete"],
-                    "default": "auto"
+                    "enum": ["overlap", "complete"],
+                    "default": "overlap"
                 },
                 "auth": auth,
                 "credentials": {"type": "string", "pattern": "^secret://"},
@@ -1808,7 +1808,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::auto(),
-            spool_mode: crate::FileSpoolMode::Auto,
+            spool_mode: crate::FileSpoolMode::Overlap,
             auth: None,
             credentials: None,
             allowlist: EgressAllowlist::allow_any(),

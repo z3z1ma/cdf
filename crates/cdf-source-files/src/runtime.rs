@@ -1027,7 +1027,7 @@ impl ResourceStream for FileResource {
             move |cancellation| {
                 cancellation.check()?;
                 let control = FileTransportControl::new(cancellation.clone(), None);
-                let (resolved, _) = dependencies.with_transport(|transport, egress| {
+                let resolved = dependencies.with_transport(|transport, egress| {
                     validate_partition(
                         &descriptor,
                         &plan,
@@ -1794,7 +1794,6 @@ struct PreparedFilePartition {
     payload_retention: Option<PayloadRetention>,
     payload_cache_key: Option<crate::payload_cache::FilePayloadCacheKey>,
     spool_mode: crate::FileSpoolMode,
-    match_count: usize,
 }
 
 struct PreparedFilePayloadKeyInput<'a> {
@@ -2119,23 +2118,22 @@ fn prepare_file_partition(
     preparation: FilePartitionPreparation<'_>,
 ) -> Result<PreparedFilePartition> {
     partition.scan_intent.validate()?;
-    let (resolved, match_count) =
-        preparation
-            .dependencies
-            .with_transport(|transport, egress| {
-                validate_partition(
-                    descriptor,
-                    plan,
-                    partition,
-                    FileResolutionContext {
-                        transport,
-                        egress,
-                        formats: preparation.dependencies.formats(),
-                        transforms: preparation.dependencies.transforms(),
-                        control: preparation.control,
-                    },
-                )
-            })?;
+    let resolved = preparation
+        .dependencies
+        .with_transport(|transport, egress| {
+            validate_partition(
+                descriptor,
+                plan,
+                partition,
+                FileResolutionContext {
+                    transport,
+                    egress,
+                    formats: preparation.dependencies.formats(),
+                    transforms: preparation.dependencies.transforms(),
+                    control: preparation.control,
+                },
+            )
+        })?;
     let planned_physical_schema_hash = preparation
         .effective_schema_runtime
         .and_then(|runtime| {
@@ -2191,7 +2189,6 @@ fn prepare_file_partition(
         payload_retention: prepared_input.payload_retention,
         payload_cache_key: prepared_input.payload_cache_key,
         spool_mode: plan.spool_mode,
-        match_count,
     })
 }
 
@@ -2468,7 +2465,6 @@ async fn stream_prepared_file_match(
         payload_retention,
         payload_cache_key,
         spool_mode,
-        match_count,
     } = prepared;
     let position = Some(SourcePosition::FileManifest(cdf_kernel::FileManifest {
         version: 1,
@@ -2503,7 +2499,6 @@ async fn stream_prepared_file_match(
                 source,
                 size_bytes,
                 mode: spool_mode,
-                match_count,
                 source_io,
                 payload_cache_key,
                 dependencies,
@@ -2538,7 +2533,6 @@ struct SpoolInputRequest<'a> {
     source: Arc<dyn ByteSource>,
     size_bytes: Option<u64>,
     mode: crate::FileSpoolMode,
-    match_count: usize,
     source_io: SourceIoObserver,
     payload_cache_key: Option<crate::payload_cache::FilePayloadCacheKey>,
     dependencies: &'a FileRuntimeDependencies,
@@ -2550,7 +2544,6 @@ async fn ready_spooled_file_input(request: SpoolInputRequest<'_>) -> Result<Read
         source,
         size_bytes,
         mode,
-        match_count,
         source_io,
         payload_cache_key,
         dependencies,
@@ -2563,41 +2556,23 @@ async fn ready_spooled_file_input(request: SpoolInputRequest<'_>) -> Result<Read
     let strong_seekable = size_bytes.is_some()
         && source.identity().strength != GenerationStrength::Weak
         && source.capabilities().exact_ranges;
-    let prefer_complete = mode == crate::FileSpoolMode::Complete
-        || (mode == crate::FileSpoolMode::Auto && match_count > 1);
-
-    if strong_seekable && prefer_complete {
-        let spool = if mode == crate::FileSpoolMode::Complete {
-            Some(
-                spool_byte_source_async(
-                    Arc::clone(&source),
-                    size_bytes,
-                    cache_staging_root.as_deref(),
-                    dependencies,
-                    cancellation.clone(),
-                )
-                .await?,
-            )
-        } else {
-            try_spool_byte_source_async(
-                Arc::clone(&source),
-                size_bytes,
-                cache_staging_root.as_deref(),
-                dependencies,
-                cancellation.clone(),
-            )
-            .await?
-        };
-        if let Some(spool) = spool {
-            source_io.set_mode(SourceReadMode::FullSpool)?;
-            return ready_materialized_spool(
-                spool,
-                source.identity().clone(),
-                payload_cache_key,
-                dependencies,
-                cancellation,
-            );
-        }
+    if strong_seekable && mode == crate::FileSpoolMode::Complete {
+        let spool = spool_byte_source_async(
+            Arc::clone(&source),
+            size_bytes,
+            cache_staging_root.as_deref(),
+            dependencies,
+            cancellation.clone(),
+        )
+        .await?;
+        source_io.set_mode(SourceReadMode::FullSpool)?;
+        return ready_materialized_spool(
+            spool,
+            source.identity().clone(),
+            payload_cache_key,
+            dependencies,
+            cancellation,
+        );
     }
 
     if let Some(size_bytes) = size_bytes
@@ -2898,8 +2873,7 @@ fn stream_file_match_blocking(
         hash_sweep_source: prepared_input.hash_sweep_source,
         payload_retention: prepared_input.payload_retention,
         payload_cache_key: prepared_input.payload_cache_key,
-        spool_mode: crate::FileSpoolMode::Auto,
-        match_count: 1,
+        spool_mode: crate::FileSpoolMode::Overlap,
     };
     let dependencies = dependencies.clone();
     let execution = dependencies.execution().clone();
@@ -2958,7 +2932,7 @@ async fn spool_byte_source_async(
         )));
     }
     let initially_reserved = size_bytes.unwrap_or(1).max(1);
-    let reservation = dependencies
+    let mut reservation = dependencies
         .execution()
         .spill()
         .try_reserve(initially_reserved)?
@@ -2969,55 +2943,6 @@ async fn spool_byte_source_async(
                 snapshot.current_bytes, snapshot.budget_bytes
             ))
         })?;
-    spool_byte_source_with_reservation(
-        source,
-        size_bytes,
-        cache_staging_root,
-        dependencies,
-        cancellation,
-        reservation,
-    )
-    .await
-}
-
-async fn try_spool_byte_source_async(
-    source: Arc<dyn ByteSource>,
-    size_bytes: Option<u64>,
-    cache_staging_root: Option<&Path>,
-    dependencies: &FileRuntimeDependencies,
-    cancellation: cdf_runtime::RunCancellation,
-) -> Result<Option<AccountedSpool>> {
-    if size_bytes.is_some_and(|bytes| bytes > dependencies.max_spool_bytes()) {
-        return Ok(None);
-    }
-    let initially_reserved = size_bytes.unwrap_or(1).max(1);
-    let Some(reservation) = dependencies
-        .execution()
-        .spill()
-        .try_reserve(initially_reserved)?
-    else {
-        return Ok(None);
-    };
-    spool_byte_source_with_reservation(
-        source,
-        size_bytes,
-        cache_staging_root,
-        dependencies,
-        cancellation,
-        reservation,
-    )
-    .await
-    .map(Some)
-}
-
-async fn spool_byte_source_with_reservation(
-    source: Arc<dyn ByteSource>,
-    size_bytes: Option<u64>,
-    cache_staging_root: Option<&Path>,
-    dependencies: &FileRuntimeDependencies,
-    cancellation: cdf_runtime::RunCancellation,
-    mut reservation: cdf_runtime::SpillReservation,
-) -> Result<AccountedSpool> {
     let (file, cache_staged) = if let Some(staging_root) = cache_staging_root {
         match tempfile::NamedTempFile::new_in(staging_root) {
             Ok(file) => (file, true),
@@ -3432,7 +3357,7 @@ fn validate_partition(
     plan: &FileResourcePlan,
     partition: &PartitionPlan,
     context: FileResolutionContext<'_>,
-) -> Result<(ResolvedFileMatch, usize)> {
+) -> Result<ResolvedFileMatch> {
     let (path, match_count) = validate_partition_plan_shape(descriptor, plan, partition)?;
     let resolved = resolve_planned_file_match(descriptor, plan, path, context)?;
     let planned = partition.planned_file()?.ok_or_else(|| {
@@ -3452,7 +3377,7 @@ fn validate_partition(
     cdf_kernel::merge_file_position_evidence(planned, &observed)?;
     debug_assert!(match_count > 0);
     validate_resolved_partition_metadata(partition, &resolved, plan, path)?;
-    Ok((resolved, match_count))
+    Ok(resolved)
 }
 
 fn validate_partition_plan_shape<'a>(
@@ -5616,7 +5541,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
-            spool_mode: crate::FileSpoolMode::Auto,
+            spool_mode: crate::FileSpoolMode::Overlap,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -5666,7 +5591,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::auto(),
-            spool_mode: crate::FileSpoolMode::Auto,
+            spool_mode: crate::FileSpoolMode::Overlap,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -5908,7 +5833,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
-            spool_mode: crate::FileSpoolMode::Auto,
+            spool_mode: crate::FileSpoolMode::Overlap,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -6221,7 +6146,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::auto(),
-            spool_mode: crate::FileSpoolMode::Auto,
+            spool_mode: crate::FileSpoolMode::Overlap,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -6336,7 +6261,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
-            spool_mode: crate::FileSpoolMode::Auto,
+            spool_mode: crate::FileSpoolMode::Overlap,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -6385,7 +6310,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
-            spool_mode: crate::FileSpoolMode::Auto,
+            spool_mode: crate::FileSpoolMode::Overlap,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -6470,7 +6395,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
-            spool_mode: crate::FileSpoolMode::Auto,
+            spool_mode: crate::FileSpoolMode::Overlap,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -6536,18 +6461,17 @@ mod tests {
         let PreparedFileInput::SpoolSource { source, size_bytes } = prepared.input else {
             panic!("full remote Parquet scan must select a seekable spool input")
         };
-        let dependencies_for_auto = dependencies.clone();
+        let dependencies_for_complete = dependencies.clone();
         dependencies
             .execution()
             .run_io(async move {
                 ready_spooled_file_input(SpoolInputRequest {
                     source,
                     size_bytes,
-                    mode: crate::FileSpoolMode::Auto,
-                    match_count: 2,
+                    mode: crate::FileSpoolMode::Complete,
                     source_io: source_io.clone(),
                     payload_cache_key: None,
-                    dependencies: &dependencies_for_auto,
+                    dependencies: &dependencies_for_complete,
                     cancellation: cdf_runtime::RunCancellation::default(),
                 })
                 .await
@@ -6651,8 +6575,7 @@ mod tests {
             hash_sweep_source: weak_input.hash_sweep_source,
             payload_retention: weak_input.payload_retention,
             payload_cache_key: weak_input.payload_cache_key,
-            spool_mode: crate::FileSpoolMode::Auto,
-            match_count: 1,
+            spool_mode: crate::FileSpoolMode::Overlap,
         };
         let dependencies_for_weak = weak_dependencies.clone();
         let weak_stream = weak_dependencies
@@ -6910,7 +6833,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
-            spool_mode: crate::FileSpoolMode::Auto,
+            spool_mode: crate::FileSpoolMode::Overlap,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -7089,7 +7012,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
-            spool_mode: crate::FileSpoolMode::Auto,
+            spool_mode: crate::FileSpoolMode::Overlap,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -7218,7 +7141,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
-            spool_mode: crate::FileSpoolMode::Auto,
+            spool_mode: crate::FileSpoolMode::Overlap,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -7271,7 +7194,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::auto(),
-            spool_mode: crate::FileSpoolMode::Auto,
+            spool_mode: crate::FileSpoolMode::Overlap,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -7326,7 +7249,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
-            spool_mode: crate::FileSpoolMode::Auto,
+            spool_mode: crate::FileSpoolMode::Overlap,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -7455,7 +7378,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::auto(),
-            spool_mode: crate::FileSpoolMode::Auto,
+            spool_mode: crate::FileSpoolMode::Overlap,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -7552,7 +7475,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
-            spool_mode: crate::FileSpoolMode::Auto,
+            spool_mode: crate::FileSpoolMode::Overlap,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -7649,7 +7572,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: Some(cdf_runtime::FormatDiscoveryKind::FullContent),
             compression: FileCompressionDeclaration::none(),
-            spool_mode: crate::FileSpoolMode::Auto,
+            spool_mode: crate::FileSpoolMode::Overlap,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -7942,7 +7865,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
-            spool_mode: crate::FileSpoolMode::Auto,
+            spool_mode: crate::FileSpoolMode::Overlap,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
@@ -8027,7 +7950,7 @@ mod tests {
             format_options: serde_json::json!({}),
             schema_discovery: None,
             compression: FileCompressionDeclaration::none(),
-            spool_mode: crate::FileSpoolMode::Auto,
+            spool_mode: crate::FileSpoolMode::Overlap,
             auth: None,
             credentials: None,
             allowlist: cdf_http::EgressAllowlist::allow_any(),
