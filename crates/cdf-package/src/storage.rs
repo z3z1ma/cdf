@@ -662,13 +662,19 @@ pub(crate) fn io_error(context: impl Into<String>, error: std::io::Error) -> Cdf
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, io::Write, time::Instant};
+    use std::{fs, io::Write, sync::Arc, time::Instant};
 
+    use arrow_array::{ArrayRef, RecordBatch, UInt64Array};
+    use arrow_ipc::{
+        CompressionType,
+        writer::{FileWriter, IpcWriteOptions},
+    };
+    use arrow_schema::{DataType, Field, Schema};
     use sha2::{Digest, Sha256};
 
     use super::{
         ArtifactDurability, AtomicArtifactSink, HashingWriter, PublishBoundary, atomic_write,
-        create_temp_sibling, encode_arrow_ipc, sync_directory,
+        create_temp_sibling, encode_arrow_ipc, sync_directory, write_arrow_ipc_file,
     };
 
     #[test]
@@ -876,5 +882,137 @@ mod tests {
             "plain_atomic_median_ns={plain_ns} hash_atomic_median_ns={hashed_ns} hashing_overhead_percent={overhead_percent:.2} bytes_per_sample={} samples={SAMPLES}",
             CHUNK_BYTES * CHUNKS,
         );
+    }
+
+    #[test]
+    #[ignore = "performance evidence; run in release mode"]
+    fn arrow_ipc_package_writer_roofline() {
+        const ROWS_PER_BATCH: usize = 64 * 1024;
+        const BATCHES: usize = 32;
+        const COLUMNS: usize = 8;
+        const SAMPLES: usize = 5;
+        const RAW_CHUNK_BYTES: usize = 1024 * 1024;
+
+        let directory = tempfile::tempdir().unwrap();
+        let fields = (0..COLUMNS)
+            .map(|column| Field::new(format!("value_{column}"), DataType::UInt64, false))
+            .collect::<Vec<_>>();
+        let schema = Arc::new(Schema::new(fields));
+        let columns = (0..COLUMNS)
+            .map(|column| {
+                Arc::new(UInt64Array::from_iter_values(
+                    (0..ROWS_PER_BATCH).map(|row| splitmix64(((column as u64) << 48) | row as u64)),
+                )) as ArrayRef
+            })
+            .collect::<Vec<_>>();
+        let batch = RecordBatch::try_new(Arc::clone(&schema), columns).unwrap();
+        let batches = vec![batch; BATCHES];
+
+        let warm_path = directory.path().join("warm.arrow");
+        let warm_receipt = write_arrow_ipc_file(&warm_path, schema.as_ref(), &batches).unwrap();
+        let encoded_bytes = warm_receipt.artifact.byte_count;
+        fs::remove_file(&warm_path).unwrap();
+        sync_directory(directory.path()).unwrap();
+
+        let raw_chunk = vec![0xa5; RAW_CHUNK_BYTES];
+        let mut plain_samples = Vec::with_capacity(SAMPLES);
+        let mut hashed_samples = Vec::with_capacity(SAMPLES);
+        let mut raw_samples = Vec::with_capacity(SAMPLES);
+        for sample in 0..SAMPLES {
+            let plain_path = directory.path().join(format!("plain-{sample}.arrow"));
+            let hashed_path = directory.path().join(format!("hashed-{sample}.arrow"));
+            let raw_path = directory.path().join(format!("raw-{sample}.bin"));
+
+            let run_plain =
+                || write_plain_arrow_ipc(&plain_path, schema.as_ref(), &batches, encoded_bytes);
+            let run_hashed = || {
+                let started = Instant::now();
+                let receipt =
+                    write_arrow_ipc_file(&hashed_path, schema.as_ref(), &batches).unwrap();
+                assert_eq!(receipt.artifact.byte_count, encoded_bytes);
+                started.elapsed().as_nanos()
+            };
+            if sample % 2 == 0 {
+                plain_samples.push(run_plain());
+                hashed_samples.push(run_hashed());
+            } else {
+                hashed_samples.push(run_hashed());
+                plain_samples.push(run_plain());
+            }
+            raw_samples.push(write_raw_durable(&raw_path, encoded_bytes, &raw_chunk));
+
+            for path in [&plain_path, &hashed_path, &raw_path] {
+                fs::remove_file(path).unwrap();
+            }
+            sync_directory(directory.path()).unwrap();
+        }
+
+        let plain_observations = plain_samples.clone();
+        let hashed_observations = hashed_samples.clone();
+        let raw_observations = raw_samples.clone();
+        plain_samples.sort_unstable();
+        hashed_samples.sort_unstable();
+        raw_samples.sort_unstable();
+        let plain_ns = plain_samples[SAMPLES / 2];
+        let hashed_ns = hashed_samples[SAMPLES / 2];
+        let raw_ns = raw_samples[SAMPLES / 2];
+        let hash_share_percent =
+            (hashed_ns as f64 - plain_ns as f64).max(0.0) * 100.0 / hashed_ns as f64;
+        let writer_roofline_ratio = raw_ns as f64 / hashed_ns as f64;
+        let physical_mib = encoded_bytes as f64 / (1024.0 * 1024.0);
+        let hashed_mib_per_second = physical_mib / (hashed_ns as f64 / 1_000_000_000.0);
+        eprintln!(
+            "encoded_bytes={encoded_bytes} rows={} plain_samples_ns={plain_observations:?} hashed_samples_ns={hashed_observations:?} raw_samples_ns={raw_observations:?} plain_ipc_median_ns={plain_ns} hashed_ipc_median_ns={hashed_ns} raw_durable_median_ns={raw_ns} hash_share_percent={hash_share_percent:.2} writer_roofline_ratio={writer_roofline_ratio:.3} hashed_mib_per_second={hashed_mib_per_second:.1}",
+            ROWS_PER_BATCH * BATCHES,
+        );
+    }
+
+    fn write_plain_arrow_ipc(
+        path: &std::path::Path,
+        schema: &Schema,
+        batches: &[RecordBatch],
+        expected_bytes: u64,
+    ) -> u128 {
+        let started = Instant::now();
+        let (temp_path, mut file) = create_temp_sibling(path).unwrap();
+        let options = IpcWriteOptions::default()
+            .try_with_compression(Some(CompressionType::LZ4_FRAME))
+            .unwrap();
+        {
+            let mut writer = FileWriter::try_new_with_options(&mut file, schema, options).unwrap();
+            for batch in batches {
+                writer.write(batch).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        file.flush().unwrap();
+        file.sync_all().unwrap();
+        assert_eq!(file.metadata().unwrap().len(), expected_bytes);
+        fs::rename(temp_path, path).unwrap();
+        sync_directory(path.parent().unwrap()).unwrap();
+        started.elapsed().as_nanos()
+    }
+
+    fn write_raw_durable(path: &std::path::Path, bytes: u64, chunk: &[u8]) -> u128 {
+        let started = Instant::now();
+        let (temp_path, mut file) = create_temp_sibling(path).unwrap();
+        let mut remaining = bytes;
+        while remaining > 0 {
+            let write_len = usize::try_from(remaining.min(chunk.len() as u64)).unwrap();
+            file.write_all(&chunk[..write_len]).unwrap();
+            remaining -= write_len as u64;
+        }
+        file.flush().unwrap();
+        file.sync_all().unwrap();
+        fs::rename(temp_path, path).unwrap();
+        sync_directory(path.parent().unwrap()).unwrap();
+        started.elapsed().as_nanos()
+    }
+
+    fn splitmix64(value: u64) -> u64 {
+        let mut value = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        value ^ (value >> 31)
     }
 }
