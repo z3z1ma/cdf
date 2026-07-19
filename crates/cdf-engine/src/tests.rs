@@ -17,9 +17,10 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_contract::{
     ContractPolicy, DedupKeep, Expression, FieldCoercionDecision, NestedDataPolicy, ObservedSchema,
-    RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME, RowRule, SchemaChangeKind,
-    SchemaEvolutionMode, VARIANT_COLUMN_NAME, VARIANT_SEMANTIC_TAG, VerdictAction,
-    compile_resource_validation_program, compile_validation_program, reconcile_schema,
+    RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME, RedactionDecision, RowRule,
+    SchemaChangeKind, SchemaEvolutionMode, VARIANT_COLUMN_NAME, VARIANT_SEMANTIC_TAG,
+    VerdictAction, compile_resource_validation_program, compile_validation_program,
+    reconcile_schema,
 };
 use cdf_kernel::{
     BackpressureSupport, Batch, BatchHeader, BatchId, BatchStream, CapabilitySupport, ContractRef,
@@ -38,7 +39,7 @@ use cdf_kernel::{
     ScanPlan, ScanPredicate, ScanRequest, SchemaBaselineReference, SchemaHash,
     SchemaObservationFieldQuarantine, SchemaObservationPolicy, SchemaSnapshotReference,
     SchemaSource, ScopeKey, SourcePosition, StreamEpochPolicy, TerminalSchemaObservationQuarantine,
-    TrustLevel, WatermarkPolicy, WriteDisposition, source_name, with_semantic,
+    TrustLevel, WatermarkAuthority, WatermarkPolicy, WriteDisposition, source_name, with_semantic,
 };
 use cdf_package_contract::{
     DEDUP_SUMMARY_FILE, PackageStatus, QuarantineObservedValue, SegmentEntry,
@@ -348,6 +349,7 @@ fn engine_plan_requires_recorded_schema_authorities() {
         quiescence: false,
         watermark_behavior: cdf_kernel::OperatorWatermarkBehavior::Drop,
         safe_frontiers: vec![SafeFrontierPolicy::CanonicalAdmittedSourcePosition],
+        source_frontier_kinds: vec![cdf_kernel::SourcePositionKind::Cursor],
         idleness_capabilities: Vec::new(),
     });
     assert!(
@@ -363,29 +365,13 @@ fn engine_plan_requires_recorded_schema_authorities() {
         plan.compiled_stream_policy,
         plan.explain.compiled_stream_policy
     );
-    assert!(plan.compiled_stream_policy.is_some());
+    assert!(plan.compiled_stream_policy.is_none());
     let serialized = serde_json::to_value(&plan).unwrap();
-    assert_eq!(
-        serialized["compiled_stream_policy"],
-        serialized["explain"]["compiled_stream_policy"]
-    );
-    assert_eq!(
-        serialized["compiled_stream_policy"]["execution_extent"],
-        serialized["execution_extent"]
-    );
-    let mut tampered = plan.clone();
-    tampered
-        .compiled_stream_policy
-        .as_mut()
-        .unwrap()
-        .semantic_hash = format!("sha256:{}", "00".repeat(32));
-    tampered.explain.compiled_stream_policy = tampered.compiled_stream_policy.clone();
+    assert!(serialized.get("compiled_stream_policy").is_none());
     assert!(
-        tampered
-            .validate_compiled_source_resource(&resource)
-            .unwrap_err()
-            .message
-            .contains("semantic hash")
+        serialized["explain"]
+            .get("compiled_stream_policy")
+            .is_none()
     );
     for required in [
         "schema_authority",
@@ -2401,11 +2387,12 @@ fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
     };
     assert!(graph.validate_destination_join(&stale_staged).is_err());
     assert_eq!(graph.nodes[0].implementation_version, "mock-v1");
+    assert_eq!(graph.execution_extent, plan.execution_extent);
     assert!(
         graph
             .nodes
             .iter()
-            .all(|node| node.execution_extent == plan.execution_extent)
+            .all(|node| node.execution_extent_hash.is_none())
     );
     assert!(
         graph
@@ -2565,6 +2552,7 @@ fn watermark_projection_fails_at_graph_compilation_before_source_contact() {
         quiescence: false,
         watermark_behavior: cdf_kernel::OperatorWatermarkBehavior::Preserve,
         safe_frontiers: vec![SafeFrontierPolicy::CanonicalAdmittedSourcePosition],
+        source_frontier_kinds: vec![cdf_kernel::SourcePositionKind::Cursor],
         idleness_capabilities: Vec::new(),
     });
     source.validate().unwrap();
@@ -2579,6 +2567,194 @@ fn watermark_projection_fails_at_graph_compilation_before_source_contact() {
 
     assert!(error.message.contains("event-time field `id` is removed"));
     assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn watermark_compilation_proves_field_domain_authority_and_column_preservation() {
+    fn extent(field: &str, domain: cdf_kernel::EventTimeDomain) -> ExecutionExtent {
+        let mut policy = sample_stream_epoch_policy();
+        policy.watermark = WatermarkPolicy::Enabled {
+            event_time_field: field.into(),
+            domain,
+            authority: WatermarkAuthority::Source,
+            partition_aggregation: cdf_kernel::PartitionWatermarkAggregation::MinimumAll,
+        };
+        ExecutionExtent::Drain {
+            version: EXECUTION_EXTENT_VERSION,
+            policy,
+            termination: DrainTermination::Records { count: 100 },
+        }
+    }
+
+    fn unbounded_source(resource: &MockResource) -> cdf_runtime::CompiledSourcePlan {
+        let mut source = mock_compiled_source_plan(resource, None);
+        source.execution_capabilities.bounded = false;
+        source.stream_capabilities = Some(cdf_runtime::SourceStreamCapabilities {
+            quiescence: false,
+            watermark_behavior: cdf_kernel::OperatorWatermarkBehavior::Preserve,
+            safe_frontiers: vec![SafeFrontierPolicy::CanonicalAdmittedSourcePosition],
+            source_frontier_kinds: vec![cdf_kernel::SourcePositionKind::Cursor],
+            idleness_capabilities: Vec::new(),
+        });
+        source.validate().unwrap();
+        source
+    }
+
+    let destination = cdf_runtime::DestinationRuntimeCapabilities::default();
+
+    let resource = MockResource::tier_b(sample_batches());
+    let source = unbounded_source(&resource);
+    let missing = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(
+                Vec::new(),
+                None,
+                None,
+                extent("missing", cdf_kernel::EventTimeDomain::SignedInteger),
+            ),
+        )
+        .unwrap()
+        .bind_compiled_source(&source)
+        .unwrap();
+    let error = missing
+        .bind_operator_graph(&source, &destination)
+        .unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("absent from the compiled output schema")
+    );
+
+    let mismatch = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(
+                Vec::new(),
+                None,
+                None,
+                extent("id", cdf_kernel::EventTimeDomain::Date32),
+            ),
+        )
+        .unwrap()
+        .bind_compiled_source(&source)
+        .unwrap();
+    let error = mismatch
+        .bind_operator_graph(&source, &destination)
+        .unwrap_err();
+    assert!(
+        error.message.contains("compiled Arrow type is Int32"),
+        "{}",
+        error.message
+    );
+
+    let mut redacted = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(
+                Vec::new(),
+                None,
+                None,
+                extent("id", cdf_kernel::EventTimeDomain::SignedInteger),
+            ),
+        )
+        .unwrap()
+        .bind_compiled_source(&source)
+        .unwrap();
+    redacted
+        .validation_program
+        .column_programs
+        .iter_mut()
+        .find(|column| column.output_name == "id")
+        .unwrap()
+        .redaction = RedactionDecision::Omit;
+    let error = redacted
+        .bind_operator_graph(&source, &destination)
+        .unwrap_err();
+    assert!(error.message.contains("is redacted"));
+
+    let mut derived_extent = extent("id", cdf_kernel::EventTimeDomain::SignedInteger);
+    let ExecutionExtent::Drain { policy, .. } = &mut derived_extent else {
+        unreachable!()
+    };
+    let WatermarkPolicy::Enabled { authority, .. } = &mut policy.watermark else {
+        unreachable!()
+    };
+    *authority = WatermarkAuthority::Derived {
+        mapping_id: "missing-mapping".into(),
+    };
+    let derived = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, None, derived_extent),
+        )
+        .unwrap();
+    let error = derived.bind_compiled_source(&source).unwrap_err();
+    assert!(error.message.contains("no source transform provides it"));
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn operator_graph_binds_the_plan_source_and_drain_policy_exactly() {
+    let resource = MockResource::tier_b(sample_batches());
+    let source = mock_compiled_source_plan(&resource, None);
+    let plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
+        )
+        .unwrap()
+        .bind_compiled_source(&source)
+        .unwrap();
+    let mut other_source = source.clone();
+    other_source.physical_plan = serde_json::json!({"partitioning": "other"});
+    other_source.physical_plan_hash =
+        cdf_runtime::artifact_hash(&other_source.physical_plan).unwrap();
+    other_source.validate().unwrap();
+    let error = plan
+        .bind_operator_graph(
+            &other_source,
+            &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        )
+        .unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("differs from the source already bound")
+    );
+
+    let mut drain_source = source.clone();
+    drain_source.execution_capabilities.bounded = false;
+    drain_source.stream_capabilities = Some(cdf_runtime::SourceStreamCapabilities {
+        quiescence: false,
+        watermark_behavior: cdf_kernel::OperatorWatermarkBehavior::Preserve,
+        safe_frontiers: vec![SafeFrontierPolicy::CanonicalAdmittedSourcePosition],
+        source_frontier_kinds: vec![cdf_kernel::SourcePositionKind::Cursor],
+        idleness_capabilities: Vec::new(),
+    });
+    drain_source.validate().unwrap();
+    resource.bind_compiled_source(&drain_source);
+    let drain = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(
+                Vec::new(),
+                None,
+                None,
+                ExecutionExtent::Drain {
+                    version: EXECUTION_EXTENT_VERSION,
+                    policy: sample_stream_epoch_policy(),
+                    termination: DrainTermination::Records { count: 100 },
+                },
+            ),
+        )
+        .unwrap()
+        .bind_compiled_source(&drain_source)
+        .unwrap();
+    let error = drain
+        .validate_compiled_source_resource(&resource)
+        .unwrap_err();
+    assert!(error.message.contains("requires a compiled operator graph"));
 }
 
 #[test]
@@ -3230,14 +3406,11 @@ fn execution_rejects_coherently_widened_source_ceiling_and_schedule() {
         cdf_runtime::CanonicalPartitionSchedule::compile(&forged_source, &plan.scan).unwrap();
     plan.compiled_schema_admission.source =
         Some(cdf_runtime::CompiledSourceCompilerBinding::compile(&forged_compiler_source).unwrap());
-    let forged_policy =
-        cdf_runtime::CompiledStreamPolicy::compile(&plan.execution_extent, &forged_compiler_source)
-            .unwrap();
     plan.compiled_source_execution = Some(forged_source);
     plan.partition_schedule = Some(forged_schedule.clone());
     plan.explain.partition_schedule = Some(forged_schedule);
-    plan.compiled_stream_policy = Some(forged_policy.clone());
-    plan.explain.compiled_stream_policy = Some(forged_policy);
+    plan.compiled_stream_policy = None;
+    plan.explain.compiled_stream_policy = None;
     let package = TempDir::new().unwrap();
 
     let error = block_on(execute_to_package(&plan, &resource, package.path())).unwrap_err();

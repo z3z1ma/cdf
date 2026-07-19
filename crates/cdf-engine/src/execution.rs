@@ -2860,7 +2860,7 @@ where
     builder.write_json_artifact(cdf_package_contract::SCAN_PLAN_FILE, &plan.scan)?;
     builder.write_json_artifact("plan/explain.json", &plan.explain)?;
     if let Some(graph) = &plan.operator_graph {
-        graph.validate()?;
+        graph.validate_plan_join(&plan.execution_extent, plan.compiled_stream_policy.as_ref())?;
         builder.write_json_artifact("plan/operator-graph.json", graph)?;
     }
     builder.write_json_artifact("plan/validation-program.json", &validation_program)?;

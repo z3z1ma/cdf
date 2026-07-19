@@ -1,4 +1,9 @@
-use cdf_kernel::{CdfError, ExecutionExtent, OperatorWatermarkBehavior, Result, WatermarkPolicy};
+use arrow_schema::{DataType, TimeUnit};
+use cdf_contract::{ColumnProgramStep, RedactionDecision};
+use cdf_kernel::{
+    CanonicalArrowTimeUnit, CdfError, EventTimeDomain, ExecutionExtent, OperatorWatermarkBehavior,
+    Result, WatermarkPolicy, source_name,
+};
 use cdf_runtime::{
     CompiledOperatorGraph, CompiledSourcePlan, DestinationIngressMode,
     DestinationRuntimeCapabilities, DestinationWriterModel, GraphEdgeDescriptor, GraphEdgeTransfer,
@@ -35,12 +40,31 @@ pub fn compile_operator_graph(
 ) -> Result<CompiledOperatorGraph> {
     source.validate()?;
     destination.validate()?;
-    validate_watermark_projection(plan)?;
-    let policy = plan.segmentation_policy()?;
+    validate_watermark_semantics(plan, source)?;
+    let segmentation_policy = plan.segmentation_policy()?;
+    let compiled_stream_policy_hash = match &plan.execution_extent {
+        ExecutionExtent::Bounded { .. } => None,
+        ExecutionExtent::Drain { .. } => Some(
+            plan.compiled_stream_policy
+                .as_ref()
+                .ok_or_else(|| {
+                    CdfError::contract(
+                        "drain operator graph requires a source-bound compiled stream policy",
+                    )
+                })?
+                .semantic_hash
+                .clone(),
+        ),
+        ExecutionExtent::Resident { .. } => {
+            return Err(CdfError::contract(
+                "resident operator graphs are not enabled",
+            ));
+        }
+    };
 
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
-    nodes.push(source_node(source, &plan.execution_extent)?);
+    nodes.push(source_node(source)?);
     if !source.execution_capabilities.canonical_order {
         nodes.push(engine_node(
             "canonical_reorder",
@@ -52,7 +76,6 @@ pub fn compile_operator_graph(
             true,
             GraphOrdering::Canonical,
             None,
-            &plan.execution_extent,
         ));
     }
     nodes.push(engine_node(
@@ -65,7 +88,6 @@ pub fn compile_operator_graph(
         false,
         GraphOrdering::PartitionLocal,
         Some("fused_transform_v1"),
-        &plan.execution_extent,
     ));
     nodes.push(engine_node(
         "transform",
@@ -77,7 +99,6 @@ pub fn compile_operator_graph(
         false,
         GraphOrdering::PartitionLocal,
         Some("fused_transform_v1"),
-        &plan.execution_extent,
     ));
     if source.execution_capabilities.canonical_order {
         edge(
@@ -118,11 +139,13 @@ pub fn compile_operator_graph(
         nodes.push(engine_node(
             "package_dedup",
             GraphNodeKind::StatefulBarrier,
-            WorkingSet::new(policy.microbatch_minimum_bytes, policy.maximum_bytes),
+            WorkingSet::new(
+                segmentation_policy.microbatch_minimum_bytes,
+                segmentation_policy.maximum_bytes,
+            ),
             true,
             GraphOrdering::Canonical,
             None,
-            &plan.execution_extent,
         ));
         edge(
             &mut edges,
@@ -137,11 +160,13 @@ pub fn compile_operator_graph(
     nodes.push(engine_node(
         "segment_assembly",
         GraphNodeKind::SegmentAssembly,
-        WorkingSet::new(policy.microbatch_minimum_bytes, policy.maximum_bytes),
+        WorkingSet::new(
+            segmentation_policy.microbatch_minimum_bytes,
+            segmentation_policy.maximum_bytes,
+        ),
         false,
         GraphOrdering::Canonical,
         None,
-        &plan.execution_extent,
     ));
     edge(
         &mut edges,
@@ -154,11 +179,13 @@ pub fn compile_operator_graph(
     nodes.push(io_node(
         "segment_persist",
         GraphNodeKind::SegmentPersist,
-        WorkingSet::new(policy.target_bytes, policy.maximum_bytes),
+        WorkingSet::new(
+            segmentation_policy.target_bytes,
+            segmentation_policy.maximum_bytes,
+        ),
         true,
         GraphOrdering::Canonical,
         PACKAGE_WRITER_VERSION,
-        &plan.execution_extent,
     ));
     edge(
         &mut edges,
@@ -172,8 +199,7 @@ pub fn compile_operator_graph(
         nodes.push(destination_node(
             "staged_ingress",
             destination,
-            policy,
-            &plan.execution_extent,
+            segmentation_policy,
         )?);
         edge(
             &mut edges,
@@ -190,11 +216,10 @@ pub fn compile_operator_graph(
     nodes.push(io_node(
         "package_finalize",
         GraphNodeKind::PackageFinalize,
-        WorkingSet::new(CONTROL_WORKING_SET_BYTES, policy.maximum_bytes),
+        WorkingSet::new(CONTROL_WORKING_SET_BYTES, segmentation_policy.maximum_bytes),
         true,
         GraphOrdering::Canonical,
         PACKAGE_WRITER_VERSION,
-        &plan.execution_extent,
     ));
     edge(
         &mut edges,
@@ -211,8 +236,7 @@ pub fn compile_operator_graph(
     nodes.push(destination_node(
         "destination_bind",
         destination,
-        policy,
-        &plan.execution_extent,
+        segmentation_policy,
     )?);
     edge(
         &mut edges,
@@ -228,7 +252,6 @@ pub fn compile_operator_graph(
         false,
         GraphOrdering::Canonical,
         COMMIT_GATE_VERSION,
-        &plan.execution_extent,
     ));
     edge(
         &mut edges,
@@ -237,17 +260,29 @@ pub fn compile_operator_graph(
         GraphOrdering::Canonical,
         GraphEdgeTransfer::Accounted,
     );
-    let graph = CompiledOperatorGraph::new(OPERATOR_GRAPH_VERSION, nodes, edges)?;
+    let graph = CompiledOperatorGraph::new(
+        OPERATOR_GRAPH_VERSION,
+        plan.execution_extent.clone(),
+        compiled_stream_policy_hash
+            .as_ref()
+            .map(|_| cdf_runtime::artifact_hash(source))
+            .transpose()?,
+        compiled_stream_policy_hash,
+        nodes,
+        edges,
+    )?;
     graph.validate_execution_extent(&plan.execution_extent)?;
     Ok(graph)
 }
 
-fn validate_watermark_projection(plan: &EnginePlan) -> Result<()> {
+fn validate_watermark_semantics(plan: &EnginePlan, source: &CompiledSourcePlan) -> Result<()> {
     let ExecutionExtent::Drain { policy, .. } = &plan.execution_extent else {
         return Ok(());
     };
     let WatermarkPolicy::Enabled {
-        event_time_field, ..
+        event_time_field,
+        domain,
+        ..
     } = &policy.watermark
     else {
         return Ok(());
@@ -261,13 +296,105 @@ fn validate_watermark_projection(plan: &EnginePlan) -> Result<()> {
             "watermark event-time field `{event_time_field}` is removed by the final projection; retain it or disable watermarks"
         )));
     }
+    let output_schema = plan.output_arrow_schema()?;
+    let output_field = output_schema.field_with_name(event_time_field).map_err(|_| {
+        CdfError::contract(format!(
+            "watermark event-time field `{event_time_field}` is absent from the compiled output schema; name an existing typed output field or disable watermarks"
+        ))
+    })?;
+    validate_event_time_domain(event_time_field, domain, output_field.data_type())?;
+
+    let column = plan
+        .validation_program
+        .column_programs
+        .iter()
+        .find(|column| column.output_name == event_time_field.as_ref())
+        .ok_or_else(|| {
+            CdfError::contract(format!(
+                "watermark event-time field `{event_time_field}` has no compiled column program"
+            ))
+        })?;
+    if column.redaction != RedactionDecision::Preserve {
+        return Err(CdfError::contract(format!(
+            "watermark event-time field `{event_time_field}` is redacted by the compiled column program; preserve that field or disable watermarks"
+        )));
+    }
+    if column
+        .steps
+        .iter()
+        .any(|step| matches!(step, ColumnProgramStep::ApplyTransform(_)))
+    {
+        return Err(CdfError::contract(format!(
+            "watermark event-time field `{event_time_field}` is changed by a transform without a named monotone watermark mapping; remove the transform, disable watermarks, or add an explicit source mapping"
+        )));
+    }
+    let source_field = source
+        .schema
+        .fields()
+        .iter()
+        .find(|field| {
+            field.name() == &column.source_name
+                || field.name() == event_time_field.as_ref()
+                || source_name(field.as_ref()) == Some(column.source_name.as_str())
+        })
+        .ok_or_else(|| {
+            CdfError::contract(format!(
+                "watermark event-time field `{event_time_field}` has no authoritative source field `{}`",
+                column.source_name
+            ))
+        })?;
+    validate_event_time_domain(event_time_field, domain, source_field.data_type())?;
     Ok(())
 }
 
-fn source_node(
-    source: &CompiledSourcePlan,
-    execution_extent: &ExecutionExtent,
-) -> Result<GraphNodeDescriptor> {
+fn validate_event_time_domain(
+    field: &str,
+    domain: &EventTimeDomain,
+    data_type: &DataType,
+) -> Result<()> {
+    let matches = match (domain, data_type) {
+        (
+            EventTimeDomain::SignedInteger,
+            DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
+        )
+        | (
+            EventTimeDomain::UnsignedInteger,
+            DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64,
+        )
+        | (EventTimeDomain::Date32, DataType::Date32)
+        | (EventTimeDomain::Date64, DataType::Date64) => true,
+        (
+            EventTimeDomain::Decimal { precision, scale },
+            DataType::Decimal128(observed_precision, observed_scale)
+            | DataType::Decimal256(observed_precision, observed_scale),
+        ) => precision == observed_precision && scale == observed_scale,
+        (
+            EventTimeDomain::Timestamp { unit, timezone },
+            DataType::Timestamp(observed_unit, observed_timezone),
+        ) => {
+            canonical_time_unit(observed_unit) == *unit
+                && observed_timezone.as_deref() == timezone.as_deref().map(AsRef::as_ref)
+        }
+        _ => false,
+    };
+    if !matches {
+        return Err(CdfError::contract(format!(
+            "watermark event-time field `{field}` declares domain {domain:?} but its compiled Arrow type is {data_type}; change the watermark domain to match the field or choose another field"
+        )));
+    }
+    Ok(())
+}
+
+fn canonical_time_unit(unit: &TimeUnit) -> CanonicalArrowTimeUnit {
+    match unit {
+        TimeUnit::Second => CanonicalArrowTimeUnit::Second,
+        TimeUnit::Millisecond => CanonicalArrowTimeUnit::Millisecond,
+        TimeUnit::Microsecond => CanonicalArrowTimeUnit::Microsecond,
+        TimeUnit::Nanosecond => CanonicalArrowTimeUnit::Nanosecond,
+    }
+}
+
+fn source_node(source: &CompiledSourcePlan) -> Result<GraphNodeDescriptor> {
     let capabilities = &source.execution_capabilities;
     let (executor, blocking_lane) = match capabilities.executor_class {
         SourceExecutorClass::Io => (GraphExecutorClass::Io, None),
@@ -303,11 +430,11 @@ fn source_node(
         } else {
             GraphOrdering::Unordered
         },
-        execution_extent: execution_extent.clone(),
+        execution_extent_hash: None,
         watermark_behavior: source
             .stream_capabilities
             .as_ref()
-            .map_or(OperatorWatermarkBehavior::Drop, |capabilities| {
+            .map_or(OperatorWatermarkBehavior::Preserve, |capabilities| {
                 capabilities.watermark_behavior.clone()
             }),
         fusion_group: None,
@@ -322,7 +449,6 @@ fn engine_node(
     spillable: bool,
     ordering: GraphOrdering,
     fusion_group: Option<&str>,
-    execution_extent: &ExecutionExtent,
 ) -> GraphNodeDescriptor {
     GraphNodeDescriptor {
         node_id: id.to_owned(),
@@ -335,7 +461,7 @@ fn engine_node(
         maximum_concurrency: u16::MAX,
         spillable,
         ordering,
-        execution_extent: execution_extent.clone(),
+        execution_extent_hash: None,
         watermark_behavior: OperatorWatermarkBehavior::Preserve,
         fusion_group: fusion_group.map(str::to_owned),
         durable_output: false,
@@ -349,7 +475,6 @@ fn io_node(
     durable_output: bool,
     ordering: GraphOrdering,
     version: &str,
-    execution_extent: &ExecutionExtent,
 ) -> GraphNodeDescriptor {
     GraphNodeDescriptor {
         node_id: id.to_owned(),
@@ -362,7 +487,7 @@ fn io_node(
         maximum_concurrency: u16::MAX,
         spillable: false,
         ordering,
-        execution_extent: execution_extent.clone(),
+        execution_extent_hash: None,
         watermark_behavior: OperatorWatermarkBehavior::Preserve,
         fusion_group: None,
         durable_output,
@@ -373,7 +498,6 @@ fn destination_node(
     id: &str,
     destination: &DestinationRuntimeCapabilities,
     policy: &CanonicalSegmentationPolicy,
-    execution_extent: &ExecutionExtent,
 ) -> Result<GraphNodeDescriptor> {
     let declared_lane = if id == "staged_ingress" {
         destination.staged_ingress_lane.as_deref()
@@ -417,7 +541,7 @@ fn destination_node(
         maximum_concurrency,
         spillable: false,
         ordering: GraphOrdering::Canonical,
-        execution_extent: execution_extent.clone(),
+        execution_extent_hash: None,
         watermark_behavior: OperatorWatermarkBehavior::Preserve,
         fusion_group: None,
         durable_output: false,

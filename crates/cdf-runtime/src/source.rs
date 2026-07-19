@@ -12,7 +12,7 @@ use cdf_kernel::{
     CdfError, EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, ErrorKind, FreshnessSpec,
     OperatorWatermarkBehavior, PayloadRetention, PushdownFidelity, QueryableResource,
     ResourceCapabilities, ResourceDescriptor, ResourceId, Result, SafeFrontierPolicy, SchemaSource,
-    TrustLevel, TypePolicyAllowances,
+    SourcePositionKind, TrustLevel, TypePolicyAllowances,
 };
 use serde::{Deserialize, Serialize};
 
@@ -521,6 +521,9 @@ pub struct SourceStreamCapabilities {
     pub quiescence: bool,
     pub watermark_behavior: OperatorWatermarkBehavior,
     pub safe_frontiers: Vec<SafeFrontierPolicy>,
+    /// Position families for which the source can compare an authored termination frontier to
+    /// emitted positions and stop without crossing it.
+    pub source_frontier_kinds: Vec<SourcePositionKind>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub idleness_capabilities: Vec<String>,
 }
@@ -540,6 +543,15 @@ impl SourceStreamCapabilities {
         {
             return Err(CdfError::contract(
                 "source safe-frontier policies must use canonical sorted order",
+            ));
+        }
+        if self
+            .source_frontier_kinds
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(CdfError::contract(
+                "source-frontier position kinds must use canonical sorted order",
             ));
         }
         validate_names(
@@ -566,6 +578,10 @@ impl SourceStreamCapabilities {
         self.idleness_capabilities
             .binary_search_by(|candidate| candidate.as_str().cmp(capability_id))
             .is_ok()
+    }
+
+    pub fn supports_source_frontier(&self, kind: SourcePositionKind) -> bool {
+        self.source_frontier_kinds.binary_search(&kind).is_ok()
     }
 }
 

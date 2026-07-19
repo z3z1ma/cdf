@@ -1,6 +1,6 @@
 use cdf_kernel::{
     CdfError, DrainTermination, ExecutionExtent, LateDataAction, OperatorWatermarkBehavior,
-    PartitionWatermarkAggregation, ResourceId, Result, WatermarkPolicy,
+    PartitionWatermarkAggregation, ResourceId, Result, WatermarkAuthority, WatermarkPolicy,
 };
 use serde::{Deserialize, Serialize};
 
@@ -55,6 +55,10 @@ impl CompiledStreamPolicy {
         if let Some(capabilities) = &self.source_stream_capabilities {
             capabilities.validate()?;
         }
+        crate::validate_artifact_hash(
+            "compiled stream policy source-plan",
+            &self.compiled_source_plan_hash,
+        )?;
         if self.semantic_hash != self.canonical_hash()? {
             return Err(CdfError::contract(
                 "compiled stream policy semantic hash does not match its canonical evidence",
@@ -195,6 +199,16 @@ fn validate_termination(
                 resource_id
             )))
         }
+        DrainTermination::SourceFrontier { position } => {
+            position.validate()?;
+            if !capabilities.supports_source_frontier(position.kind()) {
+                return Err(CdfError::contract(format!(
+                    "resource `{resource_id}` cannot compare a {:?} source_frontier; choose duration, records, or bytes termination, or use one of the source's declared frontier position kinds",
+                    position.kind()
+                )));
+            }
+            Ok(())
+        }
         _ => Ok(()),
     }
 }
@@ -211,10 +225,32 @@ fn validate_watermark(
     else {
         return Ok(());
     };
-    if capabilities.watermark_behavior == OperatorWatermarkBehavior::Drop {
-        return Err(CdfError::contract(format!(
-            "resource `{resource_id}` enables watermarks but its source declares watermark behavior drop; disable watermarks or use a source that emits compatible claims"
-        )));
+    let WatermarkPolicy::Enabled { authority, .. } = watermark else {
+        unreachable!("enabled watermark established above")
+    };
+    match (&capabilities.watermark_behavior, authority) {
+        (OperatorWatermarkBehavior::Preserve, WatermarkAuthority::Source) => {}
+        (
+            OperatorWatermarkBehavior::Transform { mapping_id },
+            WatermarkAuthority::Derived {
+                mapping_id: authority_mapping,
+            },
+        ) if mapping_id == authority_mapping => {}
+        (OperatorWatermarkBehavior::Drop, _) => {
+            return Err(CdfError::contract(format!(
+                "resource `{resource_id}` enables watermarks but its source declares watermark behavior drop; disable watermarks or use a source that emits compatible claims"
+            )));
+        }
+        (OperatorWatermarkBehavior::Preserve, WatermarkAuthority::Derived { mapping_id }) => {
+            return Err(CdfError::contract(format!(
+                "resource `{resource_id}` declares derived watermark mapping `{mapping_id}` but no source transform provides it; use source authority or a source-declared transform with the same mapping id"
+            )));
+        }
+        (OperatorWatermarkBehavior::Transform { mapping_id }, _) => {
+            return Err(CdfError::contract(format!(
+                "resource `{resource_id}` source transforms watermarks with mapping `{mapping_id}` but the policy does not record that exact derived authority"
+            )));
+        }
     }
     if let PartitionWatermarkAggregation::MinimumEligible { capability_id, .. } =
         partition_aggregation
@@ -315,6 +351,7 @@ mod tests {
             quiescence: false,
             watermark_behavior,
             safe_frontiers: vec![SafeFrontierPolicy::CanonicalAdmittedSourcePosition],
+            source_frontier_kinds: vec![cdf_kernel::SourcePositionKind::Cursor],
             idleness_capabilities: vec!["idle-v1".to_owned()],
         }
     }
@@ -470,5 +507,57 @@ mod tests {
             )
             .unwrap();
         }
+    }
+
+    #[test]
+    fn source_frontier_requires_declared_comparison_kind_and_valid_position() {
+        let source = source(capabilities(OperatorWatermarkBehavior::Preserve), true);
+        let incompatible = drain(
+            WatermarkPolicy::Disabled,
+            DrainTermination::SourceFrontier {
+                position: SourcePosition::Log(cdf_kernel::LogPosition {
+                    version: cdf_kernel::SOURCE_POSITION_VERSION,
+                    log: "events".to_owned(),
+                    offset: 42,
+                    sequence: None,
+                }),
+            },
+        );
+        let error = CompiledStreamPolicy::compile(&incompatible, &source).unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("cannot compare a Log source_frontier")
+        );
+
+        let malformed = drain(
+            WatermarkPolicy::Disabled,
+            DrainTermination::SourceFrontier {
+                position: SourcePosition::Cursor(CursorPosition {
+                    version: cdf_kernel::SOURCE_POSITION_VERSION,
+                    field: String::new(),
+                    value: CursorValue::U64(42),
+                }),
+            },
+        );
+        let error = CompiledStreamPolicy::compile(&malformed, &source).unwrap_err();
+        assert!(error.message.contains("cursor field"));
+    }
+
+    #[test]
+    fn intrinsic_policy_rejects_coherently_rehashed_malformed_source_hash() {
+        let source = source(capabilities(OperatorWatermarkBehavior::Preserve), true);
+        let mut policy = CompiledStreamPolicy::compile(
+            &drain(
+                WatermarkPolicy::Disabled,
+                DrainTermination::Records { count: 10 },
+            ),
+            &source,
+        )
+        .unwrap();
+        policy.compiled_source_plan_hash = "not-a-hash".to_owned();
+        policy.semantic_hash = policy.canonical_hash().unwrap();
+        let error = policy.validate_intrinsic().unwrap_err();
+        assert!(error.message.contains("sha256:<64 lowercase hex>"));
     }
 }

@@ -544,6 +544,8 @@ fn inspect_human_outputs_use_renderer_for_project_inventory() {
     assert_eq!(resource.exit_code, 0, "stderr: {}", resource.stderr);
     assert!(resource.stdout.contains("OK resource local.events"));
     assert!(resource.stdout.contains("Resource"));
+    assert!(resource.stdout.contains("stream capabilities"));
+    assert!(resource.stdout.contains("bounded"));
     assert!(resource.stdout.contains("-> cdf plan local.events"));
 
     let destinations = run([
@@ -2095,16 +2097,8 @@ fn explain_json_exposes_destination_plan_without_writes() {
     );
     assert_eq!(report["ddl_preview"]["supported"], true);
     assert_eq!(report["delivery_guarantee"], "effectively_once_per_package");
-    assert_eq!(
-        report["explain"]["compiled_stream_policy"]["execution_extent"],
-        report["explain"]["execution_extent"]
-    );
-    assert!(
-        report["explain"]["compiled_stream_policy"]["semantic_hash"]
-            .as_str()
-            .unwrap()
-            .starts_with("sha256:")
-    );
+    assert_eq!(report["explain"]["execution_extent"]["kind"], "bounded");
+    assert!(report["explain"].get("compiled_stream_policy").is_none());
 }
 
 #[test]

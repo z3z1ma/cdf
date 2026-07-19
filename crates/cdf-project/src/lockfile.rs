@@ -75,9 +75,15 @@ pub struct LockedResource {
     pub descriptor: ResourceDescriptor,
     pub capabilities: ResourceCapabilities,
     pub capability_sheet_hash: String,
+    #[serde(
+        default = "ExecutionExtent::bounded",
+        skip_serializing_if = "ExecutionExtent::is_bounded"
+    )]
     pub execution_extent: ExecutionExtent,
-    pub execution_extent_hash: String,
-    pub compiled_stream_policy: CompiledStreamPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_extent_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiled_stream_policy: Option<CompiledStreamPolicy>,
     pub schema_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_snapshot: Option<SchemaSnapshotReference>,
@@ -216,18 +222,36 @@ fn validate_lock(lock: &CdfLock) -> Result<()> {
             )));
         }
         resource.execution_extent.validate()?;
-        if semantic_hash(&resource.execution_extent)? != resource.execution_extent_hash {
+        let expected_extent_hash = if resource.execution_extent.is_bounded() {
+            None
+        } else {
+            Some(semantic_hash(&resource.execution_extent)?)
+        };
+        if expected_extent_hash.as_deref() != resource.execution_extent_hash.as_deref() {
             return Err(CdfError::contract(format!(
                 "locked resource `{resource_id}` execution-extent hash does not match its canonical policy"
             )));
         }
-        resource.compiled_stream_policy.validate_intrinsic()?;
-        if resource.compiled_stream_policy.resource_id != resource.descriptor.resource_id
-            || resource.compiled_stream_policy.execution_extent != resource.execution_extent
-        {
-            return Err(CdfError::contract(format!(
-                "locked resource `{resource_id}` stream policy does not match its resource and execution extent"
-            )));
+        match (
+            &resource.execution_extent,
+            resource.compiled_stream_policy.as_ref(),
+        ) {
+            (ExecutionExtent::Bounded { .. }, None) => {}
+            (ExecutionExtent::Drain { .. }, Some(policy)) => {
+                policy.validate_intrinsic()?;
+                if policy.resource_id != resource.descriptor.resource_id
+                    || policy.execution_extent != resource.execution_extent
+                {
+                    return Err(CdfError::contract(format!(
+                        "locked resource `{resource_id}` stream policy does not match its resource and execution extent"
+                    )));
+                }
+            }
+            _ => {
+                return Err(CdfError::contract(format!(
+                    "locked resource `{resource_id}` has invalid stream-policy evidence for its execution extent"
+                )));
+            }
         }
     }
     Ok(())
@@ -454,8 +478,7 @@ pub fn generate_lockfile_with_destination_artifacts(
             Some(snapshot) => snapshot.clone(),
             None => contract_snapshot_for_resource(resource)?,
         });
-        let compiled_stream_policy =
-            CompiledStreamPolicy::compile(resource.execution_extent(), resource.source_plan())?;
+        let compiled_stream_policy = compiled_stream_policy_for_lock(resource)?;
         locked_resources.insert(
             resource_id,
             LockedResource {
@@ -463,7 +486,9 @@ pub fn generate_lockfile_with_destination_artifacts(
                 capabilities: resource.capabilities().clone(),
                 capability_sheet_hash: semantic_hash(resource.capabilities())?,
                 execution_extent: resource.execution_extent().clone(),
-                execution_extent_hash: semantic_hash(resource.execution_extent())?,
+                execution_extent_hash: (!resource.execution_extent().is_bounded())
+                    .then(|| semantic_hash(resource.execution_extent()))
+                    .transpose()?,
                 compiled_stream_policy,
                 schema_hash,
                 schema_snapshot,
@@ -729,8 +754,7 @@ fn locked_resource_from_current(
     contract: ContractSnapshot,
 ) -> Result<LockedResource> {
     let descriptor = resource.descriptor().clone();
-    let compiled_stream_policy =
-        CompiledStreamPolicy::compile(resource.execution_extent(), resource.source_plan())?;
+    let compiled_stream_policy = compiled_stream_policy_for_lock(resource)?;
     Ok(LockedResource {
         schema_hash: schema_hash_from_source(&descriptor.schema_source),
         schema_snapshot: descriptor.schema_source.pinned_snapshot().cloned(),
@@ -738,10 +762,20 @@ fn locked_resource_from_current(
         capabilities: resource.capabilities().clone(),
         capability_sheet_hash: semantic_hash(resource.capabilities())?,
         execution_extent: resource.execution_extent().clone(),
-        execution_extent_hash: semantic_hash(resource.execution_extent())?,
+        execution_extent_hash: (!resource.execution_extent().is_bounded())
+            .then(|| semantic_hash(resource.execution_extent()))
+            .transpose()?,
         compiled_stream_policy,
         contract: Some(contract),
     })
+}
+
+fn compiled_stream_policy_for_lock(
+    resource: &CompiledResource,
+) -> Result<Option<CompiledStreamPolicy>> {
+    let policy =
+        CompiledStreamPolicy::compile(resource.execution_extent(), resource.source_plan())?;
+    Ok((!resource.execution_extent().is_bounded()).then_some(policy))
 }
 
 fn contract_snapshot_drift(

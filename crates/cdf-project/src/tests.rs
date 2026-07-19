@@ -1013,23 +1013,16 @@ fn lockfile_generation_round_trips_and_diffs_semantic_changes() {
     let resource = lock.resources.get("github.issues").unwrap();
     assert!(resource.capability_sheet_hash.starts_with("sha256:"));
     assert_eq!(resource.execution_extent, ExecutionExtent::bounded());
-    assert!(resource.execution_extent_hash.starts_with("sha256:"));
-    assert_eq!(
-        resource.compiled_stream_policy.execution_extent,
-        resource.execution_extent
-    );
-    assert!(
-        resource
-            .compiled_stream_policy
-            .compiled_source_plan_hash
-            .starts_with("sha256:")
-    );
+    assert!(resource.execution_extent_hash.is_none());
+    assert!(resource.compiled_stream_policy.is_none());
+    assert!(!encoded.contains("execution_extent"));
+    assert!(!encoded.contains("compiled_stream_policy"));
     let mut tampered_lock = lock.clone();
     tampered_lock
         .resources
         .get_mut("github.issues")
         .unwrap()
-        .execution_extent_hash = format!("sha256:{}", "00".repeat(32));
+        .execution_extent_hash = Some(format!("sha256:{}", "00".repeat(32)));
     assert!(
         lock_to_toml(&tampered_lock)
             .unwrap_err()

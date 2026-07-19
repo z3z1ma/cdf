@@ -47,7 +47,7 @@ pub struct ResourceDeclaration {
     pub options: BTreeMap<String, serde_json::Value>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExecutionDeclaration {
     Bounded,
@@ -59,6 +59,72 @@ pub enum ExecutionDeclaration {
         late_data: LateDataDeclaration,
         safe_frontier: SafeFrontierDeclaration,
     },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+enum UncheckedExecutionDeclaration {
+    Bounded,
+    Drain {
+        checkpoint_cadence: Option<EpochClosureDeclaration>,
+        package_rotation: Option<EpochClosureDeclaration>,
+        termination: Option<DrainTerminationDeclaration>,
+        watermark: Option<Box<WatermarkDeclaration>>,
+        late_data: Option<LateDataDeclaration>,
+        safe_frontier: Option<SafeFrontierDeclaration>,
+    },
+}
+
+impl<'de> Deserialize<'de> for ExecutionDeclaration {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+
+        match UncheckedExecutionDeclaration::deserialize(deserializer)? {
+            UncheckedExecutionDeclaration::Bounded => Ok(Self::Bounded),
+            UncheckedExecutionDeclaration::Drain {
+                checkpoint_cadence,
+                package_rotation,
+                termination,
+                watermark,
+                late_data,
+                safe_frontier,
+            } => Ok(Self::Drain {
+                checkpoint_cadence: checkpoint_cadence.ok_or_else(|| {
+                    D::Error::custom(
+                        "drain execution is missing `checkpoint_cadence`; add a typed cadence such as `{ kind = \"rows\", count = 100000 }`",
+                    )
+                })?,
+                package_rotation: package_rotation.ok_or_else(|| {
+                    D::Error::custom(
+                        "drain execution is missing `package_rotation`; add a typed rotation such as `{ kind = \"bytes\", count = 67108864 }`",
+                    )
+                })?,
+                termination: termination.ok_or_else(|| {
+                    D::Error::custom(
+                        "drain execution is missing `termination`; add finite duration, records, bytes, quiescent, or source_frontier termination",
+                    )
+                })?,
+                watermark: watermark.ok_or_else(|| {
+                    D::Error::custom(
+                        "drain execution is missing `watermark`; add `{ mode = \"disabled\" }` or a complete enabled watermark policy",
+                    )
+                })?,
+                late_data: late_data.ok_or_else(|| {
+                    D::Error::custom(
+                        "drain execution is missing `late_data`; choose `quarantine`, `recapture_next_epoch`, or `admit_with_annotation`",
+                    )
+                })?,
+                safe_frontier: safe_frontier.ok_or_else(|| {
+                    D::Error::custom(
+                        "drain execution is missing `safe_frontier`; set `canonical_admitted_source_position`",
+                    )
+                })?,
+            }),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

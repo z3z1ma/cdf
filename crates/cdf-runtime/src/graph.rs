@@ -68,7 +68,14 @@ pub struct GraphNodeDescriptor {
     pub maximum_concurrency: u16,
     pub spillable: bool,
     pub ordering: GraphOrdering,
-    pub execution_extent: ExecutionExtent,
+    /// `None` is the canonical reference to bounded-v1. Drain nodes carry the hash of the one
+    /// graph-level extent instead of duplicating arbitrarily large source-frontier payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_extent_hash: Option<String>,
+    #[serde(
+        default = "preserved_watermark_behavior",
+        skip_serializing_if = "watermark_behavior_is_preserve"
+    )]
     pub watermark_behavior: OperatorWatermarkBehavior,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fusion_group: Option<String>,
@@ -118,7 +125,9 @@ impl GraphNodeDescriptor {
                 )));
             }
         }
-        self.execution_extent.validate_for_plan()?;
+        if let Some(hash) = &self.execution_extent_hash {
+            crate::validate_artifact_hash("graph node execution extent", hash)?;
+        }
         self.watermark_behavior.validate()?;
         Ok(())
     }
@@ -151,6 +160,15 @@ impl GraphEdgeDescriptor {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompiledOperatorGraph {
     pub graph_version: String,
+    #[serde(
+        default = "ExecutionExtent::bounded",
+        skip_serializing_if = "ExecutionExtent::is_bounded"
+    )]
+    pub execution_extent: ExecutionExtent,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiled_source_plan_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiled_stream_policy_hash: Option<String>,
     pub nodes: Vec<GraphNodeDescriptor>,
     pub edges: Vec<GraphEdgeDescriptor>,
     pub semantic_hash: String,
@@ -159,6 +177,12 @@ pub struct CompiledOperatorGraph {
 #[derive(Serialize)]
 struct GraphIdentity<'a> {
     graph_version: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    execution_extent: Option<&'a ExecutionExtent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compiled_source_plan_hash: Option<&'a String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compiled_stream_policy_hash: Option<&'a String>,
     nodes: &'a [GraphNodeDescriptor],
     edges: &'a [GraphEdgeDescriptor],
 }
@@ -166,21 +190,42 @@ struct GraphIdentity<'a> {
 impl CompiledOperatorGraph {
     pub fn new(
         graph_version: impl Into<String>,
+        execution_extent: ExecutionExtent,
+        compiled_source_plan_hash: Option<String>,
+        compiled_stream_policy_hash: Option<String>,
         mut nodes: Vec<GraphNodeDescriptor>,
         mut edges: Vec<GraphEdgeDescriptor>,
     ) -> Result<Self> {
         let graph_version = graph_version.into();
         validate_token("operator graph version", &graph_version)?;
+        execution_extent.validate_for_plan()?;
+        validate_authority_hashes_for_extent(
+            &execution_extent,
+            compiled_source_plan_hash.as_deref(),
+            compiled_stream_policy_hash.as_deref(),
+        )?;
+        let execution_extent_hash = (!execution_extent.is_bounded())
+            .then(|| artifact_hash(&execution_extent))
+            .transpose()?;
+        for node in &mut nodes {
+            node.execution_extent_hash = execution_extent_hash.clone();
+        }
         validate_graph(&nodes, &edges)?;
         nodes = canonical_node_order(&nodes, &edges)?;
         edges.sort_by(|left, right| left.edge_id.cmp(&right.edge_id));
         let semantic_hash = artifact_hash(&GraphIdentity {
             graph_version: &graph_version,
+            execution_extent: (!execution_extent.is_bounded()).then_some(&execution_extent),
+            compiled_source_plan_hash: compiled_source_plan_hash.as_ref(),
+            compiled_stream_policy_hash: compiled_stream_policy_hash.as_ref(),
             nodes: &nodes,
             edges: &edges,
         })?;
         Ok(Self {
             graph_version,
+            execution_extent,
+            compiled_source_plan_hash,
+            compiled_stream_policy_hash,
             nodes,
             edges,
             semantic_hash,
@@ -189,7 +234,14 @@ impl CompiledOperatorGraph {
 
     pub fn validate(&self) -> Result<()> {
         validate_token("operator graph version", &self.graph_version)?;
+        self.execution_extent.validate_for_plan()?;
+        validate_authority_hashes_for_extent(
+            &self.execution_extent,
+            self.compiled_source_plan_hash.as_deref(),
+            self.compiled_stream_policy_hash.as_deref(),
+        )?;
         validate_graph(&self.nodes, &self.edges)?;
+        self.validate_node_extent_references()?;
         if canonical_node_order(&self.nodes, &self.edges)? != self.nodes {
             return Err(CdfError::contract(
                 "compiled operator graph nodes are not in canonical topological order",
@@ -206,6 +258,10 @@ impl CompiledOperatorGraph {
         }
         let expected = artifact_hash(&GraphIdentity {
             graph_version: &self.graph_version,
+            execution_extent: (!self.execution_extent.is_bounded())
+                .then_some(&self.execution_extent),
+            compiled_source_plan_hash: self.compiled_source_plan_hash.as_ref(),
+            compiled_stream_policy_hash: self.compiled_stream_policy_hash.as_ref(),
             nodes: &self.nodes,
             edges: &self.edges,
         })?;
@@ -303,15 +359,10 @@ impl CompiledOperatorGraph {
     pub fn validate_execution_extent(&self, extent: &ExecutionExtent) -> Result<()> {
         self.validate()?;
         extent.validate_for_plan()?;
-        if let Some(node) = self
-            .nodes
-            .iter()
-            .find(|node| &node.execution_extent != extent)
-        {
-            return Err(CdfError::contract(format!(
-                "operator `{}` execution extent differs from the compiled plan extent",
-                node.node_id
-            )));
+        if &self.execution_extent != extent {
+            return Err(CdfError::contract(
+                "operator graph execution extent differs from the compiled plan extent",
+            ));
         }
         let ExecutionExtent::Drain { policy, .. } = extent else {
             return Ok(());
@@ -345,6 +396,83 @@ impl CompiledOperatorGraph {
         }
         Ok(())
     }
+
+    pub fn validate_plan_join(
+        &self,
+        extent: &ExecutionExtent,
+        policy: Option<&crate::CompiledStreamPolicy>,
+    ) -> Result<()> {
+        self.validate_execution_extent(extent)?;
+        match (
+            extent,
+            policy,
+            self.compiled_source_plan_hash.as_deref(),
+            self.compiled_stream_policy_hash.as_deref(),
+        ) {
+            (ExecutionExtent::Bounded { .. }, None, None, None) => Ok(()),
+            (ExecutionExtent::Drain { .. }, Some(policy), Some(source_hash), Some(policy_hash))
+                if policy_hash == policy.semantic_hash
+                    && source_hash == policy.compiled_source_plan_hash
+                    && policy.execution_extent == *extent =>
+            {
+                policy.validate_intrinsic()
+            }
+            (ExecutionExtent::Drain { .. }, _, _, _) => Err(CdfError::contract(
+                "drain operator graph does not bind the plan's exact compiled stream policy",
+            )),
+            _ => Err(CdfError::contract(
+                "operator graph stream-policy binding is invalid for its execution extent",
+            )),
+        }
+    }
+
+    fn validate_node_extent_references(&self) -> Result<()> {
+        let expected = (!self.execution_extent.is_bounded())
+            .then(|| artifact_hash(&self.execution_extent))
+            .transpose()?;
+        if let Some(node) = self
+            .nodes
+            .iter()
+            .find(|node| node.execution_extent_hash != expected)
+        {
+            return Err(CdfError::contract(format!(
+                "operator `{}` does not reference the graph's exact execution extent",
+                node.node_id
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn validate_authority_hashes_for_extent(
+    extent: &ExecutionExtent,
+    source_hash: Option<&str>,
+    policy_hash: Option<&str>,
+) -> Result<()> {
+    match (extent, source_hash, policy_hash) {
+        (ExecutionExtent::Bounded { .. }, None, None) => Ok(()),
+        (ExecutionExtent::Drain { .. }, Some(source_hash), Some(policy_hash)) => {
+            crate::validate_artifact_hash("compiled source plan", source_hash)?;
+            crate::validate_artifact_hash("compiled stream policy", policy_hash)
+        }
+        (ExecutionExtent::Drain { .. }, _, _) => Err(CdfError::contract(
+            "drain operator graph requires compiled source-plan and stream-policy hashes",
+        )),
+        (ExecutionExtent::Bounded { .. }, _, _) => Err(CdfError::contract(
+            "bounded operator graph cannot declare source-plan or stream-policy hashes",
+        )),
+        (ExecutionExtent::Resident { .. }, _, _) => Err(CdfError::contract(
+            "resident operator graphs are not enabled",
+        )),
+    }
+}
+
+fn preserved_watermark_behavior() -> OperatorWatermarkBehavior {
+    OperatorWatermarkBehavior::Preserve
+}
+
+fn watermark_behavior_is_preserve(behavior: &OperatorWatermarkBehavior) -> bool {
+    *behavior == OperatorWatermarkBehavior::Preserve
 }
 
 fn validate_graph(nodes: &[GraphNodeDescriptor], edges: &[GraphEdgeDescriptor]) -> Result<()> {
@@ -853,7 +981,7 @@ mod tests {
             maximum_concurrency: 1,
             spillable: false,
             ordering: GraphOrdering::Canonical,
-            execution_extent: ExecutionExtent::bounded(),
+            execution_extent_hash: None,
             watermark_behavior: OperatorWatermarkBehavior::Preserve,
             fusion_group: None,
             durable_output,
@@ -864,6 +992,9 @@ mod tests {
     fn graph_identity_excludes_runtime_edge_pressure_configuration() {
         let graph = CompiledOperatorGraph::new(
             "graph-v1",
+            ExecutionExtent::bounded(),
+            None,
+            None,
             vec![
                 node("mock_source", GraphNodeKind::Source, false),
                 GraphNodeDescriptor {
@@ -894,9 +1025,18 @@ mod tests {
         graph.validate().unwrap();
         let encoded = serde_json::to_value(&graph).unwrap();
         assert!(encoded.get("runtime_capacity").is_none());
+        assert!(encoded.get("execution_extent").is_none());
+        assert!(encoded.get("compiled_source_plan_hash").is_none());
+        assert!(encoded.get("compiled_stream_policy_hash").is_none());
+        assert!(encoded["nodes"].as_array().unwrap().iter().all(|node| {
+            node.get("execution_extent_hash").is_none() && node.get("watermark_behavior").is_none()
+        }));
         assert!(graph.semantic_hash.starts_with("sha256:"));
         let shuffled = CompiledOperatorGraph::new(
             "graph-v1",
+            ExecutionExtent::bounded(),
+            None,
+            None,
             graph.nodes.iter().cloned().rev().collect(),
             graph.edges.iter().cloned().rev().collect(),
         )
@@ -908,6 +1048,9 @@ mod tests {
     fn graph_rejects_cycles_and_durable_boundary_disagreement() {
         let error = CompiledOperatorGraph::new(
             "graph-v1",
+            ExecutionExtent::bounded(),
+            None,
+            None,
             vec![
                 node("a", GraphNodeKind::Source, true),
                 node("b", GraphNodeKind::DestinationBind, false),
@@ -925,6 +1068,9 @@ mod tests {
 
         let error = CompiledOperatorGraph::new(
             "graph-v1",
+            ExecutionExtent::bounded(),
+            None,
+            None,
             vec![
                 node("a", GraphNodeKind::Source, false),
                 node("b", GraphNodeKind::DestinationBind, false),
@@ -969,15 +1115,15 @@ mod tests {
             },
             termination: DrainTermination::Records { count: 1_000 },
         };
-        let mut source = node("source", GraphNodeKind::Source, false);
-        source.execution_extent = extent.clone();
+        let source = node("source", GraphNodeKind::Source, false);
         let mut transform = node("transform", GraphNodeKind::Transform, false);
-        transform.execution_extent = extent.clone();
         transform.watermark_behavior = OperatorWatermarkBehavior::Drop;
-        let mut sink = node("sink", GraphNodeKind::DestinationBind, false);
-        sink.execution_extent = extent.clone();
+        let sink = node("sink", GraphNodeKind::DestinationBind, false);
         let graph = CompiledOperatorGraph::new(
             "graph-v1",
+            extent.clone(),
+            Some(format!("sha256:{}", "cd".repeat(32))),
+            Some(format!("sha256:{}", "ab".repeat(32))),
             vec![source, transform, sink],
             vec![
                 GraphEdgeDescriptor {

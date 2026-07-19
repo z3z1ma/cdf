@@ -8,6 +8,24 @@ pub fn artifact_hash(value: &impl Serialize) -> Result<String> {
     Ok(format!("sha256:{}", hex::encode(Sha256::digest(bytes))))
 }
 
+pub fn validate_artifact_hash(label: &str, value: &str) -> Result<()> {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        return Err(CdfError::contract(format!(
+            "{label} hash must use sha256:<64 lowercase hex>"
+        )));
+    };
+    if hex.len() != 64
+        || !hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return Err(CdfError::contract(format!(
+            "{label} hash must use sha256:<64 lowercase hex>"
+        )));
+    }
+    Ok(())
+}
+
 pub fn commit_request(
     delta: &StateDelta,
     target: TargetName,

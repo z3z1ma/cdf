@@ -109,6 +109,10 @@ impl SourceDriver for TestSourceDriver {
                 quiescence: false,
                 watermark_behavior: OperatorWatermarkBehavior::Preserve,
                 safe_frontiers: vec![SafeFrontierPolicy::CanonicalAdmittedSourcePosition],
+                source_frontier_kinds: vec![
+                    cdf_kernel::SourcePositionKind::Cursor,
+                    cdf_kernel::SourcePositionKind::Log,
+                ],
                 idleness_capabilities: vec!["idle-v1".to_owned()],
             }),
             CompiledSourcePlanInput {
@@ -311,6 +315,56 @@ mode = "disabled"
             ..
         } if position.log == "events-0" && position.offset == 4_242
     ));
+
+    let missing_fields = [
+        (
+            "checkpoint_cadence",
+            declared.replace(
+                "\n[resource.raw.execution.checkpoint_cadence]\nkind = \"rows\"\ncount = 10000\n",
+                "",
+            ),
+        ),
+        (
+            "package_rotation",
+            declared.replace(
+                "\n[resource.raw.execution.package_rotation]\nkind = \"bytes\"\ncount = 67108864\n",
+                "",
+            ),
+        ),
+        (
+            "termination",
+            declared.replace(
+                "\n[resource.raw.execution.termination]\nkind = \"duration\"\nmilliseconds = 60000\n",
+                "",
+            ),
+        ),
+        (
+            "watermark",
+            declared.replace(
+                "\n[resource.raw.execution.watermark]\nmode = \"disabled\"\n",
+                "",
+            ),
+        ),
+        (
+            "late_data",
+            declared.replace("late_data = \"quarantine\"\n", ""),
+        ),
+        (
+            "safe_frontier",
+            declared.replace(
+                "safe_frontier = \"canonical_admitted_source_position\"\n",
+                "",
+            ),
+        ),
+    ];
+    for (field, document) in missing_fields {
+        let error = compile(&document).unwrap_err();
+        assert!(
+            error.message.contains(field),
+            "missing `{field}` produced: {}",
+            error.message
+        );
+    }
 }
 
 #[test]

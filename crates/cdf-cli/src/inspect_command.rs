@@ -114,6 +114,8 @@ struct ResourceSummary {
     mapping_pattern: Option<String>,
     mapping_status: Option<String>,
     capabilities: cdf_kernel::ResourceCapabilities,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_capabilities: Option<cdf_runtime::SourceStreamCapabilities>,
 }
 
 impl ResourceSummary {
@@ -133,6 +135,7 @@ impl ResourceSummary {
             mapping_pattern,
             mapping_status,
             capabilities: resource.capabilities().clone(),
+            stream_capabilities: resource.source_plan().stream_capabilities.clone(),
         }
     }
 }
@@ -292,7 +295,14 @@ fn inspect_resource_document(resource: &ResourceSummary) -> RenderDocument {
                         .map(|cursor| cursor.field.clone())
                         .unwrap_or_else(|| "none".to_owned()),
                 )
-                .row("capabilities", format!("{:?}", resource.capabilities)),
+                .row("capabilities", format!("{:?}", resource.capabilities))
+                .row(
+                    "stream capabilities",
+                    resource
+                        .stream_capabilities
+                        .as_ref()
+                        .map_or_else(|| "bounded".to_owned(), |value| format!("{value:?}")),
+                ),
         )
         .blank_line()
         .push(NextCommand::new(format!(

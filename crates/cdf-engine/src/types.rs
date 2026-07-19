@@ -153,21 +153,35 @@ impl EnginePlan {
                 "compiled stream policy does not match its recorded explain evidence",
             ));
         }
-        match (
-            self.compiled_stream_policy.as_ref(),
-            self.compiled_source_execution.as_ref(),
-        ) {
-            (Some(policy), Some(source))
+        let source = self.compiled_source_execution.as_ref().ok_or_else(|| {
+            CdfError::data("executable engine plan requires compiled source authority")
+        })?;
+        match (&self.execution_extent, self.compiled_stream_policy.as_ref()) {
+            (ExecutionExtent::Bounded { .. }, None) => {}
+            (ExecutionExtent::Drain { .. }, Some(policy))
                 if policy.compiled_source_plan_hash == source.compiled_source_plan_hash()
                     && policy.execution_extent == self.execution_extent =>
             {
                 policy.validate_against_execution_plan(source)?;
             }
-            _ => {
+            (ExecutionExtent::Drain { .. }, _) => {
                 return Err(CdfError::data(
-                    "executable engine plan requires one source-bound compiled stream policy",
+                    "executable drain plan requires one source-bound compiled stream policy",
                 ));
             }
+            _ => {
+                return Err(CdfError::data(
+                    "bounded plan cannot carry unbounded stream-policy evidence",
+                ));
+            }
+        }
+        if let Some(graph) = &self.operator_graph {
+            graph
+                .validate_plan_join(&self.execution_extent, self.compiled_stream_policy.as_ref())?;
+        } else if matches!(self.execution_extent, ExecutionExtent::Drain { .. }) {
+            return Err(CdfError::data(
+                "executable drain plan requires a compiled operator graph",
+            ));
         }
         match (
             self.compiled_source_execution.as_ref(),
@@ -198,8 +212,9 @@ impl EnginePlan {
         mut self,
         source: &cdf_runtime::CompiledSourcePlan,
     ) -> Result<Self> {
-        let stream_policy =
+        let compiled_policy =
             cdf_runtime::CompiledStreamPolicy::compile(&self.execution_extent, source)?;
+        let stream_policy = (!self.execution_extent.is_bounded()).then_some(compiled_policy);
         self.compiled_schema_admission
             .bind_source(source, &self.scan.request.resource_id)?;
         let compiled_source_execution = cdf_runtime::CompiledSourceExecutionPlan::compile(source)?;
@@ -208,10 +223,10 @@ impl EnginePlan {
             &self.scan,
         )?;
         self.explain.partition_schedule = Some(schedule.clone());
-        self.explain.compiled_stream_policy = Some(stream_policy.clone());
+        self.explain.compiled_stream_policy = stream_policy.clone();
         self.partition_schedule = Some(schedule);
         self.compiled_source_execution = Some(compiled_source_execution);
-        self.compiled_stream_policy = Some(stream_policy);
+        self.compiled_stream_policy = stream_policy;
         Ok(self)
     }
 
@@ -220,6 +235,17 @@ impl EnginePlan {
         source: &cdf_runtime::CompiledSourcePlan,
         destination: &cdf_runtime::DestinationRuntimeCapabilities,
     ) -> Result<Self> {
+        let bound_source = self.compiled_source_execution.as_ref().ok_or_else(|| {
+            CdfError::contract("bind the compiled source before compiling the operator graph")
+        })?;
+        if bound_source.compiled_source_plan_hash() != cdf_runtime::artifact_hash(source)? {
+            return Err(CdfError::contract(
+                "operator graph source differs from the source already bound to the engine plan",
+            ));
+        }
+        if let Some(policy) = &self.compiled_stream_policy {
+            policy.validate_against_source(source)?;
+        }
         let graph = crate::compile_operator_graph(&self, source, destination)?;
         self.operator_graph = Some(graph);
         Ok(self)
