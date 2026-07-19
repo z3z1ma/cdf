@@ -2539,6 +2539,49 @@ fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
 }
 
 #[test]
+fn watermark_projection_fails_at_graph_compilation_before_source_contact() {
+    let resource = MockResource::tier_b(sample_batches());
+    let mut policy = sample_stream_epoch_policy();
+    policy.watermark = WatermarkPolicy::Enabled {
+        event_time_field: "id".into(),
+        domain: cdf_kernel::EventTimeDomain::SignedInteger,
+        authority: cdf_kernel::WatermarkAuthority::Source,
+        partition_aggregation: cdf_kernel::PartitionWatermarkAggregation::MinimumAll,
+    };
+    let extent = ExecutionExtent::Drain {
+        version: EXECUTION_EXTENT_VERSION,
+        policy,
+        termination: DrainTermination::Records { count: 100 },
+    };
+    let plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), Some(vec!["name".to_owned()]), None, extent),
+        )
+        .unwrap();
+    let mut source = mock_compiled_source_plan(&resource, None);
+    source.execution_capabilities.bounded = false;
+    source.stream_capabilities = Some(cdf_runtime::SourceStreamCapabilities {
+        quiescence: false,
+        watermark_behavior: cdf_kernel::OperatorWatermarkBehavior::Preserve,
+        safe_frontiers: vec![SafeFrontierPolicy::CanonicalAdmittedSourcePosition],
+        idleness_capabilities: Vec::new(),
+    });
+    source.validate().unwrap();
+    let plan = plan.bind_compiled_source(&source).unwrap();
+
+    let error = plan
+        .bind_operator_graph(
+            &source,
+            &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        )
+        .unwrap_err();
+
+    assert!(error.message.contains("event-time field `id` is removed"));
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn engine_parallel_frontier_polls_later_partition_while_head_is_stalled() {
     let (head_sender, head_receiver) = tokio::sync::oneshot::channel::<()>();
     let later_polls = Arc::new(AtomicUsize::new(0));

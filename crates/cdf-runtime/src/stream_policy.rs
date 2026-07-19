@@ -231,10 +231,10 @@ fn validate_watermark(
 mod tests {
     use arrow_schema::Schema;
     use cdf_kernel::{
-        CanonicalArrowTimeUnit, EpochClosureTrigger, EventTimeDomain, ResourceCapabilities,
-        ResourceDescriptor, STREAM_EPOCH_POLICY_VERSION, SafeFrontierPolicy, SchemaHash,
-        SchemaSource, ScopeKey, StreamEpochPolicy, TrustLevel, TypePolicyAllowances,
-        WatermarkAuthority, WriteDisposition,
+        CanonicalArrowTimeUnit, CursorPosition, CursorValue, EpochClosureTrigger, EventTimeDomain,
+        ResourceCapabilities, ResourceDescriptor, STREAM_EPOCH_POLICY_VERSION, SafeFrontierPolicy,
+        SchemaHash, SchemaSource, ScopeKey, SourcePosition, StreamEpochPolicy, TrustLevel,
+        TypePolicyAllowances, WatermarkAuthority, WriteDisposition,
     };
 
     use super::*;
@@ -435,5 +435,40 @@ mod tests {
         policy.late_data = LateDataAction::RecaptureNextEpoch;
         let error = CompiledStreamPolicy::compile(&extent, &source).unwrap_err();
         assert!(error.message.contains("not resumable and reopenable"));
+    }
+
+    #[test]
+    fn every_finite_termination_and_enabled_watermark_compile_from_capabilities() {
+        let mut stream = capabilities(OperatorWatermarkBehavior::Preserve);
+        stream.quiescence = true;
+        let source = source(stream, true);
+        let terminations = [
+            DrainTermination::Quiescent,
+            DrainTermination::Duration {
+                milliseconds: 1_000,
+            },
+            DrainTermination::Records { count: 10_000 },
+            DrainTermination::Bytes { count: 1_048_576 },
+            DrainTermination::SourceFrontier {
+                position: SourcePosition::Cursor(CursorPosition {
+                    version: 1,
+                    field: "offset".to_owned(),
+                    value: CursorValue::U64(42),
+                }),
+            },
+        ];
+        for termination in terminations {
+            CompiledStreamPolicy::compile(
+                &drain(
+                    watermark(PartitionWatermarkAggregation::MinimumEligible {
+                        idle_after_milliseconds: 30_000,
+                        capability_id: "idle-v1".into(),
+                    }),
+                    termination,
+                ),
+                &source,
+            )
+            .unwrap();
+        }
     }
 }
