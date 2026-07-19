@@ -1,0 +1,122 @@
+{
+  "version": 1,
+  "compatibility": {
+    "cdf_version": "0.1.0",
+    "artifact_version": "package-v2",
+    "arrow_version": "59.1.0",
+    "relational_engine": {
+      "component": "datafusion",
+      "version": "51.0.0"
+    },
+    "normalizer_version": "namecase-v1"
+  },
+  "pipeline_id": "pipeline-fixture",
+  "resource_id": "mock.events",
+  "plan_id": "plan-fixture",
+  "source": {
+    "driver_id": "mock_source",
+    "driver_version": "1.0.0",
+    "option_schema_hash": "sha256:0101010101010101010101010101010101010101010101010101010101010101",
+    "compiled_source_plan": {
+      "kind": "compiled_source_plan",
+      "store_namespace": "worker-fixtures",
+      "object_key": "plans/source.json",
+      "byte_count": 2048,
+      "content_sha256": "sha256:0202020202020202020202020202020202020202020202020202020202020202",
+      "provider_generation": "generation-7"
+    },
+    "physical_plan_hash": "sha256:0303030303030303030303030303030303030303030303030303030303030303",
+    "source_semantics_hash": "sha256:0404040404040404040404040404040404040404040404040404040404040404",
+    "execution_capabilities_hash": "sha256:0505050505050505050505050505050505050505050505050505050505050505"
+  },
+  "partition": {
+    "partition_id": "partition-00000003",
+    "scope": {
+      "kind": "partition",
+      "partition_id": "partition-00000003"
+    },
+    "canonical_partition_ordinal": 3,
+    "epoch_ordinal": 9,
+    "partition_plan": {
+      "kind": "partition_plan",
+      "store_namespace": "worker-fixtures",
+      "object_key": "plans/partition-00000003.json",
+      "byte_count": 1024,
+      "content_sha256": "sha256:0606060606060606060606060606060606060606060606060606060606060606",
+      "provider_generation": "generation-7"
+    },
+    "source_identity_hash": "sha256:0707070707070707070707070707070707070707070707070707070707070707",
+    "segment_authority_hash": "sha256:0808080808080808080808080808080808080808080808080808080808080808"
+  },
+  "execution": {
+    "output_schema_hash": "sha256:0909090909090909090909090909090909090909090909090909090909090909",
+    "validation_program_hash": "sha256:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+    "normalization_policy_hash": "sha256:0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+    "compiled_expression_plan_hash": "sha256:0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c",
+    "operator_graph_hash": "sha256:0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d",
+    "segmentation_policy_hash": "sha256:0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e",
+    "execution_extent_hash": "sha256:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+  },
+  "input_checkpoint": {
+    "checkpoint_id": "checkpoint-8",
+    "scope": {
+      "kind": "resource"
+    },
+    "state_version": 1,
+    "position": {
+      "kind": "cursor",
+      "version": 1,
+      "field": "offset",
+      "value": {
+        "kind": "u64",
+        "value": 100
+      }
+    },
+    "content_sha256": "sha256:1010101010101010101010101010101010101010101010101010101010101010"
+  },
+  "secret_references": [
+    "secret://env/MOCK_TOKEN"
+  ],
+  "input_artifacts": [
+    {
+      "kind": "input_payload",
+      "store_namespace": "worker-fixtures",
+      "object_key": "inputs/events.bin",
+      "byte_count": 4096,
+      "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "provider_generation": "generation-7"
+    }
+  ],
+  "resources": {
+    "memory_bytes": 268435456,
+    "disk_bytes": 2147483648,
+    "cpu_slots": 2,
+    "io_slots": 1,
+    "control": {
+      "maximum_task_bytes": 65536,
+      "maximum_attempt_bytes": 16384,
+      "maximum_result_bytes": 65536,
+      "maximum_input_artifacts": 16,
+      "maximum_output_artifacts": 16,
+      "maximum_secret_references": 4
+    }
+  },
+  "capabilities": {
+    "required_blocking_lanes": [],
+    "services": [
+      "artifact-reader-v1",
+      "source-registry-v1"
+    ]
+  },
+  "output_policy": {
+    "allowed_kinds": [
+      "canonical_segment",
+      "quarantine",
+      "residual",
+      "verdict",
+      "lineage"
+    ],
+    "maximum_artifact_bytes": 1073741824
+  },
+  "task_sha256": "sha256:54066c94d01ef1cc9f761aa7be492c14a9ffb73be20baa0458ecf3f13e3c40a5"
+}

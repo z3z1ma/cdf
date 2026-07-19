@@ -1409,6 +1409,37 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
     );
 
     let plan = registry.compile(request.clone()).unwrap();
+    let portable_plan_bytes = serde_json::to_vec(&plan).unwrap();
+    let portable_source = PortableSourceBinding {
+        driver_id: descriptor.driver_id.clone(),
+        driver_version: descriptor.driver_version.clone(),
+        option_schema_hash: descriptor.option_schema_hash.clone(),
+        compiled_source_plan: WorkerArtifactReference {
+            kind: WorkerArtifactKind::CompiledSourcePlan,
+            store_namespace: cdf_kernel::ContentStoreNamespace::new("worker-test").unwrap(),
+            object_key: cdf_kernel::ContentObjectKey::new("plans/mock-source.json").unwrap(),
+            byte_count: u64::try_from(portable_plan_bytes.len()).unwrap(),
+            content_sha256: artifact_hash(&plan).unwrap(),
+            provider_generation: Some(
+                cdf_kernel::ContentProviderGeneration::new("generation-1").unwrap(),
+            ),
+        },
+        physical_plan_hash: plan.physical_plan_hash.clone(),
+        source_semantics_hash: plan.schema_binding_stable_hash().unwrap(),
+        execution_capabilities_hash: artifact_hash(&plan.execution_capabilities).unwrap(),
+    };
+    registry
+        .validate_portable_source_binding(&portable_source)
+        .unwrap();
+    let mut stale_portable_source = portable_source.clone();
+    stale_portable_source.driver_version = "2.0.0".to_owned();
+    assert!(
+        registry
+            .validate_portable_source_binding(&stale_portable_source)
+            .unwrap_err()
+            .message
+            .contains("does not match")
+    );
     let mut tampering_registry = SourceRegistry::new();
     tampering_registry
         .register(MockSourceDriver {
@@ -1594,6 +1625,13 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
         &services,
         Arc::new(cdf_http::EgressAllowlist::allow_any()),
     );
+    let reconstructed_plan: CompiledSourcePlan =
+        serde_json::from_slice(&portable_plan_bytes).unwrap();
+    assert_eq!(
+        artifact_hash(&reconstructed_plan).unwrap(),
+        portable_source.compiled_source_plan.content_sha256
+    );
+    registry.resolve(&reconstructed_plan, &context).unwrap();
     let discovery = registry.discovery_session(&plan, &context).unwrap();
     assert_eq!(discovery.kind(), SourceDiscoveryKind::BoundedContent);
     let candidates = discovery.candidates().unwrap();

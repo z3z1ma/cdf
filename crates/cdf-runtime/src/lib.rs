@@ -24,6 +24,7 @@ mod staging;
 mod staging_lease;
 mod transformed_byte_source;
 mod utilities;
+mod worker_protocol;
 
 pub use bounded_format::*;
 pub use bulk::*;
@@ -49,6 +50,7 @@ pub use staging::*;
 pub use staging_lease::*;
 pub use transformed_byte_source::*;
 pub use utilities::*;
+pub use worker_protocol::*;
 
 pub mod foreign {
     pub use cdf_foreign_stream::*;

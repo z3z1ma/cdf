@@ -201,6 +201,31 @@ impl SourceRegistry {
             .collect()
     }
 
+    /// Verifies that an isolated worker can resolve the exact source driver named by a portable
+    /// task before it fetches any referenced plan or payload artifact.
+    pub fn validate_portable_source_binding(
+        &self,
+        binding: &crate::PortableSourceBinding,
+    ) -> Result<()> {
+        binding.validate()?;
+        let driver = self.drivers.get(&binding.driver_id).ok_or_else(|| {
+            CdfError::contract(format!(
+                "portable partition task requires unregistered source driver `{}`",
+                binding.driver_id.as_str()
+            ))
+        })?;
+        let descriptor = driver.descriptor();
+        if descriptor.driver_version != binding.driver_version
+            || descriptor.option_schema_hash != binding.option_schema_hash
+        {
+            return Err(CdfError::contract(format!(
+                "portable partition task source driver `{}` version/schema does not match this worker registry",
+                binding.driver_id.as_str()
+            )));
+        }
+        Ok(())
+    }
+
     pub fn option_schemas(&self) -> BTreeMap<String, serde_json::Value> {
         self.drivers
             .iter()
