@@ -104,6 +104,7 @@ pub struct StagedIngressRequest {
     bulk_path: crate::PreparedBulkPath,
     scheduling: StagingSchedulingContext,
     output_schema: Schema,
+    segment_schema: Schema,
 }
 
 impl StagedIngressRequest {
@@ -137,6 +138,7 @@ impl StagedIngressRequest {
                 "staged ingress mutation guard does not bind its staging lease generation",
             ));
         }
+        let segment_schema = cdf_package_contract::canonical_segment_schema(&output_schema)?;
         Ok(Self {
             attempt_id,
             binding,
@@ -145,6 +147,7 @@ impl StagedIngressRequest {
             bulk_path,
             scheduling,
             output_schema,
+            segment_schema,
         })
     }
 
@@ -174,6 +177,10 @@ impl StagedIngressRequest {
 
     pub fn output_schema(&self) -> &Schema {
         &self.output_schema
+    }
+
+    pub fn segment_schema(&self) -> &Schema {
+        &self.segment_schema
     }
 }
 
@@ -211,6 +218,7 @@ impl StagingCleanupCandidate {
 pub struct StagedSegmentIdentity {
     pub segment_id: SegmentId,
     pub sha256: String,
+    pub package_row_ord_start: u64,
     pub row_count: u64,
     pub byte_count: u64,
     pub schema_hash: SchemaHash,
@@ -236,6 +244,7 @@ impl StagedSegmentIdentity {
         Ok(Self {
             segment_id: entry.segment_id.clone(),
             sha256: entry.sha256.clone(),
+            package_row_ord_start: entry.package_row_ord_start,
             row_count: entry.row_count,
             byte_count: entry.byte_count,
             schema_hash,

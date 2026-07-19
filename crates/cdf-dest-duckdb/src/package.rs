@@ -13,14 +13,20 @@ pub(crate) fn persistence_fields(user_fields: &[FieldPlan]) -> Vec<FieldPlan> {
 
 pub(crate) fn persistence_batch(
     batch: RecordBatch,
-    row_key_start: u64,
-    stage_row_start: Option<u64>,
+    package_row_key_start: u64,
+    include_stage_order: bool,
 ) -> Result<RecordBatch> {
-    let row_count = u64::try_from(batch.num_rows())
-        .map_err(|_| CdfError::data("DuckDB Arrow batch row count exceeds u64"))?;
-    let row_key_end = row_key_start
-        .checked_add(row_count)
-        .ok_or_else(|| CdfError::data("DuckDB row provenance key overflowed"))?;
+    let package_row_ord = cdf_package_contract::package_row_ord_array(&batch)?.clone();
+    let batch = cdf_package_contract::strip_package_row_ord(batch)?;
+    let row_keys = package_row_ord
+        .values()
+        .iter()
+        .map(|ordinal| {
+            package_row_key_start
+                .checked_add(*ordinal)
+                .ok_or_else(|| CdfError::data("DuckDB row provenance key overflowed"))
+        })
+        .collect::<Result<Vec<_>>>()?;
     let mut fields = batch.schema().fields().to_vec();
     fields.push(Arc::new(Field::new(
         CDF_ROW_KEY_COLUMN,
@@ -28,21 +34,14 @@ pub(crate) fn persistence_batch(
         false,
     )));
     let mut columns = batch.columns().to_vec();
-    columns.push(Arc::new(UInt64Array::from_iter_values(
-        row_key_start..row_key_end,
-    )));
-    if let Some(stage_row_start) = stage_row_start {
-        let stage_row_end = stage_row_start
-            .checked_add(row_count)
-            .ok_or_else(|| CdfError::data("DuckDB stage row ordinal overflowed"))?;
+    columns.push(Arc::new(UInt64Array::from(row_keys)));
+    if include_stage_order {
         fields.push(Arc::new(Field::new(
             CDF_STAGE_ORDER_COLUMN,
             DataType::UInt64,
             false,
         )));
-        columns.push(Arc::new(UInt64Array::from_iter_values(
-            stage_row_start..stage_row_end,
-        )));
+        columns.push(Arc::new(package_row_ord));
     }
     RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
         .map_err(|error| CdfError::data(format!("build DuckDB persistence batch: {error}")))
@@ -188,4 +187,48 @@ pub(crate) fn duckdb_type(data_type: &DataType) -> Result<String> {
         }
     };
     Ok(ty.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow_array::{Array, Int64Array};
+
+    use super::*;
+
+    #[test]
+    fn persistence_derives_row_key_and_merge_order_from_canonical_ordinal() {
+        let logical = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
+            vec![Arc::new(Int64Array::from(vec![1_i64, 2]))],
+        )
+        .unwrap();
+        let canonical = cdf_package_contract::append_package_row_ord(vec![logical], 7)
+            .unwrap()
+            .pop()
+            .unwrap();
+
+        let persisted = persistence_batch(canonical, 100, true).unwrap();
+
+        assert!(
+            persisted
+                .schema()
+                .field_with_name(cdf_package_contract::CDF_PACKAGE_ROW_ORD_FIELD)
+                .is_err()
+        );
+        let row_keys = persisted
+            .column_by_name(CDF_ROW_KEY_COLUMN)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        let stage_order = persisted
+            .column_by_name(CDF_STAGE_ORDER_COLUMN)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        assert_eq!(row_keys.values(), &[107, 108]);
+        assert_eq!(stage_order.values(), &[7, 8]);
+        assert_eq!(stage_order.null_count(), 0);
+    }
 }

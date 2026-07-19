@@ -127,28 +127,30 @@ impl<W: Write> BinaryCopyEncoder<W> {
     pub(crate) fn write_batch(
         &mut self,
         batch: &RecordBatch,
-        row_key_start: i64,
+        package_row_key_start: i64,
         loaded_at_ms: i64,
     ) -> Result<()> {
-        let columns = batch
+        let package_row_ord = cdf_package_contract::package_row_ord_array(batch)?.clone();
+        let logical_batch = cdf_package_contract::strip_package_row_ord(batch.clone())?;
+        let columns = logical_batch
             .columns()
             .iter()
-            .zip(batch.schema().fields())
+            .zip(logical_batch.schema().fields())
             .map(|(array, field)| BinaryColumn::new(array.as_ref(), field.data_type()))
             .collect::<Result<Vec<_>>>()?;
-        for row in 0..batch.num_rows() {
+        for row in 0..logical_batch.num_rows() {
             self.writer
                 .write_all(&self.field_count.to_be_bytes())
                 .map_err(|error| io_error("write Postgres binary COPY row header", error))?;
             for column in &columns {
                 self.write_arrow_field(column, row)?;
             }
-            let row_key = row_key_start
-                .checked_add(
-                    i64::try_from(row)
-                        .map_err(|_| CdfError::data("Postgres batch row offset exceeds BIGINT"))?,
-                )
-                .ok_or_else(|| CdfError::data("Postgres row key overflowed BIGINT"))?;
+            let row_key =
+                package_row_key_start
+                    .checked_add(i64::try_from(package_row_ord.value(row)).map_err(|_| {
+                        CdfError::data("Postgres package row ordinal exceeds BIGINT")
+                    })?)
+                    .ok_or_else(|| CdfError::data("Postgres row key overflowed BIGINT"))?;
             self.write_bytes(Some(&row_key.to_be_bytes()))?;
             self.write_bytes(Some(&loaded_at_ms.to_be_bytes()))?;
             self.rows = self
@@ -369,6 +371,44 @@ mod tests {
     }
 
     #[test]
+    fn binary_copy_derives_row_key_from_canonical_package_ordinal() {
+        let logical = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
+            vec![Arc::new(Int64Array::from(vec![42_i64]))],
+        )
+        .unwrap();
+        let canonical = cdf_package_contract::append_package_row_ord(vec![logical], 7)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let mut encoder = BinaryCopyEncoder::new(Vec::new(), 1).unwrap();
+        encoder
+            .write_batch(&canonical, 100, 1_700_000_000_000)
+            .unwrap();
+        let (bytes, rows) = encoder.finish().unwrap();
+
+        assert_eq!(rows, 1);
+        let mut offset = HEADER.len() + 8;
+        assert_eq!(
+            i16::from_be_bytes(bytes[offset..offset + 2].try_into().unwrap()),
+            3
+        );
+        offset += 2;
+        for expected in [42_i64, 107, 1_700_000_000_000] {
+            assert_eq!(
+                i32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap()),
+                8
+            );
+            offset += 4;
+            assert_eq!(
+                i64::from_be_bytes(bytes[offset..offset + 8].try_into().unwrap()),
+                expected
+            );
+            offset += 8;
+        }
+    }
+
+    #[test]
     #[ignore = "release-mode D3 binary-vs-CSV encoder benchmark"]
     fn binary_copy_encoder_is_at_least_twice_csv() {
         const ROWS: usize = 262_144;
@@ -389,6 +429,10 @@ mod tests {
             ],
         )
         .unwrap();
+        let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0)
+            .unwrap()
+            .pop()
+            .unwrap();
         let started = Instant::now();
         let mut binary = BinaryCopyEncoder::new(Vec::new(), 3).unwrap();
         binary.write_batch(&batch, 1, 1_700_000_000_000).unwrap();
@@ -396,17 +440,18 @@ mod tests {
         let binary_elapsed = started.elapsed();
         assert_eq!(rows, ROWS as u64);
 
-        let ids = batch
+        let logical_batch = cdf_package_contract::strip_package_row_ord(batch.clone()).unwrap();
+        let ids = logical_batch
             .column(0)
             .as_any()
             .downcast_ref::<Int64Array>()
             .unwrap();
-        let names = batch
+        let names = logical_batch
             .column(1)
             .as_any()
             .downcast_ref::<StringArray>()
             .unwrap();
-        let amounts = batch
+        let amounts = logical_batch
             .column(2)
             .as_any()
             .downcast_ref::<Float64Array>()

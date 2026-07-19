@@ -1997,6 +1997,7 @@ fn staged_identity(
     StagedSegmentIdentity {
         segment_id: SegmentId::new(segment_id).unwrap(),
         sha256: format!("sha256:{segment_id}"),
+        package_row_ord_start: u64::from(ordinal),
         row_count: 1,
         byte_count: 8,
         schema_hash,

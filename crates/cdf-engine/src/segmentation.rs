@@ -1346,10 +1346,17 @@ mod tests {
         let baseline =
             cdf_package::PackageBuilder::create(root.path().join("baseline"), "baseline").unwrap();
         for (ordinal, chunk) in chunks.iter().enumerate() {
+            let package_row_ord_start = u64::try_from(ordinal * 1024).unwrap();
+            let canonical = cdf_package_contract::append_package_row_ord(
+                vec![chunk.clone()],
+                package_row_ord_start,
+            )
+            .unwrap();
             baseline
                 .write_segment(
                     SegmentId::new(format!("baseline-{ordinal:08}")).unwrap(),
-                    std::slice::from_ref(chunk),
+                    package_row_ord_start,
+                    &canonical,
                 )
                 .unwrap();
         }
@@ -1368,10 +1375,18 @@ mod tests {
         let canonical =
             cdf_package::PackageBuilder::create(root.path().join("canonical"), "canonical")
                 .unwrap();
+        let mut package_row_ord_start = 0_u64;
         for segment in segments {
+            let row_count = segment.row_count;
+            let batches = cdf_package_contract::append_package_row_ord(
+                segment.batches,
+                package_row_ord_start,
+            )
+            .unwrap();
             canonical
-                .write_segment(segment.segment_id, &segment.batches)
+                .write_segment(segment.segment_id, package_row_ord_start, &batches)
                 .unwrap();
+            package_row_ord_start += row_count;
         }
         canonical.finish().unwrap();
         let canonical_ns = canonical_started.elapsed().as_nanos();

@@ -15,7 +15,7 @@ use std::{
 };
 
 use arrow_array::{ArrayRef, Int32Array, Int64Array, RecordBatch, StringArray};
-use arrow_ipc::writer::StreamWriter;
+use arrow_ipc::writer::{FileWriter, StreamWriter};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_contract::{
     RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME, VARIANT_COLUMN_NAME,
@@ -14748,18 +14748,11 @@ fn write_large_vendor_arrow_ipc(project: &TestProject, filename: &str) {
 }
 
 fn write_arrow_ipc_source(project: &TestProject, filename: &str, batch: RecordBatch) {
-    let temp = TempDir::new("cdf-cli-arrow-ipc-discover-source");
-    let package_dir = temp.path().join("pkg-arrow-ipc-discover-source");
-    let builder = PackageBuilder::create(&package_dir, "pkg-arrow-ipc-discover-source").unwrap();
-    builder
-        .write_segment(SegmentId::new("seg-000001").unwrap(), &[batch])
-        .unwrap();
-    builder.finish_with_status(PackageStatus::Packaged).unwrap();
-    fs::copy(
-        package_dir.join("data/seg-000001.arrow"),
-        project.root.join("data").join(filename),
-    )
-    .unwrap();
+    let path = project.root.join("data").join(filename);
+    let file = fs::File::create(path).unwrap();
+    let mut writer = FileWriter::try_new(file, batch.schema().as_ref()).unwrap();
+    writer.write(&batch).unwrap();
+    writer.finish().unwrap();
 }
 
 fn write_vendor_parquet(path: &Path) {
@@ -14871,8 +14864,9 @@ fn write_schema_promote_package_fixture_for_target_with_commit(
     .unwrap();
     let builder = PackageBuilder::create(&package_dir, package_id).unwrap();
     write_current_replay_artifacts(&builder, batch.schema().as_ref(), schema_hash);
+    let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0).unwrap();
     let segment = builder
-        .write_segment(SegmentId::new("seg-000001").unwrap(), &[batch])
+        .write_segment(SegmentId::new("seg-000001").unwrap(), 0, &batch)
         .unwrap();
     let output_position = schema_promote_fixture_position();
     let state_segment = StateSegment {
@@ -15157,7 +15151,8 @@ fn rebuild_correction_package_semantically(
     )
     .unwrap();
     let segment_id = state.segments[0].segment_id.clone();
-    let segment = builder.write_segment(segment_id, &[batch]).unwrap();
+    let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0).unwrap();
+    let segment = builder.write_segment(segment_id, 0, &batch).unwrap();
     state.segments[0].row_count = segment.row_count;
     state.segments[0].byte_count = segment.byte_count;
     commit.segments = state.segments.clone();
@@ -15306,19 +15301,7 @@ fn write_parquet_preview_fixture(project: &TestProject) {
 }
 
 fn write_arrow_ipc_preview_fixture(project: &TestProject) {
-    let temp = TempDir::new("cdf-cli-preview-arrow-ipc-source");
-    let package_dir = temp.path().join("pkg-preview-arrow-ipc-source");
-    let builder = PackageBuilder::create(&package_dir, "pkg-preview-arrow-ipc-source").unwrap();
-    let batch = preview_fixture_batch();
-    builder
-        .write_segment(SegmentId::new("seg-000001").unwrap(), &[batch])
-        .unwrap();
-    builder.finish_with_status(PackageStatus::Packaged).unwrap();
-    fs::copy(
-        package_dir.join("data/seg-000001.arrow"),
-        project.root.join("data/events.arrow"),
-    )
-    .unwrap();
+    write_arrow_ipc_source(project, "events.arrow", preview_fixture_batch());
 }
 
 fn preview_fixture_batch() -> RecordBatch {
@@ -16032,8 +16015,9 @@ fn create_system_sql_fixture(project: &TestProject) -> SystemSqlFixture {
     fs::create_dir_all(&package_root).unwrap();
     let package_dir = package_root.join("pkg-sql-1");
     let builder = PackageBuilder::create(&package_dir, "pkg-sql-1").unwrap();
+    let batch = cdf_package_contract::append_package_row_ord(vec![sample_sql_batch()], 0).unwrap();
     builder
-        .write_segment(SegmentId::new("seg-000001").unwrap(), &[sample_sql_batch()])
+        .write_segment(SegmentId::new("seg-000001").unwrap(), 0, &batch)
         .unwrap();
     let manifest = builder
         .finish_with_status(PackageStatus::Checkpointed)
@@ -16062,8 +16046,9 @@ fn create_duckdb_doctor_fixture(project: &TestProject, mode: DoctorDriftFixtureM
     let builder = PackageBuilder::create(&package_dir, "pkg-doctor-1").unwrap();
     let batch = sample_sql_batch();
     write_current_replay_artifacts(&builder, batch.schema().as_ref(), "schema-doctor-1");
+    let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0).unwrap();
     let entry = builder
-        .write_segment(SegmentId::new("seg-000001").unwrap(), &[batch])
+        .write_segment(SegmentId::new("seg-000001").unwrap(), 0, &batch)
         .unwrap();
     let output_position = doctor_output_position(42);
     let segment = doctor_state_segment(&entry, output_position.clone());
@@ -16366,8 +16351,9 @@ fn build_archive_cli_package(root: &Path, package_id: &str) -> PathBuf {
         ],
     )
     .unwrap();
+    let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0).unwrap();
     builder
-        .write_segment(SegmentId::new("seg-000001").unwrap(), &[batch])
+        .write_segment(SegmentId::new("seg-000001").unwrap(), 0, &batch)
         .unwrap();
     builder.finish_with_status(PackageStatus::Packaged).unwrap();
     package_dir
@@ -16407,8 +16393,9 @@ fn build_gc_residual_package(root: &Path, package_id: &str, resource_id: &str) -
         vec![Arc::new(StringArray::from(residuals))],
     )
     .unwrap();
+    let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0).unwrap();
     let segment = builder
-        .write_segment(SegmentId::new("seg-000001").unwrap(), &[batch])
+        .write_segment(SegmentId::new("seg-000001").unwrap(), 0, &batch)
         .unwrap();
     let output_position = SourcePosition::Cursor(CursorPosition {
         version: 1,

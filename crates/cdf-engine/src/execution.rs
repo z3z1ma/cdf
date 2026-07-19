@@ -249,6 +249,7 @@ where
     crate::planning::validate_plan_schema_authority(resource, plan)?;
     let resource_schema = resource.schema();
     let runtime_output_schema = plan.output_arrow_schema()?;
+    cdf_package_contract::validate_logical_output_schema(runtime_output_schema.as_ref())?;
     let expression_schema = scan_expression_schema(
         resource_schema.as_ref(),
         plan.explain
@@ -1557,6 +1558,7 @@ struct SegmentOutputSink<'a, 'b> {
 struct SegmentEncodeWork {
     ordinal: u64,
     segment_id: cdf_kernel::SegmentId,
+    package_row_ord_start: u64,
     partition_ordinal: u32,
     output_position: Option<SourcePosition>,
     batches: Vec<RecordBatch>,
@@ -1605,6 +1607,7 @@ struct SegmentEncodeQueue {
     measure: bool,
     next_submission: u64,
     next_registration: u64,
+    next_package_row_ord: u64,
     pending: BTreeMap<u64, SegmentEncodeCompletion>,
     mode: SegmentEncodeMode,
 }
@@ -1690,6 +1693,7 @@ impl SegmentEncodeQueue {
             measure,
             next_submission: 0,
             next_registration: 0,
+            next_package_row_ord: 0,
             pending: BTreeMap::new(),
             mode,
         })
@@ -1724,9 +1728,12 @@ impl SegmentEncodeQueue {
         }
         match &mut self.mode {
             SegmentEncodeMode::Inline => {
-                let encoded =
-                    self.encoder
-                        .encode(work.segment_id.clone(), &work.batches, self.measure);
+                let encoded = self.encoder.encode(
+                    work.segment_id.clone(),
+                    work.package_row_ord_start,
+                    &work.batches,
+                    self.measure,
+                );
                 self.pending
                     .insert(work.ordinal, SegmentEncodeCompletion { work, encoded });
             }
@@ -1751,7 +1758,12 @@ impl SegmentEncodeQueue {
                         Box::new(move || {
                             let encoded =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    encoder.encode(work.segment_id.clone(), &work.batches, measure)
+                                    encoder.encode(
+                                        work.segment_id.clone(),
+                                        work.package_row_ord_start,
+                                        &work.batches,
+                                        measure,
+                                    )
                                 }))
                                 .unwrap_or_else(|_| {
                                     Err(CdfError::internal("segment encode worker panicked"))
@@ -1846,6 +1858,7 @@ impl SegmentEncodeQueue {
             let SegmentEncodeWork {
                 ordinal: _,
                 segment_id,
+                package_row_ord_start: _,
                 partition_ordinal,
                 output_position,
                 batches,
@@ -4544,6 +4557,7 @@ fn persist_canonical_segments(
             partition_ordinal,
             batches,
             output_position,
+            row_count,
             retained_bytes,
             canonical_batch_rows,
             canonical_batch_bytes,
@@ -4552,10 +4566,16 @@ fn persist_canonical_segments(
         } = canonical;
         let _memory_lease = match state.memory.map(Arc::clone) {
             Some(memory) => {
+                let ordinal_bytes = row_count
+                    .checked_mul(8)
+                    .ok_or_else(|| CdfError::data("canonical ordinal buffer size overflow"))?;
                 let bytes = retained_bytes
                     .max(1)
                     .checked_mul(2)
-                    .ok_or_else(|| CdfError::data("canonical concat working set overflow"))?;
+                    .and_then(|bytes| bytes.checked_add(ordinal_bytes))
+                    .ok_or_else(|| {
+                        CdfError::data("canonical concat and ordinal working set overflow")
+                    })?;
                 let request = ReservationRequest::new(
                     ConsumerKey::new("canonical-segment-concat", MemoryClass::Package)?,
                     bytes,
@@ -4567,7 +4587,7 @@ fn persist_canonical_segments(
                     state,
                     sink,
                     &format!(
-                        "canonical segment requires {bytes} bytes for retained input and concat output"
+                        "canonical segment requires {bytes} bytes for retained input, concat output, and package ordinal"
                     ),
                 )?)
             }
@@ -4578,14 +4598,19 @@ fn persist_canonical_segments(
             canonical_batch_rows,
             canonical_batch_bytes,
         )?;
-        let normalization_output_bytes = output.iter().try_fold(0_u64, |total, batch| {
+        let observed_rows = output.iter().try_fold(0_u64, |total, batch| {
             total
                 .checked_add(
-                    u64::try_from(batch.get_array_memory_size())
-                        .map_err(|_| CdfError::data("canonical output bytes exceed u64"))?,
+                    u64::try_from(batch.num_rows())
+                        .map_err(|_| CdfError::data("canonical output rows exceed u64"))?,
                 )
-                .ok_or_else(|| CdfError::data("canonical output bytes overflow"))
+                .ok_or_else(|| CdfError::data("canonical output rows overflow"))
         })?;
+        if observed_rows != row_count {
+            return Err(CdfError::internal(format!(
+                "canonical segment {segment_id} retained {row_count} rows but canonicalized {observed_rows}"
+            )));
+        }
         if state.statistics.is_some() {
             let statistics_reservation_bytes = output.iter().try_fold(0_u64, |total, batch| {
                 total
@@ -4641,10 +4666,25 @@ fn persist_canonical_segments(
                 .ok_or_else(|| CdfError::data("statistics profile segment ordinal overflow"))?;
             retain_package_statistics(state, statistics, _statistics_memory_lease)?;
         }
+        let package_row_ord_start = sink.queue.next_package_row_ord;
+        let next_package_row_ord = package_row_ord_start
+            .checked_add(row_count)
+            .ok_or_else(|| CdfError::data("package row ordinal overflow"))?;
+        let output = cdf_package_contract::append_package_row_ord(output, package_row_ord_start)?;
+        sink.queue.next_package_row_ord = next_package_row_ord;
+        let normalization_output_bytes = output.iter().try_fold(0_u64, |total, batch| {
+            total
+                .checked_add(
+                    u64::try_from(batch.get_array_memory_size())
+                        .map_err(|_| CdfError::data("canonical output bytes exceed u64"))?,
+                )
+                .ok_or_else(|| CdfError::data("canonical output bytes overflow"))
+        })?;
         sink.queue.submit(
             SegmentEncodeWork {
                 ordinal: 0,
                 segment_id,
+                package_row_ord_start,
                 partition_ordinal,
                 output_position,
                 batches: output,

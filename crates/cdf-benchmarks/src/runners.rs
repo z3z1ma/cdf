@@ -1157,7 +1157,8 @@ fn build_package_fixture(
         &serde_json::json!({ "schema_hash": schema_hash.as_str() }),
     )?;
     builder.write_runtime_arrow_schema(schema.as_ref())?;
-    let segment = builder.write_segment(SegmentId::new("seg-000001")?, &batches)?;
+    let batches = cdf_package_contract::append_package_row_ord(batches, 0)?;
+    let segment = builder.write_segment(SegmentId::new("seg-000001")?, 0, &batches)?;
     let scope = ScopeKey::Resource;
     let output_position = SourcePosition::Cursor(CursorPosition {
         version: CHECKPOINT_STATE_VERSION,

@@ -13,6 +13,7 @@ pub(crate) struct PostgresSessionSegments {
 pub(crate) struct PostgresExpectedSegment {
     pub(crate) state: StateSegment,
     pub(crate) package_byte_count: u64,
+    pub(crate) package_row_ord_start: u64,
 }
 
 pub(crate) fn expected_segments_for_session(
@@ -126,6 +127,7 @@ pub(crate) fn expected_segments_for_session(
             PostgresExpectedSegment {
                 state: state.clone(),
                 package_byte_count: manifest_segment.byte_count,
+                package_row_ord_start: manifest_segment.package_row_ord_start,
             },
         );
     }

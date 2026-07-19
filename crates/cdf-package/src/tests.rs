@@ -82,14 +82,16 @@ fn segment_encoding_completion_cannot_override_canonical_registration_order() {
     let second = encoder
         .encode(
             SegmentId::new("seg-000002").unwrap(),
-            &[sample_batch()],
+            3,
+            &[canonical_batch(sample_batch(), 3)],
             true,
         )
         .unwrap();
     let first = encoder
         .encode(
             SegmentId::new("seg-000001").unwrap(),
-            &[sample_batch()],
+            0,
+            &[canonical_batch(sample_batch(), 0)],
             true,
         )
         .unwrap();
@@ -116,7 +118,8 @@ fn unpublished_segment_encoding_is_rolled_back_on_drop() {
         .segment_encoder()
         .encode(
             SegmentId::new("seg-unregistered").unwrap(),
-            &[sample_batch()],
+            0,
+            &[canonical_batch(sample_batch(), 0)],
             false,
         )
         .unwrap();
@@ -138,6 +141,13 @@ fn sample_batch_values(ids: Vec<i64>, names: Vec<Option<&str>>) -> RecordBatch {
     let id: ArrayRef = Arc::new(Int64Array::from(ids));
     let name: ArrayRef = Arc::new(StringArray::from(names));
     RecordBatch::try_new(schema, vec![id, name]).unwrap()
+}
+
+fn canonical_batch(batch: RecordBatch, start: u64) -> RecordBatch {
+    append_package_row_ord(vec![batch], start)
+        .unwrap()
+        .pop()
+        .unwrap()
 }
 
 #[test]
@@ -167,7 +177,9 @@ fn verified_statistics_profile_is_manifest_bound_typed_parquet() {
         )
         .unwrap();
     profile.finish().unwrap();
-    builder.write_segment(segment_id, &[batch]).unwrap();
+    builder
+        .write_segment(segment_id, 0, &[canonical_batch(batch, 0)])
+        .unwrap();
     let (_, verified) = builder.finish_verified().unwrap();
     let reader = PackageReader::open(temp.path()).unwrap();
 
@@ -288,7 +300,11 @@ fn build_fixture(package_dir: &Path) -> PackageManifest {
         .append_trace_event(&BTreeMap::from([("event", "fixture-start")]))
         .unwrap();
     let segment = builder
-        .write_segment(SegmentId::new("seg-000001").unwrap(), &[sample_batch()])
+        .write_segment(
+            SegmentId::new("seg-000001").unwrap(),
+            0,
+            &[canonical_batch(sample_batch(), 0)],
+        )
         .unwrap();
     write_state_commit_artifacts(&builder, segment);
     builder.finish().unwrap()
@@ -375,13 +391,21 @@ fn build_archive_fixture(package_dir: &Path) -> PackageManifest {
     builder
         .write_segment(
             SegmentId::new("seg-000001").unwrap(),
-            &[sample_batch_values(vec![1, 2], vec![Some("ada"), None])],
+            0,
+            &[canonical_batch(
+                sample_batch_values(vec![1, 2], vec![Some("ada"), None]),
+                0,
+            )],
         )
         .unwrap();
     builder
         .write_segment(
             SegmentId::new("seg-000002").unwrap(),
-            &[sample_batch_values(vec![3], vec![Some("grace")])],
+            2,
+            &[canonical_batch(
+                sample_batch_values(vec![3], vec![Some("grace")]),
+                2,
+            )],
         )
         .unwrap();
     builder.finish().unwrap()
@@ -719,7 +743,7 @@ fn fixed_fixture_hash_is_deterministic_across_repeated_runs() {
     assert_eq!(first_manifest.package_hash, second_manifest.package_hash);
     assert_eq!(
         first_manifest.package_hash,
-        "sha256:0272e47dd0bb79bf977c1f861276da9d9f325747588612388c8c39e9108896ce"
+        "sha256:0c00d65b1af71d9d828917f0c5de616d79c629115c5a7a5eeff95565bc00dfe1"
     );
 }
 
@@ -1043,7 +1067,7 @@ fn read_commit_segments_rejects_bad_segment_requests_and_row_counts() {
 
     let package_row_mismatch = tempfile::tempdir().unwrap();
     let mut package_row_mismatch_manifest = build_archive_fixture(package_row_mismatch.path());
-    package_row_mismatch_manifest.identity.segments[0].row_count += 1;
+    package_row_mismatch_manifest.identity.segments[1].row_count += 1;
     fs::write(
         package_row_mismatch.path().join(MANIFEST_FILE),
         canonical_json_bytes(&package_row_mismatch_manifest).unwrap(),
@@ -1065,6 +1089,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
     let segment = SegmentEntry {
         segment_id: SegmentId::new("seg-000001").unwrap(),
         path: "data/seg-000001.arrow".to_owned(),
+        package_row_ord_start: 0,
         row_count: 3,
         byte_count: 99,
         sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
@@ -1726,7 +1751,11 @@ fn archive_transcode_reports_unsupported_arrow_types() {
     let batch =
         RecordBatch::try_new(schema, vec![Arc::new(Time32SecondArray::from(vec![1]))]).unwrap();
     builder
-        .write_segment(SegmentId::new("seg-000001").unwrap(), &[batch])
+        .write_segment(
+            SegmentId::new("seg-000001").unwrap(),
+            0,
+            &[canonical_batch(batch, 0)],
+        )
         .unwrap();
     builder.finish().unwrap();
 
@@ -1924,8 +1953,13 @@ fn persisted_archive_enforces_one_accounted_input_output_window() {
         .read_segment(&reader.manifest().identity.segments[0].segment_id)
         .unwrap();
     let retained_arrow_bytes = batches
-        .iter()
-        .map(|batch| record_batch_retained_bytes(batch).unwrap())
+        .into_iter()
+        .map(|batch| {
+            record_batch_retained_bytes(
+                &cdf_package_contract::strip_package_row_ord(batch).unwrap(),
+            )
+            .unwrap()
+        })
         .sum::<u64>();
     let combined_window = retained_arrow_bytes + 1;
     let combined_memory: Arc<dyn MemoryCoordinator> =

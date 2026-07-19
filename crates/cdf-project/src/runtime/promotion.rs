@@ -1176,8 +1176,9 @@ fn build_correction_package(
         vec![Arc::new(StringArray::from(operation_json))],
     )
     .map_err(cdf_kernel::CdfError::from)?;
+    let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0)?;
     let segment =
-        builder.write_segment(cdf_kernel::SegmentId::new("correction-000001")?, &[batch])?;
+        builder.write_segment(cdf_kernel::SegmentId::new("correction-000001")?, 0, &batch)?;
     let output_position = source_package_position(&artifact.source_packages, package_index)?;
     let state_segment = StateSegment {
         segment_id: segment.segment_id.clone(),

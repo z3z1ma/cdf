@@ -3605,8 +3605,9 @@ mod tests {
             vec![std::sync::Arc::new(StringArray::from(residuals))],
         )
         .unwrap();
+        let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0).unwrap();
         let segment = builder
-            .write_segment(SegmentId::new("segment-1").unwrap(), &[batch])
+            .write_segment(SegmentId::new("segment-1").unwrap(), 0, &batch)
             .unwrap();
         let output_position = SourcePosition::FileManifest(FileManifest {
             version: CHECKPOINT_STATE_VERSION,

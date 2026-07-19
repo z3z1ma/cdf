@@ -25,4 +25,5 @@ arrow-array = "59.1.0"
 arrow-ipc = { version = "59.1.0", features = ["lz4"] }
 arrow-schema = "59.1.0"
 cdf-package = { path = "../cdf-package" }
+cdf-package-contract = { path = "../cdf-package-contract" }
 tempfile = "3.27.0"

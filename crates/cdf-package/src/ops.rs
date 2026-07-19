@@ -8,8 +8,8 @@ use arrow_array::RecordBatch;
 use arrow_ipc::reader::FileReader;
 use cdf_kernel::{CdfError, Receipt, Result};
 use cdf_package_contract::{
-    FileEntry, MANIFEST_FILE, PackageManifest, PackageStatus, RECEIPTS_FILE, TombstoneReport,
-    VerificationReport,
+    FileEntry, MANIFEST_FILE, MANIFEST_VERSION, PackageManifest, PackageStatus, RECEIPTS_FILE,
+    TombstoneReport, VerificationReport,
 };
 
 use crate::{
@@ -25,7 +25,17 @@ pub fn read_manifest(package_dir: impl AsRef<Path>) -> Result<PackageManifest> {
     let path = package_dir.as_ref().join(MANIFEST_FILE);
     let bytes =
         fs::read(&path).map_err(|error| io_error(format!("read {}", path.display()), error))?;
-    serde_json::from_slice(&bytes).map_err(json_error)
+    let manifest: PackageManifest = serde_json::from_slice(&bytes).map_err(json_error)?;
+    if manifest.manifest_version != MANIFEST_VERSION
+        || manifest.identity.manifest_version != MANIFEST_VERSION
+    {
+        return Err(CdfError::data(format!(
+            "package manifest/storage version must be {MANIFEST_VERSION}; observed manifest {} identity {}",
+            manifest.manifest_version, manifest.identity.manifest_version
+        )));
+    }
+    cdf_package_contract::validate_segment_ordinal_manifest(&manifest.identity.segments)?;
+    Ok(manifest)
 }
 
 pub fn update_package_status(

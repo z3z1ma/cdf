@@ -163,13 +163,24 @@ impl StagedGroupBatchReader {
             if let Some((request, rows)) = &mut self.current {
                 match request.reader_mut().next_batch()? {
                     Some(batch) => {
-                        *rows = rows
-                            .checked_add(u64::try_from(batch.num_rows()).map_err(|_| {
-                                CdfError::data("Parquet destination row count exceeds u64")
-                            })?)
+                        let batch_rows = u64::try_from(batch.num_rows()).map_err(|_| {
+                            CdfError::data("Parquet destination row count exceeds u64")
+                        })?;
+                        let expected_start = request
+                            .identity
+                            .package_row_ord_start
+                            .checked_add(*rows)
                             .ok_or_else(|| {
-                                CdfError::data("Parquet destination row count overflow")
+                                CdfError::data("Parquet package row ordinal overflow")
                             })?;
+                        cdf_package_contract::validate_package_row_ord_batches(
+                            std::slice::from_ref(&batch),
+                            expected_start,
+                            batch_rows,
+                        )?;
+                        *rows = rows.checked_add(batch_rows).ok_or_else(|| {
+                            CdfError::data("Parquet destination row count overflow")
+                        })?;
                         return Ok(Some(batch));
                     }
                     None => {
@@ -244,6 +255,19 @@ fn write_parquet_batches(
         settings,
     } = plan;
     let settings = settings.validate()?;
+    if let Some(cancellation) = cancellation {
+        cancellation.check()?;
+    }
+    if let Some(mutation_guard) = mutation_guard {
+        mutation_guard.assert_current()?;
+    }
+    // Acquire the bounded input window before attempting the writer reservation. A verified
+    // replay reader and the Parquet writer share one ledger; reserving in the opposite order can
+    // deadlock when neither window alone exceeds the budget but their sum does.
+    let first =
+        cdf_package_contract::strip_package_row_ord(next_batch()?.ok_or_else(|| {
+            CdfError::data("Parquet destination segment contains no Arrow batches")
+        })?)?;
     let writer_bytes = settings
         .bytes_per_batch
         .clamp(1024 * 1024, 64 * 1024 * 1024);
@@ -274,8 +298,6 @@ fn write_parquet_batches(
             "Parquet segment staging requires at least {initial_spill} spill bytes; raise the spill budget"
         ))
     })?;
-    let first = next_batch()?
-        .ok_or_else(|| CdfError::data("Parquet destination segment contains no Arrow batches"))?;
     if let Some(cancellation) = cancellation {
         cancellation.check()?;
     }
@@ -315,6 +337,7 @@ fn write_parquet_batches(
             .write(&first)
             .map_err(|error| parquet_error("write Parquet record batch", error))?;
         while let Some(batch) = next_batch()? {
+            let batch = cdf_package_contract::strip_package_row_ord(batch)?;
             if let Some(cancellation) = cancellation {
                 cancellation.check()?;
             }

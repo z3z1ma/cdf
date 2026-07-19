@@ -47,6 +47,7 @@ impl PostgresDestination {
             receipt: None,
             expected_segments: request.segments.expected,
             accepted_segments: BTreeSet::new(),
+            first_row_key: None,
         })
     }
 
@@ -83,6 +84,7 @@ pub(crate) struct PostgresCommitSession {
     receipt: Option<Receipt>,
     expected_segments: BTreeMap<SegmentId, PostgresExpectedSegment>,
     accepted_segments: BTreeSet<SegmentId>,
+    first_row_key: Option<i64>,
 }
 
 pub(crate) struct ManagedPostgresCommitSession {
@@ -225,6 +227,15 @@ impl CommitSession for PostgresCommitSession {
         if self.duplicate_receipt.is_none() && !self.expected_segments.is_empty() {
             execute_statements(&mut client, &self.plan.target_ddl)?;
             create_stage_table(&mut client, &self.plan)?;
+            let package_rows =
+                self.expected_segments
+                    .values()
+                    .try_fold(0_u64, |total, segment| {
+                        total
+                            .checked_add(segment.state.row_count)
+                            .ok_or_else(|| CdfError::data("Postgres package row count overflow"))
+                    })?;
+            self.first_row_key = Some(allocate_row_key_range(&mut client, package_rows)?);
         }
         self.client = Some(client);
         self.phase = PostgresCommitSessionPhase::MigrationsApplied;
@@ -267,13 +278,27 @@ impl CommitSession for PostgresCommitSession {
                 .client
                 .as_mut()
                 .ok_or_else(|| CdfError::internal("Postgres commit session has no transaction"))?;
-            let row_key_start = allocate_row_key_range(client, expected.state.row_count)?;
-            copy_stage_rows(client, &self.plan, segment, row_key_start, loaded_at_ms)?;
+            let package_row_key_start = self.first_row_key.ok_or_else(|| {
+                CdfError::internal("Postgres package row-key allocator is not initialized")
+            })?;
+            let segment_row_key_start =
+                package_row_key_start
+                    .checked_add(i64::try_from(expected.package_row_ord_start).map_err(|_| {
+                        CdfError::data("Postgres package row ordinal exceeds BIGINT")
+                    })?)
+                    .ok_or_else(|| CdfError::data("Postgres segment row key overflowed BIGINT"))?;
+            copy_stage_rows(
+                client,
+                &self.plan,
+                segment,
+                package_row_key_start,
+                loaded_at_ms,
+            )?;
             insert_segment_range(
                 client,
                 &self.plan,
                 &expected.state.segment_id,
-                row_key_start,
+                segment_row_key_start,
                 expected.state.row_count,
             )?;
         }
@@ -363,7 +388,8 @@ fn validate_commit_segment(
         row_count += batch.num_rows() as u64;
     }
     if let Some(schema) = &schema {
-        validate_schema_matches_plan(schema.as_ref(), &plan.columns)?;
+        let logical = cdf_package_contract::logical_output_schema(schema.as_ref())?;
+        validate_schema_matches_plan(&logical, &plan.columns)?;
     }
     if row_count != expected.state.row_count {
         return Err(CdfError::data(format!(
@@ -373,6 +399,11 @@ fn validate_commit_segment(
             expected.state.row_count
         )));
     }
+    cdf_package_contract::validate_package_row_ord_batches(
+        &segment.batches,
+        expected.package_row_ord_start,
+        expected.state.row_count,
+    )?;
     Ok(())
 }
 
@@ -531,7 +562,7 @@ fn copy_stage_rows(
     client: &mut Client,
     plan: &PostgresLoadPlan,
     segment: CommitSegment,
-    row_key_start: i64,
+    package_row_key_start: i64,
     loaded_at_ms: i64,
 ) -> Result<u64> {
     let mut columns = quoted_column_names(&plan.columns);
@@ -545,15 +576,8 @@ fn copy_stage_rows(
         .copy_in(&copy_sql)
         .map_err(|error| postgres_error("open Postgres COPY into stage", error))?;
     let mut encoder = BinaryCopyEncoder::new(writer, plan.columns.len())?;
-    let mut next_row_key = row_key_start;
     for batch in segment.into_batches()? {
-        encoder.write_batch(&batch.batch, next_row_key, loaded_at_ms)?;
-        next_row_key = next_row_key
-            .checked_add(
-                i64::try_from(batch.batch.num_rows())
-                    .map_err(|_| CdfError::data("Postgres batch row count exceeds BIGINT"))?,
-            )
-            .ok_or_else(|| CdfError::data("Postgres row key overflowed BIGINT"))?;
+        encoder.write_batch(&batch.batch, package_row_key_start, loaded_at_ms)?;
     }
     let (writer, encoded_rows) = encoder.finish()?;
     let copied = writer

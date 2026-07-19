@@ -1043,6 +1043,7 @@ dependencies = [
  "arrow-schema 59.1.0",
  "cdf-kernel",
  "cdf-package",
+ "cdf-package-contract",
  "futures-core",
  "futures-executor",
  "futures-util",
@@ -1183,6 +1184,7 @@ dependencies = [
 name = "cdf-package-contract"
 version = "0.1.0"
 dependencies = [
+ "arrow-array 59.1.0",
  "arrow-schema 59.1.0",
  "cdf-kernel",
  "serde",
@@ -1385,6 +1387,7 @@ dependencies = [
  "cdf-kernel",
  "cdf-memory",
  "cdf-package",
+ "cdf-package-contract",
  "cdf-runtime",
  "futures-util",
  "hex",

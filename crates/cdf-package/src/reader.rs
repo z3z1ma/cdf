@@ -309,6 +309,11 @@ fn load_verified_segment<T>(
             entry.segment_id, entry.row_count
         )));
     }
+    cdf_package_contract::validate_package_row_ord_batches(
+        &batches,
+        entry.package_row_ord_start,
+        entry.row_count,
+    )?;
     lease.reconcile(retained_bytes.max(1))?;
     let window = Arc::new(VerifiedSegmentWindow {
         memory_lease: lease,
@@ -550,7 +555,13 @@ impl PackageReader {
                     segment_id.as_str()
                 ))
             })?;
-        read_segment_file(&self.package_dir, &segment.path)
+        let batches = read_segment_file(&self.package_dir, &segment.path)?;
+        cdf_package_contract::validate_package_row_ord_batches(
+            &batches,
+            segment.package_row_ord_start,
+            segment.row_count,
+        )?;
+        Ok(batches)
     }
 
     pub fn read_all_segments(&self) -> Result<Vec<(SegmentEntry, Vec<RecordBatch>)>> {
@@ -559,10 +570,13 @@ impl PackageReader {
             .segments
             .iter()
             .map(|segment| {
-                Ok((
-                    segment.clone(),
-                    read_segment_file(&self.package_dir, &segment.path)?,
-                ))
+                let batches = read_segment_file(&self.package_dir, &segment.path)?;
+                cdf_package_contract::validate_package_row_ord_batches(
+                    &batches,
+                    segment.package_row_ord_start,
+                    segment.row_count,
+                )?;
+                Ok((segment.clone(), batches))
             })
             .collect()
     }

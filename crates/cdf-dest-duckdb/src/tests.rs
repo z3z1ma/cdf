@@ -218,10 +218,20 @@ fn build_package_segments_for_commit(
             &BTreeMap::from([("schema_hash", "schema-v1")]),
         )
         .unwrap();
-    let entries = segments
-        .iter()
-        .map(|(segment_id, batches)| builder.write_segment(segment_id.clone(), batches).unwrap())
-        .collect::<Vec<_>>();
+    let mut entries = Vec::with_capacity(segments.len());
+    let mut package_row_ord_start = 0_u64;
+    for (segment_id, batches) in segments {
+        let row_count = batches.iter().map(RecordBatch::num_rows).sum::<usize>() as u64;
+        let canonical =
+            cdf_package_contract::append_package_row_ord(batches.clone(), package_row_ord_start)
+                .unwrap();
+        entries.push(
+            builder
+                .write_segment(segment_id.clone(), package_row_ord_start, &canonical)
+                .unwrap(),
+        );
+        package_row_ord_start += row_count;
+    }
     write_current_state_artifacts(&builder, &entries, disposition, merge_keys);
     let manifest = builder.finish().unwrap();
     PackageHash::new(manifest.package_hash).unwrap()
@@ -590,12 +600,15 @@ fn plan_current_package_commit(
                 reader.manifest().identity.segments.first().ok_or_else(|| {
                     CdfError::data("DuckDB package has no segment schema authority")
                 })?;
-            reader
+            let segment_schema = reader
                 .read_segment(&first.segment_id)?
                 .into_iter()
                 .next()
                 .map(|batch| batch.schema())
-                .ok_or_else(|| CdfError::data("DuckDB package first segment has no Arrow batch"))?
+                .ok_or_else(|| CdfError::data("DuckDB package first segment has no Arrow batch"))?;
+            Arc::new(cdf_package_contract::logical_output_schema(
+                segment_schema.as_ref(),
+            )?)
         };
     destination.plan_schema_commit(&request.commit, schema.as_ref())
 }

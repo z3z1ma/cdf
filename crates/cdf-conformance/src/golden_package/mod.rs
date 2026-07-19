@@ -105,8 +105,8 @@ pub fn build_prepared_orders_golden_package(
     builder.write_quarantine_artifact("part-000001.parquet", b"quarantine-prepared-orders-v1")?;
     builder.write_lineage_artifact("batches.parquet", b"lineage-prepared-orders-v1")?;
     builder.append_trace_event(&BTreeMap::from([("event", "prepared-orders-v1")]))?;
-    let segment =
-        builder.write_segment(SegmentId::new("seg-000001")?, &[prepared_orders_batch()?])?;
+    let batch = cdf_package_contract::append_package_row_ord(vec![prepared_orders_batch()?], 0)?;
+    let segment = builder.write_segment(SegmentId::new("seg-000001")?, 0, &batch)?;
     write_prepared_orders_state_commit_artifacts(&builder, segment)?;
     builder.finish_with_status(spec.status)?;
 

@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const DESTINATION_ID: &str = "parquet_object_store";
-const MANIFEST_VERSION: u16 = 3;
+const MANIFEST_VERSION: u16 = 4;
 const REPLACE_POINTER_VERSION: u16 = 1;
 const CORRECTION_SIDECAR_VERSION: u16 = 1;
 const CORRECTION_SIDECAR_MANIFEST_VERSION: u16 = 1;

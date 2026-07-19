@@ -253,6 +253,7 @@ pub(crate) fn build_manifest(
     segments: Vec<SegmentEntry>,
     status: PackageStatus,
 ) -> Result<PackageManifest> {
+    cdf_package_contract::validate_segment_ordinal_manifest(&segments)?;
     let identity = ManifestIdentity {
         manifest_version: MANIFEST_VERSION,
         package_id,

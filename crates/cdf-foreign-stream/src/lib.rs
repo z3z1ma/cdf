@@ -571,15 +571,24 @@ mod tests {
         let builder = PackageBuilder::create(temp.path(), "foreign-mock-package").unwrap();
         let mut batches = batch_stream_from_foreign_events(stream);
         let mut segment_count = 0_u64;
+        let mut package_row_ord_start = 0_u64;
         while let Some(batch) = block_on(batches.next()).transpose().unwrap() {
             segment_count += 1;
             let record_batch = batch.record_batch().unwrap().clone();
+            let row_count = record_batch.num_rows() as u64;
+            let record_batch = cdf_package_contract::append_package_row_ord(
+                vec![record_batch],
+                package_row_ord_start,
+            )
+            .unwrap();
             builder
                 .write_segment(
                     SegmentId::new(format!("seg-{segment_count:06}")).unwrap(),
-                    std::slice::from_ref(&record_batch),
+                    package_row_ord_start,
+                    &record_batch,
                 )
                 .unwrap();
+            package_row_ord_start += row_count;
         }
         let manifest = builder.finish().unwrap();
         assert_eq!(segment_count, 2);

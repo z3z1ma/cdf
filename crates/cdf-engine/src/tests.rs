@@ -4039,7 +4039,7 @@ fn variant_capture_materializes_nested_values_and_contract_evolution_evidence() 
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
     let batches = reader.read_segment(&output.segments[0].segment_id).unwrap();
     let batch = &batches[0];
-    assert_eq!(batch.schema().fields().len(), 3);
+    assert_eq!(batch.schema().fields().len(), 4);
     assert!(batch.schema().field_with_name("payload").is_err());
     assert!(batch.schema().field_with_name("tags").is_err());
     assert!(batch.schema().field_with_name("attributes").is_err());
@@ -4929,7 +4929,7 @@ fn package_identity_is_invariant_to_source_batch_rechunking() {
     );
     assert_eq!(
         one_output.manifest.package_hash,
-        "sha256:7d392b70cb3417cdf54fe202b854ccb8ee5e91dc0f3d7fe7b9481183220a12d6"
+        "sha256:ba199d2e1056183b72e74037e7cad6833b43a3a565d29358b1d3fc3f818f020d"
     );
 }
 
@@ -5315,6 +5315,38 @@ fn parallel_segment_encoding_is_identical_to_inline_canonical_registration() {
     .unwrap();
 
     assert_eq!(parallel.output.manifest.identity, inline.manifest.identity);
+    assert_eq!(
+        parallel
+            .output
+            .manifest
+            .identity
+            .segments
+            .iter()
+            .map(|segment| segment.package_row_ord_start)
+            .collect::<Vec<_>>(),
+        vec![0, 2]
+    );
+    let parallel_reader = cdf_package::PackageReader::open(parallel_dir.path()).unwrap();
+    let persisted_ordinals = parallel
+        .output
+        .manifest
+        .identity
+        .segments
+        .iter()
+        .flat_map(|segment| {
+            parallel_reader
+                .read_segment(&segment.segment_id)
+                .unwrap()
+                .into_iter()
+                .flat_map(|batch| {
+                    cdf_package_contract::package_row_ord_array(&batch)
+                        .unwrap()
+                        .values()
+                        .to_vec()
+                })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(persisted_ordinals, vec![0, 1, 2]);
     assert_eq!(parallel.output.segments, inline.segments);
     assert_eq!(parallel.output.lineage, inline.lineage);
     assert_eq!(

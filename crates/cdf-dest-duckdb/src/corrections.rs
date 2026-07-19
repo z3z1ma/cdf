@@ -488,7 +488,14 @@ fn commit_corrections(
             committed_at_ms,
             &duckdb_version,
         )?;
-        insert_mirrors(&tx, &mirror_request, &receipt.segment_acks, &receipt, None)?;
+        insert_mirrors(
+            &tx,
+            &mirror_request,
+            &receipt.segment_acks,
+            &receipt,
+            None,
+            None,
+        )?;
         tx.commit()
             .map_err(|error| duckdb_error("commit DuckDB correction transaction", error))?;
         receipt

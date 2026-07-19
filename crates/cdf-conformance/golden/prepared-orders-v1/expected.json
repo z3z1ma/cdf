@@ -1,10 +1,10 @@
 {
-  "manifest_version": 1,
-  "package_hash": "sha256:c1a3b20f0749898d3ddd8517e37dca50b74ee51023fc064d68aa20a7d2a645ee",
+  "manifest_version": 2,
+  "package_hash": "sha256:f8db1d6e8975ef1edc71aebe3998a7d438dec52bdda0672edd78ff148b370f95",
   "package_status": "packaged",
-  "signature_signing_input": "sha256:c1a3b20f0749898d3ddd8517e37dca50b74ee51023fc064d68aa20a7d2a645ee",
+  "signature_signing_input": "sha256:f8db1d6e8975ef1edc71aebe3998a7d438dec52bdda0672edd78ff148b370f95",
   "signature_value": null,
-  "identity_manifest_version": 1,
+  "identity_manifest_version": 2,
   "identity_layout": [
     "plan/",
     "schema/",
@@ -19,13 +19,13 @@
   "identity_files": [
     {
       "path": "data/seg-000001.arrow",
-      "byte_count": 1082,
-      "sha256": "3877d05802f03053efcdc1ba97244cdb449cc2fdcf9e91d051f85e52fef1cdc1"
+      "byte_count": 1746,
+      "sha256": "19d86e195270e1a09768b1ad7c039672ddb4600973896c1c0a293d4e2d0f4a53"
     },
     {
       "path": "destination/commit_plan.json",
       "byte_count": 358,
-      "sha256": "08cf77291de4aa43a105b4a0c87110bbac456e69cdc1cb45bb9e3d12c6383c09"
+      "sha256": "53fc3bf5e1339d1f2e4dd2664089b17f8a7604f2107068781342e9b309b430b2"
     },
     {
       "path": "lineage/batches.parquet",
@@ -75,7 +75,7 @@
     {
       "path": "state/proposed_delta.json",
       "byte_count": 585,
-      "sha256": "09f8c369cbc25693357ce4be355ceb441cab269a3b599b08dbc0372015bcbff9"
+      "sha256": "6ea0f8cd163e487f563546c7bd5168a82d3aa66c64e73d413b75f2bd3795c91a"
     },
     {
       "path": "stats/profile.parquet",
@@ -98,8 +98,8 @@
       "segment_id": "seg-000001",
       "path": "data/seg-000001.arrow",
       "row_count": 3,
-      "byte_count": 1082,
-      "sha256": "3877d05802f03053efcdc1ba97244cdb449cc2fdcf9e91d051f85e52fef1cdc1"
+      "byte_count": 1746,
+      "sha256": "19d86e195270e1a09768b1ad7c039672ddb4600973896c1c0a293d4e2d0f4a53"
     }
   ]
 }

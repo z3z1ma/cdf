@@ -1282,13 +1282,19 @@ fn build_package_with_options_and_scan_tamper(
             &BTreeMap::from([("schema_hash", SCHEMA_HASH)]),
         )
         .unwrap();
+    let batches = cdf_package_contract::append_package_row_ord(
+        vec![sample_batch(
+            vec![1, 2, 3],
+            vec![Some("ada"), Some("grace"), None],
+        )],
+        0,
+    )
+    .unwrap();
     let segment = builder
         .write_segment(
             cdf_kernel::SegmentId::new("seg-000001").unwrap(),
-            &[sample_batch(
-                vec![1, 2, 3],
-                vec![Some("ada"), Some("grace"), None],
-            )],
+            0,
+            &batches,
         )
         .unwrap();
     builder

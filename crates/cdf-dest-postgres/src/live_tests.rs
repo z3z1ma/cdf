@@ -108,7 +108,13 @@ fn live_binary_copy_is_at_least_twice_csv() {
         .unwrap();
     let mut encoder =
         crate::binary_copy::BinaryCopyEncoder::new(writer, batch.num_columns()).unwrap();
-    encoder.write_batch(&batch, 1, 1_700_000_000_000).unwrap();
+    let canonical = cdf_package_contract::append_package_row_ord(vec![batch.clone()], 0)
+        .unwrap()
+        .pop()
+        .unwrap();
+    encoder
+        .write_batch(&canonical, 1, 1_700_000_000_000)
+        .unwrap();
     let (writer, encoded) = encoder.finish().unwrap();
     let copied = writer.finish().unwrap();
     let binary_elapsed = started.elapsed();
@@ -465,10 +471,20 @@ fn build_package(
             .write_runtime_arrow_schema(batch.schema().as_ref())
             .unwrap();
     }
+    let mut package_row_ord_start = 0_u64;
     for (segment_id, batch) in segments {
+        let rows = batch.num_rows() as u64;
+        let batch =
+            cdf_package_contract::append_package_row_ord(vec![batch], package_row_ord_start)
+                .unwrap();
         builder
-            .write_segment(SegmentId::new(segment_id).unwrap(), &[batch])
+            .write_segment(
+                SegmentId::new(segment_id).unwrap(),
+                package_row_ord_start,
+                &batch,
+            )
             .unwrap();
+        package_row_ord_start += rows;
     }
     builder.finish().unwrap()
 }
@@ -539,14 +555,24 @@ fn build_replay_package(
             .write_runtime_arrow_schema(batch.schema().as_ref())
             .unwrap();
     }
-    let entries = segments
-        .into_iter()
-        .map(|(segment_id, batch)| {
+    let mut entries = Vec::with_capacity(segments.len());
+    let mut package_row_ord_start = 0_u64;
+    for (segment_id, batch) in segments {
+        let rows = batch.num_rows() as u64;
+        let batch =
+            cdf_package_contract::append_package_row_ord(vec![batch], package_row_ord_start)
+                .unwrap();
+        entries.push(
             builder
-                .write_segment(SegmentId::new(segment_id).unwrap(), &[batch])
-                .unwrap()
-        })
-        .collect::<Vec<_>>();
+                .write_segment(
+                    SegmentId::new(segment_id).unwrap(),
+                    package_row_ord_start,
+                    &batch,
+                )
+                .unwrap(),
+        );
+        package_row_ord_start += rows;
+    }
     write_replay_artifacts(&builder, target, disposition, checkpoint_id, &entries);
     builder.finish().unwrap()
 }
@@ -1064,7 +1090,9 @@ fn live_append_populates_quarantine_mirror_when_sheet_supports_it() {
     let segment = builder
         .write_segment(
             SegmentId::new("seg-000001").unwrap(),
-            &[batch(&[(1, Some("ada"))])],
+            0,
+            &cdf_package_contract::append_package_row_ord(vec![batch(&[(1, Some("ada"))])], 0)
+                .unwrap(),
         )
         .unwrap();
     write_replay_artifacts(

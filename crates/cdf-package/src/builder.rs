@@ -54,6 +54,7 @@ pub struct PackageSegmentEncoder {
 pub struct EncodedPackageSegment {
     segment_id: SegmentId,
     relative_path: String,
+    package_row_ord_start: u64,
     row_count: u64,
     receipt: crate::storage::IpcWriteReceipt,
     measure: bool,
@@ -82,6 +83,7 @@ impl PackageSegmentEncoder {
     pub fn encode(
         &self,
         segment_id: SegmentId,
+        package_row_ord_start: u64,
         batches: &[RecordBatch],
         measure: bool,
     ) -> Result<EncodedPackageSegment> {
@@ -100,6 +102,11 @@ impl PackageSegmentEncoder {
                 .checked_add(batch.num_rows() as u64)
                 .ok_or_else(|| CdfError::data("segment row count overflow"))?;
         }
+        cdf_package_contract::validate_package_row_ord_batches(
+            batches,
+            package_row_ord_start,
+            row_count,
+        )?;
         let relative_path = segment_relative_path(&segment_id)?;
         let path = package_path(&self.package_dir, &relative_path);
         if path.exists() {
@@ -124,6 +131,7 @@ impl PackageSegmentEncoder {
         Ok(EncodedPackageSegment {
             segment_id,
             relative_path,
+            package_row_ord_start,
             row_count,
             receipt,
             measure,
@@ -220,6 +228,7 @@ impl Write for StreamingIdentityArtifact {
 struct SegmentDraft {
     segment_id: SegmentId,
     path: String,
+    package_row_ord_start: u64,
     row_count: u64,
 }
 impl PackageBuilder {
@@ -502,30 +511,33 @@ impl PackageBuilder {
     pub fn write_segment(
         &self,
         segment_id: SegmentId,
+        package_row_ord_start: u64,
         batches: &[RecordBatch],
     ) -> Result<SegmentEntry> {
         Ok(self
-            .write_segment_inner(segment_id, batches, false)?
+            .write_segment_inner(segment_id, package_row_ord_start, batches, false)?
             .segment)
     }
 
     pub fn write_segment_with_metrics(
         &self,
         segment_id: SegmentId,
+        package_row_ord_start: u64,
         batches: &[RecordBatch],
     ) -> Result<SegmentWriteMetrics> {
-        self.write_segment_inner(segment_id, batches, true)
+        self.write_segment_inner(segment_id, package_row_ord_start, batches, true)
     }
 
     fn write_segment_inner(
         &self,
         segment_id: SegmentId,
+        package_row_ord_start: u64,
         batches: &[RecordBatch],
         measure: bool,
     ) -> Result<SegmentWriteMetrics> {
-        let encoded = self
-            .segment_encoder()
-            .encode(segment_id, batches, measure)?;
+        let encoded =
+            self.segment_encoder()
+                .encode(segment_id, package_row_ord_start, batches, measure)?;
         self.register_encoded_segment(encoded)
     }
 
@@ -557,6 +569,7 @@ impl PackageBuilder {
         let segment = SegmentEntry {
             segment_id: encoded.segment_id.clone(),
             path: encoded.relative_path.clone(),
+            package_row_ord_start: encoded.package_row_ord_start,
             row_count: encoded.row_count,
             byte_count: encoded.receipt.artifact.byte_count,
             sha256: encoded.receipt.artifact.sha256.clone(),
@@ -566,6 +579,7 @@ impl PackageBuilder {
             &SegmentDraft {
                 segment_id: encoded.segment_id.clone(),
                 path: encoded.relative_path.clone(),
+                package_row_ord_start: encoded.package_row_ord_start,
                 row_count: encoded.row_count,
             },
             "package segment draft journal",
@@ -660,6 +674,7 @@ impl PackageBuilder {
                 segments.push(SegmentEntry {
                     segment_id: draft.segment_id,
                     path: draft.path,
+                    package_row_ord_start: draft.package_row_ord_start,
                     row_count: draft.row_count,
                     byte_count: entry.byte_count,
                     sha256: entry.sha256.clone(),
@@ -668,6 +683,7 @@ impl PackageBuilder {
             },
         )?;
 
+        cdf_package_contract::validate_segment_ordinal_manifest(&segments)?;
         let manifest = build_manifest(self.package_id.clone(), files, segments, status)?;
         write_manifest_atomic(&self.package_dir, &manifest)?;
         Ok(manifest)

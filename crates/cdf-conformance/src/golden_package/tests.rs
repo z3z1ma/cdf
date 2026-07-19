@@ -23,8 +23,8 @@ fn prepared_orders_v1_matches_committed_golden_across_100_rebuilds() {
 fn prepared_orders_v1_expected_fixture_contains_required_evidence() {
     let expected = prepared_orders_v1_expected_evidence().unwrap();
 
-    assert_eq!(expected.manifest_version, 1);
-    assert_eq!(expected.identity_manifest_version, 1);
+    assert_eq!(expected.manifest_version, 2);
+    assert_eq!(expected.identity_manifest_version, 2);
     assert_eq!(expected.package_status, "packaged");
     assert_eq!(expected.signature_signing_input, expected.package_hash);
     assert_eq!(expected.signature_value, None);

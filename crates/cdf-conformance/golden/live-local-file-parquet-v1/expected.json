@@ -1,6 +1,6 @@
 {
   "package_id": "live-local-file-parquet-v1",
-  "package_hash": "sha256:95808115b42a60589b698f8210b6101845c1b498874584ded48d05364d5d86f8",
+  "package_hash": "sha256:0ec6a74abd10f0e4c392a381256752b355771000bfffe0180d82bfef00e6e224",
   "checkpoint_id": "checkpoint-live-local-file-parquet-v1",
   "pipeline_id": "pipeline-live-local-file-parquet-v1",
   "resource_id": "local.events",
@@ -19,12 +19,12 @@
   "mirror_load_rows": 1,
   "mirror_state_rows": 1,
   "package": {
-    "manifest_version": 1,
-    "package_hash": "sha256:95808115b42a60589b698f8210b6101845c1b498874584ded48d05364d5d86f8",
+    "manifest_version": 2,
+    "package_hash": "sha256:0ec6a74abd10f0e4c392a381256752b355771000bfffe0180d82bfef00e6e224",
     "package_status": "checkpointed",
-    "signature_signing_input": "sha256:95808115b42a60589b698f8210b6101845c1b498874584ded48d05364d5d86f8",
+    "signature_signing_input": "sha256:0ec6a74abd10f0e4c392a381256752b355771000bfffe0180d82bfef00e6e224",
     "signature_value": null,
-    "identity_manifest_version": 1,
+    "identity_manifest_version": 2,
     "identity_layout": [
       "plan/",
       "schema/",
@@ -39,13 +39,13 @@
     "identity_files": [
       {
         "path": "data/p00000000-s00000000.arrow",
-        "byte_count": 1890,
-        "sha256": "b7f44781fcab6a62db305bf7f825990f85f851b9b399bacc0646e065ea980230"
+        "byte_count": 2482,
+        "sha256": "9a1b65388b54bdc7aea448685b6f6c8dfac563c11aac5eb3ffe9962ed2b8d4d1"
       },
       {
         "path": "destination/commit_plan.json",
         "byte_count": 591,
-        "sha256": "08b30513409520075f32ff44f1b9dd2a76171de838e13c03ec265be7ca05960e"
+        "sha256": "e0af8ce74a899c1671eb13d1ba8bf51f156407fd69b99184d1aea33eb1da3045"
       },
       {
         "path": "lineage/lineage.json",
@@ -105,7 +105,7 @@
       {
         "path": "state/proposed_delta.json",
         "byte_count": 1018,
-        "sha256": "7c5f27b06d8a0f7f10bb07c34ba6370156cd15d0a880ed60807686dd5a5d7388"
+        "sha256": "2811384ed196d9cd439b49e20ac0adcd5bfcecdb2e81871cd11768ebfa7e1581"
       },
       {
         "path": "stats/profile.parquet",
@@ -123,8 +123,8 @@
         "segment_id": "p00000000-s00000000",
         "path": "data/p00000000-s00000000.arrow",
         "row_count": 2,
-        "byte_count": 1890,
-        "sha256": "b7f44781fcab6a62db305bf7f825990f85f851b9b399bacc0646e065ea980230"
+        "byte_count": 2482,
+        "sha256": "9a1b65388b54bdc7aea448685b6f6c8dfac563c11aac5eb3ffe9962ed2b8d4d1"
       }
     ]
   }

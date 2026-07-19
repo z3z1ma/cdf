@@ -1,7 +1,7 @@
 use cdf_kernel::{CdfError, PackageHash, Receipt, Result, SegmentId};
 use serde::{Deserialize, Serialize};
 
-pub const MANIFEST_VERSION: u16 = 1;
+pub const MANIFEST_VERSION: u16 = 2;
 pub const MANIFEST_FILE: &str = "manifest.json";
 pub const TRACE_FILE: &str = "trace.jsonl";
 pub const RECEIPTS_FILE: &str = "destination/receipts.json";
@@ -47,6 +47,7 @@ pub struct FileEntry {
 pub struct SegmentEntry {
     pub segment_id: SegmentId,
     pub path: String,
+    pub package_row_ord_start: u64,
     pub row_count: u64,
     pub byte_count: u64,
     pub sha256: String,

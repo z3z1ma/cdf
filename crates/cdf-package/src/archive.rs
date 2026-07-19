@@ -179,7 +179,11 @@ pub(crate) fn write_streamed_archive_temp_tree_with_memory(
         )?
         .as_minimum_working_set();
         let _window = reserve_blocking(std::sync::Arc::clone(&memory), &request)?;
-        let batches = reader.read_segment(&entry.segment_id)?;
+        let batches = reader
+            .read_segment(&entry.segment_id)?
+            .into_iter()
+            .map(cdf_package_contract::strip_package_row_ord)
+            .collect::<Result<Vec<_>>>()?;
         let retained_arrow_bytes = batches.iter().try_fold(0_u64, |total, batch| {
             total
                 .checked_add(record_batch_retained_bytes(batch)?)

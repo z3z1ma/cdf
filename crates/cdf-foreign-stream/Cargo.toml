@@ -16,5 +16,6 @@ serde = { version = "1.0.228", features = ["derive"] }
 arrow-array = "59.1.0"
 arrow-schema = "59.1.0"
 cdf-package = { path = "../cdf-package" }
+cdf-package-contract = { path = "../cdf-package-contract" }
 futures-executor = "0.3.32"
 tempfile = "3.27.0"

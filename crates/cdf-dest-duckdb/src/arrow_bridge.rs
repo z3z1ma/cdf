@@ -291,9 +291,15 @@ mod tests {
         let mut appender =
             crate::commit::open_arrow_appender(&vector_conn, &target, &column_names).unwrap();
         for ordinal in 0..BATCHES {
-            let row_key_start = u64::try_from(ordinal * BATCH_ROWS).unwrap() + 1;
-            let persisted =
-                crate::package::persistence_batch(batch.clone(), row_key_start, None).unwrap();
+            let package_row_ord_start = u64::try_from(ordinal * BATCH_ROWS).unwrap();
+            let canonical = cdf_package_contract::append_package_row_ord(
+                vec![batch.clone()],
+                package_row_ord_start,
+            )
+            .unwrap()
+            .pop()
+            .unwrap();
+            let persisted = crate::package::persistence_batch(canonical, 1, false).unwrap();
             crate::commit::append_arrow_batch(&mut appender, &target, persisted).unwrap();
         }
         crate::commit::flush_arrow_appender(&mut appender, &target).unwrap();

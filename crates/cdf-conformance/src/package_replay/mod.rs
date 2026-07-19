@@ -182,7 +182,8 @@ pub fn build_prepared_package_fixture(
         "schema/output.arrow.json",
         &BTreeMap::from([("schema_hash", spec.schema_hash.as_str())]),
     )?;
-    let segment = builder.write_segment(spec.segment_id.clone(), &[batch])?;
+    let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0)?;
+    let segment = builder.write_segment(spec.segment_id.clone(), 0, &batch)?;
     write_stream_admission_artifacts(
         &builder,
         &admission,

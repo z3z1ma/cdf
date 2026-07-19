@@ -30,6 +30,7 @@ pub struct ParquetObjectEntry {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParquetObjectSegmentEntry {
     pub segment_id: String,
+    pub package_row_ord_start: u64,
     pub row_offset: u64,
     pub row_count: u64,
     pub byte_count: u64,

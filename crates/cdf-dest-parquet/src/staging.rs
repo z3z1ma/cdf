@@ -448,6 +448,7 @@ impl StagedParquetObject {
                 }
                 segments.push(ParquetObjectSegmentEntry {
                     segment_id: identity.segment_id.as_str().to_owned(),
+                    package_row_ord_start: identity.package_row_ord_start,
                     row_offset,
                     row_count: identity.row_count,
                     byte_count: state.byte_count,

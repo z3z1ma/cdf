@@ -76,7 +76,7 @@ fn local_streaming_parquet_reaches_sixty_percent_of_write_roofline() {
                 byte_count: (ROWS * 16) as u64,
             },
             (ROWS * 16) as u64,
-            vec![batch.clone()],
+            canonical_batches(vec![batch.clone()], 0),
         )
     };
     let (_, services) = cdf_engine::StandaloneExecutionHost::default_services_with_spill(
@@ -184,6 +184,10 @@ fn sample_batch(ids: Vec<i64>, names: Vec<Option<&str>>) -> RecordBatch {
     let id: ArrayRef = Arc::new(Int64Array::from(ids));
     let name: ArrayRef = Arc::new(StringArray::from(names));
     RecordBatch::try_new(schema, vec![id, name]).unwrap()
+}
+
+fn canonical_batches(batches: Vec<RecordBatch>, start: u64) -> Vec<RecordBatch> {
+    cdf_package_contract::append_package_row_ord(batches, start).unwrap()
 }
 
 fn correction_operation(
@@ -312,10 +316,18 @@ fn build_package<S: AsRef<str>>(
         )
         .unwrap();
 
+    let mut package_row_ord_start = 0_u64;
     for (segment_id, batches) in segments {
+        let row_count = batches.iter().map(RecordBatch::num_rows).sum::<usize>() as u64;
+        let batches = canonical_batches(batches, package_row_ord_start);
         builder
-            .write_segment(SegmentId::new(segment_id.as_ref()).unwrap(), &batches)
+            .write_segment(
+                SegmentId::new(segment_id.as_ref()).unwrap(),
+                package_row_ord_start,
+                &batches,
+            )
             .unwrap();
+        package_row_ord_start += row_count;
     }
 
     let manifest = builder.finish().unwrap();
@@ -719,7 +731,7 @@ fn stage_through_ingress_with_lease(
         .iter()
         .flat_map(|segment| segment.batches.first())
         .next()
-        .map(|batch| batch.schema().as_ref().clone())
+        .map(|batch| cdf_package_contract::logical_output_schema(batch.schema().as_ref()).unwrap())
         .unwrap_or_else(|| {
             sample_batch(Vec::new(), Vec::new())
                 .schema()
@@ -1477,6 +1489,7 @@ fn filesystem_append_materializes_parquet_and_verifies_receipt() {
         .get_required(dest.execution(), &outcome.object_manifest.objects[0].key)
         .unwrap();
     assert_eq!(parquet_rows(&bytes), 3);
+    assert_eq!(parquet_field_names(&bytes), vec!["id", "name"]);
     assert_eq!(
         std::fs::read_dir(root.join(".cdf-staging"))
             .unwrap()
@@ -2306,7 +2319,7 @@ fn constrained_writer_memory_fails_cleanly_instead_of_waiting_on_its_input() {
             byte_count: 2,
         },
         2,
-        vec![batch],
+        canonical_batches(vec![batch], 0),
     );
     let result = crate::package::write_parquet_segment(
         segment,

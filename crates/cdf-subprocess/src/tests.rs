@@ -237,8 +237,9 @@ async fn ndjson_stdout_adapter_captures_stderr_and_packages_output() {
         .iter()
         .map(|batch| batch.record_batch().unwrap().clone())
         .collect::<Vec<_>>();
+    let batches = cdf_package_contract::append_package_row_ord(batches, 0).unwrap();
     package
-        .write_segment(SegmentId::new("seg-subprocess").unwrap(), &batches)
+        .write_segment(SegmentId::new("seg-subprocess").unwrap(), 0, &batches)
         .unwrap();
     package.finish().unwrap();
     cdf_package::PackageReader::open(temp.path().join("package"))
@@ -778,6 +779,7 @@ fn protocol_batches_write_to_and_replay_from_package() {
     let read = read_airbyte_ndjson_bytes(&bytes, &read_options(), &execution()).unwrap();
 
     let package = cdf_package::PackageBuilder::create(&package_dir, "pkg-protocol").unwrap();
+    let mut package_row_ord_start = 0_u64;
     for (index, stream) in read.streams.iter().enumerate() {
         let batches = stream
             .read
@@ -785,12 +787,17 @@ fn protocol_batches_write_to_and_replay_from_package() {
             .iter()
             .map(|batch| batch.record_batch().unwrap().clone())
             .collect::<Vec<_>>();
+        let row_count = batches.iter().map(RecordBatch::num_rows).sum::<usize>() as u64;
+        let batches =
+            cdf_package_contract::append_package_row_ord(batches, package_row_ord_start).unwrap();
         package
             .write_segment(
                 SegmentId::new(format!("seg-protocol-{index}")).unwrap(),
+                package_row_ord_start,
                 &batches,
             )
             .unwrap();
+        package_row_ord_start += row_count;
     }
     package.finish().unwrap();
 

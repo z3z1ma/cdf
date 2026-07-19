@@ -82,6 +82,8 @@ fn write_file_entry<W: Write>(writer: &mut W, entry: &FileEntry) -> Result<()> {
 fn write_segment_entry<W: Write>(writer: &mut W, entry: &SegmentEntry) -> Result<()> {
     write_bytes(writer, b"{\"byte_count\":")?;
     write_value(writer, &entry.byte_count)?;
+    write_bytes(writer, b",\"package_row_ord_start\":")?;
+    write_value(writer, &entry.package_row_ord_start)?;
     write_bytes(writer, b",\"path\":")?;
     write_value(writer, &entry.path)?;
     write_bytes(writer, b",\"row_count\":")?;

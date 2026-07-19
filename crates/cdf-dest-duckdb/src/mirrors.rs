@@ -105,6 +105,7 @@ pub(crate) fn insert_mirrors(
     segment_acks: &[SegmentAck],
     receipt: &Receipt,
     first_row_key: Option<u64>,
+    segment_identities: Option<&[cdf_runtime::StagedSegmentIdentity]>,
 ) -> Result<()> {
     let receipt_json = serde_json::to_string(receipt).map_err(json_error)?;
     conn.execute(
@@ -134,7 +135,6 @@ pub(crate) fn insert_mirrors(
         .iter()
         .map(|segment| (segment.segment_id.as_str(), segment))
         .collect::<BTreeMap<_, _>>();
-    let mut next_row_key = first_row_key;
     for ack in segment_acks {
         let state = state_by_segment.get(ack.segment_id.as_str()).copied();
         let scope_json = state
@@ -160,7 +160,28 @@ pub(crate) fn insert_mirrors(
             ],
         )
         .map_err(|error| duckdb_error("insert DuckDB _cdf_state row", error))?;
-        if let Some(row_key_start) = next_row_key {
+        if let Some(first_row_key) = first_row_key {
+            let identity = segment_identities
+                .and_then(|identities| {
+                    identities
+                        .iter()
+                        .find(|identity| identity.segment_id == ack.segment_id)
+                })
+                .ok_or_else(|| {
+                    CdfError::internal(format!(
+                        "DuckDB segment {} is missing canonical ordinal identity",
+                        ack.segment_id
+                    ))
+                })?;
+            if identity.row_count != ack.row_count {
+                return Err(CdfError::internal(format!(
+                    "DuckDB segment {} acknowledgement and ordinal identity row counts differ",
+                    ack.segment_id
+                )));
+            }
+            let row_key_start = first_row_key
+                .checked_add(identity.package_row_ord_start)
+                .ok_or_else(|| CdfError::data("DuckDB segment row-key range overflowed"))?;
             let row_key_end = row_key_start
                 .checked_add(ack.row_count)
                 .ok_or_else(|| CdfError::data("DuckDB segment row-key range overflowed"))?;
@@ -175,7 +196,6 @@ pub(crate) fn insert_mirrors(
                 ],
             )
             .map_err(|error| duckdb_error("insert DuckDB _cdf_segments row", error))?;
-            next_row_key = Some(row_key_end);
         }
     }
     Ok(())
