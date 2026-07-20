@@ -2699,12 +2699,15 @@ fn drain_partition_resume_stays_local_when_resource_frontier_is_a_larger_cursor(
 
 fn run_fixed_drain_epochs_with_jobs(
     jobs: u16,
-) -> Vec<(
-    String,
-    Vec<cdf_package_contract::SegmentEntry>,
-    cdf_kernel::EpochClosureEvidence,
-    bool,
-)> {
+) -> (
+    Vec<(
+        String,
+        Vec<cdf_package_contract::SegmentEntry>,
+        cdf_kernel::EpochClosureEvidence,
+        bool,
+    )>,
+    u64,
+) {
     let mut batches = sample_batches();
     for (ordinal, batch) in batches.iter_mut().enumerate() {
         batch.header.source_position = Some(SourcePosition::FileManifest(FileManifest {
@@ -2719,7 +2722,9 @@ fn run_fixed_drain_epochs_with_jobs(
             }],
         }));
     }
-    let resource = MockResource::tier_b(batches).without_control_keys();
+    let resource = MockResource::tier_b(batches)
+        .without_control_keys()
+        .with_dynamic_attestation();
     let extent = ExecutionExtent::Drain {
         version: EXECUTION_EXTENT_VERSION,
         policy: StreamEpochPolicy {
@@ -2732,7 +2737,11 @@ fn run_fixed_drain_epochs_with_jobs(
         },
         termination: DrainTermination::Records { count: 6 },
     };
-    let source = mock_unbounded_source_plan(&resource);
+    let mut source = mock_unbounded_source_plan(&resource);
+    source.execution_capabilities.speculative_safe = true;
+    source.execution_capabilities.attestation =
+        cdf_runtime::SourceAttestationStrength::ImmutableContent;
+    source.validate().unwrap();
     resource.bind_compiled_source(&source);
     let mut plan = Planner::new()
         .plan_tier_a(
@@ -2762,6 +2771,7 @@ fn run_fixed_drain_epochs_with_jobs(
         |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
     let root = TempDir::new().unwrap();
     let mut outputs = Vec::new();
+    let mut maximum_active = 0_u64;
     let mut epoch = 0_u64;
     while !controller.is_finished() {
         plan = plan
@@ -2781,6 +2791,7 @@ fn run_fixed_drain_epochs_with_jobs(
         ))
         .unwrap();
         let drain = output.drain_epoch.as_ref().unwrap();
+        maximum_active = maximum_active.max(output.source_frontier.maximum_active);
         outputs.push((
             output.output.manifest.package_hash.clone(),
             output.output.segments.clone(),
@@ -2798,15 +2809,17 @@ fn run_fixed_drain_epochs_with_jobs(
         epoch += 1;
     }
     assert_eq!(services.memory().snapshot().current_bytes, 0);
-    outputs
+    (outputs, maximum_active)
 }
 
 #[test]
 fn fixed_drain_epoch_packages_are_jobs_invariant() {
     let jobs_one = run_fixed_drain_epochs_with_jobs(1);
     let jobs_many = run_fixed_drain_epochs_with_jobs(8);
-    assert_eq!(jobs_one, jobs_many);
-    assert_eq!(jobs_one.len(), 2);
+    assert_eq!(jobs_one.0, jobs_many.0);
+    assert_eq!(jobs_one.0.len(), 2);
+    assert_eq!(jobs_one.1, 1);
+    assert!(jobs_many.1 > jobs_one.1);
 }
 
 #[test]
@@ -6414,6 +6427,7 @@ struct MockResource {
     attestation: Option<PartitionAttestation>,
     completion_attestation: Option<PartitionAttestation>,
     attestation_error: Option<String>,
+    dynamic_attestation: bool,
     transient_open_failures: Arc<AtomicUsize>,
     transient_stream_failures: Arc<AtomicUsize>,
     effective_schema_runtime: Option<EffectiveSchemaRuntime>,
@@ -6625,6 +6639,7 @@ impl MockResource {
             attestation: None,
             completion_attestation: None,
             attestation_error: None,
+            dynamic_attestation: false,
             transient_open_failures: Arc::new(AtomicUsize::new(0)),
             transient_stream_failures: Arc::new(AtomicUsize::new(0)),
             effective_schema_runtime: None,
@@ -6683,6 +6698,11 @@ impl MockResource {
 
     fn with_attestation(mut self, attestation: PartitionAttestation) -> Self {
         self.attestation = Some(attestation);
+        self
+    }
+
+    fn with_dynamic_attestation(mut self) -> Self {
+        self.dynamic_attestation = true;
         self
     }
 
@@ -7033,10 +7053,19 @@ impl ResourceStream for MockResource {
 
     fn attest_partition(
         &self,
-        _partition: PartitionPlan,
+        partition: PartitionPlan,
     ) -> cdf_kernel::PartitionAttestationAttempt<'_> {
         self.attest_count.fetch_add(1, Ordering::SeqCst);
-        let attestation = self.attestation.clone();
+        let attestation = if self.dynamic_attestation {
+            self.batches
+                .iter()
+                .filter(|batch| batch.header.partition_id == partition.partition_id)
+                .filter_map(|batch| batch.header.source_position.clone())
+                .next_back()
+                .map(|position| PartitionAttestation::new(position, None))
+        } else {
+            self.attestation.clone()
+        };
         let error = self.attestation_error.clone();
         cdf_kernel::PartitionAttestationAttempt::materialized(Box::pin(async move {
             if let Some(error) = error {
