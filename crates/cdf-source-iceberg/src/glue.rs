@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use cdf_aws::{AwsJsonClient, AwsJsonRequest};
+use cdf_aws::{AwsControlClient, AwsControlRequest, AwsControlTarget};
 use cdf_http::{HttpTransport, SecretProvider};
 use cdf_kernel::{BoxFuture, CdfError, Result};
 use cdf_runtime::{ExecutionServices, SourceEgressScope};
@@ -17,7 +17,7 @@ const GLUE_TARGET: &str = "AWSGlue.GetTable";
 /// response memory, HTTP pooling, and cancellation are neutral AWS infrastructure.
 #[derive(Clone, Debug)]
 pub struct AwsGlueCatalogClient {
-    aws: Arc<AwsJsonClient>,
+    aws: Arc<AwsControlClient>,
 }
 
 impl AwsGlueCatalogClient {
@@ -28,7 +28,7 @@ impl AwsGlueCatalogClient {
         egress: SourceEgressScope,
     ) -> Self {
         Self {
-            aws: Arc::new(AwsJsonClient::new(http, secrets, execution, egress)),
+            aws: Arc::new(AwsControlClient::new(http, secrets, execution, egress)),
         }
     }
 
@@ -44,9 +44,11 @@ impl AwsGlueCatalogClient {
         })?;
         let response = self
             .aws
-            .send(AwsJsonRequest {
+            .send(AwsControlRequest {
                 service: "glue".to_owned(),
-                target: GLUE_TARGET.to_owned(),
+                target: AwsControlTarget::JsonTarget {
+                    target: GLUE_TARGET.to_owned(),
+                },
                 region: request.region,
                 endpoint: request.endpoint,
                 credentials: request.credentials,

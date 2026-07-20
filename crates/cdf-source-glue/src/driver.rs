@@ -1,4 +1,10 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use arrow_schema::{Schema, SchemaRef};
 use cdf_http::{SecretProvider, SecretUri};
@@ -26,15 +32,17 @@ use futures_channel::oneshot;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    GlueCatalogClient, GlueGetTableRequest, GlueResourceOptions, GlueSourceOptions, GlueTable,
-    GlueTableClass, classify_table,
+    GlueCatalogClient, GlueGetTableRequest, GlueGetUnfilteredTableRequest, GlueResourceOptions,
+    GlueSourceOptions, GlueTable, GlueTableClass, LakeFormationClient, classify_table,
     execution::{execute_object, prepare_object},
     glue_arrow_schema, glue_option_schema, glue_source_descriptor,
+    lake_formation::LakeFormationRuntime,
     planner::{GluePlanningContext, plan_glue_scan},
     task_reader::{GlueExecutableTask, GluePlannedPartitionReader},
 };
 
 const PLANNING_ARTIFACT_NAMESPACE: &str = "planner-artifacts";
+static GLUE_QUERY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 type RuntimeFactory = dyn Fn(
         Arc<dyn SecretProvider + Send + Sync>,
@@ -49,6 +57,7 @@ type RuntimeFactory = dyn Fn(
 pub struct GlueRuntimeDependencies {
     pub object_access: Arc<dyn FileTransport>,
     pub catalog: Arc<dyn GlueCatalogClient>,
+    pub lake_formation: Arc<dyn LakeFormationClient>,
     pub formats: Arc<FormatRegistry>,
     pub transforms: Arc<ByteTransformRegistry>,
 }
@@ -65,12 +74,14 @@ impl GlueRuntimeDependencies {
     pub fn new(
         object_access: Arc<dyn FileTransport>,
         catalog: Arc<dyn GlueCatalogClient>,
+        lake_formation: Arc<dyn LakeFormationClient>,
         formats: Arc<FormatRegistry>,
         transforms: Arc<ByteTransformRegistry>,
     ) -> Self {
         Self {
             object_access,
             catalog,
+            lake_formation,
             formats,
             transforms,
         }
@@ -138,18 +149,98 @@ impl GlueSourceDriver {
         context: &SourceResolutionContext<'_>,
     ) -> Result<(LoadedGlueTable, GlueRuntimeDependencies)> {
         let dependencies = self.dependencies(plan, context)?;
+        let loaded = self.load_table_with_dependencies(plan, physical, context, &dependencies)?;
+        Ok((loaded, dependencies))
+    }
+
+    fn load_table_with_dependencies(
+        &self,
+        plan: &CompiledSourcePlan,
+        physical: &GluePhysicalPlan,
+        context: &SourceResolutionContext<'_>,
+        dependencies: &GlueRuntimeDependencies,
+    ) -> Result<LoadedGlueTable> {
         let request = table_request(&physical.source, &physical.resource, context.cancellation())?;
         let catalog = Arc::clone(&dependencies.catalog);
-        let response = context
+        let mut response = context
             .execution()
             .run_io(async move { catalog.get_table(request).await })?;
-        let loaded = LoadedGlueTable::new(
+        let lake_formation = if response.table.is_registered_with_lake_formation {
+            if physical.source.object_credentials.is_some() {
+                return Err(CdfError::auth(
+                    "Lake Formation governed Glue tables cannot use object_credentials; CDF must vend scoped credentials from Lake Formation",
+                ));
+            }
+            let catalog_id = response
+                .table
+                .catalog_id
+                .clone()
+                .or_else(|| physical.source.catalog_id.clone())
+                .ok_or_else(|| {
+                    CdfError::data(
+                        "Lake Formation governed Glue table omitted its catalog/account id",
+                    )
+                })?;
+            let requested_columns = requested_data_columns(&plan.schema, &response.table)?;
+            let all_columns_requested = plan.schema.fields().is_empty();
+            let query_start_unix_seconds = context.execution().unix_now().as_secs();
+            let request = GlueGetUnfilteredTableRequest {
+                region: physical.source.region.clone(),
+                catalog_id,
+                database: physical.resource.database.clone(),
+                table: physical.resource.table.clone(),
+                requested_columns,
+                all_columns_requested,
+                query_id: glue_query_id(plan, context.execution())?,
+                query_start_unix_seconds,
+                endpoint: physical.source.endpoint.clone(),
+                credentials: physical
+                    .source
+                    .credentials
+                    .as_ref()
+                    .map(|value| SecretUri::new(value.clone()))
+                    .transpose()?,
+                maximum_response_bytes: physical.source.maximum_response_bytes,
+                cancellation: context.cancellation(),
+            };
+            let catalog = Arc::clone(&dependencies.catalog);
+            let governed = context
+                .execution()
+                .run_io(async move { catalog.get_unfiltered_table(request).await })?;
+            let authorization = governed.lake_formation.clone().ok_or_else(|| {
+                CdfError::internal(
+                    "Glue governed metadata response omitted Lake Formation authorization",
+                )
+            })?;
+            let table_s3_path = governed
+                .table
+                .storage_descriptor
+                .as_ref()
+                .and_then(|descriptor| descriptor.location.clone())
+                .ok_or_else(|| {
+                    CdfError::data("Lake Formation governed Glue table omitted S3 Location")
+                })?;
+            response.bytes_read = response.bytes_read.saturating_add(governed.bytes_read);
+            response.table = governed.table;
+            Some(LakeFormationRuntime::new(
+                Arc::clone(&dependencies.lake_formation),
+                &physical.source,
+                authorization,
+                table_s3_path,
+                !response.table.partition_keys.is_empty(),
+                context.execution().clone(),
+                context.cancellation(),
+            )?)
+        } else {
+            None
+        };
+        LoadedGlueTable::new(
             response.table,
             response.bytes_read,
             &physical.resource,
             context.execution().memory(),
-        )?;
-        Ok((loaded, dependencies))
+            lake_formation,
+        )
     }
 }
 
@@ -232,23 +323,10 @@ impl SourceDriver for GlueSourceDriver {
                     payload.into_typed::<LoadedGlueTable>("Glue table metadata")?;
                 (table, Some(retention))
             }
-            None => {
-                let request =
-                    table_request(&physical.source, &physical.resource, context.cancellation())?;
-                let catalog = Arc::clone(&dependencies.catalog);
-                let response = context
-                    .execution()
-                    .run_io(async move { catalog.get_table(request).await })?;
-                (
-                    LoadedGlueTable::new(
-                        response.table,
-                        response.bytes_read,
-                        &physical.resource,
-                        context.execution().memory(),
-                    )?,
-                    None,
-                )
-            }
+            None => (
+                self.load_table_with_dependencies(plan, &physical, context, &dependencies)?,
+                None,
+            ),
         };
         let task_store = ExternalTaskStore::new(
             context.project_root().join(".cdf"),
@@ -300,13 +378,19 @@ impl SourceDriver for GlueSourceDriver {
                     SourceHealthResult {
                         probe_id: plan.descriptor.resource_id.as_str().to_owned(),
                         status: SourceHealthStatus::Passed,
-                        message: "Glue catalog table and format mapping are readable".to_owned(),
+                        message: if table.lake_formation.is_some() {
+                            "Glue/Lake Formation authorized metadata and format mapping are readable; credential vending and object access are verified by plan/run"
+                        } else {
+                            "Glue catalog table and format mapping are readable"
+                        }
+                        .to_owned(),
                         details: serde_json::json!({
                             "resource_id": plan.descriptor.resource_id.as_str(),
                             "database": physical.resource.database,
                             "table": physical.resource.table,
                             "format": table.format_id,
                             "partition_columns": table.partition_schema.fields().len(),
+                            "lake_formation": table.lake_formation.is_some(),
                             "metadata_bytes": table.bytes_read,
                         }),
                     }
@@ -354,6 +438,8 @@ impl SourceAddPlanner for GlueSourceDriver {
         for key in [
             "catalog_id",
             "endpoint",
+            "object_region",
+            "lake_formation_endpoint",
             "credentials",
             "object_credentials",
         ] {
@@ -374,6 +460,8 @@ impl SourceAddPlanner for GlueSourceDriver {
         let allowed = [
             "catalog_id",
             "endpoint",
+            "object_region",
+            "lake_formation_endpoint",
             "credentials",
             "object_credentials",
             "egress_allowlist",
@@ -436,6 +524,7 @@ struct LoadedGlueTable {
     generation: String,
     format_id: String,
     bytes_read: u64,
+    lake_formation: Option<LakeFormationRuntime>,
     _memory: cdf_memory::MemoryLease,
 }
 
@@ -445,10 +534,11 @@ impl LoadedGlueTable {
         bytes_read: u64,
         resource: &GlueResourceOptions,
         memory: Arc<dyn cdf_memory::MemoryCoordinator>,
+        lake_formation: Option<LakeFormationRuntime>,
     ) -> Result<Self> {
-        if table.is_registered_with_lake_formation {
-            return Err(CdfError::auth(
-                "Glue table is registered with Lake Formation; use the governed Glue source path once Lake Formation credential vending is configured",
+        if table.is_registered_with_lake_formation != lake_formation.is_some() {
+            return Err(CdfError::internal(
+                "Glue table Lake Formation registration and runtime authority disagree",
             ));
         }
         let mapping = match classify_table(&table, resource.format.as_deref())? {
@@ -492,6 +582,7 @@ impl LoadedGlueTable {
             generation,
             format_id: mapping.format_id,
             bytes_read,
+            lake_formation,
             _memory: memory,
         })
     }
@@ -724,6 +815,7 @@ impl ResourceStream for GlueResource {
             &executable.task,
             executable.authority(),
             &self.source,
+            self.table.lake_formation.as_ref(),
             &self.data_schema,
             &self.partition_schema,
             &self.physical_schema,
@@ -797,13 +889,19 @@ impl ResourceStream for GlueResource {
         let object_access = Arc::clone(&self.dependencies.object_access);
         let egress = self.egress.clone();
         let source = self.source.clone();
+        let lake_formation = self.table.lake_formation.clone();
         let cancellation = self.cancellation.clone();
         let physical_hash = cdf_kernel::canonical_arrow_schema_hash(self.physical_schema.as_ref());
         PartitionAttestationAttempt::materialized(Box::pin(async move {
             let executable = retained.ok_or_else(|| {
                 CdfError::contract("Glue attestation omitted its retained object task")
             })?;
-            let logical = object_resource(&executable.task.file.path, &source)?;
+            let logical = object_resource(
+                &executable.task.file.path,
+                &source,
+                lake_formation.as_ref(),
+                &executable.task.partition_values,
+            )?;
             let observed = object_access.metadata(
                 &egress,
                 &logical,
@@ -855,6 +953,7 @@ impl QueryableResource for GlueResource {
                 egress: self.egress.clone(),
                 task_store: self.task_store.clone(),
                 cancellation: self.cancellation.clone(),
+                lake_formation: self.table.lake_formation.clone(),
             },
         )
     }
@@ -879,6 +978,43 @@ fn table_request(
         maximum_response_bytes: source.maximum_response_bytes,
         cancellation,
     })
+}
+
+fn requested_data_columns(schema: &Schema, table: &GlueTable) -> Result<Vec<String>> {
+    if schema.fields().is_empty() {
+        return Ok(Vec::new());
+    }
+    let available = table
+        .storage_descriptor
+        .as_ref()
+        .ok_or_else(|| CdfError::data("AWS Glue table omitted its StorageDescriptor"))?
+        .columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut requested = Vec::new();
+    for field in schema.fields() {
+        let source_name = cdf_kernel::source_name(field.as_ref()).unwrap_or_else(|| field.name());
+        if available.contains(source_name) && !requested.iter().any(|name| name == source_name) {
+            requested.push(source_name.to_owned());
+        }
+    }
+    if requested.is_empty() && !available.is_empty() {
+        return Err(CdfError::contract(
+            "compiled Glue schema contains no table data columns for Lake Formation audit context",
+        ));
+    }
+    Ok(requested)
+}
+
+fn glue_query_id(plan: &CompiledSourcePlan, execution: &ExecutionServices) -> Result<String> {
+    let sequence = GLUE_QUERY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    artifact_hash(&serde_json::json!({
+        "kind": "cdf_glue_query_v1",
+        "plan": artifact_hash(plan)?,
+        "started_unix_nanos": execution.unix_now().as_nanos().to_string(),
+        "process_sequence": sequence,
+    }))
 }
 
 fn prepared_table_key(plan: &CompiledSourcePlan) -> Result<PreparedSourcePayloadKey> {
@@ -989,7 +1125,12 @@ fn glue_execution_capabilities(source: &GlueSourceOptions) -> Result<SourceExecu
     })
 }
 
-fn object_resource(path: &str, source: &GlueSourceOptions) -> Result<FileTransportResource> {
+fn object_resource(
+    path: &str,
+    source: &GlueSourceOptions,
+    lake_formation: Option<&LakeFormationRuntime>,
+    partition_values: &[Option<String>],
+) -> Result<FileTransportResource> {
     let mut resource = FileTransportResource::remote_url(path.to_owned()).with_egress_allowlist(
         if source.egress_allowlist.is_empty() {
             cdf_http::EgressAllowlist::allow_any()
@@ -997,7 +1138,10 @@ fn object_resource(path: &str, source: &GlueSourceOptions) -> Result<FileTranspo
             cdf_http::EgressAllowlist::from_hosts(source.egress_allowlist.clone())
         },
     );
-    if let Some(reference) = &source.object_credentials {
+    if let Some(lake_formation) = lake_formation {
+        resource = resource
+            .with_runtime_aws_credentials(lake_formation.binding(path, partition_values)?)?;
+    } else if let Some(reference) = &source.object_credentials {
         resource = resource.with_credentials(SecretUri::new(reference.clone())?);
     }
     Ok(resource)
@@ -1005,7 +1149,13 @@ fn object_resource(path: &str, source: &GlueSourceOptions) -> Result<FileTranspo
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::VecDeque, sync::Mutex};
+    use std::{
+        collections::VecDeque,
+        sync::{
+            Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
+    };
 
     use arrow_array::{Int64Array, StringArray};
     use arrow_schema::{DataType, Field};
@@ -1030,6 +1180,23 @@ mod tests {
         table: GlueTable,
         pages: Arc<Mutex<VecDeque<crate::GluePartitionPage>>>,
         table_reads: Arc<Mutex<u64>>,
+        governed: bool,
+    }
+
+    #[derive(Debug)]
+    struct DenyLakeFormation;
+
+    impl LakeFormationClient for DenyLakeFormation {
+        fn vend_credentials(
+            &self,
+            _request: crate::LakeFormationCredentialRequest,
+        ) -> cdf_kernel::BoxFuture<'_, Result<crate::LakeFormationCredentialResponse>> {
+            Box::pin(async {
+                Err(CdfError::internal(
+                    "non-governed Glue test requested Lake Formation credentials",
+                ))
+            })
+        }
     }
 
     impl GlueCatalogClient for StaticCatalog {
@@ -1042,6 +1209,7 @@ mod tests {
             Box::pin(async move {
                 Ok(crate::GlueTableResponse {
                     table,
+                    lake_formation: None,
                     bytes_read: 1024,
                 })
             })
@@ -1056,6 +1224,53 @@ mod tests {
                 page.ok_or_else(|| CdfError::internal("unexpected Glue partition page request"))
             })
         }
+
+        fn get_unfiltered_table(
+            &self,
+            request: crate::GlueGetUnfilteredTableRequest,
+        ) -> cdf_kernel::BoxFuture<'_, Result<crate::GlueTableResponse>> {
+            let governed = self.governed;
+            let table = self.table.clone();
+            Box::pin(async move {
+                if !governed {
+                    return Err(CdfError::internal(
+                        "non-governed test requested unfiltered Glue table metadata",
+                    ));
+                }
+                let columns = table
+                    .storage_descriptor
+                    .as_ref()
+                    .unwrap()
+                    .columns
+                    .iter()
+                    .map(|column| column.name.clone())
+                    .collect::<Vec<_>>();
+                Ok(crate::GlueTableResponse {
+                    table,
+                    lake_formation: Some(crate::GlueLakeFormationAuthorization {
+                        query_id: request.query_id,
+                        query_start_unix_seconds: request.query_start_unix_seconds,
+                        query_authorization_id: "authorization-1".to_owned(),
+                        resource_arn: "arn:aws:glue:us-west-2:123456789012:table/analytics/events"
+                            .to_owned(),
+                        authorized_columns: columns,
+                    }),
+                    bytes_read: 2048,
+                })
+            })
+        }
+
+        fn get_unfiltered_partitions(
+            &self,
+            _request: crate::GlueGetUnfilteredPartitionsRequest,
+        ) -> cdf_kernel::BoxFuture<'_, Result<crate::GluePartitionPage>> {
+            let page = self.pages.lock().unwrap().pop_front();
+            Box::pin(async move {
+                page.ok_or_else(|| {
+                    CdfError::internal("unexpected governed Glue partition page request")
+                })
+            })
+        }
     }
 
     #[derive(Clone)]
@@ -1063,6 +1278,7 @@ mod tests {
         identity: FileIdentityMetadata,
         source: Arc<dyn cdf_runtime::ByteSource>,
         memory: Arc<dyn cdf_memory::MemoryCoordinator>,
+        runtime_authority_seen: Arc<AtomicBool>,
     }
 
     impl FileTransport for StaticObjectAccess {
@@ -1072,6 +1288,8 @@ mod tests {
             resource: &FileTransportResource,
             _control: &FileTransportControl,
         ) -> Result<FileMetadataObservation> {
+            self.runtime_authority_seen
+                .store(resource.uses_runtime_aws_credentials(), Ordering::Relaxed);
             Ok(FileMetadataObservation::direct(
                 resource,
                 self.identity.clone(),
@@ -1081,10 +1299,12 @@ mod tests {
         fn list(
             &self,
             _egress: &cdf_runtime::SourceEgressScope,
-            _resource: &FileTransportResource,
+            resource: &FileTransportResource,
             maximum_results: usize,
             _control: &FileTransportControl,
         ) -> Result<FileIdentityStream> {
+            self.runtime_authority_seen
+                .store(resource.uses_runtime_aws_credentials(), Ordering::Relaxed);
             if maximum_results == 0 {
                 return Err(CdfError::contract(
                     "test object listing requires a nonzero result bound",
@@ -1264,6 +1484,7 @@ mod tests {
             identity: identity.clone(),
             source,
             memory: execution.memory(),
+            runtime_authority_seen: Arc::new(AtomicBool::new(false)),
         });
         let table = table_fixture();
         let table_reads = Arc::new(Mutex::new(0));
@@ -1282,6 +1503,7 @@ mod tests {
                 bytes_read: 512,
             }]))),
             table_reads: Arc::clone(&table_reads),
+            governed: false,
         });
         let mut formats = FormatRegistry::default();
         formats
@@ -1295,6 +1517,7 @@ mod tests {
             Ok(GlueRuntimeDependencies::new(
                 Arc::clone(&object_access),
                 Arc::clone(&catalog),
+                Arc::new(DenyLakeFormation),
                 Arc::clone(&formats),
                 Arc::clone(&transforms),
             ))
@@ -1371,6 +1594,107 @@ mod tests {
     }
 
     #[test]
+    fn governed_table_uses_authorized_metadata_and_runtime_partition_binding() {
+        let root = tempfile::tempdir().unwrap();
+        let (_host, execution) =
+            StandaloneExecutionHost::default_services_with_spill(256 << 20, 256 << 20).unwrap();
+        let (_data_schema, parquet) = parquet_fixture();
+        let object_path = "s3://fixture/events/day=2026-07-20/part-000.parquet";
+        let identity = FileIdentityMetadata {
+            location: object_path.to_owned(),
+            size_bytes: Some(u64::try_from(parquet.len()).unwrap()),
+            checksum: None,
+            etag: Some("fixture-generation-1".to_owned()),
+            version: None,
+            modified: Some("2026-07-20T00:00:00Z".to_owned()),
+            exact_ranges: true,
+        };
+        let source: Arc<dyn cdf_runtime::ByteSource> = Arc::new(
+            futures_executor::block_on(MemoryByteSource::from_bytes(
+                object_path,
+                parquet,
+                execution.memory(),
+            ))
+            .unwrap(),
+        );
+        let runtime_authority_seen = Arc::new(AtomicBool::new(false));
+        let object_access: Arc<dyn FileTransport> = Arc::new(StaticObjectAccess {
+            identity,
+            source,
+            memory: execution.memory(),
+            runtime_authority_seen: Arc::clone(&runtime_authority_seen),
+        });
+        let mut table = table_fixture();
+        table.is_registered_with_lake_formation = true;
+        let catalog: Arc<dyn GlueCatalogClient> = Arc::new(StaticCatalog {
+            table,
+            pages: Arc::new(Mutex::new(VecDeque::from([crate::GluePartitionPage {
+                partitions: vec![crate::GluePartition {
+                    values: vec!["2026-07-20".to_owned()],
+                    storage_descriptor: Some(GlueStorageDescriptor {
+                        location: Some("s3://fixture/events/day=2026-07-20/".to_owned()),
+                        ..GlueStorageDescriptor::default()
+                    }),
+                    parameters: BTreeMap::new(),
+                }],
+                next_token: None,
+                bytes_read: 512,
+            }]))),
+            table_reads: Arc::new(Mutex::new(0)),
+            governed: true,
+        });
+        let mut formats = FormatRegistry::default();
+        formats
+            .register(Arc::new(
+                cdf_format_parquet::ParquetFormatDriver::new().unwrap(),
+            ))
+            .unwrap();
+        let formats = Arc::new(formats);
+        let transforms = Arc::new(ByteTransformRegistry::default());
+        let driver = GlueSourceDriver::new(move |_secrets, _execution, _egress| {
+            Ok(GlueRuntimeDependencies::new(
+                Arc::clone(&object_access),
+                Arc::clone(&catalog),
+                Arc::new(DenyLakeFormation),
+                Arc::clone(&formats),
+                Arc::clone(&transforms),
+            ))
+        })
+        .unwrap();
+        let mut plan = driver.compile(compile_request(root.path())).unwrap();
+        let context = SourceResolutionContext::new(
+            root.path(),
+            Arc::new(NoopSecrets),
+            &execution,
+            Arc::new(cdf_http::EgressAllowlist::allow_any()),
+        );
+        let discovery = driver.discovery_session(&plan, &context).unwrap();
+        let candidate = discovery.candidates().unwrap().remove(0);
+        plan.schema = discovery
+            .observe(
+                &candidate,
+                &SourceDiscoveryRequest::new(16 << 20, 1).unwrap(),
+            )
+            .unwrap()
+            .schema
+            .as_ref()
+            .clone();
+        let resource = driver.resolve(&plan, &context).unwrap();
+        let scan = resource
+            .negotiate(&ScanRequest {
+                resource_id: plan.descriptor.resource_id,
+                projection: None,
+                filters: Vec::new(),
+                limit: None,
+                order_by: Vec::new(),
+                scope: ScopeKey::Resource,
+            })
+            .unwrap();
+        assert_eq!(scan.planned_task_set.unwrap().task_count, 1);
+        assert!(runtime_authority_seen.load(Ordering::Relaxed));
+    }
+
+    #[test]
     fn row_format_table_uses_the_registered_streaming_decoder() {
         let root = tempfile::tempdir().unwrap();
         let (_host, execution) =
@@ -1401,6 +1725,7 @@ mod tests {
             identity,
             source,
             memory: execution.memory(),
+            runtime_authority_seen: Arc::new(AtomicBool::new(false)),
         });
         let mut table = table_fixture();
         table.partition_keys.clear();
@@ -1416,6 +1741,7 @@ mod tests {
             table,
             pages: Arc::new(Mutex::new(VecDeque::new())),
             table_reads: Arc::new(Mutex::new(0)),
+            governed: false,
         });
         let mut formats = FormatRegistry::default();
         formats
@@ -1429,6 +1755,7 @@ mod tests {
             Ok(GlueRuntimeDependencies::new(
                 Arc::clone(&object_access),
                 Arc::clone(&catalog),
+                Arc::new(DenyLakeFormation),
                 Arc::clone(&formats),
                 Arc::clone(&transforms),
             ))

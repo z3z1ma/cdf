@@ -36,45 +36,36 @@ pub struct FileTransportResource {
     pub egress_allowlist: EgressAllowlist,
     pub auth: Option<AuthScheme>,
     pub credentials: Option<SecretUri>,
+    runtime_aws_credentials: Option<RuntimeAwsCredentials>,
 }
 
 impl FileTransportResource {
-    pub fn local_path(path: impl AsRef<Path>) -> Self {
+    pub fn new(location: FileTransportLocation) -> Self {
         Self {
-            location: FileTransportLocation::LocalPath {
-                path: path_to_lossless_string(path.as_ref()),
-            },
+            location,
             egress_allowlist: EgressAllowlist::allow_any(),
             auth: None,
             credentials: None,
+            runtime_aws_credentials: None,
         }
+    }
+
+    pub fn local_path(path: impl AsRef<Path>) -> Self {
+        Self::new(FileTransportLocation::LocalPath {
+            path: path_to_lossless_string(path.as_ref()),
+        })
     }
 
     pub fn file_url(url: impl Into<String>) -> Self {
-        Self {
-            location: FileTransportLocation::FileUrl { url: url.into() },
-            egress_allowlist: EgressAllowlist::allow_any(),
-            auth: None,
-            credentials: None,
-        }
+        Self::new(FileTransportLocation::FileUrl { url: url.into() })
     }
 
     pub fn http_url(url: impl Into<String>) -> Self {
-        Self {
-            location: FileTransportLocation::HttpUrl { url: url.into() },
-            egress_allowlist: EgressAllowlist::allow_any(),
-            auth: None,
-            credentials: None,
-        }
+        Self::new(FileTransportLocation::HttpUrl { url: url.into() })
     }
 
     pub fn remote_url(url: impl Into<String>) -> Self {
-        Self {
-            location: FileTransportLocation::RemoteUrl { url: url.into() },
-            egress_allowlist: EgressAllowlist::allow_any(),
-            auth: None,
-            credentials: None,
-        }
+        Self::new(FileTransportLocation::RemoteUrl { url: url.into() })
     }
 
     pub fn with_egress_allowlist(mut self, allowlist: EgressAllowlist) -> Self {
@@ -92,6 +83,19 @@ impl FileTransportResource {
         self
     }
 
+    pub fn with_runtime_aws_credentials(
+        mut self,
+        credentials: RuntimeAwsCredentials,
+    ) -> Result<Self> {
+        if self.credentials.is_some() {
+            return Err(CdfError::contract(
+                "file transport cannot combine static and runtime AWS credentials",
+            ));
+        }
+        self.runtime_aws_credentials = Some(credentials);
+        Ok(self)
+    }
+
     pub fn secret_references(&self) -> Vec<&cdf_http::SecretUri> {
         match &self.auth {
             Some(AuthScheme::Bearer { token_uri }) => vec![token_uri],
@@ -101,6 +105,109 @@ impl FileTransportResource {
         .into_iter()
         .chain(self.credentials.iter())
         .collect()
+    }
+
+    pub fn uses_runtime_aws_credentials(&self) -> bool {
+        self.runtime_aws_credentials.is_some()
+    }
+}
+
+#[derive(Clone)]
+pub struct RuntimeAwsCredentials(Arc<RuntimeAwsCredentialsInner>);
+
+struct RuntimeAwsCredentialsInner {
+    identity: String,
+    options: BTreeMap<String, String>,
+    provider: Arc<dyn cdf_aws::AwsCredentialProvider>,
+    stores: Mutex<BTreeMap<String, Arc<dyn ObjectStore>>>,
+}
+
+impl RuntimeAwsCredentials {
+    pub fn new(
+        identity: impl Into<String>,
+        options: BTreeMap<String, String>,
+        provider: Arc<dyn cdf_aws::AwsCredentialProvider>,
+    ) -> Result<Self> {
+        let identity = identity.into();
+        if identity.is_empty() || identity.chars().any(char::is_control) {
+            return Err(CdfError::contract(
+                "runtime AWS credential identity must be nonempty and control-free",
+            ));
+        }
+        for key in options.keys() {
+            let normalized = key.to_ascii_lowercase();
+            if matches!(
+                normalized.as_str(),
+                "aws_access_key_id"
+                    | "aws_secret_access_key"
+                    | "aws_session_token"
+                    | "access_key_id"
+                    | "secret_access_key"
+                    | "token"
+                    | "session_token"
+                    | "aws_token"
+            ) {
+                return Err(CdfError::contract(
+                    "runtime AWS credential options cannot contain credential values",
+                ));
+            }
+        }
+        Ok(Self(Arc::new(RuntimeAwsCredentialsInner {
+            identity,
+            options,
+            provider,
+            stores: Mutex::new(BTreeMap::new()),
+        })))
+    }
+
+    fn identity(&self) -> &str {
+        &self.0.identity
+    }
+
+    fn options(&self) -> &BTreeMap<String, String> {
+        &self.0.options
+    }
+
+    fn provider(&self) -> Arc<dyn cdf_aws::AwsCredentialProvider> {
+        Arc::clone(&self.0.provider)
+    }
+
+    fn store(&self, origin: &str) -> Result<Option<Arc<dyn ObjectStore>>> {
+        self.0
+            .stores
+            .lock()
+            .map(|stores| stores.get(origin).cloned())
+            .map_err(|_| CdfError::internal("runtime AWS object-store cache lock is poisoned"))
+    }
+
+    fn insert_or_get_store(
+        &self,
+        origin: String,
+        store: Arc<dyn ObjectStore>,
+    ) -> Result<Arc<dyn ObjectStore>> {
+        let mut stores =
+            self.0.stores.lock().map_err(|_| {
+                CdfError::internal("runtime AWS object-store cache lock is poisoned")
+            })?;
+        Ok(Arc::clone(stores.entry(origin).or_insert(store)))
+    }
+}
+
+impl PartialEq for RuntimeAwsCredentials {
+    fn eq(&self, other: &Self) -> bool {
+        self.identity() == other.identity() && self.options() == other.options()
+    }
+}
+
+impl Eq for RuntimeAwsCredentials {}
+
+impl fmt::Debug for RuntimeAwsCredentials {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RuntimeAwsCredentials")
+            .field("identity", &self.identity())
+            .field("option_keys", &self.options().keys().collect::<Vec<_>>())
+            .finish_non_exhaustive()
     }
 }
 
@@ -1022,6 +1129,51 @@ impl FileTransportFacade {
         egress.authorize(url)?;
         let policy = HttpRequest::new(HttpMethod::Get, format!("https://{host}/"));
         resource.egress_allowlist.check(&policy)?;
+        if resource.credentials.is_some() && resource.runtime_aws_credentials.is_some() {
+            return Err(CdfError::contract(
+                "file transport cannot combine static and runtime AWS credentials",
+            ));
+        }
+        if let Some(credentials) = &resource.runtime_aws_credentials {
+            if parsed.scheme() != "s3" {
+                return Err(CdfError::contract(
+                    "runtime AWS credentials can only authorize s3:// resources",
+                ));
+            }
+            let store = match credentials.store(&origin)? {
+                Some(store) => store,
+                None => {
+                    let mut builder = object_store::aws::AmazonS3Builder::new()
+                        .with_url(url)
+                        .with_credentials(Arc::new(ObjectStoreAwsCredentialProvider {
+                            provider: credentials.provider(),
+                        }));
+                    for (key, value) in credentials.options() {
+                        let key = key
+                            .parse::<object_store::aws::AmazonS3ConfigKey>()
+                            .map_err(|error| {
+                                CdfError::contract(format!(
+                                    "invalid runtime S3 option `{key}`: {error}"
+                                ))
+                            })?;
+                        builder = builder.with_config(key, value);
+                    }
+                    let store: Arc<dyn ObjectStore> =
+                        Arc::new(builder.build().map_err(|error| {
+                            CdfError::auth(format!(
+                                "configure S3 transport with runtime credentials: {error}"
+                            ))
+                        })?);
+                    credentials.insert_or_get_store(origin.clone(), store)?
+                }
+            };
+            return Ok((
+                store,
+                ObjectPath::parse(parsed.path().trim_start_matches('/'))
+                    .map_err(|error| CdfError::contract(format!("parse object path: {error}")))?,
+                origin,
+            ));
+        }
         if let Some(store) = self.object_stores.get(&origin) {
             return Ok((
                 Arc::clone(store),
@@ -1228,6 +1380,38 @@ impl FileTransportFacade {
             scheme.clone(),
             provider.resolve(reference)?,
         )))
+    }
+}
+
+#[derive(Clone)]
+struct ObjectStoreAwsCredentialProvider {
+    provider: Arc<dyn cdf_aws::AwsCredentialProvider>,
+}
+
+impl fmt::Debug for ObjectStoreAwsCredentialProvider {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ObjectStoreAwsCredentialProvider([RUNTIME AUTHORITY])")
+    }
+}
+
+#[async_trait::async_trait]
+impl object_store::CredentialProvider for ObjectStoreAwsCredentialProvider {
+    type Credential = object_store::aws::AwsCredential;
+
+    async fn get_credential(&self) -> object_store::Result<Arc<Self::Credential>> {
+        let credentials =
+            self.provider
+                .credentials()
+                .await
+                .map_err(|error| object_store::Error::Generic {
+                    store: "CDF runtime AWS credential provider",
+                    source: Box::new(error),
+                })?;
+        Ok(Arc::new(object_store::aws::AwsCredential {
+            key_id: credentials.access_key_id().to_owned(),
+            secret_key: credentials.secret_access_key().to_owned(),
+            token: credentials.session_token().map(str::to_owned),
+        }))
     }
 }
 
@@ -1958,6 +2142,48 @@ mod tests {
 
         assert!(Arc::ptr_eq(&first_client, &second_client));
         assert_eq!(pool.len(), 1);
+    }
+
+    #[derive(Debug)]
+    struct StaticRuntimeAwsCredentialProvider;
+
+    impl cdf_aws::AwsCredentialProvider for StaticRuntimeAwsCredentialProvider {
+        fn credentials(&self) -> cdf_kernel::BoxFuture<'_, Result<Arc<cdf_aws::AwsCredentials>>> {
+            Box::pin(async {
+                Ok(Arc::new(cdf_aws::AwsCredentials::new(
+                    "runtime-key",
+                    "runtime-secret",
+                    Some("runtime-token".to_owned()),
+                )?))
+            })
+        }
+    }
+
+    #[test]
+    fn runtime_aws_authority_precedes_process_global_object_store_clients() {
+        let global: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let transport = FileTransportFacade::new()
+            .with_object_store("s3://governed-bucket", Arc::clone(&global))
+            .with_execution_services(crate::test_execution_services());
+        let binding = RuntimeAwsCredentials::new(
+            "governed-binding",
+            BTreeMap::from([("aws_region".to_owned(), "us-west-2".to_owned())]),
+            Arc::new(StaticRuntimeAwsCredentialProvider),
+        )
+        .unwrap();
+        let resource =
+            FileTransportResource::remote_url("s3://governed-bucket/table/part-000.parquet")
+                .with_runtime_aws_credentials(binding)
+                .unwrap();
+        let (resolved, _, _) = transport
+            .resolve_object_store(
+                &crate::test_egress_scope(),
+                &resource,
+                "s3://governed-bucket/table/part-000.parquet",
+            )
+            .unwrap();
+
+        assert!(!Arc::ptr_eq(&resolved, &global));
     }
 
     #[test]

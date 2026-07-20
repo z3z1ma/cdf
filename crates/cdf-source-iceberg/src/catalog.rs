@@ -1281,12 +1281,11 @@ pub(crate) fn transport_resource(
             path: location.to_owned(),
         }
     };
-    let mut resource = FileTransportResource {
-        location: location_kind,
-        egress_allowlist: allowlist(source),
-        auth,
-        credentials: None,
-    };
+    let mut resource =
+        FileTransportResource::new(location_kind).with_egress_allowlist(allowlist(source));
+    if let Some(auth) = auth {
+        resource = resource.with_auth(auth);
+    }
     if let Some(reference) = &source.object_credentials {
         resource = resource.with_credentials(SecretUri::new(reference.clone())?);
     }

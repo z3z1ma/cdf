@@ -3764,14 +3764,14 @@ fn resolve_planned_file_match(
                     "file partition `{path}` is outside the compiled HTTP enumeration"
                 )));
             }
-            let logical = FileTransportResource {
-                location: FileTransportLocation::HttpUrl {
-                    url: path.to_owned(),
-                },
-                egress_allowlist: plan.allowlist.clone(),
-                auth: plan.auth.clone(),
-                credentials: plan.credentials.clone(),
-            };
+            let mut logical =
+                FileTransportResource::http_url(path).with_egress_allowlist(plan.allowlist.clone());
+            if let Some(auth) = &plan.auth {
+                logical = logical.with_auth(auth.clone());
+            }
+            if let Some(credentials) = &plan.credentials {
+                logical = logical.with_credentials(credentials.clone());
+            }
             let observation =
                 context
                     .transport
@@ -4131,12 +4131,14 @@ fn resolve_http_file_match(
     let mut matches = Vec::with_capacity(globs.len());
     for glob in globs {
         let url = join_http_root_and_glob(&plan.root, &glob);
-        let resource = FileTransportResource {
-            location: FileTransportLocation::HttpUrl { url },
-            egress_allowlist: plan.allowlist.clone(),
-            auth: plan.auth.clone(),
-            credentials: plan.credentials.clone(),
-        };
+        let mut resource =
+            FileTransportResource::http_url(url).with_egress_allowlist(plan.allowlist.clone());
+        if let Some(auth) = &plan.auth {
+            resource = resource.with_auth(auth.clone());
+        }
+        if let Some(credentials) = &plan.credentials {
+            resource = resource.with_credentials(credentials.clone());
+        }
         let Some(observation) = transport.metadata_if_exists(egress, &resource, control)? else {
             continue;
         };

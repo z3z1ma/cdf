@@ -10,8 +10,8 @@ use cdf_http::{AuthScheme, EgressAllowlist, SecretProvider, SecretUri};
 use cdf_kernel::{CdfError, CompiledScanIntent, PayloadRetention, QueryableResource, Result};
 use cdf_memory::{ConsumerKey, MemoryClass, ReservationRequest};
 use cdf_object_access::{
-    FilePayloadCache, FileTransportControl, FileTransportLocation, FileTransportResource,
-    file_url_path, resolve_project_cache_root,
+    FilePayloadCache, FileTransportControl, FileTransportResource, file_url_path,
+    resolve_project_cache_root,
 };
 use cdf_runtime::{
     CompiledFormatBinding, CompiledSourcePlan, ExecutionServices, FormatDiscoveryKind,
@@ -865,14 +865,14 @@ fn transport_resource_for_location(
     plan: &FileResourcePlan,
 ) -> Result<FileTransportResource> {
     let mut resource = match file_transport_scheme(location)? {
-        Some(FileTransportScheme::Http | FileTransportScheme::Https) => FileTransportResource {
-            location: FileTransportLocation::HttpUrl {
-                url: location.to_owned(),
-            },
-            egress_allowlist: plan.allowlist.clone(),
-            auth: plan.auth.clone(),
-            credentials: plan.credentials.clone(),
-        },
+        Some(FileTransportScheme::Http | FileTransportScheme::Https) => {
+            let mut resource = FileTransportResource::http_url(location)
+                .with_egress_allowlist(plan.allowlist.clone());
+            if let Some(auth) = &plan.auth {
+                resource = resource.with_auth(auth.clone());
+            }
+            resource
+        }
         Some(FileTransportScheme::File) => FileTransportResource::file_url(location),
         Some(FileTransportScheme::Remote(_)) => FileTransportResource::remote_url(location)
             .with_egress_allowlist(plan.allowlist.clone()),

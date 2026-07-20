@@ -1441,7 +1441,9 @@ dependencies = [
 name = "cdf-object-access"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bytes",
+ "cdf-aws",
  "cdf-http",
  "cdf-kernel",
  "cdf-memory",

@@ -8,6 +8,8 @@ description = "Neutral local, HTTP, and object-store access authority for cdf."
 
 [dependencies]
 bytes = "1.11.0"
+async-trait = "0.1.91"
+cdf-aws = { path = "../cdf-aws" }
 cdf-http = { path = "../cdf-http" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-memory = { path = "../cdf-memory" }

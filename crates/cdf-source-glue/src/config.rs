@@ -13,19 +13,31 @@ pub const DEFAULT_MAXIMUM_BATCH_BYTES: u64 = 32 * 1024 * 1024;
 pub const DEFAULT_MAXIMUM_CONCURRENCY: u16 = u16::MAX;
 pub const DEFAULT_STREAM_BUFFER_BATCHES: u16 = 2;
 pub const DEFAULT_PLANNING_SPILL_GROWTH_BYTES: u64 = 64 * 1024 * 1024;
+pub const DEFAULT_LAKE_FORMATION_REFRESH_MARGIN_SECONDS: u64 = 60;
+pub const DEFAULT_LAKE_FORMATION_BINDING_CACHE_ENTRIES: usize = 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GlueSourceOptions {
     pub region: String,
     #[serde(default)]
+    pub object_region: Option<String>,
+    #[serde(default)]
     pub catalog_id: Option<String>,
     #[serde(default)]
     pub endpoint: Option<String>,
     #[serde(default)]
+    pub lake_formation_endpoint: Option<String>,
+    #[serde(default)]
     pub credentials: Option<String>,
     #[serde(default)]
     pub object_credentials: Option<String>,
+    #[serde(default)]
+    pub lake_formation_session_duration_seconds: Option<u32>,
+    #[serde(default = "default_lake_formation_refresh_margin_seconds")]
+    pub lake_formation_refresh_margin_seconds: u64,
+    #[serde(default = "default_lake_formation_binding_cache_entries")]
+    pub lake_formation_binding_cache_entries: usize,
     #[serde(default)]
     pub egress_allowlist: Vec<String>,
     #[serde(default = "default_maximum_response_bytes")]
@@ -55,16 +67,24 @@ pub struct GlueSourceOptions {
 impl GlueSourceOptions {
     pub fn validate(&self) -> Result<()> {
         require_text("Glue region", &self.region)?;
+        if let Some(region) = &self.object_region {
+            require_text("Glue object region", region)?;
+        }
         if let Some(catalog_id) = &self.catalog_id {
             require_text("Glue catalog id", catalog_id)?;
         }
-        if let Some(endpoint) = &self.endpoint {
-            let parsed = url::Url::parse(endpoint)
-                .map_err(|_| CdfError::contract("Glue endpoint must be an absolute HTTP URL"))?;
+        for (label, endpoint) in [
+            ("Glue", self.endpoint.as_ref()),
+            ("Lake Formation", self.lake_formation_endpoint.as_ref()),
+        ] {
+            let Some(endpoint) = endpoint else { continue };
+            let parsed = url::Url::parse(endpoint).map_err(|_| {
+                CdfError::contract(format!("{label} endpoint must be an absolute HTTP URL"))
+            })?;
             if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
-                return Err(CdfError::contract(
-                    "Glue endpoint must be an absolute HTTP URL with a host",
-                ));
+                return Err(CdfError::contract(format!(
+                    "{label} endpoint must be an absolute HTTP URL with a host"
+                )));
             }
         }
         for reference in [&self.credentials, &self.object_credentials]
@@ -94,9 +114,24 @@ impl GlueSourceOptions {
             || self.maximum_concurrency == 0
             || self.stream_buffer_batches == 0
             || self.planning_spill_growth_bytes < 8192
+            || self.lake_formation_refresh_margin_seconds == 0
+            || self.lake_formation_binding_cache_entries == 0
         {
             return Err(CdfError::contract(
                 "Glue response, inventory, task, batch, concurrency, and stream bounds must be nonzero and maximum_batch_bytes must be at least 8192",
+            ));
+        }
+        if self
+            .lake_formation_session_duration_seconds
+            .is_some_and(|seconds| !(900..=43_200).contains(&seconds))
+        {
+            return Err(CdfError::contract(
+                "Lake Formation credential duration must be between 900 and 43200 seconds",
+            ));
+        }
+        if self.lake_formation_refresh_margin_seconds >= 900 {
+            return Err(CdfError::contract(
+                "Lake Formation credential refresh margin must be less than the minimum 900-second credential lifetime",
             ));
         }
         self.execution_working_set_bytes()?;
@@ -187,6 +222,12 @@ const fn default_stream_buffer_batches() -> u16 {
 }
 const fn default_planning_spill_growth_bytes() -> u64 {
     DEFAULT_PLANNING_SPILL_GROWTH_BYTES
+}
+const fn default_lake_formation_refresh_margin_seconds() -> u64 {
+    DEFAULT_LAKE_FORMATION_REFRESH_MARGIN_SECONDS
+}
+const fn default_lake_formation_binding_cache_entries() -> usize {
+    DEFAULT_LAKE_FORMATION_BINDING_CACHE_ENTRIES
 }
 
 fn default_format_options() -> serde_json::Value {

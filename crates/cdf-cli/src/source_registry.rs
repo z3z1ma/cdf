@@ -1,11 +1,12 @@
-use cdf_aws::AwsJsonClient;
+use cdf_aws::AwsControlClient;
 use cdf_kernel::Result;
 use cdf_object_access::{FileTransportFacade, ObjectStoreClientPool};
 use cdf_python::PythonSourceDriver;
 use cdf_runtime::{ByteTransformRegistry, FormatRegistry, SourceRegistry};
 use cdf_source_files::{FileRuntimeDependencies, FileSourceDriver, file_source_blocking_lane};
 use cdf_source_glue::{
-    AwsGlueCatalogClient as AwsGlueExternalCatalogClient, GlueRuntimeDependencies, GlueSourceDriver,
+    AwsGlueCatalogClient as AwsGlueExternalCatalogClient, AwsLakeFormationClient,
+    GlueRuntimeDependencies, GlueSourceDriver,
 };
 use cdf_source_iceberg::{AwsGlueCatalogClient, IcebergRuntimeDependencies, IcebergSourceDriver};
 use cdf_source_postgres::PostgresSourceDriver;
@@ -76,10 +77,16 @@ fn build_builtin_source_registry() -> Result<SourceRegistry> {
             .with_shared_object_store_clients(glue_object_store_clients.clone())
             .with_execution_services(execution.clone())
             .with_local_listing_lane(file_source_blocking_lane())?;
-        let aws = Arc::new(AwsJsonClient::new(control_http, secrets, execution, egress));
+        let aws = Arc::new(AwsControlClient::new(
+            control_http,
+            secrets,
+            execution,
+            egress,
+        ));
         Ok(GlueRuntimeDependencies::new(
             Arc::new(object_access),
-            Arc::new(AwsGlueExternalCatalogClient::new(aws)),
+            Arc::new(AwsGlueExternalCatalogClient::new(Arc::clone(&aws))),
+            Arc::new(AwsLakeFormationClient::new(Arc::clone(&aws))),
             Arc::clone(&glue_formats),
             Arc::clone(&glue_transforms),
         ))

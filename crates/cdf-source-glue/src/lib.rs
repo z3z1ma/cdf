@@ -4,6 +4,7 @@ mod client;
 mod config;
 mod driver;
 mod execution;
+mod lake_formation;
 mod model;
 mod planner;
 mod planning_index;
@@ -13,10 +14,15 @@ mod task_reader;
 
 pub use client::{
     AwsGlueCatalogClient, GlueCatalogClient, GlueGetPartitionsRequest, GlueGetTableRequest,
-    GluePartitionPage, GlueTableResponse,
+    GlueGetUnfilteredPartitionsRequest, GlueGetUnfilteredTableRequest,
+    GlueLakeFormationAuthorization, GluePartitionPage, GlueTableResponse,
 };
 pub use config::{GlueResourceOptions, GlueSourceOptions};
 pub use driver::{GlueRuntimeDependencies, GlueSourceDriver};
+pub use lake_formation::{
+    AwsLakeFormationClient, LakeFormationClient, LakeFormationCredentialRequest,
+    LakeFormationCredentialResponse,
+};
 pub use model::{
     GlueColumn, GlueFormatMapping, GluePartition, GlueSerdeInfo, GlueStorageDescriptor, GlueTable,
     GlueTableClass, classify_table, merge_descriptor,
@@ -39,10 +45,15 @@ pub fn glue_option_schema() -> serde_json::Value {
             "required": ["region"],
             "properties": {
                 "region": {"type": "string", "minLength": 1},
+                "object_region": {"type": "string", "minLength": 1},
                 "catalog_id": {"type": "string", "minLength": 1},
                 "endpoint": {"type": "string", "format": "uri"},
+                "lake_formation_endpoint": {"type": "string", "format": "uri"},
                 "credentials": secret,
                 "object_credentials": secret,
+                "lake_formation_session_duration_seconds": {"type": "integer", "minimum": 900, "maximum": 43200},
+                "lake_formation_refresh_margin_seconds": {"type": "integer", "minimum": 1, "maximum": 899, "default": 60},
+                "lake_formation_binding_cache_entries": {"type": "integer", "minimum": 1, "default": 1024},
                 "egress_allowlist": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
                 "maximum_response_bytes": {"type": "integer", "minimum": 1, "default": 16777216},
                 "maximum_partitions": {"type": "integer", "minimum": 1, "default": 1000000},

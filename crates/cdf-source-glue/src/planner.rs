@@ -14,7 +14,7 @@ use crate::{
     GLUE_TASK_AUTHORITY_VERSION, GLUE_TASK_SET_TYPE, GLUE_TASK_VERSION, GlueCatalogClient,
     GlueGetPartitionsRequest, GlueObjectTask, GlueResourceOptions, GlueSourceOptions,
     GlueStorageDescriptor, GlueTable, GlueTableClass, GlueTaskAuthority, classify_table,
-    merge_descriptor, planning_index::GluePlanningIndex,
+    lake_formation::LakeFormationRuntime, merge_descriptor, planning_index::GluePlanningIndex,
 };
 
 pub struct GluePlanningContext {
@@ -24,6 +24,7 @@ pub struct GluePlanningContext {
     pub egress: SourceEgressScope,
     pub task_store: ExternalTaskStore,
     pub cancellation: cdf_runtime::RunCancellation,
+    pub lake_formation: Option<LakeFormationRuntime>,
 }
 
 pub fn plan_glue_scan(
@@ -80,6 +81,7 @@ pub fn plan_glue_scan(
     let table_owned = table.clone();
     let expected_table_generation = table_generation.to_owned();
     let cancellation = context.cancellation.clone();
+    let lake_formation = context.lake_formation.clone();
     let mut index = context.execution.run_io(async move {
         populate_index(
             index,
@@ -95,6 +97,7 @@ pub fn plan_glue_scan(
             table_mapping,
             expression,
             cancellation,
+            lake_formation,
         )
         .await
     })?;
@@ -157,6 +160,7 @@ async fn populate_index(
     table_mapping: crate::GlueFormatMapping,
     expression: Option<String>,
     cancellation: cdf_runtime::RunCancellation,
+    lake_formation: Option<LakeFormationRuntime>,
 ) -> Result<GluePlanningIndex> {
     if table.partition_keys.is_empty() {
         index_descriptor(
@@ -168,6 +172,7 @@ async fn populate_index(
             table_mapping,
             Vec::new(),
             &cancellation,
+            lake_formation.as_ref(),
         )
         .await?;
         revalidate_table(
@@ -185,25 +190,56 @@ async fn populate_index(
     let mut observed_partitions = 0_usize;
     loop {
         cancellation.check()?;
-        let page = catalog
-            .get_partitions(GlueGetPartitionsRequest {
-                region: source.region.clone(),
-                catalog_id: source.catalog_id.clone(),
-                database: resource.database.clone(),
-                table: resource.table.clone(),
-                expression: expression.clone(),
-                next_token: next_token.clone(),
-                page_size: 1000,
-                endpoint: source.endpoint.clone(),
-                credentials: source
-                    .credentials
-                    .as_ref()
-                    .map(|value| SecretUri::new(value.clone()))
-                    .transpose()?,
-                maximum_response_bytes: source.maximum_response_bytes,
-                cancellation: cancellation.clone(),
-            })
-            .await?;
+        let page = if let Some(governed) = &lake_formation {
+            catalog
+                .get_unfiltered_partitions(crate::GlueGetUnfilteredPartitionsRequest {
+                    region: source.region.clone(),
+                    catalog_id: source.catalog_id.clone().or_else(|| table.catalog_id.clone()).ok_or_else(|| {
+                        CdfError::data("Lake Formation governed Glue partition request omitted catalog/account id")
+                    })?,
+                    database: resource.database.clone(),
+                    table: resource.table.clone(),
+                    expression: expression.clone(),
+                    next_token: next_token.clone(),
+                    page_size: 1000,
+                    requested_columns: governed.authorization().authorized_columns.clone(),
+                    all_columns_requested: false,
+                    query_id: governed.authorization().query_id.clone(),
+                    query_start_unix_seconds: governed
+                        .authorization()
+                        .query_start_unix_seconds,
+                    query_authorization_id: governed.authorization().query_authorization_id.clone(),
+                    endpoint: source.endpoint.clone(),
+                    credentials: source
+                        .credentials
+                        .as_ref()
+                        .map(|value| SecretUri::new(value.clone()))
+                        .transpose()?,
+                    maximum_response_bytes: source.maximum_response_bytes,
+                    cancellation: cancellation.clone(),
+                })
+                .await?
+        } else {
+            catalog
+                .get_partitions(GlueGetPartitionsRequest {
+                    region: source.region.clone(),
+                    catalog_id: source.catalog_id.clone(),
+                    database: resource.database.clone(),
+                    table: resource.table.clone(),
+                    expression: expression.clone(),
+                    next_token: next_token.clone(),
+                    page_size: 1000,
+                    endpoint: source.endpoint.clone(),
+                    credentials: source
+                        .credentials
+                        .as_ref()
+                        .map(|value| SecretUri::new(value.clone()))
+                        .transpose()?,
+                    maximum_response_bytes: source.maximum_response_bytes,
+                    cancellation: cancellation.clone(),
+                })
+                .await?
+        };
         // The transport lease accounts the encoded response only until JSON decoding completes.
         // Retain a conservative model reservation while this bounded page is classified and
         // expanded into spill-backed object tasks; no catalog-sized Vec escapes this scope.
@@ -254,6 +290,7 @@ async fn populate_index(
                 merge_format_options(mapping, &resource.format_options)?,
                 partition.values.into_iter().map(Some).collect(),
                 &cancellation,
+                lake_formation.as_ref(),
             )
             .await?;
         }
@@ -328,12 +365,13 @@ async fn index_descriptor(
     mapping: crate::GlueFormatMapping,
     partition_values: Vec<Option<String>>,
     cancellation: &cdf_runtime::RunCancellation,
+    lake_formation: Option<&LakeFormationRuntime>,
 ) -> Result<()> {
     let location = descriptor
         .location
         .as_ref()
         .ok_or_else(|| CdfError::data("Glue storage descriptor omitted Location"))?;
-    let resource = transport_resource(location, source)?;
+    let resource = transport_resource(location, source, lake_formation, &partition_values)?;
     let remaining = source
         .maximum_objects
         .saturating_sub(usize::try_from(index.object_count()?).unwrap_or(usize::MAX));
@@ -375,14 +413,22 @@ async fn index_descriptor(
     Ok(())
 }
 
-fn transport_resource(location: &str, source: &GlueSourceOptions) -> Result<FileTransportResource> {
+fn transport_resource(
+    location: &str,
+    source: &GlueSourceOptions,
+    lake_formation: Option<&LakeFormationRuntime>,
+    partition_values: &[Option<String>],
+) -> Result<FileTransportResource> {
     let mut resource = FileTransportResource::remote_url(location.to_owned())
         .with_egress_allowlist(if source.egress_allowlist.is_empty() {
             EgressAllowlist::allow_any()
         } else {
             EgressAllowlist::from_hosts(source.egress_allowlist.clone())
         });
-    if let Some(reference) = &source.object_credentials {
+    if let Some(lake_formation) = lake_formation {
+        resource = resource
+            .with_runtime_aws_credentials(lake_formation.binding(location, partition_values)?)?;
+    } else if let Some(reference) = &source.object_credentials {
         resource = resource.with_credentials(SecretUri::new(reference.clone())?);
     }
     Ok(resource)

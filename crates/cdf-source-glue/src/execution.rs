@@ -17,7 +17,7 @@ use cdf_runtime::{
 };
 use futures_util::TryStreamExt;
 
-use crate::{GlueObjectTask, GlueSourceOptions};
+use crate::{GlueObjectTask, GlueSourceOptions, lake_formation::LakeFormationRuntime};
 
 pub(crate) struct PreparedGlueObject {
     pub source: Arc<dyn ByteSource>,
@@ -36,6 +36,7 @@ pub(crate) fn prepare_object(
     task: &GlueObjectTask,
     authority: &crate::GlueTaskAuthority,
     source_options: &GlueSourceOptions,
+    lake_formation: Option<&LakeFormationRuntime>,
     table_data_schema: &SchemaRef,
     table_partition_schema: &SchemaRef,
     full_schema: &SchemaRef,
@@ -48,7 +49,12 @@ pub(crate) fn prepare_object(
 ) -> Result<PreparedGlueObject> {
     cancellation.check()?;
     task.validate_against(authority)?;
-    let logical = transport_resource(&task.file.path, source_options)?;
+    let logical = transport_resource(
+        &task.file.path,
+        source_options,
+        lake_formation,
+        &task.partition_values,
+    )?;
     let control = FileTransportControl::new(cancellation.clone(), None);
     let observation = object_access.metadata(egress, &logical, &control)?;
     let access = observation.access_resource(&logical);
@@ -273,7 +279,12 @@ fn transform_source(
     )?))
 }
 
-fn transport_resource(path: &str, source: &GlueSourceOptions) -> Result<FileTransportResource> {
+fn transport_resource(
+    path: &str,
+    source: &GlueSourceOptions,
+    lake_formation: Option<&LakeFormationRuntime>,
+    partition_values: &[Option<String>],
+) -> Result<FileTransportResource> {
     let mut resource = FileTransportResource::remote_url(path.to_owned()).with_egress_allowlist(
         if source.egress_allowlist.is_empty() {
             EgressAllowlist::allow_any()
@@ -281,7 +292,10 @@ fn transport_resource(path: &str, source: &GlueSourceOptions) -> Result<FileTran
             EgressAllowlist::from_hosts(source.egress_allowlist.clone())
         },
     );
-    if let Some(reference) = &source.object_credentials {
+    if let Some(lake_formation) = lake_formation {
+        resource = resource
+            .with_runtime_aws_credentials(lake_formation.binding(path, partition_values)?)?;
+    } else if let Some(reference) = &source.object_credentials {
         resource = resource.with_credentials(SecretUri::new(reference.clone())?);
     }
     Ok(resource)
