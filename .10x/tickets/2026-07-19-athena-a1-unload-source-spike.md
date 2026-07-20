@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-19
-Updated: 2026-07-19
+Updated: 2026-07-20
 Depends-On: .10x/tickets/done/2026-07-19-iceberg-i2-scan-execution.md
 
 # Athena A1: UNLOAD source protocol and FQ12 roofline spike
@@ -37,10 +37,11 @@ No generic Trino source disguised as Athena, no Athena destination, no credentia
 - 2026-07-19: Opened as a research/spike owner rather than prematurely treating Athena as a Trino alias. The strategic distinction is accepted: direct Iceberg provides snapshot-native zero-service planning; Athena provides managed distributed SQL planning/pushdown and a columnar Parquet handoff that should reuse CDF's existing fast path.
 - 2026-07-19: Activated after I2 reached the measured FQ12 remote-transfer roofline. Current AWS protocol and CDF boundary findings are recorded in `.10x/research/2026-07-19-athena-unload-source-protocol.md`. The retained architecture fixes schema with a bounded zero-row Athena query, records a final materializer program in the plan, executes `UNLOAD` as a runtime control task, freezes its paginated service manifest into canonical external Parquet tasks, and sends those tasks through the existing scheduler/data plane. `resolve()` side effects, a giant adapter-owned partition, Athena branches in generic execution, and query-result reuse are rejected.
 - 2026-07-19: Read-only FQ12 inspection found engine-v3 workgroups and one historical successful `UNLOAD`. Its API evidence reported 305,031 rows, 3,216,216 scanned bytes, 2,597 ms total, and one manifest URI; the referenced output object was already absent. No SQL, result location, credential, query submission, or S3 mutation was performed. The observation permanently requires replay-time object-generation validation rather than trusting retained Athena query history.
+- 2026-07-20: Re-entered shaping after the Iceberg/Glue program closed. Current source/runtime inspection confirms the source-neutral runtime partition-materialization seam does not yet exist: adapters may return static external task sets from `negotiate`, but no run-start control task can freeze provider-created partitions before scheduler execution. The existing fenced `StagingLease` implementation is semantically destination/load-specific (`DestinationId`, `TargetName`, `LoadAttemptId`) and must be generalized rather than reused under false names for Athena-owned output. No Athena implementation file was opened while these lifecycle, cleanup, disposition, and cost semantics remain unratified.
 
 ## Blockers
 
-Exact FQ12 Athena workgroup, output-root, scan-budget, retention, and cleanup authority at live-execution time. Product implementation remains blocked on ratification of the focused protocol semantics identified by the active research.
+Product implementation is blocked on three grouped ratifications: runtime materialization/disposition, generic fenced output staging/cleanup, and cost/compression defaults. Live execution additionally requires the exact FQ12 workgroup, CDF-owned output root, scan budget, retention, and cleanup authority.
 
 ## Evidence
 
