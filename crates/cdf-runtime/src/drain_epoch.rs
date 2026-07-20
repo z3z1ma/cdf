@@ -119,6 +119,7 @@ pub struct DrainEpochController {
     committed_watermark: Option<WatermarkClaim>,
     epoch_watermark_start: Option<WatermarkClaim>,
     last_observed_watermark: Option<WatermarkClaim>,
+    last_safe_frontier: Option<DrainSafeFrontierObservation>,
 }
 
 impl DrainEpochController {
@@ -151,6 +152,7 @@ impl DrainEpochController {
             committed_watermark: None,
             epoch_watermark_start: None,
             last_observed_watermark: None,
+            last_safe_frontier: None,
         })
     }
 
@@ -214,6 +216,74 @@ impl DrainEpochController {
         }
     }
 
+    /// Returns the exact remaining host-monotonic delay before a time policy can change the
+    /// controller decision. Non-time policies do not manufacture a polling cadence.
+    pub fn next_timer_delay_milliseconds(&self) -> Result<Option<u64>> {
+        self.validate_ready_for_epoch()?;
+        let now = self.monotonic_milliseconds();
+        let mut deadline = match &self.termination {
+            DrainTermination::Duration { milliseconds } => Some(
+                self.command_started_monotonic_milliseconds
+                    .checked_add(*milliseconds)
+                    .ok_or_else(|| CdfError::data("drain command deadline overflow"))?,
+            ),
+            _ => None,
+        };
+        if !self.epoch.is_empty() {
+            for trigger in [
+                &self.policy.package_rotation,
+                &self.policy.checkpoint_cadence,
+            ] {
+                if let EpochClosureTrigger::Elapsed { milliseconds } = trigger {
+                    let candidate = self
+                        .epoch_started_monotonic_milliseconds
+                        .checked_add(*milliseconds)
+                        .ok_or_else(|| CdfError::data("drain epoch deadline overflow"))?;
+                    deadline = Some(deadline.map_or(candidate, |current| current.min(candidate)));
+                }
+            }
+        }
+        Ok(deadline.map(|deadline| deadline.saturating_sub(now)))
+    }
+
+    /// Observes a host timer without inventing new source progress. A nonempty epoch may close
+    /// only at its last recorded canonical safe frontier; an empty duration-bounded drain becomes
+    /// a verified no-op.
+    pub fn observe_timer(
+        &mut self,
+        monotonic_milliseconds: u64,
+        observed_at_unix_milliseconds: u64,
+    ) -> Result<DrainEpochDecision> {
+        self.validate_ready_for_epoch()?;
+        if observed_at_unix_milliseconds == 0 {
+            return Err(CdfError::contract(
+                "drain timer observation time must be greater than zero",
+            ));
+        }
+        let Some(last) = self.last_safe_frontier.clone() else {
+            self.observe_clock(monotonic_milliseconds)?;
+            if let DrainTermination::Duration { milliseconds } = &self.termination
+                && self.command_elapsed(monotonic_milliseconds)? >= *milliseconds
+            {
+                self.state = ControllerState::Finished;
+                return Ok(DrainEpochDecision::FinishedNoOp);
+            }
+            return Ok(DrainEpochDecision::Continue);
+        };
+        self.observe_safe_frontier(DrainSafeFrontierObservation {
+            frontier: last.frontier,
+            carryover: last.carryover,
+            admitted_batches: 0,
+            admitted_rows: 0,
+            admitted_bytes: 0,
+            admitted_positions: 0,
+            global_watermark: last.global_watermark,
+            source_exhausted: false,
+            monotonic_milliseconds,
+            observed_at_unix_milliseconds,
+        })
+    }
+
     pub const fn is_finished(&self) -> bool {
         matches!(self.state, ControllerState::Finished)
     }
@@ -241,6 +311,7 @@ impl DrainEpochController {
         self.observe_watermark(observation.global_watermark.as_ref())?;
         self.epoch.checked_add(&observation)?;
         self.total.checked_add(&observation)?;
+        self.last_safe_frontier = Some(observation.clone());
 
         let closure = self.closure_at(&observation)?;
         let Some((cause, closure_observation, terminate_after_settlement)) = closure else {
@@ -299,6 +370,7 @@ impl DrainEpochController {
         self.epoch_watermark_start = self.committed_watermark.clone();
         self.last_observed_watermark = self.committed_watermark.clone();
         self.epoch = Counts::default();
+        self.last_safe_frontier = None;
         self.epoch_ordinal = self
             .epoch_ordinal
             .checked_add(1)
@@ -871,6 +943,60 @@ mod tests {
                 overshoot_milliseconds: 6,
             }
         );
+    }
+
+    #[test]
+    fn timer_closes_a_nonempty_epoch_at_its_last_safe_frontier() {
+        let mut controller = DrainEpochController::new(&extent(
+            EpochClosureTrigger::Elapsed { milliseconds: 100 },
+            EpochClosureTrigger::Bytes { count: 1_000 },
+            DrainTermination::Duration {
+                milliseconds: 1_000,
+            },
+        ))
+        .unwrap();
+        assert_eq!(
+            controller
+                .observe_safe_frontier(observation(1, 10, 10, false))
+                .unwrap(),
+            DrainEpochDecision::Continue
+        );
+        assert_eq!(
+            controller.next_timer_delay_milliseconds().unwrap(),
+            Some(90)
+        );
+        let DrainEpochDecision::Close(closure) =
+            controller.observe_timer(110, 1_700_000_000_110).unwrap()
+        else {
+            panic!("elapsed timer must close at the last safe frontier");
+        };
+        assert_eq!(closure.frontier.frontier, cursor(10));
+        assert_eq!(
+            closure.evidence.observation,
+            EpochClosureObservation::Elapsed {
+                observed_milliseconds: 110,
+                overshoot_milliseconds: 10,
+            }
+        );
+    }
+
+    #[test]
+    fn duration_timer_finishes_a_silent_empty_drain_without_cadence_polling() {
+        let mut controller = DrainEpochController::new(&extent(
+            EpochClosureTrigger::Elapsed { milliseconds: 10 },
+            EpochClosureTrigger::Bytes { count: 1_000 },
+            DrainTermination::Duration { milliseconds: 50 },
+        ))
+        .unwrap();
+        assert_eq!(
+            controller.next_timer_delay_milliseconds().unwrap(),
+            Some(50)
+        );
+        assert_eq!(
+            controller.observe_timer(50, 1_700_000_000_050).unwrap(),
+            DrainEpochDecision::FinishedNoOp
+        );
+        assert!(controller.is_finished());
     }
 
     #[test]

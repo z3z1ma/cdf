@@ -1,8 +1,9 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    future::Future,
     path::{Path, PathBuf},
     sync::{Arc, mpsc},
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use arrow_array::{
@@ -44,7 +45,7 @@ use cdf_package::PackageBuilder;
 use cdf_package_contract::{
     PackageStatus, QuarantineObservedValue, QuarantineRecord, SegmentEntry,
 };
-use futures_util::StreamExt;
+use futures_util::{StreamExt, future::Either};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::{Instrument, Span, info_span};
@@ -52,11 +53,11 @@ use tracing::{Instrument, Span, info_span};
 use crate::{
     CompiledSchemaAdmissionOutcome, CompiledSchemaAdmissionPlan, CompiledSchemaQuarantineEvidence,
     CompiledStreamAdmissionEvidence, EffectiveSchemaObservationCoercion,
-    EffectiveSchemaPlanEvidence, EngineDrainEpoch, EngineExecutionEvidence, EngineExecutionOptions,
-    EnginePackageDraft, EnginePlan, EnginePreviewLimits, EnginePreviewOutput, EngineRunOutput,
-    EngineRunOutputWithSegmentPositions, EngineSegmentPosition, ExecutionProfile,
-    LineageInputObservation, LineageSummary, PhysicalObservationEvidence,
-    SchemaQuarantineObservationEvidence, StandaloneExecutionHost,
+    EffectiveSchemaPlanEvidence, EngineDrainEpoch, EngineDrainEpochOutcome,
+    EngineExecutionEvidence, EngineExecutionOptions, EnginePackageDraft, EnginePlan,
+    EnginePreviewLimits, EnginePreviewOutput, EngineRunOutput, EngineRunOutputWithSegmentPositions,
+    EngineSegmentPosition, ExecutionProfile, LineageInputObservation, LineageSummary,
+    PhysicalObservationEvidence, SchemaQuarantineObservationEvidence, StandaloneExecutionHost,
     StreamAdmissionObservationEvidence,
     output_schema::canonicalize_effective_output_schema,
     planning::{scan_expression_schema, validate_program},
@@ -2198,6 +2199,7 @@ where
         standalone_execution_options()?,
     )
     .await?
+    .into_package()?
     .output)
 }
 
@@ -2224,6 +2226,7 @@ where
     )
     .instrument(package_execution_span(&trace_context))
     .await?
+    .into_package()?
     .output)
 }
 
@@ -2246,7 +2249,8 @@ where
         None,
         standalone_execution_options()?,
     )
-    .await
+    .await?
+    .into_package()
 }
 
 pub async fn execute_to_package_with_segment_positions_and_pre_finalize<R>(
@@ -2270,7 +2274,8 @@ where
         None,
         options,
     )
-    .await
+    .await?
+    .into_package()
 }
 
 pub async fn execute_to_package_with_streaming_hooks<'a, R>(
@@ -2296,7 +2301,8 @@ where
         None,
         options,
     )
-    .await
+    .await?
+    .into_package()
 }
 
 pub async fn execute_drain_epoch_with_hooks<'a, R>(
@@ -2306,11 +2312,11 @@ pub async fn execute_drain_epoch_with_hooks<'a, R>(
     pre_finalize: &PackagePreFinalizeHook<'_>,
     epoch: DrainEpochExecution<'a>,
     options: EngineExecutionOptions,
-) -> Result<EngineRunOutputWithSegmentPositions>
+) -> Result<EngineDrainEpochOutcome>
 where
     R: ResourceStream + ?Sized,
 {
-    Box::pin(execute_to_package_inner(
+    match Box::pin(execute_to_package_inner(
         None,
         plan,
         resource,
@@ -2321,7 +2327,124 @@ where
         Some(epoch.controller),
         options,
     ))
-    .await
+    .await?
+    {
+        PackageExecutionOutcome::Package(output) => Ok(EngineDrainEpochOutcome::Package(output)),
+        PackageExecutionOutcome::DrainFinishedNoOp { source_frontier } => {
+            Ok(EngineDrainEpochOutcome::FinishedNoOp { source_frontier })
+        }
+    }
+}
+
+enum PackageExecutionOutcome {
+    Package(Box<EngineRunOutputWithSegmentPositions>),
+    DrainFinishedNoOp {
+        source_frontier: cdf_runtime::SourceFrontierReport,
+    },
+}
+
+impl PackageExecutionOutcome {
+    fn into_package(self) -> Result<EngineRunOutputWithSegmentPositions> {
+        match self {
+            Self::Package(output) => Ok(*output),
+            Self::DrainFinishedNoOp { .. } => Err(CdfError::internal(
+                "bounded package execution produced a drain no-op",
+            )),
+        }
+    }
+}
+
+enum DrainAwarePoll<T> {
+    Ready(T),
+    Timer(cdf_runtime::DrainEpochDecision),
+}
+
+struct DrainExecutionClock {
+    controller_base_milliseconds: u64,
+    host_started: Option<Duration>,
+    local_started: Instant,
+}
+
+impl DrainExecutionClock {
+    fn new(
+        controller: Option<&cdf_runtime::DrainEpochController>,
+        services: Option<&cdf_runtime::ExecutionServices>,
+    ) -> Self {
+        Self {
+            controller_base_milliseconds: controller
+                .map_or(0, cdf_runtime::DrainEpochController::monotonic_milliseconds),
+            host_started: services.map(cdf_runtime::ExecutionServices::monotonic_now),
+            local_started: Instant::now(),
+        }
+    }
+
+    fn monotonic_milliseconds(&self, services: Option<&cdf_runtime::ExecutionServices>) -> u64 {
+        let elapsed = match (services, self.host_started) {
+            (Some(services), Some(started)) => services
+                .monotonic_now()
+                .checked_sub(started)
+                .unwrap_or_default(),
+            _ => self.local_started.elapsed(),
+        };
+        self.controller_base_milliseconds
+            .saturating_add(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+    }
+
+    fn observed_at_unix_milliseconds(
+        &self,
+        services: Option<&cdf_runtime::ExecutionServices>,
+    ) -> Result<u64> {
+        match services {
+            Some(services) => u64::try_from(services.unix_now().as_millis())
+                .map_err(|error| CdfError::internal(error.to_string())),
+            None => current_observed_at_u64_ms(),
+        }
+    }
+}
+
+async fn poll_with_drain_timer<F, T>(
+    operation: F,
+    controller: Option<&mut cdf_runtime::DrainEpochController>,
+    services: Option<&cdf_runtime::ExecutionServices>,
+    cancellation: &cdf_runtime::RunCancellation,
+    clock: &DrainExecutionClock,
+) -> Result<DrainAwarePoll<T>>
+where
+    F: Future<Output = Result<T>>,
+{
+    let Some(controller) = controller else {
+        return operation.await.map(DrainAwarePoll::Ready);
+    };
+    let mut operation = Box::pin(operation);
+    loop {
+        let Some(delay_milliseconds) = controller.next_timer_delay_milliseconds()? else {
+            return operation.await.map(DrainAwarePoll::Ready);
+        };
+        let services = services.ok_or_else(|| {
+            CdfError::contract("time-bounded drain execution requires injected host timers")
+        })?;
+        let armed_at = controller.monotonic_milliseconds();
+        let timer = services.delay(
+            Duration::from_millis(delay_milliseconds),
+            cancellation.clone(),
+        );
+        match futures_util::future::select(operation.as_mut(), timer).await {
+            Either::Left((result, _)) => return result.map(DrainAwarePoll::Ready),
+            Either::Right((timer_result, _)) => {
+                timer_result?;
+                let observed_at = clock
+                    .monotonic_milliseconds(Some(services))
+                    .max(armed_at.saturating_add(delay_milliseconds));
+                let decision = controller.observe_timer(
+                    observed_at,
+                    clock.observed_at_unix_milliseconds(Some(services))?,
+                )?;
+                if !matches!(decision, cdf_runtime::DrainEpochDecision::Continue) {
+                    return Ok(DrainAwarePoll::Timer(decision));
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -2858,7 +2981,7 @@ async fn execute_to_package_inner<'a, R>(
     stream_finalize: Option<&'a mut StreamingFinalizeHook<'a>>,
     mut drain_controller: Option<&mut cdf_runtime::DrainEpochController>,
     options: EngineExecutionOptions,
-) -> Result<EngineRunOutputWithSegmentPositions>
+) -> Result<PackageExecutionOutcome>
 where
     R: ResourceStream + ?Sized,
 {
@@ -3093,10 +3216,8 @@ where
         run_cancellation.clone(),
     )?
     .with_measurement(options.phase_metrics);
-    let drain_epoch_started = Instant::now();
-    let drain_clock_base = drain_controller
-        .as_deref()
-        .map_or(0, cdf_runtime::DrainEpochController::monotonic_milliseconds);
+    let drain_clock =
+        DrainExecutionClock::new(drain_controller.as_deref(), options.services.as_ref());
     let drain_batch_frontiers_enabled = drain_controller.is_some()
         && !plan
             .compiled_source_execution
@@ -3108,9 +3229,39 @@ where
             .bounded;
     let mut drain_epoch_closure = None;
     let mut consumed_partition_count = 0_usize;
+    let mut drain_finished_noop = false;
+    let mut source_progress_observed = false;
+    let mut last_drain_partition_resume = None::<Box<crate::DrainPartitionResume>>;
 
     let segment_result: Result<()> = async {
-    while let Some(mut opened_partition) = source_frontier.next_partition().await? {
+    loop {
+        let next_partition = match poll_with_drain_timer(
+            source_frontier.next_partition(),
+            drain_controller.as_deref_mut(),
+            options.services.as_ref(),
+            &run_cancellation,
+            &drain_clock,
+        )
+        .await?
+        {
+            DrainAwarePoll::Ready(next_partition) => next_partition,
+            DrainAwarePoll::Timer(cdf_runtime::DrainEpochDecision::Close(closure)) => {
+                drain_epoch_closure = Some(*closure);
+                break;
+            }
+            DrainAwarePoll::Timer(cdf_runtime::DrainEpochDecision::FinishedNoOp) => {
+                drain_finished_noop = true;
+                break;
+            }
+            DrainAwarePoll::Timer(cdf_runtime::DrainEpochDecision::Continue) => {
+                return Err(CdfError::internal(
+                    "drain timer returned a continue decision to its source poll",
+                ));
+            }
+        };
+        let Some(mut opened_partition) = next_partition else {
+            break;
+        };
         let open_metadata = opened_partition.metadata().clone();
         let partition_ordinal_usize = open_metadata.ordinal;
         let partition = open_metadata.partition;
@@ -3184,6 +3335,7 @@ where
             opened_partition.finish_metadata_only()?;
             consumed_partition_count = consumed_partition_count.saturating_add(1);
             if let Some(controller) = drain_controller.as_deref_mut() {
+                last_drain_partition_resume = None;
                 let frontier = drain_resource_frontier(
                     resource.descriptor(),
                     resource_schema.as_ref(),
@@ -3200,11 +3352,10 @@ where
                         admitted_positions: 1,
                         global_watermark: None,
                         source_exhausted: consumed_partition_count == frontier_partition_count,
-                        monotonic_milliseconds: drain_clock_base.saturating_add(
-                            u64::try_from(drain_epoch_started.elapsed().as_millis())
-                                .unwrap_or(u64::MAX),
-                        ),
-                        observed_at_unix_milliseconds: current_observed_at_u64_ms()?,
+                        monotonic_milliseconds: drain_clock
+                            .monotonic_milliseconds(options.services.as_ref()),
+                        observed_at_unix_milliseconds: drain_clock
+                            .observed_at_unix_milliseconds(options.services.as_ref())?,
                     },
                 )?;
                 match decision {
@@ -3259,19 +3410,56 @@ where
             let mut partition_source_row_ordinal = 0_u64;
             let mut partition_epoch_closed = false;
             let mut partition_batch_frontiers_observed = false;
+            let mut source_poll_interrupted = false;
             loop {
                 if remaining_limit == Some(0) {
                     fully_processed = false;
                     break;
                 }
                 let decode_started = phase_measurements.start();
-                let next_batch = opened_partition.next_batch().await?;
+                let next_batch = match poll_with_drain_timer(
+                    opened_partition.next_batch(),
+                    drain_controller.as_deref_mut(),
+                    options.services.as_ref(),
+                    &run_cancellation,
+                    &drain_clock,
+                )
+                .await?
+                {
+                    DrainAwarePoll::Ready(next_batch) => next_batch,
+                    DrainAwarePoll::Timer(cdf_runtime::DrainEpochDecision::Close(closure)) => {
+                        drain_epoch_closure = Some(*closure);
+                        drain_partition_resume = last_drain_partition_resume.clone();
+                        fully_processed = false;
+                        partition_epoch_closed = true;
+                        source_poll_interrupted = true;
+                        break;
+                    }
+                    DrainAwarePoll::Timer(cdf_runtime::DrainEpochDecision::FinishedNoOp) => {
+                        if source_progress_observed {
+                            return Err(CdfError::data(
+                                "drain duration elapsed after source progress but before the source exposed a checkpointable safe frontier",
+                            ));
+                        }
+                        drain_finished_noop = true;
+                        fully_processed = false;
+                        partition_epoch_closed = true;
+                        source_poll_interrupted = true;
+                        break;
+                    }
+                    DrainAwarePoll::Timer(cdf_runtime::DrainEpochDecision::Continue) => {
+                        return Err(CdfError::internal(
+                            "drain timer returned a continue decision to its batch poll",
+                        ));
+                    }
+                };
                 let decode_duration_ns = elapsed_ns(decode_started, "resource decode")?;
                 let Some(batch) = next_batch else {
                     phase_measurements.add(RunPhase::Decode, decode_duration_ns, 0, 0);
                     break;
                 };
                 let mut batch = batch;
+                source_progress_observed = true;
                 partition_input_batch_count = partition_input_batch_count.saturating_add(1);
                 partition_input_bytes = partition_input_bytes
                     .checked_add(batch.header.byte_count)
@@ -3376,7 +3564,38 @@ where
                         // validation or segment production after this verdict is fixed.
                         loop {
                             let decode_started = phase_measurements.start();
-                            let next_batch = opened_partition.next_batch().await?;
+                            let next_batch = match poll_with_drain_timer(
+                                opened_partition.next_batch(),
+                                drain_controller.as_deref_mut(),
+                                options.services.as_ref(),
+                                &run_cancellation,
+                                &drain_clock,
+                            )
+                            .await?
+                            {
+                                DrainAwarePoll::Ready(next_batch) => next_batch,
+                                DrainAwarePoll::Timer(
+                                    cdf_runtime::DrainEpochDecision::Close(_),
+                                ) => {
+                                    return Err(CdfError::internal(
+                                        "drain timer closed without a safe frontier while quarantining a partition",
+                                    ));
+                                }
+                                DrainAwarePoll::Timer(
+                                    cdf_runtime::DrainEpochDecision::FinishedNoOp,
+                                ) => {
+                                    return Err(CdfError::data(
+                                        "drain duration elapsed while quarantining a partition before its checkpointable terminal frontier",
+                                    ));
+                                }
+                                DrainAwarePoll::Timer(
+                                    cdf_runtime::DrainEpochDecision::Continue,
+                                ) => {
+                                    return Err(CdfError::internal(
+                                        "drain timer returned a continue decision to its quarantine poll",
+                                    ));
+                                }
+                            };
                             let decode_duration_ns =
                                 elapsed_ns(decode_started, "quarantined resource drain")?;
                             let Some(drained) = next_batch else {
@@ -3529,7 +3748,7 @@ where
                             )
                         {
                             partition_batch_frontiers_observed = true;
-                            if let Some(closed) = observe_drain_batch_frontier(
+                            if let Some((decision, partition_position)) = observe_drain_batch_frontier(
                                 drain_controller.as_deref_mut(),
                                 resource.descriptor(),
                                 resource_schema.as_ref(),
@@ -3539,19 +3758,21 @@ where
                                 batch.header.row_count,
                                 batch.header.byte_count,
                                 partition_watermark.clone(),
-                                drain_clock_base.saturating_add(
-                                    u64::try_from(drain_epoch_started.elapsed().as_millis())
-                                        .unwrap_or(u64::MAX),
-                                ),
+                                drain_clock.monotonic_milliseconds(options.services.as_ref()),
+                                drain_clock.observed_at_unix_milliseconds(options.services.as_ref())?,
                             )? {
-                                drain_partition_resume = Some(Box::new(crate::DrainPartitionResume {
+                                let resume = Box::new(crate::DrainPartitionResume {
                                     partition_id: partition.partition_id.clone(),
-                                    start_position: closed.partition_position,
-                                }));
-                                drain_epoch_closure = Some(closed.closure);
-                                fully_processed = false;
-                                partition_epoch_closed = true;
-                                break;
+                                    start_position: partition_position,
+                                });
+                                last_drain_partition_resume = Some(resume.clone());
+                                if let cdf_runtime::DrainEpochDecision::Close(closure) = decision {
+                                    drain_partition_resume = Some(resume);
+                                    drain_epoch_closure = Some(*closure);
+                                    fully_processed = false;
+                                    partition_epoch_closed = true;
+                                    break;
+                                }
                             }
                         }
                     };
@@ -3741,6 +3962,8 @@ where
             let completion = if fully_processed {
                 let (_, completion) = opened_partition.finish()?;
                 completion
+            } else if source_poll_interrupted {
+                None
             } else {
                 opened_partition.terminate_partial().await?;
                 None
@@ -3791,6 +4014,9 @@ where
             partition_epoch_closed,
             partition_batch_frontiers_observed,
         ) = partition_result?;
+        if drain_finished_noop {
+            break;
+        }
         checkpoint_eligible &= fully_processed || partition_epoch_closed;
         let partial_retry_attestation = if open_evidence.retry_pre_attestation.is_some()
             && completion_attestation.is_none()
@@ -3995,6 +4221,7 @@ where
             if partition_epoch_closed {
                 break;
             }
+            last_drain_partition_resume = None;
             let frontier = drain_resource_frontier(
                 resource.descriptor(),
                 resource_schema.as_ref(),
@@ -4023,11 +4250,10 @@ where
                     admitted_positions: u64::from(!partition_batch_frontiers_observed),
                     global_watermark: partition_watermark,
                     source_exhausted: consumed_partition_count == frontier_partition_count,
-                    monotonic_milliseconds: drain_clock_base.saturating_add(
-                        u64::try_from(drain_epoch_started.elapsed().as_millis())
-                            .unwrap_or(u64::MAX),
-                    ),
-                    observed_at_unix_milliseconds: current_observed_at_u64_ms()?,
+                    monotonic_milliseconds: drain_clock
+                        .monotonic_milliseconds(options.services.as_ref()),
+                    observed_at_unix_milliseconds: drain_clock
+                        .observed_at_unix_milliseconds(options.services.as_ref())?,
                 },
             )?;
             match decision {
@@ -4045,12 +4271,16 @@ where
         }
     }
 
+    if drain_finished_noop {
+        return Ok(());
+    }
+
     if apply_package_dedup {
         apply_dedup_and_write_pending_batches(
             &builder,
             &validation_program,
             pending_dedup_batches,
-            external_dedup,
+            external_dedup.take(),
             &segmentation_policy,
             &mut OutputWriteState {
                 profile: &mut profile,
@@ -4125,6 +4355,21 @@ where
                 cleanup_error,
             )),
         };
+    }
+    if drain_finished_noop {
+        run_cancellation.cancel();
+        source_frontier.terminate_and_join().await?;
+        let source_frontier_report = source_frontier.report();
+        segment_queue.abort_and_cleanup()?;
+        drop(contract_evaluator);
+        drop(residual_decisions);
+        drop(external_dedup);
+        drop(statistics_profile);
+        drop(statistics_memory_lease);
+        builder.abort_unpublished()?;
+        return Ok(PackageExecutionOutcome::DrainFinishedNoOp {
+            source_frontier: source_frontier_report,
+        });
     }
     if drain_epoch_closure.is_some() && consumed_partition_count < frontier_partition_count {
         source_frontier.terminate_and_join().await?;
@@ -4316,25 +4561,27 @@ where
             .sum(),
     );
 
-    Ok(EngineRunOutputWithSegmentPositions {
-        output: EngineRunOutput {
-            manifest,
-            verification,
-            segments,
-            profile,
-            lineage,
-            terminal_schema_quarantines: terminal_quarantines.clone(),
+    Ok(PackageExecutionOutcome::Package(Box::new(
+        EngineRunOutputWithSegmentPositions {
+            output: EngineRunOutput {
+                manifest,
+                verification,
+                segments,
+                profile,
+                lineage,
+                terminal_schema_quarantines: terminal_quarantines.clone(),
+            },
+            segment_positions,
+            phase_metrics: phase_measurements.into_metrics(),
+            source_frontier: source_frontier_report,
+            drain_epoch: drain_epoch_closure.map(|closure| EngineDrainEpoch {
+                closure,
+                consumed_partition_count,
+                resume_partition: drain_partition_resume,
+            }),
+            execution_evidence,
         },
-        segment_positions,
-        phase_metrics: phase_measurements.into_metrics(),
-        source_frontier: source_frontier_report,
-        drain_epoch: drain_epoch_closure.map(|closure| EngineDrainEpoch {
-            closure,
-            consumed_partition_count,
-            resume_partition: drain_partition_resume,
-        }),
-        execution_evidence,
-    })
+    )))
 }
 
 fn apply_dedup_and_write_pending_batches(
@@ -4652,7 +4899,8 @@ fn observe_drain_batch_frontier(
     admitted_bytes: u64,
     global_watermark: Option<WatermarkClaim>,
     monotonic_milliseconds: u64,
-) -> Result<Option<DrainBatchFrontierClosure>> {
+    observed_at_unix_milliseconds: u64,
+) -> Result<Option<(cdf_runtime::DrainEpochDecision, SourcePosition)>> {
     let Some(controller) = controller else {
         return Ok(None);
     };
@@ -4675,7 +4923,7 @@ fn observe_drain_batch_frontier(
             "drain batch cannot form a canonical safe source frontier: {error}"
         ))
     })?;
-    match controller.observe_safe_frontier(cdf_runtime::DrainSafeFrontierObservation {
+    let decision = controller.observe_safe_frontier(cdf_runtime::DrainSafeFrontierObservation {
         frontier,
         carryover: None,
         admitted_batches: 1,
@@ -4685,22 +4933,14 @@ fn observe_drain_batch_frontier(
         global_watermark,
         source_exhausted: false,
         monotonic_milliseconds,
-        observed_at_unix_milliseconds: current_observed_at_u64_ms()?,
-    })? {
-        cdf_runtime::DrainEpochDecision::Continue => Ok(None),
-        cdf_runtime::DrainEpochDecision::Close(closure) => Ok(Some(DrainBatchFrontierClosure {
-            closure: *closure,
-            partition_position,
-        })),
-        cdf_runtime::DrainEpochDecision::FinishedNoOp => Err(CdfError::internal(
+        observed_at_unix_milliseconds,
+    })?;
+    if matches!(decision, cdf_runtime::DrainEpochDecision::FinishedNoOp) {
+        return Err(CdfError::internal(
             "drain controller classified a processed batch position as an empty epoch",
-        )),
+        ));
     }
-}
-
-struct DrainBatchFrontierClosure {
-    closure: cdf_runtime::DrainEpochClosure,
-    partition_position: SourcePosition,
+    Ok(Some((decision, partition_position)))
 }
 
 fn merge_verdict_summary(total: &mut VerdictSummary, batch: VerdictSummary) {

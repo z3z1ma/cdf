@@ -1934,6 +1934,25 @@ pub struct EngineDrainEpoch {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EngineDrainEpochOutcome {
+    Package(Box<EngineRunOutputWithSegmentPositions>),
+    FinishedNoOp {
+        source_frontier: cdf_runtime::SourceFrontierReport,
+    },
+}
+
+impl EngineDrainEpochOutcome {
+    pub fn into_package(self) -> Result<EngineRunOutputWithSegmentPositions> {
+        match self {
+            Self::Package(output) => Ok(*output),
+            Self::FinishedNoOp { .. } => {
+                Err(CdfError::data("drain execution finished without a package"))
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DrainPartitionResume {
     pub partition_id: PartitionId,
     pub start_position: SourcePosition,

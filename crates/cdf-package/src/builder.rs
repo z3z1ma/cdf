@@ -280,6 +280,23 @@ impl PackageBuilder {
         &self.package_dir
     }
 
+    /// Discards an owner-private package construction directory before it becomes an artifact.
+    ///
+    /// This is reserved for executions that prove they have no package to publish (for example,
+    /// an empty finite drain). Ordinary failures retain their construction directory for the
+    /// recovery protocol instead of calling this method.
+    pub fn abort_unpublished(self) -> Result<()> {
+        let package_dir = self.package_dir.clone();
+        let parent = package_dir.parent().map(Path::to_path_buf);
+        drop(self);
+        fs::remove_dir_all(&package_dir)
+            .map_err(|error| io_error(format!("remove {}", package_dir.display()), error))?;
+        if let Some(parent) = parent {
+            sync_directory(&parent)?;
+        }
+        Ok(())
+    }
+
     pub fn segment_encoder(&self) -> PackageSegmentEncoder {
         PackageSegmentEncoder {
             package_dir: self.package_dir.clone(),

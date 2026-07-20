@@ -2434,6 +2434,8 @@ fn drain_epochs_stop_at_canonical_partition_frontiers_and_require_settlement() {
         super::DrainEpochExecution::new(&mut controller),
         executable_mock_options(EngineExecutionOptions::default()).unwrap(),
     ))
+    .unwrap()
+    .into_package()
     .unwrap();
     let first_epoch = first.drain_epoch.as_ref().unwrap();
     assert_eq!(first_epoch.consumed_partition_count, 1);
@@ -2480,6 +2482,8 @@ fn drain_epochs_stop_at_canonical_partition_frontiers_and_require_settlement() {
         super::DrainEpochExecution::new(&mut controller),
         executable_mock_options(EngineExecutionOptions::default()).unwrap(),
     ))
+    .unwrap()
+    .into_package()
     .unwrap();
     let second_epoch = second.drain_epoch.as_ref().unwrap();
     assert_eq!(second_epoch.consumed_partition_count, 1);
@@ -2580,6 +2584,8 @@ fn drain_epochs_resume_one_unbounded_partition_from_each_settled_batch_frontier(
             super::DrainEpochExecution::new(&mut controller),
             executable_mock_options(EngineExecutionOptions::default()).unwrap(),
         ))
+        .unwrap()
+        .into_package()
         .unwrap();
         let drain = output.drain_epoch.as_ref().unwrap();
         assert_eq!(output.output.profile.output_rows, 1);
@@ -2613,6 +2619,139 @@ fn drain_epochs_resume_one_unbounded_partition_from_each_settled_batch_frontier(
     assert!(controller.is_finished());
     assert_eq!(resource.open_count.load(Ordering::SeqCst), 3);
     assert_eq!(resource.batch_poll_count.load(Ordering::SeqCst), 3);
+}
+
+#[test]
+fn duration_drain_closes_while_the_next_batch_poll_is_silent() {
+    let mut batch = batch_for_partition("batch-1", "part-0", vec![1], vec!["event"], vec![true]);
+    batch.header.source_position = Some(SourcePosition::Cursor(CursorPosition {
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
+        field: "id".to_owned(),
+        value: CursorValue::I64(1),
+    }));
+    let resource = MockResource::tier_a(vec![batch])
+        .without_control_keys()
+        .with_stall_after_batches();
+    let extent = ExecutionExtent::Drain {
+        version: EXECUTION_EXTENT_VERSION,
+        policy: StreamEpochPolicy {
+            version: STREAM_EPOCH_POLICY_VERSION,
+            checkpoint_cadence: EpochClosureTrigger::Elapsed {
+                milliseconds: 60_000,
+            },
+            package_rotation: EpochClosureTrigger::Bytes { count: 1 << 20 },
+            watermark: WatermarkPolicy::Disabled,
+            late_data: LateDataAction::Quarantine,
+            safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+        },
+        termination: DrainTermination::Duration { milliseconds: 25 },
+    };
+    let source = mock_unbounded_cursor_source_plan(&resource);
+    resource.bind_compiled_source(&source);
+    let plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(Vec::new(), None, None, extent.clone()),
+        )
+        .unwrap()
+        .bind_compiled_source(&source)
+        .unwrap()
+        .bind_operator_graph(
+            &source,
+            &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        )
+        .unwrap();
+    let mut controller = cdf_runtime::DrainEpochController::new(&extent).unwrap();
+    let root = TempDir::new().unwrap();
+    let package_dir = root.path().join("duration-epoch");
+
+    let output = block_on(super::execute_drain_epoch_with_hooks(
+        &plan,
+        &resource,
+        &package_dir,
+        &|_, _| Ok(()),
+        super::DrainEpochExecution::new(&mut controller),
+        executable_mock_options(EngineExecutionOptions::default()).unwrap(),
+    ))
+    .unwrap()
+    .into_package()
+    .unwrap();
+
+    assert_eq!(output.output.profile.output_rows, 1);
+    let drain = output.drain_epoch.unwrap();
+    assert!(matches!(
+        drain.closure.evidence.cause,
+        cdf_kernel::EpochClosureCause::DrainTermination {
+            termination: DrainTermination::Duration { milliseconds: 25 }
+        }
+    ));
+    assert_eq!(
+        drain
+            .resume_partition
+            .as_deref()
+            .map(|resume| &resume.start_position),
+        Some(&SourcePosition::Cursor(CursorPosition {
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
+            field: "id".to_owned(),
+            value: CursorValue::I64(1),
+        }))
+    );
+}
+
+#[test]
+fn duration_drain_discards_an_empty_package_while_source_open_is_silent() {
+    let resource = MockResource::tier_a(Vec::new())
+        .without_control_keys()
+        .with_stall_after_batches();
+    let extent = ExecutionExtent::Drain {
+        version: EXECUTION_EXTENT_VERSION,
+        policy: StreamEpochPolicy {
+            version: STREAM_EPOCH_POLICY_VERSION,
+            checkpoint_cadence: EpochClosureTrigger::Elapsed {
+                milliseconds: 60_000,
+            },
+            package_rotation: EpochClosureTrigger::Bytes { count: 1 << 20 },
+            watermark: WatermarkPolicy::Disabled,
+            late_data: LateDataAction::Quarantine,
+            safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+        },
+        termination: DrainTermination::Duration { milliseconds: 20 },
+    };
+    let source = mock_unbounded_cursor_source_plan(&resource);
+    resource.bind_compiled_source(&source);
+    let plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(Vec::new(), None, None, extent.clone()),
+        )
+        .unwrap()
+        .bind_compiled_source(&source)
+        .unwrap()
+        .bind_operator_graph(
+            &source,
+            &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        )
+        .unwrap();
+    let mut controller = cdf_runtime::DrainEpochController::new(&extent).unwrap();
+    let root = TempDir::new().unwrap();
+    let package_dir = root.path().join("empty-duration-epoch");
+
+    let outcome = block_on(super::execute_drain_epoch_with_hooks(
+        &plan,
+        &resource,
+        &package_dir,
+        &|_, _| Ok(()),
+        super::DrainEpochExecution::new(&mut controller),
+        executable_mock_options(EngineExecutionOptions::default()).unwrap(),
+    ))
+    .unwrap();
+
+    assert!(matches!(
+        outcome,
+        EngineDrainEpochOutcome::FinishedNoOp { .. }
+    ));
+    assert!(!package_dir.exists());
+    assert!(controller.is_finished());
 }
 
 #[test]
@@ -2673,6 +2812,8 @@ fn drain_partition_resume_stays_local_when_resource_frontier_is_a_larger_cursor(
         super::DrainEpochExecution::new(&mut controller),
         executable_mock_options(EngineExecutionOptions::default()).unwrap(),
     ))
+    .unwrap()
+    .into_package()
     .unwrap();
     let drain = output.drain_epoch.unwrap();
     assert_eq!(drain.consumed_partition_count, 1);
@@ -2697,17 +2838,14 @@ fn drain_partition_resume_stays_local_when_resource_frontier_is_a_larger_cursor(
     );
 }
 
-fn run_fixed_drain_epochs_with_jobs(
-    jobs: u16,
-) -> (
-    Vec<(
-        String,
-        Vec<cdf_package_contract::SegmentEntry>,
-        cdf_kernel::EpochClosureEvidence,
-        bool,
-    )>,
-    u64,
-) {
+type FixedDrainEpochEvidence = (
+    String,
+    Vec<cdf_package_contract::SegmentEntry>,
+    cdf_kernel::EpochClosureEvidence,
+    bool,
+);
+
+fn run_fixed_drain_epochs_with_jobs(jobs: u16) -> (Vec<FixedDrainEpochEvidence>, u64) {
     let mut batches = sample_batches();
     for (ordinal, batch) in batches.iter_mut().enumerate() {
         batch.header.source_position = Some(SourcePosition::FileManifest(FileManifest {
@@ -2789,6 +2927,8 @@ fn run_fixed_drain_epochs_with_jobs(
                     scheduler.narrow_to_partition_count(plan.scan.partitions.len()),
                 ),
         ))
+        .unwrap()
+        .into_package()
         .unwrap();
         let drain = output.drain_epoch.as_ref().unwrap();
         maximum_active = maximum_active.max(output.source_frontier.maximum_active);
@@ -6436,6 +6576,7 @@ struct MockResource {
     duplicate_observation_identity: bool,
     misroute_batches: bool,
     retry_safety: cdf_kernel::PartitionRetrySafety,
+    stall_after_batches: bool,
     tier_a_intent: cdf_kernel::CompiledScanIntent,
     compiled_source_plan: Arc<OnceLock<cdf_runtime::CompiledSourcePlan>>,
     compiled_source_plan_hash: Arc<OnceLock<String>>,
@@ -6648,6 +6789,7 @@ impl MockResource {
             duplicate_observation_identity: false,
             misroute_batches: false,
             retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
+            stall_after_batches: false,
             tier_a_intent: cdf_kernel::CompiledScanIntent::full_scan(),
             compiled_source_plan: Arc::new(OnceLock::new()),
             compiled_source_plan_hash: Arc::new(OnceLock::new()),
@@ -6747,6 +6889,11 @@ impl MockResource {
 
     fn with_tier_a_intent(mut self, intent: cdf_kernel::CompiledScanIntent) -> Self {
         self.tier_a_intent = intent;
+        self
+    }
+
+    fn with_stall_after_batches(mut self) -> Self {
+        self.stall_after_batches = true;
         self
     }
 
@@ -7025,13 +7172,19 @@ impl ResourceStream for MockResource {
             .is_ok();
         let completion_attestation = self.completion_attestation.clone();
         let batch_poll_count = Arc::clone(&self.batch_poll_count);
+        let stall_after_batches = self.stall_after_batches;
         cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move {
             let stream = if transient_stream_failure {
                 Box::pin(stream::iter([Err(cdf_kernel::CdfError::transient(
                     "mock lazy stream unavailable",
                 ))])) as BatchStream
             } else {
-                Box::pin(stream::iter(batches.into_iter().map(Ok))) as BatchStream
+                let batches = stream::iter(batches.into_iter().map(Ok));
+                if stall_after_batches {
+                    Box::pin(batches.chain(stream::pending())) as BatchStream
+                } else {
+                    Box::pin(batches) as BatchStream
+                }
             };
             let stream = Box::pin(stream.inspect(move |_| {
                 batch_poll_count.fetch_add(1, Ordering::SeqCst);

@@ -656,17 +656,17 @@ async fn run_project_inner(
                 options,
             )
             .await
+            .map(|output| cdf_engine::EngineDrainEpochOutcome::Package(Box::new(output)))
         }
-        (None, None) => {
-            execute_to_package_with_segment_positions_and_pre_finalize(
-                &manifest_plan.plan,
-                resource,
-                &execution.package_dir,
-                &write_package_pre_finalize_artifacts,
-                options,
-            )
-            .await
-        }
+        (None, None) => execute_to_package_with_segment_positions_and_pre_finalize(
+            &manifest_plan.plan,
+            resource,
+            &execution.package_dir,
+            &write_package_pre_finalize_artifacts,
+            options,
+        )
+        .await
+        .map(|output| cdf_engine::EngineDrainEpochOutcome::Package(Box::new(output))),
     };
     let retry_history = retry_evidence.snapshot().and_then(|retry_history| {
         execution.recorder.append_source_retries(
@@ -676,7 +676,22 @@ async fn run_project_inner(
         Ok(retry_history)
     });
     let output = match output_result {
-        Ok(output) => output,
+        Ok(cdf_engine::EngineDrainEpochOutcome::Package(output)) => *output,
+        Ok(cdf_engine::EngineDrainEpochOutcome::FinishedNoOp { source_frontier }) => {
+            if let Some(staged) = active_staged.take() {
+                staged.abort()?;
+            }
+            retry_history?;
+            execution
+                .recorder
+                .complete_phase(RunPhase::PackageExecution, 0, 0, 0)?;
+            let mut report = no_changed_files_report(execution, head, manifest_plan.summary)?;
+            report.source_frontier = source_frontier;
+            return Ok(ProjectRunUnit {
+                report,
+                drain_epoch: None,
+            });
+        }
         Err(mut error) => {
             if let Some(staged) = active_staged.take()
                 && let Err(cleanup) = staged.abort()
