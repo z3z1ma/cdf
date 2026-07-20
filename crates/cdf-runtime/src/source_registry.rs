@@ -1257,14 +1257,12 @@ fn sanitize_health_details(value: &mut serde_json::Value, depth: usize) -> Resul
                 ));
             }
             if text.contains("://") {
-                if text.split_whitespace().count() != 1 || url::Url::parse(text).is_err() {
-                    return Err(CdfError::contract(
+                let location = crate::SourceEvidenceLocation::from_operational(text).map_err(|_| {
+                    CdfError::contract(
                         "source health detail URI must be the complete string; mixed operational text is forbidden",
-                    ));
-                }
-                *text = crate::SourceEvidenceLocation::from_operational(text)?
-                    .as_str()
-                    .to_owned();
+                    )
+                })?;
+                *text = location.as_str().to_owned();
             }
         }
         _ => {}

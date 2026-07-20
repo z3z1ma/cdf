@@ -230,30 +230,144 @@ pub struct SourceEgressTarget {
     port: Option<u16>,
 }
 
-impl SourceEgressTarget {
-    pub fn parse(operational_uri: &str) -> Result<Self> {
-        let parsed = url::Url::parse(operational_uri)
-            .map_err(|_| CdfError::contract("source egress target must be a valid absolute URI"))?;
-        let parsed_host = parsed
-            .host_str()
-            .filter(|host| !host.is_empty())
-            .ok_or_else(|| CdfError::contract("source egress target must name a host"))?;
-        let host = parsed_host
-            .strip_prefix('[')
-            .and_then(|host| host.strip_suffix(']'))
-            .unwrap_or(parsed_host)
-            .trim_end_matches('.')
-            .to_ascii_lowercase();
-        let port = parsed.port();
-        if port == Some(0) {
+pub(crate) struct ParsedSourceUri {
+    scheme: String,
+    host: Option<String>,
+    port: Option<u16>,
+    has_userinfo: bool,
+    has_query: bool,
+    has_fragment: bool,
+}
+
+impl ParsedSourceUri {
+    pub(crate) fn parse(value: &str) -> Result<Self> {
+        if value.is_empty() || value.chars().any(char::is_whitespace) {
             return Err(CdfError::contract(
-                "source egress target port must be in 1..=65535",
+                "source URI must be a nonempty, whitespace-free absolute URI",
             ));
         }
+
+        let (without_fragment, has_fragment) = value
+            .split_once('#')
+            .map_or((value, false), |(base, _)| (base, true));
+        let (without_query, has_query) = without_fragment
+            .split_once('?')
+            .map_or((without_fragment, false), |(base, _)| (base, true));
+        let (rendered_scheme, remainder) = without_query.split_once("://").ok_or_else(|| {
+            CdfError::contract("source URI must be a valid absolute URI with a scheme")
+        })?;
+        let mut scheme_bytes = rendered_scheme.bytes();
+        if !scheme_bytes
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphabetic())
+            || !scheme_bytes
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
+        {
+            return Err(CdfError::contract(
+                "source URI must be a valid absolute URI with a scheme",
+            ));
+        }
+        let scheme = rendered_scheme.to_ascii_lowercase();
+        let authority_end = remainder.find('/').unwrap_or(remainder.len());
+        let authority_text = &remainder[..authority_end];
+        if authority_text.is_empty() {
+            if scheme == "file" && remainder.starts_with('/') {
+                return Ok(Self {
+                    scheme,
+                    host: None,
+                    port: None,
+                    has_userinfo: false,
+                    has_query,
+                    has_fragment,
+                });
+            }
+            return Err(CdfError::contract("source URI must name an authority"));
+        }
+        let authority = authority_text
+            .parse::<http::uri::Authority>()
+            .map_err(|_| {
+                CdfError::contract("source URI must be a valid absolute URI with a scheme")
+            })?;
+        let userinfo_count = authority_text.bytes().filter(|byte| *byte == b'@').count();
+        if userinfo_count > 1 {
+            return Err(CdfError::contract(
+                "source URI authority contains ambiguous user information",
+            ));
+        }
+        let (host_port, has_userinfo) = authority_text
+            .split_once('@')
+            .map_or((authority_text, false), |(userinfo, host_port)| {
+                (host_port, !userinfo.is_empty())
+            });
+        if userinfo_count == 1 && !has_userinfo {
+            return Err(CdfError::contract(
+                "source URI authority contains empty user information",
+            ));
+        }
+
+        let has_explicit_port = if host_port.starts_with('[') {
+            let bracket_end = host_port.rfind(']').ok_or_else(|| {
+                CdfError::contract("source URI contains malformed bracketed IPv6")
+            })?;
+            !host_port[bracket_end + 1..].is_empty()
+        } else {
+            host_port.contains(':')
+        };
+        let parsed_port = authority.port_u16();
+        if has_explicit_port && parsed_port.is_none() {
+            return Err(CdfError::contract("source URI port must be in 1..=65535"));
+        }
+        if parsed_port == Some(0) {
+            return Err(CdfError::contract("source URI port must be in 1..=65535"));
+        }
+        let port = match (scheme.as_str(), parsed_port) {
+            ("http" | "ws", Some(80)) | ("https" | "wss", Some(443)) | ("ftp", Some(21)) => None,
+            (_, port) => port,
+        };
+
+        let normalized_host = authority
+            .host()
+            .strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .unwrap_or_else(|| authority.host())
+            .trim_end_matches('.')
+            .to_ascii_lowercase();
+        let is_ip_literal = normalized_host.contains(':')
+            || normalized_host
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || byte == b'.');
+        let host = if is_ip_literal {
+            normalized_host
+                .parse::<std::net::IpAddr>()
+                .map_or(normalized_host, |address| address.to_string())
+        } else {
+            normalized_host
+        };
+        if host.is_empty() {
+            return Err(CdfError::contract("source URI authority must name a host"));
+        }
+
         Ok(Self {
-            scheme: parsed.scheme().to_owned(),
-            host,
+            scheme,
+            host: Some(host),
             port,
+            has_userinfo,
+            has_query,
+            has_fragment,
+        })
+    }
+}
+
+impl SourceEgressTarget {
+    pub fn parse(operational_uri: &str) -> Result<Self> {
+        let parsed = ParsedSourceUri::parse(operational_uri)?;
+        let host = parsed
+            .host
+            .ok_or_else(|| CdfError::contract("source egress target must name a host"))?;
+        Ok(Self {
+            scheme: parsed.scheme,
+            host,
+            port: parsed.port,
         })
     }
 
@@ -1855,14 +1969,10 @@ fn validate_compiled_source_artifact(
             cdf_http::SecretUri::new(text.clone())?;
         }
         serde_json::Value::String(text) if text.contains("://") => {
-            let url = url::Url::parse(text).map_err(|_| {
+            let uri = ParsedSourceUri::parse(text).map_err(|_| {
                 CdfError::contract(format!("{label} contains a malformed absolute URI"))
             })?;
-            if !url.username().is_empty()
-                || url.password().is_some()
-                || url.query().is_some()
-                || url.fragment().is_some()
-            {
+            if uri.has_userinfo || uri.has_query || uri.has_fragment {
                 return Err(CdfError::contract(format!(
                     "{label} URI must not contain user information, query parameters, or a fragment"
                 )));
@@ -1944,15 +2054,35 @@ impl SourceEvidenceLocation {
                 "source evidence location requires a nonempty control-free value",
             ));
         }
+        if value.contains("://") {
+            let parsed = ParsedSourceUri::parse(value)?;
+            let without_fragment = value.split('#').next().unwrap_or(value);
+            let base = without_fragment
+                .split_once('?')
+                .map_or(without_fragment, |(base, _)| base);
+            let (scheme, remainder) = base
+                .split_once("://")
+                .expect("the URI scheme delimiter was already validated");
+            let authority_end = remainder.find('/').unwrap_or(remainder.len());
+            let (authority, suffix) = remainder.split_at(authority_end);
+            let safe_authority = authority
+                .rsplit_once('@')
+                .map_or(authority, |(_, host)| host);
+            let redacted_base = format!("{scheme}://{safe_authority}{suffix}");
+            return Ok(Self(if parsed.has_query {
+                format!("{redacted_base}?<redacted>")
+            } else {
+                redacted_base
+            }));
+        }
         let without_fragment = value.split('#').next().unwrap_or(value);
         let (base, had_query) = without_fragment
             .split_once('?')
             .map_or((without_fragment, false), |(base, _)| (base, true));
-        let redacted_base = redact_uri_userinfo(base);
         let redacted = if had_query {
-            format!("{redacted_base}?<redacted>")
+            format!("{base}?<redacted>")
         } else {
-            redacted_base
+            base.to_owned()
         };
         Ok(Self(redacted))
     }
@@ -1960,18 +2090,6 @@ impl SourceEvidenceLocation {
     pub fn as_str(&self) -> &str {
         &self.0
     }
-}
-
-fn redact_uri_userinfo(value: &str) -> String {
-    let Some((scheme, remainder)) = value.split_once("://") else {
-        return value.to_owned();
-    };
-    let authority_end = remainder.find('/').unwrap_or(remainder.len());
-    let (authority, suffix) = remainder.split_at(authority_end);
-    let authority = authority
-        .rsplit_once('@')
-        .map_or(authority, |(_, host)| host);
-    format!("{scheme}://{authority}{suffix}")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

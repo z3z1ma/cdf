@@ -1559,13 +1559,38 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
             .contains("must be JSON objects")
     );
 
-    let mut credential_uri = plan.clone();
-    credential_uri.physical_plan = serde_json::json!({
-        "endpoint": "https://alice:secret@example.test/items?token=secret#fragment"
-    });
-    credential_uri.physical_plan_hash = artifact_hash(&credential_uri.physical_plan).unwrap();
-    let error = credential_uri.validate().unwrap_err();
-    assert!(error.message.contains("must not contain user information"));
+    for unsafe_uri in [
+        "https://alice:secret@example.test/items",
+        "https://example.test/items?token=secret",
+        "https://example.test/items#fragment",
+    ] {
+        let mut credential_uri = plan.clone();
+        credential_uri.physical_plan = serde_json::json!({"endpoint": unsafe_uri});
+        credential_uri.physical_plan_hash = artifact_hash(&credential_uri.physical_plan).unwrap();
+        let error = credential_uri.validate().unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("must not contain user information, query parameters, or a fragment"),
+            "accepted unsafe compiled source URI {unsafe_uri:?}"
+        );
+    }
+
+    let mut malformed_uri = plan.clone();
+    malformed_uri.physical_plan = serde_json::json!({"endpoint": "https:///items"});
+    malformed_uri.physical_plan_hash = artifact_hash(&malformed_uri.physical_plan).unwrap();
+    assert!(
+        malformed_uri
+            .validate()
+            .unwrap_err()
+            .message
+            .contains("malformed absolute URI")
+    );
+
+    let mut local_file_uri = plan.clone();
+    local_file_uri.physical_plan = serde_json::json!({"endpoint": "file:///tmp/events.parquet"});
+    local_file_uri.physical_plan_hash = artifact_hash(&local_file_uri.physical_plan).unwrap();
+    local_file_uri.validate().unwrap();
 
     let mut raw_secret = plan.clone();
     raw_secret.physical_plan = serde_json::json!({"api_key": "plain-text-secret"});
@@ -2784,13 +2809,82 @@ fn source_egress_scope_exposes_only_normalized_credential_free_authority() {
 
     let normalized = SourceEgressTarget::parse("HTTPS://EXAMPLE.TEST./data").unwrap();
     assert_eq!(normalized.host(), "example.test");
+    assert_eq!(normalized.port(), None);
     assert_eq!(normalized.canonical_authority(), "https://example.test:443");
+    let explicit_default = SourceEgressTarget::parse("https://example.test:443/other").unwrap();
+    assert_eq!(explicit_default.port(), None);
     assert_eq!(
-        SourceEgressTarget::parse("https://example.test:443/other")
-            .unwrap()
-            .canonical_authority(),
+        explicit_default.canonical_authority(),
         normalized.canonical_authority()
     );
-    assert!(SourceEgressTarget::parse("https://2001:db8::1/data").is_err());
-    assert!(SourceEgressTarget::parse("https://example.test:0/data").is_err());
+    assert_eq!(
+        SourceEgressTarget::parse("http://192.0.2.1/events?secret=value#fragment")
+            .unwrap()
+            .canonical_authority(),
+        "http://192.0.2.1:80"
+    );
+    assert_eq!(
+        SourceEgressTarget::parse("s3://WAREHOUSE-BUCKET./prefix/object.parquet")
+            .unwrap()
+            .canonical_authority(),
+        "s3://warehouse-bucket"
+    );
+    assert_eq!(
+        SourceEgressTarget::parse("gs://analytics-bucket:8443/prefix")
+            .unwrap()
+            .canonical_authority(),
+        "gs://analytics-bucket:8443"
+    );
+    assert_eq!(
+        SourceEgressTarget::parse("az://[2001:0db8:0000:0000:0000:0000:0000:0002]/container")
+            .unwrap()
+            .canonical_authority(),
+        "az://[2001:db8::2]"
+    );
+
+    for invalid in [
+        "",
+        "example.test/path",
+        "https://",
+        "https:///path",
+        "https://@example.test/path",
+        "https://alice@bob@example.test/path",
+        "https://2001:db8::1/data",
+        "https://example.test:0/data",
+        "https://example.test:/data",
+        "https://example.test:not-a-port/data",
+        "https://example.test:65536/data",
+        "https://example.test/path with spaces",
+        "https://example.test/path#mixed text",
+    ] {
+        assert!(
+            SourceEgressTarget::parse(invalid).is_err(),
+            "accepted malformed egress URI {invalid:?}"
+        );
+    }
+}
+
+#[test]
+fn source_evidence_locations_redact_uri_secrets_and_preserve_local_paths() {
+    assert_eq!(
+        SourceEvidenceLocation::from_operational(
+            "https://alice:secret@example.test/events?token=hidden#fragment"
+        )
+        .unwrap()
+        .as_str(),
+        "https://example.test/events?<redacted>"
+    );
+    assert_eq!(
+        SourceEvidenceLocation::from_operational("file:///tmp/events.parquet")
+            .unwrap()
+            .as_str(),
+        "file:///tmp/events.parquet"
+    );
+    assert_eq!(
+        SourceEvidenceLocation::from_operational("/tmp/events?token=hidden#fragment")
+            .unwrap()
+            .as_str(),
+        "/tmp/events?<redacted>"
+    );
+    assert!(SourceEvidenceLocation::from_operational("https:///missing-host").is_err());
 }
