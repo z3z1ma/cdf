@@ -1420,6 +1420,14 @@ mod tests {
                         {"id": 1, "name": "id", "required": true, "type": "long"},
                         {"id": 2, "name": "label", "required": false, "type": "string"}
                     ]
+                },
+                {
+                    "type": "struct",
+                    "schema-id": 99,
+                    "fields": [
+                        {"id": 1, "name": "id", "required": true, "type": "long"},
+                        {"id": 2, "name": "label", "required": false, "type": "string"}
+                    ]
                 }
             ],
             "default-spec-id": 1,
@@ -2413,6 +2421,10 @@ mod tests {
         assert_eq!(authority.output_schema_id, 1);
         assert_eq!(authority.projected_field_ids, vec![1, 2]);
         assert_eq!(
+            authority.schemas.keys().copied().collect::<Vec<_>>(),
+            [0, 1]
+        );
+        assert_eq!(
             authority
                 .partition_specs
                 .keys()
@@ -2437,6 +2449,7 @@ mod tests {
             authority.sort_orders.keys().copied().collect::<Vec<_>>(),
             [0]
         );
+        let authority = authority.into_validated().unwrap();
         let mut tasks = Vec::new();
         while let Some(record) = reader.next_record().unwrap() {
             let task: crate::IcebergScanTask =

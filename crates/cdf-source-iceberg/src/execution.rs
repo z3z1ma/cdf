@@ -12,14 +12,12 @@ use iceberg::{
     Error as IcebergError, ErrorKind as IcebergErrorKind, Runtime as IcebergRuntime,
     arrow::ArrowReaderBuilder,
     scan::{FileScanTask, FileScanTaskDeleteFile, FileScanTaskStream},
-    spec::{DataContentType, DataFileFormat, Literal, NameMapping, Struct},
+    spec::{DataContentType, DataFileFormat, Literal, Struct},
 };
 
 use crate::{
     IcebergCatalogContext, IcebergDeleteContent, IcebergSourceOptions,
-    scan_task::{decode_partition_spec, decode_schema},
-    storage::prepare_task_file_io,
-    task_reader::IcebergExecutableTask,
+    storage::prepare_task_file_io, task_reader::IcebergExecutableTask,
 };
 
 pub(crate) struct PreparedIcebergTaskScan {
@@ -227,24 +225,9 @@ fn upstream_task(executable: &IcebergExecutableTask) -> Result<FileScanTask> {
     let task = &executable.task;
     let authority = executable.authority();
     task.validate_against(authority)?;
-    let schema = Arc::new(decode_schema(
-        authority
-            .schemas
-            .get(&authority.output_schema_id)
-            .expect("validated authority contains output schema"),
-    )?);
-    let file_schema = decode_schema(
-        authority
-            .schemas
-            .get(&task.file_schema_id)
-            .expect("validated task contains file schema"),
-    )?;
-    let partition_spec = Arc::new(decode_partition_spec(
-        authority
-            .partition_specs
-            .get(&task.partition_spec_id)
-            .expect("validated task contains partition spec"),
-    )?);
+    let schema = authority.schema(authority.output_schema_id)?;
+    let file_schema = authority.schema(task.file_schema_id)?;
+    let partition_spec = authority.partition_spec(task.partition_spec_id)?;
     let partition_type = partition_spec
         .partition_type(&file_schema)
         .map_err(|error| CdfError::data(format!("bind Iceberg task partition values: {error}")))?;
@@ -286,12 +269,7 @@ fn upstream_task(executable: &IcebergExecutableTask) -> Result<FileScanTask> {
                 .build())
         })
         .collect::<Result<Vec<_>>>()?;
-    let name_mapping = authority
-        .name_mapping
-        .as_ref()
-        .map(|mapping| serde_json::from_value::<NameMapping>(mapping.value.clone()).map(Arc::new))
-        .transpose()
-        .map_err(|error| CdfError::data(format!("decode Iceberg name mapping: {error}")))?;
+    let name_mapping = authority.name_mapping();
     Ok(FileScanTask::builder()
         .with_file_size_in_bytes(task.data_file.file_size_bytes)
         .with_start(task.data_file.range_start)

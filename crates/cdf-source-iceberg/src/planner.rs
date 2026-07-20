@@ -23,7 +23,7 @@ use crate::{
     ICEBERG_TASK_SET_AUTHORITY_VERSION, ICEBERG_TASK_SET_TYPE, IcebergDataFile,
     IcebergDeleteContent, IcebergDeleteFile, IcebergFileFormat, IcebergJsonAuthority,
     IcebergReaderRequirements, IcebergScanTask, IcebergSourceOptions, IcebergTaskSetAuthority,
-    LoadedIcebergTable,
+    LoadedIcebergTable, ValidatedIcebergTaskSetAuthority,
     catalog::{load_catalog_object, reserve_parse_memory},
     planning_index::{
         IcebergPlanningIndex, IcebergPlanningManifest, IcebergPlanningManifestReader,
@@ -107,13 +107,11 @@ pub(crate) fn plan_snapshot_scan(
     let has_deletes = planning_index
         .as_ref()
         .is_some_and(|index| index.manifest_count(ManifestContentType::Deletes) > 0);
-    let authority = task_authority(
-        table,
-        output_schema_id,
-        projected_field_ids,
-        scan_intent,
-        has_deletes,
-    )?;
+    let mut required_authority = RequiredTaskAuthority {
+        schema_ids: BTreeSet::from([output_schema_id]),
+        partition_spec_ids: BTreeSet::from([table.metadata.default_partition_spec().spec_id()]),
+        sort_order_ids: BTreeSet::from([table.metadata.default_sort_order_id()]),
+    };
     let spill = context.catalog.execution.spill();
     let mut writer = context.task_store.writer(
         ICEBERG_TASK_SET_TYPE,
@@ -124,14 +122,7 @@ pub(crate) fn plan_snapshot_scan(
         },
         context.catalog.execution.memory(),
         spill.as_ref(),
-        |output| authority.encode_to(output),
     )?;
-    let authority_sha256 = writer.authority_sha256().to_owned();
-    if authority_sha256 != authority.content_sha256()? {
-        return Err(CdfError::internal(
-            "Iceberg task-store authority hash does not match its canonical model",
-        ));
-    }
 
     let mut estimated_rows = 0_u64;
     let mut estimated_bytes = 0_u64;
@@ -158,9 +149,8 @@ pub(crate) fn plan_snapshot_scan(
                 emit_manifest_tasks(
                     work,
                     table,
-                    &authority,
-                    &authority_sha256,
                     &mut writer,
+                    &mut required_authority,
                     &mut task_ordinal,
                     &mut estimated_rows,
                     &mut estimated_bytes,
@@ -170,7 +160,20 @@ pub(crate) fn plan_snapshot_scan(
             },
         )?;
     }
-    let artifact = writer.finalize()?;
+    let authority = task_authority(
+        table,
+        output_schema_id,
+        projected_field_ids,
+        scan_intent,
+        has_deletes,
+        &required_authority,
+    )?;
+    let artifact = writer.finalize(|output| authority.encode_to(output))?;
+    if artifact.authority_sha256 != authority.content_sha256() {
+        return Err(CdfError::internal(
+            "Iceberg task-store authority hash does not match its canonical model",
+        ));
+    }
     let reference = artifact.reference;
     reference.validate()?;
     Ok(ScanPlan {
@@ -580,9 +583,8 @@ fn optional_manifest_header_id(
 fn emit_manifest_tasks(
     work: ManifestWork,
     table: &LoadedIcebergTable,
-    authority: &IcebergTaskSetAuthority,
-    authority_sha256: &str,
     writer: &mut ExternalTaskSetWriter,
+    required_authority: &mut RequiredTaskAuthority,
     ordinal: &mut u64,
     estimated_rows: &mut u64,
     estimated_bytes: &mut u64,
@@ -591,6 +593,7 @@ fn emit_manifest_tasks(
 ) -> Result<()> {
     let file_schema_id =
         validate_manifest_authority(table, &work.manifest, &work.listed, work.header)?;
+    required_authority.schema_ids.insert(file_schema_id);
     for (entry_index, entry) in work.manifest.entries().iter().enumerate() {
         if !entry.is_alive() {
             continue;
@@ -619,7 +622,6 @@ fn emit_manifest_tasks(
             entry_index,
             entry,
             DataTaskContext {
-                authority_sha256,
                 manifest_sha256: &work.manifest_sha256,
                 manifest_file: &work.listed,
                 manifest: &work.manifest,
@@ -628,13 +630,24 @@ fn emit_manifest_tasks(
                 maximum_task_bytes,
             },
         )?;
+        required_authority
+            .partition_spec_ids
+            .insert(task.partition_spec_id);
+        required_authority
+            .partition_spec_ids
+            .extend(task.deletes.iter().map(|delete| delete.partition_spec_id));
+        if let Some(sort_order_id) = task.data_file.sort_order_id {
+            required_authority
+                .sort_order_ids
+                .insert(i64::from(sort_order_id));
+        }
         *estimated_rows = estimated_rows
             .checked_add(entry.record_count())
             .ok_or_else(|| CdfError::data("Iceberg row estimate exceeds u64"))?;
         *estimated_bytes = estimated_bytes
             .checked_add(entry.file_size_in_bytes())
             .ok_or_else(|| CdfError::data("Iceberg byte estimate exceeds u64"))?;
-        task.append_to(authority, writer)?;
+        task.append_to(writer)?;
         *ordinal = ordinal
             .checked_add(1)
             .ok_or_else(|| CdfError::data("Iceberg task ordinal exceeds u64"))?;
@@ -684,16 +697,24 @@ fn emit_delete_manifest(
     Ok(())
 }
 
+struct RequiredTaskAuthority {
+    schema_ids: BTreeSet<i32>,
+    partition_spec_ids: BTreeSet<i32>,
+    sort_order_ids: BTreeSet<i64>,
+}
+
 fn task_authority(
     table: &LoadedIcebergTable,
     output_schema_id: i32,
     projected_field_ids: Vec<i32>,
     scan_intent: CompiledScanIntent,
     has_deletes: bool,
-) -> Result<IcebergTaskSetAuthority> {
+    required: &RequiredTaskAuthority,
+) -> Result<ValidatedIcebergTaskSetAuthority> {
     let schemas = table
         .metadata
         .schemas_iter()
+        .filter(|schema| required.schema_ids.contains(&schema.schema_id()))
         .map(|schema| {
             Ok((
                 schema.schema_id(),
@@ -706,6 +727,7 @@ fn task_authority(
     let partition_specs = table
         .metadata
         .partition_specs_iter()
+        .filter(|spec| required.partition_spec_ids.contains(&spec.spec_id()))
         .map(|spec| {
             Ok((
                 spec.spec_id(),
@@ -730,6 +752,7 @@ fn task_authority(
     let sort_orders = table
         .metadata
         .sort_orders_iter()
+        .filter(|order| required.sort_order_ids.contains(&order.order_id))
         .map(|order| {
             Ok((
                 order.order_id,
@@ -778,8 +801,7 @@ fn task_authority(
             required_capabilities,
         },
     };
-    authority.validate()?;
-    Ok(authority)
+    authority.into_validated()
 }
 
 fn projected_field_ids(
@@ -894,7 +916,6 @@ fn validate_manifest_partition_spec_id(
 }
 
 struct DataTaskContext<'a> {
-    authority_sha256: &'a str,
     manifest_sha256: &'a str,
     manifest_file: &'a IcebergPlanningManifest,
     manifest: &'a Manifest,
@@ -910,7 +931,6 @@ fn data_task(
     context: DataTaskContext<'_>,
 ) -> Result<IcebergScanTask> {
     let DataTaskContext {
-        authority_sha256,
         manifest_sha256,
         manifest_file,
         manifest,
@@ -955,7 +975,6 @@ fn data_task(
     Ok(IcebergScanTask {
         version: ICEBERG_SCAN_TASK_VERSION,
         canonical_ordinal: ordinal,
-        authority_sha256: authority_sha256.to_owned(),
         data_file: IcebergDataFile {
             path: data_file.file_path().to_owned(),
             format: IcebergFileFormat::Parquet,

@@ -13,14 +13,14 @@ use cdf_task_store::{ExternalTaskSetReader, ExternalTaskStore};
 
 use crate::{
     ICEBERG_TASK_SET_TYPE, IcebergScanTask, IcebergSourceOptions, IcebergTaskSetAuthority,
-    catalog::reserve_parse_memory,
+    ValidatedIcebergTaskSetAuthority, catalog::reserve_parse_memory,
 };
 
 const TASK_CONTENT_HASH_KEY: &str = "cdf:external_task_sha256";
 const GENERATION_ATTESTATION_MEMORY_BYTES: u64 = 256;
 
 struct RetainedTaskAuthority {
-    model: IcebergTaskSetAuthority,
+    model: ValidatedIcebergTaskSetAuthority,
     _encoded: AccountedBytes,
     _parse: MemoryLease,
 }
@@ -41,7 +41,7 @@ pub(crate) struct IcebergExecutableTask {
 }
 
 impl IcebergExecutableTask {
-    pub(crate) fn authority(&self) -> &IcebergTaskSetAuthority {
+    pub(crate) fn authority(&self) -> &ValidatedIcebergTaskSetAuthority {
         &self.authority.model
     }
 
@@ -96,8 +96,8 @@ impl IcebergPlannedPartitionReader {
         )?;
         let model: IcebergTaskSetAuthority = serde_json::from_slice(encoded.payload())
             .map_err(|error| CdfError::data(format!("decode Iceberg task authority: {error}")))?;
-        model.validate()?;
-        if model.content_sha256()? != reader.authority_sha256() {
+        let model = model.into_validated()?;
+        if model.content_sha256() != reader.authority_sha256() {
             return Err(CdfError::data(
                 "Iceberg task authority model does not match its task-store identity",
             ));
@@ -130,7 +130,7 @@ impl IcebergPlannedPartitionReader {
             .map_err(|error| CdfError::data(format!("decode Iceberg scan task: {error}")))?;
         task.validate_against(&self.authority.model)?;
         if task.canonical_ordinal != record.canonical_ordinal
-            || task.content_sha256(&self.authority.model)? != record.content_sha256
+            || task.content_sha256()? != record.content_sha256
         {
             return Err(CdfError::data(
                 "Iceberg scan task ordinal or content does not match its task-store record",

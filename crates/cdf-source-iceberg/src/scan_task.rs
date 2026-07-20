@@ -1,20 +1,24 @@
-use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ops::Deref,
+    sync::{Arc, Mutex},
+};
 
 use cdf_kernel::{CdfError, CompiledScanIntent, Result, TableSnapshotPosition};
 use cdf_runtime::artifact_hash;
 use cdf_task_store::ExternalTaskSetWriter;
 use serde::{Deserialize, Serialize};
 
-pub const ICEBERG_SCAN_TASK_VERSION: u16 = 1;
-pub const ICEBERG_TASK_SET_AUTHORITY_VERSION: u16 = 1;
-pub const ICEBERG_TASK_SET_TYPE: &str = "iceberg-scan-v1";
+pub const ICEBERG_SCAN_TASK_VERSION: u16 = 2;
+pub const ICEBERG_TASK_SET_AUTHORITY_VERSION: u16 = 2;
+pub const ICEBERG_TASK_SET_TYPE: &str = "iceberg-scan-v2";
 
 /// Shared, immutable authority for every task in one Iceberg task-set artifact.
 ///
 /// Schema, partition-spec, name-map, predicate, snapshot, and reader facts are encoded once rather
-/// than repeated per file. The artifact header hashes these canonical bytes and every task binds
-/// that hash, preserving isolated reconstruction without metadata cardinality amplification.
+/// than repeated per file. The content-addressed artifact binds these canonical bytes and its task
+/// records as one identity, preserving isolated reconstruction without cardinality amplification.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IcebergTaskSetAuthority {
@@ -176,6 +180,121 @@ impl IcebergTaskSetAuthority {
             ))
         })
     }
+
+    /// Crosses the task-authority trust boundary once and retains the result for every task.
+    ///
+    /// Artifact decoding, hashing, and schema validation are deliberately absent from the task
+    /// hot path. A task-set reader constructs exactly one validated authority and shares it across
+    /// every retained task and retry.
+    pub fn into_validated(self) -> Result<ValidatedIcebergTaskSetAuthority> {
+        self.validate()?;
+        let content_sha256 = artifact_hash(&self)?;
+        let output_schema = Arc::new(decode_schema(
+            self.schemas.get(&self.output_schema_id).ok_or_else(|| {
+                CdfError::contract(format!(
+                    "Iceberg output schema id {} is absent from task-set authority",
+                    self.output_schema_id
+                ))
+            })?,
+        )?);
+        let mut schemas = BTreeMap::new();
+        schemas.insert(self.output_schema_id, output_schema);
+        let partition_specs = self
+            .partition_specs
+            .iter()
+            .map(|(id, encoded)| Ok((*id, Arc::new(decode_partition_spec(encoded)?))))
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        let name_mapping = self
+            .name_mapping
+            .as_ref()
+            .map(|mapping| {
+                serde_json::from_value::<iceberg::spec::NameMapping>(mapping.value.clone())
+                    .map(Arc::new)
+                    .map_err(|error| {
+                        CdfError::contract(format!(
+                            "decode Iceberg name-mapping authority: {error}"
+                        ))
+                    })
+            })
+            .transpose()?;
+        Ok(ValidatedIcebergTaskSetAuthority {
+            model: self,
+            content_sha256,
+            schemas: Mutex::new(schemas),
+            partition_specs,
+            name_mapping,
+        })
+    }
+}
+
+/// One validated shared authority for an entire canonical Iceberg task set.
+///
+/// The serialized model remains the package/task identity. Only schemas and partition/sort
+/// authorities required by this exact task set are retained. Typed schemas are decoded lazily and
+/// cached by id; partition specs and name mapping are small and eagerly cached.
+#[derive(Debug)]
+pub struct ValidatedIcebergTaskSetAuthority {
+    model: IcebergTaskSetAuthority,
+    content_sha256: String,
+    schemas: Mutex<BTreeMap<i32, Arc<iceberg::spec::Schema>>>,
+    partition_specs: BTreeMap<i32, Arc<iceberg::spec::PartitionSpec>>,
+    name_mapping: Option<Arc<iceberg::spec::NameMapping>>,
+}
+
+impl ValidatedIcebergTaskSetAuthority {
+    pub fn model(&self) -> &IcebergTaskSetAuthority {
+        &self.model
+    }
+
+    pub fn content_sha256(&self) -> &str {
+        &self.content_sha256
+    }
+
+    pub fn encode_to(&self, output: &mut dyn Write) -> Result<()> {
+        serde_json::to_writer(output, &self.model).map_err(|error| {
+            CdfError::data(format!(
+                "encode validated canonical Iceberg task-set authority: {error}"
+            ))
+        })
+    }
+
+    pub fn schema(&self, schema_id: i32) -> Result<Arc<iceberg::spec::Schema>> {
+        let mut schemas = self
+            .schemas
+            .lock()
+            .map_err(|_| CdfError::internal("Iceberg validated schema cache is poisoned"))?;
+        if let Some(schema) = schemas.get(&schema_id) {
+            return Ok(Arc::clone(schema));
+        }
+        let encoded = self.model.schemas.get(&schema_id).ok_or_else(|| {
+            CdfError::contract(format!(
+                "Iceberg schema id {schema_id} is absent from validated task-set authority"
+            ))
+        })?;
+        let schema = Arc::new(decode_schema(encoded)?);
+        schemas.insert(schema_id, Arc::clone(&schema));
+        Ok(schema)
+    }
+
+    pub fn partition_spec(&self, spec_id: i32) -> Result<Arc<iceberg::spec::PartitionSpec>> {
+        self.partition_specs.get(&spec_id).cloned().ok_or_else(|| {
+            CdfError::contract(format!(
+                "Iceberg partition spec id {spec_id} is absent from validated task-set authority"
+            ))
+        })
+    }
+
+    pub fn name_mapping(&self) -> Option<Arc<iceberg::spec::NameMapping>> {
+        self.name_mapping.clone()
+    }
+}
+
+impl Deref for ValidatedIcebergTaskSetAuthority {
+    type Target = IcebergTaskSetAuthority;
+
+    fn deref(&self) -> &Self::Target {
+        &self.model
+    }
 }
 
 /// CDF-owned, portable work record for one immutable Iceberg data-file range.
@@ -187,7 +306,6 @@ impl IcebergTaskSetAuthority {
 pub struct IcebergScanTask {
     pub version: u16,
     pub canonical_ordinal: u64,
-    pub authority_sha256: String,
     pub data_file: IcebergDataFile,
     pub file_schema_id: i32,
     pub partition_spec_id: i32,
@@ -197,24 +315,12 @@ pub struct IcebergScanTask {
 }
 
 impl IcebergScanTask {
-    pub fn validate_against(&self, authority: &IcebergTaskSetAuthority) -> Result<()> {
-        authority.validate()?;
+    pub fn validate(&self) -> Result<()> {
         if self.version != ICEBERG_SCAN_TASK_VERSION {
             return Err(CdfError::contract(format!(
                 "Iceberg scan task version {} is unsupported; expected {}",
                 self.version, ICEBERG_SCAN_TASK_VERSION
             )));
-        }
-        validate_sha256("Iceberg task authority", &self.authority_sha256)?;
-        if self.authority_sha256 != authority.content_sha256()? {
-            return Err(CdfError::contract(
-                "Iceberg scan task does not bind the selected task-set authority",
-            ));
-        }
-        if authority.snapshot.is_none() {
-            return Err(CdfError::contract(
-                "Iceberg data-file task requires a selected table snapshot",
-            ));
         }
         self.data_file.validate("Iceberg data file")?;
         if self.data_file.format != IcebergFileFormat::Parquet {
@@ -222,29 +328,48 @@ impl IcebergScanTask {
                 "Iceberg source currently supports Parquet data files only",
             ));
         }
-        let schema_authority = authority.schemas.get(&self.file_schema_id).ok_or_else(|| {
-            CdfError::contract(format!(
-                "Iceberg task file schema id {} is absent from task-set authority",
-                self.file_schema_id
-            ))
-        })?;
-        let file_schema = decode_schema(schema_authority)?;
-        let output_schema = decode_schema(
-            authority
-                .schemas
-                .get(&authority.output_schema_id)
-                .expect("authority validation proved output schema"),
-        )?;
-        let spec_authority = authority
-            .partition_specs
-            .get(&self.partition_spec_id)
-            .ok_or_else(|| {
-                CdfError::contract(format!(
-                    "Iceberg task partition spec id {} is absent from task-set authority",
-                    self.partition_spec_id
-                ))
-            })?;
-        let partition_spec = decode_partition_spec(spec_authority)?;
+        let mut previous = None;
+        for delete in &self.deletes {
+            delete.validate()?;
+            if delete
+                .referenced_data_file
+                .as_deref()
+                .is_some_and(|path| path != self.data_file.path)
+            {
+                return Err(CdfError::contract(
+                    "Iceberg position delete references a different data file than its scan task",
+                ));
+            }
+            let key = delete.canonical_key();
+            if previous.as_ref().is_some_and(|value| value >= &key) {
+                return Err(CdfError::contract(
+                    "Iceberg delete files must be unique and sorted by canonical identity",
+                ));
+            }
+            previous = Some(key);
+        }
+        Ok(())
+    }
+
+    pub fn validate_against(&self, authority: &ValidatedIcebergTaskSetAuthority) -> Result<()> {
+        self.validate()?;
+        if authority.snapshot.is_none() {
+            return Err(CdfError::contract(
+                "Iceberg data-file task requires a selected table snapshot",
+            ));
+        }
+        let file_schema = authority.schema(self.file_schema_id)?;
+        let output_schema = authority.schema(authority.output_schema_id)?;
+        if let Some(sort_order_id) = self.data_file.sort_order_id
+            && !authority
+                .sort_orders
+                .contains_key(&i64::from(sort_order_id))
+        {
+            return Err(CdfError::contract(format!(
+                "Iceberg data-file sort order id {sort_order_id} is absent from task-set authority"
+            )));
+        }
+        let partition_spec = authority.partition_spec(self.partition_spec_id)?;
         let partition_type = partition_spec
             .partition_type(&file_schema)
             .map_err(|error| {
@@ -282,9 +407,7 @@ impl IcebergScanTask {
                 "Iceberg format v1 scan tasks cannot carry delete files",
             ));
         }
-        let mut previous = None;
         for delete in &self.deletes {
-            delete.validate()?;
             if !authority
                 .partition_specs
                 .contains_key(&delete.partition_spec_id)
@@ -302,28 +425,12 @@ impl IcebergScanTask {
                     )));
                 }
             }
-            if delete
-                .referenced_data_file
-                .as_deref()
-                .is_some_and(|path| path != self.data_file.path)
-            {
-                return Err(CdfError::contract(
-                    "Iceberg position delete references a different data file than its scan task",
-                ));
-            }
-            let key = delete.canonical_key();
-            if previous.as_ref().is_some_and(|value| value >= &key) {
-                return Err(CdfError::contract(
-                    "Iceberg delete files must be unique and sorted by canonical identity",
-                ));
-            }
-            previous = Some(key);
         }
         Ok(())
     }
 
-    pub fn content_sha256(&self, authority: &IcebergTaskSetAuthority) -> Result<String> {
-        self.validate_against(authority)?;
+    pub fn content_sha256(&self) -> Result<String> {
+        self.validate()?;
         artifact_hash(self)
     }
 
@@ -331,17 +438,8 @@ impl IcebergScanTask {
     ///
     /// All maps in the CDF-owned shape are ordered and the struct field order is frozen by this
     /// version, so this is the sole canonical encoder for Iceberg task-set identity.
-    pub fn append_to(
-        &self,
-        authority: &IcebergTaskSetAuthority,
-        writer: &mut ExternalTaskSetWriter,
-    ) -> Result<()> {
-        self.validate_against(authority)?;
-        if writer.authority_sha256() != self.authority_sha256 {
-            return Err(CdfError::contract(
-                "Iceberg task writer carries a different shared authority",
-            ));
-        }
+    pub fn append_to(&self, writer: &mut ExternalTaskSetWriter) -> Result<()> {
+        self.validate()?;
         writer.push_with(self.canonical_ordinal, |output| {
             serde_json::to_writer(output, self)
                 .map_err(|error| CdfError::data(format!("encode canonical Iceberg task: {error}")))
@@ -766,15 +864,17 @@ mod tests {
         }
     }
 
+    fn validated_authority() -> ValidatedIcebergTaskSetAuthority {
+        authority().into_validated().unwrap()
+    }
+
     #[test]
     fn empty_table_authority_requires_no_snapshot_but_cannot_admit_data_tasks() {
         let mut authority = authority();
         authority.snapshot = None;
-        authority.validate().unwrap();
+        let authority = authority.into_validated().unwrap();
 
-        let mut task = task();
-        task.authority_sha256 = authority.content_sha256().unwrap();
-        let error = task.validate_against(&authority).unwrap_err();
+        let error = task().validate_against(&authority).unwrap_err();
         assert!(error.message.contains("requires a selected table snapshot"));
     }
 
@@ -782,7 +882,6 @@ mod tests {
         IcebergScanTask {
             version: ICEBERG_SCAN_TASK_VERSION,
             canonical_ordinal: 4,
-            authority_sha256: authority().content_sha256().unwrap(),
             data_file: IcebergDataFile {
                 path: "s3://bucket/data/0004.parquet".to_owned(),
                 format: IcebergFileFormat::Parquet,
@@ -819,20 +918,19 @@ mod tests {
 
     #[test]
     fn task_is_self_verifying_and_deterministic() {
-        let authority = authority();
+        let authority = validated_authority();
         let task = task();
-        authority.validate().unwrap();
         task.validate_against(&authority).unwrap();
         assert_eq!(
-            task.content_sha256(&authority).unwrap(),
-            task.content_sha256(&authority).unwrap()
+            task.content_sha256().unwrap(),
+            task.content_sha256().unwrap()
         );
         let encoded = serde_json::to_vec(&task).unwrap();
         let decoded: IcebergScanTask = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(decoded, task);
         assert_eq!(
-            decoded.content_sha256(&authority).unwrap(),
-            task.content_sha256(&authority).unwrap()
+            decoded.content_sha256().unwrap(),
+            task.content_sha256().unwrap()
         );
     }
 
@@ -848,7 +946,7 @@ mod tests {
             DeterministicMemoryCoordinator::new(128 * 1024, Default::default()).unwrap(),
         );
         let spill = FixedSpillBudget::new(1024 * 1024).unwrap();
-        let authority = authority();
+        let authority = validated_authority();
         let mut writer = store
             .writer(
                 ICEBERG_TASK_SET_TYPE,
@@ -859,17 +957,15 @@ mod tests {
                 },
                 std::sync::Arc::clone(&memory),
                 &spill,
-                |output| authority.encode_to(output),
             )
             .unwrap();
-        assert_eq!(
-            writer.authority_sha256(),
-            authority.content_sha256().unwrap()
-        );
         let mut expected = task();
         expected.canonical_ordinal = 0;
-        expected.append_to(&authority, &mut writer).unwrap();
-        let artifact = writer.finalize().unwrap();
+        expected.append_to(&mut writer).unwrap();
+        let artifact = writer
+            .finalize(|output| authority.encode_to(output))
+            .unwrap();
+        assert_eq!(artifact.authority_sha256, authority.content_sha256());
         let portable = cdf_runtime::WorkerArtifactReference::from(&artifact.reference);
         portable.validate().unwrap();
 
@@ -884,7 +980,8 @@ mod tests {
             .unwrap();
         let decoded_authority: IcebergTaskSetAuthority =
             serde_json::from_slice(reader.authority().payload()).unwrap();
-        assert_eq!(decoded_authority, authority);
+        assert_eq!(&decoded_authority, authority.model());
+        let decoded_authority = decoded_authority.into_validated().unwrap();
         let record = reader.next_record().unwrap().unwrap();
         let decoded: IcebergScanTask = serde_json::from_slice(record.payload.payload()).unwrap();
         decoded.validate_against(&decoded_authority).unwrap();
@@ -926,7 +1023,7 @@ mod tests {
 
     #[test]
     fn signed_location_and_json_tampering_fail_closed() {
-        let authority = authority();
+        let authority = validated_authority();
         let mut signed = task();
         signed.data_file.path = "https://example.test/data.parquet?token=secret".to_owned();
         assert!(
@@ -937,7 +1034,7 @@ mod tests {
                 .contains("signed URLs")
         );
 
-        let mut tampered = authority;
+        let mut tampered = authority.model().clone();
         tampered.schemas.get_mut(&2).unwrap().value["schema-id"] = serde_json::json!(99);
         assert!(
             tampered
@@ -950,7 +1047,7 @@ mod tests {
 
     #[test]
     fn delete_semantics_and_order_fail_closed() {
-        let authority = authority();
+        let authority = validated_authority();
         let mut equality = task();
         equality.deletes[0].content = IcebergDeleteContent::Equality;
         assert!(

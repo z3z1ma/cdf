@@ -1,7 +1,7 @@
 #![doc = "Bounded content-addressed task-set artifacts for cdf planners."]
 
 use std::fs::{self, File};
-use std::io::{self, BufWriter, Read, Write};
+use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
@@ -19,9 +19,11 @@ use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
 const MAGIC: &[u8; 8] = b"CDFTASK1";
-const FORMAT_VERSION: u16 = 1;
+const FORMAT_VERSION: u16 = 2;
 const TASK_TAG: u8 = 1;
+const AUTHORITY_TAG: u8 = 2;
 const FOOTER_TAG: u8 = u8::MAX;
+const FOOTER_BYTES: u64 = 1 + 8 + 8;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaskSetLimits {
@@ -77,7 +79,6 @@ impl ExternalTaskStore {
         limits: TaskSetLimits,
         memory: Arc<dyn MemoryCoordinator>,
         spill: &dyn SpillBudgetCoordinator,
-        encode_authority: impl FnOnce(&mut dyn Write) -> Result<()>,
     ) -> Result<ExternalTaskSetWriter> {
         require_token("task-set type", task_type)?;
         limits.validate()?;
@@ -128,7 +129,6 @@ impl ExternalTaskStore {
             temporary: Some(temporary),
             writer: Some(writer),
             payload: Vec::with_capacity(maximum_payload_bytes),
-            authority_sha256: String::new(),
             next_ordinal: 0,
             spill_reservation: Some(spill_reservation),
             _memory_lease: memory_lease,
@@ -136,31 +136,10 @@ impl ExternalTaskStore {
         };
         task_writer.write_reserved(MAGIC)?;
         task_writer.write_reserved(&FORMAT_VERSION.to_be_bytes())?;
-        let task_type_bytes = task_type.as_bytes();
-        let task_type_length = u16::try_from(task_type_bytes.len())
+        let task_type_length = u16::try_from(task_type.len())
             .map_err(|_| CdfError::contract("task-set type is too long"))?;
         task_writer.write_reserved(&task_type_length.to_be_bytes())?;
-        task_writer.write_reserved(task_type_bytes)?;
-        task_writer.payload.clear();
-        let maximum_authority_bytes =
-            usize::try_from(task_writer.limits.maximum_authority_bytes)
-                .map_err(|_| CdfError::contract("task-set authority budget exceeds usize"))?;
-        let mut bounded = BoundedVec::new(&mut task_writer.payload, maximum_authority_bytes);
-        encode_authority(&mut bounded)?;
-        if task_writer.payload.is_empty() {
-            return Err(CdfError::data(
-                "task-set shared authority payload cannot be empty",
-            ));
-        }
-        let authority_length = u64::try_from(task_writer.payload.len())
-            .map_err(|_| CdfError::data("task-set authority payload exceeds u64"))?;
-        let authority_digest: [u8; 32] = Sha256::digest(&task_writer.payload).into();
-        task_writer.write_reserved(&authority_length.to_be_bytes())?;
-        task_writer.write_reserved(&authority_digest)?;
-        let payload = std::mem::take(&mut task_writer.payload);
-        task_writer.write_reserved(&payload)?;
-        task_writer.payload = payload;
-        task_writer.authority_sha256 = format!("sha256:{}", hex::encode(authority_digest));
+        task_writer.write_reserved(task_type.as_bytes())?;
         Ok(task_writer)
     }
 
@@ -203,6 +182,8 @@ impl ExternalTaskStore {
             memory,
             authority: None,
             authority_sha256: String::new(),
+            task_end: 0,
+            footer_task_count: 0,
             finished: false,
         };
         let magic = reader.read_array::<8>()?;
@@ -231,23 +212,88 @@ impl ExternalTaskStore {
             )));
         }
         drop(task_type_lease);
-        let authority_length = u64::from_be_bytes(reader.read_array::<8>()?);
+
+        let task_start = reader.observed_bytes;
+        let footer_offset = reader
+            .reference
+            .byte_count
+            .checked_sub(FOOTER_BYTES)
+            .ok_or_else(|| CdfError::data("task-set artifact is shorter than its footer"))?;
+        let mut tail = File::open(&reader.path)
+            .map_err(|error| io_error("open task-set trailer", &reader.path, error))?;
+        tail.seek(SeekFrom::Start(footer_offset))
+            .map_err(|error| io_error("seek task-set footer", &reader.path, error))?;
+        let mut footer = [0_u8; FOOTER_BYTES as usize];
+        tail.read_exact(&mut footer)
+            .map_err(|error| io_error("read task-set footer", &reader.path, error))?;
+        if footer[0] != FOOTER_TAG {
+            return Err(CdfError::data("task-set artifact has invalid footer tag"));
+        }
+        let footer_task_count = u64::from_be_bytes(
+            footer[1..9]
+                .try_into()
+                .map_err(|_| CdfError::internal("task-set footer count slice is invalid"))?,
+        );
+        if footer_task_count != reader.reference.task_count {
+            return Err(CdfError::data(format!(
+                "task-set footer count {footer_task_count} does not match referenced count {}",
+                reader.reference.task_count
+            )));
+        }
+        let authority_offset = u64::from_be_bytes(
+            footer[9..17]
+                .try_into()
+                .map_err(|_| CdfError::internal("task-set authority offset slice is invalid"))?,
+        );
+        if authority_offset < task_start || authority_offset >= footer_offset {
+            return Err(CdfError::data(
+                "task-set authority offset is outside the canonical task body",
+            ));
+        }
+        tail.seek(SeekFrom::Start(authority_offset))
+            .map_err(|error| io_error("seek task-set authority", &reader.path, error))?;
+        let mut authority_tag = [0_u8; 1];
+        tail.read_exact(&mut authority_tag)
+            .map_err(|error| io_error("read task-set authority tag", &reader.path, error))?;
+        if authority_tag[0] != AUTHORITY_TAG {
+            return Err(CdfError::data(
+                "task-set artifact has invalid authority tag",
+            ));
+        }
+        let mut authority_length_bytes = [0_u8; 8];
+        tail.read_exact(&mut authority_length_bytes)
+            .map_err(|error| io_error("read task-set authority length", &reader.path, error))?;
+        let authority_length = u64::from_be_bytes(authority_length_bytes);
         if authority_length == 0 || authority_length > maximum_authority_bytes {
             return Err(CdfError::data(format!(
                 "task-set authority length {authority_length} exceeds the configured budget {maximum_authority_bytes}"
             )));
         }
-        let expected_authority_digest = reader.read_array::<32>()?;
+        let expected_authority_end = authority_offset
+            .checked_add(1 + 8 + 32)
+            .and_then(|offset| offset.checked_add(authority_length))
+            .ok_or_else(|| CdfError::data("task-set authority bounds overflowed u64"))?;
+        if expected_authority_end != footer_offset {
+            return Err(CdfError::data(
+                "task-set authority frame does not end at the canonical footer",
+            ));
+        }
+        let mut expected_authority_digest = [0_u8; 32];
+        tail.read_exact(&mut expected_authority_digest)
+            .map_err(|error| io_error("read task-set authority digest", &reader.path, error))?;
         let authority_request = ReservationRequest::new(
             ConsumerKey::new("external-task-set-authority", MemoryClass::Control)?,
             authority_length,
         )?;
         let authority_lease = reserve_blocking(Arc::clone(&reader.memory), &authority_request)?;
-        let authority =
-            reader
-                .read_vec(usize::try_from(authority_length).map_err(|_| {
-                    CdfError::data("task-set authority exceeds addressable memory")
-                })?)?;
+        let mut authority = vec![
+            0_u8;
+            usize::try_from(authority_length).map_err(|_| {
+                CdfError::data("task-set authority exceeds addressable memory")
+            })?
+        ];
+        tail.read_exact(&mut authority)
+            .map_err(|error| io_error("read task-set authority", &reader.path, error))?;
         let observed_authority_digest: [u8; 32] = Sha256::digest(&authority).into();
         if observed_authority_digest != expected_authority_digest {
             return Err(CdfError::data(
@@ -259,6 +305,8 @@ impl ExternalTaskStore {
             authority_lease,
         )?);
         reader.authority_sha256 = format!("sha256:{}", hex::encode(observed_authority_digest));
+        reader.task_end = authority_offset;
+        reader.footer_task_count = footer_task_count;
         Ok(reader)
     }
 
@@ -313,7 +361,6 @@ pub struct ExternalTaskSetWriter {
     temporary: Option<NamedTempFile>,
     writer: Option<BufWriter<HashingWriter>>,
     payload: Vec<u8>,
-    authority_sha256: String,
     next_ordinal: u64,
     spill_reservation: Option<SpillReservation>,
     _memory_lease: cdf_memory::MemoryLease,
@@ -381,14 +428,61 @@ impl ExternalTaskSetWriter {
         Ok(())
     }
 
-    pub fn finalize(mut self) -> Result<ExternalTaskSetArtifact> {
+    pub fn finalize(
+        mut self,
+        encode_authority: impl FnOnce(&mut dyn Write) -> Result<()>,
+    ) -> Result<ExternalTaskSetArtifact> {
         if self.poisoned {
             return Err(CdfError::contract(
                 "task-set writer cannot finalize after a partial write failure",
             ));
         }
-        self.write_reserved(&[FOOTER_TAG])?;
-        self.write_reserved(&self.next_ordinal.to_be_bytes())?;
+        self.payload.clear();
+        let maximum_authority_bytes = usize::try_from(self.limits.maximum_authority_bytes)
+            .map_err(|_| CdfError::contract("task-set authority budget exceeds usize"))?;
+        encode_authority(&mut BoundedVec::new(
+            &mut self.payload,
+            maximum_authority_bytes,
+        ))?;
+        if self.payload.is_empty() {
+            return Err(CdfError::data(
+                "task-set shared authority payload cannot be empty",
+            ));
+        }
+        let authority_length = u64::try_from(self.payload.len())
+            .map_err(|_| CdfError::data("task-set authority payload exceeds u64"))?;
+        let authority_digest: [u8; 32] = Sha256::digest(&self.payload).into();
+        let authority_sha256 = format!("sha256:{}", hex::encode(authority_digest));
+
+        self.writer_mut()?
+            .flush()
+            .map_err(|error| io_error("flush task-set body", self.temporary_path(), error))?;
+        let authority_offset = self.writer_mut()?.get_ref().bytes;
+        let tail_bytes = 1_u64
+            .checked_add(8 + 32)
+            .and_then(|bytes| bytes.checked_add(authority_length))
+            .and_then(|bytes| bytes.checked_add(FOOTER_BYTES))
+            .ok_or_else(|| CdfError::data("task-set trailer length overflowed u64"))?;
+        self.reserve_spill(tail_bytes)?;
+        self.write_unreserved(&[AUTHORITY_TAG], "write task-set authority tag")?;
+        self.write_unreserved(
+            &authority_length.to_be_bytes(),
+            "write task-set authority length",
+        )?;
+        self.write_unreserved(&authority_digest, "write task-set authority digest")?;
+        let payload = std::mem::take(&mut self.payload);
+        let result = self.write_unreserved(&payload, "write task-set authority payload");
+        self.payload = payload;
+        result?;
+        self.write_unreserved(&[FOOTER_TAG], "write task-set footer tag")?;
+        self.write_unreserved(
+            &self.next_ordinal.to_be_bytes(),
+            "write task-set footer count",
+        )?;
+        self.write_unreserved(
+            &authority_offset.to_be_bytes(),
+            "write task-set authority offset",
+        )?;
         let writer = self
             .writer
             .take()
@@ -442,14 +536,10 @@ impl ExternalTaskSetWriter {
         Ok(ExternalTaskSetArtifact {
             task_type: self.task_type,
             task_count: self.next_ordinal,
-            authority_sha256: self.authority_sha256,
+            authority_sha256,
             reference,
             path: final_path,
         })
-    }
-
-    pub fn authority_sha256(&self) -> &str {
-        &self.authority_sha256
     }
 
     fn writer_mut(&mut self) -> Result<&mut BufWriter<HashingWriter>> {
@@ -477,13 +567,6 @@ impl ExternalTaskSetWriter {
         Ok(())
     }
 
-    fn write_reserved(&mut self, bytes: &[u8]) -> Result<()> {
-        let length = u64::try_from(bytes.len())
-            .map_err(|_| CdfError::data("task-set write length exceeds u64"))?;
-        self.reserve_spill(length)?;
-        self.write_unreserved(bytes, "write task-set artifact")
-    }
-
     fn write_unreserved(&mut self, bytes: &[u8], action: &str) -> Result<()> {
         let path = self.temporary_path().to_path_buf();
         if let Err(error) = self.writer_mut()?.write_all(bytes) {
@@ -491,6 +574,13 @@ impl ExternalTaskSetWriter {
             return Err(io_error(action, &path, error));
         }
         Ok(())
+    }
+
+    fn write_reserved(&mut self, bytes: &[u8]) -> Result<()> {
+        let length = u64::try_from(bytes.len())
+            .map_err(|_| CdfError::data("task-set write length exceeds u64"))?;
+        self.reserve_spill(length)?;
+        self.write_unreserved(bytes, "write task-set artifact")
     }
 }
 
@@ -514,6 +604,8 @@ pub struct ExternalTaskSetReader {
     memory: Arc<dyn MemoryCoordinator>,
     authority: Option<AccountedBytes>,
     authority_sha256: String,
+    task_end: u64,
+    footer_task_count: u64,
     finished: bool,
 }
 
@@ -533,6 +625,14 @@ impl ExternalTaskSetReader {
         if self.finished {
             return Ok(None);
         }
+        if self.observed_bytes == self.task_end {
+            return self.finish_tail();
+        }
+        if self.observed_bytes > self.task_end {
+            return Err(CdfError::data(
+                "task-set task body crossed the authority boundary",
+            ));
+        }
         let tag = self.read_array::<1>()?[0];
         match tag {
             TASK_TAG => {
@@ -551,6 +651,17 @@ impl ExternalTaskSetReader {
                     )));
                 }
                 let expected_digest = self.read_array::<32>()?;
+                let remaining =
+                    self.task_end
+                        .checked_sub(self.observed_bytes)
+                        .ok_or_else(|| {
+                            CdfError::data("task-set task frame crossed the authority boundary")
+                        })?;
+                if payload_length > remaining {
+                    return Err(CdfError::data(
+                        "task-set task payload crosses the authority boundary",
+                    ));
+                }
                 let request = ReservationRequest::new(
                     ConsumerKey::new("external-task-set-record", MemoryClass::Control)?,
                     payload_length,
@@ -575,34 +686,73 @@ impl ExternalTaskSetReader {
                     payload: AccountedBytes::new(Bytes::from(payload), lease)?,
                 }))
             }
-            FOOTER_TAG => {
-                let record_count = u64::from_be_bytes(self.read_array::<8>()?);
-                if record_count != self.expected_ordinal {
-                    return Err(CdfError::data(format!(
-                        "task-set footer count {record_count} does not match {} observed records",
-                        self.expected_ordinal
-                    )));
-                }
-                let mut trailing = [0_u8; 1];
-                match self.file.read(&mut trailing) {
-                    Ok(0) => {}
-                    Ok(_) => return Err(CdfError::data("task-set artifact has trailing bytes")),
-                    Err(error) => {
-                        return Err(io_error("read task-set trailing byte", &self.path, error));
-                    }
-                }
-                self.verify_complete()?;
-                self.finished = true;
-                Ok(None)
-            }
             other => Err(CdfError::data(format!(
-                "task-set artifact contains unknown frame tag {other}"
+                "task-set task body contains unknown frame tag {other}"
             ))),
         }
     }
 
     pub fn observed_task_count(&self) -> u64 {
         self.expected_ordinal
+    }
+
+    fn finish_tail(&mut self) -> Result<Option<ExternalTaskRecord>> {
+        if self.expected_ordinal != self.footer_task_count {
+            return Err(CdfError::data(format!(
+                "task-set footer count {} does not match {} observed records",
+                self.footer_task_count, self.expected_ordinal
+            )));
+        }
+        if self.read_array::<1>()?[0] != AUTHORITY_TAG {
+            return Err(CdfError::data("task-set authority tag changed"));
+        }
+        let authority_length = u64::from_be_bytes(self.read_array::<8>()?);
+        let retained_authority_length = self
+            .authority
+            .as_ref()
+            .ok_or_else(|| CdfError::internal("task-set reader authority is missing"))?
+            .payload()
+            .len();
+        if authority_length
+            != u64::try_from(retained_authority_length)
+                .map_err(|_| CdfError::data("task-set authority exceeds u64"))?
+        {
+            return Err(CdfError::data("task-set authority length changed"));
+        }
+        let authority_digest = self.read_array::<32>()?;
+        if format!("sha256:{}", hex::encode(authority_digest)) != self.authority_sha256 {
+            return Err(CdfError::data("task-set authority identity changed"));
+        }
+        let authority = self.read_vec(
+            usize::try_from(authority_length)
+                .map_err(|_| CdfError::data("task-set authority exceeds addressable memory"))?,
+        )?;
+        if authority.as_slice()
+            != self
+                .authority
+                .as_ref()
+                .ok_or_else(|| CdfError::internal("task-set reader authority is missing"))?
+                .payload()
+        {
+            return Err(CdfError::data("task-set authority payload changed"));
+        }
+        if self.read_array::<1>()?[0] != FOOTER_TAG {
+            return Err(CdfError::data("task-set footer tag changed"));
+        }
+        let record_count = u64::from_be_bytes(self.read_array::<8>()?);
+        let authority_offset = u64::from_be_bytes(self.read_array::<8>()?);
+        if record_count != self.footer_task_count || authority_offset != self.task_end {
+            return Err(CdfError::data("task-set footer authority changed"));
+        }
+        let mut trailing = [0_u8; 1];
+        match self.file.read(&mut trailing) {
+            Ok(0) => {}
+            Ok(_) => return Err(CdfError::data("task-set artifact has trailing bytes")),
+            Err(error) => return Err(io_error("read task-set trailing byte", &self.path, error)),
+        }
+        self.verify_complete()?;
+        self.finished = true;
+        Ok(None)
     }
 
     fn read_array<const N: usize>(&mut self) -> Result<[u8; N]> {
@@ -869,13 +1019,7 @@ mod tests {
         let store = store(&root);
         let (memory, spill) = authorities(64 * 1024, 1024 * 1024);
         let mut writer = store
-            .writer(
-                "synthetic-v1",
-                limits(),
-                Arc::clone(&memory),
-                &spill,
-                encode_authority,
-            )
+            .writer("synthetic-v1", limits(), Arc::clone(&memory), &spill)
             .unwrap();
         for ordinal in 0..100 {
             push_task(
@@ -888,7 +1032,7 @@ mod tests {
             )
             .unwrap();
         }
-        let artifact = writer.finalize().unwrap();
+        let artifact = writer.finalize(encode_authority).unwrap();
         assert_eq!(artifact.task_count, 100);
         assert_eq!(artifact.reference.task_count, 100);
         assert_eq!(artifact.authority_sha256, writer_authority_hash());
@@ -933,7 +1077,7 @@ mod tests {
             let store = store(root);
             let (memory, spill) = authorities(64 * 1024, 1024 * 1024);
             let mut writer = store
-                .writer("synthetic-v1", limits(), memory, &spill, encode_authority)
+                .writer("synthetic-v1", limits(), memory, &spill)
                 .unwrap();
             for ordinal in 0..32 {
                 push_task(
@@ -946,7 +1090,7 @@ mod tests {
                 )
                 .unwrap();
             }
-            references.push(writer.finalize().unwrap().reference);
+            references.push(writer.finalize(encode_authority).unwrap().reference);
         }
         assert_eq!(references[0], references[1]);
     }
@@ -957,13 +1101,7 @@ mod tests {
         let store = store(&root);
         let (memory, spill) = authorities(64 * 1024, 1024 * 1024);
         let mut writer = store
-            .writer(
-                "synthetic-v1",
-                limits(),
-                Arc::clone(&memory),
-                &spill,
-                encode_authority,
-            )
+            .writer("synthetic-v1", limits(), Arc::clone(&memory), &spill)
             .unwrap();
         let task = SyntheticTask {
             partition: 0,
@@ -976,11 +1114,14 @@ mod tests {
                 .contains("out of order")
         );
         push_task(&mut writer, 0, &task).unwrap();
-        let artifact = writer.finalize().unwrap();
+        let artifact = writer.finalize(encode_authority).unwrap();
 
         let mut bytes = fs::read(&artifact.path).unwrap();
-        let last_payload_byte = bytes.len() - 10;
-        bytes[last_payload_byte] ^= 1;
+        let payload_offset = bytes
+            .windows(b"file:///zero.parquet".len())
+            .position(|window| window == b"file:///zero.parquet")
+            .unwrap();
+        bytes[payload_offset] ^= 1;
         fs::write(&artifact.path, bytes).unwrap();
         let mut reader = store
             .reader(
@@ -1011,7 +1152,7 @@ mod tests {
         let store = store(&root);
         let (memory, spill) = authorities(64 * 1024, 96);
         let mut writer = store
-            .writer("synthetic-v1", limits(), memory, &spill, encode_authority)
+            .writer("synthetic-v1", limits(), memory, &spill)
             .unwrap();
         let oversized = SyntheticTask {
             partition: 0,
@@ -1039,13 +1180,7 @@ mod tests {
         let store = store(&root);
         let (memory, spill) = authorities(64 * 1024, 256 * 1024 * 1024);
         let mut writer = store
-            .writer(
-                "million-v1",
-                limits(),
-                Arc::clone(&memory),
-                &spill,
-                encode_authority,
-            )
+            .writer("million-v1", limits(), Arc::clone(&memory), &spill)
             .unwrap();
         for ordinal in 0..1_000_000 {
             push_task(
@@ -1058,7 +1193,7 @@ mod tests {
             )
             .unwrap();
         }
-        let artifact = writer.finalize().unwrap();
+        let artifact = writer.finalize(encode_authority).unwrap();
         assert_eq!(artifact.task_count, 1_000_000);
         assert!(memory.snapshot().peak_bytes <= 64 * 1024);
         assert!(spill.snapshot().peak_bytes <= 256 * 1024 * 1024);
