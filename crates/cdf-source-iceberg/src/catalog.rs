@@ -16,8 +16,8 @@ use cdf_object_access::{
 use cdf_runtime::{
     ExecutionServices, RunCancellation, SequentialReadRequest, SourceEgressScope, artifact_hash,
 };
-use futures_util::TryStreamExt;
 use flate2::read::GzDecoder;
+use futures_util::TryStreamExt;
 use iceberg::spec::{FormatVersion, NestedField, Snapshot, TableMetadata};
 use serde::Deserialize;
 
@@ -631,9 +631,7 @@ fn build_loaded_table(
     validate_metadata_location(&observation.metadata_location)?;
     let metadata_payload = observation.payloads.last();
     let parse_input_bytes = match (&observation.metadata_json, metadata_payload) {
-        (Some(_), Some(payload)) => {
-            u64::try_from(payload.payload().len()).unwrap_or(u64::MAX)
-        }
+        (Some(_), Some(payload)) => u64::try_from(payload.payload().len()).unwrap_or(u64::MAX),
         (Some(_), None) => 0,
         (None, Some(payload)) => metadata_json_size(
             &observation.metadata_location,
@@ -758,14 +756,11 @@ fn metadata_json_size(location: &str, payload: &[u8], maximum_bytes: u64) -> Res
 fn decode_metadata_json(location: &str, payload: &[u8]) -> Result<serde_json::Value> {
     if is_gzip_metadata_location(location) {
         serde_json::from_reader(GzDecoder::new(payload)).map_err(|error| {
-            CdfError::data(format!(
-                "decode gzip Iceberg table metadata JSON: {error}"
-            ))
+            CdfError::data(format!("decode gzip Iceberg table metadata JSON: {error}"))
         })
     } else {
-        serde_json::from_slice(payload).map_err(|error| {
-            CdfError::data(format!("decode Iceberg table metadata JSON: {error}"))
-        })
+        serde_json::from_slice(payload)
+            .map_err(|error| CdfError::data(format!("decode Iceberg table metadata JSON: {error}")))
     }
 }
 
@@ -1422,10 +1417,7 @@ mod tests {
             identity("/table/metadata/v2.gz.metadata.json"),
         ])
         .unwrap();
-        assert_eq!(
-            selected.location,
-            "/table/metadata/v2.gz.metadata.json"
-        );
+        assert_eq!(selected.location, "/table/metadata/v2.gz.metadata.json");
 
         let identities = vec![
             identity("/table/metadata/v1.metadata.json"),
