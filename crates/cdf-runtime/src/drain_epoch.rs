@@ -635,8 +635,10 @@ fn file_manifest_reaches(observed: &[FilePosition], target: &[FilePosition]) -> 
 mod tests {
     use super::*;
     use cdf_kernel::{
-        CursorPosition, LateDataAction, SOURCE_POSITION_VERSION, STREAM_EPOCH_POLICY_VERSION,
-        SafeFrontierPolicy,
+        CursorPosition, EventTimeDomain, LateDataAction, PartitionId,
+        PartitionWatermarkAggregation, SOURCE_POSITION_VERSION, STREAM_EPOCH_POLICY_VERSION,
+        SafeFrontierPolicy, WATERMARK_CLAIM_VERSION, WatermarkAuthority,
+        WatermarkObservationContext,
     };
 
     #[test]
@@ -885,6 +887,44 @@ mod tests {
         assert!(!closure.terminate_after_settlement);
     }
 
+    #[test]
+    fn watermark_claims_must_be_monotone_within_one_open_epoch() {
+        let extent = ExecutionExtent::Drain {
+            version: 1,
+            policy: StreamEpochPolicy {
+                version: STREAM_EPOCH_POLICY_VERSION,
+                checkpoint_cadence: EpochClosureTrigger::WatermarkAdvance { units: 100 },
+                package_rotation: EpochClosureTrigger::Bytes { count: 1_000 },
+                watermark: WatermarkPolicy::Enabled {
+                    event_time_field: "occurred_at".into(),
+                    domain: EventTimeDomain::UnsignedInteger,
+                    authority: WatermarkAuthority::Source,
+                    partition_aggregation: PartitionWatermarkAggregation::MinimumAll,
+                },
+                late_data: LateDataAction::Quarantine,
+                safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+            },
+            termination: DrainTermination::Records { count: 100 },
+        };
+        let mut controller = DrainEpochController::new(&extent).unwrap();
+        assert_eq!(
+            controller
+                .observe_safe_frontier(watermark_observation(1, 100))
+                .unwrap(),
+            DrainEpochDecision::Continue
+        );
+        assert_eq!(
+            controller
+                .observe_safe_frontier(watermark_observation(2, 120))
+                .unwrap(),
+            DrainEpochDecision::Continue
+        );
+        let error = controller
+            .observe_safe_frontier(watermark_observation(3, 110))
+            .unwrap_err();
+        assert!(error.message.contains("watermark regressed"));
+    }
+
     fn extent(
         checkpoint_cadence: EpochClosureTrigger,
         package_rotation: EpochClosureTrigger,
@@ -930,5 +970,21 @@ mod tests {
             field: "offset".to_owned(),
             value: CursorValue::U64(value),
         })
+    }
+
+    fn watermark_observation(position: u64, watermark: u64) -> DrainSafeFrontierObservation {
+        let mut observation = observation(1, 10, position, false);
+        observation.global_watermark = Some(WatermarkClaim {
+            version: WATERMARK_CLAIM_VERSION,
+            policy_version: STREAM_EPOCH_POLICY_VERSION,
+            event_time_field: "occurred_at".into(),
+            domain: EventTimeDomain::UnsignedInteger,
+            value: WatermarkValue::Unsigned(watermark),
+            partition_id: PartitionId::new("partition-0").unwrap(),
+            source_position: cursor(position),
+            authority: WatermarkAuthority::Source,
+            observation_context: WatermarkObservationContext::SourcePoll,
+        });
+        observation
     }
 }
