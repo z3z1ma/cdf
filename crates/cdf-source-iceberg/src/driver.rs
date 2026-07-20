@@ -1736,6 +1736,121 @@ mod tests {
             .unwrap();
     }
 
+    fn write_v1_table_fixture(execution: &ExecutionServices, table: &Path) {
+        let table = table.to_path_buf();
+        execution
+            .run_io(async move {
+                let metadata_dir = table.join("metadata");
+                let data_dir = table.join("data");
+                fs::create_dir_all(&metadata_dir).unwrap();
+                fs::create_dir_all(&data_dir).unwrap();
+                let field_id = HashMap::from([("PARQUET:field_id".to_owned(), "1".to_owned())]);
+                let arrow_schema = Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Int64, false).with_metadata(field_id),
+                ]));
+                let batch = RecordBatch::try_new(
+                    Arc::clone(&arrow_schema),
+                    vec![Arc::new(Int64Array::from(vec![1_i64, 2, 3]))],
+                )
+                .unwrap();
+                let data_path = data_dir.join("v1-data.parquet");
+                let mut data_writer = ArrowWriter::try_new(
+                    fs::File::create(&data_path).unwrap(),
+                    arrow_schema,
+                    Some(
+                        parquet::file::properties::WriterProperties::builder()
+                            .set_compression(ParquetCompression::SNAPPY)
+                            .build(),
+                    ),
+                )
+                .unwrap();
+                data_writer.write(&batch).unwrap();
+                data_writer.close().unwrap();
+
+                let manifest_list_path = metadata_dir.join("snap-101-v1.avro");
+                let metadata_bytes = serde_json::to_vec(&serde_json::json!({
+                    "format-version": 1,
+                    "table-uuid": "f0614672-8242-4f06-80ef-38b03381d1a4",
+                    "location": table.display().to_string(),
+                    "last-updated-ms": 1_602_638_573_590_i64,
+                    "last-column-id": 1,
+                    "schema": {
+                        "type": "struct",
+                        "schema-id": 0,
+                        "fields": [
+                            {"id": 1, "name": "id", "required": true, "type": "long"}
+                        ]
+                    },
+                    "partition-spec": [],
+                    "last-partition-id": 999,
+                    "default-sort-order-id": 0,
+                    "sort-orders": [{"order-id": 0, "fields": []}],
+                    "properties": {},
+                    "current-snapshot-id": 101,
+                    "snapshots": [{
+                        "snapshot-id": 101,
+                        "timestamp-ms": 1_602_638_573_590_i64,
+                        "sequence-number": 0,
+                        "schema-id": 0,
+                        "summary": {
+                            "operation": "append",
+                            "added-data-files": "1",
+                            "added-records": "3",
+                            "added-files-size": fs::metadata(&data_path).unwrap().len().to_string()
+                        },
+                        "manifest-list": manifest_list_path.display().to_string()
+                    }],
+                    "snapshot-log": [{
+                        "snapshot-id": 101,
+                        "timestamp-ms": 1_602_638_573_590_i64
+                    }],
+                    "metadata-log": []
+                }))
+                .unwrap();
+                let table_metadata: TableMetadata =
+                    serde_json::from_slice(&metadata_bytes).unwrap();
+                let file_io = FileIO::new_with_fs();
+                let manifest_path = metadata_dir.join("manifest-v1.avro");
+                let mut manifest_writer = ManifestWriterBuilder::new(
+                    file_io.new_output(manifest_path.to_string_lossy()).unwrap(),
+                    Some(101),
+                    table_metadata.current_schema().clone(),
+                    table_metadata.default_partition_spec().as_ref().clone(),
+                )
+                .build_v1();
+                manifest_writer
+                    .add_file(
+                        DataFileBuilder::default()
+                            .partition_spec_id(0)
+                            .content(DataContentType::Data)
+                            .file_path(data_path.display().to_string())
+                            .file_format(DataFileFormat::Parquet)
+                            .file_size_in_bytes(fs::metadata(&data_path).unwrap().len())
+                            .record_count(3)
+                            .partition(Struct::empty())
+                            .build()
+                            .unwrap(),
+                        0,
+                    )
+                    .unwrap();
+                let manifest = manifest_writer.write_manifest_file().await.unwrap();
+                let list_output = file_io
+                    .new_output(manifest_list_path.to_string_lossy())
+                    .unwrap()
+                    .writer()
+                    .await
+                    .unwrap();
+                let mut list_writer = ManifestListWriter::v1(list_output, 101, Some(0));
+                list_writer.add_manifests([manifest].into_iter()).unwrap();
+                list_writer.close().await.unwrap();
+
+                fs::write(metadata_dir.join("v1.metadata.json"), metadata_bytes).unwrap();
+                fs::write(metadata_dir.join("version-hint.text"), "1\n").unwrap();
+                Ok(())
+            })
+            .unwrap();
+    }
+
     fn compile_request(warehouse: &Path) -> SourceCompileRequest {
         SourceCompileRequest {
             source_kind: "iceberg".to_owned(),
@@ -2562,6 +2677,81 @@ mod tests {
                 .contains("generation changed between attempts"),
             "{generation_error}"
         );
+    }
+
+    #[test]
+    fn v1_parquet_snapshot_discovers_plans_and_executes() {
+        let root = tempfile::tempdir().unwrap();
+        let table = root.path().join("analytics/events");
+        let execution = execution_services();
+        write_v1_table_fixture(&execution, &table);
+        let driver = filesystem_driver();
+        let mut plan = driver.compile(compile_request(root.path())).unwrap();
+        let context = SourceResolutionContext::new(
+            root.path(),
+            Arc::new(NoopSecretProvider),
+            &execution,
+            Arc::new(cdf_http::EgressAllowlist::allow_any()),
+        );
+        let session = driver.discovery_session(&plan, &context).unwrap();
+        let candidate = session.candidates().unwrap().remove(0);
+        let observation = session
+            .observe(
+                &candidate,
+                &SourceDiscoveryRequest::new(64 * 1024 * 1024, 1).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(observation.schema.fields().len(), 1);
+        plan.schema = observation.schema.as_ref().clone();
+
+        let resource = driver.resolve(&plan, &context).unwrap();
+        let scan = resource
+            .negotiate(&ScanRequest {
+                resource_id: plan.descriptor.resource_id.clone(),
+                projection: None,
+                filters: Vec::new(),
+                limit: None,
+                order_by: Vec::new(),
+                scope: ScopeKey::Resource,
+            })
+            .unwrap();
+        let reference = scan.planned_task_set.as_ref().unwrap();
+        assert_eq!(reference.task_count, 1);
+        let store = ExternalTaskStore::new(
+            root.path().join(".cdf"),
+            ContentStoreNamespace::new(PLANNING_ARTIFACT_NAMESPACE).unwrap(),
+        )
+        .unwrap();
+        let reader = store
+            .reader(
+                reference.clone(),
+                crate::ICEBERG_TASK_SET_TYPE,
+                crate::DEFAULT_MAXIMUM_TASK_BYTES,
+                crate::DEFAULT_MAXIMUM_TASK_AUTHORITY_BYTES,
+                execution.memory(),
+            )
+            .unwrap();
+        let authority: crate::IcebergTaskSetAuthority =
+            serde_json::from_slice(reader.authority().payload()).unwrap();
+        assert_eq!(authority.table_format_version, 1);
+
+        let mut planned = resource.planned_partition_reader(reference).unwrap();
+        let executable = planned.next_partition(0).unwrap().unwrap();
+        let rows = futures_executor::block_on(async {
+            let mut stream = resource.open_executable(executable).await?;
+            let mut rows = 0_usize;
+            while let Some(batch) = stream.try_next().await? {
+                rows += batch
+                    .record_batch()
+                    .ok_or_else(|| CdfError::internal("Iceberg v1 test expected Arrow data"))?
+                    .num_rows();
+            }
+            stream.completion().await?;
+            Ok::<_, CdfError>(rows)
+        })
+        .unwrap();
+        assert_eq!(rows, 3);
+        assert!(planned.next_partition(1).unwrap().is_none());
     }
 
     #[test]
