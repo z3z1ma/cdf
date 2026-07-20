@@ -1638,7 +1638,10 @@ fn build_package_with_carryover(
         )
         .unwrap();
     let batches = cdf_package_contract::append_package_row_ord(
-        vec![sample_batch(vec![1], vec![Some("current")])],
+        vec![sample_batch(
+            vec![1, 2, 3],
+            vec![Some("current-1"), Some("current-2"), Some("current-3")],
+        )],
         0,
     )
     .unwrap();
@@ -1654,26 +1657,18 @@ fn build_package_with_carryover(
             "lineage.json",
             &canonical_json_bytes(&LineageSummary {
                 input_partitions: vec![PartitionId::new("artifact-fixture").unwrap()],
-                input_rows: 1,
+                input_rows: 3,
                 input_observations: vec![LineageInputObservation {
                     observation_id: "artifact-fixture".to_owned(),
                     partition_id: PartitionId::new("artifact-fixture").unwrap(),
-                    observed_rows: 1,
-                    output_position: Some(position(1)),
+                    observed_rows: 3,
+                    output_position: Some(position(3)),
                 }],
                 output_segments: vec![segment.segment_id.clone()],
             })
             .unwrap(),
         )
         .unwrap();
-    write_state_commit_artifacts(
-        &builder,
-        &segment,
-        WriteDisposition::Append,
-        "checkpoint-carryover-artifact",
-    );
-    write_compiled_expression_artifacts(&builder, false, true, None, false);
-    let manifest = builder.finish().unwrap();
     let reference = LateDataCarryoverRef {
         version: LATE_DATA_CARRYOVER_VERSION,
         package_id: package_id.to_owned(),
@@ -1685,6 +1680,15 @@ fn build_package_with_carryover(
         output_position: position(1),
     };
     reference.validate().unwrap();
+    write_state_commit_artifacts(
+        &builder,
+        &segment,
+        WriteDisposition::Append,
+        "checkpoint-carryover-artifact",
+        vec![reference.clone()],
+    );
+    write_compiled_expression_artifacts(&builder, false, true, None, false);
+    let manifest = builder.finish().unwrap();
     (manifest, reference)
 }
 
@@ -1792,7 +1796,13 @@ fn build_package_with_options_and_scan_tamper(
             .unwrap(),
         )
         .unwrap();
-    write_state_commit_artifacts(&builder, &segment, disposition, checkpoint_id);
+    write_state_commit_artifacts(
+        &builder,
+        &segment,
+        disposition,
+        checkpoint_id,
+        Vec::new(),
+    );
     write_compiled_expression_artifacts(&builder, stale, true, None, duplicate_scan_observation);
     builder.finish_with_status(status).unwrap()
 }
@@ -2148,6 +2158,7 @@ fn write_state_commit_artifacts(
     segment: &SegmentEntry,
     disposition: WriteDisposition,
     checkpoint_id: &str,
+    late_data_carryover: Vec<LateDataCarryoverRef>,
 ) {
     let scope = scope();
     let output_position = position(3);
@@ -2169,7 +2180,7 @@ fn write_state_commit_artifacts(
         output_position,
         output_watermark: None,
         partition_watermarks: Vec::new(),
-        late_data_carryover: Vec::new(),
+        late_data_carryover,
         source_continuation: None,
         schema_hash: SchemaHash::new(SCHEMA_HASH).unwrap(),
         segments: segments.clone(),
@@ -4447,6 +4458,51 @@ fn committed_head_reopens_only_its_verified_late_data_carryover() {
         Err(error) => error,
     };
     assert!(error.message.contains("committed checkpoint head"));
+}
+
+#[test]
+fn late_data_carryover_survives_the_receipt_to_checkpoint_crash_window() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_root = temp.path().join("packages");
+    let package_id = "pkg-carryover-crash-window";
+    let package_dir = package_root.join(package_id);
+    let (_manifest, reference) = build_package_with_carryover(&package_dir, package_id);
+    let destination = destination(&temp.path().join("destination.duckdb"));
+    let store = SqliteCheckpointStore::open_in_memory().unwrap();
+    let hook = |_receipt: &Receipt| Err(CdfError::internal("injected checkpoint crash window"));
+    let mut request = artifact_replay_request(&package_dir, &destination, &store);
+    request.after_receipt_verified = Some(&hook);
+
+    let error = replay_package_from_artifacts(request).unwrap_err();
+    assert!(
+        error.message.contains("injected checkpoint crash window"),
+        "{error}"
+    );
+    let receipts = package_receipts(&package_dir);
+    assert_eq!(receipts.len(), 1);
+    assert!(destination.verify_receipt(&receipts[0]).unwrap().verified);
+
+    let recovery = recover_package_from_artifacts(recovery_request(
+        &package_dir,
+        &destination,
+        &store,
+        receipts[0].clone(),
+    ))
+    .unwrap();
+    assert_eq!(recovery.checkpoint.status, CheckpointStatus::Committed);
+    assert_eq!(
+        recovery.checkpoint.delta.late_data_carryover,
+        vec![reference]
+    );
+    assert_eq!(
+        crate::runtime::load_late_data_carryover(
+            &package_root,
+            Some(&recovery.checkpoint),
+        )
+        .unwrap()
+        .len(),
+        1
+    );
 }
 
 #[test]
