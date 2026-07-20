@@ -3429,7 +3429,17 @@ where
     let apply_package_dedup = validation_program.has_exact_row_dedup_rule()
         || (plan.write_disposition == WriteDisposition::Merge
             && validation_program.has_keyed_dedup_rule());
+    if apply_package_dedup
+        && late_data_policy
+            .as_ref()
+            .is_some_and(|(_, action)| *action == cdf_kernel::LateDataAction::AdmitWithAnnotation)
+    {
+        return Err(CdfError::contract(
+            "admit_with_annotation requires stable package-row ordinals and cannot be combined with package dedup; use quarantine or recapture_next_epoch, or disable package dedup",
+        ));
+    }
     let mut pending_dedup_batches = Vec::new();
+    let mut next_package_output_row_ordinal = 0_u64;
     let mut phase_measurements = PhaseMeasurements::new(options.phase_metrics);
     let memory = options
         .services
@@ -3641,6 +3651,9 @@ where
                         });
                     }
                 } else {
+                    next_package_output_row_ordinal = next_package_output_row_ordinal
+                        .checked_add(batch_rows)
+                        .ok_or_else(|| CdfError::data("package output row ordinal overflow"))?;
                     write_normalized_output_batch(
                         PreparedKernelOutput {
                             output: batch,
@@ -4479,6 +4492,8 @@ where
                         &partition.partition_id,
                         batch_source_position.as_ref(),
                         batch_source_row_base,
+                        (*action == cdf_kernel::LateDataAction::AdmitWithAnnotation)
+                            .then_some(next_package_output_row_ordinal),
                     )?;
                     if let Some(lease) = &memory_lease {
                         let classification_bytes = [
@@ -4641,6 +4656,11 @@ where
                     close_drain_epoch_at_batch_frontier!();
                     continue;
                 }
+                next_package_output_row_ordinal = next_package_output_row_ordinal
+                    .checked_add(u64::try_from(output.num_rows()).map_err(|_| {
+                        CdfError::data("package output row count exceeds u64")
+                    })?)
+                    .ok_or_else(|| CdfError::data("package output row ordinal overflow"))?;
                 phase_measurements.add(
                     RunPhase::ValidationNormalization,
                     elapsed_ns(validation_started, "validation/normalization")?,

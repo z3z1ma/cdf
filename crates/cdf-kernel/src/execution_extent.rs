@@ -352,6 +352,19 @@ impl EventTimeDomain {
             _ => false,
         }
     }
+
+    /// Returns whether one typed value belongs to this event-time domain.
+    pub const fn matches_value(&self, value: &WatermarkValue) -> bool {
+        matches!(
+            (self, value),
+            (Self::SignedInteger, WatermarkValue::Signed(_))
+                | (Self::UnsignedInteger, WatermarkValue::Unsigned(_))
+                | (Self::Decimal { .. }, WatermarkValue::Decimal(_))
+                | (Self::Date32, WatermarkValue::Date32(_))
+                | (Self::Date64, WatermarkValue::Date64(_))
+                | (Self::Timestamp { .. }, WatermarkValue::Timestamp(_))
+        )
+    }
 }
 
 fn canonical_time_unit(unit: &TimeUnit) -> CanonicalArrowTimeUnit {
@@ -542,6 +555,31 @@ impl WatermarkClaim {
             ));
         }
         Ok(())
+    }
+
+    /// Classifies a value in this claim's exact typed domain.
+    pub fn classifies_as_late(&self, value: &WatermarkValue) -> Result<bool> {
+        self.validate()?;
+        let is_late = match (&self.value, value) {
+            (WatermarkValue::Signed(watermark), WatermarkValue::Signed(value)) => value < watermark,
+            (WatermarkValue::Unsigned(watermark), WatermarkValue::Unsigned(value)) => {
+                value < watermark
+            }
+            (WatermarkValue::Decimal(watermark), WatermarkValue::Decimal(value)) => {
+                value < watermark
+            }
+            (WatermarkValue::Date32(watermark), WatermarkValue::Date32(value)) => value < watermark,
+            (WatermarkValue::Date64(watermark), WatermarkValue::Date64(value)) => value < watermark,
+            (WatermarkValue::Timestamp(watermark), WatermarkValue::Timestamp(value)) => {
+                value < watermark
+            }
+            _ => {
+                return Err(CdfError::data(
+                    "late-data value does not share its watermark's typed domain",
+                ));
+            }
+        };
+        Ok(is_late)
     }
 }
 

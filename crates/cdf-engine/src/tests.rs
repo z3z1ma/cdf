@@ -3190,10 +3190,14 @@ fn late_rows_are_quarantined_or_admitted_with_identity_evidence() {
             evidence.records[0].effective_watermark.value,
             WatermarkValue::Signed(20)
         );
-        let quarantine = cdf_package::PackageReader::open(&second_dir)
+        let package = cdf_package::PackageReader::open(&second_dir).unwrap();
+        let verified = package.verify_for_consumption().unwrap();
+        let (joined_evidence, _) = package
+            .late_data_evidence_verified(&verified)
             .unwrap()
-            .read_quarantine_records()
-            .unwrap();
+            .expect("late-data evidence");
+        assert_eq!(joined_evidence, evidence);
+        let quarantine = package.read_quarantine_records().unwrap();
         match action {
             LateDataAction::Quarantine => {
                 assert_eq!(second.output.profile.output_rows, 0);
@@ -3243,7 +3247,9 @@ fn late_rows_are_quarantined_or_admitted_with_identity_evidence() {
                 assert!(quarantine.is_empty());
                 assert!(matches!(
                     evidence.records[0].payload,
-                    LateDataPayloadLocation::AdmittedOutput
+                    LateDataPayloadLocation::AdmittedOutput {
+                        package_row_ordinal: 0
+                    }
                 ));
                 assert!(!second_dir.join(LATE_DATA_PAYLOAD_CATALOG_FILE).exists());
             }

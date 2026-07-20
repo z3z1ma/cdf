@@ -16,10 +16,11 @@ use cdf_memory::{
 };
 use cdf_package_contract::{
     DEDUP_SUMMARY_FILE, DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage,
-    PROCESSED_OBSERVATIONS_FILE, PackageManifest, PackageReplayInputs, PackageStatus,
-    ProcessedObservationEvidenceArtifact, QuarantineRecord, ReplayView, SCAN_PLAN_FILE,
-    STATE_INPUT_CHECKPOINT_FILE, STATE_PROPOSED_DELTA_FILE, SegmentEntry, StateDeltaPreimage,
-    TombstoneReport, VerificationReport, VerifiedPackageAccess,
+    LATE_DATA_EVIDENCE_FILE, LATE_DATA_PAYLOAD_CATALOG_FILE, LateDataEvidence,
+    LateDataPayloadCatalog, PROCESSED_OBSERVATIONS_FILE, PackageManifest, PackageReplayInputs,
+    PackageStatus, ProcessedObservationEvidenceArtifact, QuarantineRecord, ReplayView,
+    SCAN_PLAN_FILE, STATE_INPUT_CHECKPOINT_FILE, STATE_PROPOSED_DELTA_FILE, SegmentEntry,
+    StateDeltaPreimage, TombstoneReport, VerificationReport, VerifiedPackageAccess,
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::de::DeserializeOwned;
@@ -567,6 +568,39 @@ impl PackageReader {
         }
         self.verified_json_artifact(verified, relative_path)
             .map(Some)
+    }
+
+    /// Reads and joins late-data evidence under the verified package identity.
+    ///
+    /// Deserialization validates each typed artifact independently; this join additionally proves
+    /// that every referenced payload row and admitted package-row ordinal exists.
+    pub fn late_data_evidence_verified(
+        &self,
+        verified: &VerifiedPackage,
+    ) -> Result<Option<(LateDataEvidence, Option<LateDataPayloadCatalog>)>> {
+        let Some(evidence) = self.verified_optional_json_artifact::<LateDataEvidence>(
+            verified,
+            LATE_DATA_EVIDENCE_FILE,
+        )?
+        else {
+            return Ok(None);
+        };
+        let catalog = self.verified_optional_json_artifact::<LateDataPayloadCatalog>(
+            verified,
+            LATE_DATA_PAYLOAD_CATALOG_FILE,
+        )?;
+        let output_rows =
+            self.manifest
+                .identity
+                .segments
+                .iter()
+                .try_fold(0_u64, |total, segment| {
+                    total
+                        .checked_add(segment.row_count)
+                        .ok_or_else(|| CdfError::data("package segment row count overflow"))
+                })?;
+        evidence.validate_payloads(catalog.as_ref(), output_rows)?;
+        Ok(Some((evidence, catalog)))
     }
 
     pub fn update_status(&mut self, status: PackageStatus) -> Result<&PackageManifest> {

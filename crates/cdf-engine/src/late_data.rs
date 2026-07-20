@@ -28,6 +28,7 @@ pub(crate) fn classify_late_data(
     partition_id: &PartitionId,
     source_position: Option<&SourcePosition>,
     source_row_base: u64,
+    package_row_ord_base: Option<u64>,
 ) -> Result<LateDataClassification> {
     if source_rows.len() != batch.num_rows() {
         return Err(CdfError::internal(
@@ -63,6 +64,7 @@ pub(crate) fn classify_late_data(
         partition_id,
         source_position,
         source_row_base,
+        package_row_ord_base,
     )?;
 
     if records.is_empty() || action == LateDataAction::AdmitWithAnnotation {
@@ -102,6 +104,7 @@ fn classify_array(
     partition_id: &PartitionId,
     source_position: Option<&SourcePosition>,
     source_row_base: u64,
+    package_row_ord_base: Option<u64>,
 ) -> Result<(Vec<bool>, Vec<LateDataRecord>)> {
     macro_rules! classify {
         ($array:ty, $threshold:expr, $map:expr, $variant:path) => {{
@@ -115,6 +118,7 @@ fn classify_array(
                 partition_id,
                 source_position,
                 source_row_base,
+                package_row_ord_base,
                 $variant,
             )
         }};
@@ -164,6 +168,7 @@ fn classify_array(
                     partition_id,
                     source_position,
                     source_row_base,
+                    package_row_ord_base,
                     WatermarkValue::Decimal,
                 )
             } else {
@@ -194,6 +199,7 @@ fn classify_array(
                     partition_id,
                     source_position,
                     source_row_base,
+                    package_row_ord_base,
                     WatermarkValue::Decimal,
                 )
             }
@@ -261,6 +267,7 @@ fn classify_ordered_values<I, T, F>(
     partition_id: &PartitionId,
     source_position: Option<&SourcePosition>,
     source_row_base: u64,
+    package_row_ord_base: Option<u64>,
     to_watermark: F,
 ) -> Result<(Vec<bool>, Vec<LateDataRecord>)>
 where
@@ -278,6 +285,31 @@ where
             let source_row = source_rows.get(row).copied().ok_or_else(|| {
                 CdfError::internal("late-data value count exceeds source-row tracking")
             })?;
+            let payload = match action {
+                LateDataAction::AdmitWithAnnotation => {
+                    let package_row_ordinal = package_row_ord_base
+                        .ok_or_else(|| {
+                            CdfError::internal(
+                                "admitted late data requires package-row ordinal authority",
+                            )
+                        })?
+                        .checked_add(u64::try_from(row).map_err(|_| {
+                            CdfError::data("late-data output row ordinal exceeds u64")
+                        })?)
+                        .ok_or_else(|| CdfError::data("late-data package row ordinal overflow"))?;
+                    LateDataPayloadLocation::AdmittedOutput {
+                        package_row_ordinal,
+                    }
+                }
+                LateDataAction::Quarantine | LateDataAction::RecaptureNextEpoch => {
+                    LateDataPayloadLocation::ArtifactRow {
+                        artifact_ordinal: u64::MAX,
+                        row_ordinal: u64::try_from(records.len()).map_err(|_| {
+                            CdfError::data("late-data payload row ordinal exceeds u64")
+                        })?,
+                    }
+                }
+            };
             records.push(LateDataRecord {
                 source_row_ordinal: source_row_base
                     .checked_add(
@@ -291,7 +323,7 @@ where
                 event_time: to_watermark(value.expect("late values are non-null")),
                 effective_watermark: watermark.clone(),
                 action,
-                payload: LateDataPayloadLocation::AdmittedOutput,
+                payload,
             });
         }
     }
@@ -349,10 +381,19 @@ mod tests {
                 &PartitionId::new("p0").unwrap(),
                 Some(&position(4)),
                 10,
+                Some(100),
             )
             .unwrap();
             assert_eq!(result.records.len(), 1);
             assert_eq!(result.records[0].source_row_ordinal, 10);
+            if action == LateDataAction::AdmitWithAnnotation {
+                assert_eq!(
+                    result.records[0].payload,
+                    LateDataPayloadLocation::AdmittedOutput {
+                        package_row_ordinal: 100,
+                    }
+                );
+            }
             assert_eq!(
                 result.admitted.num_rows()
                     + result.recaptured.as_ref().map_or(0, RecordBatch::num_rows),
@@ -416,6 +457,7 @@ mod tests {
                 &partition_id,
                 None,
                 0,
+                Some(0),
             )
             .unwrap();
             assert!(classified.records.is_empty());
