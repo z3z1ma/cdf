@@ -27,6 +27,8 @@ pub struct IcebergTaskSetAuthority {
     pub output_schema_id: i32,
     pub projected_field_ids: Vec<i32>,
     pub partition_specs: BTreeMap<i32, IcebergJsonAuthority>,
+    pub sort_orders: BTreeMap<i64, IcebergJsonAuthority>,
+    pub default_sort_order_id: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name_mapping: Option<IcebergJsonAuthority>,
     pub case_sensitive: bool,
@@ -121,6 +123,35 @@ impl IcebergTaskSetAuthority {
                     spec.spec_id()
                 )));
             }
+        }
+        if self.sort_orders.is_empty() {
+            return Err(CdfError::contract(
+                "Iceberg task-set authority requires at least one sort order",
+            ));
+        }
+        for (order_id, encoded) in &self.sort_orders {
+            if *order_id < 0 {
+                return Err(CdfError::contract(
+                    "Iceberg task-set sort-order ids must be nonnegative",
+                ));
+            }
+            encoded.validate("Iceberg task-set sort order")?;
+            let order: iceberg::spec::SortOrder = serde_json::from_value(encoded.value.clone())
+                .map_err(|error| {
+                    CdfError::contract(format!("decode Iceberg sort-order authority: {error}"))
+                })?;
+            if order.order_id != *order_id {
+                return Err(CdfError::contract(format!(
+                    "Iceberg task-set sort-order key {order_id} does not match encoded order id {}",
+                    order.order_id
+                )));
+            }
+        }
+        if !self.sort_orders.contains_key(&self.default_sort_order_id) {
+            return Err(CdfError::contract(format!(
+                "Iceberg default sort-order id {} is absent from task-set authority",
+                self.default_sort_order_id
+            )));
         }
         if let Some(mapping) = &self.name_mapping {
             mapping.validate("Iceberg name mapping")?;
@@ -704,6 +735,15 @@ mod tests {
                 }))
                 .unwrap(),
             )]),
+            sort_orders: BTreeMap::from([(
+                0,
+                IcebergJsonAuthority::new(serde_json::json!({
+                    "order-id": 0,
+                    "fields": []
+                }))
+                .unwrap(),
+            )]),
+            default_sort_order_id: 0,
             name_mapping: None,
             case_sensitive: true,
             scan_intent: CompiledScanIntent {

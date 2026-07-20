@@ -453,6 +453,18 @@ fn task_authority(
                 .and_then(IcebergJsonAuthority::new)
         })
         .transpose()?;
+    let sort_orders = table
+        .metadata
+        .sort_orders_iter()
+        .map(|order| {
+            Ok((
+                order.order_id,
+                IcebergJsonAuthority::new(serde_json::to_value(order.as_ref()).map_err(
+                    |error| CdfError::internal(format!("serialize Iceberg sort order: {error}")),
+                )?)?,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
     let mut required_capabilities = BTreeSet::from([
         "field-id-projection".to_owned(),
         "partition-evolution".to_owned(),
@@ -477,6 +489,8 @@ fn task_authority(
         output_schema_id,
         projected_field_ids,
         partition_specs,
+        sort_orders,
+        default_sort_order_id: table.metadata.default_sort_order_id(),
         name_mapping,
         case_sensitive: true,
         scan_intent,

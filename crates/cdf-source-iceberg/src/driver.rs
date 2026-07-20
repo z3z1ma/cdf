@@ -1741,6 +1741,11 @@ mod tests {
             serde_json::from_slice(reader.authority().payload()).unwrap();
         assert_eq!(authority.output_schema_id, 1);
         assert_eq!(authority.projected_field_ids, vec![1, 2]);
+        assert_eq!(authority.default_sort_order_id, 0);
+        assert_eq!(
+            authority.sort_orders.keys().copied().collect::<Vec<_>>(),
+            [0]
+        );
         let mut tasks = Vec::new();
         while let Some(record) = reader.next_record().unwrap() {
             let task: crate::IcebergScanTask =
