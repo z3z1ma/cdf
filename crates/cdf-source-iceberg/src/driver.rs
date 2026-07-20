@@ -1775,6 +1775,39 @@ mod tests {
         }
     }
 
+    fn rest_compile_request(project_root: &Path) -> SourceCompileRequest {
+        let mut request = compile_request(project_root);
+        request.source_options.insert(
+            "catalog".to_owned(),
+            serde_json::json!({
+                "kind": "rest",
+                "uri": "https://catalog.example.test/api",
+                "warehouse": "primary"
+            }),
+        );
+        request.source_options.insert(
+            "egress_allowlist".to_owned(),
+            serde_json::json!(["catalog.example.test"]),
+        );
+        request
+    }
+
+    fn rest_driver(transport: SequenceHttpTransport) -> IcebergSourceDriver {
+        IcebergSourceDriver::new(move |secrets, execution, _egress, lane| {
+            Ok(IcebergRuntimeDependencies::new(
+                Arc::new(
+                    FileTransportFacade::new()
+                        .with_shared_secret_provider(secrets)
+                        .with_execution_services(execution)
+                        .with_local_listing_lane(lane)?,
+                ),
+                Arc::new(transport.clone()),
+                Arc::new(UnsupportedGlueCatalogClient),
+            ))
+        })
+        .unwrap()
+    }
+
     fn filesystem_driver() -> IcebergSourceDriver {
         let http = NoopHttpTransport;
         IcebergSourceDriver::new(move |secrets, execution, _egress, lane| {
@@ -2550,34 +2583,8 @@ mod tests {
             .unwrap(),
         ]);
         let observed_requests = Arc::clone(&transport.requests);
-        let transport_for_runtime = transport.clone();
-        let driver = IcebergSourceDriver::new(move |secrets, execution, _egress, lane| {
-            Ok(IcebergRuntimeDependencies::new(
-                Arc::new(
-                    FileTransportFacade::new()
-                        .with_shared_secret_provider(secrets)
-                        .with_execution_services(execution)
-                        .with_local_listing_lane(lane)?,
-                ),
-                Arc::new(transport_for_runtime.clone()),
-                Arc::new(UnsupportedGlueCatalogClient),
-            ))
-        })
-        .unwrap();
-        let mut request = compile_request(root.path());
-        request.source_options.insert(
-            "catalog".to_owned(),
-            serde_json::json!({
-                "kind": "rest",
-                "uri": "https://catalog.example.test/api",
-                "warehouse": "primary"
-            }),
-        );
-        request.source_options.insert(
-            "egress_allowlist".to_owned(),
-            serde_json::json!(["catalog.example.test"]),
-        );
-        let plan = driver.compile(request).unwrap();
+        let driver = rest_driver(transport);
+        let plan = driver.compile(rest_compile_request(root.path())).unwrap();
         let execution = execution_services();
         let context = SourceResolutionContext::new(
             root.path(),
@@ -2613,6 +2620,87 @@ mod tests {
         assert!(
             observed_requests.lock().unwrap()[1]
                 .contains("/v1/prod/namespaces/analytics/tables/events")
+        );
+    }
+
+    #[test]
+    fn rest_catalog_nonempty_snapshot_executes_canonical_local_objects() {
+        let root = tempfile::tempdir().unwrap();
+        let table = root.path().join("analytics/events");
+        let execution = execution_services();
+        write_nonempty_table_fixture(&execution, &table);
+        let metadata_location = table.join("metadata/v1.metadata.json");
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&fs::read(&metadata_location).unwrap()).unwrap();
+        let transport = SequenceHttpTransport::new([
+            serde_json::to_vec(&serde_json::json!({
+                "defaults": {"prefix": "prod"},
+                "overrides": {}
+            }))
+            .unwrap(),
+            serde_json::to_vec(&serde_json::json!({
+                "metadata-location": metadata_location.display().to_string(),
+                "metadata": metadata
+            }))
+            .unwrap(),
+        ]);
+        let observed_requests = Arc::clone(&transport.requests);
+        let driver = rest_driver(transport);
+        let mut plan = driver.compile(rest_compile_request(root.path())).unwrap();
+        let context = SourceResolutionContext::new(
+            root.path(),
+            Arc::new(NoopSecretProvider),
+            &execution,
+            Arc::new(cdf_http::EgressAllowlist::allow_any()),
+        );
+        let session = driver.discovery_session(&plan, &context).unwrap();
+        let candidate = session.candidates().unwrap().remove(0);
+        let observation = session
+            .observe(
+                &candidate,
+                &SourceDiscoveryRequest::new(64 * 1024 * 1024, 1).unwrap(),
+            )
+            .unwrap();
+        plan.schema = observation.schema.as_ref().clone();
+
+        let resource = driver.resolve(&plan, &context).unwrap();
+        let scan = resource
+            .negotiate(&ScanRequest {
+                resource_id: plan.descriptor.resource_id.clone(),
+                projection: None,
+                filters: Vec::new(),
+                limit: None,
+                order_by: Vec::new(),
+                scope: ScopeKey::Resource,
+            })
+            .unwrap();
+        let reference = scan.planned_task_set.as_ref().unwrap();
+        assert_eq!(reference.task_count, 2);
+        let mut planned = resource.planned_partition_reader(reference).unwrap();
+        let rows = futures_executor::block_on(async {
+            let mut rows = 0_usize;
+            for ordinal in 0..reference.task_count {
+                let executable = planned.next_partition(ordinal).unwrap().unwrap();
+                let mut stream = resource.open_executable(executable).await?;
+                while let Some(batch) = stream.try_next().await? {
+                    rows += batch
+                        .record_batch()
+                        .ok_or_else(|| CdfError::internal("Iceberg REST test expected Arrow data"))?
+                        .num_rows();
+                }
+                stream.completion().await?;
+            }
+            Ok::<_, CdfError>(rows)
+        })
+        .unwrap();
+
+        assert_eq!(rows, 5);
+        assert_eq!(observed_requests.lock().unwrap().len(), 2);
+        assert!(
+            planned
+                .next_partition(reference.task_count)
+                .unwrap()
+                .is_none()
         );
     }
 

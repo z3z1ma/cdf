@@ -46,6 +46,7 @@ No append ancestry/changelog/tailing, ORC/Avro/v3/encryption enablement, destina
 - 2026-07-19: Added cooperative cancellation fault injection at the neutral transport boundary. Cancellation during canonical data-task metadata preparation terminates generic engine execution, consumes the configured signal, and leaves the package lifecycle at `extracting`; it never reaches validation, packaging, or checkpoint eligibility. No Iceberg-specific cancellation loop or package behavior was introduced.
 - 2026-07-19: Removed resident manifest-list cardinality from scan planning. A minimal v1/v2 Avro decoder now streams each manifest-list entry into the same invocation-local, spill-backed planning index that owns delete applicability; the upstream whole-list `Vec` and separate delete-only index are gone. Manifest identities remain canonically ordered through a `(content, path)` B-tree, counted in constant control memory, and fed to bounded parallel manifest workers without collecting the snapshot. The planning-index cache, reader cache, maximum task assembly, database, and rollback journal remain subordinate to the injected memory/spill authorities through explicit source knobs.
 - 2026-07-19: Adversarial review rejected a naive statement-level `SQLITE_FULL` retry inside one transaction: SQLite may roll back the entire transaction, making that retry silently incomplete. The retained implementation treats a full insert/commit as a failed attempt, verifies that rollback retained zero manifest rows, grows only its shared spill reservation, and deterministically reparses the already-accounted manifest-list payload. A 10,000-manifest test forces 64 KiB growth quanta, proves canonical traversal and fixed ledger residency, and completes in 1.03 seconds in the debug test profile. Initial worker assignment was also moved inside scope cleanup so iterator/queue failures cannot strand blocking workers.
+- 2026-07-19: Extended REST beyond empty discovery. A negotiated nonempty REST response now drives the real evolved v2 fixture through manifest/delete planning, two canonical external tasks, neutral local object access, aligned Parquet decode, and both delete forms to the exact five-row result. Discovery and resolution still make only the two catalog protocol requests (config and load-table); payload execution never recontacts the catalog or takes a REST-specific execution path.
 
 ## Blockers
 
@@ -76,7 +77,10 @@ None.
 - `CARGO_BUILD_JOBS=12 cargo test -p cdf-source-iceberg --lib --locked -j 12`: 28 passed. This includes real v1 manifest-list decoding, the evolved v2 data/delete execution fixture, canonical external tasks, retry/cancellation/generation fault injection, spill-backed delete applicability, and the new high-cardinality manifest law.
 - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-source-iceberg --all-targets --no-deps --locked -j 12 -- -D warnings`: passed after the spill-backed manifest planner and transaction-replay correction.
 - `git diff --check -- Cargo.lock crates/cdf-source-iceberg`: passed.
-- Limits: local/REST roofline measurements and live Glue evidence remain open in I2.
+- `CARGO_BUILD_JOBS=12 cargo test -p cdf-source-iceberg rest_catalog_nonempty_snapshot_executes_canonical_local_objects --lib --locked -j 12`: passed. The REST binding negotiated embedded metadata exactly once, planned two canonical tasks from local manifest objects, read local Parquet/delete objects through the neutral transport, and produced five surviving rows without a third catalog request.
+- `CARGO_BUILD_JOBS=12 cargo test -p cdf-source-iceberg --lib --locked -j 12`: 29 passed after nonempty REST execution coverage.
+- `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-source-iceberg --all-targets --no-deps --locked -j 12 -- -D warnings`: passed after the REST execution tranche.
+- Limits: socket-level local REST/remote-object and roofline measurements plus live Glue evidence remain open in I2.
 
 ## Review
 
