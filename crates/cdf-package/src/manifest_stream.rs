@@ -1,0 +1,413 @@
+use std::{fmt, io::Read, marker::PhantomData};
+
+use cdf_kernel::{CdfError, Result};
+use cdf_package_contract::{
+    FileEntry, LifecycleState, MANIFEST_VERSION, SegmentEntry, SignatureSlot,
+};
+use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
+
+use crate::json::json_error;
+
+/// Constant-cardinality facts from a package manifest.
+///
+/// File and segment entries remain in canonical `manifest.json`; callers visit them through
+/// [`visit_package_manifest`] instead of retaining them in this header.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PackageManifestHeader {
+    pub manifest_version: u16,
+    pub package_hash: String,
+    pub identity: ManifestIdentityHeader,
+    pub lifecycle: LifecycleState,
+    pub signature: SignatureSlot,
+    pub has_archives: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManifestIdentityHeader {
+    pub manifest_version: u16,
+    pub package_id: String,
+    pub layout: Vec<String>,
+}
+
+/// Parses one canonical package manifest while visiting file and segment entries in stored order.
+///
+/// The parser never materializes either cardinality-sized array. Callback failure stops parsing
+/// immediately and is returned as a data error.
+pub fn visit_package_manifest(
+    reader: impl Read,
+    file_visitor: &mut dyn FnMut(FileEntry) -> Result<()>,
+    segment_visitor: &mut dyn FnMut(SegmentEntry) -> Result<()>,
+) -> Result<PackageManifestHeader> {
+    let mut deserializer = serde_json::Deserializer::from_reader(reader);
+    let header = PackageManifestSeed {
+        file_visitor,
+        segment_visitor,
+    }
+    .deserialize(&mut deserializer)
+    .map_err(json_error)?;
+    deserializer.end().map_err(json_error)?;
+    if header.manifest_version != MANIFEST_VERSION
+        || header.identity.manifest_version != MANIFEST_VERSION
+    {
+        return Err(CdfError::data(format!(
+            "package manifest/storage version must be {MANIFEST_VERSION}; observed manifest {} identity {}",
+            header.manifest_version, header.identity.manifest_version
+        )));
+    }
+    Ok(header)
+}
+
+struct PackageManifestSeed<'a> {
+    file_visitor: &'a mut dyn FnMut(FileEntry) -> Result<()>,
+    segment_visitor: &'a mut dyn FnMut(SegmentEntry) -> Result<()>,
+}
+
+impl<'de> DeserializeSeed<'de> for PackageManifestSeed<'_> {
+    type Value = PackageManifestHeader;
+
+    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_map(PackageManifestVisitor {
+            file_visitor: self.file_visitor,
+            segment_visitor: self.segment_visitor,
+        })
+    }
+}
+
+struct PackageManifestVisitor<'a> {
+    file_visitor: &'a mut dyn FnMut(FileEntry) -> Result<()>,
+    segment_visitor: &'a mut dyn FnMut(SegmentEntry) -> Result<()>,
+}
+
+impl<'de> Visitor<'de> for PackageManifestVisitor<'_> {
+    type Value = PackageManifestHeader;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a CDF package manifest object")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut archives = None;
+        let mut identity = None;
+        let mut lifecycle = None;
+        let mut manifest_version = None;
+        let mut package_hash = None;
+        let mut signature = None;
+
+        while let Some(field) = map.next_key::<String>()? {
+            match field.as_str() {
+                "archives" => {
+                    require_absent(&archives, "archives")?;
+                    map.next_value::<IgnoredAny>()?;
+                    archives = Some(true);
+                }
+                "identity" => {
+                    require_absent(&identity, "identity")?;
+                    identity = Some(map.next_value_seed(ManifestIdentitySeed {
+                        file_visitor: self.file_visitor,
+                        segment_visitor: self.segment_visitor,
+                    })?);
+                }
+                "lifecycle" => {
+                    require_absent(&lifecycle, "lifecycle")?;
+                    lifecycle = Some(map.next_value()?);
+                }
+                "manifest_version" => {
+                    require_absent(&manifest_version, "manifest_version")?;
+                    manifest_version = Some(map.next_value()?);
+                }
+                "package_hash" => {
+                    require_absent(&package_hash, "package_hash")?;
+                    package_hash = Some(map.next_value()?);
+                }
+                "signature" => {
+                    require_absent(&signature, "signature")?;
+                    signature = Some(map.next_value()?);
+                }
+                unknown => return Err(de::Error::unknown_field(unknown, MANIFEST_FIELDS)),
+            }
+        }
+
+        Ok(PackageManifestHeader {
+            manifest_version: required(manifest_version, "manifest_version")?,
+            package_hash: required(package_hash, "package_hash")?,
+            identity: required(identity, "identity")?,
+            lifecycle: required(lifecycle, "lifecycle")?,
+            signature: required(signature, "signature")?,
+            has_archives: archives.unwrap_or(false),
+        })
+    }
+}
+
+struct ManifestIdentitySeed<'a> {
+    file_visitor: &'a mut dyn FnMut(FileEntry) -> Result<()>,
+    segment_visitor: &'a mut dyn FnMut(SegmentEntry) -> Result<()>,
+}
+
+impl<'de> DeserializeSeed<'de> for ManifestIdentitySeed<'_> {
+    type Value = ManifestIdentityHeader;
+
+    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_map(ManifestIdentityVisitor {
+            file_visitor: self.file_visitor,
+            segment_visitor: self.segment_visitor,
+        })
+    }
+}
+
+struct ManifestIdentityVisitor<'a> {
+    file_visitor: &'a mut dyn FnMut(FileEntry) -> Result<()>,
+    segment_visitor: &'a mut dyn FnMut(SegmentEntry) -> Result<()>,
+}
+
+impl<'de> Visitor<'de> for ManifestIdentityVisitor<'_> {
+    type Value = ManifestIdentityHeader;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a CDF package manifest identity object")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut files = None;
+        let mut layout = None;
+        let mut manifest_version = None;
+        let mut package_id = None;
+        let mut segments = None;
+
+        while let Some(field) = map.next_key::<String>()? {
+            match field.as_str() {
+                "files" => {
+                    require_absent(&files, "files")?;
+                    map.next_value_seed(EntrySequenceSeed::<FileEntry> {
+                        visitor: self.file_visitor,
+                        marker: PhantomData,
+                    })?;
+                    files = Some(());
+                }
+                "layout" => {
+                    require_absent(&layout, "layout")?;
+                    layout = Some(map.next_value()?);
+                }
+                "manifest_version" => {
+                    require_absent(&manifest_version, "manifest_version")?;
+                    manifest_version = Some(map.next_value()?);
+                }
+                "package_id" => {
+                    require_absent(&package_id, "package_id")?;
+                    package_id = Some(map.next_value()?);
+                }
+                "segments" => {
+                    require_absent(&segments, "segments")?;
+                    map.next_value_seed(EntrySequenceSeed::<SegmentEntry> {
+                        visitor: self.segment_visitor,
+                        marker: PhantomData,
+                    })?;
+                    segments = Some(());
+                }
+                unknown => return Err(de::Error::unknown_field(unknown, IDENTITY_FIELDS)),
+            }
+        }
+
+        required(files, "files")?;
+        required(segments, "segments")?;
+        Ok(ManifestIdentityHeader {
+            manifest_version: required(manifest_version, "manifest_version")?,
+            package_id: required(package_id, "package_id")?,
+            layout: required(layout, "layout")?,
+        })
+    }
+}
+
+struct EntrySequenceSeed<'a, T> {
+    visitor: &'a mut dyn FnMut(T) -> Result<()>,
+    marker: PhantomData<T>,
+}
+
+impl<'de, T> DeserializeSeed<'de> for EntrySequenceSeed<'_, T>
+where
+    T: serde::Deserialize<'de>,
+{
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(EntrySequenceVisitor {
+            visitor: self.visitor,
+        })
+    }
+}
+
+struct EntrySequenceVisitor<'a, T> {
+    visitor: &'a mut dyn FnMut(T) -> Result<()>,
+}
+
+impl<'de, T> Visitor<'de> for EntrySequenceVisitor<'_, T>
+where
+    T: serde::Deserialize<'de>,
+{
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a canonical manifest entry array")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        while let Some(entry) = sequence.next_element()? {
+            (self.visitor)(entry).map_err(de::Error::custom)?;
+        }
+        Ok(())
+    }
+}
+
+fn require_absent<E, T>(value: &Option<T>, field: &'static str) -> std::result::Result<(), E>
+where
+    E: de::Error,
+{
+    if value.is_some() {
+        return Err(de::Error::duplicate_field(field));
+    }
+    Ok(())
+}
+
+fn required<E, T>(value: Option<T>, field: &'static str) -> std::result::Result<T, E>
+where
+    E: de::Error,
+{
+    value.ok_or_else(|| de::Error::missing_field(field))
+}
+
+const MANIFEST_FIELDS: &[&str] = &[
+    "archives",
+    "identity",
+    "lifecycle",
+    "manifest_version",
+    "package_hash",
+    "signature",
+];
+const IDENTITY_FIELDS: &[&str] = &[
+    "files",
+    "layout",
+    "manifest_version",
+    "package_id",
+    "segments",
+];
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use cdf_kernel::SegmentId;
+    use cdf_package_contract::{
+        LifecycleState, ManifestIdentity, PackageManifest, PackageStatus, SignatureSlot,
+    };
+
+    use super::*;
+    use crate::json::write_package_manifest_canonical;
+
+    fn fixture() -> PackageManifest {
+        PackageManifest {
+            manifest_version: MANIFEST_VERSION,
+            package_hash: format!("sha256:{}", "a".repeat(64)),
+            identity: ManifestIdentity {
+                manifest_version: MANIFEST_VERSION,
+                package_id: "pkg-stream".to_owned(),
+                layout: vec!["data/".to_owned()],
+                files: vec![
+                    FileEntry {
+                        path: "data/000.arrow".to_owned(),
+                        byte_count: 10,
+                        sha256: "1".repeat(64),
+                    },
+                    FileEntry {
+                        path: "trace.jsonl".to_owned(),
+                        byte_count: 20,
+                        sha256: "2".repeat(64),
+                    },
+                ],
+                segments: vec![SegmentEntry {
+                    segment_id: SegmentId::new("segment-00000000000000000000").unwrap(),
+                    path: "data/000.arrow".to_owned(),
+                    package_row_ord_start: 0,
+                    row_count: 3,
+                    byte_count: 10,
+                    sha256: "1".repeat(64),
+                }],
+            },
+            lifecycle: LifecycleState {
+                status: PackageStatus::Packaged,
+            },
+            signature: SignatureSlot {
+                signing_input: format!("sha256:{}", "a".repeat(64)),
+                value: None,
+            },
+            archives: None,
+        }
+    }
+
+    #[test]
+    fn manifest_parser_visits_cardinality_entries_without_storing_them_in_header() {
+        let manifest = fixture();
+        let mut bytes = Vec::new();
+        write_package_manifest_canonical(&manifest, &mut bytes).unwrap();
+        let mut files = Vec::new();
+        let mut segments = Vec::new();
+        let header = visit_package_manifest(
+            Cursor::new(bytes),
+            &mut |entry| {
+                files.push(entry);
+                Ok(())
+            },
+            &mut |entry| {
+                segments.push(entry);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(header.manifest_version, manifest.manifest_version);
+        assert_eq!(header.package_hash, manifest.package_hash);
+        assert_eq!(header.identity.package_id, manifest.identity.package_id);
+        assert_eq!(header.identity.layout, manifest.identity.layout);
+        assert_eq!(header.lifecycle, manifest.lifecycle);
+        assert_eq!(header.signature, manifest.signature);
+        assert!(!header.has_archives);
+        assert_eq!(files, manifest.identity.files);
+        assert_eq!(segments, manifest.identity.segments);
+    }
+
+    #[test]
+    fn manifest_parser_stops_on_entry_consumer_failure() {
+        let manifest = fixture();
+        let mut bytes = Vec::new();
+        write_package_manifest_canonical(&manifest, &mut bytes).unwrap();
+        let mut visited = 0;
+        let error = visit_package_manifest(
+            Cursor::new(bytes),
+            &mut |_| {
+                visited += 1;
+                Err(CdfError::data("stop manifest visit"))
+            },
+            &mut |_| Ok(()),
+        )
+        .unwrap_err();
+
+        assert_eq!(visited, 1);
+        assert!(error.to_string().contains("stop manifest visit"));
+    }
+}

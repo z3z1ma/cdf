@@ -69,6 +69,7 @@ No unrelated product feature or performance tuning beyond closure blockers.
 - 2026-07-18: Deleted the tombstone report's package-sized removed-path list and its redundant sort. The manifest already owns those identities; tombstoning now returns only package hash plus a checked `u64` removed-file count.
 - 2026-07-18: Removed state pre-finalization's package-sized segment-position `BTreeMap`. The package journal and engine position evidence are both canonical streams, so state construction now joins them lockstep and fails at the first missing, reordered, or mismatched segment identity.
 - 2026-07-18: Removed four package-cardinality `BTreeSet` allocations from direct engine finalization and the equivalent isolated-lineage set. Lineage, processed-observation, and terminal-quarantine vectors are now canonicalized once in place, reject adjacent duplicate identities, and compare against ordered stream-admission/quarantine authority with linear iterators. This preserves exact-set semantics and strengthens duplicate terminal-quarantine rejection without another resident identity index.
+- 2026-07-18: Began the resident-manifest removal without changing `manifest.json` bytes, package hashes, or layout. A callback-driven parser now returns only constant-cardinality manifest/identity headers while visiting file and segment arrays one entry at a time in stored order. It rejects unknown, duplicate, and missing fields and stops immediately on consumer failure. Production reader/finalizer migration remains open; this is the parser boundary they will consume, not a second artifact format.
 
 ## Evidence
 
@@ -180,6 +181,10 @@ No unrelated product feature or performance tuning beyond closure blockers.
   - `CARGO_BUILD_JOBS=12 cargo test -p cdf-engine actual_engine_capsules_are_jobs_invariant_for_multiple_partitions --lib --locked -j 12` — passed. Direct and isolated assembly still produce identical canonical evidence across CPU budgets after replacing resident identity sets with sorted linear comparison.
   - `actual_engine_capsule_preserves_terminal_schema_quarantine_evidence` and `compiled_stream_admission_is_replay_verifiable_and_rejects_mismatched_evidence` passed. These prove terminal quarantine evidence remains complete and compiled stream-admission evidence remains replay-verifiable through the stricter duplicate/exact-match checks.
   - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-engine --all-targets --locked -j 12 -- -D warnings`, `cargo fmt --all`, and `git diff --check` passed.
+- 2026-07-18 streaming manifest parser foundation:
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-package manifest_parser_ --lib --locked -j 12` — passed, 2 tests. Canonical current-format bytes produce the same header/file/segment facts as the stored model, and a file-entry consumer failure stops after exactly one record.
+  - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-package --all-targets --locked -j 12 -- -D warnings`, `cargo fmt --all`, and `git diff --check` passed.
+  - Limit: no production reader uses the parser yet and the builder still reconstructs final vectors; this is migration infrastructure, not F2 closure evidence by itself.
 - This is partial F2 evidence only. The ticket remains active because its cross-codebase owner matrix, static architecture gates, remaining metadata-cardinality closure, and geometric stress proof are not complete.
 
 ## Review
