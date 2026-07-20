@@ -319,6 +319,8 @@ fn type_mismatch(array: &dyn Array, expected: &str) -> CdfError {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use std::sync::Arc;
 
     use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
@@ -375,6 +377,62 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    #[ignore = "release-mode A9 late-data control-path benchmark"]
+    fn late_data_classification_benchmark() {
+        let row_count = std::env::var("CDF_A9_LATE_DATA_ROWS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(65_536);
+        let iterations = std::env::var("CDF_A9_LATE_DATA_ITERATIONS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(1_024);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "occurred_at",
+            DataType::Int64,
+            false,
+        )]));
+        let values = (0..row_count)
+            .map(|row| i64::try_from(row).unwrap() + 1)
+            .collect::<Vec<_>>();
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(values))]).unwrap();
+        let source_rows = (0..row_count).collect::<Vec<_>>();
+        let partition_id = PartitionId::new("partition-0").unwrap();
+        let watermark = watermark(0);
+
+        let started = Instant::now();
+        for _ in 0..iterations {
+            let classified = classify_late_data(
+                batch.clone(),
+                &source_rows,
+                "occurred_at",
+                &watermark,
+                LateDataAction::Quarantine,
+                &partition_id,
+                None,
+                0,
+            )
+            .unwrap();
+            assert!(classified.records.is_empty());
+            assert_eq!(classified.admitted.num_rows(), row_count);
+        }
+        let elapsed = started.elapsed();
+        let bytes = row_count
+            .checked_mul(iterations)
+            .and_then(|rows| rows.checked_mul(std::mem::size_of::<i64>()))
+            .unwrap();
+        let bytes_per_second = bytes as f64 / elapsed.as_secs_f64();
+        println!(
+            "A9 late-data no-late classifier: rows={row_count}, iterations={iterations}, elapsed_s={:.6}, throughput_gib_s={:.3}",
+            elapsed.as_secs_f64(),
+            bytes_per_second / (1024.0 * 1024.0 * 1024.0),
+        );
+        assert!(bytes_per_second >= 1_000_000_000.0);
     }
 
     fn batch() -> RecordBatch {
