@@ -208,6 +208,9 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
         &package_root,
         &base_package_id,
         &base_checkpoint_id,
+        &plan,
+        resource.descriptor(),
+        &schema_hash,
         destination,
         checkpoint_store,
         &services,
@@ -399,6 +402,9 @@ fn settle_existing_drain_prefix<Store>(
     package_root: &Path,
     base_package_id: &str,
     base_checkpoint_id: &CheckpointId,
+    plan: &EnginePlan,
+    descriptor: &ResourceDescriptor,
+    schema_hash: &SchemaHash,
     destination: &mut ResolvedProjectDestination,
     checkpoint_store: &Store,
     services: &ExecutionServices,
@@ -415,6 +421,31 @@ where
         }
         let expected_checkpoint_id =
             CheckpointId::new(drain_epoch_string_id(base_checkpoint_id.as_str(), ordinal))?;
+        let package = PackageReader::open(&package_dir)?;
+        if matches!(
+            package.manifest().lifecycle.status,
+            PackageStatus::Planned | PackageStatus::Extracting | PackageStatus::Validated
+        ) {
+            let target = destination.target().clone();
+            let active = ActiveStagedIngress::begin(
+                destination.runtime_mut(),
+                StagedIngressPlan {
+                    checkpoint_id: expected_checkpoint_id.clone(),
+                    execution_plan_id: plan.scan.plan_id.clone(),
+                    target,
+                    disposition: plan.write_disposition.clone(),
+                    schema_hash: schema_hash.clone(),
+                    output_schema: plan.output_arrow_schema()?.as_ref().clone(),
+                    merge_keys: descriptor.merge_key.clone(),
+                },
+                services,
+            )?;
+            if let Some(active) = active {
+                active.abort()?;
+            }
+            package.discard_incomplete_construction(&package_id)?;
+            return Ok(ordinal);
+        }
         let replay = settle_existing_package_with_runtime(
             &package_dir,
             destination.runtime_mut(),

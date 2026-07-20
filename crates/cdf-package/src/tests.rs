@@ -308,6 +308,45 @@ fn verification_rejects_unknown_contract_evolution_versions() {
     }
 }
 
+#[test]
+fn incomplete_construction_can_be_discarded_only_under_its_exact_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("incomplete");
+    let builder = PackageBuilder::create(&package_dir, "pkg-incomplete").unwrap();
+    builder.update_status(PackageStatus::Extracting).unwrap();
+    builder
+        .write_identity_artifact("plan/partial.json", b"{}")
+        .unwrap();
+    drop(builder);
+
+    let mismatch = PackageReader::open(&package_dir)
+        .unwrap()
+        .discard_incomplete_construction("pkg-other")
+        .unwrap_err();
+    assert!(mismatch.to_string().contains("expected"));
+    assert!(package_dir.exists());
+
+    PackageReader::open(&package_dir)
+        .unwrap()
+        .discard_incomplete_construction("pkg-incomplete")
+        .unwrap();
+    assert!(!package_dir.exists());
+}
+
+#[test]
+fn replayable_package_cannot_cross_incomplete_construction_deletion_boundary() {
+    let temp = tempfile::tempdir().unwrap();
+    build_fixture(temp.path());
+
+    let error = PackageReader::open(temp.path())
+        .unwrap()
+        .discard_incomplete_construction("pkg-test-0001")
+        .unwrap_err();
+
+    assert!(error.to_string().contains("verified replay"));
+    assert!(temp.path().join(MANIFEST_FILE).exists());
+}
+
 fn build_fixture(package_dir: &Path) -> PackageManifest {
     let builder = PackageBuilder::create(package_dir, "pkg-test-0001").unwrap();
     builder.update_status(PackageStatus::Extracting).unwrap();

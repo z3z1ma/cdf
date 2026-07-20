@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::File,
+    fs::{self, File},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -33,7 +33,7 @@ use crate::{
     },
     package_fs::PackageRoot,
     quarantine::quarantine_records_from_package_file,
-    storage::{normalize_artifact_path, package_path},
+    storage::{io_error, normalize_artifact_path, package_path, sync_directory},
 };
 
 #[derive(Clone, Debug)]
@@ -354,6 +354,42 @@ impl PackageReader {
 
     pub fn manifest(&self) -> &PackageManifest {
         &self.manifest
+    }
+
+    /// Removes an incomplete owner-private construction so its deterministic identity can be
+    /// re-driven. Replayable packages and any construction carrying a receipt are artifacts and
+    /// cannot cross this deletion boundary.
+    pub fn discard_incomplete_construction(self, expected_package_id: &str) -> Result<()> {
+        if self.manifest.identity.package_id != expected_package_id {
+            return Err(CdfError::data(format!(
+                "incomplete package {} has identity {:?}, expected {:?}",
+                self.package_dir.display(),
+                self.manifest.identity.package_id,
+                expected_package_id
+            )));
+        }
+        if self.manifest.lifecycle.status.is_replayable() {
+            return Err(CdfError::data(format!(
+                "package {} is {} and must be recovered through verified replay, not discarded",
+                self.package_dir.display(),
+                self.manifest.lifecycle.status.as_str()
+            )));
+        }
+        if !self.receipts()?.is_empty() {
+            return Err(CdfError::data(format!(
+                "incomplete package {} carries a durable destination receipt and cannot be discarded",
+                self.package_dir.display()
+            )));
+        }
+        let package_dir = self.package_dir.clone();
+        let parent = package_dir.parent().map(Path::to_path_buf);
+        drop(self);
+        fs::remove_dir_all(&package_dir)
+            .map_err(|error| io_error(format!("remove {}", package_dir.display()), error))?;
+        if let Some(parent) = parent {
+            sync_directory(&parent)?;
+        }
+        Ok(())
     }
 
     pub fn recorded_scan_plan_verified(&self, verified: &VerifiedPackage) -> Result<ScanPlan> {

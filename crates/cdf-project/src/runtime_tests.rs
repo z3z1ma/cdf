@@ -470,26 +470,12 @@ impl ResourceStream for OneBatchThenEmptyDrainResource {
                     batches,
                 )));
             }
-            let record_batch = RecordBatch::try_new(
-                schema.clone(),
-                vec![
-                    Arc::new(Int64Array::from(vec![1])) as ArrayRef,
-                    Arc::new(Int64Array::from(vec![1])) as ArrayRef,
-                ],
-            )?;
-            let schema_hash = cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?;
-            let mut batch = cdf_kernel::Batch::from_record_batch(
-                cdf_kernel::BatchId::new("batch-one-then-empty")?,
+            let batch = one_row_cursor_batch(
+                "batch-one-then-empty",
+                schema,
                 resource_id,
                 partition.partition_id,
-                schema_hash,
-                record_batch,
             )?;
-            batch.header.source_position = Some(SourcePosition::Cursor(CursorPosition {
-                version: cdf_kernel::SOURCE_POSITION_VERSION,
-                field: "updated_at".to_owned(),
-                value: CursorValue::I64(1),
-            }));
             let batches = futures_util::stream::once(async move { Ok(batch) });
             Ok(cdf_kernel::PartitionStreamPayload::batches(Box::pin(
                 batches,
@@ -506,6 +492,100 @@ impl QueryableResource for OneBatchThenEmptyDrainResource {
     fn negotiate(&self, request: &ScanRequest) -> Result<cdf_kernel::ScanPlan> {
         self.inner.negotiate(request)
     }
+}
+
+struct OneBatchThenErrorOnceDrainResource {
+    inner: BackfillMockResource,
+    open_count: AtomicU64,
+}
+
+impl OneBatchThenErrorOnceDrainResource {
+    fn new() -> Self {
+        Self {
+            inner: BackfillMockResource::cursor(),
+            open_count: AtomicU64::new(0),
+        }
+    }
+}
+
+impl ResourceStream for OneBatchThenErrorOnceDrainResource {
+    fn descriptor(&self) -> &ResourceDescriptor {
+        self.inner.descriptor()
+    }
+
+    fn schema(&self) -> Arc<Schema> {
+        self.inner.schema()
+    }
+
+    fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<cdf_kernel::PartitionPlan>> {
+        self.inner.plan_partitions(request)
+    }
+
+    fn open(&self, partition: cdf_kernel::PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
+        let first_open = self.open_count.fetch_add(1, Ordering::SeqCst) == 0;
+        let schema = self.schema();
+        let resource_id = self.descriptor().resource_id.clone();
+        cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move {
+            let batch = one_row_cursor_batch(
+                if first_open {
+                    "batch-before-error"
+                } else {
+                    "batch-after-retry"
+                },
+                schema,
+                resource_id,
+                partition.partition_id,
+            )?;
+            let mut batches = vec![Ok(batch)];
+            if first_open {
+                batches.push(Err(CdfError::internal(
+                    "injected extraction failure after one durable segment",
+                )));
+            }
+            Ok(cdf_kernel::PartitionStreamPayload::batches(Box::pin(
+                futures_util::stream::iter(batches),
+            )))
+        }))
+    }
+}
+
+impl QueryableResource for OneBatchThenErrorOnceDrainResource {
+    fn capabilities(&self) -> &ResourceCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn negotiate(&self, request: &ScanRequest) -> Result<cdf_kernel::ScanPlan> {
+        self.inner.negotiate(request)
+    }
+}
+
+fn one_row_cursor_batch(
+    batch_id: &str,
+    schema: Arc<Schema>,
+    resource_id: ResourceId,
+    partition_id: PartitionId,
+) -> Result<cdf_kernel::Batch> {
+    let record_batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(vec![1])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![1])) as ArrayRef,
+        ],
+    )?;
+    let schema_hash = cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?;
+    let mut batch = cdf_kernel::Batch::from_record_batch(
+        cdf_kernel::BatchId::new(batch_id)?,
+        resource_id,
+        partition_id,
+        schema_hash,
+        record_batch,
+    )?;
+    batch.header.source_position = Some(SourcePosition::Cursor(CursorPosition {
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
+        field: "updated_at".to_owned(),
+        value: CursorValue::I64(1),
+    }));
+    Ok(batch)
 }
 
 fn test_file_runtime_dependencies() -> FileRuntimeDependencies {
@@ -4406,6 +4486,110 @@ fn drain_preserves_committed_summary_when_the_following_epoch_is_empty() {
             .len(),
         1
     );
+}
+
+#[test]
+fn drain_retry_discards_only_incomplete_construction_after_staging_abort() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = OneBatchThenErrorOnceDrainResource::new();
+    let package_root = temp.path().join(".cdf/packages");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+    let package_id = "pkg-drain-incomplete-retry";
+    let pipeline_id = PipelineId::new("pipeline-drain-incomplete-retry").unwrap();
+    let source = compiled_drain_test_source_plan(&resource);
+    let bound = BoundTestResource {
+        inner: &resource,
+        compiled_source_plan_hash: cdf_runtime::artifact_hash(&source).unwrap(),
+        replay_retention: None,
+    };
+    let extent = ExecutionExtent::Drain {
+        version: cdf_kernel::EXECUTION_EXTENT_VERSION,
+        policy: cdf_kernel::StreamEpochPolicy {
+            version: cdf_kernel::STREAM_EPOCH_POLICY_VERSION,
+            checkpoint_cadence: cdf_kernel::EpochClosureTrigger::Rows { count: 2 },
+            package_rotation: cdf_kernel::EpochClosureTrigger::Bytes { count: 1 << 20 },
+            watermark: cdf_kernel::WatermarkPolicy::Disabled,
+            late_data: cdf_kernel::LateDataAction::Quarantine,
+            safe_frontier: cdf_kernel::SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+        },
+        termination: cdf_kernel::DrainTermination::Records { count: 2 },
+    };
+    let mut plan = live_plan_for_queryable(&resource, package_id);
+    plan.execution_extent = extent.clone();
+    plan.explain.execution_extent = extent;
+    let destination =
+        ResolvedProjectDestination::duckdb(&duckdb_path, TargetName::new("events").unwrap())
+            .unwrap();
+    let plan = plan
+        .bind_compiled_source(&source)
+        .unwrap()
+        .bind_operator_graph(&source, &destination.runtime_capabilities())
+        .unwrap();
+    let retry_plan = plan.clone();
+
+    let first = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunSource::new(&bound),
+        plan,
+        package_root: package_root.clone(),
+        state_store_path: state_path.clone(),
+        pipeline_id: pipeline_id.clone(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-drain-incomplete-retry").unwrap(),
+        destination,
+        run_id: Some(RunId::new("run-drain-incomplete-retry-first").unwrap()),
+        event_sink: None,
+        after_receipt_verified: None,
+    }))
+    .unwrap_err();
+    assert!(first.to_string().contains("injected extraction failure"));
+    assert_eq!(
+        package_status(&package_root.join(package_id)),
+        PackageStatus::Extracting
+    );
+    let store = SqliteCheckpointStore::open(&state_path).unwrap();
+    assert!(
+        store
+            .head(
+                &pipeline_id,
+                &resource.descriptor().resource_id,
+                &resource.descriptor().state_scope,
+            )
+            .unwrap()
+            .is_none()
+    );
+
+    let destination =
+        ResolvedProjectDestination::duckdb(&duckdb_path, TargetName::new("events").unwrap())
+            .unwrap();
+    let resumed = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunSource::new(&bound),
+        plan: retry_plan,
+        package_root: package_root.clone(),
+        state_store_path: state_path.clone(),
+        pipeline_id: pipeline_id.clone(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-drain-incomplete-retry").unwrap(),
+        destination,
+        run_id: Some(RunId::new("run-drain-incomplete-retry-second").unwrap()),
+        event_sink: None,
+        after_receipt_verified: None,
+    }))
+    .unwrap();
+
+    assert_eq!(resumed.row_count, 1);
+    assert_eq!(resumed.package_status, PackageStatus::Checkpointed);
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 2);
+    let history = SqliteCheckpointStore::open(&state_path)
+        .unwrap()
+        .history(
+            &pipeline_id,
+            &resource.descriptor().resource_id,
+            &resource.descriptor().state_scope,
+        )
+        .unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].status, CheckpointStatus::Committed);
 }
 
 #[test]
