@@ -34,7 +34,7 @@ use cdf_kernel::{
     ResourceStream, Result, RunId, RunPhase, RunPhaseContext, RunPhaseMetric, RunPhaseStatus,
     SOURCE_NAME_METADATA_KEY, SOURCE_POSITION_VERSION, ScopeKey, SourcePosition,
     StratifiedHashBoundedIdentity, StratifiedHashCandidate, StratifiedHashIdentityStrength,
-    TerminalSchemaObservationQuarantine, WatermarkClaim, WriteDisposition,
+    TerminalSchemaObservationQuarantine, WatermarkClaim, WatermarkPolicy, WriteDisposition,
     aggregate_resource_closed_output_position, aggregate_resource_output_position,
     merge_terminal_position_evidence, semantic, source_name,
 };
@@ -44,7 +44,8 @@ use cdf_memory::{
 };
 use cdf_package::PackageBuilder;
 use cdf_package_contract::{
-    PackageStatus, QuarantineObservedValue, QuarantineRecord, SegmentEntry,
+    LATE_DATA_EVIDENCE_FILE, LateDataEvidence, LateDataRecord, PackageStatus,
+    QuarantineObservedValue, QuarantineRecord, SegmentEntry,
 };
 use futures_util::{StreamExt, future::Either};
 use serde::{Deserialize, Serialize};
@@ -3058,6 +3059,15 @@ where
         || plan.validation_program.transforms.iter().any(|transform| {
             matches!(transform, cdf_contract::TransformDescription::Filter { .. })
         });
+    let late_data_policy = match &plan.execution_extent {
+        ExecutionExtent::Drain { policy, .. } => match &policy.watermark {
+            WatermarkPolicy::Enabled {
+                event_time_field, ..
+            } => Some((event_time_field.clone(), policy.late_data)),
+            WatermarkPolicy::Disabled => None,
+        },
+        ExecutionExtent::Bounded { .. } | ExecutionExtent::Resident { .. } => None,
+    };
 
     let builder = PackageBuilder::create(package_dir, plan.package_id.clone())?;
     builder.update_status(PackageStatus::Extracting)?;
@@ -3106,6 +3116,7 @@ where
     let mut segments = Vec::new();
     let mut segment_positions = Vec::new();
     let mut quarantine_part_count = 0_usize;
+    let mut late_data_records = Vec::<LateDataRecord>::new();
     let mut remaining_limit = plan.scan.request.limit;
     let mut output_schema = Some(schema_artifact(runtime_output_schema.as_ref()));
     let mut stream_admission_evidence =
@@ -3704,6 +3715,7 @@ where
                     )?;
                     batch.header.extend_residual_candidates(candidates);
                 }
+                let batch_source_row_base = partition_source_row_ordinal;
                 partition_source_row_ordinal = partition_source_row_ordinal
                     .saturating_add(batch.header.row_count);
                 let residual_candidates = batch.header.take_residual_candidates();
@@ -3739,12 +3751,13 @@ where
                     ));
                 }
 
-                let track_source_rows =
-                    pre_contract_may_filter || !residual_candidates.is_empty();
+                let track_source_rows = pre_contract_may_filter
+                    || !residual_candidates.is_empty()
+                    || late_data_policy.is_some();
                 let executed = execute_batch(&record_batch, &bound_residuals, track_source_rows)?;
                 let ExecutedBatch {
-                    batch: output,
-                    source_rows,
+                    batch: mut output,
+                    mut source_rows,
                     limit_truncated,
                 } = apply_pre_contract_expressions(
                     executed.batch,
@@ -3838,6 +3851,68 @@ where
                     continue;
                 }
 
+                let mut late_quarantine_records = Vec::new();
+                if let (Some((event_time_field, action)), Some(watermark)) = (
+                    late_data_policy.as_ref(),
+                    drain_controller
+                        .as_deref()
+                        .and_then(cdf_runtime::DrainEpochController::late_data_watermark)
+                        .cloned(),
+                ) {
+                    let classification = crate::late_data::classify_late_data(
+                        output,
+                        source_rows.take().ok_or_else(|| {
+                            CdfError::internal(
+                                "watermark-enabled execution omitted source-row tracking",
+                            )
+                        })?,
+                        event_time_field,
+                        &watermark,
+                        *action,
+                        &partition.partition_id,
+                        batch_source_position.as_ref(),
+                        batch_source_row_base,
+                    )?;
+                    if classification.recaptured.is_some() {
+                        return Err(CdfError::internal(
+                            "late-data recapture payload reached execution before durable carryover was installed",
+                        ));
+                    }
+                    output = classification.admitted;
+                    source_rows = Some(classification.admitted_source_rows);
+                    if *action == cdf_kernel::LateDataAction::Quarantine {
+                        for record in &classification.records {
+                            late_quarantine_records
+                                .push(quarantine_record_from_late_data(record)?);
+                        }
+                        merge_verdict_summary(
+                            &mut verdict_summary,
+                            late_data_quarantine_summary(&classification.records),
+                        );
+                    }
+                    late_data_records.extend(classification.records);
+                    if output.num_rows() == 0 {
+                        let quarantine_lease = reserve_quarantine_evidence(memory.as_ref())?;
+                        let mut quarantine_sink = QuarantinePartAccumulator::new(
+                            &builder,
+                            &mut quarantine_part_count,
+                            quarantine_lease,
+                        );
+                        for record in late_quarantine_records {
+                            quarantine_sink.push(record)?;
+                        }
+                        quarantine_sink.finish()?;
+                        phase_measurements.add(
+                            RunPhase::ValidationNormalization,
+                            elapsed_ns(validation_started, "validation/normalization")?,
+                            validation_input_bytes,
+                            0,
+                        );
+                        close_drain_epoch_at_batch_frontier!();
+                        continue;
+                    }
+                }
+
                 let evaluation_context = package_evaluation_context
                     .clone()
                     .with_source_position(batch_source_position.clone());
@@ -3848,6 +3923,7 @@ where
                 )
                 .await?;
                 let quarantine_lease = if residual_candidates.is_empty()
+                    && late_quarantine_records.is_empty()
                     && !program_may_quarantine(&validation_program)
                 {
                     None
@@ -3859,6 +3935,9 @@ where
                     &mut quarantine_part_count,
                     quarantine_lease,
                 );
+                for record in late_quarantine_records {
+                    quarantine_sink.push(record)?;
+                }
                 let ContractExecOutput {
                     accepted,
                     variant_values,
@@ -4594,6 +4673,12 @@ where
     if verdict_summary.quarantine_candidate_count > 0 {
         write_quarantine_summary(&builder, &verdict_summary, quarantine_part_count)?;
     }
+    if !late_data_records.is_empty() {
+        builder.write_json_artifact(
+            LATE_DATA_EVIDENCE_FILE,
+            &LateDataEvidence::new(late_data_records),
+        )?;
+    }
     builder.write_lineage_artifact(
         "lineage.json",
         &cdf_package::canonical_json_bytes(&lineage)?,
@@ -5143,6 +5228,37 @@ fn quarantine_record_from_pre_contract(fact: &PreContractQuarantineFact) -> Quar
         error_code: fact.error_code.clone(),
         source_position: fact.source_position.clone(),
         observed_value_redacted: pre_contract_observed_value(&fact.observed_value_redacted),
+    }
+}
+
+fn quarantine_record_from_late_data(record: &LateDataRecord) -> Result<QuarantineRecord> {
+    Ok(QuarantineRecord {
+        source_row_ordinal: record.source_row_ordinal,
+        rule_id: "cdf.late_data".to_owned(),
+        error_code: "cdf.event_time_behind_watermark".to_owned(),
+        source_position: record.source_position.clone(),
+        observed_value_redacted: QuarantineObservedValue::Preserved {
+            value: serde_json::to_string(&record.event_time).map_err(|error| {
+                CdfError::internal(format!("serialize late-data event time: {error}"))
+            })?,
+        },
+    })
+}
+
+fn late_data_quarantine_summary(records: &[LateDataRecord]) -> VerdictSummary {
+    let row_count = u64::try_from(records.len()).unwrap_or(u64::MAX);
+    VerdictSummary {
+        input_rows: row_count,
+        accepted_rows: 0,
+        quarantined_rows: row_count,
+        violation_count: row_count,
+        quarantine_candidate_count: row_count,
+        rule_summaries: vec![cdf_contract::RuleVerdictSummary {
+            rule_id: "cdf.late_data".to_owned(),
+            error_code: "cdf.event_time_behind_watermark".to_owned(),
+            checked_rows: row_count,
+            violation_count: row_count,
+        }],
     }
 }
 

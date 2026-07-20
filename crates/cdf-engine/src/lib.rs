@@ -4,6 +4,7 @@ mod dedup_spill;
 mod execution;
 mod expression;
 mod graph_plan;
+mod late_data;
 mod memory;
 mod output_schema;
 mod planning;
