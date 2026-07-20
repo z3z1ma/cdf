@@ -2206,7 +2206,6 @@ fn build_zero_segment_processed_package(package_dir: &Path, package_id: &str) ->
             WriteDisposition::Append,
             Vec::new(),
             SchemaHash::new(SCHEMA_HASH).unwrap(),
-            Vec::new(),
         ))
         .unwrap();
     write_compiled_expression_artifacts(
@@ -2447,7 +2446,7 @@ fn write_state_commit_artifacts(
         late_data_carryover,
         source_continuation: None,
         schema_hash: SchemaHash::new(SCHEMA_HASH).unwrap(),
-        segments: segments.clone(),
+        segments,
     };
     let processed = ProcessedObservationPosition::new(
         "artifact-fixture",
@@ -2472,7 +2471,6 @@ fn write_state_commit_artifacts(
         disposition,
         Vec::new(),
         SchemaHash::new(SCHEMA_HASH).unwrap(),
-        segments,
     );
     builder.write_input_checkpoint_artifact(&None).unwrap();
     builder

@@ -1220,7 +1220,7 @@ fn structurally_verified_package_receipts(
         return Ok(receipts);
     }
     let commit = reader.destination_commit_plan_preimage()?;
-    if commit.schema_hash != delta.schema_hash || commit.segments != delta.segments {
+    if commit.schema_hash != delta.schema_hash {
         return Err(CdfError::data(
             "package destination commit preimage does not match state authority",
         ));
@@ -2955,7 +2955,6 @@ mod tests {
                     WriteDisposition::Append,
                     Vec::new(),
                     SchemaHash::new("sha256:old-schema").unwrap(),
-                    Vec::new(),
                 ),
             )
             .unwrap();
@@ -3682,7 +3681,6 @@ mod tests {
                     WriteDisposition::Append,
                     Vec::new(),
                     schema_hash.clone(),
-                    vec![state_segment.clone()],
                 ),
             )
             .unwrap();

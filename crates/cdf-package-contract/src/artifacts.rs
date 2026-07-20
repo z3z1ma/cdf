@@ -12,6 +12,7 @@ use crate::model::SegmentEntry;
 pub const STATE_INPUT_CHECKPOINT_FILE: &str = "state/input_checkpoint.json";
 pub const STATE_PROPOSED_DELTA_FILE: &str = "state/proposed_delta.json";
 pub const DESTINATION_COMMIT_PLAN_FILE: &str = "destination/commit_plan.json";
+pub const DESTINATION_COMMIT_PLAN_VERSION: u16 = 1;
 pub const SCAN_PLAN_FILE: &str = "plan/scan.json";
 pub const DEDUP_SUMMARY_FILE: &str = "stats/dedup-summary.json";
 pub const DEDUP_SUMMARY_VERSION: u16 = 3;
@@ -162,12 +163,13 @@ impl StateDeltaPreimage {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DestinationCommitPlanPreimage {
+    pub version: u16,
     pub target: TargetName,
     pub disposition: WriteDisposition,
     pub merge_keys: Vec<String>,
     pub schema_hash: SchemaHash,
-    pub segments: Vec<StateSegment>,
     pub idempotency_token_source: IdempotencyTokenSource,
 }
 
@@ -177,28 +179,42 @@ impl DestinationCommitPlanPreimage {
         disposition: WriteDisposition,
         merge_keys: Vec<String>,
         schema_hash: SchemaHash,
-        segments: Vec<StateSegment>,
     ) -> Self {
         Self {
+            version: DESTINATION_COMMIT_PLAN_VERSION,
             target,
             disposition,
             merge_keys,
             schema_hash,
-            segments,
             idempotency_token_source: IdempotencyTokenSource::PackageHash,
         }
     }
 
-    pub fn commit_request(&self, package_hash: PackageHash) -> Result<DestinationCommitRequest> {
+    pub fn commit_request(
+        &self,
+        package_hash: PackageHash,
+        segments: Vec<StateSegment>,
+    ) -> Result<DestinationCommitRequest> {
+        self.validate()?;
         match self.idempotency_token_source {
             IdempotencyTokenSource::PackageHash => Ok(DestinationCommitRequest {
                 package_hash: package_hash.clone(),
                 target: self.target.clone(),
                 disposition: self.disposition.clone(),
-                segments: self.segments.clone(),
+                segments,
                 idempotency_token: IdempotencyToken::new(package_hash.as_str())?,
             }),
         }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.version != DESTINATION_COMMIT_PLAN_VERSION {
+            return Err(CdfError::data(format!(
+                "unsupported destination commit plan version {}",
+                self.version
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -257,11 +273,6 @@ impl PackageReplayInputs {
                 commit_plan.schema_hash, state_delta.schema_hash
             )));
         }
-        if commit_plan.segments != state_delta.segments {
-            return Err(CdfError::data(
-                "destination commit plan segments do not match state delta segments",
-            ));
-        }
         validate_package_segments(package_segments, &state_delta.segments, processed.as_ref())?;
         if let Some(processed) = &processed {
             processed.validate()?;
@@ -281,7 +292,8 @@ impl PackageReplayInputs {
 
         let schema_hash = state_delta.schema_hash.clone();
         let merge_keys = commit_plan.merge_keys.clone();
-        let destination_commit = commit_plan.commit_request(package_hash.clone())?;
+        let destination_commit =
+            commit_plan.commit_request(package_hash.clone(), state_delta.segments.clone())?;
         let state_delta = state_delta.into_state_delta(package_hash);
         Ok(Self {
             input_checkpoint,
@@ -461,5 +473,34 @@ mod tests {
         sorted.sort();
         assert_eq!(sorted, paths);
         assert!(dedup_provenance_shard_path(0).is_err());
+    }
+
+    #[test]
+    fn destination_commit_preimage_has_no_duplicate_segment_authority() {
+        let plan = DestinationCommitPlanPreimage::package_hash_token(
+            TargetName::new("orders").unwrap(),
+            WriteDisposition::Append,
+            Vec::new(),
+            SchemaHash::new("schema-v1").unwrap(),
+        );
+        let mut encoded = serde_json::to_value(&plan).unwrap();
+        assert_eq!(encoded["version"], DESTINATION_COMMIT_PLAN_VERSION);
+        assert!(encoded.get("segments").is_none());
+
+        encoded
+            .as_object_mut()
+            .unwrap()
+            .insert("segments".to_owned(), serde_json::json!([]));
+        let error = serde_json::from_value::<DestinationCommitPlanPreimage>(encoded).unwrap_err();
+        assert!(error.to_string().contains("unknown field `segments`"));
+
+        let mut unsupported = plan;
+        unsupported.version += 1;
+        let error = unsupported.validate().unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("unsupported destination commit plan version")
+        );
     }
 }

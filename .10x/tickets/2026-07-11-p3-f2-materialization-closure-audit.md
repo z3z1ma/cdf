@@ -30,7 +30,7 @@ No unrelated product feature or performance tuning beyond closure blockers.
 - The cross-codebase allocation-owner matrix and static architecture/conformance gates are incomplete.
 - File discovery still exposes candidate partitions through `SourceDiscoverySession` and `DiscoveryManifestArtifact` cardinality-sized vectors; the final execution plan is external, but discovery evidence is not yet.
 - Committed `FileManifest` state and append reconciliation still retain cardinality-sized file vectors/maps. They need external manifest authority before F2 can claim unbounded file-count closure.
-- Package finalization, ordinary engine output, replay manifest validation, archive verification, and statistics-profile consumption now retain only constant-cardinality headers and verified pull authority. State/commit preimages and receipt history remain cardinality-sized. F2 cannot close until those authorities are removed, externalized, or lockstep-streamed.
+- Package finalization, ordinary engine output, replay manifest validation, archive verification, statistics-profile consumption, and the destination commit-plan preimage now retain only constant-cardinality headers and verified pull authority. The state-delta preimage and receipt history remain cardinality-sized. F2 cannot close until those authorities are removed, externalized, or lockstep-streamed.
 
 ## References
 
@@ -261,6 +261,12 @@ No unrelated product feature or performance tuning beyond closure blockers.
   - Kernel statistics tests passed 5/5; package tests passed 75 with four release-only benchmarks ignored; the profile-enabled engine integration and DuckDB drift/quarantine conformance law passed.
   - Workspace all-target check, workspace strict Clippy, format check, and diff check passed with 12 Cargo build jobs.
   - Fresh review verdict: pass for this slice. One verified Parquet reader batch, one streamed manifest entry, and one visitor row are the only cardinality-dependent live values. F2 remains active for state/commit preimages, receipt history, FileManifest/discovery evidence, the owner matrix, and geometric stress.
+- 2026-07-18 destination commit-plan authority deduplication:
+  - Removed the package-cardinality `segments` array from the current `DestinationCommitPlanPreimage`. The versioned, unknown-field-denying artifact now records only destination intent; replay derives its transient commit request from the state-delta preimage after lockstep validation against the canonical manifest stream. Legacy duplicate segment fields and unsupported versions fail closed; no compatibility shim remains.
+  - `cdf-package-contract` passed 10 tests, including explicit rejection of the removed field and unsupported versions. `cdf-package` passed 76 tests with four release-only performance tests ignored, including package-reader rejection of an unsupported commit-plan version. Focused project artifact replay and generic receipt-association validation passed.
+  - The prepared-package golden rebuilt identically 100 times. DuckDB and Parquet live package goldens each rebuilt identically 100 times, and the live PostgreSQL golden passed its bounded repeat law. Exact current package hashes and smaller commit-plan bytes are committed as evidence rather than normalized away.
+  - `CARGO_BUILD_JOBS=12 cargo check --workspace --all-targets --locked -j 12`, workspace strict Clippy, `cargo fmt --all -- --check`, and `git diff --check` passed.
+  - Fresh review first found that promotion could read the compact artifact without constructing a commit request, bypassing request-local version enforcement. Version validation now lives at the package-reader boundary and remains in request construction as defense in depth. Final verdict: pass for this slice. The durable package now has one state segment authority rather than two independently serializable arrays, package identity bytes shrink, and no source/destination branch was added. Replay still clones the state vector into the ephemeral `DestinationCommitRequest`; the state preimage itself and receipt history remain explicit F2 residuals.
 - This is partial F2 evidence only. The ticket remains active because its cross-codebase owner matrix, static architecture gates, remaining metadata-cardinality closure, and geometric stress proof are not complete.
 
 ## Review
@@ -272,6 +278,7 @@ Verdict: concerns for F2 closure; pass for the bounded DuckDB slice.
 - Residual significant F2 work remains: F1 has not yet made process native-headroom authority available through `ExecutionServices`; other native allocation owners remain unaudited; the cross-codebase owner matrix and geometric stress proof are still open. These are recorded closure blockers, not waived claims.
 - The staged-payload slice passes adversarial ownership review: publish precedes handoff; send, hook, acknowledgement, and worker failures all drop the owned payload and release its leases; sliced segments may share lease ownership through the lease's reference-counted token without releasing the physical allocation early. Generic orchestration still branches only on `DestinationIngress` capability.
 - The archive slice passes adversarial ownership review: the canonical package manifest owns exactly one hash-addressed external archive index; verifier state is constant-cardinality plus one manifest/index record; archive reports no longer copy package-sized metadata. The format-version break is intentional at customer zero and no compatibility path remains.
+- The destination commit-plan slice passes adversarial authority review: current package identity contains exactly one durable state segment list, the compact commit plan cannot deserialize the superseded duplicate field, and every destination receives the same state-derived request. The remaining ephemeral request clone is allocation debt, not a second persisted authority, and remains owned by F2.
 
 ## Retrospective
 

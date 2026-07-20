@@ -369,7 +369,6 @@ fn write_current_state_artifacts(
             disposition,
             merge_keys,
             SchemaHash::new("schema-v1").unwrap(),
-            segments,
         ))
         .unwrap();
 }

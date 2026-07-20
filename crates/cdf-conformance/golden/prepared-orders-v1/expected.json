@@ -1,14 +1,15 @@
 {
   "manifest_version": 2,
-  "package_hash": "sha256:f8db1d6e8975ef1edc71aebe3998a7d438dec52bdda0672edd78ff148b370f95",
+  "package_hash": "sha256:36b5adf2e19c489727bb752877f66c41d43882b4abc966fbdaebbb0504fe7b64",
   "package_status": "packaged",
-  "signature_signing_input": "sha256:f8db1d6e8975ef1edc71aebe3998a7d438dec52bdda0672edd78ff148b370f95",
+  "signature_signing_input": "sha256:36b5adf2e19c489727bb752877f66c41d43882b4abc966fbdaebbb0504fe7b64",
   "signature_value": null,
   "identity_manifest_version": 2,
   "identity_layout": [
     "plan/",
     "schema/",
     "data/",
+    "carryover/",
     "quarantine/",
     "stats/",
     "lineage/",
@@ -24,8 +25,8 @@
     },
     {
       "path": "destination/commit_plan.json",
-      "byte_count": 358,
-      "sha256": "53fc3bf5e1339d1f2e4dd2664089b17f8a7604f2107068781342e9b309b430b2"
+      "byte_count": 154,
+      "sha256": "68c842f0f2cf874137f9129f50c304916cd10f2588c6b3fdb4be1043f6d9f37b"
     },
     {
       "path": "lineage/batches.parquet",
@@ -74,8 +75,8 @@
     },
     {
       "path": "state/proposed_delta.json",
-      "byte_count": 585,
-      "sha256": "6ea0f8cd163e487f563546c7bd5168a82d3aa66c64e73d413b75f2bd3795c91a"
+      "byte_count": 687,
+      "sha256": "33a9d8b67c9837bb36c2b586df91eaf293fae365d6987cccc45385490f90e18f"
     },
     {
       "path": "stats/profile.parquet",

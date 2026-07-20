@@ -1645,14 +1645,13 @@ fn build_package_fixture(
         late_data_carryover: Vec::new(),
         source_continuation: None,
         schema_hash: schema_hash.clone(),
-        segments: state_segments.clone(),
+        segments: state_segments,
     };
     let commit_plan = DestinationCommitPlanPreimage::package_hash_token(
         TargetName::new("orders")?,
         WriteDisposition::Append,
         Vec::new(),
         schema_hash,
-        state_segments,
     );
     builder.write_input_checkpoint_artifact(&None)?;
     builder.write_state_delta_preimage_artifact(&state_delta)?;

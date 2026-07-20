@@ -1225,7 +1225,6 @@ fn build_correction_package(
             artifact.disposition.clone(),
             Vec::new(),
             artifact.new_schema_hash.clone(),
-            preimage.segments.clone(),
         ),
     )?;
     let manifest = builder.finish_with_status(PackageStatus::Packaged)?;

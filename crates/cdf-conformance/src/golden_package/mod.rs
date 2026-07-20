@@ -415,14 +415,13 @@ fn write_prepared_orders_state_commit_artifacts(
         late_data_carryover: Vec::new(),
         source_continuation: None,
         schema_hash: schema_hash.clone(),
-        segments: segments.clone(),
+        segments,
     };
     let commit_plan = DestinationCommitPlanPreimage::package_hash_token(
         TargetName::new("orders")?,
         WriteDisposition::Append,
         Vec::new(),
         schema_hash,
-        segments,
     );
     builder.write_input_checkpoint_artifact(&None)?;
     builder.write_state_delta_preimage_artifact(&state_delta)?;

@@ -754,7 +754,7 @@ fn write_prepared_state_commit_artifacts(
         late_data_carryover: Vec::new(),
         source_continuation: None,
         schema_hash: spec.schema_hash.clone(),
-        segments: segments.clone(),
+        segments,
     };
     let processed = ProcessedObservationPosition::new(
         PREPARED_OBSERVATION_ID,
@@ -775,7 +775,6 @@ fn write_prepared_state_commit_artifacts(
         spec.disposition.clone(),
         Vec::new(),
         spec.schema_hash.clone(),
-        segments,
     );
     builder.write_input_checkpoint_artifact(&None)?;
     builder.write_state_delta_preimage_artifact(&state_delta)?;

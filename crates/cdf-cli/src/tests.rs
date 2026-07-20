@@ -15090,7 +15090,6 @@ fn write_schema_promote_package_fixture_for_target_with_commit(
             WriteDisposition::Append,
             Vec::new(),
             SchemaHash::new(schema_hash).unwrap(),
-            vec![state_segment],
         ))
         .unwrap();
     let final_status = if commit_duckdb {
@@ -15278,7 +15277,7 @@ fn rebuild_correction_package_semantically(
     let reader = PackageReader::open(package_dir).unwrap();
     let input_checkpoint = reader.input_checkpoint().unwrap();
     let mut state = reader.state_delta_preimage().unwrap();
-    let mut commit = reader.destination_commit_plan_preimage().unwrap();
+    let commit = reader.destination_commit_plan_preimage().unwrap();
     let mut artifact: cdf_project::SchemaPromotionCorrectionPackageArtifact =
         serde_json::from_slice(
             &fs::read(package_dir.join("plan/promotion-correction.json")).unwrap(),
@@ -15328,7 +15327,6 @@ fn rebuild_correction_package_semantically(
     let segment = builder.write_segment(segment_id, 0, &batch).unwrap();
     state.segments[0].row_count = segment.row_count;
     state.segments[0].byte_count = segment.byte_count;
-    commit.segments = state.segments.clone();
     builder
         .write_input_checkpoint_artifact(&input_checkpoint)
         .unwrap();
@@ -16240,7 +16238,6 @@ fn create_duckdb_doctor_fixture(project: &TestProject, mode: DoctorDriftFixtureM
             WriteDisposition::Append,
             Vec::new(),
             SchemaHash::new("schema-doctor-1").unwrap(),
-            vec![segment.clone()],
         ))
         .unwrap();
     let manifest = builder.finish_with_status(PackageStatus::Packaged).unwrap();
@@ -16621,7 +16618,6 @@ fn build_gc_residual_package(root: &Path, package_id: &str, resource_id: &str) -
             WriteDisposition::Append,
             Vec::new(),
             schema_hash.clone(),
-            vec![state_segment.clone()],
         ))
         .unwrap();
     let manifest = builder.finish_with_status(PackageStatus::Packaged).unwrap();

@@ -550,6 +550,29 @@ fn verification_rejects_unknown_contract_evolution_versions() {
 }
 
 #[test]
+fn commit_plan_reader_rejects_unsupported_versions() {
+    let temp = tempfile::tempdir().unwrap();
+    let builder = package_builder!(temp.path(), "pkg-unsupported-commit-plan").unwrap();
+    let mut plan = DestinationCommitPlanPreimage::package_hash_token(
+        TargetName::new("orders").unwrap(),
+        WriteDisposition::Append,
+        Vec::new(),
+        SchemaHash::new("schema-v1").unwrap(),
+    );
+    plan.version += 1;
+    builder.write_commit_plan_preimage_artifact(&plan).unwrap();
+    builder.finish().unwrap();
+
+    let reader = PackageReader::open(temp.path()).unwrap();
+    let error = reader.destination_commit_plan_preimage().unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("unsupported destination commit plan version")
+    );
+}
+
+#[test]
 fn incomplete_construction_can_be_discarded_only_under_its_exact_identity() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("incomplete");
@@ -681,14 +704,13 @@ fn write_state_commit_artifacts(builder: &PackageBuilder, segment: SegmentEntry)
         late_data_carryover: Vec::new(),
         source_continuation: None,
         schema_hash: SchemaHash::new("schema-fixture").unwrap(),
-        segments: segments.clone(),
+        segments,
     };
     let commit_plan = DestinationCommitPlanPreimage::package_hash_token(
         TargetName::new("orders").unwrap(),
         WriteDisposition::Append,
         Vec::new(),
         SchemaHash::new("schema-fixture").unwrap(),
-        segments,
     );
     builder.write_input_checkpoint_artifact(&None).unwrap();
     builder
@@ -1125,7 +1147,7 @@ fn fixed_fixture_hash_is_deterministic_across_repeated_runs() {
     assert_eq!(first_manifest.package_hash, second_manifest.package_hash);
     assert_eq!(
         first_manifest.package_hash,
-        "sha256:7c4c100198dfcb530f14715902116732a9cbf54e57387a650b291a6c24bf236c"
+        "sha256:8f54a56b6ecd0234941992919c23c9027290d247c13f4708f23025ab54cf72e1"
     );
 }
 
@@ -1558,7 +1580,6 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
         WriteDisposition::Append,
         Vec::new(),
         SchemaHash::new("schema-fixture").unwrap(),
-        state_delta.segments.clone(),
     );
     let valid_input_checkpoint = Checkpoint {
         delta: StateDelta {
@@ -1622,7 +1643,6 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
         WriteDisposition::Append,
         Vec::new(),
         SchemaHash::new("schema-fixture").unwrap(),
-        two_segment_delta.segments.clone(),
     );
     let order_error = PackageReplayInputs::from_preimages(
         package_hash.clone(),
@@ -1803,7 +1823,6 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
         WriteDisposition::Append,
         Vec::new(),
         SchemaHash::new("schema-fixture").unwrap(),
-        empty_segments.segments.clone(),
     );
     let error = PackageReplayInputs::from_preimages(
         package_hash.clone(),
@@ -1827,7 +1846,6 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
         WriteDisposition::Append,
         Vec::new(),
         SchemaHash::new("schema-fixture").unwrap(),
-        row_mismatch.segments.clone(),
     );
     let error = PackageReplayInputs::from_preimages(
         package_hash.clone(),
@@ -1846,7 +1864,6 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
         WriteDisposition::Append,
         Vec::new(),
         SchemaHash::new("schema-fixture").unwrap(),
-        byte_mismatch.segments.clone(),
     );
     let error = PackageReplayInputs::from_preimages(
         package_hash.clone(),
@@ -1919,7 +1936,6 @@ fn zero_segment_replay_requires_exact_typed_processed_observation_evidence() {
         WriteDisposition::Append,
         Vec::new(),
         state_delta.schema_hash.clone(),
-        Vec::new(),
     );
 
     let missing = PackageReplayInputs::from_preimages_with_processed(
@@ -1977,7 +1993,6 @@ fn zero_segment_replay_requires_exact_typed_processed_observation_evidence() {
             WriteDisposition::Append,
             Vec::new(),
             SchemaHash::new("schema-fixture").unwrap(),
-            Vec::new(),
         ),
         replay_segment_stream(&[]),
         Some(mismatched),
@@ -2026,7 +2041,6 @@ fn table_snapshot_replay_preserves_exact_processed_authority_and_rejects_tamper(
         WriteDisposition::Append,
         Vec::new(),
         state_delta.schema_hash.clone(),
-        Vec::new(),
     );
 
     let replay = PackageReplayInputs::from_preimages_with_processed(

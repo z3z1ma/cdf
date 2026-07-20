@@ -534,14 +534,13 @@ fn write_replay_artifacts(
         late_data_carryover: Vec::new(),
         source_continuation: None,
         schema_hash: schema_hash(),
-        segments: segments.clone(),
+        segments,
     };
     let commit_plan = DestinationCommitPlanPreimage::package_hash_token(
         target,
         disposition.clone(),
         replay_merge_keys(&disposition),
         schema_hash(),
-        segments,
     );
     builder.write_input_checkpoint_artifact(&None).unwrap();
     builder

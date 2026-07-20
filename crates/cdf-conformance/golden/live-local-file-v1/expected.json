@@ -1,6 +1,6 @@
 {
   "package_id": "live-local-file-v1",
-  "package_hash": "sha256:c7d9f50f97edff73e4449de6ce7fc2367df053d08ff13af2fb6e69a4fbe8325d",
+  "package_hash": "sha256:2bdd60798d1d3604ceb6866e22f68a3e5bbd585653e66a01806beb8e13b7652b",
   "checkpoint_id": "checkpoint-live-local-file-v1",
   "pipeline_id": "pipeline-live-local-file-v1",
   "resource_id": "local.events",
@@ -21,15 +21,16 @@
   "mirror_state_rows": 1,
   "package": {
     "manifest_version": 2,
-    "package_hash": "sha256:c7d9f50f97edff73e4449de6ce7fc2367df053d08ff13af2fb6e69a4fbe8325d",
+    "package_hash": "sha256:2bdd60798d1d3604ceb6866e22f68a3e5bbd585653e66a01806beb8e13b7652b",
     "package_status": "checkpointed",
-    "signature_signing_input": "sha256:c7d9f50f97edff73e4449de6ce7fc2367df053d08ff13af2fb6e69a4fbe8325d",
+    "signature_signing_input": "sha256:2bdd60798d1d3604ceb6866e22f68a3e5bbd585653e66a01806beb8e13b7652b",
     "signature_value": null,
     "identity_manifest_version": 2,
     "identity_layout": [
       "plan/",
       "schema/",
       "data/",
+      "carryover/",
       "quarantine/",
       "stats/",
       "lineage/",
@@ -45,28 +46,28 @@
       },
       {
         "path": "destination/commit_plan.json",
-        "byte_count": 591,
-        "sha256": "e0af8ce74a899c1671eb13d1ba8bf51f156407fd69b99184d1aea33eb1da3045"
+        "byte_count": 200,
+        "sha256": "dbdf91bac6fc18622254d8daf2da261e5e34bba341b3e11ac5d2596d165ccc78"
       },
       {
         "path": "lineage/lineage.json",
-        "byte_count": 472,
-        "sha256": "26ea587f8fc9b9d651342b5d70d30c9eef8b1796319f83e944e431ae6ffcec49"
+        "byte_count": 401,
+        "sha256": "14ad5e8997beabf4b4f5932a4ed17fb6023acdd16d8d472a8c9b1b45d4b7922f"
       },
       {
         "path": "plan/explain.json",
-        "byte_count": 3324,
-        "sha256": "9c29c8123c6b341513992111aa54f19ae701fee4cc6f762bc584071762cdaf7b"
+        "byte_count": 2263,
+        "sha256": "22dcb2deecb68cc69d2847a71f0ba4c0980eb6da2e5bd1a42d30d66448452bed"
       },
       {
         "path": "plan/scan.json",
-        "byte_count": 1373,
-        "sha256": "e739bc0c3173b36d53385450f5c165f94ab1ec959824a3ce7c0170d590201b77"
+        "byte_count": 751,
+        "sha256": "d3c472e22cb1da2d102411a06daf1fb4734cad63b610617f40af15fe9018f205"
       },
       {
         "path": "plan/schema-admission.json",
         "byte_count": 2853,
-        "sha256": "11dbbd41a431ef72a26da7be77d8c686d7ebf212af41657fedbd8533280ec992"
+        "sha256": "005ab44ced5d0b3a530471ddc980693b6637d57993e970c81fb1340c6b2e3531"
       },
       {
         "path": "plan/validation-program.json",
@@ -91,7 +92,7 @@
       {
         "path": "schema/stream-admission-evidence.json",
         "byte_count": 1727,
-        "sha256": "42f7a11054f3ffee152c61bb99eee0c2344f92239858a92e1a594c6301dfd6e1"
+        "sha256": "f449b480d076564808f33218804f17ebf498d57926b8673303b6d2262699fb82"
       },
       {
         "path": "state/input_checkpoint.json",
@@ -105,13 +106,13 @@
       },
       {
         "path": "state/proposed_delta.json",
-        "byte_count": 1002,
-        "sha256": "2b4b7e2adada9c11d61f5433d037aa4c73d6d3ea3c6c859e25a2a0e8cf9c7ef1"
+        "byte_count": 1104,
+        "sha256": "df131742a2cb1ff205e10c250ab421bfd7ab9da012d5ad5f9f5eb8200e946de0"
       },
       {
         "path": "stats/profile.parquet",
         "byte_count": 8171,
-        "sha256": "1d857219794aa93562024dd63f5aea41ce5f02df0a57f53f8eb8688608a00ad5"
+        "sha256": "416eecacd52a6e12422c90c9d96fe3ca8812ac00259f64d4f07116cfbd6b563c"
       },
       {
         "path": "trace.jsonl",

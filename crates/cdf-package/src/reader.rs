@@ -852,7 +852,10 @@ impl PackageReader {
     }
 
     pub fn destination_commit_plan_preimage(&self) -> Result<DestinationCommitPlanPreimage> {
-        read_json_artifact(&self.package_dir, DESTINATION_COMMIT_PLAN_FILE)
+        let preimage: DestinationCommitPlanPreimage =
+            read_json_artifact(&self.package_dir, DESTINATION_COMMIT_PLAN_FILE)?;
+        preimage.validate()?;
+        Ok(preimage)
     }
 
     pub fn processed_observation_evidence(

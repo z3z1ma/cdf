@@ -55,7 +55,6 @@ pub(super) fn write_run_state_commit_artifacts(
         context.descriptor.write_disposition.clone(),
         context.descriptor.merge_key.clone(),
         schema_hash.clone(),
-        state_delta.segments.clone(),
     );
     builder.write_input_checkpoint_artifact(head)?;
     builder.write_state_delta_preimage_artifact(&state_delta)?;
