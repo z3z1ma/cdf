@@ -13,13 +13,13 @@ use cdf_object_access::{
     FileIdentityMetadata, FileTransport, FileTransportControl, FileTransportLocation,
     FileTransportResource,
 };
-use cdf_runtime::{
-    ExecutionServices, RunCancellation, SequentialReadRequest, SourceEgressScope, artifact_hash,
-};
+use cdf_runtime::{ExecutionServices, RunCancellation, SequentialReadRequest, SourceEgressScope};
 use flate2::read::GzDecoder;
 use futures_util::TryStreamExt;
 use iceberg::spec::{FormatVersion, NestedField, Snapshot, TableMetadata};
 use serde::Deserialize;
+use serde_json::value::RawValue;
+use sha2::{Digest, Sha256};
 
 use crate::{
     IcebergCatalogOptions, IcebergResourceOptions, IcebergSnapshotSelector, IcebergTableIdentity,
@@ -64,7 +64,6 @@ pub struct LoadedIcebergTable {
     pub metadata_generation: String,
     pub catalog_generation: Option<String>,
     pub metadata: Arc<TableMetadata>,
-    pub metadata_json: Arc<serde_json::Value>,
     pub selected: Option<SelectedIcebergSnapshot>,
     pub arrow_schema: Arc<Schema>,
     pub bytes_read: u64,
@@ -114,19 +113,16 @@ pub struct SelectedIcebergSnapshot {
 }
 
 struct RetainedMetadata {
-    payloads: Vec<AccountedBytes>,
     parse_lease: MemoryLease,
-    control_leases: Vec<MemoryLease>,
 }
 
 struct CatalogObservation {
     metadata_location: String,
     catalog_generation: Option<String>,
-    payloads: Vec<AccountedBytes>,
-    metadata_json: Option<serde_json::Value>,
+    metadata_payload: AccountedBytes,
+    embedded_metadata: Option<Box<RawValue>>,
     bytes_read: u64,
     objects_read: u64,
-    control_leases: Vec<MemoryLease>,
 }
 
 pub(crate) struct LoadedCatalogObject {
@@ -170,17 +166,7 @@ pub(crate) fn load_catalog_object(
 
 impl RetainedMetadata {
     fn retained_bytes(&self) -> u64 {
-        self.payloads
-            .iter()
-            .map(|payload| payload.lease().bytes())
-            .sum::<u64>()
-            .saturating_add(self.parse_lease.bytes())
-            .saturating_add(
-                self.control_leases
-                    .iter()
-                    .map(MemoryLease::bytes)
-                    .sum::<u64>(),
-            )
+        self.parse_lease.bytes()
     }
 }
 
@@ -364,11 +350,10 @@ impl IcebergCatalogBinding for FilesystemCatalogBinding {
                 metadata_location: selected.location.clone(),
                 catalog_generation: metadata_file_version(&selected.location)
                     .map(|version| format!("hadoop-version:{version}")),
-                payloads: vec![payload],
-                metadata_json: None,
+                metadata_payload: payload,
+                embedded_metadata: None,
                 bytes_read: selected.size_bytes.unwrap_or(0).saturating_add(hint_bytes),
                 objects_read: 1_u64.saturating_add(hint_objects),
-                control_leases: Vec::new(),
             },
         )
     }
@@ -430,6 +415,8 @@ impl IcebergCatalogBinding for RestCatalogBinding {
                 CdfError::data(format!("decode Iceberg REST catalog config: {error}"))
             })?;
         let routing = RestCatalogRouting::negotiate(uri, catalog_config)?;
+        drop(config_parse_lease);
+        drop(config_payload);
         let endpoint =
             rest_table_endpoint(&routing.uri, routing.prefix.as_deref(), &request.resource)?;
         context.egress.authorize(&endpoint)?;
@@ -456,11 +443,10 @@ impl IcebergCatalogBinding for RestCatalogBinding {
             CatalogObservation {
                 metadata_location,
                 catalog_generation: None,
-                payloads: vec![config_payload, payload],
-                metadata_json: Some(envelope.metadata),
+                metadata_payload: payload,
+                embedded_metadata: Some(envelope.metadata),
                 bytes_read: config_bytes.saturating_add(response_bytes),
                 objects_read: 2,
-                control_leases: vec![config_parse_lease],
             },
         )
     }
@@ -548,7 +534,7 @@ impl IcebergCatalogBinding for GlueCatalogBinding {
             .execution
             .run_io(async move { glue.get_table(glue_request).await })?;
         request.cancellation.check()?;
-        let pointer_lease = reserve_discovery_memory(
+        let _pointer_lease = reserve_discovery_memory(
             context.execution.memory(),
             pointer.retained_bytes.max(1),
             "iceberg-glue-pointer",
@@ -573,13 +559,12 @@ impl IcebergCatalogBinding for GlueCatalogBinding {
             CatalogObservation {
                 metadata_location: pointer.metadata_location.clone(),
                 catalog_generation: pointer.catalog_generation,
-                payloads: vec![payload],
-                metadata_json: None,
+                metadata_payload: payload,
+                embedded_metadata: None,
                 bytes_read: pointer
                     .bytes_read
                     .saturating_add(identity.size_bytes.unwrap_or(0)),
                 objects_read: 2,
-                control_leases: vec![pointer_lease],
             },
         )
     }
@@ -589,7 +574,7 @@ impl IcebergCatalogBinding for GlueCatalogBinding {
 #[serde(rename_all = "kebab-case")]
 struct RestLoadTableResponse {
     metadata_location: Option<String>,
-    metadata: serde_json::Value,
+    metadata: Box<RawValue>,
 }
 
 #[derive(Deserialize)]
@@ -630,36 +615,39 @@ fn build_loaded_table(
     context: &IcebergCatalogContext,
     observation: CatalogObservation,
 ) -> Result<LoadedIcebergTable> {
-    validate_metadata_location(&observation.metadata_location)?;
-    let metadata_payload = observation.payloads.last();
-    let parse_input_bytes = match (&observation.metadata_json, metadata_payload) {
-        (Some(_), Some(payload)) => u64::try_from(payload.payload().len()).unwrap_or(u64::MAX),
-        (Some(_), None) => 0,
-        (None, Some(payload)) => metadata_json_size(
-            &observation.metadata_location,
-            payload.payload(),
-            request.source.maximum_metadata_bytes,
-        )?,
-        (None, None) => {
-            return Err(CdfError::internal("Iceberg metadata payload is absent"));
-        }
-    };
+    let CatalogObservation {
+        metadata_location,
+        catalog_generation,
+        metadata_payload,
+        embedded_metadata,
+        bytes_read,
+        objects_read,
+    } = observation;
+    validate_metadata_location(&metadata_location)?;
+    let parse_input_bytes = embedded_metadata.as_ref().map_or_else(
+        || {
+            metadata_json_size(
+                &metadata_location,
+                metadata_payload.payload(),
+                request.source.maximum_metadata_bytes,
+            )
+        },
+        |metadata| {
+            u64::try_from(metadata.get().len())
+                .map_err(|_| CdfError::data("Iceberg metadata JSON length exceeds u64"))
+        },
+    )?;
     let parse_lease = reserve_parse_memory(
         context.execution.memory(),
         parse_input_bytes,
         request.source.metadata_parse_amplification_bps,
         "iceberg-metadata-parse",
     )?;
-    let metadata_json = observation.metadata_json.map_or_else(
-        || {
-            let metadata_payload = metadata_payload
-                .ok_or_else(|| CdfError::internal("Iceberg metadata payload is absent"))?;
-            decode_metadata_json(&observation.metadata_location, metadata_payload.payload())
-        },
-        Ok,
+    let (metadata, metadata_generation) = decode_table_metadata(
+        &metadata_location,
+        metadata_payload.payload(),
+        embedded_metadata.as_deref(),
     )?;
-    let metadata: TableMetadata = serde_json::from_value(metadata_json.clone())
-        .map_err(|error| CdfError::data(format!("validate Iceberg table metadata: {error}")))?;
     if !matches!(
         metadata.format_version(),
         FormatVersion::V1 | FormatVersion::V2
@@ -668,14 +656,21 @@ fn build_loaded_table(
             "Iceberg source currently supports table format version 1 or 2; use a v1/v2 snapshot or wait for the v3 capability",
         ));
     }
-    let metadata_generation = artifact_hash(&metadata_json)?;
+    let reference_kind = selected_reference_kind(
+        &request.resource.selector,
+        &metadata_location,
+        metadata_payload.payload(),
+        embedded_metadata.as_deref(),
+    )?;
+    drop(embedded_metadata);
+    drop(metadata_payload);
     let selected = select_snapshot(
         &request.source.catalog_identity(),
         &request.resource,
-        &observation.metadata_location,
+        &metadata_location,
         &metadata_generation,
         &metadata,
-        &metadata_json,
+        reference_kind,
     )?;
     let schema = selected.as_ref().map_or_else(
         || Ok(metadata.current_schema().clone()),
@@ -692,23 +687,18 @@ fn build_loaded_table(
         },
     )?;
     let arrow_schema = Arc::new(annotated_arrow_schema(schema.as_ref())?);
-    let retained = Arc::new(RetainedMetadata {
-        payloads: observation.payloads,
-        parse_lease,
-        control_leases: observation.control_leases,
-    });
+    let retained = Arc::new(RetainedMetadata { parse_lease });
     Ok(LoadedIcebergTable {
         catalog_identity: request.source.catalog_identity(),
         resource: request.resource.clone(),
-        metadata_location: observation.metadata_location,
+        metadata_location,
         metadata_generation,
-        catalog_generation: observation.catalog_generation,
+        catalog_generation,
         metadata: Arc::new(metadata),
-        metadata_json: Arc::new(metadata_json),
         selected,
         arrow_schema,
-        bytes_read: observation.bytes_read,
-        objects_read: observation.objects_read,
+        bytes_read,
+        objects_read,
         retained,
     })
 }
@@ -755,19 +745,118 @@ fn metadata_json_size(location: &str, payload: &[u8], maximum_bytes: u64) -> Res
     Ok(expanded)
 }
 
-fn decode_metadata_json(location: &str, payload: &[u8]) -> Result<serde_json::Value> {
-    if is_gzip_metadata_location(location) {
-        serde_json::from_reader(GzDecoder::new(payload)).map_err(|error| {
-            CdfError::data(format!("decode gzip Iceberg table metadata JSON: {error}"))
-        })
+fn decode_table_metadata(
+    location: &str,
+    payload: &[u8],
+    embedded: Option<&RawValue>,
+) -> Result<(TableMetadata, String)> {
+    let (metadata, digest) = if let Some(raw) = embedded {
+        (
+            serde_json::from_str(raw.get()).map_err(|error| {
+                CdfError::data(format!("validate Iceberg table metadata: {error}"))
+            })?,
+            Sha256::digest(raw.get().as_bytes()),
+        )
+    } else if is_gzip_metadata_location(location) {
+        let mut reader = HashingReader::new(GzDecoder::new(payload));
+        let metadata = serde_json::from_reader(&mut reader)
+            .map_err(|error| CdfError::data(format!("validate Iceberg table metadata: {error}")))?;
+        // Consume the logical stream through EOF so the generation includes insignificant
+        // trailing whitespace and gzip validates its checksum before authority is frozen.
+        std::io::copy(&mut reader, &mut std::io::sink()).map_err(|error| {
+            CdfError::data(format!("finish gzip Iceberg table metadata: {error}"))
+        })?;
+        (metadata, reader.finalize())
     } else {
-        serde_json::from_slice(payload)
-            .map_err(|error| CdfError::data(format!("decode Iceberg table metadata JSON: {error}")))
+        (
+            serde_json::from_slice(payload).map_err(|error| {
+                CdfError::data(format!("validate Iceberg table metadata: {error}"))
+            })?,
+            Sha256::digest(payload),
+        )
+    };
+    Ok((metadata, format!("sha256:{}", hex::encode(digest))))
+}
+
+struct HashingReader<R> {
+    inner: R,
+    hasher: Sha256,
+}
+
+impl<R> HashingReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            hasher: Sha256::new(),
+        }
+    }
+
+    fn finalize(self) -> sha2::digest::Output<Sha256> {
+        self.hasher.finalize()
+    }
+}
+
+impl<R: Read> Read for HashingReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let bytes = self.inner.read(buffer)?;
+        self.hasher.update(&buffer[..bytes]);
+        Ok(bytes)
     }
 }
 
 fn is_gzip_metadata_location(location: &str) -> bool {
     location_name(location).ends_with(".gz.metadata.json")
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum IcebergReferenceKind {
+    Branch,
+    Tag,
+}
+
+impl IcebergReferenceKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Branch => "branch",
+            Self::Tag => "tag",
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct MetadataReferenceProjection {
+    #[serde(default)]
+    refs: BTreeMap<String, MetadataReferenceEntry>,
+}
+
+#[derive(Deserialize)]
+struct MetadataReferenceEntry {
+    #[serde(rename = "type")]
+    kind: IcebergReferenceKind,
+}
+
+fn selected_reference_kind(
+    selector: &IcebergSnapshotSelector,
+    location: &str,
+    payload: &[u8],
+    embedded: Option<&RawValue>,
+) -> Result<Option<IcebergReferenceKind>> {
+    let name = match selector {
+        IcebergSnapshotSelector::Branch { name } | IcebergSnapshotSelector::Tag { name } => name,
+        _ => return Ok(None),
+    };
+    let projection: MetadataReferenceProjection = match embedded {
+        Some(metadata) => serde_json::from_str(metadata.get()),
+        None if is_gzip_metadata_location(location) => {
+            serde_json::from_reader(GzDecoder::new(payload))
+        }
+        None => serde_json::from_slice(payload),
+    }
+    .map_err(|error| {
+        CdfError::data(format!("decode Iceberg table reference authority: {error}"))
+    })?;
+    Ok(projection.refs.get(name).map(|reference| reference.kind))
 }
 
 fn select_snapshot(
@@ -776,19 +865,19 @@ fn select_snapshot(
     metadata_location: &str,
     metadata_generation: &str,
     metadata: &TableMetadata,
-    metadata_json: &serde_json::Value,
+    reference_kind: Option<IcebergReferenceKind>,
 ) -> Result<Option<SelectedIcebergSnapshot>> {
     let snapshot =
         match &resource.selector {
             IcebergSnapshotSelector::Current => metadata.current_snapshot().map(Arc::clone),
             IcebergSnapshotSelector::Branch { name } => {
-                validate_reference_kind(metadata_json, name, true)?;
+                validate_reference_kind(reference_kind, name, true)?;
                 Some(metadata.snapshot_for_ref(name).cloned().ok_or_else(|| {
                     CdfError::data(format!("Iceberg branch `{name}` does not exist"))
                 })?)
             }
             IcebergSnapshotSelector::Tag { name } => {
-                validate_reference_kind(metadata_json, name, false)?;
+                validate_reference_kind(reference_kind, name, false)?;
                 Some(metadata.snapshot_for_ref(name).cloned().ok_or_else(|| {
                     CdfError::data(format!("Iceberg tag `{name}` does not exist"))
                 })?)
@@ -874,23 +963,22 @@ fn selected_snapshot(
 }
 
 fn validate_reference_kind(
-    metadata: &serde_json::Value,
+    kind: Option<IcebergReferenceKind>,
     name: &str,
     expected_branch: bool,
 ) -> Result<()> {
-    let reference = metadata
-        .get("refs")
-        .and_then(serde_json::Value::as_object)
-        .and_then(|refs| refs.get(name))
-        .ok_or_else(|| CdfError::data(format!("Iceberg ref `{name}` does not exist")))?;
-    let kind = reference
-        .get("type")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| CdfError::data(format!("Iceberg ref `{name}` has no type")))?;
-    let expected = if expected_branch { "branch" } else { "tag" };
+    let kind =
+        kind.ok_or_else(|| CdfError::data(format!("Iceberg ref `{name}` does not exist")))?;
+    let expected = if expected_branch {
+        IcebergReferenceKind::Branch
+    } else {
+        IcebergReferenceKind::Tag
+    };
     if kind != expected {
         return Err(CdfError::contract(format!(
-            "Iceberg ref `{name}` is `{kind}`, not the requested `{expected}`"
+            "Iceberg ref `{name}` is `{}`, not the requested `{}`",
+            kind.as_str(),
+            expected.as_str()
         )));
     }
     Ok(())
@@ -1438,14 +1526,60 @@ mod tests {
         let payload = gzip(json);
         let location = "/table/metadata/v7.gz.metadata.json";
         assert_eq!(metadata_json_size(location, &payload, 1024).unwrap(), 39);
-        assert_eq!(
-            decode_metadata_json(location, &payload).unwrap(),
-            serde_json::json!({"format-version": 2, "table-uuid": "abc"})
-        );
+        let mut decoded = Vec::new();
+        GzDecoder::new(payload.as_slice())
+            .read_to_end(&mut decoded)
+            .unwrap();
+        assert_eq!(decoded, json);
         assert!(metadata_json_size(location, &payload, 38).is_err());
 
         let mut corrupt = payload;
         *corrupt.last_mut().unwrap() ^= 0xff;
         assert!(metadata_json_size(location, &corrupt, 1024).is_err());
+    }
+
+    #[test]
+    fn hashing_reader_covers_the_complete_logical_gzip_stream() {
+        let json = b"{\"value\":7}\n   ";
+        let payload = gzip(json);
+        let mut reader = HashingReader::new(GzDecoder::new(payload.as_slice()));
+        let value: serde_json::Value = serde_json::from_reader(&mut reader).unwrap();
+        std::io::copy(&mut reader, &mut std::io::sink()).unwrap();
+        let digest = reader.finalize();
+
+        assert_eq!(value["value"], 7);
+        assert_eq!(digest.as_slice(), Sha256::digest(json).as_slice());
+    }
+
+    #[test]
+    fn reference_kind_projection_is_bounded_to_the_selected_ref() {
+        let json = br#"{
+            "format-version": 2,
+            "schemas": [{"schema-id": 0, "fields": []}],
+            "refs": {
+                "audit": {"snapshot-id": 7, "type": "tag"},
+                "main": {"snapshot-id": 9, "type": "branch"}
+            }
+        }"#;
+        let branch = IcebergSnapshotSelector::Branch {
+            name: "main".to_owned(),
+        };
+        let tag = IcebergSnapshotSelector::Tag {
+            name: "audit".to_owned(),
+        };
+        assert_eq!(
+            selected_reference_kind(&branch, "metadata.json", json, None).unwrap(),
+            Some(IcebergReferenceKind::Branch)
+        );
+        let compressed = gzip(json);
+        assert_eq!(
+            selected_reference_kind(&tag, "v1.gz.metadata.json", &compressed, None).unwrap(),
+            Some(IcebergReferenceKind::Tag)
+        );
+        let embedded = RawValue::from_string(String::from_utf8(json.to_vec()).unwrap()).unwrap();
+        assert_eq!(
+            selected_reference_kind(&tag, "rest", b"ignored", Some(&embedded)).unwrap(),
+            Some(IcebergReferenceKind::Tag)
+        );
     }
 }
