@@ -18,7 +18,7 @@ use parquet::{
 use crate::{PackageBuilder, PackageReader, StreamingIdentityArtifact, VerifiedPackage};
 
 pub const STATISTICS_PROFILE_FILE: &str = "stats/profile.parquet";
-const STATISTICS_PROFILE_ARTIFACT_VERSION: u16 = 1;
+const STATISTICS_PROFILE_ARTIFACT_VERSION: u16 = 2;
 const SCALAR_DECIMAL_PRECISION: u8 = 38;
 const SCALAR_DECIMAL_SCALE: i8 = 0;
 
@@ -707,6 +707,15 @@ fn column_scalar(value: &Option<TypedScalar>) -> ScalarColumns<'_> {
             utf8: None,
             binary: None,
         },
+        Some(TypedScalar::Float16Bits(value)) => ScalarColumns {
+            kind: Some("float16_bits"),
+            boolean: None,
+            signed: None,
+            unsigned: Some(u64::from(*value)),
+            decimal: None,
+            utf8: None,
+            binary: None,
+        },
         Some(TypedScalar::Float32Bits(value)) => ScalarColumns {
             kind: Some("float32_bits"),
             boolean: None,
@@ -751,6 +760,15 @@ fn column_scalar(value: &Option<TypedScalar>) -> ScalarColumns<'_> {
             decimal: Some(*value),
             utf8: None,
             binary: None,
+        },
+        Some(TypedScalar::Decimal256(value)) => ScalarColumns {
+            kind: Some("decimal256"),
+            boolean: None,
+            signed: None,
+            unsigned: None,
+            decimal: None,
+            utf8: None,
+            binary: Some(value),
         },
         Some(TypedScalar::Utf8(value)) => ScalarColumns {
             kind: Some("utf8"),
@@ -867,6 +885,13 @@ impl<'a> ScalarArrayColumns<'a> {
                     "u64",
                 )?))
             }
+            Some("float16_bits") => {
+                self.require_only_value_column(row, Some(ScalarValueColumn::Unsigned))?;
+                let value = required_value(self.unsigned, row, "u64")?;
+                Some(TypedScalar::Float16Bits(u16::try_from(value).map_err(
+                    |_| CdfError::data("statistics profile float16 bits exceed u16"),
+                )?))
+            }
             Some("float32_bits") => {
                 self.require_only_value_column(row, Some(ScalarValueColumn::Unsigned))?;
                 let value = required_value(self.unsigned, row, "u64")?;
@@ -903,6 +928,13 @@ impl<'a> ScalarArrayColumns<'a> {
                     row,
                     "i128",
                 )?))
+            }
+            Some("decimal256") => {
+                self.require_only_value_column(row, Some(ScalarValueColumn::Binary))?;
+                let value = required_binary(self.binary, row, "binary")?;
+                Some(TypedScalar::Decimal256(value.try_into().map_err(|_| {
+                    CdfError::data("statistics profile decimal256 value must contain 32 bytes")
+                })?))
             }
             Some("utf8") => {
                 self.require_only_value_column(row, Some(ScalarValueColumn::Utf8))?;
@@ -1074,4 +1106,62 @@ fn parse_incomplete_reason(value: Option<&str>) -> Option<IncompleteStatisticsRe
         "non_finite_observed" => IncompleteStatisticsReason::NonFiniteObserved,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn current_profile_round_trips_float16_and_decimal256_scalars() {
+        let minimum_decimal = [0x80; 32];
+        let maximum_decimal = [0x7f; 32];
+        let stats = BatchStats {
+            columns: vec![
+                cdf_kernel::ColumnStats {
+                    field_path: vec![Box::<str>::from("half")].into_boxed_slice(),
+                    data_type: StatisticsArrowType::Float { bits: 16 },
+                    row_count: 3,
+                    null_count: 1,
+                    minimum: Some(TypedScalar::Float16Bits(0xc280)),
+                    maximum: Some(TypedScalar::Float16Bits(0x4880)),
+                    completeness: StatisticsCompleteness::Complete,
+                },
+                cdf_kernel::ColumnStats {
+                    field_path: vec![Box::<str>::from("wide_decimal")].into_boxed_slice(),
+                    data_type: StatisticsArrowType::Decimal {
+                        bits: 256,
+                        precision: 76,
+                        scale: 9,
+                    },
+                    row_count: 3,
+                    null_count: 1,
+                    minimum: Some(TypedScalar::Decimal256(minimum_decimal)),
+                    maximum: Some(TypedScalar::Decimal256(maximum_decimal)),
+                    completeness: StatisticsCompleteness::Complete,
+                },
+            ]
+            .into_boxed_slice(),
+        };
+        let batch = statistics_profile_batch(
+            StatisticsProfileGrain::Segment,
+            0,
+            "seg-000001",
+            "sha256:schema",
+            &stats,
+        )
+        .unwrap();
+        let mut rows = Vec::new();
+        visit_statistics_profile_rows(&batch, &mut |row| {
+            rows.push(row);
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].minimum, stats.columns[0].minimum);
+        assert_eq!(rows[0].maximum, stats.columns[0].maximum);
+        assert_eq!(rows[1].minimum, stats.columns[1].minimum);
+        assert_eq!(rows[1].maximum, stats.columns[1].maximum);
+    }
 }

@@ -1413,9 +1413,11 @@ version = "0.1.0"
 dependencies = [
  "arrow-arith",
  "arrow-array",
+ "arrow-buffer",
  "arrow-schema",
  "futures-core",
  "futures-util",
+ "half",
  "hex",
  "serde",
  "serde_json",

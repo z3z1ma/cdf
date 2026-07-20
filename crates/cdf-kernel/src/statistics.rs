@@ -7,15 +7,17 @@ use arrow_arith::aggregate::{
 };
 use arrow_array::{
     Array, BinaryArray, BinaryViewArray, BooleanArray, Date32Array, Date64Array, Decimal32Array,
-    Decimal64Array, Decimal128Array, DurationMicrosecondArray, DurationMillisecondArray,
-    DurationNanosecondArray, DurationSecondArray, FixedSizeBinaryArray, Float32Array, Float64Array,
-    Int8Array, Int16Array, Int32Array, Int64Array, LargeBinaryArray, LargeStringArray, RecordBatch,
-    StringArray, StringViewArray, Time32MillisecondArray, Time32SecondArray,
-    Time64MicrosecondArray, Time64NanosecondArray, TimestampMicrosecondArray,
-    TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray, UInt8Array,
-    UInt16Array, UInt32Array, UInt64Array,
+    Decimal64Array, Decimal128Array, Decimal256Array, DurationMicrosecondArray,
+    DurationMillisecondArray, DurationNanosecondArray, DurationSecondArray, FixedSizeBinaryArray,
+    Float16Array, Float32Array, Float64Array, Int8Array, Int16Array, Int32Array, Int64Array,
+    LargeBinaryArray, LargeStringArray, RecordBatch, StringArray, StringViewArray,
+    Time32MillisecondArray, Time32SecondArray, Time64MicrosecondArray, Time64NanosecondArray,
+    TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
+    TimestampSecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
 };
+use arrow_buffer::i256;
 use arrow_schema::{DataType, Field, IntervalUnit, TimeUnit, UnionMode};
+use half::f16;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::MapAccess, de::Visitor};
 
 use crate::{
@@ -23,7 +25,7 @@ use crate::{
     CanonicalArrowUnionMode, CdfError, Result,
 };
 
-pub const STATISTICS_MODEL_VERSION: u16 = 1;
+pub const STATISTICS_MODEL_VERSION: u16 = 2;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -69,11 +71,13 @@ pub enum TypedScalar {
     Boolean(bool),
     Signed(i64),
     Unsigned(u64),
+    Float16Bits(u16),
     Float32Bits(u32),
     Float64Bits(u64),
     Decimal32(i32),
     Decimal64(i64),
     Decimal128(i128),
+    Decimal256([u8; 32]),
     Utf8(Box<str>),
     Binary(Box<[u8]>),
 }
@@ -315,11 +319,13 @@ impl StatisticsArrowType {
                     TypedScalar::Signed(_)
                 )
                 | (Self::Int { signed: false, .. }, TypedScalar::Unsigned(_))
+                | (Self::Float { bits: 16 }, TypedScalar::Float16Bits(_))
                 | (Self::Float { bits: 32 }, TypedScalar::Float32Bits(_))
                 | (Self::Float { bits: 64 }, TypedScalar::Float64Bits(_))
                 | (Self::Decimal { bits: 32, .. }, TypedScalar::Decimal32(_))
                 | (Self::Decimal { bits: 64, .. }, TypedScalar::Decimal64(_))
                 | (Self::Decimal { bits: 128, .. }, TypedScalar::Decimal128(_))
+                | (Self::Decimal { bits: 256, .. }, TypedScalar::Decimal256(_))
                 | (Self::Utf8 { .. } | Self::Utf8View, TypedScalar::Utf8(_))
                 | (
                     Self::Binary { .. } | Self::FixedSizeBinary { .. } | Self::BinaryView,
@@ -977,6 +983,9 @@ fn scalar_cmp(left: &TypedScalar, right: &TypedScalar) -> Option<Ordering> {
         (TypedScalar::Boolean(a), TypedScalar::Boolean(b)) => a.cmp(b),
         (TypedScalar::Signed(a), TypedScalar::Signed(b)) => a.cmp(b),
         (TypedScalar::Unsigned(a), TypedScalar::Unsigned(b)) => a.cmp(b),
+        (TypedScalar::Float16Bits(a), TypedScalar::Float16Bits(b)) => {
+            f16::from_bits(*a).total_cmp(&f16::from_bits(*b))
+        }
         (TypedScalar::Float32Bits(a), TypedScalar::Float32Bits(b)) => {
             f32::from_bits(*a).total_cmp(&f32::from_bits(*b))
         }
@@ -986,6 +995,9 @@ fn scalar_cmp(left: &TypedScalar, right: &TypedScalar) -> Option<Ordering> {
         (TypedScalar::Decimal32(a), TypedScalar::Decimal32(b)) => a.cmp(b),
         (TypedScalar::Decimal64(a), TypedScalar::Decimal64(b)) => a.cmp(b),
         (TypedScalar::Decimal128(a), TypedScalar::Decimal128(b)) => a.cmp(b),
+        (TypedScalar::Decimal256(a), TypedScalar::Decimal256(b)) => {
+            i256::from_be_bytes(*a).cmp(&i256::from_be_bytes(*b))
+        }
         (TypedScalar::Utf8(a), TypedScalar::Utf8(b)) => a.cmp(b),
         (TypedScalar::Binary(a), TypedScalar::Binary(b)) => a.cmp(b),
         _ => return None,
@@ -1057,6 +1069,21 @@ fn compute_column(
             primitive_bounds!(array, UInt32Array, |v| TypedScalar::Unsigned(u64::from(v)))
         }
         DataType::UInt64 => primitive_bounds!(array, UInt64Array, TypedScalar::Unsigned),
+        DataType::Float16 => {
+            let values = downcast::<Float16Array>(array)?;
+            if values.iter().flatten().any(f16::is_nan) {
+                return Ok(incomplete(IncompleteStatisticsReason::NanObserved));
+            }
+            if values.iter().flatten().any(|value| !value.is_finite()) {
+                return Ok(incomplete(IncompleteStatisticsReason::NonFiniteObserved));
+            }
+            let minimum = values.iter().flatten().min_by(f16::total_cmp);
+            let maximum = values.iter().flatten().max_by(f16::total_cmp);
+            (
+                minimum.map(|value| TypedScalar::Float16Bits(value.to_bits())),
+                maximum.map(|value| TypedScalar::Float16Bits(value.to_bits())),
+            )
+        }
         DataType::Float32 => {
             let values = downcast::<Float32Array>(array)?;
             if values.iter().flatten().any(f32::is_nan) {
@@ -1095,6 +1122,11 @@ fn compute_column(
         }
         DataType::Decimal128(_, _) => {
             primitive_bounds!(array, Decimal128Array, TypedScalar::Decimal128)
+        }
+        DataType::Decimal256(_, _) => {
+            primitive_bounds!(array, Decimal256Array, |value: i256| {
+                TypedScalar::Decimal256(value.to_be_bytes())
+            })
         }
         DataType::Date32 => {
             primitive_bounds!(array, Date32Array, |v| TypedScalar::Signed(i64::from(v)))
@@ -1206,8 +1238,8 @@ mod tests {
     use std::{collections::HashMap, sync::Arc};
 
     use arrow_array::{
-        ArrayRef, Decimal128Array, Float64Array, Int64Array, ListArray, RecordBatch, StringArray,
-        TimestampMicrosecondArray,
+        ArrayRef, Decimal128Array, Decimal256Array, Float16Array, Float64Array, Int64Array,
+        ListArray, RecordBatch, StringArray, TimestampMicrosecondArray,
     };
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
 
@@ -1255,6 +1287,55 @@ mod tests {
         assert_eq!(stats.columns[0].row_count, 3);
         assert_eq!(stats.columns[0].null_count, 1);
 
+        let encoded = serde_json::to_vec(&stats).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<BatchStats>(&encoded).unwrap(),
+            stats
+        );
+    }
+
+    #[test]
+    fn float16_and_decimal256_bounds_preserve_exact_order_and_round_trip() {
+        let decimal_min =
+            i256::from_string("-123456789012345678901234567890123456789012345678901234567890")
+                .unwrap();
+        let decimal_max =
+            i256::from_string("123456789012345678901234567890123456789012345678901234567890")
+                .unwrap();
+        let decimals = Decimal256Array::from(vec![Some(decimal_max), None, Some(decimal_min)])
+            .with_precision_and_scale(76, 9)
+            .unwrap();
+        let floats = Float16Array::from(vec![
+            Some(f16::from_f32(9.5)),
+            Some(f16::from_f32(-3.25)),
+            None,
+        ]);
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("half", DataType::Float16, true),
+                Field::new("wide_decimal", DataType::Decimal256(76, 9), true),
+            ])),
+            vec![Arc::new(floats), Arc::new(decimals)],
+        )
+        .unwrap();
+
+        let stats = BatchStats::compute(&batch).unwrap();
+        assert_eq!(
+            stats.columns[0].minimum,
+            Some(TypedScalar::Float16Bits(f16::from_f32(-3.25).to_bits()))
+        );
+        assert_eq!(
+            stats.columns[0].maximum,
+            Some(TypedScalar::Float16Bits(f16::from_f32(9.5).to_bits()))
+        );
+        assert_eq!(
+            stats.columns[1].minimum,
+            Some(TypedScalar::Decimal256(decimal_min.to_be_bytes()))
+        );
+        assert_eq!(
+            stats.columns[1].maximum,
+            Some(TypedScalar::Decimal256(decimal_max.to_be_bytes()))
+        );
         let encoded = serde_json::to_vec(&stats).unwrap();
         assert_eq!(
             serde_json::from_slice::<BatchStats>(&encoded).unwrap(),

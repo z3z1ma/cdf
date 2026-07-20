@@ -5,8 +5,10 @@ use cdf_bench_core::{
     canonical_json_bytes, host_class, run_cdf_command_workload,
 };
 
+mod statistics;
 mod validation;
 
+use statistics::{StatisticsEnvelopeConfig, run_statistics_envelope};
 use validation::{ValidationEnvelopeConfig, run_validation_envelope, validation_envelope_passes};
 
 fn main() {
@@ -50,8 +52,18 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
             }
             Ok(())
         }
+        [command, samples, target_rows] if command == "statistics-envelope" => {
+            let report = run_statistics_envelope(
+                provider().fingerprint()?,
+                StatisticsEnvelopeConfig {
+                    samples: samples.parse()?,
+                    target_rows_per_sample: target_rows.parse()?,
+                },
+            )?;
+            write_stdout(&canonical_json_bytes(&report)?)
+        }
         _ => Err(format!(
-            "usage: {} cdf-command-worker REQUEST.json | run-cell REQUEST.json | host | host-class | validation-envelope SAMPLES TARGET_ROWS",
+            "usage: {} cdf-command-worker REQUEST.json | run-cell REQUEST.json | host | host-class | validation-envelope SAMPLES TARGET_ROWS | statistics-envelope SAMPLES TARGET_ROWS",
             executable_name()
         )
         .into()),
