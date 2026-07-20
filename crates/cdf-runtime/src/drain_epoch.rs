@@ -116,6 +116,7 @@ pub struct DrainEpochController {
     epoch_started_monotonic_milliseconds: u64,
     last_monotonic_milliseconds: Option<u64>,
     committed_frontier: Option<SourcePosition>,
+    committed_source_continuation: Option<SourcePosition>,
     committed_watermark: Option<WatermarkClaim>,
     epoch_watermark_start: Option<WatermarkClaim>,
     last_observed_watermark: Option<WatermarkClaim>,
@@ -149,6 +150,7 @@ impl DrainEpochController {
             epoch_started_monotonic_milliseconds: 0,
             last_monotonic_milliseconds: Some(0),
             committed_frontier: None,
+            committed_source_continuation: None,
             committed_watermark: None,
             epoch_watermark_start: None,
             last_observed_watermark: None,
@@ -164,12 +166,17 @@ impl DrainEpochController {
         self.committed_frontier.as_ref()
     }
 
+    pub fn committed_source_continuation(&self) -> Option<&SourcePosition> {
+        self.committed_source_continuation.as_ref()
+    }
+
     /// Seeds the input-low frontier and next package ordinal from the durable prefix recovered
     /// before this process admits source work. Record/byte termination counters remain
     /// invocation-local; only package identity and source-position authority resume.
     pub fn bind_initial_committed_frontier(
         &mut self,
         committed_frontier: Option<SourcePosition>,
+        committed_source_continuation: Option<SourcePosition>,
         next_epoch_ordinal: u64,
     ) -> Result<()> {
         if !matches!(self.state, ControllerState::Open)
@@ -177,6 +184,7 @@ impl DrainEpochController {
             || !self.epoch.is_empty()
             || !self.total.is_empty()
             || self.committed_frontier.is_some()
+            || self.committed_source_continuation.is_some()
         {
             return Err(CdfError::contract(
                 "initial drain frontier must be bound before the first source observation",
@@ -185,12 +193,16 @@ impl DrainEpochController {
         if let Some(frontier) = &committed_frontier {
             frontier.validate()?;
         }
+        if let Some(continuation) = &committed_source_continuation {
+            continuation.validate()?;
+        }
         if next_epoch_ordinal != 0 && committed_frontier.is_none() {
             return Err(CdfError::contract(
                 "recovered drain epoch ordinal requires a committed source frontier",
             ));
         }
         self.committed_frontier = committed_frontier;
+        self.committed_source_continuation = committed_source_continuation;
         self.epoch_ordinal = next_epoch_ordinal;
         Ok(())
     }
@@ -284,6 +296,20 @@ impl DrainEpochController {
         })
     }
 
+    /// Completes a drain whose source exhausted without exposing any processable position.
+    /// Empty source exhaustion is a successful no-op and carries no invented frontier.
+    pub fn finish_empty_source(&mut self, monotonic_milliseconds: u64) -> Result<()> {
+        self.validate_ready_for_epoch()?;
+        self.observe_clock(monotonic_milliseconds)?;
+        if !self.epoch.is_empty() || self.last_safe_frontier.is_some() {
+            return Err(CdfError::contract(
+                "empty-source completion cannot discard an observed drain frontier",
+            ));
+        }
+        self.state = ControllerState::Finished;
+        Ok(())
+    }
+
     pub const fn is_finished(&self) -> bool {
         matches!(self.state, ControllerState::Finished)
     }
@@ -366,6 +392,7 @@ impl DrainEpochController {
         }
         let terminate = closure.terminate_after_settlement;
         self.committed_frontier = Some(committed_frontier.clone());
+        self.committed_source_continuation = closure.frontier.carryover.clone();
         self.committed_watermark = closure.frontier.watermark.clone();
         self.epoch_watermark_start = self.committed_watermark.clone();
         self.last_observed_watermark = self.committed_watermark.clone();
@@ -1008,7 +1035,7 @@ mod tests {
         ))
         .unwrap();
         controller
-            .bind_initial_committed_frontier(Some(cursor(40)), 0)
+            .bind_initial_committed_frontier(Some(cursor(40)), None, 0)
             .unwrap();
         let DrainEpochDecision::Close(closure) = controller
             .observe_safe_frontier(observation(1, 10, 41, false))

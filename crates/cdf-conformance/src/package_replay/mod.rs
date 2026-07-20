@@ -751,6 +751,7 @@ fn write_prepared_state_commit_artifacts(
         parent_checkpoint_id: None,
         input_position: None,
         output_position: output_position.clone(),
+        source_continuation: None,
         schema_hash: spec.schema_hash.clone(),
         segments: segments.clone(),
     };

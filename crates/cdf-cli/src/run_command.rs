@@ -10,8 +10,8 @@ use cdf_declarative::{
 };
 use cdf_kernel::{CdfError, CheckpointId, PipelineId, RunEventSink, TargetName};
 use cdf_project::{
-    LOCK_FILE_NAME, ProjectResourceOrigin, ProjectRunRequest, RunTelemetryConfig,
-    SchemaSnapshotStore, run_project_with_scheduler_and_telemetry,
+    LOCK_FILE_NAME, ProjectResourceOrigin, ProjectRunOutcome, ProjectRunRequest,
+    RunTelemetryConfig, SchemaSnapshotStore, run_project_with_scheduler_and_telemetry,
 };
 use sha2::{Digest, Sha256};
 
@@ -27,7 +27,9 @@ use crate::{
     output::{CliError, CommandOutput},
     progress::human_progress_sink,
     project_run_resource::prepare_runtime_resource_for_cli,
-    reports::{AdhocRunReport, RunCliReport, RunDestinationReport, RunMemoryReport},
+    reports::{
+        AdhocRunReport, RunCliReport, RunDestinationReport, RunMemoryReport, RunNoOpCliReport,
+    },
     scan_command::{build_engine_plan_for_resource, default_target_for_resource},
 };
 
@@ -159,21 +161,51 @@ pub(crate) fn run(
         crate::runtime_budget::resolve(cli)?,
         run_services.memory().snapshot(),
     );
-    let mut cli_report = RunCliReport::from_report(
-        &report,
-        destination_report,
-        prepared.schema_snapshot,
-        memory,
-    );
-    if let Some(adhoc) = adhoc {
-        cli_report = cli_report.with_adhoc(adhoc);
-    }
-    let document = cli_report.render_document(explain_memory);
-    match progress {
-        Some(progress) => {
-            CommandOutput::rendered_with_progress("run", document, cli_report, progress.snapshot())
+    match report {
+        ProjectRunOutcome::Committed(report) => {
+            let mut cli_report = RunCliReport::from_report(
+                &report,
+                destination_report,
+                prepared.schema_snapshot,
+                memory,
+            );
+            if let Some(adhoc) = adhoc {
+                cli_report = cli_report.with_adhoc(adhoc);
+            }
+            let document = cli_report.render_document(explain_memory);
+            match progress {
+                Some(progress) => CommandOutput::rendered_with_progress(
+                    "run",
+                    document,
+                    cli_report,
+                    progress.snapshot(),
+                ),
+                None => CommandOutput::rendered("run", document, cli_report),
+            }
         }
-        None => CommandOutput::rendered("run", document, cli_report),
+        ProjectRunOutcome::NoOp(report) => {
+            let mut cli_report = RunNoOpCliReport::from_report(
+                &report,
+                explicit.resource_id.to_string(),
+                explicit.pipeline_id.to_string(),
+                destination_report,
+                prepared.schema_snapshot,
+                memory,
+            );
+            if let Some(adhoc) = adhoc {
+                cli_report = cli_report.with_adhoc(adhoc);
+            }
+            let document = cli_report.render_document(explain_memory);
+            match progress {
+                Some(progress) => CommandOutput::rendered_with_progress(
+                    "run",
+                    document,
+                    cli_report,
+                    progress.snapshot(),
+                ),
+                None => CommandOutput::rendered("run", document, cli_report),
+            }
+        }
     }
 }
 

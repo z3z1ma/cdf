@@ -25,7 +25,7 @@ use std::{borrow::Cow, sync::Arc, time::Instant};
 pub async fn run_project(
     request: ProjectRunRequest<'_>,
     services: &ExecutionServices,
-) -> Result<ProjectRunReport> {
+) -> Result<ProjectRunOutcome> {
     run_project_with_context(
         request,
         RunTelemetryConfig::disabled(),
@@ -40,7 +40,7 @@ pub async fn run_project_with_scheduler_and_telemetry(
     services: &ExecutionServices,
     scheduler: Option<cdf_runtime::RuntimeSchedulerResolution>,
     telemetry: RunTelemetryConfig,
-) -> Result<ProjectRunReport> {
+) -> Result<ProjectRunOutcome> {
     run_project_with_context(request, telemetry, services.clone(), scheduler).await
 }
 
@@ -48,7 +48,7 @@ pub async fn run_project_with_telemetry(
     request: ProjectRunRequest<'_>,
     services: &ExecutionServices,
     telemetry: RunTelemetryConfig,
-) -> Result<ProjectRunReport> {
+) -> Result<ProjectRunOutcome> {
     run_project_with_context(request, telemetry, services.clone(), None).await
 }
 
@@ -57,7 +57,7 @@ async fn run_project_with_context(
     telemetry: RunTelemetryConfig,
     services: ExecutionServices,
     scheduler: Option<cdf_runtime::RuntimeSchedulerResolution>,
-) -> Result<ProjectRunReport> {
+) -> Result<ProjectRunOutcome> {
     let mut request = request;
     validate_project_run_request(&mut request)?;
     validate_explicit_package_id(&request.package_id)?;
@@ -157,7 +157,8 @@ async fn run_project_with_context(
         drain_command_started: None,
     };
     match run_project_inner(execution, None).await {
-        Ok(unit) => Ok(unit.report),
+        Ok(ProjectRunUnitOutcome::Committed(unit)) => Ok(ProjectRunOutcome::Committed(unit.report)),
+        Ok(ProjectRunUnitOutcome::NoOp(report)) => Ok(ProjectRunOutcome::NoOp(report)),
         Err(error) => {
             let _ = recorder.append_run_failed(&error);
             Err(error)
@@ -184,7 +185,7 @@ struct DrainProjectExecution<'a> {
     checkpoint_store: &'a SqliteCheckpointStore,
 }
 
-async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<ProjectRunReport> {
+async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<ProjectRunOutcome> {
     let DrainProjectExecution {
         resource,
         plan,
@@ -220,12 +221,15 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
     if let (Some(retention), Some(head)) =
         (resource.stream().replay_retention(), initial_head.as_ref())
     {
-        retention.reconcile_committed_frontier(&head.delta.output_position)?;
+        retention.reconcile_committed_frontier(head.delta.source_resume_position())?;
     }
     controller.bind_initial_committed_frontier(
         initial_head
             .as_ref()
             .map(|checkpoint| checkpoint.delta.output_position.clone()),
+        initial_head
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.delta.source_continuation.clone()),
         recovered_epoch_count,
     )?;
     let initial_manifest =
@@ -234,7 +238,7 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
     let mut remaining_plan = initial_manifest.plan.into_owned();
     if let Some(frontier) = initial_head
         .as_ref()
-        .map(|checkpoint| &checkpoint.delta.output_position)
+        .map(|checkpoint| checkpoint.delta.source_resume_position())
         .filter(|position| !matches!(position, SourcePosition::FileManifest(_)))
     {
         remaining_plan.rebind_initial_committed_frontier(resource.stream(), frontier)?;
@@ -243,6 +247,7 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
     let mut epoch_count = 0_u64;
     let mut total_row_count = 0_u64;
     let mut total_segment_count = 0_u64;
+    let mut last_committed = None::<(ProjectRunReport, ProjectDrainEpochReport)>;
     let drain_command_started = Instant::now();
 
     loop {
@@ -312,24 +317,33 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
         ))
         .await
         {
-            Ok(unit) => unit,
+            Ok(ProjectRunUnitOutcome::Committed(unit)) => unit,
+            Ok(ProjectRunUnitOutcome::NoOp(report)) => {
+                if let Some((mut committed, last_epoch)) = last_committed.take() {
+                    committed.drain = Some(ProjectDrainRunReport {
+                        epoch_count,
+                        total_row_count,
+                        total_segment_count,
+                        first_run_id: first_run_id.clone().ok_or_else(|| {
+                            CdfError::internal("drain run omitted its first run id")
+                        })?,
+                        last_epoch: Box::new(last_epoch),
+                    });
+                    return Ok(ProjectRunOutcome::Committed(committed));
+                }
+                return Ok(ProjectRunOutcome::NoOp(report));
+            }
             Err(error) => {
                 let _ = recorder.append_run_failed(&error);
                 return Err(error);
             }
         };
 
-        let Some(drain_epoch) = unit.drain_epoch else {
-            // File-manifest incrementality can prove that a requested drain has no new source
-            // positions. That is the ordinary verified no-op; it must not manufacture an empty
-            // epoch package merely to populate drain telemetry.
-            if unit.report.row_count == 0 {
-                return Ok(unit.report);
-            }
-            return Err(CdfError::internal(
-                "nonempty drain execution completed without canonical epoch closure evidence",
-            ));
-        };
+        let drain_epoch = unit.drain_epoch.ok_or_else(|| {
+            CdfError::internal(
+                "committed drain execution completed without canonical epoch closure evidence",
+            )
+        })?;
         remaining_plan.advance_committed_drain_frontier(
             drain_epoch.consumed_partition_count,
             drain_epoch.resume_partition.as_deref(),
@@ -369,13 +383,14 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
                     .ok_or_else(|| CdfError::internal("drain run omitted its first run id"))?,
                 last_epoch: Box::new(last_epoch),
             });
-            return Ok(report);
+            return Ok(ProjectRunOutcome::Committed(report));
         }
         if remaining_plan.scan.partitions.is_empty() {
             return Err(CdfError::internal(
                 "drain source exhausted without a terminal epoch closure",
             ));
         }
+        last_committed = Some((unit.report, last_epoch));
         next_manifest_summary = preselected_manifest_summary(&remaining_plan)?;
     }
 }
@@ -487,6 +502,11 @@ struct ProjectRunUnit {
     drain_epoch: Option<cdf_engine::EngineDrainEpoch>,
 }
 
+enum ProjectRunUnitOutcome {
+    Committed(ProjectRunUnit),
+    NoOp(ProjectRunNoOpReport),
+}
+
 enum ManifestPlanning {
     ResolveAgainstCheckpoint,
     Preselected(Option<FileManifestRunSummary>),
@@ -495,7 +515,7 @@ enum ManifestPlanning {
 async fn run_project_inner(
     execution: ProjectRunExecution<'_>,
     mut drain_controller: Option<&mut cdf_runtime::DrainEpochController>,
-) -> Result<ProjectRunUnit> {
+) -> Result<ProjectRunUnitOutcome> {
     execution.recorder.append_run_started()?;
 
     let resource = execution.resource.stream();
@@ -552,12 +572,13 @@ async fn run_project_inner(
             1
         })?;
     if manifest_plan.no_changed_files() {
-        return no_changed_files_report(execution, head, manifest_plan.summary).map(|report| {
-            ProjectRunUnit {
-                report,
-                drain_epoch: None,
-            }
-        });
+        return no_op_report(
+            execution,
+            head,
+            manifest_plan.summary,
+            ProjectRunNoOpReason::FileManifestUnchanged,
+        )
+        .map(ProjectRunUnitOutcome::NoOp);
     }
 
     execution.recorder.append_package_started()?;
@@ -685,12 +706,14 @@ async fn run_project_inner(
             execution
                 .recorder
                 .complete_phase(RunPhase::PackageExecution, 0, 0, 0)?;
-            let mut report = no_changed_files_report(execution, head, manifest_plan.summary)?;
+            let mut report = no_op_report(
+                execution,
+                head,
+                manifest_plan.summary,
+                ProjectRunNoOpReason::SourceExhausted,
+            )?;
             report.source_frontier = source_frontier;
-            return Ok(ProjectRunUnit {
-                report,
-                drain_epoch: None,
-            });
+            return Ok(ProjectRunUnitOutcome::NoOp(report));
         }
         Err(mut error) => {
             if let Some(staged) = active_staged.take()
@@ -787,7 +810,8 @@ async fn run_project_inner(
     if drain_controller.is_some()
         && let Some(retention) = resource.replay_retention()
     {
-        retention.validate_checkpoint_frontier(&replay_inputs.state_delta.output_position)?;
+        retention
+            .validate_checkpoint_frontier(replay_inputs.state_delta.source_resume_position())?;
     }
     let replay_memory = execution.services.memory();
     let replay_report = replay_package_with_runtime_and_staged(
@@ -811,8 +835,9 @@ async fn run_project_inner(
                 ));
             }
             if let Some(retention) = resource.replay_retention() {
-                retention
-                    .commit_checkpoint_frontier(&replay_report.checkpoint.delta.output_position)?;
+                retention.commit_checkpoint_frontier(
+                    replay_report.checkpoint.delta.source_resume_position(),
+                )?;
             }
             let command_started = execution.drain_command_started.ok_or_else(|| {
                 CdfError::internal("drain settlement omitted its command clock authority")
@@ -837,7 +862,7 @@ async fn run_project_inner(
     execution.recorder.append_run_succeeded()?;
     let ledger_snapshot = execution.recorder.snapshot()?;
 
-    Ok(ProjectRunUnit {
+    Ok(ProjectRunUnitOutcome::Committed(ProjectRunUnit {
         report: ProjectRunReport {
             run_id: execution.recorder.run_id.clone(),
             ledger_snapshot,
@@ -857,7 +882,7 @@ async fn run_project_inner(
             drain: None,
         },
         drain_epoch,
-    })
+    }))
 }
 
 struct FileManifestPlanning<'a> {
@@ -999,34 +1024,19 @@ fn same_file_identity(previous: &FilePosition, current: &FilePosition) -> bool {
         }
 }
 
-fn no_changed_files_report(
+fn no_op_report(
     execution: ProjectRunExecution<'_>,
     head: Option<Checkpoint>,
     summary: Option<FileManifestRunSummary>,
-) -> Result<ProjectRunReport> {
-    let checkpoint = head.ok_or_else(|| {
-        CdfError::internal("file manifest no-op requires a committed checkpoint head")
-    })?;
-    let receipt = checkpoint.receipt.clone().ok_or_else(|| {
-        CdfError::data(format!(
-            "checkpoint {} cannot satisfy a file manifest no-op because it has no receipt",
-            checkpoint.delta.checkpoint_id
-        ))
-    })?;
+    reason: ProjectRunNoOpReason,
+) -> Result<ProjectRunNoOpReport> {
     execution.recorder.append_run_succeeded()?;
     let ledger_snapshot = execution.recorder.snapshot()?;
-    Ok(ProjectRunReport {
+    Ok(ProjectRunNoOpReport {
         run_id: execution.recorder.run_id.clone(),
         ledger_snapshot,
-        package_dir: execution.package_dir,
-        package_id: execution.package_id.to_owned(),
-        package_hash: checkpoint.delta.package_hash.clone(),
-        package_status: PackageStatus::Checkpointed,
-        checkpoint,
-        receipt,
-        receipt_source: ProjectReceiptSource::FileManifestNoChangedFiles,
-        row_count: 0,
-        segment_count: 0,
+        reason,
+        current_checkpoint: head,
         file_manifest: summary,
         terminal_schema_quarantines: execution
             .plan
@@ -1035,7 +1045,6 @@ fn no_changed_files_report(
             .unwrap_or_default(),
         runtime_scheduler: execution.services.scheduler_report()?,
         source_frontier: cdf_runtime::SourceFrontierReport::default(),
-        drain: None,
     })
 }
 

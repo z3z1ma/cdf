@@ -15017,6 +15017,7 @@ fn write_schema_promote_package_fixture_for_target_with_commit(
         parent_checkpoint_id: None,
         input_position: None,
         output_position,
+        source_continuation: None,
         schema_hash: SchemaHash::new(schema_hash).unwrap(),
         segments: vec![state_segment.clone()],
     };
@@ -15549,6 +15550,7 @@ fn status_delta(pipeline_id: &str, checkpoint_id: &str, package_hash: &str) -> S
         parent_checkpoint_id: None,
         input_position: None,
         output_position: output_position.clone(),
+        source_continuation: None,
         package_hash: PackageHash::new(package_hash).unwrap(),
         schema_hash: SchemaHash::new("schema-status-1").unwrap(),
         segments: vec![StateSegment {
@@ -16280,6 +16282,7 @@ fn doctor_delta_preimage(
         parent_checkpoint_id: None,
         input_position: None,
         output_position: output_position.clone(),
+        source_continuation: None,
         schema_hash: SchemaHash::new("schema-doctor-1").unwrap(),
         segments: vec![segment],
     }
@@ -16310,6 +16313,7 @@ fn sample_sql_delta(package_hash: &str) -> StateDelta {
         parent_checkpoint_id: None,
         input_position: None,
         output_position: output_position.clone(),
+        source_continuation: None,
         package_hash: PackageHash::new(package_hash).unwrap(),
         schema_hash: SchemaHash::new("schema-sql-1").unwrap(),
         segments: vec![StateSegment {
@@ -16554,6 +16558,7 @@ fn build_gc_residual_package(root: &Path, package_id: &str, resource_id: &str) -
             parent_checkpoint_id: None,
             input_position: None,
             output_position: output_position.clone(),
+            source_continuation: None,
             schema_hash: schema_hash.clone(),
             segments: vec![state_segment.clone()],
         })

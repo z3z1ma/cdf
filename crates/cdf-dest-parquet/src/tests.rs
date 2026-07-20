@@ -407,6 +407,7 @@ fn replay_inputs(request: &ParquetCommitRequest) -> PackageReplayInputs {
             parent_checkpoint_id: None,
             input_position: None,
             output_position,
+            source_continuation: None,
             package_hash: request.commit.package_hash.clone(),
             schema_hash: request.schema_hash.clone(),
             segments: request.commit.segments.clone(),

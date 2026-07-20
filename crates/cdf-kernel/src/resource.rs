@@ -1891,27 +1891,24 @@ pub trait ResourceStream: Send + Sync {
                 partitions.len()
             )));
         };
-        if composite.positions.len() != partitions.len() {
+        let planned_ids = partitions
+            .iter()
+            .map(|partition| partition.partition_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        if let Some(unknown) = composite
+            .positions
+            .keys()
+            .find(|partition_id| !planned_ids.contains(partition_id.as_str()))
+        {
             return Err(CdfError::data(format!(
-                "resource `{}` committed composite frontier does not exactly cover its {} planned partitions",
-                self.descriptor().resource_id,
-                partitions.len()
+                "resource `{}` committed composite frontier references absent partition `{unknown}`",
+                self.descriptor().resource_id
             )));
         }
         for partition in partitions {
-            partition.start_position = Some(
-                composite
-                    .positions
-                    .get(partition.partition_id.as_str())
-                    .ok_or_else(|| {
-                        CdfError::data(format!(
-                            "resource `{}` committed composite frontier omits partition `{}`",
-                            self.descriptor().resource_id,
-                            partition.partition_id
-                        ))
-                    })?
-                    .clone(),
-            );
+            if let Some(position) = composite.positions.get(partition.partition_id.as_str()) {
+                partition.start_position = Some(position.clone());
+            }
         }
         Ok(())
     }

@@ -1792,6 +1792,7 @@ fn checkpoint_fixture(
         parent_checkpoint_id: None,
         input_position: None,
         output_position,
+        source_continuation: None,
         package_hash: PackageHash::new(format!("{checkpoint_id}-package")).unwrap(),
         schema_hash: SchemaHash::new(format!("{checkpoint_id}-schema")).unwrap(),
         segments: vec![segment],

@@ -395,6 +395,7 @@ fn write_state_commit_artifacts(builder: &PackageBuilder, segment: SegmentEntry)
         parent_checkpoint_id: None,
         input_position: None,
         output_position,
+        source_continuation: None,
         schema_hash: SchemaHash::new("schema-fixture").unwrap(),
         segments: segments.clone(),
     };
@@ -1165,6 +1166,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
             field: "id".to_owned(),
             value: CursorValue::I64(3),
         }),
+        source_continuation: None,
         schema_hash: SchemaHash::new("schema-fixture").unwrap(),
         segments: vec![StateSegment {
             segment_id: segment.segment_id.clone(),
@@ -1199,6 +1201,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
             parent_checkpoint_id: None,
             input_position: None,
             output_position: state_delta.input_position.clone().unwrap(),
+            source_continuation: None,
             package_hash: package_hash.clone(),
             schema_hash: SchemaHash::new("schema-fixture").unwrap(),
             segments: state_delta.segments.clone(),
@@ -1479,6 +1482,7 @@ fn zero_segment_replay_requires_exact_typed_processed_observation_evidence() {
         parent_checkpoint_id: None,
         input_position: None,
         output_position: processed_position.clone(),
+        source_continuation: None,
         schema_hash: SchemaHash::new("schema-fixture").unwrap(),
         segments: Vec::new(),
     };
@@ -1582,6 +1586,7 @@ fn table_snapshot_replay_preserves_exact_processed_authority_and_rejects_tamper(
         parent_checkpoint_id: None,
         input_position: None,
         output_position: position,
+        source_continuation: None,
         schema_hash: SchemaHash::new("schema-fixture").unwrap(),
         segments: Vec::new(),
     };

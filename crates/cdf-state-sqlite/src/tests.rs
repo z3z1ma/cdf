@@ -118,6 +118,7 @@ fn delta_for(
         parent_checkpoint_id: parent_checkpoint_id.cloned(),
         input_position: None,
         output_position,
+        source_continuation: None,
         package_hash: PackageHash::new(package_hash).unwrap(),
         schema_hash: SchemaHash::new("schema-sha256").unwrap(),
         segments: vec![segment],

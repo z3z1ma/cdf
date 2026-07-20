@@ -340,6 +340,7 @@ fn write_current_state_artifacts(
             parent_checkpoint_id: None,
             input_position: None,
             output_position,
+            source_continuation: None,
             schema_hash: SchemaHash::new("schema-v1").unwrap(),
             segments: segments.clone(),
         })

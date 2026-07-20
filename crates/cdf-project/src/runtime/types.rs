@@ -72,7 +72,6 @@ pub enum ProjectReceiptSource {
     DestinationCommitReceiptOnly {
         package_receipt_recorded: bool,
     },
-    FileManifestNoChangedFiles,
     SuppliedDurableReceipt,
 }
 
@@ -108,6 +107,51 @@ pub struct ProjectRunReport {
     pub runtime_scheduler: cdf_runtime::RuntimeSchedulerReport,
     pub source_frontier: cdf_runtime::SourceFrontierReport,
     pub drain: Option<ProjectDrainRunReport>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProjectRunOutcome {
+    Committed(ProjectRunReport),
+    NoOp(ProjectRunNoOpReport),
+}
+
+impl ProjectRunOutcome {
+    pub fn into_committed(self) -> Result<ProjectRunReport> {
+        match self {
+            Self::Committed(report) => Ok(report),
+            Self::NoOp(report) => Err(CdfError::data(format!(
+                "run completed as a verified no-op ({})",
+                report.reason.as_str()
+            ))),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectRunNoOpReport {
+    pub run_id: RunId,
+    pub ledger_snapshot: RunLedgerSnapshot,
+    pub reason: ProjectRunNoOpReason,
+    pub current_checkpoint: Option<Checkpoint>,
+    pub file_manifest: Option<FileManifestRunSummary>,
+    pub terminal_schema_quarantines: Vec<TerminalSchemaObservationQuarantine>,
+    pub runtime_scheduler: cdf_runtime::RuntimeSchedulerReport,
+    pub source_frontier: cdf_runtime::SourceFrontierReport,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProjectRunNoOpReason {
+    FileManifestUnchanged,
+    SourceExhausted,
+}
+
+impl ProjectRunNoOpReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::FileManifestUnchanged => "file_manifest_unchanged",
+            Self::SourceExhausted => "source_exhausted",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

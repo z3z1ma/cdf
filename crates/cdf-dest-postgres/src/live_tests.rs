@@ -522,6 +522,7 @@ fn write_replay_artifacts(
         parent_checkpoint_id: None,
         input_position: None,
         output_position: position(10),
+        source_continuation: None,
         schema_hash: schema_hash(),
         segments: segments.clone(),
     };
@@ -624,6 +625,7 @@ fn state_delta(manifest: &PackageManifest, checkpoint: &str) -> StateDelta {
         parent_checkpoint_id: None,
         input_position: None,
         output_position: position(10),
+        source_continuation: None,
         package_hash: PackageHash::new(manifest.package_hash.clone()).unwrap(),
         schema_hash: schema_hash(),
         segments: state_segments(manifest),

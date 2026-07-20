@@ -74,7 +74,8 @@ pub(crate) fn execute_cell(
             after_receipt_verified: Some(&hook),
         },
         &services,
-    ))?;
+    ))?
+    .into_committed()?;
 
     assert!(
         gate_observed.get(),

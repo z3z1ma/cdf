@@ -94,6 +94,7 @@ pub struct StateDeltaPreimage {
     pub parent_checkpoint_id: Option<CheckpointId>,
     pub input_position: Option<SourcePosition>,
     pub output_position: SourcePosition,
+    pub source_continuation: Option<SourcePosition>,
     pub schema_hash: SchemaHash,
     pub segments: Vec<StateSegment>,
 }
@@ -110,6 +111,9 @@ impl StateDeltaPreimage {
             position.validate()?;
         }
         self.output_position.validate()?;
+        if let Some(position) = &self.source_continuation {
+            position.validate()?;
+        }
         for segment in &self.segments {
             segment.output_position.validate()?;
         }
@@ -126,6 +130,7 @@ impl StateDeltaPreimage {
             parent_checkpoint_id: self.parent_checkpoint_id,
             input_position: self.input_position,
             output_position: self.output_position,
+            source_continuation: self.source_continuation,
             package_hash,
             schema_hash: self.schema_hash,
             segments: self.segments,

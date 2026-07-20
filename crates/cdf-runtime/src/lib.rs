@@ -27,6 +27,7 @@ mod staging_lease;
 mod stream_policy;
 mod transformed_byte_source;
 mod utilities;
+mod watermark;
 mod worker_protocol;
 
 pub use bounded_format::*;
@@ -56,6 +57,7 @@ pub use staging_lease::*;
 pub use stream_policy::*;
 pub use transformed_byte_source::*;
 pub use utilities::*;
+pub use watermark::*;
 pub use worker_protocol::*;
 
 pub mod foreign {

@@ -26,12 +26,13 @@ use cdf_expression::{
     bind_filter_expressions, expression_transform_output_schema,
 };
 use cdf_kernel::{
-    Batch, CdfError, ExecutionExtent, PHYSICAL_TYPE_METADATA_KEY, PLAN_PHYSICAL_SCHEMA_HASH_KEY,
-    PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation,
-    PartitionPlan, PhysicalObservationRepresentation, PreContractObservedValue,
-    PreContractQuarantineFact, PreContractResidualCandidate, ProcessedObservationOutcome,
-    ProcessedObservationPosition, ResourceStream, Result, RunId, RunPhase, RunPhaseContext,
-    RunPhaseMetric, RunPhaseStatus, SOURCE_NAME_METADATA_KEY, ScopeKey, SourcePosition,
+    Batch, CdfError, CompositePosition, ExecutionExtent, PHYSICAL_TYPE_METADATA_KEY,
+    PLAN_PHYSICAL_SCHEMA_HASH_KEY, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
+    PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation, PartitionPlan,
+    PhysicalObservationRepresentation, PreContractObservedValue, PreContractQuarantineFact,
+    PreContractResidualCandidate, ProcessedObservationOutcome, ProcessedObservationPosition,
+    ResourceStream, Result, RunId, RunPhase, RunPhaseContext, RunPhaseMetric, RunPhaseStatus,
+    SOURCE_NAME_METADATA_KEY, SOURCE_POSITION_VERSION, ScopeKey, SourcePosition,
     StratifiedHashBoundedIdentity, StratifiedHashCandidate, StratifiedHashIdentityStrength,
     TerminalSchemaObservationQuarantine, WatermarkClaim, WriteDisposition,
     aggregate_resource_closed_output_position, aggregate_resource_output_position,
@@ -3218,6 +3219,19 @@ where
     .with_measurement(options.phase_metrics);
     let drain_clock =
         DrainExecutionClock::new(drain_controller.as_deref(), options.services.as_ref());
+    let mut partition_watermarks = match (&plan.execution_extent, drain_controller.as_ref()) {
+        (ExecutionExtent::Drain { policy, .. }, Some(_)) => {
+            Some(cdf_runtime::PartitionWatermarkTracker::new(
+                &policy.watermark,
+                plan.scan
+                    .partitions
+                    .iter()
+                    .map(|partition| &partition.partition_id),
+                drain_clock.monotonic_milliseconds(options.services.as_ref()),
+            )?)
+        }
+        _ => None,
+    };
     let drain_batch_frontiers_enabled = drain_controller.is_some()
         && !plan
             .compiled_source_execution
@@ -3232,6 +3246,12 @@ where
     let mut drain_finished_noop = false;
     let mut source_progress_observed = false;
     let mut last_drain_partition_resume = None::<Box<crate::DrainPartitionResume>>;
+    let mut drain_partition_positions = drain_source_continuation_positions(
+        drain_controller
+            .as_deref()
+            .and_then(cdf_runtime::DrainEpochController::committed_source_continuation),
+        &plan.scan.partitions,
+    )?;
 
     let segment_result: Result<()> = async {
     loop {
@@ -3260,6 +3280,15 @@ where
             }
         };
         let Some(mut opened_partition) = next_partition else {
+            if let Some(controller) = drain_controller.as_deref_mut()
+                && processed_observations.is_empty()
+                && !source_progress_observed
+            {
+                controller.finish_empty_source(
+                    drain_clock.monotonic_milliseconds(options.services.as_ref()),
+                )?;
+                drain_finished_noop = true;
+            }
             break;
         };
         let open_metadata = opened_partition.metadata().clone();
@@ -3306,6 +3335,13 @@ where
                 )));
             }
             let source_position = attestation.into_processed_position();
+            if drain_controller.is_some() {
+                record_drain_partition_position(
+                    &mut drain_partition_positions,
+                    &partition,
+                    source_position.clone(),
+                )?;
+            }
             processed_observations.push(ProcessedObservationPosition::new(
                 quarantine.observation_id().to_owned(),
                 ProcessedObservationOutcome::Quarantined,
@@ -3345,7 +3381,10 @@ where
                 let decision = controller.observe_safe_frontier(
                     cdf_runtime::DrainSafeFrontierObservation {
                         frontier,
-                        carryover: None,
+                        carryover: drain_source_continuation(
+                            &drain_partition_positions,
+                            frontier_partition_count,
+                        )?,
                         admitted_batches: 0,
                         admitted_rows: 0,
                         admitted_bytes: 0,
@@ -3615,9 +3654,6 @@ where
                                 .ok_or_else(|| {
                                     CdfError::data("drain partition input byte count overflow")
                                 })?;
-                            if let Some(watermark) = drained.header.watermarks.last() {
-                                partition_watermark = Some(watermark.clone());
-                            }
                             validate_batch_partition_ownership(
                                 &drained,
                                 &plan.scan.request.resource_id,
@@ -3748,6 +3784,19 @@ where
                             )
                         {
                             partition_batch_frontiers_observed = true;
+                            let monotonic_milliseconds =
+                                drain_clock.monotonic_milliseconds(options.services.as_ref());
+                            let effective_watermark = partition_watermarks
+                                .as_mut()
+                                .map(|watermarks| {
+                                    watermarks.observe_partition_progress(
+                                        &partition.partition_id,
+                                        partition_watermark.as_ref(),
+                                        monotonic_milliseconds,
+                                    )
+                                })
+                                .transpose()?
+                                .flatten();
                             if let Some((decision, partition_position)) = observe_drain_batch_frontier(
                                 drain_controller.as_deref_mut(),
                                 resource.descriptor(),
@@ -3755,10 +3804,12 @@ where
                                 &processed_observations,
                                 &partition,
                                 observed_partition_position.as_ref(),
+                                &mut drain_partition_positions,
+                                frontier_partition_count,
                                 batch.header.row_count,
                                 batch.header.byte_count,
-                                partition_watermark.clone(),
-                                drain_clock.monotonic_milliseconds(options.services.as_ref()),
+                                effective_watermark,
+                                monotonic_milliseconds,
                                 drain_clock.observed_at_unix_milliseconds(options.services.as_ref())?,
                             )? {
                                 let resume = Box::new(crate::DrainPartitionResume {
@@ -3994,7 +4045,6 @@ where
                 completion_attestation,
                 partition_input_batch_count,
                 partition_input_bytes,
-                partition_watermark,
                 partition_epoch_closed,
                 partition_batch_frontiers_observed,
             ))
@@ -4010,7 +4060,6 @@ where
             completion_attestation,
             partition_input_batch_count,
             partition_input_bytes,
-            partition_watermark,
             partition_epoch_closed,
             partition_batch_frontiers_observed,
         ) = partition_result?;
@@ -4174,6 +4223,13 @@ where
                 output_position: source_position.clone(),
             });
             if let Some(source_position) = source_position {
+                if drain_controller.is_some() {
+                    record_drain_partition_position(
+                        &mut drain_partition_positions,
+                        &partition,
+                        source_position.clone(),
+                    )?;
+                }
                 let evidence = stream_admission_evidence
                     .get_mut(&observation_id)
                     .ok_or_else(|| {
@@ -4221,6 +4277,16 @@ where
             if partition_epoch_closed {
                 break;
             }
+            if processed_observations.is_empty() {
+                if consumed_partition_count == frontier_partition_count {
+                    controller.finish_empty_source(
+                        drain_clock.monotonic_milliseconds(options.services.as_ref()),
+                    )?;
+                    drain_finished_noop = true;
+                    break;
+                }
+                continue;
+            }
             last_drain_partition_resume = None;
             let frontier = drain_resource_frontier(
                 resource.descriptor(),
@@ -4229,9 +4295,22 @@ where
                 &processed_observations,
             )?;
             let decision = controller.observe_safe_frontier(
+                {
+                    let monotonic_milliseconds =
+                        drain_clock.monotonic_milliseconds(options.services.as_ref());
+                    let effective_watermark = partition_watermarks
+                        .as_ref()
+                        .map(|watermarks| {
+                            watermarks.effective_watermark(monotonic_milliseconds)
+                        })
+                        .transpose()?
+                        .flatten();
                 cdf_runtime::DrainSafeFrontierObservation {
                     frontier,
-                    carryover: None,
+                    carryover: drain_source_continuation(
+                        &drain_partition_positions,
+                        frontier_partition_count,
+                    )?,
                     admitted_batches: if partition_batch_frontiers_observed {
                         0
                     } else {
@@ -4248,12 +4327,12 @@ where
                         partition_input_bytes
                     },
                     admitted_positions: u64::from(!partition_batch_frontiers_observed),
-                    global_watermark: partition_watermark,
+                    global_watermark: effective_watermark,
                     source_exhausted: consumed_partition_count == frontier_partition_count,
-                    monotonic_milliseconds: drain_clock
-                        .monotonic_milliseconds(options.services.as_ref()),
+                    monotonic_milliseconds,
                     observed_at_unix_milliseconds: drain_clock
                         .observed_at_unix_milliseconds(options.services.as_ref())?,
+                }
                 },
             )?;
             match decision {
@@ -4543,6 +4622,9 @@ where
                 profile: &profile,
                 lineage: &lineage,
                 segment_positions: &segment_positions,
+                drain_frontier: drain_epoch_closure
+                    .as_ref()
+                    .map(|closure| &closure.frontier),
                 execution_evidence: &execution_evidence,
             },
         )?;
@@ -4887,6 +4969,75 @@ fn drain_resource_frontier(
         })
 }
 
+fn drain_source_continuation_positions(
+    committed: Option<&SourcePosition>,
+    partitions: &[PartitionPlan],
+) -> Result<BTreeMap<String, SourcePosition>> {
+    let Some(committed) = committed else {
+        return Ok(BTreeMap::new());
+    };
+    committed.validate()?;
+    let planned_ids = partitions
+        .iter()
+        .map(|partition| partition.partition_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let positions = match committed {
+        SourcePosition::Composite(composite) => composite.positions.clone(),
+        position if partitions.len() == 1 => BTreeMap::from([(
+            partitions[0].partition_id.as_str().to_owned(),
+            position.clone(),
+        )]),
+        _ => {
+            return Err(CdfError::data(
+                "multi-partition drain checkpoint requires partition-keyed source continuation",
+            ));
+        }
+    };
+    if let Some(unknown) = positions
+        .keys()
+        .find(|partition_id| !planned_ids.contains(partition_id.as_str()))
+    {
+        return Err(CdfError::data(format!(
+            "drain checkpoint source continuation references absent partition `{unknown}`"
+        )));
+    }
+    Ok(positions)
+}
+
+fn record_drain_partition_position(
+    positions: &mut BTreeMap<String, SourcePosition>,
+    partition: &PartitionPlan,
+    position: SourcePosition,
+) -> Result<()> {
+    position.validate()?;
+    positions.insert(partition.partition_id.as_str().to_owned(), position);
+    Ok(())
+}
+
+fn drain_source_continuation(
+    positions: &BTreeMap<String, SourcePosition>,
+    partition_count: usize,
+) -> Result<Option<SourcePosition>> {
+    if positions.is_empty() {
+        return Ok(None);
+    }
+    if positions
+        .values()
+        .all(SourcePosition::is_batch_slice_invariant)
+    {
+        return Ok(None);
+    }
+    if partition_count == 1 {
+        return Ok(positions.values().next().cloned());
+    }
+    let continuation = SourcePosition::Composite(CompositePosition {
+        version: SOURCE_POSITION_VERSION,
+        positions: positions.clone(),
+    });
+    continuation.validate()?;
+    Ok(Some(continuation))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn observe_drain_batch_frontier(
     controller: Option<&mut cdf_runtime::DrainEpochController>,
@@ -4895,6 +5046,8 @@ fn observe_drain_batch_frontier(
     processed: &[ProcessedObservationPosition],
     partition: &PartitionPlan,
     observed_partition_position: Option<&SourcePosition>,
+    partition_positions: &mut BTreeMap<String, SourcePosition>,
+    partition_count: usize,
     admitted_rows: u64,
     admitted_bytes: u64,
     global_watermark: Option<WatermarkClaim>,
@@ -4907,6 +5060,7 @@ fn observe_drain_batch_frontier(
     let observation_id = cdf_kernel::partition_schema_observation_id(partition);
     let partition_position =
         aggregate_processed_partition_positions(observation_id, observed_partition_position, None)?;
+    record_drain_partition_position(partition_positions, partition, partition_position.clone())?;
     let mut positions = processed
         .iter()
         .map(|observation| observation.source_position.clone())
@@ -4925,7 +5079,7 @@ fn observe_drain_batch_frontier(
     })?;
     let decision = controller.observe_safe_frontier(cdf_runtime::DrainSafeFrontierObservation {
         frontier,
-        carryover: None,
+        carryover: drain_source_continuation(partition_positions, partition_count)?,
         admitted_batches: 1,
         admitted_rows,
         admitted_bytes,

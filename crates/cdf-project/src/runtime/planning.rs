@@ -82,6 +82,7 @@ fn destination_planning_inputs(
         parent_checkpoint_id: None,
         input_position: None,
         output_position: segment.output_position.clone(),
+        source_continuation: None,
         package_hash: package_hash.clone(),
         schema_hash: schema_hash.clone(),
         segments: vec![segment],

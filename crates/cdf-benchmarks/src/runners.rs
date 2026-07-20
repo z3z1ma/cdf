@@ -650,7 +650,8 @@ pub fn run_prepared_file_to_destination(
         &execution,
         Some(scheduler.clone()),
         RunTelemetryConfig::phase_metrics(),
-    ))?;
+    ))?
+    .into_committed()?;
     let (logical_receipt, logical_manifest_sha256, logical_manifest) =
         logical_destination_evidence(&report.receipt, &request.destination, &request.output_root)?;
     Ok(PreparedFileDestinationRun {
@@ -1033,7 +1034,8 @@ schema = { fields = [
             after_receipt_verified: None,
         },
         &services,
-    ))?;
+    ))?
+    .into_committed()?;
     Ok(WorkMetric {
         rows: report.row_count,
         bytes: report
@@ -1186,6 +1188,7 @@ fn build_package_fixture(
         parent_checkpoint_id: None,
         input_position: None,
         output_position,
+        source_continuation: None,
         schema_hash: schema_hash.clone(),
         segments: state_segments.clone(),
     };

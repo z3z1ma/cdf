@@ -69,11 +69,11 @@ use crate::{
     FileManifestRunSummary, PackageArtifactRecoveryRequest, PackageArtifactReplayRequest,
     PackageReplayHooks, PackageReplayStage, PreparedDestinationCommit,
     ProjectDestinationDescription, ProjectDestinationDriver, ProjectDestinationRegistry,
-    ProjectDestinationRuntime, ProjectReceiptSource, ProjectResolutionContext, ProjectRunReport,
-    ProjectRunRequest, ProjectRunSource, ResolvedProjectDestination, RunTelemetryConfig,
-    RuntimeStage, TracingRunEventSink, backfill_pipeline_id,
-    generate_lockfile_with_destination_artifacts, parse_cdf_toml, plan_backfill,
-    recover_package_from_artifacts, replay_package_from_artifacts,
+    ProjectDestinationRuntime, ProjectReceiptSource, ProjectResolutionContext,
+    ProjectRunNoOpReason, ProjectRunOutcome, ProjectRunReport, ProjectRunRequest, ProjectRunSource,
+    ResolvedProjectDestination, RunTelemetryConfig, RuntimeStage, TracingRunEventSink,
+    backfill_pipeline_id, generate_lockfile_with_destination_artifacts, parse_cdf_toml,
+    plan_backfill, recover_package_from_artifacts, replay_package_from_artifacts,
     replay_package_from_artifacts_with_stage_hook, replay_package_with_runtime,
     resolve_project_run_destination, run_project_with_scheduler_and_telemetry,
     run_project_with_telemetry as run_project_with_execution_services_and_telemetry,
@@ -223,8 +223,12 @@ fn rejecting_mock_staging_submission_services() -> cdf_runtime::ExecutionService
 }
 
 async fn run_project(request: ProjectRunRequest<'_>) -> Result<ProjectRunReport> {
+    run_project_outcome(request).await?.into_committed()
+}
+
+async fn run_project_outcome(request: ProjectRunRequest<'_>) -> Result<ProjectRunOutcome> {
     let services = test_execution_services();
-    Box::pin(run_project_fixture(
+    Box::pin(run_project_outcome_fixture(
         request,
         &services,
         RunTelemetryConfig::disabled(),
@@ -241,10 +245,20 @@ async fn run_project_with_telemetry(
 }
 
 async fn run_project_fixture<'a>(
-    mut request: ProjectRunRequest<'a>,
+    request: ProjectRunRequest<'a>,
     services: &cdf_runtime::ExecutionServices,
     telemetry: RunTelemetryConfig,
 ) -> Result<ProjectRunReport> {
+    run_project_outcome_fixture(request, services, telemetry)
+        .await?
+        .into_committed()
+}
+
+async fn run_project_outcome_fixture<'a>(
+    mut request: ProjectRunRequest<'a>,
+    services: &cdf_runtime::ExecutionServices,
+    telemetry: RunTelemetryConfig,
+) -> Result<ProjectRunOutcome> {
     if request.plan.compiled_source_execution.is_some() {
         return run_project_with_execution_services_and_telemetry(request, services, telemetry)
             .await;
@@ -364,6 +378,127 @@ impl cdf_kernel::SourceReplayRetention for CheckpointBoundReplayRetention {
 }
 
 impl QueryableResource for BoundTestResource<'_> {
+    fn capabilities(&self) -> &ResourceCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn negotiate(&self, request: &ScanRequest) -> Result<cdf_kernel::ScanPlan> {
+        self.inner.negotiate(request)
+    }
+}
+
+struct EmptyDrainResource {
+    inner: BackfillMockResource,
+}
+
+impl EmptyDrainResource {
+    fn new() -> Self {
+        Self {
+            inner: BackfillMockResource::cursor(),
+        }
+    }
+}
+
+impl ResourceStream for EmptyDrainResource {
+    fn descriptor(&self) -> &ResourceDescriptor {
+        self.inner.descriptor()
+    }
+
+    fn schema(&self) -> Arc<Schema> {
+        self.inner.schema()
+    }
+
+    fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<cdf_kernel::PartitionPlan>> {
+        self.inner.plan_partitions(request)
+    }
+
+    fn open(&self, _partition: cdf_kernel::PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
+        cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async {
+            let batches = futures_util::stream::empty::<Result<cdf_kernel::Batch>>();
+            Ok(cdf_kernel::PartitionStreamPayload::batches(Box::pin(
+                batches,
+            )))
+        }))
+    }
+}
+
+impl QueryableResource for EmptyDrainResource {
+    fn capabilities(&self) -> &ResourceCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn negotiate(&self, request: &ScanRequest) -> Result<cdf_kernel::ScanPlan> {
+        self.inner.negotiate(request)
+    }
+}
+
+struct OneBatchThenEmptyDrainResource {
+    inner: BackfillMockResource,
+    open_count: AtomicU64,
+}
+
+impl OneBatchThenEmptyDrainResource {
+    fn new() -> Self {
+        Self {
+            inner: BackfillMockResource::cursor(),
+            open_count: AtomicU64::new(0),
+        }
+    }
+}
+
+impl ResourceStream for OneBatchThenEmptyDrainResource {
+    fn descriptor(&self) -> &ResourceDescriptor {
+        self.inner.descriptor()
+    }
+
+    fn schema(&self) -> Arc<Schema> {
+        self.inner.schema()
+    }
+
+    fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<cdf_kernel::PartitionPlan>> {
+        self.inner.plan_partitions(request)
+    }
+
+    fn open(&self, partition: cdf_kernel::PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
+        let first_open = self.open_count.fetch_add(1, Ordering::SeqCst) == 0;
+        let schema = self.schema();
+        let resource_id = self.descriptor().resource_id.clone();
+        cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move {
+            if !first_open {
+                let batches = futures_util::stream::empty::<Result<cdf_kernel::Batch>>();
+                return Ok(cdf_kernel::PartitionStreamPayload::batches(Box::pin(
+                    batches,
+                )));
+            }
+            let record_batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(Int64Array::from(vec![1])) as ArrayRef,
+                    Arc::new(Int64Array::from(vec![1])) as ArrayRef,
+                ],
+            )?;
+            let schema_hash = cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?;
+            let mut batch = cdf_kernel::Batch::from_record_batch(
+                cdf_kernel::BatchId::new("batch-one-then-empty")?,
+                resource_id,
+                partition.partition_id,
+                schema_hash,
+                record_batch,
+            )?;
+            batch.header.source_position = Some(SourcePosition::Cursor(CursorPosition {
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
+                field: "updated_at".to_owned(),
+                value: CursorValue::I64(1),
+            }));
+            let batches = futures_util::stream::once(async move { Ok(batch) });
+            Ok(cdf_kernel::PartitionStreamPayload::batches(Box::pin(
+                batches,
+            )))
+        }))
+    }
+}
+
+impl QueryableResource for OneBatchThenEmptyDrainResource {
     fn capabilities(&self) -> &ResourceCapabilities {
         self.inner.capabilities()
     }
@@ -1431,6 +1566,7 @@ fn build_zero_segment_processed_package(package_dir: &Path, package_id: &str) ->
         parent_checkpoint_id: None,
         input_position: None,
         output_position: output_position.clone(),
+        source_continuation: None,
         schema_hash: SchemaHash::new(SCHEMA_HASH).unwrap(),
         segments: Vec::new(),
     };
@@ -1758,6 +1894,7 @@ fn write_state_commit_artifacts(
         parent_checkpoint_id: None,
         input_position: None,
         output_position,
+        source_continuation: None,
         schema_hash: SchemaHash::new(SCHEMA_HASH).unwrap(),
         segments: segments.clone(),
     };
@@ -1829,6 +1966,7 @@ fn delta(manifest: &PackageManifest, checkpoint_id: &str) -> StateDelta {
         parent_checkpoint_id: None,
         input_position: None,
         output_position: output_position.clone(),
+        source_continuation: None,
         package_hash: PackageHash::new(manifest.package_hash.clone()).unwrap(),
         schema_hash: SchemaHash::new(SCHEMA_HASH).unwrap(),
         segments: manifest
@@ -3735,6 +3873,8 @@ fn run_rest_project_with_jobs(
         Some(scheduler),
         RunTelemetryConfig::disabled(),
     ))
+    .unwrap()
+    .into_committed()
     .unwrap();
     (report, transport, effective_jobs)
 }
@@ -3793,6 +3933,8 @@ fn run_sql_project_with_jobs(
         Some(scheduler),
         RunTelemetryConfig::disabled(),
     ))
+    .unwrap()
+    .into_committed()
     .unwrap();
     (report, effective_jobs)
 }
@@ -4102,6 +4244,171 @@ fn drain_project_settles_each_frontier_before_committing_the_next_epoch() {
 }
 
 #[test]
+fn cold_empty_drain_returns_no_op_without_package_destination_or_checkpoint() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = EmptyDrainResource::new();
+    let package_root = temp.path().join(".cdf/packages");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+    let package_id = "pkg-empty-drain";
+    let pipeline_id = PipelineId::new("pipeline-empty-drain").unwrap();
+    let source = compiled_drain_test_source_plan(&resource);
+    let bound = BoundTestResource {
+        inner: &resource,
+        compiled_source_plan_hash: cdf_runtime::artifact_hash(&source).unwrap(),
+        replay_retention: None,
+    };
+    let extent = ExecutionExtent::Drain {
+        version: cdf_kernel::EXECUTION_EXTENT_VERSION,
+        policy: cdf_kernel::StreamEpochPolicy {
+            version: cdf_kernel::STREAM_EPOCH_POLICY_VERSION,
+            checkpoint_cadence: cdf_kernel::EpochClosureTrigger::Rows { count: 1 },
+            package_rotation: cdf_kernel::EpochClosureTrigger::Bytes { count: 1 << 20 },
+            watermark: cdf_kernel::WatermarkPolicy::Disabled,
+            late_data: cdf_kernel::LateDataAction::Quarantine,
+            safe_frontier: cdf_kernel::SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+        },
+        termination: cdf_kernel::DrainTermination::Duration {
+            milliseconds: 60_000,
+        },
+    };
+    let mut plan = live_plan_for_queryable(&resource, package_id);
+    plan.execution_extent = extent.clone();
+    plan.explain.execution_extent = extent;
+    let destination =
+        ResolvedProjectDestination::duckdb(&duckdb_path, TargetName::new("events").unwrap())
+            .unwrap();
+    let plan = plan
+        .bind_compiled_source(&source)
+        .unwrap()
+        .bind_operator_graph(&source, &destination.runtime_capabilities())
+        .unwrap();
+
+    let outcome = futures_executor::block_on(run_project_outcome(ProjectRunRequest {
+        resource: ProjectRunSource::new(&bound),
+        plan,
+        package_root: package_root.clone(),
+        state_store_path: state_path.clone(),
+        pipeline_id: pipeline_id.clone(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-empty-drain").unwrap(),
+        destination,
+        run_id: Some(RunId::new("run-empty-drain").unwrap()),
+        event_sink: None,
+        after_receipt_verified: None,
+    }))
+    .unwrap();
+
+    let ProjectRunOutcome::NoOp(report) = outcome else {
+        panic!("cold empty drain should return an explicit no-op outcome");
+    };
+    assert_eq!(report.reason, ProjectRunNoOpReason::SourceExhausted);
+    assert!(report.current_checkpoint.is_none());
+    assert!(!package_root.join(package_id).exists());
+    assert!(report.ledger_snapshot.events.iter().all(|event| !matches!(
+        event.kind,
+        RunEventKind::PackageFinalized
+            | RunEventKind::DestinationReceiptRecorded
+            | RunEventKind::CheckpointCommitted
+    )));
+    let store = SqliteCheckpointStore::open(&state_path).unwrap();
+    assert!(
+        store
+            .head(
+                &pipeline_id,
+                &resource.descriptor().resource_id,
+                &resource.descriptor().state_scope,
+            )
+            .unwrap()
+            .is_none()
+    );
+    assert!(!duckdb_path.exists());
+}
+
+#[test]
+fn drain_preserves_committed_summary_when_the_following_epoch_is_empty() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = OneBatchThenEmptyDrainResource::new();
+    let package_root = temp.path().join(".cdf/packages");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+    let package_id = "pkg-drain-final-noop";
+    let pipeline_id = PipelineId::new("pipeline-drain-final-noop").unwrap();
+    let mut source = compiled_drain_test_source_plan(&resource);
+    source.execution_capabilities.maximum_concurrency = 1;
+    source.execution_capabilities.useful_concurrency = 1;
+    source.validate().unwrap();
+    let bound = BoundTestResource {
+        inner: &resource,
+        compiled_source_plan_hash: cdf_runtime::artifact_hash(&source).unwrap(),
+        replay_retention: None,
+    };
+    let extent = ExecutionExtent::Drain {
+        version: cdf_kernel::EXECUTION_EXTENT_VERSION,
+        policy: cdf_kernel::StreamEpochPolicy {
+            version: cdf_kernel::STREAM_EPOCH_POLICY_VERSION,
+            checkpoint_cadence: cdf_kernel::EpochClosureTrigger::Rows { count: 1 },
+            package_rotation: cdf_kernel::EpochClosureTrigger::Bytes { count: 1 << 20 },
+            watermark: cdf_kernel::WatermarkPolicy::Disabled,
+            late_data: cdf_kernel::LateDataAction::Quarantine,
+            safe_frontier: cdf_kernel::SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+        },
+        termination: cdf_kernel::DrainTermination::Records { count: 2 },
+    };
+    let mut plan = live_plan_for_queryable(&resource, package_id);
+    plan.execution_extent = extent.clone();
+    plan.explain.execution_extent = extent;
+    let destination =
+        ResolvedProjectDestination::duckdb(&duckdb_path, TargetName::new("events").unwrap())
+            .unwrap();
+    let plan = plan
+        .bind_compiled_source(&source)
+        .unwrap()
+        .bind_operator_graph(&source, &destination.runtime_capabilities())
+        .unwrap();
+
+    let report = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunSource::new(&bound),
+        plan,
+        package_root: package_root.clone(),
+        state_store_path: state_path.clone(),
+        pipeline_id: pipeline_id.clone(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-drain-final-noop").unwrap(),
+        destination,
+        run_id: Some(RunId::new("run-drain-final-noop").unwrap()),
+        event_sink: None,
+        after_receipt_verified: None,
+    }))
+    .unwrap();
+
+    let drain = report.drain.as_ref().expect("drain summary");
+    assert_eq!(drain.epoch_count, 1);
+    assert_eq!(drain.total_row_count, 1);
+    assert_eq!(drain.total_segment_count, 1);
+    assert_eq!(report.row_count, 1);
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 2);
+    let second_epoch = 1_u64;
+    assert!(
+        !package_root
+            .join(format!("{package_id}-epoch-{second_epoch:020}"))
+            .exists()
+    );
+    let store = SqliteCheckpointStore::open(&state_path).unwrap();
+    assert_eq!(
+        store
+            .history(
+                &pipeline_id,
+                &resource.descriptor().resource_id,
+                &resource.descriptor().state_scope,
+            )
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn drain_project_does_not_publish_a_later_epoch_before_checkpoint_settlement() {
     let temp = tempfile::tempdir().unwrap();
     let resource = multi_file_resource(temp.path());
@@ -4392,7 +4699,7 @@ fn file_manifest_append_run_skips_unchanged_files_and_loads_only_changes() {
         .sha256
         .clone();
 
-    let unchanged = futures_executor::block_on(run_project(project_run_request(
+    let unchanged = futures_executor::block_on(run_project_outcome(project_run_request(
         &resource,
         "pkg-file-manifest-incremental-2",
         &package_root,
@@ -4401,11 +4708,12 @@ fn file_manifest_append_run_skips_unchanged_files_and_loads_only_changes() {
         "run-file-manifest-incremental-2",
     )))
     .unwrap();
-    assert_eq!(unchanged.row_count, 0);
-    assert_eq!(unchanged.segment_count, 0);
+    let ProjectRunOutcome::NoOp(unchanged) = unchanged else {
+        panic!("unchanged file manifest should produce an explicit no-op outcome");
+    };
     assert_eq!(
-        unchanged.receipt_source,
-        ProjectReceiptSource::FileManifestNoChangedFiles
+        unchanged.reason,
+        ProjectRunNoOpReason::FileManifestUnchanged
     );
     assert_eq!(
         unchanged.file_manifest,
@@ -4415,9 +4723,12 @@ fn file_manifest_append_run_skips_unchanged_files_and_loads_only_changes() {
             unchanged_file_count: 2,
         })
     );
-    assert_eq!(unchanged.checkpoint, first.checkpoint);
-    assert_eq!(unchanged.receipt, first.receipt);
-    assert!(!unchanged.package_dir.exists());
+    assert_eq!(unchanged.current_checkpoint, Some(first.checkpoint.clone()));
+    assert!(
+        !package_root
+            .join("pkg-file-manifest-incremental-2")
+            .exists()
+    );
     assert_eq!(
         unchanged.ledger_snapshot.events.len(),
         3,

@@ -162,6 +162,8 @@ impl BackfillSliceExecutor<'_> {
                 },
                 self.services,
             ))
+            .map_err(|error| redact_error_value(error, resolved.secret_redaction.as_deref()))?
+            .into_committed()
             .map_err(|error| redact_error_value(error, resolved.secret_redaction.as_deref()))?;
         Ok(BackfillSliceExecutionReport {
             run_id: run.run_id.to_string(),

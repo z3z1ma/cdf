@@ -2931,6 +2931,7 @@ mod tests {
             parent_checkpoint_id: None,
             input_position: None,
             output_position,
+            source_continuation: None,
             schema_hash: SchemaHash::new("sha256:old-schema").unwrap(),
             segments: Vec::new(),
         };
@@ -3651,6 +3652,7 @@ mod tests {
                 parent_checkpoint_id: None,
                 input_position: None,
                 output_position,
+                source_continuation: None,
                 schema_hash: schema_hash.clone(),
                 segments: vec![state_segment.clone()],
             })

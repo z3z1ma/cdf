@@ -143,10 +143,9 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
     }));
     panic::set_hook(previous_hook);
     match crashed {
-        Ok(Ok(report)) => panic!(
-            "fixture must stop in the crash window, but run {} succeeded",
-            report.run_id
-        ),
+        Ok(Ok(report)) => {
+            panic!("fixture must stop in the crash window, but run succeeded: {report:?}")
+        }
         Ok(Err(error)) => panic!("run failed before crash hook: {error}"),
         Err(_) => {}
     }

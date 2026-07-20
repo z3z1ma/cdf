@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 use cdf_kernel::{SchemaObservationScope, TargetName, TerminalSchemaObservationQuarantine};
 use cdf_project::{
     DiscoveryManifestArtifact, DiscoveryParticipation, ProjectDestinationDescription,
-    ProjectReceiptSource, ProjectRunReport,
+    ProjectReceiptSource, ProjectRunNoOpReport, ProjectRunReport,
 };
 use cdf_state_sqlite::{RunEventDetails, RunEventValue, RunLedgerSnapshot};
 use serde::Serialize;
@@ -329,6 +329,111 @@ impl RunCliReport {
                         "condition",
                         "destination receipt verified before checkpoint commit",
                     ),
+            )
+            .blank_line()
+            .push(NextCommand::new(format!("cdf inspect run {}", self.run_id)))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct RunNoOpCliReport {
+    command: &'static str,
+    run_id: String,
+    resource_id: String,
+    pipeline_id: String,
+    destination: RunDestinationReport,
+    reason: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    current_checkpoint_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    schema_snapshot: Option<SchemaSnapshotActionReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file_manifest: Option<RunFileManifestReport>,
+    memory: RunMemoryReport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    adhoc: Option<AdhocRunReport>,
+    ledger_events: RunLedgerSummary,
+    writes: WriteEffects,
+}
+
+impl RunNoOpCliReport {
+    pub(crate) fn from_report(
+        report: &ProjectRunNoOpReport,
+        resource_id: String,
+        pipeline_id: String,
+        destination: RunDestinationReport,
+        schema_snapshot: Option<SchemaSnapshotActionReport>,
+        memory: RunMemoryReport,
+    ) -> Self {
+        Self {
+            command: "run",
+            run_id: report.run_id.to_string(),
+            resource_id,
+            pipeline_id,
+            destination,
+            reason: report.reason.as_str(),
+            current_checkpoint_id: report
+                .current_checkpoint
+                .as_ref()
+                .map(|checkpoint| checkpoint.delta.checkpoint_id.to_string()),
+            schema_snapshot,
+            file_manifest: report
+                .file_manifest
+                .as_ref()
+                .map(RunFileManifestReport::from_project),
+            memory,
+            adhoc: None,
+            ledger_events: RunLedgerSummary::from_snapshot(&report.ledger_snapshot),
+            writes: WriteEffects::none(),
+        }
+    }
+
+    pub(crate) fn with_adhoc(mut self, adhoc: AdhocRunReport) -> Self {
+        self.adhoc = Some(adhoc);
+        self
+    }
+
+    pub(crate) fn render_document(&self, explain_memory: bool) -> RenderDocument {
+        let document = RenderDocument::new()
+            .push(SectionRule::new())
+            .push(StatusLine::new(
+                StatusKind::Success,
+                format!("run {} completed with no source changes", self.run_id),
+            ))
+            .blank_line()
+            .push(
+                KeyValuePanel::new("Run")
+                    .row("run", self.run_id.clone())
+                    .row("resource", self.resource_id.clone())
+                    .row("pipeline", self.pipeline_id.clone())
+                    .row("destination", self.destination.summary())
+                    .row("outcome", "no-op")
+                    .row("reason", self.reason),
+            );
+        let document = match &self.current_checkpoint_id {
+            Some(checkpoint) => document
+                .blank_line()
+                .push(KeyValuePanel::new("State").row("current checkpoint", checkpoint.clone())),
+            None => document,
+        };
+        let document = if let Some(panel) = file_manifest_panel(self.file_manifest.as_ref()) {
+            document.blank_line().push(panel)
+        } else {
+            document
+        };
+        let document = if explain_memory {
+            document.blank_line().push(self.memory.panel())
+        } else {
+            document
+        };
+        document
+            .blank_line()
+            .push(
+                KeyValuePanel::new("Effects")
+                    .row("package written", "no")
+                    .row("destination written", "no")
+                    .row("checkpoint written", "no")
+                    .row("events", self.ledger_events.event_count.to_string()),
             )
             .blank_line()
             .push(NextCommand::new(format!("cdf inspect run {}", self.run_id)))
@@ -687,12 +792,6 @@ impl RunReceiptSourceReport {
                 no_op: None,
                 package_receipt_recorded: Some(*package_receipt_recorded),
             },
-            ProjectReceiptSource::FileManifestNoChangedFiles => Self {
-                kind: "file_manifest_no_changed_files",
-                duplicate: None,
-                no_op: Some(true),
-                package_receipt_recorded: None,
-            },
             ProjectReceiptSource::SuppliedDurableReceipt => Self {
                 kind: "supplied_durable_receipt",
                 duplicate: None,
@@ -749,14 +848,6 @@ pub(crate) fn replay_event_details(
                 RunEventValue::Bool(*package_receipt_recorded),
             );
         }
-        ProjectReceiptSource::FileManifestNoChangedFiles => {
-            attributes.insert(
-                "receipt_source".to_owned(),
-                RunEventValue::String("file_manifest_no_changed_files".to_owned()),
-            );
-            attributes.insert("duplicate".to_owned(), RunEventValue::Bool(false));
-            attributes.insert("no_op".to_owned(), RunEventValue::Bool(true));
-        }
         ProjectReceiptSource::SuppliedDurableReceipt => {
             attributes.insert(
                 "receipt_source".to_owned(),
@@ -798,11 +889,6 @@ fn file_manifest_panel(summary: Option<&RunFileManifestReport>) -> Option<KeyVal
 
 fn run_write_effects(source: &ProjectReceiptSource) -> WriteEffects {
     match source {
-        ProjectReceiptSource::FileManifestNoChangedFiles => WriteEffects {
-            package: false,
-            destination: false,
-            checkpoint: false,
-        },
         ProjectReceiptSource::DestinationCommit { .. }
         | ProjectReceiptSource::DestinationCommitReceiptOnly { .. }
         | ProjectReceiptSource::SuppliedDurableReceipt => WriteEffects {

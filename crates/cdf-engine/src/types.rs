@@ -2036,6 +2036,7 @@ pub struct EnginePackageDraft<'a> {
     pub profile: &'a ExecutionProfile,
     pub lineage: &'a LineageSummary,
     pub segment_positions: &'a [EngineSegmentPosition],
+    pub drain_frontier: Option<&'a cdf_kernel::EpochFrontier>,
     pub(crate) execution_evidence: &'a EngineExecutionEvidence,
 }
 

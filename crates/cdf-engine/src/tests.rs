@@ -28,8 +28,8 @@ use cdf_kernel::{
     DiscoveryExecutorBudgetEvidence, DiscoveryManifestHash, DiscoveryManifestReference,
     DrainTermination, EXECUTION_EXTENT_VERSION, EffectiveSchemaCatalogEntry,
     EffectiveSchemaEvidence, EffectiveSchemaObservationEvidence, EffectiveSchemaRuntime,
-    EpochClosureTrigger, EstimateSupport, ExecutionExtent, FileManifest, FilePosition,
-    FilterCapabilities, FreshnessSpec, IncrementalShape, LateDataAction,
+    EpochClosureTrigger, EstimateSupport, EventTimeDomain, ExecutionExtent, FileManifest,
+    FilePosition, FilterCapabilities, FreshnessSpec, IncrementalShape, LateDataAction,
     PLAN_PHYSICAL_SCHEMA_HASH_KEY, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
     PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation, PartitionId, PartitionPlan,
     PartitioningCapabilities, PreContractObservedValue, PreContractQuarantineFact,
@@ -39,7 +39,9 @@ use cdf_kernel::{
     ScanPlan, ScanPredicate, ScanRequest, SchemaBaselineReference, SchemaHash,
     SchemaObservationFieldQuarantine, SchemaObservationPolicy, SchemaSnapshotReference,
     SchemaSource, ScopeKey, SourcePosition, StreamEpochPolicy, TerminalSchemaObservationQuarantine,
-    TrustLevel, WatermarkAuthority, WatermarkPolicy, WriteDisposition, source_name, with_semantic,
+    TrustLevel, WATERMARK_CLAIM_VERSION, WatermarkAuthority, WatermarkClaim,
+    WatermarkObservationContext, WatermarkPolicy, WatermarkValue, WriteDisposition, source_name,
+    with_semantic,
 };
 use cdf_package_contract::{
     DEDUP_SUMMARY_FILE, PackageStatus, QuarantineObservedValue, SegmentEntry,
@@ -2755,6 +2757,60 @@ fn duration_drain_discards_an_empty_package_while_source_open_is_silent() {
 }
 
 #[test]
+fn immediately_exhausted_drain_is_a_no_op_without_a_package() {
+    let resource = MockResource::tier_a(Vec::new()).without_control_keys();
+    let extent = ExecutionExtent::Drain {
+        version: EXECUTION_EXTENT_VERSION,
+        policy: StreamEpochPolicy {
+            version: STREAM_EPOCH_POLICY_VERSION,
+            checkpoint_cadence: EpochClosureTrigger::Rows { count: 1 },
+            package_rotation: EpochClosureTrigger::Bytes { count: 1 << 20 },
+            watermark: WatermarkPolicy::Disabled,
+            late_data: LateDataAction::Quarantine,
+            safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+        },
+        termination: DrainTermination::Duration {
+            milliseconds: 60_000,
+        },
+    };
+    let source = mock_unbounded_cursor_source_plan(&resource);
+    resource.bind_compiled_source(&source);
+    let plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(Vec::new(), None, None, extent.clone()),
+        )
+        .unwrap()
+        .bind_compiled_source(&source)
+        .unwrap()
+        .bind_operator_graph(
+            &source,
+            &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        )
+        .unwrap();
+    let mut controller = cdf_runtime::DrainEpochController::new(&extent).unwrap();
+    let root = TempDir::new().unwrap();
+    let package_dir = root.path().join("empty");
+
+    let outcome = block_on(super::execute_drain_epoch_with_hooks(
+        &plan,
+        &resource,
+        &package_dir,
+        &|_, _| Ok(()),
+        super::DrainEpochExecution::new(&mut controller),
+        executable_mock_options(EngineExecutionOptions::default()).unwrap(),
+    ))
+    .unwrap();
+
+    assert!(matches!(
+        outcome,
+        EngineDrainEpochOutcome::FinishedNoOp { .. }
+    ));
+    assert!(controller.is_finished());
+    assert!(!package_dir.exists());
+}
+
+#[test]
 fn drain_partition_resume_stays_local_when_resource_frontier_is_a_larger_cursor() {
     let batches = [("part-0", 100_i64), ("part-1", 1), ("part-1", 2)]
         .into_iter()
@@ -2835,6 +2891,154 @@ fn drain_partition_resume_stays_local_when_resource_frontier_is_a_larger_cursor(
             field: "id".to_owned(),
             value: CursorValue::I64(1),
         }))
+    );
+    let SourcePosition::Composite(continuation) = drain
+        .closure
+        .frontier
+        .carryover
+        .as_ref()
+        .expect("durable partition continuation")
+    else {
+        panic!("multi-partition drain continuation must be partition-keyed");
+    };
+    assert_eq!(
+        continuation.positions.get("part-0"),
+        Some(&SourcePosition::Cursor(CursorPosition {
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
+            field: "id".to_owned(),
+            value: CursorValue::I64(100),
+        }))
+    );
+    assert_eq!(
+        continuation.positions.get("part-1"),
+        Some(&SourcePosition::Cursor(CursorPosition {
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
+            field: "id".to_owned(),
+            value: CursorValue::I64(1),
+        }))
+    );
+
+    let mut restarted = plan.clone();
+    restarted
+        .rebind_initial_committed_frontier(
+            &resource,
+            &SourcePosition::Composite(continuation.clone()),
+        )
+        .unwrap();
+    assert_eq!(
+        restarted.scan.partitions[1].start_position,
+        continuation.positions.get("part-1").cloned()
+    );
+}
+
+#[test]
+fn drain_epoch_records_the_minimum_partition_watermark_not_the_latest_claim() {
+    fn claim(partition: &str, value: i64) -> WatermarkClaim {
+        WatermarkClaim {
+            version: WATERMARK_CLAIM_VERSION,
+            policy_version: STREAM_EPOCH_POLICY_VERSION,
+            event_time_field: "id".into(),
+            domain: EventTimeDomain::SignedInteger,
+            value: WatermarkValue::Signed(value),
+            partition_id: PartitionId::new(partition).unwrap(),
+            source_position: SourcePosition::Cursor(CursorPosition {
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
+                field: "id".to_owned(),
+                value: CursorValue::I64(value),
+            }),
+            authority: WatermarkAuthority::Source,
+            observation_context: WatermarkObservationContext::SourcePoll,
+        }
+    }
+
+    let mut batches = [("part-0", 100_i64), ("part-1", 5_i64)]
+        .into_iter()
+        .map(|(partition, value)| {
+            let mut batch = batch_for_partition(
+                &format!("{partition}-{value}"),
+                partition,
+                vec![i32::try_from(value).unwrap()],
+                vec!["event"],
+                vec![true],
+            );
+            batch.header.source_position = Some(SourcePosition::Cursor(CursorPosition {
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
+                field: "id".to_owned(),
+                value: CursorValue::I64(value),
+            }));
+            batch.header.watermarks.push(claim(partition, value));
+            batch
+        })
+        .collect::<Vec<_>>();
+    let resource = MockResource::tier_b(std::mem::take(&mut batches)).without_control_keys();
+    let extent = ExecutionExtent::Drain {
+        version: EXECUTION_EXTENT_VERSION,
+        policy: StreamEpochPolicy {
+            version: STREAM_EPOCH_POLICY_VERSION,
+            checkpoint_cadence: EpochClosureTrigger::Rows { count: 2 },
+            package_rotation: EpochClosureTrigger::Bytes { count: 1 << 20 },
+            watermark: WatermarkPolicy::Enabled {
+                event_time_field: "id".into(),
+                domain: EventTimeDomain::SignedInteger,
+                authority: WatermarkAuthority::Source,
+                partition_aggregation: cdf_kernel::PartitionWatermarkAggregation::MinimumAll,
+            },
+            late_data: LateDataAction::Quarantine,
+            safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+        },
+        termination: DrainTermination::Records { count: 2 },
+    };
+    let mut source = mock_unbounded_cursor_source_plan(&resource);
+    source
+        .stream_capabilities
+        .as_mut()
+        .unwrap()
+        .watermark_behavior = cdf_kernel::OperatorWatermarkBehavior::Preserve;
+    source.stream_capabilities.as_mut().unwrap().watermark =
+        Some(cdf_runtime::SourceWatermarkCapability {
+            event_time_field: "id".into(),
+            domain: EventTimeDomain::SignedInteger,
+            authority: WatermarkAuthority::Source,
+        });
+    source.validate().unwrap();
+    resource.bind_compiled_source(&source);
+    let plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(Vec::new(), None, None, extent.clone()),
+        )
+        .unwrap()
+        .bind_compiled_source(&source)
+        .unwrap()
+        .bind_operator_graph(
+            &source,
+            &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        )
+        .unwrap();
+    let mut controller = cdf_runtime::DrainEpochController::new(&extent).unwrap();
+    let root = TempDir::new().unwrap();
+    let output = block_on(super::execute_drain_epoch_with_hooks(
+        &plan,
+        &resource,
+        root.path().join("epoch-0"),
+        &|_, _| Ok(()),
+        super::DrainEpochExecution::new(&mut controller),
+        executable_mock_options(EngineExecutionOptions::default()).unwrap(),
+    ))
+    .unwrap()
+    .into_package()
+    .unwrap();
+
+    assert_eq!(
+        output
+            .drain_epoch
+            .unwrap()
+            .closure
+            .frontier
+            .watermark
+            .unwrap()
+            .value,
+        WatermarkValue::Signed(5)
     );
 }
 

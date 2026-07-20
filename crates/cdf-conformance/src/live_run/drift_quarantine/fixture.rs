@@ -160,7 +160,8 @@ pub(super) fn run_scenario(
             after_receipt_verified: Some(&gate),
         },
         &services,
-    ))?;
+    ))?
+    .into_committed()?;
     assert!(
         gate_observed.get(),
         "receipt verification gate must be observed before checkpoint commit"

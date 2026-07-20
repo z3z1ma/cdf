@@ -2217,6 +2217,8 @@ fn project_external_codec_discovers_pins_previews_and_runs_over_remote_provider(
         },
         &execution,
     ))
+    .unwrap()
+    .into_committed()
     .unwrap();
     assert_eq!(report.row_count, 1);
     assert_eq!(report.segment_count, 1);
@@ -3055,6 +3057,8 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
         },
         &test_execution_services(),
     ))
+    .unwrap()
+    .into_committed()
     .unwrap();
 
     assert_eq!(report.row_count, 2);
@@ -3137,6 +3141,8 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
         },
         &test_execution_services(),
     ))
+    .unwrap()
+    .into_committed()
     .unwrap();
     assert_eq!(pinned_report.row_count, 2);
     let pinned_package = cdf_package::PackageReader::open(&pinned_report.package_dir).unwrap();
@@ -3247,6 +3253,8 @@ fn unversioned_http_parquet_runs_and_commits_terminal_content_identity() {
         },
         &test_execution_services(),
     ))
+    .unwrap()
+    .into_committed()
     .unwrap();
 
     assert_eq!(report.row_count, 2);

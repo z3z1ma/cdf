@@ -24,6 +24,12 @@ pub struct StateDelta {
     pub parent_checkpoint_id: Option<CheckpointId>,
     pub input_position: Option<SourcePosition>,
     pub output_position: SourcePosition,
+    /// Exact source-local restart authority when the resource output position is an aggregate.
+    ///
+    /// Multi-partition drains commonly expose a useful aggregate cursor as `output_position`
+    /// while requiring partition-keyed positions to resume without loss. This field preserves
+    /// that distinction in the checkpoint instead of relying on command-local executor state.
+    pub source_continuation: Option<SourcePosition>,
     pub package_hash: PackageHash,
     pub schema_hash: SchemaHash,
     pub segments: Vec<StateSegment>,
@@ -41,6 +47,13 @@ pub struct StateSegment {
 pub const CHECKPOINT_STATE_VERSION: u16 = 1;
 
 impl StateDelta {
+    /// Exact source restart authority, or the aggregate output when that position is sufficient.
+    pub fn source_resume_position(&self) -> &SourcePosition {
+        self.source_continuation
+            .as_ref()
+            .unwrap_or(&self.output_position)
+    }
+
     /// Validates the complete typed position authority before persistence or replay.
     pub fn validate(&self) -> Result<()> {
         if self.state_version != CHECKPOINT_STATE_VERSION {
@@ -53,6 +66,9 @@ impl StateDelta {
             position.validate()?;
         }
         self.output_position.validate()?;
+        if let Some(position) = &self.source_continuation {
+            position.validate()?;
+        }
         for segment in &self.segments {
             segment.output_position.validate()?;
         }

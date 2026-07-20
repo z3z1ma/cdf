@@ -356,7 +356,8 @@ pub async fn run_live_local_file_fixture_with_destination(
         &services,
         RunTelemetryConfig::disabled().with_statistics_profile(true),
     )
-    .await
+    .await?
+    .into_committed()
 }
 
 pub fn assert_live_run_matches_expected(
