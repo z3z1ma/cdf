@@ -466,9 +466,14 @@ impl RuntimeSchedulerResolution {
             || jobs > self.effective_jobs.memory_jobs
             || jobs > self.effective_jobs.cpu_jobs
         {
-            return Err(CdfError::data(
-                "runtime scheduler job admission exceeds compiled source or host ceilings",
-            ));
+            return Err(CdfError::data(format!(
+                "runtime scheduler admitted {jobs} jobs beyond at least one ceiling: partitions={partition_ceiling}, source_maximum={}, source_useful={}, blocking_lane={lane_ceiling}, host_cpu={}, memory={}, cpu={}",
+                source.maximum_concurrency,
+                source.useful_concurrency,
+                self.container_cpu_slots,
+                self.effective_jobs.memory_jobs,
+                self.effective_jobs.cpu_jobs,
+            )));
         }
         Ok(())
     }

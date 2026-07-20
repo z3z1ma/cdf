@@ -331,8 +331,15 @@ struct ManifestWork {
     listed: IcebergPlanningManifest,
     manifest_sha256: String,
     manifest: Manifest,
+    header: ManifestHeaderAuthority,
     _payload: AccountedBytes,
     _parse_lease: MemoryLease,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ManifestHeaderAuthority {
+    schema_id: Option<i32>,
+    partition_spec_id: Option<i32>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -517,15 +524,56 @@ fn load_manifest_work(
         "iceberg-manifest-parse",
     )?;
     let manifest_sha256 = sha256_bytes(loaded.payload.payload());
+    let header = manifest_header_authority(loaded.payload.payload())?;
     let manifest = Manifest::parse_avro(loaded.payload.payload())
         .map_err(|error| CdfError::data(format!("parse Iceberg manifest: {error}")))?;
     Ok(ManifestWork {
         listed,
         manifest_sha256,
         manifest,
+        header,
         _payload: loaded.payload,
         _parse_lease: parse_lease,
     })
+}
+
+fn manifest_header_authority(payload: &[u8]) -> Result<ManifestHeaderAuthority> {
+    let reader = AvroReader::new(payload)
+        .map_err(|error| CdfError::data(format!("parse Iceberg manifest header: {error}")))?;
+    Ok(ManifestHeaderAuthority {
+        schema_id: optional_manifest_header_id(reader.user_metadata(), "schema-id")?,
+        partition_spec_id: optional_manifest_header_id(
+            reader.user_metadata(),
+            "partition-spec-id",
+        )?,
+    })
+}
+
+fn optional_manifest_header_id(
+    metadata: &std::collections::HashMap<String, Vec<u8>>,
+    key: &str,
+) -> Result<Option<i32>> {
+    metadata
+        .get(key)
+        .map(|value| {
+            let value = std::str::from_utf8(value).map_err(|error| {
+                CdfError::data(format!(
+                    "Iceberg manifest metadata `{key}` is not UTF-8: {error}"
+                ))
+            })?;
+            let id = value.parse::<i32>().map_err(|error| {
+                CdfError::data(format!(
+                    "Iceberg manifest metadata `{key}` is not an i32: {error}"
+                ))
+            })?;
+            if id < 0 {
+                return Err(CdfError::data(format!(
+                    "Iceberg manifest metadata `{key}` must be nonnegative"
+                )));
+            }
+            Ok(id)
+        })
+        .transpose()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -541,7 +589,8 @@ fn emit_manifest_tasks(
     delete_index: Option<&IcebergPlanningIndex>,
     maximum_task_bytes: u64,
 ) -> Result<()> {
-    validate_manifest_authority(table, &work.manifest, &work.listed)?;
+    let file_schema_id =
+        validate_manifest_authority(table, &work.manifest, &work.listed, work.header)?;
     for (entry_index, entry) in work.manifest.entries().iter().enumerate() {
         if !entry.is_alive() {
             continue;
@@ -574,6 +623,7 @@ fn emit_manifest_tasks(
                 manifest_sha256: &work.manifest_sha256,
                 manifest_file: &work.listed,
                 manifest: &work.manifest,
+                file_schema_id,
                 delete_index,
                 maximum_task_bytes,
             },
@@ -597,7 +647,7 @@ fn emit_delete_manifest(
     table: &LoadedIcebergTable,
     index: &mut IcebergPlanningIndex,
 ) -> Result<()> {
-    validate_manifest_authority(table, &work.manifest, &work.listed)?;
+    validate_manifest_authority(table, &work.manifest, &work.listed, work.header)?;
     for (entry_index, entry) in work.manifest.entries().iter().enumerate() {
         if !entry.is_alive() {
             continue;
@@ -762,32 +812,35 @@ fn validate_manifest_authority(
     table: &LoadedIcebergTable,
     manifest: &Manifest,
     listed: &IcebergPlanningManifest,
-) -> Result<()> {
+    header: ManifestHeaderAuthority,
+) -> Result<i32> {
     let metadata = manifest.metadata();
-    if metadata.content() != &listed.content
-        || metadata.partition_spec().spec_id() != listed.partition_spec_id
-    {
+    if metadata.content() != &listed.content {
         return Err(CdfError::data(format!(
-            "Iceberg manifest `{}` metadata does not match its manifest-list authority",
+            "Iceberg manifest `{}` content does not match its manifest-list authority",
             listed.manifest_path
         )));
     }
-    let schema = table
-        .metadata
-        .schema_by_id(metadata.schema_id())
-        .ok_or_else(|| {
-            CdfError::data(format!(
-                "Iceberg manifest `{}` references absent schema id {}",
-                listed.manifest_path,
-                metadata.schema_id()
-            ))
-        })?;
-    if artifact_hash(schema.as_ref())? != artifact_hash(metadata.schema().as_ref())? {
+    let embedded_schema_id = metadata.schema().schema_id();
+    let schema_id =
+        manifest_schema_id(&listed.manifest_path, header.schema_id, embedded_schema_id)?;
+    let schema = table.metadata.schema_by_id(schema_id).ok_or_else(|| {
+        CdfError::data(format!(
+            "Iceberg manifest `{}` references absent schema id {}",
+            listed.manifest_path, schema_id
+        ))
+    })?;
+    if schema.as_ref() != metadata.schema().as_ref() {
         return Err(CdfError::data(format!(
             "Iceberg manifest `{}` schema does not match table metadata",
             listed.manifest_path
         )));
     }
+    validate_manifest_partition_spec_id(
+        &listed.manifest_path,
+        header.partition_spec_id,
+        listed.partition_spec_id,
+    )?;
     let spec = table
         .metadata
         .partition_spec_by_id(listed.partition_spec_id)
@@ -797,10 +850,44 @@ fn validate_manifest_authority(
                 listed.manifest_path, listed.partition_spec_id
             ))
         })?;
-    if artifact_hash(spec.as_ref())? != artifact_hash(metadata.partition_spec())? {
+    if spec.fields() != metadata.partition_spec().fields() {
         return Err(CdfError::data(format!(
             "Iceberg manifest `{}` partition spec does not match table metadata",
             listed.manifest_path
+        )));
+    }
+    Ok(schema_id)
+}
+
+fn manifest_schema_id(
+    manifest_path: &str,
+    header_schema_id: Option<i32>,
+    embedded_schema_id: i32,
+) -> Result<i32> {
+    // Iceberg v1 permits the header to be absent, and manifests written under v1 remain legal
+    // after a table upgrades to v2. The embedded schema is therefore the fallback authority;
+    // when both encodings are present they must agree rather than silently selecting either one.
+    match header_schema_id {
+        Some(schema_id) if schema_id != embedded_schema_id => Err(CdfError::data(format!(
+            "Iceberg manifest `{manifest_path}` schema-id header {schema_id} does not match embedded schema id {embedded_schema_id}"
+        ))),
+        Some(schema_id) => Ok(schema_id),
+        None => Ok(embedded_schema_id),
+    }
+}
+
+fn validate_manifest_partition_spec_id(
+    manifest_path: &str,
+    header_partition_spec_id: Option<i32>,
+    listed_partition_spec_id: i32,
+) -> Result<()> {
+    // The manifest list always binds the applicable spec. An optional manifest header is useful
+    // corroboration, but absence is not a reason to invent spec 0 (the upstream model's default).
+    if let Some(partition_spec_id) = header_partition_spec_id
+        && partition_spec_id != listed_partition_spec_id
+    {
+        return Err(CdfError::data(format!(
+            "Iceberg manifest `{manifest_path}` partition-spec-id header {partition_spec_id} does not match manifest-list partition spec id {listed_partition_spec_id}"
         )));
     }
     Ok(())
@@ -811,6 +898,7 @@ struct DataTaskContext<'a> {
     manifest_sha256: &'a str,
     manifest_file: &'a IcebergPlanningManifest,
     manifest: &'a Manifest,
+    file_schema_id: i32,
     delete_index: Option<&'a IcebergPlanningIndex>,
     maximum_task_bytes: u64,
 }
@@ -826,6 +914,7 @@ fn data_task(
         manifest_sha256,
         manifest_file,
         manifest,
+        file_schema_id,
         delete_index,
         maximum_task_bytes,
     } = context;
@@ -881,7 +970,7 @@ fn data_task(
             sort_order_id: data_file.sort_order_id(),
             first_row_id: data_file.first_row_id(),
         },
-        file_schema_id: manifest.metadata().schema_id(),
+        file_schema_id,
         partition_spec_id: manifest_file.partition_spec_id,
         partition_values,
         deletes,
@@ -1042,6 +1131,42 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn omitted_manifest_ids_use_embedded_and_manifest_list_authorities() {
+        let schema = apache_avro::Schema::parse_str(r#"{"type":"int"}"#).unwrap();
+        let mut writer = apache_avro::Writer::new(&schema, Vec::new());
+        writer
+            .add_user_metadata("partition-spec-id".to_owned(), "11")
+            .unwrap();
+        writer.append(apache_avro::types::Value::Int(1)).unwrap();
+        let payload = writer.into_inner().unwrap();
+        assert_eq!(
+            manifest_header_authority(&payload).unwrap(),
+            ManifestHeaderAuthority {
+                schema_id: None,
+                partition_spec_id: Some(11),
+            }
+        );
+
+        assert_eq!(manifest_schema_id("manifest.avro", None, 7).unwrap(), 7);
+        validate_manifest_partition_spec_id("manifest.avro", None, 11).unwrap();
+
+        assert!(
+            manifest_schema_id("manifest.avro", Some(0), 7)
+                .unwrap_err()
+                .to_string()
+                .contains("schema-id header 0 does not match embedded schema id 7")
+        );
+        assert!(
+            validate_manifest_partition_spec_id("manifest.avro", Some(0), 11)
+                .unwrap_err()
+                .to_string()
+                .contains(
+                    "partition-spec-id header 0 does not match manifest-list partition spec id 11"
+                )
+        );
+    }
 
     #[test]
     fn v1_manifest_list_streams_into_canonical_planning_index() {

@@ -32,19 +32,22 @@ pub(super) fn validate_project_run_request(request: &mut ProjectRunRequest<'_>) 
 }
 
 fn validate_checkpointable_source_position(resource: ProjectRunSource<'_>) -> Result<()> {
-    if resource.capabilities().incremental == IncrementalShape::File {
+    if matches!(
+        resource.capabilities().incremental,
+        IncrementalShape::File | IncrementalShape::TableSnapshot
+    ) {
         return Ok(());
     }
     let descriptor = resource.descriptor();
     let cursor = descriptor.cursor.as_ref().ok_or_else(|| {
         CdfError::contract(format!(
-            "cdf run requires resource `{}` without file-incremental capability to declare an ordered cursor; page-token-only checkpoint semantics are not ratified",
+            "cdf run requires resource `{}` without file- or table-snapshot incremental capability to declare an ordered cursor; page-token-only checkpoint semantics are not ratified",
             descriptor.resource_id
         ))
     })?;
     if cursor.ordering == CursorOrderingClaim::Unordered {
         return Err(CdfError::contract(format!(
-            "cdf run requires resource `{}` without file-incremental capability to declare an ordered cursor for checkpoint advancement",
+            "cdf run requires resource `{}` without file- or table-snapshot incremental capability to declare an ordered cursor for checkpoint advancement",
             descriptor.resource_id
         )));
     }

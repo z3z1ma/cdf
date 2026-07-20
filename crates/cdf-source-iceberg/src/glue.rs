@@ -56,7 +56,7 @@ impl AwsGlueCatalogClient {
         }
     }
 
-    fn get_table(&self, request: GlueGetTableRequest) -> Result<GlueTablePointer> {
+    async fn request_table(&self, request: GlueGetTableRequest) -> Result<GlueTablePointer> {
         request.cancellation.check()?;
         let endpoint = glue_endpoint(&request.region, request.endpoint.as_deref())?;
         self.egress.authorize(&endpoint)?;
@@ -99,15 +99,13 @@ impl AwsGlueCatalogClient {
             }),
         )?;
         let http = Arc::clone(&self.http);
-        let response = self.execution.run_io(async move {
-            cdf_http::send_with_policy(
-                http.as_ref(),
-                &EgressAllowlist::from_hosts([host]),
-                http_request,
-                budget,
-            )
-            .await
-        })?;
+        let response = cdf_http::send_with_policy(
+            http.as_ref(),
+            &EgressAllowlist::from_hosts([host]),
+            http_request,
+            budget,
+        )
+        .await?;
         request.cancellation.check()?;
         if response.status != 200 {
             return Err(glue_error(response.status, response.body()));
@@ -154,7 +152,7 @@ fn decode_pointer(payload: &[u8]) -> Result<GlueTablePointer> {
 
 impl GlueCatalogClient for AwsGlueCatalogClient {
     fn get_table(&self, request: GlueGetTableRequest) -> BoxFuture<'_, Result<GlueTablePointer>> {
-        Box::pin(async move { self.get_table(request) })
+        Box::pin(async move { self.request_table(request).await })
     }
 }
 

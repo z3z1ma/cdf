@@ -519,6 +519,7 @@ pub enum IncrementalShape {
     Cursor,
     Log,
     File,
+    TableSnapshot,
     PageToken,
     Cdc,
 }

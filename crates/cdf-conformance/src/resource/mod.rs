@@ -419,6 +419,12 @@ fn assert_capability_preconditions(
                 "file incremental support requires file-like partition scope support"
             );
         }
+        IncrementalShape::TableSnapshot => {
+            assert!(
+                capabilities.idempotent_reads,
+                "table-snapshot incremental support requires idempotent reads"
+            );
+        }
         IncrementalShape::Log | IncrementalShape::PageToken | IncrementalShape::Cdc => {}
     }
 
@@ -429,6 +435,7 @@ fn assert_capability_preconditions(
                 IncrementalShape::Cursor
                     | IncrementalShape::Log
                     | IncrementalShape::File
+                    | IncrementalShape::TableSnapshot
                     | IncrementalShape::PageToken
                     | IncrementalShape::Cdc
             ),

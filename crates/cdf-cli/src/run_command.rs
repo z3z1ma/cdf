@@ -114,8 +114,10 @@ pub(crate) fn run(
     )?;
     let destination = resolved.destination;
     let source = prepared.resource.source_plan();
+    let partition_count = usize::try_from(plan.scan.partition_count()?)
+        .map_err(|_| CdfError::data("scan partition count exceeds this process address space"))?;
     let scheduler = cdf_runtime::resolve_runtime_scheduler(
-        plan.scan.partitions.len(),
+        partition_count,
         &source.execution_capabilities,
         &destination.runtime_capabilities(),
         &run_services,

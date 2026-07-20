@@ -114,15 +114,7 @@ pub(crate) async fn execute_task_scan(
             drop(lease);
             continue;
         }
-        let record_batch = arrow_array::RecordBatch::try_new(
-            Arc::clone(&output_schema),
-            record_batch.columns().to_vec(),
-        )
-        .map_err(|error| {
-            CdfError::data(format!(
-                "align Iceberg reader output to the compiled snapshot schema: {error}"
-            ))
-        })?;
+        let record_batch = align_reader_batch(record_batch, Arc::clone(&output_schema))?;
         let retained_bytes = cdf_memory::record_batch_retained_bytes(&record_batch)?;
         if retained_bytes == 0 || retained_bytes > source.maximum_batch_bytes {
             return Err(CdfError::data(format!(
@@ -162,6 +154,73 @@ pub(crate) async fn execute_task_scan(
         )),
         None,
     ))
+}
+
+fn align_reader_batch(
+    record_batch: arrow_array::RecordBatch,
+    output_schema: SchemaRef,
+) -> Result<arrow_array::RecordBatch> {
+    let mut input_by_field_id = std::collections::BTreeMap::new();
+    for (index, field) in record_batch.schema().fields().iter().enumerate() {
+        let field_id = arrow_iceberg_field_id(field)?;
+        if input_by_field_id.insert(field_id, index).is_some() {
+            return Err(CdfError::data(format!(
+                "Iceberg reader output repeats field id {field_id}"
+            )));
+        }
+    }
+    let columns = output_schema
+        .fields()
+        .iter()
+        .map(|field| {
+            let field_id = arrow_iceberg_field_id(field)?;
+            let index = input_by_field_id.get(&field_id).copied().ok_or_else(|| {
+                CdfError::data(format!(
+                    "Iceberg reader output omitted compiled field `{}` (id {field_id})",
+                    field.name()
+                ))
+            })?;
+            Ok(Arc::clone(record_batch.column(index)))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if input_by_field_id.len() != columns.len() {
+        return Err(CdfError::data(format!(
+            "Iceberg reader emitted {} fields but the compiled projection contains {}",
+            input_by_field_id.len(),
+            columns.len()
+        )));
+    }
+    arrow_array::RecordBatch::try_new(output_schema, columns).map_err(|error| {
+        CdfError::data(format!(
+            "align Iceberg reader output to the compiled snapshot schema: {error}"
+        ))
+    })
+}
+
+fn arrow_iceberg_field_id(field: &arrow_schema::Field) -> Result<i32> {
+    let value = field
+        .metadata()
+        .get("PARQUET:field_id")
+        .or_else(|| field.metadata().get("cdf:iceberg_field_id"))
+        .ok_or_else(|| {
+            CdfError::data(format!(
+                "Iceberg Arrow field `{}` omits field-id metadata",
+                field.name()
+            ))
+        })?;
+    let field_id = value.parse::<i32>().map_err(|error| {
+        CdfError::data(format!(
+            "Iceberg Arrow field `{}` has invalid field id `{value}`: {error}",
+            field.name()
+        ))
+    })?;
+    if field_id <= 0 {
+        return Err(CdfError::data(format!(
+            "Iceberg Arrow field `{}` has nonpositive field id {field_id}",
+            field.name()
+        )));
+    }
+    Ok(field_id)
 }
 
 fn upstream_task(executable: &IcebergExecutableTask) -> Result<FileScanTask> {
@@ -260,5 +319,46 @@ fn from_iceberg_error(error: IcebergError) -> CdfError {
             CdfError::contract(error.to_string())
         }
         _ => CdfError::internal(error.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, sync::Arc};
+
+    use arrow_array::{ArrayRef, BooleanArray, Int32Array, RecordBatch};
+    use arrow_schema::{DataType, Field, Schema};
+
+    use super::*;
+
+    fn field(name: &str, data_type: DataType, field_id: i32) -> Field {
+        Field::new(name, data_type, false).with_metadata(HashMap::from([(
+            "PARQUET:field_id".to_owned(),
+            field_id.to_string(),
+        )]))
+    }
+
+    #[test]
+    fn reader_output_aligns_by_iceberg_field_id_without_copying() {
+        let boolean: ArrayRef = Arc::new(BooleanArray::from(vec![true, false]));
+        let integer: ArrayRef = Arc::new(Int32Array::from(vec![2025, 2026]));
+        let reader = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                field("is_weekday", DataType::Boolean, 12),
+                field("year", DataType::Int32, 13),
+            ])),
+            vec![Arc::clone(&boolean), Arc::clone(&integer)],
+        )
+        .unwrap();
+        let output_schema = Arc::new(Schema::new(vec![
+            field("year", DataType::Int32, 13),
+            field("is_weekday", DataType::Boolean, 12),
+        ]));
+
+        let aligned = align_reader_batch(reader, output_schema.clone()).unwrap();
+
+        assert_eq!(aligned.schema(), output_schema);
+        assert!(Arc::ptr_eq(aligned.column(0), &integer));
+        assert!(Arc::ptr_eq(aligned.column(1), &boolean));
     }
 }

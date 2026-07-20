@@ -685,7 +685,7 @@ impl ResourceStream for IcebergResource {
     fn open(&self, _partition: PartitionPlan) -> PartitionOpenAttempt<'_> {
         PartitionOpenAttempt::materialized(Box::pin(async {
             Err(CdfError::contract(
-                "Iceberg data task execution is owned by I2 and is not yet installed",
+                "Iceberg executes retained external tasks; open an executable partition from its planned task-set reader",
             ))
         }))
     }
@@ -892,7 +892,7 @@ fn iceberg_resource_capabilities() -> ResourceCapabilities {
             parallel_partitions: true,
             supported_scopes: vec![ScopeKind::Partition],
         },
-        incremental: IncrementalShape::Full,
+        incremental: IncrementalShape::TableSnapshot,
         replay: ReplaySupport::ExactRecordedBatches,
         idempotent_reads: true,
         backpressure: BackpressureSupport::Pausable,
@@ -969,7 +969,7 @@ mod tests {
         CpuTaskSpec, ExecutionHost, ExecutionHostCapabilities, ExecutionServices,
         ExecutionTaskScope, FixedSpillBudget, IoTask, IoValue, IoValueTask, RunCancellation,
         SourceCompileContext, SourceHealthStatus, SourceResolutionContext, SpillBudgetCoordinator,
-        TaskScopeReport,
+        SourceRegistry, TaskScopeReport,
     };
     use cdf_task_store::ExternalTaskStore;
     use flate2::{Compression, write::GzEncoder};
@@ -2318,6 +2318,8 @@ mod tests {
             Arc::clone(&metadata_cancellation),
             "data/old.parquet",
         );
+        let mut registry = SourceRegistry::new();
+        registry.register(driver.clone()).unwrap();
         let context = SourceResolutionContext::new(
             root.path(),
             Arc::new(NoopSecretProvider),
@@ -2329,8 +2331,10 @@ mod tests {
         one_job_request
             .source_options
             .insert("maximum_concurrency".to_owned(), serde_json::json!(1));
-        let mut one_job_plan = driver.compile(one_job_request).unwrap();
-        let session = driver.discovery_session(&one_job_plan, &context).unwrap();
+        let mut one_job_plan = registry.compile(one_job_request).unwrap();
+        let session = registry
+            .discovery_session(&one_job_plan, &context)
+            .unwrap();
         let candidate = session.candidates().unwrap().remove(0);
         let observation = session
             .observe(
@@ -2340,7 +2344,7 @@ mod tests {
             .unwrap();
         assert_eq!(observation.schema.fields().len(), 2);
         one_job_plan.schema = observation.schema.as_ref().clone();
-        let resource = driver.resolve(&one_job_plan, &context).unwrap();
+        let resource = registry.resolve(&one_job_plan, &context).unwrap();
         let request = ScanRequest {
             resource_id: one_job_plan.descriptor.resource_id.clone(),
             projection: None,

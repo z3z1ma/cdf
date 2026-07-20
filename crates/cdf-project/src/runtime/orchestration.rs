@@ -725,9 +725,13 @@ async fn run_project_inner(
         .with_statistics_profile(execution.telemetry.statistics_profile)
         .with_execution_services(execution.services.clone());
     let options = match execution.scheduler.as_ref() {
-        Some(scheduler) => options.with_scheduler_resolution(
-            scheduler.narrow_to_partition_count(manifest_plan.plan.scan.partitions.len()),
-        ),
+        Some(scheduler) => {
+            let partition_count = usize::try_from(manifest_plan.plan.scan.partition_count()?)
+                .map_err(|_| {
+                    CdfError::data("scan partition count exceeds this process address space")
+                })?;
+            options.with_scheduler_resolution(scheduler.narrow_to_partition_count(partition_count))
+        }
         None => options,
     };
     let retry_evidence = options.source_retry_evidence();

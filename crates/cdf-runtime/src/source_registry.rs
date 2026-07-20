@@ -4,10 +4,10 @@ use std::{
 };
 
 use cdf_kernel::{
-    CdfError, EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, PartitionAttestationAttempt,
-    PartitionOpenAttempt, PartitionPlan, QueryableResource, ResourceCapabilities,
-    ResourceDescriptor, ResourceId, ResourceStream, Result, ScanPlan, ScanRequest,
-    TypePolicyAllowances,
+    CdfError, EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, ExecutablePartition,
+    PartitionAttestationAttempt, PartitionOpenAttempt, PartitionPlan, PlannedPartitionReader,
+    PlannedTaskSetReference, QueryableResource, ResourceCapabilities, ResourceDescriptor,
+    ResourceId, ResourceStream, Result, ScanPlan, ScanRequest, TypePolicyAllowances,
 };
 
 use crate::{
@@ -516,6 +516,13 @@ impl ResourceStream for RegistryBoundResource {
         self.inner.plan_partitions(request)
     }
 
+    fn planned_partition_reader(
+        &self,
+        reference: &PlannedTaskSetReference,
+    ) -> Result<Box<dyn PlannedPartitionReader>> {
+        self.inner.planned_partition_reader(reference)
+    }
+
     fn rebind_scan_for_resume(
         &self,
         scan: &mut cdf_kernel::ScanPlan,
@@ -528,8 +535,16 @@ impl ResourceStream for RegistryBoundResource {
         self.inner.open(partition)
     }
 
+    fn open_executable(&self, partition: ExecutablePartition) -> PartitionOpenAttempt<'_> {
+        self.inner.open_executable(partition)
+    }
+
     fn attest_partition(&self, partition: PartitionPlan) -> PartitionAttestationAttempt<'_> {
         self.inner.attest_partition(partition)
+    }
+
+    fn attest_executable(&self, partition: ExecutablePartition) -> PartitionAttestationAttempt<'_> {
+        self.inner.attest_executable(partition)
     }
 
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
