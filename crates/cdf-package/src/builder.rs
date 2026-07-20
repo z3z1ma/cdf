@@ -225,13 +225,6 @@ impl Write for StreamingIdentityArtifact {
     }
 }
 
-#[derive(Clone, Debug, Serialize, serde::Deserialize)]
-struct SegmentDraft {
-    segment_id: SegmentId,
-    path: String,
-    package_row_ord_start: u64,
-    row_count: u64,
-}
 impl PackageBuilder {
     pub fn create(package_dir: impl AsRef<Path>, package_id: impl Into<String>) -> Result<Self> {
         let package_dir = package_dir.as_ref().to_path_buf();
@@ -682,12 +675,7 @@ impl PackageBuilder {
         };
         append_journal(
             &self.segment_drafts,
-            &SegmentDraft {
-                segment_id: encoded.segment_id.clone(),
-                path: encoded.relative_path.clone(),
-                package_row_ord_start: encoded.package_row_ord_start,
-                row_count: encoded.row_count,
-            },
+            &segment,
             "package segment draft journal",
         )?;
         Ok(SegmentWriteMetrics {
@@ -703,6 +691,18 @@ impl PackageBuilder {
                 0
             },
         })
+    }
+
+    /// Visits durable segments in canonical registration order without retaining a second list.
+    pub fn visit_segment_entries(
+        &self,
+        visitor: &mut dyn FnMut(SegmentEntry) -> Result<()>,
+    ) -> Result<()> {
+        visit_journal::<SegmentEntry>(
+            &self.segment_drafts,
+            "package segment draft journal",
+            visitor,
+        )
     }
 
     pub fn finish(&self) -> Result<PackageManifest> {
@@ -764,32 +764,27 @@ impl PackageBuilder {
         }
         files.sort_by(|left, right| crate::storage::portable_path_cmp(&left.path, &right.path));
         let mut segments = Vec::new();
-        visit_journal::<SegmentDraft>(
-            &self.segment_drafts,
-            "package segment draft journal",
-            |draft| {
-                let index = files
-                    .binary_search_by(|entry| {
-                        crate::storage::portable_path_cmp(&entry.path, &draft.path)
-                    })
-                    .map_err(|_| {
-                        CdfError::data(format!(
-                            "segment file {} missing before package finalization",
-                            draft.path
-                        ))
-                    })?;
-                let entry = &files[index];
-                segments.push(SegmentEntry {
-                    segment_id: draft.segment_id,
-                    path: draft.path,
-                    package_row_ord_start: draft.package_row_ord_start,
-                    row_count: draft.row_count,
-                    byte_count: entry.byte_count,
-                    sha256: entry.sha256.clone(),
-                });
-                Ok(())
-            },
-        )?;
+        self.visit_segment_entries(&mut |segment| {
+            let index = files
+                .binary_search_by(|entry| {
+                    crate::storage::portable_path_cmp(&entry.path, &segment.path)
+                })
+                .map_err(|_| {
+                    CdfError::data(format!(
+                        "segment file {} missing before package finalization",
+                        segment.path
+                    ))
+                })?;
+            let entry = &files[index];
+            if entry.byte_count != segment.byte_count || entry.sha256 != segment.sha256 {
+                return Err(CdfError::data(format!(
+                    "segment {} does not match its durable artifact receipt",
+                    segment.segment_id
+                )));
+            }
+            segments.push(segment);
+            Ok(())
+        })?;
 
         cdf_package_contract::validate_segment_ordinal_manifest(&segments)?;
         let manifest = build_manifest(self.package_id.clone(), files, segments, status)?;
@@ -829,9 +824,23 @@ fn visit_journal<T: DeserializeOwned>(
         .map_err(|error| io_error(format!("flush {label}"), error))?;
     file.seek(SeekFrom::Start(0))
         .map_err(|error| io_error(format!("rewind {label}"), error))?;
-    for line in BufReader::new(&mut *file).lines() {
-        let line = line.map_err(|error| io_error(format!("read {label}"), error))?;
-        visit(serde_json::from_str(&line).map_err(crate::json::json_error)?)?;
+    let result = (|| {
+        for line in BufReader::new(&mut *file).lines() {
+            let line = line.map_err(|error| io_error(format!("read {label}"), error))?;
+            visit(serde_json::from_str(&line).map_err(crate::json::json_error)?)?;
+        }
+        Ok(())
+    })();
+    let restore = file
+        .seek(SeekFrom::End(0))
+        .map(|_| ())
+        .map_err(|error| io_error(format!("restore {label} append position"), error));
+    match (result, restore) {
+        (Err(error), Err(restore)) => Err(CdfError::internal(format!(
+            "{error}; {label} cursor restoration also failed: {restore}"
+        ))),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
     }
-    Ok(())
 }

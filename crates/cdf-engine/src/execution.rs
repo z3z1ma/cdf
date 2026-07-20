@@ -1801,7 +1801,6 @@ struct PreparedKernelOutput {
 
 struct OutputWriteState<'a> {
     profile: &'a mut ExecutionProfile,
-    segments: &'a mut Vec<SegmentEntry>,
     segment_positions: &'a mut Vec<EngineSegmentPosition>,
     phase_measurements: &'a mut PhaseMeasurements,
     memory: Option<&'a Arc<dyn MemoryCoordinator>>,
@@ -2169,7 +2168,6 @@ impl SegmentEncodeQueue {
                 partition_ordinal,
                 output_position,
             });
-            state.segments.push(segment);
             self.next_registration = self
                 .next_registration
                 .checked_add(1)
@@ -3383,7 +3381,6 @@ where
     let mut statistics_segment_ordinal = 0_u64;
     let mut verdict_summary = VerdictSummary::default();
     let mut lineage = LineageSummary::default();
-    let mut segments = Vec::new();
     let mut segment_positions = Vec::new();
     let mut quarantine_part_count = 0_usize;
     let mut late_data_evidence = LateDataEvidenceAccumulator::default();
@@ -3653,7 +3650,6 @@ where
                         &mut carryover_assembler,
                         &mut OutputWriteState {
                             profile: &mut profile,
-                            segments: &mut segments,
                             segment_positions: &mut segment_positions,
                             phase_measurements: &mut phase_measurements,
                             memory: memory.as_ref(),
@@ -3692,7 +3688,6 @@ where
                 carryover_assembler.finish()?,
                 &mut OutputWriteState {
                     profile: &mut profile,
-                    segments: &mut segments,
                     segment_positions: &mut segment_positions,
                     phase_measurements: &mut phase_measurements,
                     memory: memory.as_ref(),
@@ -4693,7 +4688,6 @@ where
                     &mut segment_assembler,
                     &mut OutputWriteState {
                         profile: &mut profile,
-                        segments: &mut segments,
                         segment_positions: &mut segment_positions,
                         phase_measurements: &mut phase_measurements,
                         memory: memory.as_ref(),
@@ -4717,7 +4711,6 @@ where
                 segment_assembler.finish()?,
                 &mut OutputWriteState {
                     profile: &mut profile,
-                    segments: &mut segments,
                     segment_positions: &mut segment_positions,
                     phase_measurements: &mut phase_measurements,
                     memory: memory.as_ref(),
@@ -5131,7 +5124,6 @@ where
             &segmentation_policy,
             &mut OutputWriteState {
                 profile: &mut profile,
-                segments: &mut segments,
                 segment_positions: &mut segment_positions,
                 phase_measurements: &mut phase_measurements,
                 memory: memory.as_ref(),
@@ -5155,7 +5147,6 @@ where
         &builder,
         &mut OutputWriteState {
             profile: &mut profile,
-            segments: &mut segments,
             segment_positions: &mut segment_positions,
             phase_measurements: &mut phase_measurements,
             memory: memory.as_ref(),
@@ -5399,7 +5390,6 @@ where
         pre_finalize(
             &builder,
             EnginePackageDraft {
-                segments: &segments,
                 profile: &profile,
                 lineage: &lineage,
                 segment_positions: &segment_positions,
@@ -7452,19 +7442,17 @@ pub fn assemble_isolated_worker_package(
     }
 
     let builder = PackageBuilder::create(package_dir, plan.package_id.clone())?;
-    let mut segments = Vec::with_capacity(canonical.len());
     let mut package_row_ord_start = 0_u64;
     for (_, _, segment_id, row_count, reference) in canonical {
         let bytes = artifacts
             .read_canonical_segment(&reference, resources.disk_bytes, resources.memory_bytes)?
             .into_bytes();
-        let metrics = builder.import_canonical_segment(
+        builder.import_canonical_segment(
             segment_id,
             package_row_ord_start,
             row_count,
             bytes.payload(),
         )?;
-        segments.push(metrics.segment);
         package_row_ord_start = package_row_ord_start
             .checked_add(row_count)
             .ok_or_else(|| CdfError::data("isolated package row ordinal overflowed u64"))?;

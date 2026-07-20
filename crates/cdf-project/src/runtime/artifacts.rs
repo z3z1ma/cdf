@@ -15,7 +15,6 @@ pub(super) fn write_run_state_commit_artifacts(
     let state_delta = state_delta_preimage_from_run_draft(
         context,
         StateDeltaRunDraft {
-            segments: draft.segments,
             segment_positions: draft.segment_positions,
             execution_evidence: draft.execution_evidence(),
             source_continuation: draft
@@ -31,6 +30,7 @@ pub(super) fn write_run_state_commit_artifacts(
         schema_hash,
         scope,
         head.as_ref(),
+        |visitor| builder.visit_segment_entries(visitor),
     )?;
     if !draft
         .execution_evidence()
@@ -182,7 +182,6 @@ pub(crate) fn state_delta_from_run(
     let preimage = state_delta_preimage_from_run_draft(
         &context,
         StateDeltaRunDraft {
-            segments: output.output.identity_segments(),
             segment_positions: &output.segment_positions,
             execution_evidence: output.execution_evidence(),
             source_continuation: output
@@ -212,6 +211,12 @@ pub(crate) fn state_delta_from_run(
         schema_hash,
         scope,
         head,
+        |visitor| {
+            for segment in output.output.identity_segments() {
+                visitor(segment.clone())?;
+            }
+            Ok(())
+        },
     )?;
     Ok(preimage.into_state_delta(PackageHash::new(
         output.output.manifest.package_hash.clone(),
@@ -219,7 +224,6 @@ pub(crate) fn state_delta_from_run(
 }
 
 struct StateDeltaRunDraft<'a> {
-    segments: &'a [SegmentEntry],
     segment_positions: &'a [cdf_engine::EngineSegmentPosition],
     execution_evidence: &'a cdf_engine::EngineExecutionEvidence,
     source_continuation: Option<SourcePosition>,
@@ -235,32 +239,45 @@ fn state_delta_preimage_from_run_draft(
     schema_hash: &SchemaHash,
     scope: &ScopeKey,
     head: Option<&Checkpoint>,
+    visit_segments: impl FnOnce(&mut dyn FnMut(SegmentEntry) -> Result<()>) -> Result<()>,
 ) -> Result<StateDeltaPreimage> {
     if !draft.execution_evidence.checkpoint_eligible() {
         return Err(CdfError::data(
             "checkpoint state requires complete source execution; a partial or limited source execution cannot advance state",
         ));
     }
-    let positions = segment_positions_by_id(draft.segments, draft.segment_positions)?;
-    let mut segment_evidence = Vec::with_capacity(draft.segments.len());
-
-    for segment in draft.segments {
+    let mut positions = segment_positions_by_id(draft.segment_positions)?;
+    let mut state_segments = Vec::with_capacity(draft.segment_positions.len());
+    visit_segments(&mut |segment| {
         let segment_position = positions
-            .get(&segment.segment_id)
+            .remove(&segment.segment_id)
             .ok_or_else(|| {
                 CdfError::internal(format!(
                     "engine output omitted source position evidence for segment {}",
                     segment.segment_id
                 ))
             })?
-            .clone()
             .ok_or_else(|| {
                 CdfError::data(format!(
                     "package segment {} has no source position evidence; cdf run cannot checkpoint without source position evidence",
                     segment.segment_id
                 ))
             })?;
-        segment_evidence.push((segment, segment_position));
+        state_segments.push(StateSegment {
+            segment_id: segment.segment_id,
+            scope: scope.clone(),
+            output_position: segment_position,
+            row_count: segment.row_count,
+            byte_count: segment.byte_count,
+        });
+        Ok(())
+    })?;
+    if !positions.is_empty() || state_segments.len() != draft.segment_positions.len() {
+        return Err(CdfError::internal(format!(
+            "engine output has {} segment source-position record(s) but the package builder exposed {} durable segment(s)",
+            draft.segment_positions.len(),
+            state_segments.len()
+        )));
     }
 
     let observed_positions = draft
@@ -290,9 +307,9 @@ fn state_delta_preimage_from_run_draft(
             &carryover_positions,
         )?;
         if observed != head.delta.output_position
-            || segment_evidence
+            || state_segments
                 .iter()
-                .any(|(_, position)| position != &head.delta.output_position)
+                .any(|segment| segment.output_position != head.delta.output_position)
         {
             return Err(CdfError::data(
                 "late-data carryover cannot advance or disagree with its committed source frontier",
@@ -307,16 +324,6 @@ fn state_delta_preimage_from_run_draft(
             &observed_positions,
         )?
     };
-    let state_segments = segment_evidence
-        .into_iter()
-        .map(|(segment, segment_position)| StateSegment {
-            segment_id: segment.segment_id.clone(),
-            scope: scope.clone(),
-            output_position: segment_position,
-            row_count: segment.row_count,
-            byte_count: segment.byte_count,
-        })
-        .collect();
     Ok(StateDeltaPreimage {
         checkpoint_id: context.checkpoint_id.clone(),
         pipeline_id: context.pipeline_id.clone(),
@@ -336,17 +343,8 @@ fn state_delta_preimage_from_run_draft(
 }
 
 fn segment_positions_by_id(
-    segments: &[SegmentEntry],
     segment_positions: &[cdf_engine::EngineSegmentPosition],
 ) -> Result<BTreeMap<SegmentId, Option<SourcePosition>>> {
-    if segment_positions.len() != segments.len() {
-        return Err(CdfError::internal(format!(
-            "engine output has {} segment(s) but {} segment source position record(s)",
-            segments.len(),
-            segment_positions.len()
-        )));
-    }
-
     let positions = segment_positions
         .iter()
         .map(|position| {

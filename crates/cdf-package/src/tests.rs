@@ -178,8 +178,37 @@ fn segment_encoding_completion_cannot_override_canonical_registration_order() {
         )
         .unwrap();
 
-    builder.register_encoded_segment(first).unwrap();
-    builder.register_encoded_segment(second).unwrap();
+    let first = builder.register_encoded_segment(first).unwrap().segment;
+    let second = builder.register_encoded_segment(second).unwrap().segment;
+    let mut journal = Vec::new();
+    builder
+        .visit_segment_entries(&mut |entry| {
+            journal.push(entry);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(journal, [first.clone(), second.clone()]);
+    let error = builder
+        .visit_segment_entries(&mut |_| Err(CdfError::data("stop visiting")))
+        .unwrap_err();
+    assert!(error.message.contains("stop visiting"));
+    let third = encoder
+        .encode(
+            SegmentId::new("seg-000003").unwrap(),
+            6,
+            &[canonical_batch(sample_batch(), 6)],
+            true,
+        )
+        .unwrap();
+    let third = builder.register_encoded_segment(third).unwrap().segment;
+    journal.clear();
+    builder
+        .visit_segment_entries(&mut |entry| {
+            journal.push(entry);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(journal, [first, second, third]);
     let manifest = builder.finish().unwrap();
     assert_eq!(
         manifest
@@ -188,7 +217,7 @@ fn segment_encoding_completion_cannot_override_canonical_registration_order() {
             .iter()
             .map(|segment| segment.segment_id.as_str())
             .collect::<Vec<_>>(),
-        ["seg-000001", "seg-000002"]
+        ["seg-000001", "seg-000002", "seg-000003"]
     );
 }
 

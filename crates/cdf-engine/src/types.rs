@@ -2091,7 +2091,6 @@ impl EngineExecutionOptions {
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug)]
 pub struct EnginePackageDraft<'a> {
-    pub segments: &'a [SegmentEntry],
     pub profile: &'a ExecutionProfile,
     pub lineage: &'a LineageSummary,
     pub segment_positions: &'a [EngineSegmentPosition],
