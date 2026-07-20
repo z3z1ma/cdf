@@ -3,6 +3,7 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use cdf_kernel::{
@@ -13,7 +14,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{SpillBudgetCoordinator, SpillReservation};
 
-const ROLLING_REPLAY_MANIFEST_VERSION: u16 = 1;
+const ROLLING_REPLAY_MANIFEST_VERSION: u16 = 2;
 const MANIFEST_FILE: &str = "manifest.json";
 const MANIFEST_TEMP_FILE: &str = ".manifest.json.tmp";
 
@@ -71,6 +72,8 @@ struct RollingReplayManifest {
     next_ordinal: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     committed_low_watermark: Option<SourcePosition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    committed_low_ordinal: Option<u64>,
     entries: Vec<RollingReplayManifestEntry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     retired: Vec<RollingReplayManifestEntry>,
@@ -112,6 +115,7 @@ impl RollingReplayStore {
                     limits,
                     next_ordinal: 0,
                     committed_low_watermark: None,
+                    committed_low_ordinal: None,
                     entries: Vec::new(),
                     retired: Vec::new(),
                 },
@@ -129,6 +133,7 @@ impl RollingReplayStore {
         root: impl AsRef<Path>,
         expected_limits: RollingReplayLimits,
         spill: Arc<dyn SpillBudgetCoordinator>,
+        now_unix_milliseconds: u64,
     ) -> Result<Self> {
         expected_limits.validate()?;
         let root = root.as_ref().to_path_buf();
@@ -150,6 +155,7 @@ impl RollingReplayStore {
                 ))
             })?;
         validate_manifest(&manifest, expected_limits)?;
+        enforce_age_bound(&manifest, now_unix_milliseconds)?;
 
         let live_bytes = verify_manifest_entries(&root, &manifest.entries, true)?;
         manifest
@@ -285,6 +291,16 @@ impl RollingReplayStore {
         let retired = state.manifest.entries.drain(..=index).collect::<Vec<_>>();
         state.manifest.retired.extend(retired);
         state.manifest.committed_low_watermark = Some(frontier.clone());
+        state.manifest.committed_low_ordinal = Some(
+            state
+                .manifest
+                .retired
+                .last()
+                .ok_or_else(|| {
+                    CdfError::internal("rolling replay retirement omitted its boundary")
+                })?
+                .ordinal,
+        );
         if let Err(error) = self.persist_manifest(&state) {
             state.manifest = previous;
             return Err(error);
@@ -358,6 +374,7 @@ impl RollingReplayStore {
 impl SourceReplayRetention for RollingReplayStore {
     fn status(&self) -> Result<SourceReplayRetentionStatus> {
         let state = self.lock_state()?;
+        enforce_age_bound(&state.manifest, current_unix_milliseconds()?)?;
         let status = SourceReplayRetentionStatus {
             maximum_bytes: state.manifest.limits.maximum_bytes,
             maximum_age_milliseconds: state.manifest.limits.maximum_age_milliseconds,
@@ -395,9 +412,15 @@ fn validate_manifest(
     if let Some(frontier) = &manifest.committed_low_watermark {
         frontier.validate()?;
     }
+    if manifest.committed_low_watermark.is_some() != manifest.committed_low_ordinal.is_some() {
+        return Err(CdfError::data(
+            "rolling replay manifest committed position and ordinal authorities diverge",
+        ));
+    }
     validate_manifest_entry_sequence(&manifest.entries)?;
     validate_manifest_entry_sequence(&manifest.retired)?;
     let mut file_names = std::collections::BTreeSet::new();
+    let mut positions = std::collections::BTreeSet::new();
     let mut maximum_ordinal = None;
     for entry in manifest.entries.iter().chain(&manifest.retired) {
         entry.position.validate()?;
@@ -413,12 +436,44 @@ fn validate_manifest(
                 "rolling replay manifest contains duplicate entry identities",
             ));
         }
+        let position_identity = serde_json::to_string(&entry.position)
+            .map_err(|error| CdfError::internal(error.to_string()))?;
+        if !positions.insert(position_identity) {
+            return Err(CdfError::data(
+                "rolling replay manifest contains an ambiguous repeated source position",
+            ));
+        }
         maximum_ordinal =
             Some(maximum_ordinal.map_or(entry.ordinal, |maximum: u64| maximum.max(entry.ordinal)));
     }
     if maximum_ordinal.is_some_and(|ordinal| manifest.next_ordinal <= ordinal) {
         return Err(CdfError::data(
             "rolling replay manifest next ordinal does not follow retained entries",
+        ));
+    }
+    if let Some(committed_ordinal) = manifest.committed_low_ordinal {
+        if manifest.retired.last().is_some_and(|entry| {
+            entry.ordinal != committed_ordinal
+                || manifest.committed_low_watermark.as_ref() != Some(&entry.position)
+        }) || manifest
+            .entries
+            .first()
+            .is_some_and(|entry| entry.ordinal <= committed_ordinal)
+        {
+            return Err(CdfError::data(
+                "rolling replay retained/retired entries diverge from the committed low watermark",
+            ));
+        }
+    } else if !manifest.retired.is_empty() {
+        return Err(CdfError::data(
+            "rolling replay retired entries require a committed low watermark",
+        ));
+    }
+    if let (Some(retired), Some(live)) = (manifest.retired.last(), manifest.entries.first())
+        && retired.ordinal >= live.ordinal
+    {
+        return Err(CdfError::data(
+            "rolling replay retired entries are not an exact prefix of live entries",
         ));
     }
     Ok(())
@@ -448,8 +503,10 @@ fn validate_append_order(
 ) -> Result<()> {
     if manifest
         .entries
-        .last()
-        .is_some_and(|entry| entry.position == *position)
+        .iter()
+        .chain(&manifest.retired)
+        .any(|entry| entry.position == *position)
+        || manifest.committed_low_watermark.as_ref() == Some(position)
     {
         return Err(CdfError::data(
             "rolling replay source position was appended twice",
@@ -465,6 +522,15 @@ fn validate_append_order(
         ));
     }
     Ok(())
+}
+
+fn current_unix_milliseconds() -> Result<u64> {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| {
+            CdfError::internal(format!("system clock precedes Unix epoch: {error}"))
+        })?;
+    u64::try_from(duration.as_millis()).map_err(|error| CdfError::internal(error.to_string()))
 }
 
 fn enforce_age_bound(manifest: &RollingReplayManifest, now: u64) -> Result<()> {
@@ -869,6 +935,22 @@ mod tests {
     }
 
     #[test]
+    fn repeated_position_is_rejected_even_when_it_is_not_adjacent() {
+        let temp = tempfile::tempdir().unwrap();
+        let spill: Arc<dyn SpillBudgetCoordinator> =
+            Arc::new(crate::FixedSpillBudget::new(64).unwrap());
+        let store = RollingReplayStore::create(temp.path(), limits(), spill).unwrap();
+        store.append(position(1), 100, b"1").unwrap();
+        store.append(position(2), 110, b"2").unwrap();
+        let error = store.append(position(1), 120, b"3").unwrap_err();
+        assert!(error.message.contains("appended twice"));
+
+        store.commit_low_watermark(&position(1)).unwrap();
+        let error = store.append(position(1), 130, b"4").unwrap_err();
+        assert!(error.message.contains("appended twice"));
+    }
+
+    #[test]
     fn recovery_revalidates_payloads_and_reacquires_shared_budget() {
         let temp = tempfile::tempdir().unwrap();
         let first_spill: Arc<dyn SpillBudgetCoordinator> =
@@ -881,7 +963,8 @@ mod tests {
         let recovered_spill: Arc<dyn SpillBudgetCoordinator> =
             Arc::new(crate::FixedSpillBudget::new(64).unwrap());
         let recovered =
-            RollingReplayStore::recover(temp.path(), limits(), recovered_spill.clone()).unwrap();
+            RollingReplayStore::recover(temp.path(), limits(), recovered_spill.clone(), 120)
+                .unwrap();
         assert_eq!(recovered.replay_units().unwrap().len(), 2);
         assert_eq!(recovered.retained_bytes().unwrap(), 6);
         assert_eq!(recovered_spill.snapshot().current_bytes, 6);
@@ -891,11 +974,29 @@ mod tests {
         fs::write(temp.path().join("entry-00000000000000000000.bin"), b"bad").unwrap();
         let corrupt_spill: Arc<dyn SpillBudgetCoordinator> =
             Arc::new(crate::FixedSpillBudget::new(64).unwrap());
-        let error = match RollingReplayStore::recover(temp.path(), limits(), corrupt_spill) {
+        let error = match RollingReplayStore::recover(temp.path(), limits(), corrupt_spill, 120) {
             Ok(_) => panic!("corrupt replay payload must fail recovery"),
             Err(error) => error,
         };
         assert!(error.message.contains("checksum"));
+    }
+
+    #[test]
+    fn recovery_rejects_an_already_expired_uncommitted_window() {
+        let temp = tempfile::tempdir().unwrap();
+        let first_spill: Arc<dyn SpillBudgetCoordinator> =
+            Arc::new(crate::FixedSpillBudget::new(64).unwrap());
+        {
+            let store = RollingReplayStore::create(temp.path(), limits(), first_spill).unwrap();
+            store.append(position(1), 100, b"one").unwrap();
+        }
+        let recovered_spill: Arc<dyn SpillBudgetCoordinator> =
+            Arc::new(crate::FixedSpillBudget::new(64).unwrap());
+        let error = match RollingReplayStore::recover(temp.path(), limits(), recovered_spill, 201) {
+            Ok(_) => panic!("expired replay window must fail recovery"),
+            Err(error) => error,
+        };
+        assert!(error.message.contains("configured 100 ms age bound"));
     }
 
     #[test]
@@ -912,13 +1013,15 @@ mod tests {
             let retired = state.manifest.entries.drain(..2).collect::<Vec<_>>();
             state.manifest.retired.extend(retired);
             state.manifest.committed_low_watermark = Some(position(2));
+            state.manifest.committed_low_ordinal = Some(1);
             store.persist_manifest(&state).unwrap();
         }
 
         let recovered_spill: Arc<dyn SpillBudgetCoordinator> =
             Arc::new(crate::FixedSpillBudget::new(64).unwrap());
         let recovered =
-            RollingReplayStore::recover(temp.path(), limits(), recovered_spill.clone()).unwrap();
+            RollingReplayStore::recover(temp.path(), limits(), recovered_spill.clone(), 130)
+                .unwrap();
         assert_eq!(
             recovered.committed_low_watermark().unwrap(),
             Some(position(2))
