@@ -24,6 +24,7 @@ pub struct IcebergTaskSetAuthority {
     pub snapshot: Option<TableSnapshotPosition>,
     pub table_format_version: u8,
     pub schemas: BTreeMap<i32, IcebergJsonAuthority>,
+    pub output_schema_id: i32,
     pub projected_field_ids: Vec<i32>,
     pub partition_specs: BTreeMap<i32, IcebergJsonAuthority>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -81,10 +82,25 @@ impl IcebergTaskSetAuthority {
                 )));
             }
         }
+        let output_schema = self.schemas.get(&self.output_schema_id).ok_or_else(|| {
+            CdfError::contract(format!(
+                "Iceberg output schema id {} is absent from task-set authority",
+                self.output_schema_id
+            ))
+        })?;
+        let output_schema = decode_schema(output_schema)?;
         if !strictly_increasing_positive(&self.projected_field_ids) {
             return Err(CdfError::contract(
                 "Iceberg projected field ids must be positive and strictly increasing",
             ));
+        }
+        for field_id in &self.projected_field_ids {
+            if output_schema.field_by_id(*field_id).is_none() {
+                return Err(CdfError::contract(format!(
+                    "Iceberg projected field id {field_id} is absent from output schema {}",
+                    self.output_schema_id
+                )));
+            }
         }
         if self.partition_specs.is_empty() {
             return Err(CdfError::contract(
@@ -142,7 +158,7 @@ pub struct IcebergScanTask {
     pub canonical_ordinal: u64,
     pub authority_sha256: String,
     pub data_file: IcebergDataFile,
-    pub schema_id: i32,
+    pub file_schema_id: i32,
     pub partition_spec_id: i32,
     /// Values are ordered by the selected partition spec and decoded against its typed fields.
     pub partition_values: Vec<Option<serde_json::Value>>,
@@ -175,21 +191,19 @@ impl IcebergScanTask {
                 "Iceberg source currently supports Parquet data files only",
             ));
         }
-        let schema_authority = authority.schemas.get(&self.schema_id).ok_or_else(|| {
+        let schema_authority = authority.schemas.get(&self.file_schema_id).ok_or_else(|| {
             CdfError::contract(format!(
-                "Iceberg task schema id {} is absent from task-set authority",
-                self.schema_id
+                "Iceberg task file schema id {} is absent from task-set authority",
+                self.file_schema_id
             ))
         })?;
-        let schema = decode_schema(schema_authority)?;
-        for field_id in &authority.projected_field_ids {
-            if schema.field_by_id(*field_id).is_none() {
-                return Err(CdfError::contract(format!(
-                    "Iceberg projected field id {field_id} is absent from task schema {}",
-                    self.schema_id
-                )));
-            }
-        }
+        let file_schema = decode_schema(schema_authority)?;
+        let output_schema = decode_schema(
+            authority
+                .schemas
+                .get(&authority.output_schema_id)
+                .expect("authority validation proved output schema"),
+        )?;
         let spec_authority = authority
             .partition_specs
             .get(&self.partition_spec_id)
@@ -200,11 +214,13 @@ impl IcebergScanTask {
                 ))
             })?;
         let partition_spec = decode_partition_spec(spec_authority)?;
-        let partition_type = partition_spec.partition_type(&schema).map_err(|error| {
-            CdfError::contract(format!(
-                "bind Iceberg partition spec to task schema: {error}"
-            ))
-        })?;
+        let partition_type = partition_spec
+            .partition_type(&file_schema)
+            .map_err(|error| {
+                CdfError::contract(format!(
+                    "bind Iceberg partition spec to task schema: {error}"
+                ))
+            })?;
         if partition_type.fields().len() != self.partition_values.len() {
             return Err(CdfError::contract(format!(
                 "Iceberg task carries {} partition values but spec {} requires {}",
@@ -248,10 +264,10 @@ impl IcebergScanTask {
                 )));
             }
             for field_id in &delete.equality_field_ids {
-                if schema.field_by_id(*field_id).is_none() {
+                if output_schema.field_by_id(*field_id).is_none() {
                     return Err(CdfError::contract(format!(
-                        "Iceberg equality-delete field id {field_id} is absent from task schema {}",
-                        self.schema_id
+                        "Iceberg equality-delete field id {field_id} is absent from output schema {}",
+                        authority.output_schema_id
                     )));
                 }
             }
@@ -651,8 +667,7 @@ mod tests {
             parent_snapshot_id: Some(6),
             metadata_location: "file:///warehouse/analytics/events/metadata/v3.json".to_owned(),
             metadata_generation:
-                "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-                    .to_owned(),
+                "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
         }
     }
 
@@ -679,6 +694,7 @@ mod tests {
                 }))
                 .unwrap(),
             )]),
+            output_schema_id: 2,
             projected_field_ids: vec![1],
             partition_specs: BTreeMap::from([(
                 0,
@@ -717,11 +733,7 @@ mod tests {
         let mut task = task();
         task.authority_sha256 = authority.content_sha256().unwrap();
         let error = task.validate_against(&authority).unwrap_err();
-        assert!(
-            error
-                .message
-                .contains("requires a selected table snapshot")
-        );
+        assert!(error.message.contains("requires a selected table snapshot"));
     }
 
     fn task() -> IcebergScanTask {
@@ -743,7 +755,7 @@ mod tests {
                 sort_order_id: Some(0),
                 first_row_id: None,
             },
-            schema_id: 2,
+            file_schema_id: 2,
             partition_spec_id: 0,
             partition_values: Vec::new(),
             deletes: vec![IcebergDeleteFile {

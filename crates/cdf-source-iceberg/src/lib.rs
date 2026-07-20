@@ -6,6 +6,8 @@ use cdf_runtime::{SourceDriverDescriptor, SourceDriverId, artifact_hash};
 
 mod catalog;
 mod config;
+mod driver;
+mod planner;
 mod scan_task;
 
 pub use catalog::{
@@ -14,10 +16,12 @@ pub use catalog::{
     SelectedIcebergSnapshot, UnsupportedGlueCatalogClient, annotated_arrow_schema,
 };
 pub use config::{
-    DEFAULT_MAXIMUM_METADATA_BYTES, DEFAULT_MAXIMUM_METADATA_FILES,
-    DEFAULT_METADATA_PARSE_AMPLIFICATION_BPS, IcebergCatalogOptions, IcebergResourceOptions,
-    IcebergSnapshotSelector, IcebergSourceOptions,
+    DEFAULT_MAXIMUM_CONCURRENCY, DEFAULT_MAXIMUM_METADATA_BYTES, DEFAULT_MAXIMUM_METADATA_FILES,
+    DEFAULT_MAXIMUM_TASK_AUTHORITY_BYTES, DEFAULT_MAXIMUM_TASK_BYTES,
+    DEFAULT_METADATA_PARSE_AMPLIFICATION_BPS, DEFAULT_TASK_WRITER_BUFFER_BYTES,
+    IcebergCatalogOptions, IcebergResourceOptions, IcebergSnapshotSelector, IcebergSourceOptions,
 };
+pub use driver::{IcebergRuntimeDependencies, IcebergSourceDriver};
 pub use scan_task::{
     ICEBERG_SCAN_TASK_VERSION, ICEBERG_TASK_SET_AUTHORITY_VERSION, ICEBERG_TASK_SET_TYPE,
     IcebergDataFile, IcebergDeleteContent, IcebergDeleteFile, IcebergFileFormat,
@@ -90,7 +94,11 @@ pub fn iceberg_option_schema() -> serde_json::Value {
                 "egress_allowlist": egress_allowlist,
                 "maximum_metadata_bytes": {"type": "integer", "minimum": 1, "default": 67108864},
                 "metadata_parse_amplification_bps": {"type": "integer", "minimum": 10000, "default": 40000},
-                "maximum_metadata_files": {"type": "integer", "minimum": 1, "default": 1000000}
+                "maximum_metadata_files": {"type": "integer", "minimum": 1, "default": 1000000},
+                "maximum_task_bytes": {"type": "integer", "minimum": 1, "default": 1048576},
+                "maximum_task_authority_bytes": {"type": "integer", "minimum": 1, "default": 67108864},
+                "task_writer_buffer_bytes": {"type": "integer", "minimum": 1, "default": 1048576},
+                "maximum_concurrency": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 65535}
             }
         },
         "resource": {
@@ -194,7 +202,7 @@ mod tests {
         assert!(descriptor.schemes.is_empty());
         assert_eq!(
             descriptor.option_schema_hash,
-            "sha256:e19e88e70e74eb7ecc955e7450c07416974e8e1fc6d8f630b84fedbc8b314545"
+            "sha256:ca4c88b0692c905998e0efda0ea074400aaac94e424f3dab5aecdcca356fcede"
         );
         assert_eq!(
             descriptor.option_schema_hash,

@@ -1428,9 +1428,11 @@ dependencies = [
  "cdf-runtime",
  "cdf-task-store",
  "futures-util",
+ "hex",
  "iceberg",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "url",
 ]

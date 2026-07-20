@@ -5,6 +5,10 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_MAXIMUM_METADATA_BYTES: u64 = 64 * 1024 * 1024;
 pub const DEFAULT_METADATA_PARSE_AMPLIFICATION_BPS: u32 = 40_000;
 pub const DEFAULT_MAXIMUM_METADATA_FILES: usize = 1_000_000;
+pub const DEFAULT_MAXIMUM_TASK_BYTES: u64 = 1024 * 1024;
+pub const DEFAULT_MAXIMUM_TASK_AUTHORITY_BYTES: u64 = 64 * 1024 * 1024;
+pub const DEFAULT_TASK_WRITER_BUFFER_BYTES: usize = 1024 * 1024;
+pub const DEFAULT_MAXIMUM_CONCURRENCY: u16 = u16::MAX;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -20,6 +24,14 @@ pub struct IcebergSourceOptions {
     pub metadata_parse_amplification_bps: u32,
     #[serde(default = "default_maximum_metadata_files")]
     pub maximum_metadata_files: usize,
+    #[serde(default = "default_maximum_task_bytes")]
+    pub maximum_task_bytes: u64,
+    #[serde(default = "default_maximum_task_authority_bytes")]
+    pub maximum_task_authority_bytes: u64,
+    #[serde(default = "default_task_writer_buffer_bytes")]
+    pub task_writer_buffer_bytes: usize,
+    #[serde(default = "default_maximum_concurrency")]
+    pub maximum_concurrency: u16,
 }
 
 impl IcebergSourceOptions {
@@ -42,6 +54,15 @@ impl IcebergSourceOptions {
         if self.maximum_metadata_files == 0 {
             return Err(CdfError::contract(
                 "Iceberg maximum_metadata_files must be greater than zero",
+            ));
+        }
+        if self.maximum_task_bytes == 0
+            || self.maximum_task_authority_bytes == 0
+            || self.task_writer_buffer_bytes == 0
+            || self.maximum_concurrency == 0
+        {
+            return Err(CdfError::contract(
+                "Iceberg task record, shared-authority, writer-buffer, and concurrency budgets must be greater than zero",
             ));
         }
         Ok(())
@@ -233,6 +254,22 @@ const fn default_maximum_metadata_files() -> usize {
     DEFAULT_MAXIMUM_METADATA_FILES
 }
 
+const fn default_maximum_task_bytes() -> u64 {
+    DEFAULT_MAXIMUM_TASK_BYTES
+}
+
+const fn default_maximum_task_authority_bytes() -> u64 {
+    DEFAULT_MAXIMUM_TASK_AUTHORITY_BYTES
+}
+
+const fn default_task_writer_buffer_bytes() -> usize {
+    DEFAULT_TASK_WRITER_BUFFER_BYTES
+}
+
+const fn default_maximum_concurrency() -> u16 {
+    DEFAULT_MAXIMUM_CONCURRENCY
+}
+
 fn validate_hosts(hosts: &[String]) -> Result<()> {
     let mut sorted = hosts.to_vec();
     sorted.sort();
@@ -340,5 +377,9 @@ mod tests {
         assert_eq!(source.maximum_metadata_bytes, 64 * 1024 * 1024);
         assert_eq!(source.metadata_parse_amplification_bps, 40_000);
         assert_eq!(source.maximum_metadata_files, 1_000_000);
+        assert_eq!(source.maximum_task_bytes, 1024 * 1024);
+        assert_eq!(source.maximum_task_authority_bytes, 64 * 1024 * 1024);
+        assert_eq!(source.task_writer_buffer_bytes, 1024 * 1024);
+        assert_eq!(source.maximum_concurrency, u16::MAX);
     }
 }

@@ -123,6 +123,45 @@ struct CatalogObservation {
     control_leases: Vec<MemoryLease>,
 }
 
+pub(crate) struct LoadedCatalogObject {
+    pub payload: AccountedBytes,
+}
+
+pub(crate) fn load_catalog_object(
+    context: &IcebergCatalogContext,
+    source: &crate::IcebergSourceOptions,
+    location: &str,
+    expected_size: Option<u64>,
+    cancellation: RunCancellation,
+) -> Result<LoadedCatalogObject> {
+    let resource = transport_resource(location, source, None)?;
+    let control = FileTransportControl::new(cancellation.clone(), None);
+    let metadata = context
+        .object_access
+        .metadata(&context.egress, &resource, &control)?;
+    let access = metadata.access_resource(&resource);
+    let identity = metadata.into_identity();
+    if let Some(expected_size) = expected_size
+        && identity.size_bytes != Some(expected_size)
+    {
+        return Err(CdfError::data(format!(
+            "Iceberg metadata object `{}` has {} bytes but its parent metadata requires {expected_size}",
+            identity.location,
+            identity
+                .size_bytes
+                .map_or_else(|| "unknown".to_owned(), |value| value.to_string())
+        )));
+    }
+    let payload = read_metadata_object(
+        context,
+        &access,
+        &identity,
+        source.maximum_metadata_bytes,
+        cancellation,
+    )?;
+    Ok(LoadedCatalogObject { payload })
+}
+
 impl RetainedMetadata {
     fn retained_bytes(&self) -> u64 {
         self.payloads
@@ -553,6 +592,7 @@ fn build_loaded_table(
     context: &IcebergCatalogContext,
     observation: CatalogObservation,
 ) -> Result<LoadedIcebergTable> {
+    validate_metadata_location(&observation.metadata_location)?;
     let metadata_payload = observation.payloads.last();
     let raw_bytes = observation
         .payloads
@@ -637,6 +677,28 @@ fn build_loaded_table(
         objects_read: observation.objects_read,
         retained,
     })
+}
+
+fn validate_metadata_location(location: &str) -> Result<()> {
+    if location.trim().is_empty()
+        || location.chars().any(char::is_control)
+        || location.contains(['?', '#'])
+    {
+        return Err(CdfError::contract(
+            "Iceberg metadata location must be nonempty, control-free, and contain no query or fragment; signed URLs belong in runtime credentials, not plan authority",
+        ));
+    }
+    if let Some((_, remainder)) = location.split_once("://")
+        && remainder
+            .split('/')
+            .next()
+            .is_some_and(|value| value.contains('@'))
+    {
+        return Err(CdfError::contract(
+            "Iceberg metadata location cannot contain URI user information",
+        ));
+    }
+    Ok(())
 }
 
 fn select_snapshot(
@@ -947,7 +1009,7 @@ fn reserve_discovery_memory(
         })
 }
 
-fn reserve_parse_memory(
+pub(crate) fn reserve_parse_memory(
     memory: Arc<dyn MemoryCoordinator>,
     input_bytes: u64,
     amplification_bps: u32,
