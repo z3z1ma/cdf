@@ -23,6 +23,7 @@ use cdf_runtime::{
     SourceHealthStatus, SourceResolutionContext, SourceRetryGranularity, SourceSchemaObservation,
     artifact_hash,
 };
+use cdf_task_store::ExternalTaskStore;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -893,6 +894,34 @@ fn transport_resource_for_location(
 struct FileProjectOptions {
     #[serde(default)]
     payload_cache: Option<FilePayloadCacheOptions>,
+    #[serde(default)]
+    planning: FilePlanningOptions,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct FilePlanningOptions {
+    maximum_task_bytes: u64,
+    maximum_authority_bytes: u64,
+    maximum_sort_key_bytes: u64,
+    index_cache_bytes: u64,
+    writer_buffer_bytes: usize,
+    spill_growth_bytes: u64,
+    metadata_parse_amplification_bps: u32,
+}
+
+impl Default for FilePlanningOptions {
+    fn default() -> Self {
+        Self {
+            maximum_task_bytes: 1024 * 1024,
+            maximum_authority_bytes: 1024 * 1024,
+            maximum_sort_key_bytes: 64 * 1024,
+            index_cache_bytes: 8 * 1024 * 1024,
+            writer_buffer_bytes: 1024 * 1024,
+            spill_growth_bytes: 64 * 1024 * 1024,
+            metadata_parse_amplification_bps: 40_000,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -926,6 +955,18 @@ fn decode_file_project_options(options: &serde_json::Value) -> Result<FileProjec
             ));
         }
     }
+    if decoded.planning.maximum_task_bytes == 0
+        || decoded.planning.maximum_authority_bytes == 0
+        || decoded.planning.maximum_sort_key_bytes == 0
+        || decoded.planning.index_cache_bytes == 0
+        || decoded.planning.writer_buffer_bytes == 0
+        || decoded.planning.spill_growth_bytes == 0
+        || decoded.planning.metadata_parse_amplification_bps < 10_000
+    {
+        return Err(CdfError::contract(
+            "file planning budgets must be positive and metadata_parse_amplification_bps must be at least 10000",
+        ));
+    }
     Ok(decoded)
 }
 
@@ -939,6 +980,22 @@ fn configure_runtime_dependencies(
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
     let options = decode_file_project_options(&options)?;
+    let task_store = ExternalTaskStore::new(
+        context.project_root().join(".cdf"),
+        cdf_kernel::ContentStoreNamespace::new("file-plans")?,
+    )?;
+    let dependencies = dependencies.with_task_store(
+        task_store,
+        crate::FileTaskStoreOptions {
+            maximum_task_bytes: options.planning.maximum_task_bytes,
+            maximum_authority_bytes: options.planning.maximum_authority_bytes,
+            maximum_sort_key_bytes: options.planning.maximum_sort_key_bytes,
+            index_cache_bytes: options.planning.index_cache_bytes,
+            writer_buffer_bytes: options.planning.writer_buffer_bytes,
+            spill_growth_bytes: options.planning.spill_growth_bytes,
+            metadata_parse_amplification_bps: options.planning.metadata_parse_amplification_bps,
+        },
+    )?;
     let Some(cache) = options.payload_cache else {
         return Ok(dependencies);
     };

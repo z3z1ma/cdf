@@ -15,6 +15,7 @@ use cdf_memory::{
     reserve_blocking,
 };
 use cdf_runtime::{SpillBudgetCoordinator, SpillReservation};
+use rusqlite::{Connection, ErrorCode, params, types::ValueRef};
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
@@ -24,12 +25,46 @@ const TASK_TAG: u8 = 1;
 const AUTHORITY_TAG: u8 = 2;
 const FOOTER_TAG: u8 = u8::MAX;
 const FOOTER_BYTES: u64 = 1 + 8 + 8;
+const SQLITE_PAGE_BYTES: u64 = 4096;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaskSetLimits {
     pub maximum_task_bytes: u64,
     pub maximum_authority_bytes: u64,
     pub writer_buffer_bytes: usize,
+}
+
+/// Resource authority for accepting task records in arbitrary provider order before emitting the
+/// canonical task-set artifact.
+///
+/// Every value is a knob because provider metadata shapes, host memory, and spill devices vary.
+/// The builder's output identity is independent of these values.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CanonicalTaskSetLimits {
+    pub tasks: TaskSetLimits,
+    pub maximum_sort_key_bytes: u64,
+    pub index_cache_bytes: u64,
+    pub spill_growth_bytes: u64,
+}
+
+impl CanonicalTaskSetLimits {
+    pub fn validate(&self) -> Result<()> {
+        self.tasks.validate()?;
+        if self.maximum_sort_key_bytes == 0
+            || self.index_cache_bytes == 0
+            || self.spill_growth_bytes < SQLITE_PAGE_BYTES * 2
+        {
+            return Err(CdfError::contract(
+                "canonical task-set sort-key, index-cache, and spill-growth budgets must be nonzero, and spill growth must cover at least two SQLite pages",
+            ));
+        }
+        usize::try_from(self.maximum_sort_key_bytes).map_err(|_| {
+            CdfError::contract(
+                "canonical task-set maximum sort-key bytes exceeds addressable memory",
+            )
+        })?;
+        Ok(())
+    }
 }
 
 impl TaskSetLimits {
@@ -141,6 +176,74 @@ impl ExternalTaskStore {
         task_writer.write_reserved(&task_type_length.to_be_bytes())?;
         task_writer.write_reserved(task_type.as_bytes())?;
         Ok(task_writer)
+    }
+
+    /// Creates a bounded, spill-backed canonical builder for provider-order task records.
+    ///
+    /// SQLite is an invocation-local sorting implementation, never serialized authority. Its page
+    /// ceiling is raised only after the shared spill coordinator admits another configured growth
+    /// quantum. Finalization streams the ordered payloads into the ordinary task-set writer.
+    pub fn canonical_builder(
+        &self,
+        task_type: &str,
+        limits: CanonicalTaskSetLimits,
+        memory: Arc<dyn MemoryCoordinator>,
+        spill: Arc<dyn SpillBudgetCoordinator>,
+    ) -> Result<CanonicalTaskSetBuilder> {
+        require_token("task-set type", task_type)?;
+        limits.validate()?;
+        let scratch_memory = limits
+            .index_cache_bytes
+            .checked_add(limits.tasks.maximum_task_bytes.saturating_mul(2))
+            .and_then(|bytes| bytes.checked_add(limits.maximum_sort_key_bytes.saturating_mul(2)))
+            .ok_or_else(|| CdfError::contract("canonical task-set memory budget overflowed"))?;
+        let memory_lease = reserve_blocking(
+            Arc::clone(&memory),
+            &ReservationRequest::new(
+                ConsumerKey::new("canonical-task-set-index", MemoryClass::Control)?,
+                scratch_memory,
+            )?,
+        )?;
+        let available = available_spill_bytes(spill.as_ref());
+        let initial = limits.spill_growth_bytes.min(available).max(1);
+        if initial < SQLITE_PAGE_BYTES * 2 {
+            return Err(CdfError::data(format!(
+                "canonical task planning requires at least {} free spill bytes but only {available} are available; raise the run spill budget or reduce concurrent planning",
+                SQLITE_PAGE_BYTES * 2
+            )));
+        }
+        let spill_reservation = spill.try_reserve(initial)?.ok_or_else(|| {
+            CdfError::data(
+                "canonical task planning could not acquire its initial shared spill reservation",
+            )
+        })?;
+        let workspace = self.temporary_workspace("canonical-task-index")?;
+        let database_path = workspace.path().join("tasks.sqlite");
+        let connection = Connection::open(&database_path)
+            .map_err(|error| sqlite_error("open canonical task index", error))?;
+        configure_canonical_index(&connection, limits.index_cache_bytes)?;
+        set_page_ceiling(&connection, spill_reservation.bytes())?;
+        connection
+            .execute_batch(
+                "CREATE TABLE tasks (
+                    sort_key BLOB PRIMARY KEY,
+                    payload BLOB NOT NULL
+                ) WITHOUT ROWID;",
+            )
+            .map_err(|error| sqlite_error("create canonical task index", error))?;
+        Ok(CanonicalTaskSetBuilder {
+            store: self.clone(),
+            task_type: task_type.to_owned(),
+            limits,
+            memory,
+            spill,
+            spill_reservation,
+            connection,
+            payload: Vec::new(),
+            task_count: 0,
+            _memory_lease: memory_lease,
+            _workspace: workspace,
+        })
     }
 
     pub fn reader(
@@ -340,6 +443,143 @@ impl ExternalTaskStore {
             ));
         }
         Ok(self.root.join(self.namespace.as_str()).join(key))
+    }
+}
+
+/// Spill-backed provider-order input for one canonical task-set artifact.
+pub struct CanonicalTaskSetBuilder {
+    store: ExternalTaskStore,
+    task_type: String,
+    limits: CanonicalTaskSetLimits,
+    memory: Arc<dyn MemoryCoordinator>,
+    spill: Arc<dyn SpillBudgetCoordinator>,
+    spill_reservation: SpillReservation,
+    connection: Connection,
+    payload: Vec<u8>,
+    task_count: u64,
+    _memory_lease: cdf_memory::MemoryLease,
+    _workspace: ExternalTaskWorkspace,
+}
+
+impl CanonicalTaskSetBuilder {
+    /// Inserts one record under its complete canonical ordering key.
+    ///
+    /// Duplicate keys fail instead of silently choosing one provider observation. Encoding occurs
+    /// inside the pre-admitted maximum record working set.
+    pub fn push_with(
+        &mut self,
+        sort_key: &[u8],
+        encode: impl FnOnce(&mut dyn Write) -> Result<()>,
+    ) -> Result<()> {
+        if sort_key.is_empty()
+            || u64::try_from(sort_key.len()).unwrap_or(u64::MAX)
+                > self.limits.maximum_sort_key_bytes
+        {
+            return Err(CdfError::data(format!(
+                "canonical task sort key requires {} bytes but its configured maximum is {}",
+                sort_key.len(),
+                self.limits.maximum_sort_key_bytes
+            )));
+        }
+        self.payload.clear();
+        let maximum = usize::try_from(self.limits.tasks.maximum_task_bytes)
+            .map_err(|_| CdfError::contract("task-set task budget exceeds usize"))?;
+        encode(&mut BoundedVec::new(&mut self.payload, maximum))?;
+        if self.payload.is_empty() {
+            return Err(CdfError::data("canonical task payload cannot be empty"));
+        }
+        loop {
+            match self.connection.execute(
+                "INSERT INTO tasks (sort_key, payload) VALUES (?1, ?2)",
+                params![sort_key, self.payload],
+            ) {
+                Ok(_) => break,
+                Err(error) if is_sqlite_full(&error) => self.grow_spill()?,
+                Err(error) if is_sqlite_constraint(&error) => {
+                    return Err(CdfError::data(
+                        "canonical task input repeats a canonical ordering key",
+                    ));
+                }
+                Err(error) => return Err(sqlite_error("insert canonical task", error)),
+            }
+        }
+        self.task_count = self
+            .task_count
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("canonical task count exceeds u64"))?;
+        Ok(())
+    }
+
+    pub fn task_count(&self) -> u64 {
+        self.task_count
+    }
+
+    pub fn finalize(
+        self,
+        encode_authority: impl FnOnce(&mut dyn Write) -> Result<()>,
+    ) -> Result<ExternalTaskSetArtifact> {
+        if self.task_count == 0 {
+            return Err(CdfError::data(
+                "canonical task-set cannot finalize an empty provider inventory",
+            ));
+        }
+        let mut writer = self.store.writer(
+            &self.task_type,
+            self.limits.tasks.clone(),
+            Arc::clone(&self.memory),
+            self.spill.as_ref(),
+        )?;
+        {
+            let mut statement = self
+                .connection
+                .prepare("SELECT payload FROM tasks ORDER BY sort_key")
+                .map_err(|error| sqlite_error("prepare canonical task traversal", error))?;
+            let mut rows = statement
+                .query([])
+                .map_err(|error| sqlite_error("query canonical tasks", error))?;
+            let mut ordinal = 0_u64;
+            while let Some(row) = rows
+                .next()
+                .map_err(|error| sqlite_error("read canonical task", error))?
+            {
+                let payload = match row
+                    .get_ref(0)
+                    .map_err(|error| sqlite_error("read canonical task payload", error))?
+                {
+                    ValueRef::Blob(payload) => payload,
+                    _ => {
+                        return Err(CdfError::internal(
+                            "canonical task index returned a non-blob payload",
+                        ));
+                    }
+                };
+                writer.push_with(ordinal, |output| {
+                    output.write_all(payload).map_err(|error| {
+                        CdfError::data(format!("write sorted canonical task: {error}"))
+                    })
+                })?;
+                ordinal = ordinal
+                    .checked_add(1)
+                    .ok_or_else(|| CdfError::data("canonical task ordinal exceeds u64"))?;
+            }
+            if ordinal != self.task_count {
+                return Err(CdfError::internal(
+                    "canonical task traversal count changed during finalization",
+                ));
+            }
+        }
+        writer.finalize(encode_authority)
+    }
+
+    fn grow_spill(&mut self) -> Result<()> {
+        let available = available_spill_bytes(self.spill.as_ref());
+        let growth = self.limits.spill_growth_bytes.min(available);
+        if growth == 0 || !self.spill_reservation.try_grow(growth)? {
+            return Err(CdfError::data(
+                "canonical task index exhausted the configured spill budget; raise the run spill budget or reduce concurrent planning",
+            ));
+        }
+        set_page_ceiling(&self.connection, self.spill_reservation.bytes())
     }
 }
 
@@ -923,6 +1163,70 @@ fn sync_parent(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn configure_canonical_index(connection: &Connection, cache_bytes: u64) -> Result<()> {
+    connection
+        .pragma_update(
+            None,
+            "page_size",
+            i64::try_from(SQLITE_PAGE_BYTES).expect("SQLite page size fits i64"),
+        )
+        .and_then(|_| connection.pragma_update(None, "journal_mode", "DELETE"))
+        .and_then(|_| connection.pragma_update(None, "synchronous", "OFF"))
+        .and_then(|_| connection.pragma_update(None, "locking_mode", "NORMAL"))
+        .and_then(|_| connection.pragma_update(None, "mmap_size", 0_i64))
+        .and_then(|_| connection.pragma_update(None, "cache_spill", true))
+        .map_err(|error| sqlite_error("configure canonical task index", error))?;
+    let cache_kib = cache_bytes.div_ceil(1024).max(1);
+    connection
+        .pragma_update(
+            None,
+            "cache_size",
+            -i64::try_from(cache_kib).unwrap_or(i64::MAX),
+        )
+        .map_err(|error| sqlite_error("configure canonical task index cache", error))
+}
+
+fn set_page_ceiling(connection: &Connection, reserved_bytes: u64) -> Result<()> {
+    let pages = reserved_bytes / SQLITE_PAGE_BYTES;
+    if pages < 2 {
+        return Err(CdfError::data(
+            "canonical task index spill reservation cannot hold two SQLite pages",
+        ));
+    }
+    connection
+        .pragma_update(
+            None,
+            "max_page_count",
+            i64::try_from(pages).unwrap_or(i64::MAX),
+        )
+        .map_err(|error| sqlite_error("raise canonical task index page ceiling", error))
+}
+
+fn available_spill_bytes(spill: &dyn SpillBudgetCoordinator) -> u64 {
+    let snapshot = spill.snapshot();
+    snapshot.budget_bytes.saturating_sub(snapshot.current_bytes)
+}
+
+fn is_sqlite_full(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(failure, _)
+            if failure.code == ErrorCode::DiskFull
+    )
+}
+
+fn is_sqlite_constraint(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(failure, _)
+            if failure.code == ErrorCode::ConstraintViolation
+    )
+}
+
+fn sqlite_error(action: &str, error: rusqlite::Error) -> CdfError {
+    CdfError::data(format!("{action}: {error}"))
+}
+
 fn validate_relative_component(value: &str, label: &str) -> Result<()> {
     let path = Path::new(value);
     if path.components().count() != 1
@@ -996,6 +1300,15 @@ mod tests {
         }
     }
 
+    fn canonical_limits() -> CanonicalTaskSetLimits {
+        CanonicalTaskSetLimits {
+            tasks: limits(),
+            maximum_sort_key_bytes: 1024,
+            index_cache_bytes: 16 * 1024,
+            spill_growth_bytes: 16 * 1024,
+        }
+    }
+
     fn encode_authority(output: &mut dyn Write) -> Result<()> {
         output
             .write_all(br#"{"version":1}"#)
@@ -1066,6 +1379,90 @@ mod tests {
         }
         assert_eq!(count, 100);
         assert_eq!(reader.observed_task_count(), 100);
+    }
+
+    #[test]
+    fn provider_order_is_externalized_into_one_canonical_identity() {
+        let first_root = TempDir::new().unwrap();
+        let second_root = TempDir::new().unwrap();
+        let mut references = Vec::new();
+        for (root, order) in [
+            (&first_root, vec![9_u64, 1, 7, 0, 8, 2, 6, 3, 5, 4]),
+            (&second_root, (0_u64..10).collect()),
+        ] {
+            let store = store(root);
+            let (memory, spill) = authorities(256 * 1024, 4 * 1024 * 1024);
+            let mut builder = store
+                .canonical_builder(
+                    "synthetic-v1",
+                    canonical_limits(),
+                    Arc::clone(&memory),
+                    Arc::new(spill),
+                )
+                .unwrap();
+            for partition in order {
+                let task = SyntheticTask {
+                    partition,
+                    path: format!("s3://bucket/{partition:08}.parquet"),
+                };
+                builder
+                    .push_with(task.path.as_bytes(), |output| {
+                        serde_json::to_writer(output, &task).map_err(|error| {
+                            CdfError::data(format!("encode synthetic task: {error}"))
+                        })
+                    })
+                    .unwrap();
+            }
+            let artifact = builder.finalize(encode_authority).unwrap();
+            let mut reader = store
+                .reader(
+                    artifact.reference.clone(),
+                    "synthetic-v1",
+                    4096,
+                    4096,
+                    Arc::clone(&memory),
+                )
+                .unwrap();
+            let mut expected = 0_u64;
+            while let Some(record) = reader.next_record().unwrap() {
+                let task: SyntheticTask = serde_json::from_slice(record.payload.payload()).unwrap();
+                assert_eq!(task.partition, expected);
+                expected += 1;
+            }
+            assert_eq!(expected, 10);
+            references.push(artifact.reference);
+        }
+        assert_eq!(references[0], references[1]);
+    }
+
+    #[test]
+    fn canonical_builder_rejects_duplicate_keys_and_releases_authorities() {
+        let root = TempDir::new().unwrap();
+        let store = store(&root);
+        let (memory, spill) = authorities(256 * 1024, 4 * 1024 * 1024);
+        let spill: Arc<dyn SpillBudgetCoordinator> = Arc::new(spill);
+        let mut builder = store
+            .canonical_builder(
+                "synthetic-v1",
+                canonical_limits(),
+                Arc::clone(&memory),
+                Arc::clone(&spill),
+            )
+            .unwrap();
+        let task = SyntheticTask {
+            partition: 0,
+            path: "s3://bucket/same.parquet".to_owned(),
+        };
+        for expected_ok in [true, false] {
+            let result = builder.push_with(task.path.as_bytes(), |output| {
+                serde_json::to_writer(output, &task)
+                    .map_err(|error| CdfError::data(format!("encode synthetic task: {error}")))
+            });
+            assert_eq!(result.is_ok(), expected_ok);
+        }
+        drop(builder);
+        assert_eq!(memory.snapshot().current_bytes, 0);
+        assert_eq!(spill.snapshot().current_bytes, 0);
     }
 
     #[test]

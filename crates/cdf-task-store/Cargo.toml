@@ -12,6 +12,7 @@ cdf-kernel = { path = "../cdf-kernel" }
 cdf-memory = { path = "../cdf-memory" }
 cdf-runtime = { path = "../cdf-runtime" }
 hex = "0.4.3"
+rusqlite = { version = "0.40.1", default-features = false, features = ["bundled"] }
 sha2 = { version = "0.10.9", features = ["asm"] }
 tempfile = "3.27.0"
 

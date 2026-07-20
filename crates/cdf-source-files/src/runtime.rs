@@ -10,16 +10,20 @@ use std::{
 use arrow_schema::{Schema, SchemaRef};
 use cdf_kernel::{
     BackpressureSupport, Batch, BatchStream, BoxFuture, CapabilitySupport, CdfError,
-    CompiledScanIntent, DeliveryGuarantee, EffectiveSchemaRuntime, EstimateSupport, ExpressionNode,
-    FilterCapabilities, IncrementalShape, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
-    PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation, PartitionCompletion, PartitionId,
-    PartitionPlan, PartitioningCapabilities, PayloadRetention, PlanId, PushdownFidelity,
-    PushedPredicate, QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor,
-    ResourceId, ResourceStream, Result, ScanPlan, ScanRequest, SchemaHash, ScopeKey, ScopeKind,
-    SourcePosition, SourceReadMode, TypePolicyAllowances, WriteDisposition,
-    partition_schema_observation_id, source_name,
+    CompiledScanIntent, DeliveryGuarantee, EffectiveSchemaRuntime, EstimateSupport,
+    ExecutablePartition, ExpressionNode, FilterCapabilities, IncrementalShape,
+    PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation,
+    PartitionCompletion, PartitionId, PartitionPlan, PartitioningCapabilities, PayloadRetention,
+    PlanId, PlannedPartitionReader, PlannedTaskSetReference, PushdownFidelity, PushedPredicate,
+    QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceId,
+    ResourceStream, Result, ScanPlan, ScanRequest, SchemaHash, ScopeKey, ScopeKind, SourcePosition,
+    SourceReadMode, TypePolicyAllowances, WriteDisposition, partition_schema_observation_id,
+    source_name,
 };
-use cdf_memory::{ConsumerKey, MemoryClass};
+use cdf_memory::{
+    AccountedBytes, ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest,
+    reserve_blocking,
+};
 #[cfg(test)]
 use cdf_object_access::{
     AccountedFileIdentity, FILE_IDENTITY_MEMORY_ENVELOPE_BYTES, FileIdentityStream,
@@ -44,9 +48,13 @@ use cdf_runtime::{
     canonical_stream_frontier_with_completion, decode_unit_no_lookback_frontiers,
     resolve_decode_unit_concurrency,
 };
+use cdf_task_store::{
+    CanonicalTaskSetLimits, ExternalTaskSetReader, ExternalTaskStore, TaskSetLimits,
+};
 #[cfg(test)]
 use futures_util::StreamExt;
 use futures_util::TryStreamExt;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
@@ -62,6 +70,33 @@ const NATIVE_UNIT_STREAM_ITEMS: usize = 1;
 const NATIVE_UNIT_BUFFERED_BATCHES: u16 = 2;
 pub const FILE_SOURCE_BLOCKING_LANE_ID: &str = "file-source.control";
 pub const FILE_SOURCE_ADVERTISED_PARALLELISM: u16 = 16;
+const FILE_PARTITION_TASK_TYPE: &str = "file-partition-v1";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileTaskStoreOptions {
+    pub maximum_task_bytes: u64,
+    pub maximum_authority_bytes: u64,
+    pub maximum_sort_key_bytes: u64,
+    pub index_cache_bytes: u64,
+    pub writer_buffer_bytes: usize,
+    pub spill_growth_bytes: u64,
+    pub metadata_parse_amplification_bps: u32,
+}
+
+impl FileTaskStoreOptions {
+    fn canonical_limits(&self) -> CanonicalTaskSetLimits {
+        CanonicalTaskSetLimits {
+            tasks: TaskSetLimits {
+                maximum_task_bytes: self.maximum_task_bytes,
+                maximum_authority_bytes: self.maximum_authority_bytes,
+                writer_buffer_bytes: self.writer_buffer_bytes,
+            },
+            maximum_sort_key_bytes: self.maximum_sort_key_bytes,
+            index_cache_bytes: self.index_cache_bytes,
+            spill_growth_bytes: self.spill_growth_bytes,
+        }
+    }
+}
 
 pub fn file_source_blocking_lane() -> BlockingLaneSpec {
     BlockingLaneSpec {
@@ -85,6 +120,8 @@ pub struct FileRuntimeDependencies {
     payload_cache: Option<FilePayloadCache>,
     egress: SourceEgressScope,
     max_spool_bytes: u64,
+    task_store: Option<ExternalTaskStore>,
+    task_store_options: Option<FileTaskStoreOptions>,
 }
 
 const DEFAULT_MAX_FILE_SPOOL_BYTES: u64 = 64 * 1024 * 1024 * 1024;
@@ -116,6 +153,8 @@ impl FileRuntimeDependencies {
             payload_cache: None,
             egress,
             max_spool_bytes: DEFAULT_MAX_FILE_SPOOL_BYTES,
+            task_store: None,
+            task_store_options: None,
         }
     }
 
@@ -127,6 +166,22 @@ impl FileRuntimeDependencies {
     pub fn with_payload_cache(mut self, payload_cache: FilePayloadCache) -> Self {
         self.payload_cache = Some(payload_cache);
         self
+    }
+
+    pub fn with_task_store(
+        mut self,
+        task_store: ExternalTaskStore,
+        options: FileTaskStoreOptions,
+    ) -> Result<Self> {
+        options.canonical_limits().validate()?;
+        if options.metadata_parse_amplification_bps < 10_000 {
+            return Err(CdfError::contract(
+                "file task metadata parse amplification must be at least 10000 basis points",
+            ));
+        }
+        self.task_store = Some(task_store);
+        self.task_store_options = Some(options);
+        Ok(self)
     }
 
     pub fn with_max_spool_bytes(mut self, max_spool_bytes: u64) -> Result<Self> {
@@ -161,6 +216,17 @@ impl FileRuntimeDependencies {
 
     pub fn payload_cache(&self) -> Option<&FilePayloadCache> {
         self.payload_cache.as_ref()
+    }
+
+    fn task_store(&self) -> Result<(&ExternalTaskStore, &FileTaskStoreOptions)> {
+        self.task_store
+            .as_ref()
+            .zip(self.task_store_options.as_ref())
+            .ok_or_else(|| {
+                CdfError::contract(
+                    "file planning requires an injected external task-store authority",
+                )
+            })
     }
 
     #[cfg(test)]
@@ -825,6 +891,135 @@ pub struct FileResourceDefinition {
     pub compiled_format: CompiledFormatBinding,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FilePartitionTaskAuthority {
+    version: u16,
+    resource_id: ResourceId,
+    compiled_source_plan_hash: String,
+    request_hash: String,
+}
+
+impl FilePartitionTaskAuthority {
+    fn validate_against(&self, resource: &FileResource) -> Result<()> {
+        if self.version != 1
+            || self.resource_id != resource.descriptor.resource_id
+            || Some(self.compiled_source_plan_hash.as_str())
+                != resource.compiled_source_plan_hash.as_deref()
+        {
+            return Err(CdfError::data(
+                "file partition task authority does not match the compiled resource",
+            ));
+        }
+        cdf_runtime::validate_artifact_hash("file partition request", &self.request_hash)
+    }
+}
+
+struct RetainedFileTask {
+    _encoded: AccountedBytes,
+    _parse: MemoryLease,
+}
+
+struct FilePlannedPartitionReader {
+    reader: ExternalTaskSetReader,
+    resource: FileResource,
+    memory: Arc<dyn MemoryCoordinator>,
+    parse_amplification_bps: u32,
+    _authority_parse: MemoryLease,
+}
+
+impl FilePlannedPartitionReader {
+    fn open(resource: FileResource, reference: PlannedTaskSetReference) -> Result<Self> {
+        let (store, options) = resource.dependencies.task_store()?;
+        let maximum_task_bytes = options.maximum_task_bytes;
+        let maximum_authority_bytes = options.maximum_authority_bytes;
+        let parse_amplification_bps = options.metadata_parse_amplification_bps;
+        let memory = resource.dependencies.execution().memory();
+        let reader = store.reader(
+            reference,
+            FILE_PARTITION_TASK_TYPE,
+            maximum_task_bytes,
+            maximum_authority_bytes,
+            Arc::clone(&memory),
+        )?;
+        let authority_parse = reserve_file_task_parse_memory(
+            Arc::clone(&memory),
+            u64::try_from(reader.authority().payload().len())
+                .map_err(|_| CdfError::data("file task authority exceeds u64"))?,
+            parse_amplification_bps,
+            "file-task-authority-parse",
+        )?;
+        let authority: FilePartitionTaskAuthority =
+            serde_json::from_slice(reader.authority().payload()).map_err(|error| {
+                CdfError::data(format!("decode file partition task authority: {error}"))
+            })?;
+        authority.validate_against(&resource)?;
+        Ok(Self {
+            reader,
+            resource,
+            memory,
+            parse_amplification_bps,
+            _authority_parse: authority_parse,
+        })
+    }
+}
+
+impl PlannedPartitionReader for FilePlannedPartitionReader {
+    fn next_partition(&mut self, expected_ordinal: u64) -> Result<Option<ExecutablePartition>> {
+        let Some(record) = self.reader.next_record()? else {
+            return Ok(None);
+        };
+        if record.canonical_ordinal != expected_ordinal {
+            return Err(CdfError::data(format!(
+                "file task reader returned ordinal {} while execution requested {expected_ordinal}",
+                record.canonical_ordinal
+            )));
+        }
+        let encoded_bytes = u64::try_from(record.payload.payload().len())
+            .map_err(|_| CdfError::data("file partition task exceeds u64"))?;
+        let parse = reserve_file_task_parse_memory(
+            Arc::clone(&self.memory),
+            encoded_bytes,
+            self.parse_amplification_bps,
+            "file-partition-task-parse",
+        )?;
+        let partition: PartitionPlan = serde_json::from_slice(record.payload.payload())
+            .map_err(|error| CdfError::data(format!("decode file partition task: {error}")))?;
+        validate_partition_plan_shape(&self.resource.descriptor, &self.resource.plan, &partition)?;
+        let retained_bytes = encoded_bytes
+            .checked_add(parse.bytes())
+            .ok_or_else(|| CdfError::data("file retained task bytes exceed u64"))?;
+        Ok(Some(ExecutablePartition::retained(
+            partition,
+            PayloadRetention::new(
+                Arc::new(RetainedFileTask {
+                    _encoded: record.payload,
+                    _parse: parse,
+                }),
+                retained_bytes,
+            )?,
+        )))
+    }
+}
+
+fn reserve_file_task_parse_memory(
+    memory: Arc<dyn MemoryCoordinator>,
+    encoded_bytes: u64,
+    amplification_bps: u32,
+    consumer: &str,
+) -> Result<MemoryLease> {
+    let bytes = encoded_bytes
+        .checked_mul(u64::from(amplification_bps))
+        .and_then(|bytes| bytes.checked_add(9_999))
+        .map(|bytes| bytes / 10_000)
+        .ok_or_else(|| CdfError::data("file task parse budget overflowed u64"))?
+        .max(1);
+    reserve_blocking(
+        memory,
+        &ReservationRequest::new(ConsumerKey::new(consumer, MemoryClass::Control)?, bytes)?,
+    )
+}
+
 impl FileResource {
     pub fn new(
         definition: FileResourceDefinition,
@@ -892,6 +1087,52 @@ impl FileResource {
             usize::MAX,
             &self.transport_control,
         )
+    }
+
+    fn externalize_partitions(
+        &self,
+        request: &ScanRequest,
+        partitions: Vec<PartitionPlan>,
+    ) -> Result<PlannedTaskSetReference> {
+        let (store, options) = self.dependencies.task_store()?;
+        let compiled_source_plan_hash =
+            self.compiled_source_plan_hash.clone().ok_or_else(|| {
+                CdfError::contract("file task planning requires compiled source-plan identity")
+            })?;
+        let authority = FilePartitionTaskAuthority {
+            version: 1,
+            resource_id: self.descriptor.resource_id.clone(),
+            compiled_source_plan_hash,
+            request_hash: cdf_runtime::artifact_hash(request)?,
+        };
+        let spill = self.dependencies.execution().spill();
+        let mut builder = store.canonical_builder(
+            FILE_PARTITION_TASK_TYPE,
+            options.canonical_limits(),
+            self.dependencies.execution().memory(),
+            spill,
+        )?;
+        for partition in partitions {
+            let sort_key = match &partition.scope {
+                ScopeKey::File { path } => path.as_bytes(),
+                _ => {
+                    return Err(CdfError::internal(
+                        "file partition task does not carry file scope",
+                    ));
+                }
+            };
+            builder.push_with(sort_key, |output| {
+                serde_json::to_writer(output, &partition)
+                    .map_err(|error| CdfError::data(format!("encode file partition task: {error}")))
+            })?;
+        }
+        builder
+            .finalize(|output| {
+                serde_json::to_writer(output, &authority).map_err(|error| {
+                    CdfError::data(format!("encode file partition task authority: {error}"))
+                })
+            })
+            .map(|artifact| artifact.reference)
     }
 
     pub(crate) fn partitions_for_intent_with_inventory_limit(
@@ -963,52 +1204,17 @@ impl FileResource {
     }
 
     pub fn validate_runtime_dependencies(&self) -> Result<()> {
-        Ok(())
+        self.dependencies.task_store().map(|_| ())
     }
 
     pub fn open_preview(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
-        open_file_resource_with_dependencies(self.clone(), partition)
-    }
-}
-
-impl ResourceStream for FileResource {
-    fn descriptor(&self) -> &ResourceDescriptor {
-        &self.descriptor
+        open_file_resource_with_dependencies(self.clone(), partition, None)
     }
 
-    fn schema(&self) -> SchemaRef {
-        Arc::clone(&self.schema)
-    }
-
-    fn compiled_source_plan_hash(&self) -> Option<&str> {
-        self.compiled_source_plan_hash.as_deref()
-    }
-
-    fn validate_runtime_dependencies(&self) -> Result<()> {
-        FileResource::validate_runtime_dependencies(self)
-    }
-
-    fn type_policy_allowances(&self) -> cdf_kernel::TypePolicyAllowances {
-        self.type_policy_allowances
-    }
-
-    fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
-        if request.resource_id != self.descriptor.resource_id {
-            return Err(CdfError::contract(format!(
-                "scan request resource `{}` does not match compiled file resource `{}`",
-                request.resource_id, self.descriptor.resource_id
-            )));
-        }
-        self.partitions_for_intent(&CompiledScanIntent::full_scan())
-    }
-
-    fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
-        open_file_resource_with_dependencies(self.clone(), partition)
-    }
-
-    fn attest_partition(
+    fn attest_partition_with_retention(
         &self,
         partition: PartitionPlan,
+        task_retention: Option<PayloadRetention>,
     ) -> cdf_kernel::PartitionAttestationAttempt<'_> {
         let descriptor = self.descriptor.clone();
         let plan = self.plan.clone();
@@ -1031,6 +1237,7 @@ impl ResourceStream for FileResource {
             &scope_id,
             FILE_SOURCE_BLOCKING_LANE_ID,
             move |cancellation| {
+                let _task_retention = task_retention;
                 cancellation.check()?;
                 let control = FileTransportControl::new(cancellation.clone(), None);
                 let resolved = dependencies.with_transport(|transport, egress| {
@@ -1076,6 +1283,97 @@ impl ResourceStream for FileResource {
         let termination = task.termination();
         cdf_kernel::PartitionAttestationAttempt::with_termination(Box::pin(task), termination)
     }
+}
+
+impl ResourceStream for FileResource {
+    fn descriptor(&self) -> &ResourceDescriptor {
+        &self.descriptor
+    }
+
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.schema)
+    }
+
+    fn compiled_source_plan_hash(&self) -> Option<&str> {
+        self.compiled_source_plan_hash.as_deref()
+    }
+
+    fn validate_runtime_dependencies(&self) -> Result<()> {
+        FileResource::validate_runtime_dependencies(self)
+    }
+
+    fn type_policy_allowances(&self) -> cdf_kernel::TypePolicyAllowances {
+        self.type_policy_allowances
+    }
+
+    fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
+        if request.resource_id != self.descriptor.resource_id {
+            return Err(CdfError::contract(format!(
+                "scan request resource `{}` does not match compiled file resource `{}`",
+                request.resource_id, self.descriptor.resource_id
+            )));
+        }
+        self.partitions_for_intent(&CompiledScanIntent::full_scan())
+    }
+
+    fn planned_partition_reader(
+        &self,
+        reference: &PlannedTaskSetReference,
+    ) -> Result<Box<dyn PlannedPartitionReader>> {
+        Ok(Box::new(FilePlannedPartitionReader::open(
+            self.clone(),
+            reference.clone(),
+        )?))
+    }
+
+    fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
+        open_file_resource_with_dependencies(self.clone(), partition, None)
+    }
+
+    fn open_executable(
+        &self,
+        partition: ExecutablePartition,
+    ) -> cdf_kernel::PartitionOpenAttempt<'_> {
+        let retention = partition.retention().cloned();
+        if retention
+            .as_ref()
+            .and_then(PayloadRetention::downcast_ref::<RetainedFileTask>)
+            .is_none()
+        {
+            return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async {
+                Err(CdfError::contract(
+                    "file executable partition omitted its retained canonical task payload",
+                ))
+            }));
+        }
+        open_file_resource_with_dependencies(self.clone(), partition.into_plan(), retention)
+    }
+
+    fn attest_partition(
+        &self,
+        partition: PartitionPlan,
+    ) -> cdf_kernel::PartitionAttestationAttempt<'_> {
+        self.attest_partition_with_retention(partition, None)
+    }
+
+    fn attest_executable(
+        &self,
+        partition: ExecutablePartition,
+    ) -> cdf_kernel::PartitionAttestationAttempt<'_> {
+        let retention = partition.retention().cloned();
+        if retention
+            .as_ref()
+            .and_then(PayloadRetention::downcast_ref::<RetainedFileTask>)
+            .is_none()
+        {
+            return cdf_kernel::PartitionAttestationAttempt::materialized(Box::pin(async {
+                Err(CdfError::contract(
+                    "file executable attestation omitted its retained canonical task payload",
+                ))
+            }));
+        }
+        self.attest_partition_with_retention(partition.into_plan(), retention)
+    }
 
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
         self.effective_schema_runtime.as_deref()
@@ -1112,8 +1410,8 @@ impl QueryableResource for FileResource {
         Ok(ScanPlan {
             plan_id: PlanId::new(format!("plan-{}", self.descriptor.resource_id))?,
             request: request.clone(),
-            partitions,
-            planned_task_set: None,
+            planned_task_set: Some(self.externalize_partitions(request, partitions)?),
+            partitions: Vec::new(),
             pushed_predicates: negotiation.pushed_predicates,
             unsupported_predicates: negotiation.unsupported_predicates,
             estimated_rows: None,
@@ -1961,6 +2259,7 @@ fn file_partitions_for_plan_with_transport(
 fn open_file_resource_with_dependencies(
     resource: FileResource,
     partition: PartitionPlan,
+    task_retention: Option<PayloadRetention>,
 ) -> cdf_kernel::PartitionOpenAttempt<'static> {
     let FileResource {
         descriptor,
@@ -2010,9 +2309,10 @@ fn open_file_resource_with_dependencies(
                 },
             )?;
             cancellation.check()?;
-            Ok(prepared)
+            Ok((prepared, task_retention))
         },
-        move |prepared, mut sender, cancellation| async move {
+        move |(prepared, task_retention), mut sender, cancellation| async move {
+            let _task_retention = task_retention;
             let source_io = prepared.source_io.clone();
             let extraction_content_hash = prepared.extraction_content_hash.clone();
             let hash_sweep_source = prepared.hash_sweep_source.clone();
@@ -5894,6 +6194,31 @@ mod tests {
                 .default_fidelity,
             PushdownFidelity::Exact
         );
+        let task_store_root = TempDir::new().unwrap();
+        let dependencies = FileRuntimeDependencies::new(
+            FileTransportFacade::new(),
+            crate::test_execution_services(),
+            formats,
+            crate::test_transform_registry(),
+            crate::test_egress_scope(),
+        )
+        .with_task_store(
+            ExternalTaskStore::new(
+                task_store_root.path(),
+                cdf_kernel::ContentStoreNamespace::new("file-plans").unwrap(),
+            )
+            .unwrap(),
+            FileTaskStoreOptions {
+                maximum_task_bytes: 1024 * 1024,
+                maximum_authority_bytes: 1024 * 1024,
+                maximum_sort_key_bytes: 64 * 1024,
+                index_cache_bytes: 1024 * 1024,
+                writer_buffer_bytes: 64 * 1024,
+                spill_growth_bytes: 1024 * 1024,
+                metadata_parse_amplification_bps: 40_000,
+            },
+        )
+        .unwrap();
         let resource = FileResource::new(
             FileResourceDefinition {
                 descriptor: descriptor.clone(),
@@ -5908,15 +6233,12 @@ mod tests {
                 )),
                 compiled_format,
             },
-            FileRuntimeDependencies::new(
-                FileTransportFacade::new(),
-                crate::test_execution_services(),
-                formats,
-                crate::test_transform_registry(),
-                crate::test_egress_scope(),
-            ),
+            dependencies,
         )
-        .unwrap();
+        .unwrap()
+        .with_compiled_source_plan_hash(
+            cdf_runtime::artifact_hash(&serde_json::json!({"resource": "events"})).unwrap(),
+        );
         let request = ScanRequest {
             resource_id: descriptor.resource_id.clone(),
             projection: Some(vec!["vendor_id".to_owned()]),
@@ -5939,11 +6261,17 @@ mod tests {
         let tier_a = resource.plan_partitions(&request).unwrap();
         assert_eq!(tier_a[0].scan_intent, CompiledScanIntent::full_scan());
         let scan = resource.negotiate(&request).unwrap();
+        assert!(scan.partitions.is_empty());
+        let task_reference = scan.planned_task_set.as_ref().unwrap();
+        let mut task_reader = resource.planned_partition_reader(task_reference).unwrap();
+        let executable = task_reader.next_partition(0).unwrap().unwrap();
+        let planned_partitions = vec![executable.plan().clone()];
+        assert!(task_reader.next_partition(1).unwrap().is_none());
         assert_eq!(
-            scan.partitions[0].scan_intent.projection.as_deref(),
+            planned_partitions[0].scan_intent.projection.as_deref(),
             Some(["vendor_id".to_owned()].as_slice())
         );
-        assert_eq!(scan.partitions[0].scan_intent.predicates.len(), 2);
+        assert_eq!(planned_partitions[0].scan_intent.predicates.len(), 2);
         assert_eq!(scan.pushed_predicates.len(), 2);
         assert!(scan.unsupported_predicates.is_empty());
         cdf_kernel::validate_compiled_scan_intents(&scan).unwrap();
@@ -5962,14 +6290,14 @@ mod tests {
         assert!(
             !exact_predicate_is_partition_equivalent(
                 &request.filters[0],
-                &scan.partitions,
+                &planned_partitions,
                 schema.as_ref(),
                 Some(&widened_runtime),
             )
             .unwrap()
         );
 
-        let opened = futures_executor::block_on(resource.open(scan.partitions[0].clone())).unwrap();
+        let opened = futures_executor::block_on(resource.open_executable(executable)).unwrap();
         let batches = futures_executor::block_on(opened.collect::<Vec<_>>())
             .into_iter()
             .collect::<Result<Vec<_>>>()
