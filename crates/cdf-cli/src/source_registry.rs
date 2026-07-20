@@ -1,8 +1,12 @@
+use cdf_aws::AwsJsonClient;
 use cdf_kernel::Result;
 use cdf_object_access::{FileTransportFacade, ObjectStoreClientPool};
 use cdf_python::PythonSourceDriver;
 use cdf_runtime::{ByteTransformRegistry, FormatRegistry, SourceRegistry};
 use cdf_source_files::{FileRuntimeDependencies, FileSourceDriver, file_source_blocking_lane};
+use cdf_source_glue::{
+    AwsGlueCatalogClient as AwsGlueExternalCatalogClient, GlueRuntimeDependencies, GlueSourceDriver,
+};
 use cdf_source_iceberg::{AwsGlueCatalogClient, IcebergRuntimeDependencies, IcebergSourceDriver};
 use cdf_source_postgres::PostgresSourceDriver;
 use cdf_source_rest::RestSourceDriver;
@@ -32,10 +36,17 @@ fn build_builtin_source_registry() -> Result<SourceRegistry> {
     registry.register(RestSourceDriver::new(move || {
         Ok(Box::new(rest_http.clone()))
     })?)?;
+    // Formats and transforms are process-scoped registries shared by every source adapter that
+    // consumes physical objects. Adding a format changes composition only; Glue and file sources
+    // never manufacture private codec catalogs.
+    let formats = builtin_format_registry()?;
+    let transforms = builtin_transform_registry()?;
     let iceberg_http = http.clone();
+    let glue_http = http.clone();
     let file_http = http;
     let object_store_clients = ObjectStoreClientPool::default();
     let iceberg_object_store_clients = object_store_clients.clone();
+    let glue_object_store_clients = object_store_clients.clone();
     registry.register(IcebergSourceDriver::new(
         move |secrets, execution, egress, local_listing_lane| {
             let rest_http: Arc<dyn cdf_http::HttpTransport> = Arc::new(iceberg_http.clone());
@@ -55,8 +66,26 @@ fn build_builtin_source_registry() -> Result<SourceRegistry> {
             ))
         },
     )?)?;
-    let formats = builtin_format_registry()?;
-    let runtime_formats = std::sync::Arc::clone(&formats);
+    let glue_formats = Arc::clone(&formats);
+    let glue_transforms = Arc::clone(&transforms);
+    registry.register(GlueSourceDriver::new(move |secrets, execution, egress| {
+        let control_http: Arc<dyn cdf_http::HttpTransport> = Arc::new(glue_http.clone());
+        let object_access = FileTransportFacade::new()
+            .with_http_transport(glue_http.clone())
+            .with_shared_secret_provider(Arc::clone(&secrets))
+            .with_shared_object_store_clients(glue_object_store_clients.clone())
+            .with_execution_services(execution.clone())
+            .with_local_listing_lane(file_source_blocking_lane())?;
+        let aws = Arc::new(AwsJsonClient::new(control_http, secrets, execution, egress));
+        Ok(GlueRuntimeDependencies::new(
+            Arc::new(object_access),
+            Arc::new(AwsGlueExternalCatalogClient::new(aws)),
+            Arc::clone(&glue_formats),
+            Arc::clone(&glue_transforms),
+        ))
+    })?)?;
+    let runtime_formats = Arc::clone(&formats);
+    let runtime_transforms = Arc::clone(&transforms);
     registry.register(FileSourceDriver::new(
         formats,
         move |secrets, execution, egress| {
@@ -69,7 +98,7 @@ fn build_builtin_source_registry() -> Result<SourceRegistry> {
                     .with_local_listing_lane(file_source_blocking_lane())?,
                 execution,
                 std::sync::Arc::clone(&runtime_formats),
-                builtin_transform_registry()?,
+                Arc::clone(&runtime_transforms),
                 egress,
             ))
         },
@@ -173,6 +202,12 @@ mod tests {
                 .descriptors()
                 .iter()
                 .any(|descriptor| descriptor.driver_id.as_str() == "iceberg")
+        );
+        assert!(
+            first
+                .descriptors()
+                .iter()
+                .any(|descriptor| descriptor.driver_id.as_str() == "glue")
         );
     }
 

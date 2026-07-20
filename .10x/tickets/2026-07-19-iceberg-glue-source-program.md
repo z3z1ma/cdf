@@ -30,7 +30,7 @@ This parent is not executable. It does not own Iceberg/Delta destinations, Glue 
 5. `.10x/tickets/done/2026-07-19-iceberg-i1-catalog-discovery.md` — done
 6. `.10x/tickets/done/2026-07-19-iceberg-i2-scan-execution.md` — done
 7. `.10x/tickets/done/2026-07-19-iceberg-i3-incremental-product-conformance.md` — done
-8. `.10x/tickets/2026-07-19-glue-g1-external-table-source.md`
+8. `.10x/tickets/done/2026-07-19-glue-g1-external-table-source.md` — done
 9. `.10x/tickets/2026-07-19-glue-g2-lake-formation-live-conformance.md`
 
 F1 and F2 are parallel. F3 is independent of F1/F2 but must avoid the active WX1 implementation files until that worker lands. F4 depends on WX1 and coordinates with P3 F2 rather than duplicating task/cardinality authority. I1 depends on F1/F2/F3. I2 depends on F4/I1. I3 depends on I2. Glue G1 depends on F1 and may proceed beside I1; G2 depends on G1 and the Iceberg Glue binding.
@@ -63,6 +63,7 @@ F1 and F2 are parallel. F3 is independent of F1/F2 but must avoid the active WX1
 - 2026-07-19: I1 closed. One driver now compiles explicit filesystem/REST/Glue catalog configuration, performs bounded generation-bound metadata discovery, freezes exact snapshot/schema/spec/sort/predicate/capability authority into canonical external tasks, supports ordinary add/deep-validation/inspect/doctor registry paths, and produces jobs-invariant planning identity. I2 is unblocked.
 - 2026-07-19: I2 closed. Canonical v1/v2 Parquet tasks now execute through neutral object access with exact evolution, projection, predicate residuals, position/equality deletes, bounded task/spill authority, deterministic retry/cancellation/generation evidence, and preview/run parity. The release FQ12 path processes 3,513,266 rows from 84 objects in about 2.22 seconds of execution versus a 2.01-second isolated S3 transfer roofline; its measured 2 MiB small-object prefetch is disableable and reduced both wall time and RSS without changing segment bytes. I3 is active for ancestry, time travel, unchanged-snapshot product behavior, and final conformance.
 - 2026-07-20: I3 closed. Explicit fixed-snapshot and append-snapshot modes now preserve exact historical selection, prove append ancestry, select only newly added manifests, and fail closed on missing/divergent/non-append history. The local matrix, strict static analysis, existing read-only FQ12 no-op, and operator capability documentation are recorded in the child. The avoidable post-plan resume ordering cost moved to the source-neutral ticket `.10x/tickets/2026-07-20-source-resume-aware-negotiation.md`; it is not hidden as an Iceberg workaround.
+- 2026-07-20: Glue G1 closed. Conventional Glue external tables now classify before payload work, plan canonical spill-backed object tasks, decode through shared object/format/transform authorities, preserve catalog and object generations, and resume through exact `FileManifest` selection. The shared `cdf-aws` control-plane authority also removed duplicated AWS signing and credential code from the Iceberg Glue binding. G2 is the sole remaining child.
 
 ## Blockers
 

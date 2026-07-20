@@ -932,6 +932,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdf-aws"
+version = "0.1.0"
+dependencies = [
+ "aws-credential-types",
+ "aws-sigv4",
+ "bytes",
+ "cdf-http",
+ "cdf-kernel",
+ "cdf-memory",
+ "cdf-runtime",
+ "futures-executor",
+ "serde",
+ "serde_json",
+ "url",
+ "zeroize",
+]
+
+[[package]]
 name = "cdf-bench-core"
 version = "0.1.0"
 dependencies = [
@@ -1014,6 +1032,7 @@ dependencies = [
  "arrow-array",
  "arrow-ipc",
  "arrow-schema",
+ "cdf-aws",
  "cdf-cli-core",
  "cdf-contract",
  "cdf-declarative",
@@ -1036,6 +1055,7 @@ dependencies = [
  "cdf-python",
  "cdf-runtime",
  "cdf-source-files",
+ "cdf-source-glue",
  "cdf-source-iceberg",
  "cdf-source-postgres",
  "cdf-source-rest",
@@ -1608,6 +1628,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdf-source-glue"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-cast",
+ "arrow-schema",
+ "bytes",
+ "cdf-aws",
+ "cdf-engine",
+ "cdf-format-json",
+ "cdf-format-parquet",
+ "cdf-http",
+ "cdf-kernel",
+ "cdf-memory",
+ "cdf-object-access",
+ "cdf-runtime",
+ "cdf-task-store",
+ "futures-channel",
+ "futures-executor",
+ "futures-util",
+ "parquet",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "cdf-source-iceberg"
 version = "0.1.0"
 dependencies = [
@@ -1615,9 +1666,8 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "async-trait",
- "aws-credential-types",
- "aws-sigv4",
  "bytes",
+ "cdf-aws",
  "cdf-contract",
  "cdf-engine",
  "cdf-http",
@@ -1642,7 +1692,6 @@ dependencies = [
  "tokio",
  "typetag",
  "url",
- "zeroize",
 ]
 
 [[package]]

@@ -1,8 +1,8 @@
-Status: blocked
+Status: active
 Created: 2026-07-19
 Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-19-iceberg-glue-source-program.md
-Depends-On: .10x/tickets/2026-07-19-glue-g1-external-table-source.md, .10x/tickets/done/2026-07-19-iceberg-i1-catalog-discovery.md
+Depends-On: .10x/tickets/done/2026-07-19-glue-g1-external-table-source.md, .10x/tickets/done/2026-07-19-iceberg-i1-catalog-discovery.md
 
 # Glue G2: Lake Formation authority and live conformance
 
@@ -33,11 +33,11 @@ No silent ambient-S3 fallback, unsupported cell-filter approximation, catalog mu
 
 ## Journal
 
-None yet.
+- 2026-07-20: Activated after Glue G1 and the Iceberg Glue catalog binding closed. The implementation must extend the shared AWS control authority and Glue adapter without serializing credentials into plans/tasks or adding a Glue/Lake Formation branch to generic runtime code.
 
 ## Blockers
 
-G1 and the Iceberg Glue catalog binding. External resource creation requires confirmation at execution time.
+No implementation blocker. Disposable external resource creation still requires confirmation; read-only inspection and existing-resource conformance are authorized.
 
 ## Evidence
 
