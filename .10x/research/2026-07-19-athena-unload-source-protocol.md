@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-19
-Updated: 2026-07-19
+Updated: 2026-07-20
 
 # Athena UNLOAD source protocol
 
@@ -12,6 +12,8 @@ What exact control-plane, schema, identity, cleanup, and execution architecture 
 
 - Inspected CDF's registered source boundary, compiled source plan, prepared-payload reuse, external task store, portable worker protocol, source positions, Iceberg/Glue adapter, and neutral object-access/Parquet path at revision `dcd97964`.
 - Read the current AWS Athena API and user-guide contracts for [UNLOAD](https://docs.aws.amazon.com/athena/latest/ug/unload.html), [StartQueryExecution](https://docs.aws.amazon.com/athena/latest/APIReference/API_StartQueryExecution.html), [GetQueryExecution](https://docs.aws.amazon.com/athena/latest/APIReference/API_GetQueryExecution.html), [GetQueryResults](https://docs.aws.amazon.com/athena/latest/APIReference/API_GetQueryResults.html), [GetQueryRuntimeStatistics](https://docs.aws.amazon.com/athena/latest/APIReference/API_GetQueryRuntimeStatistics.html), [StopQueryExecution](https://docs.aws.amazon.com/athena/latest/APIReference/API_StopQueryExecution.html), [query result files](https://docs.aws.amazon.com/athena/latest/ug/querying-finding-output-files.html), [result reuse](https://docs.aws.amazon.com/athena/latest/ug/reusing-query-results.html), [compression](https://docs.aws.amazon.com/athena/latest/ug/compression-formats.html), [ZSTD levels](https://docs.aws.amazon.com/athena/latest/ug/compression-support-zstd-levels.html), and [service quotas](https://docs.aws.amazon.com/general/latest/gr/athena.html).
+- Compared provider-native direct-read and external-materialization paths using current official documentation observed 2026-07-20: [BigQuery Storage Read API](https://cloud.google.com/bigquery/docs/reference/storage), [Dataflow BigQuery read modes and benchmark](https://cloud.google.com/dataflow/docs/guides/read-from-bigquery), [BigQuery storage overview](https://cloud.google.com/bigquery/docs/storage_overview), [Athena query optimization](https://docs.aws.amazon.com/athena/latest/ug/performance-tuning-query-optimization-techniques.html), [Redshift large-result guidance](https://docs.aws.amazon.com/redshift/latest/dg/query-performance-improvement-opportunities.html), [Redshift UNLOAD](https://docs.aws.amazon.com/redshift/latest/dg/r_UNLOAD.html), [Snowflake distributed Arrow result batches](https://docs.snowflake.com/en/developer-guide/python-connector/python-connector-distributed-fetch), [Snowflake data unloading](https://docs.snowflake.com/en/user-guide/data-unload-overview), and [Trino direct/spooling client protocol](https://trino.io/docs/current/client/client-protocol.html).
+- Read [Athena query-output cleanup guidance](https://docs.aws.amazon.com/athena/latest/ug/querying.html), [S3 lifecycle management](https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lifecycle-mgmt.html), and [S3 lifecycle troubleshooting](https://docs.aws.amazon.com/AmazonS3/latest/userguide/troubleshoot-lifecycle.html) to distinguish operator retention policy from CDF execution identity and cleanup authority.
 - Used the authenticated FQ12 `PowerUser-617739438897` profile for read-only `ListWorkGroups`, `GetWorkGroup`, query-history, query-status, and prior-result-manifest inspection. No query was submitted and no S3 object or AWS configuration was created, changed, or deleted.
 
 ## Findings
@@ -61,15 +63,52 @@ What exact control-plane, schema, identity, cleanup, and execution architecture 
 - CDF's timed region must separate provider queue/planning/engine/publish, manifest/object preparation, S3 transfer, Parquet decode, validation/package, and destination commit. `DataScannedInBytes` is billed input, not transport bytes; output object bytes and useful decoded bytes remain separate.
 - Snappy and ZSTD level 1 are the first retained compression candidates. The default must come from end-to-end wall time and network/CPU rooflines, not compressed size alone. CDF already reads both natively through the same Parquet driver.
 
+### Cross-provider precedent: direct read versus external materialization
+
+Externalizing a query result to object storage is established batch-pipeline practice, but the evidence does not support a universal export-first rule. The right choice follows the provider's result-plane architecture.
+
+- BigQuery historically supported record pagination and batch exports before adding the Storage Read API. Google now describes the Storage Read API as the improvement over both: binary Arrow/Avro blocks, disjoint parallel streams, projection, server-side filtering, snapshot consistency, flow control, offset restart, and stream splitting. Google explicitly recommends direct reads for data pipelines when timeliness matters. Its published single-worker Dataflow comparison measured 120 MB/s for Storage Read versus 105 MB/s for Avro export and 110 MB/s for JSON export. Those figures are a narrow connector comparison rather than a universal roofline, but they falsify export as BigQuery's default fastest path. Export remains useful when avoiding Storage Read charges, creating a durable/fan-out copy, or escaping the read session's guaranteed-at-least-six-hour lifetime for exceptionally long jobs.
+- Athena has no analogous parallel binary read service. AWS documents ordinary query output as one uncompressed CSV file whose write cannot be parallelized. `UNLOAD` writes compressed columnar results directly from worker nodes in parallel; AWS says it is faster in most cases. `UNLOAD` is therefore a structurally justified Athena data plane, not a generic preference for files. CDF still requires its own FQ12 before/after measurement because provider documentation is not a CDF performance result.
+- Redshift recommends `UNLOAD` for very large result sets because it parallelizes the query's RETURN step across slices. Redshift reports Parquet `UNLOAD` as up to twice as fast and up to six times smaller than text unload. That evidence compares unload formats, not `UNLOAD` with a native distributed binary-read API; a future CDF Redshift source must benchmark its direct result protocol and `UNLOAD` rather than inherit Athena's choice.
+- Snowflake supports parallel/distributed result batches and Arrow conversion directly from query results. Snowflake also supports parallel `COPY INTO <location>` bulk unloading, but this investigation found no official comparative evidence that external unload is faster than distributed Arrow result batches for ordinary extraction. The current recommendation is direct Arrow result batches first, with external unload reserved for durable handoff, fan-out, lake materialization, or measured workloads where it wins.
+- Trino's current spooling protocol is the strongest architectural precedent for provider-managed external result transport. Workers write encrypted/compressed segments to object storage concurrently, clients retrieve segments without funneling bytes through the coordinator, acknowledged or expired segments are pruned, and the protocol falls back to direct delivery for small results. Trino explicitly documents higher throughput and faster cluster query completion for large outputs. This is closer to a native query-result protocol implemented through object storage than to a user-authored SQL export.
+
+The resulting CDF doctrine is provider-capability-driven:
+
+1. Prefer a native parallel binary/Arrow read plane when one exists and meets the roofline.
+2. Prefer provider-managed spooling when it is the provider's optimized large-result protocol.
+3. Use explicit export when the ordinary result plane is serialized, row/text-oriented, coordinator-bound, or otherwise measured slower.
+4. Retain alternative transports as explicit or evidence-driven strategies; never infer that Parquet export is faster merely because it produces Parquet.
+
+Expected future defaults are therefore BigQuery Storage Read, Snowflake parallel Arrow result batches, Trino spooling with direct fallback, Athena `UNLOAD`, and a measured Redshift choice.
+
+### Ratified output namespace and retention boundary
+
+User ratification on 2026-07-20 fixes the lifecycle boundary:
+
+- The operator supplies an existing S3 output root/prefix for Athena materializations. CDF derives a unique, non-reused attempt namespace beneath that root; the exact derivation belongs to the focused source spec and MUST bind resource plus execution-attempt identity without exposing SQL, credentials, or user data in object keys.
+- CDF owns query client-token idempotency, unique namespace construction, immutable manifest/result identity, canonical child tasks, object-generation validation, and generation-safe consumption until package durability.
+- S3 lifecycle expiration and incomplete-multipart cleanup are operator/infrastructure policy. CDF does not configure, verify, renew, or enforce lifecycle rules; it does not require `GetBucketLifecycleConfiguration` or `DeleteObject` merely to run an Athena source.
+- No generic source staging lease is introduced. The existing destination staging lease protects CDF-owned asynchronous garbage collection from racing live destination attempts; that problem does not exist when CDF performs no Athena-output collector or background deletion.
+- A lifecycle policy can delete objects independently of CDF and cannot be fenced by a process lease. If an object disappears before consumption, exact generation/availability validation fails the attempt and remediation names retention or a new materialization. Package replay remains independent because it consumes immutable CDF package segments, not Athena output.
+- Athena can leave partial objects and incomplete multipart uploads after failure/cancellation. Documentation MUST recommend lifecycle expiration for the configured CDF prefix and incomplete-multipart abortion for the bucket, but this remains an operational recommendation rather than execution semantics.
+- A future eager-delete option is excluded until a concrete requirement justifies deletion permission and fenced cleanup authority. It must not be prebuilt as a speculative generic staging abstraction.
+
+Other server-side exports (Redshift, Snowflake, BigQuery, future managed query engines) may reuse a source-neutral immutable `MaterializedQueryResult` currency when they actually externalize data. That currency is execution evidence—query execution identity, materializer-program identity, service manifest, canonical task-set hash, object generations, row/update count, and telemetry—not a retention manager and not proof that every provider should export.
+
 ## Conclusions
 
 1. Retain Athena as a first-class source. It is not a Trino source subtype: AWS authentication, workgroups, idempotency, manifests, billing, cancellation, retention, and cleanup are protocol-specific. Athena and a later Trino source should share only the compiled-query and runtime partition-materialization currencies.
 2. Reuse CDF's existing object-access, Parquet, external task-store, scheduler, portable-worker, memory-ledger, package, receipt, and destination pipeline unchanged. The only new data-plane capability is the source-neutral runtime partition-materialization seam.
 3. Factor the now-repeated AWS credential resolution and SigV4 signing into a minimal shared AWS protocol crate. Glue and Athena retain their own JSON bodies, targets, response/error models, and semantics; the shared crate must not create an SDK runtime, retry loop, HTTP pool, or credential chain.
-4. Do not submit a live FQ12 query until the exact workgroup, CDF-owned output root, scan budget, retention, and cleanup policy are explicitly confirmed. Read-only inspection does not ratify those billing and write/delete side effects.
+4. Do not submit a live FQ12 query until the exact workgroup, operator-owned output root, scan budget, and query/result-object write authority are explicitly confirmed. Read-only inspection and the existence of a bucket do not ratify billing or writes. Operator lifecycle policy remains outside CDF.
+5. Use provider capability, not connector category, to choose extraction transport. BigQuery and Snowflake should begin with native parallel binary/Arrow reads; Athena should begin with `UNLOAD`; Trino should consume its native spooling protocol when available; Redshift requires a direct-versus-unload benchmark.
+6. Keep Athena lifecycle policy outside CDF. Configuration names an operator-owned output root, while CDF creates a unique attempt namespace and owns only materialization identity and consumption. No source staging lease, lifecycle inspection, or automatic deletion belongs in the initial implementation.
 
 ## Limits
 
 - No new query was submitted, so zero-row schema discovery, actual Athena Parquet physical types, empty-result manifests, Snappy/ZSTD output performance, cancellation, and orphan cleanup remain to be falsified live.
 - AWS does not document a stable global file order or durable output retention. The design intentionally depends only on the service manifest plus immediate object-generation observation.
 - The proposed generic runtime materialization seam is an architectural conclusion from current CDF boundaries and the Athena protocol. Its exact API belongs in a focused active spec before implementation.
+- The published cross-provider measurements are provider/connector-specific and do not substitute for CDF roofline tests on its supported host classes. No official Snowflake direct-Arrow-versus-unload comparison was found.
+- Lifecycle ownership is ratified product policy, but the exact FQ12 bucket/prefix, workgroup, billed scan ceiling, and permission envelope remain externally unconfirmed and must not be inferred from the presence of credentials.
