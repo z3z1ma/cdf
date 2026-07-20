@@ -120,6 +120,20 @@ async fn run_project_with_context(
         .await;
     }
 
+    let mut plan = plan;
+    if let Some(frontier) = checkpoint_store
+        .head(
+            &pipeline_id,
+            &resource.descriptor().resource_id,
+            &resource.descriptor().state_scope,
+        )?
+        .as_ref()
+        .map(|checkpoint| checkpoint.delta.source_resume_position())
+        .filter(|position| !matches!(position, SourcePosition::FileManifest(_)))
+    {
+        plan.rebind_initial_committed_frontier(resource.stream(), frontier)?;
+    }
+
     let package_dir = package_root.join(&package_id);
     refuse_existing_package_dir(&package_dir)?;
     let run = run_ledger.create_run(run_id)?;
@@ -652,13 +666,14 @@ async fn run_project_inner(
             summary: summary.clone(),
         },
     };
-    execution
-        .recorder
-        .append_plan_recorded(if manifest_plan.no_changed_files() {
+    let no_planned_partitions = manifest_plan.plan.scan.partition_count()? == 0;
+    execution.recorder.append_plan_recorded(
+        if manifest_plan.no_changed_files() || no_planned_partitions {
             0
         } else {
             1
-        })?;
+        },
+    )?;
     let pending_late_data_carryover = head
         .as_ref()
         .is_some_and(|checkpoint| !checkpoint.delta.late_data_carryover.is_empty());
@@ -668,6 +683,16 @@ async fn run_project_inner(
             head,
             manifest_plan.summary,
             ProjectRunNoOpReason::FileManifestUnchanged,
+        )
+        .map(Box::new)
+        .map(ProjectRunUnitOutcome::NoOp);
+    }
+    if no_planned_partitions && head.is_some() && !pending_late_data_carryover {
+        return no_op_report(
+            execution,
+            head,
+            manifest_plan.summary,
+            ProjectRunNoOpReason::SourcePositionUnchanged,
         )
         .map(Box::new)
         .map(ProjectRunUnitOutcome::NoOp);

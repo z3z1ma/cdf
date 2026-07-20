@@ -381,7 +381,9 @@ impl EnginePlan {
         frontier: &SourcePosition,
     ) -> Result<()> {
         resource.rebind_scan_for_resume(&mut self.scan, frontier)?;
-        if self.explain.partitions.len() == self.scan.partitions.len() {
+        if self.scan.partition_count()? == 0 {
+            self.explain.partitions.clear();
+        } else if self.explain.partitions.len() == self.scan.partitions.len() {
             for (explained, planned) in self
                 .explain
                 .partitions

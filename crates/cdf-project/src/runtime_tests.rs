@@ -304,6 +304,14 @@ impl ResourceStream for BoundTestResource<'_> {
         self.inner.plan_partitions(request)
     }
 
+    fn rebind_scan_for_resume(
+        &self,
+        scan: &mut cdf_kernel::ScanPlan,
+        committed_frontier: &SourcePosition,
+    ) -> Result<()> {
+        self.inner.rebind_scan_for_resume(scan, committed_frontier)
+    }
+
     fn open(&self, partition: cdf_kernel::PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
         self.inner.open(partition)
     }
@@ -411,6 +419,14 @@ impl ResourceStream for EmptyDrainResource {
 
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<cdf_kernel::PartitionPlan>> {
         self.inner.plan_partitions(request)
+    }
+
+    fn rebind_scan_for_resume(
+        &self,
+        scan: &mut cdf_kernel::ScanPlan,
+        committed_frontier: &SourcePosition,
+    ) -> Result<()> {
+        self.inner.rebind_scan_for_resume(scan, committed_frontier)
     }
 
     fn open(&self, _partition: cdf_kernel::PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
@@ -1488,6 +1504,155 @@ impl QueryableResource for BackfillMockResource {
         )
     }
 }
+
+struct TableSnapshotMockResource {
+    descriptor: ResourceDescriptor,
+    capabilities: ResourceCapabilities,
+    schema: Arc<Schema>,
+    snapshot: cdf_kernel::TableSnapshotPosition,
+    open_count: AtomicU64,
+}
+
+impl TableSnapshotMockResource {
+    fn new() -> Self {
+        Self {
+            descriptor: ResourceDescriptor {
+                resource_id: ResourceId::new("mock.snapshot_events").unwrap(),
+                schema_source: SchemaSource::Declared {
+                    schema_hash: SchemaHash::new("schema-table-snapshot-mock").unwrap(),
+                    source: "mock://snapshot-events".to_owned(),
+                },
+                primary_key: vec!["id".to_owned()],
+                merge_key: Vec::new(),
+                cursor: None,
+                write_disposition: WriteDisposition::Append,
+                deduplication: None,
+                contract: None,
+                state_scope: ScopeKey::Resource,
+                freshness: None,
+                trust_level: TrustLevel::Governed,
+            },
+            capabilities: ResourceCapabilities {
+                projection: CapabilitySupport::Unsupported,
+                filters: FilterCapabilities::default(),
+                limits: CapabilitySupport::Unsupported,
+                ordering: CapabilitySupport::Unsupported,
+                partitioning: Default::default(),
+                incremental: IncrementalShape::TableSnapshot,
+                replay: ReplaySupport::FromPosition,
+                idempotent_reads: true,
+                backpressure: BackpressureSupport::Pausable,
+                estimates: EstimateSupport::RowsAndBytes,
+            },
+            schema: Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("updated_at", DataType::Int64, false),
+            ])),
+            snapshot: cdf_kernel::TableSnapshotPosition {
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
+                protocol: "iceberg".to_owned(),
+                catalog: "mock:catalog".to_owned(),
+                namespace: vec!["analytics".to_owned()],
+                table: "events".to_owned(),
+                selector: cdf_kernel::TableSnapshotSelector::Current,
+                snapshot_id: 41,
+                sequence_number: 7,
+                parent_snapshot_id: Some(40),
+                metadata_location: "mock://catalog/analytics/events/metadata/v7.json".to_owned(),
+                metadata_generation: "version-id:v7".to_owned(),
+            },
+            open_count: AtomicU64::new(0),
+        }
+    }
+
+    fn position(&self) -> SourcePosition {
+        SourcePosition::TableSnapshot(Box::new(self.snapshot.clone()))
+    }
+}
+
+impl ResourceStream for TableSnapshotMockResource {
+    fn descriptor(&self) -> &ResourceDescriptor {
+        &self.descriptor
+    }
+
+    fn schema(&self) -> Arc<Schema> {
+        Arc::clone(&self.schema)
+    }
+
+    fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<cdf_kernel::PartitionPlan>> {
+        Ok(vec![cdf_kernel::PartitionPlan {
+            partition_id: PartitionId::new("snapshot-task-0").unwrap(),
+            scope: request.scope.clone(),
+            planned_position: Some(self.position()),
+            start_position: None,
+            scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
+            retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
+            metadata: BTreeMap::new(),
+        }])
+    }
+
+    fn rebind_scan_for_resume(
+        &self,
+        scan: &mut cdf_kernel::ScanPlan,
+        committed_frontier: &SourcePosition,
+    ) -> Result<()> {
+        if committed_frontier == &self.position() {
+            scan.partitions.clear();
+            scan.planned_task_set = None;
+            return Ok(());
+        }
+        Err(CdfError::data(
+            "mock table-snapshot resource received an unexpected committed frontier",
+        ))
+    }
+
+    fn open(&self, partition: cdf_kernel::PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
+        self.open_count.fetch_add(1, Ordering::SeqCst);
+        let schema = self.schema();
+        let resource_id = self.descriptor.resource_id.clone();
+        let snapshot = self.position();
+        cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move {
+            let record_batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(Int64Array::from(vec![1])) as ArrayRef,
+                    Arc::new(Int64Array::from(vec![1])) as ArrayRef,
+                ],
+            )?;
+            let schema_hash = cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?;
+            let mut batch = cdf_kernel::Batch::from_record_batch(
+                cdf_kernel::BatchId::new("batch-table-snapshot")?,
+                resource_id,
+                partition.partition_id,
+                schema_hash,
+                record_batch,
+            )?;
+            batch.header.source_position = Some(snapshot);
+            Ok(cdf_kernel::PartitionStreamPayload::batches(Box::pin(
+                futures_util::stream::once(async move { Ok(batch) }),
+            )))
+        }))
+    }
+}
+
+impl QueryableResource for TableSnapshotMockResource {
+    fn capabilities(&self) -> &ResourceCapabilities {
+        &self.capabilities
+    }
+
+    fn negotiate(&self, request: &ScanRequest) -> Result<cdf_kernel::ScanPlan> {
+        negotiate_scan_plan(
+            self.descriptor.resource_id.clone(),
+            request.clone(),
+            &self.capabilities,
+            self.plan_partitions(request)?,
+            Some(1),
+            Some(16),
+            DeliveryGuarantee::AtLeastOnceDuplicateRisk,
+        )
+    }
+}
+
 const SIMPLE_FILE_RESOURCE_APPEND_DRIFT: &str = r#"
 [source.local]
 kind = "files"
@@ -5474,6 +5639,53 @@ fn file_manifest_append_run_skips_unchanged_files_and_loads_only_changes() {
     assert_eq!(
         package_id_name_rows(&reader),
         vec![(4, Some("grace".to_owned()))]
+    );
+}
+
+#[test]
+fn bounded_table_snapshot_run_rebinds_unchanged_frontier_to_no_op() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = TableSnapshotMockResource::new();
+    let package_root = temp.path().join(".cdf/packages");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+
+    let first = futures_executor::block_on(run_project(project_run_request(
+        &resource,
+        "pkg-table-snapshot-1",
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-table-snapshot-1",
+    )))
+    .unwrap();
+    assert_eq!(first.row_count, 1);
+    assert_eq!(first.checkpoint.delta.output_position, resource.position());
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 1);
+
+    let unchanged = futures_executor::block_on(run_project_outcome(project_run_request(
+        &resource,
+        "pkg-table-snapshot-2",
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-table-snapshot-2",
+    )))
+    .unwrap();
+    let ProjectRunOutcome::NoOp(unchanged) = unchanged else {
+        panic!("unchanged table snapshot should produce an explicit no-op outcome");
+    };
+    assert_eq!(
+        unchanged.reason,
+        ProjectRunNoOpReason::SourcePositionUnchanged
+    );
+    assert_eq!(unchanged.current_checkpoint, Some(first.checkpoint));
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 1);
+    assert!(!package_root.join("pkg-table-snapshot-2").exists());
+    assert_eq!(
+        unchanged.ledger_snapshot.events.len(),
+        3,
+        "snapshot no-op must not emit package, destination, or checkpoint events"
     );
 }
 

@@ -142,6 +142,7 @@ pub struct ProjectRunNoOpReport {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProjectRunNoOpReason {
     FileManifestUnchanged,
+    SourcePositionUnchanged,
     SourceExhausted,
 }
 
@@ -149,6 +150,7 @@ impl ProjectRunNoOpReason {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::FileManifestUnchanged => "file_manifest_unchanged",
+            Self::SourcePositionUnchanged => "source_position_unchanged",
             Self::SourceExhausted => "source_exhausted",
         }
     }

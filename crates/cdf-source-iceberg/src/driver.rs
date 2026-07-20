@@ -682,6 +682,32 @@ impl ResourceStream for IcebergResource {
         )?))
     }
 
+    fn rebind_scan_for_resume(
+        &self,
+        scan: &mut ScanPlan,
+        committed_frontier: &SourcePosition,
+    ) -> Result<()> {
+        committed_frontier.validate()?;
+        let SourcePosition::TableSnapshot(committed) = committed_frontier else {
+            return Err(CdfError::data(format!(
+                "Iceberg resource `{}` cannot resume from a {} position",
+                self.descriptor.resource_id,
+                committed_frontier.kind().as_str()
+            )));
+        };
+        let selected = self.table.selected.as_ref().ok_or_else(|| {
+            CdfError::data(format!(
+                "Iceberg resource `{}` has a committed table snapshot but the selected table is empty",
+                self.descriptor.resource_id
+            ))
+        })?;
+        if committed.as_ref() == &selected.position {
+            scan.partitions.clear();
+            scan.planned_task_set = None;
+        }
+        Ok(())
+    }
+
     fn open(&self, _partition: PartitionPlan) -> PartitionOpenAttempt<'_> {
         PartitionOpenAttempt::materialized(Box::pin(async {
             Err(CdfError::contract(
@@ -2373,6 +2399,17 @@ mod tests {
             .unwrap();
         let authority: crate::IcebergTaskSetAuthority =
             serde_json::from_slice(reader.authority().payload()).unwrap();
+        let mut unchanged_scan = one_job_scan.clone();
+        resource
+            .rebind_scan_for_resume(
+                &mut unchanged_scan,
+                &SourcePosition::TableSnapshot(Box::new(
+                    authority.snapshot.clone().expect("selected snapshot"),
+                )),
+            )
+            .unwrap();
+        assert_eq!(unchanged_scan.partition_count().unwrap(), 0);
+        assert!(unchanged_scan.planned_task_set.is_none());
         assert_eq!(authority.output_schema_id, 1);
         assert_eq!(authority.projected_field_ids, vec![1, 2]);
         assert_eq!(
