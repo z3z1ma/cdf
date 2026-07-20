@@ -2,13 +2,17 @@ use cdf_kernel::{
     CdfError, PipelineId, Result, SecretReference, partition_source_identity_binding,
 };
 use cdf_runtime::{
-    PortableExecutionBinding, PortablePartitionBinding, PortablePartitionTask,
-    PortablePartitionTaskInput, PortableSourceBinding, ReconstructedExecutionAuthority,
-    ReconstructedWorkerTaskAuthority, VerifiedWorkerArtifactFacts, VerifiedWorkerSourceFacts,
-    WorkerAdmissionVerifier, WorkerArtifactKind, WorkerArtifactReference, WorkerAttemptPolicy,
-    WorkerCapabilityRequirements, WorkerCompatibility, WorkerExecutionArtifacts,
-    WorkerInputCheckpointBinding, WorkerOutputPolicy, WorkerProcessedObservation,
-    WorkerResourceBudget, WorkerSourceAttestation, artifact_hash,
+    AdmittedPartitionWorkerResult, PortableExecutionBinding, PortablePartitionBinding,
+    PortablePartitionTask, PortablePartitionTaskInput, PortableSegmentTask,
+    PortableSegmentTaskInput, PortableSourceBinding, ReconstructedExecutionAuthority,
+    ReconstructedSegmentTask, ReconstructedWorkerTaskAuthority, SegmentTaskReconstructor,
+    VerifiedWorkerArtifactFacts, VerifiedWorkerSourceFacts, WorkerAdmissionVerifier,
+    WorkerArtifactKind, WorkerArtifactReference, WorkerArtifactRole,
+    WorkerArtifactWriteAuthorization, WorkerArtifactWriteSession, WorkerAttemptPolicy,
+    WorkerAuthorizedArtifactSink, WorkerCapabilityRequirements, WorkerCompatibility,
+    WorkerExecutionArtifacts, WorkerInputCheckpointBinding, WorkerLeaseState, WorkerOutputPolicy,
+    WorkerOutputVerifier, WorkerProcessedObservation, WorkerResourceBudget,
+    WorkerSourceAttestation, artifact_hash,
 };
 use serde::{Deserialize, Serialize};
 use std::any::Any;
@@ -31,6 +35,89 @@ pub trait WorkerCompilerArtifactWriter {
 /// Exact compiler bytes observed by a worker-owned content store.
 pub struct VerifiedWorkerCompilerArtifact {
     bytes: Vec<u8>,
+}
+
+/// Prepared Arrow rows read and verified from the worker artifact authority.
+pub struct VerifiedPreparedSegmentArtifact {
+    facts: VerifiedWorkerArtifactFacts,
+    batches: Vec<arrow_array::RecordBatch>,
+}
+
+impl VerifiedPreparedSegmentArtifact {
+    pub fn new(
+        reference: &WorkerArtifactReference,
+        bytes: Vec<u8>,
+        observed_generation: Option<&cdf_kernel::ContentProviderGeneration>,
+        maximum_encoded_bytes: u64,
+        maximum_decoded_bytes: u64,
+    ) -> Result<Self> {
+        reference.validate()?;
+        if reference.kind != WorkerArtifactKind::PreparedSegment {
+            return Err(CdfError::contract(
+                "prepared segment reader requires a PreparedSegment reference",
+            ));
+        }
+        let byte_count = u64::try_from(bytes.len())
+            .map_err(|_| CdfError::contract("prepared segment exceeds u64"))?;
+        let content_sha256 = format!(
+            "sha256:{:x}",
+            <sha2::Sha256 as sha2::Digest>::digest(&bytes)
+        );
+        if byte_count != reference.byte_count
+            || byte_count > maximum_encoded_bytes
+            || content_sha256 != reference.content_sha256
+            || reference.provider_generation.as_ref() != observed_generation
+        {
+            return Err(CdfError::contract(
+                "prepared segment bytes, generation, or encoded size do not match authority",
+            ));
+        }
+        let mut reader = arrow_ipc::reader::FileReader::try_new(std::io::Cursor::new(bytes), None)
+            .map_err(CdfError::from)?;
+        let mut decoded_bytes = 0_u64;
+        let mut row_count = 0_u64;
+        let mut batches = Vec::new();
+        for batch in &mut reader {
+            let batch = batch.map_err(CdfError::from)?;
+            row_count = row_count
+                .checked_add(
+                    u64::try_from(batch.num_rows())
+                        .map_err(|_| CdfError::data("prepared segment row count exceeds u64"))?,
+                )
+                .ok_or_else(|| CdfError::data("prepared segment row count overflow"))?;
+            decoded_bytes = decoded_bytes
+                .checked_add(
+                    u64::try_from(batch.get_array_memory_size())
+                        .map_err(|_| CdfError::data("prepared segment decoded bytes exceed u64"))?,
+                )
+                .ok_or_else(|| CdfError::data("prepared segment decoded bytes overflow"))?;
+            if decoded_bytes > maximum_decoded_bytes {
+                return Err(CdfError::data(
+                    "prepared segment exceeds its admitted decoded-memory budget",
+                ));
+            }
+            batches.push(batch);
+        }
+        if row_count == 0 || batches.is_empty() {
+            return Err(CdfError::data("prepared segment contains no rows"));
+        }
+        Ok(Self {
+            facts: VerifiedWorkerArtifactFacts::new(reference.clone(), Some(row_count))?,
+            batches,
+        })
+    }
+
+    pub fn facts(&self) -> &VerifiedWorkerArtifactFacts {
+        &self.facts
+    }
+
+    pub fn batches(&self) -> &[arrow_array::RecordBatch] {
+        &self.batches
+    }
+
+    pub fn into_batches(self) -> Vec<arrow_array::RecordBatch> {
+        self.batches
+    }
 }
 
 impl VerifiedWorkerCompilerArtifact {
@@ -95,6 +182,35 @@ pub trait EngineWorkerArtifactAuthority {
         &self,
         reference: &WorkerArtifactReference,
     ) -> Result<VerifiedWorkerArtifactFacts>;
+
+    fn read_prepared_segment(
+        &self,
+        reference: &WorkerArtifactReference,
+        maximum_encoded_bytes: u64,
+        maximum_decoded_bytes: u64,
+    ) -> Result<VerifiedPreparedSegmentArtifact>;
+}
+
+/// Provider boundary for fenced worker output publication.
+pub trait EngineWorkerOutputAuthority: EngineWorkerArtifactAuthority {
+    fn reference_for_bytes(
+        &self,
+        kind: WorkerArtifactKind,
+        namespace: &cdf_kernel::ContentStoreNamespace,
+        object_key: cdf_kernel::ContentObjectKey,
+        bytes: &[u8],
+    ) -> Result<WorkerArtifactReference>;
+
+    fn object_state(
+        &self,
+        reference: &WorkerArtifactReference,
+    ) -> Result<cdf_runtime::WorkerArtifactObjectState>;
+
+    fn write_authorized_bytes(
+        &self,
+        authorization: WorkerArtifactWriteAuthorization<'_>,
+        bytes: Vec<u8>,
+    ) -> Result<VerifiedWorkerArtifactFacts>;
 }
 
 /// Source-specific observation verification behind the generic worker boundary.
@@ -128,9 +244,17 @@ impl<'a> EngineWorkerAdmissionVerifier<'a> {
         task: &PortablePartitionTask,
         reference: &WorkerArtifactReference,
     ) -> Result<T> {
+        self.decode_reference(reference, task.resources.memory_bytes)
+    }
+
+    fn decode_reference<T: serde::de::DeserializeOwned>(
+        &self,
+        reference: &WorkerArtifactReference,
+        maximum_bytes: u64,
+    ) -> Result<T> {
         let artifact = self
             .artifacts
-            .read_compiler_artifact(reference, task.resources.memory_bytes)?;
+            .read_compiler_artifact(reference, maximum_bytes)?;
         serde_json::from_slice(artifact.bytes()).map_err(|error| {
             CdfError::contract(format!(
                 "decode {:?} worker compiler artifact: {error}",
@@ -263,6 +387,216 @@ impl WorkerAdmissionVerifier for EngineWorkerAdmissionVerifier<'_> {
             attestation,
             observations,
         )
+    }
+}
+
+/// Exact engine program reconstructed for source-free canonical segment finalization.
+pub struct ReconstructedEngineSegmentProgram {
+    logical_schema: std::sync::Arc<arrow_schema::Schema>,
+    segmentation: CanonicalSegmentationPolicy,
+    prepared_batches: Vec<arrow_array::RecordBatch>,
+}
+
+impl cdf_runtime::ReconstructedWorkerExecutionProgram for ReconstructedEngineSegmentProgram {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl ReconstructedEngineSegmentProgram {
+    pub fn logical_schema(&self) -> &std::sync::Arc<arrow_schema::Schema> {
+        &self.logical_schema
+    }
+
+    pub fn segmentation(&self) -> &CanonicalSegmentationPolicy {
+        &self.segmentation
+    }
+
+    pub fn prepared_batches(&self) -> &[arrow_array::RecordBatch] {
+        &self.prepared_batches
+    }
+
+    pub fn into_prepared_batches(self) -> Vec<arrow_array::RecordBatch> {
+        self.prepared_batches
+    }
+}
+
+struct PendingEngineWorkerOutput<'a> {
+    store: &'a dyn EngineWorkerOutputAuthority,
+    bytes: Option<Vec<u8>>,
+}
+
+impl WorkerAuthorizedArtifactSink for PendingEngineWorkerOutput<'_> {
+    fn write_authorized(
+        &mut self,
+        authorization: WorkerArtifactWriteAuthorization<'_>,
+    ) -> Result<VerifiedWorkerArtifactFacts> {
+        self.store.write_authorized_bytes(
+            authorization,
+            self.bytes
+                .take()
+                .ok_or_else(|| CdfError::internal("worker output bytes were already consumed"))?,
+        )
+    }
+}
+
+/// Engine-owned source-free finalizer for one prefix-bound prepared segment.
+pub struct EngineIsolatedSegmentExecutor<'a> {
+    store: &'a dyn EngineWorkerOutputAuthority,
+    lease: &'a WorkerLeaseState,
+    now_ms: i64,
+}
+
+impl<'a> EngineIsolatedSegmentExecutor<'a> {
+    pub fn new(
+        store: &'a dyn EngineWorkerOutputAuthority,
+        lease: &'a WorkerLeaseState,
+        now_ms: i64,
+    ) -> Self {
+        Self {
+            store,
+            lease,
+            now_ms,
+        }
+    }
+}
+
+impl cdf_runtime::IsolatedSegmentExecutor for EngineIsolatedSegmentExecutor<'_> {
+    fn execute(
+        &self,
+        invocation: cdf_runtime::IsolatedSegmentInvocation,
+    ) -> cdf_kernel::BoxFuture<'_, Result<cdf_runtime::SegmentWorkerResult>> {
+        let result = (|| {
+            let (task, attempt, reconstructed) = invocation.into_parts();
+            let program = reconstructed.execution_program::<ReconstructedEngineSegmentProgram>()?;
+            if program
+                .segmentation()
+                .segment_id(task.canonical_partition_ordinal, task.segment_ordinal)?
+                != task.segment_id
+            {
+                return Err(CdfError::contract(
+                    "segment finalizer task id exceeds reconstructed segmentation authority",
+                ));
+            }
+            let observed_rows =
+                program
+                    .prepared_batches()
+                    .iter()
+                    .try_fold(0_u64, |total, batch| {
+                        total
+                            .checked_add(u64::try_from(batch.num_rows()).map_err(|_| {
+                                CdfError::data("prepared batch row count exceeds u64")
+                            })?)
+                            .ok_or_else(|| CdfError::data("prepared segment row count overflow"))
+                    })?;
+            if observed_rows != task.row_count {
+                return Err(CdfError::contract(
+                    "prepared segment rows changed after worker reconstruction",
+                ));
+            }
+            let canonical = cdf_package_contract::append_package_row_ord(
+                program.prepared_batches().to_vec(),
+                task.package_row_ord_start,
+            )?;
+            let mut bytes = Vec::new();
+            cdf_package::encode_canonical_segment_ipc(
+                &mut bytes,
+                canonical[0].schema().as_ref(),
+                &canonical,
+            )?;
+            let object_key = cdf_kernel::ContentObjectKey::new(format!(
+                "{}data/{}.arrow",
+                attempt.write_permit.output.object_key_prefix,
+                task.segment_id.as_str()
+            ))?;
+            let reference = self.store.reference_for_bytes(
+                WorkerArtifactKind::CanonicalSegment,
+                &attempt.write_permit.output.store_namespace,
+                object_key,
+                &bytes,
+            )?;
+            let receipt = cdf_runtime::WorkerArtifactReceipt {
+                role: WorkerArtifactRole::CanonicalSegment {
+                    segment_id: task.segment_id.clone(),
+                    partition_ordinal: task.canonical_partition_ordinal,
+                    segment_ordinal: task.segment_ordinal,
+                    row_count: task.row_count,
+                },
+                artifact: reference,
+            };
+            let object_state = self.store.object_state(&receipt.artifact)?;
+            let mut sink = PendingEngineWorkerOutput {
+                store: self.store,
+                bytes: Some(bytes),
+            };
+            let mut session =
+                WorkerArtifactWriteSession::new(&task, &attempt, self.lease, self.now_ms)?;
+            session.write(&receipt, &object_state, self.now_ms, &mut sink)?;
+            cdf_runtime::SegmentWorkerResult::new(
+                &attempt,
+                cdf_runtime::WorkerTerminalStatus::Succeeded,
+                Some(receipt),
+                cdf_runtime::WorkerTelemetry::default(),
+            )
+        })();
+        Box::pin(async move { result })
+    }
+}
+
+impl SegmentTaskReconstructor for EngineWorkerAdmissionVerifier<'_> {
+    fn reconstruct_segment_task(
+        &self,
+        task: &PortableSegmentTask,
+    ) -> Result<ReconstructedSegmentTask> {
+        let output_schema: crate::CompiledArrowSchema =
+            self.decode_reference(&task.output_schema, task.resources.memory_bytes)?;
+        let segmentation: CanonicalSegmentationPolicy =
+            self.decode_reference(&task.segmentation_policy, task.resources.memory_bytes)?;
+        if output_schema.arrow_schema_hash != task.output_schema_hash
+            || artifact_hash(&segmentation)? != task.segmentation_policy_hash
+        {
+            return Err(CdfError::contract(
+                "segment task compiler artifacts do not match their semantic bindings",
+            ));
+        }
+        segmentation.validate()?;
+        let logical_schema = output_schema.to_arrow()?;
+        cdf_package_contract::validate_logical_output_schema(logical_schema.as_ref())?;
+        let prepared = self.artifacts.read_prepared_segment(
+            &task.prepared_segment,
+            task.resources.disk_bytes,
+            task.resources.memory_bytes,
+        )?;
+        if prepared.batches().iter().any(|batch| {
+            batch.schema().as_ref() != logical_schema.as_ref()
+                || batch
+                    .schema()
+                    .field_with_name(cdf_package_contract::CDF_PACKAGE_ROW_ORD_FIELD)
+                    .is_ok()
+        }) {
+            return Err(CdfError::contract(
+                "prepared segment schema is not the task's exact logical output schema",
+            ));
+        }
+        Ok(ReconstructedSegmentTask::from_verified_artifacts(
+            prepared.facts().clone(),
+            VerifiedWorkerArtifactFacts::new(task.output_schema.clone(), None)?,
+            VerifiedWorkerArtifactFacts::new(task.segmentation_policy.clone(), None)?,
+            Box::new(ReconstructedEngineSegmentProgram {
+                logical_schema,
+                segmentation,
+                prepared_batches: prepared.into_batches(),
+            }),
+        ))
+    }
+}
+
+impl WorkerOutputVerifier for EngineWorkerAdmissionVerifier<'_> {
+    fn verify_output_artifact(
+        &self,
+        reference: &WorkerArtifactReference,
+    ) -> Result<VerifiedWorkerArtifactFacts> {
+        self.artifacts.verify_output_artifact(reference)
     }
 }
 
@@ -472,6 +806,104 @@ pub fn compile_engine_partition_task(
         input_checkpoint: input.input_checkpoint,
         secret_references: input.secret_references,
         input_artifacts: input.input_artifacts,
+        resources: input.resources,
+        attempt_policy: input.attempt_policy,
+        capabilities: input.capabilities,
+        output_policy: input.output_policy,
+    })
+}
+
+pub struct EngineSegmentTaskInput<'a> {
+    pub plan: &'a EnginePlan,
+    pub preparation_task: &'a PortablePartitionTask,
+    pub preparation_result: &'a AdmittedPartitionWorkerResult,
+    pub segment_ordinal: u32,
+    pub package_row_ord_start: u64,
+    pub resources: WorkerResourceBudget,
+    pub attempt_policy: WorkerAttemptPolicy,
+    pub capabilities: WorkerCapabilityRequirements,
+    pub output_policy: WorkerOutputPolicy,
+}
+
+/// Compiles one independently admitted preparation artifact into a source-free finalization task.
+pub fn compile_engine_segment_task(
+    input: EngineSegmentTaskInput<'_>,
+) -> Result<PortableSegmentTask> {
+    input.plan.validate_execution_extent_for_execution()?;
+    input.plan.validate_partition_schedule()?;
+    input.preparation_task.validate()?;
+    let result = input.preparation_result.result();
+    result.validate()?;
+    if result.task_sha256 != input.preparation_task.task_sha256
+        || input.plan.scan.plan_id != input.preparation_task.plan_id
+        || input.plan.scan.request.resource_id != input.preparation_task.resource_id
+        || input.plan.output_schema.arrow_schema_hash
+            != input.preparation_task.execution.output_schema_hash
+        || artifact_hash(input.plan.segmentation_policy()?)?
+            != input.preparation_task.execution.segmentation_policy_hash
+    {
+        return Err(CdfError::contract(
+            "admitted preparation result and engine plan do not form one finalization authority",
+        ));
+    }
+    let partition_ordinal = input.preparation_task.partition.canonical_partition_ordinal;
+    let expected_segment_id = input
+        .plan
+        .segmentation_policy()?
+        .segment_id(partition_ordinal, input.segment_ordinal)?;
+    let mut matching = result.artifacts.iter().filter(|receipt| {
+        matches!(
+            &receipt.role,
+            WorkerArtifactRole::PreparedSegment {
+                segment_id,
+                partition_ordinal: receipt_partition,
+                segment_ordinal,
+                ..
+            } if segment_id == &expected_segment_id
+                && *receipt_partition == partition_ordinal
+                && *segment_ordinal == input.segment_ordinal
+        )
+    });
+    let receipt = matching.next().ok_or_else(|| {
+        CdfError::contract("admitted preparation result lacks the requested prepared segment")
+    })?;
+    if matching.next().is_some() {
+        return Err(CdfError::contract(
+            "admitted preparation result contains duplicate prepared segment authority",
+        ));
+    }
+    let WorkerArtifactRole::PreparedSegment { row_count, .. } = &receipt.role else {
+        unreachable!("matching filter admits only prepared segment roles")
+    };
+
+    PortableSegmentTask::new(PortableSegmentTaskInput {
+        compatibility: input.preparation_task.compatibility.clone(),
+        pipeline_id: input.preparation_task.pipeline_id.clone(),
+        resource_id: input.preparation_task.resource_id.clone(),
+        plan_id: input.preparation_task.plan_id.clone(),
+        partition_id: input.preparation_task.partition.partition_id.clone(),
+        scope: input.preparation_task.partition.scope.clone(),
+        canonical_partition_ordinal: partition_ordinal,
+        segment_id: expected_segment_id,
+        segment_ordinal: input.segment_ordinal,
+        row_count: *row_count,
+        prepared_segment: receipt.artifact.clone(),
+        preparation_result_sha256: result.result_sha256.clone(),
+        package_row_ord_start: input.package_row_ord_start,
+        output_schema: input
+            .preparation_task
+            .execution
+            .artifacts
+            .output_schema
+            .clone(),
+        output_schema_hash: input.plan.output_schema.arrow_schema_hash.clone(),
+        segmentation_policy: input
+            .preparation_task
+            .execution
+            .artifacts
+            .segmentation_policy
+            .clone(),
+        segmentation_policy_hash: artifact_hash(input.plan.segmentation_policy()?)?,
         resources: input.resources,
         attempt_policy: input.attempt_policy,
         capabilities: input.capabilities,

@@ -1631,13 +1631,16 @@ impl ReconstructedSegmentTask {
     }
 }
 
-/// Host-injected verification for the source-free second barrier.
-pub trait SegmentTaskVerifier {
+/// Worker-host reconstruction for the source-free second barrier.
+pub trait SegmentTaskReconstructor {
     fn reconstruct_segment_task(
         &self,
         task: &PortableSegmentTask,
     ) -> Result<ReconstructedSegmentTask>;
+}
 
+/// Coordinator-side verification of one worker output object.
+pub trait WorkerOutputVerifier {
     fn verify_output_artifact(
         &self,
         reference: &WorkerArtifactReference,
@@ -1685,7 +1688,7 @@ pub trait IsolatedSegmentExecutor {
 pub struct LocalIsolatedSegmentHost<'a> {
     compatibility: &'a WorkerCompatibility,
     capabilities: &'a WorkerRuntimeCapabilities,
-    verifier: &'a dyn SegmentTaskVerifier,
+    reconstructor: &'a dyn SegmentTaskReconstructor,
     executor: &'a dyn IsolatedSegmentExecutor,
 }
 
@@ -1693,7 +1696,7 @@ impl<'a> LocalIsolatedSegmentHost<'a> {
     pub fn new(
         compatibility: &'a WorkerCompatibility,
         capabilities: &'a WorkerRuntimeCapabilities,
-        verifier: &'a dyn SegmentTaskVerifier,
+        reconstructor: &'a dyn SegmentTaskReconstructor,
         executor: &'a dyn IsolatedSegmentExecutor,
     ) -> Result<Self> {
         compatibility.validate()?;
@@ -1701,7 +1704,7 @@ impl<'a> LocalIsolatedSegmentHost<'a> {
         Ok(Self {
             compatibility,
             capabilities,
-            verifier,
+            reconstructor,
             executor,
         })
     }
@@ -1715,7 +1718,7 @@ impl<'a> LocalIsolatedSegmentHost<'a> {
             PortableSegmentTask::decode_bounded(task_bytes, self.compatibility, self.capabilities)?;
         let attempt =
             PartitionAttemptEnvelope::decode_bounded(attempt_bytes, &task, self.capabilities)?;
-        let reconstructed = self.verifier.reconstruct_segment_task(&task)?;
+        let reconstructed = self.reconstructor.reconstruct_segment_task(&task)?;
         reconstructed.validate_for(&task)?;
         let result = self
             .executor
@@ -1748,7 +1751,7 @@ pub async fn execute_local_isolated_segment(
     task: &PortableSegmentTask,
     attempt: &PartitionAttemptEnvelope,
     worker: &LocalIsolatedSegmentHost<'_>,
-    coordinator_verifier: &dyn SegmentTaskVerifier,
+    coordinator_verifier: &dyn WorkerOutputVerifier,
     current_lease: &WorkerLeaseState,
     now_ms: i64,
 ) -> Result<AdmittedSegmentWorkerResult> {
@@ -1762,9 +1765,6 @@ pub async fn execute_local_isolated_segment(
         .execute_serialized(&task_bytes, &attempt_bytes)
         .await?;
     let result = SegmentWorkerResult::decode_bounded(&result_bytes, task, worker.capabilities)?;
-    coordinator_verifier
-        .reconstruct_segment_task(task)?
-        .validate_for(task)?;
     result.validate_for_admission(task, attempt, current_lease, coordinator_verifier, now_ms)?;
     Ok(AdmittedSegmentWorkerResult(result))
 }
@@ -3033,7 +3033,7 @@ impl SegmentWorkerResult {
         task: &PortableSegmentTask,
         attempt: &PartitionAttemptEnvelope,
         current_lease: &WorkerLeaseState,
-        verifier: &dyn SegmentTaskVerifier,
+        verifier: &dyn WorkerOutputVerifier,
         now_ms: i64,
     ) -> Result<()> {
         self.validate()?;

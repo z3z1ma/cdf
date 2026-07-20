@@ -22,6 +22,7 @@ pub use quarantine::*;
 pub use reader::*;
 pub use runtime_schema::*;
 pub use statistics_profile::*;
+pub use storage::encode_canonical_segment_ipc;
 
 #[cfg(test)]
 mod tests;

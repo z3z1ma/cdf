@@ -409,7 +409,7 @@ impl WorkerAdmissionVerifier for MockArtifactStore {
     }
 }
 
-impl SegmentTaskVerifier for MockArtifactStore {
+impl SegmentTaskReconstructor for MockArtifactStore {
     fn reconstruct_segment_task(
         &self,
         task: &PortableSegmentTask,
@@ -424,7 +424,9 @@ impl SegmentTaskVerifier for MockArtifactStore {
             Box::new(()),
         ))
     }
+}
 
+impl WorkerOutputVerifier for MockArtifactStore {
     fn verify_output_artifact(
         &self,
         reference: &WorkerArtifactReference,

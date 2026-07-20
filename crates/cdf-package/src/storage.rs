@@ -378,7 +378,7 @@ pub(crate) fn write_arrow_ipc_file(
 ) -> Result<IpcWriteReceipt> {
     let mut sink = AtomicArtifactSink::create(path, ArtifactDurability::SegmentPublish)?;
     let encode_started = std::time::Instant::now();
-    encode_arrow_ipc(&mut sink, schema, batches)?;
+    encode_canonical_segment_ipc(sink.writer_mut()?, schema, batches)?;
     let encode_hash_duration_ns = duration_ns(encode_started, "IPC encode/hash")?;
     let publish_started = std::time::Instant::now();
     let artifact = sink.finish()?;
@@ -389,16 +389,20 @@ pub(crate) fn write_arrow_ipc_file(
     })
 }
 
-fn encode_arrow_ipc(
-    sink: &mut AtomicArtifactSink,
+/// Encodes the canonical LZ4 Arrow IPC file representation used by package segments.
+///
+/// Isolated workers use the same byte authority for durable prepared/finalized handoffs; keeping
+/// the writer here prevents a second identity-bearing IPC implementation from drifting.
+pub fn encode_canonical_segment_ipc(
+    sink: &mut dyn Write,
     schema: &arrow_schema::Schema,
     batches: &[RecordBatch],
 ) -> Result<()> {
     let options = IpcWriteOptions::default()
         .try_with_compression(Some(CompressionType::LZ4_FRAME))
         .map_err(CdfError::from)?;
-    let mut writer = FileWriter::try_new_with_options(sink.writer_mut()?, schema, options)
-        .map_err(CdfError::from)?;
+    let mut writer =
+        FileWriter::try_new_with_options(sink, schema, options).map_err(CdfError::from)?;
     for batch in batches {
         writer.write(batch).map_err(CdfError::from)?;
     }
@@ -674,7 +678,7 @@ mod tests {
 
     use super::{
         ArtifactDurability, AtomicArtifactSink, HashingWriter, PublishBoundary, atomic_write,
-        create_temp_sibling, encode_arrow_ipc, sync_directory, write_arrow_ipc_file,
+        create_temp_sibling, encode_canonical_segment_ipc, sync_directory, write_arrow_ipc_file,
     };
 
     #[test]
@@ -764,7 +768,8 @@ mod tests {
         let mut sink =
             AtomicArtifactSink::create(&final_path, ArtifactDurability::SegmentPublish).unwrap();
         sink.inject_failure(PublishBoundary::EncoderFinish);
-        encode_arrow_ipc(&mut sink, schema.as_ref(), &[batch]).unwrap();
+        encode_canonical_segment_ipc(sink.writer_mut().unwrap(), schema.as_ref(), &[batch])
+            .unwrap();
         assert!(sink.check_failure(PublishBoundary::EncoderFinish).is_err());
         drop(sink);
 

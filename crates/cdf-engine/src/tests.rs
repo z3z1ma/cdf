@@ -224,6 +224,17 @@ impl EngineWorkerArtifactAuthority for MemoryWorkerCompilerArtifacts {
             "compiler fixture contains no worker output artifacts",
         ))
     }
+
+    fn read_prepared_segment(
+        &self,
+        _reference: &cdf_runtime::WorkerArtifactReference,
+        _maximum_encoded_bytes: u64,
+        _maximum_decoded_bytes: u64,
+    ) -> Result<VerifiedPreparedSegmentArtifact> {
+        Err(cdf_kernel::CdfError::internal(
+            "compiler fixture contains no prepared segment artifacts",
+        ))
+    }
 }
 
 struct NoWorkerSourceFacts;
@@ -315,6 +326,43 @@ impl SharedEngineWorkerArtifacts {
     }
 }
 
+fn prepared_segment_bytes(
+    canonical_bytes: Vec<u8>,
+    package_row_ord_start: u64,
+    row_count: u64,
+) -> Result<Vec<u8>> {
+    let reader =
+        arrow_ipc::reader::FileReader::try_new(std::io::Cursor::new(canonical_bytes), None)
+            .map_err(cdf_kernel::CdfError::from)?;
+    let canonical = reader
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(cdf_kernel::CdfError::from)?;
+    cdf_package_contract::validate_package_row_ord_batches(
+        &canonical,
+        package_row_ord_start,
+        row_count,
+    )?;
+    let first = canonical
+        .first()
+        .ok_or_else(|| cdf_kernel::CdfError::data("canonical fixture segment is empty"))?;
+    let logical_schema = Arc::new(cdf_package_contract::logical_output_schema(
+        first.schema().as_ref(),
+    )?);
+    let logical = canonical
+        .into_iter()
+        .map(|batch| {
+            arrow_array::RecordBatch::try_new(
+                Arc::clone(&logical_schema),
+                batch.columns()[..batch.num_columns() - 1].to_vec(),
+            )
+            .map_err(cdf_kernel::CdfError::from)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut bytes = Vec::new();
+    cdf_package::encode_canonical_segment_ipc(&mut bytes, logical_schema.as_ref(), &logical)?;
+    Ok(bytes)
+}
+
 impl WorkerCompilerArtifactWriter for SharedEngineWorkerArtifacts {
     fn write(
         &mut self,
@@ -380,6 +428,72 @@ impl EngineWorkerArtifactAuthority for SharedEngineWorkerArtifacts {
         .then(|| Self::observed_output_rows(bytes))
         .transpose()?;
         cdf_runtime::VerifiedWorkerArtifactFacts::new(reference.clone(), row_count)
+    }
+
+    fn read_prepared_segment(
+        &self,
+        reference: &cdf_runtime::WorkerArtifactReference,
+        maximum_encoded_bytes: u64,
+        maximum_decoded_bytes: u64,
+    ) -> Result<VerifiedPreparedSegmentArtifact> {
+        VerifiedPreparedSegmentArtifact::new(
+            reference,
+            self.bytes_for(reference)?,
+            reference.provider_generation.as_ref(),
+            maximum_encoded_bytes,
+            maximum_decoded_bytes,
+        )
+    }
+}
+
+impl EngineWorkerOutputAuthority for SharedEngineWorkerArtifacts {
+    fn reference_for_bytes(
+        &self,
+        kind: cdf_runtime::WorkerArtifactKind,
+        namespace: &cdf_kernel::ContentStoreNamespace,
+        object_key: cdf_kernel::ContentObjectKey,
+        bytes: &[u8],
+    ) -> Result<cdf_runtime::WorkerArtifactReference> {
+        Self::reference(
+            kind,
+            namespace.as_str(),
+            object_key.as_str().to_owned(),
+            bytes,
+        )
+    }
+
+    fn object_state(
+        &self,
+        reference: &cdf_runtime::WorkerArtifactReference,
+    ) -> Result<cdf_runtime::WorkerArtifactObjectState> {
+        Ok(Self::object_state(self, reference))
+    }
+
+    fn write_authorized_bytes(
+        &self,
+        authorization: cdf_runtime::WorkerArtifactWriteAuthorization<'_>,
+        bytes: Vec<u8>,
+    ) -> Result<cdf_runtime::VerifiedWorkerArtifactFacts> {
+        let reference = &authorization.receipt().artifact;
+        let observed = Self::reference(
+            reference.kind,
+            reference.store_namespace.as_str(),
+            reference.object_key.as_str().to_owned(),
+            &bytes,
+        )?;
+        if &observed != reference {
+            return Err(cdf_kernel::CdfError::contract(
+                "authorized worker output bytes do not match their receipt",
+            ));
+        }
+        self.values.lock().unwrap().insert(
+            (
+                reference.store_namespace.as_str().to_owned(),
+                reference.object_key.as_str().to_owned(),
+            ),
+            bytes,
+        );
+        self.verify_output_artifact(reference)
     }
 }
 
@@ -660,23 +774,30 @@ impl cdf_runtime::IsolatedPartitionExecutor for ActualEngineIsolatedExecutor<'_>
             )?;
             let mut receipts = Vec::with_capacity(output.output.segments.len());
             for (segment_ordinal, segment) in output.output.segments.iter().enumerate() {
-                let bytes = std::fs::read(package_dir.join(&segment.path)).map_err(|error| {
-                    cdf_kernel::CdfError::internal(format!(
-                        "read isolated worker segment {}: {error}",
-                        segment.path
-                    ))
-                })?;
+                let canonical_bytes =
+                    std::fs::read(package_dir.join(&segment.path)).map_err(|error| {
+                        cdf_kernel::CdfError::internal(format!(
+                            "read isolated worker segment {}: {error}",
+                            segment.path
+                        ))
+                    })?;
+                let bytes = prepared_segment_bytes(
+                    canonical_bytes,
+                    segment.package_row_ord_start,
+                    segment.row_count,
+                )?;
                 let reference = SharedEngineWorkerArtifacts::reference(
-                    cdf_runtime::WorkerArtifactKind::CanonicalSegment,
+                    cdf_runtime::WorkerArtifactKind::PreparedSegment,
                     attempt.write_permit.output.store_namespace.as_str(),
                     format!(
-                        "{}{}",
-                        attempt.write_permit.output.object_key_prefix, segment.path
+                        "{}prepared/{}.arrow",
+                        attempt.write_permit.output.object_key_prefix,
+                        segment.segment_id.as_str()
                     ),
                     &bytes,
                 )?;
                 let receipt = cdf_runtime::WorkerArtifactReceipt {
-                    role: cdf_runtime::WorkerArtifactRole::CanonicalSegment {
+                    role: cdf_runtime::WorkerArtifactRole::PreparedSegment {
                         segment_id: segment.segment_id.clone(),
                         partition_ordinal: task.partition.canonical_partition_ordinal,
                         segment_ordinal: u32::try_from(segment_ordinal).map_err(|_| {
@@ -881,8 +1002,8 @@ fn isolated_engine_source_plan(
     source
 }
 
-fn isolated_engine_attempt(
-    task: &cdf_runtime::PortablePartitionTask,
+fn isolated_engine_attempt<T: cdf_runtime::PortableWorkerTask>(
+    task: &T,
     attempt_id: &str,
 ) -> (
     cdf_runtime::PartitionAttemptEnvelope,
@@ -896,9 +1017,9 @@ fn isolated_engine_attempt(
         retry_ordinal: 0,
         trace_id: format!("trace-{attempt_id}"),
         write_permit: cdf_runtime::WorkerArtifactWritePermit {
-            task_sha256: task.task_sha256.clone(),
+            task_sha256: task.task_sha256().to_owned(),
             lease_authority_domain_id: domain.clone(),
-            lease_scope: task.partition.scope.clone(),
+            lease_scope: task.lease_scope().clone(),
             fencing_token: fence,
             issued_at_ms: 1_000,
             expires_at_ms: 30_000,
@@ -913,7 +1034,7 @@ fn isolated_engine_attempt(
     };
     let lease = cdf_runtime::WorkerLeaseState {
         lease_authority_domain_id: domain,
-        lease_scope: task.partition.scope.clone(),
+        lease_scope: task.lease_scope().clone(),
         fencing_token: fence,
         expires_at_ms: 30_000,
     };
@@ -926,6 +1047,7 @@ fn run_actual_isolated_engine_equivalence(
     EngineRunOutputWithSegmentPositions,
     EngineRunOutputWithSegmentPositions,
     cdf_runtime::PartitionWorkerResult,
+    Vec<cdf_runtime::SegmentWorkerResult>,
 ) {
     let mut batches = sample_batches();
     for batch in &mut batches {
@@ -1047,7 +1169,7 @@ fn run_actual_isolated_engine_equivalence(
                 services: Vec::new(),
             },
             output_policy: cdf_runtime::WorkerOutputPolicy {
-                allowed_kinds: vec![cdf_runtime::WorkerArtifactKind::CanonicalSegment],
+                allowed_kinds: vec![cdf_runtime::WorkerArtifactKind::PreparedSegment],
                 maximum_artifact_bytes: 128 * 1024 * 1024,
             },
         },
@@ -1126,7 +1248,7 @@ fn run_actual_isolated_engine_equivalence(
         &executor,
     )
     .unwrap();
-    let admitted = block_on(cdf_runtime::execute_local_isolated_partition(
+    let admitted_preparation = block_on(cdf_runtime::execute_local_isolated_partition(
         &task,
         &attempt,
         &host,
@@ -1135,16 +1257,68 @@ fn run_actual_isolated_engine_equivalence(
         &lease,
         2_000,
     ))
-    .unwrap()
-    .into_result();
+    .unwrap();
+    let mut package_row_ord_start = 0_u64;
+    let mut finalized = Vec::with_capacity(direct.output.segments.len());
+    for (segment_ordinal, direct_segment) in direct.output.segments.iter().enumerate() {
+        assert_eq!(direct_segment.package_row_ord_start, package_row_ord_start);
+        let segment_task = compile_engine_segment_task(EngineSegmentTaskInput {
+            plan: &plan,
+            preparation_task: &task,
+            preparation_result: &admitted_preparation,
+            segment_ordinal: u32::try_from(segment_ordinal).unwrap(),
+            package_row_ord_start,
+            resources: task.resources.clone(),
+            attempt_policy: task.attempt_policy.clone(),
+            capabilities: cdf_runtime::WorkerCapabilityRequirements {
+                required_blocking_lanes: Vec::new(),
+                services: Vec::new(),
+            },
+            output_policy: cdf_runtime::WorkerOutputPolicy {
+                allowed_kinds: vec![cdf_runtime::WorkerArtifactKind::CanonicalSegment],
+                maximum_artifact_bytes: task.output_policy.maximum_artifact_bytes,
+            },
+        })
+        .unwrap();
+        let (segment_attempt, segment_lease) = isolated_engine_attempt(
+            &segment_task,
+            &format!("jobs-{cpu_slots}-segment-{segment_ordinal}"),
+        );
+        let segment_executor =
+            EngineIsolatedSegmentExecutor::new(&artifacts, &segment_lease, 2_000);
+        let segment_host = cdf_runtime::LocalIsolatedSegmentHost::new(
+            &compatibility,
+            &worker_capabilities,
+            &worker_verifier,
+            &segment_executor,
+        )
+        .unwrap();
+        finalized.push(
+            block_on(cdf_runtime::execute_local_isolated_segment(
+                &segment_task,
+                &segment_attempt,
+                &segment_host,
+                &coordinator_verifier,
+                &segment_lease,
+                2_000,
+            ))
+            .unwrap()
+            .into_result(),
+        );
+        package_row_ord_start = package_row_ord_start
+            .checked_add(direct_segment.row_count)
+            .unwrap();
+    }
+    let admitted = admitted_preparation.into_result();
     let isolated = captured.lock().unwrap().take().unwrap();
-    (direct, isolated, admitted)
+    (direct, isolated, admitted, finalized)
 }
 
 #[test]
 fn actual_engine_capsule_publishes_direct_segments_across_cpu_budgets() {
     for cpu_slots in [1, 4] {
-        let (direct, isolated, admitted) = run_actual_isolated_engine_equivalence(cpu_slots);
+        let (direct, isolated, admitted, finalized) =
+            run_actual_isolated_engine_equivalence(cpu_slots);
         assert_eq!(isolated.output.segments, direct.output.segments);
         assert_eq!(isolated.output.profile, direct.output.profile);
         assert_eq!(isolated.output.lineage, direct.output.lineage);
@@ -1157,10 +1331,17 @@ fn actual_engine_capsule_publishes_direct_segments_across_cpu_budgets() {
         );
         assert_eq!(admitted.artifacts.len(), direct.output.segments.len());
         assert_eq!(
-            admitted
-                .artifacts
+            finalized
                 .iter()
-                .map(|receipt| receipt.artifact.content_sha256.as_str())
+                .map(|result| {
+                    result
+                        .artifact
+                        .as_ref()
+                        .unwrap()
+                        .artifact
+                        .content_sha256
+                        .as_str()
+                })
                 .collect::<Vec<_>>(),
             direct
                 .output
