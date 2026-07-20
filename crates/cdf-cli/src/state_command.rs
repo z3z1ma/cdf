@@ -1,6 +1,9 @@
 mod recover;
 
-use cdf_kernel::{CheckpointId, CheckpointStore, PipelineId, ResourceId, ScopeKey};
+use cdf_kernel::{
+    CheckpointId, CheckpointStore, PipelineId, ResourceId, ScopeKey, SourcePosition,
+    TableSnapshotSelector,
+};
 use serde_json::{Map, Value, json};
 
 use crate::{
@@ -270,7 +273,7 @@ fn scope_panel(
 }
 
 fn checkpoint_panel(title: &str, checkpoint: &cdf_kernel::Checkpoint) -> KeyValuePanel {
-    KeyValuePanel::new(title)
+    let mut panel = KeyValuePanel::new(title)
         .row("checkpoint", checkpoint.delta.checkpoint_id.to_string())
         .row("status", checkpoint.status.as_str())
         .row("is head", yes_no(checkpoint.is_head))
@@ -283,6 +286,40 @@ fn checkpoint_panel(title: &str, checkpoint: &cdf_kernel::Checkpoint) -> KeyValu
                 .map(|receipt| receipt.receipt_id.to_string())
                 .unwrap_or_else(|| "none".to_owned()),
         )
+        .row(
+            "source position",
+            checkpoint.delta.output_position.kind().as_str(),
+        );
+    if let SourcePosition::TableSnapshot(position) = &checkpoint.delta.output_position {
+        panel = panel
+            .row("table protocol", position.protocol.clone())
+            .row("catalog", position.catalog.clone())
+            .row(
+                "table",
+                format!("{}.{}", position.namespace.join("."), position.table),
+            )
+            .row("selector", table_selector_summary(&position.selector))
+            .row("snapshot", position.snapshot_id.to_string())
+            .row("sequence", position.sequence_number.to_string())
+            .row(
+                "parent snapshot",
+                position
+                    .parent_snapshot_id
+                    .map_or_else(|| "none".to_owned(), |value| value.to_string()),
+            )
+            .row("metadata generation", position.metadata_generation.clone());
+    }
+    panel
+}
+
+fn table_selector_summary(selector: &TableSnapshotSelector) -> String {
+    match selector {
+        TableSnapshotSelector::Current => "current".to_owned(),
+        TableSnapshotSelector::Branch { name } => format!("branch:{name}"),
+        TableSnapshotSelector::Tag { name } => format!("tag:{name}"),
+        TableSnapshotSelector::Snapshot { snapshot_id } => format!("snapshot:{snapshot_id}"),
+        TableSnapshotSelector::Timestamp { timestamp_ms } => format!("timestamp:{timestamp_ms}"),
+    }
 }
 
 fn history_panel(history: &[cdf_kernel::Checkpoint]) -> KeyValuePanel {

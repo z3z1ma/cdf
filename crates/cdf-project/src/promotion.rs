@@ -2457,10 +2457,11 @@ mod tests {
     use cdf_kernel::{
         CHECKPOINT_STATE_VERSION, CapabilitySupport, CheckpointId, CommitCounts, ConcurrencyLimit,
         CorrectionStrategyCapability, DestinationCorrectionCapabilities, DestinationId,
-        DestinationProtocolCapabilities, DestinationSheet, DestinationSheetArtifact, FileManifest,
+        DestinationProtocolCapabilities, DestinationSheet, DestinationSheetArtifact,
         IdempotencySupport, IdempotencyToken, IdentifierRules, PipelineId, Receipt, ReceiptId,
-        ResourceId, SchemaHash, ScopeKey, SegmentId, SourcePosition, TargetName,
-        TransactionSupport, TypeMapping, TypeMappingFidelity, VerifyClause, WriteDisposition,
+        ResourceId, SchemaHash, ScopeKey, SegmentId, SourcePosition, TableSnapshotPosition,
+        TableSnapshotSelector, TargetName, TransactionSupport, TypeMapping, TypeMappingFidelity,
+        VerifyClause, WriteDisposition,
     };
 
     #[test]
@@ -2908,10 +2909,19 @@ mod tests {
         let package_dir = package_root.join("archived");
         fs::create_dir_all(&package_root).unwrap();
         let builder = cdf_package::PackageBuilder::create(&package_dir, "archived").unwrap();
-        let output_position = SourcePosition::FileManifest(FileManifest {
+        let output_position = SourcePosition::TableSnapshot(Box::new(TableSnapshotPosition {
             version: CHECKPOINT_STATE_VERSION,
-            files: Vec::new(),
-        });
+            protocol: "iceberg".to_owned(),
+            catalog: "file:/promotion-fixture".to_owned(),
+            namespace: vec!["analytics".to_owned()],
+            table: "events".to_owned(),
+            selector: TableSnapshotSelector::Current,
+            snapshot_id: 42,
+            sequence_number: 7,
+            parent_snapshot_id: Some(41),
+            metadata_location: "warehouse/analytics/events/metadata/v42.json".to_owned(),
+            metadata_generation: "sha256:metadata-v42".to_owned(),
+        }));
         let state_delta = StateDeltaPreimage {
             checkpoint_id: CheckpointId::new("checkpoint-archived").unwrap(),
             pipeline_id: PipelineId::new("pipeline-archived").unwrap(),
@@ -3609,10 +3619,19 @@ mod tests {
         let segment = builder
             .write_segment(SegmentId::new("segment-1").unwrap(), 0, &batch)
             .unwrap();
-        let output_position = SourcePosition::FileManifest(FileManifest {
+        let output_position = SourcePosition::TableSnapshot(Box::new(TableSnapshotPosition {
             version: CHECKPOINT_STATE_VERSION,
-            files: Vec::new(),
-        });
+            protocol: "iceberg".to_owned(),
+            catalog: "file:/promotion-fixture".to_owned(),
+            namespace: vec!["analytics".to_owned()],
+            table: "events".to_owned(),
+            selector: TableSnapshotSelector::Current,
+            snapshot_id: 42,
+            sequence_number: 7,
+            parent_snapshot_id: Some(41),
+            metadata_location: "warehouse/analytics/events/metadata/v42.json".to_owned(),
+            metadata_generation: "sha256:metadata-v42".to_owned(),
+        }));
         let state_segment = cdf_kernel::StateSegment {
             segment_id: segment.segment_id,
             scope: ScopeKey::Resource,

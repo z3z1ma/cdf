@@ -15,8 +15,9 @@ use cdf_kernel::{
     CursorPosition, CursorValue, DestinationId, FileManifest, FilePosition, IdempotencyToken,
     PackageHash, PartitionId, PipelineId, ProcessedObservationOutcome,
     ProcessedObservationPosition, Receipt, ReceiptId, ResourceId, SchemaHash, ScopeKey, SegmentAck,
-    SegmentId, SourcePosition, StateDelta, StateSegment, TargetName, VerifyClause,
-    WriteDisposition, aggregate_processed_observation_positions,
+    SegmentId, SourcePosition, StateDelta, StateSegment, TableSnapshotPosition,
+    TableSnapshotSelector, TargetName, VerifyClause, WriteDisposition,
+    aggregate_processed_observation_positions,
 };
 use cdf_memory::{
     ConsumerKey, DeterministicMemoryCoordinator, MemoryClass, MemoryCoordinator,
@@ -24,6 +25,50 @@ use cdf_memory::{
 };
 use cdf_package_contract::*;
 use sha2::Digest;
+
+fn table_snapshot_position() -> SourcePosition {
+    SourcePosition::TableSnapshot(Box::new(TableSnapshotPosition {
+        version: CHECKPOINT_STATE_VERSION,
+        protocol: "iceberg".to_owned(),
+        catalog: "glue:us-east-1:123456789012".to_owned(),
+        namespace: vec!["analytics".to_owned()],
+        table: "orders".to_owned(),
+        selector: TableSnapshotSelector::Branch {
+            name: "main".to_owned(),
+        },
+        snapshot_id: 42,
+        sequence_number: 7,
+        parent_snapshot_id: Some(41),
+        metadata_location: "s3://warehouse/analytics/orders/metadata/v42.json".to_owned(),
+        metadata_generation: "version-id:v42".to_owned(),
+    }))
+}
+
+#[test]
+fn table_snapshot_position_has_stable_canonical_json_and_hash() {
+    let bytes = canonical_json_bytes(&table_snapshot_position()).unwrap();
+    assert_eq!(
+        String::from_utf8(bytes.clone()).unwrap(),
+        concat!(
+            "{\"catalog\":\"glue:us-east-1:123456789012\",",
+            "\"kind\":\"table_snapshot\",",
+            "\"metadata_generation\":\"version-id:v42\",",
+            "\"metadata_location\":\"s3://warehouse/analytics/orders/metadata/v42.json\",",
+            "\"namespace\":[\"analytics\"],",
+            "\"parent_snapshot_id\":41,",
+            "\"protocol\":\"iceberg\",",
+            "\"selector\":{\"kind\":\"branch\",\"name\":\"main\"},",
+            "\"sequence_number\":7,",
+            "\"snapshot_id\":42,",
+            "\"table\":\"orders\",",
+            "\"version\":1}"
+        )
+    );
+    assert_eq!(
+        hex::encode(sha2::Sha256::digest(&bytes)),
+        "0e6d4a51d3cb81ce0ba7ba73b4684c9ac501886fe720ee1ee29087f19175e623"
+    );
+}
 
 #[test]
 fn package_local_authority_is_absolute_for_relative_roots() {
@@ -1416,7 +1461,7 @@ fn zero_segment_replay_requires_exact_typed_processed_observation_evidence() {
             source_generation: None,
             etag: Some("etag-07".to_owned()),
             object_version: None,
-            sha256: Some("sha256-07".to_owned()),
+            sha256: None,
         }],
     });
     let observation = ProcessedObservationPosition::new(
@@ -1481,7 +1526,14 @@ fn zero_segment_replay_requires_exact_typed_processed_observation_evidence() {
     let mut mismatched = processed;
     mismatched.output_position = SourcePosition::FileManifest(FileManifest {
         version: CHECKPOINT_STATE_VERSION,
-        files: Vec::new(),
+        files: vec![FilePosition {
+            path: "month-08.parquet".to_owned(),
+            size_bytes: 42,
+            source_generation: None,
+            etag: Some("etag-08".to_owned()),
+            object_version: None,
+            sha256: None,
+        }],
     });
     let error = PackageReplayInputs::from_preimages_with_processed(
         PackageHash::new("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
@@ -1497,6 +1549,76 @@ fn zero_segment_replay_requires_exact_typed_processed_observation_evidence() {
         ),
         &[],
         Some(mismatched),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("does not aggregate"), "{error}");
+}
+
+#[test]
+fn table_snapshot_replay_preserves_exact_processed_authority_and_rejects_tamper() {
+    let package_hash =
+        PackageHash::new("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            .unwrap();
+    let position = table_snapshot_position();
+    let observation = ProcessedObservationPosition::new(
+        "task-000001",
+        ProcessedObservationOutcome::Admitted,
+        position.clone(),
+    )
+    .unwrap();
+    let processed = ProcessedObservationEvidenceArtifact::new(
+        None,
+        WriteDisposition::Append,
+        vec![observation],
+        position.clone(),
+    )
+    .unwrap();
+    let state_delta = StateDeltaPreimage {
+        checkpoint_id: CheckpointId::new("checkpoint-table-snapshot").unwrap(),
+        pipeline_id: PipelineId::new("pipeline-1").unwrap(),
+        resource_id: ResourceId::new("iceberg.orders").unwrap(),
+        scope: ScopeKey::Resource,
+        state_version: CHECKPOINT_STATE_VERSION,
+        parent_checkpoint_id: None,
+        input_position: None,
+        output_position: position,
+        schema_hash: SchemaHash::new("schema-fixture").unwrap(),
+        segments: Vec::new(),
+    };
+    let commit_plan = DestinationCommitPlanPreimage::package_hash_token(
+        TargetName::new("orders").unwrap(),
+        WriteDisposition::Append,
+        Vec::new(),
+        state_delta.schema_hash.clone(),
+        Vec::new(),
+    );
+
+    let replay = PackageReplayInputs::from_preimages_with_processed(
+        package_hash.clone(),
+        None,
+        state_delta.clone(),
+        commit_plan.clone(),
+        &[],
+        Some(processed.clone()),
+    )
+    .unwrap();
+    assert_eq!(
+        replay.state_delta.output_position,
+        processed.output_position
+    );
+
+    let mut tampered = processed;
+    let SourcePosition::TableSnapshot(position) = &mut tampered.output_position else {
+        unreachable!();
+    };
+    position.metadata_generation = "version-id:tampered".to_owned();
+    let error = PackageReplayInputs::from_preimages_with_processed(
+        package_hash,
+        None,
+        state_delta,
+        commit_plan,
+        &[],
+        Some(tampered),
     )
     .unwrap_err();
     assert!(error.to_string().contains("does not aggregate"), "{error}");

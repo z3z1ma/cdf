@@ -33,8 +33,9 @@ use cdf_kernel::{
     FilePosition, IdempotencyToken, LeaseOwnerId, PackageHash, PartitionId, PartitionPlan,
     PipelineId, PromotionSettlementStore, Receipt, ReceiptId, ResourceDescriptor, ResourceId,
     ResourceStream, RunId, ScanRequest, SchemaHash, SchemaSnapshotReference, SchemaSource,
-    ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment, TargetName,
-    TrustLevel, VerifyClause, WriteDisposition, with_semantic,
+    ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment,
+    TableSnapshotPosition, TableSnapshotSelector, TargetName, TrustLevel, VerifyClause,
+    WriteDisposition, with_semantic,
 };
 use cdf_package::{PackageBuilder, PackageReader};
 use cdf_package_contract::{
@@ -13452,6 +13453,94 @@ fn state_show_human_rich_render_uses_scope_and_head_panels() {
             result.stdout
         );
     }
+}
+
+#[test]
+fn state_show_renders_typed_table_snapshot_authority() {
+    let project = TestProject::new();
+    let position = SourcePosition::TableSnapshot(Box::new(TableSnapshotPosition {
+        version: CHECKPOINT_STATE_VERSION,
+        protocol: "iceberg".to_owned(),
+        catalog: "glue:us-east-1:123456789012".to_owned(),
+        namespace: vec!["analytics".to_owned(), "curated".to_owned()],
+        table: "orders".to_owned(),
+        selector: TableSnapshotSelector::Branch {
+            name: "main".to_owned(),
+        },
+        snapshot_id: 42,
+        sequence_number: 7,
+        parent_snapshot_id: Some(41),
+        metadata_location: "s3://warehouse/analytics/orders/metadata/v42.json".to_owned(),
+        metadata_generation: "version-id:v42".to_owned(),
+    }));
+    let package_hash = "package-table-snapshot";
+    let mut delta = status_delta("cdf-run", "checkpoint-table-snapshot", package_hash);
+    delta.output_position = position.clone();
+    delta.segments[0].output_position = position;
+    let checkpoint_id = delta.checkpoint_id.clone();
+    let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
+    store.propose(delta).unwrap();
+    store
+        .commit(
+            &checkpoint_id,
+            status_receipt(package_hash, "receipt-table-snapshot", 1_700_000_000_000),
+        )
+        .unwrap();
+
+    let output = crate::state_command::state(
+        &test_cli(&project),
+        cdf_cli_core::args::StateCommand::Show(cdf_cli_core::args::StateScopeArgs {
+            pipeline_id: Some("cdf-run".to_owned()),
+            resource_id: "local.events".to_owned(),
+            scope_json: None,
+            scope: vec!["kind=resource".to_owned()],
+        }),
+        &test_execution_services(),
+        &test_destination_registry(),
+    )
+    .unwrap();
+    let result = render_rich(output);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    for expected in [
+        "source position      table_snapshot",
+        "table protocol       iceberg",
+        "catalog              glue:us-east-1:123456789012",
+        "table                analytics.curated.orders",
+        "selector             branch:main",
+        "snapshot             42",
+        "sequence             7",
+        "parent snapshot      41",
+        "metadata generation  version-id:v42",
+    ] {
+        assert!(
+            result.stdout.contains(expected),
+            "missing {expected:?} in:\n{}",
+            result.stdout
+        );
+    }
+
+    let json_result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "state",
+        "show",
+        "local.events",
+        "--pipeline",
+        "cdf-run",
+    ]);
+    assert_eq!(json_result.exit_code, 0, "stderr: {}", json_result.stderr);
+    let json = stderr_or_stdout_json(&json_result.stdout);
+    assert_eq!(
+        json["result"]["head"]["delta"]["output_position"]["kind"],
+        "table_snapshot"
+    );
+    assert_eq!(
+        json["result"]["head"]["delta"]["output_position"]["snapshot_id"],
+        42
+    );
 }
 
 #[test]

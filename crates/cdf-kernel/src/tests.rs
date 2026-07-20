@@ -1373,6 +1373,22 @@ fn source_position_version_returns_embedded_variant_version() {
             4,
         ),
         (
+            SourcePosition::TableSnapshot(Box::new(TableSnapshotPosition {
+                version: 8,
+                protocol: "iceberg".to_owned(),
+                catalog: "rest:https://catalog.example.test".to_owned(),
+                namespace: vec!["analytics".to_owned()],
+                table: "orders".to_owned(),
+                selector: TableSnapshotSelector::Current,
+                snapshot_id: 42,
+                sequence_number: 7,
+                parent_snapshot_id: Some(41),
+                metadata_location: "s3://warehouse/analytics/orders/metadata/v7.json".to_owned(),
+                metadata_generation: "etag:v7".to_owned(),
+            })),
+            8,
+        ),
+        (
             SourcePosition::PageToken(PageToken {
                 version: 5,
                 token: "next-page".to_owned(),
@@ -1400,6 +1416,62 @@ fn source_position_version_returns_embedded_variant_version() {
     for (position, expected_version) in positions {
         assert_eq!(position.version(), expected_version);
     }
+}
+
+#[test]
+fn table_snapshot_position_is_canonical_exact_and_batch_slice_invariant() {
+    assert!(
+        std::mem::size_of::<SourcePosition>() <= 96,
+        "large source variants must remain indirect so ordinary positions stay compact"
+    );
+    let position = SourcePosition::TableSnapshot(Box::new(TableSnapshotPosition {
+        version: SOURCE_POSITION_VERSION,
+        protocol: "iceberg".to_owned(),
+        catalog: "glue:us-east-1:123456789012".to_owned(),
+        namespace: vec!["analytics".to_owned(), "curated".to_owned()],
+        table: "orders".to_owned(),
+        selector: TableSnapshotSelector::Branch {
+            name: "main".to_owned(),
+        },
+        snapshot_id: 42,
+        sequence_number: 7,
+        parent_snapshot_id: Some(41),
+        metadata_location: "s3://warehouse/analytics/orders/metadata/v7.metadata.json".to_owned(),
+        metadata_generation: "version-id:metadata-v7".to_owned(),
+    }));
+
+    position.validate().unwrap();
+    assert_eq!(position.kind(), SourcePositionKind::TableSnapshot);
+    assert!(position.is_batch_slice_invariant());
+    assert_eq!(
+        serde_json::from_value::<SourcePosition>(serde_json::to_value(&position).unwrap()).unwrap(),
+        position
+    );
+
+    let SourcePosition::TableSnapshot(valid) = &position else {
+        unreachable!();
+    };
+    let mut invalid = valid.clone();
+    invalid.protocol = "Iceberg".to_owned();
+    assert!(invalid.validate().is_err());
+    let mut invalid = valid.clone();
+    invalid.namespace.clear();
+    assert!(invalid.validate().is_err());
+    let mut invalid = valid.clone();
+    invalid.snapshot_id = 0;
+    assert!(invalid.validate().is_err());
+    let mut invalid = valid.clone();
+    invalid.sequence_number = -1;
+    assert!(invalid.validate().is_err());
+    let mut invalid = valid.clone();
+    invalid.parent_snapshot_id = Some(valid.snapshot_id);
+    assert!(invalid.validate().is_err());
+    let mut invalid = valid.clone();
+    invalid.selector = TableSnapshotSelector::Snapshot { snapshot_id: 99 };
+    assert!(invalid.validate().is_err());
+    let mut invalid = valid.clone();
+    invalid.selector = TableSnapshotSelector::Timestamp { timestamp_ms: -1 };
+    assert!(invalid.validate().is_err());
 }
 
 #[test]

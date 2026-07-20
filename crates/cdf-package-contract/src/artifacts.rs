@@ -63,6 +63,13 @@ impl ProcessedObservationEvidenceArtifact {
                 "processed-observation evidence is not in unique identity order",
             ));
         }
+        if let Some(position) = &self.input_position {
+            position.validate()?;
+        }
+        for observation in &self.observations {
+            observation.source_position.validate()?;
+        }
+        self.output_position.validate()?;
         let computed = aggregate_processed_observation_positions(
             self.input_position.as_ref(),
             &self.observations,
@@ -92,6 +99,23 @@ pub struct StateDeltaPreimage {
 }
 
 impl StateDeltaPreimage {
+    pub fn validate(&self) -> Result<()> {
+        if self.state_version != CHECKPOINT_STATE_VERSION {
+            return Err(CdfError::data(format!(
+                "unsupported state delta preimage version {}",
+                self.state_version
+            )));
+        }
+        if let Some(position) = &self.input_position {
+            position.validate()?;
+        }
+        self.output_position.validate()?;
+        for segment in &self.segments {
+            segment.output_position.validate()?;
+        }
+        Ok(())
+    }
+
     pub fn into_state_delta(self, package_hash: PackageHash) -> StateDelta {
         StateDelta {
             checkpoint_id: self.checkpoint_id,
@@ -191,6 +215,7 @@ impl PackageReplayInputs {
         package_segments: &[SegmentEntry],
         processed: Option<ProcessedObservationEvidenceArtifact>,
     ) -> Result<Self> {
+        state_delta.validate()?;
         validate_input_checkpoint(&input_checkpoint, &state_delta)?;
         if commit_plan.schema_hash != state_delta.schema_hash {
             return Err(CdfError::data(format!(
@@ -246,6 +271,7 @@ fn validate_input_checkpoint(
     }
     match input_checkpoint {
         Some(checkpoint) => {
+            checkpoint.delta.validate()?;
             if checkpoint.status != CheckpointStatus::Committed || !checkpoint.is_head {
                 return Err(CdfError::data(
                     "state input checkpoint must be the committed head",

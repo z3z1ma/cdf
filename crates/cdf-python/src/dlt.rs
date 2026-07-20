@@ -436,6 +436,9 @@ fn position_to_dlt_state(position: &SourcePosition) -> Result<Value> {
         SourcePosition::FileManifest(manifest) => {
             serde_json::to_value(manifest).map_err(|error| CdfError::data(error.to_string()))
         }
+        SourcePosition::TableSnapshot(snapshot) => {
+            serde_json::to_value(snapshot).map_err(|error| CdfError::data(error.to_string()))
+        }
     }
 }
 

@@ -2200,6 +2200,7 @@ fn validate_inline_source_position(position: Option<&SourcePosition>) -> Result<
     let Some(position) = position else {
         return Ok(());
     };
+    position.validate()?;
     validate_exact_version("portable source position", position.version())?;
     match position {
         SourcePosition::Cursor(CursorPosition { field, value, .. }) => {
@@ -2222,6 +2223,9 @@ fn validate_inline_source_position(position: Option<&SourcePosition>) -> Result<
             for file in &manifest.files {
                 validate_no_absolute_coordinator_path(&file.path)?;
             }
+        }
+        SourcePosition::TableSnapshot(position) => {
+            validate_no_absolute_coordinator_path(&position.metadata_location)?;
         }
         SourcePosition::PageToken(_) => {}
         SourcePosition::Composite(composite) => {

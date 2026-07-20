@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CompositePosition, CursorPosition, CursorValue, FileManifest,
-    FilePosition, ForeignState, LogPosition, PageToken, SourcePosition,
+    FilePosition, ForeignState, LogPosition, PageToken, SourcePosition, TableSnapshotPosition,
+    TableSnapshotSelector,
 };
 use proptest::prelude::*;
 use serde_json::Value;
@@ -66,6 +67,21 @@ fn active_source_positions() -> Vec<SourcePosition> {
                 },
             ],
         }),
+        SourcePosition::TableSnapshot(Box::new(TableSnapshotPosition {
+            version: CHECKPOINT_STATE_VERSION,
+            protocol: "iceberg".to_owned(),
+            catalog: "glue:us-east-1:123456789012".to_owned(),
+            namespace: vec!["analytics".to_owned(), "curated".to_owned()],
+            table: "orders".to_owned(),
+            selector: TableSnapshotSelector::Branch {
+                name: "main".to_owned(),
+            },
+            snapshot_id: i64::MAX,
+            sequence_number: i64::MAX,
+            parent_snapshot_id: Some(i64::MAX - 1),
+            metadata_location: "s3://warehouse/analytics/orders/metadata/v42.json".to_owned(),
+            metadata_generation: "version-id:v42".to_owned(),
+        })),
         SourcePosition::PageToken(PageToken {
             version: CHECKPOINT_STATE_VERSION,
             token: "opaque-page-token".to_owned(),

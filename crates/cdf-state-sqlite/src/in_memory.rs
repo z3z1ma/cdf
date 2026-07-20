@@ -10,7 +10,7 @@ use cdf_kernel::{
 
 use crate::support::{
     lock_error, missing_checkpoint, now_ms, packages_ahead_of_state, rewind_marker, same_tuple,
-    validate_state_version, verify_receipt,
+    verify_receipt,
 };
 
 #[derive(Default)]
@@ -32,7 +32,7 @@ impl InMemoryCheckpointStore {
 
 impl CheckpointStore for InMemoryCheckpointStore {
     fn propose(&self, delta: StateDelta) -> Result<Checkpoint> {
-        validate_state_version(delta.state_version)?;
+        delta.validate()?;
         let mut state = self.lock_inner()?;
         if state.checkpoints.contains_key(&delta.checkpoint_id) {
             return Err(CdfError::contract(format!(

@@ -146,7 +146,7 @@ impl SqliteCheckpointStore {
 
 impl CheckpointStore for SqliteCheckpointStore {
     fn propose(&self, delta: StateDelta) -> Result<Checkpoint> {
-        validate_state_version(delta.state_version)?;
+        delta.validate()?;
         let checkpoint = Checkpoint {
             delta,
             status: CheckpointStatus::Proposed,
@@ -547,6 +547,7 @@ fn row_to_checkpoint_result(row: &Row<'_>) -> Result<Checkpoint> {
     let schema_hash = cdf_kernel::SchemaHash::new(row_get::<String>(row, "schema_hash")?)?;
     let status = CheckpointStatus::parse(&row_get::<String>(row, "status")?)?;
     let delta = decode_json::<StateDelta>(&row_get::<String>(row, "delta_json")?, state_version)?;
+    delta.validate()?;
     let receipt_id = row_get::<Option<String>>(row, "receipt_id")?
         .map(cdf_kernel::ReceiptId::new)
         .transpose()?;

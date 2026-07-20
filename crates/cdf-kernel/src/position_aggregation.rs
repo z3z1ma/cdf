@@ -4,7 +4,8 @@ use arrow_schema::{DataType, Schema, TimeUnit};
 
 use crate::{
     CdfError, CompositePosition, CursorOrderingClaim, CursorPosition, CursorValue, FileManifest,
-    FilePosition, ResourceDescriptor, Result, SourcePosition, WriteDisposition,
+    FilePosition, ResourceDescriptor, Result, SourcePosition, TableSnapshotPosition,
+    WriteDisposition,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,6 +93,12 @@ pub fn aggregate_position_set(
     }
     if positions
         .iter()
+        .any(|position| matches!(position, SourcePosition::TableSnapshot(_)))
+    {
+        return aggregate_table_snapshots(resource_id, input, positions);
+    }
+    if positions
+        .iter()
         .all(|position| matches!(position, SourcePosition::Cursor(_)))
     {
         if input.is_some_and(|position| !matches!(position, SourcePosition::Cursor(_))) {
@@ -113,6 +120,60 @@ pub fn aggregate_position_set(
         ));
     }
     Ok(first.clone())
+}
+
+fn aggregate_table_snapshots(
+    resource_id: &str,
+    input: Option<&SourcePosition>,
+    positions: &[SourcePosition],
+) -> Result<SourcePosition> {
+    let Some(SourcePosition::TableSnapshot(first)) = positions.first() else {
+        return Err(CdfError::data(format!(
+            "resource `{resource_id}` produced mixed table-snapshot and non-table positions"
+        )));
+    };
+    first.validate()?;
+    for position in &positions[1..] {
+        let SourcePosition::TableSnapshot(position) = position else {
+            return Err(CdfError::data(format!(
+                "resource `{resource_id}` produced mixed table-snapshot and non-table positions"
+            )));
+        };
+        position.validate()?;
+        if position != first {
+            return Err(CdfError::data(format!(
+                "resource `{resource_id}` produced divergent table-snapshot attestations"
+            )));
+        }
+    }
+    if let Some(input) = input {
+        let SourcePosition::TableSnapshot(input) = input else {
+            return Err(CdfError::data(format!(
+                "resource `{resource_id}` cannot advance a table snapshot from a non-table input position"
+            )));
+        };
+        validate_same_table_identity(resource_id, input, first)?;
+    }
+    Ok(SourcePosition::TableSnapshot(first.clone()))
+}
+
+fn validate_same_table_identity(
+    resource_id: &str,
+    input: &TableSnapshotPosition,
+    current: &TableSnapshotPosition,
+) -> Result<()> {
+    input.validate()?;
+    if input.protocol != current.protocol
+        || input.catalog != current.catalog
+        || input.namespace != current.namespace
+        || input.table != current.table
+        || input.selector != current.selector
+    {
+        return Err(CdfError::data(format!(
+            "resource `{resource_id}` changed table identity or selector while advancing its snapshot"
+        )));
+    }
+    Ok(())
 }
 
 fn aggregate_closed_cursors(
@@ -597,6 +658,26 @@ fn close_cursor(
 mod tests {
     use super::*;
 
+    fn table_snapshot(snapshot_id: i64, generation: &str) -> SourcePosition {
+        SourcePosition::TableSnapshot(Box::new(TableSnapshotPosition {
+            version: crate::SOURCE_POSITION_VERSION,
+            protocol: "iceberg".to_owned(),
+            catalog: "glue:us-east-1:123456789012".to_owned(),
+            namespace: vec!["analytics".to_owned()],
+            table: "orders".to_owned(),
+            selector: crate::TableSnapshotSelector::Branch {
+                name: "main".to_owned(),
+            },
+            snapshot_id,
+            sequence_number: snapshot_id,
+            parent_snapshot_id: (snapshot_id > 1).then_some(snapshot_id - 1),
+            metadata_location: format!(
+                "s3://warehouse/analytics/orders/metadata/v{snapshot_id}.metadata.json"
+            ),
+            metadata_generation: generation.to_owned(),
+        }))
+    }
+
     fn file(sha256: Option<&str>) -> FilePosition {
         FilePosition {
             path: "events.ndjson".to_owned(),
@@ -657,6 +738,101 @@ mod tests {
                 field: "updated_at".to_owned(),
                 value: CursorValue::I64(20),
             })
+        );
+    }
+
+    #[test]
+    fn table_snapshot_partitions_require_one_exact_attestation() {
+        let prior = table_snapshot(41, "version-id:v41");
+        let selected = table_snapshot(42, "version-id:v42");
+        let positions = [selected.clone(), selected.clone()];
+
+        assert_eq!(
+            aggregate_position_set(
+                "iceberg.orders",
+                Some(&prior),
+                &positions,
+                &WriteDisposition::Append,
+            )
+            .unwrap(),
+            selected
+        );
+
+        let divergent = [
+            table_snapshot(42, "version-id:v42"),
+            table_snapshot(43, "version-id:v43"),
+        ];
+        let error = aggregate_position_set(
+            "iceberg.orders",
+            Some(&prior),
+            &divergent,
+            &WriteDisposition::Append,
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("divergent table-snapshot attestations"),
+            "{error}"
+        );
+
+        let mixed = [
+            table_snapshot(42, "version-id:v42"),
+            SourcePosition::PageToken(crate::PageToken {
+                version: crate::SOURCE_POSITION_VERSION,
+                token: "page-1".to_owned(),
+            }),
+        ];
+        let error =
+            aggregate_position_set("iceberg.orders", None, &mixed, &WriteDisposition::Append)
+                .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("mixed table-snapshot and non-table positions"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn table_snapshot_advancement_cannot_change_table_or_selector_authority() {
+        let prior = table_snapshot(41, "version-id:v41");
+        let current = table_snapshot(42, "version-id:v42");
+
+        let mut changed_table = current.clone();
+        let SourcePosition::TableSnapshot(changed_table) = &mut changed_table else {
+            unreachable!();
+        };
+        changed_table.table = "customers".to_owned();
+        let error = aggregate_position_set(
+            "iceberg.orders",
+            Some(&prior),
+            &[SourcePosition::TableSnapshot(changed_table.clone())],
+            &WriteDisposition::Append,
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("changed table identity"),
+            "{error}"
+        );
+
+        let mut changed_selector = current;
+        let SourcePosition::TableSnapshot(changed_selector) = &mut changed_selector else {
+            unreachable!();
+        };
+        changed_selector.selector = crate::TableSnapshotSelector::Tag {
+            name: "release".to_owned(),
+        };
+        let error = aggregate_position_set(
+            "iceberg.orders",
+            Some(&prior),
+            &[SourcePosition::TableSnapshot(changed_selector.clone())],
+            &WriteDisposition::Append,
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("changed table identity"),
+            "{error}"
         );
     }
 

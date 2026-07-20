@@ -6,6 +6,7 @@ use cdf_kernel::{
     ResourceDescriptor, SchemaSource, TrustLevel, TypePolicyAllowances, WriteDisposition,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use sha2::{Digest, Sha256};
 
 use super::*;
 use crate::{
@@ -1054,11 +1055,36 @@ fn positions_are_exact_version_portable_and_foreign_state_is_external() {
         );
     }
 
+    let remote_table = SourcePosition::TableSnapshot(Box::new(cdf_kernel::TableSnapshotPosition {
+        version: PORTABLE_SOURCE_POSITION_VERSION,
+        protocol: "iceberg".to_owned(),
+        catalog: "glue:us-east-1:123456789012".to_owned(),
+        namespace: vec!["analytics".to_owned()],
+        table: "orders".to_owned(),
+        selector: cdf_kernel::TableSnapshotSelector::Current,
+        snapshot_id: 42,
+        sequence_number: 7,
+        parent_snapshot_id: Some(41),
+        metadata_location: "s3://warehouse/analytics/orders/metadata/v42.json".to_owned(),
+        metadata_generation: "version-id:v42".to_owned(),
+    }));
+    WorkerPosition::inline(remote_table.clone()).unwrap();
+    let SourcePosition::TableSnapshot(mut local_table) = remote_table else {
+        unreachable!();
+    };
+    local_table.metadata_location = "/coordinator/private/v42.metadata.json".to_owned();
+    assert!(
+        WorkerPosition::inline(SourcePosition::TableSnapshot(local_table))
+            .unwrap_err()
+            .message
+            .contains("absolute coordinator file path")
+    );
+
     let foreign = SourcePosition::ForeignState(cdf_kernel::ForeignState {
         version: PORTABLE_SOURCE_POSITION_VERSION,
         protocol: "python".to_owned(),
         opaque_blob: vec![1, 2, 3],
-        blob_sha256: hash(80),
+        blob_sha256: format!("sha256:{}", hex::encode(Sha256::digest([1, 2, 3]))),
     });
     assert!(
         WorkerPosition::inline(foreign)

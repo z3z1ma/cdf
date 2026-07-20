@@ -18,7 +18,7 @@ use cdf_kernel::{
     PipelineId, PlanId, PromotionId, PromotionPublicationEvent, PromotionPublicationTarget,
     PromotionSettlementStore, Receipt, ReceiptId, ResourceId, RewindRequest, RunId, SchemaHash,
     ScopeKey, ScopeLeaseStore, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment,
-    TargetName, VerifyClause, WriteDisposition,
+    TableSnapshotPosition, TableSnapshotSelector, TargetName, VerifyClause, WriteDisposition,
 };
 use rusqlite::params;
 use tempfile::tempdir;
@@ -57,6 +57,22 @@ fn cursor_position(value: i64) -> SourcePosition {
         field: "updated_at".to_owned(),
         value: CursorValue::I64(value),
     })
+}
+
+fn table_snapshot_position() -> SourcePosition {
+    SourcePosition::TableSnapshot(Box::new(TableSnapshotPosition {
+        version: CHECKPOINT_STATE_VERSION,
+        protocol: "iceberg".to_owned(),
+        catalog: "glue:us-east-1:123456789012".to_owned(),
+        namespace: vec!["analytics".to_owned()],
+        table: "orders".to_owned(),
+        selector: TableSnapshotSelector::Current,
+        snapshot_id: 42,
+        sequence_number: 7,
+        parent_snapshot_id: Some(41),
+        metadata_location: "s3://warehouse/analytics/orders/metadata/v7.json".to_owned(),
+        metadata_generation: "version-id:v7".to_owned(),
+    }))
 }
 
 fn delta(
@@ -1887,9 +1903,10 @@ fn sqlite_round_trips_position_scope_and_state_json() {
                 source_generation: None,
                 etag: Some("etag-1".to_owned()),
                 object_version: None,
-                sha256: Some("file-sha256".to_owned()),
+                sha256: None,
             }],
         }),
+        table_snapshot_position(),
         SourcePosition::PageToken(PageToken {
             version: 1,
             token: "next-page".to_owned(),
@@ -1902,7 +1919,8 @@ fn sqlite_round_trips_position_scope_and_state_json() {
             version: 1,
             protocol: "singer".to_owned(),
             opaque_blob: b"{\"bookmarks\":{}}".to_vec(),
-            blob_sha256: "state-sha256".to_owned(),
+            blob_sha256: "sha256:d2c47dce50d89aa04b6e25293cb52db74657d5ec68ac614dd030a4a6595a7cd7"
+                .to_owned(),
         }),
     ];
     let scopes = vec![
@@ -1987,6 +2005,71 @@ fn sqlite_round_trips_position_scope_and_state_json() {
 }
 
 #[test]
+fn checkpoint_stores_reject_semantically_tampered_table_snapshot_positions() {
+    let mut invalid = table_snapshot_position();
+    let SourcePosition::TableSnapshot(position) = &mut invalid else {
+        unreachable!();
+    };
+    position.snapshot_id = 0;
+    let invalid_delta = delta(
+        "checkpoint-invalid-table-snapshot",
+        None,
+        partition_scope(),
+        invalid,
+        "package-invalid-table-snapshot",
+    );
+    let memory = InMemoryCheckpointStore::new();
+    assert!(
+        memory
+            .propose(invalid_delta)
+            .unwrap_err()
+            .to_string()
+            .contains("snapshot id must be positive")
+    );
+
+    let store = SqliteCheckpointStore::open_in_memory().unwrap();
+    let committed = commit_delta(
+        &store,
+        delta(
+            "checkpoint-tampered-table-snapshot",
+            None,
+            partition_scope(),
+            table_snapshot_position(),
+            "package-tampered-table-snapshot",
+        ),
+    );
+    let mut tampered_delta = committed.delta.clone();
+    let SourcePosition::TableSnapshot(position) = &mut tampered_delta.output_position else {
+        unreachable!();
+    };
+    position.metadata_generation.clear();
+    tampered_delta.segments[0].output_position = tampered_delta.output_position.clone();
+    store
+        .execute_for_test(
+            "UPDATE cdf_checkpoints SET output_position_json = ?, delta_json = ? WHERE checkpoint_id = ?",
+            params![
+                encode_json(&tampered_delta.output_position).unwrap(),
+                encode_json(&tampered_delta).unwrap(),
+                committed.delta.checkpoint_id.as_str(),
+            ],
+        )
+        .unwrap();
+    let error = store
+        .head(
+            &committed.delta.pipeline_id,
+            &committed.delta.resource_id,
+            &committed.delta.scope,
+        )
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("metadata generation must be nonempty"),
+        "{error}"
+    );
+}
+
+#[test]
 fn in_memory_rejects_unsupported_state_version_without_sqlite_constraints() {
     let store = InMemoryCheckpointStore::new();
     let mut unsupported = delta(
@@ -2007,5 +2090,5 @@ fn in_memory_rejects_unsupported_state_version_without_sqlite_constraints() {
 }
 
 fn positions_count() -> usize {
-    6
+    7
 }

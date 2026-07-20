@@ -40,6 +40,26 @@ pub struct StateSegment {
 
 pub const CHECKPOINT_STATE_VERSION: u16 = 1;
 
+impl StateDelta {
+    /// Validates the complete typed position authority before persistence or replay.
+    pub fn validate(&self) -> Result<()> {
+        if self.state_version != CHECKPOINT_STATE_VERSION {
+            return Err(CdfError::contract(format!(
+                "unsupported checkpoint state version {}",
+                self.state_version
+            )));
+        }
+        if let Some(position) = &self.input_position {
+            position.validate()?;
+        }
+        self.output_position.validate()?;
+        for segment in &self.segments {
+            segment.output_position.validate()?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Receipt {
     pub receipt_id: ReceiptId,
