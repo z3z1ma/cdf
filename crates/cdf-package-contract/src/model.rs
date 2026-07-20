@@ -76,20 +76,12 @@ pub struct ParquetArchiveMetadata {
     pub format_version: u16,
     pub fidelity_report_path: String,
     pub fidelity_statement: String,
-    pub segments: Vec<ArchiveSegmentMetadata>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArchiveSegmentMetadata {
-    pub segment_id: String,
-    pub source_path: String,
-    pub source_byte_count: u64,
-    pub source_sha256: String,
-    pub source_row_count: u64,
-    pub archive_path: String,
+    pub segment_index_path: String,
+    pub segment_index_byte_count: u64,
+    pub segment_index_sha256: String,
+    pub segment_count: u64,
+    pub row_count: u64,
     pub archive_byte_count: u64,
-    pub archive_sha256: String,
-    pub archive_row_count: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -172,8 +164,8 @@ impl TryFrom<&str> for PackageStatus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerificationReport {
     pub package_hash: String,
-    pub checked_file_count: usize,
-    pub checked_archive_count: usize,
+    pub checked_file_count: u64,
+    pub checked_archive_count: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

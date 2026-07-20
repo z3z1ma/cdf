@@ -6,7 +6,7 @@ use std::{
 
 use cdf_kernel::{CdfError, PackageHash};
 use cdf_package::PackageReader;
-use cdf_package_contract::{ArchiveSegmentMetadata, MANIFEST_FILE, PackageStatus};
+use cdf_package_contract::{MANIFEST_FILE, PackageStatus};
 use cdf_project::{
     LocalPromotionCollectionAction, LocalPromotionCollectionAssessment,
     assess_local_promotion_collection, inspect_local_package_promotion_availability,
@@ -269,11 +269,6 @@ fn package_archive(args: PackageArchiveArgs) -> Result<CommandOutput, CliError> 
     }
 
     let report = cdf_package::persist_package_parquet_archive(&args.package_dir, args.force)?;
-    let archive_byte_count = report
-        .segments
-        .iter()
-        .map(|segment| segment.archive_byte_count)
-        .sum::<u64>();
     let cli_report = PackageArchiveCliReport {
         command: "package archive",
         package_hash: report.package_hash,
@@ -281,13 +276,12 @@ fn package_archive(args: PackageArchiveArgs) -> Result<CommandOutput, CliError> 
         status: report.status,
         fidelity_report_path: report.fidelity_report_path,
         fidelity_statement: report.fidelity_statement,
-        segments: report.segments,
+        segment_index_path: report.segment_index_path,
+        segment_count: report.segment_count,
+        row_count: report.row_count,
+        archive_byte_count: report.archive_byte_count,
     };
-    CommandOutput::rendered(
-        "package archive",
-        cli_report.render_document(archive_byte_count),
-        cli_report,
-    )
+    CommandOutput::rendered("package archive", cli_report.render_document(), cli_report)
 }
 
 fn list_packages(root: PathBuf) -> Result<Vec<PackageListEntry>, CliError> {
@@ -566,8 +560,8 @@ impl PackageGcCounts {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct PackageVerifyReport {
     package_hash: String,
-    checked_file_count: usize,
-    checked_archive_count: usize,
+    checked_file_count: u64,
+    checked_archive_count: u64,
 }
 
 impl PackageVerifyReport {
@@ -598,25 +592,15 @@ struct PackageArchiveCliReport {
     status: cdf_package::PackageArchiveWriteStatus,
     fidelity_report_path: String,
     fidelity_statement: String,
-    segments: Vec<ArchiveSegmentMetadata>,
+    segment_index_path: String,
+    segment_count: u64,
+    row_count: u64,
+    archive_byte_count: u64,
 }
 
 impl PackageArchiveCliReport {
-    fn render_document(&self, archive_byte_count: u64) -> RenderDocument {
-        let table = self.segments.iter().fold(
-            Table::new(["segment", "source", "archive", "rows", "bytes"]),
-            |table, segment| {
-                table.row([
-                    segment.segment_id.clone(),
-                    redact_uri_userinfo(&segment.source_path),
-                    redact_uri_userinfo(&segment.archive_path),
-                    segment.archive_row_count.to_string(),
-                    humanize_bytes(segment.archive_byte_count),
-                ])
-            },
-        );
-
-        let mut document = RenderDocument::new()
+    fn render_document(&self) -> RenderDocument {
+        RenderDocument::new()
             .push(SectionRule::new())
             .push(StatusLine::new(
                 StatusKind::Success,
@@ -628,17 +612,13 @@ impl PackageArchiveCliReport {
                     .row("package", self.package_hash.clone())
                     .row("format", self.format.clone())
                     .row("status", package_archive_status(&self.status))
-                    .row("segments", self.segments.len().to_string())
-                    .row("bytes", humanize_bytes(archive_byte_count))
+                    .row("segments", self.segment_count.to_string())
+                    .row("rows", self.row_count.to_string())
+                    .row("bytes", humanize_bytes(self.archive_byte_count))
+                    .row("index", redact_uri_userinfo(&self.segment_index_path))
                     .row("fidelity", redact_uri_userinfo(&self.fidelity_report_path))
                     .row("statement", self.fidelity_statement.clone()),
-            );
-
-        if !self.segments.is_empty() {
-            document = document.blank_line().push(table);
-        }
-
-        document
+            )
             .blank_line()
             .push(NextCommand::new("cdf package verify <package>"))
     }

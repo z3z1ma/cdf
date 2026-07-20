@@ -1335,16 +1335,8 @@ fn run_archive_ipc_to_parquet(spec: &FixtureSpec, root: &Path) -> BenchResult<Wo
     let fixture = build_package_fixture(spec, root, "pkg-archive-benchmark")?;
     let report = persist_package_parquet_archive(&fixture.package_dir, false)?;
     Ok(WorkMetric {
-        rows: report
-            .segments
-            .iter()
-            .map(|segment| segment.archive_row_count)
-            .sum(),
-        bytes: report
-            .segments
-            .iter()
-            .map(|segment| segment.archive_byte_count)
-            .sum(),
+        rows: report.row_count,
+        bytes: report.archive_byte_count,
     })
 }
 

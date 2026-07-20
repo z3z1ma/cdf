@@ -129,9 +129,8 @@ pub(crate) fn verify_package_from_root(
 ) -> Result<VerificationReport> {
     let mut report = verify_package_identity_with(root, manifest)?;
     verify_contract_evolution_versions(root, manifest)?;
-    report.checked_archive_count = if manifest.has_archives {
-        let resident = read_manifest_from_root(root)?;
-        verify_parquet_archive_metadata(root, &resident)?
+    report.checked_archive_count = if manifest.archives.is_some() {
+        verify_parquet_archive_metadata(root, manifest)?
     } else {
         verify_parquet_archive_absence(root)?
     };
@@ -202,7 +201,7 @@ fn verify_package_identity_with(
     }
 
     validate_manifest_file_paths(root)?;
-    let mut checked_file_count = 0_usize;
+    let mut checked_file_count = 0_u64;
     for expected in manifest_file_stream(root)? {
         let expected = expected?;
         match root.file_entry(&expected.path)? {
@@ -228,7 +227,7 @@ fn verify_package_identity_with(
         }
         checked_file_count = checked_file_count
             .checked_add(1)
-            .ok_or_else(|| CdfError::data("verified package file count overflowed usize"))?;
+            .ok_or_else(|| CdfError::data("verified package file count overflowed u64"))?;
     }
 
     let actual_entry_count = identity_entry_count(root)?;
@@ -281,12 +280,12 @@ fn first_unexpected_identity_failure(root: &PackageRoot) -> Result<Option<String
     }))
 }
 
-fn identity_entry_count(root: &PackageRoot) -> Result<usize> {
-    let mut count = 0_usize;
+fn identity_entry_count(root: &PackageRoot) -> Result<u64> {
+    let mut count = 0_u64;
     root.visit_identity_entries(|_, _| {
         count = count
             .checked_add(1)
-            .ok_or_else(|| CdfError::data("package identity entry count overflowed usize"))?;
+            .ok_or_else(|| CdfError::data("package identity entry count overflowed u64"))?;
         Ok(())
     })?;
     Ok(count)

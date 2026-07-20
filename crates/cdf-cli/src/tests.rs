@@ -13016,15 +13016,23 @@ fn package_archive_writes_parquet_archive_and_reports_json() {
         "archive/parquet/fidelity.json"
     );
     assert_eq!(
-        json["result"]["segments"][0]["archive_path"],
-        "archive/parquet/data/seg-000001.parquet"
+        json["result"]["segment_index_path"],
+        "archive/parquet/segments.ndjson"
     );
+    assert_eq!(json["result"]["segment_count"], 1);
+    assert_eq!(json["result"]["row_count"], 2);
+    assert!(json["result"].get("segments").is_none());
     assert!(
         package_dir
             .join("archive/parquet/data/seg-000001.parquet")
             .is_file()
     );
     assert!(package_dir.join("archive/parquet/fidelity.json").is_file());
+    assert!(
+        package_dir
+            .join("archive/parquet/segments.ndjson")
+            .is_file()
+    );
 }
 
 #[test]

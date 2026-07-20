@@ -1,6 +1,6 @@
 use std::{
     fs::{self, OpenOptions},
-    io::Write,
+    io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -10,32 +10,34 @@ use cdf_memory::{
     ConsumerKey, DeterministicMemoryCoordinator, MemoryClass, MemoryCoordinator,
     ReservationRequest, record_batch_retained_bytes, reserve_blocking,
 };
-use cdf_package_contract::{
-    ArchiveSegmentMetadata, ManifestArchives, PackageManifest, ParquetArchiveMetadata,
-};
+use cdf_package_contract::{MANIFEST_FILE, ManifestArchives, ParquetArchiveMetadata};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
     json::canonical_json_bytes,
-    ops::{read_manifest, verify_package, verify_package_identity},
+    manifest_stream::{ManifestSegmentStream, PackageManifestHeader, rewrite_manifest_archives},
+    ops::{read_manifest_header, verify_package, verify_package_identity},
     package_fs::{PackageEntryKind, PackageRoot},
     parquet::transcode_record_batches_to_bounded_parquet_bytes,
     reader::PackageReader,
     storage::{
-        io_error, package_path, portable_path_cmp, sync_directory,
-        validate_canonical_relative_path, write_manifest_atomic,
+        ArtifactDurability, AtomicArtifactSink, io_error, package_path, portable_path_cmp,
+        sync_directory, validate_canonical_relative_path,
     },
 };
 
 pub const ARCHIVE_FIDELITY_STATEMENT: &str = "Arrow IPC remains the canonical package data. Parquet bytes are an archive/interchange projection; Arrow field metadata and other Arrow-only semantics are not promoted to canonical Parquet truth.";
-const PARQUET_ARCHIVE_FORMAT_VERSION: u16 = 1;
+const PARQUET_ARCHIVE_FORMAT_VERSION: u16 = 2;
 const ARCHIVE_ROOT: &str = "archive";
 const PARQUET_ARCHIVE_DIR: &str = "archive/parquet";
 const PARQUET_DATA_DIR: &str = "archive/parquet/data";
 const FIDELITY_REPORT_PATH: &str = "archive/parquet/fidelity.json";
+const SEGMENT_INDEX_PATH: &str = "archive/parquet/segments.ndjson";
+const SEGMENT_INDEX_FILE: &str = "segments.ndjson";
 const SOURCE_FORMAT: &str = "arrow_ipc_lz4";
 const ARCHIVE_FORMAT: &str = "parquet";
+const MAX_ARCHIVE_INDEX_RECORD_BYTES: u64 = 2 * 1024 * 1024;
 pub(crate) const ARCHIVE_SEGMENT_WINDOW_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) const ARCHIVE_SEGMENT_MEMORY_CONSUMER: &str = "package-parquet-archive-segment";
 
@@ -48,7 +50,10 @@ pub struct PersistedPackageArchiveReport {
     pub status: PackageArchiveWriteStatus,
     pub fidelity_report_path: String,
     pub fidelity_statement: String,
-    pub segments: Vec<ArchiveSegmentMetadata>,
+    pub segment_index_path: String,
+    pub segment_count: u64,
+    pub row_count: u64,
+    pub archive_byte_count: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,7 +70,25 @@ pub struct PackageArchiveFidelityReport {
     pub source_format: String,
     pub archive_format: String,
     pub fidelity_statement: String,
-    pub segments: Vec<ArchiveSegmentMetadata>,
+    pub segment_index_path: String,
+    pub segment_index_byte_count: u64,
+    pub segment_index_sha256: String,
+    pub segment_count: u64,
+    pub row_count: u64,
+    pub archive_byte_count: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ArchiveSegmentMetadata {
+    pub segment_id: String,
+    pub source_path: String,
+    pub source_byte_count: u64,
+    pub source_sha256: String,
+    pub source_row_count: u64,
+    pub archive_path: String,
+    pub archive_byte_count: u64,
+    pub archive_sha256: String,
+    pub archive_row_count: u64,
 }
 
 pub fn persist_package_parquet_archive(
@@ -76,7 +99,7 @@ pub fn persist_package_parquet_archive(
     cleanup_stale_archive_temps(package_dir)?;
     verify_package_identity(package_dir)?;
 
-    let manifest = read_manifest(package_dir)?;
+    let manifest = read_manifest_header(package_dir)?;
     let package_root = PackageRoot::open(package_dir)?;
     if !manifest.lifecycle.status.is_archivable() {
         return Err(CdfError::data(format!(
@@ -112,11 +135,13 @@ pub fn persist_package_parquet_archive(
         write_new_file(&fidelity_path, &canonical_json_bytes(&fidelity)?)?;
         sync_directory(&temp_dir)?;
         install_archive_tree(package_dir, &temp_dir)?;
-        let mut updated_manifest = manifest.clone();
-        updated_manifest.archives = Some(ManifestArchives {
-            parquet: Some(metadata.clone()),
-        });
-        write_manifest_atomic(package_dir, &updated_manifest)?;
+        write_archive_manifest_atomic(
+            package_dir,
+            &package_root,
+            &ManifestArchives {
+                parquet: Some(metadata.clone()),
+            },
+        )?;
         verify_package(package_dir)?;
         Ok(metadata)
     });
@@ -175,7 +200,17 @@ pub(crate) fn write_streamed_archive_temp_tree_with_memory(
     let data_dir = temp_dir.join("data");
     fs::create_dir_all(&data_dir)
         .map_err(|error| io_error(format!("create {}", data_dir.display()), error))?;
-    let mut segments = Vec::new();
+    let index_path = temp_dir.join(SEGMENT_INDEX_FILE);
+    let mut index_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&index_path)
+        .map_err(|error| io_error(format!("create {}", index_path.display()), error))?;
+    let mut index_hasher = Sha256::new();
+    let mut index_byte_count = 0_u64;
+    let mut segment_count = 0_u64;
+    let mut total_row_count = 0_u64;
+    let mut archive_byte_count = 0_u64;
     reader.for_each_identity_segment(&mut |entry| {
         let request = ReservationRequest::new(
             ConsumerKey::new(ARCHIVE_SEGMENT_MEMORY_CONSUMER, MemoryClass::Package)?,
@@ -233,34 +268,67 @@ pub(crate) fn write_streamed_archive_temp_tree_with_memory(
         })?;
         let path = data_dir.join(file_name);
         write_new_file(&path, &parquet_bytes)?;
-        segments.push(ArchiveSegmentMetadata {
+        let parquet_byte_count = u64::try_from(parquet_bytes.len())
+            .map_err(|_| CdfError::data("archive Parquet byte count exceeds u64"))?;
+        let record = ArchiveSegmentMetadata {
             segment_id: entry.segment_id.as_str().to_owned(),
             source_path: entry.path.clone(),
             source_byte_count: entry.byte_count,
             source_sha256: entry.sha256.clone(),
             source_row_count: entry.row_count,
             archive_path,
-            archive_byte_count: parquet_bytes.len() as u64,
+            archive_byte_count: parquet_byte_count,
             archive_sha256: sha256_hex(&parquet_bytes),
             archive_row_count: row_count,
-        });
+        };
+        let record_bytes = canonical_json_bytes(&record)?;
+        index_file
+            .write_all(&record_bytes)
+            .and_then(|()| index_file.write_all(b"\n"))
+            .map_err(|error| io_error(format!("write {}", index_path.display()), error))?;
+        index_hasher.update(&record_bytes);
+        index_hasher.update(b"\n");
+        let record_byte_count = u64::try_from(record_bytes.len())
+            .map_err(|_| CdfError::data("archive index record byte count exceeds u64"))?
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("archive index record byte count overflow"))?;
+        index_byte_count = index_byte_count
+            .checked_add(record_byte_count)
+            .ok_or_else(|| CdfError::data("archive index byte count overflow"))?;
+        segment_count = segment_count
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("archive segment count overflow"))?;
+        total_row_count = total_row_count
+            .checked_add(row_count)
+            .ok_or_else(|| CdfError::data("archive row count overflow"))?;
+        archive_byte_count = archive_byte_count
+            .checked_add(parquet_byte_count)
+            .ok_or_else(|| CdfError::data("archive byte count overflow"))?;
         Ok(())
     })?;
+    index_file
+        .sync_all()
+        .map_err(|error| io_error(format!("sync {}", index_path.display()), error))?;
     sync_directory(&data_dir)?;
     Ok(ParquetArchiveMetadata {
         format_version: PARQUET_ARCHIVE_FORMAT_VERSION,
         fidelity_report_path: FIDELITY_REPORT_PATH.to_owned(),
         fidelity_statement: ARCHIVE_FIDELITY_STATEMENT.to_owned(),
-        segments,
+        segment_index_path: SEGMENT_INDEX_PATH.to_owned(),
+        segment_index_byte_count: index_byte_count,
+        segment_index_sha256: hex::encode(index_hasher.finalize()),
+        segment_count,
+        row_count: total_row_count,
+        archive_byte_count,
     })
 }
 
 pub(crate) fn verify_parquet_archive_metadata(
     package_root: &PackageRoot,
-    manifest: &PackageManifest,
-) -> Result<usize> {
+    manifest: &PackageManifestHeader,
+) -> Result<u64> {
     let Some(metadata) = manifest_parquet_archive(manifest) else {
-        if let Some((path, _)) = first_archive_entry(package_root, |_| false)? {
+        if let Some((path, _)) = first_archive_entry(package_root, |_| Ok(false))? {
             return Err(archive_verification_failure(format!(
                 "orphan archive sidecar {path}"
             )));
@@ -286,70 +354,38 @@ pub(crate) fn verify_parquet_archive_metadata(
         ));
     }
 
-    verify_archive_segments(manifest, metadata)?;
-
-    for expected in &metadata.segments {
-        match package_root.file_entry(&expected.archive_path) {
-            Ok(Some(actual)) => {
-                if actual.byte_count != expected.archive_byte_count
-                    || actual.sha256 != expected.archive_sha256
-                {
-                    return Err(archive_verification_failure(format!(
-                        "tampered archive sidecar {}: expected {} bytes sha256 {}, got {} bytes sha256 {}",
-                        expected.archive_path,
-                        expected.archive_byte_count,
-                        expected.archive_sha256,
-                        actual.byte_count,
-                        actual.sha256
-                    )));
-                }
-            }
-            Ok(None) => {
-                return Err(archive_verification_failure(format!(
-                    "missing archive sidecar {}",
-                    expected.archive_path
-                )));
-            }
-            Err(error) => {
-                return Err(archive_verification_failure(format!(
-                    "archive sidecar {} could not be read: {}",
-                    expected.archive_path, error.message
-                )));
-            }
-        }
+    if metadata.segment_index_path != SEGMENT_INDEX_PATH {
+        return Err(archive_verification_failure(format!(
+            "archive segment index path {} does not match {SEGMENT_INDEX_PATH}",
+            metadata.segment_index_path
+        )));
     }
+    if metadata.segment_count != manifest.identity.segment_count {
+        return Err(archive_verification_failure(format!(
+            "archive metadata has {} segments, expected {}",
+            metadata.segment_count, manifest.identity.segment_count
+        )));
+    }
+
+    verify_archive_segment_index(package_root, manifest, metadata)?;
 
     verify_fidelity_report(package_root, manifest, metadata)?;
 
     let expected_entry_count = metadata
-        .segments
-        .len()
-        .checked_add(1)
+        .segment_count
+        .checked_add(2)
         .ok_or_else(|| CdfError::data("archive expected-entry count overflow"))?;
     if archive_entry_count(package_root)? != expected_entry_count {
-        if let Some((path, kind)) = first_archive_entry(package_root, |path| {
-            path == FIDELITY_REPORT_PATH
-                || metadata
-                    .segments
-                    .iter()
-                    .any(|segment| segment.archive_path == path)
-        })? {
-            let label = match kind {
-                PackageEntryKind::RegularFile => "orphan archive sidecar",
-                PackageEntryKind::NonRegular => "unexpected non-regular archive entry",
-            };
-            return Err(archive_verification_failure(format!("{label} {path}")));
-        }
         return Err(archive_verification_failure(format!(
             "archive contains an unexpected entry count: expected {expected_entry_count}"
         )));
     }
 
-    Ok(metadata.segments.len())
+    Ok(metadata.segment_count)
 }
 
-pub(crate) fn verify_parquet_archive_absence(package_root: &PackageRoot) -> Result<usize> {
-    if let Some((path, _)) = first_archive_entry(package_root, |_| false)? {
+pub(crate) fn verify_parquet_archive_absence(package_root: &PackageRoot) -> Result<u64> {
+    if let Some((path, _)) = first_archive_entry(package_root, |_| Ok(false))? {
         return Err(archive_verification_failure(format!(
             "orphan archive sidecar {path}"
         )));
@@ -372,7 +408,10 @@ fn persisted_archive_report(
         status,
         fidelity_report_path: metadata.fidelity_report_path,
         fidelity_statement: metadata.fidelity_statement,
-        segments: metadata.segments,
+        segment_index_path: metadata.segment_index_path,
+        segment_count: metadata.segment_count,
+        row_count: metadata.row_count,
+        archive_byte_count: metadata.archive_byte_count,
     }
 }
 
@@ -385,7 +424,12 @@ fn fidelity_report(
         source_format: SOURCE_FORMAT.to_owned(),
         archive_format: ARCHIVE_FORMAT.to_owned(),
         fidelity_statement: metadata.fidelity_statement.clone(),
-        segments: metadata.segments.clone(),
+        segment_index_path: metadata.segment_index_path.clone(),
+        segment_index_byte_count: metadata.segment_index_byte_count,
+        segment_index_sha256: metadata.segment_index_sha256.clone(),
+        segment_count: metadata.segment_count,
+        row_count: metadata.row_count,
+        archive_byte_count: metadata.archive_byte_count,
     }
 }
 
@@ -436,54 +480,224 @@ fn install_archive_tree(package_dir: &Path, temp_dir: &Path) -> Result<()> {
     sync_directory(&archive_root)
 }
 
-fn verify_archive_segments(
-    manifest: &PackageManifest,
+fn write_archive_manifest_atomic(
+    package_dir: &Path,
+    package_root: &PackageRoot,
+    archives: &ManifestArchives,
+) -> Result<()> {
+    let input = package_root.open_std_file(MANIFEST_FILE)?;
+    let mut sink = AtomicArtifactSink::create(
+        &package_path(package_dir, MANIFEST_FILE),
+        ArtifactDurability::PhaseMetadata,
+    )?;
+    rewrite_manifest_archives(input, sink.writer_mut()?, archives)?;
+    sink.finish()?;
+    Ok(())
+}
+
+fn verify_archive_segment_index(
+    package_root: &PackageRoot,
+    manifest: &PackageManifestHeader,
     metadata: &ParquetArchiveMetadata,
 ) -> Result<()> {
-    if metadata.segments.len() != manifest.identity.segments.len() {
+    let index_file = package_root
+        .open_std_file(SEGMENT_INDEX_PATH)
+        .map_err(|error| {
+            archive_verification_failure(format!(
+                "archive segment index {SEGMENT_INDEX_PATH} could not be read: {}",
+                error.message
+            ))
+        })?;
+    let mut index = BufReader::new(DigestingReader::new(index_file));
+    let mut segments = ManifestSegmentStream::new(package_root.open_std_file(MANIFEST_FILE)?);
+    let mut segment_count = 0_u64;
+    let mut row_count = 0_u64;
+    let mut archive_byte_count = 0_u64;
+
+    for source in &mut segments {
+        let source = source?;
+        let record = read_archive_index_record(&mut index)?.ok_or_else(|| {
+            archive_verification_failure(format!(
+                "archive segment index ended before manifest segment {}",
+                source.segment_id
+            ))
+        })?;
+        verify_archive_segment_record(package_root, &source, &record)?;
+        segment_count = segment_count
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("archive segment count overflowed u64"))?;
+        row_count = row_count
+            .checked_add(record.archive_row_count)
+            .ok_or_else(|| CdfError::data("archive row count overflowed u64"))?;
+        archive_byte_count = archive_byte_count
+            .checked_add(record.archive_byte_count)
+            .ok_or_else(|| CdfError::data("archive byte count overflowed u64"))?;
+    }
+    if let Some(extra) = read_archive_index_record(&mut index)? {
         return Err(archive_verification_failure(format!(
-            "archive metadata has {} segments, expected {}",
-            metadata.segments.len(),
-            manifest.identity.segments.len()
+            "archive segment index contains extra segment {}",
+            extra.segment_id
         )));
     }
-    for (index, source) in manifest.identity.segments.iter().enumerate() {
-        let segment = &metadata.segments[index];
-        if segment.segment_id != source.segment_id.as_str() {
-            return Err(archive_verification_failure(format!(
-                "archive metadata segment {} at index {} does not match manifest segment {}",
-                segment.segment_id,
-                index,
-                source.segment_id.as_str()
-            )));
-        }
-        let expected_path = archive_segment_path(source.segment_id.as_str())?;
-        validate_canonical_relative_path(&segment.archive_path)?;
-        if segment.archive_path != expected_path {
-            return Err(archive_verification_failure(format!(
-                "archive path for segment {} is {}, expected {}",
-                source.segment_id.as_str(),
-                segment.archive_path,
-                expected_path
-            )));
-        }
-        if segment.source_path != source.path
-            || segment.source_byte_count != source.byte_count
-            || segment.source_sha256 != source.sha256
-            || segment.source_row_count != source.row_count
-        {
-            return Err(archive_verification_failure(format!(
-                "archive source metadata mismatch for segment {}",
-                source.segment_id.as_str()
-            )));
-        }
+
+    let digest = index.into_inner();
+    if digest.byte_count != metadata.segment_index_byte_count
+        || digest.sha256_hex() != metadata.segment_index_sha256
+    {
+        return Err(archive_verification_failure(format!(
+            "tampered archive segment index {SEGMENT_INDEX_PATH}: expected {} bytes sha256 {}, got {} bytes sha256 {}",
+            metadata.segment_index_byte_count,
+            metadata.segment_index_sha256,
+            digest.byte_count,
+            digest.sha256_hex()
+        )));
+    }
+    if segment_count != metadata.segment_count
+        || row_count != metadata.row_count
+        || archive_byte_count != metadata.archive_byte_count
+    {
+        return Err(archive_verification_failure(format!(
+            "archive segment index summary mismatch: expected {} segments, {} rows, {} bytes; got {segment_count} segments, {row_count} rows, {archive_byte_count} bytes",
+            metadata.segment_count, metadata.row_count, metadata.archive_byte_count
+        )));
+    }
+    if segment_count != manifest.identity.segment_count {
+        return Err(archive_verification_failure(format!(
+            "archive segment index has {segment_count} segments, expected {}",
+            manifest.identity.segment_count
+        )));
     }
     Ok(())
 }
 
+fn verify_archive_segment_record(
+    package_root: &PackageRoot,
+    source: &cdf_package_contract::SegmentEntry,
+    record: &ArchiveSegmentMetadata,
+) -> Result<()> {
+    if record.segment_id != source.segment_id.as_str() {
+        return Err(archive_verification_failure(format!(
+            "archive metadata segment {} does not match manifest segment {}",
+            record.segment_id, source.segment_id
+        )));
+    }
+    let expected_path = archive_segment_path(source.segment_id.as_str())?;
+    validate_canonical_relative_path(&record.archive_path)?;
+    if record.archive_path != expected_path {
+        return Err(archive_verification_failure(format!(
+            "archive path for segment {} is {}, expected {}",
+            source.segment_id, record.archive_path, expected_path
+        )));
+    }
+    if record.source_path != source.path
+        || record.source_byte_count != source.byte_count
+        || record.source_sha256 != source.sha256
+        || record.source_row_count != source.row_count
+    {
+        return Err(archive_verification_failure(format!(
+            "archive source metadata mismatch for segment {}",
+            source.segment_id
+        )));
+    }
+    if record.archive_row_count != source.row_count {
+        return Err(archive_verification_failure(format!(
+            "archive row count {} for segment {} does not match source row count {}",
+            record.archive_row_count, source.segment_id, source.row_count
+        )));
+    }
+    match package_root.file_entry(&record.archive_path) {
+        Ok(Some(actual))
+            if actual.byte_count == record.archive_byte_count
+                && actual.sha256 == record.archive_sha256 =>
+        {
+            Ok(())
+        }
+        Ok(Some(actual)) => Err(archive_verification_failure(format!(
+            "tampered archive sidecar {}: expected {} bytes sha256 {}, got {} bytes sha256 {}",
+            record.archive_path,
+            record.archive_byte_count,
+            record.archive_sha256,
+            actual.byte_count,
+            actual.sha256
+        ))),
+        Ok(None) => Err(archive_verification_failure(format!(
+            "missing archive sidecar {}",
+            record.archive_path
+        ))),
+        Err(error) => Err(archive_verification_failure(format!(
+            "archive sidecar {} could not be read: {}",
+            record.archive_path, error.message
+        ))),
+    }
+}
+
+fn read_archive_index_record(reader: &mut impl BufRead) -> Result<Option<ArchiveSegmentMetadata>> {
+    let mut bytes = Vec::new();
+    let read = reader
+        .take(MAX_ARCHIVE_INDEX_RECORD_BYTES + 1)
+        .read_until(b'\n', &mut bytes)
+        .map_err(|error| io_error(format!("read {SEGMENT_INDEX_PATH}"), error))?;
+    if read == 0 {
+        return Ok(None);
+    }
+    let read = u64::try_from(read)
+        .map_err(|_| CdfError::data("archive segment index record size exceeds u64"))?;
+    if read > MAX_ARCHIVE_INDEX_RECORD_BYTES {
+        return Err(archive_verification_failure(format!(
+            "archive segment index record exceeds {MAX_ARCHIVE_INDEX_RECORD_BYTES} bytes"
+        )));
+    }
+    if bytes.pop() != Some(b'\n') {
+        return Err(archive_verification_failure(
+            "archive segment index record is not newline terminated",
+        ));
+    }
+    let record: ArchiveSegmentMetadata = serde_json::from_slice(&bytes).map_err(|error| {
+        archive_verification_failure(format!("archive segment index record is invalid: {error}"))
+    })?;
+    if canonical_json_bytes(&record)? != bytes {
+        return Err(archive_verification_failure(
+            "archive segment index record is not canonical JSON",
+        ));
+    }
+    Ok(Some(record))
+}
+
+struct DigestingReader<R> {
+    inner: R,
+    hasher: Sha256,
+    byte_count: u64,
+}
+
+impl<R> DigestingReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            hasher: Sha256::new(),
+            byte_count: 0,
+        }
+    }
+
+    fn sha256_hex(&self) -> String {
+        hex::encode(self.hasher.clone().finalize())
+    }
+}
+
+impl<R: Read> Read for DigestingReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(buffer)?;
+        self.hasher.update(&buffer[..read]);
+        self.byte_count = self
+            .byte_count
+            .checked_add(u64::try_from(read).map_err(std::io::Error::other)?)
+            .ok_or_else(|| std::io::Error::other("archive index byte count overflow"))?;
+        Ok(read)
+    }
+}
+
 fn verify_fidelity_report(
     package_root: &PackageRoot,
-    manifest: &PackageManifest,
+    manifest: &PackageManifestHeader,
     metadata: &ParquetArchiveMetadata,
 ) -> Result<()> {
     let bytes = match package_root.read_optional(FIDELITY_REPORT_PATH) {
@@ -529,13 +743,13 @@ fn archive_verification_failure(message: impl std::fmt::Display) -> CdfError {
 
 fn has_parquet_archive_state(
     package_root: &PackageRoot,
-    manifest: &PackageManifest,
+    manifest: &PackageManifestHeader,
 ) -> Result<bool> {
     Ok(manifest_parquet_archive(manifest).is_some()
-        || first_archive_entry(package_root, |_| false)?.is_some())
+        || first_archive_entry(package_root, |_| Ok(false))?.is_some())
 }
 
-fn manifest_parquet_archive(manifest: &PackageManifest) -> Option<&ParquetArchiveMetadata> {
+fn manifest_parquet_archive(manifest: &PackageManifestHeader) -> Option<&ParquetArchiveMetadata> {
     manifest
         .archives
         .as_ref()
@@ -558,11 +772,11 @@ fn archive_segment_path(segment_id: &str) -> Result<String> {
 
 fn first_archive_entry(
     package_root: &PackageRoot,
-    mut is_expected: impl FnMut(&str) -> bool,
+    mut is_expected: impl FnMut(&str) -> Result<bool>,
 ) -> Result<Option<(String, PackageEntryKind)>> {
     let mut first: Option<(String, PackageEntryKind)> = None;
     package_root.visit_tree_entries(PARQUET_ARCHIVE_DIR, |path, kind| {
-        if !is_expected(&path)
+        if !is_expected(&path)?
             && first
                 .as_ref()
                 .is_none_or(|(candidate, _)| portable_path_cmp(&path, candidate).is_lt())
@@ -574,12 +788,12 @@ fn first_archive_entry(
     Ok(first)
 }
 
-fn archive_entry_count(package_root: &PackageRoot) -> Result<usize> {
-    let mut count = 0_usize;
+fn archive_entry_count(package_root: &PackageRoot) -> Result<u64> {
+    let mut count = 0_u64;
     package_root.visit_tree_entries(PARQUET_ARCHIVE_DIR, |_, _| {
         count = count
             .checked_add(1)
-            .ok_or_else(|| CdfError::data("archive entry count overflow"))?;
+            .ok_or_else(|| CdfError::data("archive entry count overflowed u64"))?;
         Ok(())
     })?;
     Ok(count)

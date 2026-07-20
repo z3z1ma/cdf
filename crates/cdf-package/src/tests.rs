@@ -738,7 +738,10 @@ fn package_layout_manifest_and_verification_cover_identity_files() {
 
     let report = verify_package(temp.path()).unwrap();
     assert_eq!(report.package_hash, manifest.package_hash);
-    assert_eq!(report.checked_file_count, manifest.identity.files.len());
+    assert_eq!(
+        report.checked_file_count,
+        u64::try_from(manifest.identity.files.len()).unwrap()
+    );
 }
 
 #[test]
@@ -2347,7 +2350,10 @@ fn persisted_archive_writes_sidecars_manifest_metadata_and_fidelity_json() {
     assert_eq!(report.package_hash, original_hash);
     assert_eq!(report.format, "parquet");
     assert_eq!(report.fidelity_report_path, "archive/parquet/fidelity.json");
-    assert_eq!(report.segments.len(), manifest.identity.segments.len());
+    assert_eq!(
+        report.segment_count,
+        u64::try_from(manifest.identity.segments.len()).unwrap()
+    );
 
     let archived_manifest = read_manifest(temp.path()).unwrap();
     assert_eq!(archived_manifest.identity, original_identity);
@@ -2359,9 +2365,20 @@ fn persisted_archive_writes_sidecars_manifest_metadata_and_fidelity_json() {
         .as_ref()
         .and_then(|archives| archives.parquet.as_ref())
         .unwrap();
-    assert_eq!(metadata.format_version, 1);
-    assert_eq!(metadata.segments, report.segments);
-    for (index, segment) in metadata.segments.iter().enumerate() {
+    assert_eq!(metadata.format_version, 2);
+    assert_eq!(metadata.segment_index_path, report.segment_index_path);
+    assert_eq!(metadata.segment_count, report.segment_count);
+    assert_eq!(metadata.row_count, report.row_count);
+    assert_eq!(metadata.archive_byte_count, report.archive_byte_count);
+    let index_bytes = fs::read(temp.path().join(&metadata.segment_index_path)).unwrap();
+    assert_eq!(metadata.segment_index_byte_count, index_bytes.len() as u64);
+    assert_eq!(
+        metadata.segment_index_sha256,
+        hex::encode(sha2::Sha256::digest(&index_bytes))
+    );
+    let segments = read_archive_index_records(temp.path());
+    assert_eq!(segments.len(), manifest.identity.segments.len());
+    for (index, segment) in segments.iter().enumerate() {
         assert_eq!(
             segment.segment_id,
             manifest.identity.segments[index].segment_id.as_str()
@@ -2383,11 +2400,19 @@ fn persisted_archive_writes_sidecars_manifest_metadata_and_fidelity_json() {
     assert_eq!(fidelity.package_hash, original_hash);
     assert_eq!(fidelity.source_format, "arrow_ipc_lz4");
     assert_eq!(fidelity.archive_format, "parquet");
-    assert_eq!(fidelity.segments, metadata.segments);
+    assert_eq!(fidelity.segment_index_path, metadata.segment_index_path);
+    assert_eq!(
+        fidelity.segment_index_byte_count,
+        metadata.segment_index_byte_count
+    );
+    assert_eq!(fidelity.segment_index_sha256, metadata.segment_index_sha256);
+    assert_eq!(fidelity.segment_count, metadata.segment_count);
+    assert_eq!(fidelity.row_count, metadata.row_count);
+    assert_eq!(fidelity.archive_byte_count, metadata.archive_byte_count);
     assert_eq!(fidelity_bytes, canonical_json_bytes(&fidelity).unwrap());
 
     let verification = verify_package(temp.path()).unwrap();
-    assert_eq!(verification.checked_archive_count, metadata.segments.len());
+    assert_eq!(verification.checked_archive_count, metadata.segment_count);
     let reader = PackageReader::open(temp.path()).unwrap();
     let mut first_segment_path = None;
     reader
@@ -2422,7 +2447,10 @@ fn persisted_archive_clean_rerun_skips_and_cleans_stale_temp_paths() {
     let second = persist_package_parquet_archive(temp.path(), false).unwrap();
 
     assert_eq!(second.status, PackageArchiveWriteStatus::Skipped);
-    assert_eq!(second.segments, first.segments);
+    assert_eq!(second.segment_index_path, first.segment_index_path);
+    assert_eq!(second.segment_count, first.segment_count);
+    assert_eq!(second.row_count, first.row_count);
+    assert_eq!(second.archive_byte_count, first.archive_byte_count);
     assert_eq!(
         fs::read(temp.path().join(MANIFEST_FILE)).unwrap(),
         first_manifest
@@ -2585,24 +2613,24 @@ fn archive_verification_reports_missing_source_mismatched_orphan_and_bad_fidelit
         "{error}"
     );
 
+    let missing_index = tempfile::tempdir().unwrap();
+    build_archive_fixture(missing_index.path());
+    persist_package_parquet_archive(missing_index.path(), false).unwrap();
+    fs::remove_file(missing_index.path().join("archive/parquet/segments.ndjson")).unwrap();
+    let error = verify_package(missing_index.path()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("archive segment index archive/parquet/segments.ndjson could not be read"),
+        "{error}"
+    );
+
     let source_mismatch = tempfile::tempdir().unwrap();
     build_archive_fixture(source_mismatch.path());
     persist_package_parquet_archive(source_mismatch.path(), false).unwrap();
-    let mut manifest = read_manifest(source_mismatch.path()).unwrap();
-    manifest
-        .archives
-        .as_mut()
-        .unwrap()
-        .parquet
-        .as_mut()
-        .unwrap()
-        .segments[0]
-        .source_sha256 = "not-the-source-hash".to_owned();
-    fs::write(
-        source_mismatch.path().join(MANIFEST_FILE),
-        canonical_json_bytes(&manifest).unwrap(),
-    )
-    .unwrap();
+    let mut segments = read_archive_index_records(source_mismatch.path());
+    segments[0].source_sha256 = "not-the-source-hash".to_owned();
+    write_archive_index_records(source_mismatch.path(), &segments);
     let error = verify_package(source_mismatch.path()).unwrap_err();
     assert!(
         error
@@ -2623,7 +2651,7 @@ fn archive_verification_reports_missing_source_mismatched_orphan_and_bad_fidelit
     assert!(
         error
             .to_string()
-            .contains("orphan archive sidecar archive/parquet/data/orphan.parquet"),
+            .contains("archive contains an unexpected entry count"),
         "{error}"
     );
 
@@ -2649,17 +2677,9 @@ fn archive_verification_reports_single_field_archive_metadata_mismatches() {
     let archive_hash = tempfile::tempdir().unwrap();
     build_archive_fixture(archive_hash.path());
     persist_package_parquet_archive(archive_hash.path(), false).unwrap();
-    let mut manifest = read_manifest(archive_hash.path()).unwrap();
-    manifest
-        .archives
-        .as_mut()
-        .unwrap()
-        .parquet
-        .as_mut()
-        .unwrap()
-        .segments[0]
-        .archive_sha256 = "not-the-archive-hash".to_owned();
-    rewrite_manifest_and_fidelity(archive_hash.path(), &manifest);
+    let mut segments = read_archive_index_records(archive_hash.path());
+    segments[0].archive_sha256 = "not-the-archive-hash".to_owned();
+    write_archive_index_records(archive_hash.path(), &segments);
     let error = verify_package(archive_hash.path()).unwrap_err();
     assert!(
         error
@@ -2671,17 +2691,9 @@ fn archive_verification_reports_single_field_archive_metadata_mismatches() {
     let source_byte_count = tempfile::tempdir().unwrap();
     build_archive_fixture(source_byte_count.path());
     persist_package_parquet_archive(source_byte_count.path(), false).unwrap();
-    let mut manifest = read_manifest(source_byte_count.path()).unwrap();
-    manifest
-        .archives
-        .as_mut()
-        .unwrap()
-        .parquet
-        .as_mut()
-        .unwrap()
-        .segments[0]
-        .source_byte_count += 1;
-    rewrite_manifest_and_fidelity(source_byte_count.path(), &manifest);
+    let mut segments = read_archive_index_records(source_byte_count.path());
+    segments[0].source_byte_count += 1;
+    write_archive_index_records(source_byte_count.path(), &segments);
     let error = verify_package(source_byte_count.path()).unwrap_err();
     assert!(
         error
@@ -2693,17 +2705,9 @@ fn archive_verification_reports_single_field_archive_metadata_mismatches() {
     let source_row_count = tempfile::tempdir().unwrap();
     build_archive_fixture(source_row_count.path());
     persist_package_parquet_archive(source_row_count.path(), false).unwrap();
-    let mut manifest = read_manifest(source_row_count.path()).unwrap();
-    manifest
-        .archives
-        .as_mut()
-        .unwrap()
-        .parquet
-        .as_mut()
-        .unwrap()
-        .segments[0]
-        .source_row_count += 1;
-    rewrite_manifest_and_fidelity(source_row_count.path(), &manifest);
+    let mut segments = read_archive_index_records(source_row_count.path());
+    segments[0].source_row_count += 1;
+    write_archive_index_records(source_row_count.path(), &segments);
     let error = verify_package(source_row_count.path()).unwrap_err();
     assert!(
         error
@@ -2824,29 +2828,21 @@ fn persisted_archive_status_gate_allows_only_ratified_statuses() {
     }
 }
 
-fn rewrite_manifest_and_fidelity(package_dir: &Path, manifest: &PackageManifest) {
-    fs::write(
-        package_dir.join(MANIFEST_FILE),
-        canonical_json_bytes(manifest).unwrap(),
-    )
-    .unwrap();
-    let metadata = manifest
-        .archives
-        .as_ref()
-        .and_then(|archives| archives.parquet.as_ref())
-        .unwrap();
-    let fidelity = PackageArchiveFidelityReport {
-        package_hash: manifest.package_hash.clone(),
-        source_format: "arrow_ipc_lz4".to_owned(),
-        archive_format: "parquet".to_owned(),
-        fidelity_statement: metadata.fidelity_statement.clone(),
-        segments: metadata.segments.clone(),
-    };
-    fs::write(
-        package_dir.join("archive/parquet/fidelity.json"),
-        canonical_json_bytes(&fidelity).unwrap(),
-    )
-    .unwrap();
+fn read_archive_index_records(package_dir: &Path) -> Vec<ArchiveSegmentMetadata> {
+    fs::read_to_string(package_dir.join("archive/parquet/segments.ndjson"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+fn write_archive_index_records(package_dir: &Path, segments: &[ArchiveSegmentMetadata]) {
+    let mut bytes = Vec::new();
+    for segment in segments {
+        bytes.extend(canonical_json_bytes(segment).unwrap());
+        bytes.push(b'\n');
+    }
+    fs::write(package_dir.join("archive/parquet/segments.ndjson"), bytes).unwrap();
 }
 
 #[test]
@@ -2874,6 +2870,7 @@ fn production_commit_paths_cannot_collect_package_segments() {
         let source = fs::read_to_string(&path).unwrap();
         let mut forbidden = vec![
             "Vec<CommitSegment>",
+            "Vec<ArchiveSegmentMetadata>",
             "read_quarantine_records(",
             "read_dedup_dropped_provenance(",
         ];

@@ -6,12 +6,13 @@ use std::{
 
 use cdf_kernel::{CdfError, Result};
 use cdf_package_contract::{
-    FileEntry, LifecycleState, MANIFEST_VERSION, PackageStatus, SegmentEntry, SignatureSlot,
+    FileEntry, LifecycleState, MANIFEST_VERSION, ManifestArchives, PackageStatus, SegmentEntry,
+    SignatureSlot,
 };
-use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use sha2::{Digest, Sha256};
 
-use crate::json::json_error;
+use crate::json::{canonical_json_bytes, json_error};
 
 /// Hashes the exact canonical identity object stored in `manifest.json` without retaining it.
 ///
@@ -109,6 +110,50 @@ pub(crate) fn rewrite_manifest_lifecycle(
         "package lifecycle status",
     )?;
     write_checked(writer, b"\"}", "package lifecycle")?;
+    std::io::copy(&mut reader, writer)
+        .map_err(|error| CdfError::internal(format!("copy package manifest suffix: {error}")))?;
+    Ok(())
+}
+
+/// Replaces optional non-identity archive metadata while copying identity-bearing bytes exactly.
+///
+/// The caller validates the input manifest before invoking this transformer. Archive metadata is
+/// constant-cardinality; package file and segment arrays are copied without reconstruction.
+pub(crate) fn rewrite_manifest_archives(
+    reader: impl Read,
+    writer: &mut impl Write,
+    archives: &ManifestArchives,
+) -> Result<()> {
+    let mut reader = BufReader::new(reader);
+    write_checked(writer, b"{\"archives\":", "package archive field")?;
+    write_checked(
+        writer,
+        &canonical_json_bytes(archives)?,
+        "package archive metadata",
+    )?;
+    write_checked(writer, b",", "package archive separator")?;
+    expect_byte(&mut reader, b'{', "package manifest object")?;
+
+    let mut field = read_top_level_key(&mut reader)?;
+    if field == "archives" {
+        expect_byte(&mut reader, b':', "package manifest field separator")?;
+        let first = read_non_whitespace_byte(&mut reader)?.ok_or_else(|| {
+            CdfError::data("package manifest archive metadata ended before its value")
+        })?;
+        skip_balanced_object(&mut reader, first, "archive metadata")?;
+        expect_byte(&mut reader, b',', "package manifest archive separator")?;
+        field = read_top_level_key(&mut reader)?;
+    }
+    if field != "identity" {
+        return Err(CdfError::data(format!(
+            "canonical package manifest must begin with optional archives then identity; observed {field:?}"
+        )));
+    }
+    write_checked(writer, b"\"identity\":", "package identity field")?;
+    expect_byte(&mut reader, b':', "package manifest field separator")?;
+    let first = read_non_whitespace_byte(&mut reader)?
+        .ok_or_else(|| CdfError::data("package manifest identity ended before its object"))?;
+    copy_balanced_object(&mut reader, writer, first, "identity")?;
     std::io::copy(&mut reader, writer)
         .map_err(|error| CdfError::internal(format!("copy package manifest suffix: {error}")))?;
     Ok(())
@@ -266,7 +311,7 @@ pub struct PackageManifestHeader {
     pub identity: ManifestIdentityHeader,
     pub lifecycle: LifecycleState,
     pub signature: SignatureSlot,
-    pub has_archives: bool,
+    pub archives: Option<ManifestArchives>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -384,8 +429,7 @@ impl<'de> Visitor<'de> for PackageManifestVisitor<'_> {
             match field.as_str() {
                 "archives" => {
                     require_absent(&archives, "archives")?;
-                    map.next_value::<IgnoredAny>()?;
-                    archives = Some(true);
+                    archives = Some(map.next_value()?);
                 }
                 "identity" => {
                     require_absent(&identity, "identity")?;
@@ -421,7 +465,7 @@ impl<'de> Visitor<'de> for PackageManifestVisitor<'_> {
             identity: required(identity, "identity")?,
             lifecycle: required(lifecycle, "lifecycle")?,
             signature: required(signature, "signature")?,
-            has_archives: archives.unwrap_or(false),
+            archives,
         })
     }
 }
@@ -921,7 +965,7 @@ mod tests {
         assert_eq!(header.identity.segment_count, 1);
         assert_eq!(header.lifecycle, manifest.lifecycle);
         assert_eq!(header.signature, manifest.signature);
-        assert!(!header.has_archives);
+        assert!(header.archives.is_none());
         assert_eq!(files, manifest.identity.files);
         assert_eq!(segments, manifest.identity.segments);
     }
