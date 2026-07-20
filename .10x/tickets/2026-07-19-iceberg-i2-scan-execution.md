@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-19
 Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-19-iceberg-glue-source-program.md
@@ -33,7 +33,7 @@ No append ancestry/changelog/tailing, ORC/Avro/v3/encryption enablement, destina
 
 ## Journal
 
-None yet.
+- 2026-07-19: Activated after I1/F4 closure. Execution will consume the existing external canonical task artifact and injected neutral object-access authority; no upstream Iceberg runtime, private pool, or generic source branch will be introduced. The first tranche is one immutable Parquet task to a preaccounted ordinary `ResourceStream`, then evolution/defaults/partition constants and delete semantics extend that single path.
 
 ## Blockers
 
