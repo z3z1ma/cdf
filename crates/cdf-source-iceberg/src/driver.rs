@@ -3,10 +3,11 @@ use std::{collections::BTreeMap, path::Path, sync::Arc};
 use cdf_http::{HttpTransport, SecretProvider};
 use cdf_kernel::{
     BackpressureSupport, CapabilitySupport, CdfError, EffectiveSchemaCatalogEntry,
-    EffectiveSchemaRuntime, EstimateSupport, FilterCapabilities, IncrementalShape,
-    PartitionOpenAttempt, PartitionPlan, PartitioningCapabilities, PayloadRetention,
-    QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceStream,
-    Result, ScanPlan, ScanRequest, ScopeKind, TypePolicyAllowances,
+    EffectiveSchemaRuntime, EstimateSupport, ExecutablePartition, FilterCapabilities,
+    IncrementalShape, PartitionOpenAttempt, PartitionPlan, PartitioningCapabilities,
+    PayloadRetention, PlannedPartitionReader, PlannedTaskSetReference, QueryableResource,
+    ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, ScanPlan,
+    ScanRequest, ScopeKind, TypePolicyAllowances,
 };
 use cdf_object_access::FileTransport;
 use cdf_runtime::{
@@ -27,6 +28,7 @@ use crate::{
     IcebergResourceOptions, IcebergSourceOptions, LoadedIcebergTable, iceberg_option_schema,
     iceberg_source_descriptor,
     planner::{IcebergPlanningContext, plan_snapshot_scan},
+    task_reader::{IcebergExecutableTask, IcebergPlannedPartitionReader},
 };
 
 const PLANNING_ARTIFACT_NAMESPACE: &str = "planner-artifacts";
@@ -665,10 +667,40 @@ impl ResourceStream for IcebergResource {
         ))
     }
 
+    fn planned_partition_reader(
+        &self,
+        reference: &PlannedTaskSetReference,
+    ) -> Result<Box<dyn PlannedPartitionReader>> {
+        Ok(Box::new(IcebergPlannedPartitionReader::open(
+            &self.task_store,
+            reference.clone(),
+            &self.source,
+            self.catalog.execution.memory(),
+        )?))
+    }
+
     fn open(&self, _partition: PartitionPlan) -> PartitionOpenAttempt<'_> {
         PartitionOpenAttempt::materialized(Box::pin(async {
             Err(CdfError::contract(
                 "Iceberg data task execution is owned by I2 and is not yet installed",
+            ))
+        }))
+    }
+
+    fn open_executable(&self, partition: ExecutablePartition) -> PartitionOpenAttempt<'_> {
+        let retained = partition
+            .retention()
+            .and_then(PayloadRetention::downcast_ref::<IcebergExecutableTask>);
+        if retained.is_none() {
+            return PartitionOpenAttempt::materialized(Box::pin(async {
+                Err(CdfError::contract(
+                    "Iceberg executable partition omitted its retained canonical task payload",
+                ))
+            }));
+        }
+        PartitionOpenAttempt::materialized(Box::pin(async {
+            Err(CdfError::contract(
+                "Iceberg Parquet task decoding is owned by the next I2 execution tranche",
             ))
         }))
     }
@@ -1760,6 +1792,27 @@ mod tests {
         assert_eq!(tasks[1].canonical_ordinal, 1);
         assert_eq!(tasks[1].file_schema_id, 1);
         assert!(tasks[1].data_file.path.ends_with("data/current.parquet"));
+
+        let mut planned = resource.planned_partition_reader(&reference).unwrap();
+        for ordinal in 0..2 {
+            let executable = planned.next_partition(ordinal).unwrap().unwrap();
+            assert_eq!(
+                executable.plan().partition_id.as_str(),
+                format!("iceberg-task-{ordinal:020}")
+            );
+            assert!(matches!(
+                executable.plan().planned_position,
+                Some(cdf_kernel::SourcePosition::TableSnapshot(_))
+            ));
+            let task = executable
+                .retention()
+                .unwrap()
+                .downcast_ref::<IcebergExecutableTask>()
+                .unwrap();
+            assert_eq!(task.task.canonical_ordinal, ordinal);
+            task.task.validate_against(task.authority()).unwrap();
+        }
+        assert!(planned.next_partition(2).unwrap().is_none());
 
         let mut many_jobs_request = compile_request(root.path());
         many_jobs_request

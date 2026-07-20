@@ -4402,7 +4402,7 @@ fn execution_rejects_tampered_retry_schedule_before_source_contact() {
     let forged_retry =
         cdf_runtime::CompiledSourceRetry::from_capabilities(&source.execution_capabilities)
             .unwrap();
-    plan.partition_schedule.as_mut().unwrap().partitions[0].retry = forged_retry;
+    plan.partition_schedule.as_mut().unwrap().admission.retry = forged_retry;
     plan.explain.partition_schedule = plan.partition_schedule.clone();
     let package = TempDir::new().unwrap();
 

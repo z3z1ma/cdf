@@ -10,6 +10,7 @@ mod driver;
 mod glue;
 mod planner;
 mod scan_task;
+mod task_reader;
 
 pub use catalog::{
     GlueCatalogClient, GlueGetTableRequest, GlueTablePointer, IcebergCatalogBinding,

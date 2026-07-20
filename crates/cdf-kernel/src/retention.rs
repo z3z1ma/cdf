@@ -34,4 +34,10 @@ impl PayloadRetention {
     pub fn strong_count(&self) -> usize {
         Arc::strong_count(&self.owner)
     }
+
+    /// Returns a typed view of source/destination-local retained state at its owning adapter
+    /// boundary. Generic orchestration deliberately cannot interpret the payload.
+    pub fn downcast_ref<T: Any + Send + Sync>(&self) -> Option<&T> {
+        self.owner.downcast_ref::<T>()
+    }
 }

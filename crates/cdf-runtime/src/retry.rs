@@ -84,6 +84,7 @@ pub struct SourceRetryHistoryEntry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceRetryEvidence {
     plan_id: String,
+    schedule_identity_hash: String,
     partition_ordinal: u32,
     partition_id: String,
     immutable_identity_hash: String,
@@ -132,6 +133,7 @@ impl SourceRetryEvidence {
         });
         if self.plan_id.is_empty()
             || self.plan_id.chars().any(char::is_control)
+            || self.schedule_identity_hash.is_empty()
             || self.partition_id.is_empty()
             || self.partition_id.chars().any(char::is_control)
             || self.immutable_identity_hash.is_empty()
@@ -163,23 +165,29 @@ impl SourceRetryEvidence {
                 "source retry evidence plan identity does not match its partition schedule",
             ));
         }
-        let scheduled = schedule
-            .partitions
-            .get(usize::try_from(self.partition_ordinal).map_err(|_| {
-                CdfError::data("source retry evidence partition ordinal exceeds usize")
-            })?)
-            .ok_or_else(|| {
-                CdfError::data("source retry evidence references an absent partition ordinal")
-            })?;
-        if scheduled.ordinal.get() != self.partition_ordinal
-            || scheduled.partition.partition_id.as_str() != self.partition_id
-            || scheduled.immutable_identity_hash != self.immutable_identity_hash
-            || crate::artifact_hash(scheduled)? != self.partition_binding_hash
-            || scheduled.retry.as_ref() != Some(&self.compiled_retry)
+        if !schedule.contains_runtime_binding(self.partition_ordinal, &self.schedule_identity_hash)
+            || schedule.admission.retry.as_ref() != Some(&self.compiled_retry)
         {
             return Err(CdfError::data(
                 "source retry evidence does not match its compiled partition retry binding",
             ));
+        }
+        if let Some(partitions) = schedule.inline_partitions() {
+            let scheduled = partitions
+                .get(usize::try_from(self.partition_ordinal).map_err(|_| {
+                    CdfError::data("source retry evidence partition ordinal exceeds usize")
+                })?)
+                .ok_or_else(|| {
+                    CdfError::data("source retry evidence references an absent partition ordinal")
+                })?;
+            if scheduled.ordinal.get() != self.partition_ordinal
+                || scheduled.partition.partition_id.as_str() != self.partition_id
+                || scheduled.immutable_identity_hash != self.immutable_identity_hash
+            {
+                return Err(CdfError::data(
+                    "source retry evidence does not match its inline partition authority",
+                ));
+            }
         }
         Ok(())
     }
@@ -243,6 +251,7 @@ impl SourceRetryJournal {
         }
         let evidence = SourceRetryEvidence {
             plan_id: plan_id.to_owned(),
+            schedule_identity_hash: partition.schedule_identity_hash.clone(),
             partition_ordinal: partition.ordinal.get(),
             partition_id: partition.partition.partition_id.to_string(),
             immutable_identity_hash: partition.immutable_identity_hash.clone(),
@@ -259,6 +268,7 @@ impl SourceRetryJournal {
             .map_err(|_| CdfError::internal("source retry journal lock poisoned"))?;
         if let Some(existing) = entries.get(&evidence.partition_ordinal)
             && (existing.plan_id != evidence.plan_id
+                || existing.schedule_identity_hash != evidence.schedule_identity_hash
                 || existing.partition_id != evidence.partition_id
                 || existing.immutable_identity_hash != evidence.immutable_identity_hash
                 || existing.partition_binding_hash != evidence.partition_binding_hash
@@ -615,6 +625,7 @@ mod tests {
                 metadata: BTreeMap::new(),
             },
             immutable_identity_hash: "sha256:partition-0".to_owned(),
+            schedule_identity_hash: "sha256:schedule-0".to_owned(),
             minimum_working_set_bytes: 2,
             maximum_working_set_bytes: 2,
             executor_class: SourceExecutorClass::Io,
@@ -632,7 +643,25 @@ mod tests {
         let scheduled = scheduled_partition();
         let schedule = crate::CanonicalPartitionSchedule {
             plan_id: "plan-0".to_owned(),
-            partitions: vec![scheduled.clone()],
+            schedule_identity_hash: scheduled.schedule_identity_hash.clone(),
+            admission: crate::PartitionAdmissionTemplate {
+                minimum_working_set_bytes: scheduled.minimum_working_set_bytes,
+                maximum_working_set_bytes: scheduled.maximum_working_set_bytes,
+                executor_class: scheduled.executor_class,
+                retry: scheduled.retry.clone(),
+                rate_limit: scheduled.rate_limit,
+                quota_authority: scheduled.quota_authority.clone(),
+                speculative_safe: scheduled.speculative_safe,
+                canonical_order: scheduled.canonical_order,
+                bounded_source: scheduled.bounded_source,
+            },
+            authority: crate::PartitionScheduleAuthority::Inline {
+                partitions: vec![crate::CanonicalPartitionBinding {
+                    ordinal: scheduled.ordinal,
+                    partition: scheduled.partition.clone(),
+                    immutable_identity_hash: scheduled.immutable_identity_hash.clone(),
+                }],
+            },
         };
         let journal = SourceRetryJournal::default();
         journal
@@ -667,7 +696,8 @@ mod tests {
         );
 
         let mut widened = schedule.clone();
-        widened.partitions[0]
+        widened
+            .admission
             .retry
             .as_mut()
             .unwrap()

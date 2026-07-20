@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use cdf_kernel::{CdfError, PartitionPlan, PartitionRetrySafety, Result, ScanPlan};
+use cdf_kernel::{
+    CdfError, PartitionPlan, PartitionRetrySafety, PlannedTaskSetReference, Result, ScanPlan,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -42,6 +44,7 @@ pub struct ScheduledPartition {
     pub ordinal: CanonicalPartitionOrdinal,
     pub partition: PartitionPlan,
     pub immutable_identity_hash: String,
+    pub schedule_identity_hash: String,
     pub minimum_working_set_bytes: u64,
     pub maximum_working_set_bytes: u64,
     pub executor_class: SourceExecutorClass,
@@ -53,73 +56,219 @@ pub struct ScheduledPartition {
     pub bounded_source: bool,
 }
 
+/// Cardinality-independent admission policy shared by every partition in one source plan.
+///
+/// Retry eligibility still narrows per partition from `PartitionPlan::retry_safety`; this records
+/// the source ceiling once instead of repeating identical scheduler metadata for every file/task.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartitionAdmissionTemplate {
+    pub minimum_working_set_bytes: u64,
+    pub maximum_working_set_bytes: u64,
+    pub executor_class: SourceExecutorClass,
+    pub retry: Option<CompiledSourceRetry>,
+    pub rate_limit: Option<crate::SourceRateLimit>,
+    pub quota_authority: Option<String>,
+    pub speculative_safe: bool,
+    pub canonical_order: bool,
+    pub bounded_source: bool,
+}
+
+impl PartitionAdmissionTemplate {
+    fn compile(capabilities: &SourceExecutionCapabilities) -> Result<Self> {
+        capabilities.validate()?;
+        let minimum_working_set_bytes = capabilities
+            .minimum_poll_bytes
+            .checked_add(capabilities.minimum_decode_bytes)
+            .ok_or_else(|| CdfError::contract("source minimum working set overflowed u64"))?;
+        let maximum_working_set_bytes = capabilities
+            .maximum_poll_bytes
+            .checked_add(capabilities.maximum_decode_bytes)
+            .ok_or_else(|| CdfError::contract("source maximum working set overflowed u64"))?;
+        Ok(Self {
+            minimum_working_set_bytes,
+            maximum_working_set_bytes,
+            executor_class: capabilities.executor_class,
+            retry: CompiledSourceRetry::from_capabilities(capabilities)?,
+            rate_limit: capabilities.rate_limit,
+            quota_authority: capabilities.quota_authority.clone(),
+            speculative_safe: capabilities.speculative_safe,
+            canonical_order: capabilities.canonical_order,
+            bounded_source: capabilities.bounded,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CanonicalPartitionBinding {
+    pub ordinal: CanonicalPartitionOrdinal,
+    pub partition: PartitionPlan,
+    pub immutable_identity_hash: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PartitionScheduleAuthority {
+    Inline {
+        partitions: Vec<CanonicalPartitionBinding>,
+    },
+    External {
+        planned_task_set: PlannedTaskSetReference,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanonicalPartitionSchedule {
     pub plan_id: String,
-    pub partitions: Vec<ScheduledPartition>,
+    pub schedule_identity_hash: String,
+    pub admission: PartitionAdmissionTemplate,
+    pub authority: PartitionScheduleAuthority,
 }
 
 impl CanonicalPartitionSchedule {
     pub fn compile(source: &CompiledSourceExecutionPlan, scan: &ScanPlan) -> Result<Self> {
         source.validate()?;
+        scan.validate_partition_authority()?;
         if source.resource_id != scan.request.resource_id {
             return Err(CdfError::contract(
                 "source plan and scan plan resource ids do not match",
             ));
         }
-        let mut partition_ids = BTreeSet::new();
-        let minimum_working_set_bytes = source
-            .execution_capabilities
-            .minimum_poll_bytes
-            .checked_add(source.execution_capabilities.minimum_decode_bytes)
-            .ok_or_else(|| CdfError::contract("source minimum working set overflowed u64"))?;
-        let maximum_working_set_bytes = source
-            .execution_capabilities
-            .maximum_poll_bytes
-            .checked_add(source.execution_capabilities.maximum_decode_bytes)
-            .ok_or_else(|| CdfError::contract("source maximum working set overflowed u64"))?;
-        let partitions = scan
-            .partitions
-            .iter()
-            .enumerate()
-            .map(|(ordinal, partition)| {
-                if !partition_ids.insert(partition.partition_id.as_str()) {
-                    return Err(CdfError::contract(format!(
-                        "scan plan contains duplicate partition id `{}`",
-                        partition.partition_id
-                    )));
-                }
-                let ordinal = u32::try_from(ordinal).map_err(|_| {
-                    CdfError::contract("scan plan partition count exceeds u32 ordinals")
-                })?;
-                let immutable_identity_hash = artifact_hash(&serde_json::json!({
-                    "driver": source.driver,
-                    "physical_plan_hash": source.physical_plan_hash,
-                    "partition": partition,
-                }))?;
-                Ok(ScheduledPartition {
-                    ordinal: CanonicalPartitionOrdinal::new(ordinal),
-                    partition: partition.clone(),
-                    immutable_identity_hash,
-                    minimum_working_set_bytes,
-                    maximum_working_set_bytes,
-                    executor_class: source.execution_capabilities.executor_class,
-                    retry: compile_partition_retry(
-                        &source.execution_capabilities,
-                        partition.retry_safety,
-                    )?,
-                    rate_limit: source.execution_capabilities.rate_limit,
-                    quota_authority: source.execution_capabilities.quota_authority.clone(),
-                    speculative_safe: source.execution_capabilities.speculative_safe,
-                    canonical_order: source.execution_capabilities.canonical_order,
-                    bounded_source: source.execution_capabilities.bounded,
+        let schedule_identity_hash = schedule_identity_hash(source, scan)?;
+        let admission = PartitionAdmissionTemplate::compile(&source.execution_capabilities)?;
+        let authority = if let Some(planned_task_set) = &scan.planned_task_set {
+            if planned_task_set.task_count > u64::from(u32::MAX) {
+                return Err(CdfError::contract(
+                    "external task-set partition count exceeds canonical u32 ordinals",
+                ));
+            }
+            PartitionScheduleAuthority::External {
+                planned_task_set: planned_task_set.clone(),
+            }
+        } else {
+            let mut partition_ids = BTreeSet::new();
+            let partitions = scan
+                .partitions
+                .iter()
+                .enumerate()
+                .map(|(ordinal, partition)| {
+                    if !partition_ids.insert(partition.partition_id.as_str()) {
+                        return Err(CdfError::contract(format!(
+                            "scan plan contains duplicate partition id `{}`",
+                            partition.partition_id
+                        )));
+                    }
+                    compile_partition_binding(source, &schedule_identity_hash, ordinal, partition)
                 })
-            })
-            .collect::<Result<Vec<_>>>()?;
+                .collect::<Result<Vec<_>>>()?;
+            PartitionScheduleAuthority::Inline { partitions }
+        };
         Ok(Self {
             plan_id: scan.plan_id.to_string(),
-            partitions,
+            schedule_identity_hash,
+            admission,
+            authority,
         })
+    }
+
+    pub fn partition_count(&self) -> u64 {
+        match &self.authority {
+            PartitionScheduleAuthority::Inline { partitions } => {
+                u64::try_from(partitions.len()).unwrap_or(u64::MAX)
+            }
+            PartitionScheduleAuthority::External { planned_task_set } => {
+                planned_task_set.task_count
+            }
+        }
+    }
+
+    pub fn inline_partitions(&self) -> Option<&[CanonicalPartitionBinding]> {
+        match &self.authority {
+            PartitionScheduleAuthority::Inline { partitions } => Some(partitions),
+            PartitionScheduleAuthority::External { .. } => None,
+        }
+    }
+
+    pub fn inline_partitions_mut(&mut self) -> Option<&mut Vec<CanonicalPartitionBinding>> {
+        match &mut self.authority {
+            PartitionScheduleAuthority::Inline { partitions } => Some(partitions),
+            PartitionScheduleAuthority::External { .. } => None,
+        }
+    }
+
+    pub fn external_task_set(&self) -> Option<&PlannedTaskSetReference> {
+        match &self.authority {
+            PartitionScheduleAuthority::Inline { .. } => None,
+            PartitionScheduleAuthority::External { planned_task_set } => Some(planned_task_set),
+        }
+    }
+
+    /// Materializes one bounded runtime binding from either inline or external plan authority.
+    pub fn scheduled_partition(
+        &self,
+        source: &CompiledSourceExecutionPlan,
+        ordinal: usize,
+        partition: &PartitionPlan,
+    ) -> Result<ScheduledPartition> {
+        source.validate()?;
+        let expected_admission =
+            PartitionAdmissionTemplate::compile(&source.execution_capabilities)?;
+        if self.admission != expected_admission {
+            return Err(CdfError::data(
+                "partition schedule admission differs from its compiled source execution plan",
+            ));
+        }
+        let binding = match &self.authority {
+            PartitionScheduleAuthority::Inline { partitions } => {
+                let binding = partitions.get(ordinal).ok_or_else(|| {
+                    CdfError::contract("partition schedule does not cover the requested ordinal")
+                })?;
+                if &binding.partition != partition {
+                    return Err(CdfError::contract(
+                        "partition schedule plan differs from the executable scan partition",
+                    ));
+                }
+                binding.clone()
+            }
+            PartitionScheduleAuthority::External { planned_task_set } => {
+                if u64::try_from(ordinal)
+                    .map_or(true, |ordinal| ordinal >= planned_task_set.task_count)
+                {
+                    return Err(CdfError::contract(
+                        "external partition ordinal exceeds its planned task-set authority",
+                    ));
+                }
+                compile_partition_binding(source, &self.schedule_identity_hash, ordinal, partition)?
+            }
+        };
+        if binding.ordinal.get() as usize != ordinal {
+            return Err(CdfError::data(
+                "partition schedule contains a stale canonical ordinal",
+            ));
+        }
+        let retry = compile_partition_retry(
+            &source.execution_capabilities,
+            binding.partition.retry_safety,
+        )?;
+        Ok(ScheduledPartition {
+            ordinal: binding.ordinal,
+            partition: binding.partition,
+            immutable_identity_hash: binding.immutable_identity_hash,
+            schedule_identity_hash: self.schedule_identity_hash.clone(),
+            minimum_working_set_bytes: self.admission.minimum_working_set_bytes,
+            maximum_working_set_bytes: self.admission.maximum_working_set_bytes,
+            executor_class: self.admission.executor_class,
+            retry,
+            rate_limit: self.admission.rate_limit,
+            quota_authority: self.admission.quota_authority.clone(),
+            speculative_safe: self.admission.speculative_safe,
+            canonical_order: self.admission.canonical_order,
+            bounded_source: self.admission.bounded_source,
+        })
+    }
+
+    pub fn contains_runtime_binding(&self, ordinal: u32, schedule_identity_hash: &str) -> bool {
+        schedule_identity_hash == self.schedule_identity_hash
+            && u64::from(ordinal) < self.partition_count()
     }
 
     pub fn validate_against_scan(
@@ -127,99 +276,45 @@ impl CanonicalPartitionSchedule {
         scan: &ScanPlan,
         source: &CompiledSourceExecutionPlan,
     ) -> Result<()> {
-        source.validate()?;
-        if self.plan_id != scan.plan_id.as_str() || self.partitions.len() != scan.partitions.len() {
+        let expected = Self::compile(source, scan)?;
+        if self != &expected {
             return Err(CdfError::data(
-                "partition schedule does not match its scan plan identity or partition count",
+                "partition schedule differs from its scan or compiled source execution plan",
             ));
-        }
-        for (ordinal, (scheduled, partition)) in
-            self.partitions.iter().zip(&scan.partitions).enumerate()
-        {
-            if usize::try_from(scheduled.ordinal.get()).ok() != Some(ordinal)
-                || &scheduled.partition != partition
-                || scheduled.minimum_working_set_bytes == 0
-                || scheduled.maximum_working_set_bytes < scheduled.minimum_working_set_bytes
-            {
-                return Err(CdfError::data(
-                    "partition schedule contains stale ordinal, partition, or working-set evidence",
-                ));
-            }
-            let expected_identity = artifact_hash(&serde_json::json!({
-                "driver": source.driver,
-                "physical_plan_hash": source.physical_plan_hash,
-                "partition": partition,
-            }))?;
-            let expected_retry =
-                compile_partition_retry(&source.execution_capabilities, partition.retry_safety)?;
-            if scheduled.immutable_identity_hash != expected_identity
-                || scheduled.minimum_working_set_bytes
-                    != source
-                        .execution_capabilities
-                        .minimum_poll_bytes
-                        .checked_add(source.execution_capabilities.minimum_decode_bytes)
-                        .ok_or_else(|| {
-                            CdfError::contract("source minimum working set overflowed u64")
-                        })?
-                || scheduled.maximum_working_set_bytes
-                    != source
-                        .execution_capabilities
-                        .maximum_poll_bytes
-                        .checked_add(source.execution_capabilities.maximum_decode_bytes)
-                        .ok_or_else(|| {
-                            CdfError::contract("source maximum working set overflowed u64")
-                        })?
-                || scheduled.executor_class != source.execution_capabilities.executor_class
-                || scheduled.retry != expected_retry
-                || scheduled.rate_limit != source.execution_capabilities.rate_limit
-                || scheduled.quota_authority != source.execution_capabilities.quota_authority
-                || scheduled.speculative_safe != source.execution_capabilities.speculative_safe
-                || scheduled.canonical_order != source.execution_capabilities.canonical_order
-                || scheduled.bounded_source != source.execution_capabilities.bounded
-            {
-                return Err(CdfError::data(
-                    "partition schedule widens or differs from its compiled source execution plan",
-                ));
-            }
-            validate_partition_retry_binding(partition.retry_safety, scheduled.retry.as_ref())?;
         }
         Ok(())
     }
 }
 
-fn validate_partition_retry_binding(
-    partition_safety: PartitionRetrySafety,
-    retry: Option<&CompiledSourceRetry>,
-) -> Result<()> {
-    let Some(retry) = retry else {
-        return if partition_safety == PartitionRetrySafety::Forbidden {
-            Ok(())
-        } else {
-            Err(CdfError::data(
-                "retry-safe partition schedule omitted its compiled retry policy",
-            ))
-        };
-    };
-    retry.validate()?;
-    let expected_attestation = match partition_safety {
-        PartitionRetrySafety::Forbidden => {
-            return Err(CdfError::data(
-                "retry-forbidden partition schedule contains a compiled retry policy",
-            ));
-        }
-        PartitionRetrySafety::ImmutableContent => {
-            crate::SourceAttestationStrength::ImmutableContent
-        }
-        PartitionRetrySafety::Snapshot => crate::SourceAttestationStrength::Snapshot,
-    };
-    if retry.granularity != crate::SourceRetryGranularity::Partition
-        || retry.attestation != expected_attestation
-    {
-        return Err(CdfError::data(
-            "partition schedule retry granularity or attestation exceeds its planned safety proof",
-        ));
-    }
-    Ok(())
+fn schedule_identity_hash(source: &CompiledSourceExecutionPlan, scan: &ScanPlan) -> Result<String> {
+    artifact_hash(&serde_json::json!({
+        "driver": source.driver,
+        "physical_plan_hash": source.physical_plan_hash,
+        "plan_id": scan.plan_id,
+        "partitions": scan.partitions,
+        "planned_task_set": scan.planned_task_set,
+    }))
+}
+
+fn compile_partition_binding(
+    source: &CompiledSourceExecutionPlan,
+    schedule_identity_hash: &str,
+    ordinal: usize,
+    partition: &PartitionPlan,
+) -> Result<CanonicalPartitionBinding> {
+    let ordinal = u32::try_from(ordinal)
+        .map_err(|_| CdfError::contract("scan plan partition count exceeds u32 ordinals"))?;
+    let immutable_identity_hash = artifact_hash(&serde_json::json!({
+        "driver": source.driver,
+        "physical_plan_hash": source.physical_plan_hash,
+        "schedule_identity_hash": schedule_identity_hash,
+        "partition": partition,
+    }))?;
+    Ok(CanonicalPartitionBinding {
+        ordinal: CanonicalPartitionOrdinal::new(ordinal),
+        partition: partition.clone(),
+        immutable_identity_hash,
+    })
 }
 
 fn compile_partition_retry(

@@ -26,8 +26,8 @@ use cdf_expression::{
     bind_filter_expressions, expression_transform_output_schema,
 };
 use cdf_kernel::{
-    Batch, CdfError, CompositePosition, ExecutionExtent, PHYSICAL_TYPE_METADATA_KEY,
-    PLAN_PHYSICAL_SCHEMA_HASH_KEY, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
+    Batch, CdfError, CompositePosition, ExecutablePartition, ExecutionExtent,
+    PHYSICAL_TYPE_METADATA_KEY, PLAN_PHYSICAL_SCHEMA_HASH_KEY, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
     PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation, PartitionPlan,
     PhysicalObservationRepresentation, PreContractObservedValue, PreContractQuarantineFact,
     PreContractResidualCandidate, ProcessedObservationOutcome, ProcessedObservationPosition,
@@ -2458,7 +2458,7 @@ struct PartitionOpenEvidence {
 #[derive(Clone)]
 struct PartitionOpenMetadata {
     ordinal: usize,
-    partition: cdf_kernel::PartitionPlan,
+    partition: ExecutablePartition,
     evidence: PartitionOpenEvidence,
 }
 
@@ -2477,7 +2477,7 @@ struct PartitionOpenRuntime {
 fn open_partition<'a, R>(
     resource: &'a R,
     ordinal: usize,
-    partition: cdf_kernel::PartitionPlan,
+    partition: ExecutablePartition,
     terminal_quarantine: bool,
     plan_id: String,
     scheduled: Option<cdf_runtime::ScheduledPartition>,
@@ -2536,7 +2536,7 @@ where
                     Ok(None) => {
                         let error = CdfError::data(format!(
                             "retry of partition `{}` requires source reattestation before reopen",
-                            partition.partition_id
+                            partition.plan().partition_id
                         ));
                         schedule_partition_retry(
                             retry_state.as_mut().expect("retry state exists"),
@@ -2565,7 +2565,7 @@ where
             } else {
                 None
             };
-            let mut opening = resource.open(partition.clone());
+            let mut opening = resource.open_executable(partition.clone());
             match cancellation.await_or_cancel(&mut opening).await {
                 Ok(mut stream) => {
                     let first_batch = if let Some(retry_state) = retry_state.as_mut() {
@@ -2721,13 +2721,13 @@ where
 
 async fn attest_partition_with_terminal_join<R>(
     resource: &R,
-    partition: &cdf_kernel::PartitionPlan,
+    partition: &ExecutablePartition,
     cancellation: &cdf_runtime::RunCancellation,
 ) -> Result<Option<cdf_kernel::PartitionAttestation>>
 where
     R: ResourceStream + ?Sized,
 {
-    let mut attempt = resource.attest_partition(partition.clone());
+    let mut attempt = resource.attest_executable(partition.clone());
     match cancellation.await_or_cancel(&mut attempt).await {
         Ok(attestation) => Ok(attestation),
         Err(error) if cancellation.is_cancelled() => match attempt.terminate_and_join().await {
@@ -2853,46 +2853,70 @@ fn retry_exhausted_error(
 
 fn scheduled_partition(
     schedule: Option<&cdf_runtime::CanonicalPartitionSchedule>,
+    source: Option<&cdf_runtime::CompiledSourceExecutionPlan>,
     ordinal: usize,
     partition: &PartitionPlan,
 ) -> Result<Option<cdf_runtime::ScheduledPartition>> {
     let Some(schedule) = schedule else {
         return Ok(None);
     };
-    let scheduled = schedule.partitions.get(ordinal).ok_or_else(|| {
-        CdfError::contract("partition schedule does not cover every scan partition")
+    let source = source.ok_or_else(|| {
+        CdfError::contract("partition schedule requires compiled source execution authority")
     })?;
-    if usize::try_from(scheduled.ordinal.get()).ok() != Some(ordinal)
-        || &scheduled.partition != partition
-    {
-        return Err(CdfError::contract(
-            "partition schedule ordinal or plan differs from the executable scan partition",
-        ));
+    schedule
+        .scheduled_partition(source, ordinal, partition)
+        .map(Some)
+}
+
+enum ExecutablePartitionPlans {
+    Inline(Vec<PartitionPlan>),
+    External(Box<dyn cdf_kernel::PlannedPartitionReader>),
+}
+
+impl ExecutablePartitionPlans {
+    fn next(&mut self, ordinal: usize) -> Result<ExecutablePartition> {
+        match self {
+            Self::Inline(partitions) => partitions
+                .get(ordinal)
+                .cloned()
+                .map(ExecutablePartition::inline)
+                .ok_or_else(|| {
+                    CdfError::internal("source frontier requested an absent partition ordinal")
+                }),
+            Self::External(reader) => reader
+                .next_partition(
+                    u64::try_from(ordinal)
+                        .map_err(|_| CdfError::data("external partition ordinal exceeds u64"))?,
+                )?
+                .ok_or_else(|| {
+                    CdfError::data(
+                        "external planned task set ended before its recorded partition count",
+                    )
+                }),
+        }
     }
-    Ok(Some(scheduled.clone()))
 }
 
 fn source_partition_opener<'a, R>(
     resource: &'a R,
-    partitions: Vec<cdf_kernel::PartitionPlan>,
+    mut partitions: ExecutablePartitionPlans,
     effective_schema_evidence: Option<&'a EffectiveSchemaPlanEvidence>,
     schedule: Option<&'a cdf_runtime::CanonicalPartitionSchedule>,
+    compiled_source: Option<&'a cdf_runtime::CompiledSourceExecutionPlan>,
     open_runtime: PartitionOpenRuntime,
 ) -> cdf_runtime::SourcePartitionOpener<'a, PartitionOpenMetadata>
 where
     R: ResourceStream + ?Sized,
 {
     Box::new(move |ordinal, cancellation| {
-        let partition = partitions.get(ordinal).cloned().ok_or_else(|| {
-            CdfError::internal("source frontier requested an absent partition ordinal")
-        })?;
+        let partition = partitions.next(ordinal)?;
         let terminal = effective_schema_evidence
-            .map(|evidence| partition_schema_disposition(&partition, evidence))
+            .map(|evidence| partition_schema_disposition(partition.plan(), evidence))
             .transpose()?
             .is_some_and(|disposition| {
                 matches!(disposition, PartitionSchemaDisposition::Quarantined(_))
             });
-        let scheduled = scheduled_partition(schedule, ordinal, &partition)?;
+        let scheduled = scheduled_partition(schedule, compiled_source, ordinal, partition.plan())?;
         let mut partition_runtime = open_runtime.clone();
         partition_runtime.cancellation = cancellation;
         Ok(open_partition(
@@ -2907,23 +2931,18 @@ where
     })
 }
 
-fn source_frontier_batch_bounds(plan: &EnginePlan, partition_count: usize) -> Result<Vec<u64>> {
-    if partition_count == 0 {
-        return Ok(Vec::new());
-    }
+fn source_frontier_batch_bound(plan: &EnginePlan, partition_count: usize) -> Result<u64> {
     let schedule = plan.partition_schedule.as_ref().ok_or_else(|| {
         CdfError::contract("package execution requires a compiled partition schedule")
     })?;
-    if schedule.partitions.len() != partition_count {
+    if partition_count != 0
+        && usize::try_from(schedule.partition_count()).ok() != Some(partition_count)
+    {
         return Err(CdfError::contract(
             "source frontier schedule does not cover every executable partition",
         ));
     }
-    if schedule
-        .partitions
-        .iter()
-        .any(|partition| partition.maximum_working_set_bytes == 0)
-    {
+    if schedule.admission.maximum_working_set_bytes == 0 {
         return Err(CdfError::contract(
             "source frontier partition requires a nonzero working-set bound",
         ));
@@ -2940,11 +2959,14 @@ fn source_frontier_batch_bounds(plan: &EnginePlan, partition_count: usize) -> Re
     // (transport poll plus decode). The frontier retains only the decoded batch crossing the
     // source edge, so reserving the schedule total here double-counts transport memory and can
     // make a valid single-partition schedule impossible to execute under the same ledger.
-    Ok(vec![maximum_batch_bytes; partition_count])
+    Ok(maximum_batch_bytes)
 }
 
 pub(crate) fn partition_open_jobs(plan: &EnginePlan, options: &EngineExecutionOptions) -> usize {
-    let partition_count = plan.scan.partitions.len();
+    let partition_count = plan.partition_schedule.as_ref().map_or_else(
+        || plan.scan.partitions.len(),
+        |schedule| usize::try_from(schedule.partition_count()).unwrap_or(usize::MAX),
+    );
     if partition_count <= 1 {
         return partition_count.max(1);
     }
@@ -3012,12 +3034,13 @@ where
     plan.validate_compiled_expression_plan()?;
     plan.validate_partition_schedule()?;
     plan.validate_compiled_source_resource(resource)?;
+    let planned_partition_count = usize::try_from(plan.scan.partition_count()?)
+        .map_err(|_| CdfError::data("scan partition count exceeds this process address space"))?;
     if let Some(scheduler) = &options.scheduler {
         let source = plan.compiled_source_execution.as_ref().ok_or_else(|| {
             CdfError::contract("package execution requires a compiled source execution plan")
         })?;
-        scheduler
-            .validate_for_source(plan.scan.partitions.len(), source.execution_capabilities())?;
+        scheduler.validate_for_source(planned_partition_count, source.execution_capabilities())?;
     }
     let validation_program = plan.validation_program.clone();
     validate_program(&validation_program)?;
@@ -3201,16 +3224,23 @@ where
     let frontier_partition_count = if partition_jobs == 0 {
         0
     } else {
-        plan.scan.partitions.len()
+        planned_partition_count
+    };
+    let executable_partitions = match &plan.scan.planned_task_set {
+        Some(reference) => {
+            ExecutablePartitionPlans::External(resource.planned_partition_reader(reference)?)
+        }
+        None => ExecutablePartitionPlans::Inline(plan.scan.partitions.clone()),
     };
     let source_opener = source_partition_opener(
         resource,
-        plan.scan.partitions.clone(),
+        executable_partitions,
         effective_schema_evidence,
         plan.partition_schedule.as_ref(),
+        plan.compiled_source_execution.as_ref(),
         partition_open_runtime,
     );
-    let source_batch_bounds = source_frontier_batch_bounds(plan, frontier_partition_count)?;
+    let source_batch_bound = source_frontier_batch_bound(plan, frontier_partition_count)?;
     let source_batch_memory = plan
         .compiled_source_execution
         .as_ref()
@@ -3222,7 +3252,7 @@ where
         frontier_partition_count,
         partition_jobs.max(1),
         source_opener,
-        source_batch_bounds,
+        source_batch_bound,
         memory.clone(),
         source_batch_memory,
         run_cancellation.clone(),
@@ -6549,25 +6579,36 @@ fn partition_schema_disposition(
     partition: &cdf_kernel::PartitionPlan,
     evidence: &EffectiveSchemaPlanEvidence,
 ) -> Result<PartitionSchemaDisposition> {
-    let observation_id = partition
-        .metadata
-        .get(PLAN_SCHEMA_OBSERVATION_ID_KEY)
-        .ok_or_else(|| {
-            CdfError::data("effective-schema partition omitted its observation identity")
-        })?;
-    let expected_binding = evidence
-        .observation_bindings
-        .get(observation_id)
-        .ok_or_else(|| {
-            CdfError::data(format!(
-                "effective-schema evidence omitted source identity binding for observation {observation_id:?}"
-            ))
-        })?;
-    validate_plan_metadata(
-        partition,
-        PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
-        expected_binding,
-    )?;
+    let observation_id = cdf_kernel::partition_schema_observation_id(partition);
+    let expected_binding = evidence.observation_bindings.get(observation_id);
+    if let Some(expected_binding) = expected_binding {
+        validate_plan_metadata(
+            partition,
+            PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
+            expected_binding,
+        )?;
+    } else if evidence.authority.observation(observation_id).is_some()
+        || evidence
+            .terminal_quarantines
+            .binary_search_by(|item| item.observation_id().cmp(observation_id))
+            .is_ok()
+    {
+        return Err(CdfError::data(format!(
+            "effective-schema evidence omitted source identity binding for known observation {observation_id:?}"
+        )));
+    } else {
+        if partition.metadata.keys().any(|key| {
+            matches!(
+                key.as_str(),
+                PLAN_SCHEMA_OBSERVATION_BINDING_KEY | PLAN_PHYSICAL_SCHEMA_HASH_KEY
+            )
+        }) {
+            return Err(CdfError::data(format!(
+                "unobserved schema candidate {observation_id:?} carries spoofed pre-observation evidence"
+            )));
+        }
+        return Ok(PartitionSchemaDisposition::Unobserved);
+    }
     if let Some(quarantine) = evidence
         .terminal_quarantines
         .binary_search_by(|item| item.observation_id().cmp(observation_id))

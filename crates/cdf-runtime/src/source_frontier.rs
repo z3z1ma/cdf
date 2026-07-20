@@ -66,7 +66,7 @@ pub struct CanonicalSourceFrontier<'a, M> {
     partition_count: usize,
     maximum_active: usize,
     opener: SourcePartitionOpener<'a, M>,
-    maximum_batch_bytes: Vec<u64>,
+    maximum_batch_bytes: u64,
     memory: Option<Arc<dyn MemoryCoordinator>>,
     batch_memory: crate::SourceBatchMemoryContract,
     cancellation: RunCancellation,
@@ -94,7 +94,7 @@ impl<'a, M: Send + 'a> CanonicalSourceFrontier<'a, M> {
         partition_count: usize,
         maximum_active: usize,
         opener: SourcePartitionOpener<'a, M>,
-        maximum_batch_bytes: Vec<u64>,
+        maximum_batch_bytes: u64,
         memory: Option<Arc<dyn MemoryCoordinator>>,
         batch_memory: crate::SourceBatchMemoryContract,
         cancellation: RunCancellation,
@@ -104,9 +104,9 @@ impl<'a, M: Send + 'a> CanonicalSourceFrontier<'a, M> {
                 "canonical source frontier requires nonzero active capacity",
             ));
         }
-        if maximum_batch_bytes.len() != partition_count || maximum_batch_bytes.contains(&0) {
+        if maximum_batch_bytes == 0 {
             return Err(CdfError::contract(
-                "canonical source frontier requires one nonzero batch bound per partition",
+                "canonical source frontier requires a nonzero retained-batch bound",
             ));
         }
         if maximum_active > 1 && memory.is_none() {
@@ -425,7 +425,7 @@ impl<'a, M: Send + 'a> CanonicalSourceFrontier<'a, M> {
         reservation: Option<cdf_memory::MemoryLease>,
     ) {
         let cancellation = self.cancellation.clone();
-        let maximum_batch_bytes = self.maximum_batch_bytes[ordinal];
+        let maximum_batch_bytes = self.maximum_batch_bytes;
         let memory = self.memory.clone();
         let batch_memory = self.batch_memory;
         self.pending.push(Box::pin(async move {
@@ -533,7 +533,7 @@ impl<'a, M: Send + 'a> CanonicalSourceFrontier<'a, M> {
         }
         let current = self.current.take().expect("current source was checked");
         let head_reservation = reserve_frontier_poll(
-            self.maximum_batch_bytes[ordinal],
+            self.maximum_batch_bytes,
             self.memory.clone(),
             self.batch_memory,
             self.cancellation.clone(),
@@ -1073,7 +1073,7 @@ mod tests {
             2,
             2,
             opener,
-            vec![1024; 2],
+            1024,
             Some(memory),
             crate::SourceBatchMemoryContract::Preaccounted,
             RunCancellation::default(),
@@ -1225,7 +1225,7 @@ mod tests {
             2,
             2,
             opener,
-            vec![1024, 1024],
+            1024,
             Some(memory_authority),
             crate::SourceBatchMemoryContract::FrontierReserved,
             RunCancellation::default(),
@@ -1325,7 +1325,7 @@ mod tests {
             3,
             2,
             opener,
-            vec![1024; 3],
+            1024,
             Some(memory_authority),
             crate::SourceBatchMemoryContract::FrontierReserved,
             RunCancellation::default(),
@@ -1380,7 +1380,7 @@ mod tests {
             4,
             2,
             opener,
-            vec![1024; 4],
+            1024,
             Some(memory),
             crate::SourceBatchMemoryContract::FrontierReserved,
             RunCancellation::default(),
@@ -1428,7 +1428,7 @@ mod tests {
             3,
             3,
             opener,
-            vec![1024; 3],
+            1024,
             Some(memory),
             crate::SourceBatchMemoryContract::FrontierReserved,
             RunCancellation::default(),
@@ -1466,7 +1466,7 @@ mod tests {
             3,
             3,
             opener,
-            vec![1024; 3],
+            1024,
             Some(memory),
             crate::SourceBatchMemoryContract::FrontierReserved,
             RunCancellation::default(),
@@ -1536,7 +1536,7 @@ mod tests {
             2,
             2,
             opener,
-            vec![1024, 1024],
+            1024,
             Some(memory_authority),
             crate::SourceBatchMemoryContract::FrontierReserved,
             RunCancellation::default(),

@@ -21,6 +21,7 @@ use crate::{
         PartitionId, PlanId, PredicateId, ResourceId, SchemaHash,
     },
     position::{FilePosition, SourcePosition},
+    retention::PayloadRetention,
     scope::{ScopeKey, ScopeKind},
 };
 
@@ -798,6 +799,60 @@ pub struct ScanPlan {
     pub estimated_rows: Option<u64>,
     pub estimated_bytes: Option<u64>,
     pub delivery_guarantee: DeliveryGuarantee,
+}
+
+/// Invocation-local, bounded reader for one external canonical partition authority.
+///
+/// High-cardinality sources use this seam to translate their portable task records into ordinary
+/// [`PartitionPlan`] values one canonical ordinal at a time. The engine remains opaque to the
+/// task encoding, while the source remains unable to bypass the normal partition scheduler,
+/// retry, attestation, schema-admission, and package paths.
+pub trait PlannedPartitionReader: Send {
+    /// Returns exactly the requested canonical partition, or `None` only at verified end-of-set.
+    ///
+    /// Calls are strictly increasing from zero. Implementations MUST reject skipped, repeated, or
+    /// reordered ordinals and MUST retain no unbounded history of decoded tasks.
+    fn next_partition(&mut self, expected_ordinal: u64) -> Result<Option<ExecutablePartition>>;
+}
+
+/// One ordinary partition plan paired with source-private, ledger-owned invocation state.
+///
+/// The opaque retention is never serialized or hashed into plan/package identity. It exists only
+/// to carry already-decoded task authority through bounded scheduler lookahead without copying it
+/// into generic metadata or forcing a second task-store read. Adapters recover their own type at
+/// `open_executable`; all generic code remains limited to the canonical `PartitionPlan`.
+#[derive(Clone, Debug)]
+pub struct ExecutablePartition {
+    plan: PartitionPlan,
+    retention: Option<PayloadRetention>,
+}
+
+impl ExecutablePartition {
+    pub fn inline(plan: PartitionPlan) -> Self {
+        Self {
+            plan,
+            retention: None,
+        }
+    }
+
+    pub fn retained(plan: PartitionPlan, retention: PayloadRetention) -> Self {
+        Self {
+            plan,
+            retention: Some(retention),
+        }
+    }
+
+    pub fn plan(&self) -> &PartitionPlan {
+        &self.plan
+    }
+
+    pub fn into_plan(self) -> PartitionPlan {
+        self.plan
+    }
+
+    pub fn retention(&self) -> Option<&PayloadRetention> {
+        self.retention.as_ref()
+    }
 }
 
 pub const PLANNED_TASK_SET_REFERENCE_VERSION: u16 = 1;
@@ -1862,6 +1917,20 @@ pub trait ResourceStream: Send + Sync {
         Ok(())
     }
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>>;
+    /// Opens the source-owned decoder for an external canonical partition authority.
+    ///
+    /// Generic orchestration calls this only when `ScanPlan::planned_task_set` is present. The
+    /// returned reader is invocation-local because task artifacts are sequential, integrity-
+    /// checked streams; sharing one across runs would make ordering and cancellation ambiguous.
+    fn planned_partition_reader(
+        &self,
+        _reference: &PlannedTaskSetReference,
+    ) -> Result<Box<dyn PlannedPartitionReader>> {
+        Err(CdfError::contract(format!(
+            "resource `{}` uses an external planned task set but its source adapter does not provide a partition reader",
+            self.descriptor().resource_id
+        )))
+    }
     /// Rebinds a recorded partition set to the last committed resource frontier before any
     /// partition is opened. The default covers the ubiquitous single-partition stream and a
     /// composite frontier keyed exactly by partition id; adapters with another partition-local
@@ -1918,11 +1987,19 @@ pub trait ResourceStream: Send + Sync {
     /// Generic orchestration can therefore cancel and await producer shutdown even when
     /// cancellation wins before the opened stream becomes visible.
     fn open(&self, partition: PartitionPlan) -> PartitionOpenAttempt<'_>;
+    /// Opens a runtime-materialized partition. Inline sources inherit the ordinary `open` path;
+    /// external-task sources override this to recover their private retained task state.
+    fn open_executable(&self, partition: ExecutablePartition) -> PartitionOpenAttempt<'_> {
+        self.open(partition.into_plan())
+    }
     /// Revalidates a planned observation without opening its payload and returns
     /// the exact source position safe to mark processed. Adapters with mutable
     /// external identity MUST override this method.
     fn attest_partition(&self, _partition: PartitionPlan) -> PartitionAttestationAttempt<'_> {
         PartitionAttestationAttempt::materialized(Box::pin(async { Ok(None) }))
+    }
+    fn attest_executable(&self, partition: ExecutablePartition) -> PartitionAttestationAttempt<'_> {
+        self.attest_partition(partition.into_plan())
     }
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
         None

@@ -1084,6 +1084,7 @@ mod tests {
                 metadata: BTreeMap::new(),
             },
             immutable_identity_hash: "sha256:fixture".to_owned(),
+            schedule_identity_hash: "sha256:schedule-fixture".to_owned(),
             minimum_working_set_bytes: 1,
             maximum_working_set_bytes: 1,
             executor_class: cdf_runtime::SourceExecutorClass::Io,
@@ -1102,7 +1103,25 @@ mod tests {
         };
         let schedule = cdf_runtime::CanonicalPartitionSchedule {
             plan_id: "plan-recorder-source-retry".to_owned(),
-            partitions: vec![scheduled.clone()],
+            schedule_identity_hash: scheduled.schedule_identity_hash.clone(),
+            admission: cdf_runtime::PartitionAdmissionTemplate {
+                minimum_working_set_bytes: scheduled.minimum_working_set_bytes,
+                maximum_working_set_bytes: scheduled.maximum_working_set_bytes,
+                executor_class: scheduled.executor_class,
+                retry: scheduled.retry.clone(),
+                rate_limit: scheduled.rate_limit,
+                quota_authority: scheduled.quota_authority.clone(),
+                speculative_safe: scheduled.speculative_safe,
+                canonical_order: scheduled.canonical_order,
+                bounded_source: scheduled.bounded_source,
+            },
+            authority: cdf_runtime::PartitionScheduleAuthority::Inline {
+                partitions: vec![cdf_runtime::CanonicalPartitionBinding {
+                    ordinal: scheduled.ordinal,
+                    partition: scheduled.partition.clone(),
+                    immutable_identity_hash: scheduled.immutable_identity_hash.clone(),
+                }],
+            },
         };
         let journal = cdf_runtime::SourceRetryJournal::default();
         journal
