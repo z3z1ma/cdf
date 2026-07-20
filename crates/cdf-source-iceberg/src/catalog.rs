@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, io::Read, sync::Arc};
 
 use arrow_schema::{DataType, FieldRef, Schema};
 use cdf_http::{
@@ -17,6 +17,7 @@ use cdf_runtime::{
     ExecutionServices, RunCancellation, SequentialReadRequest, SourceEgressScope, artifact_hash,
 };
 use futures_util::TryStreamExt;
+use flate2::read::GzDecoder;
 use iceberg::spec::{FormatVersion, NestedField, Snapshot, TableMetadata};
 use serde::Deserialize;
 
@@ -629,20 +630,19 @@ fn build_loaded_table(
 ) -> Result<LoadedIcebergTable> {
     validate_metadata_location(&observation.metadata_location)?;
     let metadata_payload = observation.payloads.last();
-    let raw_bytes = observation
-        .payloads
-        .iter()
-        .try_fold(0_u64, |total, payload| {
-            total
-                .checked_add(u64::try_from(payload.payload().len()).unwrap_or(u64::MAX))
-                .ok_or_else(|| CdfError::data("Iceberg metadata byte count overflowed"))
-        })?;
-    let parse_input_bytes = if observation.metadata_json.is_some() {
-        metadata_payload.map_or(0, |payload| {
+    let parse_input_bytes = match (&observation.metadata_json, metadata_payload) {
+        (Some(_), Some(payload)) => {
             u64::try_from(payload.payload().len()).unwrap_or(u64::MAX)
-        })
-    } else {
-        raw_bytes
+        }
+        (Some(_), None) => 0,
+        (None, Some(payload)) => metadata_json_size(
+            &observation.metadata_location,
+            payload.payload(),
+            request.source.maximum_metadata_bytes,
+        )?,
+        (None, None) => {
+            return Err(CdfError::internal("Iceberg metadata payload is absent"));
+        }
     };
     let parse_lease = reserve_parse_memory(
         context.execution.memory(),
@@ -654,9 +654,7 @@ fn build_loaded_table(
         || {
             let metadata_payload = metadata_payload
                 .ok_or_else(|| CdfError::internal("Iceberg metadata payload is absent"))?;
-            serde_json::from_slice(metadata_payload.payload()).map_err(|error| {
-                CdfError::data(format!("decode Iceberg table metadata JSON: {error}"))
-            })
+            decode_metadata_json(&observation.metadata_location, metadata_payload.payload())
         },
         Ok,
     )?;
@@ -735,6 +733,44 @@ fn validate_metadata_location(location: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn metadata_json_size(location: &str, payload: &[u8], maximum_bytes: u64) -> Result<u64> {
+    if !is_gzip_metadata_location(location) {
+        return u64::try_from(payload.len())
+            .map_err(|_| CdfError::data("Iceberg metadata JSON length exceeds u64"));
+    }
+    let maximum_plus_one = maximum_bytes
+        .checked_add(1)
+        .ok_or_else(|| CdfError::contract("maximum_metadata_bytes cannot equal u64::MAX"))?;
+    let mut decoder = GzDecoder::new(payload);
+    let mut bounded = decoder.by_ref().take(maximum_plus_one);
+    let expanded = std::io::copy(&mut bounded, &mut std::io::sink())
+        .map_err(|error| CdfError::data(format!("decode gzip Iceberg table metadata: {error}")))?;
+    if expanded == 0 || expanded > maximum_bytes {
+        return Err(CdfError::data(format!(
+            "gzip Iceberg table metadata expands to {expanded} bytes outside the configured 1..={maximum_bytes} byte budget"
+        )));
+    }
+    Ok(expanded)
+}
+
+fn decode_metadata_json(location: &str, payload: &[u8]) -> Result<serde_json::Value> {
+    if is_gzip_metadata_location(location) {
+        serde_json::from_reader(GzDecoder::new(payload)).map_err(|error| {
+            CdfError::data(format!(
+                "decode gzip Iceberg table metadata JSON: {error}"
+            ))
+        })
+    } else {
+        serde_json::from_slice(payload).map_err(|error| {
+            CdfError::data(format!("decode Iceberg table metadata JSON: {error}"))
+        })
+    }
+}
+
+fn is_gzip_metadata_location(location: &str) -> bool {
+    location_name(location).ends_with(".gz.metadata.json")
 }
 
 fn select_snapshot(
@@ -1129,10 +1165,8 @@ fn location_name(location: &str) -> &str {
 
 fn metadata_file_version(location: &str) -> Option<u64> {
     let name = location_name(location);
-    if !name.ends_with(".metadata.json") {
-        return None;
-    }
-    let prefix = name.trim_end_matches(".metadata.json");
+    let prefix = name.strip_suffix(".metadata.json")?;
+    let prefix = prefix.strip_suffix(".gz").unwrap_or(prefix);
     let digits = prefix
         .strip_prefix('v')
         .and_then(|value| value.split('-').next())
@@ -1305,7 +1339,17 @@ fn http_catalog_error(status: u16) -> CdfError {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
+    use flate2::{Compression, write::GzEncoder};
+
     use super::*;
+
+    fn gzip(payload: &[u8]) -> Vec<u8> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(payload).unwrap();
+        encoder.finish().unwrap()
+    }
 
     #[test]
     fn rest_endpoint_uses_iceberg_namespace_encoding() {
@@ -1375,10 +1419,13 @@ mod tests {
         let selected = select_latest_metadata_file(vec![
             identity("/table/metadata/v1.metadata.json"),
             identity("/table/metadata/00002-a.metadata.json"),
-            identity("/table/metadata/v2.metadata.json"),
+            identity("/table/metadata/v2.gz.metadata.json"),
         ])
         .unwrap();
-        assert_eq!(selected.location, "/table/metadata/v2.metadata.json");
+        assert_eq!(
+            selected.location,
+            "/table/metadata/v2.gz.metadata.json"
+        );
 
         let identities = vec![
             identity("/table/metadata/v1.metadata.json"),
@@ -1389,5 +1436,22 @@ mod tests {
         assert_eq!(selected.location, "/table/metadata/v2.metadata.json");
         assert_eq!(parse_version_hint(b" 2\n").unwrap(), 2);
         assert!(parse_version_hint(b"v2").is_err());
+    }
+
+    #[test]
+    fn gzip_metadata_is_bounded_decoded_and_crc_checked() {
+        let json = br#"{"format-version":2,"table-uuid":"abc"}"#;
+        let payload = gzip(json);
+        let location = "/table/metadata/v7.gz.metadata.json";
+        assert_eq!(metadata_json_size(location, &payload, 1024).unwrap(), 39);
+        assert_eq!(
+            decode_metadata_json(location, &payload).unwrap(),
+            serde_json::json!({"format-version": 2, "table-uuid": "abc"})
+        );
+        assert!(metadata_json_size(location, &payload, 38).is_err());
+
+        let mut corrupt = payload;
+        *corrupt.last_mut().unwrap() ^= 0xff;
+        assert!(metadata_json_size(location, &corrupt, 1024).is_err());
     }
 }

@@ -1568,6 +1568,7 @@ dependencies = [
  "cdf-object-access",
  "cdf-runtime",
  "cdf-task-store",
+ "flate2",
  "futures-util",
  "hex",
  "iceberg",

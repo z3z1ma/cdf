@@ -18,6 +18,7 @@ cdf-object-access = { path = "../cdf-object-access" }
 cdf-runtime = { path = "../cdf-runtime" }
 cdf-task-store = { path = "../cdf-task-store" }
 futures-util = "0.3.32"
+flate2 = "1.1.9"
 hex = "0.4.3"
 iceberg = { git = "https://github.com/apache/iceberg-rust.git", rev = "db4f6091850814b83989721afe12aa9e4406d6b3" }
 serde = { version = "1.0.228", features = ["derive"] }

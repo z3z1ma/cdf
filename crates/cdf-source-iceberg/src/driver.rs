@@ -611,6 +611,7 @@ mod tests {
     use std::{
         collections::{BTreeMap, VecDeque},
         fs,
+        io::Write,
         path::Path,
         sync::{Arc, Mutex},
         time::Duration,
@@ -633,6 +634,7 @@ mod tests {
         SpillBudgetCoordinator, TaskScopeReport,
     };
     use cdf_task_store::ExternalTaskStore;
+    use flate2::{Compression, write::GzEncoder};
     use iceberg::{
         io::FileIO,
         spec::{
@@ -1199,6 +1201,45 @@ mod tests {
             )
             .unwrap();
         assert_eq!(sink.0[0].status, SourceHealthStatus::Passed);
+    }
+
+    #[test]
+    fn filesystem_discovery_reads_bounded_gzip_table_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let table = root.path().join("analytics/events");
+        let metadata = table.join("metadata");
+        fs::create_dir_all(&metadata).unwrap();
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(&empty_table_metadata(&table)).unwrap();
+        fs::write(
+            metadata.join("v1.gz.metadata.json"),
+            encoder.finish().unwrap(),
+        )
+        .unwrap();
+        fs::write(metadata.join("version-hint.text"), "1\n").unwrap();
+
+        let execution = execution_services();
+        let driver = filesystem_driver();
+        let plan = driver.compile(compile_request(root.path())).unwrap();
+        let context = SourceResolutionContext::new(
+            root.path(),
+            Arc::new(NoopSecretProvider),
+            &execution,
+            Arc::new(cdf_http::EgressAllowlist::allow_any()),
+        );
+        let session = driver.discovery_session(&plan, &context).unwrap();
+        let candidate = session.candidates().unwrap().remove(0);
+        let observation = session
+            .observe(
+                &candidate,
+                &SourceDiscoveryRequest::new(64 * 1024 * 1024, 1).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(observation.schema.fields().len(), 2);
+        assert_eq!(
+            observation.source_identity["catalog_generation"],
+            "hadoop-version:1"
+        );
     }
 
     #[test]
