@@ -20,85 +20,110 @@ pub enum LateDataPayloadLocation {
     },
 }
 
-/// Identity-bearing evidence for one row observed behind the effective global watermark.
+/// Row-local portion of identity-bearing late-data evidence.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "UncheckedLateDataRecord", deny_unknown_fields)]
-pub struct LateDataRecord {
+#[serde(deny_unknown_fields)]
+pub struct LateDataRowEvidence {
     pub source_row_ordinal: u64,
+    pub event_time: WatermarkValue,
+    pub payload: LateDataPayloadLocation,
+}
+
+/// One source-batch observation. Common authority is stored once rather than cloned per late row.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "UncheckedLateDataBatchEvidence", deny_unknown_fields)]
+pub struct LateDataBatchEvidence {
     pub partition_id: PartitionId,
     pub source_position: Option<SourcePosition>,
-    pub event_time: WatermarkValue,
     pub effective_watermark: WatermarkClaim,
     pub action: LateDataAction,
-    pub payload: LateDataPayloadLocation,
+    pub rows: Vec<LateDataRowEvidence>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct UncheckedLateDataRecord {
-    source_row_ordinal: u64,
+struct UncheckedLateDataBatchEvidence {
     partition_id: PartitionId,
     source_position: Option<SourcePosition>,
-    event_time: WatermarkValue,
     effective_watermark: WatermarkClaim,
     action: LateDataAction,
-    payload: LateDataPayloadLocation,
+    rows: Vec<LateDataRowEvidence>,
 }
 
-impl TryFrom<UncheckedLateDataRecord> for LateDataRecord {
+impl TryFrom<UncheckedLateDataBatchEvidence> for LateDataBatchEvidence {
     type Error = cdf_kernel::CdfError;
 
-    fn try_from(value: UncheckedLateDataRecord) -> Result<Self, Self::Error> {
-        let record = Self {
-            source_row_ordinal: value.source_row_ordinal,
+    fn try_from(value: UncheckedLateDataBatchEvidence) -> Result<Self, Self::Error> {
+        let evidence = Self {
             partition_id: value.partition_id,
             source_position: value.source_position,
-            event_time: value.event_time,
             effective_watermark: value.effective_watermark,
             action: value.action,
-            payload: value.payload,
+            rows: value.rows,
         };
-        record.validate()?;
-        Ok(record)
+        evidence.validate()?;
+        Ok(evidence)
     }
 }
 
-impl LateDataRecord {
+impl LateDataBatchEvidence {
     pub fn validate(&self) -> cdf_kernel::Result<()> {
         self.effective_watermark.validate()?;
         if let Some(position) = &self.source_position {
             position.validate()?;
         }
-        if !self
-            .effective_watermark
-            .domain
-            .matches_value(&self.event_time)
-        {
+        if self.partition_id != self.effective_watermark.partition_id {
             return Err(cdf_kernel::CdfError::data(
-                "late-data event time does not match its watermark domain",
+                "late-data batch partition does not match its watermark authority",
             ));
         }
-        if !self
-            .effective_watermark
-            .classifies_as_late(&self.event_time)?
-        {
-            return Err(cdf_kernel::CdfError::data(
-                "late-data event time is not behind its effective watermark",
+        if self.rows.is_empty() {
+            return Err(cdf_kernel::CdfError::contract(
+                "late-data batch evidence requires at least one row",
             ));
         }
-        match (&self.action, &self.payload) {
-            (
-                LateDataAction::AdmitWithAnnotation,
-                LateDataPayloadLocation::AdmittedOutput { .. },
-            )
-            | (
-                LateDataAction::Quarantine | LateDataAction::RecaptureNextEpoch,
-                LateDataPayloadLocation::ArtifactRow { .. },
-            ) => Ok(()),
-            _ => Err(cdf_kernel::CdfError::data(
-                "late-data action does not match its payload location",
-            )),
+        let mut previous_source_row = None;
+        for row in &self.rows {
+            if previous_source_row.is_some_and(|previous| previous >= row.source_row_ordinal) {
+                return Err(cdf_kernel::CdfError::contract(
+                    "late-data row evidence must use strictly increasing source ordinals",
+                ));
+            }
+            if !self
+                .effective_watermark
+                .domain
+                .matches_value(&row.event_time)
+            {
+                return Err(cdf_kernel::CdfError::data(
+                    "late-data event time does not match its watermark domain",
+                ));
+            }
+            if !self
+                .effective_watermark
+                .classifies_as_late(&row.event_time)?
+            {
+                return Err(cdf_kernel::CdfError::data(
+                    "late-data event time is not behind its effective watermark",
+                ));
+            }
+            match (&self.action, &row.payload) {
+                (
+                    LateDataAction::AdmitWithAnnotation,
+                    LateDataPayloadLocation::AdmittedOutput { .. },
+                )
+                | (
+                    LateDataAction::Quarantine | LateDataAction::RecaptureNextEpoch,
+                    LateDataPayloadLocation::ArtifactRow { .. },
+                ) => {}
+                _ => {
+                    return Err(cdf_kernel::CdfError::data(
+                        "late-data action does not match its payload location",
+                    ));
+                }
+            }
+            previous_source_row = Some(row.source_row_ordinal);
         }
+        Ok(())
     }
 }
 
@@ -106,14 +131,14 @@ impl LateDataRecord {
 #[serde(try_from = "UncheckedLateDataEvidence", deny_unknown_fields)]
 pub struct LateDataEvidence {
     pub version: u16,
-    pub records: Vec<LateDataRecord>,
+    pub batches: Vec<LateDataBatchEvidence>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct UncheckedLateDataEvidence {
     version: u16,
-    records: Vec<LateDataRecord>,
+    batches: Vec<LateDataBatchEvidence>,
 }
 
 impl TryFrom<UncheckedLateDataEvidence> for LateDataEvidence {
@@ -122,7 +147,7 @@ impl TryFrom<UncheckedLateDataEvidence> for LateDataEvidence {
     fn try_from(value: UncheckedLateDataEvidence) -> Result<Self, Self::Error> {
         let evidence = Self {
             version: value.version,
-            records: value.records,
+            batches: value.batches,
         };
         evidence.validate()?;
         Ok(evidence)
@@ -130,10 +155,10 @@ impl TryFrom<UncheckedLateDataEvidence> for LateDataEvidence {
 }
 
 impl LateDataEvidence {
-    pub fn new(records: Vec<LateDataRecord>) -> cdf_kernel::Result<Self> {
+    pub fn new(batches: Vec<LateDataBatchEvidence>) -> cdf_kernel::Result<Self> {
         let evidence = Self {
             version: LATE_DATA_EVIDENCE_VERSION,
-            records,
+            batches,
         };
         evidence.validate()?;
         Ok(evidence)
@@ -146,8 +171,8 @@ impl LateDataEvidence {
                 self.version
             )));
         }
-        for record in &self.records {
-            record.validate()?;
+        for batch in &self.batches {
+            batch.validate()?;
         }
         Ok(())
     }
@@ -161,39 +186,41 @@ impl LateDataEvidence {
         if let Some(catalog) = catalog {
             catalog.validate()?;
         }
-        for record in &self.records {
-            match record.payload {
-                LateDataPayloadLocation::AdmittedOutput {
-                    package_row_ordinal,
-                } => {
-                    if package_row_ordinal >= output_row_count {
-                        return Err(cdf_kernel::CdfError::data(
-                            "late-data admitted-output ordinal exceeds package row authority",
-                        ));
+        for batch in &self.batches {
+            for row in &batch.rows {
+                match row.payload {
+                    LateDataPayloadLocation::AdmittedOutput {
+                        package_row_ordinal,
+                    } => {
+                        if package_row_ordinal >= output_row_count {
+                            return Err(cdf_kernel::CdfError::data(
+                                "late-data admitted-output ordinal exceeds package row authority",
+                            ));
+                        }
                     }
-                }
-                LateDataPayloadLocation::ArtifactRow {
-                    artifact_ordinal,
-                    row_ordinal,
-                } => {
-                    let artifact = catalog
-                        .and_then(|catalog| {
-                            usize::try_from(artifact_ordinal)
-                                .ok()
-                                .and_then(|ordinal| catalog.artifacts.get(ordinal))
-                        })
-                        .ok_or_else(|| {
-                            cdf_kernel::CdfError::data(
-                                "late-data evidence references a missing payload artifact",
-                            )
-                        })?;
-                    if artifact.artifact_ordinal != artifact_ordinal
-                        || artifact.action != record.action
-                        || row_ordinal >= artifact.row_count
-                    {
-                        return Err(cdf_kernel::CdfError::data(
-                            "late-data evidence payload reference exceeds its artifact authority",
-                        ));
+                    LateDataPayloadLocation::ArtifactRow {
+                        artifact_ordinal,
+                        row_ordinal,
+                    } => {
+                        let artifact = catalog
+                            .and_then(|catalog| {
+                                usize::try_from(artifact_ordinal)
+                                    .ok()
+                                    .and_then(|ordinal| catalog.artifacts.get(ordinal))
+                            })
+                            .ok_or_else(|| {
+                                cdf_kernel::CdfError::data(
+                                    "late-data evidence references a missing payload artifact",
+                                )
+                            })?;
+                        if artifact.artifact_ordinal != artifact_ordinal
+                            || artifact.action != batch.action
+                            || row_ordinal >= artifact.row_count
+                        {
+                            return Err(cdf_kernel::CdfError::data(
+                                "late-data evidence payload reference exceeds its artifact authority",
+                            ));
+                        }
                     }
                 }
             }
@@ -305,12 +332,10 @@ mod tests {
         }
     }
 
-    fn record(action: LateDataAction, payload: LateDataPayloadLocation) -> LateDataRecord {
-        LateDataRecord {
-            source_row_ordinal: 4,
+    fn batch(action: LateDataAction, payload: LateDataPayloadLocation) -> LateDataBatchEvidence {
+        LateDataBatchEvidence {
             partition_id: PartitionId::new("partition-0").unwrap(),
             source_position: None,
-            event_time: WatermarkValue::Signed(10),
             effective_watermark: WatermarkClaim {
                 version: WATERMARK_CLAIM_VERSION,
                 policy_version: STREAM_EPOCH_POLICY_VERSION,
@@ -327,7 +352,11 @@ mod tests {
                 observation_context: WatermarkObservationContext::SourcePoll,
             },
             action,
-            payload,
+            rows: vec![LateDataRowEvidence {
+                source_row_ordinal: 4,
+                event_time: WatermarkValue::Signed(10),
+                payload,
+            }],
         }
     }
 
@@ -366,7 +395,7 @@ mod tests {
 
     #[test]
     fn evidence_deserialization_and_payload_join_fail_closed() {
-        let admitted = record(
+        let admitted = batch(
             LateDataAction::AdmitWithAnnotation,
             LateDataPayloadLocation::AdmittedOutput {
                 package_row_ordinal: 1,
@@ -380,7 +409,7 @@ mod tests {
         wrong_version["version"] = serde_json::json!(2);
         assert!(serde_json::from_value::<LateDataEvidence>(wrong_version).is_err());
 
-        let mismatched = record(
+        let mismatched = batch(
             LateDataAction::Quarantine,
             LateDataPayloadLocation::AdmittedOutput {
                 package_row_ordinal: 0,
@@ -388,7 +417,7 @@ mod tests {
         );
         assert!(mismatched.validate().is_err());
 
-        let quarantined = LateDataEvidence::new(vec![record(
+        let quarantined = LateDataEvidence::new(vec![batch(
             LateDataAction::Quarantine,
             LateDataPayloadLocation::ArtifactRow {
                 artifact_ordinal: 0,

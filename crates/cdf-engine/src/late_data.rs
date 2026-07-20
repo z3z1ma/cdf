@@ -9,13 +9,13 @@ use cdf_kernel::{
     CdfError, EventTimeDomain, LateDataAction, PartitionId, Result, SourcePosition, WatermarkClaim,
     WatermarkValue,
 };
-use cdf_package_contract::{LateDataPayloadLocation, LateDataRecord};
+use cdf_package_contract::{LateDataBatchEvidence, LateDataPayloadLocation, LateDataRowEvidence};
 
 pub(crate) struct LateDataClassification {
     pub(crate) admitted: RecordBatch,
     pub(crate) recaptured: Option<RecordBatch>,
     pub(crate) quarantined: Option<RecordBatch>,
-    pub(crate) records: Vec<LateDataRecord>,
+    pub(crate) evidence: Option<LateDataBatchEvidence>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -54,25 +54,29 @@ pub(crate) fn classify_late_data(
         )));
     }
 
-    let (late, records) = classify_array(
+    let (late, rows) = classify_array(
         values.as_ref(),
         &watermark.domain,
         &watermark.value,
         source_rows,
-        watermark,
         action,
-        partition_id,
-        source_position,
         source_row_base,
         package_row_ord_base,
     )?;
 
-    if records.is_empty() || action == LateDataAction::AdmitWithAnnotation {
+    let evidence = (!rows.is_empty()).then(|| LateDataBatchEvidence {
+        partition_id: partition_id.clone(),
+        source_position: source_position.cloned(),
+        effective_watermark: watermark.clone(),
+        action,
+        rows,
+    });
+    if evidence.is_none() || action == LateDataAction::AdmitWithAnnotation {
         return Ok(LateDataClassification {
             admitted: batch,
             recaptured: None,
             quarantined: None,
-            records,
+            evidence,
         });
     }
 
@@ -89,23 +93,19 @@ pub(crate) fn classify_late_data(
         admitted,
         recaptured,
         quarantined,
-        records,
+        evidence,
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn classify_array(
     array: &dyn Array,
     domain: &EventTimeDomain,
     watermark_value: &WatermarkValue,
     source_rows: &[usize],
-    watermark: &WatermarkClaim,
     action: LateDataAction,
-    partition_id: &PartitionId,
-    source_position: Option<&SourcePosition>,
     source_row_base: u64,
     package_row_ord_base: Option<u64>,
-) -> Result<(Vec<bool>, Vec<LateDataRecord>)> {
+) -> Result<(Vec<bool>, Vec<LateDataRowEvidence>)> {
     macro_rules! classify {
         ($array:ty, $threshold:expr, $map:expr, $variant:path) => {{
             let values = downcast::<$array>(array)?;
@@ -113,10 +113,7 @@ fn classify_array(
                 values.iter().map(|value| Ok(value.map($map))),
                 $threshold,
                 source_rows,
-                watermark,
                 action,
-                partition_id,
-                source_position,
                 source_row_base,
                 package_row_ord_base,
                 $variant,
@@ -163,10 +160,7 @@ fn classify_array(
                     values.iter().map(Ok),
                     *threshold,
                     source_rows,
-                    watermark,
                     action,
-                    partition_id,
-                    source_position,
                     source_row_base,
                     package_row_ord_base,
                     WatermarkValue::Decimal,
@@ -194,10 +188,7 @@ fn classify_array(
                     }),
                     *threshold,
                     source_rows,
-                    watermark,
                     action,
-                    partition_id,
-                    source_position,
                     source_row_base,
                     package_row_ord_base,
                     WatermarkValue::Decimal,
@@ -257,26 +248,22 @@ fn classify_array(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn classify_ordered_values<I, T, F>(
     values: I,
     threshold: T,
     source_rows: &[usize],
-    watermark: &WatermarkClaim,
     action: LateDataAction,
-    partition_id: &PartitionId,
-    source_position: Option<&SourcePosition>,
     source_row_base: u64,
     package_row_ord_base: Option<u64>,
     to_watermark: F,
-) -> Result<(Vec<bool>, Vec<LateDataRecord>)>
+) -> Result<(Vec<bool>, Vec<LateDataRowEvidence>)>
 where
     I: Iterator<Item = Result<Option<T>>>,
     T: Copy + Ord,
     F: Fn(T) -> WatermarkValue,
 {
     let mut late = Vec::with_capacity(source_rows.len());
-    let mut records = Vec::new();
+    let mut rows = Vec::new();
     for (row, value) in values.enumerate() {
         let value = value?;
         let is_late = value.is_some_and(|value| value < threshold);
@@ -304,13 +291,13 @@ where
                 LateDataAction::Quarantine | LateDataAction::RecaptureNextEpoch => {
                     LateDataPayloadLocation::ArtifactRow {
                         artifact_ordinal: u64::MAX,
-                        row_ordinal: u64::try_from(records.len()).map_err(|_| {
+                        row_ordinal: u64::try_from(rows.len()).map_err(|_| {
                             CdfError::data("late-data payload row ordinal exceeds u64")
                         })?,
                     }
                 }
             };
-            records.push(LateDataRecord {
+            rows.push(LateDataRowEvidence {
                 source_row_ordinal: source_row_base
                     .checked_add(
                         u64::try_from(source_row).map_err(|_| {
@@ -318,11 +305,7 @@ where
                         })?,
                     )
                     .ok_or_else(|| CdfError::data("late-data source row ordinal overflow"))?,
-                partition_id: partition_id.clone(),
-                source_position: source_position.cloned(),
                 event_time: to_watermark(value.expect("late values are non-null")),
-                effective_watermark: watermark.clone(),
-                action,
                 payload,
             });
         }
@@ -332,7 +315,7 @@ where
             "late-data value count differs from source-row tracking",
         ));
     }
-    Ok((late, records))
+    Ok((late, rows))
 }
 
 fn downcast<T: Array + 'static>(array: &dyn Array) -> Result<&T> {
@@ -384,11 +367,12 @@ mod tests {
                 Some(100),
             )
             .unwrap();
-            assert_eq!(result.records.len(), 1);
-            assert_eq!(result.records[0].source_row_ordinal, 10);
+            let evidence = result.evidence.as_ref().unwrap();
+            assert_eq!(evidence.rows.len(), 1);
+            assert_eq!(evidence.rows[0].source_row_ordinal, 10);
             if action == LateDataAction::AdmitWithAnnotation {
                 assert_eq!(
-                    result.records[0].payload,
+                    evidence.rows[0].payload,
                     LateDataPayloadLocation::AdmittedOutput {
                         package_row_ordinal: 100,
                     }
@@ -460,7 +444,7 @@ mod tests {
                 Some(0),
             )
             .unwrap();
-            assert!(classified.records.is_empty());
+            assert!(classified.evidence.is_none());
             assert_eq!(classified.admitted.num_rows(), row_count);
         }
         let elapsed = started.elapsed();

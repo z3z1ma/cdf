@@ -3184,10 +3184,15 @@ fn late_rows_are_quarantined_or_admitted_with_identity_evidence() {
             &std::fs::read(second_dir.join(cdf_package_contract::LATE_DATA_EVIDENCE_FILE)).unwrap(),
         )
         .unwrap();
-        assert_eq!(evidence.records.len(), 1);
-        assert_eq!(evidence.records[0].event_time, WatermarkValue::Signed(10));
+        assert_eq!(evidence.batches.len(), 1);
+        let evidence_batch = &evidence.batches[0];
+        assert_eq!(evidence_batch.rows.len(), 1);
         assert_eq!(
-            evidence.records[0].effective_watermark.value,
+            evidence_batch.rows[0].event_time,
+            WatermarkValue::Signed(10)
+        );
+        assert_eq!(
+            evidence_batch.effective_watermark.value,
             WatermarkValue::Signed(20)
         );
         let package = cdf_package::PackageReader::open(&second_dir).unwrap();
@@ -3212,7 +3217,7 @@ fn late_rows_are_quarantined_or_admitted_with_identity_evidence() {
                 assert_eq!(catalog.artifacts[0].action, action);
                 assert_eq!(catalog.artifacts[0].row_count, 1);
                 assert!(matches!(
-                    evidence.records[0].payload,
+                    evidence_batch.rows[0].payload,
                     LateDataPayloadLocation::ArtifactRow {
                         artifact_ordinal: 0,
                         row_ordinal: 0,
@@ -3246,7 +3251,7 @@ fn late_rows_are_quarantined_or_admitted_with_identity_evidence() {
                 assert_eq!(second.output.profile.output_rows, 1);
                 assert!(quarantine.is_empty());
                 assert!(matches!(
-                    evidence.records[0].payload,
+                    evidence_batch.rows[0].payload,
                     LateDataPayloadLocation::AdmittedOutput {
                         package_row_ordinal: 0
                     }
@@ -3264,7 +3269,7 @@ fn late_rows_are_quarantined_or_admitted_with_identity_evidence() {
                 assert_eq!(catalog.artifacts.len(), 1);
                 assert_eq!(catalog.artifacts[0].action, action);
                 assert!(matches!(
-                    evidence.records[0].payload,
+                    evidence_batch.rows[0].payload,
                     LateDataPayloadLocation::ArtifactRow {
                         artifact_ordinal: 0,
                         row_ordinal: 0,
@@ -3424,13 +3429,7 @@ fn run_fixed_drain_epochs_with_jobs(jobs: u16) -> (Vec<FixedDrainEpochEvidence>,
     }
     batches.insert(
         0,
-        batch_for_partition(
-            "batch-idle",
-            "part-0",
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        ),
+        batch_for_partition("batch-idle", "part-0", Vec::new(), Vec::new(), Vec::new()),
     );
     for (ordinal, batch) in batches.iter_mut().enumerate() {
         let source_position = SourcePosition::FileManifest(FileManifest {
@@ -3566,9 +3565,10 @@ fn run_fixed_drain_epochs_with_jobs(jobs: u16) -> (Vec<FixedDrainEpochEvidence>,
         .unwrap();
         let drain = output.drain_epoch.as_ref().unwrap();
         observed_global_watermark |= drain.closure.frontier.watermark.is_some();
-        observed_source_idleness |= drain.partition_watermarks.iter().any(|state| {
-            state.partition_id.as_str() == "part-0" && state.idleness.is_some()
-        });
+        observed_source_idleness |= drain
+            .partition_watermarks
+            .iter()
+            .any(|state| state.partition_id.as_str() == "part-0" && state.idleness.is_some());
         maximum_active = maximum_active.max(output.source_frontier.maximum_active);
         outputs.push((
             output.output.manifest.package_hash.clone(),
