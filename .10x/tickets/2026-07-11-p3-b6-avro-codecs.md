@@ -1,4 +1,4 @@
-Status: active
+Status: blocked
 Created: 2026-07-11
 Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-10-p3-ws-b-format-decode-engines.md
@@ -71,6 +71,12 @@ No network schema registry client.
   `cargo deny` and `cargo audit` are green; `cargo vet` admits every Avro addition
   but remains red solely on the independently committed Iceberg git dependency,
   whose supply-chain admission is outside this ticket.
+- 2026-07-18: Audited C5 before claiming it as the resource-containment fix.
+  C5 is a serialized authority/equivalence boundary whose local host executes in
+  process; it does not impose an allocator or CPU fence around dependency-owned
+  decode. Upstream `arrow-avro` 58.3.0 exposes no decompression or nested-value
+  limit. The ticket therefore moves to `blocked` instead of laundering C5 into
+  closure evidence or adding a destination/source-specific subprocess workaround.
 
 ## Evidence
 
