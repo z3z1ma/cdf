@@ -241,6 +241,93 @@ impl StatisticsArrowField {
 }
 
 impl StatisticsArrowType {
+    /// Converts one Arrow data type into the canonical statistics declaration used by package
+    /// evidence. Consumers use this to validate recorded field evidence without importing an
+    /// engine-specific type system.
+    pub fn from_arrow_data_type(data_type: &DataType) -> Result<Self> {
+        Self::from_arrow(data_type)
+    }
+
+    /// Validates persisted bounds against the canonical Arrow type and completeness contract.
+    /// Package readers and future pruning adapters share this authority so corrupt evidence can
+    /// never become permission to skip data.
+    pub fn validate_bounds(
+        &self,
+        row_count: u64,
+        null_count: u64,
+        completeness: &StatisticsCompleteness,
+        minimum: Option<&TypedScalar>,
+        maximum: Option<&TypedScalar>,
+    ) -> Result<()> {
+        if null_count > row_count {
+            return Err(CdfError::data("statistics null count exceeds row count"));
+        }
+        if matches!(completeness, StatisticsCompleteness::Incomplete { .. }) {
+            if minimum.is_some() || maximum.is_some() {
+                return Err(CdfError::data(
+                    "incomplete statistics cannot carry minimum or maximum bounds",
+                ));
+            }
+            return Ok(());
+        }
+
+        let non_null_count = row_count - null_count;
+        if non_null_count == 0 {
+            if minimum.is_some() || maximum.is_some() {
+                return Err(CdfError::data(
+                    "all-null statistics cannot carry minimum or maximum bounds",
+                ));
+            }
+            return Ok(());
+        }
+        let minimum = minimum.ok_or_else(|| {
+            CdfError::data("complete non-null statistics require a minimum bound")
+        })?;
+        let maximum = maximum.ok_or_else(|| {
+            CdfError::data("complete non-null statistics require a maximum bound")
+        })?;
+        if !self.accepts_scalar(minimum) || !self.accepts_scalar(maximum) {
+            return Err(CdfError::data(
+                "statistics bound scalar kind does not match its Arrow type",
+            ));
+        }
+        let ordering = scalar_cmp(minimum, maximum).ok_or_else(|| {
+            CdfError::data("statistics minimum and maximum scalar kinds do not match")
+        })?;
+        if ordering == Ordering::Greater {
+            return Err(CdfError::data(
+                "statistics minimum bound exceeds its maximum bound",
+            ));
+        }
+        Ok(())
+    }
+
+    fn accepts_scalar(&self, scalar: &TypedScalar) -> bool {
+        matches!(
+            (self, scalar),
+            (Self::Boolean, TypedScalar::Boolean(_))
+                | (
+                    Self::Int { signed: true, .. }
+                        | Self::Timestamp { .. }
+                        | Self::Date { .. }
+                        | Self::Time { .. }
+                        | Self::Duration { .. },
+                    TypedScalar::Signed(_)
+                )
+                | (Self::Int { signed: false, .. }, TypedScalar::Unsigned(_))
+                | (Self::Float { bits: 32 }, TypedScalar::Float32Bits(_))
+                | (Self::Float { bits: 64 }, TypedScalar::Float64Bits(_))
+                | (Self::Decimal { bits: 32, .. }, TypedScalar::Decimal32(_))
+                | (Self::Decimal { bits: 64, .. }, TypedScalar::Decimal64(_))
+                | (Self::Decimal { bits: 128, .. }, TypedScalar::Decimal128(_))
+                | (Self::Utf8 { .. } | Self::Utf8View, TypedScalar::Utf8(_))
+                | (
+                    Self::Binary { .. } | Self::FixedSizeBinary { .. } | Self::BinaryView,
+                    TypedScalar::Binary(_)
+                )
+        )
+    }
+
     fn from_arrow(data_type: &DataType) -> Result<Self> {
         let time_unit = |unit: &TimeUnit| match unit {
             TimeUnit::Second => CanonicalArrowTimeUnit::Second,
@@ -1224,6 +1311,71 @@ mod tests {
                 reason: IncompleteStatisticsReason::UnsupportedType
             }
         ));
+    }
+
+    #[test]
+    fn persisted_bounds_reject_type_completeness_and_order_corruption() {
+        let signed = StatisticsArrowType::Int {
+            signed: true,
+            bits: 64,
+        };
+        signed
+            .validate_bounds(
+                3,
+                1,
+                &StatisticsCompleteness::Complete,
+                Some(&TypedScalar::Signed(-2)),
+                Some(&TypedScalar::Signed(10)),
+            )
+            .unwrap();
+
+        for (minimum, maximum, expected) in [
+            (
+                Some(TypedScalar::Unsigned(1)),
+                Some(TypedScalar::Unsigned(2)),
+                "scalar kind",
+            ),
+            (
+                Some(TypedScalar::Signed(10)),
+                Some(TypedScalar::Signed(-2)),
+                "exceeds",
+            ),
+        ] {
+            let error = signed
+                .validate_bounds(
+                    3,
+                    1,
+                    &StatisticsCompleteness::Complete,
+                    minimum.as_ref(),
+                    maximum.as_ref(),
+                )
+                .unwrap_err();
+            assert!(error.message.contains(expected), "{error}");
+        }
+
+        let error = signed
+            .validate_bounds(
+                3,
+                1,
+                &StatisticsCompleteness::Incomplete {
+                    reason: IncompleteStatisticsReason::UnsupportedType,
+                },
+                Some(&TypedScalar::Signed(-2)),
+                None,
+            )
+            .unwrap_err();
+        assert!(error.message.contains("incomplete statistics"), "{error}");
+
+        let error = signed
+            .validate_bounds(
+                3,
+                3,
+                &StatisticsCompleteness::Complete,
+                Some(&TypedScalar::Signed(-2)),
+                Some(&TypedScalar::Signed(10)),
+            )
+            .unwrap_err();
+        assert!(error.message.contains("all-null statistics"), "{error}");
     }
 
     #[test]

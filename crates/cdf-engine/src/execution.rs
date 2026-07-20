@@ -3608,7 +3608,7 @@ where
                 None => None,
             };
             let mut reader = arrow_ipc::reader::FileReader::try_new_buffered(
-                input.object.open_file()?,
+                input.object.open_verified_file()?,
                 None,
             )
             .map_err(CdfError::from)?;

@@ -1,5 +1,6 @@
 use std::{
     fs,
+    io::{self, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -210,8 +211,32 @@ impl VerifiedIdentityObject {
         &self.sha256
     }
 
-    pub fn open_file(&self) -> Result<std::fs::File> {
-        self.package_root.open_std_file(&self.relative_path)
+    /// Opens the retained capability after revalidating the exact identity bytes on the same
+    /// handle. Streaming consumers avoid whole-artifact buffering without weakening the
+    /// post-verification tamper check.
+    pub fn open_verified_file(&self) -> Result<std::fs::File> {
+        let mut file = self.package_root.open_std_file(&self.relative_path)?;
+        let mut hasher = Sha256::new();
+        let byte_count = io::copy(&mut file, &mut hasher).map_err(|error| {
+            io_error(
+                format!("hash verified identity artifact {}", self.relative_path),
+                error,
+            )
+        })?;
+        let sha256 = hex::encode(hasher.finalize());
+        if byte_count != self.byte_count || sha256 != self.sha256 {
+            return Err(CdfError::data(format!(
+                "identity artifact {} changed after package verification: expected {} bytes with sha256 {}, observed {byte_count} bytes with sha256 {sha256}",
+                self.relative_path, self.byte_count, self.sha256
+            )));
+        }
+        file.seek(SeekFrom::Start(0)).map_err(|error| {
+            io_error(
+                format!("rewind verified identity artifact {}", self.relative_path),
+                error,
+            )
+        })?;
+        Ok(file)
     }
 }
 
@@ -578,6 +603,13 @@ impl PackageReader {
             visitor(entry?)?;
         }
         Ok(())
+    }
+
+    pub(crate) fn identity_segment_stream(&self) -> Result<ManifestSegmentStream<std::fs::File>> {
+        Ok(ManifestSegmentStream::new(
+            self.package_root
+                .open_std_file(cdf_package_contract::MANIFEST_FILE)?,
+        ))
     }
 
     pub fn for_each_identity_file(

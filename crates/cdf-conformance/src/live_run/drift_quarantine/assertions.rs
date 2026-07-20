@@ -69,7 +69,13 @@ pub(super) fn assert_drift_quarantine_package_evidence(report: &ProjectRunReport
             .any(|rule| rule["change"] == "type_narrowing" && rule["verdict"] == "quarantine")
     );
 
-    let profile = reader.verified_statistics_profile(&verified).unwrap();
+    let mut profile = Vec::new();
+    reader
+        .for_each_verified_statistics_profile(&verified, &mut |row| {
+            profile.push(row);
+            Ok(())
+        })
+        .unwrap();
     assert!(profile.iter().any(|row| {
         row.grain == StatisticsProfileGrain::Package
             && row.row_count == 1

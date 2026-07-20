@@ -9,7 +9,7 @@ use cdf_kernel::{
     BatchStats, CdfError, IncompleteStatisticsReason, Result, STATISTICS_MODEL_VERSION,
     StatisticsArrowType, StatisticsCompleteness, TypedScalar,
 };
-use cdf_package_contract::FileEntry;
+use cdf_package_contract::{FileEntry, SegmentEntry};
 use parquet::{
     arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder},
     file::properties::WriterProperties,
@@ -121,12 +121,17 @@ impl StatisticsProfileWriter {
 }
 
 impl PackageReader {
-    pub fn verified_statistics_profile(
+    /// Visits profile rows in canonical order without retaining the artifact or manifest segment
+    /// set. Visited rows remain provisional until this method returns `Ok(())`, because a later
+    /// row or the end-of-stream completeness check can still invalidate the profile.
+    pub fn for_each_verified_statistics_profile(
         &self,
         verified: &VerifiedPackage,
-    ) -> Result<Vec<StatisticsProfileRow>> {
-        let bytes = self.verified_identity_bytes(verified, STATISTICS_PROFILE_FILE)?;
-        let mut reader = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(bytes))
+        visitor: &mut dyn FnMut(StatisticsProfileRow) -> Result<()>,
+    ) -> Result<()> {
+        let object =
+            self.verified_identity_object(Arc::new(verified.clone()), STATISTICS_PROFILE_FILE)?;
+        let mut reader = ParquetRecordBatchReaderBuilder::try_new(object.open_verified_file()?)
             .map_err(|error| {
                 CdfError::data(format!("open verified statistics profile Parquet: {error}"))
             })?
@@ -134,127 +139,285 @@ impl PackageReader {
             .map_err(|error| {
                 CdfError::data(format!("build verified statistics profile reader: {error}"))
             })?;
-        let mut rows = Vec::new();
+        let mut validator = StatisticsProfileValidator::new(self, verified)?;
         for batch in &mut reader {
             let batch = batch.map_err(|error| {
                 CdfError::data(format!(
                     "read verified statistics profile row group: {error}"
                 ))
             })?;
-            rows.extend(statistics_profile_rows(&batch)?);
+            visit_statistics_profile_rows(&batch, &mut |row| {
+                validator.accept(&row)?;
+                visitor(row)
+            })?;
         }
-        self.validate_statistics_profile_rows(&rows)?;
-        Ok(rows)
+        validator.finish()
+    }
+}
+
+struct StatisticsProfileValidator<'a> {
+    segments: crate::manifest_stream::ManifestSegmentStream<std::fs::File>,
+    manifest_segment_count: u64,
+    package_id: &'a str,
+    current_segment: Option<SegmentEntry>,
+    current_segment_ordinal: Option<u64>,
+    next_segment_ordinal: u64,
+    expected_segment_field: u32,
+    expected_package_field: u32,
+    runtime_schema: SchemaRef,
+    runtime_schema_field_count: u32,
+    manifest_row_count: u64,
+    profile_row_count: u64,
+    package_row_count: u64,
+    seen_package: bool,
+    schema_hash: Option<String>,
+    prior: Option<(StatisticsProfileGrain, u64, u32)>,
+}
+
+impl<'a> StatisticsProfileValidator<'a> {
+    fn new(reader: &'a PackageReader, verified: &VerifiedPackage) -> Result<Self> {
+        let runtime_schema = reader.runtime_arrow_schema_verified(verified)?;
+        let runtime_schema_field_count = u32::try_from(runtime_schema.fields().len())
+            .map_err(|_| CdfError::data("runtime Arrow schema field count exceeds u32"))?;
+        Ok(Self {
+            segments: reader.identity_segment_stream()?,
+            manifest_segment_count: reader.manifest().identity.segment_count,
+            package_id: &reader.manifest().identity.package_id,
+            current_segment: None,
+            current_segment_ordinal: None,
+            next_segment_ordinal: 0,
+            expected_segment_field: 0,
+            expected_package_field: 0,
+            runtime_schema,
+            runtime_schema_field_count,
+            manifest_row_count: 0,
+            profile_row_count: 0,
+            package_row_count: 0,
+            seen_package: false,
+            schema_hash: None,
+            prior: None,
+        })
     }
 
-    fn validate_statistics_profile_rows(&self, rows: &[StatisticsProfileRow]) -> Result<()> {
-        let mut manifest_segments = Vec::new();
-        self.for_each_identity_segment(&mut |segment| {
-            manifest_segments.push(segment);
-            Ok(())
-        })?;
-        if rows.is_empty() {
-            if manifest_segments.is_empty() {
+    fn accept(&mut self, row: &StatisticsProfileRow) -> Result<()> {
+        self.profile_row_count = self
+            .profile_row_count
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("statistics profile row count overflowed u64"))?;
+        if row.schema_hash.trim().is_empty() {
+            return Err(CdfError::data(
+                "statistics profile schema hash cannot be empty",
+            ));
+        }
+        match self.schema_hash.as_deref() {
+            Some(expected) if expected != row.schema_hash => {
+                return Err(CdfError::data(
+                    "statistics profile schema hash changed between rows",
+                ));
+            }
+            None => self.schema_hash = Some(row.schema_hash.clone()),
+            Some(_) => {}
+        }
+        row.data_type.validate_bounds(
+            row.row_count,
+            row.null_count,
+            &row.completeness,
+            row.minimum.as_ref(),
+            row.maximum.as_ref(),
+        )?;
+        self.validate_field(row)?;
+        if let Some((prior_grain, prior_container, prior_field)) = self.prior {
+            let ordered = match (prior_grain, row.grain) {
+                (StatisticsProfileGrain::Segment, StatisticsProfileGrain::Segment) => {
+                    (row.container_ordinal, row.field_ordinal) > (prior_container, prior_field)
+                }
+                (StatisticsProfileGrain::Segment, StatisticsProfileGrain::Package) => true,
+                (StatisticsProfileGrain::Package, StatisticsProfileGrain::Package) => {
+                    row.container_ordinal == 0 && row.field_ordinal > prior_field
+                }
+                (StatisticsProfileGrain::Package, StatisticsProfileGrain::Segment) => false,
+            };
+            if !ordered {
+                return Err(CdfError::data(
+                    "statistics profile rows are not in canonical grain/container/field order",
+                ));
+            }
+        }
+        self.prior = Some((row.grain, row.container_ordinal, row.field_ordinal));
+
+        match row.grain {
+            StatisticsProfileGrain::Segment => self.accept_segment(row),
+            StatisticsProfileGrain::Package => self.accept_package(row),
+        }
+    }
+
+    fn accept_segment(&mut self, row: &StatisticsProfileRow) -> Result<()> {
+        if self.seen_package {
+            return Err(CdfError::data(
+                "statistics profile segment row appears after package rows",
+            ));
+        }
+        if self.current_segment_ordinal != Some(row.container_ordinal) {
+            self.finish_segment_fields()?;
+            if row.container_ordinal != self.next_segment_ordinal {
+                return Err(CdfError::data(
+                    "statistics profile segment ordinals are not contiguous",
+                ));
+            }
+            let segment = self.segments.next().transpose()?.ok_or_else(|| {
+                CdfError::data(format!(
+                    "statistics profile references missing segment ordinal {}",
+                    row.container_ordinal
+                ))
+            })?;
+            self.manifest_row_count = self
+                .manifest_row_count
+                .checked_add(segment.row_count)
+                .ok_or_else(|| CdfError::data("statistics manifest row count overflowed u64"))?;
+            self.current_segment = Some(segment);
+            self.current_segment_ordinal = Some(row.container_ordinal);
+            self.next_segment_ordinal = self
+                .next_segment_ordinal
+                .checked_add(1)
+                .ok_or_else(|| CdfError::data("statistics segment ordinal overflowed u64"))?;
+            self.expected_segment_field = 0;
+        }
+        let segment = self
+            .current_segment
+            .as_ref()
+            .ok_or_else(|| CdfError::internal("statistics segment authority is absent"))?;
+        if row.container_id != segment.segment_id.as_str() {
+            return Err(CdfError::data(format!(
+                "statistics profile segment ordinal {} names {:?} but manifest names {:?}",
+                row.container_ordinal,
+                row.container_id,
+                segment.segment_id.as_str()
+            )));
+        }
+        if row.row_count != segment.row_count {
+            return Err(CdfError::data(format!(
+                "statistics profile segment {} row count {} differs from manifest {}",
+                segment.segment_id, row.row_count, segment.row_count
+            )));
+        }
+        if row.field_ordinal != self.expected_segment_field {
+            return Err(CdfError::data(
+                "statistics profile segment fields are not contiguous",
+            ));
+        }
+        self.expected_segment_field = self
+            .expected_segment_field
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("statistics profile field ordinal overflowed u32"))?;
+        Ok(())
+    }
+
+    fn accept_package(&mut self, row: &StatisticsProfileRow) -> Result<()> {
+        if !self.seen_package {
+            self.finish_segment_fields()?;
+            if let Some(extra) = self.segments.next().transpose()? {
+                return Err(CdfError::data(format!(
+                    "statistics profile omitted manifest segment {}",
+                    extra.segment_id
+                )));
+            }
+            if self.next_segment_ordinal != self.manifest_segment_count {
+                return Err(CdfError::data(format!(
+                    "statistics profile contains {} segments, expected {}",
+                    self.next_segment_ordinal, self.manifest_segment_count
+                )));
+            }
+            self.seen_package = true;
+        }
+        if row.container_ordinal != 0 || row.container_id != self.package_id {
+            return Err(CdfError::data(
+                "statistics profile package row does not bind the manifest package id",
+            ));
+        }
+        if row.row_count != self.manifest_row_count {
+            return Err(CdfError::data(format!(
+                "statistics profile package row count {} differs from manifest total {}",
+                row.row_count, self.manifest_row_count
+            )));
+        }
+        if row.field_ordinal != self.expected_package_field {
+            return Err(CdfError::data(
+                "statistics profile package fields are not contiguous",
+            ));
+        }
+        self.expected_package_field = self
+            .expected_package_field
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("statistics profile field ordinal overflowed u32"))?;
+        self.package_row_count = self
+            .package_row_count
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("statistics profile package row count overflowed u64"))?;
+        Ok(())
+    }
+
+    fn finish_segment_fields(&mut self) -> Result<()> {
+        if self.current_segment_ordinal.is_none() {
+            return Ok(());
+        }
+        if self.expected_segment_field != self.runtime_schema_field_count {
+            return Err(CdfError::data(format!(
+                "statistics profile segment has {} fields, expected {} from the runtime Arrow schema",
+                self.expected_segment_field, self.runtime_schema_field_count
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_field(&self, row: &StatisticsProfileRow) -> Result<()> {
+        let field_index = usize::try_from(row.field_ordinal)
+            .map_err(|_| CdfError::data("statistics profile field ordinal exceeds usize"))?;
+        let field = self
+            .runtime_schema
+            .fields()
+            .get(field_index)
+            .ok_or_else(|| {
+                CdfError::data(format!(
+                    "statistics profile references missing runtime schema field ordinal {}",
+                    row.field_ordinal
+                ))
+            })?;
+        if row.field_path.len() != 1 || row.field_path[0].as_ref() != field.name() {
+            return Err(CdfError::data(format!(
+                "statistics profile field ordinal {} path does not match runtime schema field {:?}",
+                row.field_ordinal,
+                field.name()
+            )));
+        }
+        let expected = StatisticsArrowType::from_arrow_data_type(field.data_type())?;
+        if row.data_type != expected {
+            return Err(CdfError::data(format!(
+                "statistics profile field ordinal {} Arrow type does not match the runtime schema",
+                row.field_ordinal
+            )));
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<()> {
+        if self.profile_row_count == 0 {
+            if self.manifest_segment_count == 0 {
                 return Ok(());
             }
             return Err(CdfError::data(
                 "statistics profile is empty for a package with data segments",
             ));
         }
-        let mut expected_segment = 0_u64;
-        let mut expected_field = 0_u32;
-        let mut seen_package = false;
-        let mut package_rows = 0_u64;
-        let mut prior: Option<(StatisticsProfileGrain, u64, u32)> = None;
-        for row in rows {
-            if let Some((prior_grain, prior_container, prior_field)) = prior {
-                let ordered = match (prior_grain, row.grain) {
-                    (StatisticsProfileGrain::Segment, StatisticsProfileGrain::Segment) => {
-                        (row.container_ordinal, row.field_ordinal) > (prior_container, prior_field)
-                    }
-                    (StatisticsProfileGrain::Segment, StatisticsProfileGrain::Package) => true,
-                    (StatisticsProfileGrain::Package, StatisticsProfileGrain::Package) => {
-                        row.container_ordinal == 0 && row.field_ordinal > prior_field
-                    }
-                    (StatisticsProfileGrain::Package, StatisticsProfileGrain::Segment) => false,
-                };
-                if !ordered {
-                    return Err(CdfError::data(
-                        "statistics profile rows are not in canonical grain/container/field order",
-                    ));
-                }
-            }
-            prior = Some((row.grain, row.container_ordinal, row.field_ordinal));
-            match row.grain {
-                StatisticsProfileGrain::Segment => {
-                    if seen_package {
-                        return Err(CdfError::data(
-                            "statistics profile segment row appears after package rows",
-                        ));
-                    }
-                    if row.container_ordinal != expected_segment {
-                        expected_segment = row.container_ordinal;
-                        expected_field = 0;
-                    }
-                    let segment = manifest_segments
-                        .get(usize::try_from(row.container_ordinal).map_err(|_| {
-                            CdfError::data("statistics profile segment ordinal exceeds usize")
-                        })?)
-                        .ok_or_else(|| {
-                            CdfError::data(format!(
-                                "statistics profile references missing segment ordinal {}",
-                                row.container_ordinal
-                            ))
-                        })?;
-                    if row.container_id != segment.segment_id.as_str() {
-                        return Err(CdfError::data(format!(
-                            "statistics profile segment ordinal {} names {:?} but manifest names {:?}",
-                            row.container_ordinal,
-                            row.container_id,
-                            segment.segment_id.as_str()
-                        )));
-                    }
-                    if row.row_count != segment.row_count {
-                        return Err(CdfError::data(format!(
-                            "statistics profile segment {} row count {} differs from manifest {}",
-                            segment.segment_id.as_str(),
-                            row.row_count,
-                            segment.row_count
-                        )));
-                    }
-                    if row.field_ordinal != expected_field {
-                        return Err(CdfError::data(
-                            "statistics profile segment fields are not contiguous",
-                        ));
-                    }
-                    expected_field = expected_field.checked_add(1).ok_or_else(|| {
-                        CdfError::data("statistics profile field ordinal overflow")
-                    })?;
-                }
-                StatisticsProfileGrain::Package => {
-                    seen_package = true;
-                    if row.container_ordinal != 0
-                        || row.container_id != self.manifest().identity.package_id
-                    {
-                        return Err(CdfError::data(
-                            "statistics profile package row does not bind the manifest package id",
-                        ));
-                    }
-                    package_rows = package_rows.checked_add(1).ok_or_else(|| {
-                        CdfError::data("statistics profile package row count overflow")
-                    })?;
-                }
-            }
-            if row.null_count > row.row_count {
-                return Err(CdfError::data(
-                    "statistics profile null count exceeds row count",
-                ));
-            }
-        }
-        if package_rows == 0 {
+        if !self.seen_package || self.package_row_count == 0 {
             return Err(CdfError::data(
                 "statistics profile requires package-grain rows",
             ));
+        }
+        if self.expected_package_field != self.runtime_schema_field_count {
+            return Err(CdfError::data(format!(
+                "statistics profile package has {} fields, expected {} from the runtime Arrow schema",
+                self.expected_package_field, self.runtime_schema_field_count
+            )));
         }
         Ok(())
     }
@@ -364,7 +527,10 @@ fn statistics_profile_batch(
     .map_err(CdfError::from)
 }
 
-fn statistics_profile_rows(batch: &RecordBatch) -> Result<Vec<StatisticsProfileRow>> {
+fn visit_statistics_profile_rows(
+    batch: &RecordBatch,
+    visitor: &mut dyn FnMut(StatisticsProfileRow) -> Result<()>,
+) -> Result<()> {
     if batch.schema().as_ref() != statistics_profile_schema().as_ref() {
         return Err(CdfError::data(
             "statistics profile Parquet schema does not match the current profile schema",
@@ -386,62 +552,61 @@ fn statistics_profile_rows(batch: &RecordBatch) -> Result<Vec<StatisticsProfileR
     let min = ScalarArrayColumns::from_batch(batch, 13)?;
     let max = ScalarArrayColumns::from_batch(batch, 20)?;
 
-    (0..batch.num_rows())
-        .map(|row| {
-            let version = required_value(version, row, "profile_version")?;
-            if version != STATISTICS_PROFILE_ARTIFACT_VERSION {
+    for row in 0..batch.num_rows() {
+        let version = required_value(version, row, "profile_version")?;
+        if version != STATISTICS_PROFILE_ARTIFACT_VERSION {
+            return Err(CdfError::data(format!(
+                "unsupported statistics profile artifact version {version}"
+            )));
+        }
+        let model_version = required_value(model_version, row, "statistics_model_version")?;
+        if model_version != STATISTICS_MODEL_VERSION {
+            return Err(CdfError::data(format!(
+                "unsupported statistics model version {model_version}"
+            )));
+        }
+        let completeness = match required_str(completeness, row, "completeness")? {
+            "complete" => {
+                if optional(incomplete_reason, row).is_some() {
+                    return Err(CdfError::data(
+                        "complete statistics profile row carried an incomplete reason",
+                    ));
+                }
+                StatisticsCompleteness::Complete
+            }
+            "incomplete" => StatisticsCompleteness::Incomplete {
+                reason: parse_incomplete_reason(optional(incomplete_reason, row)).ok_or_else(
+                    || CdfError::data("incomplete statistics profile row omitted its reason"),
+                )?,
+            },
+            other => {
                 return Err(CdfError::data(format!(
-                    "unsupported statistics profile artifact version {version}"
+                    "unknown statistics profile completeness {other:?}"
                 )));
             }
-            let model_version = required_value(model_version, row, "statistics_model_version")?;
-            if model_version != STATISTICS_MODEL_VERSION {
-                return Err(CdfError::data(format!(
-                    "unsupported statistics model version {model_version}"
-                )));
-            }
-            let completeness = match required_str(completeness, row, "completeness")? {
-                "complete" => {
-                    if optional(incomplete_reason, row).is_some() {
-                        return Err(CdfError::data(
-                            "complete statistics profile row carried an incomplete reason",
-                        ));
-                    }
-                    StatisticsCompleteness::Complete
-                }
-                "incomplete" => StatisticsCompleteness::Incomplete {
-                    reason: parse_incomplete_reason(optional(incomplete_reason, row)).ok_or_else(
-                        || CdfError::data("incomplete statistics profile row omitted its reason"),
-                    )?,
-                },
-                other => {
-                    return Err(CdfError::data(format!(
-                        "unknown statistics profile completeness {other:?}"
-                    )));
-                }
-            };
-            Ok(StatisticsProfileRow {
-                grain: StatisticsProfileGrain::parse(required_str(grain, row, "grain")?)?,
-                container_ordinal: required_value(container_ordinal, row, "container_ordinal")?,
-                container_id: required_str(container_id, row, "container_id")?.to_owned(),
-                schema_hash: required_str(schema_hash, row, "schema_hash")?.to_owned(),
-                field_ordinal: required_value(field_ordinal, row, "field_ordinal")?,
-                field_path: serde_json::from_str(required_str(field_path, row, "field_path_json")?)
-                    .map_err(|error| {
-                        CdfError::data(format!("decode statistics field path JSON: {error}"))
-                    })?,
-                data_type: serde_json::from_str(required_str(data_type, row, "arrow_type_json")?)
-                    .map_err(|error| {
+        };
+        visitor(StatisticsProfileRow {
+            grain: StatisticsProfileGrain::parse(required_str(grain, row, "grain")?)?,
+            container_ordinal: required_value(container_ordinal, row, "container_ordinal")?,
+            container_id: required_str(container_id, row, "container_id")?.to_owned(),
+            schema_hash: required_str(schema_hash, row, "schema_hash")?.to_owned(),
+            field_ordinal: required_value(field_ordinal, row, "field_ordinal")?,
+            field_path: serde_json::from_str(required_str(field_path, row, "field_path_json")?)
+                .map_err(|error| {
+                    CdfError::data(format!("decode statistics field path JSON: {error}"))
+                })?,
+            data_type: serde_json::from_str(required_str(data_type, row, "arrow_type_json")?)
+                .map_err(|error| {
                     CdfError::data(format!("decode statistics Arrow type JSON: {error}"))
                 })?,
-                row_count: required_value(row_count, row, "row_count")?,
-                null_count: required_value(null_count, row, "null_count")?,
-                completeness,
-                minimum: min.scalar(row)?,
-                maximum: max.scalar(row)?,
-            })
-        })
-        .collect()
+            row_count: required_value(row_count, row, "row_count")?,
+            null_count: required_value(null_count, row, "null_count")?,
+            completeness,
+            minimum: min.scalar(row)?,
+            maximum: max.scalar(row)?,
+        })?;
+    }
+    Ok(())
 }
 
 fn statistics_profile_schema() -> SchemaRef {

@@ -1714,7 +1714,7 @@ fn run_actual_isolated_engine_equivalence(
         .take(partition_count)
         .collect::<Vec<_>>();
     for batch in &mut batches {
-        batch.header.source_position = Some(isolated_terminal_file_position());
+        batch.header.source_position = Some(terminal_file_position());
     }
     let direct_resource = MockResource::tier_a(batches.clone())
         .without_control_keys()
@@ -2299,7 +2299,7 @@ fn actual_engine_capsule_preserves_a_finite_drain_epoch() {
 fn actual_engine_capsule_preserves_terminal_schema_quarantine_evidence() {
     let mut batch =
         missing_control_field_batch("isolated-schema-quarantine", "part-0", vec!["one", "two"]);
-    batch.header.source_position = Some(isolated_terminal_file_position());
+    batch.header.source_position = Some(terminal_file_position());
     let resource = MockResource::tier_a(vec![batch])
         .with_schema(sample_schema())
         .without_control_keys();
@@ -2433,7 +2433,13 @@ fn tier_a_resource_runs_engine_projection_filter_limit_into_package() {
     );
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
     let verified = reader.verify_for_consumption().unwrap();
-    let profile_rows = reader.verified_statistics_profile(&verified).unwrap();
+    let mut profile_rows = Vec::new();
+    reader
+        .for_each_verified_statistics_profile(&verified, &mut |row| {
+            profile_rows.push(row);
+            Ok(())
+        })
+        .unwrap();
     assert!(profile_rows.iter().any(|row| {
         row.grain == cdf_package::StatisticsProfileGrain::Package
             && row.field_path[0].as_ref() == "name"
@@ -4165,20 +4171,6 @@ fn terminal_effective_schema_runtime(
 }
 
 fn terminal_file_position() -> SourcePosition {
-    SourcePosition::FileManifest(FileManifest {
-        version: 1,
-        files: vec![FilePosition {
-            path: "input-0".to_owned(),
-            size_bytes: 10,
-            source_generation: None,
-            etag: Some("etag-0".to_owned()),
-            object_version: None,
-            sha256: Some("sha-0".to_owned()),
-        }],
-    })
-}
-
-fn isolated_terminal_file_position() -> SourcePosition {
     SourcePosition::FileManifest(FileManifest {
         version: 1,
         files: vec![FilePosition {

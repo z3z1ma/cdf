@@ -343,6 +343,9 @@ fn verified_statistics_profile_is_manifest_bound_typed_parquet() {
     let segment_id = SegmentId::new("seg-000001").unwrap();
     let batch = sample_batch();
     let stats = cdf_kernel::BatchStats::compute(&batch).unwrap();
+    builder
+        .write_runtime_arrow_schema(batch.schema().as_ref())
+        .unwrap();
     let mut profile = builder.begin_statistics_profile().unwrap();
     profile
         .write_stats(
@@ -369,7 +372,13 @@ fn verified_statistics_profile_is_manifest_bound_typed_parquet() {
     let (_, verified) = builder.finish_verified().unwrap();
     let reader = PackageReader::open(temp.path()).unwrap();
 
-    let rows = reader.verified_statistics_profile(&verified).unwrap();
+    let mut rows = Vec::new();
+    reader
+        .for_each_verified_statistics_profile(&verified, &mut |row| {
+            rows.push(row);
+            Ok(())
+        })
+        .unwrap();
 
     assert_eq!(rows.len(), 4);
     assert_eq!(rows[0].grain, StatisticsProfileGrain::Segment);
@@ -383,12 +392,118 @@ fn verified_statistics_profile_is_manifest_bound_typed_parquet() {
     );
     assert_eq!(rows[2].grain, StatisticsProfileGrain::Package);
 
+    let mut visited = 0_u64;
+    let error = reader
+        .for_each_verified_statistics_profile(&verified, &mut |_| {
+            visited += 1;
+            Err(CdfError::data("stop statistics visitor"))
+        })
+        .unwrap_err();
+    assert_eq!(visited, 1);
+    assert!(error.message.contains("stop statistics visitor"), "{error}");
+
     fs::write(temp.path().join(STATISTICS_PROFILE_FILE), b"tampered").unwrap();
-    let error = reader.verified_statistics_profile(&verified).unwrap_err();
+    let error = reader
+        .for_each_verified_statistics_profile(&verified, &mut |_| Ok(()))
+        .unwrap_err();
     assert!(
         error
             .message
             .contains("identity artifact stats/profile.parquet changed after package verification"),
+        "{error}"
+    );
+}
+
+#[test]
+fn statistics_profile_stream_rejects_schema_drift_and_omitted_manifest_segments() {
+    let schema_drift = tempfile::tempdir().unwrap();
+    let builder = package_builder!(schema_drift.path(), "pkg-stats-schema-drift").unwrap();
+    let batch = sample_batch();
+    builder
+        .write_runtime_arrow_schema(batch.schema().as_ref())
+        .unwrap();
+    let mut stats = cdf_kernel::BatchStats::compute(&batch).unwrap();
+    stats.columns[0].field_path = vec!["wrong".into()].into_boxed_slice();
+    let segment_id = SegmentId::new("seg-000001").unwrap();
+    let mut profile = builder.begin_statistics_profile().unwrap();
+    profile
+        .write_stats(
+            StatisticsProfileGrain::Segment,
+            0,
+            segment_id.as_str(),
+            "sha256:schema",
+            &stats,
+        )
+        .unwrap();
+    profile
+        .write_stats(
+            StatisticsProfileGrain::Package,
+            0,
+            "pkg-stats-schema-drift",
+            "sha256:schema",
+            &stats,
+        )
+        .unwrap();
+    profile.finish().unwrap();
+    builder
+        .write_segment(segment_id, 0, &[canonical_batch(batch, 0)])
+        .unwrap();
+    let (_, verified) = builder.finish_verified().unwrap();
+    let reader = PackageReader::open(schema_drift.path()).unwrap();
+    let error = reader
+        .for_each_verified_statistics_profile(&verified, &mut |_| Ok(()))
+        .unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("path does not match runtime schema field"),
+        "{error}"
+    );
+
+    let omitted = tempfile::tempdir().unwrap();
+    let builder = package_builder!(omitted.path(), "pkg-stats-omitted-segment").unwrap();
+    let batch = sample_batch();
+    builder
+        .write_runtime_arrow_schema(batch.schema().as_ref())
+        .unwrap();
+    let stats = cdf_kernel::BatchStats::compute(&batch).unwrap();
+    let first = SegmentId::new("seg-000001").unwrap();
+    let second = SegmentId::new("seg-000002").unwrap();
+    let mut profile = builder.begin_statistics_profile().unwrap();
+    profile
+        .write_stats(
+            StatisticsProfileGrain::Segment,
+            0,
+            first.as_str(),
+            "sha256:schema",
+            &stats,
+        )
+        .unwrap();
+    profile
+        .write_stats(
+            StatisticsProfileGrain::Package,
+            0,
+            "pkg-stats-omitted-segment",
+            "sha256:schema",
+            &stats,
+        )
+        .unwrap();
+    profile.finish().unwrap();
+    builder
+        .write_segment(first, 0, &[canonical_batch(batch.clone(), 0)])
+        .unwrap();
+    builder
+        .write_segment(second, 3, &[canonical_batch(batch, 3)])
+        .unwrap();
+    let (_, verified) = builder.finish_verified().unwrap();
+    let reader = PackageReader::open(omitted.path()).unwrap();
+    let error = reader
+        .for_each_verified_statistics_profile(&verified, &mut |_| Ok(()))
+        .unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("statistics profile omitted manifest segment seg-000002"),
         "{error}"
     );
 }
@@ -2871,6 +2986,8 @@ fn production_commit_paths_cannot_collect_package_segments() {
         let mut forbidden = vec![
             "Vec<CommitSegment>",
             "Vec<ArchiveSegmentMetadata>",
+            "Result<Vec<StatisticsProfileRow>>",
+            "fn verified_statistics_profile(",
             "read_quarantine_records(",
             "read_dedup_dropped_provenance(",
         ];
