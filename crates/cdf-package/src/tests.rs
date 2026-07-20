@@ -26,6 +26,16 @@ use cdf_memory::{
 use cdf_package_contract::*;
 use sha2::Digest;
 
+macro_rules! package_builder {
+    ($path:expr, $package_id:expr $(,)?) => {
+        PackageBuilder::create(
+            $path,
+            $package_id,
+            PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024).unwrap(),
+        )
+    };
+}
+
 fn collect_quarantine_records(reader: &PackageReader) -> Vec<QuarantineRecord> {
     let mut records = Vec::new();
     reader
@@ -99,7 +109,7 @@ fn package_local_authority_is_absolute_for_relative_roots() {
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&relative);
-    let builder = PackageBuilder::create(&relative, "pkg-relative-authority").unwrap();
+    let builder = package_builder!(&relative, "pkg-relative-authority").unwrap();
     assert!(builder.package_dir().is_absolute());
     builder.finish().unwrap();
     PackageReader::open(&relative).unwrap();
@@ -113,7 +123,7 @@ fn finalization_does_not_reopen_registered_artifact_content() {
 
     let directory = tempfile::tempdir().unwrap();
     let package_dir = directory.path().join("package");
-    let builder = PackageBuilder::create(&package_dir, "pkg-no-reread").unwrap();
+    let builder = package_builder!(&package_dir, "pkg-no-reread").unwrap();
     builder
         .write_identity_artifact("stats/receipt-backed.bin", b"registered")
         .unwrap();
@@ -139,7 +149,7 @@ fn finalization_authority_opens_for_consumption_without_rereading_identity_files
 
     let directory = tempfile::tempdir().unwrap();
     let package_dir = directory.path().join("package");
-    let builder = PackageBuilder::create(&package_dir, "pkg-finalization-proof").unwrap();
+    let builder = package_builder!(&package_dir, "pkg-finalization-proof").unwrap();
     builder
         .write_identity_artifact("stats/receipt-backed.bin", b"registered")
         .unwrap();
@@ -159,7 +169,7 @@ fn finalization_authority_opens_for_consumption_without_rereading_identity_files
 #[test]
 fn segment_encoding_completion_cannot_override_canonical_registration_order() {
     let directory = tempfile::tempdir().unwrap();
-    let builder = PackageBuilder::create(directory.path(), "pkg-encode-frontier").unwrap();
+    let builder = package_builder!(directory.path(), "pkg-encode-frontier").unwrap();
     let encoder = builder.segment_encoder();
     let second = encoder
         .encode(
@@ -229,7 +239,7 @@ fn imported_canonical_segment_preserves_native_package_identity() {
     let segment_id = SegmentId::new("seg-000001").unwrap();
     let batch = canonical_batch(sample_batch(), 0);
 
-    let direct = PackageBuilder::create(&direct_root, "pkg-import-equivalence").unwrap();
+    let direct = package_builder!(&direct_root, "pkg-import-equivalence").unwrap();
     let direct_segment = direct
         .write_segment(segment_id.clone(), 0, std::slice::from_ref(&batch))
         .unwrap();
@@ -242,7 +252,7 @@ fn imported_canonical_segment_preserves_native_package_identity() {
         std::slice::from_ref(&batch),
     )
     .unwrap();
-    let imported = PackageBuilder::create(&imported_root, "pkg-import-equivalence").unwrap();
+    let imported = package_builder!(&imported_root, "pkg-import-equivalence").unwrap();
     let imported_segment = imported
         .import_canonical_segment(segment_id, 0, 3, &encoded)
         .unwrap()
@@ -252,7 +262,7 @@ fn imported_canonical_segment_preserves_native_package_identity() {
     assert_eq!(imported_segment, direct_segment);
     assert_eq!(imported_manifest, direct_manifest);
 
-    let invalid = PackageBuilder::create(
+    let invalid = package_builder!(
         directory.path().join("invalid"),
         "pkg-import-invalid-ordinal",
     )
@@ -275,7 +285,7 @@ fn imported_canonical_segment_preserves_native_package_identity() {
 #[test]
 fn unpublished_segment_encoding_is_rolled_back_on_drop() {
     let directory = tempfile::tempdir().unwrap();
-    let builder = PackageBuilder::create(directory.path(), "pkg-encode-rollback").unwrap();
+    let builder = package_builder!(directory.path(), "pkg-encode-rollback").unwrap();
     let encoded = builder
         .segment_encoder()
         .encode(
@@ -315,7 +325,7 @@ fn canonical_batch(batch: RecordBatch, start: u64) -> RecordBatch {
 #[test]
 fn verified_statistics_profile_is_manifest_bound_typed_parquet() {
     let temp = tempfile::tempdir().unwrap();
-    let builder = PackageBuilder::create(temp.path(), "pkg-stats-profile").unwrap();
+    let builder = package_builder!(temp.path(), "pkg-stats-profile").unwrap();
     let segment_id = SegmentId::new("seg-000001").unwrap();
     let batch = sample_batch();
     let stats = cdf_kernel::BatchStats::compute(&batch).unwrap();
@@ -398,7 +408,7 @@ fn verification_rejects_unknown_contract_evolution_versions() {
         ),
     ] {
         let temp = tempfile::tempdir().unwrap();
-        let builder = PackageBuilder::create(temp.path(), format!("pkg-{name}")).unwrap();
+        let builder = package_builder!(temp.path(), format!("pkg-{name}")).unwrap();
         builder.update_status(PackageStatus::Extracting).unwrap();
         builder
             .write_json_artifact("schema/contract-evolution.json", &artifact)
@@ -414,7 +424,7 @@ fn verification_rejects_unknown_contract_evolution_versions() {
 fn incomplete_construction_can_be_discarded_only_under_its_exact_identity() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("incomplete");
-    let builder = PackageBuilder::create(&package_dir, "pkg-incomplete").unwrap();
+    let builder = package_builder!(&package_dir, "pkg-incomplete").unwrap();
     builder.update_status(PackageStatus::Extracting).unwrap();
     builder
         .write_identity_artifact("plan/partial.json", b"{}")
@@ -450,7 +460,7 @@ fn replayable_package_cannot_cross_incomplete_construction_deletion_boundary() {
 }
 
 fn build_fixture(package_dir: &Path) -> PackageManifest {
-    let builder = PackageBuilder::create(package_dir, "pkg-test-0001").unwrap();
+    let builder = package_builder!(package_dir, "pkg-test-0001").unwrap();
     builder.update_status(PackageStatus::Extracting).unwrap();
     builder
         .write_json_artifact(
@@ -597,7 +607,7 @@ fn collect_commit_segments_for_test(
 }
 
 fn build_archive_fixture(package_dir: &Path) -> PackageManifest {
-    let builder = PackageBuilder::create(package_dir, "pkg-archive-0001").unwrap();
+    let builder = package_builder!(package_dir, "pkg-archive-0001").unwrap();
     builder.update_status(PackageStatus::Extracting).unwrap();
     builder
         .write_json_artifact(
@@ -744,7 +754,7 @@ fn quarantine_records_round_trip_as_parquet_identity_evidence() {
     ];
 
     let temp = tempfile::tempdir().unwrap();
-    let builder = PackageBuilder::create(temp.path(), "pkg-quarantine-0001").unwrap();
+    let builder = package_builder!(temp.path(), "pkg-quarantine-0001").unwrap();
     builder
         .write_quarantine_records("part-000001.parquet", &records)
         .unwrap();
@@ -778,7 +788,7 @@ fn quarantine_records_round_trip_as_parquet_identity_evidence() {
     );
 
     let traversal = tempfile::tempdir().unwrap();
-    let builder = PackageBuilder::create(traversal.path(), "pkg-quarantine-traversal").unwrap();
+    let builder = package_builder!(traversal.path(), "pkg-quarantine-traversal").unwrap();
     builder
         .write_quarantine_records("part-000001.parquet", &records)
         .unwrap();
@@ -808,7 +818,7 @@ fn quarantine_records_round_trip_as_parquet_identity_evidence() {
 #[test]
 fn quarantine_writer_streams_multiple_bounded_record_chunks() {
     let temp = tempfile::tempdir().unwrap();
-    let builder = PackageBuilder::create(temp.path(), "pkg-quarantine-stream").unwrap();
+    let builder = package_builder!(temp.path(), "pkg-quarantine-stream").unwrap();
     let mut writer = builder
         .begin_quarantine_records("part-000001.parquet")
         .unwrap();
@@ -849,7 +859,7 @@ fn quarantine_writer_streams_multiple_bounded_record_chunks() {
 #[test]
 fn dedup_summary_round_trips_as_json_identity_evidence() {
     let temp = tempfile::tempdir().unwrap();
-    let builder = PackageBuilder::create(temp.path(), "pkg-dedup-summary-0001").unwrap();
+    let builder = package_builder!(temp.path(), "pkg-dedup-summary-0001").unwrap();
     let summary = serde_json::json!({
         "version": 3,
         "rule_id": "row-rule-0000-dedup",
@@ -909,7 +919,7 @@ fn dedup_summary_round_trips_as_json_identity_evidence() {
 #[test]
 fn streaming_identity_artifact_is_atomic_hashed_and_manifest_owned() {
     let temp = tempfile::tempdir().unwrap();
-    let builder = PackageBuilder::create(temp.path(), "streaming-artifact").unwrap();
+    let builder = package_builder!(temp.path(), "streaming-artifact").unwrap();
     let mut artifact = builder
         .begin_streaming_identity_artifact("stats/large-array.json")
         .unwrap();
@@ -941,7 +951,7 @@ fn streaming_identity_artifact_is_atomic_hashed_and_manifest_owned() {
 #[test]
 fn dropped_streaming_identity_artifact_publishes_nothing() {
     let temp = tempfile::tempdir().unwrap();
-    let builder = PackageBuilder::create(temp.path(), "dropped-streaming-artifact").unwrap();
+    let builder = package_builder!(temp.path(), "dropped-streaming-artifact").unwrap();
     {
         let mut artifact = builder
             .begin_streaming_identity_artifact("stats/incomplete.json")
@@ -954,7 +964,7 @@ fn dropped_streaming_identity_artifact_publishes_nothing() {
 #[test]
 fn finalization_rejects_unregistered_identity_writers() {
     let temp = tempfile::tempdir().unwrap();
-    let builder = PackageBuilder::create(temp.path(), "unregistered-writer").unwrap();
+    let builder = package_builder!(temp.path(), "unregistered-writer").unwrap();
     fs::write(temp.path().join("stats/bypass.json"), b"{}").unwrap();
 
     let error = builder.finish().unwrap_err();
@@ -1081,7 +1091,7 @@ fn consumption_verification_authority_is_bound_to_one_package_directory() {
 #[test]
 fn verified_identity_artifact_read_rejects_post_verification_change() {
     let temp = tempfile::tempdir().unwrap();
-    let builder = PackageBuilder::create(temp.path(), "pkg-plan-consumption-binding").unwrap();
+    let builder = package_builder!(temp.path(), "pkg-plan-consumption-binding").unwrap();
     builder
         .write_json_artifact(
             "plan/scan.json",
@@ -1928,7 +1938,7 @@ fn processed_observation_aggregation_respects_append_and_replace_dispositions() 
 #[test]
 fn runtime_arrow_schema_round_trips_as_verified_package_identity() {
     let temp = tempfile::tempdir().unwrap();
-    let builder = PackageBuilder::create(temp.path(), "pkg-runtime-schema").unwrap();
+    let builder = package_builder!(temp.path(), "pkg-runtime-schema").unwrap();
     let schema = sample_batch().schema();
     builder.write_runtime_arrow_schema(schema.as_ref()).unwrap();
     builder.finish().unwrap();
@@ -2070,7 +2080,7 @@ fn verification_reports_unexpected_symlinks_without_following_them() {
 #[test]
 fn package_writers_reject_nonportable_identity_names() {
     let temp = tempfile::tempdir().unwrap();
-    let builder = PackageBuilder::create(temp.path(), "pkg-portable-paths").unwrap();
+    let builder = package_builder!(temp.path(), "pkg-portable-paths").unwrap();
     for path in [
         "stats/CON.json",
         "stats/name:stream",
@@ -2197,7 +2207,7 @@ fn tombstone_removes_identity_files_but_preserves_manifest_hashes() {
 #[test]
 fn archive_transcode_reports_unsupported_arrow_types() {
     let temp = tempfile::tempdir().unwrap();
-    let builder = PackageBuilder::create(temp.path(), "pkg-archive-unsupported").unwrap();
+    let builder = package_builder!(temp.path(), "pkg-archive-unsupported").unwrap();
     let schema = Arc::new(Schema::new(vec![Field::new(
         "unsupported_time",
         DataType::Time32(TimeUnit::Second),

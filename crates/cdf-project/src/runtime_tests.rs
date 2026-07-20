@@ -1872,7 +1872,13 @@ fn build_package_with_carryover(
     package_dir: &Path,
     package_id: &str,
 ) -> (PackageManifest, LateDataCarryoverRef) {
-    let builder = PackageBuilder::create(package_dir, package_id).unwrap();
+    let builder = PackageBuilder::create(
+        package_dir,
+        package_id,
+        cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
+            .unwrap(),
+    )
+    .unwrap();
     builder.update_status(PackageStatus::Extracting).unwrap();
     let carryover_batch = sample_batch(vec![7], vec![Some("late")]);
     builder
@@ -2004,7 +2010,13 @@ fn build_package_with_options_and_scan_tamper(
     checkpoint_id: &str,
     duplicate_scan_observation: bool,
 ) -> PackageManifest {
-    let builder = PackageBuilder::create(package_dir, package_id).unwrap();
+    let builder = PackageBuilder::create(
+        package_dir,
+        package_id,
+        cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
+            .unwrap(),
+    )
+    .unwrap();
     builder.update_status(PackageStatus::Extracting).unwrap();
     builder
         .write_runtime_arrow_schema(sample_batch(vec![], vec![]).schema().as_ref())
@@ -2051,7 +2063,13 @@ fn build_package_with_options_and_scan_tamper(
 }
 
 fn build_zero_segment_processed_package(package_dir: &Path, package_id: &str) -> PackageManifest {
-    let builder = PackageBuilder::create(package_dir, package_id).unwrap();
+    let builder = PackageBuilder::create(
+        package_dir,
+        package_id,
+        cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
+            .unwrap(),
+    )
+    .unwrap();
     builder.update_status(PackageStatus::Extracting).unwrap();
     builder
         .write_runtime_arrow_schema(sample_batch(vec![], vec![]).schema().as_ref())

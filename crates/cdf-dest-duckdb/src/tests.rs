@@ -215,7 +215,13 @@ fn build_package_segments_for_commit(
     disposition: WriteDisposition,
     merge_keys: Vec<String>,
 ) -> PackageHash {
-    let builder = PackageBuilder::create(package_dir, package_id).unwrap();
+    let builder = PackageBuilder::create(
+        package_dir,
+        package_id,
+        cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
+            .unwrap(),
+    )
+    .unwrap();
     builder.update_status(PackageStatus::Extracting).unwrap();
     let schema = segments
         .iter()

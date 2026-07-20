@@ -1343,8 +1343,13 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
 
         let baseline_started = std::time::Instant::now();
-        let baseline =
-            cdf_package::PackageBuilder::create(root.path().join("baseline"), "baseline").unwrap();
+        let baseline = cdf_package::PackageBuilder::create(
+            root.path().join("baseline"),
+            "baseline",
+            cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
+                .unwrap(),
+        )
+        .unwrap();
         for (ordinal, chunk) in chunks.iter().enumerate() {
             let package_row_ord_start = u64::try_from(ordinal * 1024).unwrap();
             let canonical = cdf_package_contract::append_package_row_ord(
@@ -1372,9 +1377,13 @@ mod tests {
         }
         segments.extend(assembler.finish().unwrap());
         assert_eq!(segments.len(), 1);
-        let canonical =
-            cdf_package::PackageBuilder::create(root.path().join("canonical"), "canonical")
-                .unwrap();
+        let canonical = cdf_package::PackageBuilder::create(
+            root.path().join("canonical"),
+            "canonical",
+            cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
+                .unwrap(),
+        )
+        .unwrap();
         let mut package_row_ord_start = 0_u64;
         for segment in segments {
             let row_count = segment.row_count;

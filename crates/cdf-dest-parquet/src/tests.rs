@@ -313,7 +313,13 @@ fn build_package<S: AsRef<str>>(
     package_id: &str,
     segments: Vec<(S, Vec<RecordBatch>)>,
 ) -> BuiltPackage {
-    let builder = PackageBuilder::create(package_dir, package_id).unwrap();
+    let builder = PackageBuilder::create(
+        package_dir,
+        package_id,
+        cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
+            .unwrap(),
+    )
+    .unwrap();
     builder.update_status(PackageStatus::Extracting).unwrap();
     builder
         .write_json_artifact(

@@ -3,6 +3,7 @@
 mod archive;
 mod artifacts;
 mod builder;
+mod draft_index;
 mod json;
 mod manifest_stream;
 mod ops;
@@ -16,6 +17,7 @@ mod storage;
 
 pub use archive::*;
 pub use builder::*;
+pub use draft_index::{PackageBuilderResources, PackageDraftIndexLimits};
 pub use json::*;
 pub use manifest_stream::*;
 pub use ops::*;

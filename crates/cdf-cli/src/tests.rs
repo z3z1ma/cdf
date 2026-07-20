@@ -67,6 +67,17 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LIVE_POSTGRES_SCHEMA_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LOCAL_POSTGRES_START: Mutex<()> = Mutex::new(());
 
+macro_rules! package_builder {
+    ($path:expr, $package_id:expr $(,)?) => {
+        PackageBuilder::create(
+            $path,
+            $package_id,
+            cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
+                .unwrap(),
+        )
+    };
+}
+
 fn test_execution_services() -> cdf_runtime::ExecutionServices {
     static SERVICES: std::sync::OnceLock<cdf_runtime::ExecutionServices> =
         std::sync::OnceLock::new();
@@ -4279,6 +4290,7 @@ fn schema_promote_multi_target_uses_canonical_checkpoint_chain_and_exact_publica
         lock_authority: context.lock_authority.as_ref().unwrap(),
         dry_plan: &plan,
         destinations,
+        execution_services: test_execution_services(),
         pipeline_id: PipelineId::new("cdf-schema-promotion").unwrap(),
         lease_owner: LeaseOwnerId::new("multi-target-crash").unwrap(),
         lease_duration_ms: DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS,
@@ -4414,6 +4426,7 @@ fn schema_promote_execute_recovers_every_persisted_crash_boundary() {
             lock_authority: context.lock_authority.as_ref().unwrap(),
             dry_plan: &plan,
             destinations: vec![destination],
+            execution_services: test_execution_services(),
             pipeline_id: PipelineId::new("cdf-schema-promotion").unwrap(),
             lease_owner: LeaseOwnerId::new(format!("crash-{failpoint:?}")).unwrap(),
             lease_duration_ms: DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS,
@@ -4656,6 +4669,7 @@ fn schema_promote_rejects_tampered_staged_and_correction_authority_before_mutati
             lock_authority: context.lock_authority.as_ref().unwrap(),
             dry_plan: &plan,
             destinations: vec![destination],
+            execution_services: test_execution_services(),
             pipeline_id: PipelineId::new("cdf-schema-promotion").unwrap(),
             lease_owner: LeaseOwnerId::new("tamper-fixture").unwrap(),
             lease_duration_ms: DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS,
@@ -4785,6 +4799,7 @@ fn schema_promote_api_rejects_divergent_caller_lock_before_mutation() {
         lock_authority: context.lock_authority.as_ref().unwrap(),
         dry_plan: &plan,
         destinations: vec![destination],
+        execution_services: test_execution_services(),
         pipeline_id: PipelineId::new("cdf-schema-promotion").unwrap(),
         lease_owner: LeaseOwnerId::new("divergent-lock-fixture").unwrap(),
         lease_duration_ms: DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS,
@@ -4872,6 +4887,7 @@ fn schema_promote_rejects_semantically_rebuilt_correction_packages_without_sourc
             lock_authority: context.lock_authority.as_ref().unwrap(),
             dry_plan: &plan,
             destinations: vec![destination],
+            execution_services: test_execution_services(),
             pipeline_id: PipelineId::new("cdf-schema-promotion").unwrap(),
             lease_owner: LeaseOwnerId::new("semantic-repackage-fixture").unwrap(),
             lease_duration_ms: DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS,
@@ -12733,7 +12749,7 @@ fn doctor_fails_on_missing_and_extra_duckdb_mirror_rows() {
 fn package_verify_uses_lower_package_reader() {
     let temp = TempDir::new("cdf-cli-package");
     let package_dir = temp.path().join("pkg");
-    let builder = PackageBuilder::create(&package_dir, "pkg-1").unwrap();
+    let builder = package_builder!(&package_dir, "pkg-1").unwrap();
     builder.finish_with_status(PackageStatus::Packaged).unwrap();
 
     let result = run([
@@ -12810,8 +12826,7 @@ fn package_gc_plans_retention_from_packages_and_checkpoint_history() {
     );
 
     let collectible_dir = package_root.join("pkg-gc-collectible");
-    let collectible_builder =
-        PackageBuilder::create(&collectible_dir, "pkg-gc-collectible").unwrap();
+    let collectible_builder = package_builder!(&collectible_dir, "pkg-gc-collectible").unwrap();
     let collectible_manifest = collectible_builder
         .finish_with_status(PackageStatus::Validated)
         .unwrap();
@@ -12951,7 +12966,7 @@ fn package_gc_reports_last_locally_promotable_residual_bytes() {
 fn package_gc_explicit_directory_is_dry_run_without_deleting_collectible_artifacts() {
     let temp = TempDir::new("cdf-cli-package-gc-dry-run");
     let package_dir = temp.path().join("pkg-validated");
-    let builder = PackageBuilder::create(&package_dir, "pkg-validated").unwrap();
+    let builder = package_builder!(&package_dir, "pkg-validated").unwrap();
     let manifest = builder
         .finish_with_status(PackageStatus::Validated)
         .unwrap();
@@ -15008,7 +15023,7 @@ fn write_schema_promote_package_fixture_for_target_with_commit(
         ],
     )
     .unwrap();
-    let builder = PackageBuilder::create(&package_dir, package_id).unwrap();
+    let builder = package_builder!(&package_dir, package_id).unwrap();
     write_current_replay_artifacts(&builder, batch.schema().as_ref(), schema_hash);
     let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0).unwrap();
     let segment = builder
@@ -15278,7 +15293,7 @@ fn rebuild_correction_package_semantically(
     }
     fs::remove_dir_all(package_dir).unwrap();
     let package_id = package_dir.file_name().unwrap().to_str().unwrap();
-    let builder = PackageBuilder::create(package_dir, package_id).unwrap();
+    let builder = package_builder!(package_dir, package_id).unwrap();
     builder
         .write_json_artifact("plan/promotion-correction.json", &artifact)
         .unwrap();
@@ -15487,7 +15502,7 @@ fn initialize_status_state(project: &TestProject) {
 fn write_status_package(project: &TestProject, package_id: &str) -> (PathBuf, String) {
     let package_dir = project.root.join(".cdf/packages").join(package_id);
     fs::create_dir_all(project.root.join(".cdf/packages")).unwrap();
-    let builder = PackageBuilder::create(&package_dir, package_id).unwrap();
+    let builder = package_builder!(&package_dir, package_id).unwrap();
     let manifest = builder
         .finish_with_status(PackageStatus::Checkpointed)
         .unwrap();
@@ -16168,7 +16183,7 @@ fn create_system_sql_fixture(project: &TestProject) -> SystemSqlFixture {
     let package_root = project.root.join(".cdf/packages");
     fs::create_dir_all(&package_root).unwrap();
     let package_dir = package_root.join("pkg-sql-1");
-    let builder = PackageBuilder::create(&package_dir, "pkg-sql-1").unwrap();
+    let builder = package_builder!(&package_dir, "pkg-sql-1").unwrap();
     let batch = cdf_package_contract::append_package_row_ord(vec![sample_sql_batch()], 0).unwrap();
     builder
         .write_segment(SegmentId::new("seg-000001").unwrap(), 0, &batch)
@@ -16197,7 +16212,7 @@ fn create_duckdb_doctor_fixture(project: &TestProject, mode: DoctorDriftFixtureM
     let package_root = project.root.join(".cdf/packages");
     fs::create_dir_all(&package_root).unwrap();
     let package_dir = package_root.join("pkg-doctor-1");
-    let builder = PackageBuilder::create(&package_dir, "pkg-doctor-1").unwrap();
+    let builder = package_builder!(&package_dir, "pkg-doctor-1").unwrap();
     let batch = sample_sql_batch();
     write_current_replay_artifacts(&builder, batch.schema().as_ref(), "schema-doctor-1");
     let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0).unwrap();
@@ -16500,7 +16515,7 @@ fn test_cli(project: &TestProject) -> cdf_cli_core::args::Cli {
 
 fn build_archive_cli_package(root: &Path, package_id: &str) -> PathBuf {
     let package_dir = root.join(package_id);
-    let builder = PackageBuilder::create(&package_dir, package_id).unwrap();
+    let builder = package_builder!(&package_dir, package_id).unwrap();
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("name", DataType::Utf8, true),
@@ -16523,7 +16538,7 @@ fn build_archive_cli_package(root: &Path, package_id: &str) -> PathBuf {
 
 fn build_gc_residual_package(root: &Path, package_id: &str, resource_id: &str) -> (PathBuf, u64) {
     let package_dir = root.join(package_id);
-    let builder = PackageBuilder::create(&package_dir, package_id).unwrap();
+    let builder = package_builder!(&package_dir, package_id).unwrap();
     let mut variant = with_semantic(
         Field::new(VARIANT_COLUMN_NAME, DataType::Utf8, true),
         VARIANT_SEMANTIC_TAG,

@@ -1,9 +1,17 @@
 use cdf_kernel::{CdfError, Result};
-use cdf_package_contract::{FileEntry, ManifestIdentity, PackageManifest, SegmentEntry};
+use cdf_package_contract::{
+    FileEntry, LifecycleState, MANIFEST_VERSION, ManifestIdentity, PackageManifest, PackageStatus,
+    SegmentEntry, SignatureSlot,
+};
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::io::Write;
+
+type FileEntrySink<'a> = dyn FnMut(FileEntry) -> Result<()> + 'a;
+type SegmentEntrySink<'a> = dyn FnMut(SegmentEntry) -> Result<()> + 'a;
+type FileEntrySource<'a> = dyn FnMut(&mut FileEntrySink<'_>) -> Result<()> + 'a;
+type SegmentEntrySource<'a> = dyn FnMut(&mut SegmentEntrySink<'_>) -> Result<()> + 'a;
 
 pub fn canonical_json_bytes<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
     let value = serde_json::to_value(value).map_err(json_error)?;
@@ -16,6 +24,57 @@ pub fn manifest_identity_hash(identity: &ManifestIdentity) -> Result<String> {
     let mut writer = DigestWriter(Sha256::new());
     write_manifest_identity_canonical(identity, &mut writer)?;
     Ok(format!("sha256:{}", hex::encode(writer.0.finalize())))
+}
+
+pub(crate) fn manifest_identity_hash_streaming(
+    package_id: &str,
+    layout: &[String],
+    visit_files: &mut FileEntrySource<'_>,
+    visit_segments: &mut SegmentEntrySource<'_>,
+) -> Result<String> {
+    let mut writer = DigestWriter(Sha256::new());
+    write_manifest_identity_canonical_streaming(
+        package_id,
+        layout,
+        visit_files,
+        visit_segments,
+        &mut writer,
+    )?;
+    Ok(format!("sha256:{}", hex::encode(writer.0.finalize())))
+}
+
+pub(crate) fn write_package_manifest_canonical_streaming<W: Write>(
+    package_id: &str,
+    layout: &[String],
+    package_hash: &str,
+    status: PackageStatus,
+    visit_files: &mut FileEntrySource<'_>,
+    visit_segments: &mut SegmentEntrySource<'_>,
+    writer: &mut W,
+) -> Result<()> {
+    write_bytes(writer, b"{\"identity\":")?;
+    write_manifest_identity_canonical_streaming(
+        package_id,
+        layout,
+        visit_files,
+        visit_segments,
+        writer,
+    )?;
+    write_bytes(writer, b",\"lifecycle\":")?;
+    write_value(writer, &LifecycleState { status })?;
+    write_bytes(writer, b",\"manifest_version\":")?;
+    write_display(writer, MANIFEST_VERSION)?;
+    write_bytes(writer, b",\"package_hash\":")?;
+    write_json_string(writer, package_hash)?;
+    write_bytes(writer, b",\"signature\":")?;
+    write_value(
+        writer,
+        &SignatureSlot {
+            signing_input: package_hash.to_owned(),
+            value: None,
+        },
+    )?;
+    write_bytes(writer, b"}")
 }
 
 pub(crate) fn write_package_manifest_canonical<W: Write>(
@@ -71,6 +130,45 @@ fn write_manifest_identity_canonical<W: Write>(
         }
         write_segment_entry(writer, entry)?;
     }
+    write_bytes(writer, b"]}")
+}
+
+fn write_manifest_identity_canonical_streaming<W: Write>(
+    package_id: &str,
+    layout: &[String],
+    visit_files: &mut FileEntrySource<'_>,
+    visit_segments: &mut SegmentEntrySource<'_>,
+    writer: &mut W,
+) -> Result<()> {
+    write_bytes(writer, b"{\"files\":[")?;
+    let mut first = true;
+    visit_files(&mut |entry| {
+        if !first {
+            write_bytes(writer, b",")?;
+        }
+        first = false;
+        write_file_entry(writer, &entry)
+    })?;
+    write_bytes(writer, b"],\"layout\":[")?;
+    for (index, value) in layout.iter().enumerate() {
+        if index > 0 {
+            write_bytes(writer, b",")?;
+        }
+        write_json_string(writer, value)?;
+    }
+    write_bytes(writer, b"],\"manifest_version\":")?;
+    write_display(writer, MANIFEST_VERSION)?;
+    write_bytes(writer, b",\"package_id\":")?;
+    write_json_string(writer, package_id)?;
+    write_bytes(writer, b",\"segments\":[")?;
+    first = true;
+    visit_segments(&mut |entry| {
+        if !first {
+            write_bytes(writer, b",")?;
+        }
+        first = false;
+        write_segment_entry(writer, &entry)
+    })?;
     write_bytes(writer, b"]}")
 }
 

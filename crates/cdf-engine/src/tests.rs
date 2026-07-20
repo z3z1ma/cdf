@@ -2078,6 +2078,7 @@ fn run_actual_isolated_engine_equivalence_for_resource(
             &finalized,
             &artifacts,
             &resources,
+            &worker_services,
         )
         .unwrap_err();
         assert!(replay_error.message.contains("different engine plan"));
@@ -2089,6 +2090,7 @@ fn run_actual_isolated_engine_equivalence_for_resource(
         &finalized,
         &artifacts,
         &resources,
+        &worker_services,
     )
     .unwrap();
     (

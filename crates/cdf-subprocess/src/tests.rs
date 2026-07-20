@@ -169,8 +169,13 @@ async fn ndjson_stdout_adapter_captures_stderr_and_packages_output() {
     ));
     assert_eq!(batches[0].header.row_count, 1);
 
-    let package =
-        cdf_package::PackageBuilder::create(temp.path().join("package"), "pkg-subprocess").unwrap();
+    let package = cdf_package::PackageBuilder::create(
+        temp.path().join("package"),
+        "pkg-subprocess",
+        cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
+            .unwrap(),
+    )
+    .unwrap();
     let batches = batches
         .iter()
         .map(|batch| batch.record_batch().unwrap().clone())
@@ -1283,7 +1288,13 @@ async fn airbyte_protocol_streams_selected_rows_and_packages_for_replay() {
 
     let package_dir = temp.path().join("protocol-package");
     let batches = cdf_package_contract::append_package_row_ord(batches, 0).unwrap();
-    let package = cdf_package::PackageBuilder::create(&package_dir, "pkg-protocol").unwrap();
+    let package = cdf_package::PackageBuilder::create(
+        &package_dir,
+        "pkg-protocol",
+        cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
+            .unwrap(),
+    )
+    .unwrap();
     package
         .write_segment(SegmentId::new("seg-protocol-0").unwrap(), 0, &batches)
         .unwrap();

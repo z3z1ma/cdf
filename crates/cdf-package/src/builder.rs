@@ -1,7 +1,6 @@
 use std::{
-    collections::BTreeMap,
-    fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader, Seek, SeekFrom, Write},
+    fs::{self, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -16,27 +15,29 @@ use cdf_package_contract::{
     STATE_PROPOSED_DELTA_FILE, SegmentEntry, StateDeltaPreimage, TRACE_FILE,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
-use serde::{Serialize, de::DeserializeOwned};
+use serde::Serialize;
 
 use crate::{
-    json::canonical_json_bytes,
+    draft_index::{PackageBuilderResources, PackageDraftIndex},
+    json::{
+        canonical_json_bytes, manifest_identity_hash_streaming,
+        write_package_manifest_canonical_streaming,
+    },
     ops::update_package_status,
     quarantine::{quarantine_record_batch, quarantine_schema},
     storage::{
         ArtifactDurability, HashingWriter, atomic_write, build_manifest,
         collect_identity_file_entries, create_layout, io_error, nested_artifact_path,
-        normalize_artifact_path, package_path, remove_artifact_and_sync, segment_relative_path,
-        sync_directory, visit_identity_file_paths, write_arrow_ipc_file,
+        normalize_artifact_path, package_layout, package_path, remove_artifact_and_sync,
+        segment_relative_path, sync_directory, visit_identity_file_paths, write_arrow_ipc_file,
         write_canonical_segment_ipc_bytes, write_manifest_atomic,
     },
 };
 
-#[derive(Debug)]
 pub struct PackageBuilder {
     package_dir: PathBuf,
     package_id: String,
-    segment_drafts: Mutex<File>,
-    artifact_receipts: Arc<Mutex<File>>,
+    draft_index: Arc<Mutex<PackageDraftIndex>>,
     trace: Mutex<HashingWriter<std::fs::File>>,
 }
 
@@ -144,7 +145,7 @@ impl PackageSegmentEncoder {
 pub struct StreamingIdentityArtifact {
     relative_path: String,
     sink: Option<crate::storage::AtomicArtifactSink>,
-    artifact_receipts: Arc<Mutex<File>>,
+    draft_index: Arc<Mutex<PackageDraftIndex>>,
 }
 
 pub struct QuarantineArtifactWriter {
@@ -199,11 +200,10 @@ impl StreamingIdentityArtifact {
             byte_count: receipt.byte_count,
             sha256: receipt.sha256,
         };
-        append_journal(
-            &self.artifact_receipts,
-            &entry,
-            "package artifact receipt journal",
-        )?;
+        self.draft_index
+            .lock()
+            .map_err(|_| CdfError::internal("package draft index lock is poisoned"))?
+            .insert_file(&entry)?;
         Ok(entry)
     }
 }
@@ -226,7 +226,11 @@ impl Write for StreamingIdentityArtifact {
 }
 
 impl PackageBuilder {
-    pub fn create(package_dir: impl AsRef<Path>, package_id: impl Into<String>) -> Result<Self> {
+    pub fn create(
+        package_dir: impl AsRef<Path>,
+        package_id: impl Into<String>,
+        resources: PackageBuilderResources,
+    ) -> Result<Self> {
         let package_dir = package_dir.as_ref().to_path_buf();
         let package_id = package_id.into();
         if package_id.trim().is_empty() {
@@ -254,18 +258,17 @@ impl PackageBuilder {
             .append(true)
             .open(&trace_path)
             .map_err(|error| io_error(format!("open {}", trace_path.display()), error))?;
+        let draft_index = PackageDraftIndex::create(
+            &package_dir,
+            resources.limits,
+            resources.memory,
+            resources.spill,
+        )?;
 
         Ok(Self {
             package_dir,
             package_id,
-            segment_drafts: Mutex::new(
-                tempfile::tempfile()
-                    .map_err(|error| io_error("create package segment draft journal", error))?,
-            ),
-            artifact_receipts: Arc::new(Mutex::new(
-                tempfile::tempfile()
-                    .map_err(|error| io_error("create package artifact receipt journal", error))?,
-            )),
+            draft_index: Arc::new(Mutex::new(draft_index)),
             trace: Mutex::new(HashingWriter::new(trace)),
         })
     }
@@ -439,11 +442,10 @@ impl PackageBuilder {
             byte_count: receipt.byte_count,
             sha256: receipt.sha256,
         };
-        append_journal(
-            &self.artifact_receipts,
-            &entry,
-            "package artifact receipt journal",
-        )?;
+        self.draft_index
+            .lock()
+            .map_err(|_| CdfError::internal("package draft index lock is poisoned"))?
+            .insert_file(&entry)?;
         Ok(entry)
     }
 
@@ -459,7 +461,7 @@ impl PackageBuilder {
                 &path,
                 ArtifactDurability::PhaseMetadata,
             )?),
-            artifact_receipts: Arc::clone(&self.artifact_receipts),
+            draft_index: Arc::clone(&self.draft_index),
         })
     }
 
@@ -649,11 +651,12 @@ impl PackageBuilder {
             byte_count: encoded.receipt.artifact.byte_count,
             sha256: encoded.receipt.artifact.sha256.clone(),
         };
-        if let Err(error) = append_journal(
-            &self.artifact_receipts,
-            &file_entry,
-            "package artifact receipt journal",
-        ) {
+        if let Err(error) = self
+            .draft_index
+            .lock()
+            .map_err(|_| CdfError::internal("package draft index lock is poisoned"))?
+            .insert_file(&file_entry)
+        {
             return match encoded.rollback_unpublished() {
                 Ok(()) => Err(error),
                 Err(cleanup_error) => Err(CdfError::internal(format!(
@@ -673,11 +676,10 @@ impl PackageBuilder {
             byte_count: encoded.receipt.artifact.byte_count,
             sha256: encoded.receipt.artifact.sha256.clone(),
         };
-        append_journal(
-            &self.segment_drafts,
-            &segment,
-            "package segment draft journal",
-        )?;
+        self.draft_index
+            .lock()
+            .map_err(|_| CdfError::internal("package draft index lock is poisoned"))?
+            .insert_segment(&segment)?;
         Ok(SegmentWriteMetrics {
             segment,
             encode_duration_ns: if encoded.measure {
@@ -698,11 +700,10 @@ impl PackageBuilder {
         &self,
         visitor: &mut dyn FnMut(SegmentEntry) -> Result<()>,
     ) -> Result<()> {
-        visit_journal::<SegmentEntry>(
-            &self.segment_drafts,
-            "package segment draft journal",
-            visitor,
-        )
+        self.draft_index
+            .lock()
+            .map_err(|_| CdfError::internal("package draft index lock is poisoned"))?
+            .visit_segments(visitor)
     }
 
     pub fn finish(&self) -> Result<PackageManifest> {
@@ -724,25 +725,23 @@ impl PackageBuilder {
             trace.sync_all()?;
             trace.file_entry(TRACE_FILE)
         };
-        append_journal(
-            &self.artifact_receipts,
-            &trace_entry,
-            "package artifact receipt journal",
-        )?;
+        self.draft_index
+            .lock()
+            .map_err(|_| CdfError::internal("package draft index lock is poisoned"))?
+            .insert_file(&trace_entry)?;
         sync_directory(&self.package_dir)?;
-        let mut pending_artifacts =
-            read_journal::<FileEntry>(&self.artifact_receipts, "package artifact receipt journal")?
-                .into_iter()
-                .map(|entry| (entry.path.clone(), entry))
-                .collect::<BTreeMap<_, _>>();
-        let mut files = Vec::new();
+        let draft_index = self
+            .draft_index
+            .lock()
+            .map_err(|_| CdfError::internal("package draft index lock is poisoned"))?;
+        let mut observed_file_count = 0_u64;
         visit_identity_file_paths(&self.package_dir, |relative_path| {
             let path = package_path(&self.package_dir, &relative_path);
             let byte_count = std::fs::metadata(&path)
                 .map_err(|error| io_error(format!("stat {}", path.display()), error))?
                 .len();
-            match pending_artifacts.remove(&relative_path) {
-                Some(entry) if entry.byte_count == byte_count => files.push(entry),
+            match draft_index.file(&relative_path)? {
+                Some(entry) if entry.byte_count == byte_count => {}
                 Some(entry) => {
                     return Err(CdfError::data(format!(
                         "identity artifact {relative_path} changed after its writer receipt: expected {} bytes, found {byte_count}",
@@ -755,92 +754,92 @@ impl PackageBuilder {
                     )));
                 }
             }
+            observed_file_count = observed_file_count
+                .checked_add(1)
+                .ok_or_else(|| CdfError::data("package identity file count exceeds u64"))?;
             Ok(())
         })?;
-        if let Some((path, _)) = pending_artifacts.first_key_value() {
+        if observed_file_count != draft_index.file_count() {
+            let mut missing = None;
+            draft_index.visit_files(&mut |entry| {
+                if missing.is_none() && !package_path(&self.package_dir, &entry.path).is_file() {
+                    missing = Some(entry.path);
+                }
+                Ok(())
+            })?;
+            let path = missing.unwrap_or_else(|| "<unknown>".to_owned());
             return Err(CdfError::data(format!(
                 "identity artifact {path} is missing before package finalization"
             )));
         }
-        files.sort_by(|left, right| crate::storage::portable_path_cmp(&left.path, &right.path));
-        let mut segments = Vec::new();
-        self.visit_segment_entries(&mut |segment| {
-            let index = files
-                .binary_search_by(|entry| {
-                    crate::storage::portable_path_cmp(&entry.path, &segment.path)
-                })
-                .map_err(|_| {
-                    CdfError::data(format!(
-                        "segment file {} missing before package finalization",
-                        segment.path
-                    ))
-                })?;
-            let entry = &files[index];
+        let mut previous_path = None;
+        draft_index.visit_files(&mut |entry| {
+            crate::storage::validate_manifest_identity_path(previous_path.as_deref(), &entry.path)?;
+            previous_path = Some(entry.path);
+            Ok(())
+        })?;
+        let mut next_package_row_ord = 0_u64;
+        let mut observed_segment_count = 0_u64;
+        draft_index.visit_segments(&mut |segment| {
+            let entry = draft_index.file(&segment.path)?.ok_or_else(|| {
+                CdfError::data(format!(
+                    "segment file {} missing before package finalization",
+                    segment.path
+                ))
+            })?;
             if entry.byte_count != segment.byte_count || entry.sha256 != segment.sha256 {
                 return Err(CdfError::data(format!(
                     "segment {} does not match its durable artifact receipt",
                     segment.segment_id
                 )));
             }
-            segments.push(segment);
+            if segment.row_count == 0 {
+                return Err(CdfError::data(format!(
+                    "canonical segment {} must contain at least one row",
+                    segment.segment_id
+                )));
+            }
+            if segment.package_row_ord_start != next_package_row_ord {
+                return Err(CdfError::data(format!(
+                    "canonical segment {} package row ordinal starts at {} but manifest order requires {next_package_row_ord}",
+                    segment.segment_id, segment.package_row_ord_start
+                )));
+            }
+            next_package_row_ord = next_package_row_ord
+                .checked_add(segment.row_count)
+                .ok_or_else(|| CdfError::data("package row ordinal range overflow"))?;
+            observed_segment_count = observed_segment_count
+                .checked_add(1)
+                .ok_or_else(|| CdfError::data("package segment count exceeds u64"))?;
             Ok(())
         })?;
-
-        cdf_package_contract::validate_segment_ordinal_manifest(&segments)?;
-        let manifest = build_manifest(self.package_id.clone(), files, segments, status)?;
-        write_manifest_atomic(&self.package_dir, &manifest)?;
-        Ok(manifest)
-    }
-}
-
-fn append_journal<T: Serialize>(journal: &Mutex<File>, value: &T, label: &str) -> Result<()> {
-    let mut bytes = canonical_json_bytes(value)?;
-    bytes.push(b'\n');
-    journal
-        .lock()
-        .map_err(|_| CdfError::internal(format!("{label} lock is poisoned")))?
-        .write_all(&bytes)
-        .map_err(|error| io_error(format!("write {label}"), error))
-}
-
-fn read_journal<T: DeserializeOwned>(journal: &Mutex<File>, label: &str) -> Result<Vec<T>> {
-    let mut values = Vec::new();
-    visit_journal(journal, label, |value| {
-        values.push(value);
-        Ok(())
-    })?;
-    Ok(values)
-}
-
-fn visit_journal<T: DeserializeOwned>(
-    journal: &Mutex<File>,
-    label: &str,
-    mut visit: impl FnMut(T) -> Result<()>,
-) -> Result<()> {
-    let mut file = journal
-        .lock()
-        .map_err(|_| CdfError::internal(format!("{label} lock is poisoned")))?;
-    file.flush()
-        .map_err(|error| io_error(format!("flush {label}"), error))?;
-    file.seek(SeekFrom::Start(0))
-        .map_err(|error| io_error(format!("rewind {label}"), error))?;
-    let result = (|| {
-        for line in BufReader::new(&mut *file).lines() {
-            let line = line.map_err(|error| io_error(format!("read {label}"), error))?;
-            visit(serde_json::from_str(&line).map_err(crate::json::json_error)?)?;
+        if observed_segment_count != draft_index.segment_count() {
+            return Err(CdfError::internal(
+                "package draft segment count changed during finalization",
+            ));
         }
-        Ok(())
-    })();
-    let restore = file
-        .seek(SeekFrom::End(0))
-        .map(|_| ())
-        .map_err(|error| io_error(format!("restore {label} append position"), error));
-    match (result, restore) {
-        (Err(error), Err(restore)) => Err(CdfError::internal(format!(
-            "{error}; {label} cursor restoration also failed: {restore}"
-        ))),
-        (Err(error), Ok(())) => Err(error),
-        (Ok(()), Err(error)) => Err(error),
-        (Ok(()), Ok(())) => Ok(()),
+        let layout = package_layout();
+        let package_hash = manifest_identity_hash_streaming(
+            &self.package_id,
+            &layout,
+            &mut |visitor| draft_index.visit_files(visitor),
+            &mut |visitor| draft_index.visit_segments(visitor),
+        )?;
+        let manifest_path = self.package_dir.join(MANIFEST_FILE);
+        let mut sink = crate::storage::AtomicArtifactSink::create(
+            &manifest_path,
+            ArtifactDurability::PhaseMetadata,
+        )?;
+        write_package_manifest_canonical_streaming(
+            &self.package_id,
+            &layout,
+            &package_hash,
+            status,
+            &mut |visitor| draft_index.visit_files(visitor),
+            &mut |visitor| draft_index.visit_segments(visitor),
+            sink.writer_mut()?,
+        )?;
+        sink.finish()?;
+        crate::read_manifest(&self.package_dir)
     }
 }

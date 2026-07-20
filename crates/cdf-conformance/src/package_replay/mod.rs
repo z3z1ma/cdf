@@ -171,7 +171,11 @@ impl PreparedPackageReplayCase {
 pub fn build_prepared_package_fixture(
     spec: PreparedPackageFixtureSpec,
 ) -> Result<PreparedPackageFixture> {
-    let builder = PackageBuilder::create(&spec.package_dir, spec.package_id.clone())?;
+    let builder = PackageBuilder::create(
+        &spec.package_dir,
+        spec.package_id.clone(),
+        cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)?,
+    )?;
     builder.update_status(PackageStatus::Extracting)?;
     let batch = deterministic_orders_batch()?;
     let schema = batch.schema();

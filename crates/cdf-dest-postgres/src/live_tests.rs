@@ -465,7 +465,13 @@ fn build_package(
     package_id: &str,
     segments: Vec<(&str, RecordBatch)>,
 ) -> PackageManifest {
-    let builder = PackageBuilder::create(root, package_id).unwrap();
+    let builder = PackageBuilder::create(
+        root,
+        package_id,
+        cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
+            .unwrap(),
+    )
+    .unwrap();
     if let Some((_, batch)) = segments.first() {
         builder
             .write_runtime_arrow_schema(batch.schema().as_ref())
@@ -553,7 +559,13 @@ fn build_replay_package(
     checkpoint_id: &str,
     segments: Vec<(&str, RecordBatch)>,
 ) -> PackageManifest {
-    let builder = PackageBuilder::create(root, package_id).unwrap();
+    let builder = PackageBuilder::create(
+        root,
+        package_id,
+        cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
+            .unwrap(),
+    )
+    .unwrap();
     if let Some((_, batch)) = segments.first() {
         builder
             .write_runtime_arrow_schema(batch.schema().as_ref())
@@ -1091,7 +1103,13 @@ fn live_append_populates_quarantine_mirror_when_sheet_supports_it() {
         return;
     };
     let package_dir = tempfile::tempdir().unwrap();
-    let builder = PackageBuilder::create(package_dir.path(), "pkg-live-quarantine-mirror").unwrap();
+    let builder = PackageBuilder::create(
+        package_dir.path(),
+        "pkg-live-quarantine-mirror",
+        cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
+            .unwrap(),
+    )
+    .unwrap();
     builder
         .write_runtime_arrow_schema(batch(&[(1, Some("ada"))]).schema().as_ref())
         .unwrap();

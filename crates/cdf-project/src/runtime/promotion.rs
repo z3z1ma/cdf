@@ -177,6 +177,7 @@ where
     pub lock_authority: &'a LockFileAuthority,
     pub dry_plan: &'a SchemaPromotionPlanReport,
     pub destinations: Vec<ResolvedProjectDestination>,
+    pub execution_services: cdf_runtime::ExecutionServices,
     pub pipeline_id: PipelineId,
     pub lease_owner: LeaseOwnerId,
     pub lease_duration_ms: u64,
@@ -674,6 +675,7 @@ where
                 chain_parent.clone(),
                 scope.clone(),
                 package_index,
+                &request.execution_services,
             )?;
             let authority = correction_target_authority(
                 staged,
@@ -1157,8 +1159,16 @@ fn build_correction_package(
     input_checkpoint: Option<Checkpoint>,
     scope: ScopeKey,
     package_index: &BTreeMap<String, PathBuf>,
+    execution_services: &cdf_runtime::ExecutionServices,
 ) -> cdf_kernel::Result<PreparedCorrectionPackage> {
-    let builder = PackageBuilder::create(package_dir, package_id)?;
+    let builder = PackageBuilder::create(
+        package_dir,
+        package_id,
+        cdf_package::PackageBuilderResources::shared(
+            execution_services.memory(),
+            execution_services.spill(),
+        )?,
+    )?;
     builder.write_json_artifact("plan/promotion-correction.json", &artifact)?;
     builder.write_json_artifact("plan/validation-program.json", &artifact.validation_program)?;
     let operation_json = artifact
@@ -2327,10 +2337,15 @@ mod tests {
 
         fs::remove_dir_all(&malformed).unwrap();
         let original = temp.path().join("original");
-        PackageBuilder::create(&original, "source-package")
-            .unwrap()
-            .finish_with_status(PackageStatus::Packaged)
-            .unwrap();
+        PackageBuilder::create(
+            &original,
+            "source-package",
+            cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
+                .unwrap(),
+        )
+        .unwrap()
+        .finish_with_status(PackageStatus::Packaged)
+        .unwrap();
         let duplicate = temp.path().join("duplicate");
         copy_directory(&original, &duplicate);
         let error = source_package_index(temp.path(), &BTreeSet::new()).unwrap_err();

@@ -713,7 +713,13 @@ mod tests {
             )),
         ])) as ForeignEventStream;
         let temp = tempfile::tempdir().unwrap();
-        let builder = PackageBuilder::create(temp.path(), "foreign-mock-package").unwrap();
+        let builder = PackageBuilder::create(
+            temp.path(),
+            "foreign-mock-package",
+            cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
+                .unwrap(),
+        )
+        .unwrap();
         let mut batches = batch_stream_from_foreign_events(stream);
         let mut segment_count = 0_u64;
         let mut package_row_ord_start = 0_u64;

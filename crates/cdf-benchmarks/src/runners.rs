@@ -1602,7 +1602,11 @@ fn build_package_fixture(
         .map(|batch| batch.schema())
         .ok_or_else(|| bench_error("package fixture requires at least one batch"))?;
     let schema_hash = canonical_arrow_schema_hash(schema.as_ref())?;
-    let builder = PackageBuilder::create(&package_dir, package_id)?;
+    let builder = PackageBuilder::create(
+        &package_dir,
+        package_id,
+        cdf_package::PackageBuilderResources::standalone(64 * 1024 * 1024, 1024 * 1024 * 1024)?,
+    )?;
     builder.update_status(PackageStatus::Extracting)?;
     builder.write_json_artifact(
         "plan/benchmark-fixture.json",

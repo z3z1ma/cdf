@@ -77,7 +77,11 @@ pub struct GoldenSegmentEvidence {
 pub fn build_prepared_orders_golden_package(
     spec: GoldenPackageFixtureSpec,
 ) -> Result<GoldenPackageFixture> {
-    let builder = PackageBuilder::create(&spec.package_dir, spec.package_id)?;
+    let builder = PackageBuilder::create(
+        &spec.package_dir,
+        spec.package_id,
+        cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)?,
+    )?;
     builder.update_status(PackageStatus::Extracting)?;
     builder.write_json_artifact(
         "plan/resource_plan.json",

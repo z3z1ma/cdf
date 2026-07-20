@@ -146,6 +146,17 @@ fn standalone_execution_options() -> Result<EngineExecutionOptions> {
     Ok(EngineExecutionOptions::default().with_execution_services(services))
 }
 
+fn package_builder_resources(
+    services: Option<&cdf_runtime::ExecutionServices>,
+) -> Result<cdf_package::PackageBuilderResources> {
+    let services = services.ok_or_else(|| {
+        CdfError::contract(
+            "package execution requires shared execution services for manifest memory and spill accounting",
+        )
+    })?;
+    cdf_package::PackageBuilderResources::shared(services.memory(), services.spill())
+}
+
 /// An owned, accounted handoff from durable package publication to staged ingress.
 ///
 /// The record batches and their existing memory leases move together so a destination queue does
@@ -3337,7 +3348,11 @@ where
         ExecutionExtent::Bounded { .. } | ExecutionExtent::Resident { .. } => None,
     };
 
-    let builder = PackageBuilder::create(package_dir, plan.package_id.clone())?;
+    let builder = PackageBuilder::create(
+        package_dir,
+        plan.package_id.clone(),
+        package_builder_resources(options.services.as_ref())?,
+    )?;
     builder.update_status(PackageStatus::Extracting)?;
     builder.write_json_artifact(cdf_package_contract::SCAN_PLAN_FILE, &plan.scan)?;
     builder.write_json_artifact("plan/explain.json", &plan.explain)?;
@@ -5209,7 +5224,6 @@ where
     let source_frontier_report = source_frontier.report();
 
     drop(contract_evaluator);
-    builder.write_json_artifact("plan/validation-program.json", &validation_program)?;
     if let Some(coercion) = &validation_program.schema_coercion {
         builder.write_json_artifact("schema/coercion-plan.json", coercion)?;
     }
@@ -7198,6 +7212,7 @@ pub fn assemble_isolated_worker_package(
     canonical_segments: &[cdf_runtime::AdmittedSegmentWorkerResult],
     artifacts: &dyn EngineWorkerArtifactAuthority,
     resources: &cdf_runtime::WorkerResourceBudget,
+    services: &cdf_runtime::ExecutionServices,
 ) -> Result<EngineRunOutputWithSegmentPositions> {
     let mut preparation_results = BTreeMap::new();
     for admitted in &partition_evidence {
@@ -7458,7 +7473,11 @@ pub fn assemble_isolated_worker_package(
         ));
     }
 
-    let builder = PackageBuilder::create(package_dir, plan.package_id.clone())?;
+    let builder = PackageBuilder::create(
+        package_dir,
+        plan.package_id.clone(),
+        cdf_package::PackageBuilderResources::shared(services.memory(), services.spill())?,
+    )?;
     let mut package_row_ord_start = 0_u64;
     for (_, _, segment_id, row_count, reference) in canonical {
         let bytes = artifacts
@@ -7960,7 +7979,13 @@ mod transform_kernel_tests {
         let managed: Arc<dyn MemoryCoordinator> = memory.clone();
         let lease = reserve_quarantine_evidence(Some(&managed)).unwrap();
         let temp = tempfile::tempdir().unwrap();
-        let builder = PackageBuilder::create(temp.path(), "quarantine-budget").unwrap();
+        let builder = PackageBuilder::create(
+            temp.path(),
+            "quarantine-budget",
+            cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
+                .unwrap(),
+        )
+        .unwrap();
         let mut part_count = 0;
         let mut sink = QuarantinePartAccumulator::new(&builder, &mut part_count, lease);
         let error = sink
@@ -7995,7 +8020,13 @@ mod transform_kernel_tests {
         let managed: Arc<dyn MemoryCoordinator> = memory.clone();
         let lease = reserve_quarantine_evidence(Some(&managed)).unwrap();
         let temp = tempfile::tempdir().unwrap();
-        let builder = PackageBuilder::create(temp.path(), "dense-quarantine-budget").unwrap();
+        let builder = PackageBuilder::create(
+            temp.path(),
+            "dense-quarantine-budget",
+            cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
+                .unwrap(),
+        )
+        .unwrap();
         let mut part_count = 0;
         let mut sink = QuarantinePartAccumulator::new(&builder, &mut part_count, lease);
         for row in 0..ROWS {
@@ -8050,7 +8081,13 @@ mod transform_kernel_tests {
         let managed: Arc<dyn MemoryCoordinator> = memory.clone();
         let lease = reserve_quarantine_evidence(Some(&managed)).unwrap();
         let temp = tempfile::tempdir().unwrap();
-        let builder = PackageBuilder::create(temp.path(), "dense-quarantine-rss").unwrap();
+        let builder = PackageBuilder::create(
+            temp.path(),
+            "dense-quarantine-rss",
+            cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
+                .unwrap(),
+        )
+        .unwrap();
         let mut part_count = 0;
         let mut sink = QuarantinePartAccumulator::new(&builder, &mut part_count, lease);
         for row in 0..rows {

@@ -2908,7 +2908,13 @@ mod tests {
         let package_root = temp.path().join("packages");
         let package_dir = package_root.join("archived");
         fs::create_dir_all(&package_root).unwrap();
-        let builder = cdf_package::PackageBuilder::create(&package_dir, "archived").unwrap();
+        let builder = cdf_package::PackageBuilder::create(
+            &package_dir,
+            "archived",
+            cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
+                .unwrap(),
+        )
+        .unwrap();
         let output_position = SourcePosition::TableSnapshot(Box::new(TableSnapshotPosition {
             version: CHECKPOINT_STATE_VERSION,
             protocol: "iceberg".to_owned(),
@@ -3599,7 +3605,13 @@ mod tests {
         add_receipt: bool,
     ) -> PathBuf {
         let package_dir = root.join(package_id);
-        let builder = cdf_package::PackageBuilder::create(&package_dir, package_id).unwrap();
+        let builder = cdf_package::PackageBuilder::create(
+            &package_dir,
+            package_id,
+            cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
+                .unwrap(),
+        )
+        .unwrap();
         let field = if canonical_field {
             let field = cdf_kernel::with_semantic(
                 Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, true),

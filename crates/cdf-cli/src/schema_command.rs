@@ -194,6 +194,7 @@ fn execute_promotion(
         lock_authority: &authority,
         dry_plan: &report,
         destinations,
+        execution_services: execution.clone(),
         pipeline_id: PipelineId::new("cdf-schema-promotion")?,
         lease_owner: LeaseOwnerId::new(format!("schema-promote:{}", report.promotion_id))?,
         lease_duration_ms: DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS,

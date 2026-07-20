@@ -277,7 +277,7 @@ pub(crate) fn build_manifest(
     })
 }
 
-fn package_layout() -> Vec<String> {
+pub(crate) fn package_layout() -> Vec<String> {
     let mut layout = REQUIRED_DIRECTORIES
         .iter()
         .map(|directory| format!("{directory}/"))
