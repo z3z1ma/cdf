@@ -257,22 +257,23 @@ fn verification_failure(message: impl std::fmt::Display) -> CdfError {
 pub fn tombstone_package(package_dir: impl AsRef<Path>) -> Result<TombstoneReport> {
     let package_dir = package_dir.as_ref();
     let manifest = read_manifest(package_dir)?;
-    let mut removed_files = Vec::new();
+    let mut removed_file_count = 0_u64;
 
     for entry in &manifest.identity.files {
         let path = package_path(package_dir, &entry.path);
         if path.exists() {
             fs::remove_file(&path)
                 .map_err(|error| io_error(format!("remove {}", path.display()), error))?;
-            removed_files.push(entry.path.clone());
+            removed_file_count = removed_file_count
+                .checked_add(1)
+                .ok_or_else(|| CdfError::data("tombstoned file count overflowed u64"))?;
         }
     }
-    removed_files.sort();
 
     update_package_status(package_dir, PackageStatus::Archived)?;
     Ok(TombstoneReport {
         package_hash: manifest.package_hash,
-        removed_files,
+        removed_file_count,
     })
 }
 

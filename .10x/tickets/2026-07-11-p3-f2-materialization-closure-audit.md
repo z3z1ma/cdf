@@ -66,6 +66,7 @@ No unrelated product feature or performance tuning beyond closure blockers.
 - 2026-07-18: Deleted the lineage artifact's duplicate partition and output-segment arrays. Input partition identity is now derived from the existing typed input-observation records; output segment identity remains solely in canonical segment positions and the package manifest. Direct and isolated execution no longer allocate or merge those redundant vectors, and worker-result validation compares canonical segment positions directly with prepared artifact receipts. The old JSON fields were removed rather than accepted as compatibility aliases.
 - 2026-07-18: Removed the engine's package-lifetime build-time `Vec<SegmentEntry>`. The package segment journal now records the complete durable entry once and exposes a canonical streaming visitor. Project pre-finalization joins that stream directly with segment-position evidence to construct state artifacts; isolated assembly no longer accumulates imported entries it never consumed. Visitor failure restores the append cursor before returning, so inspection cannot corrupt later registration. Final manifest construction still materializes its own segment array and remains an explicit F2 blocker.
 - 2026-07-18: Removed the quarantine-mirror outcome's per-part path array. The package manifest remains the artifact identity authority; mirror evidence is now constant-size and records its version, canonical quarantine directory, Parquet part count, and schema-observation presence. Directory inspection counts with checked `u64` arithmetic and the conformance laws assert the superseded `quarantine_artifacts` field is absent.
+- 2026-07-18: Deleted the tombstone report's package-sized removed-path list and its redundant sort. The manifest already owns those identities; tombstoning now returns only package hash plus a checked `u64` removed-file count.
 
 ## Evidence
 
@@ -167,6 +168,9 @@ No unrelated product feature or performance tuning beyond closure blockers.
   - `project_run_records_non_mirror_outcome_for_unsupported_quarantine_sheet` passed through package, DuckDB commit, checkpoint, and artifact inspection with one quarantine part and no inline path array.
   - `RUST_MIN_STACK=16777216 CARGO_BUILD_JOBS=12 cargo test -p cdf-conformance drift_quarantine_duckdb_conformance_asserts_unsupported_mirror_exclusion --lib --locked -j 12` — passed. The live-run conformance path verifies the same constant-size evidence after drift/quarantine execution.
   - `CARGO_BUILD_JOBS=12 cargo check -p cdf-conformance --all-targets --locked -j 12` and strict Clippy for project/conformance passed. `cargo fmt --all` and `git diff --check` passed.
+- 2026-07-18 constant-size tombstone report:
+  - `tombstone_removes_identity_files_but_preserves_manifest_hashes` passed and asserts the checked removed count equals manifest cardinality while identity hash/status semantics remain unchanged.
+  - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-package-contract -p cdf-package --all-targets --locked -j 12 -- -D warnings`, `cargo fmt --all`, and `git diff --check` passed.
 - This is partial F2 evidence only. The ticket remains active because its cross-codebase owner matrix, static architecture gates, remaining metadata-cardinality closure, and geometric stress proof are not complete.
 
 ## Review

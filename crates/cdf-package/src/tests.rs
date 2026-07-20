@@ -2172,10 +2172,9 @@ fn tombstone_removes_identity_files_but_preserves_manifest_hashes() {
     let report = reader.tombstone().unwrap();
     assert_eq!(report.package_hash, manifest.package_hash);
     assert!(manifest_path.is_file());
-    assert!(
-        report
-            .removed_files
-            .contains(&"data/seg-000001.arrow".to_owned())
+    assert_eq!(
+        report.removed_file_count,
+        manifest.identity.files.len() as u64
     );
 
     let tombstoned_manifest = read_manifest(temp.path()).unwrap();

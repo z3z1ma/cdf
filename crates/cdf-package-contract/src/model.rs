@@ -179,7 +179,7 @@ pub struct VerificationReport {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TombstoneReport {
     pub package_hash: String,
-    pub removed_files: Vec<String>,
+    pub removed_file_count: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
