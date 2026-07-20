@@ -68,6 +68,7 @@ No unrelated product feature or performance tuning beyond closure blockers.
 - 2026-07-18: Removed the quarantine-mirror outcome's per-part path array. The package manifest remains the artifact identity authority; mirror evidence is now constant-size and records its version, canonical quarantine directory, Parquet part count, and schema-observation presence. Directory inspection counts with checked `u64` arithmetic and the conformance laws assert the superseded `quarantine_artifacts` field is absent.
 - 2026-07-18: Deleted the tombstone report's package-sized removed-path list and its redundant sort. The manifest already owns those identities; tombstoning now returns only package hash plus a checked `u64` removed-file count.
 - 2026-07-18: Removed state pre-finalization's package-sized segment-position `BTreeMap`. The package journal and engine position evidence are both canonical streams, so state construction now joins them lockstep and fails at the first missing, reordered, or mismatched segment identity.
+- 2026-07-18: Removed four package-cardinality `BTreeSet` allocations from direct engine finalization and the equivalent isolated-lineage set. Lineage, processed-observation, and terminal-quarantine vectors are now canonicalized once in place, reject adjacent duplicate identities, and compare against ordered stream-admission/quarantine authority with linear iterators. This preserves exact-set semantics and strengthens duplicate terminal-quarantine rejection without another resident identity index.
 
 ## Evidence
 
@@ -175,6 +176,10 @@ No unrelated product feature or performance tuning beyond closure blockers.
 - 2026-07-18 lockstep state segment join:
   - `CARGO_BUILD_JOBS=12 cargo test -p cdf-project state_delta_ --lib --locked -j 12` — passed all 12 state aggregation, merge, conflict, mixed-position, cursor, and receipt-count laws without the temporary ordered map.
   - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-project --all-targets --locked -j 12 -- -D warnings`, `cargo fmt --all`, and `git diff --check` passed.
+- 2026-07-18 linear observation-evidence reconciliation:
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-engine actual_engine_capsules_are_jobs_invariant_for_multiple_partitions --lib --locked -j 12` — passed. Direct and isolated assembly still produce identical canonical evidence across CPU budgets after replacing resident identity sets with sorted linear comparison.
+  - `actual_engine_capsule_preserves_terminal_schema_quarantine_evidence` and `compiled_stream_admission_is_replay_verifiable_and_rejects_mismatched_evidence` passed. These prove terminal quarantine evidence remains complete and compiled stream-admission evidence remains replay-verifiable through the stricter duplicate/exact-match checks.
+  - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-engine --all-targets --locked -j 12 -- -D warnings`, `cargo fmt --all`, and `git diff --check` passed.
 - This is partial F2 evidence only. The ticket remains active because its cross-codebase owner matrix, static architecture gates, remaining metadata-cardinality closure, and geometric stress proof are not complete.
 
 ## Review

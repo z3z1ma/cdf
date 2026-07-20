@@ -5213,56 +5213,71 @@ where
     if let Some(coercion) = &validation_program.schema_coercion {
         builder.write_json_artifact("schema/coercion-plan.json", coercion)?;
     }
-    let lineage_observation_ids = lineage
+    lineage
         .input_observations
-        .iter()
-        .map(|observation| observation.observation_id.as_str())
-        .collect::<BTreeSet<_>>();
-    if lineage_observation_ids.len() != lineage.input_observations.len() {
+        .sort_by(|left, right| left.observation_id.cmp(&right.observation_id));
+    if lineage
+        .input_observations
+        .windows(2)
+        .any(|pair| pair[0].observation_id == pair[1].observation_id)
+    {
         return Err(CdfError::data(
             "execution lineage contains a schema observation identity assigned to more than one partition",
         ));
     }
-    let stream_observation_ids = stream_admission_evidence
-        .keys()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
-    if lineage_observation_ids != stream_observation_ids {
+    if !lineage
+        .input_observations
+        .iter()
+        .map(|observation| observation.observation_id.as_str())
+        .eq(stream_admission_evidence.keys().map(String::as_str))
+    {
         return Err(CdfError::data(
             "execution lineage does not exactly bind every admitted stream observation to one partition",
         ));
     }
-    let admitted_observations = processed_observations
+    processed_observations.sort_by(|left, right| left.observation_id.cmp(&right.observation_id));
+    if processed_observations
+        .windows(2)
+        .any(|pair| pair[0].observation_id == pair[1].observation_id)
+    {
+        return Err(CdfError::data(
+            "processed schema observation identity is assigned to more than one partition",
+        ));
+    }
+    terminal_quarantines.sort_by(|left, right| left.observation_id().cmp(right.observation_id()));
+    if terminal_quarantines
+        .windows(2)
+        .any(|pair| pair[0].observation_id() == pair[1].observation_id())
+    {
+        return Err(CdfError::data(
+            "schema-quarantine evidence contains a duplicate observation identity",
+        ));
+    }
+    if !processed_observations
         .iter()
         .filter(|observation| observation.outcome == ProcessedObservationOutcome::Admitted)
         .map(|observation| observation.observation_id.as_str())
-        .collect::<BTreeSet<_>>();
-    let quarantined_observations = processed_observations
-        .iter()
-        .filter(|observation| observation.outcome == ProcessedObservationOutcome::Quarantined)
-        .map(|observation| observation.observation_id.as_str())
-        .collect::<BTreeSet<_>>();
-    if admitted_observations
-        != stream_admission_evidence
-            .values()
-            .filter(|observation| {
+        .eq(stream_admission_evidence
+            .iter()
+            .filter(|(_, observation)| {
                 matches!(
                     observation.completion,
                     crate::StreamAdmissionCompletion::Complete { .. }
                 )
             })
-            .map(|observation| observation.observation_id.as_str())
-            .collect::<BTreeSet<_>>()
+            .map(|(observation_id, _)| observation_id.as_str()))
     {
         return Err(CdfError::data(
             "processed admitted observations do not exactly match stream-admission evidence",
         ));
     }
-    if quarantined_observations
-        != terminal_quarantines
+    if !processed_observations
+        .iter()
+        .filter(|observation| observation.outcome == ProcessedObservationOutcome::Quarantined)
+        .map(|observation| observation.observation_id.as_str())
+        .eq(terminal_quarantines
             .iter()
-            .map(TerminalSchemaObservationQuarantine::observation_id)
-            .collect::<BTreeSet<_>>()
+            .map(TerminalSchemaObservationQuarantine::observation_id))
     {
         return Err(CdfError::data(
             "processed quarantined observations do not exactly match schema-quarantine evidence",
@@ -7305,11 +7320,13 @@ pub fn assemble_isolated_worker_package(
             .max(evidence.source_frontier.peak_ready_partitions);
     }
 
-    let mut observation_ids = BTreeSet::new();
+    lineage
+        .input_observations
+        .sort_by(|left, right| left.observation_id.cmp(&right.observation_id));
     if lineage
         .input_observations
-        .iter()
-        .any(|observation| !observation_ids.insert(observation.observation_id.as_str()))
+        .windows(2)
+        .any(|pair| pair[0].observation_id == pair[1].observation_id)
     {
         return Err(CdfError::contract(
             "isolated partition evidence assigns one observation to multiple partitions",
