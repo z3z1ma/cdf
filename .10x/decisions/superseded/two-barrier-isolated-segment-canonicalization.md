@@ -1,6 +1,8 @@
-Status: active
+Status: superseded
 Created: 2026-07-20
 Updated: 2026-07-20
+
+Superseded-By: `.10x/decisions/partition-separable-isolated-segment-canonicalization.md`
 
 # Two-barrier isolated segment canonicalization
 

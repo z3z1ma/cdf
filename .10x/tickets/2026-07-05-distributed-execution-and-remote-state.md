@@ -31,6 +31,7 @@ No new artifact type may be introduced without superseding decision.
 - 2026-07-05: Opened from book and specs.
 - 2026-07-10: `.10x/tickets/done/2026-07-10-p2-rp4-schema-scope-lease-lock-cas.md` now owns the first executor-neutral fenced `ScopeKey` lease primitive required by schema promotion, with in-memory/SQLite implementations only. This ticket MUST reuse/extend that conformance-tested primitive for remote stores and worker scheduling rather than introducing a second lease model.
 - 2026-07-11: P3/P0 foundation `.10x/specs/portable-partition-task-protocol.md`, WX1, and C5 now own the neutral canonical task/result protocol and local isolated-worker equivalence law. This distributed parent MUST wrap that protocol with transport, remote stores/leases/artifacts, placement, and framework/substrate adapters; it MUST NOT create a competing worker plan or let Spark/Flink/Ballista reinterpret CDF semantics.
+- 2026-07-20: `.10x/decisions/partition-separable-isolated-segment-canonicalization.md` makes the current partition capsule exact for compiler-proven separable work and explicitly rejects multi-partition package-global selectors before side effects. This ticket owns any later typed global-operator/epoch task needed to distribute those graphs; it MUST bind the compiled whole-plan authority and MUST NOT overload a partition task or reinterpret global state as partition-local.
 
 ## Blockers
 
