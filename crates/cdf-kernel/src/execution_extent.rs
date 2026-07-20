@@ -656,7 +656,7 @@ impl EpochFrontier {
 pub struct EpochClosureEvidence {
     pub version: u16,
     pub frontier: EpochFrontier,
-    pub trigger: EpochClosureTrigger,
+    pub cause: EpochClosureCause,
     pub observation: EpochClosureObservation,
     pub observed_at_unix_milliseconds: u64,
 }
@@ -666,7 +666,7 @@ pub struct EpochClosureEvidence {
 struct UncheckedEpochClosureEvidence {
     version: u16,
     frontier: EpochFrontier,
-    trigger: EpochClosureTrigger,
+    cause: EpochClosureCause,
     observation: EpochClosureObservation,
     observed_at_unix_milliseconds: u64,
 }
@@ -678,7 +678,7 @@ impl TryFrom<UncheckedEpochClosureEvidence> for EpochClosureEvidence {
         let evidence = Self {
             version: value.version,
             frontier: value.frontier,
-            trigger: value.trigger,
+            cause: value.cause,
             observation: value.observation,
             observed_at_unix_milliseconds: value.observed_at_unix_milliseconds,
         };
@@ -695,8 +695,8 @@ impl EpochClosureEvidence {
             EPOCH_CLOSURE_EVIDENCE_VERSION,
         )?;
         self.frontier.validate()?;
-        self.trigger.validate("epoch closure")?;
-        self.observation.validate_against(&self.trigger)?;
+        self.cause.validate()?;
+        self.observation.validate_against(&self.cause)?;
         if self.observed_at_unix_milliseconds == 0 {
             return Err(CdfError::contract(
                 "epoch closure observation time must be greater than zero",
@@ -706,7 +706,32 @@ impl EpochClosureEvidence {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// The complete reason a finite epoch closed. Cadence and rotation are kept
+/// distinct even when they use the same threshold so operational evidence can
+/// explain which policy requested the barrier. Termination and source
+/// exhaustion are first-class because a final legal epoch may close before a
+/// cadence threshold is reached.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EpochClosureCause {
+    CheckpointCadence { trigger: EpochClosureTrigger },
+    PackageRotation { trigger: EpochClosureTrigger },
+    DrainTermination { termination: DrainTermination },
+    SourceExhausted,
+}
+
+impl EpochClosureCause {
+    fn validate(&self) -> Result<()> {
+        match self {
+            Self::CheckpointCadence { trigger } => trigger.validate("checkpoint cadence"),
+            Self::PackageRotation { trigger } => trigger.validate("package rotation"),
+            Self::DrainTermination { termination } => termination.validate(),
+            Self::SourceExhausted => Ok(()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EpochClosureObservation {
     Batches {
@@ -729,11 +754,20 @@ pub enum EpochClosureObservation {
         observed_units: u64,
         overshoot_units: u64,
     },
+    SourceFrontier {
+        observed: SourcePosition,
+    },
+    Quiescent,
 }
 
 impl EpochClosureObservation {
-    fn validate_against(&self, trigger: &EpochClosureTrigger) -> Result<()> {
-        let consistent = match (self, trigger) {
+    fn validate_against(&self, cause: &EpochClosureCause) -> Result<()> {
+        let trigger = match cause {
+            EpochClosureCause::CheckpointCadence { trigger }
+            | EpochClosureCause::PackageRotation { trigger } => Some(trigger),
+            EpochClosureCause::DrainTermination { .. } | EpochClosureCause::SourceExhausted => None,
+        };
+        let trigger_consistent = trigger.is_some_and(|trigger| match (self, trigger) {
             (
                 Self::Batches {
                     observed,
@@ -770,10 +804,54 @@ impl EpochClosureObservation {
                 EpochClosureTrigger::WatermarkAdvance { units },
             ) => observed_units.checked_sub(*units) == Some(*overshoot_units),
             _ => false,
+        });
+        let termination_consistent = match (self, cause) {
+            (
+                Self::Rows {
+                    observed,
+                    overshoot,
+                },
+                EpochClosureCause::DrainTermination {
+                    termination: DrainTermination::Records { count },
+                },
+            )
+            | (
+                Self::Bytes {
+                    observed,
+                    overshoot,
+                },
+                EpochClosureCause::DrainTermination {
+                    termination: DrainTermination::Bytes { count },
+                },
+            ) => observed.checked_sub(*count) == Some(*overshoot),
+            (
+                Self::Elapsed {
+                    observed_milliseconds,
+                    overshoot_milliseconds,
+                },
+                EpochClosureCause::DrainTermination {
+                    termination: DrainTermination::Duration { milliseconds },
+                },
+            ) => observed_milliseconds.checked_sub(*milliseconds) == Some(*overshoot_milliseconds),
+            (
+                Self::SourceFrontier { observed },
+                EpochClosureCause::DrainTermination {
+                    termination: DrainTermination::SourceFrontier { position },
+                },
+            ) => observed.validate().is_ok() && observed.kind() == position.kind(),
+            (
+                Self::Quiescent,
+                EpochClosureCause::DrainTermination {
+                    termination: DrainTermination::Quiescent,
+                }
+                | EpochClosureCause::SourceExhausted,
+            ) => true,
+            _ => false,
         };
+        let consistent = trigger_consistent || termination_consistent;
         if !consistent {
             return Err(CdfError::contract(
-                "epoch closure observation must match its trigger dimension and exact overshoot",
+                "epoch closure observation must match its cause dimension and exact overshoot",
             ));
         }
         Ok(())
@@ -909,7 +987,9 @@ mod tests {
         let evidence = EpochClosureEvidence {
             version: EPOCH_CLOSURE_EVIDENCE_VERSION,
             frontier,
-            trigger: EpochClosureTrigger::Elapsed { milliseconds: 500 },
+            cause: EpochClosureCause::PackageRotation {
+                trigger: EpochClosureTrigger::Elapsed { milliseconds: 500 },
+            },
             observation: EpochClosureObservation::Elapsed {
                 observed_milliseconds: 508,
                 overshoot_milliseconds: 8,
@@ -918,7 +998,8 @@ mod tests {
         };
         evidence.validate().unwrap();
         let recorded = serde_json::to_value(evidence).unwrap();
-        assert_eq!(recorded["trigger"]["kind"], "elapsed");
+        assert_eq!(recorded["cause"]["kind"], "package_rotation");
+        assert_eq!(recorded["cause"]["trigger"]["kind"], "elapsed");
         assert_eq!(recorded["observation"]["observed_milliseconds"], 508);
         assert_eq!(recorded["observation"]["overshoot_milliseconds"], 8);
     }
@@ -964,7 +1045,9 @@ mod tests {
         let evidence = EpochClosureEvidence {
             version: EPOCH_CLOSURE_EVIDENCE_VERSION,
             frontier,
-            trigger: EpochClosureTrigger::WatermarkAdvance { units: 10 },
+            cause: EpochClosureCause::CheckpointCadence {
+                trigger: EpochClosureTrigger::WatermarkAdvance { units: 10 },
+            },
             observation: EpochClosureObservation::WatermarkAdvance {
                 observed_units: 12,
                 overshoot_units: 2,
