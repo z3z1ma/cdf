@@ -3,6 +3,7 @@ use std::{
     sync::{Arc, Mutex, mpsc::sync_channel},
 };
 
+use apache_avro::{Reader as AvroReader, from_value as from_avro_value};
 use cdf_kernel::{
     CdfError, CompiledScanIntent, DeliveryGuarantee, PlanId, Result, ScanPlan, ScanRequest,
     WriteDisposition,
@@ -12,8 +13,9 @@ use cdf_runtime::artifact_hash;
 use cdf_task_store::{ExternalTaskSetWriter, ExternalTaskStore, TaskSetLimits};
 use iceberg::spec::{
     DEFAULT_SCHEMA_NAME_MAPPING, DataContentType, DataFileFormat, FormatVersion, Manifest,
-    ManifestContentType, ManifestList, ManifestStatus,
+    ManifestContentType, ManifestStatus,
 };
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -23,7 +25,9 @@ use crate::{
     IcebergReaderRequirements, IcebergScanTask, IcebergSourceOptions, IcebergTaskSetAuthority,
     LoadedIcebergTable,
     catalog::{load_catalog_object, reserve_parse_memory},
-    delete_index::IcebergDeleteIndex,
+    planning_index::{
+        IcebergPlanningIndex, IcebergPlanningManifest, IcebergPlanningManifestReader,
+    },
 };
 
 pub(crate) struct IcebergPlanningContext<'a> {
@@ -69,7 +73,7 @@ pub(crate) fn plan_snapshot_scan(
         limit: None,
         order_by: Vec::new(),
     };
-    let mut manifests = Vec::new();
+    let mut planning_index = None;
     if let Some(selected) = &table.selected {
         let manifest_list = load_catalog_object(
             context.catalog,
@@ -84,48 +88,25 @@ pub(crate) fn plan_snapshot_scan(
             source.metadata_parse_amplification_bps,
             "iceberg-manifest-list-parse",
         )?;
-        let list = ManifestList::parse_with_version(
+        let mut index = IcebergPlanningIndex::create(
+            context.task_store,
+            source,
+            context.catalog.execution.memory(),
+            context.catalog.execution.spill(),
+        )?;
+        parse_manifest_list(
             manifest_list.payload.payload(),
             table.metadata.format_version(),
-        )
-        .map_err(|error| CdfError::data(format!("parse Iceberg manifest list: {error}")))?;
-        manifests = list.consume_entries().into_iter().collect::<Vec<_>>();
-        if manifests.len() > source.maximum_metadata_files {
-            return Err(CdfError::data(format!(
-                "Iceberg snapshot contains {} manifests but maximum_metadata_files is {}",
-                manifests.len(),
-                source.maximum_metadata_files
-            )));
-        }
-        manifests.sort_by(|left, right| {
-            left.manifest_path
-                .cmp(&right.manifest_path)
-                .then_with(|| left.partition_spec_id.cmp(&right.partition_spec_id))
-                .then_with(|| left.added_snapshot_id.cmp(&right.added_snapshot_id))
-        });
-        if manifests
-            .windows(2)
-            .any(|pair| pair[0].manifest_path == pair[1].manifest_path)
-        {
-            return Err(CdfError::data(
-                "Iceberg manifest list contains a duplicate manifest path",
-            ));
-        }
-        for manifest_file in &manifests {
-            validate_manifest_list_entry(manifest_file)?;
-            if table.metadata.format_version() == FormatVersion::V1
-                && manifest_file.content == ManifestContentType::Deletes
-            {
-                return Err(CdfError::data(
-                    "Iceberg format v1 snapshot cannot contain delete manifests",
-                ));
-            }
-        }
+            source.maximum_metadata_files,
+            &mut index,
+            &context.cancellation,
+        )?;
         drop(manifest_list_parse);
+        planning_index = Some(index);
     }
-    let has_deletes = manifests
-        .iter()
-        .any(|manifest| manifest.content == ManifestContentType::Deletes);
+    let has_deletes = planning_index
+        .as_ref()
+        .is_some_and(|index| index.manifest_count(ManifestContentType::Deletes) > 0);
     let authority = task_authority(
         table,
         output_schema_id,
@@ -154,38 +135,22 @@ pub(crate) fn plan_snapshot_scan(
 
     let mut estimated_rows = 0_u64;
     let mut estimated_bytes = 0_u64;
-    if !manifests.is_empty() {
-        let delete_manifests = manifests
-            .iter()
-            .filter(|manifest| manifest.content == ManifestContentType::Deletes)
-            .cloned()
-            .collect::<Vec<_>>();
-        let data_manifests = manifests
-            .into_iter()
-            .filter(|manifest| manifest.content == ManifestContentType::Data)
-            .collect::<Vec<_>>();
-        let mut delete_index = if delete_manifests.is_empty() {
-            None
-        } else {
-            Some(IcebergDeleteIndex::create(
-                context.task_store,
-                source,
-                context.catalog.execution.memory(),
-                context.catalog.execution.spill(),
-            )?)
-        };
-        if let Some(index) = delete_index.as_mut() {
+    if let Some(mut index) = planning_index {
+        if has_deletes {
+            let mut manifests = index.manifest_cursor(ManifestContentType::Deletes)?;
             process_manifests_canonical(
-                delete_manifests,
+                manifests.manifest_count(),
+                &mut manifests,
                 source,
                 context.catalog,
                 context.cancellation.clone(),
-                |work| emit_delete_manifest(work, table, index),
+                |work| emit_delete_manifest(work, table, &mut index),
             )?;
         }
         let mut task_ordinal = 0_u64;
-        process_manifests_canonical(
-            data_manifests,
+        let manifests = index.manifest_reader(ManifestContentType::Data)?;
+        process_indexed_manifests(
+            manifests,
             source,
             context.catalog,
             context.cancellation.clone(),
@@ -199,7 +164,7 @@ pub(crate) fn plan_snapshot_scan(
                     &mut task_ordinal,
                     &mut estimated_rows,
                     &mut estimated_bytes,
-                    delete_index.as_ref(),
+                    has_deletes.then_some(&index),
                     source.maximum_task_bytes,
                 )
             },
@@ -221,8 +186,149 @@ pub(crate) fn plan_snapshot_scan(
     })
 }
 
+#[derive(Deserialize)]
+struct ManifestListEntryV1 {
+    manifest_path: String,
+    manifest_length: i64,
+    partition_spec_id: i32,
+    added_snapshot_id: i64,
+    #[serde(default)]
+    key_metadata: Option<Vec<u8>>,
+}
+
+#[derive(Deserialize)]
+struct ManifestListEntryV2 {
+    manifest_path: String,
+    manifest_length: i64,
+    partition_spec_id: i32,
+    content: i32,
+    sequence_number: i64,
+    added_snapshot_id: i64,
+    #[serde(default)]
+    key_metadata: Option<Vec<u8>>,
+}
+
+fn parse_manifest_list(
+    payload: &[u8],
+    version: FormatVersion,
+    maximum_manifests: usize,
+    index: &mut IcebergPlanningIndex,
+    cancellation: &cdf_runtime::RunCancellation,
+) -> Result<()> {
+    if version == FormatVersion::V3 {
+        return Err(CdfError::contract(
+            "Iceberg format v3 scan planning is not compiled; use a v1/v2 table",
+        ));
+    }
+    loop {
+        index.begin_manifest_ingest()?;
+        let attempt =
+            parse_manifest_list_attempt(payload, version, maximum_manifests, index, cancellation);
+        match attempt {
+            Ok(true) => match index.finish_manifest_ingest() {
+                Ok(true) => return Ok(()),
+                Ok(false) => index.restart_manifest_ingest_after_spill_full()?,
+                Err(error) => {
+                    index.abort_manifest_ingest()?;
+                    return Err(error);
+                }
+            },
+            Ok(false) => index.restart_manifest_ingest_after_spill_full()?,
+            Err(error) => {
+                index.abort_manifest_ingest()?;
+                return Err(error);
+            }
+        }
+    }
+}
+
+fn parse_manifest_list_attempt(
+    payload: &[u8],
+    version: FormatVersion,
+    maximum_manifests: usize,
+    index: &mut IcebergPlanningIndex,
+    cancellation: &cdf_runtime::RunCancellation,
+) -> Result<bool> {
+    let reader = AvroReader::new(payload)
+        .map_err(|error| CdfError::data(format!("open Iceberg manifest list: {error}")))?;
+    let mut manifest_count = 0_usize;
+    for value in reader {
+        cancellation.check()?;
+        let value = value
+            .map_err(|error| CdfError::data(format!("read Iceberg manifest list: {error}")))?;
+        let (manifest, key_metadata) = match version {
+            FormatVersion::V1 => {
+                let listed: ManifestListEntryV1 = from_avro_value(&value).map_err(|error| {
+                    CdfError::data(format!("decode Iceberg v1 manifest-list entry: {error}"))
+                })?;
+                (
+                    IcebergPlanningManifest {
+                        manifest_path: listed.manifest_path,
+                        manifest_length: listed.manifest_length,
+                        partition_spec_id: listed.partition_spec_id,
+                        content: ManifestContentType::Data,
+                        sequence_number: 0,
+                        added_snapshot_id: listed.added_snapshot_id,
+                    },
+                    listed.key_metadata,
+                )
+            }
+            FormatVersion::V2 => {
+                let listed: ManifestListEntryV2 = from_avro_value(&value).map_err(|error| {
+                    CdfError::data(format!("decode Iceberg v2 manifest-list entry: {error}"))
+                })?;
+                let content = match listed.content {
+                    0 => ManifestContentType::Data,
+                    1 => ManifestContentType::Deletes,
+                    value => {
+                        return Err(CdfError::data(format!(
+                            "Iceberg manifest list contains unknown content type {value}"
+                        )));
+                    }
+                };
+                (
+                    IcebergPlanningManifest {
+                        manifest_path: listed.manifest_path,
+                        manifest_length: listed.manifest_length,
+                        partition_spec_id: listed.partition_spec_id,
+                        content,
+                        sequence_number: listed.sequence_number,
+                        added_snapshot_id: listed.added_snapshot_id,
+                    },
+                    listed.key_metadata,
+                )
+            }
+            FormatVersion::V3 => unreachable!("v3 returned before opening the manifest list"),
+        };
+        if key_metadata.is_some() {
+            return Err(CdfError::contract(
+                "encrypted Iceberg manifests require a configured KMS capability; plaintext key metadata is never admitted",
+            ));
+        }
+        u64::try_from(manifest.manifest_length)
+            .map_err(|_| CdfError::data("Iceberg manifest length is negative or exceeds u64"))?;
+        if manifest.partition_spec_id < 0 {
+            return Err(CdfError::data(
+                "Iceberg manifest partition spec id must be nonnegative",
+            ));
+        }
+        manifest_count = manifest_count
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("Iceberg manifest count exceeds usize"))?;
+        if manifest_count > maximum_manifests {
+            return Err(CdfError::data(format!(
+                "Iceberg snapshot contains more than maximum_metadata_files={maximum_manifests} manifests"
+            )));
+        }
+        if !index.insert_manifest(&manifest)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 struct ManifestWork {
-    listed: iceberg::spec::ManifestFile,
+    listed: IcebergPlanningManifest,
     manifest_sha256: String,
     manifest: Manifest,
     _payload: AccountedBytes,
@@ -230,24 +336,45 @@ struct ManifestWork {
 }
 
 #[allow(clippy::too_many_arguments)]
+fn process_indexed_manifests(
+    manifests: IcebergPlanningManifestReader,
+    source: &IcebergSourceOptions,
+    catalog: &crate::IcebergCatalogContext,
+    cancellation: cdf_runtime::RunCancellation,
+    emit: impl FnMut(ManifestWork) -> Result<()>,
+) -> Result<()> {
+    manifests.consume(|manifest_count, manifests| {
+        process_manifests_canonical(
+            manifest_count,
+            manifests,
+            source,
+            catalog,
+            cancellation,
+            emit,
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn process_manifests_canonical(
-    manifests: Vec<iceberg::spec::ManifestFile>,
+    manifest_count: u64,
+    manifests: &mut dyn Iterator<Item = Result<IcebergPlanningManifest>>,
     source: &IcebergSourceOptions,
     catalog: &crate::IcebergCatalogContext,
     cancellation: cdf_runtime::RunCancellation,
     mut emit: impl FnMut(ManifestWork) -> Result<()>,
 ) -> Result<()> {
-    if manifests.is_empty() {
+    if manifest_count == 0 {
         return Ok(());
     }
+    let manifest_count = usize::try_from(manifest_count)
+        .map_err(|_| CdfError::data("Iceberg manifest count exceeds addressable usize"))?;
     let host_slots = usize::from(catalog.execution.capabilities().logical_cpu_slots.max(1));
-    let worker_count = manifests
-        .len()
+    let worker_count = manifest_count
         .min(usize::from(source.maximum_concurrency))
         .min(host_slots)
         .max(1);
-    let manifests = Arc::new(manifests);
-    let (job_sender, job_receiver) = sync_channel::<usize>(worker_count);
+    let (job_sender, job_receiver) = sync_channel::<(usize, IcebergPlanningManifest)>(worker_count);
     let job_receiver = Arc::new(Mutex::new(job_receiver));
     let (result_sender, result_receiver) =
         sync_channel::<(usize, Result<ManifestWork>)>(worker_count);
@@ -256,7 +383,6 @@ fn process_manifests_canonical(
     for _ in 0..worker_count {
         let jobs = Arc::clone(&job_receiver);
         let results = result_sender.clone();
-        let manifests = Arc::clone(&manifests);
         let worker_catalog = catalog.clone();
         let source = source.clone();
         let cancellation = cancellation.clone();
@@ -265,7 +391,7 @@ fn process_manifests_canonical(
             Box::new(move || {
                 loop {
                     cancellation.check()?;
-                    let index = match jobs
+                    let (index, manifest) = match jobs
                         .lock()
                         .map_err(|_| CdfError::internal("Iceberg manifest work queue is poisoned"))?
                         .recv()
@@ -276,7 +402,7 @@ fn process_manifests_canonical(
                     let result = load_manifest_work(
                         &worker_catalog,
                         &source,
-                        manifests[index].clone(),
+                        manifest,
                         cancellation.clone(),
                     );
                     if results.send((index, result)).is_err() {
@@ -295,17 +421,18 @@ fn process_manifests_canonical(
     }
     drop(result_sender);
 
-    let initially_assigned = worker_count.min(manifests.len());
-    for index in 0..initially_assigned {
-        job_sender.send(index).map_err(|_| {
-            CdfError::internal("Iceberg manifest workers stopped before accepting initial work")
-        })?;
-    }
-    let mut next_assignment = initially_assigned;
-    let mut next_canonical_manifest = 0_usize;
-    let mut pending = BTreeMap::<usize, Result<ManifestWork>>::new();
     let drain_result = (|| -> Result<()> {
-        while next_canonical_manifest < manifests.len() {
+        let initially_assigned = worker_count.min(manifest_count);
+        for index in 0..initially_assigned {
+            let manifest = next_indexed_manifest(manifests, index, manifest_count)?;
+            job_sender.send((index, manifest)).map_err(|_| {
+                CdfError::internal("Iceberg manifest workers stopped before accepting initial work")
+            })?;
+        }
+        let mut next_assignment = initially_assigned;
+        let mut next_canonical_manifest = 0_usize;
+        let mut pending = BTreeMap::<usize, Result<ManifestWork>>::new();
+        while next_canonical_manifest < manifest_count {
             cancellation.check()?;
             let (index, result) = result_receiver.recv().map_err(|_| {
                 CdfError::internal(
@@ -320,8 +447,10 @@ fn process_manifests_canonical(
             while let Some(work) = pending.remove(&next_canonical_manifest) {
                 emit(work?)?;
                 next_canonical_manifest += 1;
-                if next_assignment < manifests.len() {
-                    job_sender.send(next_assignment).map_err(|_| {
+                if next_assignment < manifest_count {
+                    let manifest =
+                        next_indexed_manifest(manifests, next_assignment, manifest_count)?;
+                    job_sender.send((next_assignment, manifest)).map_err(|_| {
                         CdfError::internal(
                             "Iceberg manifest workers stopped before accepting bounded work",
                         )
@@ -329,6 +458,12 @@ fn process_manifests_canonical(
                     next_assignment += 1;
                 }
             }
+        }
+        if let Some(extra) = manifests.next() {
+            extra?;
+            return Err(CdfError::data(
+                "Iceberg manifest index emitted more entries than its counted authority",
+            ));
         }
         Ok(())
     })();
@@ -348,21 +483,22 @@ fn process_manifests_canonical(
     }
 }
 
-fn validate_manifest_list_entry(manifest_file: &iceberg::spec::ManifestFile) -> Result<()> {
-    if manifest_file.key_metadata.is_some() {
-        return Err(CdfError::contract(
-            "encrypted Iceberg manifests require a configured KMS capability; plaintext key metadata is never admitted",
-        ));
-    }
-    u64::try_from(manifest_file.manifest_length)
-        .map(|_| ())
-        .map_err(|_| CdfError::data("Iceberg manifest length is negative or exceeds u64"))
+fn next_indexed_manifest(
+    manifests: &mut dyn Iterator<Item = Result<IcebergPlanningManifest>>,
+    index: usize,
+    manifest_count: usize,
+) -> Result<IcebergPlanningManifest> {
+    manifests.next().transpose()?.ok_or_else(|| {
+        CdfError::data(format!(
+            "Iceberg manifest index ended at {index} before its {manifest_count}-entry authority"
+        ))
+    })
 }
 
 fn load_manifest_work(
     catalog: &crate::IcebergCatalogContext,
     source: &IcebergSourceOptions,
-    listed: iceberg::spec::ManifestFile,
+    listed: IcebergPlanningManifest,
     cancellation: cdf_runtime::RunCancellation,
 ) -> Result<ManifestWork> {
     let expected_size = u64::try_from(listed.manifest_length)
@@ -402,7 +538,7 @@ fn emit_manifest_tasks(
     ordinal: &mut u64,
     estimated_rows: &mut u64,
     estimated_bytes: &mut u64,
-    delete_index: Option<&IcebergDeleteIndex>,
+    delete_index: Option<&IcebergPlanningIndex>,
     maximum_task_bytes: u64,
 ) -> Result<()> {
     validate_manifest_authority(table, &work.manifest, &work.listed)?;
@@ -459,7 +595,7 @@ fn emit_manifest_tasks(
 fn emit_delete_manifest(
     work: ManifestWork,
     table: &LoadedIcebergTable,
-    index: &mut IcebergDeleteIndex,
+    index: &mut IcebergPlanningIndex,
 ) -> Result<()> {
     validate_manifest_authority(table, &work.manifest, &work.listed)?;
     for (entry_index, entry) in work.manifest.entries().iter().enumerate() {
@@ -625,7 +761,7 @@ fn projected_field_ids(
 fn validate_manifest_authority(
     table: &LoadedIcebergTable,
     manifest: &Manifest,
-    listed: &iceberg::spec::ManifestFile,
+    listed: &IcebergPlanningManifest,
 ) -> Result<()> {
     let metadata = manifest.metadata();
     if metadata.content() != &listed.content
@@ -673,9 +809,9 @@ fn validate_manifest_authority(
 struct DataTaskContext<'a> {
     authority_sha256: &'a str,
     manifest_sha256: &'a str,
-    manifest_file: &'a iceberg::spec::ManifestFile,
+    manifest_file: &'a IcebergPlanningManifest,
     manifest: &'a Manifest,
-    delete_index: Option<&'a IcebergDeleteIndex>,
+    delete_index: Option<&'a IcebergPlanningIndex>,
     maximum_task_bytes: u64,
 }
 
@@ -755,7 +891,7 @@ fn data_task(
 fn delete_file(
     manifest_sha256: &str,
     entry_index: usize,
-    manifest_file: &iceberg::spec::ManifestFile,
+    manifest_file: &IcebergPlanningManifest,
     manifest: &Manifest,
     entry: &iceberg::spec::ManifestEntry,
 ) -> Result<(IcebergDeleteFile, Vec<Option<serde_json::Value>>)> {
@@ -867,7 +1003,7 @@ fn encoded_partition_values(
 
 fn inherited_sequences(
     entry: &iceberg::spec::ManifestEntry,
-    manifest_file: &iceberg::spec::ManifestFile,
+    manifest_file: &IcebergPlanningManifest,
 ) -> (Option<i64>, Option<i64>) {
     let sequence = entry.sequence_number.or_else(|| {
         (entry.status == ManifestStatus::Added || manifest_file.sequence_number == 0)
@@ -890,5 +1026,97 @@ fn delivery_guarantee(disposition: WriteDisposition) -> DeliveryGuarantee {
         WriteDisposition::Replace => DeliveryGuarantee::EffectivelyOncePerTarget,
         WriteDisposition::Merge => DeliveryGuarantee::EffectivelyOncePerKey,
         WriteDisposition::CdcApply => DeliveryGuarantee::EffectivelyOncePerPosition,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, fs, sync::Arc};
+
+    use cdf_kernel::ContentStoreNamespace;
+    use cdf_memory::DeterministicMemoryCoordinator;
+    use cdf_runtime::{FixedSpillBudget, SpillBudgetCoordinator};
+    use iceberg::{
+        io::FileIO,
+        spec::{ManifestFile, ManifestListWriter},
+    };
+
+    use super::*;
+
+    #[test]
+    fn v1_manifest_list_streams_into_canonical_planning_index() {
+        let root = tempfile::tempdir().unwrap();
+        let manifest_list = root.path().join("manifest-list-v1.avro");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let output = FileIO::new_with_fs()
+            .new_output(manifest_list.to_string_lossy())
+            .unwrap();
+        let file_writer = runtime.block_on(output.writer()).unwrap();
+        let mut writer = ManifestListWriter::v1(file_writer, 41, Some(0));
+        writer
+            .add_manifests(
+                [ManifestFile {
+                    manifest_path: "data-manifest.avro".to_owned(),
+                    manifest_length: 512,
+                    partition_spec_id: 0,
+                    content: ManifestContentType::Data,
+                    sequence_number: 0,
+                    min_sequence_number: 0,
+                    added_snapshot_id: 41,
+                    added_files_count: Some(1),
+                    existing_files_count: Some(0),
+                    deleted_files_count: Some(0),
+                    added_rows_count: Some(3),
+                    existing_rows_count: Some(0),
+                    deleted_rows_count: Some(0),
+                    partitions: None,
+                    key_metadata: None,
+                    first_row_id: None,
+                }]
+                .into_iter(),
+            )
+            .unwrap();
+        runtime.block_on(writer.close()).unwrap();
+
+        let store = ExternalTaskStore::new(
+            root.path(),
+            ContentStoreNamespace::new("iceberg-manifest-v1-test").unwrap(),
+        )
+        .unwrap();
+        let memory = Arc::new(
+            DeterministicMemoryCoordinator::new(8 * 1024 * 1024, BTreeMap::new()).unwrap(),
+        );
+        let spill: Arc<dyn SpillBudgetCoordinator> =
+            Arc::new(FixedSpillBudget::new(16 * 1024 * 1024).unwrap());
+        let mut source: IcebergSourceOptions = serde_json::from_value(serde_json::json!({
+            "catalog": {"kind": "filesystem", "warehouse": ".warehouse"}
+        }))
+        .unwrap();
+        source.planning_index_cache_bytes = 1024 * 1024;
+        source.planning_index_spill_growth_bytes = 4 * 1024 * 1024;
+        let mut index = IcebergPlanningIndex::create(&store, &source, memory, spill).unwrap();
+        parse_manifest_list(
+            &fs::read(manifest_list).unwrap(),
+            FormatVersion::V1,
+            1,
+            &mut index,
+            &cdf_runtime::RunCancellation::default(),
+        )
+        .unwrap();
+        assert_eq!(index.manifest_count(ManifestContentType::Data), 1);
+        let reader = index.manifest_reader(ManifestContentType::Data).unwrap();
+        reader
+            .consume(|count, manifests| {
+                assert_eq!(count, 1);
+                let manifest = manifests.next().unwrap()?;
+                assert_eq!(manifest.manifest_path, "data-manifest.avro");
+                assert_eq!(manifest.sequence_number, 0);
+                assert!(manifests.next().is_none());
+                Ok(())
+            })
+            .unwrap();
     }
 }

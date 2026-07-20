@@ -15,8 +15,8 @@ pub const DEFAULT_PARQUET_METADATA_PREFETCH_BYTES: usize = 512 * 1024;
 pub const DEFAULT_PARQUET_RANGE_COALESCE_BYTES: u64 = 1024 * 1024;
 pub const DEFAULT_PARQUET_RANGE_FETCH_CONCURRENCY: u16 = 10;
 pub const DEFAULT_STREAM_BUFFER_BATCHES: u16 = 2;
-pub const DEFAULT_DELETE_INDEX_CACHE_BYTES: u64 = 8 * 1024 * 1024;
-pub const DEFAULT_DELETE_INDEX_SPILL_GROWTH_BYTES: u64 = 64 * 1024 * 1024;
+pub const DEFAULT_PLANNING_INDEX_CACHE_BYTES: u64 = 8 * 1024 * 1024;
+pub const DEFAULT_PLANNING_INDEX_SPILL_GROWTH_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -52,10 +52,10 @@ pub struct IcebergSourceOptions {
     pub parquet_range_fetch_concurrency: u16,
     #[serde(default = "default_stream_buffer_batches")]
     pub stream_buffer_batches: u16,
-    #[serde(default = "default_delete_index_cache_bytes")]
-    pub delete_index_cache_bytes: u64,
-    #[serde(default = "default_delete_index_spill_growth_bytes")]
-    pub delete_index_spill_growth_bytes: u64,
+    #[serde(default = "default_planning_index_cache_bytes")]
+    pub planning_index_cache_bytes: u64,
+    #[serde(default = "default_planning_index_spill_growth_bytes")]
+    pub planning_index_spill_growth_bytes: u64,
 }
 
 impl IcebergSourceOptions {
@@ -95,11 +95,11 @@ impl IcebergSourceOptions {
             || self.parquet_range_coalesce_bytes == 0
             || self.parquet_range_fetch_concurrency == 0
             || self.stream_buffer_batches == 0
-            || self.delete_index_cache_bytes == 0
-            || self.delete_index_spill_growth_bytes < 8192
+            || self.planning_index_cache_bytes == 0
+            || self.planning_index_spill_growth_bytes < 8192
         {
             return Err(CdfError::contract(
-                "Iceberg task, concurrency, delete-index, and Parquet execution knobs are invalid",
+                "Iceberg task, concurrency, planning-index, and Parquet execution knobs are invalid",
             ));
         }
         self.maximum_batch_bytes
@@ -338,12 +338,12 @@ const fn default_stream_buffer_batches() -> u16 {
     DEFAULT_STREAM_BUFFER_BATCHES
 }
 
-const fn default_delete_index_cache_bytes() -> u64 {
-    DEFAULT_DELETE_INDEX_CACHE_BYTES
+const fn default_planning_index_cache_bytes() -> u64 {
+    DEFAULT_PLANNING_INDEX_CACHE_BYTES
 }
 
-const fn default_delete_index_spill_growth_bytes() -> u64 {
-    DEFAULT_DELETE_INDEX_SPILL_GROWTH_BYTES
+const fn default_planning_index_spill_growth_bytes() -> u64 {
+    DEFAULT_PLANNING_INDEX_SPILL_GROWTH_BYTES
 }
 
 fn validate_hosts(hosts: &[String]) -> Result<()> {
@@ -463,7 +463,7 @@ mod tests {
         assert_eq!(source.parquet_range_coalesce_bytes, 1024 * 1024);
         assert_eq!(source.parquet_range_fetch_concurrency, 10);
         assert_eq!(source.stream_buffer_batches, 2);
-        assert_eq!(source.delete_index_cache_bytes, 8 * 1024 * 1024);
-        assert_eq!(source.delete_index_spill_growth_bytes, 64 * 1024 * 1024);
+        assert_eq!(source.planning_index_cache_bytes, 8 * 1024 * 1024);
+        assert_eq!(source.planning_index_spill_growth_bytes, 64 * 1024 * 1024);
     }
 }

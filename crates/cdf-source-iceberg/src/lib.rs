@@ -6,11 +6,11 @@ use cdf_runtime::{SourceDriverDescriptor, SourceDriverId, artifact_hash};
 
 mod catalog;
 mod config;
-mod delete_index;
 mod driver;
 mod execution;
 mod glue;
 mod planner;
+mod planning_index;
 mod scan_task;
 mod storage;
 mod task_reader;
@@ -21,12 +21,12 @@ pub use catalog::{
     SelectedIcebergSnapshot, UnsupportedGlueCatalogClient, annotated_arrow_schema,
 };
 pub use config::{
-    DEFAULT_DELETE_INDEX_CACHE_BYTES, DEFAULT_DELETE_INDEX_SPILL_GROWTH_BYTES,
     DEFAULT_MAXIMUM_BATCH_BYTES, DEFAULT_MAXIMUM_CONCURRENCY, DEFAULT_MAXIMUM_METADATA_BYTES,
     DEFAULT_MAXIMUM_METADATA_FILES, DEFAULT_MAXIMUM_TASK_AUTHORITY_BYTES,
     DEFAULT_MAXIMUM_TASK_BYTES, DEFAULT_METADATA_PARSE_AMPLIFICATION_BPS,
     DEFAULT_PARQUET_BATCH_ROWS, DEFAULT_PARQUET_METADATA_PREFETCH_BYTES,
     DEFAULT_PARQUET_RANGE_COALESCE_BYTES, DEFAULT_PARQUET_RANGE_FETCH_CONCURRENCY,
+    DEFAULT_PLANNING_INDEX_CACHE_BYTES, DEFAULT_PLANNING_INDEX_SPILL_GROWTH_BYTES,
     DEFAULT_STREAM_BUFFER_BATCHES, DEFAULT_TASK_WRITER_BUFFER_BYTES, IcebergCatalogOptions,
     IcebergResourceOptions, IcebergSnapshotSelector, IcebergSourceOptions,
 };
@@ -118,8 +118,8 @@ pub fn iceberg_option_schema() -> serde_json::Value {
                 "parquet_range_coalesce_bytes": {"type": "integer", "minimum": 1, "default": 1048576},
                 "parquet_range_fetch_concurrency": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 10}
                 ,"stream_buffer_batches": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 2}
-                ,"delete_index_cache_bytes": {"type": "integer", "minimum": 1, "default": 8388608}
-                ,"delete_index_spill_growth_bytes": {"type": "integer", "minimum": 8192, "default": 67108864}
+                ,"planning_index_cache_bytes": {"type": "integer", "minimum": 1, "default": 8388608}
+                ,"planning_index_spill_growth_bytes": {"type": "integer", "minimum": 8192, "default": 67108864}
             }
         },
         "resource": {
@@ -223,7 +223,7 @@ mod tests {
         assert!(descriptor.schemes.is_empty());
         assert_eq!(
             descriptor.option_schema_hash,
-            "sha256:2ff78c84e8aef1245ec0c9183dbc026ed48b2497831d84e798a6cc3b6ceab049"
+            "sha256:dd59dbba2e8d53e486d4f163905935c05893b6f82aa4e6480f3ee346d30da85e"
         );
         assert_eq!(
             descriptor.option_schema_hash,

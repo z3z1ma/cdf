@@ -1559,6 +1559,7 @@ dependencies = [
 name = "cdf-source-iceberg"
 version = "0.1.0"
 dependencies = [
+ "apache-avro",
  "arrow-array",
  "arrow-schema",
  "async-trait",
