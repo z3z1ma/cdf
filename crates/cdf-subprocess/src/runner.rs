@@ -25,7 +25,7 @@ use cdf_runtime::{
     ContentIdentity, DecodeSchemaPlan, GenerationStrength, MemoryByteSource, ReadOptions,
     RunCancellation, SequentialReadRequest, decode_bounded_format, decode_format_stream,
 };
-use futures_util::{StreamExt, stream};
+use futures_util::{FutureExt, StreamExt, stream};
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
     process::{Child, ChildStdout, Command},
@@ -35,7 +35,10 @@ use tokio::{
 use std::os::unix::process::CommandExt;
 
 #[cfg(unix)]
-use rustix::process::{Pid, Signal, kill_process_group, test_kill_process_group};
+use rustix::{
+    io::Errno,
+    process::{Pid, Signal, kill_process_group, test_kill_process_group},
+};
 
 use crate::{
     BoundedCommandBytes, BoundedCommandOutput, CommandSpec, StderrTrace, StdoutFormat,
@@ -49,6 +52,7 @@ pub async fn run_bounded_command(
     memory: Arc<dyn MemoryCoordinator>,
 ) -> Result<BoundedCommandOutput> {
     validate_supervision(&supervision)?;
+    validate_process_tree_authority()?;
     cancellation.check()?;
     let stdout_lease = reserve_output_capacity(
         &memory,
@@ -102,7 +106,10 @@ pub async fn run_bounded_command(
         tokio::select! {
             result = &mut wait, if exit_status.is_none() => {
                 match result {
-                    Ok(status) => exit_status = Some(status),
+                    Ok(status) => {
+                        exit_status = Some(status);
+                        break None;
+                    }
                     Err(error) => break Some(CdfError::internal(format!("wait for subprocess: {error}"))),
                 }
             }
@@ -133,7 +140,13 @@ pub async fn run_bounded_command(
     };
     drop(wait);
     if let Some(error) = terminal_error {
-        terminate_child_tree(&mut child, process_group, supervision.termination_grace).await;
+        let error =
+            match terminate_child_tree(&mut child, process_group, supervision.termination_grace)
+                .await
+            {
+                Ok(()) => error,
+                Err(cleanup) => with_cleanup_error(error, cleanup),
+            };
         if !stdout_done {
             stdout_task.abort();
             let _ = stdout_task.await;
@@ -143,6 +156,21 @@ pub async fn run_bounded_command(
             let _ = stderr_task.await;
         }
         return Err(error);
+    }
+    if let Err(error) =
+        ensure_process_group_quiescent(process_group, supervision.termination_grace).await
+    {
+        stdout_task.abort();
+        stderr_task.abort();
+        let _ = stdout_task.await;
+        let _ = stderr_task.await;
+        return Err(error);
+    }
+    if !stdout_done {
+        stdout = Some(join_bounded_reader(stdout_task.await, "stdout")?);
+    }
+    if !stderr_done {
+        stderr = Some(join_diagnostic_reader(stderr_task.await)?);
     }
     let stdout = BoundedCommandBytes::new(
         stdout.expect("completed subprocess captured stdout"),
@@ -154,7 +182,6 @@ pub async fn run_bounded_command(
         supervision.maximum_stderr_bytes,
     );
     let stderr_bytes = BoundedCommandBytes::new(stderr.bytes, stderr_lease)?;
-    ensure_process_group_quiescent(process_group, supervision.termination_grace).await;
     Ok(BoundedCommandOutput {
         stdout,
         stderr: StderrTrace::new(
@@ -274,11 +301,24 @@ fn redact_diagnostic_capture(
     command: &CommandSpec,
     maximum_bytes: u64,
 ) -> DiagnosticCapture {
-    let mut text = String::from_utf8_lossy(&capture.bytes).into_owned();
-    for secret in command.env.values().filter(|value| !value.is_empty()) {
-        text = text.replace(secret, "<redacted>");
+    let mut bytes = capture.bytes;
+    for secret in command
+        .env
+        .values()
+        .filter(|value| !value.is_empty())
+        .map(String::as_bytes)
+    {
+        bytes = replace_bytes(&bytes, secret, b"<redacted>");
+        if capture.discarded_bytes > 0 {
+            let partial = (1..secret.len())
+                .rev()
+                .find(|length| bytes.ends_with(&secret[..*length]));
+            if let Some(partial) = partial {
+                bytes.truncate(bytes.len() - partial);
+                bytes.extend_from_slice(b"<redacted>");
+            }
+        }
     }
-    let mut bytes = text.into_bytes();
     let maximum = usize::try_from(maximum_bytes).unwrap_or(usize::MAX);
     let redaction_overflow = bytes.len().saturating_sub(maximum);
     bytes.truncate(maximum);
@@ -288,6 +328,23 @@ fn redact_diagnostic_capture(
             .discarded_bytes
             .saturating_add(u64::try_from(redaction_overflow).unwrap_or(u64::MAX)),
     }
+}
+
+fn replace_bytes(input: &[u8], needle: &[u8], replacement: &[u8]) -> Vec<u8> {
+    debug_assert!(!needle.is_empty());
+    let mut output = Vec::with_capacity(input.len());
+    let mut offset = 0;
+    while let Some(relative) = input[offset..]
+        .windows(needle.len())
+        .position(|candidate| candidate == needle)
+    {
+        let start = offset + relative;
+        output.extend_from_slice(&input[offset..start]);
+        output.extend_from_slice(replacement);
+        offset = start + needle.len();
+    }
+    output.extend_from_slice(&input[offset..]);
+    output
 }
 
 fn join_diagnostic_reader(
@@ -392,11 +449,18 @@ fn status_message(status: ExitStatus) -> String {
 fn validate_supervision(supervision: &SupervisionOptions) -> Result<()> {
     if supervision.maximum_stdout_bytes == 0
         || supervision.maximum_stderr_bytes == 0
+        || supervision.maximum_stream_chunk_bytes == 0
         || supervision.maximum_stdout_bytes == u64::MAX
         || supervision.maximum_stderr_bytes == u64::MAX
+        || supervision.maximum_stream_chunk_bytes == u64::MAX
     {
         return Err(CdfError::contract(
-            "subprocess stdout and stderr byte boundaries must be within 1..u64::MAX",
+            "subprocess collected stdout, stream chunk, and stderr byte boundaries must be within 1..u64::MAX",
+        ));
+    }
+    if supervision.maximum_streamed_stdout_bytes == Some(0) {
+        return Err(CdfError::contract(
+            "subprocess total streamed stdout boundary must be greater than zero when configured",
         ));
     }
     if supervision.stderr_line_limit == 0 {
@@ -410,6 +474,18 @@ fn validate_supervision(supervision: &SupervisionOptions) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn validate_process_tree_authority() -> Result<()> {
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_process_tree_authority() -> Result<()> {
+    Err(CdfError::contract(
+        "subprocess adapters require process-tree termination authority; this platform is unsupported until a native job/process-tree backend is available",
+    ))
 }
 
 #[derive(Clone, Debug)]
@@ -436,6 +512,7 @@ enum SubprocessLifecyclePhase {
 
 struct SubprocessLifecycleInner {
     phase: Mutex<SubprocessLifecyclePhase>,
+    worker_join: Mutex<Option<tokio::sync::oneshot::Receiver<Result<()>>>>,
     notify: tokio::sync::Notify,
     run_cancellation: RunCancellation,
     foreign_cancellation: ForeignCancellation,
@@ -448,6 +525,7 @@ impl SubprocessLifecycle {
     fn new(foreign_cancellation: ForeignCancellation) -> Self {
         Self(Arc::new(SubprocessLifecycleInner {
             phase: Mutex::new(SubprocessLifecyclePhase::NotStarted),
+            worker_join: Mutex::new(None),
             notify: tokio::sync::Notify::new(),
             run_cancellation: RunCancellation::default(),
             foreign_cancellation,
@@ -472,6 +550,16 @@ impl SubprocessLifecycle {
                 "subprocess invocation was cancelled before startup",
             )),
         }
+    }
+
+    fn attach_worker(&self, receiver: tokio::sync::oneshot::Receiver<Result<()>>) -> Result<()> {
+        let mut worker_join = self.0.worker_join.lock().unwrap();
+        if worker_join.replace(receiver).is_some() {
+            return Err(CdfError::internal(
+                "subprocess lifecycle attached more than one producer task",
+            ));
+        }
+        Ok(())
     }
 
     fn complete(&self, terminal: SubprocessTerminal) {
@@ -508,6 +596,17 @@ impl SubprocessLifecycle {
             notified.await;
         }
     }
+
+    async fn join(&self) -> Result<()> {
+        let worker = self.0.worker_join.lock().unwrap().take();
+        if let Some(worker) = worker {
+            worker.await.map_err(|_| {
+                CdfError::internal("subprocess producer task terminated without cleanup evidence")
+            })??;
+        }
+        self.terminal().await;
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -531,6 +630,7 @@ impl SubprocessProducer {
         memory: Arc<dyn MemoryCoordinator>,
     ) -> Result<Self> {
         validate_supervision(&supervision)?;
+        validate_process_tree_authority()?;
         let transfer_mode = transfer_mode(stdout_format);
         let descriptor = ForeignProducerDescriptor {
             producer_id: ForeignProducerId::new("cdf-subprocess")?,
@@ -637,10 +737,7 @@ impl ForeignProducer for SubprocessProducer {
             let joined_lifecycle = lifecycle.clone();
             let termination = cdf_kernel::InvocationTermination::new(
                 move || cancellation_lifecycle.cancel(),
-                Box::pin(async move {
-                    joined_lifecycle.terminal().await;
-                    Ok(())
-                }),
+                Box::pin(async move { joined_lifecycle.join().await }),
             );
             let bridge_lifecycle = lifecycle.clone();
             tokio::spawn(async move {
@@ -858,27 +955,61 @@ impl ChildProcessGroup {
 }
 
 #[cfg(unix)]
-fn process_group_exists(group: ChildProcessGroup) -> bool {
-    test_kill_process_group(group.id).is_ok()
+fn process_group_exists(group: ChildProcessGroup) -> Result<bool> {
+    match test_kill_process_group(group.id) {
+        Ok(()) => Ok(true),
+        Err(Errno::SRCH) => Ok(false),
+        Err(error) => Err(CdfError::internal(format!(
+            "inspect subprocess process group {}: {error}",
+            group.id.as_raw_nonzero()
+        ))),
+    }
 }
 
 #[cfg(not(unix))]
-fn process_group_exists(_group: ChildProcessGroup) -> bool {
-    false
+fn process_group_exists(_group: ChildProcessGroup) -> Result<bool> {
+    Err(CdfError::contract(
+        "subprocess process-tree supervision is unsupported on this platform",
+    ))
 }
 
-async fn ensure_process_group_quiescent(group: ChildProcessGroup, grace: std::time::Duration) {
-    if !process_group_exists(group) {
-        return;
+#[cfg(unix)]
+fn signal_process_group(group: ChildProcessGroup, signal: Signal) -> Result<()> {
+    match kill_process_group(group.id, signal) {
+        Ok(()) | Err(Errno::SRCH) => Ok(()),
+        Err(error) => Err(CdfError::internal(format!(
+            "signal subprocess process group {} with {signal:?}: {error}",
+            group.id.as_raw_nonzero()
+        ))),
+    }
+}
+
+async fn ensure_process_group_quiescent(
+    group: ChildProcessGroup,
+    grace: std::time::Duration,
+) -> Result<()> {
+    if !process_group_exists(group)? {
+        return Ok(());
     }
     #[cfg(unix)]
     {
-        let _ = kill_process_group(group.id, Signal::TERM);
-        if wait_for_process_group_exit(group, grace).await {
-            return;
+        signal_process_group(group, Signal::TERM)?;
+        if wait_for_process_group_exit(group, grace).await? {
+            return Ok(());
         }
-        let _ = kill_process_group(group.id, Signal::KILL);
-        let _ = wait_for_process_group_exit(group, grace).await;
+        signal_process_group(group, Signal::KILL)?;
+        if wait_for_process_group_exit(group, grace).await? {
+            return Ok(());
+        }
+        Err(CdfError::internal(format!(
+            "subprocess process group {} survived forced termination",
+            group.id.as_raw_nonzero()
+        )))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = grace;
+        unreachable!("unsupported process-tree authority returned a group")
     }
 }
 
@@ -886,37 +1017,67 @@ async fn terminate_child_tree(
     child: &mut Child,
     group: ChildProcessGroup,
     grace: std::time::Duration,
-) {
+) -> Result<()> {
     #[cfg(unix)]
     {
-        let _ = kill_process_group(group.id, Signal::TERM);
+        signal_process_group(group, Signal::TERM)?;
     }
     #[cfg(not(unix))]
     {
         let _ = child.start_kill();
     }
-    let child_exited = tokio::time::timeout(grace, child.wait()).await.is_ok();
-    let group_exited = wait_for_process_group_exit(group, grace).await;
+    let child_exited = match tokio::time::timeout(grace, child.wait()).await {
+        Ok(Ok(_)) => true,
+        Ok(Err(error)) => {
+            return Err(CdfError::internal(format!(
+                "wait for terminated subprocess: {error}"
+            )));
+        }
+        Err(_) => false,
+    };
+    let group_exited = wait_for_process_group_exit(group, grace).await?;
     if !child_exited || !group_exited {
         #[cfg(unix)]
         {
-            let _ = kill_process_group(group.id, Signal::KILL);
+            signal_process_group(group, Signal::KILL)?;
         }
-        let _ = child.start_kill();
-        let _ = child.wait().await;
-        let _ = wait_for_process_group_exit(group, grace).await;
+        if !child_exited {
+            child.start_kill().map_err(|error| {
+                CdfError::internal(format!("force terminate subprocess: {error}"))
+            })?;
+            child.wait().await.map_err(|error| {
+                CdfError::internal(format!("wait for force-terminated subprocess: {error}"))
+            })?;
+        }
+        if !wait_for_process_group_exit(group, grace).await? {
+            return Err(CdfError::internal(
+                "subprocess process group survived force termination",
+            ));
+        }
     }
+    Ok(())
 }
 
-async fn wait_for_process_group_exit(group: ChildProcessGroup, grace: std::time::Duration) -> bool {
+async fn wait_for_process_group_exit(
+    group: ChildProcessGroup,
+    grace: std::time::Duration,
+) -> Result<bool> {
     let deadline = tokio::time::Instant::now() + grace;
-    while process_group_exists(group) {
+    while process_group_exists(group)? {
         if tokio::time::Instant::now() >= deadline {
-            return false;
+            return Ok(false);
         }
         tokio::time::sleep(grace.min(std::time::Duration::from_millis(10))).await;
     }
-    true
+    Ok(true)
+}
+
+fn with_cleanup_error(mut primary: CdfError, cleanup: CdfError) -> CdfError {
+    primary.message = format!(
+        "{}; subprocess process-tree cleanup also failed: {}",
+        primary.message, cleanup.message
+    );
+    primary
 }
 
 struct SubprocessStdoutByteSource {
@@ -953,7 +1114,7 @@ impl SubprocessStdoutByteSource {
             exact_ranges: false,
             useful_range_concurrency: 0,
             minimum_chunk_bytes: 1,
-            maximum_chunk_bytes: supervision.maximum_stdout_bytes,
+            maximum_chunk_bytes: supervision.maximum_stream_chunk_bytes,
         };
         capabilities.validate()?;
         Ok(Self {
@@ -978,7 +1139,7 @@ impl ByteSource for SubprocessStdoutByteSource {
     }
 
     fn maximum_sequential_bytes(&self) -> Option<u64> {
-        Some(self.supervision.maximum_stdout_bytes)
+        self.supervision.maximum_streamed_stdout_bytes
     }
 
     fn open_sequential(
@@ -1033,7 +1194,7 @@ struct RunningSubprocessStdout {
     stderr_task: tokio::task::JoinHandle<Result<DiagnosticCapture>>,
     stderr_lease: MemoryLease,
     stderr_line_limit: usize,
-    maximum_stdout_bytes: u64,
+    maximum_stdout_bytes: Option<u64>,
     stdout_bytes: u64,
     preferred_chunk_bytes: u64,
     deadline: Option<tokio::time::Instant>,
@@ -1043,6 +1204,7 @@ struct RunningSubprocessStdout {
     process_group: ChildProcessGroup,
     termination_grace: std::time::Duration,
     command: CommandSpec,
+    exit_status: Option<ExitStatus>,
 }
 
 async fn start_streaming_subprocess(
@@ -1053,7 +1215,6 @@ async fn start_streaming_subprocess(
     preferred_chunk_bytes: u64,
     cancellation: RunCancellation,
 ) -> Result<RunningSubprocessStdout> {
-    lifecycle.mark_started()?;
     let stderr_lease = reserve_output_capacity(
         &memory,
         "subprocess-stderr",
@@ -1085,7 +1246,7 @@ async fn start_streaming_subprocess(
         stderr_task,
         stderr_lease,
         stderr_line_limit: supervision.stderr_line_limit,
-        maximum_stdout_bytes: supervision.maximum_stdout_bytes,
+        maximum_stdout_bytes: supervision.maximum_streamed_stdout_bytes,
         stdout_bytes: 0,
         preferred_chunk_bytes,
         deadline,
@@ -1095,6 +1256,7 @@ async fn start_streaming_subprocess(
         process_group,
         termination_grace: supervision.termination_grace,
         command: command.clone(),
+        exit_status: None,
     })
 }
 
@@ -1106,53 +1268,95 @@ async fn spawn_streaming_subprocess_stdout(
     preferred_chunk_bytes: u64,
     cancellation: RunCancellation,
 ) -> Result<AccountedByteStream> {
-    let mut running = start_streaming_subprocess(
+    let (worker_done, worker_join) = tokio::sync::oneshot::channel();
+    lifecycle.attach_worker(worker_join)?;
+    lifecycle.mark_started()?;
+    let running = start_streaming_subprocess(
         command,
         supervision,
         memory,
-        lifecycle,
+        lifecycle.clone(),
         preferred_chunk_bytes,
         cancellation,
     )
-    .await?;
+    .await;
+    let mut running = match running {
+        Ok(running) => running,
+        Err(error) => {
+            let _ = worker_done.send(Ok(()));
+            return Err(error);
+        }
+    };
     let (sender, receiver) = tokio::sync::mpsc::channel::<Result<AccountedBytes>>(1);
+    let worker_lifecycle = lifecycle;
     tokio::spawn(async move {
-        loop {
-            match read_subprocess_stdout_chunk(&mut running).await {
-                Ok(Some(chunk)) => {
-                    if sender.send(Ok(chunk)).await.is_err() {
-                        running.lifecycle.cancel();
-                        terminate_child_tree(
+        let work = std::panic::AssertUnwindSafe(async {
+            loop {
+                match read_subprocess_stdout_chunk(&mut running).await {
+                    Ok(SubprocessStdoutRead::Chunk(chunk)) => {
+                        if sender.send(Ok(chunk)).await.is_err() {
+                            running.lifecycle.cancel();
+                            let cleanup = terminate_child_tree(
+                                &mut running.child,
+                                running.process_group,
+                                running.termination_grace,
+                            )
+                            .await;
+                            abort_stderr_task(&mut running).await;
+                            return match cleanup {
+                                Ok(()) => SubprocessTerminal::Cancelled,
+                                Err(error) => SubprocessTerminal::Failed(error),
+                            };
+                        }
+                    }
+                    Ok(SubprocessStdoutRead::Complete(diagnostic)) => {
+                        return SubprocessTerminal::Succeeded { diagnostic };
+                    }
+                    Err(error) => {
+                        let cleanup = terminate_child_tree(
                             &mut running.child,
                             running.process_group,
                             running.termination_grace,
                         )
                         .await;
                         abort_stderr_task(&mut running).await;
-                        running.lifecycle.complete(SubprocessTerminal::Cancelled);
-                        break;
+                        let error = match cleanup {
+                            Ok(()) => error,
+                            Err(cleanup) => with_cleanup_error(error, cleanup),
+                        };
+                        let terminal = if running.lifecycle.is_cancelled() {
+                            SubprocessTerminal::Cancelled
+                        } else {
+                            SubprocessTerminal::Failed(error.clone())
+                        };
+                        let _ = sender.send(Err(error)).await;
+                        return terminal;
                     }
                 }
-                Ok(None) => break,
-                Err(error) => {
-                    terminate_child_tree(
-                        &mut running.child,
-                        running.process_group,
-                        running.termination_grace,
-                    )
-                    .await;
-                    abort_stderr_task(&mut running).await;
-                    let terminal = if running.lifecycle.is_cancelled() {
-                        SubprocessTerminal::Cancelled
-                    } else {
-                        SubprocessTerminal::Failed(error.clone())
-                    };
-                    running.lifecycle.complete(terminal);
-                    let _ = sender.send(Err(error)).await;
-                    break;
-                }
             }
-        }
+        })
+        .catch_unwind()
+        .await;
+        let terminal = match work {
+            Ok(terminal) => terminal,
+            Err(_) => {
+                let primary = CdfError::internal("subprocess producer task panicked");
+                let cleanup = terminate_child_tree(
+                    &mut running.child,
+                    running.process_group,
+                    running.termination_grace,
+                )
+                .await;
+                abort_stderr_task(&mut running).await;
+                SubprocessTerminal::Failed(match cleanup {
+                    Ok(()) => primary,
+                    Err(cleanup) => with_cleanup_error(primary, cleanup),
+                })
+            }
+        };
+        drop(running);
+        worker_lifecycle.complete(terminal);
+        let _ = worker_done.send(Ok(()));
     });
     Ok(
         Box::pin(stream::try_unfold(receiver, |mut receiver| async move {
@@ -1165,46 +1369,42 @@ async fn spawn_streaming_subprocess_stdout(
     )
 }
 
+enum SubprocessStdoutRead {
+    Chunk(AccountedBytes),
+    Complete(Option<TerminalDiagnostic>),
+}
+
 async fn read_subprocess_stdout_chunk(
     state: &mut RunningSubprocessStdout,
-) -> Result<Option<AccountedBytes>> {
+) -> Result<SubprocessStdoutRead> {
     state.cancellation.check()?;
     let remaining = state
         .maximum_stdout_bytes
-        .saturating_sub(state.stdout_bytes);
-    let read_window = if remaining == 0 {
-        1
-    } else {
-        state
-            .preferred_chunk_bytes
-            .min(remaining.saturating_add(1))
-            .max(1)
-    };
+        .map(|maximum| maximum.saturating_sub(state.stdout_bytes));
+    let read_window = remaining.map_or(state.preferred_chunk_bytes, |remaining| {
+        if remaining == 0 {
+            1
+        } else {
+            state.preferred_chunk_bytes.min(remaining.saturating_add(1))
+        }
+    });
+    let read_window = read_window.max(1);
     let read_window = usize::try_from(read_window)
         .map_err(|_| CdfError::data("subprocess stdout chunk boundary exceeds usize"))?;
     let lease = reserve_subprocess_stdout_chunk(&state.memory, read_window as u64).await?;
     let mut buffer = vec![0_u8; read_window];
-    let read = read_with_deadline(
-        &mut state.stdout,
-        &mut buffer,
-        state.deadline,
-        state.cancellation.clone(),
-    )
-    .await?;
+    let read = read_stdout_or_observe_child_exit(state, &mut buffer).await?;
     if read == 0 {
         drop(lease);
         let diagnostic = finalize_streaming_subprocess(state).await?;
-        state
-            .lifecycle
-            .complete(SubprocessTerminal::Succeeded { diagnostic });
-        return Ok(None);
+        return Ok(SubprocessStdoutRead::Complete(diagnostic));
     }
     let read_u64 = u64::try_from(read)
         .map_err(|_| CdfError::data("subprocess stdout read length exceeds u64"))?;
-    if read_u64 > remaining {
+    if remaining.is_some_and(|remaining| read_u64 > remaining) {
         return Err(CdfError::data(format!(
-            "subprocess stdout exceeded the {}-byte boundary",
-            state.maximum_stdout_bytes
+            "subprocess stdout exceeded the {}-byte total-transfer policy",
+            state.maximum_stdout_bytes.expect("checked maximum")
         )));
     }
     state.stdout_bytes = state
@@ -1213,7 +1413,7 @@ async fn read_subprocess_stdout_chunk(
         .ok_or_else(|| CdfError::data("subprocess stdout byte count overflowed"))?;
     buffer.truncate(read);
     let chunk = AccountedBytes::new(Bytes::from(buffer), lease)?;
-    Ok(Some(chunk))
+    Ok(SubprocessStdoutRead::Chunk(chunk))
 }
 
 async fn reserve_subprocess_stdout_chunk(
@@ -1243,6 +1443,54 @@ async fn abort_stderr_task(state: &mut RunningSubprocessStdout) {
     );
     stderr_task.abort();
     let _ = stderr_task.await;
+}
+
+async fn read_stdout_or_observe_child_exit(
+    state: &mut RunningSubprocessStdout,
+    buffer: &mut [u8],
+) -> Result<usize> {
+    loop {
+        if state.exit_status.is_some() {
+            return read_with_deadline(
+                &mut state.stdout,
+                buffer,
+                state.deadline,
+                state.cancellation.clone(),
+            )
+            .await;
+        }
+        let cancelled = state.cancellation.cancelled();
+        tokio::pin!(cancelled);
+        match state.deadline {
+            Some(deadline) => {
+                let sleep = tokio::time::sleep_until(deadline);
+                tokio::pin!(sleep);
+                tokio::select! {
+                    result = state.stdout.read(buffer) => {
+                        return result.map_err(|error| CdfError::internal(format!("read subprocess stdout: {error}")));
+                    }
+                    result = state.child.wait() => {
+                        state.exit_status = Some(result.map_err(|error| CdfError::internal(format!("wait for subprocess: {error}")))?);
+                        ensure_process_group_quiescent(state.process_group, state.termination_grace).await?;
+                    }
+                    () = &mut sleep => return Err(subprocess_timeout(deadline)),
+                    () = &mut cancelled => return Err(state.cancellation.check().unwrap_err()),
+                }
+            }
+            None => {
+                tokio::select! {
+                    result = state.stdout.read(buffer) => {
+                        return result.map_err(|error| CdfError::internal(format!("read subprocess stdout: {error}")));
+                    }
+                    result = state.child.wait() => {
+                        state.exit_status = Some(result.map_err(|error| CdfError::internal(format!("wait for subprocess: {error}")))?);
+                        ensure_process_group_quiescent(state.process_group, state.termination_grace).await?;
+                    }
+                    () = &mut cancelled => return Err(state.cancellation.check().unwrap_err()),
+                }
+            }
+        }
+    }
 }
 
 async fn read_with_deadline<R: AsyncRead + Unpin>(
@@ -1317,25 +1565,13 @@ fn subprocess_timeout(deadline: tokio::time::Instant) -> CdfError {
 async fn finalize_streaming_subprocess(
     state: &mut RunningSubprocessStdout,
 ) -> Result<Option<TerminalDiagnostic>> {
-    let exit_status = match wait_with_deadline(
-        &mut state.child,
-        state.deadline,
-        state.cancellation.clone(),
-    )
-    .await
-    {
-        Ok(status) => status,
-        Err(error) => {
-            terminate_child_tree(
-                &mut state.child,
-                state.process_group,
-                state.termination_grace,
-            )
-            .await;
-            abort_stderr_task(state).await;
-            return Err(error);
+    let exit_status = match state.exit_status.take() {
+        Some(status) => status,
+        None => {
+            wait_with_deadline(&mut state.child, state.deadline, state.cancellation.clone()).await?
         }
     };
+    ensure_process_group_quiescent(state.process_group, state.termination_grace).await?;
     let stderr_task = std::mem::replace(
         &mut state.stderr_task,
         tokio::spawn(async {
@@ -1355,7 +1591,6 @@ async fn finalize_streaming_subprocess(
         state.stderr_line_limit,
         stderr_capture.discarded_bytes,
     );
-    ensure_process_group_quiescent(state.process_group, state.termination_grace).await;
     if !exit_status.success() {
         return Err(CdfError::new(
             ErrorKind::Transient,

@@ -57,7 +57,13 @@ pub struct SupervisionOptions {
     /// Grace period between cooperative process-group termination and forced termination.
     pub termination_grace: Duration,
     pub stderr_line_limit: usize,
+    /// Maximum stdout retained by [`crate::run_bounded_command`]. This is not a streaming limit.
     pub maximum_stdout_bytes: u64,
+    /// Optional total-transfer policy for streaming stdout. `None` permits an arbitrarily long
+    /// stream while in-flight chunks remain memory-ledger bounded.
+    pub maximum_streamed_stdout_bytes: Option<u64>,
+    /// Maximum in-flight stdout chunk requested from the child pipe.
+    pub maximum_stream_chunk_bytes: u64,
     pub maximum_stderr_bytes: u64,
 }
 
@@ -68,6 +74,8 @@ impl Default for SupervisionOptions {
             termination_grace: Duration::from_millis(250),
             stderr_line_limit: DEFAULT_STDERR_LINE_LIMIT,
             maximum_stdout_bytes: 64 * 1024 * 1024,
+            maximum_streamed_stdout_bytes: None,
+            maximum_stream_chunk_bytes: 16 * 1024 * 1024,
             maximum_stderr_bytes: 256 * 1024,
         }
     }

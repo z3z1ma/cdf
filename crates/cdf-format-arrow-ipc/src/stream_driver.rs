@@ -127,10 +127,8 @@ impl FormatDriver for ArrowIpcStreamFormatDriver {
                     "Arrow IPC stream projection and predicate pushdown are unsupported",
                 ));
             }
-            let maximum_bytes = source.maximum_sequential_bytes().ok_or_else(|| {
-                CdfError::contract("Arrow IPC stream requires a finite sequential byte boundary")
-            })?;
-            if maximum_bytes == 0 {
+            let maximum_bytes = source.maximum_sequential_bytes();
+            if maximum_bytes == Some(0) {
                 return Err(CdfError::contract(
                     "Arrow IPC stream sequential byte boundary must be greater than zero",
                 ));
@@ -158,7 +156,7 @@ impl FormatDriver for ArrowIpcStreamFormatDriver {
 struct ArrowIpcStreamDecodeSession {
     source: Arc<dyn ByteSource>,
     units: Vec<DecodeUnitPlan>,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
 }
 
 impl FormatDecodeSession for ArrowIpcStreamDecodeSession {
@@ -203,7 +201,7 @@ struct DecodeState {
     sequence: u64,
     finished: bool,
     consumed_bytes: u64,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
 }
 
 async fn decode_next(
@@ -234,10 +232,13 @@ async fn decode_next(
                     .consumed_bytes
                     .checked_add(chunk_bytes)
                     .ok_or_else(|| CdfError::data("Arrow IPC stream byte count overflowed"))?;
-                if state.consumed_bytes > state.maximum_bytes {
+                if state
+                    .maximum_bytes
+                    .is_some_and(|maximum| state.consumed_bytes > maximum)
+                {
                     return Err(CdfError::data(format!(
                         "Arrow IPC stream exceeds its {}-byte boundary",
-                        state.maximum_bytes
+                        state.maximum_bytes.expect("checked maximum")
                     )));
                 }
                 state.pending = Some(Buffer::from(chunk.into_retained_bytes()));

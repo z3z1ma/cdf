@@ -367,8 +367,9 @@ async fn arrow_ipc_stdout_adapter_streams_unknown_length_without_executor_deadlo
 
 #[tokio::test(flavor = "current_thread")]
 async fn ndjson_stdout_adapter_streams_with_compiled_schema_without_reserving_stdout_ceiling() {
-    let constrained: Arc<dyn MemoryCoordinator> =
+    let coordinator =
         Arc::new(DeterministicMemoryCoordinator::new(96 * 1024 * 1024, BTreeMap::new()).unwrap());
+    let constrained: Arc<dyn MemoryCoordinator> = coordinator.clone();
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, true),
         Field::new("name", DataType::Utf8, true),
@@ -384,7 +385,8 @@ async fn ndjson_stdout_adapter_streams_with_compiled_schema_without_reserving_st
         read_options(),
         DecodeSchemaPlan::fixed_admission(schema),
         SupervisionOptions {
-            maximum_stdout_bytes: 256 * 1024 * 1024,
+            maximum_stdout_bytes: 8,
+            maximum_stream_chunk_bytes: 4 * 1024,
             maximum_stderr_bytes: 64 * 1024,
             ..SupervisionOptions::default()
         },
@@ -427,6 +429,31 @@ async fn ndjson_stdout_adapter_streams_with_compiled_schema_without_reserving_st
             .sum::<u64>(),
         4096
     );
+    drop(batches);
+    assert_eq!(coordinator.snapshot().current_bytes, 0);
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn successful_parent_reaps_background_descendant_before_inherited_pipe_eof() {
+    let output = tokio::time::timeout(
+        Duration::from_secs(2),
+        run_bounded_command(
+            shell(["-c", "sleep 30 & printf ok"]),
+            SupervisionOptions {
+                maximum_stdout_bytes: 8,
+                termination_grace: Duration::from_millis(50),
+                ..SupervisionOptions::default()
+            },
+            cdf_runtime::RunCancellation::default(),
+            memory(),
+        ),
+    )
+    .await
+    .expect("background descendant held inherited pipes open")
+    .unwrap();
+
+    assert_eq!(output.stdout.as_bytes(), b"ok");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -539,6 +566,48 @@ async fn cancellation_before_first_frame_kills_descendants_and_joins() {
         rustix::process::test_kill_process(pid).is_err(),
         "subprocess descendant {pid:?} survived cancellation"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn dropping_a_stream_cancels_the_child_and_join_releases_all_leases() {
+    let coordinator =
+        Arc::new(DeterministicMemoryCoordinator::new(96 * 1024 * 1024, BTreeMap::new()).unwrap());
+    let admitted: Arc<dyn MemoryCoordinator> = coordinator.clone();
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+    let producer = SubprocessProducer::new(
+        shell(["-c", "printf '{\"id\":1}\\n'; sleep 30"]),
+        StdoutFormat::Ndjson,
+        read_options().with_batch_size(1).unwrap(),
+        DecodeSchemaPlan::fixed_admission(schema),
+        SupervisionOptions {
+            termination_grace: Duration::from_millis(50),
+            maximum_stream_chunk_bytes: 1024,
+            ..SupervisionOptions::default()
+        },
+        admitted,
+    )
+    .unwrap();
+    let opened = producer
+        .open(ForeignStreamOpenRequest {
+            resource_id: ResourceId::new("orders").unwrap(),
+            partition_id: PartitionId::new("p0").unwrap(),
+            cancellation: Default::default(),
+        })
+        .await
+        .unwrap();
+    let termination = opened.termination.clone();
+    let mut events = opened.events;
+    let event = events.next().await.unwrap().unwrap();
+    assert!(matches!(event, ForeignStreamEvent::Outcome(_)));
+    drop(event);
+    drop(events);
+
+    tokio::time::timeout(Duration::from_secs(2), termination.join())
+        .await
+        .expect("producer task did not join after stream drop")
+        .unwrap();
+    assert_eq!(coordinator.snapshot().current_bytes, 0);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -670,6 +739,27 @@ async fn retained_stderr_redacts_injected_environment_values() {
     assert!(!output.stderr.summary().contains("super-secret-value"));
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn truncated_stderr_redacts_a_retained_secret_prefix() {
+    let command = shell(["-c", "printf '%s' \"$CDF_TEST_SECRET\" >&2; printf ok"])
+        .with_env("CDF_TEST_SECRET", "super-secret-value");
+    let output = run_bounded_command(
+        command,
+        SupervisionOptions {
+            maximum_stdout_bytes: 8,
+            maximum_stderr_bytes: 6,
+            ..SupervisionOptions::default()
+        },
+        cdf_runtime::RunCancellation::default(),
+        memory(),
+    )
+    .await
+    .unwrap();
+
+    assert!(output.stderr.is_truncated());
+    assert!(!output.stderr.summary().contains("super"));
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
 async fn timeout_terminates_the_entire_subprocess_process_group() {
@@ -702,6 +792,30 @@ async fn timeout_terminates_the_entire_subprocess_process_group() {
         rustix::process::test_kill_process(pid).is_err(),
         "subprocess descendant {pid:?} survived timeout"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn timeout_force_terminates_a_term_resistant_process_group() {
+    let error = tokio::time::timeout(
+        Duration::from_secs(2),
+        run_bounded_command(
+            shell(["-c", "trap '' TERM; while :; do sleep 1; done"]),
+            SupervisionOptions {
+                timeout: Some(Duration::from_millis(50)),
+                termination_grace: Duration::from_millis(50),
+                ..SupervisionOptions::default()
+            },
+            cdf_runtime::RunCancellation::default(),
+            memory(),
+        ),
+    )
+    .await
+    .expect("TERM-resistant process group was not force-terminated")
+    .unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::Transient);
+    assert!(error.message.contains("timed out"));
 }
 
 #[tokio::test(flavor = "current_thread")]
