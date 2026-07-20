@@ -46,6 +46,7 @@ impl DrainSafeFrontierObservation {
 pub struct DrainEpochClosure {
     pub frontier: EpochFrontier,
     pub evidence: EpochClosureEvidence,
+    pub observed_at_unix_milliseconds: u64,
     pub terminate_after_settlement: bool,
 }
 
@@ -248,12 +249,12 @@ impl DrainEpochController {
             frontier: frontier.clone(),
             cause,
             observation: closure_observation,
-            observed_at_unix_milliseconds: observation.observed_at_unix_milliseconds,
         };
         evidence.validate()?;
         let closure = DrainEpochClosure {
             frontier,
             evidence,
+            observed_at_unix_milliseconds: observation.observed_at_unix_milliseconds,
             terminate_after_settlement,
         };
         self.state = ControllerState::AwaitingSettlement(Box::new(closure.clone()));

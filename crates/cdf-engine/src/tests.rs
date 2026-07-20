@@ -2595,6 +2595,118 @@ fn drain_epochs_resume_one_unbounded_partition_from_each_settled_batch_frontier(
     assert_eq!(resource.batch_poll_count.load(Ordering::SeqCst), 3);
 }
 
+fn run_fixed_drain_epochs_with_jobs(
+    jobs: u16,
+) -> Vec<(
+    String,
+    Vec<cdf_package_contract::SegmentEntry>,
+    cdf_kernel::EpochClosureEvidence,
+    bool,
+)> {
+    let mut batches = sample_batches();
+    for (ordinal, batch) in batches.iter_mut().enumerate() {
+        batch.header.source_position = Some(SourcePosition::FileManifest(FileManifest {
+            version: 1,
+            files: vec![FilePosition {
+                path: format!("input-{ordinal}.arrow"),
+                size_bytes: batch.header.byte_count,
+                source_generation: Some(format!("generation-{ordinal}")),
+                etag: None,
+                object_version: None,
+                sha256: None,
+            }],
+        }));
+    }
+    let resource = MockResource::tier_b(batches).without_control_keys();
+    let extent = ExecutionExtent::Drain {
+        version: EXECUTION_EXTENT_VERSION,
+        policy: StreamEpochPolicy {
+            version: STREAM_EPOCH_POLICY_VERSION,
+            checkpoint_cadence: EpochClosureTrigger::Rows { count: 3 },
+            package_rotation: EpochClosureTrigger::Bytes { count: 1 << 20 },
+            watermark: WatermarkPolicy::Disabled,
+            late_data: LateDataAction::Quarantine,
+            safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+        },
+        termination: DrainTermination::Records { count: 6 },
+    };
+    let source = mock_unbounded_source_plan(&resource);
+    resource.bind_compiled_source(&source);
+    let mut plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(Vec::new(), None, None, extent.clone()),
+        )
+        .unwrap()
+        .bind_compiled_source(&source)
+        .unwrap()
+        .bind_operator_graph(
+            &source,
+            &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        )
+        .unwrap();
+    let (_, services) = StandaloneExecutionHost::default_services(512 * 1024 * 1024).unwrap();
+    let services = services.with_run_job_ceiling(jobs).unwrap();
+    let scheduler = cdf_runtime::resolve_runtime_scheduler(
+        plan.scan.partitions.len(),
+        &source.execution_capabilities,
+        &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        &services,
+        Some(jobs),
+    )
+    .unwrap();
+    let mut controller = cdf_runtime::DrainEpochController::new(&extent).unwrap();
+    let pre_finalize =
+        |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
+    let root = TempDir::new().unwrap();
+    let mut outputs = Vec::new();
+    let mut epoch = 0_u64;
+    while !controller.is_finished() {
+        plan = plan
+            .rebind_package_id(format!("pkg-drain-jobs-{epoch}"))
+            .unwrap();
+        let output = block_on(super::execute_drain_epoch_with_hooks(
+            &plan,
+            &resource,
+            root.path().join(format!("epoch-{epoch}")),
+            &pre_finalize,
+            super::DrainEpochExecution::new(&mut controller),
+            EngineExecutionOptions::default()
+                .with_execution_services(services.clone())
+                .with_scheduler_resolution(
+                    scheduler.narrow_to_partition_count(plan.scan.partitions.len()),
+                ),
+        ))
+        .unwrap();
+        let drain = output.drain_epoch.as_ref().unwrap();
+        outputs.push((
+            output.output.manifest.package_hash.clone(),
+            output.output.segments.clone(),
+            drain.closure.evidence.clone(),
+            drain.closure.terminate_after_settlement,
+        ));
+        controller
+            .acknowledge_settlement(&drain.closure.frontier.frontier)
+            .unwrap();
+        plan.advance_committed_drain_frontier(
+            drain.consumed_partition_count,
+            drain.resume_partition.as_deref(),
+        )
+        .unwrap();
+        epoch += 1;
+    }
+    assert_eq!(services.memory().snapshot().current_bytes, 0);
+    outputs
+}
+
+#[test]
+fn fixed_drain_epoch_packages_are_jobs_invariant() {
+    let jobs_one = run_fixed_drain_epochs_with_jobs(1);
+    let jobs_many = run_fixed_drain_epochs_with_jobs(8);
+    assert_eq!(jobs_one, jobs_many);
+    assert_eq!(jobs_one.len(), 2);
+}
+
 #[test]
 fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
     let resource = MockResource::tier_b(sample_batches());

@@ -131,6 +131,7 @@ pub struct ProjectDrainEpochReport {
     pub row_count: u64,
     pub segment_count: usize,
     pub closure: cdf_kernel::EpochClosureEvidence,
+    pub observed_at_unix_milliseconds: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

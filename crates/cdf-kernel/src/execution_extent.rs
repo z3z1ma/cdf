@@ -643,8 +643,9 @@ impl EpochFrontier {
     }
 }
 
-/// Truthful control evidence for why and when a canonical frontier closed.
-/// A7 must persist this through an explicitly nonidentity evidence channel.
+/// Deterministic control evidence for why a canonical frontier closed.
+/// Observation wall time belongs to the run ledger and live closure report, never package
+/// identity.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "UncheckedEpochClosureEvidence", deny_unknown_fields)]
 pub struct EpochClosureEvidence {
@@ -652,7 +653,6 @@ pub struct EpochClosureEvidence {
     pub frontier: EpochFrontier,
     pub cause: EpochClosureCause,
     pub observation: EpochClosureObservation,
-    pub observed_at_unix_milliseconds: u64,
 }
 
 #[derive(Deserialize)]
@@ -662,7 +662,6 @@ struct UncheckedEpochClosureEvidence {
     frontier: EpochFrontier,
     cause: EpochClosureCause,
     observation: EpochClosureObservation,
-    observed_at_unix_milliseconds: u64,
 }
 
 impl TryFrom<UncheckedEpochClosureEvidence> for EpochClosureEvidence {
@@ -674,7 +673,6 @@ impl TryFrom<UncheckedEpochClosureEvidence> for EpochClosureEvidence {
             frontier: value.frontier,
             cause: value.cause,
             observation: value.observation,
-            observed_at_unix_milliseconds: value.observed_at_unix_milliseconds,
         };
         evidence.validate()?;
         Ok(evidence)
@@ -691,11 +689,6 @@ impl EpochClosureEvidence {
         self.frontier.validate()?;
         self.cause.validate()?;
         self.observation.validate_against(&self.cause)?;
-        if self.observed_at_unix_milliseconds == 0 {
-            return Err(CdfError::contract(
-                "epoch closure observation time must be greater than zero",
-            ));
-        }
         Ok(())
     }
 }
@@ -988,7 +981,6 @@ mod tests {
                 observed_milliseconds: 508,
                 overshoot_milliseconds: 8,
             },
-            observed_at_unix_milliseconds: 1_700_000_000_000,
         };
         evidence.validate().unwrap();
         let recorded = serde_json::to_value(evidence).unwrap();
@@ -1046,7 +1038,6 @@ mod tests {
                 observed_units: 12,
                 overshoot_units: 2,
             },
-            observed_at_unix_milliseconds: 1,
         };
         let mut invalid_evidence = serde_json::to_value(evidence).unwrap();
         invalid_evidence["observation"]["overshoot_units"] = 1.into();

@@ -329,6 +329,7 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
             receipt: unit.report.receipt.clone(),
             row_count: unit.report.row_count,
             segment_count: unit.report.segment_count,
+            observed_at_unix_milliseconds: drain_epoch.closure.observed_at_unix_milliseconds,
             closure: drain_epoch.closure.evidence,
         };
         if controller.is_finished() {
