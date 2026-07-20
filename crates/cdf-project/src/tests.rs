@@ -2841,7 +2841,10 @@ schema = { fields = [
         parallel.output.manifest.package_hash,
         serial.output.manifest.package_hash
     );
-    assert_eq!(parallel.output.segments, serial.output.segments);
+    assert_eq!(
+        parallel.output.identity_segments(),
+        serial.output.identity_segments()
+    );
     assert_eq!(parallel.output.profile, serial.output.profile);
     assert_eq!(parallel.output.lineage, serial.output.lineage);
     assert_eq!(parallel.segment_positions, serial.segment_positions);

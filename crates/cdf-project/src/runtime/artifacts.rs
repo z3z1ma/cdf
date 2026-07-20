@@ -182,7 +182,7 @@ pub(crate) fn state_delta_from_run(
     let preimage = state_delta_preimage_from_run_draft(
         &context,
         StateDeltaRunDraft {
-            segments: &output.output.segments,
+            segments: output.output.identity_segments(),
             segment_positions: &output.segment_positions,
             execution_evidence: output.execution_evidence(),
             source_continuation: output

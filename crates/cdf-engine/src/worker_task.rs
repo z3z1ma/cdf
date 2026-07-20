@@ -36,7 +36,7 @@ impl EnginePartitionEvidence {
         let segmentation = plan.segmentation_policy()?;
         let canonical_partition_ordinal = task.partition.canonical_partition_ordinal;
         let mut lineage = output.output.lineage.clone();
-        lineage.output_segments = (0..output.output.segments.len())
+        lineage.output_segments = (0..output.output.identity_segments().len())
             .map(|ordinal| {
                 segmentation.segment_id(
                     canonical_partition_ordinal,

@@ -5443,7 +5443,6 @@ where
             output: EngineRunOutput {
                 manifest,
                 verification,
-                segments,
                 profile,
                 lineage,
                 terminal_schema_quarantines: terminal_quarantines.clone(),
@@ -7601,7 +7600,6 @@ pub fn assemble_isolated_worker_package(
         output: EngineRunOutput {
             manifest,
             verification,
-            segments,
             profile,
             lineage,
             terminal_schema_quarantines,

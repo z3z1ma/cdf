@@ -901,8 +901,8 @@ async fn run_project_inner(
     let package_hash = replay_inputs.state_delta.package_hash.clone();
     let profile = &output.output.profile;
     let row_count = profile.output_rows;
-    let segment_count = output.output.segments.len();
-    for (index, segment) in output.output.segments.iter().enumerate() {
+    let segment_count = output.output.identity_segments().len();
+    for (index, segment) in output.output.identity_segments().iter().enumerate() {
         execution.recorder.append_package_segment_recorded(
             segment,
             index.saturating_add(1),

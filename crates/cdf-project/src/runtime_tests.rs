@@ -3702,7 +3702,6 @@ fn engine_output_with_positions_and_checkpoint_eligibility(
         EngineRunOutput {
             manifest,
             verification,
-            segments,
             profile: ExecutionProfile::default(),
             lineage: LineageSummary::default(),
             terminal_schema_quarantines: Vec::new(),

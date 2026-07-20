@@ -1840,10 +1840,17 @@ pub struct EstimateExplain {
 pub struct EngineRunOutput {
     pub manifest: PackageManifest,
     pub verification: VerifiedPackage,
-    pub segments: Vec<SegmentEntry>,
     pub profile: ExecutionProfile,
     pub lineage: LineageSummary,
     pub terminal_schema_quarantines: Vec<TerminalSchemaObservationQuarantine>,
+}
+
+impl EngineRunOutput {
+    /// Canonical finalized segment authority. The engine does not retain a second package-sized
+    /// segment collection after the package manifest is published.
+    pub fn identity_segments(&self) -> &[SegmentEntry] {
+        &self.manifest.identity.segments
+    }
 }
 
 pub const ENGINE_EXECUTION_EVIDENCE_VERSION: u16 = 2;

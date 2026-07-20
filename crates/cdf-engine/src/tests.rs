@@ -1177,8 +1177,8 @@ impl cdf_runtime::IsolatedPartitionExecutor for ActualEngineIsolatedExecutor<'_>
                 &self.lease,
                 self.now_ms,
             )?;
-            let mut receipts = Vec::with_capacity(output.output.segments.len());
-            for (segment_ordinal, segment) in output.output.segments.iter().enumerate() {
+            let mut receipts = Vec::with_capacity(output.output.identity_segments().len());
+            for (segment_ordinal, segment) in output.output.identity_segments().iter().enumerate() {
                 let segment_ordinal = u32::try_from(segment_ordinal).map_err(|_| {
                     cdf_kernel::CdfError::data("isolated worker segment ordinal exceeds u32")
                 })?;
@@ -1964,7 +1964,7 @@ fn run_actual_isolated_engine_equivalence_for_resource(
     }
 
     let mut package_row_ord_start = 0_u64;
-    let mut finalized = Vec::with_capacity(direct.output.segments.len());
+    let mut finalized = Vec::with_capacity(direct.output.identity_segments().len());
     let segment_verifier = EngineWorkerAdmissionVerifier::new(&artifacts);
     for (fixture, preparation) in fixtures.iter().zip(&preparations) {
         let mut prepared_segments = preparation
@@ -2081,7 +2081,10 @@ fn actual_engine_capsule_publishes_direct_segments_across_cpu_budgets() {
             isolated.output.verification.package_hash(),
             direct.output.verification.package_hash()
         );
-        assert_eq!(isolated.output.segments, direct.output.segments);
+        assert_eq!(
+            isolated.output.identity_segments(),
+            direct.output.identity_segments()
+        );
         assert_eq!(isolated.output.profile, direct.output.profile);
         assert_eq!(isolated.output.lineage, direct.output.lineage);
         assert_eq!(isolated.segment_positions, direct.segment_positions);
@@ -2091,7 +2094,10 @@ fn actual_engine_capsule_publishes_direct_segments_across_cpu_budgets() {
             admitted.counts.output_rows,
             direct.output.profile.output_rows
         );
-        assert_eq!(admitted.artifacts.len(), direct.output.segments.len() + 1);
+        assert_eq!(
+            admitted.artifacts.len(),
+            direct.output.identity_segments().len() + 1
+        );
         assert_eq!(
             finalized
                 .iter()
@@ -2107,7 +2113,7 @@ fn actual_engine_capsule_publishes_direct_segments_across_cpu_budgets() {
                 .collect::<Vec<_>>(),
             direct
                 .output
-                .segments
+                .identity_segments()
                 .iter()
                 .map(|segment| format!("sha256:{}", segment.sha256))
                 .collect::<Vec<_>>()
@@ -2123,8 +2129,8 @@ fn actual_engine_capsules_are_jobs_invariant_for_multiple_partitions() {
         run_actual_isolated_engine_equivalence(4, 2, ExecutionExtent::bounded());
 
     assert_eq!(
-        direct_parallel.output.segments,
-        direct_serial.output.segments
+        direct_parallel.output.identity_segments(),
+        direct_serial.output.identity_segments()
     );
     assert_eq!(
         direct_parallel.output.manifest,
@@ -2183,7 +2189,7 @@ fn actual_engine_capsules_are_jobs_invariant_for_multiple_partitions() {
     };
     let direct_hashes = direct_serial
         .output
-        .segments
+        .identity_segments()
         .iter()
         .map(|segment| format!("sha256:{}", segment.sha256))
         .collect::<Vec<_>>();
@@ -2212,7 +2218,10 @@ fn actual_engine_capsule_preserves_a_finite_drain_epoch() {
         isolated.output.verification.package_hash(),
         direct.output.verification.package_hash()
     );
-    assert_eq!(isolated.output.segments, direct.output.segments);
+    assert_eq!(
+        isolated.output.identity_segments(),
+        direct.output.identity_segments()
+    );
     assert_eq!(isolated.output.profile, direct.output.profile);
     assert_eq!(isolated.output.lineage, direct.output.lineage);
     assert_eq!(isolated.segment_positions, direct.segment_positions);
@@ -2239,7 +2248,7 @@ fn actual_engine_capsule_preserves_a_finite_drain_epoch() {
             .unwrap()
             .artifact
             .content_sha256,
-        format!("sha256:{}", direct.output.segments[0].sha256)
+        format!("sha256:{}", direct.output.identity_segments()[0].sha256)
     );
 }
 
@@ -2363,7 +2372,7 @@ fn tier_a_resource_runs_engine_projection_filter_limit_into_package() {
     assert_eq!(output.manifest.lifecycle.status, PackageStatus::Packaged);
     assert_eq!(output.profile.output_rows, 1);
     assert!(output.profile.output_bytes > 0);
-    assert_eq!(output.segments.len(), 1);
+    assert_eq!(output.identity_segments().len(), 1);
     assert_eq!(output.profile.statistics.columns[0].field_path.len(), 1);
     assert_eq!(
         output.profile.statistics.columns[0].field_path[0].as_ref(),
@@ -2389,7 +2398,9 @@ fn tier_a_resource_runs_engine_projection_filter_limit_into_package() {
     }));
 
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let batches = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    let batches = reader
+        .read_segment(&output.identity_segments()[0].segment_id)
+        .unwrap();
     let batch = &batches[0];
     assert_eq!(batch.num_rows(), 1);
     assert_eq!(batch.schema().field(0).name(), "name");
@@ -2445,7 +2456,7 @@ fn residual_limit_is_consumed_across_partitions() {
 
     assert_eq!(output.profile.output_rows, 1);
     assert_eq!(output.profile.output_batches, 1);
-    assert_eq!(output.segments.len(), 1);
+    assert_eq!(output.identity_segments().len(), 1);
 }
 
 #[test]
@@ -2463,7 +2474,7 @@ fn zero_limit_finalizes_an_empty_package_without_source_contact() {
 
     assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
     assert_eq!(output.profile.output_rows, 0);
-    assert!(output.segments.is_empty());
+    assert!(output.identity_segments().is_empty());
 }
 
 #[test]
@@ -3499,11 +3510,11 @@ fn execution_returns_segment_source_position_evidence() {
     ))
     .unwrap();
 
-    assert_eq!(output.output.segments.len(), 1);
+    assert_eq!(output.output.identity_segments().len(), 1);
     assert_eq!(output.segment_positions.len(), 1);
     assert_eq!(
         output.segment_positions[0].segment_id,
-        output.output.segments[0].segment_id
+        output.output.identity_segments()[0].segment_id
     );
     let Some(SourcePosition::FileManifest(manifest)) = &output.segment_positions[0].output_position
     else {
@@ -3933,7 +3944,7 @@ fn terminal_schema_observation_quarantine_processes_distinct_partitions_without_
     ))
     .unwrap();
 
-    assert!(output.output.segments.is_empty());
+    assert!(output.output.identity_segments().is_empty());
     assert!(output.segment_positions.is_empty());
     assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
     assert_eq!(resource.attest_count.load(Ordering::SeqCst), 2);
@@ -4153,7 +4164,7 @@ fn inexact_and_unsupported_predicates_are_reapplied_during_execution() {
 
     assert_eq!(output.profile.output_rows, 2);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    for segment in output.segments {
+    for segment in output.identity_segments() {
         let batches = reader.read_segment(&segment.segment_id).unwrap();
         let names = batches[0]
             .column(0)
@@ -4215,8 +4226,8 @@ fn durable_segment_hook_runs_after_publish_with_exact_entry_and_batch() {
     .unwrap();
 
     let observed = observed.lock().unwrap();
-    assert_eq!(observed.len(), output.output.segments.len());
-    for (actual, expected) in observed.iter().zip(&output.output.segments) {
+    assert_eq!(observed.len(), output.output.identity_segments().len());
+    for (actual, expected) in observed.iter().zip(output.output.identity_segments()) {
         assert_eq!(&actual.0, &expected.segment_id);
         assert_eq!(&actual.1, &expected.sha256);
         assert_eq!(actual.2, actual.3);
@@ -5745,7 +5756,7 @@ fn run_fixed_drain_epochs_with_jobs(jobs: u16) -> (Vec<FixedDrainEpochEvidence>,
         maximum_active = maximum_active.max(output.source_frontier.maximum_active);
         outputs.push((
             output.output.manifest.package_hash.clone(),
-            output.output.segments.clone(),
+            output.output.identity_segments().to_vec(),
             drain.closure.evidence.clone(),
             drain.closure.terminate_after_settlement,
         ));
@@ -5892,8 +5903,11 @@ fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
             .with_scheduler_resolution(scheduler),
     ))
     .unwrap();
-    assert!(serial.segments.len() > 1);
-    assert_eq!(parallel.output.segments.len(), serial.segments.len());
+    assert!(serial.identity_segments().len() > 1);
+    assert_eq!(
+        parallel.output.identity_segments().len(),
+        serial.identity_segments().len()
+    );
     assert_eq!(parallel.output.manifest.identity, serial.manifest.identity);
     assert_eq!(parallel.output.lineage, serial.lineage);
     assert_eq!(
@@ -6510,7 +6524,10 @@ fn randomized_skew_limit_projection_and_filter_matrix_is_jobs_invariant() {
                 run.output.manifest.package_hash,
                 runs[0].output.manifest.package_hash
             );
-            assert_eq!(run.output.segments, runs[0].output.segments);
+            assert_eq!(
+                run.output.identity_segments(),
+                runs[0].output.identity_segments()
+            );
             assert_eq!(run.output.lineage, runs[0].output.lineage);
             assert_eq!(run.output.profile, runs[0].output.profile);
             assert_eq!(run.segment_positions, runs[0].segment_positions);
@@ -6547,7 +6564,10 @@ fn randomized_skew_terminal_failure_is_canonical_across_jobs() {
                         actual.output.manifest.package_hash,
                         expected.output.manifest.package_hash
                     );
-                    assert_eq!(actual.output.segments, expected.output.segments);
+                    assert_eq!(
+                        actual.output.identity_segments(),
+                        expected.output.identity_segments()
+                    );
                     assert_eq!(actual.output.lineage, expected.output.lineage);
                     assert_eq!(actual.segment_positions, expected.segment_positions);
                 }
@@ -6970,7 +6990,9 @@ fn validation_program_source_name_can_cover_and_rename_batch_field() {
 
     assert_eq!(output.profile.output_rows, 3);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let batches = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    let batches = reader
+        .read_segment(&output.identity_segments()[0].segment_id)
+        .unwrap();
     let schema = batches[0].schema();
     let field = schema.field(0);
     assert_eq!(field.name(), "customer_name");
@@ -6994,7 +7016,9 @@ fn validation_program_output_name_can_cover_already_normalized_batch_field() {
 
     assert_eq!(output.profile.output_rows, 3);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let batches = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    let batches = reader
+        .read_segment(&output.identity_segments()[0].segment_id)
+        .unwrap();
     let schema = batches[0].schema();
     let field = schema.field(0);
     assert_eq!(field.name(), "customer_name");
@@ -7047,7 +7071,9 @@ fn package_artifacts_record_schema_coercion_evidence_and_physical_type_metadata(
     );
 
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let batches = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    let batches = reader
+        .read_segment(&output.identity_segments()[0].segment_id)
+        .unwrap();
     assert_eq!(
         batches[0]
             .column_by_name("id")
@@ -7356,9 +7382,11 @@ fn contract_exec_filters_quarantined_rows_before_normalize() {
     let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
 
     assert_eq!(output.profile.output_rows, 2);
-    assert_eq!(output.segments.len(), 1);
+    assert_eq!(output.identity_segments().len(), 1);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let batches = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    let batches = reader
+        .read_segment(&output.identity_segments()[0].segment_id)
+        .unwrap();
     let names = batches[0]
         .column_by_name("name")
         .unwrap()
@@ -7513,9 +7541,11 @@ fn contract_exec_writes_redacted_quarantine_artifact_and_keeps_accepted_rows() {
     let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
 
     assert_eq!(output.profile.output_rows, 1);
-    assert_eq!(output.segments.len(), 1);
+    assert_eq!(output.identity_segments().len(), 1);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let batches = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    let batches = reader
+        .read_segment(&output.identity_segments()[0].segment_id)
+        .unwrap();
     let accepted = batches[0]
         .column_by_name("name")
         .unwrap()
@@ -7740,9 +7770,11 @@ fn source_decode_quarantine_facts_fold_into_package_artifacts() {
     let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
 
     assert_eq!(output.profile.output_rows, 1);
-    assert_eq!(output.segments.len(), 1);
+    assert_eq!(output.identity_segments().len(), 1);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let accepted = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    let accepted = reader
+        .read_segment(&output.identity_segments()[0].segment_id)
+        .unwrap();
     assert_eq!(batch_i32s(&accepted[0], "id"), vec![3]);
     assert_eq!(batch_strings(&accepted, "name"), vec!["three"]);
     let quarantine = collect_quarantine_records(&reader);
@@ -7827,7 +7859,9 @@ fn variant_capture_materializes_nested_values_and_contract_evolution_evidence() 
 
     assert_eq!(output.profile.output_rows, 1);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let batches = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    let batches = reader
+        .read_segment(&output.identity_segments()[0].segment_id)
+        .unwrap();
     let batch = &batches[0];
     assert_eq!(batch.schema().fields().len(), 4);
     assert!(batch.schema().field_with_name("payload").is_err());
@@ -8039,7 +8073,9 @@ fn residual_contract_exec_captures_safe_values_redacts_pii_and_quarantines_contr
     let temp = TempDir::new().unwrap();
     let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let batches = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    let batches = reader
+        .read_segment(&output.identity_segments()[0].segment_id)
+        .unwrap();
     let output = &batches[0];
     assert_eq!(output.num_rows(), 2);
     let variants = output
@@ -8468,9 +8504,11 @@ fn merge_dedup_keep_last_runs_after_contract_filtering_and_before_normalize() {
     let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
 
     assert_eq!(output.profile.output_rows, 3);
-    assert_eq!(output.segments.len(), 1);
+    assert_eq!(output.identity_segments().len(), 1);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let segment = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    let segment = reader
+        .read_segment(&output.identity_segments()[0].segment_id)
+        .unwrap();
     assert_eq!(batch_i32s(&segment[0], "id"), vec![2, 1, 3]);
     assert_eq!(
         batch_strings(&segment, "customer_name"),
@@ -8611,7 +8649,7 @@ fn dynamic_schema_quarantine_drains_to_eof_and_commits_terminal_content_identity
     ))
     .unwrap();
 
-    assert!(output.output.segments.is_empty());
+    assert!(output.output.identity_segments().is_empty());
     assert_eq!(output.output.lineage.input_rows, 3);
     assert_eq!(output.output.terminal_schema_quarantines.len(), 1);
     let processed = output.execution_evidence().processed_observations();
@@ -8658,9 +8696,11 @@ fn merge_dedup_keep_first_uses_package_order() {
     let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
 
     assert_eq!(output.profile.output_rows, 3);
-    assert_eq!(output.segments.len(), 1);
+    assert_eq!(output.identity_segments().len(), 1);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let segment = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    let segment = reader
+        .read_segment(&output.identity_segments()[0].segment_id)
+        .unwrap();
     assert_eq!(batch_i32s(&segment[0], "id"), vec![1, 2, 3]);
     assert_eq!(
         batch_strings(&segment, "name"),
@@ -8704,7 +8744,10 @@ fn package_identity_is_invariant_to_source_batch_rechunking() {
     let many_dir = TempDir::new().unwrap();
     let one_output = block_on(execute_to_package(&one_plan, &one, one_dir.path())).unwrap();
     let many_output = block_on(execute_to_package(&many_plan, &many, many_dir.path())).unwrap();
-    assert_eq!(one_output.segments, many_output.segments);
+    assert_eq!(
+        one_output.identity_segments(),
+        many_output.identity_segments()
+    );
     assert_eq!(one_output.lineage, many_output.lineage);
     assert_eq!(one_output.manifest.identity, many_output.manifest.identity);
     assert_eq!(
@@ -8743,9 +8786,11 @@ fn append_plan_with_compiled_dedup_rule_does_not_change_rows_or_write_summary() 
     let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
 
     assert_eq!(output.profile.output_rows, 2);
-    assert_eq!(output.segments.len(), 1);
+    assert_eq!(output.identity_segments().len(), 1);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let batches = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    let batches = reader
+        .read_segment(&output.identity_segments()[0].segment_id)
+        .unwrap();
     assert_eq!(batch_i32s(&batches[0], "id"), vec![1, 1]);
     assert_eq!(
         batch_strings(&batches, "name"),
@@ -8778,7 +8823,9 @@ fn append_exact_row_dedup_compiles_and_drops_only_complete_duplicates() {
 
     assert_eq!(output.profile.output_rows, 2);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let batches = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    let batches = reader
+        .read_segment(&output.identity_segments()[0].segment_id)
+        .unwrap();
     assert_eq!(batch_i32s(&batches[0], "id"), vec![1, 1]);
     assert_eq!(batch_strings(&batches, "name"), vec!["same", "different"]);
     let summary = reader.read_dedup_summary_json().unwrap().unwrap();
@@ -8852,9 +8899,11 @@ fn replace_plan_with_compiled_dedup_rule_does_not_change_rows_or_write_summary()
     let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
 
     assert_eq!(output.profile.output_rows, 2);
-    assert_eq!(output.segments.len(), 1);
+    assert_eq!(output.identity_segments().len(), 1);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let batches = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    let batches = reader
+        .read_segment(&output.identity_segments()[0].segment_id)
+        .unwrap();
     assert_eq!(batch_i32s(&batches[0], "id"), vec![1, 1]);
     assert_eq!(
         batch_strings(&batches, "name"),
@@ -8936,7 +8985,7 @@ fn freshness_contract_writes_observed_at_context_when_rule_requires_it() {
     let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
 
     assert_eq!(output.profile.output_rows, 0);
-    assert!(output.segments.is_empty());
+    assert!(output.identity_segments().is_empty());
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
     assert!(
         reader
@@ -9132,12 +9181,15 @@ fn parallel_segment_encoding_is_identical_to_inline_canonical_registration() {
         })
         .collect::<Vec<_>>();
     assert_eq!(persisted_ordinals, vec![0, 1, 2]);
-    assert_eq!(parallel.output.segments, inline.segments);
+    assert_eq!(
+        parallel.output.identity_segments(),
+        inline.identity_segments()
+    );
     assert_eq!(parallel.output.lineage, inline.lineage);
     assert_eq!(
         parallel.segment_positions,
         inline
-            .segments
+            .identity_segments()
             .iter()
             .map(|segment| {
                 EngineSegmentPosition {
