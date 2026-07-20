@@ -2934,22 +2934,15 @@ fn preobserved_widening_is_rejected_by_the_compiled_verdict_program() {
         Field::new("active", DataType::Boolean, false),
     ]));
     let physical_hash = cdf_kernel::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
-    let descriptor = descriptor();
-    let evidence = EffectiveSchemaEvidence::new(
-        SchemaBaselineReference::Pinned {
-            snapshot: descriptor.schema_source.pinned_snapshot().unwrap().clone(),
-        },
+    let evidence = bound_effective_schema_evidence(
         SchemaHash::new("effective-preobserved-v1").unwrap(),
-        DiscoveryManifestReference {
-            manifest_hash: DiscoveryManifestHash::new("manifest-preobserved-v1").unwrap(),
-            path: ".cdf/schemas/orders@manifest-preobserved-v1.discovery.json".to_owned(),
-        },
+        "manifest-preobserved-v1",
+        ".cdf/schemas/orders@manifest-preobserved-v1.discovery.json",
         vec![EffectiveSchemaObservationEvidence::new(
             "input-0",
             physical_hash.clone(),
         )],
-    )
-    .unwrap();
+    );
     let runtime = EffectiveSchemaRuntime::new(
         evidence,
         vec![EffectiveSchemaCatalogEntry::new(
@@ -2984,22 +2977,15 @@ fn preobserved_widening_is_rejected_by_the_compiled_verdict_program() {
 fn planning_rejects_one_schema_observation_identity_across_partitions() {
     let schema = sample_schema();
     let physical_hash = cdf_kernel::canonical_arrow_schema_hash(schema.as_ref()).unwrap();
-    let descriptor = descriptor();
-    let evidence = EffectiveSchemaEvidence::new(
-        SchemaBaselineReference::Pinned {
-            snapshot: descriptor.schema_source.pinned_snapshot().unwrap().clone(),
-        },
+    let evidence = bound_effective_schema_evidence(
         SchemaHash::new("effective-unique-observations-v1").unwrap(),
-        DiscoveryManifestReference {
-            manifest_hash: DiscoveryManifestHash::new("manifest-unique-observations-v1").unwrap(),
-            path: ".cdf/schemas/orders@manifest-unique-observations-v1.discovery.json".to_owned(),
-        },
+        "manifest-unique-observations-v1",
+        ".cdf/schemas/orders@manifest-unique-observations-v1.discovery.json",
         vec![EffectiveSchemaObservationEvidence::new(
             "input-0",
             physical_hash.clone(),
         )],
-    )
-    .unwrap();
+    );
     let runtime = EffectiveSchemaRuntime::new(
         evidence,
         vec![EffectiveSchemaCatalogEntry::new(
@@ -3698,23 +3684,15 @@ fn effective_schema_binds_only_the_attempted_partition_observation_under_limit()
         batch.header.observed_schema_hash = physical_hash.clone();
         batch.header.source_position = Some(terminal_file_position());
     }
-    let descriptor = descriptor();
-    let baseline_snapshot = descriptor.schema_source.pinned_snapshot().unwrap().clone();
-    let evidence = EffectiveSchemaEvidence::new(
-        SchemaBaselineReference::Pinned {
-            snapshot: baseline_snapshot,
-        },
+    let evidence = bound_effective_schema_evidence(
         SchemaHash::new("effective-snapshot-v1").unwrap(),
-        DiscoveryManifestReference {
-            manifest_hash: DiscoveryManifestHash::new("manifest-v1").unwrap(),
-            path: ".cdf/schemas/orders@manifest-v1.discovery.json".to_owned(),
-        },
+        "manifest-v1",
+        ".cdf/schemas/orders@manifest-v1.discovery.json",
         vec![EffectiveSchemaObservationEvidence::new(
             "input-0",
             physical_hash.clone(),
         )],
-    )
-    .unwrap();
+    );
     let runtime = EffectiveSchemaRuntime::new(
         evidence,
         vec![EffectiveSchemaCatalogEntry::new(
@@ -3798,22 +3776,15 @@ fn pushed_projection_rebinds_preobserved_physical_evidence_before_execution() {
     .unwrap();
     batch.header.source_position = Some(terminal_file_position());
 
-    let descriptor = descriptor();
-    let evidence = EffectiveSchemaEvidence::new(
-        SchemaBaselineReference::Pinned {
-            snapshot: descriptor.schema_source.pinned_snapshot().unwrap().clone(),
-        },
+    let evidence = bound_effective_schema_evidence(
         SchemaHash::new("effective-projected-v1").unwrap(),
-        DiscoveryManifestReference {
-            manifest_hash: DiscoveryManifestHash::new("manifest-projected-v1").unwrap(),
-            path: ".cdf/schemas/orders@manifest-projected-v1.discovery.json".to_owned(),
-        },
+        "manifest-projected-v1",
+        ".cdf/schemas/orders@manifest-projected-v1.discovery.json",
         vec![EffectiveSchemaObservationEvidence::new(
             "input-0",
             physical_hash.clone(),
         )],
-    )
-    .unwrap();
+    );
     let runtime = EffectiveSchemaRuntime::new(
         evidence,
         vec![EffectiveSchemaCatalogEntry::new(
@@ -4138,22 +4109,15 @@ fn terminal_effective_schema_runtime(
     else {
         panic!("incompatible fixture must compile to terminal quarantine");
     };
-    let descriptor = descriptor();
-    let evidence = EffectiveSchemaEvidence::new(
-        SchemaBaselineReference::Pinned {
-            snapshot: descriptor.schema_source.pinned_snapshot().unwrap().clone(),
-        },
+    let evidence = bound_effective_schema_evidence(
         SchemaHash::new("effective-snapshot-v1").unwrap(),
-        DiscoveryManifestReference {
-            manifest_hash: DiscoveryManifestHash::new("manifest-v1").unwrap(),
-            path: ".cdf/schemas/orders@manifest-v1.discovery.json".to_owned(),
-        },
+        "manifest-v1",
+        ".cdf/schemas/orders@manifest-v1.discovery.json",
         vec![
             EffectiveSchemaObservationEvidence::new("input-0", physical_hash.clone()),
             EffectiveSchemaObservationEvidence::new("input-1", physical_hash.clone()),
         ],
-    )
-    .unwrap();
+    );
     EffectiveSchemaRuntime::new(
         evidence,
         vec![EffectiveSchemaCatalogEntry::new(
@@ -4559,7 +4523,9 @@ fn mock_compiled_source_plan_with_speculation(
             schema: resource.schema().as_ref().clone(),
             type_policy_allowances: resource.type_policy_allowances,
             effective_schema_runtime: resource.effective_schema_runtime.clone(),
-            baseline_observation_schema_catalog: Vec::new(),
+            baseline_observation_schema_catalog: resource
+                .baseline_observation_schema_catalog
+                .clone(),
             redacted_options: serde_json::json!({"endpoint": "redacted"}),
             physical_plan: serde_json::json!({"partitioning": "mock"}),
         },
@@ -8242,27 +8208,16 @@ fn residual_multi_partition_decisions_share_verified_effective_schema_and_keep_i
         .unwrap(),
     );
 
-    let baseline_snapshot = descriptor()
-        .schema_source
-        .pinned_snapshot()
-        .unwrap()
-        .clone();
     let effective_schema_hash = SchemaHash::new("effective-snapshot-v1").unwrap();
-    let evidence = EffectiveSchemaEvidence::new(
-        SchemaBaselineReference::Pinned {
-            snapshot: baseline_snapshot,
-        },
+    let evidence = bound_effective_schema_evidence(
         effective_schema_hash.clone(),
-        DiscoveryManifestReference {
-            manifest_hash: DiscoveryManifestHash::new("manifest-residual-mixed").unwrap(),
-            path: ".cdf/schemas/orders@manifest-residual-mixed.discovery.json".to_owned(),
-        },
+        "manifest-residual-mixed",
+        ".cdf/schemas/orders@manifest-residual-mixed.discovery.json",
         vec![EffectiveSchemaObservationEvidence::new(
             "input-0",
             physical_hash.clone(),
         )],
-    )
-    .unwrap();
+    );
     let runtime = EffectiveSchemaRuntime::new(
         evidence,
         vec![EffectiveSchemaCatalogEntry::new(
@@ -9692,7 +9647,14 @@ impl MockResource {
         schema: SchemaRef,
         runtime: EffectiveSchemaRuntime,
     ) -> Self {
+        let SchemaBaselineReference::Pinned { snapshot } = &runtime.evidence.baseline else {
+            panic!("engine effective-schema fixtures require a pinned discovery baseline");
+        };
         self.schema = schema;
+        self.descriptor.schema_source = SchemaSource::Discovered {
+            snapshot: snapshot.clone(),
+        };
+        self.baseline_observation_schema_catalog = runtime.schema_catalog.clone();
         self.effective_schema_runtime = Some(runtime);
         self
     }
@@ -10539,6 +10501,32 @@ fn descriptor() -> ResourceDescriptor {
         freshness: Some(FreshnessSpec { max_age_ms: 60_000 }),
         trust_level: TrustLevel::Governed,
     }
+}
+
+fn bound_effective_schema_evidence(
+    effective_schema_hash: SchemaHash,
+    manifest_hash: &str,
+    manifest_path: &str,
+    observations: Vec<EffectiveSchemaObservationEvidence>,
+) -> EffectiveSchemaEvidence {
+    let discovery_manifest = DiscoveryManifestReference {
+        manifest_hash: DiscoveryManifestHash::new(manifest_hash).unwrap(),
+        path: manifest_path.to_owned(),
+    };
+    let snapshot = descriptor()
+        .schema_source
+        .pinned_snapshot()
+        .unwrap()
+        .clone()
+        .with_discovery_manifest(&discovery_manifest)
+        .unwrap();
+    EffectiveSchemaEvidence::new(
+        SchemaBaselineReference::Pinned { snapshot },
+        effective_schema_hash,
+        discovery_manifest,
+        observations,
+    )
+    .unwrap()
 }
 
 fn sample_schema() -> SchemaRef {
