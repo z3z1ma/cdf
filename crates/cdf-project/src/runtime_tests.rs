@@ -472,6 +472,7 @@ impl ResourceStream for OneBatchThenEmptyDrainResource {
             }
             let batch = one_row_cursor_batch(
                 "batch-one-then-empty",
+                1,
                 schema,
                 resource_id,
                 partition.partition_id,
@@ -532,6 +533,7 @@ impl ResourceStream for OneBatchThenErrorOnceDrainResource {
                 } else {
                     "batch-after-retry"
                 },
+                1,
                 schema,
                 resource_id,
                 partition.partition_id,
@@ -559,8 +561,121 @@ impl QueryableResource for OneBatchThenErrorOnceDrainResource {
     }
 }
 
+struct DurableMultiPartitionDrainResource {
+    inner: BackfillMockResource,
+    fail_first_resume: AtomicBool,
+    opens: Mutex<Vec<(String, Option<SourcePosition>)>>,
+}
+
+impl DurableMultiPartitionDrainResource {
+    fn new() -> Self {
+        Self {
+            inner: BackfillMockResource::cursor(),
+            fail_first_resume: AtomicBool::new(true),
+            opens: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl ResourceStream for DurableMultiPartitionDrainResource {
+    fn descriptor(&self) -> &ResourceDescriptor {
+        self.inner.descriptor()
+    }
+
+    fn schema(&self) -> Arc<Schema> {
+        self.inner.schema()
+    }
+
+    fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<cdf_kernel::PartitionPlan>> {
+        ["part-a", "part-b"]
+            .into_iter()
+            .map(|partition_id| {
+                Ok(cdf_kernel::PartitionPlan {
+                    partition_id: PartitionId::new(partition_id)?,
+                    scope: request.scope.clone(),
+                    planned_position: None,
+                    start_position: None,
+                    scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
+                    retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
+                    metadata: BTreeMap::new(),
+                })
+            })
+            .collect()
+    }
+
+    fn open(&self, partition: cdf_kernel::PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
+        let partition_id = partition.partition_id.as_str().to_owned();
+        let start_position = partition.start_position.clone();
+        self.opens
+            .lock()
+            .unwrap()
+            .push((partition_id.clone(), start_position.clone()));
+        let schema = self.schema();
+        let resource_id = self.descriptor().resource_id.clone();
+        let fail_resume = partition_id == "part-b"
+            && start_position.is_some()
+            && self.fail_first_resume.swap(false, Ordering::SeqCst);
+        cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move {
+            if fail_resume {
+                return Err(CdfError::internal(
+                    "injected failure after the first multi-partition checkpoint",
+                ));
+            }
+            let values = match (partition_id.as_str(), start_position) {
+                ("part-a", None) => vec![100],
+                ("part-a", Some(_)) => Vec::new(),
+                ("part-b", None) => vec![1, 2],
+                ("part-b", Some(SourcePosition::Cursor(position)))
+                    if position.value == CursorValue::I64(1) =>
+                {
+                    vec![2]
+                }
+                (partition, start) => {
+                    return Err(CdfError::data(format!(
+                        "unexpected drain resume for {partition}: {start:?}"
+                    )));
+                }
+            };
+            let batches = values
+                .into_iter()
+                .map(|value| {
+                    one_row_cursor_batch(
+                        &format!("batch-{partition_id}-{value}"),
+                        value,
+                        Arc::clone(&schema),
+                        resource_id.clone(),
+                        PartitionId::new(partition_id.clone())?,
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(cdf_kernel::PartitionStreamPayload::batches(Box::pin(
+                futures_util::stream::iter(batches.into_iter().map(Ok)),
+            )))
+        }))
+    }
+}
+
+impl QueryableResource for DurableMultiPartitionDrainResource {
+    fn capabilities(&self) -> &ResourceCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn negotiate(&self, request: &ScanRequest) -> Result<cdf_kernel::ScanPlan> {
+        negotiate_scan_plan(
+            self.descriptor().resource_id.clone(),
+            request.clone(),
+            self.capabilities(),
+            self.plan_partitions(request)?,
+            None,
+            None,
+            DeliveryGuarantee::AtLeastOnceDuplicateRisk,
+        )
+    }
+}
+
 fn one_row_cursor_batch(
     batch_id: &str,
+    value: i64,
     schema: Arc<Schema>,
     resource_id: ResourceId,
     partition_id: PartitionId,
@@ -568,8 +683,8 @@ fn one_row_cursor_batch(
     let record_batch = RecordBatch::try_new(
         schema.clone(),
         vec![
-            Arc::new(Int64Array::from(vec![1])) as ArrayRef,
-            Arc::new(Int64Array::from(vec![1])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![value])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![value])) as ArrayRef,
         ],
     )?;
     let schema_hash = cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?;
@@ -583,7 +698,7 @@ fn one_row_cursor_batch(
     batch.header.source_position = Some(SourcePosition::Cursor(CursorPosition {
         version: cdf_kernel::SOURCE_POSITION_VERSION,
         field: "updated_at".to_owned(),
-        value: CursorValue::I64(1),
+        value: CursorValue::I64(value),
     }));
     Ok(batch)
 }
@@ -4590,6 +4705,191 @@ fn drain_retry_discards_only_incomplete_construction_after_staging_abort() {
         .unwrap();
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].status, CheckpointStatus::Committed);
+}
+
+#[test]
+fn multi_partition_drain_restart_uses_persisted_partition_continuation() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = DurableMultiPartitionDrainResource::new();
+    let package_root = temp.path().join(".cdf/packages");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+    let package_id = "pkg-drain-durable-continuation";
+    let pipeline_id = PipelineId::new("pipeline-drain-durable-continuation").unwrap();
+    let mut source = compiled_drain_test_source_plan(&resource);
+    source.execution_capabilities.maximum_concurrency = 1;
+    source.execution_capabilities.useful_concurrency = 1;
+    source.validate().unwrap();
+    let bound = BoundTestResource {
+        inner: &resource,
+        compiled_source_plan_hash: cdf_runtime::artifact_hash(&source).unwrap(),
+        replay_retention: None,
+    };
+    let extent = ExecutionExtent::Drain {
+        version: cdf_kernel::EXECUTION_EXTENT_VERSION,
+        policy: cdf_kernel::StreamEpochPolicy {
+            version: cdf_kernel::STREAM_EPOCH_POLICY_VERSION,
+            checkpoint_cadence: cdf_kernel::EpochClosureTrigger::Rows { count: 2 },
+            package_rotation: cdf_kernel::EpochClosureTrigger::Bytes { count: 1 << 20 },
+            watermark: cdf_kernel::WatermarkPolicy::Disabled,
+            late_data: cdf_kernel::LateDataAction::Quarantine,
+            safe_frontier: cdf_kernel::SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+        },
+        termination: cdf_kernel::DrainTermination::Records { count: 3 },
+    };
+    let mut plan = live_plan_for_queryable(&resource, package_id);
+    plan.execution_extent = extent.clone();
+    plan.explain.execution_extent = extent;
+    let destination =
+        ResolvedProjectDestination::duckdb(&duckdb_path, TargetName::new("events").unwrap())
+            .unwrap();
+    let plan = plan
+        .bind_compiled_source(&source)
+        .unwrap()
+        .bind_operator_graph(&source, &destination.runtime_capabilities())
+        .unwrap();
+    let retry_plan = plan.clone();
+
+    let first = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunSource::new(&bound),
+        plan,
+        package_root: package_root.clone(),
+        state_store_path: state_path.clone(),
+        pipeline_id: pipeline_id.clone(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-drain-durable-continuation").unwrap(),
+        destination,
+        run_id: Some(RunId::new("run-drain-durable-continuation-first").unwrap()),
+        event_sink: None,
+        after_receipt_verified: None,
+    }))
+    .unwrap_err();
+    assert!(
+        first
+            .to_string()
+            .contains("injected failure after the first multi-partition checkpoint"),
+        "{first}"
+    );
+
+    let store = SqliteCheckpointStore::open(&state_path).unwrap();
+    let first_head = store
+        .head(
+            &pipeline_id,
+            &resource.descriptor().resource_id,
+            &resource.descriptor().state_scope,
+        )
+        .unwrap()
+        .expect("first epoch checkpoint");
+    assert_eq!(
+        first_head.delta.output_position,
+        SourcePosition::Cursor(CursorPosition {
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
+            field: "updated_at".to_owned(),
+            value: CursorValue::I64(100),
+        })
+    );
+    let SourcePosition::Composite(first_continuation) = first_head
+        .delta
+        .source_continuation
+        .as_ref()
+        .expect("durable source continuation")
+    else {
+        panic!("multi-partition restart authority must remain partition-keyed");
+    };
+    assert_eq!(
+        first_continuation.positions.get("part-b"),
+        Some(&SourcePosition::Cursor(CursorPosition {
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
+            field: "updated_at".to_owned(),
+            value: CursorValue::I64(1),
+        }))
+    );
+
+    let destination =
+        ResolvedProjectDestination::duckdb(&duckdb_path, TargetName::new("events").unwrap())
+            .unwrap();
+    let resumed = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunSource::new(&bound),
+        plan: retry_plan,
+        package_root: package_root.clone(),
+        state_store_path: state_path.clone(),
+        pipeline_id: pipeline_id.clone(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-drain-durable-continuation").unwrap(),
+        destination,
+        run_id: Some(RunId::new("run-drain-durable-continuation-second").unwrap()),
+        event_sink: None,
+        after_receipt_verified: None,
+    }))
+    .unwrap();
+
+    assert_eq!(resumed.row_count, 1);
+    let history = SqliteCheckpointStore::open(&state_path)
+        .unwrap()
+        .history(
+            &pipeline_id,
+            &resource.descriptor().resource_id,
+            &resource.descriptor().state_scope,
+        )
+        .unwrap();
+    assert_eq!(history.len(), 2);
+    assert_eq!(
+        history[1].delta.parent_checkpoint_id,
+        Some(history[0].delta.checkpoint_id.clone())
+    );
+    let SourcePosition::Composite(final_continuation) = history[1]
+        .delta
+        .source_continuation
+        .as_ref()
+        .expect("final durable source continuation")
+    else {
+        panic!("final multi-partition restart authority must remain partition-keyed");
+    };
+    assert_eq!(
+        final_continuation.positions.get("part-a"),
+        Some(&SourcePosition::Cursor(CursorPosition {
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
+            field: "updated_at".to_owned(),
+            value: CursorValue::I64(100),
+        }))
+    );
+    assert_eq!(
+        final_continuation.positions.get("part-b"),
+        Some(&SourcePosition::Cursor(CursorPosition {
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
+            field: "updated_at".to_owned(),
+            value: CursorValue::I64(2),
+        }))
+    );
+    let committed_rows = history
+        .iter()
+        .map(|checkpoint| {
+            checkpoint
+                .receipt
+                .as_ref()
+                .expect("committed checkpoint receipt")
+                .counts
+                .rows_written
+        })
+        .sum::<u64>();
+    assert_eq!(committed_rows, 3);
+    let opens = resource.opens.lock().unwrap();
+    assert!(opens.contains(&(
+        "part-a".to_owned(),
+        Some(SourcePosition::Cursor(CursorPosition {
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
+            field: "updated_at".to_owned(),
+            value: CursorValue::I64(100),
+        })),
+    )));
+    assert!(opens.contains(&(
+        "part-b".to_owned(),
+        Some(SourcePosition::Cursor(CursorPosition {
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
+            field: "updated_at".to_owned(),
+            value: CursorValue::I64(1),
+        })),
+    )));
 }
 
 #[test]

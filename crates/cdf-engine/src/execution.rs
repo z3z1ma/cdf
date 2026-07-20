@@ -3383,7 +3383,6 @@ where
                         frontier,
                         carryover: drain_source_continuation(
                             &drain_partition_positions,
-                            frontier_partition_count,
                         )?,
                         admitted_batches: 0,
                         admitted_rows: 0,
@@ -3805,7 +3804,6 @@ where
                                 &partition,
                                 observed_partition_position.as_ref(),
                                 &mut drain_partition_positions,
-                                frontier_partition_count,
                                 batch.header.row_count,
                                 batch.header.byte_count,
                                 effective_watermark,
@@ -4309,7 +4307,6 @@ where
                     frontier,
                     carryover: drain_source_continuation(
                         &drain_partition_positions,
-                        frontier_partition_count,
                     )?,
                     admitted_batches: if partition_batch_frontiers_observed {
                         0
@@ -4977,10 +4974,6 @@ fn drain_source_continuation_positions(
         return Ok(BTreeMap::new());
     };
     committed.validate()?;
-    let planned_ids = partitions
-        .iter()
-        .map(|partition| partition.partition_id.as_str())
-        .collect::<BTreeSet<_>>();
     let positions = match committed {
         SourcePosition::Composite(composite) => composite.positions.clone(),
         position if partitions.len() == 1 => BTreeMap::from([(
@@ -4993,14 +4986,6 @@ fn drain_source_continuation_positions(
             ));
         }
     };
-    if let Some(unknown) = positions
-        .keys()
-        .find(|partition_id| !planned_ids.contains(partition_id.as_str()))
-    {
-        return Err(CdfError::data(format!(
-            "drain checkpoint source continuation references absent partition `{unknown}`"
-        )));
-    }
     Ok(positions)
 }
 
@@ -5016,7 +5001,6 @@ fn record_drain_partition_position(
 
 fn drain_source_continuation(
     positions: &BTreeMap<String, SourcePosition>,
-    partition_count: usize,
 ) -> Result<Option<SourcePosition>> {
     if positions.is_empty() {
         return Ok(None);
@@ -5027,7 +5011,7 @@ fn drain_source_continuation(
     {
         return Ok(None);
     }
-    if partition_count == 1 {
+    if positions.len() == 1 {
         return Ok(positions.values().next().cloned());
     }
     let continuation = SourcePosition::Composite(CompositePosition {
@@ -5047,7 +5031,6 @@ fn observe_drain_batch_frontier(
     partition: &PartitionPlan,
     observed_partition_position: Option<&SourcePosition>,
     partition_positions: &mut BTreeMap<String, SourcePosition>,
-    partition_count: usize,
     admitted_rows: u64,
     admitted_bytes: u64,
     global_watermark: Option<WatermarkClaim>,
@@ -5079,7 +5062,7 @@ fn observe_drain_batch_frontier(
     })?;
     let decision = controller.observe_safe_frontier(cdf_runtime::DrainSafeFrontierObservation {
         frontier,
-        carryover: drain_source_continuation(partition_positions, partition_count)?,
+        carryover: drain_source_continuation(partition_positions)?,
         admitted_batches: 1,
         admitted_rows,
         admitted_bytes,
