@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Target: .10x/decisions/kernel-owned-stream-epoch-policy.md, .10x/specs/stream-epochs-watermarks.md, .10x/tickets/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md
+Target: .10x/decisions/kernel-owned-stream-epoch-policy.md, .10x/specs/stream-epochs-watermarks.md, .10x/tickets/done/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md
 Verdict: pass
 
 # Stream epoch architecture review

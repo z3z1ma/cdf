@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Relates-To: .10x/decisions/kernel-owned-stream-epoch-policy.md, .10x/specs/stream-epochs-watermarks.md, .10x/tickets/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md
+Relates-To: .10x/decisions/kernel-owned-stream-epoch-policy.md, .10x/specs/stream-epochs-watermarks.md, .10x/tickets/done/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md
 
 # Stream epoch shaping evidence
 

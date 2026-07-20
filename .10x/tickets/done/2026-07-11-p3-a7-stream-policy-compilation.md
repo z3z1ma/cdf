@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-11
 Updated: 2026-07-19
-Parent: .10x/tickets/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md
+Parent: .10x/tickets/done/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md
 Depends-On: .10x/tickets/done/2026-07-11-p0-bx1-kernel-stream-extent-artifacts.md, .10x/tickets/done/2026-07-11-p0-sx1-source-extension-boundary.md, .10x/tickets/done/2026-07-11-p3-a5-streaming-operator-graph.md
 
 # P3 A7: stream policy compilation and explain

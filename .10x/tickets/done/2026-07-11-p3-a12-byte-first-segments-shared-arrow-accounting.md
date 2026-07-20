@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-11
 Updated: 2026-07-11
-Parent: .10x/tickets/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md
+Parent: .10x/tickets/done/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-a3-canonical-segmentation-adaptive-batching.md
 
 # P3 A12: byte-first segments and shared Arrow allocation accounting
