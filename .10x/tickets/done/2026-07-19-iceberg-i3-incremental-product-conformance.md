@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-19
 Updated: 2026-07-20
-Parent: .10x/tickets/2026-07-19-iceberg-glue-source-program.md
+Parent: .10x/tickets/done/2026-07-19-iceberg-glue-source-program.md
 Depends-On: .10x/tickets/done/2026-07-19-iceberg-i2-scan-execution.md
 
 # Iceberg I3: snapshot incrementality, product parity, and full conformance

@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-19
 Updated: 2026-07-19
-Parent: .10x/tickets/2026-07-19-iceberg-glue-source-program.md
+Parent: .10x/tickets/done/2026-07-19-iceberg-glue-source-program.md
 Depends-On: .10x/tickets/done/2026-07-11-p0-wx1-portable-partition-task-protocol.md, .10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md
 
 # Iceberg F4: externalized canonical scan-task sets

@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-19
 Updated: 2026-07-19
-Parent: .10x/tickets/2026-07-19-iceberg-glue-source-program.md
+Parent: .10x/tickets/done/2026-07-19-iceberg-glue-source-program.md
 Depends-On: .10x/tickets/done/2026-07-19-iceberg-f4-externalized-scan-tasks.md, .10x/tickets/done/2026-07-19-iceberg-i1-catalog-discovery.md
 
 # Iceberg I2: bounded scan execution and delete semantics

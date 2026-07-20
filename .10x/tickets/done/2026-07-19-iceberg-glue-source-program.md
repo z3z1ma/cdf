@@ -1,6 +1,6 @@
-Status: active
+Status: done
 Created: 2026-07-19
-Updated: 2026-07-19
+Updated: 2026-07-20
 
 # Iceberg and AWS Glue source program
 
@@ -31,7 +31,8 @@ This parent is not executable. It does not own Iceberg/Delta destinations, Glue 
 6. `.10x/tickets/done/2026-07-19-iceberg-i2-scan-execution.md` — done
 7. `.10x/tickets/done/2026-07-19-iceberg-i3-incremental-product-conformance.md` — done
 8. `.10x/tickets/done/2026-07-19-glue-g1-external-table-source.md` — done
-9. `.10x/tickets/2026-07-19-glue-g2-lake-formation-live-conformance.md`
+9. `.10x/tickets/done/2026-07-19-glue-g2-lake-formation-live-conformance.md` — done
+10. `.10x/tickets/cancelled/2026-07-20-glue-g3-governed-fq12-fixture.md` — cancelled; reactivate only with explicit fixture/IAM mutation authority
 
 F1 and F2 are parallel. F3 is independent of F1/F2 but must avoid the active WX1 implementation files until that worker lands. F4 depends on WX1 and coordinates with P3 F2 rather than duplicating task/cardinality authority. I1 depends on F1/F2/F3. I2 depends on F4/I1. I3 depends on I2. Glue G1 depends on F1 and may proceed beside I1; G2 depends on G1 and the Iceberg Glue binding.
 
@@ -65,19 +66,23 @@ F1 and F2 are parallel. F3 is independent of F1/F2 but must avoid the active WX1
 - 2026-07-20: I3 closed. Explicit fixed-snapshot and append-snapshot modes now preserve exact historical selection, prove append ancestry, select only newly added manifests, and fail closed on missing/divergent/non-append history. The local matrix, strict static analysis, existing read-only FQ12 no-op, and operator capability documentation are recorded in the child. The avoidable post-plan resume ordering cost moved to the source-neutral ticket `.10x/tickets/2026-07-20-source-resume-aware-negotiation.md`; it is not hidden as an Iceberg workaround.
 - 2026-07-20: Glue G1 closed. Conventional Glue external tables now classify before payload work, plan canonical spill-backed object tasks, decode through shared object/format/transform authorities, preserve catalog and object generations, and resume through exact `FileManifest` selection. The shared `cdf-aws` control-plane authority also removed duplicated AWS signing and credential code from the Iceberg Glue binding. G2 is the sole remaining child.
 - 2026-07-20: G2 implemented the Lake Formation metadata/credential authority and reached the real FQ12 permission boundary read-only. The account contains no governed conventional external fixture and the active role cannot call the privileged unfiltered API, so the external-fixture slice requires a separately authorized AWS mutation/IAM change; no product implementation blocker remains.
+- 2026-07-20: G2 closed after one consolidated adversarial review corrected runtime-authority precedence and partition-scope reuse. The external-only governed-fixture slice closed cancelled as G3 because the authorized account state cannot exercise it without unapproved mutations. Every program child is now terminal.
 
 ## Blockers
 
-Child-specific only. Parent closure depends on all children.
+None. Every child is terminal; the cancelled external-fixture residual has a precise reactivation trigger.
 
 ## Evidence
 
-None yet; parent aggregates closed-child evidence.
+- The nine completed implementation children contain criterion-mapped unit, conformance, static-analysis, bounded-memory, determinism, local REST/filesystem, and FQ12 Glue/S3 evidence.
+- Iceberg FQ12 execution processed 3,513,266 rows from 84 objects in approximately 2.22 seconds against a 2.01-second isolated S3 transfer roofline.
+- Glue G2's final local gate passed 97 tests plus dependency-inclusive strict Clippy and dependency policy; its read-only FQ12 probe reached the expected Lake Formation permission boundary without mutating AWS.
+- `rg` architecture inspection found no Iceberg/Glue branch in generic project/runtime/engine/package/destination code; source-specific behavior remains behind source and neutral object/AWS control interfaces.
 
 ## Review
 
-Pending child closure.
+Pass with one explicit residual. All implemented behavior was reviewed against source, runtime authority, memory, identity, retry, and redaction boundaries. The only unmet original live matrix cell requires provisioning a governed conventional table and granting application-integration permissions; G3 records why it is cancelled and what authority reopens it. This does not weaken or bypass the implemented fail-closed product behavior.
 
 ## Retrospective
 
-Pending.
+The program's successful seam was capability composition: Iceberg owns table semantics; Glue owns catalog classification and governed metadata; neutral object access owns transport; format drivers own decode; the runtime sees only source contracts and externalized tasks. The costly surprises were ecosystem version alignment and Lake Formation's operational protocol details, both of which are now durable decisions/tests. Future catalog sources should reuse these boundaries rather than delegate at runtime or copy transport logic.

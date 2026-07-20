@@ -1,14 +1,14 @@
-Status: active
+Status: done
 Created: 2026-07-19
-Updated: 2026-07-19
-Parent: .10x/tickets/2026-07-19-iceberg-glue-source-program.md
+Updated: 2026-07-20
+Parent: .10x/tickets/done/2026-07-19-iceberg-glue-source-program.md
 Depends-On: .10x/tickets/done/2026-07-19-glue-g1-external-table-source.md, .10x/tickets/done/2026-07-19-iceberg-i1-catalog-discovery.md
 
 # Glue G2: Lake Formation authority and live conformance
 
 ## Scope
 
-Implement Glue/Lake Formation metadata authorization, table/partition credential vending and renewal, requested-column audit context, exact permission-mode handling, worker-local secret resolution, and authorized FQ12 live Glue external/Iceberg catalog conformance with cleanup and performance evidence.
+Implement Glue/Lake Formation metadata authorization, table/partition credential vending and renewal, requested-column audit context, exact permission-mode handling, worker-local secret resolution, local protocol conformance, and authorized read-only FQ12 reachability evidence. Disposable governed-fixture provisioning was split to cancelled G3 because it requires separate external mutation/IAM authority.
 
 ## Non-goals
 
@@ -19,7 +19,7 @@ No silent ambient-S3 fallback, unsupported cell-filter approximation, catalog mu
 - Full-table and supported column-scoped reads use vended least-authority credentials and renew safely during long runs.
 - Unsupported cell/nested filters fail closed before S3 access with Athena/Trino remediation.
 - Credentials never enter plans/tasks/packages/logs/evidence; workers resolve references locally.
-- FQ12 fixtures cover Glue Iceberg catalog plus conventional external tables, many partitions, expiry/retry, denial/redaction, no-op incrementality, performance, and teardown.
+- Local protocol fixtures cover table/partition scope, expiry/retry, denial/redaction, no-op incrementality, and the complete governed execution path; read-only FQ12 proves protocol reachability and records the environment boundary.
 
 ## References
 
@@ -41,7 +41,7 @@ No silent ambient-S3 fallback, unsupported cell-filter approximation, catalog mu
 
 ## Blockers
 
-Disposable governed-fixture setup and teardown cannot execute without separate AWS mutation/IAM authorization. The implementation and read-only account inspection are complete; closure must either cancel that unavailable external-fixture slice with a recorded trigger or obtain explicit provisioning authority.
+None. Disposable governed-fixture setup and teardown moved to `.10x/tickets/cancelled/2026-07-20-glue-g3-governed-fq12-fixture.md` with an explicit reactivation trigger.
 
 ## Evidence
 
