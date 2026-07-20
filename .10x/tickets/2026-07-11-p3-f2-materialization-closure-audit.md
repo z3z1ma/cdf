@@ -73,6 +73,7 @@ No unrelated product feature or performance tuning beyond closure blockers.
 - 2026-07-18: Moved the process-wide spill budget/reservation authority from `cdf-runtime` into the runtime-neutral `cdf-memory` resource layer. `cdf-runtime` re-exports the exact types, so existing sources, destinations, task stores, and the concurrent connector lane remain source-compatible without an import migration. The lower-level package layer can now account metadata spill directly without depending upward on orchestration or inventing a package-specific disk-budget trait.
 - 2026-07-18: Put the first production control-plane consumers on streamed manifest access. Package list counts segments with checked `u64`; GC classification reads the constant header before independent verification; and `cdf sql` inserts file/segment rows directly into its SQLite evidence catalog. None of these paths retains a second manifest-sized file/segment collection. GC verification itself still uses the resident verifier and remains part of the larger migration.
 - 2026-07-18: Removed the slice-returning segment collection from the destination-neutral verified-package contract. Adapters and final staged binding now receive canonical manifest segments through a fallible visitor, so future package persistence can stream authority without changing every destination again. PostgreSQL, Parquet conformance, and generic staging were migrated in place; no old slice method or adapter-specific package-reader escape remains.
+- 2026-07-18: Added a pull-based canonical segment-array reader for existing manifest bytes. It incrementally locates the unescaped structural `segments` key, retains one JSON object at a time, validates comma/object framing, and rejects a segment record above the current-format structural ceiling before allocation can grow without bound. This preserves iterator-based destination ingress without a raw parser thread, channel, or whole-manifest collection.
 
 ## Evidence
 
@@ -203,6 +204,10 @@ No unrelated product feature or performance tuning beyond closure blockers.
   - `CARGO_BUILD_JOBS=12 cargo test -p cdf-dest-parquet --lib --locked -j 12` — passed, 36 tests and 1 release benchmark ignored, including staged ordering and exact manifest receipt verification.
   - Strict Clippy for package contract/package/runtime/PostgreSQL/Parquet passed; `cargo fmt --all` and `git diff --check` passed.
   - Limit: `VerifiedPackageReader` still visits its resident manifest vector internally. The contract no longer requires that representation, but the reader migration remains open.
+- 2026-07-18 pull-based manifest segment stream:
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-package manifest_segment_stream_ --lib --locked -j 12` — passed, 2 tests. The stream ignores an escaped decoy key inside a string, yields the exact canonical segment array, and rejects an oversized record at its structural ceiling.
+  - Strict `cdf-package` Clippy, `cargo fmt --all`, and `git diff --check` passed.
+  - Limit: the new stream is not yet installed beneath `PackageReader`; resident-reader removal remains the next slice.
 - This is partial F2 evidence only. The ticket remains active because its cross-codebase owner matrix, static architecture gates, remaining metadata-cardinality closure, and geometric stress proof are not complete.
 
 ## Review

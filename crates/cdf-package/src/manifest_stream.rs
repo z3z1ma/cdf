@@ -1,4 +1,8 @@
-use std::{fmt, io::Read, marker::PhantomData};
+use std::{
+    fmt,
+    io::{BufReader, Read},
+    marker::PhantomData,
+};
 
 use cdf_kernel::{CdfError, Result};
 use cdf_package_contract::{
@@ -308,6 +312,160 @@ const IDENTITY_FIELDS: &[&str] = &[
     "segments",
 ];
 
+const SEGMENTS_ARRAY_PREFIX: &[u8] = b"\"segments\":[";
+const MAX_CANONICAL_SEGMENT_ENTRY_BYTES: usize = 4096;
+
+/// Pull-based reader over the canonical manifest segment array.
+///
+/// CDF-generated segment identifiers are package path components, so one canonical record has a
+/// fixed structural ceiling. This is an artifact safety bound, not a throughput/concurrency cap.
+pub struct ManifestSegmentStream<R> {
+    reader: BufReader<R>,
+    entry: Vec<u8>,
+    started: bool,
+    finished: bool,
+    expect_comma: bool,
+}
+
+impl<R: Read> ManifestSegmentStream<R> {
+    pub fn new(reader: R) -> Self {
+        Self {
+            reader: BufReader::new(reader),
+            entry: Vec::with_capacity(512),
+            started: false,
+            finished: false,
+            expect_comma: false,
+        }
+    }
+
+    fn locate_segments(&mut self) -> Result<()> {
+        let mut matched = 0;
+        let mut preceding_backslashes = 0_usize;
+        loop {
+            let byte = read_byte(&mut self.reader)?.ok_or_else(|| {
+                CdfError::data("package manifest omitted its canonical segments array")
+            })?;
+            let unescaped = preceding_backslashes.is_multiple_of(2);
+            if byte == SEGMENTS_ARRAY_PREFIX[matched] && (matched > 0 || unescaped) {
+                matched += 1;
+                if matched == SEGMENTS_ARRAY_PREFIX.len() {
+                    self.started = true;
+                    return Ok(());
+                }
+            } else {
+                matched = usize::from(byte == SEGMENTS_ARRAY_PREFIX[0] && unescaped);
+            }
+            if byte == b'\\' {
+                preceding_backslashes += 1;
+            } else {
+                preceding_backslashes = 0;
+            }
+        }
+    }
+
+    fn next_entry(&mut self) -> Result<Option<SegmentEntry>> {
+        if self.finished {
+            return Ok(None);
+        }
+        if !self.started {
+            self.locate_segments()?;
+        }
+
+        let first = loop {
+            let byte = read_byte(&mut self.reader)?.ok_or_else(|| {
+                CdfError::data("package manifest segments array ended before `]`")
+            })?;
+            if byte.is_ascii_whitespace() {
+                continue;
+            }
+            if self.expect_comma {
+                if byte == b']' {
+                    self.finished = true;
+                    return Ok(None);
+                }
+                if byte != b',' {
+                    return Err(CdfError::data(
+                        "package manifest segment entries require canonical comma separation",
+                    ));
+                }
+                self.expect_comma = false;
+                continue;
+            }
+            break byte;
+        };
+        if first == b']' {
+            self.finished = true;
+            return Ok(None);
+        }
+        if first != b'{' {
+            return Err(CdfError::data(
+                "package manifest segment entry must be a JSON object",
+            ));
+        }
+
+        self.entry.clear();
+        self.entry.push(first);
+        let mut depth = 1_u32;
+        let mut in_string = false;
+        let mut escaped = false;
+        while depth > 0 {
+            let byte = read_byte(&mut self.reader)?.ok_or_else(|| {
+                CdfError::data("package manifest segment entry ended before its closing object")
+            })?;
+            if self.entry.len() == MAX_CANONICAL_SEGMENT_ENTRY_BYTES {
+                return Err(CdfError::data(format!(
+                    "package manifest segment entry exceeds the current-format structural ceiling of {MAX_CANONICAL_SEGMENT_ENTRY_BYTES} bytes"
+                )));
+            }
+            self.entry.push(byte);
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if byte == b'\\' {
+                    escaped = true;
+                } else if byte == b'"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            match byte {
+                b'"' => in_string = true,
+                b'{' => {
+                    depth = depth
+                        .checked_add(1)
+                        .ok_or_else(|| CdfError::data("manifest JSON nesting overflowed u32"))?;
+                }
+                b'}' => depth -= 1,
+                _ => {}
+            }
+        }
+        self.expect_comma = true;
+        serde_json::from_slice(&self.entry)
+            .map(Some)
+            .map_err(json_error)
+    }
+}
+
+impl<R: Read> Iterator for ManifestSegmentStream<R> {
+    type Item = Result<SegmentEntry>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_entry().transpose()
+    }
+}
+
+fn read_byte(reader: &mut impl Read) -> Result<Option<u8>> {
+    let mut byte = [0_u8; 1];
+    match reader.read(&mut byte) {
+        Ok(0) => Ok(None),
+        Ok(1) => Ok(Some(byte[0])),
+        Ok(_) => unreachable!("one-byte buffer cannot read more than one byte"),
+        Err(error) => Err(CdfError::internal(format!(
+            "read package manifest: {error}"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
@@ -409,5 +567,33 @@ mod tests {
 
         assert_eq!(visited, 1);
         assert!(error.to_string().contains("stop manifest visit"));
+    }
+
+    #[test]
+    fn manifest_segment_stream_yields_only_the_canonical_array() {
+        let mut manifest = fixture();
+        manifest.identity.package_id = "escaped-\"segments\":[-decoy".to_owned();
+        let mut bytes = Vec::new();
+        write_package_manifest_canonical(&manifest, &mut bytes).unwrap();
+
+        let segments = ManifestSegmentStream::new(Cursor::new(bytes))
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(segments, manifest.identity.segments);
+    }
+
+    #[test]
+    fn manifest_segment_stream_rejects_records_above_the_artifact_ceiling() {
+        let mut manifest = fixture();
+        manifest.identity.segments[0].segment_id =
+            SegmentId::new("s".repeat(MAX_CANONICAL_SEGMENT_ENTRY_BYTES)).unwrap();
+        let mut bytes = Vec::new();
+        write_package_manifest_canonical(&manifest, &mut bytes).unwrap();
+
+        let error = ManifestSegmentStream::new(Cursor::new(bytes))
+            .next()
+            .unwrap()
+            .unwrap_err();
+        assert!(error.to_string().contains("structural ceiling"));
     }
 }
