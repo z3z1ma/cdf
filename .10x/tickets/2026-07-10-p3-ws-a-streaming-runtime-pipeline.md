@@ -21,7 +21,7 @@ This workstream is a plan and requires bounded executable children for runtime o
 - `.10x/tickets/done/2026-07-11-p3-a5-streaming-operator-graph.md`
 - `.10x/tickets/done/2026-07-11-p3-a6-spillable-package-dedup.md` (child of A5)
 - `.10x/tickets/done/2026-07-11-p3-a7-stream-policy-compilation.md`
-- `.10x/tickets/2026-07-11-p3-a8-drain-epoch-executor.md`
+- `.10x/tickets/done/2026-07-11-p3-a8-drain-epoch-executor.md`
 - `.10x/tickets/2026-07-11-p3-a9-watermark-late-data-conformance.md`
 
 ## Acceptance criteria
@@ -40,7 +40,7 @@ No distributed scheduler, resident supervisor, general windowing engine, semanti
 
 ## Blockers
 
-None at the parent level. WS-L is done. The remaining executable chain is A7 -> A8 -> A9; the shared runtime-spine freeze applies only while a child that owns those files is active.
+None at the parent level. WS-L and A1-A8 are done. A9 is the final executable conformance child; the shared runtime-spine freeze applies only while a child that owns those files is active.
 
 ## Progress and notes
 
@@ -48,3 +48,4 @@ None at the parent level. WS-L is done. The remaining executable chain is A7 -> 
 - 2026-07-11: A2 completed the neutral memory ledger, shared finite DataFusion coordinator, weighted discovery execution, working-set conformance, and versioned headroom policy.
 - 2026-07-11: A3 completed plan-versioned row/byte canonical segmentation across the full Arrow vocabulary, adaptive nonidentity microbatches, typed position joins, source-rechunking invariance, and the fixed package golden.
 - 2026-07-19: Reprioritized the remaining chain as program-critical. A7 and WX1 proceed as independent prerequisites; A8 follows A7, then C5 can close deterministic isolated-worker equivalence against both completed authorities.
+- 2026-07-19: A8 closed with deterministic finite drain epochs, persisted partition-local restart authority, generic incomplete-construction recovery, explicit no-op outcomes, bounded replay retention, timer-independent closure, and minimum-partition watermark aggregation. A9 is now the sole remaining child and owns late-data/idle-resume/chaos conformance rather than another runtime architecture rewrite.

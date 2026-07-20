@@ -28,7 +28,7 @@ Execute logical file, row-group, window, and other safe partitions concurrently 
 
 ## Blockers
 
-C1–C4, the injected execution host, memory ledger, WS-L baseline, and D8 full-path repair are complete. C5 remains blocked only on WX1 and A8; C4 no longer gates F4, G4, or V3.
+C1–C4, WX1, A8, the injected execution host, memory ledger, WS-L baseline, and D8 full-path repair are complete. C5 is executable; C4 no longer gates F4, G4, or V3.
 
 ## Progress and notes
 

@@ -1,8 +1,8 @@
-Status: open
+Status: active
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md
-Depends-On: .10x/tickets/2026-07-11-p3-a8-drain-epoch-executor.md
+Depends-On: .10x/tickets/done/2026-07-11-p3-a8-drain-epoch-executor.md
 
 # P3 A9: watermark, late-data, and epoch conformance closeout
 
@@ -28,8 +28,12 @@ No concrete CDC source, resident supervisor, or general windowing engine.
 
 ## Blockers
 
-Blocked on A8.
+None. A8 is done.
 
 ## References
 
 - `.10x/specs/stream-epochs-watermarks.md`
+
+## Journal
+
+- 2026-07-19: Activated immediately after A8 closure. This ticket consumes the implemented epoch, continuation, watermark-aggregation, replay-retention, and crash-recovery authorities; it will add total late-data/idleness/operator-propagation conformance without reopening A8's runtime architecture.

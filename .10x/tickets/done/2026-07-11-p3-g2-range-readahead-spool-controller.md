@@ -29,7 +29,7 @@ No format-specific range planning.
 
 ## Blockers
 
-None. G1, C1, and the memory ledger are closed. The non-pausable unbounded rolling-replay store is executed by `.10x/tickets/2026-07-11-p3-a8-drain-epoch-executor.md`, where checkpoint/epoch authority exists; it is not a finite file-spool or cache concern.
+None. G1, C1, and the memory ledger are closed. The non-pausable unbounded rolling-replay store was executed by `.10x/tickets/done/2026-07-11-p3-a8-drain-epoch-executor.md`, where checkpoint/epoch authority exists; it is not a finite file-spool or cache concern.
 
 ## References
 
