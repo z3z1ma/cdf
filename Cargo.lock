@@ -1041,7 +1041,6 @@ dependencies = [
  "cdf-dest-postgres",
  "cdf-engine",
  "cdf-format-arrow-ipc",
- "cdf-format-avro",
  "cdf-format-delimited",
  "cdf-format-json",
  "cdf-format-parquet",

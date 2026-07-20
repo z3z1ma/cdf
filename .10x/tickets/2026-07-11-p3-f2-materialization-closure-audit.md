@@ -27,7 +27,6 @@ No unrelated product feature or performance tuning beyond closure blockers.
 
 ## Blockers
 
-- The current production registry still exposes Avro while B6 records an uncontained dependency-owned decompression allocation. F2 cannot close until that codec is either generically contained or removed from product registration.
 - The cross-codebase allocation-owner matrix and remaining metadata-cardinality audit are incomplete.
 
 ## References
@@ -51,6 +50,7 @@ No unrelated product feature or performance tuning beyond closure blockers.
 - 2026-07-18: Deleted `PackageReader::read_all_segments` and `PackageReader::read_commit_segments`; both eager APIs were already forbidden in production and retained only a superseded test escape hatch. CLI, conformance, project, Parquet, and PostgreSQL test consumers now exercise the same verified, ledger-accounted segment streams as production. Commit-request duplicate, missing, and row-count validation remains on that single path; the request map uses an in-place `Option` state instead of a second cardinality-sized set.
 - 2026-07-18: Corrected the F2 graph edge to B13. F2 audits the formats currently admitted to the product registry and installs forward conformance; it does not wait for every future catalog-v1 codec. Each later codec remains responsible for its own bounded-allocation proof before registration. This exposes, rather than hides, the current Avro registration contradiction as a direct F2 blocker.
 - 2026-07-18: While exercising the migrated conformance path, found a deterministic fixture defect: drift/quarantine asserted the optional statistics profile after invoking `run_project` with telemetry disabled. The fixture now requests statistics through `RunTelemetryConfig::with_statistics_profile(true)`; product telemetry defaults are unchanged.
+- 2026-07-18: Removed both Avro framings from the standard CLI format registry and removed the CLI's direct Avro dependency. B6 explicitly records dependency-owned decompression as uncontained, so advertising the codec as production-ready violated F2's allocation-owner requirement. The implementation remains available to its focused crate tests while B6 is blocked; a product-catalog regression law prevents accidental re-admission without closure evidence.
 
 ## Evidence
 
@@ -87,6 +87,10 @@ No unrelated product feature or performance tuning beyond closure blockers.
   - Focused migrated consumers passed: project file-manifest incrementality and merge-dedup replay; CLI Arrow IPC discovery, declared widening, and hints; P2 REST S5; DuckDB drift/quarantine; Parquet staged physical-plan recording; and live PostgreSQL rollback.
   - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-package -p cdf-cli -p cdf-conformance -p cdf-project -p cdf-dest-parquet -p cdf-dest-postgres --all-targets --locked -j 12 -- -D warnings` — passed before the test-only telemetry fixture repair; conformance strict Clippy is rerun before commit.
   - The sampled-pin promotion test reached and passed the migrated package reader, then failed later on an independent locked-policy-authority mismatch. This is not evidence for or against this slice and is not reported as passing.
+- 2026-07-18 Avro product-registration correction:
+  - `CARGO_BUILD_JOBS=12 cargo check -p cdf-cli --all-targets -j 12` — passed and regenerated the lockfile after removing the direct CLI dependency.
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-cli builtin_format_catalog_excludes_resource_uncontained_avro --locked -j 12` — passed. Proves the standard product registry does not admit either blocked Avro framing.
+  - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-cli --all-targets --locked -j 12 -- -D warnings` — passed.
 - This is partial F2 evidence only. The ticket remains active because its cross-codebase owner matrix, static architecture gates, remaining metadata-cardinality closure, and geometric stress proof are not complete.
 
 ## Review

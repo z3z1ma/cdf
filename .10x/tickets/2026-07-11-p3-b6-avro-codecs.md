@@ -77,6 +77,12 @@ No network schema registry client.
   decode. Upstream `arrow-avro` 58.3.0 exposes no decompression or nested-value
   limit. The ticket therefore moves to `blocked` instead of laundering C5 into
   closure evidence or adding a destination/source-specific subprocess workaround.
+- 2026-07-18: F2 found that the blocked codec had nevertheless been registered in
+  the standard CLI catalog. Removed both Avro framings from product registration
+  and removed the CLI's direct Avro dependency until this ticket has enforceable
+  containment evidence. The codec crate, native tests, and focused ticket remain;
+  test-only registries may still exercise it under explicit deterministic budgets.
+  A product-catalog regression test now rejects accidental re-admission.
 
 ## Evidence
 
