@@ -1397,9 +1397,15 @@ where
     let package = PackageReader::open(package_dir)?.into_verified()?;
     validate_package_compiled_expression_plan(&package)?;
     validate_package_compiled_schema_admission(&package)?;
-    let receipts = package.reader().receipts()?;
-    match receipts.as_slice() {
-        [] => replay_package_with_runtime(
+    let mut first_receipt = None;
+    let receipt_count = package.reader().for_each_receipt(&mut |receipt| {
+        if first_receipt.is_none() {
+            first_receipt = Some(receipt);
+        }
+        Ok(())
+    })?;
+    match (first_receipt, receipt_count) {
+        (None, 0) => replay_package_with_runtime(
             package,
             runtime,
             checkpoint_store,
@@ -1407,17 +1413,16 @@ where
             PackageReplayHooks::default(),
             execution,
         ),
-        [receipt] => recover_package_with_runtime(
+        (Some(receipt), 1) => recover_package_with_runtime(
             package,
             runtime,
             checkpoint_store,
-            receipt.clone(),
+            receipt,
             PackageReplayHooks::default(),
         ),
         _ => Err(CdfError::data(format!(
-            "drain package {} contains {} receipts; one package must have exactly one durable destination settlement",
+            "drain package {} contains {receipt_count} receipts; one package must have exactly one durable destination settlement",
             package_dir.display(),
-            receipts.len()
         ))),
     }
 }
@@ -1630,18 +1635,24 @@ pub(crate) fn record_package_receipt_once(
     reader: &PackageReader,
     receipt: &Receipt,
 ) -> Result<bool> {
-    let matching = reader
-        .receipts()?
-        .into_iter()
-        .filter(|existing| existing.receipt_id == receipt.receipt_id)
-        .collect::<Vec<_>>();
-    match matching.as_slice() {
-        [] => {
+    let mut matching = None;
+    let mut duplicate = false;
+    reader.for_each_receipt(&mut |existing| {
+        if existing.receipt_id != receipt.receipt_id {
+            return Ok(());
+        }
+        if matching.replace(existing).is_some() {
+            duplicate = true;
+        }
+        Ok(())
+    })?;
+    match (matching, duplicate) {
+        (None, false) => {
             reader.append_receipt(receipt.clone())?;
             Ok(true)
         }
-        [existing] if logically_equivalent_receipts(existing, receipt) => Ok(false),
-        [..] => Err(CdfError::data(format!(
+        (Some(existing), false) if logically_equivalent_receipts(&existing, receipt) => Ok(false),
+        _ => Err(CdfError::data(format!(
             "package receipt id {} is already recorded with conflicting logical commit evidence",
             receipt.receipt_id
         ))),

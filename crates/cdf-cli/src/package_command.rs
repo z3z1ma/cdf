@@ -216,8 +216,8 @@ fn classify_package_artifact(
             planned_action: PackageGcPlannedAction::Retain,
         };
     }
-    match cdf_package::read_receipts(package_dir) {
-        Ok(receipts) if !receipts.is_empty() => {
+    match cdf_package::PackageReader::open(package_dir).and_then(|reader| reader.receipt_count()) {
+        Ok(count) if count != 0 => {
             return PackageGcArtifact {
                 package_path,
                 package_hash,

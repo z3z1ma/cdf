@@ -515,9 +515,13 @@ pub fn live_replay_case(
 }
 
 pub fn read_single_live_receipt(package_dir: impl AsRef<Path>) -> Receipt {
-    let receipts = PackageReader::open(package_dir)
-        .unwrap()
-        .receipts()
+    let reader = PackageReader::open(package_dir).unwrap();
+    let mut receipts = Vec::new();
+    reader
+        .for_each_receipt(&mut |receipt| {
+            receipts.push(receipt);
+            Ok(())
+        })
         .unwrap();
     assert_eq!(receipts.len(), 1, "live package must contain one receipt");
     receipts[0].clone()

@@ -34,6 +34,17 @@ use cdf_package_contract::{
 use cdf_runtime::DestinationRuntime;
 use object_store::{memory::InMemory, path::Path as ObjectPath};
 
+fn collect_package_receipts(reader: &cdf_package::PackageReader) -> Vec<cdf_kernel::Receipt> {
+    let mut receipts = Vec::new();
+    reader
+        .for_each_receipt(&mut |receipt| {
+            receipts.push(receipt);
+            Ok(())
+        })
+        .unwrap();
+    receipts
+}
+
 fn identity_segments(reader: &cdf_package::PackageReader) -> Result<Vec<SegmentEntry>> {
     let mut segments = Vec::new();
     reader.for_each_identity_segment(&mut |entry| {
@@ -1550,10 +1561,7 @@ fn filesystem_append_materializes_parquet_and_verifies_receipt() {
         "successful local install must leave no staged file"
     );
 
-    let receipts = PackageReader::open(&package_dir)
-        .unwrap()
-        .receipts()
-        .unwrap();
+    let receipts = collect_package_receipts(&PackageReader::open(&package_dir).unwrap());
     assert!(
         receipts.is_empty(),
         "package receipts belong to orchestration"
@@ -1611,10 +1619,7 @@ fn staged_segment_ingress_materializes_verifiable_manifest_receipt() {
     assert_eq!(manifest.objects[0].row_count, 2);
     assert_eq!(manifest.objects[0].schema_hash, "schema-v1");
 
-    let receipts = PackageReader::open(&package_dir)
-        .unwrap()
-        .receipts()
-        .unwrap();
+    let receipts = collect_package_receipts(&PackageReader::open(&package_dir).unwrap());
     assert!(
         receipts.is_empty(),
         "package receipts belong to orchestration"
@@ -1926,10 +1931,7 @@ fn staged_segment_ingress_duplicate_replay_preserves_existing_manifest() {
     assert_eq!(manifest_before, manifest_after);
     assert!(dest.verify_receipt(&duplicate.receipt).unwrap().verified);
 
-    let receipts = PackageReader::open(&package_dir)
-        .unwrap()
-        .receipts()
-        .unwrap();
+    let receipts = collect_package_receipts(&PackageReader::open(&package_dir).unwrap());
     assert!(
         receipts.is_empty(),
         "package receipts belong to orchestration"

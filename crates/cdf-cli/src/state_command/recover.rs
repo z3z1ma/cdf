@@ -89,38 +89,50 @@ fn select_recovery_receipt(
     reader: &cdf_package::PackageReader,
     receipt_id: Option<&str>,
 ) -> Result<SelectedReceipt, CliError> {
-    let receipts = reader.receipts()?;
     match receipt_id {
         Some(receipt_id) => {
             let receipt_id = cdf_kernel::ReceiptId::new(receipt_id)?;
-            let receipt = receipts
-                .into_iter()
-                .find(|receipt| receipt.receipt_id == receipt_id)
-                .ok_or_else(|| {
-                    CdfError::contract(format!(
-                        "state recover receipt {} is not present in package receipts",
-                        receipt_id
-                    ))
-                })?;
+            let mut receipt = None;
+            reader.for_each_receipt(&mut |candidate| {
+                if receipt.is_none() && candidate.receipt_id == receipt_id {
+                    receipt = Some(candidate);
+                }
+                Ok(())
+            })?;
+            let receipt = receipt.ok_or_else(|| {
+                CdfError::contract(format!(
+                    "state recover receipt {} is not present in package receipts",
+                    receipt_id
+                ))
+            })?;
             Ok(SelectedReceipt {
                 receipt,
                 selection: RecoveryReceiptSelection::Explicit,
             })
         }
-        None => match receipts.len() {
-            0 => Err(CdfError::contract(
-                "state recover requires exactly one durable package receipt; found zero",
-            )
-            .into()),
-            1 => Ok(SelectedReceipt {
-                receipt: receipts.into_iter().next().expect("len checked"),
-                selection: RecoveryReceiptSelection::SingleDurableReceipt,
-            }),
-            count => Err(CdfError::contract(format!(
-                "state recover found {count} durable package receipts; pass --receipt to choose one"
-            ))
-            .into()),
-        },
+        None => {
+            let mut first = None;
+            let count = reader.for_each_receipt(&mut |receipt| {
+                if first.is_none() {
+                    first = Some(receipt);
+                }
+                Ok(())
+            })?;
+            match (first, count) {
+                (None, 0) => Err(CdfError::contract(
+                    "state recover requires exactly one durable package receipt; found zero",
+                )
+                .into()),
+                (Some(receipt), 1) => Ok(SelectedReceipt {
+                    receipt,
+                    selection: RecoveryReceiptSelection::SingleDurableReceipt,
+                }),
+                _ => Err(CdfError::contract(format!(
+                    "state recover found {count} durable package receipts; pass --receipt to choose one"
+                ))
+                .into()),
+            }
+        }
     }
 }
 

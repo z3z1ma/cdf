@@ -161,7 +161,7 @@ pub(super) struct ResumePackagePointer {
     pub(super) package_id: Option<String>,
     pub(super) package_hash: Option<String>,
     pub(super) status: Option<String>,
-    pub(super) receipt_count: usize,
+    pub(super) receipt_count: u64,
 }
 
 impl ResumePackagePointer {
@@ -171,7 +171,7 @@ impl ResumePackagePointer {
             package_id: Some(facts.reader.manifest().identity.package_id.clone()),
             package_hash: Some(facts.reader.manifest().package_hash.clone()),
             status: Some(facts.status.as_str().to_owned()),
-            receipt_count: facts.receipts.len(),
+            receipt_count: facts.receipt_count,
         }
     }
 }

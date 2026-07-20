@@ -78,6 +78,17 @@ macro_rules! package_builder {
     };
 }
 
+fn collect_package_receipts(reader: &PackageReader) -> Vec<Receipt> {
+    let mut receipts = Vec::new();
+    reader
+        .for_each_receipt(&mut |receipt| {
+            receipts.push(receipt);
+            Ok(())
+        })
+        .unwrap();
+    receipts
+}
+
 fn test_execution_services() -> cdf_runtime::ExecutionServices {
     static SERVICES: std::sync::OnceLock<cdf_runtime::ExecutionServices> =
         std::sync::OnceLock::new();
@@ -2869,7 +2880,7 @@ fn local_arrow_ipc_discover_pin_show_diff_preview_and_run_share_pinned_schema() 
     let package_dir = run_package_dir(&project, &run_result);
     let reader = PackageReader::open(&package_dir).unwrap();
     reader.verify().unwrap();
-    let receipts = reader.receipts().unwrap();
+    let receipts = collect_package_receipts(&reader);
     assert_eq!(receipts.len(), 1);
     let receipt = &receipts[0];
     assert_eq!(receipt.schema_hash.as_str(), pinned_hash);
@@ -4549,11 +4560,11 @@ fn schema_promote_failure_reports_persisted_recovery_status_without_secret_leak(
     write_vendor_score_parquet(&source_path);
     write_schema_promote_package_fixture(&project, &old_hash);
     let source_package = project.root.join(".cdf/packages/pkg-promote-source");
-    let mut receipts = cdf_package::read_receipts(&source_package).unwrap();
+    let mut receipts = collect_package_receipts(&PackageReader::open(&source_package).unwrap());
     receipts[0].destination = DestinationId::new("postgres").unwrap();
     fs::write(
         source_package.join(RECEIPTS_FILE),
-        serde_json::to_vec_pretty(&receipts).unwrap(),
+        cdf_package::canonical_json_bytes(&receipts).unwrap(),
     )
     .unwrap();
 
@@ -4925,13 +4936,7 @@ fn schema_promote_rejects_semantically_rebuilt_correction_packages_without_sourc
             fs::read(project.root.join("cdf.lock")).unwrap(),
             lock_before
         );
-        assert!(
-            PackageReader::open(&correction)
-                .unwrap()
-                .receipts()
-                .unwrap()
-                .is_empty()
-        );
+        assert!(collect_package_receipts(&PackageReader::open(&correction).unwrap()).is_empty());
         let connection = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
         let score_columns = connection
             .prepare("SELECT count(*) FROM pragma_table_info('events') WHERE name = 'score'")
@@ -7603,7 +7608,7 @@ fn run_adhoc_local_parquet_reuses_identity_and_ordinary_evidence_spine() {
 
     let package = PackageReader::open(run_package_dir(&project, &first)).unwrap();
     package.verify().unwrap();
-    let receipt = package.receipts().unwrap().remove(0);
+    let receipt = collect_package_receipts(&package).remove(0);
     assert_eq!(receipt.schema_hash.as_str(), report["schema_hash"]);
     let destination = DuckDbDestination::new(project.root.join(".cdf/adhoc-local.duckdb")).unwrap();
     assert!(destination.verify_receipt(&receipt).unwrap().verified);
@@ -7711,7 +7716,7 @@ fn run_adhoc_destination_failure_preserves_recoverable_evidence_and_retry() {
         package.verify().is_err(),
         "mid-stage destination failure must not masquerade as a finalized package"
     );
-    assert!(package.receipts().unwrap().is_empty());
+    assert!(collect_package_receipts(&package).is_empty());
     assert_eq!(
         package.manifest().lifecycle.status,
         PackageStatus::Extracting,
@@ -9207,7 +9212,7 @@ fn resume_stale_package_status_fails_closed_when_selected_receipt_differs_from_h
     fs::remove_file(project.root.join("data/events.ndjson")).unwrap();
     let package_dir = run_package_dir(&project, &run_result);
     let mut reader = PackageReader::open(&package_dir).unwrap();
-    let mut wrong_receipt = reader.receipts().unwrap()[0].clone();
+    let mut wrong_receipt = collect_package_receipts(&reader)[0].clone();
     wrong_receipt.receipt_id = ReceiptId::new("receipt-resume-wrong").unwrap();
     reader.append_receipt(wrong_receipt).unwrap();
     reader.update_status(PackageStatus::Loading).unwrap();
@@ -10555,10 +10560,8 @@ fn all_quarantine_run_commits_zero_segments_and_skips_exact_identity_until_chang
     assert_eq!(report["result"]["segment_count"], 0);
     assert_eq!(report["result"]["row_count"], 0);
     let package = run_package_dir(&project, &quarantined);
-    let package_receipts = cdf_package::PackageReader::open(&package)
-        .unwrap()
-        .receipts()
-        .unwrap();
+    let package_receipts =
+        collect_package_receipts(&cdf_package::PackageReader::open(&package).unwrap());
     assert_eq!(package_receipts.len(), 1);
     assert!(package_receipts[0].segment_acks.is_empty());
     assert!(package.join("state/processed-observations.json").is_file());
@@ -10612,10 +10615,7 @@ fn all_quarantine_run_commits_zero_segments_and_skips_exact_identity_until_chang
     ]);
     assert_eq!(replay.exit_code, 0, "{}", replay.stderr);
     assert!(
-        cdf_package::PackageReader::open(&package)
-            .unwrap()
-            .receipts()
-            .unwrap()
+        collect_package_receipts(&cdf_package::PackageReader::open(&package).unwrap())
             .iter()
             .all(|receipt| receipt.segment_acks.is_empty())
     );
@@ -13571,7 +13571,7 @@ fn state_recover_commits_verified_package_receipt_without_destination_rows() {
     let package_hash = reader.manifest().package_hash.clone();
     let package_id = reader.manifest().identity.package_id.clone();
     let checkpoint_id = reader.replay_inputs().unwrap().state_delta.checkpoint_id;
-    let receipt_id = reader.receipts().unwrap()[0].receipt_id.to_string();
+    let receipt_id = collect_package_receipts(&reader)[0].receipt_id.to_string();
     let destination_path = project.root.join(".cdf/dev.duckdb");
     let rows_before = duckdb_event_count(&destination_path);
 
@@ -13676,7 +13676,7 @@ fn state_recover_explicit_receipt_disambiguates_multiple_package_receipts() {
     let project = TestProject::new();
     let package_dir = create_replay_package_fixture(&project);
     let reader = PackageReader::open(&package_dir).unwrap();
-    let mut receipts = reader.receipts().unwrap();
+    let mut receipts = collect_package_receipts(&reader);
     let selected_receipt_id = receipts[0].receipt_id.to_string();
     receipts[0].receipt_id = ReceiptId::new("receipt-state-recover-extra").unwrap();
     reader.append_receipt(receipts[0].clone()).unwrap();
@@ -13734,7 +13734,7 @@ fn state_recover_fails_closed_on_zero_or_ambiguous_package_receipts() {
     let ambiguous_project = TestProject::new();
     let package_dir = create_replay_package_fixture(&ambiguous_project);
     let reader = PackageReader::open(&package_dir).unwrap();
-    let mut duplicate = reader.receipts().unwrap()[0].clone();
+    let mut duplicate = collect_package_receipts(&reader)[0].clone();
     duplicate.receipt_id = ReceiptId::new("receipt-state-recover-ambiguous-extra").unwrap();
     reader.append_receipt(duplicate).unwrap();
 
@@ -14424,7 +14424,7 @@ fn seed_resume_receipt_before_checkpoint(
     .unwrap_err();
     assert!(error.to_string().contains("stop before resume checkpoint"));
     let reader = PackageReader::open(package_dir).unwrap();
-    assert_eq!(reader.receipts().unwrap().len(), 1);
+    assert_eq!(collect_package_receipts(&reader).len(), 1);
     assert_eq!(reader.manifest().lifecycle.status, PackageStatus::Loading);
     let inputs = reader.replay_inputs().unwrap();
     let history = store
@@ -14487,7 +14487,7 @@ fn seed_quasar_resume_receipt_before_checkpoint(
             .contains("stop quasar fixture before checkpoint commit")
     );
     let reader = PackageReader::open(package_dir).unwrap();
-    assert_eq!(reader.receipts().unwrap().len(), 1);
+    assert_eq!(collect_package_receipts(&reader).len(), 1);
     assert_eq!(reader.manifest().lifecycle.status, PackageStatus::Loading);
     let history = store
         .history(
@@ -14520,7 +14520,7 @@ fn seed_quasar_resume_receipt_before_checkpoint(
 fn resume_package_event(kind: RunEventKind, package_dir: &Path) -> RunEventAppend {
     let reader = PackageReader::open(package_dir).unwrap();
     let inputs = reader.replay_inputs().unwrap();
-    let receipts = reader.receipts().unwrap();
+    let receipts = collect_package_receipts(&reader);
     let receipt = receipts.last();
     let mut event = RunEventAppend::new(kind);
     event.resource_id = Some(inputs.state_delta.resource_id.clone());
@@ -14551,12 +14551,11 @@ fn remove_state_store(project: &TestProject) {
     }
 }
 
-fn package_receipt_count(package_dir: &Path) -> usize {
+fn package_receipt_count(package_dir: &Path) -> u64 {
     PackageReader::open(package_dir)
         .unwrap()
-        .receipts()
+        .receipt_count()
         .unwrap()
-        .len()
 }
 
 fn remove_package_receipts(package_dir: &Path) {
@@ -14578,7 +14577,7 @@ fn package_status(package_dir: &Path) -> PackageStatus {
 fn assert_no_replay_mutation(
     project: &TestProject,
     package_dir: &Path,
-    receipt_count: usize,
+    receipt_count: u64,
     status: PackageStatus,
     local_destination_path: Option<&Path>,
 ) {

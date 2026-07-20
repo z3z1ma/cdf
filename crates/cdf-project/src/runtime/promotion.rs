@@ -828,24 +828,6 @@ fn verify_source_package_receipts(
     let reader = PackageReader::open(package_dir)?;
     reader.verify()?;
     let replay = reader.replay_inputs()?;
-    let mut receipts = reader
-        .receipts()?
-        .into_iter()
-        .filter(|receipt| &receipt.destination == destination_id && &receipt.target == target)
-        .collect::<Vec<_>>();
-    receipts.sort_by(|left, right| left.receipt_id.cmp(&right.receipt_id));
-    let actual_ids = receipts
-        .iter()
-        .map(|receipt| receipt.receipt_id.to_string())
-        .collect::<Vec<_>>();
-    let mut expected_ids = expected_receipt_ids.to_vec();
-    expected_ids.sort();
-    if actual_ids != expected_ids {
-        return Err(cdf_kernel::CdfError::data(format!(
-            "source package {} receipt ids changed before correction packaging",
-            replay.state_delta.package_hash
-        )));
-    }
     let expected_acks = replay
         .state_delta
         .segments
@@ -856,7 +838,11 @@ fn verify_source_package_receipts(
             byte_count: segment.byte_count,
         })
         .collect::<Vec<_>>();
-    for receipt in receipts {
+    let mut actual_ids = Vec::new();
+    reader.for_each_receipt(&mut |receipt| {
+        if &receipt.destination != destination_id || &receipt.target != target {
+            return Ok(());
+        }
         if receipt.package_hash != replay.state_delta.package_hash
             || receipt.target != replay.destination_commit.target
             || receipt.disposition != replay.destination_commit.disposition
@@ -877,6 +863,17 @@ fn verify_source_package_receipts(
                 receipt.receipt_id
             )));
         }
+        actual_ids.push(receipt.receipt_id.to_string());
+        Ok(())
+    })?;
+    actual_ids.sort();
+    let mut expected_ids = expected_receipt_ids.to_vec();
+    expected_ids.sort();
+    if actual_ids != expected_ids {
+        return Err(cdf_kernel::CdfError::data(format!(
+            "source package {} receipt ids changed before correction packaging",
+            replay.state_delta.package_hash
+        )));
     }
     Ok(())
 }
@@ -1055,14 +1052,13 @@ fn extract_operations(
     let reader = PackageReader::open(package_dir)?;
     let verified = reader.verify_for_consumption()?;
     let package_hash = PackageHash::new(reader.manifest().package_hash.clone())?;
-    let receipts = reader
-        .receipts()?
-        .into_iter()
-        .filter(|receipt| {
-            receipt.destination.as_str() == destination && receipt.target.as_str() == target
-        })
-        .map(|receipt| receipt.receipt_id.to_string())
-        .collect::<BTreeSet<_>>();
+    let mut receipts = BTreeSet::new();
+    reader.for_each_receipt(&mut |receipt| {
+        if receipt.destination.as_str() == destination && receipt.target.as_str() == target {
+            receipts.insert(receipt.receipt_id.to_string());
+        }
+        Ok(())
+    })?;
     if receipts
         != expected_receipt_ids
             .iter()
@@ -1534,7 +1530,7 @@ fn settle_correction_package(
         package.state_delta.segments.clone(),
         package.artifact.operations.clone(),
     )?;
-    if !reader.receipts()?.is_empty() {
+    if reader.receipt_count()? != 0 {
         return verify_stored_correction_receipt(destination, package);
     }
     let verified_package = Arc::new(reader.clone().into_verified()?);
@@ -1562,16 +1558,23 @@ fn verify_stored_correction_receipt(
 ) -> cdf_kernel::Result<Receipt> {
     destination.runtime_mut().ensure_protocol_ready()?;
     let reader = PackageReader::open(&package.package_dir)?;
-    let receipts = reader.receipts()?;
-    if receipts.len() != 1 {
+    let mut receipt = None;
+    let count = reader.for_each_receipt(&mut |candidate| {
+        if receipt.is_none() {
+            receipt = Some(candidate);
+        }
+        Ok(())
+    })?;
+    let Some(receipt) = receipt else {
+        return Err(cdf_kernel::CdfError::contract(
+            "promotion correction package must contain exactly one canonical receipt",
+        ));
+    };
+    if count != 1 {
         return Err(cdf_kernel::CdfError::contract(
             "promotion correction package must contain exactly one canonical receipt",
         ));
     }
-    let receipt = receipts
-        .into_iter()
-        .next()
-        .expect("one receipt was checked");
     let request = DestinationCorrectionCommitRequest::new(
         package.package_hash.clone(),
         IdempotencyToken::new(package.package_hash.to_string())?,

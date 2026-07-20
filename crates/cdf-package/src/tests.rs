@@ -2368,19 +2368,59 @@ fn receipt_append_is_stored_outside_identity_and_exposed_to_replay() {
     let reader = PackageReader::open(temp.path()).unwrap();
     let before_receipt_hash = manifest.package_hash.clone();
 
-    let receipts = reader
-        .append_receipt(sample_receipt(&manifest.package_hash))
-        .unwrap();
-    assert_eq!(receipts.len(), 1);
+    let first = sample_receipt(&manifest.package_hash);
+    let mut second = sample_receipt(&manifest.package_hash);
+    second.receipt_id = ReceiptId::new("receipt_second").unwrap();
+    assert_eq!(reader.append_receipt(first.clone()).unwrap(), 1);
+    assert_eq!(reader.append_receipt(second.clone()).unwrap(), 2);
     assert!(
         temp.path()
             .join("destination")
             .join("receipts.json")
             .is_file()
     );
+    let receipt_path = temp.path().join(RECEIPTS_FILE);
+    let canonical_receipts = fs::read(&receipt_path).unwrap();
+    assert_eq!(
+        canonical_receipts,
+        canonical_json_bytes(&vec![first.clone(), second.clone()]).unwrap()
+    );
 
     let reread = PackageReader::open(temp.path()).unwrap();
-    assert_eq!(reread.receipts().unwrap().len(), 1);
+    assert_eq!(reread.receipt_count().unwrap(), 2);
+    let mut observed = Vec::new();
+    assert_eq!(
+        reread
+            .for_each_receipt(&mut |receipt| {
+                observed.push(receipt.receipt_id);
+                Ok(())
+            })
+            .unwrap(),
+        2
+    );
+    assert_eq!(observed, vec![first.receipt_id, second.receipt_id]);
+
+    let mut visits = 0_u64;
+    let error = reread
+        .for_each_receipt(&mut |_| {
+            visits += 1;
+            Err(CdfError::data("stop receipt traversal"))
+        })
+        .unwrap_err();
+    assert_eq!(visits, 1);
+    assert_eq!(error.to_string(), "Data: stop receipt traversal");
+
+    let mut trailing = canonical_receipts.clone();
+    trailing.extend_from_slice(b" trailing");
+    fs::write(&receipt_path, trailing).unwrap();
+    assert!(
+        reread
+            .receipt_count()
+            .unwrap_err()
+            .to_string()
+            .contains("trailing characters")
+    );
+    fs::write(&receipt_path, canonical_receipts).unwrap();
     assert_eq!(reread.manifest().package_hash, before_receipt_hash);
     verify_package(temp.path()).unwrap();
 }
@@ -2985,7 +3025,10 @@ fn production_commit_paths_cannot_collect_package_segments() {
     let reader_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("src")
         .join("reader.rs");
-    let mut files = vec![archive_path.clone(), reader_path.clone()];
+    let ops_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("ops.rs");
+    let mut files = vec![archive_path.clone(), reader_path.clone(), ops_path];
     files.push(crates_dir.join("cdf-project/src/promotion.rs"));
     for relative in [
         "cdf-project/src/runtime",
@@ -3004,6 +3047,8 @@ fn production_commit_paths_cannot_collect_package_segments() {
             "fn verified_statistics_profile(",
             "read_quarantine_records(",
             "read_dedup_dropped_provenance(",
+            "read_receipts(",
+            ".receipts()",
         ];
         if path != archive_path && path != reader_path {
             forbidden.push("read_segment(");

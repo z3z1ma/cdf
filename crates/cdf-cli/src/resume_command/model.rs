@@ -15,7 +15,7 @@ pub(super) struct ResumePackageFacts {
     pub(super) reader: PackageReader,
     pub(super) status: PackageStatus,
     pub(super) replay_inputs: Option<PackageReplayInputs>,
-    pub(super) receipts: Vec<Receipt>,
+    pub(super) receipt_count: u64,
 }
 
 impl ResumePackageFacts {
@@ -23,13 +23,13 @@ impl ResumePackageFacts {
         let reader = PackageReader::open(path)?;
         let status = reader.manifest().lifecycle.status.clone();
         let replay_inputs = reader.replay_inputs().ok();
-        let receipts = reader.receipts()?;
+        let receipt_count = reader.receipt_count()?;
         Ok(Self {
             path: path.to_path_buf(),
             reader,
             status,
             replay_inputs,
-            receipts,
+            receipt_count,
         })
     }
 }
@@ -123,22 +123,30 @@ pub(super) fn package_path_from_events(events: &[RunEvent]) -> Option<String> {
     if paths.len() == 1 { paths.pop() } else { None }
 }
 
-pub(super) fn select_receipt(package: &ResumePackageFacts, events: &[RunEvent]) -> Option<Receipt> {
+pub(super) fn select_receipt(
+    package: &ResumePackageFacts,
+    events: &[RunEvent],
+) -> Result<Option<Receipt>, CliError> {
     let ledger_receipt_ids = events
         .iter()
         .filter_map(|event| event.receipt_id.as_ref().map(ToString::to_string))
         .collect::<Vec<_>>();
-    for receipt_id in ledger_receipt_ids.iter().rev() {
-        if let Some(receipt) = package
-            .receipts
+    let mut last = None;
+    let mut selected = None::<(usize, Receipt)>;
+    package.reader.for_each_receipt(&mut |receipt| {
+        if let Some(index) = ledger_receipt_ids
             .iter()
-            .rev()
-            .find(|receipt| receipt.receipt_id.as_str() == receipt_id)
+            .rposition(|receipt_id| receipt.receipt_id.as_str() == receipt_id)
+            && selected
+                .as_ref()
+                .is_none_or(|(selected_index, _)| index >= *selected_index)
         {
-            return Some(receipt.clone());
+            selected = Some((index, receipt.clone()));
         }
-    }
-    package.receipts.last().cloned()
+        last = Some(receipt);
+        Ok(())
+    })?;
+    Ok(selected.map(|(_, receipt)| receipt).or(last))
 }
 
 pub(super) fn resolve_project_path(root: &Path, value: &Path) -> PathBuf {

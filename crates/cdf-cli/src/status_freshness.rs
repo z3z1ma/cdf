@@ -4,7 +4,7 @@ use std::{
 };
 
 use cdf_kernel::{CdfError, ScopeKey, TrustLevel};
-use cdf_package::read_receipts;
+use cdf_package::PackageReader;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params};
 use serde::Serialize;
 
@@ -774,8 +774,8 @@ fn matching_package_receipt(facts: &[RunReceiptFact], project_root: &Path) -> Pa
             continue;
         };
         let package_dir = resolve_package_path(project_root, package_path);
-        let receipts = match read_receipts(&package_dir) {
-            Ok(receipts) => receipts,
+        let reader = match PackageReader::open(&package_dir) {
+            Ok(reader) => reader,
             Err(error) => {
                 return PackageReceiptLookup::Corrupt {
                     fact: fact.clone(),
@@ -786,10 +786,24 @@ fn matching_package_receipt(facts: &[RunReceiptFact], project_root: &Path) -> Pa
                 };
             }
         };
-        if let Some(receipt) = receipts.iter().rev().find(|receipt| {
-            receipt.package_hash.as_str() == fact.package_hash
+        let mut matching = None;
+        if let Err(error) = reader.for_each_receipt(&mut |receipt| {
+            if receipt.package_hash.as_str() == fact.package_hash
                 && receipt.receipt_id.as_str() == fact.receipt_id
+            {
+                matching = Some(receipt);
+            }
+            Ok(())
         }) {
+            return PackageReceiptLookup::Corrupt {
+                fact: fact.clone(),
+                reason: format!(
+                    "read package receipts from {}: {error}",
+                    package_dir.display()
+                ),
+            };
+        }
+        if let Some(receipt) = matching {
             return PackageReceiptLookup::Found(PackageReceiptFact {
                 receipt_id: fact.receipt_id.clone(),
                 package_hash: fact.package_hash.clone(),

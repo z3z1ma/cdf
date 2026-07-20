@@ -1215,7 +1215,11 @@ fn structurally_verified_package_receipts(
     delta: &StateDeltaPreimage,
     package_hash: &PackageHash,
 ) -> cdf_kernel::Result<Vec<cdf_kernel::Receipt>> {
-    let mut receipts = reader.receipts()?;
+    let mut receipts = Vec::new();
+    reader.for_each_receipt(&mut |receipt| {
+        receipts.push(receipt);
+        Ok(())
+    })?;
     if receipts.is_empty() {
         return Ok(receipts);
     }
@@ -3439,11 +3443,17 @@ mod tests {
             true,
         );
         let reader = PackageReader::open(&invalid_receipt).unwrap();
-        let mut receipts = reader.receipts().unwrap();
+        let mut receipts = Vec::new();
+        reader
+            .for_each_receipt(&mut |receipt| {
+                receipts.push(receipt);
+                Ok(())
+            })
+            .unwrap();
         receipts[0].schema_hash = SchemaHash::new("sha256:wrong").unwrap();
         fs::write(
             invalid_receipt.join(RECEIPTS_FILE),
-            serde_json::to_vec_pretty(&receipts).unwrap(),
+            cdf_package::canonical_json_bytes(&receipts).unwrap(),
         )
         .unwrap();
         let corrupt = build_availability_package(

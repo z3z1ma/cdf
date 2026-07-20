@@ -153,9 +153,13 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
     assert_eq!(transport.requests().len(), 1);
 
     let package_dir = project.package_root().join(PACKAGE_ID);
-    let crash_receipts = PackageReader::open(&package_dir)
-        .unwrap()
-        .receipts()
+    let receipt_reader = PackageReader::open(&package_dir).unwrap();
+    let mut crash_receipts = Vec::new();
+    receipt_reader
+        .for_each_receipt(&mut |receipt| {
+            crash_receipts.push(receipt);
+            Ok(())
+        })
         .unwrap();
     assert_eq!(crash_receipts.len(), 1);
     assert_eq!(

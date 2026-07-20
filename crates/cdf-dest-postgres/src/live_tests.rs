@@ -37,6 +37,17 @@ use crate::{
     identifiers::quote_identifier_unchecked,
 };
 
+fn collect_package_receipts(reader: &PackageReader) -> Vec<cdf_kernel::Receipt> {
+    let mut receipts = Vec::new();
+    reader
+        .for_each_receipt(&mut |receipt| {
+            receipts.push(receipt);
+            Ok(())
+        })
+        .unwrap();
+    receipts
+}
+
 #[test]
 #[ignore = "release-mode local PostgreSQL binary-vs-CSV COPY benchmark"]
 fn live_binary_copy_is_at_least_twice_csv() {
@@ -914,10 +925,7 @@ fn live_begin_session_returns_verifiable_receipt_and_preserves_duplicate_noop() 
     assert_eq!(receipt.counts.rows_written, 2);
     assert!(env.destination().verify_receipt(&receipt).unwrap().verified);
     assert!(
-        cdf_package::PackageReader::open(package_dir.path())
-            .unwrap()
-            .receipts()
-            .unwrap()
+        collect_package_receipts(&cdf_package::PackageReader::open(package_dir.path()).unwrap())
             .is_empty()
     );
 
@@ -930,10 +938,7 @@ fn live_begin_session_returns_verifiable_receipt_and_preserves_duplicate_noop() 
     .unwrap();
     assert_eq!(duplicate.receipt_id, receipt.receipt_id);
     assert!(
-        cdf_package::PackageReader::open(package_dir.path())
-            .unwrap()
-            .receipts()
-            .unwrap()
+        collect_package_receipts(&cdf_package::PackageReader::open(package_dir.path()).unwrap())
             .is_empty()
     );
 
@@ -1402,10 +1407,7 @@ fn live_rollback_after_direct_copy_leaves_no_target_or_mirror_partial_commit() {
     let load_count = load_mirror_count(&mut client, &target.display_name(), &manifest.package_hash);
     assert_eq!(load_count, 0);
     assert!(
-        cdf_package::PackageReader::open(package_dir.path())
-            .unwrap()
-            .receipts()
-            .unwrap()
+        collect_package_receipts(&cdf_package::PackageReader::open(package_dir.path()).unwrap())
             .is_empty()
     );
 }
@@ -1543,11 +1545,7 @@ fn live_addressed_correction_updates_exact_rows_preserves_residuals_and_replays(
         try_correction_commit(&env, correction_dir.path(), request, commit_request.plan).unwrap();
     assert_eq!(replay, receipt);
     assert!(
-        PackageReader::open(correction_dir.path())
-            .unwrap()
-            .receipts()
-            .unwrap()
-            .is_empty()
+        collect_package_receipts(&PackageReader::open(correction_dir.path()).unwrap()).is_empty()
     );
 }
 

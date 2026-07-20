@@ -418,30 +418,28 @@ impl PackageAvailabilityReport {
                 reason: Some(error.to_string()),
             };
         }
-        match reader.receipts() {
-            Ok(receipts) => {
-                let receipt_ids = receipts
-                    .iter()
-                    .map(|receipt| receipt.receipt_id.to_string())
-                    .collect::<Vec<_>>();
-                Self {
-                    path: pointer.path,
-                    status: "available".to_owned(),
-                    ledger_package_id: pointer.package_id,
-                    ledger_package_hash: pointer.package_hash,
-                    manifest_package_id: Some(manifest.identity.package_id.clone()),
-                    manifest_package_hash: Some(manifest.package_hash.clone()),
-                    lifecycle_status: Some(manifest.lifecycle.status.as_str().to_owned()),
-                    segment_count: Some(segment_count),
-                    receipt_artifact_status: if receipt_ids.is_empty() {
-                        "missing".to_owned()
-                    } else {
-                        "available".to_owned()
-                    },
-                    receipt_ids,
-                    reason: None,
-                }
-            }
+        let mut receipt_ids = Vec::new();
+        match reader.for_each_receipt(&mut |receipt| {
+            receipt_ids.push(receipt.receipt_id.to_string());
+            Ok(())
+        }) {
+            Ok(_) => Self {
+                path: pointer.path,
+                status: "available".to_owned(),
+                ledger_package_id: pointer.package_id,
+                ledger_package_hash: pointer.package_hash,
+                manifest_package_id: Some(manifest.identity.package_id.clone()),
+                manifest_package_hash: Some(manifest.package_hash.clone()),
+                lifecycle_status: Some(manifest.lifecycle.status.as_str().to_owned()),
+                segment_count: Some(segment_count),
+                receipt_artifact_status: if receipt_ids.is_empty() {
+                    "missing".to_owned()
+                } else {
+                    "available".to_owned()
+                },
+                receipt_ids,
+                reason: None,
+            },
             Err(error) => Self {
                 path: pointer.path,
                 status: "available".to_owned(),

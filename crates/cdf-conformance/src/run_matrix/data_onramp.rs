@@ -539,7 +539,13 @@ fn p2_s5_rest_discover_pin_preview_run_package_checkpoint_conformance() {
     let package_dir = temp.path().join(".cdf/packages").join(package_id);
     let reader = PackageReader::open(&package_dir).unwrap();
     reader.verify().unwrap();
-    let receipts = reader.receipts().unwrap();
+    let mut receipts = Vec::new();
+    reader
+        .for_each_receipt(&mut |receipt| {
+            receipts.push(receipt);
+            Ok(())
+        })
+        .unwrap();
     assert_eq!(receipts.len(), 1);
     let receipt = &receipts[0];
     assert_eq!(receipt.schema_hash.as_str(), pinned_hash);

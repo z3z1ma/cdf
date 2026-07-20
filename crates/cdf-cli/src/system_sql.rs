@@ -4,7 +4,7 @@ use std::{
 };
 
 use cdf_kernel::CdfError;
-use cdf_package::read_receipts;
+use cdf_package::PackageReader;
 use cdf_package_contract::MANIFEST_FILE;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Statement, params, types::ValueRef};
 use serde::Serialize;
@@ -261,7 +261,8 @@ fn mount_package(conn: &Connection, path: &Path) -> Result<(), CliError> {
     let manifest = cdf_package::read_manifest_header(path)?;
     let package_id = manifest.identity.package_id.as_str();
     let package_hash = manifest.package_hash.as_str();
-    let receipts = read_receipts(path)?;
+    let reader = PackageReader::open(path)?;
+    let receipt_count = reader.receipt_count()?;
     let mut identity_file_count = 0_u64;
     let mut segment_count = 0_u64;
     cdf_package::visit_manifest_entries(
@@ -302,7 +303,7 @@ fn mount_package(conn: &Connection, path: &Path) -> Result<(), CliError> {
             manifest.signature.value.as_deref(),
             to_i64(identity_file_count)?,
             to_i64(segment_count)?,
-            to_i64(receipts.len())?,
+            to_i64(receipt_count)?,
         ],
     )
     .map_err(sqlite_cli_error)?;
@@ -401,39 +402,54 @@ fn mount_package(conn: &Connection, path: &Path) -> Result<(), CliError> {
             ",
         )
         .map_err(sqlite_cli_error)?;
-    for receipt in &receipts {
-        let receipt_json = json_string(receipt)?;
-        insert_receipt
-            .execute(params![
-                package_hash,
-                package_id,
-                receipt.receipt_id.as_str(),
-                receipt.destination.as_str(),
-                receipt.target.as_str(),
-                json_scalar_string(&receipt.disposition)?,
-                receipt.idempotency_token.as_str(),
-                to_i64(receipt.counts.rows_written)?,
-                optional_to_i64(receipt.counts.rows_inserted)?,
-                optional_to_i64(receipt.counts.rows_updated)?,
-                optional_to_i64(receipt.counts.rows_deleted)?,
-                receipt.schema_hash.as_str(),
-                receipt.committed_at_ms,
-                receipt_json,
-            ])
-            .map_err(sqlite_cli_error)?;
-        for ack in &receipt.segment_acks {
-            insert_ack
+    let mut mount_error = None;
+    let visit_result = reader.for_each_receipt(&mut |receipt| {
+        let result = (|| -> Result<(), CliError> {
+            let receipt_json = json_string(&receipt)?;
+            insert_receipt
                 .execute(params![
                     package_hash,
                     package_id,
                     receipt.receipt_id.as_str(),
-                    ack.segment_id.as_str(),
-                    to_i64(ack.row_count)?,
-                    to_i64(ack.byte_count)?,
+                    receipt.destination.as_str(),
+                    receipt.target.as_str(),
+                    json_scalar_string(&receipt.disposition)?,
+                    receipt.idempotency_token.as_str(),
+                    to_i64(receipt.counts.rows_written)?,
+                    optional_to_i64(receipt.counts.rows_inserted)?,
+                    optional_to_i64(receipt.counts.rows_updated)?,
+                    optional_to_i64(receipt.counts.rows_deleted)?,
+                    receipt.schema_hash.as_str(),
+                    receipt.committed_at_ms,
+                    receipt_json,
                 ])
                 .map_err(sqlite_cli_error)?;
+            for ack in &receipt.segment_acks {
+                insert_ack
+                    .execute(params![
+                        package_hash,
+                        package_id,
+                        receipt.receipt_id.as_str(),
+                        ack.segment_id.as_str(),
+                        to_i64(ack.row_count)?,
+                        to_i64(ack.byte_count)?,
+                    ])
+                    .map_err(sqlite_cli_error)?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                mount_error = Some(error);
+                Err(CdfError::internal("mount package receipt failed"))
+            }
         }
+    });
+    if let Some(error) = mount_error {
+        return Err(error);
     }
+    visit_result?;
     Ok(())
 }
 

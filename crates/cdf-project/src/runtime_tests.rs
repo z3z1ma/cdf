@@ -3260,10 +3260,15 @@ fn package_status(package_dir: &Path) -> PackageStatus {
 }
 
 fn package_receipts(package_dir: &Path) -> Vec<Receipt> {
-    PackageReader::open(package_dir)
-        .unwrap()
-        .receipts()
-        .unwrap()
+    let reader = PackageReader::open(package_dir).unwrap();
+    let mut receipts = Vec::new();
+    reader
+        .for_each_receipt(&mut |receipt| {
+            receipts.push(receipt);
+            Ok(())
+        })
+        .unwrap();
+    receipts
 }
 
 fn remove_package_receipts(package_dir: &Path) {
@@ -9499,7 +9504,7 @@ fn zero_segment_processed_package_recovers_after_receipt_without_source_or_data_
     let reader = PackageReader::open(&package_dir).unwrap();
     let inputs = reader.replay_inputs().unwrap();
     assert!(inputs.state_delta.segments.is_empty());
-    let receipts = reader.receipts().unwrap();
+    let receipts = package_receipts(&package_dir);
     assert_eq!(receipts.len(), 1);
     assert!(receipts[0].segment_acks.is_empty());
     assert!(

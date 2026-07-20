@@ -542,9 +542,13 @@ where
 }
 
 pub fn assert_package_receipt_durable(package_dir: impl AsRef<Path>, receipt: &Receipt) {
-    let receipts = PackageReader::open(package_dir)
-        .unwrap()
-        .receipts()
+    let reader = PackageReader::open(package_dir).unwrap();
+    let mut receipts = Vec::new();
+    reader
+        .for_each_receipt(&mut |receipt| {
+            receipts.push(receipt);
+            Ok(())
+        })
         .unwrap();
     assert!(
         receipts.iter().any(|stored| stored == receipt),

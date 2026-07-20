@@ -125,7 +125,7 @@ impl<'a> ResumeAttempt<'a> {
             }
         };
         let checkpoint_status = checkpoint_status(&self.store, &replay_inputs.state_delta)?;
-        let receipt = select_receipt(package, &self.snapshot.events);
+        let receipt = select_receipt(package, &self.snapshot.events)?;
 
         match (receipt, checkpoint_status.committed) {
             (None, true) => {
@@ -341,7 +341,7 @@ impl<'a> ResumeAttempt<'a> {
         );
         report.mutated = true;
         report.package.status = Some(status.as_str().to_owned());
-        report.package.receipt_count = PackageReader::open(&package.path)?.receipts()?.len();
+        report.package.receipt_count = PackageReader::open(&package.path)?.receipt_count()?;
         report.receipt = ResumeReceiptPointer::from_receipt(Some(&receipt));
         report.checkpoint = ResumeCheckpointPointer::from_checkpoint(Some(&head));
         self.append_package_status_updated(package, &status)?;
@@ -368,7 +368,7 @@ impl<'a> ResumeAttempt<'a> {
         );
         report.mutated = true;
         report.package.status = Some(common.package_status.as_str().to_owned());
-        report.package.receipt_count = PackageReader::open(&package.path)?.receipts()?.len();
+        report.package.receipt_count = PackageReader::open(&package.path)?.receipt_count()?;
         report.checkpoint = ResumeCheckpointPointer::from_checkpoint(Some(common.checkpoint));
         report.receipt = ResumeReceiptPointer::from_receipt(Some(common.receipt));
         self.append_replay_events(package, delta, &common)?;
@@ -397,7 +397,7 @@ impl<'a> ResumeAttempt<'a> {
         );
         report.mutated = true;
         report.package.status = Some(common.package_status.as_str().to_owned());
-        report.package.receipt_count = PackageReader::open(&package.path)?.receipts()?.len();
+        report.package.receipt_count = PackageReader::open(&package.path)?.receipt_count()?;
         report.checkpoint = ResumeCheckpointPointer::from_checkpoint(Some(common.checkpoint));
         report.receipt = ResumeReceiptPointer::from_receipt(Some(common.receipt));
         report.receipt.source = Some("supplied_durable_receipt".to_owned());
@@ -438,7 +438,11 @@ impl<'a> ResumeAttempt<'a> {
         let receipt = self
             .package
             .as_ref()
-            .and_then(|package| select_receipt(package, &self.snapshot.events))
+            .and_then(|package| {
+                select_receipt(package, &self.snapshot.events)
+                    .ok()
+                    .flatten()
+            })
             .as_ref()
             .map(|receipt| ResumeReceiptPointer::from_receipt(Some(receipt)))
             .unwrap_or_default();
@@ -533,6 +537,7 @@ impl<'a> ResumeAttempt<'a> {
     fn append_run_resumed(&self, report: &ResumeReport) -> Result<(), CliError> {
         let mut event = RunEventAppend::new(RunEventKind::RunResumed);
         if let Some(package) = &self.package {
+            let receipt = select_receipt(package, &self.snapshot.events)?;
             fill_package_event_fields(
                 &mut event,
                 package,
@@ -540,7 +545,7 @@ impl<'a> ResumeAttempt<'a> {
                     .replay_inputs
                     .as_ref()
                     .map(|inputs| &inputs.state_delta),
-                select_receipt(package, &self.snapshot.events).as_ref(),
+                receipt.as_ref(),
             );
         }
         event.details = resume_event_details(report);
@@ -551,6 +556,7 @@ impl<'a> ResumeAttempt<'a> {
     pub(super) fn append_run_failed(&self, report: &ResumeReport) -> Result<(), CliError> {
         let mut event = RunEventAppend::new(RunEventKind::RunFailed);
         if let Some(package) = &self.package {
+            let receipt = select_receipt(package, &self.snapshot.events)?;
             fill_package_event_fields(
                 &mut event,
                 package,
@@ -558,7 +564,7 @@ impl<'a> ResumeAttempt<'a> {
                     .replay_inputs
                     .as_ref()
                     .map(|inputs| &inputs.state_delta),
-                select_receipt(package, &self.snapshot.events).as_ref(),
+                receipt.as_ref(),
             );
         }
         event.details = resume_event_details(report);

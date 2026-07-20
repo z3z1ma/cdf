@@ -43,9 +43,9 @@ fn packaged_no_receipts_replay_commits_destination_receipt_checkpoint_and_status
     assert!(
         PackageReader::open(&case.package_dir)
             .unwrap()
-            .receipts()
+            .receipt_count()
             .unwrap()
-            .is_empty(),
+            == 0,
         "fixture must start at the packaged/no-receipts boundary"
     );
 
@@ -545,9 +545,13 @@ fn stage_helper_crash(
 
     let destination = DuckDbDestination::new(&db_path).unwrap();
     let snapshot = read_mirror_snapshot_if_exists(&destination);
-    let receipts = PackageReader::open(&case.package_dir)
-        .unwrap()
-        .receipts()
+    let reader = PackageReader::open(&case.package_dir).unwrap();
+    let mut receipts = Vec::new();
+    reader
+        .for_each_receipt(&mut |receipt| {
+            receipts.push(receipt);
+            Ok(())
+        })
         .unwrap();
     let store = SqliteCheckpointStore::open(&sqlite_path).unwrap();
 

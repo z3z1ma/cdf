@@ -80,10 +80,15 @@ pub(crate) fn recover_after_crash(
 }
 
 pub(crate) fn durable_receipt(package_dir: &Path) -> Result<Option<Receipt>> {
-    Ok(PackageReader::open(package_dir)?
-        .receipts()?
-        .into_iter()
-        .next())
+    let reader = PackageReader::open(package_dir)?;
+    let mut receipt = None;
+    reader.for_each_receipt(&mut |candidate| {
+        if receipt.is_none() {
+            receipt = Some(candidate);
+        }
+        Ok(())
+    })?;
+    Ok(receipt)
 }
 
 pub(crate) fn package_status(package_dir: &Path) -> Result<PackageStatus> {

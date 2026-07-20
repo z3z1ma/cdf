@@ -1,4 +1,8 @@
-use std::{fs, io::BufReader, path::Path};
+use std::{
+    fs,
+    io::{BufReader, Write},
+    path::Path,
+};
 
 use arrow_array::RecordBatch;
 use arrow_ipc::reader::FileReader;
@@ -7,6 +11,7 @@ use cdf_package_contract::{
     FileEntry, MANIFEST_FILE, MANIFEST_VERSION, PackageManifest, PackageStatus, RECEIPTS_FILE,
     TombstoneReport, VerificationReport,
 };
+use serde::de::{Error as _, SeqAccess, Visitor};
 
 use crate::{
     archive::{verify_parquet_archive_absence, verify_parquet_archive_metadata},
@@ -17,8 +22,8 @@ use crate::{
     },
     package_fs::{PackageEntryKind, PackageRoot},
     storage::{
-        ArtifactDurability, AtomicArtifactSink, atomic_write, io_error, package_path,
-        portable_path_cmp, validate_manifest_identity_path,
+        ArtifactDurability, AtomicArtifactSink, io_error, package_path, portable_path_cmp,
+        validate_manifest_identity_path,
     },
 };
 
@@ -88,7 +93,77 @@ pub fn update_package_status(
     Ok(manifest)
 }
 
-pub fn append_receipt(package_dir: impl AsRef<Path>, receipt: Receipt) -> Result<Vec<Receipt>> {
+struct ReceiptVisitState<'a> {
+    expected_package_hash: &'a str,
+    visitor: &'a mut dyn FnMut(Receipt) -> Result<()>,
+    count: u64,
+    callback_error: Option<CdfError>,
+}
+
+struct ReceiptArrayVisitor<'a, 'b> {
+    state: &'a mut ReceiptVisitState<'b>,
+}
+
+impl<'de> Visitor<'de> for ReceiptArrayVisitor<'_, '_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a package receipt array")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> std::result::Result<(), A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        while let Some(receipt) = sequence.next_element::<Receipt>()? {
+            if receipt.package_hash.as_str() != self.state.expected_package_hash {
+                self.state.callback_error = Some(CdfError::data(format!(
+                    "receipt package hash {} does not match manifest package hash {}",
+                    receipt.package_hash.as_str(),
+                    self.state.expected_package_hash
+                )));
+                return Err(A::Error::custom("package receipt hash mismatch"));
+            }
+            if let Err(error) = (self.state.visitor)(receipt) {
+                self.state.callback_error = Some(error);
+                return Err(A::Error::custom("package receipt visitor failed"));
+            }
+            self.state.count = self
+                .state
+                .count
+                .checked_add(1)
+                .ok_or_else(|| A::Error::custom("package receipt count overflowed"))?;
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn visit_receipts_from_root(
+    root: &PackageRoot,
+    expected_package_hash: &str,
+    visitor: &mut dyn FnMut(Receipt) -> Result<()>,
+) -> Result<u64> {
+    let Some(file) = root.open_optional_std_file(RECEIPTS_FILE)? else {
+        return Ok(0);
+    };
+    let mut state = ReceiptVisitState {
+        expected_package_hash,
+        visitor,
+        count: 0,
+        callback_error: None,
+    };
+    let mut deserializer = serde_json::Deserializer::from_reader(BufReader::new(file));
+    if let Err(error) = serde::de::Deserializer::deserialize_seq(
+        &mut deserializer,
+        ReceiptArrayVisitor { state: &mut state },
+    ) {
+        return Err(state.callback_error.unwrap_or_else(|| json_error(error)));
+    }
+    deserializer.end().map_err(json_error)?;
+    Ok(state.count)
+}
+
+pub fn append_receipt(package_dir: impl AsRef<Path>, receipt: Receipt) -> Result<u64> {
     let package_dir = package_dir.as_ref();
     let manifest = read_manifest_header(package_dir)?;
     if receipt.package_hash.as_str() != manifest.package_hash {
@@ -99,22 +174,44 @@ pub fn append_receipt(package_dir: impl AsRef<Path>, receipt: Receipt) -> Result
         )));
     }
 
-    let mut receipts = read_receipts(package_dir)?;
-    receipts.push(receipt);
+    let root = PackageRoot::open(package_dir)?;
     let path = package_path(package_dir, RECEIPTS_FILE);
-    let bytes = canonical_json_bytes(&receipts)?;
-    atomic_write(&path, &bytes)?;
-    Ok(receipts)
-}
-
-pub fn read_receipts(package_dir: impl AsRef<Path>) -> Result<Vec<Receipt>> {
-    let path = package_path(package_dir.as_ref(), RECEIPTS_FILE);
-    if !path.exists() {
-        return Ok(Vec::new());
+    let mut sink = AtomicArtifactSink::create(&path, ArtifactDurability::PhaseMetadata)?;
+    let writer = sink.writer_mut()?;
+    writer
+        .write_all(b"[")
+        .map_err(|error| io_error(format!("write {}", path.display()), error))?;
+    let mut count = 0_u64;
+    visit_receipts_from_root(&root, &manifest.package_hash, &mut |existing| {
+        if count != 0 {
+            writer
+                .write_all(b",")
+                .map_err(|error| io_error(format!("write {}", path.display()), error))?;
+        }
+        let bytes = canonical_json_bytes(&existing)?;
+        writer
+            .write_all(&bytes)
+            .map_err(|error| io_error(format!("write {}", path.display()), error))?;
+        count = count
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("package receipt count overflowed"))?;
+        Ok(())
+    })?;
+    if count != 0 {
+        writer
+            .write_all(b",")
+            .map_err(|error| io_error(format!("write {}", path.display()), error))?;
     }
-    let bytes =
-        fs::read(&path).map_err(|error| io_error(format!("read {}", path.display()), error))?;
-    serde_json::from_slice(&bytes).map_err(json_error)
+    let bytes = canonical_json_bytes(&receipt)?;
+    writer
+        .write_all(&bytes)
+        .and_then(|()| writer.write_all(b"]"))
+        .map_err(|error| io_error(format!("write {}", path.display()), error))?;
+    count = count
+        .checked_add(1)
+        .ok_or_else(|| CdfError::data("package receipt count overflowed"))?;
+    sink.finish()?;
+    Ok(count)
 }
 
 pub fn verify_package(package_dir: impl AsRef<Path>) -> Result<VerificationReport> {

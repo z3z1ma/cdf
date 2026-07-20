@@ -147,6 +147,14 @@ impl PackageRoot {
         self.open_regular_file(relative_path).map(File::into_std)
     }
 
+    pub(crate) fn open_optional_std_file(
+        &self,
+        relative_path: &str,
+    ) -> Result<Option<std::fs::File>> {
+        self.try_open_regular_file(relative_path)
+            .map(|file| file.map(File::into_std))
+    }
+
     fn try_open_regular_file(&self, relative_path: &str) -> Result<Option<File>> {
         validate_canonical_relative_path(relative_path)?;
         let mut components = relative_path.split('/').peekable();

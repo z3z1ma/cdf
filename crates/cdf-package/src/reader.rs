@@ -31,8 +31,9 @@ use crate::{
     artifacts::{read_json_artifact, read_optional_json_artifact},
     manifest_stream::{ManifestFileStream, ManifestSegmentStream, PackageManifestHeader},
     ops::{
-        append_receipt, read_manifest_header_from_root, read_receipts, read_segment_file_from_root,
+        append_receipt, read_manifest_header_from_root, read_segment_file_from_root,
         tombstone_package, update_package_status, verify_package_from_root,
+        visit_receipts_from_root,
     },
     package_fs::PackageRoot,
     quarantine::{
@@ -660,7 +661,7 @@ impl PackageReader {
                 self.manifest.lifecycle.status.as_str()
             )));
         }
-        if !self.receipts()?.is_empty() {
+        if self.receipt_count()? != 0 {
             return Err(CdfError::data(format!(
                 "incomplete package {} carries a durable destination receipt and cannot be discarded",
                 self.package_dir.display()
@@ -835,12 +836,16 @@ impl PackageReader {
         Ok(&self.manifest)
     }
 
-    pub fn append_receipt(&self, receipt: Receipt) -> Result<Vec<Receipt>> {
+    pub fn append_receipt(&self, receipt: Receipt) -> Result<u64> {
         append_receipt(&self.package_dir, receipt)
     }
 
-    pub fn receipts(&self) -> Result<Vec<Receipt>> {
-        read_receipts(&self.package_dir)
+    pub fn for_each_receipt(&self, visitor: &mut dyn FnMut(Receipt) -> Result<()>) -> Result<u64> {
+        visit_receipts_from_root(&self.package_root, &self.manifest.package_hash, visitor)
+    }
+
+    pub fn receipt_count(&self) -> Result<u64> {
+        self.for_each_receipt(&mut |_| Ok(()))
     }
 
     pub fn input_checkpoint(&self) -> Result<Option<Checkpoint>> {
