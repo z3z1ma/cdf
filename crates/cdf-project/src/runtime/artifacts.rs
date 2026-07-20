@@ -3,6 +3,8 @@ use cdf_kernel::CapabilitySupport;
 use cdf_package_contract::{PROCESSED_OBSERVATIONS_FILE, ProcessedObservationEvidenceArtifact};
 
 const QUARANTINE_MIRROR_OUTCOME_FILE: &str = "destination/quarantine-mirror.json";
+const QUARANTINE_MIRROR_OUTCOME_VERSION: u16 = 1;
+const QUARANTINE_DIRECTORY: &str = "quarantine/";
 
 pub(super) fn write_run_state_commit_artifacts(
     builder: &cdf_package::PackageBuilder,
@@ -65,10 +67,9 @@ pub(super) fn write_quarantine_mirror_outcome_artifact(
     builder: &cdf_package::PackageBuilder,
     context: &QuarantineMirrorArtifactContext,
 ) -> Result<()> {
-    let artifacts = quarantine_artifacts(builder.package_dir())?;
-    if artifacts.is_empty() {
+    let Some(artifacts) = quarantine_artifact_summary(builder.package_dir())? else {
         return Ok(());
-    }
+    };
 
     let (outcome, reason) = match context.quarantine_table_support {
         CapabilitySupport::Supported => ("mirror_supported", None),
@@ -80,9 +81,12 @@ pub(super) fn write_quarantine_mirror_outcome_artifact(
     builder.write_json_artifact(
         QUARANTINE_MIRROR_OUTCOME_FILE,
         &QuarantineMirrorOutcomeArtifact {
+            version: QUARANTINE_MIRROR_OUTCOME_VERSION,
             destination_id: context.destination_id.as_str().to_owned(),
             quarantine_table_support: capability_support_name(&context.quarantine_table_support),
-            quarantine_artifacts: artifacts,
+            quarantine_directory: QUARANTINE_DIRECTORY,
+            quarantine_part_count: artifacts.part_count,
+            schema_observations_present: artifacts.schema_observations_present,
             outcome,
             reason,
         },
@@ -105,20 +109,29 @@ pub(super) struct QuarantineMirrorArtifactContext {
 
 #[derive(serde::Serialize)]
 struct QuarantineMirrorOutcomeArtifact<'a> {
+    version: u16,
     destination_id: String,
     quarantine_table_support: &'static str,
-    quarantine_artifacts: Vec<String>,
+    quarantine_directory: &'static str,
+    quarantine_part_count: u64,
+    schema_observations_present: bool,
     outcome: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<&'a str>,
 }
 
-fn quarantine_artifacts(package_dir: &Path) -> Result<Vec<String>> {
+struct QuarantineArtifactSummary {
+    part_count: u64,
+    schema_observations_present: bool,
+}
+
+fn quarantine_artifact_summary(package_dir: &Path) -> Result<Option<QuarantineArtifactSummary>> {
     let directory = package_dir.join("quarantine");
     if !directory.exists() {
-        return Ok(Vec::new());
+        return Ok(None);
     }
-    let mut artifacts = Vec::new();
+    let mut part_count = 0_u64;
+    let mut schema_observations_present = false;
     for entry in fs::read_dir(&directory)
         .map_err(|error| CdfError::data(format!("read {}: {error}", directory.display())))?
     {
@@ -138,14 +151,21 @@ fn quarantine_artifacts(package_dir: &Path) -> Result<Vec<String>> {
                 path.display()
             )));
         };
-        if (file_name.starts_with("part-") && file_name.ends_with(".parquet"))
-            || file_name == "schema-observations.json"
-        {
-            artifacts.push(format!("quarantine/{file_name}"));
+        if file_name.starts_with("part-") && file_name.ends_with(".parquet") {
+            part_count = part_count
+                .checked_add(1)
+                .ok_or_else(|| CdfError::data("quarantine artifact count overflowed u64"))?;
+        } else if file_name == "schema-observations.json" {
+            schema_observations_present = true;
         }
     }
-    artifacts.sort();
-    Ok(artifacts)
+    if part_count == 0 && !schema_observations_present {
+        return Ok(None);
+    }
+    Ok(Some(QuarantineArtifactSummary {
+        part_count,
+        schema_observations_present,
+    }))
 }
 
 fn capability_support_name(support: &CapabilitySupport) -> &'static str {

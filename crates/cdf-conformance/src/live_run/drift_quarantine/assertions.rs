@@ -231,10 +231,11 @@ pub(super) fn assert_unsupported_quarantine_mirror_artifact(
         mirror["reason"],
         "destination sheet declares quarantine_tables unsupported"
     );
-    assert_eq!(
-        mirror["quarantine_artifacts"],
-        serde_json::json!(["quarantine/part-000001.parquet"])
-    );
+    assert_eq!(mirror["version"], 1);
+    assert_eq!(mirror["quarantine_directory"], "quarantine/");
+    assert_eq!(mirror["quarantine_part_count"], 1);
+    assert_eq!(mirror["schema_observations_present"], false);
+    assert!(mirror.get("quarantine_artifacts").is_none());
 }
 
 pub(super) fn assert_supported_quarantine_mirror_artifact(
@@ -245,10 +246,11 @@ pub(super) fn assert_supported_quarantine_mirror_artifact(
     assert_eq!(mirror["destination_id"], destination_id);
     assert_eq!(mirror["quarantine_table_support"], "supported");
     assert_eq!(mirror["outcome"], "mirror_supported");
-    assert_eq!(
-        mirror["quarantine_artifacts"],
-        serde_json::json!(["quarantine/part-000001.parquet"])
-    );
+    assert_eq!(mirror["version"], 1);
+    assert_eq!(mirror["quarantine_directory"], "quarantine/");
+    assert_eq!(mirror["quarantine_part_count"], 1);
+    assert_eq!(mirror["schema_observations_present"], false);
+    assert!(mirror.get("quarantine_artifacts").is_none());
 }
 
 pub(super) fn assert_parquet_quarantine_mirror_excluded_by_sheet() {

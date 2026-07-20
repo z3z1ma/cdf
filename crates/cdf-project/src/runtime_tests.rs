@@ -6754,10 +6754,11 @@ fn project_run_records_non_mirror_outcome_for_unsupported_quarantine_sheet() {
     assert_eq!(mirror_outcome["destination_id"], "duckdb");
     assert_eq!(mirror_outcome["quarantine_table_support"], "unsupported");
     assert_eq!(mirror_outcome["outcome"], "not_mirrored");
-    assert_eq!(
-        mirror_outcome["quarantine_artifacts"][0],
-        "quarantine/part-000001.parquet"
-    );
+    assert_eq!(mirror_outcome["version"], 1);
+    assert_eq!(mirror_outcome["quarantine_directory"], "quarantine/");
+    assert_eq!(mirror_outcome["quarantine_part_count"], 1);
+    assert_eq!(mirror_outcome["schema_observations_present"], false);
+    assert!(mirror_outcome.get("quarantine_artifacts").is_none());
 }
 
 #[test]
