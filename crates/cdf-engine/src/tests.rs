@@ -246,6 +246,16 @@ impl EngineWorkerArtifactAuthority for MemoryWorkerCompilerArtifacts {
             "compiler fixture contains no canonical segment artifacts",
         ))
     }
+
+    fn read_partition_evidence(
+        &self,
+        _reference: &cdf_runtime::WorkerArtifactReference,
+        _maximum_bytes: u64,
+    ) -> Result<VerifiedEnginePartitionEvidenceArtifact> {
+        Err(cdf_kernel::CdfError::internal(
+            "compiler fixture contains no partition evidence artifacts",
+        ))
+    }
 }
 
 struct NoWorkerSourceFacts;
@@ -468,6 +478,19 @@ impl EngineWorkerArtifactAuthority for SharedEngineWorkerArtifacts {
             reference.provider_generation.as_ref(),
             maximum_encoded_bytes,
             maximum_decoded_bytes,
+        )
+    }
+
+    fn read_partition_evidence(
+        &self,
+        reference: &cdf_runtime::WorkerArtifactReference,
+        maximum_bytes: u64,
+    ) -> Result<VerifiedEnginePartitionEvidenceArtifact> {
+        VerifiedEnginePartitionEvidenceArtifact::new(
+            reference,
+            self.bytes_for(reference)?,
+            reference.provider_generation.as_ref(),
+            maximum_bytes,
         )
     }
 }
@@ -705,7 +728,6 @@ struct ActualEngineIsolatedExecutor<'a> {
     lease: cdf_runtime::WorkerLeaseState,
     package_root: &'a std::path::Path,
     now_ms: i64,
-    output: Arc<Mutex<Option<EngineRunOutputWithSegmentPositions>>>,
 }
 
 impl cdf_runtime::IsolatedPartitionExecutor for ActualEngineIsolatedExecutor<'_> {
@@ -826,6 +848,48 @@ impl cdf_runtime::IsolatedPartitionExecutor for ActualEngineIsolatedExecutor<'_>
                     )
                 })
                 .collect::<Result<Vec<_>>>()?;
+            let stream_admission_bytes = std::fs::read(
+                package_dir.join("schema/stream-admission-evidence.json"),
+            )
+            .map_err(|error| {
+                cdf_kernel::CdfError::internal(format!(
+                    "read isolated partition stream-admission evidence: {error}"
+                ))
+            })?;
+            let stream_admission =
+                serde_json::from_slice(&stream_admission_bytes).map_err(|error| {
+                    cdf_kernel::CdfError::contract(format!(
+                        "decode isolated partition stream-admission evidence: {error}"
+                    ))
+                })?;
+            let schema_quarantine_path =
+                package_dir.join("quarantine/schema-admission-evidence.json");
+            let schema_quarantine_evidence = schema_quarantine_path
+                .exists()
+                .then(|| {
+                    std::fs::read(&schema_quarantine_path)
+                        .map_err(|error| {
+                            cdf_kernel::CdfError::internal(format!(
+                                "read isolated partition schema-quarantine evidence: {error}"
+                            ))
+                        })
+                        .and_then(|bytes| {
+                            serde_json::from_slice(&bytes).map_err(|error| {
+                                cdf_kernel::CdfError::contract(format!(
+                                    "decode isolated partition schema-quarantine evidence: {error}"
+                                ))
+                            })
+                        })
+                })
+                .transpose()?;
+            let partition_evidence = EnginePartitionEvidence::from_execution(
+                &task,
+                &plan,
+                &output,
+                stream_admission,
+                schema_quarantine_evidence,
+            )?;
+            let partition_evidence_bytes = cdf_package::canonical_json_bytes(&partition_evidence)?;
             let mut write_session = cdf_runtime::WorkerArtifactWriteSession::new(
                 &task,
                 &attempt,
@@ -880,6 +944,34 @@ impl cdf_runtime::IsolatedPartitionExecutor for ActualEngineIsolatedExecutor<'_>
                 write_session.write(&receipt, &object_state, self.now_ms, &mut sink)?;
                 receipts.push(receipt);
             }
+            let evidence_reference = SharedEngineWorkerArtifacts::reference(
+                cdf_runtime::WorkerArtifactKind::PartitionEvidence,
+                attempt.write_permit.output.store_namespace.as_str(),
+                format!(
+                    "{}evidence/partition-{:08}.json",
+                    attempt.write_permit.output.object_key_prefix,
+                    task.partition.canonical_partition_ordinal
+                ),
+                &partition_evidence_bytes,
+            )?;
+            let evidence_receipt = cdf_runtime::WorkerArtifactReceipt {
+                role: cdf_runtime::WorkerArtifactRole::PartitionEvidence {
+                    partition_ordinal: task.partition.canonical_partition_ordinal,
+                },
+                artifact: evidence_reference,
+            };
+            let evidence_state = self.artifacts.object_state(&evidence_receipt.artifact);
+            let mut evidence_sink = PendingEngineWorkerWrite {
+                store: &self.artifacts,
+                bytes: partition_evidence_bytes,
+            };
+            write_session.write(
+                &evidence_receipt,
+                &evidence_state,
+                self.now_ms,
+                &mut evidence_sink,
+            )?;
+            receipts.push(evidence_receipt);
             receipts.sort_by(|left, right| left.artifact.cmp(&right.artifact));
             let artifact_bytes = receipts.iter().try_fold(0_u64, |total, receipt| {
                 total
@@ -908,7 +1000,6 @@ impl cdf_runtime::IsolatedPartitionExecutor for ActualEngineIsolatedExecutor<'_>
                     telemetry: cdf_runtime::WorkerTelemetry::default(),
                 },
             )?;
-            *self.output.lock().unwrap() = Some(output);
             Ok(result)
         })();
         Box::pin(async move { result })
@@ -1211,7 +1302,7 @@ fn run_actual_isolated_engine_equivalence(
     extent: ExecutionExtent,
 ) -> (
     EngineRunOutputWithSegmentPositions,
-    Vec<EngineRunOutputWithSegmentPositions>,
+    EngineRunOutputWithSegmentPositions,
     Vec<cdf_runtime::PartitionWorkerResult>,
     Vec<cdf_runtime::SegmentWorkerResult>,
 ) {
@@ -1358,7 +1449,10 @@ fn run_actual_isolated_engine_equivalence(
                         services: Vec::new(),
                     },
                     output_policy: cdf_runtime::WorkerOutputPolicy {
-                        allowed_kinds: vec![cdf_runtime::WorkerArtifactKind::PreparedSegment],
+                        allowed_kinds: vec![
+                            cdf_runtime::WorkerArtifactKind::PreparedSegment,
+                            cdf_runtime::WorkerArtifactKind::PartitionEvidence,
+                        ],
                         maximum_artifact_bytes: 128 * 1024 * 1024,
                     },
                 },
@@ -1436,8 +1530,9 @@ fn run_actual_isolated_engine_equivalence(
         .collect::<Vec<_>>();
 
     let mut preparations = Vec::with_capacity(fixtures.len());
-    let mut isolated_outputs = Vec::with_capacity(fixtures.len());
+    let mut partition_evidence = Vec::with_capacity(fixtures.len());
     let jobs = usize::from(cpu_slots).max(1);
+    let plan_authority = &plan;
     for chunk in fixtures.chunks(jobs) {
         let completed = std::thread::scope(|scope| {
             chunk
@@ -1481,7 +1576,6 @@ fn run_actual_isolated_engine_equivalence(
                             EngineWorkerAdmissionVerifier::new(&artifacts, &fixture.authority);
                         let coordinator_verifier =
                             EngineWorkerAdmissionVerifier::new(&artifacts, &fixture.authority);
-                        let captured = Arc::new(Mutex::new(None));
                         let executor = ActualEngineIsolatedExecutor {
                             registry: &registry,
                             source_context: &source_context,
@@ -1490,7 +1584,6 @@ fn run_actual_isolated_engine_equivalence(
                             lease: lease.clone(),
                             package_root: worker_root.path(),
                             now_ms: 2_000,
-                            output: Arc::clone(&captured),
                         };
                         let host = cdf_runtime::LocalIsolatedWorkerHost::new(
                             &compatibility,
@@ -1508,12 +1601,12 @@ fn run_actual_isolated_engine_equivalence(
                             &lease,
                             2_000,
                         ))?;
-                        let output = captured.lock().unwrap().take().ok_or_else(|| {
-                            cdf_kernel::CdfError::internal(
-                                "isolated engine executor did not retain its output",
-                            )
-                        })?;
-                        Ok::<_, cdf_kernel::CdfError>((chunk_ordinal, admitted, output))
+                        let evidence = coordinator_verifier.read_partition_evidence(
+                            &fixture.task,
+                            plan_authority,
+                            admitted.result(),
+                        )?;
+                        Ok::<_, cdf_kernel::CdfError>((chunk_ordinal, admitted, evidence))
                     })
                 })
                 .collect::<Vec<_>>()
@@ -1526,9 +1619,9 @@ fn run_actual_isolated_engine_equivalence(
                 .collect::<Result<Vec<_>>>()
         })
         .unwrap();
-        for (_, admitted, output) in completed {
+        for (_, admitted, evidence) in completed {
             preparations.push(admitted);
-            isolated_outputs.push(output);
+            partition_evidence.push(evidence);
         }
     }
 
@@ -1594,20 +1687,32 @@ fn run_actual_isolated_engine_equivalence(
                     &segment_lease,
                     2_000,
                 ))
-                .unwrap()
-                .into_result(),
+                .unwrap(),
             );
             package_row_ord_start = package_row_ord_start.checked_add(row_count).unwrap();
         }
     }
+    let assembled_root = TempDir::new().unwrap();
+    let assembled = assemble_isolated_worker_package(
+        &plan,
+        assembled_root.path(),
+        partition_evidence,
+        &finalized,
+        &artifacts,
+        &resources,
+    )
+    .unwrap();
     (
         direct,
-        isolated_outputs,
+        assembled,
         preparations
             .into_iter()
             .map(cdf_runtime::AdmittedPartitionWorkerResult::into_result)
             .collect(),
-        finalized,
+        finalized
+            .into_iter()
+            .map(cdf_runtime::AdmittedSegmentWorkerResult::into_result)
+            .collect(),
     )
 }
 
@@ -1616,7 +1721,6 @@ fn actual_engine_capsule_publishes_direct_segments_across_cpu_budgets() {
     for cpu_slots in [1, 4] {
         let (direct, isolated, admitted, finalized) =
             run_actual_isolated_engine_equivalence(cpu_slots, 1, ExecutionExtent::bounded());
-        let isolated = &isolated[0];
         let admitted = &admitted[0];
         assert_eq!(isolated.output.manifest, direct.output.manifest);
         assert_eq!(
@@ -1633,7 +1737,7 @@ fn actual_engine_capsule_publishes_direct_segments_across_cpu_budgets() {
             admitted.counts.output_rows,
             direct.output.profile.output_rows
         );
-        assert_eq!(admitted.artifacts.len(), direct.output.segments.len());
+        assert_eq!(admitted.artifacts.len(), direct.output.segments.len() + 1);
         assert_eq!(
             finalized
                 .iter()
@@ -1686,8 +1790,14 @@ fn actual_engine_capsules_are_jobs_invariant_for_multiple_partitions() {
         direct_parallel.execution_evidence(),
         direct_serial.execution_evidence()
     );
-    assert_eq!(isolated_serial.len(), 2);
-    assert_eq!(isolated_parallel.len(), 2);
+    assert_eq!(
+        isolated_serial.output.manifest,
+        direct_serial.output.manifest
+    );
+    assert_eq!(
+        isolated_parallel.output.manifest,
+        direct_parallel.output.manifest
+    );
     assert_eq!(
         admitted_serial
             .iter()
@@ -1743,7 +1853,6 @@ fn actual_engine_capsule_preserves_a_finite_drain_epoch() {
     };
     let (direct, isolated, admitted, finalized) =
         run_actual_isolated_engine_equivalence(4, 1, extent);
-    let isolated = &isolated[0];
     assert_eq!(isolated.output.manifest, direct.output.manifest);
     assert_eq!(
         isolated.output.verification.package_hash(),

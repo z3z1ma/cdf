@@ -58,10 +58,11 @@ use crate::{
     CompiledSchemaAdmissionOutcome, CompiledSchemaAdmissionPlan, CompiledSchemaQuarantineEvidence,
     CompiledStreamAdmissionEvidence, EffectiveSchemaObservationCoercion,
     EffectiveSchemaPlanEvidence, EngineDrainEpoch, EngineDrainEpochOutcome,
-    EngineExecutionEvidence, EngineExecutionOptions, EnginePackageDraft, EnginePlan,
-    EnginePreviewLimits, EnginePreviewOutput, EngineRunOutput, EngineRunOutputWithSegmentPositions,
-    EngineSegmentPosition, ExecutionProfile, LineageInputObservation, LineageSummary,
-    PhysicalObservationEvidence, SchemaQuarantineObservationEvidence, StandaloneExecutionHost,
+    EngineExecutionEvidence, EngineExecutionOptions, EnginePackageDraft, EnginePartitionEvidence,
+    EnginePlan, EnginePreviewLimits, EnginePreviewOutput, EngineRunOutput,
+    EngineRunOutputWithSegmentPositions, EngineSegmentPosition, EngineWorkerArtifactAuthority,
+    ExecutionProfile, LineageInputObservation, LineageSummary, PhysicalObservationEvidence,
+    SchemaQuarantineObservationEvidence, StandaloneExecutionHost,
     StreamAdmissionObservationEvidence,
     output_schema::canonicalize_effective_output_schema,
     planning::{scan_expression_schema, validate_program},
@@ -7202,6 +7203,339 @@ fn quarantine_observed_value(
             QuarantineObservedValue::Masked { value }
         }
     }
+}
+
+/// Assembles one coordinator-owned package exclusively from admitted isolated-worker artifacts.
+///
+/// Partition evidence and canonical segment results have already crossed their independent
+/// admission boundaries. This function performs the canonical merge and package finalization;
+/// worker-local package directories and in-memory execution outputs are deliberately absent.
+pub fn assemble_isolated_worker_package(
+    plan: &EnginePlan,
+    package_dir: impl AsRef<Path>,
+    mut partition_evidence: Vec<EnginePartitionEvidence>,
+    canonical_segments: &[cdf_runtime::AdmittedSegmentWorkerResult],
+    artifacts: &dyn EngineWorkerArtifactAuthority,
+    resources: &cdf_runtime::WorkerResourceBudget,
+) -> Result<EngineRunOutputWithSegmentPositions> {
+    if partition_evidence.is_empty() {
+        return Err(CdfError::contract(
+            "isolated package assembly requires partition evidence",
+        ));
+    }
+    resources.validate()?;
+    partition_evidence.sort_by_key(|evidence| evidence.canonical_partition_ordinal);
+    if partition_evidence
+        .iter()
+        .enumerate()
+        .any(|(ordinal, evidence)| {
+            evidence.canonical_partition_ordinal != u32::try_from(ordinal).unwrap_or(u32::MAX)
+                || plan
+                    .scan
+                    .partitions
+                    .get(ordinal)
+                    .is_none_or(|partition| partition.partition_id != evidence.partition_id)
+        })
+    {
+        return Err(CdfError::contract(
+            "isolated partition evidence is not the plan's complete canonical partition prefix",
+        ));
+    }
+
+    let mut profile = ExecutionProfile::default();
+    let mut lineage = LineageSummary::default();
+    let mut segment_positions = Vec::new();
+    let mut processed_observations = Vec::new();
+    let mut source_retries = Vec::new();
+    let mut stream_catalog = BTreeMap::new();
+    let mut stream_observations = Vec::new();
+    let mut phase_metrics = Vec::new();
+    let mut source_frontier = cdf_runtime::SourceFrontierReport::default();
+    let checkpoint_eligible = partition_evidence
+        .iter()
+        .all(|evidence| evidence.checkpoint_eligible);
+
+    for evidence in &partition_evidence {
+        profile.output_rows = profile
+            .output_rows
+            .checked_add(evidence.profile.output_rows)
+            .ok_or_else(|| CdfError::data("isolated profile output rows overflowed u64"))?;
+        profile.output_bytes = profile
+            .output_bytes
+            .checked_add(evidence.profile.output_bytes)
+            .ok_or_else(|| CdfError::data("isolated profile output bytes overflowed u64"))?;
+        profile.output_batches = profile
+            .output_batches
+            .checked_add(evidence.profile.output_batches)
+            .ok_or_else(|| CdfError::data("isolated profile output batches overflowed u64"))?;
+        profile.statistics.merge(&evidence.profile.statistics)?;
+
+        lineage.input_rows = lineage
+            .input_rows
+            .checked_add(evidence.lineage.input_rows)
+            .ok_or_else(|| CdfError::data("isolated lineage input rows overflowed u64"))?;
+        lineage
+            .input_partitions
+            .extend(evidence.lineage.input_partitions.iter().cloned());
+        lineage
+            .input_observations
+            .extend(evidence.lineage.input_observations.iter().cloned());
+        lineage
+            .output_segments
+            .extend(evidence.lineage.output_segments.iter().cloned());
+        segment_positions.extend(evidence.segment_positions.iter().cloned());
+        processed_observations.extend(evidence.processed_observations.iter().cloned());
+        source_retries.extend(evidence.source_retries.iter().cloned());
+        for (hash, observation) in &evidence.stream_admission.physical_observation_catalog {
+            if let Some(existing) = stream_catalog.insert(hash.clone(), observation.clone())
+                && existing != *observation
+            {
+                return Err(CdfError::contract(
+                    "isolated stream-admission catalog contains conflicting physical evidence",
+                ));
+            }
+        }
+        stream_observations.extend(evidence.stream_admission.observations.iter().cloned());
+        phase_metrics.extend(evidence.phase_metrics.iter().cloned());
+        source_frontier.partition_count = source_frontier
+            .partition_count
+            .checked_add(evidence.source_frontier.partition_count)
+            .ok_or_else(|| CdfError::data("isolated source frontier partitions overflowed u64"))?;
+        source_frontier.maximum_active = source_frontier
+            .maximum_active
+            .max(evidence.source_frontier.maximum_active);
+        source_frontier.wait_ns = source_frontier
+            .wait_ns
+            .checked_add(evidence.source_frontier.wait_ns)
+            .ok_or_else(|| CdfError::data("isolated source frontier wait overflowed u64"))?;
+        source_frontier.prefetched_batches = source_frontier
+            .prefetched_batches
+            .checked_add(evidence.source_frontier.prefetched_batches)
+            .ok_or_else(|| CdfError::data("isolated source frontier prefetch overflowed u64"))?;
+        source_frontier.discarded_prefetched_batches = source_frontier
+            .discarded_prefetched_batches
+            .checked_add(evidence.source_frontier.discarded_prefetched_batches)
+            .ok_or_else(|| CdfError::data("isolated discarded prefetch overflowed u64"))?;
+        source_frontier.peak_ready_partitions = source_frontier
+            .peak_ready_partitions
+            .max(evidence.source_frontier.peak_ready_partitions);
+    }
+
+    let mut observation_ids = BTreeSet::new();
+    if lineage
+        .input_observations
+        .iter()
+        .any(|observation| !observation_ids.insert(observation.observation_id.as_str()))
+    {
+        return Err(CdfError::contract(
+            "isolated partition evidence assigns one observation to multiple partitions",
+        ));
+    }
+    stream_observations.sort_by(|left, right| left.observation_id.cmp(&right.observation_id));
+    let stream_admission = CompiledStreamAdmissionEvidence::new(
+        &plan.compiled_schema_admission,
+        stream_catalog,
+        stream_observations,
+    )?;
+
+    let terminal_schema_quarantines = partition_evidence
+        .iter()
+        .flat_map(|evidence| evidence.terminal_schema_quarantines.iter().cloned())
+        .collect::<Vec<_>>();
+    if !terminal_schema_quarantines.is_empty()
+        || partition_evidence
+            .iter()
+            .any(|evidence| evidence.schema_quarantine_evidence.is_some())
+    {
+        return Err(CdfError::contract(
+            "isolated package assembly does not yet admit schema-quarantine evidence",
+        ));
+    }
+    if !profile.statistics.columns.is_empty() {
+        return Err(CdfError::contract(
+            "isolated package assembly requires referenced statistics-profile evidence",
+        ));
+    }
+
+    let mut canonical = canonical_segments
+        .iter()
+        .map(|admitted| {
+            let result = admitted.result();
+            let receipt = result.artifact.as_ref().ok_or_else(|| {
+                CdfError::contract("admitted canonical segment lacks its artifact receipt")
+            })?;
+            let cdf_runtime::WorkerArtifactRole::CanonicalSegment {
+                segment_id,
+                partition_ordinal,
+                segment_ordinal,
+                row_count,
+            } = &receipt.role
+            else {
+                return Err(CdfError::contract(
+                    "admitted segment result does not carry a canonical segment role",
+                ));
+            };
+            Ok((
+                *partition_ordinal,
+                *segment_ordinal,
+                segment_id.clone(),
+                *row_count,
+                receipt.artifact.clone(),
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    canonical.sort_by_key(|(partition, segment, ..)| (*partition, *segment));
+    let actual_segment_ids = canonical
+        .iter()
+        .map(|(_, _, segment_id, ..)| segment_id.clone())
+        .collect::<Vec<_>>();
+    if actual_segment_ids != lineage.output_segments
+        || segment_positions
+            .iter()
+            .map(|position| position.segment_id.clone())
+            .collect::<Vec<_>>()
+            != actual_segment_ids
+    {
+        return Err(CdfError::contract(
+            "isolated canonical segment results do not match partition evidence",
+        ));
+    }
+
+    let builder = PackageBuilder::create(package_dir, plan.package_id.clone())?;
+    let mut segments = Vec::with_capacity(canonical.len());
+    let mut package_row_ord_start = 0_u64;
+    for (_, _, segment_id, row_count, reference) in canonical {
+        let bytes = artifacts
+            .read_canonical_segment(&reference, resources.disk_bytes, resources.memory_bytes)?
+            .into_bytes();
+        let metrics = builder.import_canonical_segment(
+            segment_id,
+            package_row_ord_start,
+            row_count,
+            &bytes,
+        )?;
+        segments.push(metrics.segment);
+        package_row_ord_start = package_row_ord_start
+            .checked_add(row_count)
+            .ok_or_else(|| CdfError::data("isolated package row ordinal overflowed u64"))?;
+    }
+
+    builder.update_status(PackageStatus::Extracting)?;
+    builder.write_json_artifact(cdf_package_contract::SCAN_PLAN_FILE, &plan.scan)?;
+    builder.write_json_artifact("plan/explain.json", &plan.explain)?;
+    if let Some(graph) = &plan.operator_graph {
+        graph.validate_plan_join(&plan.execution_extent, plan.compiled_stream_policy.as_ref())?;
+        builder.write_json_artifact("plan/operator-graph.json", graph)?;
+    }
+    builder.write_json_artifact("plan/validation-program.json", &plan.validation_program)?;
+    builder.write_json_artifact(
+        "plan/schema-admission.json",
+        &plan.compiled_schema_admission,
+    )?;
+    if let Some(evidence) = &plan.effective_schema_evidence {
+        builder.write_json_artifact("schema/effective-schema-evidence.json", evidence)?;
+    }
+    if plan.validation_program.requires_observed_at_ms() {
+        return Err(CdfError::contract(
+            "isolated package assembly requires recorded contract-evaluation context evidence",
+        ));
+    }
+    if let Some(coercion) = &plan.validation_program.schema_coercion {
+        builder.write_json_artifact("schema/coercion-plan.json", coercion)?;
+    }
+    builder.write_json_artifact("schema/stream-admission-evidence.json", &stream_admission)?;
+    let runtime_output_schema = plan.output_arrow_schema()?;
+    builder.write_json_artifact(
+        "schema/output.json",
+        &schema_artifact(&runtime_output_schema),
+    )?;
+    builder.write_runtime_arrow_schema(&runtime_output_schema)?;
+    if let Some(evolution) = contract_evolution_artifact_metadata(
+        &plan.validation_program,
+        plan.schema_authority.baseline_schema_hash.clone(),
+        plan.schema_authority.effective_schema_hash.clone(),
+        false,
+    ) {
+        write_contract_evolution_stream(&builder, &evolution, None)?;
+    }
+    builder.write_lineage_artifact(
+        "lineage.json",
+        &cdf_package::canonical_json_bytes(&lineage)?,
+    )?;
+
+    let drain_epoch = match &plan.execution_extent {
+        ExecutionExtent::Bounded { .. } => {
+            if partition_evidence
+                .iter()
+                .any(|evidence| evidence.drain.is_some())
+            {
+                return Err(CdfError::contract(
+                    "bounded isolated package evidence cannot contain a drain epoch",
+                ));
+            }
+            None
+        }
+        ExecutionExtent::Drain { .. } => {
+            if partition_evidence.len() != 1 {
+                return Err(CdfError::contract(
+                    "multi-partition drain requires the canonical epoch-task topology",
+                ));
+            }
+            let drain = partition_evidence[0].drain.clone().ok_or_else(|| {
+                CdfError::contract("drain isolated package evidence lacks epoch closure")
+            })?;
+            builder.write_json_artifact("plan/epoch-frontier.json", &drain.frontier)?;
+            builder.write_json_artifact("plan/epoch-closure.json", &drain.closure)?;
+            builder.write_json_artifact(
+                cdf_package_contract::PARTITION_WATERMARK_STATE_FILE,
+                &cdf_package_contract::PartitionWatermarkStateArtifact::new(
+                    drain.partition_watermarks.clone(),
+                )?,
+            )?;
+            Some(EngineDrainEpoch {
+                closure: cdf_runtime::DrainEpochClosure {
+                    frontier: drain.frontier,
+                    evidence: drain.closure,
+                    observed_at_unix_milliseconds: drain.observed_at_unix_milliseconds,
+                    terminate_after_settlement: drain.terminate_after_settlement,
+                },
+                consumed_partition_count: drain.consumed_partition_count,
+                resume_partition: drain.resume_partition.map(Box::new),
+                consumed_late_data_carryover: drain.consumed_late_data_carryover,
+                late_data_carryover: drain.late_data_carryover,
+                partition_watermarks: drain.partition_watermarks,
+            })
+        }
+        ExecutionExtent::Resident { .. } => {
+            return Err(CdfError::contract(
+                "isolated resident package assembly is not enabled",
+            ));
+        }
+    };
+
+    let execution_evidence = EngineExecutionEvidence::new(
+        processed_observations,
+        source_retries,
+        plan.partition_schedule.as_ref(),
+        checkpoint_eligible,
+    )?;
+    builder.update_status(PackageStatus::Validated)?;
+    let (manifest, verification) = builder.finish_verified()?;
+    Ok(EngineRunOutputWithSegmentPositions {
+        output: EngineRunOutput {
+            manifest,
+            verification,
+            segments,
+            profile,
+            lineage,
+            terminal_schema_quarantines,
+        },
+        segment_positions,
+        phase_metrics,
+        source_frontier,
+        drain_epoch,
+        execution_evidence,
+    })
 }
 
 fn schema_artifact(schema: &Schema) -> SchemaArtifact {

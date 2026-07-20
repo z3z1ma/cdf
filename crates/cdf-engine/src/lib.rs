@@ -20,8 +20,9 @@ mod worker_task;
 
 pub use execution::{
     DrainEpochExecution, DurableSegmentHook, DurableSegmentPayload, LateDataCarryoverInput,
-    PackagePreFinalizeHook, StreamingFinalizeHook, execute_drain_epoch_with_hooks,
-    execute_to_package, execute_to_package_with_run_id, execute_to_package_with_segment_positions,
+    PackagePreFinalizeHook, StreamingFinalizeHook, assemble_isolated_worker_package,
+    execute_drain_epoch_with_hooks, execute_to_package, execute_to_package_with_run_id,
+    execute_to_package_with_segment_positions,
     execute_to_package_with_segment_positions_and_pre_finalize,
     execute_to_package_with_streaming_hooks, normalize_record_batch,
     preview_partition_selector_candidate, preview_resource,

@@ -1847,6 +1847,52 @@ pub struct EngineRunOutput {
 }
 
 pub const ENGINE_EXECUTION_EVIDENCE_VERSION: u16 = 2;
+pub const ENGINE_PARTITION_EVIDENCE_VERSION: u16 = 1;
+
+/// Partition-local execution evidence published by an isolated worker as a referenced artifact.
+///
+/// Package identity remains coordinator-owned. This draft contains only mergeable typed evidence;
+/// canonical segment payloads travel through their dedicated artifact references.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnginePartitionEvidence {
+    pub version: u16,
+    pub partition_id: PartitionId,
+    pub canonical_partition_ordinal: u32,
+    pub profile: ExecutionProfile,
+    pub lineage: LineageSummary,
+    pub segment_positions: Vec<EngineSegmentPosition>,
+    pub processed_observations: Vec<ProcessedObservationPosition>,
+    pub source_retries: Vec<cdf_runtime::SourceRetryEvidence>,
+    pub checkpoint_eligible: bool,
+    pub stream_admission: CompiledStreamAdmissionEvidence,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub terminal_schema_quarantines: Vec<TerminalSchemaObservationQuarantine>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_quarantine_evidence: Option<CompiledSchemaQuarantineEvidence>,
+    pub phase_metrics: Vec<RunPhaseMetric>,
+    pub source_frontier: cdf_runtime::SourceFrontierReport,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drain: Option<EnginePartitionDrainEvidence>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnginePartitionDrainEvidence {
+    pub frontier: cdf_kernel::EpochFrontier,
+    pub closure: cdf_kernel::EpochClosureEvidence,
+    pub observed_at_unix_milliseconds: u64,
+    pub terminate_after_settlement: bool,
+    pub consumed_partition_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_partition: Option<DrainPartitionResume>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub consumed_late_data_carryover: Vec<cdf_kernel::LateDataCarryoverRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub late_data_carryover: Vec<cdf_kernel::LateDataCarryoverRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub partition_watermarks: Vec<cdf_kernel::PartitionWatermarkState>,
+}
 
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1957,7 +2003,8 @@ impl EngineDrainEpochOutcome {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DrainPartitionResume {
     pub partition_id: PartitionId,
     pub start_position: SourcePosition,
@@ -2054,7 +2101,8 @@ impl<'a> EnginePackageDraft<'a> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EngineSegmentPosition {
     pub segment_id: SegmentId,
     pub partition_ordinal: u32,

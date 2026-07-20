@@ -73,7 +73,8 @@ pub enum SourceRetryExhaustion {
     ElapsedDeadline,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SourceRetryHistoryEntry {
     pub failed_attempt: u16,
     pub cause: ErrorKind,
@@ -81,7 +82,8 @@ pub struct SourceRetryHistoryEntry {
     pub exhaustion: Option<SourceRetryExhaustion>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SourceRetryEvidence {
     plan_id: String,
     schedule_identity_hash: String,

@@ -78,6 +78,7 @@ pub enum WorkerArtifactKind {
     Residual,
     Verdict,
     Lineage,
+    PartitionEvidence,
 }
 
 impl WorkerArtifactKind {
@@ -90,6 +91,7 @@ impl WorkerArtifactKind {
                 | Self::Residual
                 | Self::Verdict
                 | Self::Lineage
+                | Self::PartitionEvidence
         )
     }
 }
@@ -2475,6 +2477,9 @@ pub enum WorkerArtifactRole {
     Residual,
     Verdict,
     Lineage,
+    PartitionEvidence {
+        partition_ordinal: u32,
+    },
 }
 
 impl WorkerArtifactRole {
@@ -2486,6 +2491,7 @@ impl WorkerArtifactRole {
             Self::Residual => WorkerArtifactKind::Residual,
             Self::Verdict => WorkerArtifactKind::Verdict,
             Self::Lineage => WorkerArtifactKind::Lineage,
+            Self::PartitionEvidence { .. } => WorkerArtifactKind::PartitionEvidence,
         }
     }
 }
@@ -2839,11 +2845,12 @@ impl PartitionWorkerResult {
             }
             | WorkerArtifactRole::CanonicalSegment {
                 partition_ordinal, ..
-            } = receipt.role
+            }
+            | WorkerArtifactRole::PartitionEvidence { partition_ordinal } = receipt.role
                 && partition_ordinal != task.partition.canonical_partition_ordinal
             {
                 return Err(CdfError::contract(
-                    "partition worker segment receipt exceeds its canonical partition authority",
+                    "partition worker output receipt exceeds its canonical partition authority",
                 ));
             }
             let facts = verifier.verify_artifact(&receipt.artifact)?;
@@ -2880,7 +2887,8 @@ impl PartitionWorkerResult {
                 }
                 WorkerArtifactRole::Residual
                 | WorkerArtifactRole::Verdict
-                | WorkerArtifactRole::Lineage => {}
+                | WorkerArtifactRole::Lineage
+                | WorkerArtifactRole::PartitionEvidence { .. } => {}
             }
         }
         let attestation = self.source_attestation.as_ref().ok_or_else(|| {

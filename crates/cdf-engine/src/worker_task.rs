@@ -17,7 +17,159 @@ use cdf_runtime::{
 use serde::{Deserialize, Serialize};
 use std::any::Any;
 
-use crate::{CanonicalSegmentationPolicy, EnginePlan};
+use crate::{
+    CanonicalSegmentationPolicy, CompiledSchemaQuarantineEvidence, CompiledStreamAdmissionEvidence,
+    ENGINE_PARTITION_EVIDENCE_VERSION, EnginePartitionDrainEvidence, EnginePartitionEvidence,
+    EnginePlan, EngineRunOutputWithSegmentPositions, EngineSegmentPosition,
+};
+
+impl EnginePartitionEvidence {
+    pub fn from_execution(
+        task: &PortablePartitionTask,
+        plan: &EnginePlan,
+        output: &EngineRunOutputWithSegmentPositions,
+        stream_admission: CompiledStreamAdmissionEvidence,
+        schema_quarantine_evidence: Option<CompiledSchemaQuarantineEvidence>,
+    ) -> Result<Self> {
+        let segmentation = plan.segmentation_policy()?;
+        let canonical_partition_ordinal = task.partition.canonical_partition_ordinal;
+        let mut lineage = output.output.lineage.clone();
+        lineage.output_segments = (0..output.output.segments.len())
+            .map(|ordinal| {
+                segmentation.segment_id(
+                    canonical_partition_ordinal,
+                    u32::try_from(ordinal)
+                        .map_err(|_| CdfError::data("partition segment ordinal exceeds u32"))?,
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let segment_positions = output
+            .segment_positions
+            .iter()
+            .enumerate()
+            .map(|(ordinal, position)| {
+                Ok(EngineSegmentPosition {
+                    segment_id: segmentation.segment_id(
+                        canonical_partition_ordinal,
+                        u32::try_from(ordinal).map_err(|_| {
+                            CdfError::data("partition segment position ordinal exceeds u32")
+                        })?,
+                    )?,
+                    partition_ordinal: canonical_partition_ordinal,
+                    output_position: position.output_position.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let drain = output
+            .drain_epoch
+            .as_ref()
+            .map(|epoch| EnginePartitionDrainEvidence {
+                frontier: epoch.closure.frontier.clone(),
+                closure: epoch.closure.evidence.clone(),
+                observed_at_unix_milliseconds: epoch.closure.observed_at_unix_milliseconds,
+                terminate_after_settlement: epoch.closure.terminate_after_settlement,
+                consumed_partition_count: epoch.consumed_partition_count,
+                resume_partition: epoch.resume_partition.as_deref().cloned(),
+                consumed_late_data_carryover: epoch.consumed_late_data_carryover.clone(),
+                late_data_carryover: epoch.late_data_carryover.clone(),
+                partition_watermarks: epoch.partition_watermarks.clone(),
+            });
+        let draft = Self {
+            version: ENGINE_PARTITION_EVIDENCE_VERSION,
+            partition_id: task.partition.partition_id.clone(),
+            canonical_partition_ordinal,
+            profile: output.output.profile.clone(),
+            lineage,
+            segment_positions,
+            processed_observations: output
+                .execution_evidence()
+                .processed_observations()
+                .to_vec(),
+            source_retries: output.execution_evidence().source_retries().to_vec(),
+            checkpoint_eligible: output.execution_evidence().checkpoint_eligible(),
+            stream_admission,
+            terminal_schema_quarantines: output.output.terminal_schema_quarantines.clone(),
+            schema_quarantine_evidence,
+            phase_metrics: output.phase_metrics.clone(),
+            source_frontier: output.source_frontier.clone(),
+            drain,
+        };
+        draft.validate(task, plan, None)?;
+        Ok(draft)
+    }
+
+    pub fn validate(
+        &self,
+        task: &PortablePartitionTask,
+        plan: &EnginePlan,
+        result: Option<&cdf_runtime::PartitionWorkerResult>,
+    ) -> Result<()> {
+        self.stream_admission
+            .validate(&plan.compiled_schema_admission)?;
+        let partition_matches = self.version == ENGINE_PARTITION_EVIDENCE_VERSION
+            && self.partition_id == task.partition.partition_id
+            && self.canonical_partition_ordinal == task.partition.canonical_partition_ordinal
+            && self
+                .lineage
+                .input_partitions
+                .iter()
+                .all(|partition| partition == &self.partition_id)
+            && self
+                .segment_positions
+                .iter()
+                .all(|position| position.partition_ordinal == self.canonical_partition_ordinal)
+            && self.lineage.output_segments
+                == self
+                    .segment_positions
+                    .iter()
+                    .map(|position| position.segment_id.clone())
+                    .collect::<Vec<_>>();
+        if !partition_matches {
+            return Err(CdfError::contract(
+                "partition evidence does not match its portable task or canonical segments",
+            ));
+        }
+        if self.terminal_schema_quarantines.is_empty() != self.schema_quarantine_evidence.is_none()
+        {
+            return Err(CdfError::contract(
+                "partition schema quarantine rows and evidence must be present together",
+            ));
+        }
+        if let Some(result) = result {
+            let prepared_segments = result
+                .artifacts
+                .iter()
+                .filter_map(|receipt| match &receipt.role {
+                    WorkerArtifactRole::PreparedSegment { segment_id, .. } => {
+                        Some(segment_id.clone())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let worker_observations = self
+                .processed_observations
+                .iter()
+                .map(|observation| {
+                    WorkerProcessedObservation::new(
+                        observation.observation_id.clone(),
+                        observation.outcome.clone(),
+                        cdf_runtime::WorkerPosition::inline(observation.source_position.clone())?,
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?;
+            if self.lineage.input_rows != result.counts.input_rows
+                || self.profile.output_rows != result.counts.output_rows
+                || worker_observations != result.processed_observations
+                || self.lineage.output_segments != prepared_segments
+            {
+                return Err(CdfError::contract(
+                    "partition evidence does not match its admitted worker result",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
 
 /// Content-addressed compiler-artifact writer injected by the coordinator.
 ///
@@ -37,6 +189,48 @@ pub struct VerifiedWorkerCompilerArtifact {
     bytes: Vec<u8>,
 }
 
+pub struct VerifiedEnginePartitionEvidenceArtifact {
+    evidence: EnginePartitionEvidence,
+}
+
+impl VerifiedEnginePartitionEvidenceArtifact {
+    pub fn new(
+        reference: &WorkerArtifactReference,
+        bytes: Vec<u8>,
+        observed_generation: Option<&cdf_kernel::ContentProviderGeneration>,
+        maximum_bytes: u64,
+    ) -> Result<Self> {
+        reference.validate()?;
+        if reference.kind != WorkerArtifactKind::PartitionEvidence {
+            return Err(CdfError::contract(
+                "partition evidence reader requires a PartitionEvidence reference",
+            ));
+        }
+        let byte_count = u64::try_from(bytes.len())
+            .map_err(|_| CdfError::contract("partition evidence exceeds u64"))?;
+        let content_sha256 = format!(
+            "sha256:{:x}",
+            <sha2::Sha256 as sha2::Digest>::digest(&bytes)
+        );
+        if byte_count != reference.byte_count
+            || byte_count > maximum_bytes
+            || content_sha256 != reference.content_sha256
+            || reference.provider_generation.as_ref() != observed_generation
+        {
+            return Err(CdfError::contract(
+                "partition evidence bytes, generation, or size do not match authority",
+            ));
+        }
+        let evidence = serde_json::from_slice(&bytes)
+            .map_err(|error| CdfError::contract(format!("decode partition evidence: {error}")))?;
+        Ok(Self { evidence })
+    }
+
+    pub fn into_evidence(self) -> EnginePartitionEvidence {
+        self.evidence
+    }
+}
+
 /// Prepared Arrow rows read and verified from the worker artifact authority.
 pub struct VerifiedPreparedSegmentArtifact {
     facts: VerifiedWorkerArtifactFacts,
@@ -46,6 +240,7 @@ pub struct VerifiedPreparedSegmentArtifact {
 /// Exact canonical-segment semantics observed from verified IPC bytes.
 pub struct VerifiedCanonicalSegmentArtifact {
     facts: VerifiedCanonicalSegmentFacts,
+    bytes: Vec<u8>,
 }
 
 impl VerifiedCanonicalSegmentArtifact {
@@ -78,8 +273,9 @@ impl VerifiedCanonicalSegmentArtifact {
             ));
         }
 
-        let mut reader = arrow_ipc::reader::FileReader::try_new(std::io::Cursor::new(bytes), None)
-            .map_err(CdfError::from)?;
+        let mut reader =
+            arrow_ipc::reader::FileReader::try_new(std::io::Cursor::new(bytes.as_slice()), None)
+                .map_err(CdfError::from)?;
         let mut decoded_bytes = 0_u64;
         let mut row_count = 0_u64;
         let mut batches = Vec::new();
@@ -126,11 +322,16 @@ impl VerifiedCanonicalSegmentArtifact {
                 logical_schema_hash,
                 package_row_ord_start,
             )?,
+            bytes,
         })
     }
 
     pub fn into_facts(self) -> VerifiedCanonicalSegmentFacts {
         self.facts
+    }
+
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
     }
 }
 
@@ -287,6 +488,12 @@ pub trait EngineWorkerArtifactAuthority {
         maximum_encoded_bytes: u64,
         maximum_decoded_bytes: u64,
     ) -> Result<VerifiedCanonicalSegmentArtifact>;
+
+    fn read_partition_evidence(
+        &self,
+        reference: &WorkerArtifactReference,
+        maximum_bytes: u64,
+    ) -> Result<VerifiedEnginePartitionEvidenceArtifact>;
 }
 
 /// Provider boundary for fenced worker output publication.
@@ -335,6 +542,32 @@ impl<'a> EngineWorkerAdmissionVerifier<'a> {
         source: &'a dyn EngineWorkerSourceAuthority,
     ) -> Self {
         Self { artifacts, source }
+    }
+
+    pub fn read_partition_evidence(
+        &self,
+        task: &PortablePartitionTask,
+        plan: &EnginePlan,
+        result: &cdf_runtime::PartitionWorkerResult,
+    ) -> Result<EnginePartitionEvidence> {
+        let mut references = result.artifacts.iter().filter_map(|receipt| {
+            matches!(receipt.role, WorkerArtifactRole::PartitionEvidence { .. })
+                .then_some(&receipt.artifact)
+        });
+        let reference = references.next().ok_or_else(|| {
+            CdfError::contract("admitted partition result lacks partition evidence")
+        })?;
+        if references.next().is_some() {
+            return Err(CdfError::contract(
+                "admitted partition result contains more than one partition evidence artifact",
+            ));
+        }
+        let evidence = self
+            .artifacts
+            .read_partition_evidence(reference, task.resources.disk_bytes)?
+            .into_evidence();
+        evidence.validate(task, plan, Some(result))?;
+        Ok(evidence)
     }
 
     fn decode<T: serde::de::DeserializeOwned>(
@@ -466,7 +699,10 @@ impl WorkerAdmissionVerifier for EngineWorkerAdmissionVerifier<'_> {
             | WorkerArtifactKind::Quarantine
             | WorkerArtifactKind::Residual
             | WorkerArtifactKind::Verdict
-            | WorkerArtifactKind::Lineage => self.artifacts.verify_output_artifact(reference),
+            | WorkerArtifactKind::Lineage
+            | WorkerArtifactKind::PartitionEvidence => {
+                self.artifacts.verify_output_artifact(reference)
+            }
             _ => {
                 self.artifacts
                     .read_compiler_artifact(reference, reference.byte_count)?;
