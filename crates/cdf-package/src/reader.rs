@@ -32,7 +32,9 @@ use crate::{
         tombstone_package, update_package_status, verify_package_from_root,
     },
     package_fs::PackageRoot,
-    quarantine::quarantine_records_from_package_file,
+    quarantine::{
+        for_each_quarantine_record_in_package_file, quarantine_record_count_in_package_file,
+    },
     storage::{io_error, normalize_artifact_path, package_path, sync_directory},
 };
 
@@ -88,9 +90,12 @@ impl VerifiedPackageAccess for VerifiedPackageReader {
         self.reader.runtime_arrow_schema_verified(&self.verified)
     }
 
-    fn quarantine_records(&self) -> Result<Vec<QuarantineRecord>> {
+    fn for_each_quarantine_record(
+        &self,
+        visitor: &mut dyn FnMut(QuarantineRecord) -> Result<()>,
+    ) -> Result<()> {
         self.reader.require_verification(&self.verified)?;
-        self.reader.read_quarantine_records()
+        self.reader.for_each_quarantine_record(visitor)
     }
 }
 
@@ -942,17 +947,38 @@ impl PackageReader {
         )
     }
 
-    pub fn read_quarantine_records(&self) -> Result<Vec<QuarantineRecord>> {
-        let mut records = Vec::new();
+    pub fn for_each_quarantine_record(
+        &self,
+        visitor: &mut dyn FnMut(QuarantineRecord) -> Result<()>,
+    ) -> Result<()> {
         for entry in &self.manifest.identity.files {
             if entry.path.starts_with("quarantine/") && entry.path.ends_with(".parquet") {
-                records.extend(quarantine_records_from_package_file(
+                for_each_quarantine_record_in_package_file(
                     &self.package_dir,
                     &entry.path,
-                )?);
+                    visitor,
+                )?;
             }
         }
-        Ok(records)
+        Ok(())
+    }
+
+    pub fn quarantine_record_count(&self) -> Result<u64> {
+        self.manifest
+            .identity
+            .files
+            .iter()
+            .try_fold(0_u64, |count, entry| {
+                if entry.path.starts_with("quarantine/") && entry.path.ends_with(".parquet") {
+                    let file_count =
+                        quarantine_record_count_in_package_file(&self.package_dir, &entry.path)?;
+                    count
+                        .checked_add(file_count)
+                        .ok_or_else(|| CdfError::data("quarantine record count overflow"))
+                } else {
+                    Ok(count)
+                }
+            })
     }
 
     pub fn read_dedup_summary_json(&self) -> Result<Option<serde_json::Value>> {

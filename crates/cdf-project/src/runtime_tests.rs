@@ -6732,7 +6732,14 @@ fn project_run_records_non_mirror_outcome_for_unsupported_quarantine_sheet() {
     assert_eq!(report.segment_count, 1);
     assert_eq!(report.package_status, PackageStatus::Checkpointed);
     let reader = PackageReader::open(&package_dir).unwrap();
-    assert_eq!(reader.read_quarantine_records().unwrap().len(), 1);
+    let mut quarantine_record_count = 0_u64;
+    reader
+        .for_each_quarantine_record(&mut |_| {
+            quarantine_record_count += 1;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(quarantine_record_count, 1);
     assert!(
         reader
             .manifest()

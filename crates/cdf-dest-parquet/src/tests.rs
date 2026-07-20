@@ -577,8 +577,11 @@ impl VerifiedPackageAccess for TestVerifiedPackage {
         Ok(Arc::clone(&self.schema))
     }
 
-    fn quarantine_records(&self) -> Result<Vec<QuarantineRecord>> {
-        Ok(Vec::new())
+    fn for_each_quarantine_record(
+        &self,
+        _visitor: &mut dyn FnMut(QuarantineRecord) -> Result<()>,
+    ) -> Result<()> {
+        Ok(())
     }
 }
 

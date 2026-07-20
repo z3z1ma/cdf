@@ -8050,7 +8050,11 @@ mod transform_kernel_tests {
         paths.sort();
         let mut records = Vec::new();
         for path in paths {
-            records.extend(cdf_package::quarantine_records_from_parquet_file(path).unwrap());
+            cdf_package::for_each_quarantine_record_in_parquet_file(path, &mut |record| {
+                records.push(record);
+                Ok(())
+            })
+            .unwrap();
         }
         assert_eq!(records.len(), ROWS);
         assert_eq!(records.first().unwrap().source_row_ordinal, 0);

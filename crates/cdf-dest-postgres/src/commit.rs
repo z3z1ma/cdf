@@ -941,10 +941,6 @@ fn insert_quarantine_mirror(
     plan: &PostgresLoadPlan,
     receipt: &Receipt,
 ) -> Result<()> {
-    let records = package.quarantine_records()?;
-    if records.is_empty() {
-        return Ok(());
-    }
     let statement = plan
         .mirror_sql
         .iter()
@@ -955,7 +951,7 @@ fn insert_quarantine_mirror(
     let target = receipt.target.as_str();
     let package_hash = receipt.package_hash.as_str();
     let receipt_id = receipt.receipt_id.as_str();
-    for record in records {
+    package.for_each_quarantine_record(&mut |record| {
         let source_row_ordinal = to_i64(record.source_row_ordinal, "source_row_ordinal")?;
         let source_position_json = record
             .source_position
@@ -979,8 +975,8 @@ fn insert_quarantine_mirror(
                 ],
             )
             .map_err(|error| postgres_error("insert Postgres _cdf_quarantine mirror", error))?;
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 fn verify_receipt_in_transaction(client: &mut Client, receipt: &Receipt) -> Result<()> {

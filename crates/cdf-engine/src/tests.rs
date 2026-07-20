@@ -59,6 +59,19 @@ use tracing::{
     span::{Attributes, Record},
 };
 
+fn collect_quarantine_records(
+    reader: &cdf_package::PackageReader,
+) -> Vec<cdf_package_contract::QuarantineRecord> {
+    let mut records = Vec::new();
+    reader
+        .for_each_quarantine_record(&mut |record| {
+            records.push(record);
+            Ok(())
+        })
+        .unwrap();
+    records
+}
+
 fn executable_mock_plan(plan: &EnginePlan, resource: &MockResource) -> Result<EnginePlan> {
     if plan.compiled_source_execution.is_some() {
         return Ok(plan.clone());
@@ -5351,7 +5364,7 @@ fn late_rows_are_quarantined_or_admitted_with_identity_evidence() {
             .unwrap()
             .expect("late-data evidence");
         assert_eq!(joined_evidence, evidence);
-        let quarantine = package.read_quarantine_records().unwrap();
+        let quarantine = collect_quarantine_records(&package);
         match action {
             LateDataAction::Quarantine => {
                 assert_eq!(second.output.profile.output_rows, 0);
@@ -7501,7 +7514,7 @@ fn contract_exec_writes_redacted_quarantine_artifact_and_keeps_accepted_rows() {
     assert_eq!(accepted.len(), 1);
     assert_eq!(accepted.value(0), "ok@example.test");
 
-    let quarantine = reader.read_quarantine_records().unwrap();
+    let quarantine = collect_quarantine_records(&reader);
     assert_eq!(quarantine.len(), 1);
     assert_eq!(quarantine[0].source_row_ordinal, 1);
     assert_eq!(quarantine[0].error_code, "regex_violation");
@@ -7611,10 +7624,8 @@ fn contract_quarantine_preserves_source_ordinal_after_transform_filter() {
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
     let temp = TempDir::new().unwrap();
     block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
-    let quarantine = cdf_package::PackageReader::open(temp.path())
-        .unwrap()
-        .read_quarantine_records()
-        .unwrap();
+    let quarantine =
+        collect_quarantine_records(&cdf_package::PackageReader::open(temp.path()).unwrap());
     assert_eq!(quarantine.len(), 1);
     assert_eq!(quarantine[0].error_code, "regex_violation");
     assert_eq!(quarantine[0].source_row_ordinal, 1);
@@ -7673,10 +7684,8 @@ fn contract_quarantine_preserves_source_ordinal_after_residual_quarantine() {
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
     let temp = TempDir::new().unwrap();
     block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
-    let quarantine = cdf_package::PackageReader::open(temp.path())
-        .unwrap()
-        .read_quarantine_records()
-        .unwrap();
+    let quarantine =
+        collect_quarantine_records(&cdf_package::PackageReader::open(temp.path()).unwrap());
     let contract = quarantine
         .iter()
         .find(|record| record.error_code == "regex_violation")
@@ -7725,7 +7734,7 @@ fn source_decode_quarantine_facts_fold_into_package_artifacts() {
     let accepted = reader.read_segment(&output.segments[0].segment_id).unwrap();
     assert_eq!(batch_i32s(&accepted[0], "id"), vec![3]);
     assert_eq!(batch_strings(&accepted, "name"), vec!["three"]);
-    let quarantine = reader.read_quarantine_records().unwrap();
+    let quarantine = collect_quarantine_records(&reader);
     assert_eq!(quarantine.len(), 1);
     assert_eq!(quarantine[0].source_row_ordinal, 1);
     assert_eq!(
@@ -7918,7 +7927,7 @@ fn variant_capture_materializes_nested_values_and_contract_evolution_evidence() 
     );
     assert_eq!(reader.replay_view().unwrap().segments.len(), 1);
 
-    let quarantine = reader.read_quarantine_records().unwrap();
+    let quarantine = collect_quarantine_records(&reader);
     assert_eq!(quarantine.len(), 1);
     let QuarantineObservedValue::Hashed { value, .. } = &quarantine[0].observed_value_redacted
     else {
@@ -8033,7 +8042,7 @@ fn residual_contract_exec_captures_safe_values_redacts_pii_and_quarantines_contr
     assert!(!variants.value(1).contains("alice@example.test"));
     assert!(!variants.value(1).contains("top-secret"));
 
-    let quarantine = reader.read_quarantine_records().unwrap();
+    let quarantine = collect_quarantine_records(&reader);
     assert_eq!(quarantine.len(), 1);
     assert_eq!(quarantine[0].error_code, "cdf.residual_control_critical");
     let evolution_bytes =
@@ -8325,7 +8334,7 @@ fn residual_unsupported_encoding_becomes_named_quarantine() {
     block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
 
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let quarantine = reader.read_quarantine_records().unwrap();
+    let quarantine = collect_quarantine_records(&reader);
     assert_eq!(quarantine.len(), 1);
     assert_eq!(
         quarantine[0].error_code,

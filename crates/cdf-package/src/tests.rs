@@ -11,7 +11,7 @@ use ::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray, Time32SecondArray};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use cdf_kernel::{
-    CHECKPOINT_STATE_VERSION, Checkpoint, CheckpointId, CheckpointStatus, CommitCounts,
+    CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId, CheckpointStatus, CommitCounts,
     CommitSegment, CursorPosition, CursorValue, DestinationId, FileManifest, FilePosition,
     IdempotencyToken, PackageHash, PartitionId, PipelineId, ProcessedObservationOutcome,
     ProcessedObservationPosition, Receipt, ReceiptId, ResourceId, Result, SchemaHash, ScopeKey,
@@ -25,6 +25,17 @@ use cdf_memory::{
 };
 use cdf_package_contract::*;
 use sha2::Digest;
+
+fn collect_quarantine_records(reader: &PackageReader) -> Vec<QuarantineRecord> {
+    let mut records = Vec::new();
+    reader
+        .for_each_quarantine_record(&mut |record| {
+            records.push(record);
+            Ok(())
+        })
+        .unwrap();
+    records
+}
 
 fn table_snapshot_position() -> SourcePosition {
     SourcePosition::TableSnapshot(Box::new(TableSnapshotPosition {
@@ -699,7 +710,8 @@ fn quarantine_records_round_trip_as_parquet_identity_evidence() {
         .unwrap();
     let manifest = builder.finish().unwrap();
     let reader = PackageReader::open(temp.path()).unwrap();
-    assert_eq!(reader.read_quarantine_records().unwrap(), records);
+    assert_eq!(collect_quarantine_records(&reader), records);
+    assert_eq!(reader.quarantine_record_count().unwrap(), 2);
 
     let report = verify_package(temp.path()).unwrap();
     assert_eq!(report.checked_file_count, manifest.identity.files.len());
@@ -743,7 +755,7 @@ fn quarantine_records_round_trip_as_parquet_identity_evidence() {
     .unwrap();
     let error = PackageReader::open(traversal.path())
         .unwrap()
-        .read_quarantine_records()
+        .for_each_quarantine_record(&mut |_| Ok(()))
         .unwrap_err();
     assert!(
         error
@@ -775,11 +787,23 @@ fn quarantine_writer_streams_multiple_bounded_record_chunks() {
     writer.finish().unwrap();
     builder.finish().unwrap();
 
-    let actual = PackageReader::open(temp.path())
-        .unwrap()
-        .read_quarantine_records()
-        .unwrap();
+    let reader = PackageReader::open(temp.path()).unwrap();
+    let actual = collect_quarantine_records(&reader);
     assert_eq!(actual, expected);
+    assert_eq!(reader.quarantine_record_count().unwrap(), 20_000);
+
+    let mut visited = 0_u64;
+    let error = reader
+        .for_each_quarantine_record(&mut |_| {
+            visited += 1;
+            if visited == 10 {
+                return Err(CdfError::data("stop quarantine visitor"));
+            }
+            Ok(())
+        })
+        .unwrap_err();
+    assert_eq!(visited, 10);
+    assert_eq!(error.to_string(), "Data: stop quarantine visitor");
 }
 
 #[test]

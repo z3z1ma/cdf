@@ -11,9 +11,10 @@ use crate::{
     storage::{normalize_artifact_path, package_path},
 };
 
-pub fn quarantine_records_from_parquet_file(
+pub fn for_each_quarantine_record_in_parquet_file(
     path: impl AsRef<Path>,
-) -> Result<Vec<QuarantineRecord>> {
+    visitor: &mut dyn FnMut(QuarantineRecord) -> Result<()>,
+) -> Result<()> {
     let path = path.as_ref();
     let file = File::open(path)
         .map_err(|error| crate::storage::io_error(format!("open {}", path.display()), error))?;
@@ -21,20 +22,44 @@ pub fn quarantine_records_from_parquet_file(
         .map_err(|error| CdfError::data(format!("read quarantine parquet metadata: {error}")))?
         .build()
         .map_err(|error| CdfError::data(format!("create quarantine parquet reader: {error}")))?;
-    read_quarantine_batches(reader)
+    visit_quarantine_batches(reader, visitor)
 }
 
-pub(crate) fn quarantine_records_from_package_file(
+pub fn quarantine_record_count_in_parquet_file(path: impl AsRef<Path>) -> Result<u64> {
+    let path = path.as_ref();
+    let file = File::open(path)
+        .map_err(|error| crate::storage::io_error(format!("open {}", path.display()), error))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .map_err(|error| CdfError::data(format!("read quarantine parquet metadata: {error}")))?;
+    u64::try_from(builder.metadata().file_metadata().num_rows())
+        .map_err(|_| CdfError::data("quarantine parquet row count cannot be negative"))
+}
+
+pub(crate) fn for_each_quarantine_record_in_package_file(
     package_dir: &Path,
     relative_path: impl AsRef<Path>,
-) -> Result<Vec<QuarantineRecord>> {
+    visitor: &mut dyn FnMut(QuarantineRecord) -> Result<()>,
+) -> Result<()> {
     let relative_path = normalize_artifact_path(relative_path.as_ref())?;
     if !relative_path.starts_with("quarantine/") || !relative_path.ends_with(".parquet") {
         return Err(CdfError::data(format!(
             "quarantine artifact path must live under quarantine/ and end in .parquet: {relative_path}"
         )));
     }
-    quarantine_records_from_parquet_file(package_path(package_dir, relative_path))
+    for_each_quarantine_record_in_parquet_file(package_path(package_dir, relative_path), visitor)
+}
+
+pub(crate) fn quarantine_record_count_in_package_file(
+    package_dir: &Path,
+    relative_path: impl AsRef<Path>,
+) -> Result<u64> {
+    let relative_path = normalize_artifact_path(relative_path.as_ref())?;
+    if !relative_path.starts_with("quarantine/") || !relative_path.ends_with(".parquet") {
+        return Err(CdfError::data(format!(
+            "quarantine artifact path must live under quarantine/ and end in .parquet: {relative_path}"
+        )));
+    }
+    quarantine_record_count_in_parquet_file(package_path(package_dir, relative_path))
 }
 
 pub(crate) fn quarantine_record_batch(records: &[QuarantineRecord]) -> Result<RecordBatch> {
@@ -129,21 +154,27 @@ fn observed_columns(record: &QuarantineRecord) -> (&'static str, Option<String>,
     }
 }
 
-fn read_quarantine_batches<I, E>(batches: I) -> Result<Vec<QuarantineRecord>>
+fn visit_quarantine_batches<I, E>(
+    batches: I,
+    visitor: &mut dyn FnMut(QuarantineRecord) -> Result<()>,
+) -> Result<()>
 where
     I: IntoIterator<Item = std::result::Result<RecordBatch, E>>,
     E: std::fmt::Display,
 {
-    let mut records = Vec::new();
     for batch in batches {
-        records.extend(records_from_batch(
+        visit_records_from_batch(
             &batch.map_err(|error| CdfError::data(error.to_string()))?,
-        )?);
+            visitor,
+        )?;
     }
-    Ok(records)
+    Ok(())
 }
 
-fn records_from_batch(batch: &RecordBatch) -> Result<Vec<QuarantineRecord>> {
+fn visit_records_from_batch(
+    batch: &RecordBatch,
+    visitor: &mut dyn FnMut(QuarantineRecord) -> Result<()>,
+) -> Result<()> {
     let ordinals = required_array::<UInt64Array>(batch, "source_row_ordinal")?;
     let rule_ids = required_array::<StringArray>(batch, "rule_id")?;
     let error_codes = required_array::<StringArray>(batch, "error_code")?;
@@ -152,9 +183,8 @@ fn records_from_batch(batch: &RecordBatch) -> Result<Vec<QuarantineRecord>> {
     let value_algorithms = required_array::<StringArray>(batch, "observed_value_algorithm")?;
     let values = required_array::<StringArray>(batch, "observed_value")?;
 
-    let mut records = Vec::with_capacity(batch.num_rows());
     for row in 0..batch.num_rows() {
-        records.push(QuarantineRecord {
+        visitor(QuarantineRecord {
             source_row_ordinal: ordinals.value(row),
             rule_id: required_string(rule_ids, row, "rule_id")?.to_owned(),
             error_code: required_string(error_codes, row, "error_code")?.to_owned(),
@@ -168,9 +198,9 @@ fn records_from_batch(batch: &RecordBatch) -> Result<Vec<QuarantineRecord>> {
                 optional_string(value_algorithms, row),
                 optional_string(values, row),
             )?,
-        });
+        })?;
     }
-    Ok(records)
+    Ok(())
 }
 
 fn required_array<'a, T: 'static>(batch: &'a RecordBatch, name: &str) -> Result<&'a T> {

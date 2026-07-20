@@ -909,8 +909,7 @@ async fn run_project_inner(
             segment_count,
         )?;
     }
-    let quarantine_record_count = u64::try_from(package.reader().read_quarantine_records()?.len())
-        .map_err(|error| CdfError::internal(error.to_string()))?;
+    let quarantine_record_count = package.reader().quarantine_record_count()?;
     execution.recorder.append_package_finalized(
         &package_hash,
         row_count,

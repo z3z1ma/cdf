@@ -104,7 +104,13 @@ pub(super) fn assert_drift_quarantine_package_evidence(report: &ProjectRunReport
         serde_json::json!(["quarantine/part-000001.parquet"])
     );
 
-    let quarantine = reader.read_quarantine_records().unwrap();
+    let mut quarantine = Vec::new();
+    reader
+        .for_each_quarantine_record(&mut |record| {
+            quarantine.push(record);
+            Ok(())
+        })
+        .unwrap();
     assert_eq!(quarantine.len(), 1);
     assert_eq!(quarantine[0].source_row_ordinal, 2);
     assert_eq!(

@@ -69,17 +69,20 @@ pub(crate) fn run_duckdb_demo(root: &Path) -> DuckDbDriftQuarantineDemoEvidence 
     assert_unsupported_quarantine_mirror_artifact(&drift, "duckdb");
     assert_parquet_quarantine_mirror_excluded_by_sheet();
 
-    let quarantined_rows = PackageReader::open(&drift.package_dir)
-        .unwrap()
-        .read_quarantine_records()
-        .unwrap()
-        .len();
+    let reader = PackageReader::open(&drift.package_dir).unwrap();
+    let mut quarantined_rows = 0_u64;
+    reader
+        .for_each_quarantine_record(&mut |_| {
+            quarantined_rows += 1;
+            Ok(())
+        })
+        .unwrap();
     let snapshot = duckdb.read_mirror_snapshot_read_only().unwrap();
     DuckDbDriftQuarantineDemoEvidence {
         clean_package_id: clean.package_id,
         drift_package_id: drift.package_id,
         accepted_rows: drift.row_count,
-        quarantined_rows: u64::try_from(quarantined_rows).unwrap(),
+        quarantined_rows,
         receipt_verified: DestinationProtocol::verify(&duckdb, &drift.receipt)
             .unwrap()
             .verified,

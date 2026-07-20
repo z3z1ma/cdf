@@ -17,7 +17,10 @@ pub trait VerifiedPackageAccess: Send + Sync {
     fn recorded_scan_plan(&self) -> Result<ScanPlan>;
     fn replay_inputs(&self) -> Result<PackageReplayInputs>;
     fn runtime_arrow_schema(&self) -> Result<SchemaRef>;
-    fn quarantine_records(&self) -> Result<Vec<QuarantineRecord>>;
+    fn for_each_quarantine_record(
+        &self,
+        visitor: &mut dyn FnMut(QuarantineRecord) -> Result<()>,
+    ) -> Result<()>;
 }
 
 pub type SharedVerifiedPackageAccess = Arc<dyn VerifiedPackageAccess>;
