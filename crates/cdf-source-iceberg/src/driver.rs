@@ -892,7 +892,7 @@ fn execution_capabilities(source: &IcebergSourceOptions) -> SourceExecutionCapab
         reopenable: true,
         resumable: true,
         speculative_safe: true,
-        retry_granularity: SourceRetryGranularity::Unit,
+        retry_granularity: SourceRetryGranularity::Partition,
         retryable_errors: vec![
             cdf_kernel::ErrorKind::Transient,
             cdf_kernel::ErrorKind::RateLimited,
@@ -931,10 +931,11 @@ mod tests {
     };
     use cdf_object_access::FileTransportFacade;
     use cdf_runtime::{
-        BlockingTask, CpuFutureTask, CpuTaskSpec, ExecutionHost, ExecutionHostCapabilities,
-        ExecutionServices, ExecutionTaskScope, FixedSpillBudget, IoTask, IoValue, IoValueTask,
-        RunCancellation, SourceCompileContext, SourceHealthStatus, SourceResolutionContext,
-        SpillBudgetCoordinator, TaskScopeReport,
+        BlockingTask, CanonicalPartitionSchedule, CompiledSourceExecutionPlan, CpuFutureTask,
+        CpuTaskSpec, ExecutionHost, ExecutionHostCapabilities, ExecutionServices,
+        ExecutionTaskScope, FixedSpillBudget, IoTask, IoValue, IoValueTask, RunCancellation,
+        SourceCompileContext, SourceHealthStatus, SourceResolutionContext, SpillBudgetCoordinator,
+        TaskScopeReport,
     };
     use cdf_task_store::ExternalTaskStore;
     use flate2::{Compression, write::GzEncoder};
@@ -2126,6 +2127,9 @@ mod tests {
         );
 
         let mut planned = resource.planned_partition_reader(&reference).unwrap();
+        let compiled_execution = CompiledSourceExecutionPlan::compile(&one_job_plan).unwrap();
+        let schedule =
+            CanonicalPartitionSchedule::compile(&compiled_execution, &one_job_scan).unwrap();
         for ordinal in 0..2 {
             let executable = planned.next_partition(ordinal).unwrap().unwrap();
             assert_eq!(
@@ -2143,6 +2147,17 @@ mod tests {
                 .unwrap();
             assert_eq!(task.task.canonical_ordinal, ordinal);
             task.task.validate_against(task.authority()).unwrap();
+            let scheduled = schedule
+                .scheduled_partition(
+                    &compiled_execution,
+                    usize::try_from(ordinal).unwrap(),
+                    executable.plan(),
+                )
+                .unwrap();
+            assert_eq!(
+                scheduled.retry.unwrap().granularity,
+                SourceRetryGranularity::Partition
+            );
         }
         assert!(planned.next_partition(2).unwrap().is_none());
 
