@@ -2216,7 +2216,7 @@ fn project_external_codec_discovers_pins_previews_and_runs_over_remote_provider(
             pipeline_id: PipelineId::new("pipeline-project-external-remote").unwrap(),
             package_id: "pkg-project-external-remote".to_owned(),
             checkpoint_id: CheckpointId::new("checkpoint-project-external-remote").unwrap(),
-            destination: ResolvedProjectDestination::duckdb(
+            destination: crate::test_destinations::duckdb(
                 temp.path().join(".cdf/dev.duckdb"),
                 TargetName::new("external_events").unwrap(),
             )
@@ -3056,7 +3056,7 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
             pipeline_id: PipelineId::new("pipeline-http").unwrap(),
             package_id: "pkg-http-parquet-runtime".to_owned(),
             checkpoint_id: CheckpointId::new("checkpoint-http-parquet-runtime").unwrap(),
-            destination: ResolvedProjectDestination::duckdb(
+            destination: crate::test_destinations::duckdb(
                 duckdb_path,
                 TargetName::new("events").unwrap(),
             )
@@ -3140,7 +3140,7 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
             pipeline_id: PipelineId::new("pipeline-http-pinned").unwrap(),
             package_id: "pkg-http-parquet-pinned-runtime".to_owned(),
             checkpoint_id: CheckpointId::new("checkpoint-http-parquet-pinned-runtime").unwrap(),
-            destination: ResolvedProjectDestination::duckdb(
+            destination: crate::test_destinations::duckdb(
                 temp.path().join(".cdf/dev-pinned.duckdb"),
                 TargetName::new("events_pinned").unwrap(),
             )
@@ -3252,7 +3252,7 @@ fn unversioned_http_parquet_runs_and_commits_terminal_content_identity() {
             pipeline_id: PipelineId::new("pipeline-http-unversioned").unwrap(),
             package_id: "pkg-http-unversioned".to_owned(),
             checkpoint_id: CheckpointId::new("checkpoint-http-unversioned").unwrap(),
-            destination: ResolvedProjectDestination::duckdb(
+            destination: crate::test_destinations::duckdb(
                 temp.path().join(".cdf/dev.duckdb"),
                 TargetName::new("events").unwrap(),
             )
@@ -5098,7 +5098,7 @@ fn live_plan_for_stream(
     package_id: &str,
 ) -> EnginePlan {
     let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
-    let destination = ResolvedProjectDestination::duckdb(
+    let destination = crate::test_destinations::duckdb(
         "/tmp/cdf-project-plan-policy-only.duckdb",
         TargetName::new("events").unwrap(),
     )

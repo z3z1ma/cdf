@@ -413,19 +413,19 @@ mod tests {
     #[test]
     fn destination_doctor_rendering_redacts_driver_health_in_json_and_human_output() {
         let runtime = DestinationRuntime {
-            kind: "fourth".to_owned(),
-            destination_id: Some("fourth".to_owned()),
-            label: Some("fourth destination".to_owned()),
-            schemes: vec!["fourth".to_owned()],
+            kind: "quasar".to_owned(),
+            destination_id: Some("quasar".to_owned()),
+            label: Some("quasar destination".to_owned()),
+            schemes: vec!["quasar".to_owned()],
             sheet: None,
             capabilities: None,
             health: vec![cdf_runtime::DestinationHealthResult {
-                probe_id: "fourth_ready".to_owned(),
+                probe_id: "quasar_ready".to_owned(),
                 status: cdf_runtime::DestinationHealthStatus::Passed,
-                message: "connected to fourth://user:doctor-secret@example.invalid/db".to_owned(),
+                message: "connected to quasar://user:doctor-secret@example.invalid/db".to_owned(),
                 details: BTreeMap::from([(
                     "endpoint".to_owned(),
-                    json!("fourth://user:doctor-secret@example.invalid/db"),
+                    json!("quasar://user:doctor-secret@example.invalid/db"),
                 )]),
             }],
             error: None,
@@ -443,14 +443,14 @@ mod tests {
             .render(&cdf_cli_core::render::RenderConfig::headless_for_width(96));
         assert!(!json.contains("doctor-secret"));
         assert!(!human.contains("doctor-secret"));
-        assert!(json.contains("fourth://[redacted]@example.invalid/db"));
-        assert!(human.contains("fourth://[redacted]@example.invalid/db"));
+        assert!(json.contains("quasar://[redacted]@example.invalid/db"));
+        assert!(human.contains("quasar://[redacted]@example.invalid/db"));
     }
 
     #[test]
     fn destination_doctor_reports_registry_bulk_path_degradation_without_driver_branches() {
         let descriptor = cdf_runtime::BulkPathDescriptor {
-            path_id: "fourth_native".to_owned(),
+            path_id: "quasar_native".to_owned(),
             version: 1,
             ingress_mode: cdf_runtime::DestinationIngressMode::FinalizedPackageOnly,
             writer_model: cdf_runtime::DestinationWriterModel::SingleWriter,
@@ -470,19 +470,19 @@ mod tests {
             native_internal_parallelism: 1,
             external_staging: false,
             fallback: cdf_runtime::BulkFallbackMode::PreflightOnly,
-            schema_preflight_version: "fourth-schema@1".to_owned(),
+            schema_preflight_version: "quasar-schema@1".to_owned(),
             measured_evidence_version: None,
         };
         let check =
             destination_bulk_path_check(Some(cdf_runtime::DestinationRuntimeCapabilities {
                 bulk_paths: vec![descriptor],
-                bulk_path: Some("fourth_native".to_owned()),
+                bulk_path: Some("quasar_native".to_owned()),
                 ..Default::default()
             }));
 
         assert_eq!(check.status, CheckStatus::Failed);
         assert!(check.message.contains("measured evidence version"));
-        assert_eq!(check.details.unwrap()["selected_path"], "fourth_native");
+        assert_eq!(check.details.unwrap()["selected_path"], "quasar_native");
 
         let unavailable = destination_bulk_path_check(None);
         assert_eq!(unavailable.status, CheckStatus::Unsupported);

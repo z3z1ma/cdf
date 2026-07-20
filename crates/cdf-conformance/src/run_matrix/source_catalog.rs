@@ -5,11 +5,12 @@ use cdf_project::{ProjectRunReport, ProjectRunSource};
 
 use super::{
     MatrixDisposition, RunMatrixCell, SourceArchetype, external_mock_fixture, file_fixture,
-    local_postgres::LivePostgres, plan_json, python_fixture, rest_fixture, sql_fixture,
+    plan_json, python_fixture, rest_fixture, sql_fixture,
 };
+use crate::destination_catalog::ConformanceEnvironment;
 
 type PrepareSource =
-    fn(&RunMatrixCell, &Path, Option<&LivePostgres>) -> Result<PreparedMatrixSource>;
+    fn(&RunMatrixCell, &Path, &ConformanceEnvironment) -> Result<PreparedMatrixSource>;
 
 struct SourceFixture {
     archetype: &'static str,
@@ -109,7 +110,7 @@ fn fixture(source: &SourceArchetype) -> Option<&'static SourceFixture> {
 pub(crate) fn prepare(
     cell: &RunMatrixCell,
     project_root: &Path,
-    postgres: Option<&LivePostgres>,
+    environment: &ConformanceEnvironment,
 ) -> Result<PreparedMatrixSource> {
     let fixture = fixture(&cell.source_archetype).ok_or_else(|| {
         CdfError::contract(format!(
@@ -117,13 +118,13 @@ pub(crate) fn prepare(
             cell.source_archetype
         ))
     })?;
-    (fixture.prepare)(cell, project_root, postgres)
+    (fixture.prepare)(cell, project_root, environment)
 }
 
 fn prepare_file(
     cell: &RunMatrixCell,
     project_root: &Path,
-    _postgres: Option<&LivePostgres>,
+    _environment: &ConformanceEnvironment,
 ) -> Result<PreparedMatrixSource> {
     let compiled = file_fixture::resource(project_root, cell.disposition)?;
     let resource = crate::source_fixture::resolve_local_file(&compiled, project_root)?;
@@ -136,7 +137,7 @@ fn prepare_file(
 fn prepare_python(
     cell: &RunMatrixCell,
     project_root: &Path,
-    _postgres: Option<&LivePostgres>,
+    _environment: &ConformanceEnvironment,
 ) -> Result<PreparedMatrixSource> {
     Ok(PreparedMatrixSource::new(
         python_fixture::resource(project_root, cell.disposition)?,
@@ -147,7 +148,7 @@ fn prepare_python(
 fn prepare_rest(
     cell: &RunMatrixCell,
     _project_root: &Path,
-    _postgres: Option<&LivePostgres>,
+    _environment: &ConformanceEnvironment,
 ) -> Result<PreparedMatrixSource> {
     let (resource, transport) = rest_fixture::resource(cell.disposition)?;
     Ok(PreparedMatrixSource::new(resource, move |report| {
@@ -159,13 +160,10 @@ fn prepare_rest(
 fn prepare_sql(
     cell: &RunMatrixCell,
     _project_root: &Path,
-    postgres: Option<&LivePostgres>,
+    environment: &ConformanceEnvironment,
 ) -> Result<PreparedMatrixSource> {
-    let postgres = postgres.ok_or_else(|| {
-        CdfError::contract("SQL source conformance requires a live Postgres fixture")
-    })?;
     Ok(PreparedMatrixSource::new(
-        sql_fixture::resource(cell.clone(), postgres)?,
+        sql_fixture::resource(cell.clone(), environment.postgres()?)?,
         sql_fixture::assert_source_position,
     ))
 }
@@ -173,7 +171,7 @@ fn prepare_sql(
 fn prepare_external_mock(
     cell: &RunMatrixCell,
     project_root: &Path,
-    _postgres: Option<&LivePostgres>,
+    _environment: &ConformanceEnvironment,
 ) -> Result<PreparedMatrixSource> {
     Ok(PreparedMatrixSource::new(
         external_mock_fixture::resource(project_root, cell.disposition)?,

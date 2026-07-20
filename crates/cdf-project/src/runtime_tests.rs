@@ -2753,7 +2753,7 @@ impl ProjectDestinationDriver for MockProjectDestinationDriver {
             description: ProjectDestinationDescription::new(
                 self.destination.sheet.destination.clone(),
                 &["mock"],
-                "mock fourth destination",
+                "mock quasar destination",
             ),
             sheet_artifact_hash: cdf_runtime::artifact_hash(&sheet_artifact)?,
             sheet_artifact,
@@ -2765,7 +2765,7 @@ impl ProjectDestinationDriver for MockProjectDestinationDriver {
             },
             health_probes: vec![cdf_runtime::DestinationHealthProbe {
                 probe_id: "mock_ready".to_owned(),
-                description: "mock fourth destination readiness".to_owned(),
+                description: "mock quasar destination readiness".to_owned(),
                 requires_credentials: true,
                 mutates_destination: false,
             }],
@@ -2780,7 +2780,7 @@ impl ProjectDestinationDriver for MockProjectDestinationDriver {
         Ok(vec![cdf_runtime::DestinationHealthResult {
             probe_id: "mock_ready".to_owned(),
             status: cdf_runtime::DestinationHealthStatus::Passed,
-            message: "mock fourth destination is ready".to_owned(),
+            message: "mock quasar destination is ready".to_owned(),
             details: Default::default(),
         }])
     }
@@ -2894,7 +2894,7 @@ impl ProjectDestinationRuntime for MockProjectDestinationRuntime {
     }
 
     fn secret_redaction(&self) -> Option<&str> {
-        Some("fourth-secret")
+        Some("quasar-secret")
     }
 }
 
@@ -3457,7 +3457,7 @@ fn sql_runtime_resource(table: &str) -> cdf_declarative::CompiledResource {
 }
 
 fn live_plan(resource: &dyn QueryableResource, package_id: &str) -> EnginePlan {
-    let destination = ResolvedProjectDestination::duckdb(
+    let destination = crate::test_destinations::duckdb(
         "/tmp/cdf-plan-policy-only.duckdb",
         TargetName::new("events").unwrap(),
     )
@@ -3469,7 +3469,7 @@ fn live_plan(resource: &dyn QueryableResource, package_id: &str) -> EnginePlan {
 }
 
 fn live_plan_for_queryable(resource: &dyn QueryableResource, package_id: &str) -> EnginePlan {
-    let destination = ResolvedProjectDestination::duckdb(
+    let destination = crate::test_destinations::duckdb(
         "/tmp/cdf-plan-policy-only.duckdb",
         TargetName::new("events").unwrap(),
     )
@@ -3536,7 +3536,7 @@ fn live_plan_with_policy(
     package_id: &str,
     policy: &ContractPolicy,
 ) -> EnginePlan {
-    let destination = ResolvedProjectDestination::duckdb(
+    let destination = crate::test_destinations::duckdb(
         "/tmp/cdf-plan-policy-only.duckdb",
         TargetName::new("events").unwrap(),
     )
@@ -3679,7 +3679,7 @@ fn destination_planning_facade_previews_duckdb_schema_commit_without_writes() {
     let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
     let database_path = temp.path().join("planned.duckdb");
     let mut destination =
-        ResolvedProjectDestination::duckdb(&database_path, TargetName::new("events").unwrap())
+        crate::test_destinations::duckdb(&database_path, TargetName::new("events").unwrap())
             .unwrap();
 
     let engine_plan = live_plan(&resource, "pkg-plan-preview-duckdb");
@@ -3716,7 +3716,7 @@ fn destination_planning_facade_rejects_parquet_merge_without_writes() {
     let temp = tempfile::tempdir().unwrap();
     let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_MERGE);
     let parquet_root = temp.path().join("parquet");
-    let mut destination = ResolvedProjectDestination::parquet_filesystem(
+    let mut destination = crate::test_destinations::parquet_filesystem(
         &parquet_root,
         TargetName::new("events").unwrap(),
     )
@@ -3760,7 +3760,7 @@ fn project_run_request<'a>(
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
         package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new(format!("checkpoint-{package_id}")).unwrap(),
-        destination: ResolvedProjectDestination::duckdb(
+        destination: crate::test_destinations::duckdb(
             duckdb_path,
             TargetName::new("events").unwrap(),
         )
@@ -3845,7 +3845,7 @@ fn parquet_project_run_request<'a>(
     state_path: &Path,
     run_id: &str,
 ) -> ProjectRunRequest<'a> {
-    let destination = ResolvedProjectDestination::parquet_filesystem(
+    let destination = crate::test_destinations::parquet_filesystem(
         parquet_root,
         TargetName::new("events").unwrap(),
     )
@@ -3877,7 +3877,7 @@ fn postgres_project_run_request<'a>(
     state_path: &Path,
     run_id: &str,
 ) -> ProjectRunRequest<'a> {
-    let destination = ResolvedProjectDestination::postgres(
+    let destination = crate::test_destinations::postgres(
         database_url.to_owned(),
         target,
         MergeDedupPolicy::Last,
@@ -4296,7 +4296,7 @@ fn run_rest_project_with_jobs(
 
     let source = compiled.source_plan().clone();
     let destination =
-        ResolvedProjectDestination::duckdb(duckdb_path, TargetName::new("items").unwrap()).unwrap();
+        crate::test_destinations::duckdb(duckdb_path, TargetName::new("items").unwrap()).unwrap();
     let plan = live_plan(&resource, package_id)
         .bind_compiled_source(&source)
         .unwrap()
@@ -4351,7 +4351,7 @@ fn run_sql_project_with_jobs(
         .unwrap();
     let resource = resolve_postgres_resource(compiled, database_url, &services);
     let package_id = "pkg-general-sql-runtime";
-    let destination = ResolvedProjectDestination::duckdb(
+    let destination = crate::test_destinations::duckdb(
         root.join(".cdf/dev.duckdb"),
         TargetName::new("orders").unwrap(),
     )
@@ -4427,7 +4427,7 @@ fn live_file_run_post_receipt_failure_keeps_checkpoint_uncommitted_and_receipt_r
         pipeline_id: pipeline_id.clone(),
         package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new("checkpoint-live-hook-failure").unwrap(),
-        destination: ResolvedProjectDestination::duckdb(
+        destination: crate::test_destinations::duckdb(
             duckdb_path.clone(),
             TargetName::new("events").unwrap(),
         )
@@ -4708,8 +4708,7 @@ fn drain_project_settles_each_frontier_before_committing_the_next_epoch() {
     plan.execution_extent = extent.clone();
     plan.explain.execution_extent = extent;
     let resolved_destination =
-        ResolvedProjectDestination::duckdb(&duckdb_path, TargetName::new("events").unwrap())
-            .unwrap();
+        crate::test_destinations::duckdb(&duckdb_path, TargetName::new("events").unwrap()).unwrap();
     let plan = plan
         .bind_compiled_source(&source)
         .unwrap()
@@ -4817,8 +4816,7 @@ fn cold_empty_drain_returns_no_op_without_package_destination_or_checkpoint() {
     plan.execution_extent = extent.clone();
     plan.explain.execution_extent = extent;
     let destination =
-        ResolvedProjectDestination::duckdb(&duckdb_path, TargetName::new("events").unwrap())
-            .unwrap();
+        crate::test_destinations::duckdb(&duckdb_path, TargetName::new("events").unwrap()).unwrap();
     let plan = plan
         .bind_compiled_source(&source)
         .unwrap()
@@ -4900,8 +4898,7 @@ fn drain_preserves_committed_summary_when_the_following_epoch_is_empty() {
     plan.execution_extent = extent.clone();
     plan.explain.execution_extent = extent;
     let destination =
-        ResolvedProjectDestination::duckdb(&duckdb_path, TargetName::new("events").unwrap())
-            .unwrap();
+        crate::test_destinations::duckdb(&duckdb_path, TargetName::new("events").unwrap()).unwrap();
     let plan = plan
         .bind_compiled_source(&source)
         .unwrap()
@@ -4980,8 +4977,7 @@ fn drain_retry_discards_only_incomplete_construction_after_staging_abort() {
     plan.execution_extent = extent.clone();
     plan.explain.execution_extent = extent;
     let destination =
-        ResolvedProjectDestination::duckdb(&duckdb_path, TargetName::new("events").unwrap())
-            .unwrap();
+        crate::test_destinations::duckdb(&duckdb_path, TargetName::new("events").unwrap()).unwrap();
     let plan = plan
         .bind_compiled_source(&source)
         .unwrap()
@@ -5021,8 +5017,7 @@ fn drain_retry_discards_only_incomplete_construction_after_staging_abort() {
     );
 
     let destination =
-        ResolvedProjectDestination::duckdb(&duckdb_path, TargetName::new("events").unwrap())
-            .unwrap();
+        crate::test_destinations::duckdb(&duckdb_path, TargetName::new("events").unwrap()).unwrap();
     let resumed = futures_executor::block_on(run_project(ProjectRunRequest {
         resource: ProjectRunSource::new(&bound),
         plan: retry_plan,
@@ -5087,8 +5082,7 @@ fn multi_partition_drain_restart_uses_persisted_partition_continuation() {
     plan.execution_extent = extent.clone();
     plan.explain.execution_extent = extent;
     let destination =
-        ResolvedProjectDestination::duckdb(&duckdb_path, TargetName::new("events").unwrap())
-            .unwrap();
+        crate::test_destinations::duckdb(&duckdb_path, TargetName::new("events").unwrap()).unwrap();
     let plan = plan
         .bind_compiled_source(&source)
         .unwrap()
@@ -5152,8 +5146,7 @@ fn multi_partition_drain_restart_uses_persisted_partition_continuation() {
     );
 
     let destination =
-        ResolvedProjectDestination::duckdb(&duckdb_path, TargetName::new("events").unwrap())
-            .unwrap();
+        crate::test_destinations::duckdb(&duckdb_path, TargetName::new("events").unwrap()).unwrap();
     let resumed = futures_executor::block_on(run_project(ProjectRunRequest {
         resource: ProjectRunSource::new(&bound),
         plan: retry_plan,
@@ -5269,8 +5262,7 @@ fn drain_project_does_not_publish_a_later_epoch_before_checkpoint_settlement() {
     plan.execution_extent = extent.clone();
     plan.explain.execution_extent = extent;
     let resolved_destination =
-        ResolvedProjectDestination::duckdb(&duckdb_path, TargetName::new("events").unwrap())
-            .unwrap();
+        crate::test_destinations::duckdb(&duckdb_path, TargetName::new("events").unwrap()).unwrap();
     let plan = plan
         .bind_compiled_source(&source)
         .unwrap()
@@ -5342,7 +5334,7 @@ fn drain_project_does_not_publish_a_later_epoch_before_checkpoint_settlement() {
         pipeline_id: pipeline_id.clone(),
         package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new("checkpoint-drain-settlement-failure").unwrap(),
-        destination: ResolvedProjectDestination::duckdb(
+        destination: crate::test_destinations::duckdb(
             &duckdb_path,
             TargetName::new("events").unwrap(),
         )
@@ -6669,7 +6661,7 @@ fn project_run_records_non_mirror_outcome_for_unsupported_quarantine_sheet() {
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
         package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new("checkpoint-quarantine-duckdb-unsupported").unwrap(),
-        destination: ResolvedProjectDestination::duckdb(
+        destination: crate::test_destinations::duckdb(
             duckdb_path,
             TargetName::new("events").unwrap(),
         )
@@ -6858,7 +6850,7 @@ fn postgres_destination_policy_truncates_package_and_committed_column_identicall
     let package_root = temp.path().join(".cdf/packages");
     let state_path = temp.path().join(".cdf/state.db");
     let target = PostgresTarget::new(Some(&postgres.schema), "normalized_events").unwrap();
-    let destination = ResolvedProjectDestination::postgres(
+    let destination = crate::test_destinations::postgres(
         postgres.url.clone(),
         target,
         MergeDedupPolicy::Last,
@@ -6937,7 +6929,7 @@ fn stale_normalizer_version_fails_before_writes() {
         pipeline_id: PipelineId::new("pipeline-stale-normalizer-version").unwrap(),
         package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new("checkpoint-stale-normalizer-version").unwrap(),
-        destination: ResolvedProjectDestination::duckdb(
+        destination: crate::test_destinations::duckdb(
             &destination_path,
             TargetName::new("events").unwrap(),
         )
@@ -7060,7 +7052,7 @@ fn general_project_run_executes_rest_with_discovered_snapshot_hash() {
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
         package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new("checkpoint-general-rest-discovered-runtime").unwrap(),
-        destination: ResolvedProjectDestination::duckdb(
+        destination: crate::test_destinations::duckdb(
             duckdb_path,
             TargetName::new("items").unwrap(),
         )
@@ -7190,7 +7182,7 @@ fn parquet_artifact_recovery_after_general_run_failure_does_not_need_source() {
     let target = receipts[0].target.clone();
     let report = recover_package_from_artifacts(PackageArtifactRecoveryRequest {
         package_dir: package_dir.clone(),
-        destination: ResolvedProjectDestination::parquet_filesystem(&parquet_root, target).unwrap(),
+        destination: crate::test_destinations::parquet_filesystem(&parquet_root, target).unwrap(),
         checkpoint_store: &store,
         receipt: receipts[0].clone(),
         after_receipt_verified: None,
@@ -7246,7 +7238,7 @@ fn parquet_artifact_replay_after_source_loss_without_receipt_commits_checkpoint(
         .target;
     let report = replay_package_from_artifacts(PackageArtifactReplayRequest {
         package_dir: package_dir.clone(),
-        destination: ResolvedProjectDestination::parquet_filesystem(&replay_root, target).unwrap(),
+        destination: crate::test_destinations::parquet_filesystem(&replay_root, target).unwrap(),
         checkpoint_store: &store,
         after_receipt_verified: None,
     })
@@ -7308,7 +7300,7 @@ fn postgres_artifact_recovery_after_durable_receipt_commits_without_source_conta
     assert_eq!(receipts.len(), 1);
     let report = recover_package_from_artifacts(PackageArtifactRecoveryRequest {
         package_dir: package_dir.clone(),
-        destination: ResolvedProjectDestination::postgres(
+        destination: crate::test_destinations::postgres(
             postgres.url.clone(),
             target,
             MergeDedupPolicy::Last,
@@ -7374,7 +7366,7 @@ fn postgres_artifact_replay_after_source_loss_without_receipt_commits_checkpoint
     let store = SqliteCheckpointStore::open(&replay_state_path).unwrap();
     let report = replay_package_from_artifacts(PackageArtifactReplayRequest {
         package_dir: package_dir.clone(),
-        destination: ResolvedProjectDestination::postgres(
+        destination: crate::test_destinations::postgres(
             postgres.url.clone(),
             target,
             MergeDedupPolicy::Last,
@@ -7460,7 +7452,7 @@ fn postgres_artifact_replay_rejects_mismatched_explicit_target_before_mutation()
     let wrong_target = PostgresTarget::new(Some(&postgres.schema), "events_target_wrong").unwrap();
     let error = replay_package_from_artifacts(PackageArtifactReplayRequest {
         package_dir: package_dir.clone(),
-        destination: ResolvedProjectDestination::postgres(
+        destination: crate::test_destinations::postgres(
             postgres.url.clone(),
             wrong_target,
             MergeDedupPolicy::Last,
@@ -7515,7 +7507,7 @@ fn general_project_run_rejects_rest_missing_secret_value_before_writes() {
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
         package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new("checkpoint-general-rest-missing-secret-value").unwrap(),
-        destination: ResolvedProjectDestination::duckdb(
+        destination: crate::test_destinations::duckdb(
             duckdb_path.clone(),
             TargetName::new("items").unwrap(),
         )
@@ -7558,7 +7550,7 @@ fn general_project_run_rejects_rest_without_cursor_before_writes() {
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
         package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new("checkpoint-general-rest-no-cursor").unwrap(),
-        destination: ResolvedProjectDestination::duckdb(
+        destination: crate::test_destinations::duckdb(
             duckdb_path.clone(),
             TargetName::new("items").unwrap(),
         )
@@ -7620,7 +7612,7 @@ fn general_project_run_window_closes_inexact_numeric_rest_cursor() {
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
         package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new("checkpoint-general-rest-window-close-numeric").unwrap(),
-        destination: ResolvedProjectDestination::duckdb(
+        destination: crate::test_destinations::duckdb(
             duckdb_path.clone(),
             TargetName::new("items").unwrap(),
         )
@@ -7660,7 +7652,7 @@ fn general_project_run_rejects_sql_empty_secret_inside_source_lifecycle_before_d
             pipeline_id: PipelineId::new("pipeline-live").unwrap(),
             package_id: package_id.to_owned(),
             checkpoint_id: CheckpointId::new("checkpoint-general-sql-empty-secret").unwrap(),
-            destination: ResolvedProjectDestination::duckdb(
+            destination: crate::test_destinations::duckdb(
                 duckdb_path.clone(),
                 TargetName::new("orders").unwrap(),
             )
@@ -8506,7 +8498,7 @@ fn generic_lock_plan_replay_and_recovery_drive_mock_runtime_without_destination_
     let context = ProjectResolutionContext::for_project_run(temp.path(), &target);
     let inspection = registry
         .inspect(
-            "mock://user:fourth-secret@example.invalid/database",
+            "mock://user:quasar-secret@example.invalid/database",
             &context,
         )
         .unwrap();
@@ -8522,14 +8514,14 @@ fn generic_lock_plan_replay_and_recovery_drive_mock_runtime_without_destination_
     let lock_config = parse_cdf_toml(
         r#"
 [project]
-name = "fourth-driver-lock"
+name = "quasar-driver-lock"
 default_environment = "dev"
 normalizer = "namecase-v1"
 
 [environments.dev]
 state = ".cdf/state.db"
 packages = ".cdf/packages"
-destination = "mock://user:fourth-secret@example.invalid/database"
+destination = "mock://user:quasar-secret@example.invalid/database"
 
 [resources."mock.*"]
 source = "resources/mock.toml"
@@ -8562,7 +8554,7 @@ source = "resources/mock.toml"
     );
     let health = registry
         .health(
-            "mock://user:fourth-secret@example.invalid/database",
+            "mock://user:quasar-secret@example.invalid/database",
             &context,
         )
         .unwrap();
@@ -8585,7 +8577,7 @@ source = "resources/mock.toml"
         .column_identifier_policy()
         .unwrap()
         .unwrap();
-    let engine_plan = live_plan_with_exact_policy(&resource, "pkg-fourth-plan", &plan_policy);
+    let engine_plan = live_plan_with_exact_policy(&resource, "pkg-quasar-plan", &plan_policy);
     let planned = planned_destination
         .plan_resource_commit(&resource, &engine_plan)
         .unwrap();
@@ -8594,7 +8586,7 @@ source = "resources/mock.toml"
     assert_eq!(destination.write_count(), 0, "planning must not mutate");
 
     let mut replay_runtime = registry.resolve("mock://registered", &context).unwrap();
-    assert_eq!(replay_runtime.secret_redaction(), Some("fourth-secret"));
+    assert_eq!(replay_runtime.secret_redaction(), Some("quasar-secret"));
     let replay_stages = Arc::new(Mutex::new(Vec::new()));
     let replay_stages_hook = Arc::clone(&replay_stages);
     let stage_hook = move |stage: PackageReplayStage<'_>| {
@@ -9390,11 +9382,8 @@ fn zero_segment_processed_package_recovers_after_receipt_without_source_or_data_
 
     let error = replay_package_from_artifacts(PackageArtifactReplayRequest {
         package_dir: package_dir.clone(),
-        destination: ResolvedProjectDestination::duckdb(
-            &db_path,
-            TargetName::new("orders").unwrap(),
-        )
-        .unwrap(),
+        destination: crate::test_destinations::duckdb(&db_path, TargetName::new("orders").unwrap())
+            .unwrap(),
         checkpoint_store: &store,
         after_receipt_verified: Some(&hook),
     })
@@ -9422,11 +9411,8 @@ fn zero_segment_processed_package_recovers_after_receipt_without_source_or_data_
 
     let recovered = recover_package_from_artifacts(PackageArtifactRecoveryRequest {
         package_dir: package_dir.clone(),
-        destination: ResolvedProjectDestination::duckdb(
-            &db_path,
-            TargetName::new("orders").unwrap(),
-        )
-        .unwrap(),
+        destination: crate::test_destinations::duckdb(&db_path, TargetName::new("orders").unwrap())
+            .unwrap(),
         checkpoint_store: &store,
         receipt: receipts[0].clone(),
         after_receipt_verified: None,

@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Target: .10x/decisions/destination-runtime-composition-boundary.md, .10x/specs/destination-extension-runtime-contract.md, .10x/tickets/2026-07-11-p0-destination-extension-boundary.md
+Target: .10x/decisions/destination-runtime-composition-boundary.md, .10x/specs/destination-extension-runtime-contract.md, .10x/tickets/done/2026-07-11-p0-destination-extension-boundary.md
 Verdict: pass
 
 # Destination extension boundary shaping review

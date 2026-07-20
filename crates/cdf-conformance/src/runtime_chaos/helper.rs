@@ -4,25 +4,20 @@ use std::{
     process::Command,
 };
 
-use cdf_kernel::{CdfError, Receipt, Result, TargetName};
+use cdf_kernel::{CdfError, Receipt, Result};
 use cdf_project::{
     PackageArtifactReplayRequest, RuntimeStage, replay_package_from_artifacts_with_stage_hook,
 };
 use cdf_state_sqlite::SqliteCheckpointStore;
 
 use super::{ChaosCrashWindow, destinations::ChaosDestinationHandle, fixture::ChaosPackageFixture};
+use crate::destination_catalog::DestinationExecutionSpec;
 
 const HELPER_ENV: &str = "CDF_CONFORMANCE_RUNTIME_CHAOS_HELPER";
 const HELPER_WINDOW_ENV: &str = "CDF_CONFORMANCE_RUNTIME_CHAOS_WINDOW";
 const HELPER_PACKAGE_DIR_ENV: &str = "CDF_CONFORMANCE_RUNTIME_CHAOS_PACKAGE_DIR";
 const HELPER_SQLITE_PATH_ENV: &str = "CDF_CONFORMANCE_RUNTIME_CHAOS_SQLITE_PATH";
-const HELPER_DESTINATION_ENV: &str = "CDF_CONFORMANCE_RUNTIME_CHAOS_DESTINATION";
-const HELPER_TARGET_ENV: &str = "CDF_CONFORMANCE_RUNTIME_CHAOS_TARGET";
-const HELPER_DUCKDB_PATH_ENV: &str = "CDF_CONFORMANCE_RUNTIME_CHAOS_DUCKDB_PATH";
-const HELPER_PARQUET_ROOT_ENV: &str = "CDF_CONFORMANCE_RUNTIME_CHAOS_PARQUET_ROOT";
-const HELPER_POSTGRES_URL_ENV: &str = "CDF_CONFORMANCE_RUNTIME_CHAOS_POSTGRES_URL";
-const HELPER_POSTGRES_SCHEMA_ENV: &str = "CDF_CONFORMANCE_RUNTIME_CHAOS_POSTGRES_SCHEMA";
-const HELPER_POSTGRES_TABLE_ENV: &str = "CDF_CONFORMANCE_RUNTIME_CHAOS_POSTGRES_TABLE";
+const HELPER_DESTINATION_SPEC_ENV: &str = "CDF_CONFORMANCE_RUNTIME_CHAOS_DESTINATION_SPEC";
 const HELPER_TEST_NAME: &str = "runtime_chaos::helper::generic_stage_chaos_helper_process";
 const HELPER_EXIT_CODE: i32 = 87;
 
@@ -100,56 +95,18 @@ fn run_helper_process() -> Result<()> {
 }
 
 fn apply_destination_env(command: &mut Command, destination: &ChaosDestinationHandle) {
-    match destination {
-        ChaosDestinationHandle::DuckDb {
-            database_path,
-            target,
-        } => {
-            command
-                .env(HELPER_DESTINATION_ENV, "duckdb")
-                .env(HELPER_DUCKDB_PATH_ENV, database_path)
-                .env(HELPER_TARGET_ENV, target.as_str());
-        }
-        ChaosDestinationHandle::Parquet { root, target } => {
-            command
-                .env(HELPER_DESTINATION_ENV, "parquet_filesystem")
-                .env(HELPER_PARQUET_ROOT_ENV, root)
-                .env(HELPER_TARGET_ENV, target.as_str());
-        }
-        ChaosDestinationHandle::Postgres {
-            database_url,
-            schema,
-            table,
-            ..
-        } => {
-            command
-                .env(HELPER_DESTINATION_ENV, "postgres")
-                .env(HELPER_POSTGRES_URL_ENV, database_url)
-                .env(HELPER_POSTGRES_SCHEMA_ENV, schema)
-                .env(HELPER_POSTGRES_TABLE_ENV, table);
-        }
-    }
+    command.env(
+        HELPER_DESTINATION_SPEC_ENV,
+        serde_json::to_string(&destination.execution_spec()).unwrap(),
+    );
 }
 
-fn destination_from_env() -> Result<ChaosDestinationHandle> {
-    match env::var(HELPER_DESTINATION_ENV).unwrap().as_str() {
-        "duckdb" => Ok(ChaosDestinationHandle::duckdb(
-            PathBuf::from(env::var(HELPER_DUCKDB_PATH_ENV).unwrap()),
-            TargetName::new(env::var(HELPER_TARGET_ENV).unwrap())?,
-        )),
-        "parquet_filesystem" => Ok(ChaosDestinationHandle::parquet(
-            PathBuf::from(env::var(HELPER_PARQUET_ROOT_ENV).unwrap()),
-            TargetName::new(env::var(HELPER_TARGET_ENV).unwrap())?,
-        )),
-        "postgres" => ChaosDestinationHandle::postgres(
-            env::var(HELPER_POSTGRES_URL_ENV).unwrap(),
-            env::var(HELPER_POSTGRES_SCHEMA_ENV).unwrap(),
-            env::var(HELPER_POSTGRES_TABLE_ENV).unwrap(),
-        ),
-        other => Err(CdfError::contract(format!(
-            "unknown runtime chaos helper destination {other}"
-        ))),
-    }
+fn destination_from_env() -> Result<DestinationExecutionSpec> {
+    serde_json::from_str(&env::var(HELPER_DESTINATION_SPEC_ENV).unwrap()).map_err(|error| {
+        CdfError::contract(format!(
+            "invalid runtime chaos destination execution spec: {error}"
+        ))
+    })
 }
 
 fn parse_window(value: &str) -> Result<ChaosCrashWindow> {

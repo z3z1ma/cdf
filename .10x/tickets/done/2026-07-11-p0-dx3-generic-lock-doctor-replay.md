@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-11
 Updated: 2026-07-17
-Parent: .10x/tickets/2026-07-11-p0-destination-extension-boundary.md
+Parent: .10x/tickets/done/2026-07-11-p0-destination-extension-boundary.md
 Depends-On: .10x/tickets/done/2026-07-11-p0-dx2-driver-owned-adapters-composition.md, .10x/tickets/done/2026-07-12-p0-dx3a-cli-destination-registry-authority.md
 
 # P0 DX3: generic lock, doctor, replay, and product surfaces

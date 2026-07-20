@@ -34,7 +34,7 @@ Reduce focused compile latency by enforcing the lean CLI core, complete static p
 - `.10x/tickets/done/2026-07-11-p0-sx1-source-extension-boundary.md`
 - `.10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md`
 - `.10x/tickets/done/2026-07-11-p0-dx3-generic-lock-doctor-replay.md`
-- `.10x/tickets/2026-07-11-p0-dx4-conformance-extension-law.md`
+- `.10x/tickets/done/2026-07-11-p0-dx4-conformance-extension-law.md`
 - `.10x/tickets/2026-07-12-p3-j6-datafusion-selective-adoption-audit.md`
 
 ## Assumptions

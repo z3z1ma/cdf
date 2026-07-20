@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-11
 Updated: 2026-07-12
-Parent: .10x/tickets/2026-07-11-p0-destination-extension-boundary.md
+Parent: .10x/tickets/done/2026-07-11-p0-destination-extension-boundary.md
 Depends-On: .10x/tickets/done/2026-07-11-p0-dx1-neutral-runtime-crate.md
 
 # P0 DX2: driver-owned adapters and composition root

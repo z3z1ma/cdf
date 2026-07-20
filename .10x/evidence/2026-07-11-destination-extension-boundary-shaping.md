@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Relates-To: .10x/tickets/2026-07-11-p0-destination-extension-boundary.md, .10x/decisions/destination-runtime-composition-boundary.md, .10x/specs/destination-extension-runtime-contract.md
+Relates-To: .10x/tickets/done/2026-07-11-p0-destination-extension-boundary.md, .10x/decisions/destination-runtime-composition-boundary.md, .10x/specs/destination-extension-runtime-contract.md
 
 # Destination extension boundary shaping evidence
 

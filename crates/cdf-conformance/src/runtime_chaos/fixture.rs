@@ -13,8 +13,7 @@ use crate::package_replay::{
 };
 
 use super::{
-    ChaosCrashWindow, ChaosDestination, ExecutedChaosCase,
-    destinations::{ChaosDestinationHandle, duplicate_retry_behavior},
+    ChaosCrashWindow, ChaosDestination, ExecutedChaosCase, destinations::ChaosDestinationHandle,
 };
 
 pub(crate) struct ChaosPackageFixture {
@@ -99,6 +98,7 @@ pub(crate) fn assert_checkpoint_not_ahead_of_durable_data(
     destination: &ChaosDestinationHandle,
     report: &PackageReplayReport,
 ) -> Result<()> {
+    destination.assert_receipt_identity(&report.receipt)?;
     destination.verify_trait_receipt(&report.receipt)?;
     if report.checkpoint.receipt.as_ref() != Some(&report.receipt) {
         return Err(CdfError::contract(
@@ -138,10 +138,11 @@ pub(crate) fn assert_duplicate_retry_no_second_write(
             "runtime chaos duplicate retry did not return the stable durable receipt",
         ));
     }
+    destination.assert_receipt_identity(&duplicate.receipt)?;
     destination.verify_trait_receipt(&duplicate.receipt)?;
     Ok((
         true,
-        duplicate_retry_behavior(destination.kind(), duplicate.receipt_source),
+        destination.duplicate_retry_behavior(duplicate.receipt_source),
     ))
 }
 

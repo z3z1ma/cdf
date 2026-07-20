@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-18
 
 # Destination extension runtime contract
 
@@ -57,7 +57,7 @@ Permanent architecture tests MUST prove:
 
 ## Acceptance scenario
 
-Given a fourth destination crate implementing the runtime and kernel contracts, when it is registered at the composition root and added to the conformance fixture catalog, then project lock/plan/run/replay/resume/doctor and every applicable conformance law work without modifying `cdf-project` or generic CLI/conformance modules.
+Given a synthetic Quasar destination implementing the runtime and kernel contracts, when it is registered at the composition root and added to the conformance fixture catalog, then project lock/plan/run/replay/resume/doctor and every applicable conformance law work without modifying `cdf-project` or generic CLI/conformance modules.
 
 ## Explicit exclusions
 

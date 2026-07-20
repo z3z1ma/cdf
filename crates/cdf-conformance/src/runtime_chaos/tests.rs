@@ -4,11 +4,11 @@ use cdf_kernel::{CheckpointStatus, CheckpointStore, Result};
 use cdf_package_contract::PackageStatus;
 use cdf_state_sqlite::SqliteCheckpointStore;
 
-use crate::run_matrix::local_postgres::LivePostgres;
-
 use super::{
     ChaosCrashWindow, ChaosDestination, RuntimeChaosOutput, cross_destination_chaos_cases,
-    destinations::{ChaosDestinationHandle, DestinationFootprint},
+    destinations::{
+        ConformanceEnvironment, DestinationFootprint, DestinationPayload, destination_for_case,
+    },
     fixture::{
         ChaosPackageFixture, ExecutedCaseParts, assert_checkpoint_not_ahead_of_durable_data,
         assert_duplicate_retry_no_second_write, durable_receipt, executed_case, package_status,
@@ -19,7 +19,7 @@ use super::{
 
 #[test]
 fn cross_destination_generic_runtime_stage_chaos_persists_output() {
-    let postgres = LivePostgres::start().expect(
+    let environment = ConformanceEnvironment::start().expect(
         "C3 runtime chaos requires Postgres coverage; set TEST_DATABASE_URL or install initdb/pg_ctl",
     );
     let mut output = RuntimeChaosOutput::default();
@@ -27,20 +27,17 @@ fn cross_destination_generic_runtime_stage_chaos_persists_output() {
     for (destination, window) in cross_destination_chaos_cases() {
         output
             .executed_cases
-            .push(execute_case(destination, window, &postgres).unwrap());
+            .push(execute_case(destination, window, &environment).unwrap());
     }
 
-    assert_eq!(output.executed_cases.len(), 12);
-    for destination in [
-        ChaosDestination::DuckDb,
-        ChaosDestination::ParquetFilesystem,
-        ChaosDestination::Postgres,
-    ] {
+    let destinations = crate::destination_catalog::conformance_destinations();
+    assert_eq!(output.executed_cases.len(), destinations.len() * 4);
+    for destination in destinations {
         assert_eq!(
             output
                 .executed_cases
                 .iter()
-                .filter(|case| case.destination == destination)
+                .filter(|case| case.destination.as_str() == destination.as_str())
                 .count(),
             4
         );
@@ -57,19 +54,19 @@ fn cross_destination_generic_runtime_stage_chaos_persists_output() {
                 .iter()
                 .filter(|case| case.crash_window == window)
                 .count(),
-            3
+            crate::destination_catalog::conformance_destinations().len()
         );
     }
 
     let serialized = serde_json::to_string_pretty(&output).unwrap();
-    assert!(!serialized.contains(postgres.url()));
+    environment.assert_redacted(&serialized);
     println!("CDF_RUNTIME_CHAOS_OUTPUT={serialized}");
 }
 
 fn execute_case(
     destination_kind: ChaosDestination,
     window: ChaosCrashWindow,
-    postgres: &LivePostgres,
+    environment: &ConformanceEnvironment,
 ) -> Result<super::ExecutedChaosCase> {
     let temp = tempfile::tempdir()
         .map_err(|error| cdf_kernel::CdfError::data(format!("create chaos tempdir: {error}")))?;
@@ -78,10 +75,10 @@ fn execute_case(
     })?;
     let sqlite_path = temp.path().join(".cdf/runtime-chaos-state.sqlite");
     let store = SqliteCheckpointStore::open(&sqlite_path)?;
-    let destination = ChaosDestinationHandle::new(destination_kind, window, temp.path(), postgres)?;
+    let destination = destination_for_case(&destination_kind, window, temp.path(), environment)?;
     let fixture = ChaosPackageFixture::build(
         temp.path(),
-        destination_kind,
+        destination_kind.clone(),
         window,
         destination.target_name(),
     )?;
@@ -108,6 +105,10 @@ fn execute_case(
     let receipt_recovery_avoided_second_destination_write = if receipt.is_some() {
         before_recovery_footprint == after_recovery_footprint
     } else {
+        assert_ne!(
+            before_recovery_footprint, after_recovery_footprint,
+            "pre-write crash recovery must materialize the destination"
+        );
         true
     };
     assert!(
@@ -118,6 +119,11 @@ fn execute_case(
     assert_eq!(
         package_status(&fixture.package_dir)?,
         PackageStatus::Checkpointed
+    );
+    assert_eq!(
+        destination.payload_snapshot()?,
+        DestinationPayload::prepared_orders(),
+        "crash recovery must reproduce the prepared package payload exactly"
     );
     assert_checkpoint_not_ahead_of_durable_data(&destination, &report)?;
 

@@ -58,22 +58,27 @@ impl std::fmt::Display for SourceArchetype {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MatrixDestination {
-    #[serde(rename = "duckdb")]
-    DuckDb,
-    ParquetFilesystem,
-    Postgres,
-}
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct MatrixDestination(String);
 
 impl MatrixDestination {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::DuckDb => "duckdb",
-            Self::ParquetFilesystem => "parquet_filesystem",
-            Self::Postgres => "postgres",
+    pub fn new(value: impl Into<String>) -> Result<Self> {
+        let value = value.into();
+        if value.is_empty()
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        {
+            return Err(CdfError::contract(
+                "conformance destination must be a nonempty lowercase ASCII identifier",
+            ));
         }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
@@ -182,11 +187,7 @@ pub fn run_spine_matrix_cells() -> Vec<RunMatrixCell> {
 
 pub fn source_matrix_cells(source_archetype: SourceArchetype) -> Vec<RunMatrixCell> {
     let mut cells = Vec::new();
-    for destination in [
-        MatrixDestination::DuckDb,
-        MatrixDestination::ParquetFilesystem,
-        MatrixDestination::Postgres,
-    ] {
+    for destination in crate::destination_catalog::conformance_destinations() {
         for disposition in [
             MatrixDisposition::Append,
             MatrixDisposition::Replace,
@@ -194,7 +195,7 @@ pub fn source_matrix_cells(source_archetype: SourceArchetype) -> Vec<RunMatrixCe
         ] {
             cells.push(RunMatrixCell::new(
                 source_archetype.clone(),
-                destination,
+                destination.clone(),
                 disposition,
             ));
         }

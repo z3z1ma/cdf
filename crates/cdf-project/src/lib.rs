@@ -41,6 +41,8 @@ mod schema_snapshot;
 mod secrets;
 mod sources;
 #[cfg(test)]
+mod test_destinations;
+#[cfg(test)]
 mod tests;
 
 pub use backfill::*;

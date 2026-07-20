@@ -1,23 +1,17 @@
 use std::{cell::Cell, path::Path};
 
-use cdf_dest_duckdb::DuckDbDestination;
-use cdf_dest_parquet::ParquetDestination;
-use cdf_dest_postgres::PostgresDestination;
 use cdf_engine::EnginePlan;
 use cdf_kernel::{
-    CdfError, CheckpointStatus, CheckpointStore, DestinationProtocol, IdempotencySupport,
-    PipelineId, QueryableResource, Receipt, ResourceId, Result, ScopeKey,
+    CdfError, CheckpointStatus, CheckpointStore, IdempotencySupport, PipelineId, QueryableResource,
+    Receipt, ResourceId, Result, ScopeKey,
 };
 use cdf_package::PackageReader;
 use cdf_package_contract::PackageStatus;
-use cdf_project::{
-    PackageArtifactReplayRequest, ProjectReceiptSource, ProjectRunReport,
-    replay_package_from_artifacts,
-};
+use cdf_project::{PackageArtifactReplayRequest, ProjectRunReport, replay_package_from_artifacts};
 use cdf_state_sqlite::SqliteCheckpointStore;
 
 use super::{
-    MatrixDestination, MatrixDisposition, RunMatrixCell,
+    MatrixDisposition, RunMatrixCell,
     core::{ROW_COUNT, SEGMENT_COUNT},
     destinations::MatrixDestinationHandle,
     test_support::copy_dir_all,
@@ -141,7 +135,7 @@ pub(crate) fn assert_duplicate_replay_noop(
     report: &ProjectRunReport,
     root: &Path,
 ) -> Result<String> {
-    assert_sheet_idempotency_is_package_token(cell.destination);
+    assert_eq!(destination.idempotency()?, IdempotencySupport::PackageToken);
     let before = destination.footprint()?;
     let duplicate_store = SqliteCheckpointStore::open(root.join(format!(
         ".cdf/duplicate-{}.sqlite",
@@ -171,24 +165,10 @@ pub(crate) fn assert_duplicate_replay_noop(
         )?
         .expect("duplicate checkpoint head");
     assert_eq!(duplicate_head.status, CheckpointStatus::Committed);
+    destination.assert_receipt_identity(&duplicate.receipt)?;
     destination.verify_trait_receipt(&duplicate.receipt)?;
 
-    Ok(match (cell.destination, duplicate.receipt_source) {
-        (
-            MatrixDestination::DuckDb | MatrixDestination::ParquetFilesystem,
-            ProjectReceiptSource::DestinationCommit {
-                duplicate: true,
-                package_receipt_recorded: false,
-            },
-        ) => "no-op duplicate: destination sheet idempotency=package_token, runtime reported duplicate=true, destination footprint unchanged".to_owned(),
-        (
-            MatrixDestination::Postgres,
-            ProjectReceiptSource::DestinationCommitReceiptOnly {
-                package_receipt_recorded: false,
-            },
-        ) => "no-op duplicate: Postgres sheet idempotency=package_token, receipt-only runtime returned the stable receipt and destination footprint unchanged".to_owned(),
-        (_, source) => panic!("unexpected duplicate receipt source: {source:?}"),
-    })
+    Ok(destination.duplicate_retry_behavior(duplicate.receipt_source))
 }
 
 pub(crate) fn assert_artifact_replay_identity(
@@ -197,6 +177,7 @@ pub(crate) fn assert_artifact_replay_identity(
     report: &ProjectRunReport,
     root: &Path,
 ) -> Result<()> {
+    let expected_payload = destination.payload_snapshot()?;
     let replay_package_dir = root
         .join(".cdf/replay-packages")
         .join(format!("{}-copy", report.package_id));
@@ -217,7 +198,13 @@ pub(crate) fn assert_artifact_replay_identity(
     assert_eq!(replay.checkpoint.status, CheckpointStatus::Committed);
     assert_eq!(replay.checkpoint.delta, report.checkpoint.delta);
     assert_receipt_core_identity(&report.receipt, &replay.receipt);
+    replay_destination.assert_receipt_identity(&replay.receipt)?;
     replay_destination.verify_trait_receipt(&replay.receipt)?;
+    assert_eq!(
+        replay_destination.payload_snapshot()?,
+        expected_payload,
+        "artifact replay must reproduce the destination payload exactly"
+    );
     PackageReader::open(&replay_package_dir)?.verify()?;
     let replay_head = replay_store
         .head(
@@ -267,27 +254,4 @@ fn assert_receipt_core_identity(expected: &Receipt, actual: &Receipt) {
     assert_eq!(actual.idempotency_token, expected.idempotency_token);
     assert_eq!(actual.segment_acks, expected.segment_acks);
     assert_eq!(actual.counts, expected.counts);
-}
-
-fn assert_sheet_idempotency_is_package_token(destination: MatrixDestination) {
-    let idempotency = match destination {
-        MatrixDestination::DuckDb => {
-            let temp = tempfile::tempdir().unwrap();
-            DuckDbDestination::new(temp.path().join("sheet.duckdb"))
-                .unwrap()
-                .sheet()
-                .idempotency
-                .clone()
-        }
-        MatrixDestination::ParquetFilesystem => {
-            let temp = tempfile::tempdir().unwrap();
-            ParquetDestination::new_filesystem(temp.path(), crate::test_execution_services())
-                .unwrap()
-                .sheet()
-                .idempotency
-                .clone()
-        }
-        MatrixDestination::Postgres => PostgresDestination::new().sheet().idempotency.clone(),
-    };
-    assert_eq!(idempotency, IdempotencySupport::PackageToken);
 }

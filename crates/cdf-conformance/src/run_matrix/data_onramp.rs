@@ -22,8 +22,8 @@ use std::{
 };
 
 use super::{
-    MatrixDestination, MatrixDisposition, RunMatrixCell, SourceArchetype, core, file_fixture,
-    local_postgres::LivePostgres, plan_json, source_catalog,
+    MatrixDestination, MatrixDisposition, RunMatrixCell, SourceArchetype, core,
+    destinations::ConformanceEnvironment, file_fixture, plan_json, source_catalog,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -679,21 +679,25 @@ fn p2_closed_registry_has_no_open_owners_and_rejects_terminal_ones_as_active() {
 
 #[test]
 fn p2_preview_run_parity_law_covers_supported_archetypes() {
-    let postgres = LivePostgres::start().expect(
+    let environment = ConformanceEnvironment::start().expect(
         "P2 S8 parity conformance requires Postgres coverage; set TEST_DATABASE_URL or install initdb/pg_ctl",
     );
     let cases = source_catalog::archetypes().into_iter().map(|source| {
-        RunMatrixCell::new(source, MatrixDestination::DuckDb, MatrixDisposition::Append)
+        RunMatrixCell::new(
+            source,
+            MatrixDestination::new("duckdb").unwrap(),
+            MatrixDisposition::Append,
+        )
     });
 
     for cell in cases {
-        let preview = preview_fingerprint(cell.clone(), Some(&postgres)).unwrap_or_else(|error| {
+        let preview = preview_fingerprint(cell.clone(), &environment).unwrap_or_else(|error| {
             panic!(
                 "{} preview failed before parity comparison: {error}",
                 cell.source_archetype.as_str()
             )
         });
-        let executed = core::execute_cell(cell.clone(), Some(&postgres)).unwrap_or_else(|error| {
+        let executed = core::execute_cell(cell.clone(), &environment).unwrap_or_else(|error| {
             panic!(
                 "{} run failed before parity comparison: {error}",
                 cell.source_archetype.as_str()
@@ -861,7 +865,7 @@ fn workspace_root() -> &'static Path {
 
 fn preview_fingerprint(
     cell: RunMatrixCell,
-    postgres: Option<&LivePostgres>,
+    environment: &ConformanceEnvironment,
 ) -> Result<PreviewFingerprint> {
     let temp = tempfile::tempdir().map_err(|error| {
         cdf_kernel::CdfError::data(format!("create P2 parity preview tempdir: {error}"))
@@ -872,7 +876,7 @@ fn preview_fingerprint(
         cell.disposition.as_str()
     );
 
-    let source = source_catalog::prepare(&cell, temp.path(), postgres)?;
+    let source = source_catalog::prepare(&cell, temp.path(), environment)?;
     let plan = source.engine_plan(&package_id, cell.disposition, None)?;
     let partitions = source.queryable().plan_partitions(&plan.scan.request)?;
     assert_eq!(partitions, plan.scan.partitions);

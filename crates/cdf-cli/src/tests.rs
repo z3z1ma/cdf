@@ -429,9 +429,7 @@ fn destination_registry_composition_is_confined_to_the_cli_root() {
             continue;
         }
         let text = fs::read_to_string(&path).unwrap();
-        let concrete_driver_import = ["cdf_dest_duckdb", "cdf_dest_parquet", "cdf_dest_postgres"]
-            .iter()
-            .any(|driver| text.contains(driver));
+        let concrete_driver_import = text.contains("cdf_dest_");
         let concrete_driver_allowed = matches!(
             relative_text.as_ref(),
             "src/destination_registry.rs" | "src/doctor_drift.rs"
@@ -8712,13 +8710,13 @@ fn resume_human_rich_render_uses_recovery_and_artifact_panels() {
 }
 
 #[test]
-fn injected_fourth_destination_reaches_lock_plan_run_duplicate_replay_doctor_and_inspect() {
+fn injected_quasar_destination_reaches_lock_plan_run_duplicate_replay_doctor_and_inspect() {
     let project = TestProject::new();
     let destination_uri = crate::destination_registry_test_support::destination_uri();
     let secret = crate::destination_registry_test_support::secret_sentinel();
     write_project_destination(&project, &destination_uri);
     let (registry, state) =
-        crate::destination_registry_test_support::registry_with_fourth_destination().unwrap();
+        crate::destination_registry_test_support::registry_with_quasar_destination().unwrap();
 
     for command in [
         vec!["contract".to_owned(), "freeze".to_owned()],
@@ -8827,20 +8825,20 @@ fn injected_fourth_destination_reaches_lock_plan_run_duplicate_replay_doctor_and
 }
 
 #[test]
-fn injected_fourth_destination_resume_replays_finalized_package_without_source_contact() {
+fn injected_quasar_destination_resume_replays_finalized_package_without_source_contact() {
     let project = TestProject::new();
     let package_dir = create_replay_package_fixture(&project);
     let destination_uri = crate::destination_registry_test_support::destination_uri();
     let secret = crate::destination_registry_test_support::secret_sentinel();
     write_project_destination(&project, &destination_uri);
     let (registry, state) =
-        crate::destination_registry_test_support::registry_with_fourth_destination().unwrap();
+        crate::destination_registry_test_support::registry_with_quasar_destination().unwrap();
     let mut reader = PackageReader::open(&package_dir).unwrap();
     reader.update_status(PackageStatus::Packaged).unwrap();
     remove_package_receipts(&package_dir);
     let run_id = create_resume_run_with_package(
         &project,
-        "run-resume-fourth-replay",
+        "run-resume-quasar-replay",
         &package_dir,
         &[RunEventKind::PackageFinalized, RunEventKind::RunFailed],
     );
@@ -8863,7 +8861,7 @@ fn injected_fourth_destination_resume_replays_finalized_package_without_source_c
     assert_eq!(report["action"], "replay_package");
     assert_eq!(report["source_contact"], false);
     assert_eq!(report["mutated"], true);
-    assert_eq!(report["receipt"]["destination_id"], "fourth");
+    assert_eq!(report["receipt"]["destination_id"], "quasar");
     assert_eq!(report["checkpoint"]["status"], "committed");
     assert_eq!(report["package"]["status"], "checkpointed");
     assert_eq!(state.durable_commits(), 1);
@@ -8874,20 +8872,20 @@ fn injected_fourth_destination_resume_replays_finalized_package_without_source_c
 }
 
 #[test]
-fn injected_fourth_destination_resume_verifies_durable_receipt_without_duplicate_commit() {
+fn injected_quasar_destination_resume_verifies_durable_receipt_without_duplicate_commit() {
     let project = TestProject::new();
     let package_dir = create_replay_package_fixture(&project);
     let destination_uri = crate::destination_registry_test_support::destination_uri();
     let secret = crate::destination_registry_test_support::secret_sentinel();
     write_project_destination(&project, &destination_uri);
     let (registry, state) =
-        crate::destination_registry_test_support::registry_with_fourth_destination().unwrap();
-    let run_id = seed_fourth_resume_receipt_before_checkpoint(
+        crate::destination_registry_test_support::registry_with_quasar_destination().unwrap();
+    let run_id = seed_quasar_resume_receipt_before_checkpoint(
         &project,
         &package_dir,
         &destination_uri,
         &registry,
-        "run-resume-fourth-receipt",
+        "run-resume-quasar-receipt",
     );
     let commits_before_resume = state.durable_commits();
     let begins_before_resume = state.commit_begins();
@@ -14413,7 +14411,7 @@ fn seed_resume_receipt_before_checkpoint(
     run_id
 }
 
-fn seed_fourth_resume_receipt_before_checkpoint(
+fn seed_quasar_resume_receipt_before_checkpoint(
     project: &TestProject,
     package_dir: &Path,
     destination_uri: &str,
@@ -14434,7 +14432,7 @@ fn seed_fourth_resume_receipt_before_checkpoint(
     let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
     let stop_after_receipt = |_receipt: &Receipt| {
         Err(CdfError::internal(
-            "stop fourth fixture before checkpoint commit",
+            "stop quasar fixture before checkpoint commit",
         ))
     };
     let error = replay_package_from_artifacts(PackageArtifactReplayRequest {
@@ -14447,7 +14445,7 @@ fn seed_fourth_resume_receipt_before_checkpoint(
     assert!(
         error
             .to_string()
-            .contains("stop fourth fixture before checkpoint commit")
+            .contains("stop quasar fixture before checkpoint commit")
     );
     let reader = PackageReader::open(package_dir).unwrap();
     assert_eq!(reader.receipts().unwrap().len(), 1);

@@ -1,24 +1,25 @@
 use super::{
-    ExcludedMatrixCell, MatrixDestination, MatrixDisposition, RunMatrixCell, RunMatrixOutput,
-    SourceArchetype, core, local_postgres::LivePostgres, run_spine_matrix_cells, source_catalog,
+    ExcludedMatrixCell, RunMatrixOutput, SourceArchetype, core,
+    destinations::ConformanceEnvironment, run_spine_matrix_cells, source_catalog,
+    source_matrix_cells,
 };
 
 #[test]
 fn registered_source_catalog_cells_persist_output() {
-    let postgres = LivePostgres::start().expect(
+    let environment = ConformanceEnvironment::start().expect(
         "C2 run matrix requires Postgres coverage; set TEST_DATABASE_URL or install initdb/pg_ctl",
     );
     let mut output = RunMatrixOutput::default();
 
     for cell in run_spine_matrix_cells() {
-        if let Some(reason) = core::sheet_exclusion_reason(&cell) {
+        if let Some(reason) = core::sheet_exclusion_reason(&cell, &environment).unwrap() {
             output
                 .excluded_cells
                 .push(ExcludedMatrixCell { cell, reason });
             continue;
         }
 
-        let executed = core::execute_cell(cell.clone(), Some(&postgres)).unwrap_or_else(|error| {
+        let executed = core::execute_cell(cell.clone(), &environment).unwrap_or_else(|error| {
             panic!(
                 "run-matrix cell {}/{}/{} failed: {error}",
                 cell.source_archetype,
@@ -36,77 +37,31 @@ fn registered_source_catalog_cells_persist_output() {
 
     let serialized = serde_json::to_string_pretty(&output).unwrap();
     assert!(!serialized.contains("run-matrix-token"));
-    assert!(!serialized.contains(postgres.url()));
+    environment.assert_redacted(&serialized);
     println!("CDF_RUN_MATRIX_OUTPUT={serialized}");
 }
 
 fn assert_source_counts(output: &RunMatrixOutput, source: &SourceArchetype) {
+    let expected = source_matrix_cells(source.clone()).len();
     assert_eq!(
-        core::executed_for_source(&output.executed_cells, source).count(),
-        8
-    );
-    assert_eq!(
-        core::excluded_for_source(&output.excluded_cells, source).count(),
-        1
+        core::executed_for_source(&output.executed_cells, source).count()
+            + core::excluded_for_source(&output.excluded_cells, source).count(),
+        expected
     );
 }
 
 fn assert_required_cells(output: &RunMatrixOutput, source: &SourceArchetype) {
-    for destination in [MatrixDestination::DuckDb, MatrixDestination::Postgres] {
-        assert_executed(
-            output,
-            RunMatrixCell::new(source.clone(), destination, MatrixDisposition::Append),
-        );
-        assert_executed(
-            output,
-            RunMatrixCell::new(source.clone(), destination, MatrixDisposition::Replace),
-        );
-        assert_executed(
-            output,
-            RunMatrixCell::new(source.clone(), destination, MatrixDisposition::Merge),
-        );
-    }
-
-    assert_executed(
-        output,
-        RunMatrixCell::new(
-            source.clone(),
-            MatrixDestination::ParquetFilesystem,
-            MatrixDisposition::Append,
-        ),
-    );
-    assert_executed(
-        output,
-        RunMatrixCell::new(
-            source.clone(),
-            MatrixDestination::ParquetFilesystem,
-            MatrixDisposition::Replace,
-        ),
-    );
-    assert_excluded(
-        output,
-        RunMatrixCell::new(
-            source.clone(),
-            MatrixDestination::ParquetFilesystem,
-            MatrixDisposition::Merge,
-        ),
-    );
-}
-
-fn assert_executed(output: &RunMatrixOutput, cell: RunMatrixCell) {
-    assert!(
-        output
+    for cell in source_matrix_cells(source.clone()) {
+        let executed = output
             .executed_cells
             .iter()
-            .any(|executed| executed.cell == cell)
-    );
-}
-
-fn assert_excluded(output: &RunMatrixOutput, cell: RunMatrixCell) {
-    assert!(output.excluded_cells.iter().any(|excluded| {
-        excluded.cell == cell
-            && excluded
-                .reason
-                .contains("supported_dispositions=[append, replace]")
-    }));
+            .any(|executed| executed.cell == cell);
+        let excluded = output.excluded_cells.iter().any(|excluded| {
+            excluded.cell == cell && excluded.reason.contains("supported_dispositions=")
+        });
+        assert_ne!(
+            executed, excluded,
+            "cell must execute or be sheet-excluded: {cell:?}"
+        );
+    }
 }

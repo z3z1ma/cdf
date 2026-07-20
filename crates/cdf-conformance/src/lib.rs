@@ -25,6 +25,10 @@ pub fn test_execution_services() -> cdf_runtime::ExecutionServices {
             cdf_engine::StandaloneExecutionHost::default_services(128 * 1024 * 1024)
                 .expect("conformance execution host")
                 .1
+                .with_content_reachability_store(std::sync::Arc::new(
+                    cdf_state_sqlite::SqliteContentReachabilityStore::open_in_memory()
+                        .expect("conformance content reachability store"),
+                ))
                 .with_staging_lease_authority(std::sync::Arc::new(
                     cdf_runtime::ScopeStagingLeaseAuthority::new(std::sync::Arc::new(
                         cdf_state_sqlite::InMemoryScopeLeaseStore::new(),

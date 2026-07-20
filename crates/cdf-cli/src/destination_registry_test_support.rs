@@ -21,16 +21,16 @@ use cdf_runtime::{
     DestinationWriterModel, FinalizedPackageIngress, PreparedDestinationCommit,
 };
 
-const SCHEME: &str = "fourth";
-const SECRET_SENTINEL: &str = "fourth-registry-secret";
+const SCHEME: &str = "quasar";
+const SECRET_SENTINEL: &str = "quasar-registry-secret";
 
 #[derive(Clone, Default)]
-pub(crate) struct FourthDestinationState {
-    inner: Arc<FourthDestinationStateInner>,
+pub(crate) struct QuasarDestinationState {
+    inner: Arc<QuasarDestinationStateInner>,
 }
 
 #[derive(Default)]
-struct FourthDestinationStateInner {
+struct QuasarDestinationStateInner {
     inspections: AtomicU64,
     health_checks: AtomicU64,
     resolutions: AtomicU64,
@@ -41,7 +41,7 @@ struct FourthDestinationStateInner {
     receipts: Mutex<BTreeMap<String, Receipt>>,
 }
 
-impl FourthDestinationState {
+impl QuasarDestinationState {
     pub(crate) fn inspections(&self) -> u64 {
         self.inner.inspections.load(Ordering::SeqCst)
     }
@@ -83,11 +83,11 @@ impl FourthDestinationState {
     }
 }
 
-pub(crate) fn registry_with_fourth_destination()
--> Result<(DestinationRegistry, FourthDestinationState)> {
+pub(crate) fn registry_with_quasar_destination()
+-> Result<(DestinationRegistry, QuasarDestinationState)> {
     let mut registry = crate::destination_registry::builtin_destination_registry()?;
-    let state = FourthDestinationState::default();
-    registry.register(FourthDestinationDriver {
+    let state = QuasarDestinationState::default();
+    registry.register(QuasarDestinationDriver {
         state: state.clone(),
     })?;
     Ok((registry, state))
@@ -105,11 +105,11 @@ pub(crate) fn secret_sentinel() -> &'static str {
     SECRET_SENTINEL
 }
 
-struct FourthDestinationDriver {
-    state: FourthDestinationState,
+struct QuasarDestinationDriver {
+    state: QuasarDestinationState,
 }
 
-impl DestinationDriver for FourthDestinationDriver {
+impl DestinationDriver for QuasarDestinationDriver {
     fn schemes(&self) -> &'static [&'static str] {
         &[SCHEME]
     }
@@ -121,7 +121,7 @@ impl DestinationDriver for FourthDestinationDriver {
     ) -> Result<DestinationInspection> {
         validate_uri(uri)?;
         self.state.inner.inspections.fetch_add(1, Ordering::SeqCst);
-        let protocol = FourthDestinationProtocol::new(self.state.clone());
+        let protocol = QuasarDestinationProtocol::new(self.state.clone());
         let sheet_artifact = protocol.sheet_artifact()?;
         Ok(DestinationInspection {
             description: description(),
@@ -129,8 +129,8 @@ impl DestinationDriver for FourthDestinationDriver {
             sheet_artifact,
             runtime: capabilities(),
             health_probes: vec![DestinationHealthProbe {
-                probe_id: "fourth_ready".to_owned(),
-                description: "fourth destination readiness".to_owned(),
+                probe_id: "quasar_ready".to_owned(),
+                description: "quasar destination readiness".to_owned(),
                 requires_credentials: true,
                 mutates_destination: false,
             }],
@@ -148,9 +148,9 @@ impl DestinationDriver for FourthDestinationDriver {
             .health_checks
             .fetch_add(1, Ordering::SeqCst);
         Ok(vec![DestinationHealthResult {
-            probe_id: "fourth_ready".to_owned(),
+            probe_id: "quasar_ready".to_owned(),
             status: DestinationHealthStatus::Passed,
-            message: "fourth destination is ready".to_owned(),
+            message: "quasar destination is ready".to_owned(),
             details: BTreeMap::new(),
         }])
     }
@@ -162,8 +162,8 @@ impl DestinationDriver for FourthDestinationDriver {
     ) -> Result<Box<dyn DestinationRuntime>> {
         let secret = validate_uri(uri)?;
         self.state.inner.resolutions.fetch_add(1, Ordering::SeqCst);
-        Ok(Box::new(FourthDestinationRuntime {
-            protocol: FourthDestinationProtocol::new(self.state.clone()),
+        Ok(Box::new(QuasarDestinationRuntime {
+            protocol: QuasarDestinationProtocol::new(self.state.clone()),
             secret,
         }))
     }
@@ -171,10 +171,10 @@ impl DestinationDriver for FourthDestinationDriver {
 
 fn validate_uri(uri: &str) -> Result<Option<String>> {
     let parsed = url::Url::parse(uri)
-        .map_err(|error| CdfError::contract(format!("invalid fourth destination URI: {error}")))?;
+        .map_err(|error| CdfError::contract(format!("invalid quasar destination URI: {error}")))?;
     if parsed.scheme() != SCHEME {
         return Err(CdfError::contract(
-            "fourth destination driver received another URI scheme",
+            "quasar destination driver received another URI scheme",
         ));
     }
     Ok(parsed.password().map(str::to_owned))
@@ -184,18 +184,18 @@ fn description() -> DestinationDescription {
     DestinationDescription::new(
         DestinationId::new(SCHEME).unwrap(),
         &[SCHEME],
-        "fourth registry fixture",
+        "quasar registry fixture",
     )
 }
 
 #[derive(Clone)]
-struct FourthDestinationProtocol {
+struct QuasarDestinationProtocol {
     sheet: DestinationSheet,
-    state: FourthDestinationState,
+    state: QuasarDestinationState,
 }
 
-impl FourthDestinationProtocol {
-    fn new(state: FourthDestinationState) -> Self {
+impl QuasarDestinationProtocol {
+    fn new(state: QuasarDestinationState) -> Self {
         Self {
             sheet: DestinationSheet {
                 destination: DestinationId::new(SCHEME).unwrap(),
@@ -223,7 +223,7 @@ impl FourthDestinationProtocol {
     }
 }
 
-impl DestinationProtocol for FourthDestinationProtocol {
+impl DestinationProtocol for QuasarDestinationProtocol {
     fn sheet(&self) -> &DestinationSheet {
         &self.sheet
     }
@@ -235,14 +235,14 @@ impl DestinationProtocol for FourthDestinationProtocol {
             .contains(&request.disposition)
         {
             return Err(CdfError::contract(format!(
-                "fourth destination does not support {:?}",
+                "quasar destination does not support {:?}",
                 request.disposition
             )));
         }
         self.state.inner.plans.fetch_add(1, Ordering::SeqCst);
         Ok(CommitPlan {
             plan_id: cdf_kernel::PlanId::new(format!(
-                "fourth:{}:{}",
+                "quasar:{}:{}",
                 request.target, request.idempotency_token
             ))?,
             target: request.target.clone(),
@@ -266,17 +266,17 @@ impl DestinationProtocol for FourthDestinationProtocol {
         Ok(ReceiptVerification {
             verified,
             receipt_id: receipt.receipt_id.clone(),
-            reason: (!verified).then(|| "fourth receipt is not durable".to_owned()),
+            reason: (!verified).then(|| "quasar receipt is not durable".to_owned()),
         })
     }
 }
 
-struct FourthDestinationRuntime {
-    protocol: FourthDestinationProtocol,
+struct QuasarDestinationRuntime {
+    protocol: QuasarDestinationProtocol,
     secret: Option<String>,
 }
 
-impl DestinationRuntime for FourthDestinationRuntime {
+impl DestinationRuntime for QuasarDestinationRuntime {
     fn protocol(&self) -> &dyn DestinationProtocol {
         &self.protocol
     }
@@ -298,7 +298,7 @@ impl DestinationRuntime for FourthDestinationRuntime {
     }
 }
 
-impl FinalizedPackageIngress for FourthDestinationRuntime {
+impl FinalizedPackageIngress for QuasarDestinationRuntime {
     fn prepare_package_commit(
         &mut self,
         inputs: &cdf_package_contract::PackageReplayInputs,
@@ -325,7 +325,7 @@ impl FinalizedPackageIngress for FourthDestinationRuntime {
     ) -> Result<Box<dyn CommitSession + '_>> {
         if prepared.has_pending_context() {
             return Err(CdfError::internal(
-                "fourth destination received unexpected pending commit context",
+                "quasar destination received unexpected pending commit context",
             ));
         }
         self.protocol
@@ -333,7 +333,7 @@ impl FinalizedPackageIngress for FourthDestinationRuntime {
             .inner
             .commit_begins
             .fetch_add(1, Ordering::SeqCst);
-        Ok(Box::new(FourthCommitSession {
+        Ok(Box::new(QuasarCommitSession {
             state: self.protocol.state.clone(),
             request: prepared.commit().clone(),
             plan: prepared.plan().clone(),
@@ -348,8 +348,8 @@ impl FinalizedPackageIngress for FourthDestinationRuntime {
     }
 }
 
-struct FourthCommitSession {
-    state: FourthDestinationState,
+struct QuasarCommitSession {
+    state: QuasarDestinationState,
     request: DestinationCommitRequest,
     plan: CommitPlan,
     schema_hash: SchemaHash,
@@ -358,7 +358,7 @@ struct FourthCommitSession {
     acknowledgements: Vec<SegmentAck>,
 }
 
-impl CommitSession for FourthCommitSession {
+impl CommitSession for QuasarCommitSession {
     fn apply_migrations(&mut self) -> Result<()> {
         self.migrations_applied = true;
         Ok(())
@@ -370,7 +370,7 @@ impl CommitSession for FourthCommitSession {
     ) -> Result<Vec<SegmentAck>> {
         if !self.migrations_applied {
             return Err(CdfError::destination(
-                "fourth destination requires migration application before segment ingress",
+                "quasar destination requires migration application before segment ingress",
             ));
         }
         let mut acknowledgements = Vec::new();
@@ -381,10 +381,10 @@ impl CommitSession for FourthCommitSession {
                 .segments
                 .iter()
                 .find(|expected| expected.segment_id == segment.state.segment_id)
-                .ok_or_else(|| CdfError::data("fourth destination received undeclared segment"))?;
+                .ok_or_else(|| CdfError::data("quasar destination received undeclared segment"))?;
             if expected != &segment.state {
                 return Err(CdfError::data(
-                    "fourth destination segment identity differs from commit authority",
+                    "quasar destination segment identity differs from commit authority",
                 ));
             }
             let acknowledgement = SegmentAck {
@@ -404,7 +404,7 @@ impl CommitSession for FourthCommitSession {
         }
         if self.acknowledgements.len() != self.request.segments.len() {
             return Err(CdfError::destination(
-                "fourth destination did not acknowledge every segment",
+                "quasar destination did not acknowledge every segment",
             ));
         }
         let rows_written = self
@@ -413,7 +413,7 @@ impl CommitSession for FourthCommitSession {
             .map(|acknowledgement| acknowledgement.row_count)
             .sum();
         let receipt = Receipt {
-            receipt_id: ReceiptId::new(format!("fourth:{}", self.request.idempotency_token))?,
+            receipt_id: ReceiptId::new(format!("quasar:{}", self.request.idempotency_token))?,
             destination: DestinationId::new(SCHEME)?,
             target: self.request.target.clone(),
             package_hash: self.request.package_hash.clone(),
@@ -431,7 +431,7 @@ impl CommitSession for FourthCommitSession {
             migrations: self.plan.migrations,
             committed_at_ms: 1_700_000_000_000,
             verify: VerifyClause {
-                kind: "fourth_receipt_v1".to_owned(),
+                kind: "quasar_receipt_v1".to_owned(),
                 statement: "verify by package idempotency token".to_owned(),
                 parameters: BTreeMap::from([(
                     "idempotency_token".to_owned(),
@@ -454,7 +454,7 @@ impl CommitSession for FourthCommitSession {
 
 fn capabilities() -> DestinationRuntimeCapabilities {
     let path = BulkPathDescriptor {
-        path_id: "fourth_native".to_owned(),
+        path_id: "quasar_native".to_owned(),
         version: 1,
         ingress_mode: DestinationIngressMode::FinalizedPackageOnly,
         writer_model: DestinationWriterModel::SingleWriter,
@@ -474,16 +474,16 @@ fn capabilities() -> DestinationRuntimeCapabilities {
         native_internal_parallelism: 1,
         external_staging: false,
         fallback: BulkFallbackMode::Forbidden,
-        schema_preflight_version: "fourth-schema-v1".to_owned(),
-        measured_evidence_version: Some("fourth-test-evidence-v1".to_owned()),
+        schema_preflight_version: "quasar-schema-v1".to_owned(),
+        measured_evidence_version: Some("quasar-test-evidence-v1".to_owned()),
     };
     DestinationRuntimeCapabilities {
         commit_payload_mode: cdf_runtime::DestinationCommitPayloadMode::SegmentStreaming,
         max_in_flight_segments: Some(1),
         max_in_flight_bytes: Some(64 * 1024 * 1024),
         bulk_paths: vec![path],
-        bulk_path: Some("fourth_native".to_owned()),
-        bulk_evidence_version: Some("fourth-test-evidence-v1".to_owned()),
+        bulk_path: Some("quasar_native".to_owned()),
+        bulk_evidence_version: Some("quasar-test-evidence-v1".to_owned()),
         ..Default::default()
     }
 }

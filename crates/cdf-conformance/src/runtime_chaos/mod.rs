@@ -1,21 +1,17 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ChaosDestination {
-    #[serde(rename = "duckdb")]
-    DuckDb,
-    ParquetFilesystem,
-    Postgres,
-}
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ChaosDestination(String);
 
 impl ChaosDestination {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::DuckDb => "duckdb",
-            Self::ParquetFilesystem => "parquet_filesystem",
-            Self::Postgres => "postgres",
-        }
+    pub fn new(value: impl Into<String>) -> cdf_kernel::Result<Self> {
+        let destination = crate::run_matrix::MatrixDestination::new(value)?;
+        Ok(Self(destination.as_str().to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
@@ -43,6 +39,16 @@ impl ChaosCrashWindow {
             Self::CheckpointCommittedBeforePackageStatusCheckpointed => {
                 "checkpoint_committed_before_package_status_checkpointed"
             }
+        }
+    }
+
+    #[cfg(test)]
+    fn fixture_suffix(self) -> &'static str {
+        match self {
+            Self::PackageReplayVerifiedBeforeDestinationWrite => "pkg",
+            Self::CheckpointProposedBeforeDestinationWrite => "prop",
+            Self::DestinationReceiptRecordedVerifiedBeforeCheckpointCommit => "rcpt",
+            Self::CheckpointCommittedBeforePackageStatusCheckpointed => "ckpt",
         }
     }
 }
@@ -73,18 +79,17 @@ pub struct RuntimeChaosOutput {
 
 pub fn cross_destination_chaos_cases() -> Vec<(ChaosDestination, ChaosCrashWindow)> {
     let mut cases = Vec::new();
-    for destination in [
-        ChaosDestination::DuckDb,
-        ChaosDestination::ParquetFilesystem,
-        ChaosDestination::Postgres,
-    ] {
+    for destination in crate::destination_catalog::conformance_destinations()
+        .into_iter()
+        .map(|destination| ChaosDestination::new(destination.as_str()).unwrap())
+    {
         for window in [
             ChaosCrashWindow::PackageReplayVerifiedBeforeDestinationWrite,
             ChaosCrashWindow::CheckpointProposedBeforeDestinationWrite,
             ChaosCrashWindow::DestinationReceiptRecordedVerifiedBeforeCheckpointCommit,
             ChaosCrashWindow::CheckpointCommittedBeforePackageStatusCheckpointed,
         ] {
-            cases.push((destination, window));
+            cases.push((destination.clone(), window));
         }
     }
     cases

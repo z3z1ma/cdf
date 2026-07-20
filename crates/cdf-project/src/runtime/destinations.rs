@@ -81,66 +81,6 @@ impl ResolvedProjectDestination {
         Ok(self)
     }
 
-    #[cfg(test)]
-    pub fn duckdb(database_path: impl AsRef<Path>, target: TargetName) -> Result<Self> {
-        let (_, base_services) =
-            cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024)?;
-        let scopes: std::sync::Arc<dyn cdf_kernel::ScopeLeaseStore> =
-            std::sync::Arc::new(cdf_state_sqlite::InMemoryScopeLeaseStore::new());
-        let services = base_services.with_staging_lease_authority(std::sync::Arc::new(
-            cdf_runtime::ScopeStagingLeaseAuthority::new(scopes),
-        ))?;
-        Self::new(
-            Box::new(cdf_dest_duckdb::DuckDbDestination::new(database_path)?),
-            target,
-        )
-        .with_bound_execution_services(services)
-    }
-
-    #[cfg(test)]
-    pub fn parquet_filesystem(root: impl AsRef<Path>, target: TargetName) -> Result<Self> {
-        let (_, base_services) =
-            cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024)?;
-        let scopes: std::sync::Arc<dyn cdf_kernel::ScopeLeaseStore> =
-            std::sync::Arc::new(cdf_state_sqlite::InMemoryScopeLeaseStore::new());
-        let services = base_services.with_staging_lease_authority(std::sync::Arc::new(
-            cdf_runtime::ScopeStagingLeaseAuthority::new(scopes),
-        ))?;
-        let services = services.with_content_reachability_store(std::sync::Arc::new(
-            cdf_state_sqlite::SqliteContentReachabilityStore::open_in_memory()?,
-        ));
-        Self::new(
-            Box::new(
-                cdf_dest_parquet::FilesystemParquetRuntime::with_execution_services(
-                    root.as_ref().to_path_buf(),
-                    services.clone(),
-                ),
-            ),
-            target,
-        )
-        .with_bound_execution_services(services)
-    }
-
-    #[cfg(test)]
-    pub fn postgres(
-        database_url: impl Into<String>,
-        target: cdf_dest_postgres::PostgresTarget,
-        dedup: cdf_dest_postgres::MergeDedupPolicy,
-        existing_table: Option<cdf_dest_postgres::PostgresExistingTable>,
-    ) -> Result<Self> {
-        let target_name = TargetName::new(target.display_name())?;
-        let destination = cdf_dest_postgres::PostgresDestination::connect(database_url)?;
-        Ok(Self::new(
-            Box::new(cdf_dest_postgres::PostgresRuntime::for_replay(
-                &destination,
-                target,
-                dedup,
-                existing_table,
-            )),
-            target_name,
-        ))
-    }
-
     pub fn target(&self) -> &TargetName {
         &self.target
     }

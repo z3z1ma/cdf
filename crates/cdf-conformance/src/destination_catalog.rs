@@ -1,35 +1,39 @@
 use std::path::Path;
 #[cfg(test)]
-use std::sync::{Arc, Mutex};
+use std::{fs, path::PathBuf};
+
+#[cfg(test)]
+use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
 
 use cdf_dest_duckdb::DuckDbRuntimeDriver;
 use cdf_dest_parquet::ParquetRuntimeDriver;
 use cdf_dest_postgres::PostgresRuntimeDriver;
 #[cfg(test)]
-use cdf_kernel::{DestinationId, DestinationProtocol, IdempotencySupport, WriteDisposition};
+use cdf_kernel::{CdfError, DestinationProtocol, IdempotencySupport, Receipt, WriteDisposition};
 use cdf_kernel::{Result, TargetName};
+#[cfg(test)]
+use cdf_project::ProjectReceiptSource;
 use cdf_project::ResolvedProjectDestination;
 #[cfg(test)]
-use cdf_project::{
-    PackageArtifactRecoveryRequest, PackageArtifactReplayRequest, recover_package_from_artifacts,
-    replay_package_from_artifacts,
-};
-#[cfg(test)]
-use cdf_runtime::{
-    BulkFallbackMode, BulkOrdering, BulkPathDescriptor, BulkSizeRange, DestinationDescription,
-    DestinationDriver, DestinationIngressMode, DestinationInspection, DestinationRuntime,
-    DestinationRuntimeCapabilities, DestinationWriterModel,
-};
+use cdf_runtime::{DestinationInspection, DestinationRuntime};
 use cdf_runtime::{DestinationPolicyProvider, DestinationRegistry, DestinationResolutionContext};
 
+use crate::run_matrix::MatrixDestination;
 #[cfg(test)]
-use crate::{
-    destination::{
-        DestinationConformanceCase, MockDestination, assert_destination_conformance,
-        representative_commit_request,
-    },
-    package_replay::{PackageReader, PreparedPackageFixtureSpec, build_prepared_package_fixture},
-};
+use crate::run_matrix::local_postgres::{LivePostgres, qualified_name, reset_postgres_schema};
+#[cfg(test)]
+use cdf_dest_duckdb::{DuckDbDestination, DuckDbMirrorSnapshot};
+#[cfg(test)]
+use cdf_dest_parquet::ParquetDestination;
+#[cfg(test)]
+use cdf_dest_postgres::{PostgresDestination, PostgresTarget};
+#[cfg(test)]
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+#[cfg(test)]
+use postgres::{Client, NoTls};
+
+#[cfg(test)]
+mod quasar;
 
 struct ConformanceDestinationPolicy;
 
@@ -45,28 +49,102 @@ impl DestinationPolicyProvider for ConformanceDestinationPolicy {
 static POLICY: ConformanceDestinationPolicy = ConformanceDestinationPolicy;
 
 struct DestinationCatalogEntry {
+    id: &'static str,
+    #[cfg(test)]
+    runtime_destination_id: &'static str,
+    #[cfg(test)]
+    expects_row_provenance: bool,
     install: fn(&mut DestinationRegistry) -> Result<()>,
     #[cfg(test)]
     inspection_uri: fn(&Path) -> String,
+    #[cfg(test)]
+    fixture: fn(&Path, &str, &ConformanceEnvironment) -> Result<DestinationFixture>,
+}
+
+#[cfg(test)]
+pub(crate) struct ConformanceEnvironment {
+    postgres: Option<LivePostgres>,
+}
+
+#[cfg(test)]
+impl ConformanceEnvironment {
+    pub(crate) fn start() -> Result<Self> {
+        Ok(Self {
+            postgres: Some(LivePostgres::start()?),
+        })
+    }
+
+    pub(crate) fn local_only() -> Self {
+        Self { postgres: None }
+    }
+
+    pub(crate) fn postgres(&self) -> Result<&LivePostgres> {
+        self.postgres
+            .as_ref()
+            .ok_or_else(|| CdfError::contract("conformance environment does not provide Postgres"))
+    }
+
+    pub(crate) fn assert_redacted(&self, text: &str) {
+        if let Some(postgres) = &self.postgres {
+            assert!(!text.contains(postgres.url()));
+        }
+    }
 }
 
 const DESTINATIONS: &[DestinationCatalogEntry] = &[
     DestinationCatalogEntry {
+        id: "duckdb",
+        #[cfg(test)]
+        runtime_destination_id: "duckdb",
+        #[cfg(test)]
+        expects_row_provenance: true,
         install: |registry| registry.register(DuckDbRuntimeDriver),
         #[cfg(test)]
         inspection_uri: |root| local_uri("duckdb", &root.join("conformance.duckdb")),
+        #[cfg(test)]
+        fixture: duckdb_fixture,
     },
     DestinationCatalogEntry {
+        id: "parquet_filesystem",
+        #[cfg(test)]
+        runtime_destination_id: "parquet_object_store",
+        #[cfg(test)]
+        expects_row_provenance: true,
         install: |registry| registry.register(ParquetRuntimeDriver),
         #[cfg(test)]
         inspection_uri: |root| local_uri("parquet", &root.join("conformance-lake")),
+        #[cfg(test)]
+        fixture: parquet_fixture,
     },
     DestinationCatalogEntry {
+        id: "postgres",
+        #[cfg(test)]
+        runtime_destination_id: "postgres",
+        #[cfg(test)]
+        expects_row_provenance: true,
         install: |registry| registry.register(PostgresRuntimeDriver),
         #[cfg(test)]
         inspection_uri: |_| "postgres://localhost/conformance".to_owned(),
+        #[cfg(test)]
+        fixture: postgres_fixture,
+    },
+    #[cfg(test)]
+    DestinationCatalogEntry {
+        id: "quasar",
+        runtime_destination_id: "quasar",
+        expects_row_provenance: false,
+        install: |registry| registry.register(quasar::QuasarDriver),
+        inspection_uri: |root| local_uri("quasar", &root.join("conformance-quasar")),
+        fixture: quasar_fixture,
     },
 ];
+
+pub(crate) fn conformance_destinations() -> Vec<MatrixDestination> {
+    DESTINATIONS
+        .iter()
+        .map(|entry| MatrixDestination::new(entry.id).expect("catalog id is valid"))
+        .collect()
+}
 
 pub(crate) fn registry() -> Result<DestinationRegistry> {
     let mut registry = DestinationRegistry::new();
@@ -98,7 +176,14 @@ pub(crate) fn local_uri(scheme: &str, path: &Path) -> String {
 fn catalog_is_the_single_first_party_destination_enrollment_point() {
     assert_eq!(
         registry().unwrap().registered_schemes(),
-        ["duckdb", "parquet", "postgres", "postgresql"]
+        ["duckdb", "parquet", "postgres", "postgresql", "quasar"]
+    );
+    assert_eq!(
+        conformance_destinations()
+            .into_iter()
+            .map(|destination| destination.as_str().to_owned())
+            .collect::<Vec<_>>(),
+        ["duckdb", "parquet_filesystem", "postgres", "quasar"]
     );
 }
 
@@ -111,24 +196,27 @@ fn every_catalog_destination_publishes_measured_bulk_and_provenance_capabilities
         let inspection = registry
             .inspect(&(entry.inspection_uri)(temp.path()), &context)
             .unwrap();
-        assert_bulk_matrix_contract(&inspection);
         assert_eq!(
-            inspection
-                .sheet_artifact
-                .protocol_capabilities
-                .corrections
-                .row_provenance
-                .persistence,
-            cdf_kernel::CapabilitySupport::Supported
+            inspection.description.destination_id.as_str(),
+            entry.runtime_destination_id
         );
         assert_eq!(
-            inspection
-                .sheet_artifact
-                .protocol_capabilities
-                .corrections
-                .row_provenance
-                .targetability,
-            cdf_kernel::CapabilitySupport::Supported
+            inspection.sheet_artifact.sheet.destination.as_str(),
+            entry.runtime_destination_id
+        );
+        assert_bulk_matrix_contract(&inspection);
+        let row_provenance = &inspection
+            .sheet_artifact
+            .protocol_capabilities
+            .corrections
+            .row_provenance;
+        assert_eq!(
+            row_provenance.persistence == cdf_kernel::CapabilitySupport::Supported,
+            entry.expects_row_provenance
+        );
+        assert_eq!(
+            row_provenance.targetability == cdf_kernel::CapabilitySupport::Supported,
+            entry.expects_row_provenance
         );
     }
 }
@@ -240,454 +328,791 @@ fn assert_bulk_matrix_contract(inspection: &DestinationInspection) {
     );
 }
 
-#[test]
-fn fourth_registered_destination_inherits_the_generic_bulk_matrix_contract() {
-    let destination = MockDestination::new("fourth", vec![WriteDisposition::Append]);
-    let mut registry = registry().unwrap();
-    registry
-        .register(FourthDriver::new(destination.clone()))
-        .unwrap();
-    let root = tempfile::tempdir().unwrap();
-    let target = TargetName::new("orders").unwrap();
-    let inspection = registry
-        .inspect(
-            "fourth://local/matrix",
-            &DestinationResolutionContext::for_project_inspection(root.path()),
-        )
-        .unwrap();
-
-    assert_bulk_matrix_contract(&inspection);
-    assert_destination_conformance(
-        &destination,
-        [DestinationConformanceCase::new(
-            representative_commit_request(WriteDisposition::Append),
-        )],
-    );
-    assert_eq!(
-        registry.registered_schemes(),
-        ["duckdb", "fourth", "parquet", "postgres", "postgresql"]
-    );
-
-    let package_dir = root.path().join("package");
-    build_prepared_package_fixture(
-        PreparedPackageFixtureSpec::new(&package_dir, "fourth-runtime-package").unwrap(),
-    )
-    .unwrap();
-    let inputs = PackageReader::open(&package_dir)
-        .unwrap()
-        .replay_inputs()
-        .unwrap();
-    let services = crate::test_execution_services();
-    let resolution = DestinationResolutionContext::for_project_run(root.path(), &target)
-        .with_execution_services(&services);
-    let mut runtime = registry
-        .resolve("fourth://local/matrix", &resolution)
-        .unwrap();
-    assert_eq!(
-        runtime.protocol().sheet_artifact().unwrap(),
-        inspection.sheet_artifact
-    );
-    let schema = arrow_schema::Schema::new(vec![arrow_schema::Field::new(
-        "id",
-        arrow_schema::DataType::Int64,
-        false,
-    )]);
-    let preparation = runtime
-        .prepare_bulk_paths(&cdf_runtime::BulkPathPreparationInput::new(&schema))
-        .unwrap();
-    assert_eq!(preparation.eligible.len(), 2);
-    assert_eq!(preparation.eligible[0].descriptor.path_id, "fourth_native");
-    assert_eq!(
-        preparation.eligible[0].descriptor.fallback,
-        BulkFallbackMode::PreflightOnly
-    );
-    preparation.eligible[0].validate().unwrap();
-    assert_eq!(preparation.eligible[1].descriptor.path_id, "fourth_compat");
-    let forced_fallback_schema = arrow_schema::Schema::new(vec![arrow_schema::Field::new(
-        "name",
-        arrow_schema::DataType::Utf8,
-        false,
-    )]);
-    let forced_fallback = runtime
-        .prepare_bulk_paths(&cdf_runtime::BulkPathPreparationInput::new(
-            &forced_fallback_schema,
-        ))
-        .unwrap();
-    assert_eq!(forced_fallback.selected_path_id, "fourth_compat");
-    assert_eq!(forced_fallback.eligible.len(), 1);
-    assert_eq!(forced_fallback.rejected.len(), 1);
-    assert_eq!(forced_fallback.rejected[0].path_id, "fourth_native");
-    let unsupported_schema = arrow_schema::Schema::new(vec![arrow_schema::Field::new(
-        "unsupported",
-        arrow_schema::DataType::Decimal256(76, 9),
-        false,
-    )]);
-    let rejection = runtime
-        .prepare_bulk_paths(&cdf_runtime::BulkPathPreparationInput::new(
-            &unsupported_schema,
-        ))
-        .unwrap_err();
-    assert!(rejection.message.contains("unsupported"));
-    let store =
-        cdf_state_sqlite::SqliteCheckpointStore::open(root.path().join("state.sqlite")).unwrap();
-    let report = replay_package_from_artifacts(PackageArtifactReplayRequest {
-        package_dir: package_dir.clone(),
-        destination: ResolvedProjectDestination::new(runtime, target.clone()),
-        checkpoint_store: &store,
-        after_receipt_verified: None,
-    })
-    .unwrap();
-    assert!(destination.verify(&report.receipt).unwrap().verified);
-    assert_eq!(
-        PackageReader::open(&package_dir)
-            .unwrap()
-            .receipts()
-            .unwrap(),
-        vec![report.receipt.clone()]
-    );
-    assert_eq!(destination.committed_paths(), ["fourth_compat"]);
-    assert!(
-        destination.preparation_contexts().contains(&(true, false)),
-        "package replay must provide semantic commit authority to destination preflight"
-    );
-    assert_eq!(
-        report.receipt.segment_acks,
-        inputs
-            .destination_commit
-            .segments
-            .iter()
-            .map(|segment| cdf_kernel::SegmentAck {
-                segment_id: segment.segment_id.clone(),
-                row_count: segment.row_count,
-                byte_count: segment.byte_count,
-            })
-            .collect::<Vec<_>>()
-    );
-    let committed_once = destination.committed_segments();
-
-    let duplicate_store =
-        cdf_state_sqlite::SqliteCheckpointStore::open(root.path().join("duplicate-state.sqlite"))
-            .unwrap();
-    let duplicate_runtime = registry
-        .resolve("fourth://local/matrix", &resolution)
-        .unwrap();
-    let duplicate = replay_package_from_artifacts(PackageArtifactReplayRequest {
-        package_dir: package_dir.clone(),
-        destination: ResolvedProjectDestination::new(duplicate_runtime, target.clone()),
-        checkpoint_store: &duplicate_store,
-        after_receipt_verified: None,
-    })
-    .unwrap();
-    assert_eq!(duplicate.receipt, report.receipt);
-    assert_eq!(destination.committed_segments(), committed_once);
-    assert_eq!(
-        PackageReader::open(&package_dir)
-            .unwrap()
-            .receipts()
-            .unwrap(),
-        vec![report.receipt.clone()]
-    );
-
-    let crash_package_dir = root.path().join("crash-package");
-    build_prepared_package_fixture(
-        PreparedPackageFixtureSpec::new(&crash_package_dir, "fourth-crash-package").unwrap(),
-    )
-    .unwrap();
-    let crashed_receipt = Arc::new(Mutex::new(None));
-    let captured = Arc::clone(&crashed_receipt);
-    let fail_after_receipt = move |receipt: &cdf_kernel::Receipt| {
-        *captured.lock().unwrap() = Some(receipt.clone());
-        Err(cdf_kernel::CdfError::internal(
-            "injected crash after durable destination receipt",
-        ))
-    };
-    let crash_store =
-        cdf_state_sqlite::SqliteCheckpointStore::open(root.path().join("crash-state.sqlite"))
-            .unwrap();
-    let crash_runtime = registry
-        .resolve("fourth://local/matrix", &resolution)
-        .unwrap();
-    assert!(
-        replay_package_from_artifacts(PackageArtifactReplayRequest {
-            package_dir: crash_package_dir.clone(),
-            destination: ResolvedProjectDestination::new(crash_runtime, target.clone()),
-            checkpoint_store: &crash_store,
-            after_receipt_verified: Some(&fail_after_receipt),
-        })
-        .is_err()
-    );
-    let durable_receipt = crashed_receipt.lock().unwrap().clone().unwrap();
-    assert_eq!(
-        PackageReader::open(&crash_package_dir)
-            .unwrap()
-            .receipts()
-            .unwrap(),
-        vec![durable_receipt.clone()]
-    );
-    let recovery_runtime = registry
-        .resolve("fourth://local/matrix", &resolution)
-        .unwrap();
-    let recovered = recover_package_from_artifacts(PackageArtifactRecoveryRequest {
-        package_dir: crash_package_dir.clone(),
-        checkpoint_store: &crash_store,
-        destination: ResolvedProjectDestination::new(recovery_runtime, target),
-        receipt: durable_receipt.clone(),
-        after_receipt_verified: None,
-    })
-    .unwrap();
-    assert_eq!(recovered.receipt, durable_receipt);
-    assert_eq!(
-        PackageReader::open(&crash_package_dir)
-            .unwrap()
-            .receipts()
-            .unwrap(),
-        vec![durable_receipt]
-    );
+#[cfg(test)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct DestinationExecutionSpec {
+    uri: String,
+    project_root: PathBuf,
+    target: TargetName,
 }
 
 #[cfg(test)]
-struct FourthDriver {
-    destination: MockDestination,
-}
-
-#[cfg(test)]
-impl FourthDriver {
-    fn new(destination: MockDestination) -> Self {
-        Self { destination }
+impl DestinationExecutionSpec {
+    pub(crate) fn resolved(&self) -> Result<ResolvedProjectDestination> {
+        resolve(&self.uri, &self.project_root, self.target.clone())
     }
 }
 
 #[cfg(test)]
-impl DestinationDriver for FourthDriver {
-    fn schemes(&self) -> &'static [&'static str] {
-        &["fourth"]
-    }
+#[derive(Clone, Debug)]
+pub(crate) struct DestinationFixture {
+    destination: MatrixDestination,
+    runtime_destination_id: &'static str,
+    execution: DestinationExecutionSpec,
+    state: DestinationFixtureState,
+}
 
-    fn inspect(
-        &self,
-        _uri: &str,
-        _context: &DestinationResolutionContext<'_>,
-    ) -> Result<DestinationInspection> {
-        let sheet_artifact = self.destination.sheet_artifact()?;
-        Ok(DestinationInspection {
-            description: DestinationDescription::new(
-                DestinationId::new("fourth")?,
-                &["fourth"],
-                "fourth matrix fixture",
-            ),
-            sheet_artifact_hash: cdf_runtime::artifact_hash(&sheet_artifact)?,
-            sheet_artifact,
-            runtime: fourth_runtime_capabilities(),
-            health_probes: Vec::new(),
-        })
-    }
+#[cfg(test)]
+#[derive(Clone, Debug)]
+enum DestinationFixtureState {
+    DuckDb {
+        database_path: PathBuf,
+    },
+    Parquet {
+        root: PathBuf,
+        scheme: &'static str,
+    },
+    Postgres {
+        database_url: String,
+        schema: String,
+        table: String,
+    },
+    Quasar {
+        root: PathBuf,
+    },
+}
 
-    fn resolve(
-        &self,
-        uri: &str,
-        _context: &DestinationResolutionContext<'_>,
-    ) -> Result<Box<dyn DestinationRuntime>> {
-        if !uri.starts_with("fourth:") {
-            return Err(cdf_kernel::CdfError::contract(
-                "fourth driver received a non-fourth URI",
-            ));
-        }
-        Ok(Box::new(FourthRuntime {
-            destination: self.destination.clone(),
-        }))
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DestinationFootprint {
+    DuckDb {
+        mirror: DuckDbMirrorSnapshot,
+        payload_rows: Vec<LogicalRow>,
+    },
+    Parquet {
+        files: Vec<FileFootprint>,
+    },
+    Postgres {
+        payload_rows: Vec<LogicalRow>,
+        loads_rows: i64,
+        state_rows: i64,
+    },
+    Quasar {
+        files: Vec<FileFootprint>,
+    },
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct FileFootprint {
+    path: String,
+    bytes: Vec<u8>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DestinationPayload(Vec<LogicalRow>);
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(super) struct LogicalRow {
+    id: i64,
+    name: Option<String>,
+}
+
+#[cfg(test)]
+impl DestinationPayload {
+    pub(crate) fn prepared_orders() -> Self {
+        Self(vec![
+            LogicalRow {
+                id: 1,
+                name: Some("ada".to_owned()),
+            },
+            LogicalRow {
+                id: 2,
+                name: Some("grace".to_owned()),
+            },
+            LogicalRow { id: 3, name: None },
+        ])
     }
 }
 
 #[cfg(test)]
-struct FourthRuntime {
-    destination: MockDestination,
-}
-
-#[cfg(test)]
-impl DestinationRuntime for FourthRuntime {
-    fn protocol(&self) -> &dyn cdf_kernel::DestinationProtocol {
-        &self.destination
+impl DestinationFixture {
+    pub(crate) fn execution_spec(&self) -> DestinationExecutionSpec {
+        self.execution.clone()
     }
 
-    fn ingress(&mut self) -> cdf_runtime::DestinationIngress<'_> {
-        cdf_runtime::DestinationIngress::FinalizedPackage(self)
+    pub(crate) fn target_name(&self) -> TargetName {
+        self.execution.target.clone()
     }
 
-    fn describe(&self) -> DestinationDescription {
-        DestinationDescription::new(
-            DestinationId::new("fourth").unwrap(),
-            &["fourth"],
-            "fourth matrix fixture",
-        )
+    pub(crate) fn resolved(&self) -> Result<ResolvedProjectDestination> {
+        self.execution.resolved()
     }
 
-    fn runtime_capabilities(&self) -> DestinationRuntimeCapabilities {
-        fourth_runtime_capabilities()
-    }
-
-    fn prepare_bulk_paths(
-        &mut self,
-        input: &cdf_runtime::BulkPathPreparationInput<'_>,
-    ) -> Result<cdf_runtime::BulkPathPreparation> {
-        self.destination
-            .record_preparation_context(input.commit.is_some(), input.execution.is_some());
-        if let Some(field) = input
-            .output_schema
-            .fields()
-            .iter()
-            .find(|field| matches!(field.data_type(), arrow_schema::DataType::Decimal256(_, _)))
-        {
-            return Err(cdf_kernel::CdfError::contract(format!(
-                "field {} type {} is unsupported by fourth_native; use a non-decimal256 mapping or select another destination",
-                field.name(),
-                field.data_type()
+    pub(crate) fn assert_receipt_identity(&self, receipt: &Receipt) -> Result<()> {
+        if receipt.destination.as_str() != self.runtime_destination_id {
+            return Err(CdfError::destination(format!(
+                "destination {} emitted receipt identity {}; expected {}",
+                self.destination.as_str(),
+                receipt.destination,
+                self.runtime_destination_id
             )));
         }
-        let capabilities = fourth_runtime_capabilities();
-        let contains_utf8 = input.output_schema.fields().iter().any(|field| {
-            matches!(
-                field.data_type(),
-                arrow_schema::DataType::Utf8 | arrow_schema::DataType::LargeUtf8
-            )
-        });
-        let mut paths = capabilities.bulk_paths.clone();
-        let selected_path_id = if contains_utf8 {
-            "fourth_compat"
-        } else {
-            "fourth_native"
+        let resolved = self.resolved()?;
+        if resolved.describe().destination_id.as_str() != self.runtime_destination_id {
+            return Err(CdfError::destination(format!(
+                "destination {} resolved runtime identity {}; expected {}",
+                self.destination.as_str(),
+                resolved.describe().destination_id,
+                self.runtime_destination_id
+            )));
         }
-        .to_owned();
-        let rejected = if contains_utf8 {
-            paths.retain(|path| path.path_id == "fourth_compat");
-            vec![cdf_runtime::BulkPathRejection {
-                path_id: "fourth_native".to_owned(),
-                field: input
-                    .output_schema
-                    .fields()
-                    .iter()
-                    .find(|field| {
-                        matches!(
-                            field.data_type(),
-                            arrow_schema::DataType::Utf8 | arrow_schema::DataType::LargeUtf8
-                        )
-                    })
-                    .map(|field| field.name().clone()),
-                reason: "native numeric path does not encode strings".to_owned(),
-                fixes: vec!["use the exact preflight compatibility path".to_owned()],
-            }]
-        } else {
-            Vec::new()
-        };
-        Ok(cdf_runtime::BulkPathPreparation {
-            selected_path_id,
-            eligible: paths
-                .into_iter()
-                .map(|descriptor| cdf_runtime::PreparedBulkPath {
-                    rows_per_batch: descriptor.rows.preferred,
-                    bytes_per_batch: descriptor.bytes.preferred,
-                    writers: 1,
-                    descriptor,
-                })
-                .collect(),
-            rejected,
-        })
-    }
-}
-
-#[cfg(test)]
-impl cdf_runtime::FinalizedPackageIngress for FourthRuntime {
-    fn prepare_package_commit(
-        &mut self,
-        inputs: &cdf_package_contract::PackageReplayInputs,
-        context: &cdf_runtime::DestinationPlanningContext<'_>,
-    ) -> Result<cdf_runtime::PreparedDestinationCommit> {
-        fourth_runtime_capabilities().validate_prepared_bulk_path(context.bulk_path)?;
-        let plan = self.destination.plan_commit(&inputs.destination_commit)?;
-        cdf_runtime::PreparedDestinationCommit::from_verified_inputs(
-            inputs,
-            plan,
-            context.bulk_path.clone(),
-            cdf_runtime::DestinationReceiptReportingPolicy::DestinationCommitReceiptOnly,
-        )
+        Ok(())
     }
 
-    fn begin_prepared_commit(
-        &mut self,
-        prepared: &mut cdf_runtime::PreparedDestinationCommit,
-    ) -> Result<Box<dyn cdf_kernel::CommitSession + '_>> {
-        if prepared.has_pending_context() {
-            return Err(cdf_kernel::CdfError::internal(
-                "fourth fixture received unexpected pending context",
-            ));
-        }
-        self.destination.record_prepared_path(
-            prepared.plan().plan_id.clone(),
-            prepared.bulk_path().descriptor.path_id.clone(),
-        );
-        self.destination
-            .begin(prepared.commit().clone(), prepared.plan().clone())
+    pub(crate) fn supported_dispositions(&self) -> Result<Vec<WriteDisposition>> {
+        let inspection = registry()?.inspect(
+            &self.execution.uri,
+            &DestinationResolutionContext::for_project_inspection(&self.execution.project_root),
+        )?;
+        Ok(inspection
+            .sheet_artifact
+            .sheet
+            .supported_dispositions
+            .clone())
     }
-}
 
-#[cfg(test)]
-fn fourth_runtime_capabilities() -> DestinationRuntimeCapabilities {
-    let descriptor =
-        |path_id: &str, fallback: BulkFallbackMode, evidence: &str| -> BulkPathDescriptor {
-            BulkPathDescriptor {
-                path_id: path_id.to_owned(),
-                version: 1,
-                ingress_mode: DestinationIngressMode::FinalizedPackageOnly,
-                writer_model: DestinationWriterModel::SingleWriter,
-                ordering: BulkOrdering::ManifestOrder,
-                rows: BulkSizeRange {
-                    minimum: 1,
-                    preferred: 64 * 1024,
-                    maximum: 1024 * 1024,
-                },
-                bytes: BulkSizeRange {
-                    minimum: 1,
-                    preferred: 16 * 1024 * 1024,
-                    maximum: 64 * 1024 * 1024,
-                },
-                max_useful_writers: 1,
-                blocking_lane: None,
-                native_internal_parallelism: 1,
-                external_staging: false,
-                fallback,
-                schema_preflight_version: "fourth-schema@1".to_owned(),
-                measured_evidence_version: Some(evidence.to_owned()),
+    pub(crate) fn idempotency(&self) -> Result<IdempotencySupport> {
+        let inspection = registry()?.inspect(
+            &self.execution.uri,
+            &DestinationResolutionContext::for_project_inspection(&self.execution.project_root),
+        )?;
+        Ok(inspection.sheet_artifact.sheet.idempotency)
+    }
+
+    pub(crate) fn verify_trait_receipt(&self, receipt: &Receipt) -> Result<()> {
+        let verification = match &self.state {
+            DestinationFixtureState::DuckDb { database_path } => {
+                DuckDbDestination::new(database_path)?.verify(receipt)?
             }
+            DestinationFixtureState::Parquet { root, .. } => {
+                ParquetDestination::new_filesystem(root, crate::test_execution_services())?
+                    .verify(receipt)?
+            }
+            DestinationFixtureState::Postgres { database_url, .. } => {
+                PostgresDestination::connect(database_url.clone())?.verify(receipt)?
+            }
+            DestinationFixtureState::Quasar { .. } => quasar::verify_receipt(receipt)?,
         };
-    DestinationRuntimeCapabilities {
-        bulk_paths: vec![
-            descriptor(
-                "fourth_native",
-                BulkFallbackMode::PreflightOnly,
-                "fourth-native-v1",
-            ),
-            descriptor(
-                "fourth_compat",
-                BulkFallbackMode::Forbidden,
-                "fourth-compat-v1",
-            ),
-        ],
-        bulk_path: Some("fourth_native".to_owned()),
-        bulk_evidence_version: Some("fourth-native-v1".to_owned()),
-        ..Default::default()
+        if !verification.verified {
+            return Err(CdfError::destination(format!(
+                "conformance receipt {} did not verify through DestinationProtocol::verify: {}",
+                verification.receipt_id,
+                verification
+                    .reason
+                    .unwrap_or_else(|| "verification returned false".to_owned())
+            )));
+        }
+        Ok(())
     }
+
+    pub(crate) fn footprint(&self) -> Result<DestinationFootprint> {
+        match &self.state {
+            DestinationFixtureState::DuckDb { database_path } => {
+                if !database_path.exists() {
+                    return Ok(DestinationFootprint::DuckDb {
+                        mirror: DuckDbMirrorSnapshot::default(),
+                        payload_rows: Vec::new(),
+                    });
+                }
+                Ok(DestinationFootprint::DuckDb {
+                    mirror: DuckDbDestination::new(database_path)?
+                        .read_mirror_snapshot_read_only()?,
+                    payload_rows: duckdb_payload(database_path, self.execution.target.as_str())?,
+                })
+            }
+            DestinationFixtureState::Parquet { root, .. } => Ok(DestinationFootprint::Parquet {
+                files: list_relative_files(root)?,
+            }),
+            DestinationFixtureState::Postgres {
+                database_url,
+                schema,
+                table,
+            } => postgres_footprint(database_url, schema, table, self.execution.target.as_str()),
+            DestinationFixtureState::Quasar { root } => Ok(DestinationFootprint::Quasar {
+                files: list_relative_files(root)?,
+            }),
+        }
+    }
+
+    pub(crate) fn payload_snapshot(&self) -> Result<DestinationPayload> {
+        match &self.state {
+            DestinationFixtureState::DuckDb { database_path } => {
+                Ok(DestinationPayload(if database_path.exists() {
+                    duckdb_payload(database_path, self.execution.target.as_str())?
+                } else {
+                    Vec::new()
+                }))
+            }
+            DestinationFixtureState::Parquet { root, .. } => {
+                Ok(DestinationPayload(parquet_payload(root)?))
+            }
+            DestinationFixtureState::Postgres {
+                database_url,
+                schema,
+                table,
+            } => Ok(DestinationPayload(postgres_payload(
+                database_url,
+                schema,
+                table,
+            )?)),
+            DestinationFixtureState::Quasar { root } => {
+                Ok(DestinationPayload(quasar::payload(root)?))
+            }
+        }
+    }
+
+    pub(crate) fn fresh_artifact_replay_destination(&self, root: &Path) -> Result<Self> {
+        match &self.state {
+            DestinationFixtureState::DuckDb { .. } => {
+                let database_path = root.join(".cdf/replay.duckdb");
+                Ok(Self {
+                    destination: self.destination.clone(),
+                    runtime_destination_id: self.runtime_destination_id,
+                    execution: DestinationExecutionSpec {
+                        uri: local_uri("duckdb", &database_path),
+                        project_root: root.to_path_buf(),
+                        target: self.execution.target.clone(),
+                    },
+                    state: DestinationFixtureState::DuckDb { database_path },
+                })
+            }
+            DestinationFixtureState::Parquet { scheme, .. } => {
+                let replay_root = root.join(format!(".cdf/replay-{}", self.destination.as_str()));
+                Ok(Self {
+                    destination: self.destination.clone(),
+                    runtime_destination_id: self.runtime_destination_id,
+                    execution: DestinationExecutionSpec {
+                        uri: local_uri(scheme, &replay_root),
+                        project_root: root.to_path_buf(),
+                        target: self.execution.target.clone(),
+                    },
+                    state: DestinationFixtureState::Parquet {
+                        root: replay_root,
+                        scheme,
+                    },
+                })
+            }
+            DestinationFixtureState::Postgres {
+                database_url,
+                schema,
+                table,
+            } => {
+                reset_postgres_schema(database_url, schema)?;
+                Ok(Self {
+                    destination: self.destination.clone(),
+                    runtime_destination_id: self.runtime_destination_id,
+                    execution: self.execution.clone(),
+                    state: DestinationFixtureState::Postgres {
+                        database_url: database_url.clone(),
+                        schema: schema.clone(),
+                        table: table.clone(),
+                    },
+                })
+            }
+            DestinationFixtureState::Quasar { .. } => {
+                let replay_root = root.join(".cdf/replay-quasar");
+                Ok(Self {
+                    destination: self.destination.clone(),
+                    runtime_destination_id: self.runtime_destination_id,
+                    execution: DestinationExecutionSpec {
+                        uri: local_uri("quasar", &replay_root),
+                        project_root: root.to_path_buf(),
+                        target: self.execution.target.clone(),
+                    },
+                    state: DestinationFixtureState::Quasar { root: replay_root },
+                })
+            }
+        }
+    }
+
+    pub(crate) fn duplicate_retry_behavior(&self, source: ProjectReceiptSource) -> String {
+        match source {
+            ProjectReceiptSource::DestinationCommit {
+                duplicate: true,
+                package_receipt_recorded: false,
+            } => "no-op duplicate: package-token destination reported duplicate=true and destination footprint was unchanged".to_owned(),
+            ProjectReceiptSource::DestinationCommitReceiptOnly {
+                package_receipt_recorded: false,
+            } => "no-op duplicate: receipt-only destination returned the stable receipt and destination footprint was unchanged".to_owned(),
+            other => panic!("unexpected duplicate retry receipt source: {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+impl DestinationFootprint {
+    pub(crate) fn has_destination_write(&self) -> bool {
+        match self {
+            Self::DuckDb {
+                mirror,
+                payload_rows,
+            } => {
+                mirror.loads_table_present
+                    || mirror.state_table_present
+                    || !mirror.loads.is_empty()
+                    || !mirror.state.is_empty()
+                    || !payload_rows.is_empty()
+            }
+            Self::Parquet { files } => !files.is_empty(),
+            Self::Postgres {
+                payload_rows,
+                loads_rows,
+                ..
+            } => !payload_rows.is_empty() || *loads_rows > 0,
+            Self::Quasar { files } => !files.is_empty(),
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn fixture(
+    destination: &MatrixDestination,
+    root: &Path,
+    table: &str,
+    environment: &ConformanceEnvironment,
+) -> Result<DestinationFixture> {
+    let entry = DESTINATIONS
+        .iter()
+        .find(|entry| entry.id == destination.as_str())
+        .ok_or_else(|| {
+            CdfError::contract(format!(
+                "destination {} is not enrolled in conformance",
+                destination.as_str()
+            ))
+        })?;
+    (entry.fixture)(root, table, environment)
+}
+
+#[cfg(test)]
+fn duckdb_fixture(
+    root: &Path,
+    table: &str,
+    _environment: &ConformanceEnvironment,
+) -> Result<DestinationFixture> {
+    let database_path = root.join(".cdf/run-matrix.duckdb");
+    Ok(DestinationFixture {
+        destination: MatrixDestination::new("duckdb")?,
+        runtime_destination_id: "duckdb",
+        execution: DestinationExecutionSpec {
+            uri: local_uri("duckdb", &database_path),
+            project_root: root.to_path_buf(),
+            target: TargetName::new(table)?,
+        },
+        state: DestinationFixtureState::DuckDb { database_path },
+    })
+}
+
+#[cfg(test)]
+fn parquet_fixture(
+    root: &Path,
+    table: &str,
+    _environment: &ConformanceEnvironment,
+) -> Result<DestinationFixture> {
+    let lake_root = root.join(".cdf/lake");
+    Ok(DestinationFixture {
+        destination: MatrixDestination::new("parquet_filesystem")?,
+        runtime_destination_id: "parquet_object_store",
+        execution: DestinationExecutionSpec {
+            uri: local_uri("parquet", &lake_root),
+            project_root: root.to_path_buf(),
+            target: TargetName::new(table)?,
+        },
+        state: DestinationFixtureState::Parquet {
+            root: lake_root,
+            scheme: "parquet",
+        },
+    })
+}
+
+#[cfg(test)]
+fn postgres_fixture(
+    root: &Path,
+    table: &str,
+    environment: &ConformanceEnvironment,
+) -> Result<DestinationFixture> {
+    let postgres = environment.postgres()?;
+    let target = PostgresTarget::new(Some(postgres.schema()), table)?;
+    Ok(DestinationFixture {
+        destination: MatrixDestination::new("postgres")?,
+        runtime_destination_id: "postgres",
+        execution: DestinationExecutionSpec {
+            uri: postgres.url().to_owned(),
+            project_root: root.to_path_buf(),
+            target: TargetName::new(target.display_name())?,
+        },
+        state: DestinationFixtureState::Postgres {
+            database_url: postgres.url().to_owned(),
+            schema: postgres.schema().to_owned(),
+            table: table.to_owned(),
+        },
+    })
+}
+
+#[cfg(test)]
+fn quasar_fixture(
+    root: &Path,
+    table: &str,
+    _environment: &ConformanceEnvironment,
+) -> Result<DestinationFixture> {
+    let quasar_root = root.join(".cdf/quasar");
+    Ok(DestinationFixture {
+        destination: MatrixDestination::new("quasar")?,
+        runtime_destination_id: "quasar",
+        execution: DestinationExecutionSpec {
+            uri: local_uri("quasar", &quasar_root),
+            project_root: root.to_path_buf(),
+            target: TargetName::new(table)?,
+        },
+        state: DestinationFixtureState::Quasar { root: quasar_root },
+    })
+}
+
+#[cfg(test)]
+fn list_relative_files(root: &Path) -> Result<Vec<FileFootprint>> {
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut files = Vec::new();
+    collect_relative_files(root, root, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+#[cfg(test)]
+fn collect_relative_files(
+    root: &Path,
+    current: &Path,
+    files: &mut Vec<FileFootprint>,
+) -> Result<()> {
+    for entry in fs::read_dir(current)
+        .map_err(|error| CdfError::data(format!("read {}: {error}", current.display())))?
+    {
+        let entry = entry.map_err(|error| {
+            CdfError::data(format!("read entry in {}: {error}", current.display()))
+        })?;
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|error| {
+            CdfError::data(format!("read file type for {}: {error}", path.display()))
+        })?;
+        if file_type.is_dir() {
+            collect_relative_files(root, &path, files)?;
+        } else if file_type.is_file() {
+            let relative = path.strip_prefix(root).map_err(|error| {
+                CdfError::data(format!("relativize {}: {error}", path.display()))
+            })?;
+            files.push(FileFootprint {
+                path: relative.display().to_string(),
+                bytes: fs::read(&path)
+                    .map_err(|error| CdfError::data(format!("read {}: {error}", path.display())))?,
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn duckdb_payload(database_path: &Path, target: &str) -> Result<Vec<LogicalRow>> {
+    let connection = duckdb::Connection::open(database_path).map_err(|error| {
+        CdfError::destination(format!("open DuckDB {}: {error}", database_path.display()))
+    })?;
+    let table = target.rsplit('.').next().unwrap_or(target);
+    let exists: bool = connection
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM information_schema.tables WHERE table_name = ?",
+            [table],
+            |row| row.get(0),
+        )
+        .map_err(|error| {
+            CdfError::destination(format!("inspect DuckDB target {target}: {error}"))
+        })?;
+    if !exists {
+        return Ok(Vec::new());
+    }
+    let sql = format!(
+        "SELECT \"id\", \"name\" FROM {} ORDER BY \"_cdf_row_key\"",
+        quote_qualified_identifier(target)
+    );
+    let mut statement = connection.prepare(&sql).map_err(|error| {
+        CdfError::destination(format!(
+            "prepare DuckDB payload query for {target}: {error}"
+        ))
+    })?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(LogicalRow {
+                id: row.get(0)?,
+                name: row.get(1)?,
+            })
+        })
+        .map_err(|error| {
+            CdfError::destination(format!("query DuckDB payload for {target}: {error}"))
+        })?;
+    rows.map(|row| {
+        row.map_err(|error| {
+            CdfError::destination(format!("read DuckDB payload row for {target}: {error}"))
+        })
+    })
+    .collect()
+}
+
+#[cfg(test)]
+fn parquet_payload(root: &Path) -> Result<Vec<LogicalRow>> {
+    let mut paths = Vec::new();
+    collect_files_with_extension(root, root, "parquet", &mut paths)?;
+    paths.sort();
+    let mut rows = Vec::new();
+    for path in paths {
+        let file = fs::File::open(&path)
+            .map_err(|error| CdfError::data(format!("open {}: {error}", path.display())))?;
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+            .map_err(|error| CdfError::data(format!("open Parquet {}: {error}", path.display())))?
+            .build()
+            .map_err(|error| CdfError::data(format!("read Parquet {}: {error}", path.display())))?;
+        for batch in reader {
+            let batch = batch.map_err(|error| {
+                CdfError::data(format!("decode Parquet {}: {error}", path.display()))
+            })?;
+            rows.extend(logical_rows_from_batch(&batch)?);
+        }
+    }
+    Ok(rows)
+}
+
+#[cfg(test)]
+fn collect_files_with_extension(
+    root: &Path,
+    current: &Path,
+    extension: &str,
+    paths: &mut Vec<PathBuf>,
+) -> Result<()> {
+    if !root.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(current)
+        .map_err(|error| CdfError::data(format!("read {}: {error}", current.display())))?
+    {
+        let entry = entry.map_err(|error| {
+            CdfError::data(format!("read entry in {}: {error}", current.display()))
+        })?;
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|error| {
+            CdfError::data(format!("read file type for {}: {error}", path.display()))
+        })?;
+        if file_type.is_dir() {
+            collect_files_with_extension(root, &path, extension, paths)?;
+        } else if file_type.is_file()
+            && path.extension().and_then(|value| value.to_str()) == Some(extension)
+        {
+            paths.push(path);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(super) fn logical_rows_from_batch(batch: &RecordBatch) -> Result<Vec<LogicalRow>> {
+    let id_index = batch
+        .schema()
+        .index_of("id")
+        .map_err(|error| CdfError::data(format!("conformance payload misses id: {error}")))?;
+    let name_index = batch
+        .schema()
+        .index_of("name")
+        .map_err(|error| CdfError::data(format!("conformance payload misses name: {error}")))?;
+    let ids = batch
+        .column(id_index)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .ok_or_else(|| CdfError::data("conformance payload id is not int64"))?;
+    let names = batch
+        .column(name_index)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or_else(|| CdfError::data("conformance payload name is not utf8"))?;
+    Ok((0..batch.num_rows())
+        .map(|index| LogicalRow {
+            id: ids.value(index),
+            name: (!names.is_null(index)).then(|| names.value(index).to_owned()),
+        })
+        .collect())
+}
+
+#[cfg(test)]
+fn quote_qualified_identifier(value: &str) -> String {
+    value
+        .split('.')
+        .map(|part| format!("\"{}\"", part.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+#[cfg(test)]
+fn postgres_footprint(
+    database_url: &str,
+    schema: &str,
+    table: &str,
+    target_name: &str,
+) -> Result<DestinationFootprint> {
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|error| CdfError::destination(format!("connect to Postgres: {error}")))?;
+    Ok(DestinationFootprint::Postgres {
+        payload_rows: query_postgres_payload(&mut client, schema, table)?,
+        loads_rows: query_load_count_if_exists(&mut client, schema, target_name)?,
+        state_rows: query_count_if_exists(&mut client, schema, "_cdf_state")?,
+    })
+}
+
+#[cfg(test)]
+fn postgres_payload(database_url: &str, schema: &str, table: &str) -> Result<Vec<LogicalRow>> {
+    let mut client = Client::connect(database_url, NoTls)
+        .map_err(|error| CdfError::destination(format!("connect to Postgres: {error}")))?;
+    query_postgres_payload(&mut client, schema, table)
+}
+
+#[cfg(test)]
+fn query_postgres_payload(
+    client: &mut Client,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<LogicalRow>> {
+    if !table_exists(client, schema, table)? {
+        return Ok(Vec::new());
+    }
+    let rows = client
+        .query(
+            &format!(
+                "SELECT \"id\", \"name\" FROM {} ORDER BY \"_cdf_row_key\"",
+                qualified_name(schema, table)
+            ),
+            &[],
+        )
+        .map_err(|error| {
+            CdfError::destination(format!(
+                "query Postgres payload for {schema}.{table}: {error}"
+            ))
+        })?;
+    Ok(rows
+        .into_iter()
+        .map(|row| LogicalRow {
+            id: row.get(0),
+            name: row.get(1),
+        })
+        .collect())
+}
+
+#[cfg(test)]
+fn query_count_if_exists(client: &mut Client, schema: &str, table: &str) -> Result<i64> {
+    if !table_exists(client, schema, table)? {
+        return Ok(0);
+    }
+    client
+        .query_one(
+            &format!(
+                "SELECT COUNT(*)::bigint FROM {}",
+                qualified_name(schema, table)
+            ),
+            &[],
+        )
+        .map(|row| row.get(0))
+        .map_err(|error| {
+            CdfError::destination(format!(
+                "query Postgres row count for {schema}.{table}: {error}"
+            ))
+        })
+}
+
+#[cfg(test)]
+fn query_load_count_if_exists(client: &mut Client, schema: &str, target_name: &str) -> Result<i64> {
+    if !table_exists(client, schema, "_cdf_loads")? {
+        return Ok(0);
+    }
+    client
+        .query_one(
+            &format!(
+                "SELECT COUNT(*)::bigint FROM {} WHERE \"target\" = $1",
+                qualified_name(schema, "_cdf_loads")
+            ),
+            &[&target_name],
+        )
+        .map(|row| row.get(0))
+        .map_err(|error| {
+            CdfError::destination(format!(
+                "query Postgres _cdf_loads row count for target {target_name}: {error}"
+            ))
+        })
+}
+
+#[cfg(test)]
+fn table_exists(client: &mut Client, schema: &str, table: &str) -> Result<bool> {
+    client
+        .query_one(
+            "SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_schema = $1 AND table_name = $2
+            )",
+            &[&schema, &table],
+        )
+        .map(|row| row.get(0))
+        .map_err(|error| {
+            CdfError::destination(format!(
+                "inspect Postgres table existence for {schema}.{table}: {error}"
+            ))
+        })
 }
 
 #[test]
 fn generic_project_and_cli_runtime_sources_do_not_import_destination_crates() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     assert_no_concrete_destination_imports(
-        &root.join("crates/cdf-project/src/runtime"),
-        &["destinations.rs"],
+        &root.join("crates/cdf-project/src"),
+        &["runtime_tests.rs", "test_destinations.rs", "tests.rs"],
     );
     assert_no_concrete_destination_imports(
         &root.join("crates/cdf-cli/src"),
         &["destination_registry.rs", "doctor_drift.rs", "tests.rs"],
     );
+}
+
+#[test]
+fn generic_conformance_engines_do_not_branch_on_destination_identity() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut identities = DESTINATIONS
+        .iter()
+        .flat_map(|entry| [entry.id, entry.runtime_destination_id])
+        .collect::<Vec<_>>();
+    identities.sort_unstable();
+    identities.dedup();
+    for relative in [
+        "run_matrix/assertions.rs",
+        "run_matrix/core.rs",
+        "run_matrix/destinations.rs",
+        "run_matrix/mod.rs",
+        "run_matrix/tests.rs",
+        "runtime_chaos/destinations.rs",
+        "runtime_chaos/fixture.rs",
+        "runtime_chaos/helper.rs",
+        "runtime_chaos/mod.rs",
+        "runtime_chaos/tests.rs",
+    ] {
+        let path = root.join(relative);
+        let source = fs::read_to_string(&path).unwrap();
+        assert!(
+            !source.contains("cdf_dest_"),
+            "generic conformance engine imports a concrete destination: {}",
+            path.display()
+        );
+        for identity in &identities {
+            assert!(
+                !source.contains(&format!("\"{identity}\"")),
+                "generic conformance engine branches on destination `{identity}`: {}",
+                path.display()
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -706,10 +1131,7 @@ fn assert_no_concrete_destination_imports(root: &Path, allowed_files: &[&str]) {
                     .and_then(|value| value.to_str())
                     .is_some_and(|name| allowed_files.contains(&name));
                 assert!(
-                    allowed
-                        || (!source.contains("cdf_dest_duckdb")
-                            && !source.contains("cdf_dest_parquet")
-                            && !source.contains("cdf_dest_postgres")),
+                    allowed || !source.contains("cdf_dest_"),
                     "generic runtime source imports a concrete destination: {}",
                     path.display()
                 );

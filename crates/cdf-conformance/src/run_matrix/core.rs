@@ -1,19 +1,16 @@
 use std::cell::Cell;
 
-use cdf_dest_parquet::ParquetDestination;
-use cdf_kernel::{CdfError, DestinationProtocol, PipelineId, Result, RunId, SourcePosition};
+use cdf_kernel::{CdfError, PipelineId, Result, RunId, SourcePosition};
 use cdf_package::PackageReader;
 use cdf_project::{ProjectRunReport, ProjectRunRequest, run_project};
 
-use super::local_postgres::LivePostgres;
 use super::{
-    ExcludedMatrixCell, ExecutedMatrixCell, MatrixDestination, MatrixDisposition, RunMatrixCell,
-    SourceArchetype,
+    ExcludedMatrixCell, ExecutedMatrixCell, RunMatrixCell, SourceArchetype,
     assertions::{
         assert_artifact_replay_identity, assert_committed_checkpoint, assert_duplicate_replay_noop,
         assert_plan_honesty, assert_replay_inputs_match_run, assert_run_report, receipt_gate,
     },
-    destinations::{MatrixDestinationHandle, target_for_cell},
+    destinations::{ConformanceEnvironment, destination_for_cell},
     source_catalog,
 };
 
@@ -22,7 +19,7 @@ pub(crate) const SEGMENT_COUNT: usize = 1;
 
 pub(crate) fn execute_cell(
     cell: RunMatrixCell,
-    postgres: Option<&LivePostgres>,
+    environment: &ConformanceEnvironment,
 ) -> Result<ExecutedMatrixCell> {
     let temp = tempfile::tempdir()
         .map_err(|error| CdfError::data(format!("create run matrix tempdir: {error}")))?;
@@ -38,10 +35,8 @@ pub(crate) fn execute_cell(
     let package_root = temp.path().join(".cdf/packages");
     let state_store_path = temp.path().join(".cdf/state.sqlite");
 
-    let source = source_catalog::prepare(&cell, temp.path(), postgres)?;
-    let target = target_for_cell(cell.clone(), postgres)?;
-    let destination =
-        MatrixDestinationHandle::new(cell.destination, temp.path(), target, postgres)?;
+    let source = source_catalog::prepare(&cell, temp.path(), environment)?;
+    let destination = destination_for_cell(&cell, temp.path(), environment)?;
     let resolved_destination = destination.resolved()?;
     let identifier_policy = resolved_destination.column_identifier_policy()?;
     let plan = source.engine_plan(&package_id, cell.disposition, identifier_policy.as_ref())?;
@@ -84,6 +79,7 @@ pub(crate) fn execute_cell(
     assert_run_report(cell.clone(), &report, &resource_id, &scope, &pipeline_id);
     PackageReader::open(&report.package_dir)?.verify()?;
     assert_replay_inputs_match_run(cell.clone(), &report);
+    destination.assert_receipt_identity(&report.receipt)?;
     destination.verify_trait_receipt(&report.receipt)?;
     assert_committed_checkpoint(&state_store_path, &report);
     assert_segment_positions_match_checkpoint(&report);
@@ -110,25 +106,21 @@ pub(crate) fn execute_cell(
     })
 }
 
-pub(crate) fn sheet_exclusion_reason(cell: &RunMatrixCell) -> Option<String> {
-    if cell.destination != MatrixDestination::ParquetFilesystem
-        || cell.disposition != MatrixDisposition::Merge
-    {
-        return None;
+pub(crate) fn sheet_exclusion_reason(
+    cell: &RunMatrixCell,
+    environment: &ConformanceEnvironment,
+) -> Result<Option<String>> {
+    let temp = tempfile::tempdir()
+        .map_err(|error| CdfError::data(format!("create exclusion tempdir: {error}")))?;
+    let destination = destination_for_cell(cell, temp.path(), environment)?;
+    let supported = destination.supported_dispositions()?;
+    if supported.contains(&cell.disposition.to_write_disposition()) {
+        return Ok(None);
     }
-    let temp = tempfile::tempdir().unwrap();
-    let destination =
-        ParquetDestination::new_filesystem(temp.path(), crate::test_execution_services()).unwrap();
-    assert!(
-        !destination
-            .sheet()
-            .supported_dispositions
-            .contains(&cell.disposition.to_write_disposition())
-    );
-    Some(
-        "Parquet destination sheet supported_dispositions=[append, replace]; merge is not listed"
-            .to_owned(),
-    )
+    Ok(Some(format!(
+        "destination sheet supported_dispositions={supported:?}; {:?} is not listed",
+        cell.disposition.to_write_disposition()
+    )))
 }
 
 pub(crate) fn executed_for_source<'a>(

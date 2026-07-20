@@ -596,13 +596,14 @@ fn external_source_inherits_registry_schema_add_discovery_and_doctor_laws() {
 
 #[test]
 fn external_source_inherits_generic_plan_run_receipt_checkpoint_and_replay_laws() {
+    let environment = crate::destination_catalog::ConformanceEnvironment::local_only();
     let executed = super::core::execute_cell(
         super::RunMatrixCell::new(
             super::SourceArchetype::external_mock(),
-            super::MatrixDestination::DuckDb,
+            super::MatrixDestination::new("duckdb").unwrap(),
             MatrixDisposition::Append,
         ),
-        None,
+        &environment,
     )
     .unwrap();
     assert_eq!(executed.row_count, 2);

@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Target: .10x/tickets/2026-07-11-p0-dx4-conformance-extension-law.md
+Target: .10x/tickets/done/2026-07-11-p0-dx4-conformance-extension-law.md
 Verdict: concerns
 
 # DX4 conformance catalog milestone review

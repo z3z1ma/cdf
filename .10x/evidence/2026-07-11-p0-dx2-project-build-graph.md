@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-12
-Relates-To: .10x/tickets/done/2026-07-11-p0-dx2-driver-owned-adapters-composition.md, .10x/tickets/2026-07-11-p0-destination-extension-boundary.md
+Relates-To: .10x/tickets/done/2026-07-11-p0-dx2-driver-owned-adapters-composition.md, .10x/tickets/done/2026-07-11-p0-destination-extension-boundary.md
 
 # cdf-project normal build graph is destination-neutral
 
