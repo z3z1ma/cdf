@@ -34,7 +34,7 @@ pub const ICEBERG_SOURCE_BLOCKING_LANE_ID: &str = "iceberg-source.control";
 pub fn iceberg_source_blocking_lane(maximum_concurrency: u16) -> BlockingLaneSpec {
     BlockingLaneSpec {
         lane_id: ICEBERG_SOURCE_BLOCKING_LANE_ID.to_owned(),
-        binding: BlockingLaneBinding::Static,
+        binding: BlockingLaneBinding::RuntimeResolvedRequired,
         maximum_concurrency,
         cpu_slot_cost: 1,
         native_internal_parallelism: 1,
@@ -132,18 +132,12 @@ impl IcebergSourceDriver {
         plan: &CompiledSourcePlan,
         context: &SourceResolutionContext<'_>,
     ) -> Result<IcebergCatalogContext> {
+        let resolved_lane = self.resolved_blocking_lane(plan, context)?;
         let dependencies = (self.runtime_factory)(
             Arc::clone(context.secret_provider()),
             context.execution().clone(),
             context.egress_scope(&plan.driver.driver_id),
-            plan.execution_capabilities
-                .blocking_lane
-                .clone()
-                .ok_or_else(|| {
-                    CdfError::contract(
-                        "Iceberg compiled execution requires its source-owned blocking lane",
-                    )
-                })?,
+            resolved_lane,
         )?;
         Ok(IcebergCatalogContext {
             object_access: dependencies.object_access,
@@ -172,6 +166,27 @@ impl IcebergSourceDriver {
             &catalog,
         )?;
         Ok((table, catalog))
+    }
+
+    fn resolved_blocking_lane(
+        &self,
+        plan: &CompiledSourcePlan,
+        context: &SourceResolutionContext<'_>,
+    ) -> Result<BlockingLaneSpec> {
+        let compiled = plan
+            .execution_capabilities
+            .blocking_lane
+            .as_ref()
+            .ok_or_else(|| {
+                CdfError::contract("Iceberg compiled execution omitted its blocking lane")
+            })?;
+        let mut resolved = compiled.clone();
+        resolved.binding = BlockingLaneBinding::RuntimeResolved;
+        resolved.maximum_concurrency = resolved
+            .maximum_concurrency
+            .min(context.execution().capabilities().logical_cpu_slots.max(1));
+        resolved.validate_tightening_of(compiled)?;
+        Ok(resolved)
     }
 }
 
@@ -239,6 +254,14 @@ impl SourceDriver for IcebergSourceDriver {
             PreparedSourcePayload::new(table.clone(), retention),
         )?;
         Ok(Box::new(IcebergDiscoverySession { table, candidate }))
+    }
+
+    fn resolve_blocking_lane(
+        &self,
+        plan: &CompiledSourcePlan,
+        context: &SourceResolutionContext<'_>,
+    ) -> Result<Option<BlockingLaneSpec>> {
+        self.resolved_blocking_lane(plan, context).map(Some)
     }
 
     fn resolve(
@@ -972,6 +995,15 @@ mod tests {
             "1"
         );
         assert_eq!(context.prepared_payloads().pending_count().unwrap(), 1);
+        assert_eq!(execution.capabilities().blocking_lanes.len(), 1);
+        assert_eq!(
+            execution.capabilities().blocking_lanes[0],
+            BlockingLaneSpec {
+                binding: BlockingLaneBinding::RuntimeResolved,
+                maximum_concurrency: 2,
+                ..iceberg_source_blocking_lane(u16::MAX)
+            }
+        );
 
         let resource = driver.resolve(&plan, &context).unwrap();
         assert_eq!(context.prepared_payloads().pending_count().unwrap(), 0);
