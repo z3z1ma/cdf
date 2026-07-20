@@ -119,6 +119,7 @@ fn delta_for(
         input_position: None,
         output_position,
         output_watermark: None,
+        late_data_carryover: Vec::new(),
         source_continuation: None,
         package_hash: PackageHash::new(package_hash).unwrap(),
         schema_hash: SchemaHash::new("schema-sha256").unwrap(),

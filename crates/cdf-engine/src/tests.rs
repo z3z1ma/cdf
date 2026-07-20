@@ -3046,6 +3046,7 @@ fn drain_epoch_records_the_minimum_partition_watermark_not_the_latest_claim() {
 fn late_rows_are_quarantined_or_admitted_with_identity_evidence() {
     for action in [
         LateDataAction::Quarantine,
+        LateDataAction::RecaptureNextEpoch,
         LateDataAction::AdmitWithAnnotation,
     ] {
         let claim = |value: i64, offset: i64| WatermarkClaim {
@@ -3100,7 +3101,7 @@ fn late_rows_are_quarantined_or_admitted_with_identity_evidence() {
                 late_data: action,
                 safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
             },
-            termination: DrainTermination::Records { count: 2 },
+            termination: DrainTermination::Records { count: 3 },
         };
         let mut source = mock_unbounded_cursor_source_plan(&resource);
         source
@@ -3202,7 +3203,61 @@ fn late_rows_are_quarantined_or_admitted_with_identity_evidence() {
                 assert_eq!(second.output.profile.output_rows, 1);
                 assert!(quarantine.is_empty());
             }
-            LateDataAction::RecaptureNextEpoch => unreachable!(),
+            LateDataAction::RecaptureNextEpoch => {
+                assert_eq!(second.output.profile.output_rows, 0);
+                assert!(quarantine.is_empty());
+                let second_drain = second.drain_epoch.as_ref().unwrap();
+                assert_eq!(second_drain.late_data_carryover.len(), 1);
+                controller
+                    .acknowledge_settlement(&second_drain.closure.frontier.frontier)
+                    .unwrap();
+                plan.advance_committed_drain_frontier(
+                    second_drain.consumed_partition_count,
+                    second_drain.resume_partition.as_deref(),
+                )
+                .unwrap();
+                plan = plan
+                    .rebind_package_id("pkg-late-recapture-epoch-2")
+                    .unwrap();
+                let reader = cdf_package::PackageReader::open(&second_dir).unwrap();
+                let verified = Arc::new(reader.verify_for_consumption().unwrap());
+                let carryover = second_drain
+                    .late_data_carryover
+                    .iter()
+                    .map(|reference| {
+                        let object = reader
+                            .verified_identity_object(
+                                Arc::clone(&verified),
+                                &reference.relative_path,
+                            )
+                            .unwrap();
+                        super::LateDataCarryoverInput::new(reference.clone(), object).unwrap()
+                    })
+                    .collect();
+                let third_dir = root.path().join("RecaptureNextEpoch-epoch-2");
+                let third = block_on(super::execute_drain_epoch_with_hooks(
+                    &plan,
+                    &resource,
+                    &third_dir,
+                    &|_, _| Ok(()),
+                    super::DrainEpochExecution::new(&mut controller)
+                        .with_late_data_carryover(carryover),
+                    executable_mock_options(EngineExecutionOptions::default()).unwrap(),
+                ))
+                .unwrap()
+                .into_package()
+                .unwrap();
+                let third_drain = third.drain_epoch.as_ref().unwrap();
+                assert_eq!(third.output.profile.output_rows, 1);
+                assert_eq!(third_drain.consumed_late_data_carryover.len(), 1);
+                assert!(third_drain.late_data_carryover.is_empty());
+                assert!(third_drain.closure.terminate_after_settlement);
+                assert!(
+                    third_dir
+                        .join("plan/late-data-carryover-input.json")
+                        .is_file()
+                );
+            }
         }
     }
 }

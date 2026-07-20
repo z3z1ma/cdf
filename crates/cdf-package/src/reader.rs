@@ -151,6 +151,34 @@ pub struct VerifiedSegmentObject<T> {
     _verification: Arc<VerifiedPackage>,
 }
 
+/// A verified identity-bearing package artifact retained beneath the package root capability.
+#[derive(Debug)]
+pub struct VerifiedIdentityObject {
+    relative_path: String,
+    byte_count: u64,
+    sha256: String,
+    package_root: Arc<PackageRoot>,
+    _verification: Arc<VerifiedPackage>,
+}
+
+impl VerifiedIdentityObject {
+    pub fn relative_path(&self) -> &str {
+        &self.relative_path
+    }
+
+    pub const fn byte_count(&self) -> u64 {
+        self.byte_count
+    }
+
+    pub fn sha256(&self) -> &str {
+        &self.sha256
+    }
+
+    pub fn open_file(&self) -> Result<std::fs::File> {
+        self.package_root.open_std_file(&self.relative_path)
+    }
+}
+
 impl<T> VerifiedSegmentObject<T> {
     /// Returns a pathname spelling for diagnostics only.
     pub fn display_path(&self) -> &Path {
@@ -474,6 +502,35 @@ impl PackageReader {
             )));
         }
         Ok(bytes)
+    }
+
+    /// Retains a verified file capability for streaming consumers that must not buffer the whole
+    /// identity artifact merely to cross the package boundary.
+    pub fn verified_identity_object(
+        &self,
+        verified: Arc<VerifiedPackage>,
+        relative_path: impl AsRef<Path>,
+    ) -> Result<VerifiedIdentityObject> {
+        self.require_verification(&verified)?;
+        let relative_path = normalize_artifact_path(relative_path.as_ref())?;
+        let entry = self
+            .manifest
+            .identity
+            .files
+            .iter()
+            .find(|entry| entry.path == relative_path)
+            .ok_or_else(|| {
+                CdfError::data(format!(
+                    "verified package identity does not contain artifact {relative_path}"
+                ))
+            })?;
+        Ok(VerifiedIdentityObject {
+            relative_path,
+            byte_count: entry.byte_count,
+            sha256: entry.sha256.clone(),
+            package_root: Arc::clone(&self.package_root),
+            _verification: verified,
+        })
     }
 
     pub fn verified_json_artifact<T: DeserializeOwned>(

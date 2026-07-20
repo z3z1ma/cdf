@@ -80,7 +80,33 @@ const SOURCE_ROW_FIELD: &str = "_cdf_internal_source_row";
 pub struct DrainEpochExecution<'a> {
     durable_segment: Option<&'a mut DurableSegmentHook<'a>>,
     stream_finalize: Option<&'a mut StreamingFinalizeHook<'a>>,
+    late_data_carryover: Vec<LateDataCarryoverInput>,
     controller: &'a mut cdf_runtime::DrainEpochController,
+}
+
+pub struct LateDataCarryoverInput {
+    reference: cdf_kernel::LateDataCarryoverRef,
+    object: cdf_package::VerifiedIdentityObject,
+}
+
+impl LateDataCarryoverInput {
+    pub fn new(
+        reference: cdf_kernel::LateDataCarryoverRef,
+        object: cdf_package::VerifiedIdentityObject,
+    ) -> Result<Self> {
+        reference.validate()?;
+        if reference.relative_path != object.relative_path() {
+            return Err(CdfError::data(
+                "late-data carryover reference does not match its verified package object",
+            ));
+        }
+        if reference.byte_count != object.byte_count() || reference.sha256 != object.sha256() {
+            return Err(CdfError::data(
+                "late-data carryover content identity does not match its verified package object",
+            ));
+        }
+        Ok(Self { reference, object })
+    }
 }
 
 impl<'a> DrainEpochExecution<'a> {
@@ -88,6 +114,7 @@ impl<'a> DrainEpochExecution<'a> {
         Self {
             durable_segment: None,
             stream_finalize: None,
+            late_data_carryover: Vec::new(),
             controller,
         }
     }
@@ -99,6 +126,14 @@ impl<'a> DrainEpochExecution<'a> {
     ) -> Self {
         self.durable_segment = Some(durable_segment);
         self.stream_finalize = Some(stream_finalize);
+        self
+    }
+
+    pub fn with_late_data_carryover(
+        mut self,
+        late_data_carryover: Vec<LateDataCarryoverInput>,
+    ) -> Self {
+        self.late_data_carryover = late_data_carryover;
         self
     }
 }
@@ -1350,6 +1385,7 @@ struct ExecutionTraceContext {
 
 struct ContractExecOutput {
     accepted: RecordBatch,
+    accepted_source_rows: Option<Vec<usize>>,
     variant_values: Vec<Option<String>>,
     summary: VerdictSummary,
     residual_decisions: Vec<ResidualDecisionArtifact>,
@@ -1551,7 +1587,6 @@ struct PendingDedupBatch {
 struct PreparedOutputBatch {
     output: RecordBatch,
     variant_values: Vec<Option<String>>,
-    output_position: Option<SourcePosition>,
     memory_lease: Option<MemoryLease>,
 }
 
@@ -1565,8 +1600,6 @@ struct OutputWriteState<'a> {
     lineage: &'a mut LineageSummary,
     segments: &'a mut Vec<SegmentEntry>,
     segment_positions: &'a mut Vec<EngineSegmentPosition>,
-    output_schema: &'a mut Option<SchemaArtifact>,
-    expected_schema: &'a Schema,
     phase_measurements: &'a mut PhaseMeasurements,
     memory: Option<&'a Arc<dyn MemoryCoordinator>>,
     statistics: Option<StatisticsProfileState<'a>>,
@@ -2197,6 +2230,7 @@ where
         None,
         None,
         None,
+        Vec::new(),
         None,
         standalone_execution_options()?,
     )
@@ -2223,6 +2257,7 @@ where
         None,
         None,
         None,
+        Vec::new(),
         None,
         standalone_execution_options()?,
     )
@@ -2248,6 +2283,7 @@ where
         None,
         None,
         None,
+        Vec::new(),
         None,
         standalone_execution_options()?,
     )
@@ -2273,6 +2309,7 @@ where
         Some(pre_finalize),
         None,
         None,
+        Vec::new(),
         None,
         options,
     )
@@ -2300,6 +2337,7 @@ where
         Some(pre_finalize),
         Some(durable_segment),
         Some(stream_finalize),
+        Vec::new(),
         None,
         options,
     )
@@ -2326,6 +2364,7 @@ where
         Some(pre_finalize),
         epoch.durable_segment,
         epoch.stream_finalize,
+        epoch.late_data_carryover,
         Some(epoch.controller),
         options,
     ))
@@ -3003,6 +3042,7 @@ async fn execute_to_package_inner<'a, R>(
     pre_finalize: Option<&PackagePreFinalizeHook<'_>>,
     durable_segment: Option<&'a mut DurableSegmentHook<'a>>,
     stream_finalize: Option<&'a mut StreamingFinalizeHook<'a>>,
+    late_data_carryover_input: Vec<LateDataCarryoverInput>,
     mut drain_controller: Option<&mut cdf_runtime::DrainEpochController>,
     options: EngineExecutionOptions,
 ) -> Result<PackageExecutionOutcome>
@@ -3140,6 +3180,7 @@ where
     let mut segment_positions = Vec::new();
     let mut quarantine_part_count = 0_usize;
     let mut late_data_records = Vec::<LateDataRecord>::new();
+    let mut late_data_carryover = Vec::<cdf_kernel::LateDataCarryoverRef>::new();
     let mut remaining_limit = plan.scan.request.limit;
     let mut output_schema = Some(schema_artifact(runtime_output_schema.as_ref()));
     let mut stream_admission_evidence =
@@ -3294,8 +3335,205 @@ where
             .and_then(cdf_runtime::DrainEpochController::committed_source_continuation),
         &plan.scan.partitions,
     )?;
+    let mut carryover_progress_observed = false;
+
+    let consumed_late_data_carryover = late_data_carryover_input
+        .iter()
+        .map(|input| input.reference.clone())
+        .collect::<Vec<_>>();
+    if !consumed_late_data_carryover.is_empty() {
+        builder.write_json_artifact(
+            "plan/late-data-carryover-input.json",
+            &consumed_late_data_carryover,
+        )?;
+    }
 
     let segment_result: Result<()> = async {
+    if !late_data_carryover_input.is_empty() {
+        let controller = drain_controller.as_deref_mut().ok_or_else(|| {
+            CdfError::contract("late-data carryover requires drain execution authority")
+        })?;
+        let carryover_frontier = controller.committed_frontier().cloned().ok_or_else(|| {
+            CdfError::data(
+                "late-data carryover requires the receipt-gated frontier that produced it",
+            )
+        })?;
+        let carryover_partition_ordinal = u32::try_from(plan.scan.partitions.len())
+            .map_err(|_| CdfError::data("late-data carryover partition ordinal exceeds u32"))?;
+        let mut carryover_assembler = crate::CanonicalSegmentAssembler::new(
+            segmentation_policy.clone(),
+            carryover_partition_ordinal,
+        )?;
+        for input in late_data_carryover_input {
+            let decode_window = input
+                .reference
+                .memory_bound_bytes
+                .checked_add(input.reference.byte_count)
+                .ok_or_else(|| CdfError::data("late-data carryover decode window overflow"))?;
+            let lease = match memory.as_ref() {
+                Some(memory) => {
+                    let request = ReservationRequest::new(
+                        ConsumerKey::new("late-data-carryover", MemoryClass::Decode)?,
+                        decode_window,
+                    )?
+                    .as_minimum_working_set();
+                    Some(reserve(Arc::clone(memory), request).await?)
+                }
+                None => None,
+            };
+            let mut reader = arrow_ipc::reader::FileReader::try_new_buffered(
+                input.object.open_file()?,
+                None,
+            )
+            .map_err(CdfError::from)?;
+            if reader.schema().as_ref() != runtime_output_schema.as_ref() {
+                return Err(CdfError::data(format!(
+                    "late-data carryover {} schema does not match the compiled output schema",
+                    input.reference.relative_path
+                )));
+            }
+            let mut artifact_rows = 0_u64;
+            let mut artifact_retained_bytes = 0_u64;
+            for batch in &mut reader {
+                let batch = batch.map_err(CdfError::from)?;
+                let batch_rows = u64::try_from(batch.num_rows())
+                    .map_err(|_| CdfError::data("late-data carryover rows exceed u64"))?;
+                let batch_retained_bytes = cdf_memory::record_batch_retained_bytes(&batch)?;
+                artifact_rows = artifact_rows
+                    .checked_add(batch_rows)
+                    .ok_or_else(|| CdfError::data("late-data carryover row count overflow"))?;
+                artifact_retained_bytes = artifact_retained_bytes
+                    .checked_add(batch_retained_bytes)
+                    .ok_or_else(|| CdfError::data("late-data carryover memory count overflow"))?;
+
+                if apply_package_dedup {
+                    if let Some((rule, index, payload)) = &mut external_dedup {
+                        index.push_owned_keys(encode_package_dedup_keys(
+                            &validation_program,
+                            rule,
+                            &batch,
+                        )?)?;
+                        payload.push(
+                            carryover_partition_ordinal,
+                            Some(carryover_frontier.clone()),
+                            &batch,
+                        )?;
+                    } else {
+                        pending_dedup_batches.push(PendingDedupBatch {
+                            partition_ordinal: carryover_partition_ordinal,
+                            output: batch,
+                            output_position: Some(carryover_frontier.clone()),
+                            _memory_lease: lease.clone(),
+                        });
+                    }
+                } else {
+                    write_normalized_output_batch(
+                        PreparedKernelOutput {
+                            output: batch,
+                            memory_lease: lease.clone(),
+                        },
+                        Some(carryover_frontier.clone()),
+                        &mut carryover_assembler,
+                        &mut OutputWriteState {
+                            profile: &mut profile,
+                            lineage: &mut lineage,
+                            segments: &mut segments,
+                            segment_positions: &mut segment_positions,
+                            phase_measurements: &mut phase_measurements,
+                            memory: memory.as_ref(),
+                            statistics: statistics_profile_state(
+                                &statistics_memory,
+                                &mut statistics_memory_lease,
+                                &mut statistics_profile,
+                                &statistics_profile_schema_hash,
+                                &mut statistics_segment_ordinal,
+                            ),
+                        },
+                        &mut SegmentOutputSink {
+                            builder: &builder,
+                            queue: &mut segment_queue,
+                            durable: &mut durable_segment_observer,
+                        },
+                    )?;
+                }
+            }
+            if artifact_rows != input.reference.row_count
+                || artifact_retained_bytes > input.reference.memory_bound_bytes
+            {
+                return Err(CdfError::data(format!(
+                    "late-data carryover {} decoded as {artifact_rows} rows/{artifact_retained_bytes} retained bytes, expected {} rows within its {}-byte memory bound",
+                    input.reference.relative_path,
+                    input.reference.row_count,
+                    input.reference.memory_bound_bytes
+                )));
+            }
+            if let Some(lease) = &lease {
+                lease.reconcile(artifact_retained_bytes.max(1))?;
+            }
+        }
+        if !apply_package_dedup {
+            persist_canonical_segments(
+                carryover_assembler.finish()?,
+                &mut OutputWriteState {
+                    profile: &mut profile,
+                    lineage: &mut lineage,
+                    segments: &mut segments,
+                    segment_positions: &mut segment_positions,
+                    phase_measurements: &mut phase_measurements,
+                    memory: memory.as_ref(),
+                    statistics: statistics_profile_state(
+                        &statistics_memory,
+                        &mut statistics_memory_lease,
+                        &mut statistics_profile,
+                        &statistics_profile_schema_hash,
+                        &mut statistics_segment_ordinal,
+                    ),
+                },
+                &mut SegmentOutputSink {
+                    builder: &builder,
+                    queue: &mut segment_queue,
+                    durable: &mut durable_segment_observer,
+                },
+            )?;
+        }
+        carryover_progress_observed = true;
+        let carryover = controller.committed_source_continuation().cloned();
+        let global_watermark = controller.committed_watermark().cloned();
+        let decision = controller.observe_safe_frontier(
+            cdf_runtime::DrainSafeFrontierObservation {
+                frontier: carryover_frontier,
+                carryover,
+                // These rows already contributed to source-admission counters in the epoch that
+                // recaptured them. One synthetic position marks this package as nonempty without
+                // double-counting termination or cadence thresholds.
+                admitted_batches: 0,
+                admitted_rows: 0,
+                admitted_bytes: 0,
+                admitted_positions: 1,
+                global_watermark,
+                source_exhausted: false,
+                monotonic_milliseconds: drain_clock
+                    .monotonic_milliseconds(options.services.as_ref()),
+                observed_at_unix_milliseconds: drain_clock
+                    .observed_at_unix_milliseconds(options.services.as_ref())?,
+            },
+        )?;
+        match decision {
+            cdf_runtime::DrainEpochDecision::Continue => {}
+            cdf_runtime::DrainEpochDecision::Close(closure) => {
+                drain_epoch_closure = Some(*closure);
+            }
+            cdf_runtime::DrainEpochDecision::FinishedNoOp => {
+                return Err(CdfError::internal(
+                    "drain controller classified persisted late-data carryover as an empty epoch",
+                ));
+            }
+        }
+    }
+
+    if drain_epoch_closure.is_some() {
+        return Ok(());
+    }
     loop {
         let next_partition = match poll_with_drain_timer(
             source_frontier.next_partition(),
@@ -3326,16 +3564,53 @@ where
                 && processed_observations.is_empty()
                 && !source_progress_observed
             {
-                controller.finish_empty_source(
-                    drain_clock.monotonic_milliseconds(options.services.as_ref()),
-                )?;
-                drain_finished_noop = true;
+                if carryover_progress_observed {
+                    let frontier = controller.committed_frontier().cloned().ok_or_else(|| {
+                        CdfError::internal(
+                            "late-data carryover lost its committed source frontier",
+                        )
+                    })?;
+                    let carryover = controller.committed_source_continuation().cloned();
+                    let global_watermark = controller.committed_watermark().cloned();
+                    match controller.observe_safe_frontier(
+                        cdf_runtime::DrainSafeFrontierObservation {
+                            frontier,
+                            carryover,
+                            admitted_batches: 0,
+                            admitted_rows: 0,
+                            admitted_bytes: 0,
+                            admitted_positions: 0,
+                            global_watermark,
+                            source_exhausted: true,
+                            monotonic_milliseconds: drain_clock
+                                .monotonic_milliseconds(options.services.as_ref()),
+                            observed_at_unix_milliseconds: drain_clock
+                                .observed_at_unix_milliseconds(options.services.as_ref())?,
+                        },
+                    )? {
+                        cdf_runtime::DrainEpochDecision::Close(closure) => {
+                            drain_epoch_closure = Some(*closure);
+                        }
+                        cdf_runtime::DrainEpochDecision::Continue
+                        | cdf_runtime::DrainEpochDecision::FinishedNoOp => {
+                            return Err(CdfError::internal(
+                                "source exhaustion did not close a nonempty carryover epoch",
+                            ));
+                        }
+                    }
+                } else {
+                    controller.finish_empty_source(
+                        drain_clock.monotonic_milliseconds(options.services.as_ref()),
+                    )?;
+                    drain_finished_noop = true;
+                }
             }
             break;
         };
         let open_metadata = opened_partition.metadata().clone();
         let partition_ordinal_usize = open_metadata.ordinal;
-        let partition = open_metadata.partition;
+        let executable_partition = open_metadata.partition;
+        let partition = executable_partition.plan().clone();
         let open_evidence = open_metadata.evidence;
         let partition_ordinal = u32::try_from(partition_ordinal_usize)
             .map_err(|_| CdfError::data("partition ordinal exceeds u32"))?;
@@ -3353,7 +3628,7 @@ where
                 None => {
                     let attestation = attest_partition_with_terminal_join(
                         resource,
-                        &partition,
+                        &executable_partition,
                         &run_cancellation,
                     )
                     .await?
@@ -3786,8 +4061,8 @@ where
                     || late_data_policy.is_some();
                 let executed = execute_batch(&record_batch, &bound_residuals, track_source_rows)?;
                 let ExecutedBatch {
-                    batch: mut output,
-                    mut source_rows,
+                    batch: output,
+                    source_rows,
                     limit_truncated,
                 } = apply_pre_contract_expressions(
                     executed.batch,
@@ -3881,68 +4156,6 @@ where
                     continue;
                 }
 
-                let mut late_quarantine_records = Vec::new();
-                if let (Some((event_time_field, action)), Some(watermark)) = (
-                    late_data_policy.as_ref(),
-                    drain_controller
-                        .as_deref()
-                        .and_then(cdf_runtime::DrainEpochController::late_data_watermark)
-                        .cloned(),
-                ) {
-                    let classification = crate::late_data::classify_late_data(
-                        output,
-                        source_rows.take().ok_or_else(|| {
-                            CdfError::internal(
-                                "watermark-enabled execution omitted source-row tracking",
-                            )
-                        })?,
-                        event_time_field,
-                        &watermark,
-                        *action,
-                        &partition.partition_id,
-                        batch_source_position.as_ref(),
-                        batch_source_row_base,
-                    )?;
-                    if classification.recaptured.is_some() {
-                        return Err(CdfError::internal(
-                            "late-data recapture payload reached execution before durable carryover was installed",
-                        ));
-                    }
-                    output = classification.admitted;
-                    source_rows = Some(classification.admitted_source_rows);
-                    if *action == cdf_kernel::LateDataAction::Quarantine {
-                        for record in &classification.records {
-                            late_quarantine_records
-                                .push(quarantine_record_from_late_data(record)?);
-                        }
-                        merge_verdict_summary(
-                            &mut verdict_summary,
-                            late_data_quarantine_summary(&classification.records),
-                        );
-                    }
-                    late_data_records.extend(classification.records);
-                    if output.num_rows() == 0 {
-                        let quarantine_lease = reserve_quarantine_evidence(memory.as_ref())?;
-                        let mut quarantine_sink = QuarantinePartAccumulator::new(
-                            &builder,
-                            &mut quarantine_part_count,
-                            quarantine_lease,
-                        );
-                        for record in late_quarantine_records {
-                            quarantine_sink.push(record)?;
-                        }
-                        quarantine_sink.finish()?;
-                        phase_measurements.add(
-                            RunPhase::ValidationNormalization,
-                            elapsed_ns(validation_started, "validation/normalization")?,
-                            validation_input_bytes,
-                            0,
-                        );
-                        close_drain_epoch_at_batch_frontier!();
-                        continue;
-                    }
-                }
-
                 let evaluation_context = package_evaluation_context
                     .clone()
                     .with_source_position(batch_source_position.clone());
@@ -3953,7 +4166,6 @@ where
                 )
                 .await?;
                 let quarantine_lease = if residual_candidates.is_empty()
-                    && late_quarantine_records.is_empty()
                     && !program_may_quarantine(&validation_program)
                 {
                     None
@@ -3965,11 +4177,9 @@ where
                     &mut quarantine_part_count,
                     quarantine_lease,
                 );
-                for record in late_quarantine_records {
-                    quarantine_sink.push(record)?;
-                }
                 let ContractExecOutput {
                     accepted,
+                    accepted_source_rows,
                     variant_values,
                     summary,
                     residual_decisions: batch_residual_decisions,
@@ -4010,24 +4220,114 @@ where
                 let validation_output_bytes =
                     u64::try_from(output.get_array_memory_size())
                         .map_err(|error| CdfError::internal(error.to_string()))?;
-                if apply_package_dedup {
-                    let prepared_output = prepare_output_batch(
-                        &validation_program,
-                        effective_schema_evidence.is_some(),
+                let prepared_output = prepare_output_batch(
+                    &validation_program,
+                    effective_schema_evidence.is_some(),
                         PreparedOutputBatch {
                             output,
                             variant_values,
-                            output_position: batch_output_position.clone(),
                             memory_lease,
                         },
-                        &mut output_schema,
-                        runtime_output_schema.as_ref(),
-                        &mut phase_measurements,
-                    )?;
-                    let PreparedKernelOutput {
+                    &mut output_schema,
+                    runtime_output_schema.as_ref(),
+                    &mut phase_measurements,
+                )?;
+                let PreparedKernelOutput {
+                    output,
+                    memory_lease,
+                } = prepared_output;
+                let (output, memory_lease) = if let (Some((event_time_field, action)), Some(watermark)) = (
+                    late_data_policy.as_ref(),
+                    drain_controller
+                        .as_deref()
+                        .and_then(cdf_runtime::DrainEpochController::late_data_watermark)
+                        .cloned(),
+                ) {
+                    let classification = crate::late_data::classify_late_data(
                         output,
-                        memory_lease,
-                    } = prepared_output;
+                        accepted_source_rows.ok_or_else(|| {
+                            CdfError::internal(
+                                "watermark-enabled contract execution omitted accepted source-row tracking",
+                            )
+                        })?,
+                        event_time_field,
+                        &watermark,
+                        *action,
+                        &partition.partition_id,
+                        batch_source_position.as_ref(),
+                        batch_source_row_base,
+                    )?;
+                    if let Some(recaptured) = classification.recaptured {
+                        let row_count = u64::try_from(recaptured.num_rows()).map_err(|_| {
+                            CdfError::data("late-data carryover row count exceeds u64")
+                        })?;
+                        let memory_bound_bytes =
+                            cdf_memory::record_batch_retained_bytes(&recaptured)?;
+                        let relative_path = format!(
+                            "carryover/late-data-{:020}.arrow",
+                            late_data_carryover.len()
+                        );
+                        let file = builder
+                            .write_ipc_identity_batches(&relative_path, &[recaptured])?;
+                        let output_position = batch_output_position.clone().ok_or_else(|| {
+                            CdfError::data(
+                                "recapture_next_epoch requires exact source position authority for every withheld batch",
+                            )
+                        })?;
+                        let carryover = cdf_kernel::LateDataCarryoverRef {
+                            version: cdf_kernel::LATE_DATA_CARRYOVER_VERSION,
+                            package_id: plan.package_id.clone(),
+                            relative_path: file.path,
+                            byte_count: file.byte_count,
+                            sha256: file.sha256,
+                            row_count,
+                            memory_bound_bytes,
+                            output_position,
+                        };
+                        carryover.validate()?;
+                        late_data_carryover.push(carryover);
+                    }
+                    if *action == cdf_kernel::LateDataAction::Quarantine
+                        && !classification.records.is_empty()
+                    {
+                        let quarantine_lease = reserve_quarantine_evidence(memory.as_ref())?;
+                        let mut quarantine_sink = QuarantinePartAccumulator::new(
+                            &builder,
+                            &mut quarantine_part_count,
+                            quarantine_lease,
+                        );
+                        for record in &classification.records {
+                            quarantine_sink.push(quarantine_record_from_late_data(record)?)?;
+                        }
+                        quarantine_sink.finish()?;
+                        merge_verdict_summary(
+                            &mut verdict_summary,
+                            late_data_quarantine_summary(&classification.records),
+                        );
+                    }
+                    late_data_records.extend(classification.records);
+                    if let Some(lease) = &memory_lease {
+                        lease.reconcile(
+                            u64::try_from(classification.admitted.get_array_memory_size())
+                                .map_err(|_| CdfError::data("late-data output bytes exceed u64"))?
+                                .max(1),
+                        )?;
+                    }
+                    (classification.admitted, memory_lease)
+                } else {
+                    (output, memory_lease)
+                };
+                if output.num_rows() == 0 {
+                    phase_measurements.add(
+                        RunPhase::ValidationNormalization,
+                        elapsed_ns(validation_started, "validation/normalization")?,
+                        validation_input_bytes,
+                        0,
+                    );
+                    close_drain_epoch_at_batch_frontier!();
+                    continue;
+                }
+                if apply_package_dedup {
                     phase_measurements.add(
                         RunPhase::ValidationNormalization,
                         elapsed_ns(validation_started, "validation/normalization")?,
@@ -4058,23 +4358,18 @@ where
                     validation_input_bytes,
                     validation_output_bytes,
                 );
-                write_output_batch(
-                    &validation_program,
-                    effective_schema_evidence.is_some(),
-                    PreparedOutputBatch {
+                write_normalized_output_batch(
+                    PreparedKernelOutput {
                         output,
-                        variant_values,
-                        output_position: batch_output_position,
                         memory_lease,
                     },
+                    batch_output_position,
                     &mut segment_assembler,
                     &mut OutputWriteState {
                         profile: &mut profile,
                         lineage: &mut lineage,
                         segments: &mut segments,
                         segment_positions: &mut segment_positions,
-                        output_schema: &mut output_schema,
-                        expected_schema: runtime_output_schema.as_ref(),
                         phase_measurements: &mut phase_measurements,
                         memory: memory.as_ref(),
                         statistics: statistics_profile_state(
@@ -4100,8 +4395,6 @@ where
                     lineage: &mut lineage,
                     segments: &mut segments,
                     segment_positions: &mut segment_positions,
-                    output_schema: &mut output_schema,
-                    expected_schema: runtime_output_schema.as_ref(),
                     phase_measurements: &mut phase_measurements,
                     memory: memory.as_ref(),
                     statistics: statistics_profile_state(
@@ -4179,7 +4472,11 @@ where
             && completion_attestation.is_none()
         {
             Some(
-                attest_partition_with_terminal_join(resource, &partition, &run_cancellation)
+                attest_partition_with_terminal_join(
+                    resource,
+                    &executable_partition,
+                    &run_cancellation,
+                )
                     .await?
                     .ok_or_else(|| {
                         CdfError::data(format!(
@@ -4220,7 +4517,11 @@ where
             let fallback_attestation = if observed_partition_position.is_none()
                 && completion_attestation.is_none()
             {
-                attest_partition_with_terminal_join(resource, &partition, &run_cancellation)
+                attest_partition_with_terminal_join(
+                    resource,
+                    &executable_partition,
+                    &run_cancellation,
+                )
                     .await?
             } else {
                 None
@@ -4262,7 +4563,7 @@ where
                     None => {
                         let attestation = attest_partition_with_terminal_join(
                             resource,
-                            &partition,
+                            &executable_partition,
                             &run_cancellation,
                         )
                         .await?;
@@ -4387,10 +4688,46 @@ where
             }
             if processed_observations.is_empty() {
                 if consumed_partition_count == frontier_partition_count {
-                    controller.finish_empty_source(
-                        drain_clock.monotonic_milliseconds(options.services.as_ref()),
-                    )?;
-                    drain_finished_noop = true;
+                    if carryover_progress_observed {
+                        let frontier = controller.committed_frontier().cloned().ok_or_else(|| {
+                            CdfError::internal(
+                                "late-data carryover lost its committed source frontier",
+                            )
+                        })?;
+                        let carryover = controller.committed_source_continuation().cloned();
+                        let global_watermark = controller.committed_watermark().cloned();
+                        match controller.observe_safe_frontier(
+                            cdf_runtime::DrainSafeFrontierObservation {
+                                frontier,
+                                carryover,
+                                admitted_batches: 0,
+                                admitted_rows: 0,
+                                admitted_bytes: 0,
+                                admitted_positions: 0,
+                                global_watermark,
+                                source_exhausted: true,
+                                monotonic_milliseconds: drain_clock
+                                    .monotonic_milliseconds(options.services.as_ref()),
+                                observed_at_unix_milliseconds: drain_clock
+                                    .observed_at_unix_milliseconds(options.services.as_ref())?,
+                            },
+                        )? {
+                            cdf_runtime::DrainEpochDecision::Close(closure) => {
+                                drain_epoch_closure = Some(*closure);
+                            }
+                            cdf_runtime::DrainEpochDecision::Continue
+                            | cdf_runtime::DrainEpochDecision::FinishedNoOp => {
+                                return Err(CdfError::internal(
+                                    "source exhaustion did not close a nonempty carryover epoch",
+                                ));
+                            }
+                        }
+                    } else {
+                        controller.finish_empty_source(
+                            drain_clock.monotonic_milliseconds(options.services.as_ref()),
+                        )?;
+                        drain_finished_noop = true;
+                    }
                     break;
                 }
                 continue;
@@ -4473,8 +4810,6 @@ where
                 lineage: &mut lineage,
                 segments: &mut segments,
                 segment_positions: &mut segment_positions,
-                output_schema: &mut output_schema,
-                expected_schema: runtime_output_schema.as_ref(),
                 phase_measurements: &mut phase_measurements,
                 memory: memory.as_ref(),
                 statistics: statistics_profile_state(
@@ -4500,8 +4835,6 @@ where
             lineage: &mut lineage,
             segments: &mut segments,
             segment_positions: &mut segment_positions,
-            output_schema: &mut output_schema,
-            expected_schema: runtime_output_schema.as_ref(),
             phase_measurements: &mut phase_measurements,
             memory: memory.as_ref(),
             statistics: statistics_profile_state(
@@ -4738,6 +5071,8 @@ where
                 drain_frontier: drain_epoch_closure
                     .as_ref()
                     .map(|closure| &closure.frontier),
+                consumed_late_data_carryover: &consumed_late_data_carryover,
+                late_data_carryover: &late_data_carryover,
                 execution_evidence: &execution_evidence,
             },
         )?;
@@ -4773,6 +5108,8 @@ where
                 closure,
                 consumed_partition_count,
                 resume_partition: drain_partition_resume,
+                consumed_late_data_carryover,
+                late_data_carryover,
             }),
             execution_evidence,
         },
@@ -5373,26 +5710,6 @@ fn write_contract_evolution_stream(
     Ok(())
 }
 
-fn write_output_batch(
-    program: &ValidationProgram,
-    canonicalize_observed_schema: bool,
-    prepared: PreparedOutputBatch,
-    assembler: &mut crate::CanonicalSegmentAssembler,
-    state: &mut OutputWriteState<'_>,
-    sink: &mut SegmentOutputSink<'_, '_>,
-) -> Result<()> {
-    let output_position = prepared.output_position.clone();
-    let prepared = prepare_output_batch(
-        program,
-        canonicalize_observed_schema,
-        prepared,
-        state.output_schema,
-        state.expected_schema,
-        state.phase_measurements,
-    )?;
-    write_normalized_output_batch(prepared, output_position, assembler, state, sink)
-}
-
 fn prepare_output_batch(
     program: &ValidationProgram,
     canonicalize_observed_schema: bool,
@@ -5404,7 +5721,6 @@ fn prepare_output_batch(
     let PreparedOutputBatch {
         output,
         variant_values,
-        output_position: _,
         memory_lease,
     } = prepared;
     let normalization_started = phase_measurements.start();
@@ -5941,6 +6257,14 @@ fn apply_contract_exec(
         },
     )?;
     let summary = evaluation.summary;
+    let accepted_source_rows = residual.typed_source_rows.as_ref().map(|source_rows| {
+        evaluation
+            .accepted_rows
+            .iter()
+            .zip(source_rows)
+            .filter_map(|(accepted, source_row)| accepted.unwrap_or(false).then_some(*source_row))
+            .collect::<Vec<_>>()
+    });
     let accepted = if summary.accepted_rows == summary.input_rows {
         residual.typed_batch
     } else {
@@ -5956,6 +6280,7 @@ fn apply_contract_exec(
     combined.rule_summaries.extend(residual.rule_summaries);
     Ok(ContractExecOutput {
         accepted,
+        accepted_source_rows,
         variant_values: variants,
         summary: combined,
         residual_decisions: residual.residual_decisions,
@@ -5979,6 +6304,14 @@ fn apply_contract_exec_without_residual_candidates(
             )?)
         })?;
     let summary = evaluation.summary;
+    let accepted_source_rows = context.source_rows.map(|source_rows| {
+        evaluation
+            .accepted_rows
+            .iter()
+            .zip(source_rows)
+            .filter_map(|(accepted, source_row)| accepted.unwrap_or(false).then_some(*source_row))
+            .collect::<Vec<_>>()
+    });
     let accepted = if summary.accepted_rows == summary.input_rows {
         batch
     } else {
@@ -5997,6 +6330,7 @@ fn apply_contract_exec_without_residual_candidates(
     };
     Ok(ContractExecOutput {
         accepted,
+        accepted_source_rows,
         variant_values,
         summary,
         residual_decisions: Vec::new(),

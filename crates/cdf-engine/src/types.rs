@@ -1931,6 +1931,8 @@ pub struct EngineDrainEpoch {
     pub closure: cdf_runtime::DrainEpochClosure,
     pub consumed_partition_count: usize,
     pub resume_partition: Option<Box<DrainPartitionResume>>,
+    pub consumed_late_data_carryover: Vec<cdf_kernel::LateDataCarryoverRef>,
+    pub late_data_carryover: Vec<cdf_kernel::LateDataCarryoverRef>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2037,6 +2039,8 @@ pub struct EnginePackageDraft<'a> {
     pub lineage: &'a LineageSummary,
     pub segment_positions: &'a [EngineSegmentPosition],
     pub drain_frontier: Option<&'a cdf_kernel::EpochFrontier>,
+    pub consumed_late_data_carryover: &'a [cdf_kernel::LateDataCarryoverRef],
+    pub late_data_carryover: &'a [cdf_kernel::LateDataCarryoverRef],
     pub(crate) execution_evidence: &'a EngineExecutionEvidence,
 }
 

@@ -323,6 +323,45 @@ impl PackageBuilder {
         )
     }
 
+    /// Writes an identity-bearing Arrow IPC artifact without assigning package row ordinals.
+    ///
+    /// This is for typed package-side control payloads such as next-epoch carryover, never for
+    /// canonical destination segments.
+    pub fn write_ipc_identity_batches(
+        &self,
+        relative_path: impl AsRef<Path>,
+        batches: &[RecordBatch],
+    ) -> Result<FileEntry> {
+        let first = batches
+            .first()
+            .ok_or_else(|| CdfError::data("Arrow IPC identity artifact requires a batch"))?;
+        if batches
+            .iter()
+            .any(|batch| batch.schema().as_ref() != first.schema().as_ref())
+        {
+            return Err(CdfError::data(
+                "Arrow IPC identity artifact requires one Arrow schema",
+            ));
+        }
+        let options = arrow_ipc::writer::IpcWriteOptions::default()
+            .try_with_compression(Some(arrow_ipc::CompressionType::LZ4_FRAME))
+            .map_err(CdfError::from)?;
+        let mut artifact = self.begin_streaming_identity_artifact(relative_path)?;
+        {
+            let mut writer = arrow_ipc::writer::FileWriter::try_new_with_options(
+                &mut artifact,
+                first.schema().as_ref(),
+                options,
+            )
+            .map_err(CdfError::from)?;
+            for batch in batches {
+                writer.write(batch).map_err(CdfError::from)?;
+            }
+            writer.finish().map_err(CdfError::from)?;
+        }
+        artifact.finish()
+    }
+
     pub fn write_input_checkpoint_artifact(
         &self,
         checkpoint: &Option<Checkpoint>,

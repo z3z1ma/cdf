@@ -13,7 +13,6 @@ use cdf_package_contract::LateDataRecord;
 
 pub(crate) struct LateDataClassification {
     pub(crate) admitted: RecordBatch,
-    pub(crate) admitted_source_rows: Vec<usize>,
     pub(crate) recaptured: Option<RecordBatch>,
     pub(crate) records: Vec<LateDataRecord>,
 }
@@ -82,7 +81,6 @@ pub(crate) fn classify_late_data(
     if records.is_empty() || action == LateDataAction::AdmitWithAnnotation {
         return Ok(LateDataClassification {
             admitted: batch,
-            admitted_source_rows: source_rows,
             recaptured: None,
             records,
         });
@@ -90,12 +88,6 @@ pub(crate) fn classify_late_data(
 
     let admitted_mask = BooleanArray::from(late.iter().map(|late| !late).collect::<Vec<_>>());
     let admitted = filter_record_batch(&batch, &admitted_mask).map_err(CdfError::from)?;
-    let admitted_source_rows = source_rows
-        .iter()
-        .copied()
-        .zip(&late)
-        .filter_map(|(row, late)| (!late).then_some(row))
-        .collect();
     let recaptured = if action == LateDataAction::RecaptureNextEpoch {
         let late_mask = BooleanArray::from(late);
         Some(filter_record_batch(&batch, &late_mask).map_err(CdfError::from)?)
@@ -104,7 +96,6 @@ pub(crate) fn classify_late_data(
     };
     Ok(LateDataClassification {
         admitted,
-        admitted_source_rows,
         recaptured,
         records,
     })
@@ -273,15 +264,12 @@ mod tests {
             match action {
                 LateDataAction::Quarantine => {
                     assert!(result.recaptured.is_none());
-                    assert_eq!(result.admitted_source_rows, vec![1, 2, 3]);
                 }
                 LateDataAction::RecaptureNextEpoch => {
                     assert_eq!(result.recaptured.unwrap().num_rows(), 1);
-                    assert_eq!(result.admitted_source_rows, vec![1, 2, 3]);
                 }
                 LateDataAction::AdmitWithAnnotation => {
                     assert!(result.recaptured.is_none());
-                    assert_eq!(result.admitted_source_rows, vec![0, 1, 2, 3]);
                 }
             }
         }

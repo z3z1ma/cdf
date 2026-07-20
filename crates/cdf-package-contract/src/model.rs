@@ -9,6 +9,7 @@ pub const REQUIRED_DIRECTORIES: &[&str] = &[
     "plan",
     "schema",
     "data",
+    "carryover",
     "quarantine",
     "stats",
     "lineage",

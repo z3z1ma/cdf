@@ -523,6 +523,7 @@ fn write_replay_artifacts(
         input_position: None,
         output_position: position(10),
         output_watermark: None,
+        late_data_carryover: Vec::new(),
         source_continuation: None,
         schema_hash: schema_hash(),
         segments: segments.clone(),

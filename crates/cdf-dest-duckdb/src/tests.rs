@@ -341,6 +341,7 @@ fn write_current_state_artifacts(
             input_position: None,
             output_position,
             output_watermark: None,
+            late_data_carryover: Vec::new(),
             source_continuation: None,
             schema_hash: SchemaHash::new("schema-v1").unwrap(),
             segments: segments.clone(),

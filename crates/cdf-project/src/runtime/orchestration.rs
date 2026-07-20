@@ -141,6 +141,7 @@ async fn run_project_with_context(
         resource,
         plan: &plan,
         package_id: &package_id,
+        package_root,
         package_dir,
         pipeline_id: &pipeline_id,
         checkpoint_id: &checkpoint_id,
@@ -318,6 +319,7 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
                 resource,
                 plan: &remaining_plan,
                 package_id: &package_id,
+                package_root: package_root.clone(),
                 package_dir,
                 pipeline_id: &pipeline_id,
                 checkpoint_id: &checkpoint_id,
@@ -525,6 +527,7 @@ struct ProjectRunExecution<'a> {
     resource: ProjectRunSource<'a>,
     plan: &'a EnginePlan,
     package_id: &'a str,
+    package_root: PathBuf,
     package_dir: PathBuf,
     pipeline_id: &'a PipelineId,
     checkpoint_id: &'a CheckpointId,
@@ -554,6 +557,43 @@ enum ProjectRunUnitOutcome {
 enum ManifestPlanning {
     ResolveAgainstCheckpoint,
     Preselected(Option<FileManifestRunSummary>),
+}
+
+fn load_late_data_carryover(
+    package_root: &Path,
+    head: Option<&Checkpoint>,
+) -> Result<Vec<cdf_engine::LateDataCarryoverInput>> {
+    let Some(head) = head else {
+        return Ok(Vec::new());
+    };
+    let references = &head.delta.late_data_carryover;
+    cdf_kernel::validate_late_data_carryover_refs(references)?;
+    let Some(package_id) = references
+        .first()
+        .map(|reference| reference.package_id.as_str())
+    else {
+        return Ok(Vec::new());
+    };
+    let reader = PackageReader::open(package_root.join(package_id))?;
+    if reader.manifest().identity.package_id != package_id {
+        return Err(CdfError::data(
+            "late-data carryover package directory does not match its package identity",
+        ));
+    }
+    let verified = Arc::new(reader.verify_for_consumption()?);
+    if verified.package_hash() != head.delta.package_hash.as_str() {
+        return Err(CdfError::data(
+            "late-data carryover package does not match the committed checkpoint head",
+        ));
+    }
+    references
+        .iter()
+        .map(|reference| {
+            let object =
+                reader.verified_identity_object(Arc::clone(&verified), &reference.relative_path)?;
+            cdf_engine::LateDataCarryoverInput::new(reference.clone(), object)
+        })
+        .collect()
 }
 
 async fn run_project_inner(
@@ -615,7 +655,10 @@ async fn run_project_inner(
         } else {
             1
         })?;
-    if manifest_plan.no_changed_files() {
+    let pending_late_data_carryover = head
+        .as_ref()
+        .is_some_and(|checkpoint| !checkpoint.delta.late_data_carryover.is_empty());
+    if manifest_plan.no_changed_files() && !pending_late_data_carryover {
         return no_op_report(
             execution,
             head,
@@ -625,6 +668,15 @@ async fn run_project_inner(
         .map(Box::new)
         .map(ProjectRunUnitOutcome::NoOp);
     }
+    if pending_late_data_carryover && drain_controller.is_none() {
+        return Err(CdfError::contract(
+            "pending late-data carryover requires a drain execution plan",
+        ));
+    }
+    let mut late_data_carryover = Some(load_late_data_carryover(
+        &execution.package_root,
+        head.as_ref(),
+    )?);
 
     execution.recorder.append_package_started()?;
 
@@ -689,7 +741,10 @@ async fn run_project_inner(
                 &execution.package_dir,
                 &write_package_pre_finalize_artifacts,
                 cdf_engine::DrainEpochExecution::new(controller)
-                    .with_streaming_hooks(&mut durable_segment, &mut stream_finalize),
+                    .with_streaming_hooks(&mut durable_segment, &mut stream_finalize)
+                    .with_late_data_carryover(late_data_carryover.take().ok_or_else(|| {
+                        CdfError::internal("late-data carryover input was consumed twice")
+                    })?),
                 options,
             )
             .await
@@ -700,7 +755,11 @@ async fn run_project_inner(
                 resource,
                 &execution.package_dir,
                 &write_package_pre_finalize_artifacts,
-                cdf_engine::DrainEpochExecution::new(controller),
+                cdf_engine::DrainEpochExecution::new(controller).with_late_data_carryover(
+                    late_data_carryover.take().ok_or_else(|| {
+                        CdfError::internal("late-data carryover input was consumed twice")
+                    })?,
+                ),
                 options,
             )
             .await

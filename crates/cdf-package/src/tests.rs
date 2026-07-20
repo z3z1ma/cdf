@@ -435,6 +435,7 @@ fn write_state_commit_artifacts(builder: &PackageBuilder, segment: SegmentEntry)
         input_position: None,
         output_position,
         output_watermark: None,
+        late_data_carryover: Vec::new(),
         source_continuation: None,
         schema_hash: SchemaHash::new("schema-fixture").unwrap(),
         segments: segments.clone(),
@@ -836,7 +837,7 @@ fn fixed_fixture_hash_is_deterministic_across_repeated_runs() {
     assert_eq!(first_manifest.package_hash, second_manifest.package_hash);
     assert_eq!(
         first_manifest.package_hash,
-        "sha256:0c00d65b1af71d9d828917f0c5de616d79c629115c5a7a5eeff95565bc00dfe1"
+        "sha256:22c9bf95b9fab4fdc118ee11ce4bbba25755e442624c420c208d6066da68ffcf"
     );
 }
 
@@ -1207,6 +1208,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
             value: CursorValue::I64(3),
         }),
         output_watermark: None,
+        late_data_carryover: Vec::new(),
         source_continuation: None,
         schema_hash: SchemaHash::new("schema-fixture").unwrap(),
         segments: vec![StateSegment {
@@ -1243,6 +1245,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
             input_position: None,
             output_position: state_delta.input_position.clone().unwrap(),
             output_watermark: None,
+            late_data_carryover: Vec::new(),
             source_continuation: None,
             package_hash: package_hash.clone(),
             schema_hash: SchemaHash::new("schema-fixture").unwrap(),
@@ -1525,6 +1528,7 @@ fn zero_segment_replay_requires_exact_typed_processed_observation_evidence() {
         input_position: None,
         output_position: processed_position.clone(),
         output_watermark: None,
+        late_data_carryover: Vec::new(),
         source_continuation: None,
         schema_hash: SchemaHash::new("schema-fixture").unwrap(),
         segments: Vec::new(),
@@ -1630,6 +1634,7 @@ fn table_snapshot_replay_preserves_exact_processed_authority_and_rejects_tamper(
         input_position: None,
         output_position: position,
         output_watermark: None,
+        late_data_carryover: Vec::new(),
         source_continuation: None,
         schema_hash: SchemaHash::new("schema-fixture").unwrap(),
         segments: Vec::new(),

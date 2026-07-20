@@ -1,4 +1,7 @@
-use std::collections::BTreeSet;
+use std::{
+    collections::BTreeSet,
+    path::{Component, Path},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +30,8 @@ pub struct StateDelta {
     pub output_position: SourcePosition,
     /// Receipt-gated global event-time completeness emitted by this state transition.
     pub output_watermark: Option<WatermarkClaim>,
+    /// Validated rows withheld for deterministic admission into the next epoch.
+    pub late_data_carryover: Vec<LateDataCarryoverRef>,
     /// Exact source-local restart authority when the resource output position is an aggregate.
     ///
     /// Multi-partition drains commonly expose a useful aggregate cursor as `output_position`
@@ -72,6 +77,7 @@ impl StateDelta {
         if let Some(watermark) = &self.output_watermark {
             watermark.validate()?;
         }
+        validate_late_data_carryover_refs(&self.late_data_carryover)?;
         if let Some(position) = &self.source_continuation {
             position.validate()?;
         }
@@ -80,6 +86,98 @@ impl StateDelta {
         }
         Ok(())
     }
+}
+
+pub const LATE_DATA_CARRYOVER_VERSION: u16 = 1;
+
+/// Content-bound package artifact retained as input to the next finite epoch.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LateDataCarryoverRef {
+    pub version: u16,
+    pub package_id: String,
+    pub relative_path: String,
+    pub byte_count: u64,
+    pub sha256: String,
+    pub row_count: u64,
+    /// Conservative retained Arrow allocation bound for one decoded carryover batch.
+    pub memory_bound_bytes: u64,
+    pub output_position: SourcePosition,
+}
+
+impl LateDataCarryoverRef {
+    pub fn validate(&self) -> Result<()> {
+        if self.version != LATE_DATA_CARRYOVER_VERSION {
+            return Err(CdfError::contract(format!(
+                "unsupported late-data carryover version {}",
+                self.version
+            )));
+        }
+        if self.package_id.is_empty() || self.relative_path.is_empty() {
+            return Err(CdfError::data(
+                "late-data carryover requires package and artifact identities",
+            ));
+        }
+        if self.package_id == "."
+            || self.package_id == ".."
+            || self
+                .package_id
+                .chars()
+                .any(|character| character.is_control() || matches!(character, '/' | '\\'))
+        {
+            return Err(CdfError::data(
+                "late-data carryover package identity must be one safe path component",
+            ));
+        }
+        let path = Path::new(&self.relative_path);
+        if path.is_absolute()
+            || path.components().any(|component| {
+                matches!(
+                    component,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            })
+            || !self.relative_path.starts_with("carryover/")
+        {
+            return Err(CdfError::data(
+                "late-data carryover path must remain beneath the package carryover directory",
+            ));
+        }
+        if self.byte_count == 0 || self.row_count == 0 || self.memory_bound_bytes == 0 {
+            return Err(CdfError::data(
+                "late-data carryover requires nonzero encoded bytes, retained bytes, and row counts",
+            ));
+        }
+        if self.sha256.len() != 64 || !self.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(CdfError::data(
+                "late-data carryover requires a lowercase or uppercase hexadecimal SHA-256",
+            ));
+        }
+        self.output_position.validate()
+    }
+}
+
+pub fn validate_late_data_carryover_refs(carryover: &[LateDataCarryoverRef]) -> Result<()> {
+    let mut package_id = None::<&str>;
+    let mut paths = BTreeSet::new();
+    for reference in carryover {
+        reference.validate()?;
+        match package_id {
+            Some(expected) if expected != reference.package_id => {
+                return Err(CdfError::data(
+                    "checkpoint late-data carryover must originate from one package identity",
+                ));
+            }
+            Some(_) => {}
+            None => package_id = Some(reference.package_id.as_str()),
+        }
+        if !paths.insert(reference.relative_path.as_str()) {
+            return Err(CdfError::data(
+                "checkpoint late-data carryover contains a duplicate package artifact",
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

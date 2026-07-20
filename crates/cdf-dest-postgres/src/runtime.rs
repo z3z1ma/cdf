@@ -429,6 +429,7 @@ fn postgres_preflight_delta(
         input_position: None,
         output_position: segment.output_position.clone(),
         output_watermark: None,
+        late_data_carryover: Vec::new(),
         source_continuation: None,
         package_hash: PackageHash::new("sha256:postgres-preflight")?,
         schema_hash: schema_hash.clone(),

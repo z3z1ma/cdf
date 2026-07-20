@@ -24,6 +24,8 @@ pub(super) fn write_run_state_commit_artifacts(
             output_watermark: draft
                 .drain_frontier
                 .and_then(|frontier| frontier.watermark.clone()),
+            consumed_late_data_carryover: draft.consumed_late_data_carryover.to_vec(),
+            late_data_carryover: draft.late_data_carryover.to_vec(),
         },
         schema_hash,
         scope,
@@ -190,6 +192,16 @@ pub(crate) fn state_delta_from_run(
                 .drain_epoch
                 .as_ref()
                 .and_then(|epoch| epoch.closure.frontier.watermark.clone()),
+            consumed_late_data_carryover: output
+                .drain_epoch
+                .as_ref()
+                .map(|epoch| epoch.consumed_late_data_carryover.clone())
+                .unwrap_or_default(),
+            late_data_carryover: output
+                .drain_epoch
+                .as_ref()
+                .map(|epoch| epoch.late_data_carryover.clone())
+                .unwrap_or_default(),
         },
         schema_hash,
         scope,
@@ -206,6 +218,8 @@ struct StateDeltaRunDraft<'a> {
     execution_evidence: &'a cdf_engine::EngineExecutionEvidence,
     source_continuation: Option<SourcePosition>,
     output_watermark: Option<cdf_kernel::WatermarkClaim>,
+    consumed_late_data_carryover: Vec<cdf_kernel::LateDataCarryoverRef>,
+    late_data_carryover: Vec<cdf_kernel::LateDataCarryoverRef>,
 }
 
 fn state_delta_preimage_from_run_draft(
@@ -242,23 +256,50 @@ fn state_delta_preimage_from_run_draft(
         segment_evidence.push((segment, segment_position));
     }
 
-    if draft.execution_evidence.processed_observations().is_empty() {
-        return Err(CdfError::data(
-            "checkpoint state requires complete processed-observation evidence; a partial or limited source execution cannot advance state",
-        ));
-    }
     let observed_positions = draft
         .execution_evidence
         .processed_observations()
         .iter()
         .map(|observation| observation.source_position.clone())
         .collect::<Vec<_>>();
-    let output_position = cdf_kernel::aggregate_resource_closed_output_position(
-        context.descriptor,
-        context.schema,
-        head.map(|checkpoint| &checkpoint.delta.output_position),
-        &observed_positions,
-    )?;
+    let output_position = if observed_positions.is_empty() {
+        if draft.consumed_late_data_carryover.is_empty() {
+            return Err(CdfError::data(
+                "checkpoint state requires processed source observations or persisted late-data carryover",
+            ));
+        }
+        let head = head.ok_or_else(|| {
+            CdfError::data("late-data carryover checkpoint requires a committed input head")
+        })?;
+        let carryover_positions = draft
+            .consumed_late_data_carryover
+            .iter()
+            .map(|carryover| carryover.output_position.clone())
+            .collect::<Vec<_>>();
+        let observed = cdf_kernel::aggregate_resource_closed_output_position(
+            context.descriptor,
+            context.schema,
+            Some(&head.delta.output_position),
+            &carryover_positions,
+        )?;
+        if observed != head.delta.output_position
+            || segment_evidence
+                .iter()
+                .any(|(_, position)| position != &head.delta.output_position)
+        {
+            return Err(CdfError::data(
+                "late-data carryover cannot advance or disagree with its committed source frontier",
+            ));
+        }
+        head.delta.output_position.clone()
+    } else {
+        cdf_kernel::aggregate_resource_closed_output_position(
+            context.descriptor,
+            context.schema,
+            head.map(|checkpoint| &checkpoint.delta.output_position),
+            &observed_positions,
+        )?
+    };
     let state_segments = segment_evidence
         .into_iter()
         .map(|(segment, segment_position)| StateSegment {
@@ -279,6 +320,7 @@ fn state_delta_preimage_from_run_draft(
         input_position: head.map(|checkpoint| checkpoint.delta.output_position.clone()),
         output_position,
         output_watermark: draft.output_watermark,
+        late_data_carryover: draft.late_data_carryover,
         source_continuation: draft.source_continuation,
         schema_hash: schema_hash.clone(),
         segments: state_segments,
