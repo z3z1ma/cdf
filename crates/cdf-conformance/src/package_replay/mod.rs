@@ -752,6 +752,7 @@ fn write_prepared_state_commit_artifacts(
         input_position: None,
         output_position: output_position.clone(),
         output_watermark: None,
+        partition_watermarks: Vec::new(),
         late_data_carryover: Vec::new(),
         source_continuation: None,
         schema_hash: spec.schema_hash.clone(),

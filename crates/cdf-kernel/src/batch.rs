@@ -128,6 +128,8 @@ pub struct BatchHeader {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_coercion_plan: Option<String>,
     pub watermarks: Vec<crate::WatermarkClaim>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partition_idleness: Option<crate::PartitionIdlenessClaim>,
     pub stats: BatchStats,
     pub cdc: Option<CdcMetadata>,
     #[serde(skip, default)]
@@ -163,6 +165,7 @@ impl BatchHeader {
             pre_contract_quarantine: Vec::new(),
             schema_coercion_plan: None,
             watermarks: Vec::new(),
+            partition_idleness: None,
             stats: BatchStats::default(),
             cdc: None,
             pre_contract_evidence: PreContractEvidence::default(),

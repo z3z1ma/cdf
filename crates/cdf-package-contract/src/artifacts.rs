@@ -95,6 +95,7 @@ pub struct StateDeltaPreimage {
     pub input_position: Option<SourcePosition>,
     pub output_position: SourcePosition,
     pub output_watermark: Option<cdf_kernel::WatermarkClaim>,
+    pub partition_watermarks: Vec<cdf_kernel::PartitionWatermarkState>,
     pub late_data_carryover: Vec<cdf_kernel::LateDataCarryoverRef>,
     pub source_continuation: Option<SourcePosition>,
     pub schema_hash: SchemaHash,
@@ -116,6 +117,7 @@ impl StateDeltaPreimage {
         if let Some(watermark) = &self.output_watermark {
             watermark.validate()?;
         }
+        cdf_kernel::validate_partition_watermark_states(&self.partition_watermarks)?;
         cdf_kernel::validate_late_data_carryover_refs(&self.late_data_carryover)?;
         if let Some(position) = &self.source_continuation {
             position.validate()?;
@@ -137,6 +139,7 @@ impl StateDeltaPreimage {
             input_position: self.input_position,
             output_position: self.output_position,
             output_watermark: self.output_watermark,
+            partition_watermarks: self.partition_watermarks,
             late_data_carryover: self.late_data_carryover,
             source_continuation: self.source_continuation,
             package_hash,
@@ -371,4 +374,57 @@ fn validate_package_segments(
         }
     }
     Ok(())
+}
+pub const PARTITION_WATERMARK_STATE_FILE: &str = "stats/partition-watermarks.json";
+pub const PARTITION_WATERMARK_STATE_ARTIFACT_VERSION: u16 = 1;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    try_from = "UncheckedPartitionWatermarkStateArtifact",
+    deny_unknown_fields
+)]
+pub struct PartitionWatermarkStateArtifact {
+    pub version: u16,
+    pub partitions: Vec<cdf_kernel::PartitionWatermarkState>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UncheckedPartitionWatermarkStateArtifact {
+    version: u16,
+    partitions: Vec<cdf_kernel::PartitionWatermarkState>,
+}
+
+impl TryFrom<UncheckedPartitionWatermarkStateArtifact> for PartitionWatermarkStateArtifact {
+    type Error = CdfError;
+
+    fn try_from(value: UncheckedPartitionWatermarkStateArtifact) -> Result<Self> {
+        let artifact = Self {
+            version: value.version,
+            partitions: value.partitions,
+        };
+        artifact.validate()?;
+        Ok(artifact)
+    }
+}
+
+impl PartitionWatermarkStateArtifact {
+    pub fn new(partitions: Vec<cdf_kernel::PartitionWatermarkState>) -> Result<Self> {
+        let artifact = Self {
+            version: PARTITION_WATERMARK_STATE_ARTIFACT_VERSION,
+            partitions,
+        };
+        artifact.validate()?;
+        Ok(artifact)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.version != PARTITION_WATERMARK_STATE_ARTIFACT_VERSION {
+            return Err(CdfError::contract(format!(
+                "unsupported partition watermark state artifact version {}",
+                self.version
+            )));
+        }
+        cdf_kernel::validate_partition_watermark_states(&self.partitions)
+    }
 }

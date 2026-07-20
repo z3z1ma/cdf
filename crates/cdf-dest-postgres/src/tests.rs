@@ -55,6 +55,7 @@ fn input(disposition: WriteDisposition, dedup: MergeDedupPolicy) -> PostgresLoad
             value: CursorValue::I64(10),
         }),
         output_watermark: None,
+        partition_watermarks: Vec::new(),
         late_data_carryover: Vec::new(),
         source_continuation: None,
         package_hash: PackageHash::new("sha256:abcdef0123456789").unwrap(),

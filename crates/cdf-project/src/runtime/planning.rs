@@ -83,6 +83,7 @@ fn destination_planning_inputs(
         input_position: None,
         output_position: segment.output_position.clone(),
         output_watermark: None,
+        partition_watermarks: Vec::new(),
         late_data_carryover: Vec::new(),
         source_continuation: None,
         package_hash: package_hash.clone(),

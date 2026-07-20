@@ -14,8 +14,9 @@ use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, Checkpoint, CheckpointId, CheckpointStatus, CheckpointStore,
     CommitCounts, CompositePosition, ContractRef, CursorPosition, CursorValue, DestinationId,
     EventTimeDomain, FileManifest, FilePosition, ForeignState, IdempotencyToken, LeaseOwnerId,
-    LogPosition, MigrationRecord, PROMOTION_PUBLICATION_EVENT_VERSION, PackageHash, PageToken,
-    PartitionId, PipelineId, PlanId, PromotionId, PromotionPublicationEvent,
+    LogPosition, MigrationRecord, PARTITION_WATERMARK_STATE_VERSION,
+    PROMOTION_PUBLICATION_EVENT_VERSION, PackageHash, PageToken, PartitionId,
+    PartitionWatermarkState, PipelineId, PlanId, PromotionId, PromotionPublicationEvent,
     PromotionPublicationTarget, PromotionSettlementStore, Receipt, ReceiptId, ResourceId,
     RewindRequest, RunId, STREAM_EPOCH_POLICY_VERSION, SchemaHash, ScopeKey, ScopeLeaseStore,
     SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment, TableSnapshotPosition,
@@ -121,6 +122,7 @@ fn delta_for(
         input_position: None,
         output_position,
         output_watermark: None,
+        partition_watermarks: Vec::new(),
         late_data_carryover: Vec::new(),
         source_continuation: None,
         package_hash: PackageHash::new(package_hash).unwrap(),
@@ -246,7 +248,7 @@ fn commit_delta<S: CheckpointStore>(store: &S, delta: StateDelta) -> Checkpoint 
 }
 
 fn with_watermark(mut delta: StateDelta, value: i64) -> StateDelta {
-    delta.output_watermark = Some(WatermarkClaim {
+    let claim = WatermarkClaim {
         version: WATERMARK_CLAIM_VERSION,
         policy_version: STREAM_EPOCH_POLICY_VERSION,
         event_time_field: "updated_at".into(),
@@ -256,7 +258,14 @@ fn with_watermark(mut delta: StateDelta, value: i64) -> StateDelta {
         source_position: delta.output_position.clone(),
         authority: WatermarkAuthority::Source,
         observation_context: WatermarkObservationContext::EpochBarrier,
-    });
+    };
+    delta.output_watermark = Some(claim.clone());
+    delta.partition_watermarks = vec![PartitionWatermarkState {
+        version: PARTITION_WATERMARK_STATE_VERSION,
+        partition_id: claim.partition_id.clone(),
+        claim: Some(claim),
+        idleness: None,
+    }];
     delta
 }
 
@@ -289,6 +298,24 @@ fn assert_store_rejects_watermark_erasure_and_commit_races<S: CheckpointStore>(s
             .message
             .contains("cannot erase")
     );
+
+    let mut partition_regression = with_watermark(
+        delta(
+            "checkpoint-partition-watermark-regression",
+            Some(&first.delta.checkpoint_id),
+            partition_scope(),
+            cursor_position(2),
+            "package-partition-watermark-regression",
+        ),
+        100,
+    );
+    partition_regression.partition_watermarks[0]
+        .claim
+        .as_mut()
+        .unwrap()
+        .value = WatermarkValue::Signed(90);
+    let error = store.propose(partition_regression).unwrap_err();
+    assert!(error.message.contains("regressed"), "{error}");
 
     let stale = with_watermark(
         delta(

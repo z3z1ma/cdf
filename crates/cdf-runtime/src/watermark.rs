@@ -4,14 +4,15 @@ use std::{
 };
 
 use cdf_kernel::{
-    CdfError, PartitionId, PartitionWatermarkAggregation, Result, WatermarkClaim, WatermarkPolicy,
-    WatermarkValue,
+    CdfError, PARTITION_WATERMARK_STATE_VERSION, PartitionId, PartitionIdlenessClaim,
+    PartitionWatermarkAggregation, PartitionWatermarkState as RecordedPartitionWatermarkState,
+    Result, WatermarkClaim, WatermarkPolicy, WatermarkValue, validate_partition_watermark_states,
 };
 
 #[derive(Clone, Debug)]
 struct PartitionWatermarkState {
     claim: Option<WatermarkClaim>,
-    last_activity_milliseconds: u64,
+    idleness: Option<PartitionIdlenessClaim>,
     eligible: bool,
 }
 
@@ -49,7 +50,7 @@ pub struct PartitionWatermarkTracker {
     partitions: BTreeMap<PartitionId, PartitionWatermarkState>,
     eligible_claims: BTreeSet<(WatermarkOrderKey, PartitionId)>,
     eligible_missing_claims: usize,
-    idle_deadlines: BTreeSet<(u64, PartitionId)>,
+    historical: BTreeMap<PartitionId, RecordedPartitionWatermarkState>,
     last_observation_milliseconds: u64,
     effective_floor: Option<WatermarkClaim>,
 }
@@ -60,7 +61,7 @@ impl PartitionWatermarkTracker {
         partitions: impl IntoIterator<Item = &'a PartitionId>,
         started_milliseconds: u64,
     ) -> Result<Self> {
-        Self::new_with_floor(policy, partitions, started_milliseconds, None)
+        Self::new_with_state(policy, partitions, started_milliseconds, None, &[])
     }
 
     /// Restores the last receipt-gated global watermark before observing a new epoch.
@@ -73,17 +74,33 @@ impl PartitionWatermarkTracker {
         started_milliseconds: u64,
         effective_floor: Option<WatermarkClaim>,
     ) -> Result<Self> {
+        Self::new_with_state(
+            policy,
+            partitions,
+            started_milliseconds,
+            effective_floor,
+            &[],
+        )
+    }
+
+    /// Restores the receipt-gated partition claims and source-authored idleness evidence.
+    pub fn new_with_state<'a>(
+        policy: &WatermarkPolicy,
+        partitions: impl IntoIterator<Item = &'a PartitionId>,
+        started_milliseconds: u64,
+        effective_floor: Option<WatermarkClaim>,
+        restored: &[RecordedPartitionWatermarkState],
+    ) -> Result<Self> {
         validate_floor(policy, effective_floor.as_ref())?;
+        validate_partition_watermark_states(restored)?;
         let mut states = BTreeMap::new();
-        let mut idle_deadlines = BTreeSet::new();
-        let idle_after_milliseconds = idle_after(policy);
         for partition_id in partitions {
             if states
                 .insert(
                     partition_id.clone(),
                     PartitionWatermarkState {
                         claim: None,
-                        last_activity_milliseconds: started_milliseconds,
+                        idleness: None,
                         eligible: matches!(policy, WatermarkPolicy::Enabled { .. }),
                     },
                 )
@@ -93,23 +110,40 @@ impl PartitionWatermarkTracker {
                     "watermark tracker received duplicate partition `{partition_id}`"
                 )));
             }
-            if let Some(deadline) = idle_after_milliseconds
-                .and_then(|idle_after| started_milliseconds.checked_add(idle_after))
-            {
-                idle_deadlines.insert((deadline, partition_id.clone()));
+        }
+        let mut historical = BTreeMap::new();
+        for recorded in restored {
+            validate_recorded_state_against_policy(policy, recorded)?;
+            if let Some(state) = states.get_mut(&recorded.partition_id) {
+                state.claim = recorded.claim.clone();
+                state.idleness = recorded.idleness.clone();
+                state.eligible = recorded.idleness.is_none()
+                    && matches!(policy, WatermarkPolicy::Enabled { .. });
+            } else {
+                historical.insert(recorded.partition_id.clone(), recorded.clone());
             }
         }
-        let eligible_missing_claims = if matches!(policy, WatermarkPolicy::Enabled { .. }) {
-            states.len()
-        } else {
-            0
-        };
+        let mut eligible_claims = BTreeSet::new();
+        let mut eligible_missing_claims = 0_usize;
+        for (partition_id, state) in &states {
+            if !state.eligible {
+                continue;
+            }
+            if let Some(claim) = &state.claim {
+                eligible_claims
+                    .insert((WatermarkOrderKey::from(&claim.value), partition_id.clone()));
+            } else {
+                eligible_missing_claims = eligible_missing_claims
+                    .checked_add(1)
+                    .ok_or_else(|| CdfError::internal("eligible watermark count overflow"))?;
+            }
+        }
         Ok(Self {
             policy: policy.clone(),
             partitions: states,
-            eligible_claims: BTreeSet::new(),
+            eligible_claims,
             eligible_missing_claims,
-            idle_deadlines,
+            historical,
             last_observation_milliseconds: started_milliseconds,
             effective_floor,
         })
@@ -145,18 +179,11 @@ impl PartitionWatermarkTracker {
             }
         }
 
-        let idle_after_milliseconds = idle_after(&self.policy);
         let state = self.partitions.get_mut(partition_id).ok_or_else(|| {
             CdfError::data(format!(
                 "watermark claim references unplanned partition `{partition_id}`"
             ))
         })?;
-        if let Some(deadline) = idle_after_milliseconds
-            .and_then(|idle_after| state.last_activity_milliseconds.checked_add(idle_after))
-        {
-            self.idle_deadlines
-                .remove(&(deadline, partition_id.clone()));
-        }
         if !state.eligible {
             state.eligible = true;
             if let Some(previous) = state.claim.as_ref() {
@@ -171,12 +198,7 @@ impl PartitionWatermarkTracker {
                     .ok_or_else(|| CdfError::internal("eligible watermark count overflow"))?;
             }
         }
-        state.last_activity_milliseconds = monotonic_milliseconds;
-        if let Some(deadline) = idle_after_milliseconds
-            .and_then(|idle_after| monotonic_milliseconds.checked_add(idle_after))
-        {
-            self.idle_deadlines.insert((deadline, partition_id.clone()));
-        }
+        state.idleness = None;
         if let Some(claim) = claim {
             if let Some(previous) = state.claim.as_ref() {
                 self.eligible_claims.remove(&(
@@ -196,6 +218,59 @@ impl PartitionWatermarkTracker {
             state.claim = Some(claim.clone());
         }
         self.effective_watermark(monotonic_milliseconds)
+    }
+
+    /// Excludes one partition only from source-authored idleness evidence admitted by the exact
+    /// compiled capability. Scheduler delay and host timers never manufacture eligibility.
+    pub fn observe_partition_idle(
+        &mut self,
+        partition_id: &PartitionId,
+        idleness: &PartitionIdlenessClaim,
+        monotonic_milliseconds: u64,
+    ) -> Result<Option<WatermarkClaim>> {
+        self.advance_clock(monotonic_milliseconds)?;
+        validate_idleness_against_policy(&self.policy, partition_id, idleness)?;
+        let state = self.partitions.get_mut(partition_id).ok_or_else(|| {
+            CdfError::data(format!(
+                "partition idleness references unplanned partition `{partition_id}`"
+            ))
+        })?;
+        if state.eligible {
+            state.eligible = false;
+            if let Some(claim) = &state.claim {
+                self.eligible_claims
+                    .remove(&(WatermarkOrderKey::from(&claim.value), partition_id.clone()));
+            } else {
+                self.eligible_missing_claims = self
+                    .eligible_missing_claims
+                    .checked_sub(1)
+                    .ok_or_else(|| CdfError::internal("eligible watermark count underflow"))?;
+            }
+        }
+        state.idleness = Some(idleness.clone());
+        self.effective_watermark(monotonic_milliseconds)
+    }
+
+    /// Canonical receipt-gated state for the next epoch or process.
+    pub fn snapshot(&self) -> Result<Vec<RecordedPartitionWatermarkState>> {
+        let mut snapshot = self.historical.clone();
+        for (partition_id, state) in &self.partitions {
+            if state.claim.is_none() && state.idleness.is_none() {
+                continue;
+            }
+            snapshot.insert(
+                partition_id.clone(),
+                RecordedPartitionWatermarkState {
+                    version: PARTITION_WATERMARK_STATE_VERSION,
+                    partition_id: partition_id.clone(),
+                    claim: state.claim.clone(),
+                    idleness: state.idleness.clone(),
+                },
+            );
+        }
+        let snapshot = snapshot.into_values().collect::<Vec<_>>();
+        validate_partition_watermark_states(&snapshot)?;
+        Ok(snapshot)
     }
 
     pub fn effective_watermark(
@@ -278,45 +353,57 @@ impl PartitionWatermarkTracker {
             ));
         }
         self.last_observation_milliseconds = monotonic_milliseconds;
-        while let Some((deadline, partition_id)) = self.idle_deadlines.first().cloned() {
-            if deadline > monotonic_milliseconds {
-                break;
-            }
-            self.idle_deadlines
-                .remove(&(deadline, partition_id.clone()));
-            let state = self.partitions.get_mut(&partition_id).ok_or_else(|| {
-                CdfError::internal("watermark idle index references an unknown partition")
-            })?;
-            if !state.eligible {
-                continue;
-            }
-            state.eligible = false;
-            if let Some(claim) = state.claim.as_ref() {
-                self.eligible_claims
-                    .remove(&(WatermarkOrderKey::from(&claim.value), partition_id));
-            } else {
-                self.eligible_missing_claims = self
-                    .eligible_missing_claims
-                    .checked_sub(1)
-                    .ok_or_else(|| CdfError::internal("eligible watermark count underflow"))?;
-            }
-        }
         Ok(())
     }
 }
 
-fn idle_after(policy: &WatermarkPolicy) -> Option<u64> {
+fn idleness_policy(policy: &WatermarkPolicy) -> Option<(u64, &str)> {
     match policy {
         WatermarkPolicy::Enabled {
             partition_aggregation:
                 PartitionWatermarkAggregation::MinimumEligible {
                     idle_after_milliseconds,
-                    ..
+                    capability_id,
                 },
             ..
-        } => Some(*idle_after_milliseconds),
+        } => Some((*idle_after_milliseconds, capability_id)),
         _ => None,
     }
+}
+
+fn validate_idleness_against_policy(
+    policy: &WatermarkPolicy,
+    partition_id: &PartitionId,
+    idleness: &PartitionIdlenessClaim,
+) -> Result<()> {
+    idleness.validate()?;
+    let Some((minimum_idle, capability_id)) = idleness_policy(policy) else {
+        return Err(CdfError::data(
+            "source emitted partition idleness without minimum_eligible authority",
+        ));
+    };
+    if &idleness.partition_id != partition_id
+        || idleness.capability_id.as_ref() != capability_id
+        || idleness.idle_for_milliseconds < minimum_idle
+    {
+        return Err(CdfError::data(
+            "partition idleness does not match the compiled partition/capability/window authority",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_recorded_state_against_policy(
+    policy: &WatermarkPolicy,
+    state: &RecordedPartitionWatermarkState,
+) -> Result<()> {
+    if let Some(claim) = &state.claim {
+        validate_claim_against_policy(policy, claim)?;
+    }
+    if let Some(idleness) = &state.idleness {
+        validate_idleness_against_policy(policy, &state.partition_id, idleness)?;
+    }
+    Ok(())
 }
 
 fn validate_floor(policy: &WatermarkPolicy, floor: Option<&WatermarkClaim>) -> Result<()> {
@@ -425,6 +512,20 @@ mod tests {
         }
     }
 
+    fn idleness(partition: &str, idle_for_milliseconds: u64) -> PartitionIdlenessClaim {
+        PartitionIdlenessClaim {
+            version: cdf_kernel::PARTITION_IDLENESS_CLAIM_VERSION,
+            partition_id: PartitionId::new(partition).unwrap(),
+            source_position: SourcePosition::Cursor(CursorPosition {
+                version: SOURCE_POSITION_VERSION,
+                field: "offset".to_owned(),
+                value: CursorValue::U64(0),
+            }),
+            capability_id: "source-idleness-v1".into(),
+            idle_for_milliseconds,
+        }
+    }
+
     fn policy(aggregation: PartitionWatermarkAggregation) -> WatermarkPolicy {
         WatermarkPolicy::Enabled {
             event_time_field: "occurred_at".into(),
@@ -461,7 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn minimum_eligible_excludes_only_partitions_past_the_compiled_idle_window() {
+    fn minimum_eligible_excludes_only_source_attested_idle_partitions() {
         let a = PartitionId::new("a").unwrap();
         let b = PartitionId::new("b").unwrap();
         let mut tracker = PartitionWatermarkTracker::new(
@@ -479,8 +580,13 @@ mod tests {
                 .unwrap(),
             None
         );
+        assert_eq!(tracker.effective_watermark(10).unwrap(), None);
         assert_eq!(
-            tracker.effective_watermark(10).unwrap().unwrap().value,
+            tracker
+                .observe_partition_idle(&b, &idleness("b", 10), 10)
+                .unwrap()
+                .unwrap()
+                .value,
             WatermarkValue::Unsigned(100)
         );
     }
@@ -500,6 +606,12 @@ mod tests {
         )
         .unwrap();
 
+        tracker
+            .observe_partition_idle(&b, &idleness("b", 10), 110)
+            .unwrap();
+        tracker
+            .observe_partition_idle(&a, &idleness("a", 10), 110)
+            .unwrap();
         assert_eq!(
             tracker.effective_watermark(110).unwrap().unwrap().value,
             WatermarkValue::Unsigned(50)
@@ -644,7 +756,7 @@ mod tests {
 
         assert_eq!(tracker.partitions.len(), PARTITIONS);
         assert_eq!(tracker.eligible_claims.len(), PARTITIONS);
-        assert_eq!(tracker.idle_deadlines.len(), PARTITIONS);
+        assert!(tracker.historical.is_empty());
         assert_eq!(tracker.eligible_missing_claims, 0);
     }
 
@@ -715,7 +827,42 @@ mod tests {
             "watermark-tracker partitions={partition_count} updates={update_count} elapsed_seconds={:.6} ns_per_update={nanoseconds_per_update:.2} updates_per_second={:.0} metadata_entries={}",
             elapsed.as_secs_f64(),
             update_count as f64 / elapsed.as_secs_f64(),
-            tracker.partitions.len() + tracker.eligible_claims.len() + tracker.idle_deadlines.len(),
+            tracker.partitions.len() + tracker.eligible_claims.len() + tracker.historical.len(),
         );
+    }
+
+    #[test]
+    fn partition_claims_and_idleness_survive_epoch_reconstruction() {
+        let a = PartitionId::new("a").unwrap();
+        let b = PartitionId::new("b").unwrap();
+        let policy = policy(PartitionWatermarkAggregation::MinimumEligible {
+            idle_after_milliseconds: 10,
+            capability_id: "source-idleness-v1".into(),
+        });
+        let mut first = PartitionWatermarkTracker::new(&policy, [&a, &b], 0).unwrap();
+        first
+            .observe_partition_progress(&a, Some(&claim("a", 20)), 1)
+            .unwrap();
+        first
+            .observe_partition_idle(&b, &idleness("b", 10), 2)
+            .unwrap();
+        let snapshot = first.snapshot().unwrap();
+
+        let second = PartitionWatermarkTracker::new_with_state(
+            &policy,
+            [&a, &b],
+            3,
+            Some(claim("a", 20)),
+            &snapshot,
+        )
+        .unwrap();
+        assert!(
+            second
+                .validate_partition_claim(&a, None, &claim("a", 19))
+                .unwrap_err()
+                .message
+                .contains("regressed")
+        );
+        assert_eq!(second.snapshot().unwrap(), snapshot);
     }
 }

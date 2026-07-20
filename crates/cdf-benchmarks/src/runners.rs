@@ -1189,6 +1189,7 @@ fn build_package_fixture(
         input_position: None,
         output_position,
         output_watermark: None,
+        partition_watermarks: Vec::new(),
         late_data_carryover: Vec::new(),
         source_continuation: None,
         schema_hash: schema_hash.clone(),

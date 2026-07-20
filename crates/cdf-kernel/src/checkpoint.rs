@@ -6,7 +6,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    WatermarkClaim,
+    PartitionWatermarkState, WatermarkClaim,
     destination::{CommitCounts, MigrationRecord, SegmentAck, TransactionMetadata, VerifyClause},
     error::{CdfError, Result},
     ids::{
@@ -16,6 +16,7 @@ use crate::{
     position::SourcePosition,
     resource::WriteDisposition,
     scope::ScopeKey,
+    validate_partition_watermark_states,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +31,9 @@ pub struct StateDelta {
     pub output_position: SourcePosition,
     /// Receipt-gated global event-time completeness emitted by this state transition.
     pub output_watermark: Option<WatermarkClaim>,
+    /// Receipt-gated per-partition watermark/idleness state used to enforce monotonic claims
+    /// across epoch and process boundaries.
+    pub partition_watermarks: Vec<PartitionWatermarkState>,
     /// Validated rows withheld for deterministic admission into the next epoch.
     pub late_data_carryover: Vec<LateDataCarryoverRef>,
     /// Exact source-local restart authority when the resource output position is an aggregate.
@@ -77,6 +81,7 @@ impl StateDelta {
         if let Some(watermark) = &self.output_watermark {
             watermark.validate()?;
         }
+        validate_partition_watermark_states(&self.partition_watermarks)?;
         validate_late_data_carryover_refs(&self.late_data_carryover)?;
         if let Some(position) = &self.source_continuation {
             position.validate()?;
@@ -107,8 +112,34 @@ impl StateDelta {
             )),
             (Some(previous), Some(next)) => next.validate_monotone_successor(previous),
             (None, _) => Ok(()),
-        }
+        }?;
+        validate_partition_watermark_state_transition(
+            &previous.partition_watermarks,
+            &self.partition_watermarks,
+        )
     }
+}
+
+fn validate_partition_watermark_state_transition(
+    previous: &[PartitionWatermarkState],
+    next: &[PartitionWatermarkState],
+) -> Result<()> {
+    validate_partition_watermark_states(previous)?;
+    validate_partition_watermark_states(next)?;
+    for previous_state in previous {
+        let next_state = next
+            .binary_search_by(|candidate| candidate.partition_id.cmp(&previous_state.partition_id))
+            .ok()
+            .and_then(|index| next.get(index))
+            .ok_or_else(|| {
+                CdfError::data(format!(
+                    "checkpoint cannot erase watermark state for partition `{}`",
+                    previous_state.partition_id
+                ))
+            })?;
+        next_state.validate_monotone_successor(previous_state)?;
+    }
+    Ok(())
 }
 
 pub const LATE_DATA_CARRYOVER_VERSION: u16 = 1;

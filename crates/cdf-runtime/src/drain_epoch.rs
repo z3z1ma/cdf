@@ -3,9 +3,9 @@ use std::collections::BTreeMap;
 use cdf_kernel::{
     CdfError, CursorValue, DrainTermination, EPOCH_CLOSURE_EVIDENCE_VERSION,
     EPOCH_FRONTIER_VERSION, EpochClosureCause, EpochClosureEvidence, EpochClosureObservation,
-    EpochClosureTrigger, EpochFrontier, ExecutionExtent, FilePosition, Result,
-    STREAM_EPOCH_POLICY_VERSION, SourcePosition, StreamEpochPolicy, WatermarkClaim,
-    WatermarkPolicy, WatermarkValue,
+    EpochClosureTrigger, EpochFrontier, ExecutionExtent, FilePosition, PartitionWatermarkState,
+    Result, STREAM_EPOCH_POLICY_VERSION, SourcePosition, StreamEpochPolicy, WatermarkClaim,
+    WatermarkPolicy, WatermarkValue, validate_partition_watermark_states,
 };
 
 /// One canonical point at which every admitted source position at or below
@@ -118,6 +118,8 @@ pub struct DrainEpochController {
     committed_frontier: Option<SourcePosition>,
     committed_source_continuation: Option<SourcePosition>,
     committed_watermark: Option<WatermarkClaim>,
+    committed_partition_watermarks: Vec<PartitionWatermarkState>,
+    pending_partition_watermarks: Option<Vec<PartitionWatermarkState>>,
     epoch_watermark_start: Option<WatermarkClaim>,
     last_observed_watermark: Option<WatermarkClaim>,
     last_safe_frontier: Option<DrainSafeFrontierObservation>,
@@ -152,6 +154,8 @@ impl DrainEpochController {
             committed_frontier: None,
             committed_source_continuation: None,
             committed_watermark: None,
+            committed_partition_watermarks: Vec::new(),
+            pending_partition_watermarks: None,
             epoch_watermark_start: None,
             last_observed_watermark: None,
             last_safe_frontier: None,
@@ -175,6 +179,10 @@ impl DrainEpochController {
         self.committed_watermark.as_ref()
     }
 
+    pub fn committed_partition_watermarks(&self) -> &[PartitionWatermarkState] {
+        &self.committed_partition_watermarks
+    }
+
     /// Strongest global completeness claim observed by the open epoch.
     ///
     /// Batch admission compares event time against this value before admitting the batch's new
@@ -188,11 +196,12 @@ impl DrainEpochController {
     /// Seeds the input-low frontier and next package ordinal from the durable prefix recovered
     /// before this process admits source work. Record/byte termination counters remain
     /// invocation-local; only package identity and source-position authority resume.
-    pub fn bind_initial_committed_frontier(
+    pub fn bind_initial_committed_state(
         &mut self,
         committed_frontier: Option<SourcePosition>,
         committed_source_continuation: Option<SourcePosition>,
         committed_watermark: Option<WatermarkClaim>,
+        committed_partition_watermarks: Vec<PartitionWatermarkState>,
         next_epoch_ordinal: u64,
     ) -> Result<()> {
         if !matches!(self.state, ControllerState::Open)
@@ -202,6 +211,8 @@ impl DrainEpochController {
             || self.committed_frontier.is_some()
             || self.committed_source_continuation.is_some()
             || self.committed_watermark.is_some()
+            || !self.committed_partition_watermarks.is_empty()
+            || self.pending_partition_watermarks.is_some()
         {
             return Err(CdfError::contract(
                 "initial drain frontier must be bound before the first source observation",
@@ -216,6 +227,7 @@ impl DrainEpochController {
         if let Some(watermark) = &committed_watermark {
             self.observe_watermark(Some(watermark))?;
         }
+        validate_partition_watermark_states(&committed_partition_watermarks)?;
         if next_epoch_ordinal != 0 && committed_frontier.is_none() {
             return Err(CdfError::contract(
                 "recovered drain epoch ordinal requires a committed source frontier",
@@ -224,9 +236,39 @@ impl DrainEpochController {
         self.committed_frontier = committed_frontier;
         self.committed_source_continuation = committed_source_continuation;
         self.committed_watermark = committed_watermark.clone();
+        self.committed_partition_watermarks = committed_partition_watermarks;
         self.epoch_watermark_start = committed_watermark.clone();
         self.last_observed_watermark = committed_watermark;
         self.epoch_ordinal = next_epoch_ordinal;
+        Ok(())
+    }
+
+    pub fn stage_partition_watermarks(
+        &mut self,
+        states: Vec<PartitionWatermarkState>,
+    ) -> Result<()> {
+        if !matches!(self.state, ControllerState::AwaitingSettlement(_))
+            || self.pending_partition_watermarks.is_some()
+        {
+            return Err(CdfError::contract(
+                "partition watermark state requires one unstaged pending epoch closure",
+            ));
+        }
+        validate_partition_watermark_states(&states)?;
+        for previous in &self.committed_partition_watermarks {
+            let next = states
+                .binary_search_by(|candidate| candidate.partition_id.cmp(&previous.partition_id))
+                .ok()
+                .and_then(|index| states.get(index))
+                .ok_or_else(|| {
+                    CdfError::data(format!(
+                        "pending epoch cannot erase watermark state for partition `{}`",
+                        previous.partition_id
+                    ))
+                })?;
+            next.validate_monotone_successor(previous)?;
+        }
+        self.pending_partition_watermarks = Some(states);
         Ok(())
     }
 
@@ -421,6 +463,9 @@ impl DrainEpochController {
         self.committed_frontier = Some(committed_frontier.clone());
         self.committed_source_continuation = closure.frontier.carryover.clone();
         self.committed_watermark = closure.frontier.watermark.clone();
+        if let Some(states) = self.pending_partition_watermarks.take() {
+            self.committed_partition_watermarks = states;
+        }
         self.epoch_watermark_start = self.committed_watermark.clone();
         self.last_observed_watermark = self.committed_watermark.clone();
         self.epoch = Counts::default();
@@ -1062,7 +1107,7 @@ mod tests {
         ))
         .unwrap();
         controller
-            .bind_initial_committed_frontier(Some(cursor(40)), None, None, 0)
+            .bind_initial_committed_state(Some(cursor(40)), None, None, Vec::new(), 0)
             .unwrap();
         let DrainEpochDecision::Close(closure) = controller
             .observe_safe_frontier(observation(1, 10, 41, false))
@@ -1101,7 +1146,13 @@ mod tests {
         let mut controller = DrainEpochController::new(&watermark_extent()).unwrap();
         let committed = watermark_observation(40, 90).global_watermark.unwrap();
         controller
-            .bind_initial_committed_frontier(Some(cursor(40)), None, Some(committed.clone()), 1)
+            .bind_initial_committed_state(
+                Some(cursor(40)),
+                None,
+                Some(committed.clone()),
+                Vec::new(),
+                1,
+            )
             .unwrap();
 
         assert_eq!(controller.committed_watermark(), Some(&committed));
@@ -1119,7 +1170,13 @@ mod tests {
         let mut controller = DrainEpochController::new(&extent).unwrap();
         let committed = watermark_observation(40, 90).global_watermark.unwrap();
         controller
-            .bind_initial_committed_frontier(Some(cursor(40)), None, Some(committed.clone()), 1)
+            .bind_initial_committed_state(
+                Some(cursor(40)),
+                None,
+                Some(committed.clone()),
+                Vec::new(),
+                1,
+            )
             .unwrap();
 
         let DrainEpochDecision::Close(closure) = controller

@@ -3082,7 +3082,7 @@ fn late_rows_are_quarantined_or_admitted_with_identity_evidence() {
                     field: "id".to_owned(),
                     value: CursorValue::I64(offset),
                 }));
-                batch.header.watermarks.push(claim(value, offset));
+                batch.header.watermarks.push(claim(20, offset));
                 batch
             })
             .collect::<Vec<_>>();
@@ -3420,6 +3420,19 @@ type FixedDrainEpochEvidence = (
 fn run_fixed_drain_epochs_with_jobs(jobs: u16) -> (Vec<FixedDrainEpochEvidence>, u64) {
     let mut batches = sample_batches();
     for (ordinal, batch) in batches.iter_mut().enumerate() {
+        batch.header.partition_id = PartitionId::new(format!("part-{}", ordinal + 1)).unwrap();
+    }
+    batches.insert(
+        0,
+        batch_for_partition(
+            "batch-idle",
+            "part-0",
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ),
+    );
+    for (ordinal, batch) in batches.iter_mut().enumerate() {
         let source_position = SourcePosition::FileManifest(FileManifest {
             version: 1,
             files: vec![FilePosition {
@@ -3432,19 +3445,30 @@ fn run_fixed_drain_epochs_with_jobs(jobs: u16) -> (Vec<FixedDrainEpochEvidence>,
             }],
         });
         batch.header.source_position = Some(source_position.clone());
-        batch.header.watermarks.push(WatermarkClaim {
-            version: WATERMARK_CLAIM_VERSION,
-            policy_version: STREAM_EPOCH_POLICY_VERSION,
-            event_time_field: "id".into(),
-            domain: EventTimeDomain::SignedInteger,
-            value: WatermarkValue::Signed(i64::try_from((ordinal + 1) * 10).unwrap()),
-            partition_id: batch.header.partition_id.clone(),
-            source_position,
-            authority: WatermarkAuthority::Source,
-            observation_context: WatermarkObservationContext::SourcePoll,
-        });
+        if batch.header.partition_id.as_str() == "part-0" {
+            batch.header.partition_idleness = Some(cdf_kernel::PartitionIdlenessClaim {
+                version: cdf_kernel::PARTITION_IDLENESS_CLAIM_VERSION,
+                partition_id: batch.header.partition_id.clone(),
+                source_position,
+                capability_id: "source-idleness-v1".into(),
+                idle_for_milliseconds: 10,
+            });
+        } else {
+            batch.header.watermarks.push(WatermarkClaim {
+                version: WATERMARK_CLAIM_VERSION,
+                policy_version: STREAM_EPOCH_POLICY_VERSION,
+                event_time_field: "id".into(),
+                domain: EventTimeDomain::SignedInteger,
+                value: WatermarkValue::Signed(i64::try_from((ordinal + 1) * 10).unwrap()),
+                partition_id: batch.header.partition_id.clone(),
+                source_position,
+                authority: WatermarkAuthority::Source,
+                observation_context: WatermarkObservationContext::SourcePoll,
+            });
+        }
     }
     let resource = MockResource::tier_b(batches)
+        .with_partition_count(3)
         .without_control_keys()
         .with_dynamic_attestation();
     let extent = ExecutionExtent::Drain {
@@ -3457,7 +3481,10 @@ fn run_fixed_drain_epochs_with_jobs(jobs: u16) -> (Vec<FixedDrainEpochEvidence>,
                 event_time_field: "id".into(),
                 domain: EventTimeDomain::SignedInteger,
                 authority: WatermarkAuthority::Source,
-                partition_aggregation: cdf_kernel::PartitionWatermarkAggregation::MinimumAll,
+                partition_aggregation: cdf_kernel::PartitionWatermarkAggregation::MinimumEligible {
+                    idle_after_milliseconds: 10,
+                    capability_id: "source-idleness-v1".into(),
+                },
             },
             late_data: LateDataAction::Quarantine,
             safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
@@ -3479,6 +3506,11 @@ fn run_fixed_drain_epochs_with_jobs(jobs: u16) -> (Vec<FixedDrainEpochEvidence>,
             domain: EventTimeDomain::SignedInteger,
             authority: WatermarkAuthority::Source,
         });
+    source
+        .stream_capabilities
+        .as_mut()
+        .unwrap()
+        .idleness_capabilities = vec!["source-idleness-v1".to_owned()];
     source.validate().unwrap();
     resource.bind_compiled_source(&source);
     let mut plan = Planner::new()
@@ -3510,6 +3542,8 @@ fn run_fixed_drain_epochs_with_jobs(jobs: u16) -> (Vec<FixedDrainEpochEvidence>,
     let root = TempDir::new().unwrap();
     let mut outputs = Vec::new();
     let mut maximum_active = 0_u64;
+    let mut observed_global_watermark = false;
+    let mut observed_source_idleness = false;
     let mut epoch = 0_u64;
     while !controller.is_finished() {
         plan = plan
@@ -3531,6 +3565,10 @@ fn run_fixed_drain_epochs_with_jobs(jobs: u16) -> (Vec<FixedDrainEpochEvidence>,
         .into_package()
         .unwrap();
         let drain = output.drain_epoch.as_ref().unwrap();
+        observed_global_watermark |= drain.closure.frontier.watermark.is_some();
+        observed_source_idleness |= drain.partition_watermarks.iter().any(|state| {
+            state.partition_id.as_str() == "part-0" && state.idleness.is_some()
+        });
         maximum_active = maximum_active.max(output.source_frontier.maximum_active);
         outputs.push((
             output.output.manifest.package_hash.clone(),
@@ -3548,6 +3586,8 @@ fn run_fixed_drain_epochs_with_jobs(jobs: u16) -> (Vec<FixedDrainEpochEvidence>,
         .unwrap();
         epoch += 1;
     }
+    assert!(observed_global_watermark);
+    assert!(observed_source_idleness);
     assert_eq!(services.memory().snapshot().current_bytes, 0);
     (outputs, maximum_active)
 }

@@ -93,6 +93,7 @@ pub(super) fn delta_for(
         input_position: None,
         output_position,
         output_watermark: None,
+        partition_watermarks: Vec::new(),
         late_data_carryover: Vec::new(),
         source_continuation: None,
         package_hash: PackageHash::new(package_hash).unwrap(),

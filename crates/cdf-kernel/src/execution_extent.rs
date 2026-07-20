@@ -402,6 +402,171 @@ pub enum PartitionWatermarkAggregation {
     },
 }
 
+pub const PARTITION_IDLENESS_CLAIM_VERSION: u16 = 1;
+
+/// Source-authored evidence that one partition has remained idle for the compiled exclusion
+/// window. Host scheduling delay is never sufficient to construct this claim.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "UncheckedPartitionIdlenessClaim", deny_unknown_fields)]
+pub struct PartitionIdlenessClaim {
+    pub version: u16,
+    pub partition_id: PartitionId,
+    pub source_position: SourcePosition,
+    pub capability_id: Box<str>,
+    pub idle_for_milliseconds: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UncheckedPartitionIdlenessClaim {
+    version: u16,
+    partition_id: PartitionId,
+    source_position: SourcePosition,
+    capability_id: Box<str>,
+    idle_for_milliseconds: u64,
+}
+
+impl TryFrom<UncheckedPartitionIdlenessClaim> for PartitionIdlenessClaim {
+    type Error = CdfError;
+
+    fn try_from(value: UncheckedPartitionIdlenessClaim) -> Result<Self> {
+        let claim = Self {
+            version: value.version,
+            partition_id: value.partition_id,
+            source_position: value.source_position,
+            capability_id: value.capability_id,
+            idle_for_milliseconds: value.idle_for_milliseconds,
+        };
+        claim.validate()?;
+        Ok(claim)
+    }
+}
+
+impl PartitionIdlenessClaim {
+    pub fn validate(&self) -> Result<()> {
+        require_version(
+            "partition idleness claim",
+            self.version,
+            PARTITION_IDLENESS_CLAIM_VERSION,
+        )?;
+        require_nonempty("partition idleness partition", self.partition_id.as_str())?;
+        require_nonempty("partition idleness capability", &self.capability_id)?;
+        self.source_position.validate()?;
+        if self.idle_for_milliseconds == 0 {
+            return Err(CdfError::contract(
+                "partition idleness claim requires a nonzero observed idle duration",
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub const PARTITION_WATERMARK_STATE_VERSION: u16 = 1;
+
+/// Receipt-gated per-partition watermark and idleness authority carried across finite epochs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "UncheckedPartitionWatermarkState", deny_unknown_fields)]
+pub struct PartitionWatermarkState {
+    pub version: u16,
+    pub partition_id: PartitionId,
+    pub claim: Option<WatermarkClaim>,
+    pub idleness: Option<PartitionIdlenessClaim>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UncheckedPartitionWatermarkState {
+    version: u16,
+    partition_id: PartitionId,
+    claim: Option<WatermarkClaim>,
+    idleness: Option<PartitionIdlenessClaim>,
+}
+
+impl TryFrom<UncheckedPartitionWatermarkState> for PartitionWatermarkState {
+    type Error = CdfError;
+
+    fn try_from(value: UncheckedPartitionWatermarkState) -> Result<Self> {
+        let state = Self {
+            version: value.version,
+            partition_id: value.partition_id,
+            claim: value.claim,
+            idleness: value.idleness,
+        };
+        state.validate()?;
+        Ok(state)
+    }
+}
+
+impl PartitionWatermarkState {
+    pub fn validate(&self) -> Result<()> {
+        require_version(
+            "partition watermark state",
+            self.version,
+            PARTITION_WATERMARK_STATE_VERSION,
+        )?;
+        require_nonempty(
+            "partition watermark state partition",
+            self.partition_id.as_str(),
+        )?;
+        if let Some(claim) = &self.claim {
+            claim.validate()?;
+            if claim.partition_id != self.partition_id {
+                return Err(CdfError::data(
+                    "partition watermark state claim names a different partition",
+                ));
+            }
+        }
+        if let Some(idleness) = &self.idleness {
+            idleness.validate()?;
+            if idleness.partition_id != self.partition_id {
+                return Err(CdfError::data(
+                    "partition watermark state idleness names a different partition",
+                ));
+            }
+        }
+        if self.claim.is_none() && self.idleness.is_none() {
+            return Err(CdfError::contract(
+                "partition watermark state must retain a claim or idleness evidence",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn validate_monotone_successor(&self, previous: &Self) -> Result<()> {
+        self.validate()?;
+        previous.validate()?;
+        if self.partition_id != previous.partition_id {
+            return Err(CdfError::internal(
+                "partition watermark transition joined different partitions",
+            ));
+        }
+        if let Some(previous_claim) = &previous.claim {
+            let next_claim = self.claim.as_ref().ok_or_else(|| {
+                CdfError::data(format!(
+                    "watermark state cannot erase claim for partition `{}`",
+                    self.partition_id
+                ))
+            })?;
+            next_claim.validate_monotone_successor(previous_claim)?;
+        }
+        Ok(())
+    }
+}
+
+pub fn validate_partition_watermark_states(states: &[PartitionWatermarkState]) -> Result<()> {
+    let mut previous = None::<&PartitionId>;
+    for state in states {
+        state.validate()?;
+        if previous.is_some_and(|partition| partition >= &state.partition_id) {
+            return Err(CdfError::contract(
+                "partition watermark state must use unique canonical partition order",
+            ));
+        }
+        previous = Some(&state.partition_id);
+    }
+    Ok(())
+}
+
 impl PartitionWatermarkAggregation {
     fn validate(&self) -> Result<()> {
         if let Self::MinimumEligible {

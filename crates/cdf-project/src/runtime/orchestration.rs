@@ -241,7 +241,7 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
     {
         retention.reconcile_committed_frontier(head.delta.source_resume_position())?;
     }
-    controller.bind_initial_committed_frontier(
+    controller.bind_initial_committed_state(
         initial_head
             .as_ref()
             .map(|checkpoint| checkpoint.delta.output_position.clone()),
@@ -251,6 +251,10 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
         initial_head
             .as_ref()
             .and_then(|checkpoint| checkpoint.delta.output_watermark.clone()),
+        initial_head
+            .as_ref()
+            .map(|checkpoint| checkpoint.delta.partition_watermarks.clone())
+            .unwrap_or_default(),
         recovered_epoch_count,
     )?;
     let initial_manifest =

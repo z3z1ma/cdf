@@ -1933,6 +1933,7 @@ pub struct EngineDrainEpoch {
     pub resume_partition: Option<Box<DrainPartitionResume>>,
     pub consumed_late_data_carryover: Vec<cdf_kernel::LateDataCarryoverRef>,
     pub late_data_carryover: Vec<cdf_kernel::LateDataCarryoverRef>,
+    pub partition_watermarks: Vec<cdf_kernel::PartitionWatermarkState>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2041,6 +2042,7 @@ pub struct EnginePackageDraft<'a> {
     pub drain_frontier: Option<&'a cdf_kernel::EpochFrontier>,
     pub consumed_late_data_carryover: &'a [cdf_kernel::LateDataCarryoverRef],
     pub late_data_carryover: &'a [cdf_kernel::LateDataCarryoverRef],
+    pub partition_watermarks: &'a [cdf_kernel::PartitionWatermarkState],
     pub(crate) execution_evidence: &'a EngineExecutionEvidence,
 }
 

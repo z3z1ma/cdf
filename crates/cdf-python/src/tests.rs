@@ -1793,6 +1793,7 @@ fn checkpoint_fixture(
         input_position: None,
         output_position,
         output_watermark: None,
+        partition_watermarks: Vec::new(),
         late_data_carryover: Vec::new(),
         source_continuation: None,
         package_hash: PackageHash::new(format!("{checkpoint_id}-package")).unwrap(),

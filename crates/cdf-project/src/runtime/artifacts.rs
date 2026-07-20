@@ -26,6 +26,7 @@ pub(super) fn write_run_state_commit_artifacts(
                 .and_then(|frontier| frontier.watermark.clone()),
             consumed_late_data_carryover: draft.consumed_late_data_carryover.to_vec(),
             late_data_carryover: draft.late_data_carryover.to_vec(),
+            partition_watermarks: draft.partition_watermarks.to_vec(),
         },
         schema_hash,
         scope,
@@ -202,6 +203,11 @@ pub(crate) fn state_delta_from_run(
                 .as_ref()
                 .map(|epoch| epoch.late_data_carryover.clone())
                 .unwrap_or_default(),
+            partition_watermarks: output
+                .drain_epoch
+                .as_ref()
+                .map(|epoch| epoch.partition_watermarks.clone())
+                .unwrap_or_default(),
         },
         schema_hash,
         scope,
@@ -220,6 +226,7 @@ struct StateDeltaRunDraft<'a> {
     output_watermark: Option<cdf_kernel::WatermarkClaim>,
     consumed_late_data_carryover: Vec<cdf_kernel::LateDataCarryoverRef>,
     late_data_carryover: Vec<cdf_kernel::LateDataCarryoverRef>,
+    partition_watermarks: Vec<cdf_kernel::PartitionWatermarkState>,
 }
 
 fn state_delta_preimage_from_run_draft(
@@ -320,6 +327,7 @@ fn state_delta_preimage_from_run_draft(
         input_position: head.map(|checkpoint| checkpoint.delta.output_position.clone()),
         output_position,
         output_watermark: draft.output_watermark,
+        partition_watermarks: draft.partition_watermarks,
         late_data_carryover: draft.late_data_carryover,
         source_continuation: draft.source_continuation,
         schema_hash: schema_hash.clone(),

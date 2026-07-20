@@ -3527,7 +3527,7 @@ where
         DrainExecutionClock::new(drain_controller.as_deref(), options.services.as_ref());
     let mut partition_watermarks = match (&plan.execution_extent, drain_controller.as_ref()) {
         (ExecutionExtent::Drain { policy, .. }, Some(controller)) => {
-            Some(cdf_runtime::PartitionWatermarkTracker::new_with_floor(
+            Some(cdf_runtime::PartitionWatermarkTracker::new_with_state(
                 &policy.watermark,
                 plan.scan
                     .partitions
@@ -3535,6 +3535,7 @@ where
                     .map(|partition| &partition.partition_id),
                 drain_clock.monotonic_milliseconds(options.services.as_ref()),
                 controller.committed_watermark().cloned(),
+                controller.committed_partition_watermarks(),
             )?)
         }
         _ => None,
@@ -4063,6 +4064,18 @@ where
                 } else if let Some(watermark) = batch.header.watermarks.last() {
                     partition_watermark = Some(watermark.clone());
                 }
+                if let Some(idleness) = &batch.header.partition_idleness {
+                    idleness.validate()?;
+                    if idleness.partition_id != partition.partition_id
+                        || batch.header.row_count != 0
+                        || !batch.header.watermarks.is_empty()
+                        || batch.header.source_position.as_ref() != Some(&idleness.source_position)
+                    {
+                        return Err(CdfError::data(
+                            "partition idleness must be a zero-row control batch with matching partition/source-position authority and no watermark claim",
+                        ));
+                    }
+                }
                 let decoded_input_bytes = batch.header.byte_count;
                 phase_measurements.add(
                     RunPhase::Decode,
@@ -4329,6 +4342,24 @@ where
                         !limit_truncated || position.is_batch_slice_invariant()
                     })
                     .cloned();
+                let watermark_observation_milliseconds =
+                    drain_clock.monotonic_milliseconds(options.services.as_ref());
+                let effective_batch_watermark = partition_watermarks
+                    .as_mut()
+                    .map(|watermarks| match &batch.header.partition_idleness {
+                        Some(idleness) => watermarks.observe_partition_idle(
+                            &partition.partition_id,
+                            idleness,
+                            watermark_observation_milliseconds,
+                        ),
+                        None => watermarks.observe_partition_progress(
+                            &partition.partition_id,
+                            partition_watermark.as_ref(),
+                            watermark_observation_milliseconds,
+                        ),
+                    })
+                    .transpose()?
+                    .flatten();
                 macro_rules! close_drain_epoch_at_batch_frontier {
                     () => {
                         if partition_drain_batch_frontiers_enabled
@@ -4338,19 +4369,6 @@ where
                             )
                         {
                             partition_batch_frontiers_observed = true;
-                            let monotonic_milliseconds =
-                                drain_clock.monotonic_milliseconds(options.services.as_ref());
-                            let effective_watermark = partition_watermarks
-                                .as_mut()
-                                .map(|watermarks| {
-                                    watermarks.observe_partition_progress(
-                                        &partition.partition_id,
-                                        partition_watermark.as_ref(),
-                                        monotonic_milliseconds,
-                                    )
-                                })
-                                .transpose()?
-                                .flatten();
                             if let Some((decision, partition_position)) = observe_drain_batch_frontier(
                                 drain_controller.as_deref_mut(),
                                 resource.descriptor(),
@@ -4361,8 +4379,8 @@ where
                                 &mut drain_partition_positions,
                                 batch.header.row_count,
                                 batch.header.byte_count,
-                                effective_watermark,
-                                monotonic_milliseconds,
+                                effective_batch_watermark.clone(),
+                                watermark_observation_milliseconds,
                                 drain_clock.observed_at_unix_milliseconds(options.services.as_ref())?,
                             )? {
                                 let resume = Box::new(crate::DrainPartitionResume {
@@ -5345,6 +5363,23 @@ where
     if verdict_summary.quarantine_candidate_count > 0 {
         write_quarantine_summary(&builder, &verdict_summary, quarantine_part_count)?;
     }
+    let partition_watermark_state = partition_watermarks
+        .as_ref()
+        .map(cdf_runtime::PartitionWatermarkTracker::snapshot)
+        .transpose()?
+        .unwrap_or_default();
+    if drain_epoch_closure.is_some() {
+        drain_controller
+            .as_mut()
+            .ok_or_else(|| CdfError::internal("drain closure omitted its controller authority"))?
+            .stage_partition_watermarks(partition_watermark_state.clone())?;
+        builder.write_json_artifact(
+            cdf_package_contract::PARTITION_WATERMARK_STATE_FILE,
+            &cdf_package_contract::PartitionWatermarkStateArtifact::new(
+                partition_watermark_state.clone(),
+            )?,
+        )?;
+    }
     late_data_evidence.finish()?;
     late_data_payloads.finish()?;
     builder.write_lineage_artifact(
@@ -5378,6 +5413,7 @@ where
                     .map(|closure| &closure.frontier),
                 consumed_late_data_carryover: &consumed_late_data_carryover,
                 late_data_carryover: &late_data_carryover,
+                partition_watermarks: &partition_watermark_state,
                 execution_evidence: &execution_evidence,
             },
         )?;
@@ -5415,6 +5451,7 @@ where
                 resume_partition: drain_partition_resume,
                 consumed_late_data_carryover,
                 late_data_carryover,
+                partition_watermarks: partition_watermark_state,
             }),
             execution_evidence,
         },
