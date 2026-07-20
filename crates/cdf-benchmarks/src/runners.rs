@@ -35,6 +35,9 @@ use cdf_project::{
 };
 use cdf_runtime::{ByteTransformRegistry, FormatRegistry, SourceRegistry, SourceResolutionContext};
 use cdf_source_files::{FileRuntimeDependencies, FileSourceDriver, file_source_blocking_lane};
+use cdf_source_iceberg::{
+    IcebergRuntimeDependencies, IcebergSourceDriver, UnsupportedGlueCatalogClient,
+};
 use cdf_state_sqlite::InMemoryCheckpointStore;
 use datafusion::prelude::{SessionContext, col, lit};
 use duckdb::{Connection, appender_params_from_iter, types::Value};
@@ -94,7 +97,7 @@ pub struct PreparedFilePackageWorkload {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PreparedFilePackageRun {
+pub struct PreparedSourcePackageRun {
     #[serde(flatten)]
     pub measurement: WorkerMeasurement,
     pub configured_jobs: Option<u16>,
@@ -105,6 +108,18 @@ pub struct PreparedFilePackageRun {
     pub segments: Vec<cdf_package_contract::SegmentEntry>,
     pub runtime_scheduler: cdf_runtime::RuntimeSchedulerReport,
     pub source_frontier: cdf_runtime::SourceFrontierReport,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedIcebergPackageWorkload {
+    pub project_root: PathBuf,
+    pub warehouse: PathBuf,
+    pub namespace: Vec<String>,
+    pub table: String,
+    pub package_dir: PathBuf,
+    pub maximum_metadata_bytes: u64,
+    pub jobs: Option<u16>,
+    pub execution_host_jobs: u16,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -445,7 +460,7 @@ pub fn run_startup_control_workload(
 
 pub fn run_prepared_file_to_package(
     request: &PreparedFilePackageWorkload,
-) -> BenchResult<PreparedFilePackageRun> {
+) -> BenchResult<PreparedSourcePackageRun> {
     if request.jobs == Some(0) {
         return Err(bench_error("prepared file workload jobs must be nonzero"));
     }
@@ -513,7 +528,175 @@ pub fn run_prepared_file_to_package(
             .with_execution_services(execution.clone())
             .with_scheduler_resolution(scheduler.clone()),
     ))?;
-    Ok(PreparedFilePackageRun {
+    Ok(PreparedSourcePackageRun {
+        measurement: WorkerMeasurement {
+            timed_wall_time_ns: None,
+            rows: output.output.profile.output_rows,
+            logical_bytes: output.output.profile.output_bytes,
+            physical_bytes,
+            spill_bytes: 0,
+            phases: output
+                .phase_metrics
+                .into_iter()
+                .map(|metric| PhaseMetric {
+                    phase: metric.phase.as_str().to_owned(),
+                    duration_ns: metric.duration_ns,
+                    bytes: metric.output_bytes.max(metric.input_bytes),
+                })
+                .collect(),
+        },
+        configured_jobs: request.jobs,
+        effective_jobs: scheduler.effective_jobs.jobs,
+        limiting_factors: scheduler.effective_jobs.limiting_factors,
+        partition_count,
+        package_hash: output.output.manifest.package_hash,
+        segments: output.output.segments,
+        runtime_scheduler: execution.scheduler_report()?,
+        source_frontier: output.source_frontier,
+    })
+}
+
+pub fn run_prepared_iceberg_to_package(
+    request: &PreparedIcebergPackageWorkload,
+) -> BenchResult<PreparedSourcePackageRun> {
+    if request.namespace.is_empty() || request.namespace.iter().any(String::is_empty) {
+        return Err(bench_error(
+            "prepared Iceberg workload namespace must contain nonempty components",
+        ));
+    }
+    if request.table.is_empty() {
+        return Err(bench_error(
+            "prepared Iceberg workload table must be nonempty",
+        ));
+    }
+    if request.maximum_metadata_bytes == 0 {
+        return Err(bench_error(
+            "prepared Iceberg workload metadata budget must be nonzero",
+        ));
+    }
+    if request.jobs == Some(0) {
+        return Err(bench_error(
+            "prepared Iceberg workload jobs must be nonzero",
+        ));
+    }
+    fs::create_dir_all(&request.project_root)?;
+    let execution = benchmark_execution_services(request.execution_host_jobs)?;
+    let host_jobs = execution.capabilities().logical_cpu_slots;
+    let execution = execution
+        .with_run_job_ceiling(request.jobs.unwrap_or(host_jobs))?
+        .with_scheduler_measurement(true)?;
+    let mut registry = SourceRegistry::new();
+    registry.register(IcebergSourceDriver::new(
+        move |secrets, execution, _egress, local_listing_lane| {
+            Ok(IcebergRuntimeDependencies::new(
+                Arc::new(
+                    FileTransportFacade::new()
+                        .with_shared_secret_provider(secrets)
+                        .with_execution_services(execution)
+                        .with_local_listing_lane(local_listing_lane)?,
+                ),
+                Arc::new(FixtureTransport::new(Vec::new())),
+                Arc::new(UnsupportedGlueCatalogClient),
+            ))
+        },
+    )?)?;
+    let document = parse_toml(&format!(
+        r#"
+[source.lake]
+kind = "iceberg"
+catalog = {{ kind = "filesystem", warehouse = {} }}
+maximum_metadata_bytes = {}
+egress_allowlist = []
+
+[resource.table]
+namespace = {}
+table = {}
+write_disposition = "append"
+trust = "governed"
+"#,
+        serde_json::to_string(&request.warehouse)?,
+        request.maximum_metadata_bytes,
+        serde_json::to_string(&request.namespace)?,
+        serde_json::to_string(&request.table)?,
+    ))?;
+    let compiled = compile_document_with_project_root(&registry, &document, &request.project_root)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| bench_error("prepared Iceberg declaration compiled no resource"))?;
+    let mut source_plan = compiled.source_plan().clone();
+    let secrets = Arc::new(EnvSecretProvider::from_map(
+        std::iter::empty::<(&str, &str)>(),
+    ));
+    let resolution = SourceResolutionContext::new(
+        &request.project_root,
+        secrets,
+        &execution,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
+    );
+    let discovery = registry.discovery_session(&source_plan, &resolution)?;
+    let mut candidates = discovery.candidates()?;
+    if candidates.len() != 1 {
+        return Err(bench_error(format!(
+            "prepared Iceberg discovery produced {} candidates instead of one",
+            candidates.len()
+        )));
+    }
+    let observation = discovery.observe(
+        &candidates.remove(0),
+        &cdf_runtime::SourceDiscoveryRequest::new(request.maximum_metadata_bytes, 1)?,
+    )?;
+    source_plan.schema = observation.schema.as_ref().clone();
+    let resource = registry.resolve(&source_plan, &resolution)?;
+    let plan = Planner::new()
+        .plan_tier_b(
+            resource.as_ref(),
+            EnginePlanInput {
+                request: ScanRequest {
+                    resource_id: resource.descriptor().resource_id.clone(),
+                    projection: None,
+                    filters: Vec::new(),
+                    limit: None,
+                    order_by: Vec::new(),
+                    scope: resource.descriptor().state_scope.clone(),
+                },
+                validation_program: compile_validation_program(
+                    &ContractPolicy::for_trust(resource.descriptor().trust_level.clone()),
+                    &ObservedSchema::from_arrow(resource.schema().as_ref()),
+                )?,
+                execution_extent: ExecutionExtent::bounded(),
+                package_id: "pkg-p3-iceberg-prepared".to_owned(),
+            },
+        )?
+        .bind_compiled_source(&source_plan)?
+        .bind_operator_graph(
+            &source_plan,
+            &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        )?;
+    let source_execution = plan.compiled_source_execution.as_ref().ok_or_else(|| {
+        bench_error("prepared Iceberg plan omitted compiled source execution authority")
+    })?;
+    let partition_count = usize::try_from(plan.scan.partition_count()?)
+        .map_err(|_| bench_error("prepared source task count exceeds addressable usize"))?;
+    let scheduler = cdf_runtime::resolve_runtime_scheduler(
+        partition_count,
+        source_execution.execution_capabilities(),
+        &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        &execution,
+        request.jobs,
+    )?;
+    execution.tighten_run_job_ceiling(scheduler.effective_jobs.jobs)?;
+    let physical_bytes = plan.scan.estimated_bytes.unwrap_or(0);
+    let output = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
+        &plan,
+        resource.as_ref(),
+        &request.package_dir,
+        &|_builder: &PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(()),
+        EngineExecutionOptions::default()
+            .with_phase_metrics(true)
+            .with_execution_services(execution.clone())
+            .with_scheduler_resolution(scheduler.clone()),
+    ))?;
+    Ok(PreparedSourcePackageRun {
         measurement: WorkerMeasurement {
             timed_wall_time_ns: None,
             rows: output.output.profile.output_rows,

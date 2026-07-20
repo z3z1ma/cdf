@@ -33,7 +33,7 @@ No changelog/tailing approximation, catalog writes, ORC/Avro/v3/encryption silen
 
 ## Journal
 
-None yet.
+- 2026-07-19: I2's authorized FQ12 smoke run exposed the first concrete I3 acceptance failure. Two bounded runs selected the exact same Glue Iceberg snapshot (`snapshot_id=2229073605200099107`, sequence 7, identical metadata generation) and each appended 1,097 rows to DuckDB. The checkpoint head correctly records identical input/output `TableSnapshotPosition` values, proving the missing behavior is generic bounded-source resume/no-op binding before package creation rather than catalog drift. I3 MUST replace this duplicate execution with the specified visible fast no-op and a permanent local two-run regression scenario before closure.
 
 ## Blockers
 

@@ -961,6 +961,7 @@ dependencies = [
  "cdf-project",
  "cdf-runtime",
  "cdf-source-files",
+ "cdf-source-iceberg",
  "cdf-source-rest",
  "cdf-state-sqlite",
  "clap",

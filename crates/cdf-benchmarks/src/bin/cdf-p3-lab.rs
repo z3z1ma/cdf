@@ -3,11 +3,12 @@ use std::{collections::BTreeMap, fs, path::Path};
 use cdf_benchmarks::{
     BenchmarkReport, ChildCommand, HostCapabilityProvider, HostProbeConfig, InteropFixtureWorkload,
     MacroRunSpec, PreoptimizationBaselineConfig, PreparedFileDestinationWorkload,
-    PreparedFilePackageWorkload, ProfileTool, ReferenceWorkload, StartupControlWorkload,
-    SystemHostProvider, WorkerMeasurement, canonical_json_bytes, compare_reports, comparison_fails,
-    host_class, install_baseline, plan_profile, read_package_batches, run_cdf_command_workload,
-    run_interop_fixture_workload, run_preoptimization_baseline, run_prepared_file_to_destination,
-    run_prepared_file_to_package, run_reference, run_startup_control_workload,
+    PreparedFilePackageWorkload, PreparedIcebergPackageWorkload, ProfileTool, ReferenceWorkload,
+    StartupControlWorkload, SystemHostProvider, WorkerMeasurement, canonical_json_bytes,
+    compare_reports, comparison_fails, host_class, install_baseline, plan_profile,
+    read_package_batches, run_cdf_command_workload, run_interop_fixture_workload,
+    run_preoptimization_baseline, run_prepared_file_to_destination, run_prepared_file_to_package,
+    run_prepared_iceberg_to_package, run_reference, run_startup_control_workload,
     summarize_package_shape,
 };
 
@@ -37,6 +38,18 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             workload.package_dir = package_root.path().join("package");
             let started = std::time::Instant::now();
             let mut run = run_prepared_file_to_package(&workload)?;
+            run.measurement.timed_wall_time_ns =
+                Some(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
+            write_stdout(&canonical_json_bytes(&run)?)
+        }
+        [command, request] if command == "cdf-iceberg-package-worker" => {
+            let mut workload: PreparedIcebergPackageWorkload =
+                serde_json::from_slice(&fs::read(request)?)?;
+            fs::create_dir_all(&workload.package_dir)?;
+            let package_root = tempfile::tempdir_in(&workload.package_dir)?;
+            workload.package_dir = package_root.path().join("package");
+            let started = std::time::Instant::now();
+            let mut run = run_prepared_iceberg_to_package(&workload)?;
             run.measurement.timed_wall_time_ns =
                 Some(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
             write_stdout(&canonical_json_bytes(&run)?)
