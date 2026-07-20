@@ -1,12 +1,12 @@
 use std::{
     fmt,
-    io::{BufReader, Read},
+    io::{BufReader, Read, Write},
     marker::PhantomData,
 };
 
 use cdf_kernel::{CdfError, Result};
 use cdf_package_contract::{
-    FileEntry, LifecycleState, MANIFEST_VERSION, SegmentEntry, SignatureSlot,
+    FileEntry, LifecycleState, MANIFEST_VERSION, PackageStatus, SegmentEntry, SignatureSlot,
 };
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use sha2::{Digest, Sha256};
@@ -48,6 +48,119 @@ pub fn stored_manifest_identity_hash(reader: impl Read) -> Result<String> {
     hasher.update([first]);
     hash_balanced_object(&mut reader, &mut hasher, "identity")?;
     Ok(format!("sha256:{}", hex::encode(hasher.finalize())))
+}
+
+/// Rewrites only the non-identity lifecycle object while copying package-cardinality bytes.
+///
+/// The caller must validate the manifest first. This function additionally checks the canonical
+/// top-level field order through `lifecycle`, then copies the identity object byte-for-byte so a
+/// status transition cannot perturb package identity or require a resident manifest.
+pub(crate) fn rewrite_manifest_lifecycle(
+    reader: impl Read,
+    writer: &mut impl Write,
+    status: PackageStatus,
+) -> Result<()> {
+    let mut reader = BufReader::new(reader);
+    write_checked(writer, b"{", "package manifest object")?;
+    expect_byte(&mut reader, b'{', "package manifest object")?;
+
+    let mut field = read_top_level_key(&mut reader)?;
+    if field == "archives" {
+        write_checked(writer, b"\"archives\":", "package archive field")?;
+        expect_byte(&mut reader, b':', "package manifest field separator")?;
+        let first = read_non_whitespace_byte(&mut reader)?.ok_or_else(|| {
+            CdfError::data("package manifest archive metadata ended before its value")
+        })?;
+        copy_balanced_object(&mut reader, writer, first, "archive metadata")?;
+        expect_byte(&mut reader, b',', "package manifest archive separator")?;
+        write_checked(writer, b",", "package archive separator")?;
+        field = read_top_level_key(&mut reader)?;
+    }
+    if field != "identity" {
+        return Err(CdfError::data(format!(
+            "canonical package manifest must begin with optional archives then identity; observed {field:?}"
+        )));
+    }
+    write_checked(writer, b"\"identity\":", "package identity field")?;
+    expect_byte(&mut reader, b':', "package manifest field separator")?;
+    let first = read_non_whitespace_byte(&mut reader)?
+        .ok_or_else(|| CdfError::data("package manifest identity ended before its object"))?;
+    copy_balanced_object(&mut reader, writer, first, "identity")?;
+
+    expect_byte(&mut reader, b',', "package manifest lifecycle separator")?;
+    let field = read_top_level_key(&mut reader)?;
+    if field != "lifecycle" {
+        return Err(CdfError::data(format!(
+            "canonical package manifest identity must be followed by lifecycle; observed {field:?}"
+        )));
+    }
+    expect_byte(&mut reader, b':', "package manifest field separator")?;
+    let first = read_non_whitespace_byte(&mut reader)?
+        .ok_or_else(|| CdfError::data("package manifest lifecycle ended before its object"))?;
+    skip_balanced_object(&mut reader, first, "lifecycle")?;
+    write_checked(
+        writer,
+        b",\"lifecycle\":{\"status\":\"",
+        "package lifecycle",
+    )?;
+    write_checked(
+        writer,
+        status.as_str().as_bytes(),
+        "package lifecycle status",
+    )?;
+    write_checked(writer, b"\"}", "package lifecycle")?;
+    std::io::copy(&mut reader, writer)
+        .map_err(|error| CdfError::internal(format!("copy package manifest suffix: {error}")))?;
+    Ok(())
+}
+
+fn copy_balanced_object(
+    reader: &mut impl Read,
+    writer: &mut impl Write,
+    first: u8,
+    label: &str,
+) -> Result<()> {
+    if first != b'{' {
+        return Err(CdfError::data(format!(
+            "canonical package manifest {label} must be a JSON object"
+        )));
+    }
+    write_checked(writer, &[first], label)?;
+    let mut depth = 1_u64;
+    let mut in_string = false;
+    let mut escaped = false;
+    while depth > 0 {
+        let byte = read_byte(reader)?
+            .ok_or_else(|| CdfError::data(format!("package manifest {label} ended early")))?;
+        write_checked(writer, &[byte], label)?;
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'{' => {
+                depth = depth
+                    .checked_add(1)
+                    .ok_or_else(|| CdfError::data("manifest JSON nesting overflowed u64"))?;
+            }
+            b'}' => depth -= 1,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn write_checked(writer: &mut impl Write, bytes: &[u8], label: &str) -> Result<()> {
+    writer
+        .write_all(bytes)
+        .map_err(|error| CdfError::internal(format!("write package manifest {label}: {error}")))
 }
 
 fn read_top_level_key(reader: &mut impl Read) -> Result<String> {
@@ -824,6 +937,37 @@ mod tests {
             assert_eq!(
                 stored_manifest_identity_hash(Cursor::new(bytes)).unwrap(),
                 expected
+            );
+        }
+    }
+
+    #[test]
+    fn lifecycle_rewrite_preserves_identity_archive_and_signature_bytes() {
+        for archives in [None, Some(ManifestArchives { parquet: None })] {
+            let mut manifest = fixture();
+            manifest.archives = archives;
+            let mut original = Vec::new();
+            write_package_manifest_canonical(&manifest, &mut original).unwrap();
+            let original_identity_hash =
+                stored_manifest_identity_hash(Cursor::new(&original)).unwrap();
+
+            let mut rewritten = Vec::new();
+            rewrite_manifest_lifecycle(
+                Cursor::new(&original),
+                &mut rewritten,
+                PackageStatus::Checkpointed,
+            )
+            .unwrap();
+            let observed: PackageManifest = serde_json::from_slice(&rewritten).unwrap();
+
+            assert_eq!(observed.identity, manifest.identity);
+            assert_eq!(observed.archives, manifest.archives);
+            assert_eq!(observed.package_hash, manifest.package_hash);
+            assert_eq!(observed.signature, manifest.signature);
+            assert_eq!(observed.lifecycle.status, PackageStatus::Checkpointed);
+            assert_eq!(
+                stored_manifest_identity_hash(Cursor::new(&rewritten)).unwrap(),
+                original_identity_hash
             );
         }
     }

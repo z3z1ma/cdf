@@ -11,7 +11,7 @@ use arrow_schema::{DataType, Field, Schema};
 use cdf_kernel::{CdfError, Checkpoint, Result, SegmentId};
 use cdf_package_contract::{
     DEDUP_SUMMARY_FILE, DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage, FileEntry,
-    MANIFEST_FILE, PackageManifest, PackageStatus, QuarantineRecord, STATE_INPUT_CHECKPOINT_FILE,
+    MANIFEST_FILE, PackageStatus, QuarantineRecord, STATE_INPUT_CHECKPOINT_FILE,
     STATE_PROPOSED_DELTA_FILE, SegmentEntry, StateDeltaPreimage, TRACE_FILE,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
@@ -344,7 +344,7 @@ impl PackageBuilder {
         })
     }
 
-    pub fn update_status(&self, status: PackageStatus) -> Result<PackageManifest> {
+    pub fn update_status(&self, status: PackageStatus) -> Result<crate::PackageManifestHeader> {
         update_package_status(&self.package_dir, status)
     }
 

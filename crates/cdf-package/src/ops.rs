@@ -13,12 +13,12 @@ use crate::{
     json::{canonical_json_bytes, json_error},
     manifest_stream::{
         ManifestFileStream, ManifestSegmentStream, PackageManifestHeader,
-        stored_manifest_identity_hash, visit_package_manifest,
+        rewrite_manifest_lifecycle, stored_manifest_identity_hash, visit_package_manifest,
     },
     package_fs::{PackageEntryKind, PackageRoot},
     storage::{
-        atomic_write, io_error, package_path, portable_path_cmp, validate_manifest_identity_path,
-        write_manifest_atomic,
+        ArtifactDurability, AtomicArtifactSink, atomic_write, io_error, package_path,
+        portable_path_cmp, validate_manifest_identity_path,
     },
 };
 
@@ -73,11 +73,18 @@ pub(crate) fn read_manifest_from_root(root: &PackageRoot) -> Result<PackageManif
 pub fn update_package_status(
     package_dir: impl AsRef<Path>,
     status: PackageStatus,
-) -> Result<PackageManifest> {
+) -> Result<PackageManifestHeader> {
     let package_dir = package_dir.as_ref();
-    let mut manifest = read_manifest(package_dir)?;
+    let root = PackageRoot::open(package_dir)?;
+    let mut manifest = read_manifest_header_from_root(&root)?;
+    let input = root.open_regular_file(MANIFEST_FILE)?.into_std();
+    let mut sink = AtomicArtifactSink::create(
+        &package_path(package_dir, MANIFEST_FILE),
+        ArtifactDurability::PhaseMetadata,
+    )?;
+    rewrite_manifest_lifecycle(input, sink.writer_mut()?, status.clone())?;
+    sink.finish()?;
     manifest.lifecycle.status = status;
-    write_manifest_atomic(package_dir, &manifest)?;
     Ok(manifest)
 }
 
@@ -378,10 +385,13 @@ fn verification_failure(message: impl std::fmt::Display) -> CdfError {
 
 pub fn tombstone_package(package_dir: impl AsRef<Path>) -> Result<TombstoneReport> {
     let package_dir = package_dir.as_ref();
-    let manifest = read_manifest(package_dir)?;
+    let root = PackageRoot::open(package_dir)?;
+    let manifest = read_manifest_header_from_root(&root)?;
     let mut removed_file_count = 0_u64;
 
-    for entry in &manifest.identity.files {
+    for entry in manifest_file_stream(&root)? {
+        let entry = entry?;
+        validate_manifest_identity_path(None, &entry.path)?;
         let path = package_path(package_dir, &entry.path);
         if path.exists() {
             fs::remove_file(&path)

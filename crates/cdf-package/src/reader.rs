@@ -799,8 +799,7 @@ impl PackageReader {
     }
 
     pub fn update_status(&mut self, status: PackageStatus) -> Result<&PackageManifestHeader> {
-        update_package_status(&self.package_dir, status)?;
-        self.manifest = Arc::new(read_manifest_header_from_root(&self.package_root)?);
+        self.manifest = Arc::new(update_package_status(&self.package_dir, status)?);
         Ok(&self.manifest)
     }
 
