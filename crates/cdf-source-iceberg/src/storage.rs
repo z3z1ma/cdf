@@ -3,8 +3,8 @@ use std::{collections::BTreeMap, fmt, ops::Range, sync::Arc};
 use async_trait::async_trait;
 use bytes::Bytes;
 use cdf_kernel::{CdfError, ErrorKind as CdfErrorKind, Result};
-use cdf_object_access::{FileIdentityMetadata, FileTransportControl};
-use cdf_runtime::{ByteExtent, ByteSource, RunCancellation, artifact_hash};
+use cdf_object_access::{FileIdentityMetadata, FileTransportControl, FileTransportLocation};
+use cdf_runtime::{ByteExtent, ByteSource, MemoryByteSource, RunCancellation, artifact_hash};
 use futures_util::stream::BoxStream;
 use iceberg::{
     Error as IcebergError, ErrorKind as IcebergErrorKind,
@@ -175,7 +175,29 @@ pub(crate) fn prepare_task_file_io(
                 "Iceberg object `{path}` byte source does not preserve its manifest size authority"
             )));
         }
-        generation_hasher.update(artifact_hash(&identity)?.as_bytes());
+        let identity_hash = artifact_hash(&identity)?;
+        generation_hasher.update(identity_hash.as_bytes());
+        let prefetch_whole_object = should_prefetch_whole_object(
+            source.parquet_whole_object_prefetch_bytes,
+            planned.size_bytes,
+            &logical.location,
+        );
+        let byte_source: Arc<dyn ByteSource> = if prefetch_whole_object {
+            let extent = ByteExtent::new(0, planned.size_bytes)?;
+            let read_source = Arc::clone(&byte_source);
+            let read_cancellation = cancellation.clone();
+            let payload = context.execution.run_io(async move {
+                read_source
+                    .read_exact_range(extent, read_cancellation)
+                    .await
+            })?;
+            Arc::new(MemoryByteSource::from_ephemeral_accounted_bytes(
+                format!("iceberg-prefetch:{identity_hash}"),
+                payload,
+            )?)
+        } else {
+            byte_source
+        };
         objects.insert(
             path,
             PreparedIcebergObject {
@@ -193,6 +215,19 @@ pub(crate) fn prepare_task_file_io(
         FileIOBuilder::new(Arc::new(CdfIcebergStorageFactory { storage })).build(),
         generation_hash,
     ))
+}
+
+fn should_prefetch_whole_object(
+    threshold_bytes: u64,
+    object_bytes: u64,
+    location: &FileTransportLocation,
+) -> bool {
+    threshold_bytes > 0
+        && object_bytes <= threshold_bytes
+        && matches!(
+            location,
+            FileTransportLocation::HttpUrl { .. } | FileTransportLocation::RemoteUrl { .. }
+        )
 }
 
 fn insert_planned_object(
@@ -362,4 +397,28 @@ pub(crate) fn to_iceberg_error(error: CdfError) -> IcebergError {
     IcebergError::new(kind, error.message.clone())
         .with_retryable(retryable)
         .with_source(error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FileTransportLocation, should_prefetch_whole_object};
+
+    #[test]
+    fn whole_object_prefetch_is_remote_bounded_and_disableable() {
+        let remote = FileTransportLocation::RemoteUrl {
+            url: "s3://bucket/object.parquet".to_owned(),
+        };
+        let http = FileTransportLocation::HttpUrl {
+            url: "https://example.test/object.parquet".to_owned(),
+        };
+        let local = FileTransportLocation::LocalPath {
+            path: "/tmp/object.parquet".to_owned(),
+        };
+
+        assert!(should_prefetch_whole_object(1024, 1024, &remote));
+        assert!(should_prefetch_whole_object(1024, 1024, &http));
+        assert!(!should_prefetch_whole_object(0, 1, &remote));
+        assert!(!should_prefetch_whole_object(1024, 1025, &remote));
+        assert!(!should_prefetch_whole_object(1024, 1, &local));
+    }
 }

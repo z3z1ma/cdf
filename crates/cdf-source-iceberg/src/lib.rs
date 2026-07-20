@@ -116,7 +116,8 @@ pub fn iceberg_option_schema() -> serde_json::Value {
                 "maximum_batch_bytes": {"type": "integer", "minimum": 1, "default": 33554432},
                 "parquet_metadata_prefetch_bytes": {"type": "integer", "minimum": 1, "default": 524288},
                 "parquet_range_coalesce_bytes": {"type": "integer", "minimum": 1, "default": 1048576},
-                "parquet_range_fetch_concurrency": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 10}
+                "parquet_range_fetch_concurrency": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 10},
+                "parquet_whole_object_prefetch_bytes": {"type": "integer", "minimum": 0, "default": 2097152}
                 ,"stream_buffer_batches": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 2}
                 ,"planning_index_cache_bytes": {"type": "integer", "minimum": 1, "default": 8388608}
                 ,"planning_index_spill_growth_bytes": {"type": "integer", "minimum": 8192, "default": 67108864}
@@ -223,7 +224,7 @@ mod tests {
         assert!(descriptor.schemes.is_empty());
         assert_eq!(
             descriptor.option_schema_hash,
-            "sha256:dd59dbba2e8d53e486d4f163905935c05893b6f82aa4e6480f3ee346d30da85e"
+            "sha256:220fa60ca488268f99efd1b146426c6c2d7c35ae8c6dca4e7137add0dafd1467"
         );
         assert_eq!(
             descriptor.option_schema_hash,

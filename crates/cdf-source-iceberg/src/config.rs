@@ -14,6 +14,7 @@ pub const DEFAULT_MAXIMUM_BATCH_BYTES: u64 = 32 * 1024 * 1024;
 pub const DEFAULT_PARQUET_METADATA_PREFETCH_BYTES: usize = 512 * 1024;
 pub const DEFAULT_PARQUET_RANGE_COALESCE_BYTES: u64 = 1024 * 1024;
 pub const DEFAULT_PARQUET_RANGE_FETCH_CONCURRENCY: u16 = 10;
+pub const DEFAULT_PARQUET_WHOLE_OBJECT_PREFETCH_BYTES: u64 = 2 * 1024 * 1024;
 pub const DEFAULT_STREAM_BUFFER_BATCHES: u16 = 2;
 pub const DEFAULT_PLANNING_INDEX_CACHE_BYTES: u64 = 8 * 1024 * 1024;
 pub const DEFAULT_PLANNING_INDEX_SPILL_GROWTH_BYTES: u64 = 64 * 1024 * 1024;
@@ -50,6 +51,10 @@ pub struct IcebergSourceOptions {
     pub parquet_range_coalesce_bytes: u64,
     #[serde(default = "default_parquet_range_fetch_concurrency")]
     pub parquet_range_fetch_concurrency: u16,
+    /// Maximum remote Parquet object size eligible for one ledger-accounted whole-object fetch.
+    /// Zero disables the latency optimization and preserves exact-range reads for every object.
+    #[serde(default = "default_parquet_whole_object_prefetch_bytes")]
+    pub parquet_whole_object_prefetch_bytes: u64,
     #[serde(default = "default_stream_buffer_batches")]
     pub stream_buffer_batches: u16,
     #[serde(default = "default_planning_index_cache_bytes")]
@@ -102,14 +107,19 @@ impl IcebergSourceOptions {
                 "Iceberg task, concurrency, planning-index, and Parquet execution knobs are invalid",
             ));
         }
+        self.execution_working_set_bytes()?;
+        Ok(())
+    }
+
+    pub(crate) fn execution_working_set_bytes(&self) -> Result<u64> {
         self.maximum_batch_bytes
             .checked_mul(u64::from(self.stream_buffer_batches) + 1)
+            .and_then(|bytes| bytes.checked_add(self.parquet_whole_object_prefetch_bytes))
             .ok_or_else(|| {
                 CdfError::contract(
-                    "Iceberg maximum_batch_bytes and stream_buffer_batches overflow the execution working set",
+                    "Iceberg batch, stream-buffer, and whole-object prefetch knobs overflow the execution working set",
                 )
-            })?;
-        Ok(())
+            })
     }
 
     pub fn catalog_identity(&self) -> String {
@@ -334,6 +344,10 @@ const fn default_parquet_range_fetch_concurrency() -> u16 {
     DEFAULT_PARQUET_RANGE_FETCH_CONCURRENCY
 }
 
+const fn default_parquet_whole_object_prefetch_bytes() -> u64 {
+    DEFAULT_PARQUET_WHOLE_OBJECT_PREFETCH_BYTES
+}
+
 const fn default_stream_buffer_batches() -> u16 {
     DEFAULT_STREAM_BUFFER_BATCHES
 }
@@ -462,6 +476,7 @@ mod tests {
         assert_eq!(source.parquet_metadata_prefetch_bytes, 512 * 1024);
         assert_eq!(source.parquet_range_coalesce_bytes, 1024 * 1024);
         assert_eq!(source.parquet_range_fetch_concurrency, 10);
+        assert_eq!(source.parquet_whole_object_prefetch_bytes, 2 * 1024 * 1024);
         assert_eq!(source.stream_buffer_batches, 2);
         assert_eq!(source.planning_index_cache_bytes, 8 * 1024 * 1024);
         assert_eq!(source.planning_index_spill_growth_bytes, 64 * 1024 * 1024);

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -111,6 +111,13 @@ pub struct PreparedSourcePackageRun {
     pub partition_count: usize,
     pub package_hash: String,
     pub segments: Vec<cdf_package_contract::SegmentEntry>,
+    /// Identity-bearing package artifacts other than canonical data segments.
+    ///
+    /// The lab exposes these digests so jobs/retry/repeat comparisons can distinguish a
+    /// data-plane determinism failure from drift in recorded plan or evidence artifacts without
+    /// retaining multi-gigabyte benchmark packages.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub identity_artifacts: Vec<cdf_package_contract::FileEntry>,
     pub runtime_scheduler: cdf_runtime::RuntimeSchedulerReport,
     pub source_frontier: cdf_runtime::SourceFrontierReport,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -144,6 +151,10 @@ pub struct PreparedIcebergPackageWorkload {
     #[serde(default)]
     pub projection: Option<Vec<String>>,
     pub package_dir: PathBuf,
+    /// Retain the completed package at `package_dir` for artifact-level diagnostics.
+    /// Ordinary timed workers leave this false and use an automatically cleaned child directory.
+    #[serde(default)]
+    pub retain_package: bool,
     pub maximum_metadata_bytes: u64,
     #[serde(default)]
     pub maximum_concurrency: Option<u16>,
@@ -151,6 +162,8 @@ pub struct PreparedIcebergPackageWorkload {
     pub parquet_batch_rows: Option<usize>,
     #[serde(default)]
     pub maximum_batch_bytes: Option<u64>,
+    #[serde(default)]
+    pub parquet_whole_object_prefetch_bytes: Option<u64>,
     pub jobs: Option<u16>,
     pub execution_host_jobs: u16,
 }
@@ -598,6 +611,7 @@ pub fn run_prepared_file_to_package(
             .with_execution_services(execution.clone())
             .with_scheduler_resolution(scheduler.clone()),
     ))?;
+    let identity_artifacts = non_segment_identity_artifacts(&output.output.manifest);
     Ok(PreparedSourcePackageRun {
         measurement: WorkerMeasurement {
             timed_wall_time_ns: None,
@@ -621,6 +635,7 @@ pub fn run_prepared_file_to_package(
         partition_count,
         package_hash: output.output.manifest.package_hash,
         segments: output.output.segments,
+        identity_artifacts,
         runtime_scheduler: execution.scheduler_report()?,
         source_frontier: output.source_frontier,
         source_io_stages: Vec::new(),
@@ -802,6 +817,7 @@ pub fn run_prepared_iceberg_to_package(
             &runtime_scheduler.source_io_controller,
         ),
     ];
+    let identity_artifacts = non_segment_identity_artifacts(&output.output.manifest);
     Ok(PreparedSourcePackageRun {
         measurement: WorkerMeasurement {
             timed_wall_time_ns: None,
@@ -817,10 +833,29 @@ pub fn run_prepared_iceberg_to_package(
         partition_count,
         package_hash: output.output.manifest.package_hash,
         segments: output.output.segments,
+        identity_artifacts,
         runtime_scheduler,
         source_frontier: output.source_frontier,
         source_io_stages,
     })
+}
+
+fn non_segment_identity_artifacts(
+    manifest: &cdf_package_contract::PackageManifest,
+) -> Vec<cdf_package_contract::FileEntry> {
+    let segment_paths = manifest
+        .identity
+        .segments
+        .iter()
+        .map(|segment| segment.path.as_str())
+        .collect::<BTreeSet<_>>();
+    manifest
+        .identity
+        .files
+        .iter()
+        .filter(|entry| !segment_paths.contains(entry.path.as_str()))
+        .cloned()
+        .collect()
 }
 
 fn prepared_iceberg_registry(catalog: &PreparedIcebergCatalog) -> BenchResult<SourceRegistry> {
@@ -931,13 +966,18 @@ fn prepared_iceberg_declaration(request: &PreparedIcebergPackageWorkload) -> Ben
         .map_or_else(String::new, |value| {
             format!("maximum_batch_bytes = {value}\n")
         });
+    let parquet_whole_object_prefetch_bytes = request
+        .parquet_whole_object_prefetch_bytes
+        .map_or_else(String::new, |value| {
+            format!("parquet_whole_object_prefetch_bytes = {value}\n")
+        });
     Ok(format!(
         r#"
 [source.lake]
 kind = "iceberg"
 catalog = {catalog}
 {object_credentials}maximum_metadata_bytes = {maximum_metadata_bytes}
-{maximum_concurrency}{parquet_batch_rows}{maximum_batch_bytes}egress_allowlist = {egress_allowlist}
+{maximum_concurrency}{parquet_batch_rows}{maximum_batch_bytes}{parquet_whole_object_prefetch_bytes}egress_allowlist = {egress_allowlist}
 
 [resource.table]
 namespace = {namespace}
@@ -1633,10 +1673,12 @@ mod tests {
             table: "events".to_owned(),
             projection: Some(vec!["event_id".to_owned()]),
             package_dir: PathBuf::from("/tmp/cdf-bench-package"),
+            retain_package: false,
             maximum_metadata_bytes: 128 * 1024 * 1024,
             maximum_concurrency: Some(24),
             parquet_batch_rows: Some(32 * 1024),
             maximum_batch_bytes: Some(64 * 1024 * 1024),
+            parquet_whole_object_prefetch_bytes: Some(8 * 1024 * 1024),
             jobs: Some(16),
             execution_host_jobs: 16,
         }

@@ -9,8 +9,8 @@ use std::{
 use arrow_schema::Schema;
 use cdf_http::{EgressAllowlist, HttpMethod, HttpRequest, SecretProvider};
 use cdf_kernel::{
-    CdfError, EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, ErrorKind, EventTimeDomain,
-    FreshnessSpec, OperatorWatermarkBehavior, PayloadRetention, PushdownFidelity,
+    CanonicalArrowSchema, CdfError, EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, ErrorKind,
+    EventTimeDomain, FreshnessSpec, OperatorWatermarkBehavior, PayloadRetention, PushdownFidelity,
     QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceId, Result,
     SafeFrontierPolicy, SchemaSource, SourcePosition, SourcePositionKind, TrustLevel,
     TypePolicyAllowances, WatermarkAuthority,
@@ -18,6 +18,29 @@ use cdf_kernel::{
 use serde::{Deserialize, Serialize};
 
 use crate::{BlockingLaneSpec, ExecutionServices, artifact_hash};
+
+mod canonical_schema_serde {
+    use super::{CanonicalArrowSchema, Schema};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(schema: &Schema, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        CanonicalArrowSchema::from_arrow(schema)
+            .map_err(serde::ser::Error::custom)?
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> std::result::Result<Schema, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        CanonicalArrowSchema::deserialize(deserializer)?
+            .to_arrow()
+            .map_err(serde::de::Error::custom)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PreparedSourcePayloadKey {
@@ -1350,6 +1373,7 @@ pub struct CompiledSourcePlan {
     pub execution_capabilities: SourceExecutionCapabilities,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_capabilities: Option<SourceStreamCapabilities>,
+    #[serde(with = "canonical_schema_serde")]
     pub schema: Schema,
     pub type_policy_allowances: TypePolicyAllowances,
     pub effective_schema_runtime: Option<EffectiveSchemaRuntime>,
@@ -2322,4 +2346,52 @@ fn validate_names(label: &str, values: &[String]) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod canonical_schema_serde_tests {
+    use std::collections::HashMap;
+
+    use arrow_schema::{DataType, Field};
+    use serde::{Deserialize, Serialize};
+
+    use super::{Schema, artifact_hash, canonical_schema_serde};
+
+    #[derive(Serialize, Deserialize)]
+    struct SchemaEnvelope {
+        #[serde(with = "canonical_schema_serde")]
+        schema: Schema,
+    }
+
+    fn schema(reverse: bool) -> Schema {
+        let mut schema_metadata = HashMap::new();
+        let mut field_metadata = HashMap::new();
+        for ordinal in 0..32 {
+            let ordinal = if reverse { 31 - ordinal } else { ordinal };
+            schema_metadata.insert(format!("schema-{ordinal:02}"), ordinal.to_string());
+            field_metadata.insert(format!("field-{ordinal:02}"), ordinal.to_string());
+        }
+        Schema::new_with_metadata(
+            vec![Field::new("value", DataType::Int64, false).with_metadata(field_metadata)],
+            schema_metadata,
+        )
+    }
+
+    #[test]
+    fn canonical_schema_serialization_is_metadata_order_independent() {
+        let left = SchemaEnvelope {
+            schema: schema(false),
+        };
+        let right = SchemaEnvelope {
+            schema: schema(true),
+        };
+
+        assert_eq!(
+            artifact_hash(&left).unwrap(),
+            artifact_hash(&right).unwrap()
+        );
+        let encoded = serde_json::to_vec(&left).unwrap();
+        let decoded: SchemaEnvelope = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded.schema, left.schema);
+    }
 }

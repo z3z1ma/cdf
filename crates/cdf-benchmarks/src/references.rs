@@ -30,7 +30,7 @@ use arrow_schema::{
     ArrowError, DataType, Field, Schema, SchemaRef, TimeUnit, ffi::FFI_ArrowSchema,
 };
 use parquet::{
-    arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder},
+    arrow::{ArrowWriter, ProjectionMask, arrow_reader::ParquetRecordBatchReaderBuilder},
     file::properties::{EnabledStatistics, WriterProperties},
 };
 use serde::{Deserialize, Serialize};
@@ -184,6 +184,12 @@ pub enum ReferenceWorkload {
     ArrowParquet {
         path: PathBuf,
         batch_rows: usize,
+    },
+    ArrowParquetFiles {
+        paths: Vec<PathBuf>,
+        projection: Vec<String>,
+        batch_rows: usize,
+        jobs: usize,
     },
     ArrowParquetRewrite {
         path: PathBuf,
@@ -375,6 +381,12 @@ pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurem
                 .build()?;
             collect_arrow(reader, physical_bytes)
         }
+        ReferenceWorkload::ArrowParquetFiles {
+            paths,
+            projection,
+            batch_rows,
+            jobs,
+        } => run_arrow_parquet_files(paths, projection, *batch_rows, *jobs),
         ReferenceWorkload::ArrowParquetRewrite {
             path,
             output,
@@ -611,6 +623,90 @@ pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurem
             },
         ),
     }
+}
+
+fn run_arrow_parquet_files(
+    paths: &[PathBuf],
+    projection: &[String],
+    batch_rows: usize,
+    jobs: usize,
+) -> BenchResult<WorkerMeasurement> {
+    require_batch(batch_rows)?;
+    if paths.is_empty() {
+        return Err(bench_error(
+            "Arrow Parquet files reference requires at least one input path",
+        ));
+    }
+    if projection.is_empty() {
+        return Err(bench_error(
+            "Arrow Parquet files reference requires a nonempty projection",
+        ));
+    }
+    if jobs == 0 {
+        return Err(bench_error(
+            "Arrow Parquet files reference jobs must be nonzero",
+        ));
+    }
+    let physical_bytes = paths.iter().try_fold(0_u64, |total, path| {
+        total
+            .checked_add(fs::metadata(path)?.len())
+            .ok_or_else(|| bench_error("Arrow Parquet files physical byte count overflowed"))
+    })?;
+    let next = AtomicUsize::new(0);
+    let worker_count = jobs.min(paths.len());
+    let partials = std::thread::scope(|scope| {
+        let handles = (0..worker_count)
+            .map(|_| {
+                scope.spawn(|| -> BenchResult<(u64, u64)> {
+                    let mut rows = 0_u64;
+                    let mut logical_bytes = 0_u64;
+                    loop {
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(path) = paths.get(index) else {
+                            break;
+                        };
+                        let builder =
+                            ParquetRecordBatchReaderBuilder::try_new(fs::File::open(path)?)?;
+                        let indices = projection
+                            .iter()
+                            .map(|name| builder.schema().index_of(name).map_err(Into::into))
+                            .collect::<BenchResult<Vec<_>>>()?;
+                        let mask = ProjectionMask::roots(builder.parquet_schema(), indices);
+                        let reader = builder
+                            .with_projection(mask)
+                            .with_batch_size(batch_rows)
+                            .build()?;
+                        for batch in reader {
+                            let batch = batch?;
+                            rows = rows.saturating_add(batch.num_rows() as u64);
+                            logical_bytes = logical_bytes
+                                .saturating_add(u64::try_from(batch.get_array_memory_size())?);
+                            black_box(batch);
+                        }
+                    }
+                    Ok((rows, logical_bytes))
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .map_err(|_| bench_error("Arrow Parquet files reference worker panicked"))?
+            })
+            .collect::<BenchResult<Vec<_>>>()
+    })?;
+    let (rows, logical_bytes) = partials.into_iter().fold(
+        (0_u64, 0_u64),
+        |(rows, bytes), (partial_rows, partial_bytes)| {
+            (
+                rows.saturating_add(partial_rows),
+                bytes.saturating_add(partial_bytes),
+            )
+        },
+    );
+    measurement(rows, logical_bytes, physical_bytes)
 }
 
 fn input_bytes(paths: &[PathBuf]) -> BenchResult<u64> {
@@ -2749,6 +2845,46 @@ mod tests {
             measurement.physical_bytes,
             fs::metadata(output).unwrap().len()
         );
+        assert!(measurement.logical_bytes > 0);
+    }
+
+    #[test]
+    fn parquet_files_reference_projects_and_decodes_files_concurrently() {
+        let temp = tempfile::tempdir().unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("text", DataType::Utf8, false),
+        ]));
+        let paths = (0..2)
+            .map(|index| {
+                let path = temp.path().join(format!("part-{index}.parquet"));
+                let batch = RecordBatch::try_new(
+                    schema.clone(),
+                    vec![
+                        Arc::new(Int64Array::from(vec![1, 2, 3])),
+                        Arc::new(StringArray::from(vec!["one", "two", "three"])),
+                    ],
+                )
+                .unwrap();
+                let mut writer =
+                    ArrowWriter::try_new(fs::File::create(&path).unwrap(), schema.clone(), None)
+                        .unwrap();
+                writer.write(&batch).unwrap();
+                writer.close().unwrap();
+                path
+            })
+            .collect::<Vec<_>>();
+
+        let measurement = run_reference(&ReferenceWorkload::ArrowParquetFiles {
+            paths: paths.clone(),
+            projection: vec!["id".to_owned()],
+            batch_rows: 1024,
+            jobs: 2,
+        })
+        .unwrap();
+
+        assert_eq!(measurement.rows, 6);
+        assert_eq!(measurement.physical_bytes, input_bytes(&paths).unwrap());
         assert!(measurement.logical_bytes > 0);
     }
 

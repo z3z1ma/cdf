@@ -239,7 +239,7 @@ impl SourceDriver for IcebergSourceDriver {
         CompiledSourcePlan::new(
             self.descriptor.clone(),
             iceberg_resource_capabilities(),
-            execution_capabilities(&physical.source),
+            execution_capabilities(&physical.source)?,
             cdf_runtime::CompiledSourcePlanInput {
                 descriptor: request.descriptor,
                 schema: request.schema,
@@ -932,14 +932,12 @@ fn iceberg_resource_capabilities() -> ResourceCapabilities {
     }
 }
 
-fn execution_capabilities(source: &IcebergSourceOptions) -> SourceExecutionCapabilities {
-    SourceExecutionCapabilities {
+fn execution_capabilities(source: &IcebergSourceOptions) -> Result<SourceExecutionCapabilities> {
+    Ok(SourceExecutionCapabilities {
         minimum_poll_bytes: 8 * 1024,
         maximum_poll_bytes: 32 * 1024 * 1024,
         minimum_decode_bytes: 8 * 1024,
-        maximum_decode_bytes: source
-            .maximum_batch_bytes
-            .saturating_mul(u64::from(source.stream_buffer_batches) + 1),
+        maximum_decode_bytes: source.execution_working_set_bytes()?,
         maximum_concurrency: source.maximum_concurrency,
         useful_concurrency: source.maximum_concurrency,
         executor_class: SourceExecutorClass::BlockingLane,
@@ -963,7 +961,7 @@ fn execution_capabilities(source: &IcebergSourceOptions) -> SourceExecutionCapab
         bounded: true,
         batch_memory: SourceBatchMemoryContract::Preaccounted,
         telemetry_version: "v1".to_owned(),
-    }
+    })
 }
 
 #[cfg(test)]

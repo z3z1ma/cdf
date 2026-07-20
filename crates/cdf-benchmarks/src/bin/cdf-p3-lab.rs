@@ -46,8 +46,12 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let mut workload: PreparedIcebergPackageWorkload =
                 serde_json::from_slice(&fs::read(request)?)?;
             fs::create_dir_all(&workload.package_dir)?;
-            let package_root = tempfile::tempdir_in(&workload.package_dir)?;
-            workload.package_dir = package_root.path().join("package");
+            let package_root = (!workload.retain_package)
+                .then(|| tempfile::tempdir_in(&workload.package_dir))
+                .transpose()?;
+            if let Some(package_root) = &package_root {
+                workload.package_dir = package_root.path().join("package");
+            }
             let started = std::time::Instant::now();
             let mut run = run_prepared_iceberg_to_package(&workload)?;
             run.measurement.timed_wall_time_ns =
