@@ -1301,6 +1301,66 @@ pub struct VerifiedWorkerArtifactFacts {
     row_count: Option<u64>,
 }
 
+/// Canonical segment semantics independently observed from the stored object.
+///
+/// The coordinator compares these facts with the second-barrier task before admitting the
+/// worker result. Format-specific verification belongs behind [`WorkerOutputVerifier`]; the
+/// portable runtime only owns the exact schema/ordinal invariants that every canonical segment
+/// must prove.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedCanonicalSegmentFacts {
+    artifact: VerifiedWorkerArtifactFacts,
+    logical_schema_hash: SchemaHash,
+    package_row_ord_start: u64,
+    package_row_ord_end: u64,
+}
+
+impl VerifiedCanonicalSegmentFacts {
+    pub fn new(
+        reference: WorkerArtifactReference,
+        row_count: u64,
+        logical_schema_hash: SchemaHash,
+        package_row_ord_start: u64,
+    ) -> Result<Self> {
+        if reference.kind != WorkerArtifactKind::CanonicalSegment {
+            return Err(CdfError::contract(
+                "canonical segment facts require a CanonicalSegment reference",
+            ));
+        }
+        let package_row_ord_end = package_row_ord_start
+            .checked_add(row_count)
+            .ok_or_else(|| CdfError::data("canonical segment package row ordinal overflow"))?;
+        Ok(Self {
+            artifact: VerifiedWorkerArtifactFacts::new(reference, Some(row_count))?,
+            logical_schema_hash,
+            package_row_ord_start,
+            package_row_ord_end,
+        })
+    }
+
+    fn validate_for(
+        &self,
+        task: &PortableSegmentTask,
+        reference: &WorkerArtifactReference,
+    ) -> Result<()> {
+        self.artifact.validate_for(reference)?;
+        let expected_end = task
+            .package_row_ord_start
+            .checked_add(task.row_count)
+            .ok_or_else(|| CdfError::data("segment task package row ordinal overflow"))?;
+        if self.artifact.row_count() != Some(task.row_count)
+            || self.logical_schema_hash != task.output_schema_hash
+            || self.package_row_ord_start != task.package_row_ord_start
+            || self.package_row_ord_end != expected_end
+        {
+            return Err(CdfError::contract(
+                "canonical segment content does not match the task schema or package row ordinal authority",
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl VerifiedWorkerArtifactFacts {
     pub fn new(reference: WorkerArtifactReference, row_count: Option<u64>) -> Result<Self> {
         reference.validate()?;
@@ -1641,10 +1701,11 @@ pub trait SegmentTaskReconstructor {
 
 /// Coordinator-side verification of one worker output object.
 pub trait WorkerOutputVerifier {
-    fn verify_output_artifact(
+    fn verify_canonical_segment(
         &self,
+        task: &PortableSegmentTask,
         reference: &WorkerArtifactReference,
-    ) -> Result<VerifiedWorkerArtifactFacts>;
+    ) -> Result<VerifiedCanonicalSegmentFacts>;
 }
 
 pub struct IsolatedSegmentInvocation {
@@ -3082,13 +3143,9 @@ impl SegmentWorkerResult {
                 "segment worker receipt exceeds its canonical segment authority",
             ));
         }
-        let facts = verifier.verify_output_artifact(&receipt.artifact)?;
-        facts.validate_for(&receipt.artifact)?;
-        if facts.row_count() != Some(task.row_count) {
-            return Err(CdfError::contract(
-                "segment worker receipt row count does not match stored content",
-            ));
-        }
+        verifier
+            .verify_canonical_segment(task, &receipt.artifact)?
+            .validate_for(task, &receipt.artifact)?;
         validate_encoded_size(
             "segment worker result",
             self,

@@ -427,11 +427,36 @@ impl SegmentTaskReconstructor for MockArtifactStore {
 }
 
 impl WorkerOutputVerifier for MockArtifactStore {
-    fn verify_output_artifact(
+    fn verify_canonical_segment(
         &self,
+        task: &PortableSegmentTask,
         reference: &WorkerArtifactReference,
-    ) -> Result<VerifiedWorkerArtifactFacts> {
-        <Self as WorkerAdmissionVerifier>::verify_artifact(self, reference)
+    ) -> Result<VerifiedCanonicalSegmentFacts> {
+        <Self as WorkerAdmissionVerifier>::verify_artifact(self, reference)?;
+        VerifiedCanonicalSegmentFacts::new(
+            reference.clone(),
+            task.row_count,
+            task.output_schema_hash.clone(),
+            task.package_row_ord_start,
+        )
+    }
+}
+
+struct ShiftedCanonicalVerifier<'a>(&'a MockArtifactStore);
+
+impl WorkerOutputVerifier for ShiftedCanonicalVerifier<'_> {
+    fn verify_canonical_segment(
+        &self,
+        task: &PortableSegmentTask,
+        reference: &WorkerArtifactReference,
+    ) -> Result<VerifiedCanonicalSegmentFacts> {
+        <MockArtifactStore as WorkerAdmissionVerifier>::verify_artifact(self.0, reference)?;
+        VerifiedCanonicalSegmentFacts::new(
+            reference.clone(),
+            task.row_count,
+            task.output_schema_hash.clone(),
+            task.package_row_ord_start + 1,
+        )
     }
 }
 
@@ -1014,6 +1039,17 @@ fn segment_finalization_task_binds_dense_prefix_and_one_canonical_receipt() {
     decoded
         .validate_for_admission(&task, &attempt, &fixture.lease(), &fixture.store, 2_000)
         .unwrap();
+
+    let shifted_error = decoded
+        .validate_for_admission(
+            &task,
+            &attempt,
+            &fixture.lease(),
+            &ShiftedCanonicalVerifier(&fixture.store),
+            2_000,
+        )
+        .unwrap_err();
+    assert!(shifted_error.message.contains("package row ordinal"));
 
     let mut forged = task.clone();
     forged.package_row_ord_start += 1;

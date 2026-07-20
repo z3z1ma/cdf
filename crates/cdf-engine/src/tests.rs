@@ -235,6 +235,17 @@ impl EngineWorkerArtifactAuthority for MemoryWorkerCompilerArtifacts {
             "compiler fixture contains no prepared segment artifacts",
         ))
     }
+
+    fn read_canonical_segment(
+        &self,
+        _reference: &cdf_runtime::WorkerArtifactReference,
+        _maximum_encoded_bytes: u64,
+        _maximum_decoded_bytes: u64,
+    ) -> Result<VerifiedCanonicalSegmentArtifact> {
+        Err(cdf_kernel::CdfError::internal(
+            "compiler fixture contains no canonical segment artifacts",
+        ))
+    }
 }
 
 struct NoWorkerSourceFacts;
@@ -437,6 +448,21 @@ impl EngineWorkerArtifactAuthority for SharedEngineWorkerArtifacts {
         maximum_decoded_bytes: u64,
     ) -> Result<VerifiedPreparedSegmentArtifact> {
         VerifiedPreparedSegmentArtifact::new(
+            reference,
+            self.bytes_for(reference)?,
+            reference.provider_generation.as_ref(),
+            maximum_encoded_bytes,
+            maximum_decoded_bytes,
+        )
+    }
+
+    fn read_canonical_segment(
+        &self,
+        reference: &cdf_runtime::WorkerArtifactReference,
+        maximum_encoded_bytes: u64,
+        maximum_decoded_bytes: u64,
+    ) -> Result<VerifiedCanonicalSegmentArtifact> {
+        VerifiedCanonicalSegmentArtifact::new(
             reference,
             self.bytes_for(reference)?,
             reference.provider_generation.as_ref(),
@@ -1592,6 +1618,11 @@ fn actual_engine_capsule_publishes_direct_segments_across_cpu_budgets() {
             run_actual_isolated_engine_equivalence(cpu_slots, 1, ExecutionExtent::bounded());
         let isolated = &isolated[0];
         let admitted = &admitted[0];
+        assert_eq!(isolated.output.manifest, direct.output.manifest);
+        assert_eq!(
+            isolated.output.verification.package_hash(),
+            direct.output.verification.package_hash()
+        );
         assert_eq!(isolated.output.segments, direct.output.segments);
         assert_eq!(isolated.output.profile, direct.output.profile);
         assert_eq!(isolated.output.lineage, direct.output.lineage);
@@ -1636,6 +1667,14 @@ fn actual_engine_capsules_are_jobs_invariant_for_multiple_partitions() {
     assert_eq!(
         direct_parallel.output.segments,
         direct_serial.output.segments
+    );
+    assert_eq!(
+        direct_parallel.output.manifest,
+        direct_serial.output.manifest
+    );
+    assert_eq!(
+        direct_parallel.output.verification.package_hash(),
+        direct_serial.output.verification.package_hash()
     );
     assert_eq!(direct_parallel.output.profile, direct_serial.output.profile);
     assert_eq!(direct_parallel.output.lineage, direct_serial.output.lineage);
@@ -1705,6 +1744,11 @@ fn actual_engine_capsule_preserves_a_finite_drain_epoch() {
     let (direct, isolated, admitted, finalized) =
         run_actual_isolated_engine_equivalence(4, 1, extent);
     let isolated = &isolated[0];
+    assert_eq!(isolated.output.manifest, direct.output.manifest);
+    assert_eq!(
+        isolated.output.verification.package_hash(),
+        direct.output.verification.package_hash()
+    );
     assert_eq!(isolated.output.segments, direct.output.segments);
     assert_eq!(isolated.output.profile, direct.output.profile);
     assert_eq!(isolated.output.lineage, direct.output.lineage);

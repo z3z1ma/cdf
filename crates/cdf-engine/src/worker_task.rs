@@ -6,8 +6,8 @@ use cdf_runtime::{
     PortablePartitionTask, PortablePartitionTaskInput, PortableSegmentTask,
     PortableSegmentTaskInput, PortableSourceBinding, ReconstructedExecutionAuthority,
     ReconstructedSegmentTask, ReconstructedWorkerTaskAuthority, SegmentTaskReconstructor,
-    VerifiedWorkerArtifactFacts, VerifiedWorkerSourceFacts, WorkerAdmissionVerifier,
-    WorkerArtifactKind, WorkerArtifactReference, WorkerArtifactRole,
+    VerifiedCanonicalSegmentFacts, VerifiedWorkerArtifactFacts, VerifiedWorkerSourceFacts,
+    WorkerAdmissionVerifier, WorkerArtifactKind, WorkerArtifactReference, WorkerArtifactRole,
     WorkerArtifactWriteAuthorization, WorkerArtifactWriteSession, WorkerAttemptPolicy,
     WorkerAuthorizedArtifactSink, WorkerCapabilityRequirements, WorkerCompatibility,
     WorkerExecutionArtifacts, WorkerInputCheckpointBinding, WorkerLeaseState, WorkerOutputPolicy,
@@ -41,6 +41,97 @@ pub struct VerifiedWorkerCompilerArtifact {
 pub struct VerifiedPreparedSegmentArtifact {
     facts: VerifiedWorkerArtifactFacts,
     batches: Vec<arrow_array::RecordBatch>,
+}
+
+/// Exact canonical-segment semantics observed from verified IPC bytes.
+pub struct VerifiedCanonicalSegmentArtifact {
+    facts: VerifiedCanonicalSegmentFacts,
+}
+
+impl VerifiedCanonicalSegmentArtifact {
+    pub fn new(
+        reference: &WorkerArtifactReference,
+        bytes: Vec<u8>,
+        observed_generation: Option<&cdf_kernel::ContentProviderGeneration>,
+        maximum_encoded_bytes: u64,
+        maximum_decoded_bytes: u64,
+    ) -> Result<Self> {
+        reference.validate()?;
+        if reference.kind != WorkerArtifactKind::CanonicalSegment {
+            return Err(CdfError::contract(
+                "canonical segment reader requires a CanonicalSegment reference",
+            ));
+        }
+        let byte_count = u64::try_from(bytes.len())
+            .map_err(|_| CdfError::contract("canonical segment exceeds u64"))?;
+        let content_sha256 = format!(
+            "sha256:{:x}",
+            <sha2::Sha256 as sha2::Digest>::digest(&bytes)
+        );
+        if byte_count != reference.byte_count
+            || byte_count > maximum_encoded_bytes
+            || content_sha256 != reference.content_sha256
+            || reference.provider_generation.as_ref() != observed_generation
+        {
+            return Err(CdfError::contract(
+                "canonical segment bytes, generation, or encoded size do not match authority",
+            ));
+        }
+
+        let mut reader = arrow_ipc::reader::FileReader::try_new(std::io::Cursor::new(bytes), None)
+            .map_err(CdfError::from)?;
+        let mut decoded_bytes = 0_u64;
+        let mut row_count = 0_u64;
+        let mut batches = Vec::new();
+        for batch in &mut reader {
+            let batch = batch.map_err(CdfError::from)?;
+            row_count = row_count
+                .checked_add(
+                    u64::try_from(batch.num_rows())
+                        .map_err(|_| CdfError::data("canonical segment row count exceeds u64"))?,
+                )
+                .ok_or_else(|| CdfError::data("canonical segment row count overflow"))?;
+            decoded_bytes =
+                decoded_bytes
+                    .checked_add(u64::try_from(batch.get_array_memory_size()).map_err(|_| {
+                        CdfError::data("canonical segment decoded bytes exceed u64")
+                    })?)
+                    .ok_or_else(|| CdfError::data("canonical segment decoded bytes overflow"))?;
+            if decoded_bytes > maximum_decoded_bytes {
+                return Err(CdfError::data(
+                    "canonical segment exceeds its admitted decoded-memory budget",
+                ));
+            }
+            batches.push(batch);
+        }
+        let first = batches
+            .first()
+            .ok_or_else(|| CdfError::data("canonical segment contains no rows"))?;
+        let package_row_ord_start = cdf_package_contract::package_row_ord_array(first)?
+            .values()
+            .first()
+            .copied()
+            .ok_or_else(|| CdfError::data("canonical segment contains an empty first batch"))?;
+        cdf_package_contract::validate_package_row_ord_batches(
+            &batches,
+            package_row_ord_start,
+            row_count,
+        )?;
+        let logical_schema = cdf_package_contract::logical_output_schema(first.schema().as_ref())?;
+        let logical_schema_hash = cdf_kernel::canonical_arrow_schema_hash(&logical_schema)?;
+        Ok(Self {
+            facts: VerifiedCanonicalSegmentFacts::new(
+                reference.clone(),
+                row_count,
+                logical_schema_hash,
+                package_row_ord_start,
+            )?,
+        })
+    }
+
+    pub fn into_facts(self) -> VerifiedCanonicalSegmentFacts {
+        self.facts
+    }
 }
 
 impl VerifiedPreparedSegmentArtifact {
@@ -189,6 +280,13 @@ pub trait EngineWorkerArtifactAuthority {
         maximum_encoded_bytes: u64,
         maximum_decoded_bytes: u64,
     ) -> Result<VerifiedPreparedSegmentArtifact>;
+
+    fn read_canonical_segment(
+        &self,
+        reference: &WorkerArtifactReference,
+        maximum_encoded_bytes: u64,
+        maximum_decoded_bytes: u64,
+    ) -> Result<VerifiedCanonicalSegmentArtifact>;
 }
 
 /// Provider boundary for fenced worker output publication.
@@ -596,11 +694,20 @@ impl SegmentTaskReconstructor for EngineWorkerAdmissionVerifier<'_> {
 }
 
 impl WorkerOutputVerifier for EngineWorkerAdmissionVerifier<'_> {
-    fn verify_output_artifact(
+    fn verify_canonical_segment(
         &self,
+        task: &PortableSegmentTask,
         reference: &WorkerArtifactReference,
-    ) -> Result<VerifiedWorkerArtifactFacts> {
-        self.artifacts.verify_output_artifact(reference)
+    ) -> Result<VerifiedCanonicalSegmentFacts> {
+        self.artifacts
+            .read_canonical_segment(
+                reference,
+                task.resources
+                    .disk_bytes
+                    .min(task.output_policy.maximum_artifact_bytes),
+                task.resources.memory_bytes,
+            )
+            .map(VerifiedCanonicalSegmentArtifact::into_facts)
     }
 }
 
