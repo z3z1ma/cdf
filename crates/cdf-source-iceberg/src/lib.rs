@@ -10,6 +10,7 @@ pub use scan_task::{
     ICEBERG_SCAN_TASK_VERSION, ICEBERG_TASK_SET_AUTHORITY_VERSION, ICEBERG_TASK_SET_TYPE,
     IcebergDataFile, IcebergDeleteContent, IcebergDeleteFile, IcebergFileFormat,
     IcebergJsonAuthority, IcebergReaderRequirements, IcebergScanTask, IcebergTaskSetAuthority,
+    IcebergTableIdentity,
 };
 
 pub const ICEBERG_SOURCE_DRIVER_VERSION: &str = "1.0.0";

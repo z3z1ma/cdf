@@ -19,7 +19,9 @@ pub const ICEBERG_TASK_SET_TYPE: &str = "iceberg-scan-v1";
 #[serde(deny_unknown_fields)]
 pub struct IcebergTaskSetAuthority {
     pub version: u16,
-    pub snapshot: TableSnapshotPosition,
+    pub table: IcebergTableIdentity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<TableSnapshotPosition>,
     pub table_format_version: u8,
     pub schemas: BTreeMap<i32, IcebergJsonAuthority>,
     pub projected_field_ids: Vec<i32>,
@@ -39,11 +41,20 @@ impl IcebergTaskSetAuthority {
                 self.version, ICEBERG_TASK_SET_AUTHORITY_VERSION
             )));
         }
-        self.snapshot.validate()?;
-        if self.snapshot.protocol != "iceberg" {
-            return Err(CdfError::contract(
-                "Iceberg scan task requires an Iceberg table-snapshot position",
-            ));
+        self.table.validate()?;
+        if let Some(snapshot) = &self.snapshot {
+            snapshot.validate()?;
+            if snapshot.protocol != "iceberg"
+                || snapshot.catalog != self.table.catalog
+                || snapshot.namespace != self.table.namespace
+                || snapshot.table != self.table.table
+                || snapshot.metadata_location != self.table.metadata_location
+                || snapshot.metadata_generation != self.table.metadata_generation
+            {
+                return Err(CdfError::contract(
+                    "Iceberg task-set snapshot does not match its table and metadata authority",
+                ));
+            }
         }
         if !matches!(self.table_format_version, 1 | 2) {
             return Err(CdfError::contract(
@@ -151,6 +162,11 @@ impl IcebergScanTask {
         if self.authority_sha256 != authority.content_sha256()? {
             return Err(CdfError::contract(
                 "Iceberg scan task does not bind the selected task-set authority",
+            ));
+        }
+        if authority.snapshot.is_none() {
+            return Err(CdfError::contract(
+                "Iceberg data-file task requires a selected table snapshot",
             ));
         }
         self.data_file.validate("Iceberg data file")?;
@@ -283,6 +299,35 @@ impl IcebergScanTask {
             serde_json::to_writer(output, self)
                 .map_err(|error| CdfError::data(format!("encode canonical Iceberg task: {error}")))
         })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IcebergTableIdentity {
+    pub catalog: String,
+    pub namespace: Vec<String>,
+    pub table: String,
+    pub table_uuid: String,
+    pub metadata_location: String,
+    pub metadata_generation: String,
+}
+
+impl IcebergTableIdentity {
+    pub fn validate(&self) -> Result<()> {
+        require_text("Iceberg catalog identity", &self.catalog)?;
+        if self.namespace.is_empty() {
+            return Err(CdfError::contract(
+                "Iceberg table namespace requires at least one component",
+            ));
+        }
+        for component in &self.namespace {
+            require_text("Iceberg table namespace component", component)?;
+        }
+        require_text("Iceberg table name", &self.table)?;
+        require_text("Iceberg table UUID", &self.table_uuid)?;
+        require_text("Iceberg metadata location", &self.metadata_location)?;
+        validate_sha256("Iceberg metadata generation", &self.metadata_generation)
     }
 }
 
@@ -605,14 +650,25 @@ mod tests {
             sequence_number: 3,
             parent_snapshot_id: Some(6),
             metadata_location: "file:///warehouse/analytics/events/metadata/v3.json".to_owned(),
-            metadata_generation: "sha256:metadata".to_owned(),
+            metadata_generation:
+                "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                    .to_owned(),
         }
     }
 
     fn authority() -> IcebergTaskSetAuthority {
+        let snapshot = snapshot();
         IcebergTaskSetAuthority {
             version: ICEBERG_TASK_SET_AUTHORITY_VERSION,
-            snapshot: snapshot(),
+            table: IcebergTableIdentity {
+                catalog: snapshot.catalog.clone(),
+                namespace: snapshot.namespace.clone(),
+                table: snapshot.table.clone(),
+                table_uuid: "00000000-0000-0000-0000-000000000007".to_owned(),
+                metadata_location: snapshot.metadata_location.clone(),
+                metadata_generation: snapshot.metadata_generation.clone(),
+            },
+            snapshot: Some(snapshot),
             table_format_version: 2,
             schemas: BTreeMap::from([(
                 2,
@@ -650,6 +706,22 @@ mod tests {
                 ]),
             },
         }
+    }
+
+    #[test]
+    fn empty_table_authority_requires_no_snapshot_but_cannot_admit_data_tasks() {
+        let mut authority = authority();
+        authority.snapshot = None;
+        authority.validate().unwrap();
+
+        let mut task = task();
+        task.authority_sha256 = authority.content_sha256().unwrap();
+        let error = task.validate_against(&authority).unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("requires a selected table snapshot")
+        );
     }
 
     fn task() -> IcebergScanTask {
