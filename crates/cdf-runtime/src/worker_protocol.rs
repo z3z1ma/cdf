@@ -13,8 +13,10 @@ use crate::{
 };
 
 pub const PORTABLE_PARTITION_TASK_VERSION: u16 = 1;
+pub const PORTABLE_SEGMENT_TASK_VERSION: u16 = 1;
 pub const PARTITION_ATTEMPT_VERSION: u16 = 1;
 pub const PARTITION_WORKER_RESULT_VERSION: u16 = 1;
+pub const SEGMENT_WORKER_RESULT_VERSION: u16 = 1;
 pub const PORTABLE_SOURCE_POSITION_VERSION: u16 = 1;
 pub const PORTABLE_CHECKPOINT_STATE_VERSION: u16 = 1;
 
@@ -768,6 +770,20 @@ impl WorkerOutputPolicy {
     }
 }
 
+/// Common lease, budget, and output contract shared by portable worker task kinds.
+///
+/// Semantic reconstruction remains task-specific. This trait exists only so one fenced attempt
+/// and cumulative artifact-write implementation can protect both partition preparation and
+/// canonical segment finalization.
+pub trait PortableWorkerTask: std::fmt::Debug {
+    fn validate_portable(&self) -> Result<()>;
+    fn task_sha256(&self) -> &str;
+    fn lease_scope(&self) -> &ScopeKey;
+    fn resources(&self) -> &WorkerResourceBudget;
+    fn attempt_policy(&self) -> &WorkerAttemptPolicy;
+    fn output_policy(&self) -> &WorkerOutputPolicy;
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "UncheckedPortablePartitionTask", deny_unknown_fields)]
 pub struct PortablePartitionTask {
@@ -854,6 +870,348 @@ pub struct PortablePartitionTaskInput {
     pub attempt_policy: WorkerAttemptPolicy,
     pub capabilities: WorkerCapabilityRequirements,
     pub output_policy: WorkerOutputPolicy,
+}
+
+/// One portable second-barrier task that turns an admitted prepared segment into package bytes.
+///
+/// It intentionally carries no source driver, options, secrets, or checkpoint authority. The
+/// preparation result digest and prepared artifact bind the first barrier; the dense package-row
+/// prefix and compiler artifacts bind the only identity-bearing work left to perform.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "UncheckedPortableSegmentTask", deny_unknown_fields)]
+pub struct PortableSegmentTask {
+    pub version: u16,
+    pub compatibility: WorkerCompatibility,
+    pub pipeline_id: PipelineId,
+    pub resource_id: ResourceId,
+    pub plan_id: PlanId,
+    pub partition_id: PartitionId,
+    pub scope: ScopeKey,
+    pub canonical_partition_ordinal: u32,
+    pub segment_id: SegmentId,
+    pub segment_ordinal: u32,
+    pub row_count: u64,
+    pub prepared_segment: WorkerArtifactReference,
+    pub preparation_result_sha256: String,
+    pub package_row_ord_start: u64,
+    pub output_schema: WorkerArtifactReference,
+    pub output_schema_hash: SchemaHash,
+    pub segmentation_policy: WorkerArtifactReference,
+    pub segmentation_policy_hash: String,
+    pub resources: WorkerResourceBudget,
+    pub attempt_policy: WorkerAttemptPolicy,
+    pub capabilities: WorkerCapabilityRequirements,
+    pub output_policy: WorkerOutputPolicy,
+    pub task_sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UncheckedPortableSegmentTask {
+    version: u16,
+    compatibility: WorkerCompatibility,
+    pipeline_id: PipelineId,
+    resource_id: ResourceId,
+    plan_id: PlanId,
+    partition_id: PartitionId,
+    scope: ScopeKey,
+    canonical_partition_ordinal: u32,
+    segment_id: SegmentId,
+    segment_ordinal: u32,
+    row_count: u64,
+    prepared_segment: WorkerArtifactReference,
+    preparation_result_sha256: String,
+    package_row_ord_start: u64,
+    output_schema: WorkerArtifactReference,
+    output_schema_hash: SchemaHash,
+    segmentation_policy: WorkerArtifactReference,
+    segmentation_policy_hash: String,
+    resources: WorkerResourceBudget,
+    attempt_policy: WorkerAttemptPolicy,
+    capabilities: WorkerCapabilityRequirements,
+    output_policy: WorkerOutputPolicy,
+    task_sha256: String,
+}
+
+#[derive(Serialize)]
+struct PortableSegmentTaskSemantic<'a> {
+    version: u16,
+    compatibility: &'a WorkerCompatibility,
+    pipeline_id: &'a PipelineId,
+    resource_id: &'a ResourceId,
+    plan_id: &'a PlanId,
+    partition_id: &'a PartitionId,
+    scope: &'a ScopeKey,
+    canonical_partition_ordinal: u32,
+    segment_id: &'a SegmentId,
+    segment_ordinal: u32,
+    row_count: u64,
+    prepared_segment: &'a WorkerArtifactReference,
+    preparation_result_sha256: &'a str,
+    package_row_ord_start: u64,
+    output_schema: &'a WorkerArtifactReference,
+    output_schema_hash: &'a SchemaHash,
+    segmentation_policy: &'a WorkerArtifactReference,
+    segmentation_policy_hash: &'a str,
+    resources: &'a WorkerResourceBudget,
+    attempt_policy: &'a WorkerAttemptPolicy,
+    capabilities: &'a WorkerCapabilityRequirements,
+    output_policy: &'a WorkerOutputPolicy,
+}
+
+impl TryFrom<UncheckedPortableSegmentTask> for PortableSegmentTask {
+    type Error = CdfError;
+
+    fn try_from(value: UncheckedPortableSegmentTask) -> Result<Self> {
+        let task = Self {
+            version: value.version,
+            compatibility: value.compatibility,
+            pipeline_id: value.pipeline_id,
+            resource_id: value.resource_id,
+            plan_id: value.plan_id,
+            partition_id: value.partition_id,
+            scope: value.scope,
+            canonical_partition_ordinal: value.canonical_partition_ordinal,
+            segment_id: value.segment_id,
+            segment_ordinal: value.segment_ordinal,
+            row_count: value.row_count,
+            prepared_segment: value.prepared_segment,
+            preparation_result_sha256: value.preparation_result_sha256,
+            package_row_ord_start: value.package_row_ord_start,
+            output_schema: value.output_schema,
+            output_schema_hash: value.output_schema_hash,
+            segmentation_policy: value.segmentation_policy,
+            segmentation_policy_hash: value.segmentation_policy_hash,
+            resources: value.resources,
+            attempt_policy: value.attempt_policy,
+            capabilities: value.capabilities,
+            output_policy: value.output_policy,
+            task_sha256: value.task_sha256,
+        };
+        task.validate()?;
+        Ok(task)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct PortableSegmentTaskInput {
+    pub compatibility: WorkerCompatibility,
+    pub pipeline_id: PipelineId,
+    pub resource_id: ResourceId,
+    pub plan_id: PlanId,
+    pub partition_id: PartitionId,
+    pub scope: ScopeKey,
+    pub canonical_partition_ordinal: u32,
+    pub segment_id: SegmentId,
+    pub segment_ordinal: u32,
+    pub row_count: u64,
+    pub prepared_segment: WorkerArtifactReference,
+    pub preparation_result_sha256: String,
+    pub package_row_ord_start: u64,
+    pub output_schema: WorkerArtifactReference,
+    pub output_schema_hash: SchemaHash,
+    pub segmentation_policy: WorkerArtifactReference,
+    pub segmentation_policy_hash: String,
+    pub resources: WorkerResourceBudget,
+    pub attempt_policy: WorkerAttemptPolicy,
+    pub capabilities: WorkerCapabilityRequirements,
+    pub output_policy: WorkerOutputPolicy,
+}
+
+impl PortableSegmentTask {
+    pub fn new(input: PortableSegmentTaskInput) -> Result<Self> {
+        let mut task = Self {
+            version: PORTABLE_SEGMENT_TASK_VERSION,
+            compatibility: input.compatibility,
+            pipeline_id: input.pipeline_id,
+            resource_id: input.resource_id,
+            plan_id: input.plan_id,
+            partition_id: input.partition_id,
+            scope: input.scope,
+            canonical_partition_ordinal: input.canonical_partition_ordinal,
+            segment_id: input.segment_id,
+            segment_ordinal: input.segment_ordinal,
+            row_count: input.row_count,
+            prepared_segment: input.prepared_segment,
+            preparation_result_sha256: input.preparation_result_sha256,
+            package_row_ord_start: input.package_row_ord_start,
+            output_schema: input.output_schema,
+            output_schema_hash: input.output_schema_hash,
+            segmentation_policy: input.segmentation_policy,
+            segmentation_policy_hash: input.segmentation_policy_hash,
+            resources: input.resources,
+            attempt_policy: input.attempt_policy,
+            capabilities: input.capabilities,
+            output_policy: input.output_policy,
+            task_sha256: String::new(),
+        };
+        task.task_sha256 = task.compute_hash()?;
+        task.validate()?;
+        Ok(task)
+    }
+
+    pub fn decode_bounded(
+        bytes: &[u8],
+        compatibility: &WorkerCompatibility,
+        worker: &WorkerRuntimeCapabilities,
+    ) -> Result<Self> {
+        worker.validate()?;
+        validate_raw_size(
+            "portable segment task",
+            bytes,
+            worker.control.maximum_task_bytes,
+        )?;
+        let task: Self = serde_json::from_slice(bytes).map_err(|error| {
+            CdfError::contract(format!("decode portable segment task: {error}"))
+        })?;
+        task.validate_for_worker(compatibility, worker)?;
+        Ok(task)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.version != PORTABLE_SEGMENT_TASK_VERSION {
+            return Err(CdfError::contract(format!(
+                "portable segment task version {} is unsupported",
+                self.version
+            )));
+        }
+        self.compatibility.validate()?;
+        PipelineId::new(self.pipeline_id.as_str())?;
+        ResourceId::new(self.resource_id.as_str())?;
+        PlanId::new(self.plan_id.as_str())?;
+        PartitionId::new(self.partition_id.as_str())?;
+        SegmentId::new(self.segment_id.as_str())?;
+        validate_portable_scope(&self.scope)?;
+        if self.row_count == 0
+            || self
+                .package_row_ord_start
+                .checked_add(self.row_count)
+                .is_none()
+        {
+            return Err(CdfError::contract(
+                "portable segment task requires a nonzero row count and nonoverflowing package ordinal range",
+            ));
+        }
+        validate_artifact_kind(
+            &self.prepared_segment,
+            WorkerArtifactKind::PreparedSegment,
+            "portable segment task input",
+        )?;
+        validate_sha256(
+            "partition preparation result",
+            &self.preparation_result_sha256,
+        )?;
+        validate_artifact_kind(
+            &self.output_schema,
+            WorkerArtifactKind::OutputSchema,
+            "portable segment task output schema",
+        )?;
+        validate_sha256(
+            "portable segment output schema",
+            self.output_schema_hash.as_str(),
+        )?;
+        validate_artifact_kind(
+            &self.segmentation_policy,
+            WorkerArtifactKind::SegmentationPolicy,
+            "portable segment task segmentation policy",
+        )?;
+        validate_sha256(
+            "portable segment segmentation policy",
+            &self.segmentation_policy_hash,
+        )?;
+        self.resources.validate()?;
+        self.attempt_policy.validate()?;
+        self.capabilities.validate()?;
+        self.output_policy.validate()?;
+        if self.output_policy.allowed_kinds != [WorkerArtifactKind::CanonicalSegment] {
+            return Err(CdfError::contract(
+                "portable segment task may authorize only canonical segment output",
+            ));
+        }
+        if self.resources.control.maximum_input_artifacts < 3 {
+            return Err(CdfError::contract(
+                "portable segment task input-artifact budget must admit prepared rows, schema, and segmentation policy",
+            ));
+        }
+        if self.task_sha256 != self.compute_hash()? {
+            return Err(CdfError::contract(
+                "portable segment task digest does not match its canonical payload",
+            ));
+        }
+        validate_encoded_size(
+            "portable segment task",
+            self,
+            self.resources.control.maximum_task_bytes,
+        )
+    }
+
+    pub fn validate_for_worker(
+        &self,
+        compatibility: &WorkerCompatibility,
+        worker: &WorkerRuntimeCapabilities,
+    ) -> Result<()> {
+        self.validate()?;
+        compatibility.validate()?;
+        if &self.compatibility != compatibility {
+            return Err(CdfError::contract(
+                "portable segment task compatibility tuple is unsupported by this worker",
+            ));
+        }
+        self.capabilities.validate_worker(&self.resources, worker)
+    }
+
+    fn compute_hash(&self) -> Result<String> {
+        artifact_hash(&PortableSegmentTaskSemantic {
+            version: self.version,
+            compatibility: &self.compatibility,
+            pipeline_id: &self.pipeline_id,
+            resource_id: &self.resource_id,
+            plan_id: &self.plan_id,
+            partition_id: &self.partition_id,
+            scope: &self.scope,
+            canonical_partition_ordinal: self.canonical_partition_ordinal,
+            segment_id: &self.segment_id,
+            segment_ordinal: self.segment_ordinal,
+            row_count: self.row_count,
+            prepared_segment: &self.prepared_segment,
+            preparation_result_sha256: &self.preparation_result_sha256,
+            package_row_ord_start: self.package_row_ord_start,
+            output_schema: &self.output_schema,
+            output_schema_hash: &self.output_schema_hash,
+            segmentation_policy: &self.segmentation_policy,
+            segmentation_policy_hash: &self.segmentation_policy_hash,
+            resources: &self.resources,
+            attempt_policy: &self.attempt_policy,
+            capabilities: &self.capabilities,
+            output_policy: &self.output_policy,
+        })
+    }
+}
+
+impl PortableWorkerTask for PortableSegmentTask {
+    fn validate_portable(&self) -> Result<()> {
+        self.validate()
+    }
+
+    fn task_sha256(&self) -> &str {
+        &self.task_sha256
+    }
+
+    fn lease_scope(&self) -> &ScopeKey {
+        &self.scope
+    }
+
+    fn resources(&self) -> &WorkerResourceBudget {
+        &self.resources
+    }
+
+    fn attempt_policy(&self) -> &WorkerAttemptPolicy {
+        &self.attempt_policy
+    }
+
+    fn output_policy(&self) -> &WorkerOutputPolicy {
+        &self.output_policy
+    }
 }
 
 pub struct ReconstructedWorkerTaskAuthority {
@@ -1209,6 +1567,208 @@ pub async fn execute_local_isolated_partition(
     Ok(AdmittedPartitionWorkerResult(result))
 }
 
+/// Opaque, owned second-barrier program reconstructed from verified prepared/schema/policy bytes.
+pub struct ReconstructedSegmentTask {
+    prepared_segment: VerifiedWorkerArtifactFacts,
+    output_schema: VerifiedWorkerArtifactFacts,
+    segmentation_policy: VerifiedWorkerArtifactFacts,
+    execution_program: Box<dyn ReconstructedWorkerExecutionProgram>,
+}
+
+impl std::fmt::Debug for ReconstructedSegmentTask {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ReconstructedSegmentTask")
+            .field("prepared_segment", &self.prepared_segment)
+            .field("output_schema", &self.output_schema)
+            .field("segmentation_policy", &self.segmentation_policy)
+            .field("execution_program", &"<opaque>")
+            .finish()
+    }
+}
+
+impl ReconstructedSegmentTask {
+    pub fn from_verified_artifacts(
+        prepared_segment: VerifiedWorkerArtifactFacts,
+        output_schema: VerifiedWorkerArtifactFacts,
+        segmentation_policy: VerifiedWorkerArtifactFacts,
+        execution_program: Box<dyn ReconstructedWorkerExecutionProgram>,
+    ) -> Self {
+        Self {
+            prepared_segment,
+            output_schema,
+            segmentation_policy,
+            execution_program,
+        }
+    }
+
+    pub fn execution_program<T: Any>(&self) -> Result<&T> {
+        self.execution_program
+            .as_any()
+            .downcast_ref::<T>()
+            .ok_or_else(|| {
+                CdfError::contract(format!(
+                    "reconstructed segment execution program is not `{}`",
+                    std::any::type_name::<T>()
+                ))
+            })
+    }
+
+    fn validate_for(&self, task: &PortableSegmentTask) -> Result<()> {
+        self.prepared_segment.validate_for(&task.prepared_segment)?;
+        self.output_schema.validate_for(&task.output_schema)?;
+        self.segmentation_policy
+            .validate_for(&task.segmentation_policy)?;
+        if self.prepared_segment.row_count() != Some(task.row_count)
+            || self.output_schema.row_count().is_some()
+            || self.segmentation_policy.row_count().is_some()
+        {
+            return Err(CdfError::contract(
+                "reconstructed segment artifacts do not match the task row/schema/policy authority",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Host-injected verification for the source-free second barrier.
+pub trait SegmentTaskVerifier {
+    fn reconstruct_segment_task(
+        &self,
+        task: &PortableSegmentTask,
+    ) -> Result<ReconstructedSegmentTask>;
+
+    fn verify_output_artifact(
+        &self,
+        reference: &WorkerArtifactReference,
+    ) -> Result<VerifiedWorkerArtifactFacts>;
+}
+
+pub struct IsolatedSegmentInvocation {
+    task: PortableSegmentTask,
+    attempt: PartitionAttemptEnvelope,
+    reconstructed: ReconstructedSegmentTask,
+}
+
+impl IsolatedSegmentInvocation {
+    pub fn task(&self) -> &PortableSegmentTask {
+        &self.task
+    }
+
+    pub fn attempt(&self) -> &PartitionAttemptEnvelope {
+        &self.attempt
+    }
+
+    pub fn reconstructed(&self) -> &ReconstructedSegmentTask {
+        &self.reconstructed
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        PortableSegmentTask,
+        PartitionAttemptEnvelope,
+        ReconstructedSegmentTask,
+    ) {
+        (self.task, self.attempt, self.reconstructed)
+    }
+}
+
+pub trait IsolatedSegmentExecutor {
+    fn execute(
+        &self,
+        invocation: IsolatedSegmentInvocation,
+    ) -> BoxFuture<'_, Result<SegmentWorkerResult>>;
+}
+
+/// Local serialization harness for source-free canonical segment finalization.
+pub struct LocalIsolatedSegmentHost<'a> {
+    compatibility: &'a WorkerCompatibility,
+    capabilities: &'a WorkerRuntimeCapabilities,
+    verifier: &'a dyn SegmentTaskVerifier,
+    executor: &'a dyn IsolatedSegmentExecutor,
+}
+
+impl<'a> LocalIsolatedSegmentHost<'a> {
+    pub fn new(
+        compatibility: &'a WorkerCompatibility,
+        capabilities: &'a WorkerRuntimeCapabilities,
+        verifier: &'a dyn SegmentTaskVerifier,
+        executor: &'a dyn IsolatedSegmentExecutor,
+    ) -> Result<Self> {
+        compatibility.validate()?;
+        capabilities.validate()?;
+        Ok(Self {
+            compatibility,
+            capabilities,
+            verifier,
+            executor,
+        })
+    }
+
+    pub async fn execute_serialized(
+        &self,
+        task_bytes: &[u8],
+        attempt_bytes: &[u8],
+    ) -> Result<Vec<u8>> {
+        let task =
+            PortableSegmentTask::decode_bounded(task_bytes, self.compatibility, self.capabilities)?;
+        let attempt =
+            PartitionAttemptEnvelope::decode_bounded(attempt_bytes, &task, self.capabilities)?;
+        let reconstructed = self.verifier.reconstruct_segment_task(&task)?;
+        reconstructed.validate_for(&task)?;
+        let result = self
+            .executor
+            .execute(IsolatedSegmentInvocation {
+                task,
+                attempt,
+                reconstructed,
+            })
+            .await?;
+        result.validate()?;
+        serde_json::to_vec(&result)
+            .map_err(|error| CdfError::internal(format!("encode segment worker result: {error}")))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdmittedSegmentWorkerResult(SegmentWorkerResult);
+
+impl AdmittedSegmentWorkerResult {
+    pub fn result(&self) -> &SegmentWorkerResult {
+        &self.0
+    }
+
+    pub fn into_result(self) -> SegmentWorkerResult {
+        self.0
+    }
+}
+
+pub async fn execute_local_isolated_segment(
+    task: &PortableSegmentTask,
+    attempt: &PartitionAttemptEnvelope,
+    worker: &LocalIsolatedSegmentHost<'_>,
+    coordinator_verifier: &dyn SegmentTaskVerifier,
+    current_lease: &WorkerLeaseState,
+    now_ms: i64,
+) -> Result<AdmittedSegmentWorkerResult> {
+    task.validate_for_worker(worker.compatibility, worker.capabilities)?;
+    attempt.validate_for_task(task)?;
+    let task_bytes = serde_json::to_vec(task)
+        .map_err(|error| CdfError::internal(format!("encode portable segment task: {error}")))?;
+    let attempt_bytes = serde_json::to_vec(attempt)
+        .map_err(|error| CdfError::internal(format!("encode segment attempt: {error}")))?;
+    let result_bytes = worker
+        .execute_serialized(&task_bytes, &attempt_bytes)
+        .await?;
+    let result = SegmentWorkerResult::decode_bounded(&result_bytes, task, worker.capabilities)?;
+    coordinator_verifier
+        .reconstruct_segment_task(task)?
+        .validate_for(task)?;
+    result.validate_for_admission(task, attempt, current_lease, coordinator_verifier, now_ms)?;
+    Ok(AdmittedSegmentWorkerResult(result))
+}
+
 impl PortablePartitionTask {
     pub fn new(input: PortablePartitionTaskInput) -> Result<Self> {
         let mut task = Self {
@@ -1401,6 +1961,32 @@ impl PortablePartitionTask {
     }
 }
 
+impl PortableWorkerTask for PortablePartitionTask {
+    fn validate_portable(&self) -> Result<()> {
+        self.validate()
+    }
+
+    fn task_sha256(&self) -> &str {
+        &self.task_sha256
+    }
+
+    fn lease_scope(&self) -> &ScopeKey {
+        &self.partition.scope
+    }
+
+    fn resources(&self) -> &WorkerResourceBudget {
+        &self.resources
+    }
+
+    fn attempt_policy(&self) -> &WorkerAttemptPolicy {
+        &self.attempt_policy
+    }
+
+    fn output_policy(&self) -> &WorkerOutputPolicy {
+        &self.output_policy
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerArtifactWriteScope {
@@ -1488,20 +2074,20 @@ impl WorkerArtifactWritePermit {
 
     fn validate_reference_before_write(
         &self,
-        task: &PortablePartitionTask,
+        task: &dyn PortableWorkerTask,
         current_lease: &WorkerLeaseState,
         reference: &WorkerArtifactReference,
         object_state: &WorkerArtifactObjectState,
         now_ms: i64,
     ) -> Result<()> {
         self.validate()?;
-        task.validate()?;
+        task.validate_portable()?;
         current_lease.validate()?;
         reference.validate()?;
-        if self.task_sha256 != task.task_sha256
-            || self.lease_scope != task.partition.scope
-            || self.output.maximum_bytes > task.output_policy.maximum_artifact_bytes
-            || !task.output_policy.allowed_kinds.contains(&reference.kind)
+        if self.task_sha256 != task.task_sha256()
+            || &self.lease_scope != task.lease_scope()
+            || self.output.maximum_bytes > task.output_policy().maximum_artifact_bytes
+            || !task.output_policy().allowed_kinds.contains(&reference.kind)
             || !self.output.admits(reference)
             || reference.byte_count > self.output.maximum_bytes
         {
@@ -1586,7 +2172,7 @@ impl WorkerArtifactWriteAuthorization<'_> {
 /// byte and object ceilings are checked cumulatively before the sink can observe a write request.
 #[derive(Debug)]
 pub struct WorkerArtifactWriteSession<'a> {
-    task: &'a PortablePartitionTask,
+    task: &'a dyn PortableWorkerTask,
     permit: &'a WorkerArtifactWritePermit,
     lease: &'a WorkerLeaseState,
     artifact_count: u32,
@@ -1596,7 +2182,7 @@ pub struct WorkerArtifactWriteSession<'a> {
 
 impl<'a> WorkerArtifactWriteSession<'a> {
     pub fn new(
-        task: &'a PortablePartitionTask,
+        task: &'a dyn PortableWorkerTask,
         attempt: &'a PartitionAttemptEnvelope,
         lease: &'a WorkerLeaseState,
         now_ms: i64,
@@ -1636,8 +2222,8 @@ impl<'a> WorkerArtifactWriteSession<'a> {
             .artifact_bytes
             .checked_add(receipt.artifact.byte_count)
             .ok_or_else(|| CdfError::contract("worker output artifact bytes overflowed u64"))?;
-        if next_count > self.task.resources.control.maximum_output_artifacts
-            || next_bytes > self.task.output_policy.maximum_artifact_bytes
+        if next_count > self.task.resources().control.maximum_output_artifacts
+            || next_bytes > self.task.output_policy().maximum_artifact_bytes
             || next_bytes > self.permit.output.maximum_bytes
             || self.artifacts.contains(&receipt.artifact)
         {
@@ -1739,17 +2325,17 @@ impl TryFrom<UncheckedPartitionAttemptEnvelope> for PartitionAttemptEnvelope {
 }
 
 impl PartitionAttemptEnvelope {
-    pub fn decode_bounded(
+    pub fn decode_bounded<T: PortableWorkerTask + ?Sized>(
         bytes: &[u8],
-        task: &PortablePartitionTask,
+        task: &T,
         worker: &WorkerRuntimeCapabilities,
     ) -> Result<Self> {
         worker.validate()?;
-        task.resources.control.validate_within(&worker.control)?;
+        task.resources().control.validate_within(&worker.control)?;
         validate_raw_size(
             "partition attempt envelope",
             bytes,
-            task.resources
+            task.resources()
                 .control
                 .maximum_attempt_bytes
                 .min(worker.control.maximum_attempt_bytes),
@@ -1773,30 +2359,30 @@ impl PartitionAttemptEnvelope {
         self.write_permit.validate()
     }
 
-    pub fn validate_for_task(&self, task: &PortablePartitionTask) -> Result<()> {
+    pub fn validate_for_task<T: PortableWorkerTask + ?Sized>(&self, task: &T) -> Result<()> {
         self.validate()?;
-        task.validate()?;
-        if self.write_permit.task_sha256 != task.task_sha256
-            || self.write_permit.lease_scope != task.partition.scope
+        task.validate_portable()?;
+        if self.write_permit.task_sha256 != task.task_sha256()
+            || &self.write_permit.lease_scope != task.lease_scope()
         {
             return Err(CdfError::contract(
                 "partition attempt does not bind the current portable task digest and scope",
             ));
         }
-        if self.retry_ordinal >= task.attempt_policy.maximum_attempts
+        if self.retry_ordinal >= task.attempt_policy().maximum_attempts
             || u64::try_from(
                 self.write_permit
                     .expires_at_ms
                     .saturating_sub(self.write_permit.issued_at_ms),
             )
             .unwrap_or(u64::MAX)
-                > task.attempt_policy.maximum_attempt_duration_ms
+                > task.attempt_policy().maximum_attempt_duration_ms
         {
             return Err(CdfError::contract(
                 "partition attempt exceeds the task retry or duration authority",
             ));
         }
-        if self.write_permit.output.maximum_bytes > task.output_policy.maximum_artifact_bytes {
+        if self.write_permit.output.maximum_bytes > task.output_policy().maximum_artifact_bytes {
             return Err(CdfError::contract(
                 "partition attempt widens the task artifact byte authority",
             ));
@@ -1804,7 +2390,7 @@ impl PartitionAttemptEnvelope {
         validate_encoded_size(
             "partition attempt envelope",
             self,
-            task.resources.control.maximum_attempt_bytes,
+            task.resources().control.maximum_attempt_bytes,
         )
     }
 }
@@ -2313,6 +2899,211 @@ impl PartitionWorkerResult {
             &self.processed_observations,
             &self.artifacts,
             &self.counts,
+        ))
+    }
+}
+
+/// Bounded second-barrier result for exactly one canonical segment.
+///
+/// Source, verdict, and checkpoint evidence belongs to the admitted preparation result. This
+/// result proves only that the prefix-bound prepared artifact became the one canonical segment
+/// authorized by `PortableSegmentTask`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "UncheckedSegmentWorkerResult", deny_unknown_fields)]
+pub struct SegmentWorkerResult {
+    pub version: u16,
+    pub task_sha256: String,
+    pub attempt_id: String,
+    pub write_permit_sha256: String,
+    pub status: WorkerTerminalStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<WorkerArtifactReceipt>,
+    pub telemetry: WorkerTelemetry,
+    pub result_sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UncheckedSegmentWorkerResult {
+    version: u16,
+    task_sha256: String,
+    attempt_id: String,
+    write_permit_sha256: String,
+    status: WorkerTerminalStatus,
+    artifact: Option<WorkerArtifactReceipt>,
+    telemetry: WorkerTelemetry,
+    result_sha256: String,
+}
+
+impl TryFrom<UncheckedSegmentWorkerResult> for SegmentWorkerResult {
+    type Error = CdfError;
+
+    fn try_from(value: UncheckedSegmentWorkerResult) -> Result<Self> {
+        let result = Self {
+            version: value.version,
+            task_sha256: value.task_sha256,
+            attempt_id: value.attempt_id,
+            write_permit_sha256: value.write_permit_sha256,
+            status: value.status,
+            artifact: value.artifact,
+            telemetry: value.telemetry,
+            result_sha256: value.result_sha256,
+        };
+        result.validate()?;
+        Ok(result)
+    }
+}
+
+impl SegmentWorkerResult {
+    pub fn new(
+        attempt: &PartitionAttemptEnvelope,
+        status: WorkerTerminalStatus,
+        artifact: Option<WorkerArtifactReceipt>,
+        telemetry: WorkerTelemetry,
+    ) -> Result<Self> {
+        let mut result = Self {
+            version: SEGMENT_WORKER_RESULT_VERSION,
+            task_sha256: attempt.write_permit.task_sha256.clone(),
+            attempt_id: attempt.attempt_id.clone(),
+            write_permit_sha256: attempt.write_permit.hash()?,
+            status,
+            artifact,
+            telemetry,
+            result_sha256: String::new(),
+        };
+        result.result_sha256 = result.compute_semantic_hash()?;
+        result.validate()?;
+        Ok(result)
+    }
+
+    pub fn decode_bounded(
+        bytes: &[u8],
+        task: &PortableSegmentTask,
+        worker: &WorkerRuntimeCapabilities,
+    ) -> Result<Self> {
+        worker.validate()?;
+        task.resources.control.validate_within(&worker.control)?;
+        validate_raw_size(
+            "segment worker result",
+            bytes,
+            task.resources
+                .control
+                .maximum_result_bytes
+                .min(worker.control.maximum_result_bytes),
+        )?;
+        serde_json::from_slice(bytes)
+            .map_err(|error| CdfError::contract(format!("decode segment worker result: {error}")))
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.version != SEGMENT_WORKER_RESULT_VERSION {
+            return Err(CdfError::contract(format!(
+                "segment worker result version {} is unsupported",
+                self.version
+            )));
+        }
+        validate_sha256("segment worker task", &self.task_sha256)?;
+        validate_token("segment worker attempt id", &self.attempt_id)?;
+        validate_sha256("segment worker write permit", &self.write_permit_sha256)?;
+        self.status.validate()?;
+        match (&self.status, &self.artifact) {
+            (WorkerTerminalStatus::Succeeded, Some(receipt)) => receipt.validate()?,
+            (WorkerTerminalStatus::Succeeded, None) => {
+                return Err(CdfError::contract(
+                    "successful segment worker result requires one artifact receipt",
+                ));
+            }
+            (_, Some(_)) => {
+                return Err(CdfError::contract(
+                    "non-successful segment worker result cannot publish an artifact",
+                ));
+            }
+            (_, None) => {}
+        }
+        if self.result_sha256 != self.compute_semantic_hash()? {
+            return Err(CdfError::contract(
+                "segment worker result digest does not match its canonical semantic payload",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn validate_for_admission(
+        &self,
+        task: &PortableSegmentTask,
+        attempt: &PartitionAttemptEnvelope,
+        current_lease: &WorkerLeaseState,
+        verifier: &dyn SegmentTaskVerifier,
+        now_ms: i64,
+    ) -> Result<()> {
+        self.validate()?;
+        task.validate()?;
+        attempt.validate_for_task(task)?;
+        current_lease.validate_permit(&attempt.write_permit, now_ms)?;
+        if self.task_sha256 != task.task_sha256
+            || self.attempt_id != attempt.attempt_id
+            || self.write_permit_sha256 != attempt.write_permit.hash()?
+        {
+            return Err(CdfError::contract(
+                "segment worker result has a stale or mismatched task/attempt/write permit",
+            ));
+        }
+        if !matches!(self.status, WorkerTerminalStatus::Succeeded) {
+            return Err(CdfError::data(
+                "only a successful segment worker result may advance coordinator authority",
+            ));
+        }
+        let receipt = self.artifact.as_ref().ok_or_else(|| {
+            CdfError::contract("successful segment worker result lacks its artifact receipt")
+        })?;
+        let WorkerArtifactRole::CanonicalSegment {
+            segment_id,
+            partition_ordinal,
+            segment_ordinal,
+            row_count,
+        } = &receipt.role
+        else {
+            return Err(CdfError::contract(
+                "segment finalization result must publish one canonical segment",
+            ));
+        };
+        if segment_id != &task.segment_id
+            || *partition_ordinal != task.canonical_partition_ordinal
+            || *segment_ordinal != task.segment_ordinal
+            || *row_count != task.row_count
+            || !task
+                .output_policy
+                .allowed_kinds
+                .contains(&receipt.artifact.kind)
+            || !attempt.write_permit.output.admits(&receipt.artifact)
+            || receipt.artifact.byte_count > task.output_policy.maximum_artifact_bytes
+        {
+            return Err(CdfError::contract(
+                "segment worker receipt exceeds its canonical segment authority",
+            ));
+        }
+        let facts = verifier.verify_output_artifact(&receipt.artifact)?;
+        facts.validate_for(&receipt.artifact)?;
+        if facts.row_count() != Some(task.row_count) {
+            return Err(CdfError::contract(
+                "segment worker receipt row count does not match stored content",
+            ));
+        }
+        validate_encoded_size(
+            "segment worker result",
+            self,
+            task.resources.control.maximum_result_bytes,
+        )
+    }
+
+    fn compute_semantic_hash(&self) -> Result<String> {
+        artifact_hash(&(
+            self.version,
+            &self.task_sha256,
+            &self.attempt_id,
+            &self.write_permit_sha256,
+            &self.status,
+            &self.artifact,
         ))
     }
 }

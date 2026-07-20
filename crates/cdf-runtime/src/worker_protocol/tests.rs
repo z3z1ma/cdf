@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::BTreeMap, sync::Arc};
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc};
 
 use arrow_schema::Schema;
 use cdf_kernel::{
@@ -223,9 +223,9 @@ struct RecordedSemanticArtifact {
     semantic_hash: String,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct MockArtifactStore {
-    values: RefCell<BTreeMap<(WorkerArtifactKind, String), serde_json::Value>>,
+    values: Rc<RefCell<BTreeMap<(WorkerArtifactKind, String), serde_json::Value>>>,
 }
 
 impl MockArtifactStore {
@@ -409,6 +409,30 @@ impl WorkerAdmissionVerifier for MockArtifactStore {
     }
 }
 
+impl SegmentTaskVerifier for MockArtifactStore {
+    fn reconstruct_segment_task(
+        &self,
+        task: &PortableSegmentTask,
+    ) -> Result<ReconstructedSegmentTask> {
+        let verify = |reference: &WorkerArtifactReference| {
+            <Self as WorkerAdmissionVerifier>::verify_artifact(self, reference)
+        };
+        Ok(ReconstructedSegmentTask::from_verified_artifacts(
+            verify(&task.prepared_segment)?,
+            verify(&task.output_schema)?,
+            verify(&task.segmentation_policy)?,
+            Box::new(()),
+        ))
+    }
+
+    fn verify_output_artifact(
+        &self,
+        reference: &WorkerArtifactReference,
+    ) -> Result<VerifiedWorkerArtifactFacts> {
+        <Self as WorkerAdmissionVerifier>::verify_artifact(self, reference)
+    }
+}
+
 struct Fixture {
     task: PortablePartitionTask,
     store: MockArtifactStore,
@@ -436,6 +460,44 @@ impl IsolatedPartitionExecutor for FixtureIsolatedExecutor<'_> {
                 .execution_program::<()>()
                 .map(|_| self.fixture.result(invocation.attempt()))
         };
+        Box::pin(async move { result })
+    }
+}
+
+struct FixtureIsolatedSegmentExecutor<'a> {
+    store: &'a MockArtifactStore,
+}
+
+impl IsolatedSegmentExecutor for FixtureIsolatedSegmentExecutor<'_> {
+    fn execute(
+        &self,
+        invocation: IsolatedSegmentInvocation,
+    ) -> cdf_kernel::BoxFuture<'_, Result<SegmentWorkerResult>> {
+        let result = invocation
+            .reconstructed()
+            .execution_program::<()>()
+            .and_then(|_| {
+                let task = invocation.task();
+                let canonical = self.store.insert_semantic(
+                    WorkerArtifactKind::CanonicalSegment,
+                    "attempts/segment-attempt-4/data/p00000003-s00000000.arrow",
+                    hash(53),
+                );
+                SegmentWorkerResult::new(
+                    invocation.attempt(),
+                    WorkerTerminalStatus::Succeeded,
+                    Some(WorkerArtifactReceipt {
+                        role: WorkerArtifactRole::CanonicalSegment {
+                            segment_id: task.segment_id.clone(),
+                            partition_ordinal: task.canonical_partition_ordinal,
+                            segment_ordinal: task.segment_ordinal,
+                            row_count: task.row_count,
+                        },
+                        artifact: canonical,
+                    }),
+                    WorkerTelemetry::default(),
+                )
+            });
         Box::pin(async move { result })
     }
 }
@@ -718,6 +780,67 @@ impl Fixture {
         )
         .unwrap()
     }
+
+    fn segment_task(
+        &self,
+        prepared_segment: WorkerArtifactReference,
+        preparation_result_sha256: String,
+    ) -> PortableSegmentTask {
+        PortableSegmentTask::new(PortableSegmentTaskInput {
+            compatibility: self.task.compatibility.clone(),
+            pipeline_id: self.task.pipeline_id.clone(),
+            resource_id: self.task.resource_id.clone(),
+            plan_id: self.task.plan_id.clone(),
+            partition_id: self.task.partition.partition_id.clone(),
+            scope: self.task.partition.scope.clone(),
+            canonical_partition_ordinal: self.task.partition.canonical_partition_ordinal,
+            segment_id: SegmentId::new("p00000003-s00000000").unwrap(),
+            segment_ordinal: 0,
+            row_count: 50,
+            prepared_segment,
+            preparation_result_sha256,
+            package_row_ord_start: 125,
+            output_schema: self.task.execution.artifacts.output_schema.clone(),
+            output_schema_hash: self.task.execution.output_schema_hash.clone(),
+            segmentation_policy: self.task.execution.artifacts.segmentation_policy.clone(),
+            segmentation_policy_hash: self.task.execution.segmentation_policy_hash.clone(),
+            resources: self.task.resources.clone(),
+            attempt_policy: self.task.attempt_policy.clone(),
+            capabilities: WorkerCapabilityRequirements {
+                required_blocking_lanes: Vec::new(),
+                services: vec!["artifact-reader-v1".to_owned()],
+            },
+            output_policy: WorkerOutputPolicy {
+                allowed_kinds: vec![WorkerArtifactKind::CanonicalSegment],
+                maximum_artifact_bytes: self.task.output_policy.maximum_artifact_bytes,
+            },
+        })
+        .unwrap()
+    }
+
+    fn segment_attempt(&self, task: &PortableSegmentTask) -> PartitionAttemptEnvelope {
+        PartitionAttemptEnvelope {
+            version: PARTITION_ATTEMPT_VERSION,
+            attempt_id: "segment-attempt-4".to_owned(),
+            retry_ordinal: 0,
+            trace_id: "segment-trace-4".to_owned(),
+            write_permit: WorkerArtifactWritePermit {
+                task_sha256: task.task_sha256.clone(),
+                lease_authority_domain_id: LeaseAuthorityDomainId::new("local-test-domain")
+                    .unwrap(),
+                lease_scope: task.scope.clone(),
+                fencing_token: FencingToken::new(4).unwrap(),
+                issued_at_ms: 1_000,
+                expires_at_ms: 10_000,
+                output: WorkerArtifactWriteScope {
+                    store_namespace: ContentStoreNamespace::new("worker-fixtures").unwrap(),
+                    object_key_prefix: "attempts/segment-attempt-4/".to_owned(),
+                    maximum_bytes: 1024 * 1024 * 1024,
+                },
+                generation_precondition: WorkerObjectGenerationPrecondition::CreateOrVerifyContent,
+            },
+        }
+    }
 }
 
 #[test]
@@ -843,6 +966,121 @@ fn prepared_segment_receipts_are_row_verified_without_becoming_package_identity(
             .iter()
             .all(|receipt| receipt.artifact.kind == WorkerArtifactKind::PreparedSegment)
     );
+}
+
+#[test]
+fn segment_finalization_task_binds_dense_prefix_and_one_canonical_receipt() {
+    let fixture = Fixture::new();
+    let prepared = fixture.store.insert_semantic(
+        WorkerArtifactKind::PreparedSegment,
+        "attempts/attempt-4/prepared/p00000003-s00000000.arrow",
+        hash(51),
+    );
+    let task = fixture.segment_task(prepared, hash(52));
+    let encoded = serde_json::to_vec(&task).unwrap();
+    assert_eq!(
+        PortableSegmentTask::decode_bounded(&encoded, &compatibility(), &worker_capabilities())
+            .unwrap(),
+        task
+    );
+    let attempt = fixture.segment_attempt(&task);
+    attempt.validate_for_task(&task).unwrap();
+
+    let canonical = fixture.store.insert_semantic(
+        WorkerArtifactKind::CanonicalSegment,
+        "attempts/segment-attempt-4/data/p00000003-s00000000.arrow",
+        hash(53),
+    );
+    let result = SegmentWorkerResult::new(
+        &attempt,
+        WorkerTerminalStatus::Succeeded,
+        Some(WorkerArtifactReceipt {
+            role: WorkerArtifactRole::CanonicalSegment {
+                segment_id: task.segment_id.clone(),
+                partition_ordinal: task.canonical_partition_ordinal,
+                segment_ordinal: task.segment_ordinal,
+                row_count: task.row_count,
+            },
+            artifact: canonical,
+        }),
+        WorkerTelemetry::default(),
+    )
+    .unwrap();
+    let result_bytes = serde_json::to_vec(&result).unwrap();
+    let decoded =
+        SegmentWorkerResult::decode_bounded(&result_bytes, &task, &worker_capabilities()).unwrap();
+    decoded
+        .validate_for_admission(&task, &attempt, &fixture.lease(), &fixture.store, 2_000)
+        .unwrap();
+
+    let mut forged = task.clone();
+    forged.package_row_ord_start += 1;
+    forged.task_sha256 = forged.compute_hash().unwrap();
+    assert!(
+        decoded
+            .validate_for_admission(&forged, &attempt, &fixture.lease(), &fixture.store, 2_000,)
+            .unwrap_err()
+            .message
+            .contains("task")
+    );
+}
+
+#[test]
+fn local_isolated_segment_host_round_trips_source_free_finalization() {
+    let fixture = Fixture::new();
+    let prepared = fixture.store.insert_semantic(
+        WorkerArtifactKind::PreparedSegment,
+        "attempts/attempt-4/prepared/p00000003-s00000000.arrow",
+        hash(51),
+    );
+    let task = fixture.segment_task(prepared, hash(52));
+    let attempt = fixture.segment_attempt(&task);
+    let compatibility = compatibility();
+    let capabilities = worker_capabilities();
+    let worker_store = fixture.store.clone();
+    let coordinator_store = fixture.store.clone();
+    let executor = FixtureIsolatedSegmentExecutor {
+        store: &worker_store,
+    };
+    let worker =
+        LocalIsolatedSegmentHost::new(&compatibility, &capabilities, &worker_store, &executor)
+            .unwrap();
+
+    let admitted = futures_executor::block_on(execute_local_isolated_segment(
+        &task,
+        &attempt,
+        &worker,
+        &coordinator_store,
+        &fixture.lease(),
+        2_000,
+    ))
+    .unwrap();
+    let artifact = admitted.result().artifact.as_ref().unwrap();
+    assert_eq!(artifact.artifact.kind, WorkerArtifactKind::CanonicalSegment);
+    assert!(matches!(
+        artifact.role,
+        WorkerArtifactRole::CanonicalSegment {
+            partition_ordinal: 3,
+            segment_ordinal: 0,
+            row_count: 50,
+            ..
+        }
+    ));
+
+    let stale = WorkerLeaseState {
+        fencing_token: FencingToken::new(5).unwrap(),
+        ..fixture.lease()
+    };
+    let error = futures_executor::block_on(execute_local_isolated_segment(
+        &task,
+        &attempt,
+        &worker,
+        &coordinator_store,
+        &stale,
+        2_000,
+    ))
+    .unwrap_err();
+    assert!(error.message.contains("stale"));
 }
 
 #[test]
