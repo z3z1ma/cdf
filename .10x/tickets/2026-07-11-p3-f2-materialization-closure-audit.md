@@ -51,6 +51,7 @@ No unrelated product feature or performance tuning beyond closure blockers.
 - 2026-07-18: Corrected the F2 graph edge to B13. F2 audits the formats currently admitted to the product registry and installs forward conformance; it does not wait for every future catalog-v1 codec. Each later codec remains responsible for its own bounded-allocation proof before registration. This exposes, rather than hides, the current Avro registration contradiction as a direct F2 blocker.
 - 2026-07-18: While exercising the migrated conformance path, found a deterministic fixture defect: drift/quarantine asserted the optional statistics profile after invoking `run_project` with telemetry disabled. The fixture now requests statistics through `RunTelemetryConfig::with_statistics_profile(true)`; product telemetry defaults are unchanged.
 - 2026-07-18: Removed both Avro framings from the standard CLI format registry and removed the CLI's direct Avro dependency. B6 explicitly records dependency-owned decompression as uncontained, so advertising the codec as production-ready violated F2's allocation-owner requirement. The implementation remains available to its focused crate tests while B6 is blocked; a product-catalog regression law prevents accidental re-admission without closure evidence.
+- 2026-07-18: Closed the lost native-headroom authority gap named by the prior F2 review. The CLI's validated `MemoryBudgetResolution` now crosses the composition root into `ExecutionServices`, where adapters can read one generic process/managed/native/spill authority. Resolution validation rejects internally inconsistent totals and host managed/spill mismatches. Synthetic hosts may deliberately omit process authority. The first value-owned implementation made `ExecutionServices` large enough to trip strict Clippy in the segment-encode enum; retaining the immutable resolution behind `Arc` restored the lean hot structure and made service cloning cheaper.
 
 ## Evidence
 
@@ -91,6 +92,11 @@ No unrelated product feature or performance tuning beyond closure blockers.
   - `CARGO_BUILD_JOBS=12 cargo check -p cdf-cli --all-targets -j 12` — passed and regenerated the lockfile after removing the direct CLI dependency.
   - `CARGO_BUILD_JOBS=12 cargo test -p cdf-cli builtin_format_catalog_excludes_resource_uncontained_avro --locked -j 12` — passed. Proves the standard product registry does not admit either blocked Avro framing.
   - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-cli --all-targets --locked -j 12 -- -D warnings` — passed.
+- 2026-07-18 process memory authority propagation:
+  - `CARGO_BUILD_JOBS=12 cargo check -p cdf-memory -p cdf-runtime -p cdf-engine -p cdf-cli --all-targets --locked -j 12` — passed.
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-memory budget_resolution_preserves_native_headroom_and_rejects_unsafe_shape --locked -j 12` — passed. Proves resolved totals validate and a forged headroom total fails.
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-engine default_services_preserve_process_memory_budget_resolution --locked -j 12` — passed. Proves production-style standalone services retain exact process/native/managed/spill resolution and preserve it through run-job scoping.
+  - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-memory -p cdf-runtime -p cdf-engine -p cdf-cli --all-targets --locked -j 12 -- -D warnings` — passed after replacing the first oversized inline resolution field with immutable shared ownership.
 - This is partial F2 evidence only. The ticket remains active because its cross-codebase owner matrix, static architecture gates, remaining metadata-cardinality closure, and geometric stress proof are not complete.
 
 ## Review

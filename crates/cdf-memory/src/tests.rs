@@ -431,6 +431,10 @@ fn budget_resolution_preserves_native_headroom_and_rejects_unsafe_shape() {
         resolution.process_budget_bytes - resolution.native_headroom_bytes
     );
     assert_eq!(resolution.headroom_policy_version, HEADROOM_POLICY_VERSION);
+    resolution.validate().unwrap();
+    let mut inconsistent = resolution.clone();
+    inconsistent.native_headroom_bytes += 1;
+    assert!(inconsistent.validate().is_err());
     assert!(resolve_memory_budget(Some(256), 1024, 900, 1).is_err());
 }
 

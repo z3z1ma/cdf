@@ -1131,6 +1131,36 @@ pub struct MemoryBudgetResolution {
     pub headroom_policy_version: String,
 }
 
+impl MemoryBudgetResolution {
+    pub fn validate(&self) -> Result<()> {
+        if self.effective_authority_bytes == 0
+            || self.process_budget_bytes == 0
+            || self.native_headroom_bytes == 0
+            || self.managed_pool_bytes == 0
+            || self.spill_budget_bytes == 0
+            || self.headroom_policy_version.is_empty()
+        {
+            return Err(CdfError::contract(
+                "memory budget resolution requires nonzero authority, process, native headroom, managed pool, spill, and policy version",
+            ));
+        }
+        if self.process_budget_bytes > self.effective_authority_bytes
+            || self.requested_process_bytes.is_some_and(|requested| {
+                requested != self.process_budget_bytes || requested > self.effective_authority_bytes
+            })
+            || self
+                .managed_pool_bytes
+                .checked_add(self.native_headroom_bytes)
+                != Some(self.process_budget_bytes)
+        {
+            return Err(CdfError::contract(
+                "memory budget resolution is internally inconsistent",
+            ));
+        }
+        Ok(())
+    }
+}
+
 pub fn resolve_memory_budget(
     requested_process_bytes: Option<u64>,
     effective_authority_bytes: u64,
@@ -1197,7 +1227,7 @@ fn resolve_memory_budget_inner(
                 "process memory budget {process_budget_bytes} leaves less than the {minimum_working_set_bytes}-byte minimum working set after {native_headroom_bytes} bytes of native headroom; raise the budget or reduce the working set"
             ))
         })?;
-    Ok(MemoryBudgetResolution {
+    let resolution = MemoryBudgetResolution {
         requested_process_bytes,
         effective_authority_bytes,
         process_budget_bytes,
@@ -1205,7 +1235,9 @@ fn resolve_memory_budget_inner(
         managed_pool_bytes,
         spill_budget_bytes,
         headroom_policy_version: HEADROOM_POLICY_VERSION.to_owned(),
-    })
+    };
+    resolution.validate()?;
+    Ok(resolution)
 }
 
 #[cfg(test)]

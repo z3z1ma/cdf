@@ -12,7 +12,7 @@ use std::{
 };
 
 use cdf_kernel::{BoxFuture, CdfError, ErrorKind, InvocationTermination, Result};
-use cdf_memory::MemoryCoordinator;
+use cdf_memory::{MemoryBudgetResolution, MemoryCoordinator};
 use futures_channel::{mpsc, oneshot};
 use futures_util::{SinkExt, Stream, future::Either};
 use serde::{Deserialize, Serialize};
@@ -700,6 +700,7 @@ impl ExecutionTaskScope for ReportingTaskScope {
 #[derive(Clone)]
 pub struct ExecutionServices {
     host: Arc<dyn ExecutionHost>,
+    memory_budget_resolution: Option<Arc<MemoryBudgetResolution>>,
     run_work: Option<Arc<RunWorkAdmission>>,
     staging_leases: Option<Arc<crate::StagingLeaseSupervisor>>,
     content_reachability: Option<Arc<dyn cdf_kernel::ContentReachabilityStore>>,
@@ -1071,6 +1072,7 @@ impl std::fmt::Debug for ExecutionServices {
         formatter
             .debug_struct("ExecutionServices")
             .field("capabilities", &self.host.capabilities())
+            .field("memory_budget_resolution", &self.memory_budget_resolution)
             .field("run_job_ceiling", &self.run_job_ceiling().ok().flatten())
             .finish_non_exhaustive()
     }
@@ -1081,6 +1083,7 @@ impl ExecutionServices {
         host.capabilities().validate()?;
         Ok(Self {
             host,
+            memory_budget_resolution: None,
             run_work: None,
             staging_leases: None,
             content_reachability: None,
@@ -1098,6 +1101,7 @@ impl ExecutionServices {
         }
         Ok(Self {
             host: Arc::clone(&self.host),
+            memory_budget_resolution: self.memory_budget_resolution.clone(),
             run_work: Some(Arc::new(RunWorkAdmission {
                 state: Mutex::new(RunWorkAdmissionState {
                     ceiling: jobs,
@@ -1123,6 +1127,7 @@ impl ExecutionServices {
     ) -> Result<Self> {
         Ok(Self {
             host: Arc::clone(&self.host),
+            memory_budget_resolution: self.memory_budget_resolution.clone(),
             run_work: self.run_work.clone(),
             staging_leases: Some(crate::StagingLeaseSupervisor::new(
                 authority,
@@ -1141,6 +1146,7 @@ impl ExecutionServices {
     ) -> Self {
         Self {
             host: Arc::clone(&self.host),
+            memory_budget_resolution: self.memory_budget_resolution.clone(),
             run_work: self.run_work.clone(),
             staging_leases: self.staging_leases.clone(),
             content_reachability: Some(store),
@@ -1158,6 +1164,30 @@ impl ExecutionServices {
                 "immutable content publication requires an injected reachability store",
             )
         })
+    }
+
+    pub fn with_memory_budget_resolution(
+        &self,
+        resolution: MemoryBudgetResolution,
+    ) -> Result<Self> {
+        resolution.validate()?;
+        let managed_budget = self.host.memory().snapshot().budget_bytes;
+        let spill_budget = self.host.spill().snapshot().budget_bytes;
+        if resolution.managed_pool_bytes != managed_budget
+            || resolution.spill_budget_bytes != spill_budget
+        {
+            return Err(CdfError::contract(format!(
+                "memory budget resolution declares managed/spill budgets {}/{} but execution host provides {managed_budget}/{spill_budget}",
+                resolution.managed_pool_bytes, resolution.spill_budget_bytes
+            )));
+        }
+        let mut services = self.clone();
+        services.memory_budget_resolution = Some(Arc::new(resolution));
+        Ok(services)
+    }
+
+    pub fn memory_budget_resolution(&self) -> Option<&MemoryBudgetResolution> {
+        self.memory_budget_resolution.as_deref()
     }
 
     pub fn acquire_staging_lease(
@@ -1496,6 +1526,7 @@ impl ExecutionServices {
         }
         Ok(Self {
             host: Arc::clone(&self.host),
+            memory_budget_resolution: self.memory_budget_resolution.clone(),
             run_work: self.run_work.clone(),
             staging_leases: self.staging_leases.clone(),
             content_reachability: self.content_reachability.clone(),
@@ -2022,6 +2053,7 @@ mod tests {
             });
             let services = ExecutionServices {
                 host: Arc::new(TestHost),
+                memory_budget_resolution: None,
                 run_work: Some(Arc::clone(&admission)),
                 staging_leases: None,
                 content_reachability: None,

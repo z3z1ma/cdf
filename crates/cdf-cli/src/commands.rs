@@ -112,11 +112,8 @@ fn default_services(
     CliError,
 > {
     let budgets = crate::runtime_budget::resolve(cli)?.resolution;
-    cdf_engine::StandaloneExecutionHost::default_services_with_spill(
-        budgets.managed_pool_bytes,
-        budgets.spill_budget_bytes,
-    )
-    .map_err(Into::into)
+    cdf_engine::StandaloneExecutionHost::default_services_with_budget_resolution(budgets)
+        .map_err(Into::into)
 }
 
 pub(crate) fn json_cli_error(error: serde_json::Error) -> CliError {

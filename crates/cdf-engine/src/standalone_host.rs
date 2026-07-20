@@ -14,7 +14,7 @@ use std::{
 };
 
 use cdf_kernel::{CdfError, Result};
-use cdf_memory::MemoryCoordinator;
+use cdf_memory::{MemoryBudgetResolution, MemoryCoordinator};
 use cdf_runtime::{
     BlockingLaneSpec, BlockingTask, BlockingValueTask, CpuFutureTask, CpuTaskSpec, ExecutionHost,
     ExecutionHostCapabilities, ExecutionTaskScope, IoTask, IoValue, IoValueTask, RunCancellation,
@@ -599,6 +599,18 @@ pub struct StandaloneExecutionHost {
 }
 
 impl StandaloneExecutionHost {
+    pub fn default_services_with_budget_resolution(
+        resolution: MemoryBudgetResolution,
+    ) -> Result<(Arc<Self>, cdf_runtime::ExecutionServices)> {
+        resolution.validate()?;
+        let (host, services) = Self::default_services_with_spill(
+            resolution.managed_pool_bytes,
+            resolution.spill_budget_bytes,
+        )?;
+        let services = services.with_memory_budget_resolution(resolution)?;
+        Ok((host, services))
+    }
+
     pub fn default_services(
         managed_budget_bytes: u64,
     ) -> Result<(Arc<Self>, cdf_runtime::ExecutionServices)> {
@@ -1128,6 +1140,37 @@ mod tests {
             memory,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn default_services_preserve_process_memory_budget_resolution() {
+        let resolution = cdf_memory::resolve_unenforced_memory_budget(
+            Some(2 * 1024 * 1024 * 1024),
+            2 * 1024 * 1024 * 1024,
+            64 * 1024 * 1024,
+            1024 * 1024 * 1024,
+        )
+        .unwrap();
+        let (_, services) =
+            StandaloneExecutionHost::default_services_with_budget_resolution(resolution.clone())
+                .unwrap();
+
+        assert_eq!(services.memory_budget_resolution(), Some(&resolution));
+        assert_eq!(
+            services.memory().snapshot().budget_bytes,
+            resolution.managed_pool_bytes
+        );
+        assert_eq!(
+            services.spill().snapshot().budget_bytes,
+            resolution.spill_budget_bytes
+        );
+        assert_eq!(
+            services
+                .with_run_job_ceiling(2)
+                .unwrap()
+                .memory_budget_resolution(),
+            Some(&resolution)
+        );
     }
 
     #[test]
