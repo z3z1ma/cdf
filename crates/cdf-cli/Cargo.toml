@@ -11,7 +11,7 @@ name = "cdf"
 path = "src/main.rs"
 
 [dependencies]
-arrow-array = "59.1.0"
+arrow-array = "58.3.0"
 cdf-cli-core = { path = "../cdf-cli-core" }
 cdf-contract = { path = "../cdf-contract" }
 cdf-declarative = { path = "../cdf-declarative" }
@@ -55,8 +55,8 @@ toml = "1.1.2"
 url = "2.5.8"
 
 [dev-dependencies]
-arrow-ipc = "59.1.0"
-arrow-schema = "59.1.0"
+arrow-ipc = "58.3.0"
+arrow-schema = "58.3.0"
 duckdb.workspace = true
 flate2 = "1.1.9"
 postgres = "0.19"

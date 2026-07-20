@@ -30,7 +30,7 @@ Checkpoint schema, package manifest version, capability-sheet format, WIT world,
 
 Each cdf minor release MUST pin one load-bearing dependency tuple. Patch releases MUST NOT move those pins.
 
-While CDF depends on Apache DataFusion from a git source, CDF MUST NOT publish crates.io releases unless a later active decision explicitly supersedes this constraint. Current crate manifests MUST carry `publish = false` while that git pin remains. The release path MUST first replace the DataFusion git pin with a crates.io dependency or record the superseding release decision with supply-chain evidence, then remove the manifest publication guard only as part of that governed release work.
+CDF MUST NOT publish a crate whose distributable dependency graph contains a disallowed git or path dependency. Current crate manifests MUST carry `publish = false` until release work proves the specific crate graph is registry-publishable. Removing a publication guard requires a governed release ticket with dependency-source and supply-chain evidence under `.10x/knowledge/dependency-tuple-migration-guard.md`.
 
 ## MVP contents
 

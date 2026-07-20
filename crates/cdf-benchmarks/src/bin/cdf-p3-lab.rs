@@ -205,7 +205,7 @@ fn provider() -> SystemHostProvider {
     SystemHostProvider::new(HostProbeConfig {
         cdf_version: env!("CARGO_PKG_VERSION").to_owned(),
         dependency_versions: BTreeMap::from([
-            ("arrow".to_owned(), "59.1.0".to_owned()),
+            ("arrow".to_owned(), "58.3.0".to_owned()),
             ("duckdb".to_owned(), "1.10504.0".to_owned()),
         ]),
         benchmark_profile: "release".to_owned(),

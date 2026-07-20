@@ -68,7 +68,7 @@ cargo tree -p cdf-project --locked -i paste
 - `cargo deny check` passed. It still prints the known duplicate Arrow 58/59 warnings from the ratified DuckDB residual, but advisories, bans, licenses, and sources are `ok`.
 - `cargo audit` passed with one allowed warning: `RUSTSEC-2024-0436` for `paste 1.0.15`.
 - `cargo vet` passed with 452 exemptions and the existing prune warning.
-- `osv-scanner scan source -r .` exited 1 only for `RUSTSEC-2024-0436` on `paste 1.0.15`; the advisory remains governed by `.10x/decisions/native-arrow-datafusion-parquet-policy.md` and `.10x/decisions/datafusion-git-pin-arrow59-tuple.md`.
+- `osv-scanner scan source -r .` exited 1 only for `RUSTSEC-2024-0436` on `paste 1.0.15`; the advisory remains governed by `.10x/decisions/native-arrow-datafusion-parquet-policy.md` and `.10x/decisions/superseded/datafusion-git-pin-arrow59-tuple.md`.
 - Full-history `gitleaks git` reported the two pre-existing historical Python findings already owned by `.10x/tickets/done/2026-07-08-historical-gitleaks-findings-triage.md`.
 - Source-only Gitleaks scans over `crates/cdf-cli/src` and `crates/cdf-project/src` passed with no leaks.
 - Semgrep Rust scan completed with 0 findings.

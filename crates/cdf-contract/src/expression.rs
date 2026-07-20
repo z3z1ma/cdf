@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 
 pub const COMPILED_EXPRESSION_PLAN_VERSION: u16 = 1;
 pub const DATAFUSION_EXPRESSION_OPTIMIZER: &str = "datafusion-expr-simplifier";
-pub const DATAFUSION_EXPRESSION_PIN: &str = "7ff7278edc1bf7446303bff51e5883a38414bbdf";
+pub const DATAFUSION_EXPRESSION_PIN: &str = "54.0.0";
 pub const NATIVE_CONTRACT_OPTIMIZER: &str = "cdf-native-contract-lowering";
 pub const SOURCE_EXACT_PUSHDOWN_OPTIMIZER: &str = "cdf-source-exact-pushdown";
 pub const NATIVE_FILTER_LOWERING_VERSION: &str = "1";

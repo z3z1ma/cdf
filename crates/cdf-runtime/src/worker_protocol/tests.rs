@@ -88,7 +88,7 @@ fn compatibility() -> WorkerCompatibility {
     WorkerCompatibility {
         cdf_version: "0.1.0".to_owned(),
         artifact_version: "package-v2".to_owned(),
-        arrow_version: "59.1.0".to_owned(),
+        arrow_version: "58.3.0".to_owned(),
         relational_engine: WorkerComponentVersion {
             component: "datafusion".to_owned(),
             version: "51.0.0".to_owned(),

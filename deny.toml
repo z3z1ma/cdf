@@ -30,5 +30,6 @@ unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
     "https://github.com/apache/arrow-rs-object-store.git",
-    "https://github.com/apache/datafusion.git",
+    "https://github.com/apache/iceberg-rust.git",
+    "https://github.com/z3z1ma/arrow-rs.git",
 ]

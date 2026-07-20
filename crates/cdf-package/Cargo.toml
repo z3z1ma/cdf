@@ -7,9 +7,9 @@ publish = false
 description = "Package builder and reader boundary for cdf."
 
 [dependencies]
-arrow-array = "59.1.0"
-arrow-ipc = { version = "59.1.0", features = ["lz4"] }
-arrow-schema = "59.1.0"
+arrow-array = "58.3.0"
+arrow-ipc = { version = "58.3.0", features = ["lz4"] }
+arrow-schema = "58.3.0"
 bytes = "1.11.0"
 cap-fs-ext = "=4.0.2"
 cap-std = "=4.0.2"
@@ -17,7 +17,7 @@ cdf-kernel = { path = "../cdf-kernel" }
 cdf-memory = { path = "../cdf-memory" }
 cdf-package-contract = { path = "../cdf-package-contract" }
 hex = "0.4.3"
-parquet = { version = "59.1.0", default-features = false, features = ["arrow"] }
+parquet = { version = "58.3.0", default-features = false, features = ["arrow"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 sha2 = { version = "0.10.9", features = ["asm"] }

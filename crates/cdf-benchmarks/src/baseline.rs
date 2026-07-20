@@ -68,7 +68,7 @@ pub fn run_preoptimization_baseline(
         Some(ReferenceIdentity {
             kind: "internal".to_owned(),
             name: "arrow-json".to_owned(),
-            version: "59.1.0".to_owned(),
+            version: "58.3.0".to_owned(),
             semantic_work: "infer and decode prepared NDJSON into Arrow batches".to_owned(),
         }),
         vec![BiasLabel {

@@ -100,6 +100,7 @@ fn first_party_codec_graphs_are_parser_local_and_mutually_isolated() {
 fn generic_source_compiler_graphs_exclude_concrete_drivers() {
     let concrete_drivers = [
         "cdf-source-files",
+        "cdf-source-iceberg",
         "cdf-source-rest",
         "cdf-source-postgres",
         "cdf-python",
@@ -120,6 +121,7 @@ fn generic_source_compiler_graphs_exclude_concrete_drivers() {
 fn first_party_source_driver_graphs_are_sibling_isolated() {
     let drivers = [
         "cdf-source-files",
+        "cdf-source-iceberg",
         "cdf-source-rest",
         "cdf-source-postgres",
         "cdf-python",
@@ -193,4 +195,33 @@ fn generic_compiler_and_runtime_graphs_exclude_object_access_implementation() {
             "generic package {root} reaches concrete object access implementation:\n{tree}"
         );
     }
+}
+
+#[test]
+fn iceberg_source_graph_is_arrow58_native_and_engine_free() {
+    let tree = cargo_tree("cdf-source-iceberg", "normal");
+    let packages = package_names(&tree);
+    for required in ["cdf-source-iceberg", "iceberg", "arrow-array", "parquet"] {
+        assert!(
+            packages.contains(required),
+            "Iceberg source graph omits required package {required}:\n{tree}"
+        );
+    }
+    for forbidden in ["iceberg-datafusion", "datafusion", "cdf-engine"] {
+        assert!(
+            !packages.contains(forbidden),
+            "Iceberg source graph reaches forbidden engine package {forbidden}:\n{tree}"
+        );
+    }
+    assert!(
+        !tree.contains("arrow-array v57.")
+            && !tree.contains("parquet v57.")
+            && !tree.contains("arrow-array v59.")
+            && !tree.contains("parquet v59."),
+        "Iceberg source graph contains another Arrow/Parquet tuple:\n{tree}"
+    );
+    assert!(
+        tree.contains("arrow-array v58.3.0") && tree.contains("parquet v58.3.0"),
+        "Iceberg source graph is not pinned to CDF's Arrow/Parquet 58.3 tuple:\n{tree}"
+    );
 }

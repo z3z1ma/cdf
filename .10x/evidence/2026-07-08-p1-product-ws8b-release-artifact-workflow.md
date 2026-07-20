@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-08
 Updated: 2026-07-08
-Relates-To: .10x/tickets/done/2026-07-08-p1-product-ws8b-release-artifact-workflow.md, .10x/specs/versioning-lts-release-policy.md, .10x/knowledge/datafusion-cratesio-arrow59-tripwire.md
+Relates-To: .10x/tickets/done/2026-07-08-p1-product-ws8b-release-artifact-workflow.md, .10x/specs/versioning-lts-release-policy.md, .10x/knowledge/dependency-tuple-migration-guard.md
 
 # WS8B release artifact workflow evidence
 

@@ -13,8 +13,8 @@ futures-util = "0.3.32"
 serde = { version = "1.0.228", features = ["derive"] }
 
 [dev-dependencies]
-arrow-array = "59.1.0"
-arrow-schema = "59.1.0"
+arrow-array = "58.3.0"
+arrow-schema = "58.3.0"
 cdf-package = { path = "../cdf-package" }
 cdf-package-contract = { path = "../cdf-package-contract" }
 futures-executor = "0.3.32"

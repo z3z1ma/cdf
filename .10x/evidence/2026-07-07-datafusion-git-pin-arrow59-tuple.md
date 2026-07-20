@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-07
 Updated: 2026-07-07
-Relates-To: .10x/tickets/done/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md, .10x/decisions/datafusion-git-pin-arrow59-tuple.md, .10x/decisions/arrow-datafusion-tuple-policy.md, .10x/decisions/datafusion-tier-b-delegation-boundary.md
+Relates-To: .10x/tickets/done/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md, .10x/decisions/superseded/datafusion-git-pin-arrow59-tuple.md, .10x/decisions/arrow-datafusion-tuple-policy.md, .10x/decisions/datafusion-tier-b-delegation-boundary.md
 
 # DataFusion git-pin Arrow 59 tuple evidence
 

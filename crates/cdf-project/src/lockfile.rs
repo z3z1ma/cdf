@@ -713,7 +713,7 @@ pub fn diff_lockfiles(before: &CdfLock, after: &CdfLock) -> Result<Vec<LockDiff>
 fn current_dependency_tuple() -> DependencyTuple {
     DependencyTuple {
         cdf: env!("CARGO_PKG_VERSION").to_owned(),
-        arrow_rs: "59.1.0".to_owned(),
+        arrow_rs: "58.3.0".to_owned(),
         datafusion: None,
         object_store: None,
         duckdb_rs: None,

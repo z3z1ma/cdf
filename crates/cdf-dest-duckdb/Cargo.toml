@@ -7,9 +7,9 @@ publish = false
 description = "DuckDB destination boundary for cdf."
 
 [dependencies]
-arrow-array = { version = "59.1.0", features = ["ffi"] }
-arrow-ipc = { version = "59.1.0", features = ["lz4"] }
-arrow-schema = "59.1.0"
+arrow-array = { version = "58.3.0", features = ["ffi"] }
+arrow-ipc = { version = "58.3.0", features = ["lz4"] }
+arrow-schema = "58.3.0"
 duckdb.workspace = true
 cdf-contract = { path = "../cdf-contract" }
 cdf-kernel = { path = "../cdf-kernel" }

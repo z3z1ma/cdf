@@ -7,8 +7,8 @@ publish = false
 description = "Conformance harness boundary for cdf."
 
 [dependencies]
-arrow-array = "59.1.0"
-arrow-schema = "59.1.0"
+arrow-array = "58.3.0"
+arrow-schema = "58.3.0"
 cdf-contract = { path = "../cdf-contract" }
 cdf-declarative = { path = "../cdf-declarative" }
 cdf-dest-duckdb = { path = "../cdf-dest-duckdb" }
@@ -30,7 +30,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 
 [dev-dependencies]
-arrow-cast = "59.1.0"
+arrow-cast = "58.3.0"
 bytes = "1.11.1"
 cdf-cli = { path = "../cdf-cli" }
 cdf-cli-core = { path = "../cdf-cli-core" }
@@ -42,7 +42,7 @@ cdf-source-postgres = { path = "../cdf-source-postgres" }
 cdf-source-rest = { path = "../cdf-source-rest" }
 duckdb.workspace = true
 futures-executor = "0.3.32"
-parquet = { version = "59.1.0", default-features = false, features = ["arrow"] }
+parquet = { version = "58.3.0", default-features = false, features = ["arrow"] }
 postgres = "0.19"
 proptest = "1.11.0"
 tempfile = "3.27.0"

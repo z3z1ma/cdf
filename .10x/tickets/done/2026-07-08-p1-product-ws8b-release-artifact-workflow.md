@@ -32,7 +32,7 @@ None for WS8B implementation. Generated completions and man pages now land throu
 
 ## Progress and notes
 
-- 2026-07-08: Activated for implementation. Read `VISION.md`, `QUALITY.md`, this ticket, `.10x/specs/versioning-lts-release-policy.md`, WS8A and WS8C done tickets, `.10x/knowledge/datafusion-cratesio-arrow59-tripwire.md`, and related WS8 evidence/reviews before editing.
+- 2026-07-08: Activated for implementation. Read `VISION.md`, `QUALITY.md`, this ticket, `.10x/specs/versioning-lts-release-policy.md`, WS8A and WS8C done tickets, the then-current DataFusion tripwire now replaced by `.10x/knowledge/dependency-tuple-migration-guard.md`, and related WS8 evidence/reviews before editing.
 - 2026-07-08: Added `.github/workflows/release-artifacts.yml`. It validates release metadata, builds `cdf` binary artifacts for the five mainstream targets, verifies per-target archives and checksums, emits an aggregate `SHA256SUMS`, uploads workflow artifacts, and can upload a GitHub prerelease without any crates.io publication step.
 - 2026-07-08: Added `tools/verify-release-metadata.sh`, `tools/package-release-artifact.sh`, `tools/verify-release-artifacts.sh`, and `tools/test-release-artifacts.sh`. The scripts enforce workspace/changelog/license consistency, DataFusion-git publication disablement, archive contents, and checksum verification.
 - 2026-07-08: Added the root `LICENSE` file so release artifacts can include the Apache-2.0 license text instead of relying only on Cargo metadata.

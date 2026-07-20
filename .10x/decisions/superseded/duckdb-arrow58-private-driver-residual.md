@@ -1,14 +1,16 @@
-Status: active
+Status: superseded
 Created: 2026-07-07
-Updated: 2026-07-07
+Updated: 2026-07-19
 
 # DuckDB Arrow 58 private driver residual
+
+Superseded by `.10x/decisions/secure-arrow58-ecosystem-tuple.md`, which aligns CDF, DataFusion, Iceberg, and DuckDB on one Arrow/Parquet 58 tuple and removes this residual entirely.
 
 ## Context
 
 `.10x/decisions/arrow-datafusion-tuple-policy.md` requires one same-major Arrow/DataFusion tuple per CDF minor release and rejects a permanent Arrow-major bridge in the DataFusion engine hot path.
 
-`.10x/decisions/datafusion-git-pin-arrow59-tuple.md` ratifies a temporary Apache DataFusion git pin at rev `7ff7278edc1bf7446303bff51e5883a38414bbdf`, giving CDF's engine an Arrow `59.1.0` DataFusion tuple without downgrading first-party Arrow APIs.
+`.10x/decisions/superseded/datafusion-git-pin-arrow59-tuple.md` ratifies a temporary Apache DataFusion git pin at rev `7ff7278edc1bf7446303bff51e5883a38414bbdf`, giving CDF's engine an Arrow `59.1.0` DataFusion tuple without downgrading first-party Arrow APIs.
 
 `.10x/evidence/2026-07-07-duckdb-arrow58-residual-audit.md` finds that the remaining Arrow `58.3.0` path is private to `duckdb 1.10504.0`. Current `duckdb-rs` latest/current is `1.10504.0`, and its Arrow dependency is unconditional. No released version or feature setting currently removes Arrow 58 while preserving CDF's existing DuckDB destination wrapper contract.
 

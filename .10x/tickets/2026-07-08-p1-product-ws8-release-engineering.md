@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-08
 Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p1-product-experience-program.md
-Depends-On: QUALITY.md, .10x/specs/conformance-governance-roadmap.md, .10x/knowledge/datafusion-cratesio-arrow59-tripwire.md
+Depends-On: QUALITY.md, .10x/specs/conformance-governance-roadmap.md, .10x/knowledge/dependency-tuple-migration-guard.md
 
 # P1 product WS8: Release engineering and distribution
 
@@ -15,7 +15,7 @@ Add the production pipeline: CI workflows, release workflow, changelog, versioni
 - CI has fast gates per push and scheduled/manual slow gates that follow the relevant `QUALITY.md` Deep Loop.
 - Release workflow produces reproducible checksummed binaries for mainstream targets.
 - `CHANGELOG.md` follows a ratified convention.
-- Versioning/LTS policy covers artifact-spec versions, migration fixtures, dependency tuple cadence, support windows, and the crates.io publication constraint caused by the temporary DataFusion git pin.
+- Versioning/LTS policy covers artifact-spec versions, migration fixtures, dependency tuple cadence, support windows, and graph-derived crates.io publication eligibility.
 - At least one install channel is scripted and smoke-tested; other channels are ticketed.
 - Completions and man pages ship as release artifacts.
 
@@ -33,7 +33,7 @@ Record CI run URLs or local workflow output, release artifact checksums, install
 
 ## Explicit exclusions
 
-No claim of crates.io publication while the DataFusion git pin remains. No unsupported target promises. No manual-only release steps unless explicitly recorded as temporary blockers.
+No claim of crates.io publication while the distributable graph contains disallowed git/path dependencies. No unsupported target promises. No manual-only release steps unless explicitly recorded as temporary blockers.
 
 ## Progress and notes
 
@@ -46,4 +46,4 @@ No claim of crates.io publication while the DataFusion git pin remains. No unsup
 
 ## Blockers
 
-None for shaping. Actual crates.io publication remains blocked until the DataFusion Arrow 59 tuple is available on crates.io and the git pin is removed.
+None for shaping. Actual crates.io publication remains blocked while the current Arrow-rs and Iceberg git pins are reachable from the distributable crate graph; binary release work is not blocked.

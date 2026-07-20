@@ -7,8 +7,8 @@ publish = false
 description = "REST source adapter for cdf."
 
 [dependencies]
-arrow-array = "59.1.0"
-arrow-schema = "59.1.0"
+arrow-array = "58.3.0"
+arrow-schema = "58.3.0"
 cdf-format-json = { path = "../cdf-format-json" }
 cdf-contract = { path = "../cdf-contract" }
 cdf-http = { path = "../cdf-http" }

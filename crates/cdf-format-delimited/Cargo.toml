@@ -7,10 +7,10 @@ publish = false
 description = "Streaming delimited text format drivers for cdf."
 
 [dependencies]
-arrow-array = "59.1.0"
-arrow-cast = "59.1.0"
-arrow-csv = "59.1.0"
-arrow-schema = "59.1.0"
+arrow-array = "58.3.0"
+arrow-cast = "58.3.0"
+arrow-csv = "58.3.0"
+arrow-schema = "58.3.0"
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-memory = { path = "../cdf-memory" }
 cdf-runtime = { path = "../cdf-runtime" }

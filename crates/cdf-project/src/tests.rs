@@ -988,7 +988,7 @@ fn lockfile_generation_round_trips_and_diffs_semantic_changes() {
             .unwrap();
     let dependency_tuple = DependencyTuple {
         cdf: "0.1.0".to_owned(),
-        arrow_rs: "59.1.0".to_owned(),
+        arrow_rs: "58.3.0".to_owned(),
         datafusion: Some("54.0.0".to_owned()),
         object_store: None,
         duckdb_rs: None,
@@ -5294,7 +5294,7 @@ fn contract_freeze_preserves_existing_dependency_and_destination_data() {
         DestinationSheetArtifact::new(sheet, DestinationProtocolCapabilities::default()).unwrap();
     let dependency_tuple = DependencyTuple {
         cdf: "0.1.0-old".to_owned(),
-        arrow_rs: "59.1.0-old".to_owned(),
+        arrow_rs: "58.3.0-old".to_owned(),
         datafusion: Some("pinned-datafusion".to_owned()),
         object_store: Some("pinned-object-store".to_owned()),
         duckdb_rs: Some("pinned-duckdb".to_owned()),

@@ -40,7 +40,7 @@ Dependency, security, and quality gates:
 - `cargo audit --json > reports/ai-quality/cargo-audit-cli-plan-explain.json`: passed.
 - `cargo vet`: passed with `Vetting Succeeded (452 exempted)` and the existing prune warning for unrelated stale exemptions.
 - `semgrep scan --config p/rust --error --json --output reports/ai-quality/semgrep-rust-cli-plan-explain.json .`: passed with 0 findings.
-- `osv-scanner scan --lockfile Cargo.lock --format json --output reports/ai-quality/osv-cli-plan-explain.json`: reported only the already-ratified `paste 1.0.15` / `RUSTSEC-2024-0436` advisory governed by `.10x/decisions/datafusion-git-pin-arrow59-tuple.md` and `.10x/evidence/2026-07-08-cargo-vet-datafusion-git-policy.md`.
+- `osv-scanner scan --lockfile Cargo.lock --format json --output reports/ai-quality/osv-cli-plan-explain.json`: reported only the already-ratified `paste 1.0.15` / `RUSTSEC-2024-0436` advisory governed by `.10x/decisions/superseded/datafusion-git-pin-arrow59-tuple.md` and `.10x/evidence/2026-07-08-cargo-vet-datafusion-git-policy.md`.
 - `tools/codeql-rust-quality.sh`: passed using reusable DB path `target/quality/codeql-db-rust`. It refreshed because Rust source content changed, then wrote `target/quality/reports/codeql-rust-current.sarif`; non-diagnostic/security result count was 0. Current extractor metrics still show the known Rust macro-expansion limitation.
 - Source-only `gitleaks detect --no-git --redact` over `crates/cdf-cli/src`, `crates/cdf-project/src/runtime`, `crates/cdf-dest-duckdb/src`, and `crates/cdf-dest-parquet/src`: passed with no leaks found.
 - `gitleaks protect --staged --redact --report-format json --report-path reports/ai-quality/gitleaks-cli-plan-explain-staged.json --no-banner`: passed with no leaks found.

@@ -7,7 +7,7 @@ publish = false
 description = "File and object-store source adapter for cdf."
 
 [dependencies]
-arrow-schema = "59.1.0"
+arrow-schema = "58.3.0"
 bytes = "1.11.0"
 cdf-http = { path = "../cdf-http" }
 cdf-expression = { path = "../cdf-expression" }
@@ -27,8 +27,8 @@ tokio = { version = "=1.52.3", features = ["fs", "io-util"] }
 url = "2.5.8"
 
 [dev-dependencies]
-arrow-array = "59.1.0"
-arrow-ipc = "59.1.0"
+arrow-array = "58.3.0"
+arrow-ipc = "58.3.0"
 cdf-format-arrow-ipc = { path = "../cdf-format-arrow-ipc" }
 cdf-format-delimited = { path = "../cdf-format-delimited" }
 cdf-format-json = { path = "../cdf-format-json" }
@@ -37,5 +37,5 @@ cdf-package = { path = "../cdf-package" }
 cdf-transform-gzip = { path = "../cdf-transform-gzip" }
 flate2 = "1.1.9"
 object_store = { git = "https://github.com/apache/arrow-rs-object-store.git", rev = "c7316d29face118e7409eead0cda098f38589428" }
-parquet = "59.1.0"
+parquet = "58.3.0"
 tokio = { version = "=1.52.3", features = ["rt-multi-thread"] }

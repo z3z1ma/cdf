@@ -71,7 +71,7 @@ Additional audit check:
 cargo audit --deny warnings
 ```
 
-That raw audit command failed only on the already-ratified `paste 1.0.15` / `RUSTSEC-2024-0436` unmaintained advisory. The explicit-ignore audit command above passed. This is the same scoped exception governed by `.10x/decisions/native-arrow-datafusion-parquet-policy.md` and `.10x/decisions/datafusion-git-pin-arrow59-tuple.md`.
+That raw audit command failed only on the already-ratified `paste 1.0.15` / `RUSTSEC-2024-0436` unmaintained advisory. The explicit-ignore audit command above passed. This is the same scoped exception governed by `.10x/decisions/native-arrow-datafusion-parquet-policy.md` and `.10x/decisions/superseded/datafusion-git-pin-arrow59-tuple.md`.
 
 ## Results
 

@@ -7,12 +7,12 @@ publish = false
 description = "Schema contract compilation boundary for cdf."
 
 [dependencies]
-arrow-array = "59.1.0"
-arrow-buffer = "59.1.0"
-arrow-cast = "59.1.0"
-arrow-schema = "59.1.0"
-arrow-row = "59.1.0"
-arrow-select = "59.1.0"
+arrow-array = "58.3.0"
+arrow-buffer = "58.3.0"
+arrow-cast = "58.3.0"
+arrow-schema = "58.3.0"
+arrow-row = "58.3.0"
+arrow-select = "58.3.0"
 base64 = "0.22.1"
 cdf-kernel = { path = "../cdf-kernel" }
 half = "2.7.1"

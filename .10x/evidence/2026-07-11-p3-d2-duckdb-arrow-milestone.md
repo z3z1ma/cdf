@@ -9,7 +9,7 @@ Relates-To: .10x/tickets/done/2026-07-11-p3-d2-duckdb-arrow-bulk.md, .10x/ticket
 
 Commits `c78ae76e` and `a0c6ad1d` replace DuckDB's package-wide scalar row materialization with bounded Arrow-native ingestion. The runtime declares `SegmentStreaming`; each verified segment crosses the Arrow 59/58 C Stream bridge and DuckDB's native data-chunk appender in 64k-row batches. Append/replace now retain one compact package-wide Arrow ingress plus a three-scalar row per segment range table, then execute one vectorized provenance join at finalize. This avoids repeated package/segment strings, package-sized resident metadata, and per-segment full-column SQL copies while preserving exact `(load, segment, row)` addresses. Merge retains its disk-backed temporary stage with SQL null-key/conflicting-duplicate checks and deterministic first-row deduplication.
 
-The binding's vtab alternative was source-inspected and rejected because its query-parameter helper permanently retains every batch in a process-global arena. The selected C Stream bridge is governed by `.10x/decisions/duckdb-arrow-c-stream-version-bridge.md` and has compile-time layout assertions plus 32-case property coverage over length/null ownership transfer.
+The binding's vtab alternative was source-inspected and rejected because its query-parameter helper permanently retains every batch in a process-global arena. The then-selected cross-major C Stream bridge is preserved in `.10x/decisions/superseded/duckdb-arrow-c-stream-version-bridge.md`; `.10x/decisions/secure-arrow58-ecosystem-tuple.md` later removed the version boundary.
 
 ## Procedure
 

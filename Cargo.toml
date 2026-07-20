@@ -29,6 +29,7 @@ members = [
     "crates/cdf-source-postgres",
     "crates/cdf-source-rest",
     "crates/cdf-source-files",
+    "crates/cdf-source-iceberg",
     "crates/cdf-transport-http",
     "crates/cdf-declarative",
     "crates/cdf-python",
@@ -53,6 +54,13 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 duckdb = "=1.10504.0"
+
+[patch.crates-io]
+# 10x: Arrow-rs 58.3.0 with Thrift 0.23 plus the upstream map-row and CSV-header
+# validation features backported. Remove these pins when one supported Arrow release has all three.
+arrow-csv = { git = "https://github.com/z3z1ma/arrow-rs.git", rev = "2865fdfc2351303f37f3f8ca5e45fece682ab0b7" }
+arrow-row = { git = "https://github.com/z3z1ma/arrow-rs.git", rev = "2865fdfc2351303f37f3f8ca5e45fece682ab0b7" }
+parquet = { git = "https://github.com/z3z1ma/arrow-rs.git", rev = "2865fdfc2351303f37f3f8ca5e45fece682ab0b7" }
 
 [profile.release]
 opt-level = 3

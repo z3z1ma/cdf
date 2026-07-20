@@ -24,7 +24,7 @@ This parent is not executable. It does not own Iceberg/Delta destinations, Glue 
 ## Child graph
 
 1. `.10x/tickets/done/2026-07-19-iceberg-f1-neutral-object-access.md` — done
-2. `.10x/tickets/2026-07-19-iceberg-f2-arrow59-dependency.md`
+2. `.10x/tickets/done/2026-07-19-iceberg-f2-dependency-foundation.md` — done
 3. `.10x/tickets/2026-07-19-iceberg-f3-table-snapshot-position.md`
 4. `.10x/tickets/2026-07-19-iceberg-f4-externalized-scan-tasks.md`
 5. `.10x/tickets/2026-07-19-iceberg-i1-catalog-discovery.md`
@@ -57,6 +57,7 @@ F1 and F2 are parallel. F3 is independent of F1/F2 but must avoid the active WX1
 
 - 2026-07-19: Program shaped from code/source inspection and current Apache Iceberg/AWS Glue APIs. The worktree had one unrelated modification in `crates/cdf-runtime/src/worker_protocol.rs`; this program claimed the neutral object-access/source lane and will not edit that file.
 - 2026-07-19: F1 closed. Local/HTTP/S3/GCS/Azure byte access, metadata/listing, client pooling, spools, and payload cache now have one neutral `cdf-object-access` authority; `cdf-source-files` retains source semantics and no compatibility shim. F2 and F3 are the next independent foundations; Glue G1 is now unblocked on object access but still depends on its own executable sequence.
+- 2026-07-19: F2 closed. CDF, registry DataFusion, Apache Iceberg, Python, Parquet, and DuckDB now share Arrow/Parquet 58.3; PyO3 remains 0.29 through a direct standard PyCapsule importer; Thrift 0.23 is the only reachable Thrift; and the bounded Arrow-rs fork contains only three exact upstream/security deltas. The first-party Iceberg source crate and graph laws are established without leaking Iceberg/DataFusion types upward.
 
 ## Blockers
 

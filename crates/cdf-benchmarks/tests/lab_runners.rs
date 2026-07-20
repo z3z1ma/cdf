@@ -48,7 +48,7 @@ fn provider() -> SystemHostProvider {
     SystemHostProvider::new(HostProbeConfig {
         cdf_version: env!("CARGO_PKG_VERSION").to_owned(),
         dependency_versions: BTreeMap::from([
-            ("arrow".to_owned(), "59.1.0".to_owned()),
+            ("arrow".to_owned(), "58.3.0".to_owned()),
             ("duckdb".to_owned(), "1.10504.0".to_owned()),
         ]),
         benchmark_profile: "test".to_owned(),
@@ -71,7 +71,7 @@ fn key(provider: &dyn HostCapabilityProvider, mode: IoMode) -> ComparabilityKey 
         workload_id: "sequential-read".to_owned(),
         timed_region_version: 1,
         cdf_revision: "fixture-revision".to_owned(),
-        dependency_tuple: "arrow59-duckdb1".to_owned(),
+        dependency_tuple: "arrow58-duckdb1".to_owned(),
         host_class: host_class(&provider.fingerprint().unwrap()).unwrap(),
         os_toolchain: "fixture-rust1.96".to_owned(),
         io_mode: mode,
@@ -609,7 +609,7 @@ fn preoptimization_baseline_covers_every_target_and_retains_phases() {
             worker_executable: PathBuf::from(env!("CARGO_BIN_EXE_cdf-p3-lab")),
             output_root: temp.path().join("baseline"),
             cdf_revision: "fixture-revision".to_owned(),
-            dependency_tuple: "arrow59-duckdb1".to_owned(),
+            dependency_tuple: "arrow58-duckdb1".to_owned(),
             os_toolchain: "fixture-rust1.96".to_owned(),
             sample_count: 3,
             timeout: Duration::from_secs(30),

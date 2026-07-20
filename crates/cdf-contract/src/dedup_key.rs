@@ -459,11 +459,23 @@ mod tests {
 
     use super::*;
 
+    fn maps(rows: Vec<Vec<(&str, Option<i32>)>>) -> MapArray {
+        let mut keys = Vec::new();
+        let mut values = Vec::new();
+        let mut offsets = Vec::with_capacity(rows.len() + 1);
+        offsets.push(0_u32);
+        for row in rows {
+            for (key, value) in row {
+                keys.push(key);
+                values.push(value);
+            }
+            offsets.push(u32::try_from(keys.len()).unwrap());
+        }
+        MapArray::new_from_strings(keys.into_iter(), &Int32Array::from(values), &offsets).unwrap()
+    }
+
     fn map(entries: Vec<(&str, Option<i32>)>) -> ArrayRef {
-        Arc::new(MapArray::from_vec_of_maps::<StringArray, Int32Array, _, _>(
-            vec![Some(entries)],
-            false,
-        ))
+        Arc::new(maps(vec![entries]))
     }
 
     fn encoded(array: ArrayRef) -> Vec<u8> {
@@ -526,13 +538,10 @@ mod tests {
 
     #[test]
     fn sliced_map_does_not_validate_unreferenced_entries() {
-        let maps = MapArray::from_vec_of_maps::<StringArray, Int32Array, _, _>(
-            vec![
-                Some(vec![("duplicate", Some(1)), ("duplicate", Some(2))]),
-                Some(vec![("kept", Some(3))]),
-            ],
-            false,
-        );
+        let maps = maps(vec![
+            vec![("duplicate", Some(1)), ("duplicate", Some(2))],
+            vec![("kept", Some(3))],
+        ]);
         let sliced = Arc::new(maps.slice(1, 1)) as ArrayRef;
         let canonical = canonicalize_map_order(vec![sliced]).unwrap();
         assert_eq!(canonical[0].len(), 1);
@@ -540,13 +549,10 @@ mod tests {
 
     #[test]
     fn dictionary_does_not_validate_unreferenced_map_values() {
-        let values = MapArray::from_vec_of_maps::<StringArray, Int32Array, _, _>(
-            vec![
-                Some(vec![("duplicate", Some(1)), ("duplicate", Some(2))]),
-                Some(vec![("kept", Some(3))]),
-            ],
-            false,
-        );
+        let values = maps(vec![
+            vec![("duplicate", Some(1)), ("duplicate", Some(2))],
+            vec![("kept", Some(3))],
+        ]);
         let dictionary =
             DictionaryArray::<Int8Type>::new(Int8Array::from(vec![1_i8]), Arc::new(values));
         let canonical = canonicalize_map_order(vec![Arc::new(dictionary) as ArrayRef]).unwrap();

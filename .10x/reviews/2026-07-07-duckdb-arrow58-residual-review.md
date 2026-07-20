@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-07
 Updated: 2026-07-07
-Target: .10x/tickets/done/2026-07-07-p0-workstream-d-dependency-tuple-residual.md, .10x/tickets/done/2026-07-07-duckdb-arrow58-transitive-residual.md, .10x/evidence/2026-07-07-duckdb-arrow58-residual-audit.md, .10x/decisions/duckdb-arrow58-private-driver-residual.md, .10x/knowledge/datafusion-cratesio-arrow59-tripwire.md, .10x/specs/conformance-governance-roadmap.md, deny.toml, supply-chain/config.toml
+Target: .10x/tickets/done/2026-07-07-p0-workstream-d-dependency-tuple-residual.md, .10x/tickets/done/2026-07-07-duckdb-arrow58-transitive-residual.md, .10x/evidence/2026-07-07-duckdb-arrow58-residual-audit.md, .10x/decisions/superseded/duckdb-arrow58-private-driver-residual.md, .10x/knowledge/dependency-tuple-migration-guard.md, .10x/specs/conformance-governance-roadmap.md, deny.toml, supply-chain/config.toml
 Verdict: concerns
 
 # DuckDB Arrow 58 residual review

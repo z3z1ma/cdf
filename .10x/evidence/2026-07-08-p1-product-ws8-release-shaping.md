@@ -12,7 +12,7 @@ The P1 directive requires release engineering and distribution work, including C
 Existing authority already covered several required semantics:
 
 - `.10x/specs/conformance-governance-roadmap.md` requires semver, serialized artifact migrations, dependency tuple cadence, and no crates.io publication while DataFusion is a git dependency.
-- `.10x/knowledge/datafusion-cratesio-arrow59-tripwire.md` defines the trigger and migration shape for removing the temporary DataFusion git pin.
+- `.10x/knowledge/dependency-tuple-migration-guard.md` now defines tuple migration and publication eligibility; it supersedes the former DataFusion-specific tripwire.
 - `.10x/knowledge/quality-gate-execution.md` requires parallel quality checks and reusable CodeQL Rust databases.
 
 ## Procedure
@@ -22,7 +22,7 @@ Inspected:
 - P1 directive attachment and objective file content.
 - `.10x/tickets/2026-07-08-p1-product-ws8-release-engineering.md`.
 - `.10x/specs/conformance-governance-roadmap.md`.
-- `.10x/knowledge/datafusion-cratesio-arrow59-tripwire.md`.
+- `.10x/knowledge/dependency-tuple-migration-guard.md`.
 - `.10x/knowledge/quality-gate-execution.md`.
 - `.10x/knowledge/vision-coverage-matrix.md` P1 row.
 

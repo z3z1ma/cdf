@@ -14,7 +14,7 @@ Review of the ratified DataFusion git-pin tuple implementation, including Cargo 
 
 No blocking findings.
 
-The implementation follows `.10x/decisions/datafusion-git-pin-arrow59-tuple.md`: DataFusion is pinned to the exact Apache git rev `7ff7278edc1bf7446303bff51e5883a38414bbdf`, first-party Arrow/Parquet crates resolve to `59.1.0`, and the Python bridge remains on the current `pyo3 0.29` / `pyo3-arrow 0.19` line. The published-crate Arrow 58 repin path that introduced unratified PyO3 and Thrift findings was not revived.
+The implementation follows `.10x/decisions/superseded/datafusion-git-pin-arrow59-tuple.md`: DataFusion is pinned to the exact Apache git rev `7ff7278edc1bf7446303bff51e5883a38414bbdf`, first-party Arrow/Parquet crates resolve to `59.1.0`, and the Python bridge remains on the current `pyo3 0.29` / `pyo3-arrow 0.19` line. The published-crate Arrow 58 repin path that introduced unratified PyO3 and Thrift findings was not revived.
 
 The lower-layer boundary is preserved. The direct source scan found no DataFusion references in `cdf-kernel` or other lower crates, while `cargo tree -i datafusion@54.0.0` shows the dependency enters through `cdf-engine`.
 

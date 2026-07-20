@@ -50,7 +50,7 @@ criteria = "safe-to-deploy"
 
 - Bare `cargo vet` and locked `cargo vet --locked` now agree for the current DataFusion git pin.
 - The Cargo Vet posture is scoped to the exact ratified Apache DataFusion rev and the 28 DataFusion workspace crates currently present in the locked graph.
-- The repair does not weaken `.10x/decisions/datafusion-git-pin-arrow59-tuple.md` or `.10x/knowledge/datafusion-cratesio-arrow59-tripwire.md`: the git pin remains temporary, the crates.io migration tripwire remains active, and crates.io publication remains blocked while the git dependency remains.
+- The historical repair did not weaken `.10x/decisions/superseded/datafusion-git-pin-arrow59-tuple.md`; its current replacement authority is `.10x/knowledge/dependency-tuple-migration-guard.md`.
 - The broader source policy remains intact: `deny.toml` still denies unknown git sources and allows only `https://github.com/apache/datafusion.git`.
 
 ## Limits

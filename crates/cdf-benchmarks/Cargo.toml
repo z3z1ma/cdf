@@ -7,12 +7,12 @@ publish = false
 description = "Opt-in local benchmark harness for cdf."
 
 [dependencies]
-arrow-array = "59.1.0"
-arrow-csv = "59.1.0"
-arrow-ipc = { version = "59.1.0", features = ["lz4"] }
-arrow-json = "59.1.0"
-arrow-schema = "59.1.0"
-arrow-select = "59.1.0"
+arrow-array = "58.3.0"
+arrow-csv = "58.3.0"
+arrow-ipc = { version = "58.3.0", features = ["lz4"] }
+arrow-json = "58.3.0"
+arrow-schema = "58.3.0"
+arrow-select = "58.3.0"
 clap = { version = "4.6.1", default-features = false, features = ["std", "help", "usage", "error-context"] }
 cdf-bench-core = { path = "../cdf-bench-core" }
 cdf-contract = { path = "../cdf-contract" }
@@ -36,12 +36,12 @@ cdf-object-access = { path = "../cdf-object-access" }
 cdf-source-files = { path = "../cdf-source-files" }
 cdf-source-rest = { path = "../cdf-source-rest" }
 cdf-state-sqlite = { path = "../cdf-state-sqlite" }
-datafusion = { git = "https://github.com/apache/datafusion.git", rev = "7ff7278edc1bf7446303bff51e5883a38414bbdf", default-features = false }
+datafusion = { version = "54.0.0", default-features = false }
 duckdb = { workspace = true, features = ["appender-arrow"] }
 futures-executor = "0.3.32"
 futures-util = "0.3.32"
 hex = "0.4.3"
-parquet = { version = "59.1.0", default-features = false, features = ["arrow"] }
+parquet = { version = "58.3.0", default-features = false, features = ["arrow"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 sha2 = "0.10.9"

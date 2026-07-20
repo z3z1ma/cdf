@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-07
 Updated: 2026-07-07
-Relates-To: .10x/tickets/done/2026-07-07-p0-workstream-d-dependency-tuple-residual.md, .10x/tickets/done/2026-07-07-duckdb-arrow58-transitive-residual.md, .10x/decisions/duckdb-arrow58-private-driver-residual.md, .10x/decisions/datafusion-git-pin-arrow59-tuple.md, .10x/decisions/arrow-datafusion-tuple-policy.md
+Relates-To: .10x/tickets/done/2026-07-07-p0-workstream-d-dependency-tuple-residual.md, .10x/tickets/done/2026-07-07-duckdb-arrow58-transitive-residual.md, .10x/decisions/superseded/duckdb-arrow58-private-driver-residual.md, .10x/decisions/superseded/datafusion-git-pin-arrow59-tuple.md, .10x/decisions/arrow-datafusion-tuple-policy.md
 
 # DuckDB Arrow 58 residual audit
 
@@ -111,7 +111,7 @@ Current evidence against it: receipt verification reads `receipt_json` via scala
 
 Potential failure: accepting the residual could weaken the one-tuple policy.
 
-Current assessment: `.10x/decisions/arrow-datafusion-tuple-policy.md` governs the engine hot path and public Arrow/DataFusion tuple. This residual is private to the DuckDB destination wrapper and does not cross the CDF public Arrow API boundary. The acceptance must remain temporary and revisited on the precise triggers in `.10x/decisions/duckdb-arrow58-private-driver-residual.md`.
+Historical assessment: `.10x/decisions/arrow-datafusion-tuple-policy.md` governed the engine hot path and public Arrow/DataFusion tuple. This residual was private to the DuckDB destination wrapper and did not cross the CDF public Arrow API boundary. Its former acceptance and triggers are preserved in `.10x/decisions/superseded/duckdb-arrow58-private-driver-residual.md`.
 
 ## What this supports
 

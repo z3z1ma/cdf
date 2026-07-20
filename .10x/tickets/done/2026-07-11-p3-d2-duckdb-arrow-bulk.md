@@ -32,7 +32,7 @@ Depends on D1, A4, and the DuckDB triage.
 ## References
 
 - `.10x/specs/destination-bulk-path-runtime.md`
-- `.10x/decisions/duckdb-arrow-c-stream-version-bridge.md`
+- `.10x/decisions/superseded/duckdb-arrow-c-stream-version-bridge.md`
 
 ## Progress and notes
 

@@ -2,7 +2,7 @@ Status: blocked
 Created: 2026-07-19
 Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-19-iceberg-glue-source-program.md
-Depends-On: .10x/tickets/done/2026-07-19-iceberg-f1-neutral-object-access.md, .10x/tickets/2026-07-19-iceberg-f2-arrow59-dependency.md, .10x/tickets/2026-07-19-iceberg-f3-table-snapshot-position.md
+Depends-On: .10x/tickets/done/2026-07-19-iceberg-f1-neutral-object-access.md, .10x/tickets/done/2026-07-19-iceberg-f2-dependency-foundation.md, .10x/tickets/2026-07-19-iceberg-f3-table-snapshot-position.md
 
 # Iceberg I1: catalog bindings, discovery, and compiled snapshot plan
 

@@ -400,10 +400,7 @@ impl PythonResourceBridge {
                 }
                 Some(boundary) if boundary.kind == PythonYieldKind::ArrowCArray => {
                     py.detach(|| self.flush_json_rows(&mut window, &mut state, 0, &mut emit))?;
-                    let batch = item
-                        .extract::<PyRecordBatch>()
-                        .map(PyRecordBatch::into_inner)
-                        .map_err(py_error)?;
+                    let batch = arrow_capsule::import_record_batch(&item).map_err(py_error)?;
                     py.detach(|| {
                         state.emit_record_batch(
                             batch,

@@ -5,10 +5,8 @@ use crate::*;
 pub(crate) fn import_arrow_stream(
     object: &Bound<'_, PyAny>,
 ) -> Result<Box<dyn arrow_array::RecordBatchReader + Send>> {
-    object
-        .extract::<PyRecordBatchReader>()
-        .and_then(PyRecordBatchReader::into_reader)
-        .map_err(py_error)
+    let reader = arrow_capsule::import_record_batch_stream(object).map_err(py_error)?;
+    Ok(Box::new(reader))
 }
 
 pub(crate) fn python_dict_to_json(py: Python<'_>, object: &Bound<'_, PyAny>) -> Result<String> {

@@ -7,7 +7,7 @@ publish = false
 description = "Declarative resource authoring boundary for cdf."
 
 [dependencies]
-arrow-schema = "59.1.0"
+arrow-schema = "58.3.0"
 cdf-contract = { path = "../cdf-contract" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-runtime = { path = "../cdf-runtime" }

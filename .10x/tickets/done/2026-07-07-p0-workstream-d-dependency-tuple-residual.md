@@ -2,7 +2,7 @@ Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/done/2026-07-07-p0-structural-debt-program.md
-Depends-On: .10x/tickets/done/2026-07-07-duckdb-arrow58-transitive-residual.md, .10x/decisions/datafusion-git-pin-arrow59-tuple.md
+Depends-On: .10x/tickets/done/2026-07-07-duckdb-arrow58-transitive-residual.md, .10x/decisions/superseded/datafusion-git-pin-arrow59-tuple.md
 
 # P0 Workstream D: Close dependency tuple residual
 
@@ -45,8 +45,8 @@ No permanent Arrow-major bridge in the engine hot path, no weakening DataFusion 
 ## Progress and notes
 
 - 2026-07-07: Opened from P0 stop-line. Current records already ratify the DataFusion git pin on Arrow 59 and open the DuckDB Arrow 58 residual investigation.
-- 2026-07-07: Completed dependency-tree, registry/source, boundary, and supply-chain audit in `.10x/evidence/2026-07-07-duckdb-arrow58-residual-audit.md`. Current `duckdb-rs` latest/current is `1.10504.0`; its Arrow dependency is unconditional, so no low-risk version/feature remediation exists. Recorded temporary acceptance in `.10x/decisions/duckdb-arrow58-private-driver-residual.md`.
-- 2026-07-07: Created weekly DataFusion crates.io Arrow 59 tripwire in `.10x/knowledge/datafusion-cratesio-arrow59-tripwire.md`. Updated `.10x/specs/conformance-governance-roadmap.md` to forbid crates.io publication while the DataFusion git pin remains unless superseded by a later active decision.
+- 2026-07-07: Completed dependency-tree, registry/source, boundary, and supply-chain audit in `.10x/evidence/2026-07-07-duckdb-arrow58-residual-audit.md`. Current `duckdb-rs` latest/current was `1.10504.0`; its Arrow dependency was unconditional, so no low-risk version/feature remediation existed. The former temporary acceptance is preserved in `.10x/decisions/superseded/duckdb-arrow58-private-driver-residual.md`.
+- 2026-07-07: Created the then-current weekly DataFusion crates.io Arrow 59 tripwire, now superseded by `.10x/knowledge/dependency-tuple-migration-guard.md`. Updated `.10x/specs/conformance-governance-roadmap.md` to forbid crates.io publication while disallowed git dependencies remain unless superseded by a later active decision.
 - 2026-07-07: Supply-chain gates passed without config changes: `cargo deny check` passed with duplicate-version warnings and `advisories ok, bans ok, licenses ok, sources ok`; `cargo vet --locked` passed with `Vetting Succeeded (393 exempted)`. Current `deny.toml` source posture is explicit enough: unknown git is denied and only the Apache DataFusion git URL is allowed.
 - 2026-07-07: Adversarial review in `.10x/reviews/2026-07-07-duckdb-arrow58-residual-review.md` did not falsify the private-driver boundary claim but raised closure concerns: active-path references, missing mechanical publication guard, and stale spec metadata.
 - 2026-07-07: Parent orchestrator repaired active-path references, moved `.10x/tickets/done/2026-07-07-duckdb-arrow58-transitive-residual.md` to terminal state, added `publish = false` to all current crate manifests while the DataFusion git pin remains, updated the governance spec metadata, and recorded removal of the publish guard as part of the DataFusion crates.io migration tripwire.

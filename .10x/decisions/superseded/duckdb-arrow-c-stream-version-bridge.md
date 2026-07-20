@@ -1,8 +1,10 @@
-Status: active
+Status: superseded
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-19
 
 # DuckDB Arrow C Stream version bridge
+
+Superseded by `.10x/decisions/secure-arrow58-ecosystem-tuple.md`. CDF and the pinned DuckDB binding now share Arrow 58.3, so no Arrow-major ownership bridge exists or is permitted. The destination's current Arrow C Data table-function boundary is same-major native ingress, not this former compatibility mechanism.
 
 ## Context
 

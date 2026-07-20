@@ -16047,7 +16047,7 @@ default_environment = "dev"
 
 [dependency_tuple]
 cdf = "0.1.0"
-arrow_rs = "59.1.0"
+arrow_rs = "58.3.0"
 "#,
     )
     .unwrap();
