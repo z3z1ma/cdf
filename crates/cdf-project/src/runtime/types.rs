@@ -111,14 +111,14 @@ pub struct ProjectRunReport {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProjectRunOutcome {
-    Committed(ProjectRunReport),
-    NoOp(ProjectRunNoOpReport),
+    Committed(Box<ProjectRunReport>),
+    NoOp(Box<ProjectRunNoOpReport>),
 }
 
 impl ProjectRunOutcome {
     pub fn into_committed(self) -> Result<ProjectRunReport> {
         match self {
-            Self::Committed(report) => Ok(report),
+            Self::Committed(report) => Ok(*report),
             Self::NoOp(report) => Err(CdfError::data(format!(
                 "run completed as a verified no-op ({})",
                 report.reason.as_str()

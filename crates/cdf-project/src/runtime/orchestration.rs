@@ -157,7 +157,9 @@ async fn run_project_with_context(
         drain_command_started: None,
     };
     match run_project_inner(execution, None).await {
-        Ok(ProjectRunUnitOutcome::Committed(unit)) => Ok(ProjectRunOutcome::Committed(unit.report)),
+        Ok(ProjectRunUnitOutcome::Committed(unit)) => {
+            Ok(ProjectRunOutcome::Committed(Box::new(unit.report)))
+        }
         Ok(ProjectRunUnitOutcome::NoOp(report)) => Ok(ProjectRunOutcome::NoOp(report)),
         Err(error) => {
             let _ = recorder.append_run_failed(&error);
@@ -185,6 +187,16 @@ struct DrainProjectExecution<'a> {
     checkpoint_store: &'a SqliteCheckpointStore,
 }
 
+struct DrainRecoveryContext<'a> {
+    package_root: &'a Path,
+    base_package_id: &'a str,
+    base_checkpoint_id: &'a CheckpointId,
+    plan: &'a EnginePlan,
+    descriptor: &'a ResourceDescriptor,
+    schema_hash: &'a SchemaHash,
+    services: &'a ExecutionServices,
+}
+
 async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<ProjectRunOutcome> {
     let DrainProjectExecution {
         resource,
@@ -205,15 +217,17 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
         checkpoint_store,
     } = execution;
     let recovered_epoch_count = settle_existing_drain_prefix(
-        &package_root,
-        &base_package_id,
-        &base_checkpoint_id,
-        &plan,
-        resource.descriptor(),
-        &schema_hash,
+        DrainRecoveryContext {
+            package_root: &package_root,
+            base_package_id: &base_package_id,
+            base_checkpoint_id: &base_checkpoint_id,
+            plan: &plan,
+            descriptor: resource.descriptor(),
+            schema_hash: &schema_hash,
+            services: &services,
+        },
         destination,
         checkpoint_store,
-        &services,
     )?;
     let mut controller = cdf_runtime::DrainEpochController::new(&plan.execution_extent)?;
     let initial_head = checkpoint_store.head(
@@ -332,7 +346,7 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
                         })?,
                         last_epoch: Box::new(last_epoch),
                     });
-                    return Ok(ProjectRunOutcome::Committed(committed));
+                    return Ok(ProjectRunOutcome::Committed(Box::new(committed)));
                 }
                 return Ok(ProjectRunOutcome::NoOp(report));
             }
@@ -386,7 +400,7 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
                     .ok_or_else(|| CdfError::internal("drain run omitted its first run id"))?,
                 last_epoch: Box::new(last_epoch),
             });
-            return Ok(ProjectRunOutcome::Committed(report));
+            return Ok(ProjectRunOutcome::Committed(Box::new(report)));
         }
         if remaining_plan.scan.partitions.is_empty() {
             return Err(CdfError::internal(
@@ -399,28 +413,24 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
 }
 
 fn settle_existing_drain_prefix<Store>(
-    package_root: &Path,
-    base_package_id: &str,
-    base_checkpoint_id: &CheckpointId,
-    plan: &EnginePlan,
-    descriptor: &ResourceDescriptor,
-    schema_hash: &SchemaHash,
+    context: DrainRecoveryContext<'_>,
     destination: &mut ResolvedProjectDestination,
     checkpoint_store: &Store,
-    services: &ExecutionServices,
 ) -> Result<u64>
 where
     Store: CheckpointStore + ?Sized,
 {
     let mut ordinal = 0_u64;
     loop {
-        let package_id = drain_epoch_string_id(base_package_id, ordinal);
-        let package_dir = package_root.join(&package_id);
+        let package_id = drain_epoch_string_id(context.base_package_id, ordinal);
+        let package_dir = context.package_root.join(&package_id);
         if !package_dir.exists() {
             return Ok(ordinal);
         }
-        let expected_checkpoint_id =
-            CheckpointId::new(drain_epoch_string_id(base_checkpoint_id.as_str(), ordinal))?;
+        let expected_checkpoint_id = CheckpointId::new(drain_epoch_string_id(
+            context.base_checkpoint_id.as_str(),
+            ordinal,
+        ))?;
         let package = PackageReader::open(&package_dir)?;
         if matches!(
             package.manifest().lifecycle.status,
@@ -431,14 +441,14 @@ where
                 destination.runtime_mut(),
                 StagedIngressPlan {
                     checkpoint_id: expected_checkpoint_id.clone(),
-                    execution_plan_id: plan.scan.plan_id.clone(),
+                    execution_plan_id: context.plan.scan.plan_id.clone(),
                     target,
-                    disposition: plan.write_disposition.clone(),
-                    schema_hash: schema_hash.clone(),
-                    output_schema: plan.output_arrow_schema()?.as_ref().clone(),
-                    merge_keys: descriptor.merge_key.clone(),
+                    disposition: context.plan.write_disposition.clone(),
+                    schema_hash: context.schema_hash.clone(),
+                    output_schema: context.plan.output_arrow_schema()?.as_ref().clone(),
+                    merge_keys: context.descriptor.merge_key.clone(),
                 },
-                services,
+                context.services,
             )?;
             if let Some(active) = active {
                 active.abort()?;
@@ -450,8 +460,8 @@ where
             &package_dir,
             destination.runtime_mut(),
             checkpoint_store,
-            services.memory(),
-            Some(services),
+            context.services.memory(),
+            Some(context.services),
         )?;
         if replay.checkpoint.delta.checkpoint_id != expected_checkpoint_id {
             return Err(CdfError::data(format!(
@@ -534,8 +544,8 @@ struct ProjectRunUnit {
 }
 
 enum ProjectRunUnitOutcome {
-    Committed(ProjectRunUnit),
-    NoOp(ProjectRunNoOpReport),
+    Committed(Box<ProjectRunUnit>),
+    NoOp(Box<ProjectRunNoOpReport>),
 }
 
 enum ManifestPlanning {
@@ -609,6 +619,7 @@ async fn run_project_inner(
             manifest_plan.summary,
             ProjectRunNoOpReason::FileManifestUnchanged,
         )
+        .map(Box::new)
         .map(ProjectRunUnitOutcome::NoOp);
     }
 
@@ -744,7 +755,7 @@ async fn run_project_inner(
                 ProjectRunNoOpReason::SourceExhausted,
             )?;
             report.source_frontier = source_frontier;
-            return Ok(ProjectRunUnitOutcome::NoOp(report));
+            return Ok(ProjectRunUnitOutcome::NoOp(Box::new(report)));
         }
         Err(mut error) => {
             if let Some(staged) = active_staged.take()
@@ -893,7 +904,7 @@ async fn run_project_inner(
     execution.recorder.append_run_succeeded()?;
     let ledger_snapshot = execution.recorder.snapshot()?;
 
-    Ok(ProjectRunUnitOutcome::Committed(ProjectRunUnit {
+    Ok(ProjectRunUnitOutcome::Committed(Box::new(ProjectRunUnit {
         report: ProjectRunReport {
             run_id: execution.recorder.run_id.clone(),
             ledger_snapshot,
@@ -913,7 +924,7 @@ async fn run_project_inner(
             drain: None,
         },
         drain_epoch,
-    }))
+    })))
 }
 
 struct FileManifestPlanning<'a> {

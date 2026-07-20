@@ -14,12 +14,14 @@ pub(super) fn write_run_state_commit_artifacts(
 ) -> Result<()> {
     let state_delta = state_delta_preimage_from_run_draft(
         context,
-        draft.segments,
-        draft.segment_positions,
-        draft.execution_evidence(),
-        draft
-            .drain_frontier
-            .and_then(|frontier| frontier.carryover.clone()),
+        StateDeltaRunDraft {
+            segments: draft.segments,
+            segment_positions: draft.segment_positions,
+            execution_evidence: draft.execution_evidence(),
+            source_continuation: draft
+                .drain_frontier
+                .and_then(|frontier| frontier.carryover.clone()),
+        },
         schema_hash,
         scope,
         head.as_ref(),
@@ -173,13 +175,15 @@ pub(crate) fn state_delta_from_run(
     };
     let preimage = state_delta_preimage_from_run_draft(
         &context,
-        &output.output.segments,
-        &output.segment_positions,
-        output.execution_evidence(),
-        output
-            .drain_epoch
-            .as_ref()
-            .and_then(|epoch| epoch.closure.frontier.carryover.clone()),
+        StateDeltaRunDraft {
+            segments: &output.output.segments,
+            segment_positions: &output.segment_positions,
+            execution_evidence: output.execution_evidence(),
+            source_continuation: output
+                .drain_epoch
+                .as_ref()
+                .and_then(|epoch| epoch.closure.frontier.carryover.clone()),
+        },
         schema_hash,
         scope,
         head,
@@ -189,25 +193,29 @@ pub(crate) fn state_delta_from_run(
     )?))
 }
 
+struct StateDeltaRunDraft<'a> {
+    segments: &'a [SegmentEntry],
+    segment_positions: &'a [cdf_engine::EngineSegmentPosition],
+    execution_evidence: &'a cdf_engine::EngineExecutionEvidence,
+    source_continuation: Option<SourcePosition>,
+}
+
 fn state_delta_preimage_from_run_draft(
     context: &StateCommitArtifactContext<'_>,
-    segments: &[SegmentEntry],
-    segment_positions: &[cdf_engine::EngineSegmentPosition],
-    execution_evidence: &cdf_engine::EngineExecutionEvidence,
-    source_continuation: Option<SourcePosition>,
+    draft: StateDeltaRunDraft<'_>,
     schema_hash: &SchemaHash,
     scope: &ScopeKey,
     head: Option<&Checkpoint>,
 ) -> Result<StateDeltaPreimage> {
-    if !execution_evidence.checkpoint_eligible() {
+    if !draft.execution_evidence.checkpoint_eligible() {
         return Err(CdfError::data(
             "checkpoint state requires complete source execution; a partial or limited source execution cannot advance state",
         ));
     }
-    let positions = segment_positions_by_id(segments, segment_positions)?;
-    let mut segment_evidence = Vec::with_capacity(segments.len());
+    let positions = segment_positions_by_id(draft.segments, draft.segment_positions)?;
+    let mut segment_evidence = Vec::with_capacity(draft.segments.len());
 
-    for segment in segments {
+    for segment in draft.segments {
         let segment_position = positions
             .get(&segment.segment_id)
             .ok_or_else(|| {
@@ -226,12 +234,13 @@ fn state_delta_preimage_from_run_draft(
         segment_evidence.push((segment, segment_position));
     }
 
-    if execution_evidence.processed_observations().is_empty() {
+    if draft.execution_evidence.processed_observations().is_empty() {
         return Err(CdfError::data(
             "checkpoint state requires complete processed-observation evidence; a partial or limited source execution cannot advance state",
         ));
     }
-    let observed_positions = execution_evidence
+    let observed_positions = draft
+        .execution_evidence
         .processed_observations()
         .iter()
         .map(|observation| observation.source_position.clone())
@@ -261,7 +270,7 @@ fn state_delta_preimage_from_run_draft(
         parent_checkpoint_id: head.map(|checkpoint| checkpoint.delta.checkpoint_id.clone()),
         input_position: head.map(|checkpoint| checkpoint.delta.output_position.clone()),
         output_position,
-        source_continuation,
+        source_continuation: draft.source_continuation,
         schema_hash: schema_hash.clone(),
         segments: state_segments,
     })
