@@ -6595,10 +6595,14 @@ fn merge_dedup_live_run_records_deduped_package_replay_identity_and_duplicate_re
     assert_eq!(summary["output_rows"], 2);
     assert_eq!(summary["duplicate_key_count"], 1);
     assert_eq!(summary["dropped_row_count"], 1);
-    assert_eq!(
-        reader.read_dedup_dropped_provenance().unwrap(),
-        vec![(0, 2)]
-    );
+    let mut dedup_provenance = Vec::new();
+    reader
+        .for_each_dedup_dropped_provenance(&mut |dropped, kept| {
+            dedup_provenance.push((dropped, kept));
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(dedup_provenance, vec![(0, 2)]);
     let replay_inputs = reader.replay_inputs().unwrap();
     assert_eq!(
         replay_inputs.destination_commit.disposition,

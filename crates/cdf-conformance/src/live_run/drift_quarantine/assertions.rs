@@ -136,10 +136,14 @@ pub(super) fn assert_drift_quarantine_package_evidence(report: &ProjectRunReport
     assert_eq!(dedup["output_rows"], 1);
     assert_eq!(dedup["duplicate_key_count"], 1);
     assert_eq!(dedup["dropped_row_count"], 1);
-    assert_eq!(
-        reader.read_dedup_dropped_provenance().unwrap(),
-        vec![(0, 1)]
-    );
+    let mut dedup_provenance = Vec::new();
+    reader
+        .for_each_dedup_dropped_provenance(&mut |dropped, kept| {
+            dedup_provenance.push((dropped, kept));
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(dedup_provenance, vec![(0, 1)]);
 
     let memory: Arc<dyn cdf_memory::MemoryCoordinator> = Arc::new(
         cdf_memory::DeterministicMemoryCoordinator::new(64 * 1024 * 1024, BTreeMap::new()).unwrap(),

@@ -2246,7 +2246,7 @@ impl Drop for SegmentEncodeQueue {
 const DEDUP_PROVENANCE_SHARD_ROWS: usize = 64 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct DedupSummaryV2 {
+struct DedupSummaryV3 {
     version: u16,
     rule_id: String,
     keys: Vec<String>,
@@ -2257,29 +2257,21 @@ struct DedupSummaryV2 {
     dropped_row_count: u64,
     provenance_format: String,
     provenance_version: u16,
+    provenance_path: String,
     provenance_shard_row_target: u64,
     shard_count: u64,
-    shards: Vec<DedupProvenanceShard>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct DedupProvenanceShard {
-    path: String,
-    row_count: u64,
-    byte_count: u64,
-    sha256: String,
 }
 
 struct DedupProvenanceSink {
     rows: Vec<(u64, u64)>,
-    shards: Vec<DedupProvenanceShard>,
+    shard_count: u64,
 }
 
 impl DedupProvenanceSink {
     fn new() -> Self {
         Self {
             rows: Vec::with_capacity(DEDUP_PROVENANCE_SHARD_ROWS),
-            shards: Vec::new(),
+            shard_count: 0,
         }
     }
 
@@ -2300,24 +2292,20 @@ impl DedupProvenanceSink {
         Ok(())
     }
 
-    fn finish(mut self, builder: &PackageBuilder) -> Result<Vec<DedupProvenanceShard>> {
+    fn finish(mut self, builder: &PackageBuilder) -> Result<u64> {
         self.flush(builder)?;
-        Ok(self.shards)
+        Ok(self.shard_count)
     }
 
     fn flush(&mut self, builder: &PackageBuilder) -> Result<()> {
         if self.rows.is_empty() {
             return Ok(());
         }
-        let file_name = format!("part-{:06}.parquet", self.shards.len() + 1);
-        let row_count = self.rows.len() as u64;
-        let entry = builder.write_dedup_provenance_shard(&file_name, &self.rows)?;
-        self.shards.push(DedupProvenanceShard {
-            path: entry.path,
-            row_count,
-            byte_count: entry.byte_count,
-            sha256: entry.sha256,
-        });
+        self.shard_count = self
+            .shard_count
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("dedup provenance shard count overflow"))?;
+        builder.write_dedup_provenance_shard(self.shard_count, &self.rows)?;
         self.rows.clear();
         Ok(())
     }
@@ -5565,8 +5553,8 @@ fn apply_dedup_and_write_pending_batches(
         if let Some((_, mut assembler)) = assembler {
             persist_canonical_segments(assembler.finish()?, state, sink)?;
         }
-        let shards = provenance.finish(builder)?;
-        write_dedup_summary_v2(
+        let shard_count = provenance.finish(builder)?;
+        write_dedup_summary_v3(
             builder,
             cdf_contract::DedupSummary {
                 rule_id: rule.rule_id,
@@ -5578,7 +5566,7 @@ fn apply_dedup_and_write_pending_batches(
                 dropped_row_count: decisions.summary.dropped_row_count,
                 dropped_rows: Vec::new(),
             },
-            shards,
+            shard_count,
         )?;
         state.phase_measurements.add(
             RunPhase::ValidationNormalization,
@@ -5603,8 +5591,8 @@ fn apply_dedup_and_write_pending_batches(
             dropped.kept_package_row_ordinal,
         )?;
     }
-    let shards = provenance.finish(builder)?;
-    write_dedup_summary_v2(builder, dedup.summary.clone(), shards)?;
+    let shard_count = provenance.finish(builder)?;
+    write_dedup_summary_v3(builder, dedup.summary.clone(), shard_count)?;
     state.phase_measurements.add(
         RunPhase::ValidationNormalization,
         elapsed_ns(validation_started, "package dedup")?,
@@ -5648,13 +5636,13 @@ fn apply_dedup_and_write_pending_batches(
     Ok(())
 }
 
-fn write_dedup_summary_v2(
+fn write_dedup_summary_v3(
     builder: &PackageBuilder,
     summary: cdf_contract::DedupSummary,
-    shards: Vec<DedupProvenanceShard>,
+    shard_count: u64,
 ) -> Result<()> {
-    builder.write_dedup_summary(&DedupSummaryV2 {
-        version: 2,
+    builder.write_dedup_summary(&DedupSummaryV3 {
+        version: cdf_package_contract::DEDUP_SUMMARY_VERSION,
         rule_id: summary.rule_id,
         keys: summary.keys,
         keep: summary.keep,
@@ -5663,10 +5651,10 @@ fn write_dedup_summary_v2(
         duplicate_key_count: summary.duplicate_key_count,
         dropped_row_count: summary.dropped_row_count,
         provenance_format: "parquet".to_owned(),
-        provenance_version: 1,
+        provenance_version: cdf_package_contract::DEDUP_PROVENANCE_VERSION,
+        provenance_path: cdf_package_contract::DEDUP_PROVENANCE_DIRECTORY.to_owned(),
         provenance_shard_row_target: DEDUP_PROVENANCE_SHARD_ROWS as u64,
-        shard_count: shards.len() as u64,
-        shards,
+        shard_count,
     })?;
     Ok(())
 }

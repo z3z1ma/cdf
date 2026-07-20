@@ -72,6 +72,17 @@ fn collect_quarantine_records(
     records
 }
 
+fn collect_dedup_dropped_provenance(reader: &cdf_package::PackageReader) -> Vec<(u64, u64)> {
+    let mut rows = Vec::new();
+    reader
+        .for_each_dedup_dropped_provenance(&mut |dropped, kept| {
+            rows.push((dropped, kept));
+            Ok(())
+        })
+        .unwrap();
+    rows
+}
+
 fn executable_mock_plan(plan: &EnginePlan, resource: &MockResource) -> Result<EnginePlan> {
     if plan.compiled_source_execution.is_some() {
         return Ok(plan.clone());
@@ -8473,10 +8484,7 @@ fn merge_dedup_keep_last_runs_after_contract_filtering_and_before_normalize() {
     assert_eq!(summary["output_rows"], 3);
     assert_eq!(summary["duplicate_key_count"], 1);
     assert_eq!(summary["dropped_row_count"], 1);
-    assert_eq!(
-        reader.read_dedup_dropped_provenance().unwrap(),
-        vec![(0, 2)]
-    );
+    assert_eq!(collect_dedup_dropped_provenance(&reader), vec![(0, 2)]);
     assert!(
         reader
             .manifest()
@@ -8665,10 +8673,7 @@ fn merge_dedup_keep_first_uses_package_order() {
     assert_eq!(summary["output_rows"], 3);
     assert_eq!(summary["duplicate_key_count"], 1);
     assert_eq!(summary["dropped_row_count"], 1);
-    assert_eq!(
-        reader.read_dedup_dropped_provenance().unwrap(),
-        vec![(2, 0)]
-    );
+    assert_eq!(collect_dedup_dropped_provenance(&reader), vec![(2, 0)]);
 }
 
 #[test]
@@ -8781,14 +8786,15 @@ fn append_exact_row_dedup_compiles_and_drops_only_complete_duplicates() {
     assert_eq!(summary["input_rows"], 3);
     assert_eq!(summary["output_rows"], 2);
     assert_eq!(summary["dropped_row_count"], 1);
-    assert_eq!(summary["version"], 2);
+    assert_eq!(summary["version"], 3);
     assert_eq!(summary["provenance_format"], "parquet");
+    assert_eq!(summary["provenance_path"], "stats/dedup-dropped/");
     assert_eq!(summary["provenance_shard_row_target"], 65_536);
     assert_eq!(summary["shard_count"], 1);
     assert!(summary.get("dropped_rows").is_none());
     assert!(
         temp.path()
-            .join("stats/dedup-dropped/part-000001.parquet")
+            .join("stats/dedup-dropped/part-00000000000000000001.parquet")
             .is_file()
     );
 

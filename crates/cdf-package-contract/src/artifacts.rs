@@ -16,8 +16,22 @@ pub const STATE_PROPOSED_DELTA_FILE: &str = "state/proposed_delta.json";
 pub const DESTINATION_COMMIT_PLAN_FILE: &str = "destination/commit_plan.json";
 pub const SCAN_PLAN_FILE: &str = "plan/scan.json";
 pub const DEDUP_SUMMARY_FILE: &str = "stats/dedup-summary.json";
+pub const DEDUP_SUMMARY_VERSION: u16 = 3;
+pub const DEDUP_PROVENANCE_VERSION: u16 = 1;
+pub const DEDUP_PROVENANCE_DIRECTORY: &str = "stats/dedup-dropped/";
 pub const PROCESSED_OBSERVATIONS_FILE: &str = "state/processed-observations.json";
 pub const PROCESSED_OBSERVATIONS_VERSION: u16 = 1;
+
+pub fn dedup_provenance_shard_path(shard_ordinal: u64) -> Result<String> {
+    if shard_ordinal == 0 {
+        return Err(CdfError::contract(
+            "dedup provenance shard ordinals start at one",
+        ));
+    }
+    Ok(format!(
+        "{DEDUP_PROVENANCE_DIRECTORY}part-{shard_ordinal:020}.parquet"
+    ))
+}
 
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -426,5 +440,23 @@ impl PartitionWatermarkStateArtifact {
             )));
         }
         cdf_kernel::validate_partition_watermark_states(&self.partitions)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dedup_provenance_shard_paths_sort_numerically_across_full_u64_domain() {
+        let ordinals = [1, 999_999, 1_000_000, u64::MAX];
+        let paths = ordinals
+            .into_iter()
+            .map(|ordinal| dedup_provenance_shard_path(ordinal).unwrap())
+            .collect::<Vec<_>>();
+        let mut sorted = paths.clone();
+        sorted.sort();
+        assert_eq!(sorted, paths);
+        assert!(dedup_provenance_shard_path(0).is_err());
     }
 }

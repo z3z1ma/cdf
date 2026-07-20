@@ -37,6 +37,17 @@ fn collect_quarantine_records(reader: &PackageReader) -> Vec<QuarantineRecord> {
     records
 }
 
+fn collect_dedup_dropped_provenance(reader: &PackageReader) -> Vec<(u64, u64)> {
+    let mut rows = Vec::new();
+    reader
+        .for_each_dedup_dropped_provenance(&mut |dropped, kept| {
+            rows.push((dropped, kept));
+            Ok(())
+        })
+        .unwrap();
+    rows
+}
+
 fn table_snapshot_position() -> SourcePosition {
     SourcePosition::TableSnapshot(Box::new(TableSnapshotPosition {
         version: CHECKPOINT_STATE_VERSION,
@@ -811,26 +822,33 @@ fn dedup_summary_round_trips_as_json_identity_evidence() {
     let temp = tempfile::tempdir().unwrap();
     let builder = PackageBuilder::create(temp.path(), "pkg-dedup-summary-0001").unwrap();
     let summary = serde_json::json!({
+        "version": 3,
         "rule_id": "row-rule-0000-dedup",
         "keys": ["id"],
         "keep": "last",
-        "input_rows": 3,
-        "output_rows": 2,
-        "duplicate_key_count": 1,
-        "dropped_row_count": 1,
-        "dropped_rows": [
-            {"package_row_ordinal": 0, "kept_package_row_ordinal": 2}
-        ]
+        "input_rows": 6,
+        "output_rows": 3,
+        "duplicate_key_count": 3,
+        "dropped_row_count": 3,
+        "provenance_format": "parquet",
+        "provenance_version": 1,
+        "provenance_path": "stats/dedup-dropped/",
+        "provenance_shard_row_target": 65536,
+        "shard_count": 2
     });
 
+    builder
+        .write_dedup_provenance_shard(1, &[(0, 2), (4, 5)])
+        .unwrap();
+    builder.write_dedup_provenance_shard(2, &[(7, 9)]).unwrap();
     builder.write_dedup_summary(&summary).unwrap();
     let manifest = builder.finish().unwrap();
     let reader = PackageReader::open(temp.path()).unwrap();
 
     assert_eq!(reader.read_dedup_summary_json().unwrap(), Some(summary));
     assert_eq!(
-        reader.read_dedup_dropped_provenance().unwrap(),
-        vec![(0, 2)]
+        collect_dedup_dropped_provenance(&reader),
+        vec![(0, 2), (4, 5), (7, 9)]
     );
     assert!(
         manifest
@@ -2711,7 +2729,10 @@ fn production_commit_paths_cannot_collect_package_segments() {
     let archive_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("src")
         .join("archive.rs");
-    let mut files = vec![archive_path.clone()];
+    let reader_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("reader.rs");
+    let mut files = vec![archive_path.clone(), reader_path.clone()];
     files.push(crates_dir.join("cdf-project/src/promotion.rs"));
     for relative in [
         "cdf-project/src/runtime",
@@ -2723,8 +2744,12 @@ fn production_commit_paths_cannot_collect_package_segments() {
     }
     for path in files {
         let source = fs::read_to_string(&path).unwrap();
-        let mut forbidden = vec!["Vec<CommitSegment>"];
-        if path != archive_path {
+        let mut forbidden = vec![
+            "Vec<CommitSegment>",
+            "read_quarantine_records(",
+            "read_dedup_dropped_provenance(",
+        ];
+        if path != archive_path && path != reader_path {
             forbidden.push("read_segment(");
         }
         for forbidden in forbidden {

@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, File},
+    fs,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -14,12 +14,14 @@ use cdf_memory::{
     record_batch_retained_bytes, reserve_blocking,
 };
 use cdf_package_contract::{
-    DEDUP_SUMMARY_FILE, DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage,
+    DEDUP_PROVENANCE_DIRECTORY, DEDUP_PROVENANCE_VERSION, DEDUP_SUMMARY_FILE,
+    DEDUP_SUMMARY_VERSION, DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage,
     LATE_DATA_EVIDENCE_FILE, LATE_DATA_PAYLOAD_CATALOG_FILE, LateDataEvidence,
     LateDataPayloadCatalog, PROCESSED_OBSERVATIONS_FILE, PackageManifest, PackageReplayInputs,
     PackageStatus, ProcessedObservationEvidenceArtifact, QuarantineRecord, ReplayView,
     SCAN_PLAN_FILE, STATE_INPUT_CHECKPOINT_FILE, STATE_PROPOSED_DELTA_FILE, SegmentEntry,
     StateDeltaPreimage, TombstoneReport, VerificationReport, VerifiedPackageAccess,
+    dedup_provenance_shard_path,
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::de::DeserializeOwned;
@@ -985,60 +987,58 @@ impl PackageReader {
         read_optional_json_artifact(&self.package_dir, DEDUP_SUMMARY_FILE)
     }
 
-    pub fn read_dedup_dropped_provenance(&self) -> Result<Vec<(u64, u64)>> {
+    pub fn for_each_dedup_dropped_provenance(
+        &self,
+        visitor: &mut dyn FnMut(u64, u64) -> Result<()>,
+    ) -> Result<()> {
         let Some(summary) = self.read_dedup_summary_json()? else {
-            return Ok(Vec::new());
+            return Ok(());
         };
-        if summary.get("version").and_then(serde_json::Value::as_u64) != Some(2) {
-            return summary
-                .get("dropped_rows")
-                .and_then(serde_json::Value::as_array)
-                .into_iter()
-                .flatten()
-                .map(|row| {
-                    Ok((
-                        required_json_u64(row, "package_row_ordinal")?,
-                        required_json_u64(row, "kept_package_row_ordinal")?,
-                    ))
-                })
-                .collect();
+        if required_json_u64(&summary, "version")? != u64::from(DEDUP_SUMMARY_VERSION) {
+            return Err(CdfError::data(
+                "dedup summary must use current external provenance version 3",
+            ));
         }
-        let shards = summary
-            .get("shards")
-            .and_then(serde_json::Value::as_array)
-            .ok_or_else(|| CdfError::data("dedup v2 summary omits shards"))?;
-        let mut output = Vec::new();
-        for shard in shards {
-            let relative = shard
-                .get("path")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| CdfError::data("dedup v2 shard omits path"))?;
-            if !relative.starts_with("stats/dedup-dropped/") || !relative.ends_with(".parquet") {
+        if required_json_string(&summary, "provenance_format")? != "parquet"
+            || required_json_u64(&summary, "provenance_version")?
+                != u64::from(DEDUP_PROVENANCE_VERSION)
+            || required_json_string(&summary, "provenance_path")? != DEDUP_PROVENANCE_DIRECTORY
+        {
+            return Err(CdfError::data(
+                "dedup summary declares unsupported provenance storage",
+            ));
+        }
+        let expected_shard_count = required_json_u64(&summary, "shard_count")?;
+        let expected_row_count = required_json_u64(&summary, "dropped_row_count")?;
+        let mut shard_count = 0_u64;
+        let mut row_count = 0_u64;
+        let mut previous_dropped = None;
+        for entry in &self.manifest.identity.files {
+            if !entry.path.starts_with(DEDUP_PROVENANCE_DIRECTORY) {
+                continue;
+            }
+            if !entry.path.ends_with(".parquet") {
                 return Err(CdfError::data(format!(
-                    "dedup provenance path is outside its artifact directory: {relative}"
+                    "dedup provenance artifact is not Parquet: {}",
+                    entry.path
                 )));
             }
-            if !self
-                .manifest
-                .identity
-                .files
-                .iter()
-                .any(|entry| entry.path == relative)
-            {
+            shard_count = shard_count
+                .checked_add(1)
+                .ok_or_else(|| CdfError::data("dedup provenance shard count overflow"))?;
+            let expected_path = dedup_provenance_shard_path(shard_count)?;
+            if entry.path != expected_path {
                 return Err(CdfError::data(format!(
-                    "dedup provenance shard is absent from package identity: {relative}"
+                    "dedup provenance shard {} is not canonical path {expected_path}",
+                    entry.path
                 )));
             }
-            let path = self.package_dir.join(relative);
-            let reader =
-                ParquetRecordBatchReaderBuilder::try_new(File::open(&path).map_err(|error| {
-                    CdfError::data(format!("open {}: {error}", path.display()))
-                })?)
-                .map_err(|error| {
-                    CdfError::data(format!("read dedup provenance metadata: {error}"))
-                })?
-                .build()
-                .map_err(|error| CdfError::data(format!("open dedup provenance rows: {error}")))?;
+            let reader = ParquetRecordBatchReaderBuilder::try_new(
+                self.package_root.open_std_file(&entry.path)?,
+            )
+            .map_err(|error| CdfError::data(format!("read dedup provenance metadata: {error}")))?
+            .build()
+            .map_err(|error| CdfError::data(format!("open dedup provenance rows: {error}")))?;
             for batch in reader {
                 let batch = batch.map_err(|error| {
                     CdfError::data(format!("read dedup provenance rows: {error}"))
@@ -1049,16 +1049,26 @@ impl PackageReader {
                     if dropped.is_null(row) || kept.is_null(row) {
                         return Err(CdfError::data("dedup provenance ordinals cannot be null"));
                     }
-                    output.push((dropped.value(row), kept.value(row)));
+                    let dropped = dropped.value(row);
+                    if previous_dropped.is_some_and(|previous| previous >= dropped) {
+                        return Err(CdfError::data(
+                            "dedup provenance shards are not in strict dropped-row order",
+                        ));
+                    }
+                    previous_dropped = Some(dropped);
+                    row_count = row_count
+                        .checked_add(1)
+                        .ok_or_else(|| CdfError::data("dedup provenance row count overflow"))?;
+                    visitor(dropped, kept.value(row))?;
                 }
             }
         }
-        if output.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
-            return Err(CdfError::data(
-                "dedup provenance shards are not in strict dropped-row order",
-            ));
+        if shard_count != expected_shard_count || row_count != expected_row_count {
+            return Err(CdfError::data(format!(
+                "dedup provenance summary declares {expected_shard_count} shards and {expected_row_count} rows but package identity contains {shard_count} shards and {row_count} rows"
+            )));
         }
-        Ok(output)
+        Ok(())
     }
 
     pub fn tombstone(&mut self) -> Result<TombstoneReport> {
@@ -1073,6 +1083,13 @@ fn required_json_u64(value: &serde_json::Value, field: &str) -> Result<u64> {
         .get(field)
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| CdfError::data(format!("dedup provenance row omits {field}")))
+}
+
+fn required_json_string<'a>(value: &'a serde_json::Value, field: &str) -> Result<&'a str> {
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| CdfError::data(format!("dedup summary omits string field {field:?}")))
 }
 
 fn dedup_u64_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a UInt64Array> {

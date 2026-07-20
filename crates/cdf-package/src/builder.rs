@@ -525,7 +525,7 @@ impl PackageBuilder {
 
     pub fn write_dedup_provenance_shard(
         &self,
-        file_name: &str,
+        shard_ordinal: u64,
         rows: &[(u64, u64)],
     ) -> Result<FileEntry> {
         if rows.is_empty() {
@@ -550,7 +550,10 @@ impl PackageBuilder {
             ],
         )
         .map_err(CdfError::from)?;
-        self.write_parquet_identity_batches(format!("stats/dedup-dropped/{file_name}"), &[batch])
+        self.write_parquet_identity_batches(
+            cdf_package_contract::dedup_provenance_shard_path(shard_ordinal)?,
+            &[batch],
+        )
     }
 
     fn write_parquet_identity_batches(
