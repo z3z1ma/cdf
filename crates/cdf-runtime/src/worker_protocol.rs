@@ -1463,6 +1463,7 @@ pub trait WorkerAdmissionVerifier {
 
     fn verify_source_authority(
         &self,
+        registry: &crate::SourceRegistry,
         task: &PortablePartitionTask,
         authority: &ReconstructedWorkerTaskAuthority,
         attestation: &WorkerSourceAttestation,
@@ -2887,7 +2888,8 @@ impl PartitionWorkerResult {
         let attestation = self.source_attestation.as_ref().ok_or_else(|| {
             CdfError::contract("successful partition worker result lacks source attestation")
         })?;
-        let source_facts = verifier.verify_source_authority(task, &authority, attestation, self)?;
+        let source_facts =
+            verifier.verify_source_authority(registry, task, &authority, attestation, self)?;
         for (matches, label, claimed, observed) in [
             (
                 source_facts.processed_position == attestation.processed_position,

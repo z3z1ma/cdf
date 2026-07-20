@@ -2211,6 +2211,25 @@ pub trait SourceDriver: Send + Sync {
             self.descriptor().driver_id.as_str()
         )))
     }
+    /// Independently verifies source facts reported by an isolated worker.
+    ///
+    /// This is source-driver authority, not engine orchestration: a new portable source owns its
+    /// position, generation, physical-schema, and observation semantics in the same registry entry
+    /// that compiles and resolves it. The default fails closed until the driver provides an exact
+    /// verifier for its portable plans.
+    fn verify_worker_source(
+        &self,
+        _task: &crate::PortablePartitionTask,
+        _plan: &CompiledSourcePlan,
+        _partition: &cdf_kernel::PartitionPlan,
+        _attestation: &crate::WorkerSourceAttestation,
+        _observations: &[crate::WorkerProcessedObservation],
+    ) -> Result<crate::VerifiedWorkerSourceFacts> {
+        Err(CdfError::contract(format!(
+            "source driver `{}` has not declared isolated-worker source verification",
+            self.descriptor().driver_id.as_str()
+        )))
+    }
     fn reference_compiler(&self) -> Option<&dyn SourceReferenceCompiler> {
         None
     }

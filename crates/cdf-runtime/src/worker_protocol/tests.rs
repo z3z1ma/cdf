@@ -41,6 +41,35 @@ impl SourceDriver for PortableMockDriver {
         plan.validate()
     }
 
+    fn verify_worker_source(
+        &self,
+        task: &PortablePartitionTask,
+        plan: &CompiledSourcePlan,
+        partition: &PartitionPlan,
+        attestation: &WorkerSourceAttestation,
+        observations: &[WorkerProcessedObservation],
+    ) -> Result<VerifiedWorkerSourceFacts> {
+        self.validate_portable_plan(plan)?;
+        let planned = partition.planned_position.as_ref().ok_or_else(|| {
+            CdfError::contract("mock partition lacks planned source-position authority")
+        })?;
+        if task.partition.partition_id != partition.partition_id
+            || attestation.processed_position != WorkerPosition::inline(planned.clone())?
+            || attestation.physical_schema_hash != task.execution.output_schema_hash
+            || !observations.is_empty()
+        {
+            return Err(CdfError::contract(
+                "worker source attestation exceeds reconstructed position/schema authority",
+            ));
+        }
+        VerifiedWorkerSourceFacts::new(
+            WorkerPosition::inline(planned.clone())?,
+            task.execution.output_schema_hash.clone(),
+            50,
+            4096,
+        )
+    }
+
     fn health(
         &self,
         _request: SourceHealthRequest,
@@ -375,38 +404,18 @@ impl WorkerAdmissionVerifier for MockArtifactStore {
 
     fn verify_source_authority(
         &self,
-        _task: &PortablePartitionTask,
+        registry: &SourceRegistry,
+        task: &PortablePartitionTask,
         authority: &ReconstructedWorkerTaskAuthority,
         attestation: &WorkerSourceAttestation,
         _result: &PartitionWorkerResult,
     ) -> Result<VerifiedWorkerSourceFacts> {
-        let planned = authority
-            .partition()
-            .planned_position
-            .as_ref()
-            .ok_or_else(|| {
-                CdfError::contract("mock partition lacks planned source-position authority")
-            })?;
-        let WorkerPosition::Inline {
-            position: processed,
-        } = &attestation.processed_position
-        else {
-            return Err(CdfError::contract(
-                "mock source does not admit external foreign positions",
-            ));
-        };
-        if processed != planned
-            || attestation.physical_schema_hash != *authority.execution().output_schema_hash()
-        {
-            return Err(CdfError::contract(
-                "worker source attestation exceeds reconstructed position/schema authority",
-            ));
-        }
-        VerifiedWorkerSourceFacts::new(
-            WorkerPosition::inline(planned.clone())?,
-            authority.execution().output_schema_hash().clone(),
-            50,
-            4096,
+        registry.verify_worker_source(
+            task,
+            authority.source(),
+            authority.partition(),
+            attestation,
+            &[],
         )
     }
 }

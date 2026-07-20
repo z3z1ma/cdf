@@ -282,23 +282,6 @@ impl EngineWorkerArtifactAuthority for MemoryWorkerCompilerArtifacts {
     }
 }
 
-struct NoWorkerSourceFacts;
-
-impl EngineWorkerSourceAuthority for NoWorkerSourceFacts {
-    fn verify_source(
-        &self,
-        _task: &cdf_runtime::PortablePartitionTask,
-        _source: &cdf_runtime::CompiledSourcePlan,
-        _partition: &PartitionPlan,
-        _attestation: &cdf_runtime::WorkerSourceAttestation,
-        _observations: &[cdf_runtime::WorkerProcessedObservation],
-    ) -> Result<cdf_runtime::VerifiedWorkerSourceFacts> {
-        Err(cdf_kernel::CdfError::internal(
-            "compiler fixture does not verify execution results",
-        ))
-    }
-}
-
 type SharedEngineWorkerArtifactMap = BTreeMap<(String, String), bytes::Bytes>;
 
 #[derive(Clone)]
@@ -784,6 +767,72 @@ impl cdf_runtime::SourceDriver for IsolatedEngineMockDriver {
         Ok(())
     }
 
+    fn verify_worker_source(
+        &self,
+        task: &cdf_runtime::PortablePartitionTask,
+        plan: &cdf_runtime::CompiledSourcePlan,
+        partition: &PartitionPlan,
+        attestation: &cdf_runtime::WorkerSourceAttestation,
+        observations: &[cdf_runtime::WorkerProcessedObservation],
+    ) -> Result<cdf_runtime::VerifiedWorkerSourceFacts> {
+        self.validate_portable_plan(plan)?;
+        let batches = self
+            .batches
+            .iter()
+            .filter(|batch| batch.header.partition_id == partition.partition_id)
+            .collect::<Vec<_>>();
+        let first = batches.first().ok_or_else(|| {
+            cdf_kernel::CdfError::contract(
+                "isolated mock driver cannot verify an unknown partition",
+            )
+        })?;
+        let physical_schema_hash = first.header.observed_schema_hash.clone();
+        let processed_position = first.header.source_position.clone().ok_or_else(|| {
+            cdf_kernel::CdfError::contract(
+                "isolated mock driver requires an exact processed source position",
+            )
+        })?;
+        if batches.iter().any(|batch| {
+            batch.header.source_position.as_ref() != Some(&processed_position)
+                || batch.header.observed_schema_hash != physical_schema_hash
+        }) {
+            return Err(cdf_kernel::CdfError::contract(
+                "isolated mock partition batches disagree on position or schema",
+            ));
+        }
+        let expected_observations = vec![cdf_runtime::WorkerProcessedObservation::new(
+            partition.partition_id.as_str(),
+            cdf_kernel::ProcessedObservationOutcome::Admitted,
+            cdf_runtime::WorkerPosition::inline(processed_position.clone())?,
+        )?];
+        let input_rows = batches.iter().try_fold(0_u64, |total, batch| {
+            total
+                .checked_add(batch.header.row_count)
+                .ok_or_else(|| cdf_kernel::CdfError::data("mock input rows overflowed u64"))
+        })?;
+        let source_bytes = batches.iter().try_fold(0_u64, |total, batch| {
+            total
+                .checked_add(batch.header.byte_count)
+                .ok_or_else(|| cdf_kernel::CdfError::data("mock source bytes overflowed u64"))
+        })?;
+        if task.partition.partition_id != partition.partition_id
+            || attestation.processed_position
+                != cdf_runtime::WorkerPosition::inline(processed_position.clone())?
+            || attestation.physical_schema_hash != physical_schema_hash
+            || observations != expected_observations
+        {
+            return Err(cdf_kernel::CdfError::contract(
+                "isolated worker source result exceeds registered driver authority",
+            ));
+        }
+        cdf_runtime::VerifiedWorkerSourceFacts::new(
+            cdf_runtime::WorkerPosition::inline(processed_position)?,
+            physical_schema_hash,
+            input_rows,
+            source_bytes,
+        )
+    }
+
     fn health(
         &self,
         _request: cdf_runtime::SourceHealthRequest,
@@ -822,45 +871,6 @@ impl cdf_runtime::SourceDriver for IsolatedEngineMockDriver {
             .with_partition_count(partition_count);
         resource.bind_compiled_source(plan);
         Ok(Arc::new(resource))
-    }
-}
-
-struct IsolatedEngineSourceAuthority {
-    dataset_id: String,
-    partition_id: PartitionId,
-    processed_position: SourcePosition,
-    physical_schema_hash: SchemaHash,
-    expected_observations: Vec<cdf_runtime::WorkerProcessedObservation>,
-    input_rows: u64,
-    source_bytes: u64,
-}
-
-impl EngineWorkerSourceAuthority for IsolatedEngineSourceAuthority {
-    fn verify_source(
-        &self,
-        _task: &cdf_runtime::PortablePartitionTask,
-        source: &cdf_runtime::CompiledSourcePlan,
-        partition: &PartitionPlan,
-        attestation: &cdf_runtime::WorkerSourceAttestation,
-        observations: &[cdf_runtime::WorkerProcessedObservation],
-    ) -> Result<cdf_runtime::VerifiedWorkerSourceFacts> {
-        if source.physical_plan["dataset_id"].as_str() != Some(self.dataset_id.as_str())
-            || partition.partition_id != self.partition_id
-            || attestation.processed_position
-                != cdf_runtime::WorkerPosition::inline(self.processed_position.clone())?
-            || attestation.physical_schema_hash != self.physical_schema_hash
-            || observations != self.expected_observations
-        {
-            return Err(cdf_kernel::CdfError::contract(
-                "isolated worker source result exceeds independently observed fixture authority",
-            ));
-        }
-        cdf_runtime::VerifiedWorkerSourceFacts::new(
-            cdf_runtime::WorkerPosition::inline(self.processed_position.clone())?,
-            self.physical_schema_hash.clone(),
-            self.input_rows,
-            self.source_bytes,
-        )
     }
 }
 
@@ -1265,7 +1275,7 @@ fn engine_partition_task_compiles_every_authority_as_typed_artifacts() {
     assert!(!serialized.contains("operator_chain"));
     assert!(!serialized.contains("compiled_source_execution"));
 
-    let verifier = EngineWorkerAdmissionVerifier::new(&artifacts, &NoWorkerSourceFacts);
+    let verifier = EngineWorkerAdmissionVerifier::new(&artifacts);
     let reconstructed =
         cdf_runtime::WorkerAdmissionVerifier::reconstruct_task_authority(&verifier, &task).unwrap();
     assert_eq!(reconstructed.source(), &source);
@@ -1275,7 +1285,7 @@ fn engine_partition_task_compiles_every_authority_as_typed_artifacts() {
         .values
         .get_mut(&cdf_runtime::WorkerArtifactKind::ProjectPlan)
         .unwrap()[0] ^= 1;
-    let verifier = EngineWorkerAdmissionVerifier::new(&artifacts, &NoWorkerSourceFacts);
+    let verifier = EngineWorkerAdmissionVerifier::new(&artifacts);
     let error = cdf_runtime::WorkerAdmissionVerifier::reconstruct_task_authority(&verifier, &task)
         .unwrap_err();
     assert!(error.message.contains("bytes or generation"));
@@ -1476,8 +1486,6 @@ fn run_actual_isolated_engine_equivalence(
     for batch in &mut batches {
         batch.header.source_position = Some(isolated_terminal_file_position());
     }
-    let physical_schema_hash =
-        cdf_kernel::canonical_arrow_schema_hash(sample_schema().as_ref()).unwrap();
     let dataset_id = "isolated-orders-v1";
     let option_schema = isolated_mock_option_schema();
     let descriptor = cdf_runtime::SourceDriverDescriptor {
@@ -1635,61 +1643,11 @@ fn run_actual_isolated_engine_equivalence(
 
     struct PartitionFixture {
         task: cdf_runtime::PortablePartitionTask,
-        authority: IsolatedEngineSourceAuthority,
     }
 
     let fixtures = partition_tasks
         .into_iter()
-        .map(|task| {
-            let partition_id = task.partition.partition_id.clone();
-            let observation_ids = direct
-                .output
-                .lineage
-                .input_observations
-                .iter()
-                .filter(|observation| observation.partition_id == partition_id)
-                .map(|observation| observation.observation_id.as_str())
-                .collect::<BTreeSet<_>>();
-            let expected_observations = direct
-                .execution_evidence()
-                .processed_observations()
-                .iter()
-                .filter(|observation| observation_ids.contains(observation.observation_id.as_str()))
-                .map(|observation| {
-                    cdf_runtime::WorkerProcessedObservation::new(
-                        observation.observation_id.clone(),
-                        observation.outcome.clone(),
-                        cdf_runtime::WorkerPosition::inline(observation.source_position.clone())?,
-                    )
-                })
-                .collect::<Result<Vec<_>>>()
-                .unwrap();
-            let input_rows = direct
-                .output
-                .lineage
-                .input_observations
-                .iter()
-                .filter(|observation| observation.partition_id == partition_id)
-                .map(|observation| observation.observed_rows)
-                .sum();
-            let source_bytes = batches
-                .iter()
-                .filter(|batch| batch.header.partition_id == partition_id)
-                .map(|batch| batch.header.byte_count)
-                .sum();
-            PartitionFixture {
-                task,
-                authority: IsolatedEngineSourceAuthority {
-                    dataset_id: dataset_id.to_owned(),
-                    partition_id,
-                    processed_position: isolated_terminal_file_position(),
-                    physical_schema_hash: physical_schema_hash.clone(),
-                    expected_observations,
-                    input_rows,
-                    source_bytes,
-                },
-            }
-        })
+        .map(|task| PartitionFixture { task })
         .collect::<Vec<_>>();
 
     let mut preparations = Vec::with_capacity(fixtures.len());
@@ -1735,10 +1693,8 @@ fn run_actual_isolated_engine_equivalence(
                             &worker_services,
                             Arc::new(cdf_http::EgressAllowlist::allow_any()),
                         );
-                        let worker_verifier =
-                            EngineWorkerAdmissionVerifier::new(&artifacts, &fixture.authority);
-                        let coordinator_verifier =
-                            EngineWorkerAdmissionVerifier::new(&artifacts, &fixture.authority);
+                        let worker_verifier = EngineWorkerAdmissionVerifier::new(&artifacts);
+                        let coordinator_verifier = EngineWorkerAdmissionVerifier::new(&artifacts);
                         let executor = ActualEngineIsolatedExecutor {
                             registry: &registry,
                             source_context: &source_context,
@@ -1790,7 +1746,7 @@ fn run_actual_isolated_engine_equivalence(
 
     let mut package_row_ord_start = 0_u64;
     let mut finalized = Vec::with_capacity(direct.output.segments.len());
-    let segment_verifier = EngineWorkerAdmissionVerifier::new(&artifacts, &NoWorkerSourceFacts);
+    let segment_verifier = EngineWorkerAdmissionVerifier::new(&artifacts);
     for (fixture, preparation) in fixtures.iter().zip(&preparations) {
         let mut prepared_segments = preparation
             .result()

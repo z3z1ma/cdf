@@ -245,6 +245,32 @@ impl SourceRegistry {
         driver.validate_portable_plan(plan)
     }
 
+    /// Routes isolated-worker source admission through the same registered driver that owns the
+    /// compiled plan. Generic orchestration therefore never grows a parallel source-specific
+    /// verification switch or adapter registry.
+    pub fn verify_worker_source(
+        &self,
+        task: &crate::PortablePartitionTask,
+        plan: &CompiledSourcePlan,
+        partition: &PartitionPlan,
+        attestation: &crate::WorkerSourceAttestation,
+        observations: &[crate::WorkerProcessedObservation],
+    ) -> Result<crate::VerifiedWorkerSourceFacts> {
+        self.validate_portable_source_plan(&task.source, plan)?;
+        if partition.partition_id != task.partition.partition_id {
+            return Err(CdfError::contract(
+                "worker source verification partition does not match its portable task",
+            ));
+        }
+        self.driver_for_plan(plan)?.verify_worker_source(
+            task,
+            plan,
+            partition,
+            attestation,
+            observations,
+        )
+    }
+
     pub fn option_schemas(&self) -> BTreeMap<String, serde_json::Value> {
         self.drivers
             .iter()

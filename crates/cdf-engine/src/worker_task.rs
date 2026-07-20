@@ -502,30 +502,14 @@ pub trait EngineWorkerOutputAuthority: EngineWorkerArtifactAuthority {
     ) -> Result<VerifiedWorkerArtifactFacts>;
 }
 
-/// Source-specific observation verification behind the generic worker boundary.
-pub trait EngineWorkerSourceAuthority {
-    fn verify_source(
-        &self,
-        task: &PortablePartitionTask,
-        source: &cdf_runtime::CompiledSourcePlan,
-        partition: &cdf_kernel::PartitionPlan,
-        attestation: &WorkerSourceAttestation,
-        observations: &[WorkerProcessedObservation],
-    ) -> Result<VerifiedWorkerSourceFacts>;
-}
-
 /// Engine-owned decoder and coordinator verifier for portable worker authority.
 pub struct EngineWorkerAdmissionVerifier<'a> {
     artifacts: &'a dyn EngineWorkerArtifactAuthority,
-    source: &'a dyn EngineWorkerSourceAuthority,
 }
 
 impl<'a> EngineWorkerAdmissionVerifier<'a> {
-    pub fn new(
-        artifacts: &'a dyn EngineWorkerArtifactAuthority,
-        source: &'a dyn EngineWorkerSourceAuthority,
-    ) -> Self {
-        Self { artifacts, source }
+    pub fn new(artifacts: &'a dyn EngineWorkerArtifactAuthority) -> Self {
+        Self { artifacts }
     }
 
     pub fn read_partition_evidence(
@@ -711,6 +695,7 @@ impl WorkerAdmissionVerifier for EngineWorkerAdmissionVerifier<'_> {
 
     fn verify_source_authority(
         &self,
+        registry: &cdf_runtime::SourceRegistry,
         task: &PortablePartitionTask,
         authority: &ReconstructedWorkerTaskAuthority,
         attestation: &WorkerSourceAttestation,
@@ -731,7 +716,7 @@ impl WorkerAdmissionVerifier for EngineWorkerAdmissionVerifier<'_> {
                 )
             })
             .collect::<Result<Vec<_>>>()?;
-        self.source.verify_source(
+        registry.verify_worker_source(
             task,
             authority.source(),
             authority.partition(),
