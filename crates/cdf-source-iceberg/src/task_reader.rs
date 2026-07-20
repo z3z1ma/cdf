@@ -22,6 +22,7 @@ struct RetainedTaskAuthority {
 }
 
 /// Source-private payload carried through bounded scheduler lookahead.
+#[derive(Clone)]
 pub(crate) struct IcebergExecutableTask {
     pub(crate) task: IcebergScanTask,
     authority: Arc<RetainedTaskAuthority>,

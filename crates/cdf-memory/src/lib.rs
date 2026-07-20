@@ -519,6 +519,15 @@ impl AccountedBytes {
         &self.lease
     }
 
+    /// Transfers this payload into a zero-copy `Bytes` owner while retaining its lease.
+    ///
+    /// Foreign readers that accept `Bytes` can therefore hold a CDF-managed transport buffer
+    /// without copying it or escaping the memory ledger. The reservation is released only after
+    /// the final clone or slice of the returned `Bytes` is dropped.
+    pub fn into_retained_bytes(self) -> Bytes {
+        Bytes::from_owner(self)
+    }
+
     /// Returns a zero-copy logical slice while retaining the lease for the complete
     /// physical allocation. This is intentionally conservative: coalesced I/O is
     /// accounted until every logical slice of the response has been released.

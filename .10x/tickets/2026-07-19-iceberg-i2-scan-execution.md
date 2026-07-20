@@ -34,6 +34,8 @@ No append ancestry/changelog/tailing, ORC/Avro/v3/encryption enablement, destina
 ## Journal
 
 - 2026-07-19: Activated after I1/F4 closure. Execution will consume the existing external canonical task artifact and injected neutral object-access authority; no upstream Iceberg runtime, private pool, or generic source branch will be introduced. The first tranche is one immutable Parquet task to a preaccounted ordinary `ResourceStream`, then evolution/defaults/partition constants and delete semantics extend that single path.
+- 2026-07-19: Commit `855be499` installed a source-neutral external partition reader and cardinality-independent schedule/frontier authority. Iceberg now decodes one canonical task at a time while retaining its task-store bytes and parse lease; generic orchestration sees only `ExecutablePartition` plus opaque adapter retention.
+- 2026-07-19: Implemented the first complete scan path through the aligned Iceberg Arrow 58 reader. Per-task blocking preparation resolves exact object generations through injected CDF object access, then a CPU stream performs field-ID projection, schema evolution/default filling, and Parquet decode. Ranged `AccountedBytes` cross the foreign reader zero-copy through `Bytes::from_owner`, retaining their CDF lease until the final foreign slice drops. Output batches reserve/reconcile the shared ledger and carry exact table-snapshot positions. Batch rows, retained bytes, metadata prefetch, range coalescing/concurrency, and internal stream depth are explicit source knobs.
 
 ## Blockers
 
@@ -41,7 +43,10 @@ None.
 
 ## Evidence
 
-Pending execution.
+- `CARGO_BUILD_JOBS=12 cargo test -p cdf-source-iceberg --lib`: 25 passed. The real local v2 fixture plans two files written under schema IDs 0/1, executes both canonical tasks, projects the current two-column schema, fills the evolved optional field for the old file, emits eight rows, and attests the fixed snapshot.
+- `CARGO_BUILD_JOBS=12 cargo test -p cdf-memory --lib`: 22 passed, including pointer-identity and lease-lifetime proof for zero-copy foreign `Bytes` ownership.
+- `CARGO_BUILD_JOBS=12 cargo check -p cdf-engine -p cdf-project`: passed, proving the external-task and prepared-CPU seams compose through generic engine/project consumers.
+- Limits: delete-file planning/application, engine preview parity, cardinality-bounded completion/schema evidence, cancellation/retry/job invariance, and performance evidence remain open in I2.
 
 ## Review
 

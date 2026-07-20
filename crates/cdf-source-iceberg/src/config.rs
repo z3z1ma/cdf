@@ -9,6 +9,12 @@ pub const DEFAULT_MAXIMUM_TASK_BYTES: u64 = 1024 * 1024;
 pub const DEFAULT_MAXIMUM_TASK_AUTHORITY_BYTES: u64 = 64 * 1024 * 1024;
 pub const DEFAULT_TASK_WRITER_BUFFER_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_MAXIMUM_CONCURRENCY: u16 = u16::MAX;
+pub const DEFAULT_PARQUET_BATCH_ROWS: usize = 64 * 1024;
+pub const DEFAULT_MAXIMUM_BATCH_BYTES: u64 = 32 * 1024 * 1024;
+pub const DEFAULT_PARQUET_METADATA_PREFETCH_BYTES: usize = 512 * 1024;
+pub const DEFAULT_PARQUET_RANGE_COALESCE_BYTES: u64 = 1024 * 1024;
+pub const DEFAULT_PARQUET_RANGE_FETCH_CONCURRENCY: u16 = 10;
+pub const DEFAULT_STREAM_BUFFER_BATCHES: u16 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -32,6 +38,18 @@ pub struct IcebergSourceOptions {
     pub task_writer_buffer_bytes: usize,
     #[serde(default = "default_maximum_concurrency")]
     pub maximum_concurrency: u16,
+    #[serde(default = "default_parquet_batch_rows")]
+    pub parquet_batch_rows: usize,
+    #[serde(default = "default_maximum_batch_bytes")]
+    pub maximum_batch_bytes: u64,
+    #[serde(default = "default_parquet_metadata_prefetch_bytes")]
+    pub parquet_metadata_prefetch_bytes: usize,
+    #[serde(default = "default_parquet_range_coalesce_bytes")]
+    pub parquet_range_coalesce_bytes: u64,
+    #[serde(default = "default_parquet_range_fetch_concurrency")]
+    pub parquet_range_fetch_concurrency: u16,
+    #[serde(default = "default_stream_buffer_batches")]
+    pub stream_buffer_batches: u16,
 }
 
 impl IcebergSourceOptions {
@@ -56,15 +74,33 @@ impl IcebergSourceOptions {
                 "Iceberg maximum_metadata_files must be greater than zero",
             ));
         }
+        if self.maximum_batch_bytes < 8 * 1024 {
+            return Err(CdfError::contract(
+                "Iceberg maximum_batch_bytes must be at least the 8192-byte source working set",
+            ));
+        }
         if self.maximum_task_bytes == 0
             || self.maximum_task_authority_bytes == 0
             || self.task_writer_buffer_bytes == 0
             || self.maximum_concurrency == 0
+            || self.parquet_batch_rows == 0
+            || self.maximum_batch_bytes == 0
+            || self.parquet_metadata_prefetch_bytes == 0
+            || self.parquet_range_coalesce_bytes == 0
+            || self.parquet_range_fetch_concurrency == 0
+            || self.stream_buffer_batches == 0
         {
             return Err(CdfError::contract(
-                "Iceberg task record, shared-authority, writer-buffer, and concurrency budgets must be greater than zero",
+                "Iceberg task, concurrency, and Parquet execution knobs must be greater than zero",
             ));
         }
+        self.maximum_batch_bytes
+            .checked_mul(u64::from(self.stream_buffer_batches) + 1)
+            .ok_or_else(|| {
+                CdfError::contract(
+                    "Iceberg maximum_batch_bytes and stream_buffer_batches overflow the execution working set",
+                )
+            })?;
         Ok(())
     }
 
@@ -270,6 +306,30 @@ const fn default_maximum_concurrency() -> u16 {
     DEFAULT_MAXIMUM_CONCURRENCY
 }
 
+const fn default_parquet_batch_rows() -> usize {
+    DEFAULT_PARQUET_BATCH_ROWS
+}
+
+const fn default_maximum_batch_bytes() -> u64 {
+    DEFAULT_MAXIMUM_BATCH_BYTES
+}
+
+const fn default_parquet_metadata_prefetch_bytes() -> usize {
+    DEFAULT_PARQUET_METADATA_PREFETCH_BYTES
+}
+
+const fn default_parquet_range_coalesce_bytes() -> u64 {
+    DEFAULT_PARQUET_RANGE_COALESCE_BYTES
+}
+
+const fn default_parquet_range_fetch_concurrency() -> u16 {
+    DEFAULT_PARQUET_RANGE_FETCH_CONCURRENCY
+}
+
+const fn default_stream_buffer_batches() -> u16 {
+    DEFAULT_STREAM_BUFFER_BATCHES
+}
+
 fn validate_hosts(hosts: &[String]) -> Result<()> {
     let mut sorted = hosts.to_vec();
     sorted.sort();
@@ -381,5 +441,11 @@ mod tests {
         assert_eq!(source.maximum_task_authority_bytes, 64 * 1024 * 1024);
         assert_eq!(source.task_writer_buffer_bytes, 1024 * 1024);
         assert_eq!(source.maximum_concurrency, u16::MAX);
+        assert_eq!(source.parquet_batch_rows, 64 * 1024);
+        assert_eq!(source.maximum_batch_bytes, 32 * 1024 * 1024);
+        assert_eq!(source.parquet_metadata_prefetch_bytes, 512 * 1024);
+        assert_eq!(source.parquet_range_coalesce_bytes, 1024 * 1024);
+        assert_eq!(source.parquet_range_fetch_concurrency, 10);
+        assert_eq!(source.stream_buffer_batches, 2);
     }
 }

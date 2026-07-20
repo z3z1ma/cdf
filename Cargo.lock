@@ -1558,7 +1558,9 @@ dependencies = [
 name = "cdf-source-iceberg"
 version = "0.1.0"
 dependencies = [
+ "arrow-array",
  "arrow-schema",
+ "async-trait",
  "aws-credential-types",
  "aws-sigv4",
  "bytes",
@@ -1569,14 +1571,17 @@ dependencies = [
  "cdf-runtime",
  "cdf-task-store",
  "flate2",
+ "futures-channel",
  "futures-util",
  "hex",
  "iceberg",
+ "parquet",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "tokio",
+ "typetag",
  "url",
  "zeroize",
 ]

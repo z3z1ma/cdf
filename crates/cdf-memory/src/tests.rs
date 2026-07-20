@@ -34,6 +34,28 @@ fn shared_payload_clones_release_exactly_once() {
 }
 
 #[test]
+fn transferred_bytes_retain_the_ledger_lease_without_copying() {
+    let coordinator = DeterministicMemoryCoordinator::new(1024, BTreeMap::new()).unwrap();
+    let request =
+        ReservationRequest::new(consumer("foreign-reader", MemoryClass::Source), 64).unwrap();
+    let lease = coordinator.try_reserve(&request).unwrap().unwrap();
+    let accounted =
+        AccountedBytes::new(bytes::Bytes::from_static(b"generation-bound"), lease).unwrap();
+    let original_address = accounted.payload().as_ptr();
+
+    let foreign = accounted.into_retained_bytes();
+    assert_eq!(foreign.as_ptr(), original_address);
+    assert_eq!(foreign.as_ref(), b"generation-bound");
+    assert_eq!(coordinator.snapshot().current_bytes, 16);
+
+    let slice = foreign.slice(0..10);
+    drop(foreign);
+    assert_eq!(coordinator.snapshot().current_bytes, 16);
+    drop(slice);
+    assert_eq!(coordinator.snapshot().current_bytes, 0);
+}
+
+#[test]
 fn logical_slices_retain_one_complete_physical_allocation() {
     let coordinator = DeterministicMemoryCoordinator::new(1024, BTreeMap::new()).unwrap();
     let request =

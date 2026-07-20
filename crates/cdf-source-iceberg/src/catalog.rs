@@ -34,6 +34,7 @@ pub struct IcebergCatalogContext {
     pub glue: Arc<dyn GlueCatalogClient>,
     pub secrets: Arc<dyn SecretProvider + Send + Sync>,
     pub execution: ExecutionServices,
+    pub blocking_lane: cdf_runtime::BlockingLaneSpec,
     pub egress: SourceEgressScope,
     pub project_root: std::path::PathBuf,
 }
@@ -43,6 +44,7 @@ impl std::fmt::Debug for IcebergCatalogContext {
         formatter
             .debug_struct("IcebergCatalogContext")
             .field("project_root", &self.project_root)
+            .field("blocking_lane", &self.blocking_lane)
             .finish_non_exhaustive()
     }
 }
@@ -1169,7 +1171,7 @@ fn metadata_file_version(location: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
-fn transport_resource(
+pub(crate) fn transport_resource(
     location: &str,
     source: &crate::IcebergSourceOptions,
     auth: Option<cdf_http::AuthScheme>,

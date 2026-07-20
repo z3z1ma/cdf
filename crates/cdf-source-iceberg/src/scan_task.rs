@@ -378,12 +378,14 @@ impl IcebergTableIdentity {
     }
 }
 
-fn decode_schema(authority: &IcebergJsonAuthority) -> Result<iceberg::spec::Schema> {
+pub(crate) fn decode_schema(authority: &IcebergJsonAuthority) -> Result<iceberg::spec::Schema> {
     serde_json::from_value(authority.value.clone())
         .map_err(|error| CdfError::contract(format!("decode Iceberg schema authority: {error}")))
 }
 
-fn decode_partition_spec(authority: &IcebergJsonAuthority) -> Result<iceberg::spec::PartitionSpec> {
+pub(crate) fn decode_partition_spec(
+    authority: &IcebergJsonAuthority,
+) -> Result<iceberg::spec::PartitionSpec> {
     serde_json::from_value(authority.value.clone()).map_err(|error| {
         CdfError::contract(format!("decode Iceberg partition spec authority: {error}"))
     })

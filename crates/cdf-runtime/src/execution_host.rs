@@ -1773,6 +1773,78 @@ impl ExecutionServices {
         })
     }
 
+    /// Runs blocking preparation and a CPU-dominant asynchronous stream under one invocation.
+    ///
+    /// This is the neutral source seam for a synchronous control plane followed by decoding that
+    /// awaits host-driven I/O. Preparation occupies only its declared blocking lane; after it
+    /// publishes the prepared authority, all producer polling and native compute consume the
+    /// exact CPU allocation declared by `spec`.
+    pub fn spawn_blocking_prepared_cpu_stream<T, P, Prepare, Produce, Fut>(
+        &self,
+        run_id: &str,
+        lane: &str,
+        spec: CpuTaskSpec,
+        maximum_items: usize,
+        prepare: Prepare,
+        produce: Produce,
+    ) -> Result<ScopedTaskStream<T>>
+    where
+        T: Send + 'static,
+        P: Send + 'static,
+        Prepare: FnOnce(RunCancellation) -> Result<P> + Send + 'static,
+        Produce: FnOnce(P, TaskStreamSender<T>, RunCancellation) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        if maximum_items == 0 {
+            return Err(CdfError::contract(
+                "prepared CPU stream requires a nonzero item bound",
+            ));
+        }
+        spec.validate()?;
+        let mut scope = self.open_scope(run_id)?;
+        let cancellation = scope.cancellation();
+        let (sender, receiver) = mpsc::channel(maximum_items);
+        let stream_sender = TaskStreamSender {
+            sender,
+            cancellation: cancellation.clone(),
+        };
+        let (prepared_sender, prepared_receiver) = oneshot::channel();
+        let preparation_cancellation = cancellation.clone();
+        scope.spawn_blocking(
+            lane,
+            Box::new(move || {
+                let result = prepare(preparation_cancellation);
+                let _ = prepared_sender.send(result);
+                Ok(())
+            }),
+        )?;
+        let producer_cancellation = cancellation.clone();
+        scope.spawn_cpu_future(
+            spec,
+            Box::pin(async move {
+                let prepared = prepared_receiver.await.map_err(|_| {
+                    CdfError::internal(
+                        "blocking preparation ended without publishing its CPU-stream result",
+                    )
+                })??;
+                produce(prepared, stream_sender, producer_cancellation).await
+            }),
+        )?;
+        let scope_join = scope.join();
+        let cancel = cancellation.clone();
+        let termination = InvocationTermination::new(
+            move || cancel.cancel(),
+            Box::pin(async move { scope_join.await.map(|_| ()) }),
+        );
+        Ok(ScopedTaskStream {
+            receiver,
+            termination,
+            join: None,
+            cancellation,
+            terminal: false,
+        })
+    }
+
     /// Runs one bounded, CPU-dominant asynchronous producer on the host CPU executor. The
     /// producer may await host-driven I/O, but its polling and native compute consume the exact
     /// declared shared CPU-slot demand.

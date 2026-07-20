@@ -7,9 +7,11 @@ use cdf_runtime::{SourceDriverDescriptor, SourceDriverId, artifact_hash};
 mod catalog;
 mod config;
 mod driver;
+mod execution;
 mod glue;
 mod planner;
 mod scan_task;
+mod storage;
 mod task_reader;
 
 pub use catalog::{
@@ -18,10 +20,13 @@ pub use catalog::{
     SelectedIcebergSnapshot, UnsupportedGlueCatalogClient, annotated_arrow_schema,
 };
 pub use config::{
-    DEFAULT_MAXIMUM_CONCURRENCY, DEFAULT_MAXIMUM_METADATA_BYTES, DEFAULT_MAXIMUM_METADATA_FILES,
-    DEFAULT_MAXIMUM_TASK_AUTHORITY_BYTES, DEFAULT_MAXIMUM_TASK_BYTES,
-    DEFAULT_METADATA_PARSE_AMPLIFICATION_BPS, DEFAULT_TASK_WRITER_BUFFER_BYTES,
-    IcebergCatalogOptions, IcebergResourceOptions, IcebergSnapshotSelector, IcebergSourceOptions,
+    DEFAULT_MAXIMUM_BATCH_BYTES, DEFAULT_MAXIMUM_CONCURRENCY, DEFAULT_MAXIMUM_METADATA_BYTES,
+    DEFAULT_MAXIMUM_METADATA_FILES, DEFAULT_MAXIMUM_TASK_AUTHORITY_BYTES,
+    DEFAULT_MAXIMUM_TASK_BYTES, DEFAULT_METADATA_PARSE_AMPLIFICATION_BPS,
+    DEFAULT_PARQUET_BATCH_ROWS, DEFAULT_PARQUET_METADATA_PREFETCH_BYTES,
+    DEFAULT_PARQUET_RANGE_COALESCE_BYTES, DEFAULT_PARQUET_RANGE_FETCH_CONCURRENCY,
+    DEFAULT_STREAM_BUFFER_BATCHES, DEFAULT_TASK_WRITER_BUFFER_BYTES, IcebergCatalogOptions,
+    IcebergResourceOptions, IcebergSnapshotSelector, IcebergSourceOptions,
 };
 pub use driver::{
     ICEBERG_SOURCE_BLOCKING_LANE_ID, IcebergRuntimeDependencies, IcebergSourceDriver,
@@ -104,7 +109,13 @@ pub fn iceberg_option_schema() -> serde_json::Value {
                 "maximum_task_bytes": {"type": "integer", "minimum": 1, "default": 1048576},
                 "maximum_task_authority_bytes": {"type": "integer", "minimum": 1, "default": 67108864},
                 "task_writer_buffer_bytes": {"type": "integer", "minimum": 1, "default": 1048576},
-                "maximum_concurrency": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 65535}
+                "maximum_concurrency": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 65535},
+                "parquet_batch_rows": {"type": "integer", "minimum": 1, "default": 65536},
+                "maximum_batch_bytes": {"type": "integer", "minimum": 1, "default": 33554432},
+                "parquet_metadata_prefetch_bytes": {"type": "integer", "minimum": 1, "default": 524288},
+                "parquet_range_coalesce_bytes": {"type": "integer", "minimum": 1, "default": 1048576},
+                "parquet_range_fetch_concurrency": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 10}
+                ,"stream_buffer_batches": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 2}
             }
         },
         "resource": {
@@ -208,7 +219,7 @@ mod tests {
         assert!(descriptor.schemes.is_empty());
         assert_eq!(
             descriptor.option_schema_hash,
-            "sha256:ca4c88b0692c905998e0efda0ea074400aaac94e424f3dab5aecdcca356fcede"
+            "sha256:b648b49154d421cb1ef5fbf1e2d29343d497bd5a395cb48577b0a98697b5b0c7"
         );
         assert_eq!(
             descriptor.option_schema_hash,

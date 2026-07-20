@@ -2,16 +2,16 @@ use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 use cdf_http::{HttpTransport, SecretProvider};
 use cdf_kernel::{
-    BackpressureSupport, CapabilitySupport, CdfError, EffectiveSchemaCatalogEntry,
+    BackpressureSupport, BatchStream, CapabilitySupport, CdfError, EffectiveSchemaCatalogEntry,
     EffectiveSchemaRuntime, EstimateSupport, ExecutablePartition, FilterCapabilities,
-    IncrementalShape, PartitionOpenAttempt, PartitionPlan, PartitioningCapabilities,
-    PayloadRetention, PlannedPartitionReader, PlannedTaskSetReference, QueryableResource,
-    ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, ScanPlan,
-    ScanRequest, ScopeKind, TypePolicyAllowances,
+    IncrementalShape, PartitionOpenAttempt, PartitionPlan, PartitionStreamPayload,
+    PartitioningCapabilities, PayloadRetention, PlannedPartitionReader, PlannedTaskSetReference,
+    QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceStream,
+    Result, ScanPlan, ScanRequest, ScopeKind, TypePolicyAllowances,
 };
 use cdf_object_access::FileTransport;
 use cdf_runtime::{
-    BlockingLaneBinding, BlockingLaneSpec, CompiledSourcePlan, ExecutionServices,
+    BlockingLaneBinding, BlockingLaneSpec, CompiledSourcePlan, CpuTaskSpec, ExecutionServices,
     InterruptionSafety, LaneAffinity, PreparedSourcePayload, PreparedSourcePayloadKey,
     SourceAddPlanner, SourceAddProposal, SourceAddRequest, SourceAttestationStrength,
     SourceBatchMemoryContract, SourceCompileRequest, SourceDiscoveryCandidate, SourceDiscoveryKind,
@@ -25,8 +25,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     GlueCatalogClient, IcebergCatalogContext, IcebergCatalogLoadRequest, IcebergCatalogRegistry,
-    IcebergResourceOptions, IcebergSourceOptions, LoadedIcebergTable, iceberg_option_schema,
-    iceberg_source_descriptor,
+    IcebergResourceOptions, IcebergSourceOptions, LoadedIcebergTable,
+    execution::{execute_task_scan, prepare_task_scan},
+    iceberg_option_schema, iceberg_source_descriptor,
     planner::{IcebergPlanningContext, plan_snapshot_scan},
     task_reader::{IcebergExecutableTask, IcebergPlannedPartitionReader},
 };
@@ -140,7 +141,7 @@ impl IcebergSourceDriver {
             Arc::clone(context.secret_provider()),
             context.execution().clone(),
             context.egress_scope(&plan.driver.driver_id),
-            resolved_lane,
+            resolved_lane.clone(),
         )?;
         Ok(IcebergCatalogContext {
             object_access: dependencies.object_access,
@@ -148,6 +149,7 @@ impl IcebergSourceDriver {
             glue: dependencies.glue,
             secrets: Arc::clone(context.secret_provider()),
             execution: context.execution().clone(),
+            blocking_lane: resolved_lane,
             egress: context.egress_scope(&plan.driver.driver_id),
             project_root: context.project_root().to_path_buf(),
         })
@@ -690,19 +692,77 @@ impl ResourceStream for IcebergResource {
     fn open_executable(&self, partition: ExecutablePartition) -> PartitionOpenAttempt<'_> {
         let retained = partition
             .retention()
-            .and_then(PayloadRetention::downcast_ref::<IcebergExecutableTask>);
-        if retained.is_none() {
+            .and_then(PayloadRetention::downcast_ref::<IcebergExecutableTask>)
+            .cloned();
+        let Some(executable) = retained else {
             return PartitionOpenAttempt::materialized(Box::pin(async {
                 Err(CdfError::contract(
                     "Iceberg executable partition omitted its retained canonical task payload",
                 ))
             }));
+        };
+        let execution = self.catalog.execution.clone();
+        if let Err(error) = execution.ensure_blocking_lanes(&[self.catalog.blocking_lane.clone()]) {
+            return PartitionOpenAttempt::materialized(Box::pin(async move { Err(error) }));
         }
-        PartitionOpenAttempt::materialized(Box::pin(async {
-            Err(CdfError::contract(
-                "Iceberg Parquet task decoding is owned by the next I2 execution tranche",
-            ))
-        }))
+        let partition = partition.into_plan();
+        let scope_id = format!("iceberg-open-{}", partition.partition_id.as_str());
+        let prepare_context = self.catalog.clone();
+        let prepare_source = self.source.clone();
+        let producer_source = self.source.clone();
+        let descriptor = self.descriptor.clone();
+        let output_schema = Arc::clone(&self.schema);
+        let producer_partition = partition.clone();
+        let memory = execution.memory();
+        let maximum_items = usize::from(self.source.stream_buffer_batches);
+        let (completion_sender, completion_receiver) = futures_channel::oneshot::channel();
+        let task = execution.spawn_blocking_prepared_cpu_stream(
+            &scope_id,
+            ICEBERG_SOURCE_BLOCKING_LANE_ID,
+            CpuTaskSpec {
+                task_kind: "source.iceberg.parquet".to_owned(),
+                cpu_slot_cost: 1,
+                native_internal_parallelism: 1,
+            },
+            maximum_items,
+            move |cancellation| {
+                prepare_task_scan(&prepare_context, &prepare_source, executable, cancellation)
+            },
+            move |prepared, sender, cancellation| async move {
+                let completion = execute_task_scan(
+                    prepared,
+                    descriptor,
+                    output_schema,
+                    producer_partition,
+                    producer_source,
+                    memory,
+                    sender,
+                    cancellation,
+                )
+                .await?;
+                let _ = completion_sender.send(completion);
+                Ok(())
+            },
+        );
+        let stream = match task {
+            Ok(stream) => stream,
+            Err(error) => {
+                return PartitionOpenAttempt::materialized(Box::pin(async move { Err(error) }));
+            }
+        };
+        let termination = stream.termination();
+        let opening = Box::pin(async move {
+            let stream = Box::pin(stream) as BatchStream;
+            let completion = Box::pin(async move {
+                completion_receiver.await.map_err(|_| {
+                    CdfError::internal(
+                        "Iceberg source scope reached EOF without publishing completion evidence",
+                    )
+                })
+            });
+            Ok(PartitionStreamPayload::new(stream, completion))
+        });
+        PartitionOpenAttempt::with_termination(opening, termination)
     }
 
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
@@ -815,7 +875,9 @@ fn execution_capabilities(source: &IcebergSourceOptions) -> SourceExecutionCapab
         minimum_poll_bytes: 8 * 1024,
         maximum_poll_bytes: 32 * 1024 * 1024,
         minimum_decode_bytes: 8 * 1024,
-        maximum_decode_bytes: 32 * 1024 * 1024,
+        maximum_decode_bytes: source
+            .maximum_batch_bytes
+            .saturating_mul(u64::from(source.stream_buffer_batches) + 1),
         maximum_concurrency: source.maximum_concurrency,
         useful_concurrency: source.maximum_concurrency,
         executor_class: SourceExecutorClass::BlockingLane,
@@ -845,7 +907,7 @@ fn execution_capabilities(source: &IcebergSourceOptions) -> SourceExecutionCapab
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::{BTreeMap, VecDeque},
+        collections::{BTreeMap, HashMap, VecDeque},
         fs,
         io::Write,
         path::Path,
@@ -853,7 +915,8 @@ mod tests {
         time::Duration,
     };
 
-    use arrow_schema::Schema;
+    use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
     use cdf_http::{
         HttpRequest, HttpResponse, HttpResponseBudget, HttpTransport, SecretProvider, SecretUri,
         SecretValue,
@@ -871,6 +934,7 @@ mod tests {
     };
     use cdf_task_store::ExternalTaskStore;
     use flate2::{Compression, write::GzEncoder};
+    use futures_util::TryStreamExt;
     use iceberg::{
         io::FileIO,
         spec::{
@@ -878,6 +942,7 @@ mod tests {
             ManifestWriterBuilder, Struct, TableMetadata,
         },
     };
+    use parquet::{arrow::ArrowWriter, basic::Compression as ParquetCompression};
 
     use super::*;
     use crate::UnsupportedGlueCatalogClient;
@@ -1233,6 +1298,65 @@ mod tests {
             .run_io(async move {
                 let metadata_dir = table.join("metadata");
                 fs::create_dir_all(&metadata_dir).unwrap();
+                let data_dir = table.join("data");
+                fs::create_dir_all(&data_dir).unwrap();
+                let field_id = |value: i32| {
+                    HashMap::from([("PARQUET:field_id".to_owned(), value.to_string())])
+                };
+                let old_schema = Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Int64, false).with_metadata(field_id(1)),
+                ]));
+                let old_batch = RecordBatch::try_new(
+                    Arc::clone(&old_schema),
+                    vec![Arc::new(Int64Array::from(vec![1_i64, 2, 3]))],
+                )
+                .unwrap();
+                let old_data_path = data_dir.join("old.parquet");
+                let mut old_data = ArrowWriter::try_new(
+                    fs::File::create(&old_data_path).unwrap(),
+                    old_schema,
+                    Some(
+                        parquet::file::properties::WriterProperties::builder()
+                            .set_compression(ParquetCompression::SNAPPY)
+                            .build(),
+                    ),
+                )
+                .unwrap();
+                old_data.write(&old_batch).unwrap();
+                old_data.close().unwrap();
+
+                let current_schema = Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Int64, false).with_metadata(field_id(1)),
+                    Field::new("label", DataType::Utf8, true).with_metadata(field_id(2)),
+                ]));
+                let current_batch = RecordBatch::try_new(
+                    Arc::clone(&current_schema),
+                    vec![
+                        Arc::new(Int64Array::from(vec![4_i64, 5, 6, 7, 8])),
+                        Arc::new(StringArray::from(vec![
+                            Some("four"),
+                            Some("five"),
+                            None,
+                            Some("seven"),
+                            Some("eight"),
+                        ])),
+                    ],
+                )
+                .unwrap();
+                let current_data_path = data_dir.join("current.parquet");
+                let mut current_data = ArrowWriter::try_new(
+                    fs::File::create(&current_data_path).unwrap(),
+                    current_schema,
+                    Some(
+                        parquet::file::properties::WriterProperties::builder()
+                            .set_compression(ParquetCompression::SNAPPY)
+                            .build(),
+                    ),
+                )
+                .unwrap();
+                current_data.write(&current_batch).unwrap();
+                current_data.close().unwrap();
+
                 let manifest_list_path = metadata_dir.join("snap-101.avro");
                 let metadata_bytes = nonempty_table_metadata(&table, &manifest_list_path);
                 let table_metadata: TableMetadata =
@@ -1259,9 +1383,9 @@ mod tests {
                         DataFileBuilder::default()
                             .partition_spec_id(0)
                             .content(DataContentType::Data)
-                            .file_path(table.join("data/old.parquet").display().to_string())
+                            .file_path(old_data_path.display().to_string())
                             .file_format(DataFileFormat::Parquet)
-                            .file_size_in_bytes(111)
+                            .file_size_in_bytes(fs::metadata(&old_data_path).unwrap().len())
                             .record_count(3)
                             .partition(Struct::empty())
                             .build()
@@ -1286,9 +1410,9 @@ mod tests {
                         DataFileBuilder::default()
                             .partition_spec_id(0)
                             .content(DataContentType::Data)
-                            .file_path(table.join("data/current.parquet").display().to_string())
+                            .file_path(current_data_path.display().to_string())
                             .file_format(DataFileFormat::Parquet)
-                            .file_size_in_bytes(222)
+                            .file_size_in_bytes(fs::metadata(&current_data_path).unwrap().len())
                             .record_count(5)
                             .partition(Struct::empty())
                             .build()
@@ -1730,7 +1854,7 @@ mod tests {
         one_job_request
             .source_options
             .insert("maximum_concurrency".to_owned(), serde_json::json!(1));
-        let one_job_plan = driver.compile(one_job_request).unwrap();
+        let mut one_job_plan = driver.compile(one_job_request).unwrap();
         let session = driver.discovery_session(&one_job_plan, &context).unwrap();
         let candidate = session.candidates().unwrap().remove(0);
         let observation = session
@@ -1740,6 +1864,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(observation.schema.fields().len(), 2);
+        one_job_plan.schema = observation.schema.as_ref().clone();
         let resource = driver.resolve(&one_job_plan, &context).unwrap();
         let request = ScanRequest {
             resource_id: one_job_plan.descriptor.resource_id.clone(),
@@ -1751,7 +1876,7 @@ mod tests {
         };
         let one_job_scan = resource.negotiate(&request).unwrap();
         assert_eq!(one_job_scan.estimated_rows, Some(8));
-        assert_eq!(one_job_scan.estimated_bytes, Some(333));
+        assert!(one_job_scan.estimated_bytes.unwrap() > 0);
         let reference = one_job_scan.planned_task_set.clone().unwrap();
         assert_eq!(reference.task_count, 2);
 
@@ -1792,6 +1917,15 @@ mod tests {
         assert_eq!(tasks[1].canonical_ordinal, 1);
         assert_eq!(tasks[1].file_schema_id, 1);
         assert!(tasks[1].data_file.path.ends_with("data/current.parquet"));
+        assert_eq!(
+            one_job_scan.estimated_bytes,
+            Some(
+                tasks
+                    .iter()
+                    .map(|task| task.data_file.file_size_bytes)
+                    .sum()
+            )
+        );
 
         let mut planned = resource.planned_partition_reader(&reference).unwrap();
         for ordinal in 0..2 {
@@ -1814,11 +1948,51 @@ mod tests {
         }
         assert!(planned.next_partition(2).unwrap().is_none());
 
+        let mut executable_reader = resource.planned_partition_reader(&reference).unwrap();
+        let executable = [
+            executable_reader.next_partition(0).unwrap().unwrap(),
+            executable_reader.next_partition(1).unwrap().unwrap(),
+        ];
+        let (rows, null_labels) = execution
+            .run_io(async move {
+                let mut rows = 0_usize;
+                let mut null_labels = 0_usize;
+                for task in executable {
+                    let mut opened = resource.open_executable(task).await?;
+                    while let Some(batch) = opened.try_next().await? {
+                        assert!(batch.retained_bytes() > 0);
+                        assert!(matches!(
+                            batch.header.source_position,
+                            Some(cdf_kernel::SourcePosition::TableSnapshot(_))
+                        ));
+                        let record_batch = batch.record_batch().unwrap();
+                        assert_eq!(record_batch.schema().fields().len(), 2);
+                        rows += record_batch.num_rows();
+                        null_labels += record_batch
+                            .column(1)
+                            .as_any()
+                            .downcast_ref::<StringArray>()
+                            .unwrap()
+                            .null_count();
+                    }
+                    let completion = opened.completion().await?;
+                    assert!(matches!(
+                        completion.attestation().unwrap().processed_position(),
+                        cdf_kernel::SourcePosition::TableSnapshot(_)
+                    ));
+                }
+                Ok((rows, null_labels))
+            })
+            .unwrap();
+        assert_eq!(rows, 8);
+        assert_eq!(null_labels, 4);
+
         let mut many_jobs_request = compile_request(root.path());
         many_jobs_request
             .source_options
             .insert("maximum_concurrency".to_owned(), serde_json::json!(16));
-        let many_jobs_plan = driver.compile(many_jobs_request).unwrap();
+        let mut many_jobs_plan = driver.compile(many_jobs_request).unwrap();
+        many_jobs_plan.schema = one_job_plan.schema.clone();
         let many_jobs_resource = driver.resolve(&many_jobs_plan, &context).unwrap();
         let many_jobs_scan = many_jobs_resource.negotiate(&request).unwrap();
         assert_eq!(
