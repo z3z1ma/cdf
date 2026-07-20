@@ -313,7 +313,10 @@ impl WorkerAdmissionVerifier for MockArtifactStore {
             load_hash(&task.execution.artifacts.segment_plan),
         )?;
         Ok(ReconstructedWorkerTaskAuthority::from_verified_artifacts(
-            source, partition, execution,
+            source,
+            partition,
+            execution,
+            Box::new(()),
         ))
     }
 
@@ -424,7 +427,10 @@ impl IsolatedPartitionExecutor for FixtureIsolatedExecutor<'_> {
                 "isolated executor received authority other than its reconstructed task",
             ))
         } else {
-            Ok(self.fixture.result(invocation.attempt()))
+            invocation
+                .authority()
+                .execution_program::<()>()
+                .map(|_| self.fixture.result(invocation.attempt()))
         };
         Box::pin(async move { result })
     }

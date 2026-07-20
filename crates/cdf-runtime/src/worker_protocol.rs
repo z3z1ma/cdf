@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::{any::Any, collections::BTreeSet};
 
 use cdf_kernel::{
     BoxFuture, CdfError, CheckpointId, ContentObjectKey, ContentProviderGeneration,
@@ -854,11 +854,39 @@ pub struct PortablePartitionTaskInput {
     pub output_policy: WorkerOutputPolicy,
 }
 
-#[derive(Clone, Debug)]
 pub struct ReconstructedWorkerTaskAuthority {
     source: crate::CompiledSourcePlan,
     partition: cdf_kernel::PartitionPlan,
     execution: ReconstructedExecutionAuthority,
+    execution_program: Box<dyn ReconstructedWorkerExecutionProgram>,
+}
+
+impl std::fmt::Debug for ReconstructedWorkerTaskAuthority {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ReconstructedWorkerTaskAuthority")
+            .field("source", &self.source)
+            .field("partition", &self.partition)
+            .field("execution", &self.execution)
+            .field("execution_program", &"<opaque>")
+            .finish()
+    }
+}
+
+/// Engine-owned executable program reconstructed from verified compiler artifacts.
+///
+/// The portable protocol deliberately treats this payload as opaque. A verifier constructs it
+/// from the same bytes that establish the neutral authority tuple, and the matching worker
+/// executor downcasts it to its own concrete program type. This keeps engine types out of
+/// `cdf-runtime` without forcing a second artifact read or allowing the worker to recompile.
+pub trait ReconstructedWorkerExecutionProgram: Any + Send + Sync {
+    fn as_any(&self) -> &dyn Any;
+}
+
+impl ReconstructedWorkerExecutionProgram for () {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 impl ReconstructedWorkerTaskAuthority {
@@ -869,11 +897,13 @@ impl ReconstructedWorkerTaskAuthority {
         source: crate::CompiledSourcePlan,
         partition: cdf_kernel::PartitionPlan,
         execution: ReconstructedExecutionAuthority,
+        execution_program: Box<dyn ReconstructedWorkerExecutionProgram>,
     ) -> Self {
         Self {
             source,
             partition,
             execution,
+            execution_program,
         }
     }
 
@@ -887,6 +917,18 @@ impl ReconstructedWorkerTaskAuthority {
 
     pub fn execution(&self) -> &ReconstructedExecutionAuthority {
         &self.execution
+    }
+
+    pub fn execution_program<T: Any>(&self) -> Result<&T> {
+        self.execution_program
+            .as_any()
+            .downcast_ref::<T>()
+            .ok_or_else(|| {
+                CdfError::contract(format!(
+                    "reconstructed worker execution program is not `{}`",
+                    std::any::type_name::<T>()
+                ))
+            })
     }
 }
 

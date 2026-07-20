@@ -11,6 +11,7 @@ use cdf_runtime::{
     WorkerResourceBudget, WorkerSourceAttestation, artifact_hash,
 };
 use serde::{Deserialize, Serialize};
+use std::any::Any;
 
 use crate::{CanonicalSegmentationPolicy, EnginePlan};
 
@@ -221,7 +222,10 @@ impl WorkerAdmissionVerifier for EngineWorkerAdmissionVerifier<'_> {
             artifact_hash(&segment_plan)?,
         )?;
         Ok(ReconstructedWorkerTaskAuthority::from_verified_artifacts(
-            source, partition, execution,
+            source,
+            partition,
+            execution,
+            Box::new(ReconstructedEngineWorkerProgram { plan }),
         ))
     }
 
@@ -279,6 +283,27 @@ pub struct WorkerDecodeUnitAuthorityArtifact {
 pub struct WorkerSegmentAuthorityArtifact {
     pub canonical_partition_ordinal: u32,
     pub segmentation: CanonicalSegmentationPolicy,
+}
+
+/// Exact engine program handed to the isolated executor after artifact verification.
+///
+/// It is intentionally absent from the portable protocol type graph: the protocol carries the
+/// canonical artifact references and hashes, while this owned value is reconstructed locally and
+/// never serialized as worker control data.
+pub struct ReconstructedEngineWorkerProgram {
+    plan: EnginePlan,
+}
+
+impl cdf_runtime::ReconstructedWorkerExecutionProgram for ReconstructedEngineWorkerProgram {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl ReconstructedEngineWorkerProgram {
+    pub fn plan(&self) -> &EnginePlan {
+        &self.plan
+    }
 }
 
 pub struct EnginePartitionTaskInput<'a> {
