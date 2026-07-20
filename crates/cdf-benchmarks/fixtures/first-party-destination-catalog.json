@@ -2,7 +2,7 @@
   {
     "destination_id": "duckdb",
     "runtime": {
-      "blocking_lanes": [{"lane_id":"duckdb.staged_ingress","maximum_concurrency":1,"cpu_slot_cost":1,"native_internal_parallelism":1,"affinity":"pinned","interruption":"cooperative_only"},{"lane_id":"duckdb.final_binding","maximum_concurrency":1,"cpu_slot_cost":1,"native_internal_parallelism":1,"affinity":"pinned","interruption":"cooperative_only"}],
+      "blocking_lanes": [{"lane_id":"duckdb.staged_ingress","maximum_concurrency":1,"cpu_slot_cost":1,"native_internal_parallelism":1,"affinity":"pinned","interruption":"cooperative_only","binding":"static"},{"lane_id":"duckdb.final_binding","maximum_concurrency":1,"cpu_slot_cost":1,"native_internal_parallelism":1,"affinity":"pinned","interruption":"cooperative_only","binding":"static"}],
       "staged_ingress_lane": "duckdb.staged_ingress",
       "final_binding_lane": "duckdb.final_binding",
       "ingress_mode": "staged_durable_segments",
@@ -22,7 +22,7 @@
   {
     "destination_id": "parquet_object_store",
     "runtime": {
-      "blocking_lanes": [{"lane_id":"parquet.ingress","maximum_concurrency":1,"cpu_slot_cost":1,"native_internal_parallelism":1,"affinity":"shared","interruption":"cooperative_only"},{"lane_id":"parquet.encode","maximum_concurrency":2,"cpu_slot_cost":1,"native_internal_parallelism":1,"affinity":"shared","interruption":"cooperative_only"}],
+      "blocking_lanes": [{"lane_id":"parquet.ingress","maximum_concurrency":1,"cpu_slot_cost":1,"native_internal_parallelism":1,"affinity":"shared","interruption":"cooperative_only","binding":"static"},{"lane_id":"parquet.encode","maximum_concurrency":2,"cpu_slot_cost":1,"native_internal_parallelism":1,"affinity":"shared","interruption":"cooperative_only","binding":"static"}],
       "staged_ingress_lane": "parquet.ingress",
       "final_binding_lane": "parquet.ingress",
       "ingress_mode": "staged_durable_segments",
@@ -42,7 +42,7 @@
   {
     "destination_id": "postgres",
     "runtime": {
-      "blocking_lanes": [{"lane_id":"postgres.sync","maximum_concurrency":4,"cpu_slot_cost":1,"native_internal_parallelism":1,"affinity":"shared","interruption":"cooperative_only"}],
+      "blocking_lanes": [{"lane_id":"postgres.sync","maximum_concurrency":4,"cpu_slot_cost":1,"native_internal_parallelism":1,"affinity":"shared","interruption":"cooperative_only","binding":"static"}],
       "final_binding_lane": "postgres.sync",
       "ingress_mode": "finalized_package_only",
       "staged_ingress": null,

@@ -755,6 +755,8 @@ fn validate_option_schema_node(schema: &serde_json::Value, path: &str) -> Result
         "items",
         "uniqueItems",
         "minimum",
+        "maximum",
+        "minItems",
         "enum",
     ];
     const TYPES: &[&str] = &[
@@ -918,6 +920,28 @@ fn validate_option_schema_node(schema: &serde_json::Value, path: &str) -> Result
             "source option schema `{path}.minimum` must be numeric"
         )));
     }
+    if object
+        .get("maximum")
+        .is_some_and(|value| !value.is_u64() && !value.is_i64() && !value.is_f64())
+    {
+        return Err(CdfError::contract(format!(
+            "source option schema `{path}.maximum` must be numeric"
+        )));
+    }
+    if let (Some(minimum), Some(maximum)) = (
+        object.get("minimum").and_then(serde_json::Value::as_f64),
+        object.get("maximum").and_then(serde_json::Value::as_f64),
+    ) && minimum > maximum
+    {
+        return Err(CdfError::contract(format!(
+            "source option schema `{path}` declares minimum {minimum} above maximum {maximum}"
+        )));
+    }
+    if object.get("minItems").is_some_and(|value| !value.is_u64()) {
+        return Err(CdfError::contract(format!(
+            "source option schema `{path}.minItems` must be a nonnegative integer"
+        )));
+    }
     if let Some(items) = object.get("items") {
         validate_option_schema_node(items, &format!("{path}.items"))?;
     }
@@ -938,7 +962,7 @@ fn validate_option_schema_node(schema: &serde_json::Value, path: &str) -> Result
             "source option schema `{path}` uses object keywords without declaring object type"
         )));
     }
-    if ["items", "uniqueItems"]
+    if ["items", "uniqueItems", "minItems"]
         .iter()
         .any(|keyword| object.contains_key(*keyword))
         && !schema_declares_type(object, "array")
@@ -956,12 +980,12 @@ fn validate_option_schema_node(schema: &serde_json::Value, path: &str) -> Result
             "source option schema `{path}` uses string keywords without declaring string type"
         )));
     }
-    if object.contains_key("minimum")
+    if (object.contains_key("minimum") || object.contains_key("maximum"))
         && !schema_declares_type(object, "integer")
         && !schema_declares_type(object, "number")
     {
         return Err(CdfError::contract(format!(
-            "source option schema `{path}` uses `minimum` without declaring numeric type"
+            "source option schema `{path}` uses numeric bounds without declaring numeric type"
         )));
     }
     Ok(())
@@ -1058,6 +1082,15 @@ fn validate_option_instance(
         }
     }
     if let Some(array) = instance.as_array() {
+        if schema
+            .get("minItems")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|minimum| u64::try_from(array.len()).is_ok_and(|length| length < minimum))
+        {
+            return Err(CdfError::contract(format!(
+                "source option `{path}` has fewer items than its declared minimum"
+            )));
+        }
         if let Some(items) = schema.get("items") {
             for (index, value) in array.iter().enumerate() {
                 validate_option_instance(items, value, &format!("{path}[{index}]"))?;
@@ -1114,6 +1147,13 @@ fn validate_option_instance(
     {
         return Err(CdfError::contract(format!(
             "source option `{path}` is below its declared minimum"
+        )));
+    }
+    if let Some(maximum) = schema.get("maximum").and_then(serde_json::Value::as_f64)
+        && instance.as_f64().is_some_and(|value| value > maximum)
+    {
+        return Err(CdfError::contract(format!(
+            "source option `{path}` is above its declared maximum"
         )));
     }
     Ok(())
@@ -1486,8 +1526,13 @@ mod tests {
                 "required": ["path", "limit"],
                 "properties": {
                     "path": {"type": "string", "minLength": 1},
-                    "limit": {"type": "integer", "minimum": 1},
-                    "fields": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 5},
+                    "fields": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {"type": "string"},
+                        "uniqueItems": true
+                    }
                 }
             }
         });
@@ -1520,6 +1565,20 @@ mod tests {
         .unwrap_err();
         assert!(error.message.contains("$.resource.fields"));
         let error = validate_option_instance(
+            &schema["resource"],
+            &serde_json::json!({"path": "events", "limit": 6, "fields": ["id"]}),
+            "$.resource",
+        )
+        .unwrap_err();
+        assert!(error.message.contains("above its declared maximum"));
+        let error = validate_option_instance(
+            &schema["resource"],
+            &serde_json::json!({"path": "events", "limit": 1, "fields": []}),
+            "$.resource",
+        )
+        .unwrap_err();
+        assert!(error.message.contains("fewer items"));
+        let error = validate_option_instance(
             &schema["source"],
             &serde_json::json!({
                 "endpoint": "not-a-uri",
@@ -1544,6 +1603,14 @@ mod tests {
         unsupported["resource"]["properties"]["path"]["if"] = serde_json::json!({});
         let error = validate_option_schema(&unsupported).unwrap_err();
         assert!(error.message.contains("unsupported keyword `if`"));
+
+        unsupported["resource"]["properties"]["path"] = serde_json::json!({
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 1
+        });
+        let error = validate_option_schema(&unsupported).unwrap_err();
+        assert!(error.message.contains("minimum 2 above maximum 1"));
     }
 
     #[test]

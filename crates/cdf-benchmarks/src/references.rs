@@ -525,12 +525,14 @@ pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurem
             output,
             *rows,
             *batch_rows,
-            *include_row_key,
-            *checkpoint,
-            *verify_rowid,
-            *duckdb_threads,
-            *duckdb_memory_limit_bytes,
-            *duckdb_temp_directory_budget_bytes,
+            DuckDbArrowStreamScanOptions {
+                include_row_key: *include_row_key,
+                checkpoint: *checkpoint,
+                verify_rowid: *verify_rowid,
+                duckdb_threads: *duckdb_threads,
+                duckdb_memory_limit_bytes: *duckdb_memory_limit_bytes,
+                duckdb_temp_directory_budget_bytes: *duckdb_temp_directory_budget_bytes,
+            },
         ),
         ReferenceWorkload::DuckDbArrowIpcExistingRead {
             paths,
@@ -580,10 +582,12 @@ pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurem
             *rows,
             *batch_rows,
             *rows_per_file,
-            *include_row_key,
-            *compression,
-            extension,
-            *checkpoint,
+            DuckDbArrowIpcHandoffOptions {
+                include_row_key: *include_row_key,
+                compression: *compression,
+                extension,
+                checkpoint: *checkpoint,
+            },
         ),
         ReferenceWorkload::DuckDbParquetStagedIngest {
             output,
@@ -599,10 +603,12 @@ pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurem
             staging,
             *rows,
             *batch_rows,
-            *row_group_rows,
-            *row_group_bytes,
-            *include_row_key,
-            *checkpoint,
+            DuckDbParquetStagedOptions {
+                row_group_rows: *row_group_rows,
+                row_group_bytes: *row_group_bytes,
+                include_row_key: *include_row_key,
+                checkpoint: *checkpoint,
+            },
         ),
     }
 }
@@ -824,16 +830,21 @@ fn run_duckdb_arrow_data_chunk_append(
     })
 }
 
-fn run_duckdb_arrow_stream_scan_ingest(
-    output: &Path,
-    rows: u64,
-    batch_rows: usize,
+#[derive(Clone, Copy)]
+struct DuckDbArrowStreamScanOptions {
     include_row_key: bool,
     checkpoint: bool,
     verify_rowid: bool,
     duckdb_threads: Option<i64>,
     duckdb_memory_limit_bytes: Option<u64>,
     duckdb_temp_directory_budget_bytes: Option<u64>,
+}
+
+fn run_duckdb_arrow_stream_scan_ingest(
+    output: &Path,
+    rows: u64,
+    batch_rows: usize,
+    options: DuckDbArrowStreamScanOptions,
 ) -> BenchResult<WorkerMeasurement> {
     if rows == 0 {
         return Err(bench_error(
@@ -848,18 +859,23 @@ fn run_duckdb_arrow_stream_scan_ingest(
     remove_if_exists(&duckdb_wal_path(output))?;
 
     let logical_bytes = Arc::new(AtomicU64::new(0));
-    let reader = TlcArrowBatchReader::new(rows, batch_rows, include_row_key, logical_bytes.clone());
+    let reader = TlcArrowBatchReader::new(
+        rows,
+        batch_rows,
+        options.include_row_key,
+        logical_bytes.clone(),
+    );
     let mut stream = FFI_ArrowArrayStream::new(Box::new(reader));
     let mut connection = RawDuckDbConnection::open(output)?;
     configure_duckdb_parallel_scan(
         &mut connection,
-        duckdb_threads,
-        duckdb_memory_limit_bytes,
-        duckdb_temp_directory_budget_bytes,
+        options.duckdb_threads,
+        options.duckdb_memory_limit_bytes,
+        options.duckdb_temp_directory_budget_bytes,
     )?;
     register_duckdb_arrow_stream_scan(connection.handle(), "cdf_arrow_stream", &mut stream)?;
     connection.query("CREATE TABLE arrow_stream_scan AS SELECT * FROM cdf_arrow_stream")?;
-    if checkpoint {
+    if options.checkpoint {
         connection.query("CHECKPOINT")?;
     }
     drop(connection);
@@ -876,7 +892,7 @@ fn run_duckdb_arrow_stream_scan_ingest(
             "DuckDB Arrow stream-scan row count mismatch: expected {rows}, observed {observed_rows}"
         )));
     }
-    if verify_rowid {
+    if options.verify_rowid {
         let (count, distinct_count, min_rowid, max_rowid) = connection.query_row(
             "SELECT count(*), count(DISTINCT rowid), min(rowid), max(rowid) \
              FROM arrow_stream_scan",
@@ -1091,16 +1107,21 @@ fn run_duckdb_arrow_ipc_table_function_ingest(
     })
 }
 
+#[derive(Clone, Copy)]
+struct DuckDbArrowIpcHandoffOptions<'a> {
+    include_row_key: bool,
+    compression: ArrowIpcCompression,
+    extension: &'a DuckDbArrowExtension,
+    checkpoint: bool,
+}
+
 fn run_duckdb_arrow_ipc_handoff_ingest(
     output: &Path,
     staging_dir: &Path,
     rows: u64,
     batch_rows: usize,
     rows_per_file: u64,
-    include_row_key: bool,
-    compression: ArrowIpcCompression,
-    extension: &DuckDbArrowExtension,
-    checkpoint: bool,
+    options: DuckDbArrowIpcHandoffOptions<'_>,
 ) -> BenchResult<WorkerMeasurement> {
     if rows == 0 {
         return Err(bench_error(
@@ -1128,7 +1149,7 @@ fn run_duckdb_arrow_ipc_handoff_ingest(
     let mut logical_bytes = 0_u64;
     let mut physical_input_bytes = 0_u64;
     let mut paths = Vec::new();
-    let schema = Arc::new(tlc_arrow_schema(include_row_key));
+    let schema = Arc::new(tlc_arrow_schema(options.include_row_key));
     let mut file_index = 0_u64;
     while remaining > 0 {
         let file_rows = remaining.min(rows_per_file);
@@ -1139,8 +1160,8 @@ fn run_duckdb_arrow_ipc_handoff_ingest(
             file_rows,
             batch_rows,
             row_start,
-            include_row_key,
-            compression,
+            options.include_row_key,
+            options.compression,
         )?;
         logical_bytes = logical_bytes.saturating_add(write.logical_bytes);
         physical_input_bytes = physical_input_bytes.saturating_add(write.physical_bytes);
@@ -1152,13 +1173,13 @@ fn run_duckdb_arrow_ipc_handoff_ingest(
         file_index += 1;
     }
 
-    let connection = open_duckdb_arrow_database(output, extension)?;
-    load_duckdb_arrow_extension(&connection, extension)?;
+    let connection = open_duckdb_arrow_database(output, options.extension)?;
+    load_duckdb_arrow_extension(&connection, options.extension)?;
     connection.execute_batch(&format!(
         "CREATE TABLE arrow_ipc_handoff AS SELECT * FROM read_arrow({})",
         duckdb_path_list(&paths)
     ))?;
-    if checkpoint {
+    if options.checkpoint {
         connection.execute_batch("CHECKPOINT")?;
     }
     let observed_rows =
@@ -1226,15 +1247,20 @@ fn write_tlc_arrow_ipc_file(
     })
 }
 
+#[derive(Clone, Copy)]
+struct DuckDbParquetStagedOptions {
+    row_group_rows: usize,
+    row_group_bytes: usize,
+    include_row_key: bool,
+    checkpoint: bool,
+}
+
 fn run_duckdb_parquet_staged_ingest(
     output: &Path,
     staging: &Path,
     rows: u64,
     batch_rows: usize,
-    row_group_rows: usize,
-    row_group_bytes: usize,
-    include_row_key: bool,
-    checkpoint: bool,
+    options: DuckDbParquetStagedOptions,
 ) -> BenchResult<WorkerMeasurement> {
     if rows == 0 {
         return Err(bench_error(
@@ -1242,12 +1268,12 @@ fn run_duckdb_parquet_staged_ingest(
         ));
     }
     require_batch(batch_rows)?;
-    if row_group_rows == 0 {
+    if options.row_group_rows == 0 {
         return Err(bench_error(
             "DuckDB Parquet staged ingest reference requires positive row_group_rows",
         ));
     }
-    if row_group_bytes == 0 {
+    if options.row_group_bytes == 0 {
         return Err(bench_error(
             "DuckDB Parquet staged ingest reference requires positive row_group_bytes",
         ));
@@ -1262,14 +1288,14 @@ fn run_duckdb_parquet_staged_ingest(
     remove_if_exists(output)?;
     remove_if_exists(&duckdb_wal_path(output))?;
 
-    let schema = Arc::new(tlc_arrow_schema(include_row_key));
+    let schema = Arc::new(tlc_arrow_schema(options.include_row_key));
     let properties = WriterProperties::builder()
         .set_created_by("cdf benchmark DuckDB Parquet staged ingest reference".to_owned())
         .set_write_batch_size(batch_rows)
         .set_data_page_row_count_limit(batch_rows.min(64 * 1024))
-        .set_data_page_size_limit(row_group_bytes.min(8 * 1024 * 1024))
-        .set_max_row_group_row_count(Some(row_group_rows))
-        .set_max_row_group_bytes(Some(row_group_bytes))
+        .set_data_page_size_limit(options.row_group_bytes.min(8 * 1024 * 1024))
+        .set_max_row_group_row_count(Some(options.row_group_rows))
+        .set_max_row_group_bytes(Some(options.row_group_bytes))
         .set_dictionary_enabled(false)
         .set_statistics_enabled(EnabledStatistics::None)
         .build();
@@ -1281,7 +1307,7 @@ fn run_duckdb_parquet_staged_ingest(
     let mut logical_bytes = 0_u64;
     while remaining > 0 {
         let current_rows = usize::try_from(remaining.min(batch_rows as u64))?;
-        let batch = tlc_arrow_batch(current_rows, row_start, include_row_key)?;
+        let batch = tlc_arrow_batch(current_rows, row_start, options.include_row_key)?;
         logical_bytes = logical_bytes.saturating_add(u64::try_from(batch.get_array_memory_size())?);
         writer.write(&batch)?;
         row_start = row_start
@@ -1297,7 +1323,7 @@ fn run_duckdb_parquet_staged_ingest(
         "CREATE TABLE parquet_stage AS SELECT * FROM read_parquet({})",
         duckdb_string_literal(staging)
     ))?;
-    if checkpoint {
+    if options.checkpoint {
         connection.execute_batch("CHECKPOINT")?;
     }
     let observed_rows = connection.query_row("SELECT count(*) FROM parquet_stage", [], |row| {

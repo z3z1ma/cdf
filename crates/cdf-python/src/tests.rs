@@ -20,7 +20,7 @@ use cdf_foreign_stream::{
     ForeignCancellation, ForeignCopyClassification, ForeignProducer, ForeignStreamOpenRequest,
     ForeignTerminalStatus, ForeignTransferMode, summarize_foreign_events,
 };
-use cdf_http::{EgressAllowlist, HeaderMap, HttpMethod, SecretValue};
+use cdf_http::{EgressAllowlist, HttpMethod, SecretValue};
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, Checkpoint, CheckpointId, CheckpointStatus, CheckpointStore,
     CursorOrderingClaim, CursorValue, ErrorKind, PackageHash, PageToken, PipelineId, Receipt,
@@ -1385,18 +1385,13 @@ fn deterministic_hash_changes_when_payload_changes() {
 
 #[test]
 fn trace_headers_stay_case_insensitive_and_redacted() {
-    let mut headers = HeaderMap::new();
-    headers.insert("X-Api-Key".to_owned(), "secret".to_owned());
     let mut redactor = Redactor::default();
     redactor.register_secret("secret").unwrap();
-    let request = HttpRequest {
-        method: HttpMethod::Get,
-        url: "https://example.test/?token=secret".to_owned(),
-        headers,
-    };
+    let request = HttpRequest::new(HttpMethod::Get, "https://example.test/?token=secret")
+        .with_header("X-Api-Key", "secret");
     let trace = TraceEvent::from_request(&request, &redactor);
 
-    assert_eq!(trace.headers.get("X-Api-Key").unwrap(), "[REDACTED]");
+    assert_eq!(trace.headers.get("x-api-key").unwrap(), "[REDACTED]");
     assert_eq!(trace.url, "https://example.test/?token=[REDACTED]");
 }
 

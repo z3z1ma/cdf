@@ -64,8 +64,7 @@ pub fn summarize_package_shape(package_dir: impl AsRef<Path>) -> BenchResult<Pac
         } else {
             multi_batch_segments = multi_batch_segments.saturating_add(1);
         }
-        if segment_batch_count > 0 {
-            let average = segment.row_count / segment_batch_count;
+        if let Some(average) = segment.row_count.checked_div(segment_batch_count) {
             let ceiling = segment.row_count.div_ceil(segment_batch_count);
             min_estimated_batch_rows = min_estimated_batch_rows.min(average);
             max_estimated_batch_rows = max_estimated_batch_rows.max(ceiling);
