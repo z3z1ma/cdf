@@ -208,6 +208,20 @@ fn sample_state_delta_and_receipt() -> (StateDelta, Receipt) {
         row_count: 3,
         byte_count: 24,
     };
+    let output_watermark = WatermarkClaim {
+        version: WATERMARK_CLAIM_VERSION,
+        policy_version: STREAM_EPOCH_POLICY_VERSION,
+        event_time_field: "updated_at".into(),
+        domain: EventTimeDomain::Timestamp {
+            unit: CanonicalArrowTimeUnit::Microsecond,
+            timezone: Some("America/Phoenix".into()),
+        },
+        value: WatermarkValue::Timestamp(1_700_000_000_000_000),
+        partition_id: PartitionId::new("p0").unwrap(),
+        source_position: output_position.clone(),
+        authority: WatermarkAuthority::Source,
+        observation_context: WatermarkObservationContext::EpochBarrier,
+    };
     let delta = StateDelta {
         checkpoint_id: CheckpointId::new("checkpoint-1").unwrap(),
         pipeline_id: PipelineId::new("pipeline-1").unwrap(),
@@ -217,6 +231,7 @@ fn sample_state_delta_and_receipt() -> (StateDelta, Receipt) {
         parent_checkpoint_id: None,
         input_position: None,
         output_position,
+        output_watermark: Some(output_watermark),
         source_continuation: None,
         package_hash: PackageHash::new("package-sha256").unwrap(),
         schema_hash: SchemaHash::new("schema-sha256").unwrap(),
@@ -1130,6 +1145,7 @@ fn artifact_values_serde_round_trip() {
         parent_checkpoint_id: None,
         input_position: None,
         output_position,
+        output_watermark: None,
         source_continuation: None,
         package_hash: PackageHash::new("package-sha256").unwrap(),
         schema_hash: SchemaHash::new("schema-sha256").unwrap(),

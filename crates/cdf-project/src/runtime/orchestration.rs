@@ -247,6 +247,9 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
         initial_head
             .as_ref()
             .and_then(|checkpoint| checkpoint.delta.source_continuation.clone()),
+        initial_head
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.delta.output_watermark.clone()),
         recovered_epoch_count,
     )?;
     let initial_manifest =

@@ -1188,6 +1188,7 @@ fn build_package_fixture(
         parent_checkpoint_id: None,
         input_position: None,
         output_position,
+        output_watermark: None,
         source_continuation: None,
         schema_hash: schema_hash.clone(),
         segments: state_segments.clone(),

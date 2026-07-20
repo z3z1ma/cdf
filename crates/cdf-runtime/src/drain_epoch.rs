@@ -192,6 +192,7 @@ impl DrainEpochController {
         &mut self,
         committed_frontier: Option<SourcePosition>,
         committed_source_continuation: Option<SourcePosition>,
+        committed_watermark: Option<WatermarkClaim>,
         next_epoch_ordinal: u64,
     ) -> Result<()> {
         if !matches!(self.state, ControllerState::Open)
@@ -200,6 +201,7 @@ impl DrainEpochController {
             || !self.total.is_empty()
             || self.committed_frontier.is_some()
             || self.committed_source_continuation.is_some()
+            || self.committed_watermark.is_some()
         {
             return Err(CdfError::contract(
                 "initial drain frontier must be bound before the first source observation",
@@ -211,6 +213,9 @@ impl DrainEpochController {
         if let Some(continuation) = &committed_source_continuation {
             continuation.validate()?;
         }
+        if let Some(watermark) = &committed_watermark {
+            self.observe_watermark(Some(watermark))?;
+        }
         if next_epoch_ordinal != 0 && committed_frontier.is_none() {
             return Err(CdfError::contract(
                 "recovered drain epoch ordinal requires a committed source frontier",
@@ -218,6 +223,9 @@ impl DrainEpochController {
         }
         self.committed_frontier = committed_frontier;
         self.committed_source_continuation = committed_source_continuation;
+        self.committed_watermark = committed_watermark.clone();
+        self.epoch_watermark_start = committed_watermark.clone();
+        self.last_observed_watermark = committed_watermark;
         self.epoch_ordinal = next_epoch_ordinal;
         Ok(())
     }
@@ -1050,7 +1058,7 @@ mod tests {
         ))
         .unwrap();
         controller
-            .bind_initial_committed_frontier(Some(cursor(40)), None, 0)
+            .bind_initial_committed_frontier(Some(cursor(40)), None, None, 0)
             .unwrap();
         let DrainEpochDecision::Close(closure) = controller
             .observe_safe_frontier(observation(1, 10, 41, false))
@@ -1064,23 +1072,7 @@ mod tests {
 
     #[test]
     fn watermark_claims_must_be_monotone_within_one_open_epoch() {
-        let extent = ExecutionExtent::Drain {
-            version: 1,
-            policy: StreamEpochPolicy {
-                version: STREAM_EPOCH_POLICY_VERSION,
-                checkpoint_cadence: EpochClosureTrigger::WatermarkAdvance { units: 100 },
-                package_rotation: EpochClosureTrigger::Bytes { count: 1_000 },
-                watermark: WatermarkPolicy::Enabled {
-                    event_time_field: "occurred_at".into(),
-                    domain: EventTimeDomain::UnsignedInteger,
-                    authority: WatermarkAuthority::Source,
-                    partition_aggregation: PartitionWatermarkAggregation::MinimumAll,
-                },
-                late_data: LateDataAction::Quarantine,
-                safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
-            },
-            termination: DrainTermination::Records { count: 100 },
-        };
+        let extent = watermark_extent();
         let mut controller = DrainEpochController::new(&extent).unwrap();
         assert_eq!(
             controller
@@ -1098,6 +1090,39 @@ mod tests {
             .observe_safe_frontier(watermark_observation(3, 110))
             .unwrap_err();
         assert!(error.message.contains("watermark regressed"));
+    }
+
+    #[test]
+    fn restored_watermark_is_the_next_epoch_late_data_floor() {
+        let mut controller = DrainEpochController::new(&watermark_extent()).unwrap();
+        let committed = watermark_observation(40, 90).global_watermark.unwrap();
+        controller
+            .bind_initial_committed_frontier(Some(cursor(40)), None, Some(committed.clone()), 1)
+            .unwrap();
+
+        assert_eq!(controller.committed_watermark(), Some(&committed));
+        assert_eq!(controller.late_data_watermark(), Some(&committed));
+        assert_eq!(controller.epoch_ordinal(), 1);
+    }
+
+    fn watermark_extent() -> ExecutionExtent {
+        ExecutionExtent::Drain {
+            version: 1,
+            policy: StreamEpochPolicy {
+                version: STREAM_EPOCH_POLICY_VERSION,
+                checkpoint_cadence: EpochClosureTrigger::WatermarkAdvance { units: 100 },
+                package_rotation: EpochClosureTrigger::Bytes { count: 1_000 },
+                watermark: WatermarkPolicy::Enabled {
+                    event_time_field: "occurred_at".into(),
+                    domain: EventTimeDomain::UnsignedInteger,
+                    authority: WatermarkAuthority::Source,
+                    partition_aggregation: PartitionWatermarkAggregation::MinimumAll,
+                },
+                late_data: LateDataAction::Quarantine,
+                safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+            },
+            termination: DrainTermination::Records { count: 100 },
+        }
     }
 
     fn extent(

@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    WatermarkClaim,
     destination::{CommitCounts, MigrationRecord, SegmentAck, TransactionMetadata, VerifyClause},
     error::{CdfError, Result},
     ids::{
@@ -24,6 +25,8 @@ pub struct StateDelta {
     pub parent_checkpoint_id: Option<CheckpointId>,
     pub input_position: Option<SourcePosition>,
     pub output_position: SourcePosition,
+    /// Receipt-gated global event-time completeness emitted by this state transition.
+    pub output_watermark: Option<WatermarkClaim>,
     /// Exact source-local restart authority when the resource output position is an aggregate.
     ///
     /// Multi-partition drains commonly expose a useful aggregate cursor as `output_position`
@@ -66,6 +69,9 @@ impl StateDelta {
             position.validate()?;
         }
         self.output_position.validate()?;
+        if let Some(watermark) = &self.output_watermark {
+            watermark.validate()?;
+        }
         if let Some(position) = &self.source_continuation {
             position.validate()?;
         }

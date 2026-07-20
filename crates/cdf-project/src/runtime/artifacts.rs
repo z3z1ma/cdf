@@ -21,6 +21,9 @@ pub(super) fn write_run_state_commit_artifacts(
             source_continuation: draft
                 .drain_frontier
                 .and_then(|frontier| frontier.carryover.clone()),
+            output_watermark: draft
+                .drain_frontier
+                .and_then(|frontier| frontier.watermark.clone()),
         },
         schema_hash,
         scope,
@@ -183,6 +186,10 @@ pub(crate) fn state_delta_from_run(
                 .drain_epoch
                 .as_ref()
                 .and_then(|epoch| epoch.closure.frontier.carryover.clone()),
+            output_watermark: output
+                .drain_epoch
+                .as_ref()
+                .and_then(|epoch| epoch.closure.frontier.watermark.clone()),
         },
         schema_hash,
         scope,
@@ -198,6 +205,7 @@ struct StateDeltaRunDraft<'a> {
     segment_positions: &'a [cdf_engine::EngineSegmentPosition],
     execution_evidence: &'a cdf_engine::EngineExecutionEvidence,
     source_continuation: Option<SourcePosition>,
+    output_watermark: Option<cdf_kernel::WatermarkClaim>,
 }
 
 fn state_delta_preimage_from_run_draft(
@@ -270,6 +278,7 @@ fn state_delta_preimage_from_run_draft(
         parent_checkpoint_id: head.map(|checkpoint| checkpoint.delta.checkpoint_id.clone()),
         input_position: head.map(|checkpoint| checkpoint.delta.output_position.clone()),
         output_position,
+        output_watermark: draft.output_watermark,
         source_continuation: draft.source_continuation,
         schema_hash: schema_hash.clone(),
         segments: state_segments,

@@ -1200,6 +1200,7 @@ fn build_correction_package(
             .as_ref()
             .map(|checkpoint| checkpoint.delta.output_position.clone()),
         output_position,
+        output_watermark: None,
         source_continuation: None,
         schema_hash: artifact.new_schema_hash.clone(),
         segments: vec![state_segment],

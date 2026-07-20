@@ -522,6 +522,7 @@ fn write_replay_artifacts(
         parent_checkpoint_id: None,
         input_position: None,
         output_position: position(10),
+        output_watermark: None,
         source_continuation: None,
         schema_hash: schema_hash(),
         segments: segments.clone(),
