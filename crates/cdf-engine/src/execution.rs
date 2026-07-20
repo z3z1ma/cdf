@@ -25,14 +25,15 @@ use cdf_expression::{
     bind_filter_expressions, expression_transform_output_schema,
 };
 use cdf_kernel::{
-    Batch, CdfError, PHYSICAL_TYPE_METADATA_KEY, PLAN_PHYSICAL_SCHEMA_HASH_KEY,
+    Batch, CdfError, ExecutionExtent, PHYSICAL_TYPE_METADATA_KEY, PLAN_PHYSICAL_SCHEMA_HASH_KEY,
     PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation,
     PartitionPlan, PhysicalObservationRepresentation, PreContractObservedValue,
     PreContractQuarantineFact, PreContractResidualCandidate, ProcessedObservationOutcome,
     ProcessedObservationPosition, ResourceStream, Result, RunId, RunPhase, RunPhaseContext,
     RunPhaseMetric, RunPhaseStatus, SOURCE_NAME_METADATA_KEY, ScopeKey, SourcePosition,
     StratifiedHashBoundedIdentity, StratifiedHashCandidate, StratifiedHashIdentityStrength,
-    TerminalSchemaObservationQuarantine, WriteDisposition, aggregate_resource_output_position,
+    TerminalSchemaObservationQuarantine, WriteDisposition,
+    aggregate_resource_closed_output_position, aggregate_resource_output_position,
     merge_terminal_position_evidence, semantic, source_name,
 };
 use cdf_memory::{
@@ -51,7 +52,7 @@ use tracing::{Instrument, Span, info_span};
 use crate::{
     CompiledSchemaAdmissionOutcome, CompiledSchemaAdmissionPlan, CompiledSchemaQuarantineEvidence,
     CompiledStreamAdmissionEvidence, EffectiveSchemaObservationCoercion,
-    EffectiveSchemaPlanEvidence, EngineExecutionEvidence, EngineExecutionOptions,
+    EffectiveSchemaPlanEvidence, EngineDrainEpoch, EngineExecutionEvidence, EngineExecutionOptions,
     EnginePackageDraft, EnginePlan, EnginePreviewLimits, EnginePreviewOutput, EngineRunOutput,
     EngineRunOutputWithSegmentPositions, EngineSegmentPosition, ExecutionProfile,
     LineageInputObservation, LineageSummary, PhysicalObservationEvidence,
@@ -71,6 +72,33 @@ pub type DurableSegmentHook<'a> =
     dyn FnMut(&SegmentEntry, DurableSegmentPayload) -> Result<()> + 'a;
 pub type StreamingFinalizeHook<'a> = dyn FnMut() -> Result<()> + 'a;
 const SOURCE_ROW_FIELD: &str = "_cdf_internal_source_row";
+
+/// Mutable epoch-scoped authorities that may advance only through one canonical drain closure.
+pub struct DrainEpochExecution<'a> {
+    durable_segment: Option<&'a mut DurableSegmentHook<'a>>,
+    stream_finalize: Option<&'a mut StreamingFinalizeHook<'a>>,
+    controller: &'a mut cdf_runtime::DrainEpochController,
+}
+
+impl<'a> DrainEpochExecution<'a> {
+    pub fn new(controller: &'a mut cdf_runtime::DrainEpochController) -> Self {
+        Self {
+            durable_segment: None,
+            stream_finalize: None,
+            controller,
+        }
+    }
+
+    pub fn with_streaming_hooks(
+        mut self,
+        durable_segment: &'a mut DurableSegmentHook<'a>,
+        stream_finalize: &'a mut StreamingFinalizeHook<'a>,
+    ) -> Self {
+        self.durable_segment = Some(durable_segment);
+        self.stream_finalize = Some(stream_finalize);
+        self
+    }
+}
 
 fn standalone_execution_options() -> Result<EngineExecutionOptions> {
     let (_, services) = StandaloneExecutionHost::default_services(DEFAULT_PROCESS_BUDGET_BYTES)?;
@@ -2166,6 +2194,7 @@ where
         None,
         None,
         None,
+        None,
         standalone_execution_options()?,
     )
     .await?
@@ -2187,6 +2216,7 @@ where
         plan,
         resource,
         package_dir,
+        None,
         None,
         None,
         None,
@@ -2213,6 +2243,7 @@ where
         None,
         None,
         None,
+        None,
         standalone_execution_options()?,
     )
     .await
@@ -2234,6 +2265,7 @@ where
         resource,
         package_dir,
         Some(pre_finalize),
+        None,
         None,
         None,
         options,
@@ -2261,6 +2293,32 @@ where
         Some(pre_finalize),
         Some(durable_segment),
         Some(stream_finalize),
+        None,
+        options,
+    )
+    .await
+}
+
+pub async fn execute_drain_epoch_with_hooks<'a, R>(
+    plan: &EnginePlan,
+    resource: &R,
+    package_dir: impl AsRef<Path>,
+    pre_finalize: &PackagePreFinalizeHook<'_>,
+    epoch: DrainEpochExecution<'a>,
+    options: EngineExecutionOptions,
+) -> Result<EngineRunOutputWithSegmentPositions>
+where
+    R: ResourceStream + ?Sized,
+{
+    execute_to_package_inner(
+        None,
+        plan,
+        resource,
+        package_dir,
+        Some(pre_finalize),
+        epoch.durable_segment,
+        epoch.stream_finalize,
+        Some(epoch.controller),
         options,
     )
     .await
@@ -2798,12 +2856,34 @@ async fn execute_to_package_inner<'a, R>(
     pre_finalize: Option<&PackagePreFinalizeHook<'_>>,
     durable_segment: Option<&'a mut DurableSegmentHook<'a>>,
     stream_finalize: Option<&'a mut StreamingFinalizeHook<'a>>,
+    mut drain_controller: Option<&mut cdf_runtime::DrainEpochController>,
     options: EngineExecutionOptions,
 ) -> Result<EngineRunOutputWithSegmentPositions>
 where
     R: ResourceStream + ?Sized,
 {
     plan.validate_execution_extent_for_execution()?;
+    match (&plan.execution_extent, drain_controller.is_some()) {
+        (ExecutionExtent::Bounded { .. }, false) | (ExecutionExtent::Drain { .. }, true) => {}
+        (ExecutionExtent::Bounded { .. }, true) => {
+            return Err(CdfError::contract(
+                "bounded execution cannot use the drain epoch controller",
+            ));
+        }
+        (ExecutionExtent::Drain { .. }, false) => {
+            return Err(CdfError::contract(
+                "drain execution requires the finite epoch controller and settlement gate",
+            ));
+        }
+        (ExecutionExtent::Resident { .. }, _) => {
+            return Err(CdfError::contract(
+                "resident execution is not enabled; use a finite drain termination",
+            ));
+        }
+    }
+    if let Some(controller) = drain_controller.as_deref() {
+        controller.validate_ready_for_epoch()?;
+    }
     plan.validate_compiled_expression_plan()?;
     plan.validate_partition_schedule()?;
     plan.validate_compiled_source_resource(resource)?;
@@ -3012,6 +3092,12 @@ where
         run_cancellation.clone(),
     )?
     .with_measurement(options.phase_metrics);
+    let drain_epoch_started = Instant::now();
+    let drain_clock_base = drain_controller
+        .as_deref()
+        .map_or(0, cdf_runtime::DrainEpochController::monotonic_milliseconds);
+    let mut drain_epoch_closure = None;
+    let mut consumed_partition_count = 0_usize;
 
     let segment_result: Result<()> = async {
     while let Some(mut opened_partition) = source_frontier.next_partition().await? {
@@ -3084,6 +3170,44 @@ where
                 physical_observation,
             )?;
             opened_partition.finish_metadata_only()?;
+            consumed_partition_count = consumed_partition_count.saturating_add(1);
+            if let Some(controller) = drain_controller.as_deref_mut() {
+                let frontier = drain_resource_frontier(
+                    resource.descriptor(),
+                    resource_schema.as_ref(),
+                    controller.committed_frontier(),
+                    &processed_observations,
+                )?;
+                let decision = controller.observe_safe_frontier(
+                    cdf_runtime::DrainSafeFrontierObservation {
+                        frontier,
+                        carryover: None,
+                        admitted_batches: 0,
+                        admitted_rows: 0,
+                        admitted_bytes: 0,
+                        admitted_positions: 1,
+                        global_watermark: None,
+                        source_exhausted: consumed_partition_count == frontier_partition_count,
+                        monotonic_milliseconds: drain_clock_base.saturating_add(
+                            u64::try_from(drain_epoch_started.elapsed().as_millis())
+                                .unwrap_or(u64::MAX),
+                        ),
+                        observed_at_unix_milliseconds: current_observed_at_u64_ms()?,
+                    },
+                )?;
+                match decision {
+                    cdf_runtime::DrainEpochDecision::Continue => continue,
+                    cdf_runtime::DrainEpochDecision::Close(closure) => {
+                        drain_epoch_closure = Some(*closure);
+                        break;
+                    }
+                    cdf_runtime::DrainEpochDecision::FinishedNoOp => {
+                        return Err(CdfError::internal(
+                            "drain controller classified a processed source position as an empty epoch",
+                        ));
+                    }
+                }
+            }
             continue;
         }
         let partition_schema_evidence =
@@ -3117,6 +3241,9 @@ where
             let mut dynamic_quarantine = None;
             let mut partition_observation_id = None::<String>;
             let mut admitted_batch_count = 0_u64;
+            let mut partition_input_batch_count = 0_u64;
+            let mut partition_input_bytes = 0_u64;
+            let mut partition_watermark = None;
             let mut partition_source_row_ordinal = 0_u64;
             loop {
                 if remaining_limit == Some(0) {
@@ -3131,6 +3258,13 @@ where
                     break;
                 };
                 let mut batch = batch;
+                partition_input_batch_count = partition_input_batch_count.saturating_add(1);
+                partition_input_bytes = partition_input_bytes
+                    .checked_add(batch.header.byte_count)
+                    .ok_or_else(|| CdfError::data("drain partition input byte count overflow"))?;
+                if let Some(watermark) = batch.header.watermarks.last() {
+                    partition_watermark = Some(watermark.clone());
+                }
                 validate_batch_partition_ownership(
                     &batch,
                     &plan.scan.request.resource_id,
@@ -3235,6 +3369,16 @@ where
                                 break;
                             };
                             let drained = drained;
+                            partition_input_batch_count =
+                                partition_input_batch_count.saturating_add(1);
+                            partition_input_bytes = partition_input_bytes
+                                .checked_add(drained.header.byte_count)
+                                .ok_or_else(|| {
+                                    CdfError::data("drain partition input byte count overflow")
+                                })?;
+                            if let Some(watermark) = drained.header.watermarks.last() {
+                                partition_watermark = Some(watermark.clone());
+                            }
                             validate_batch_partition_ownership(
                                 &drained,
                                 &plan.scan.request.resource_id,
@@ -3553,6 +3697,9 @@ where
                 partition_observation_id,
                 partition_source_row_ordinal,
                 completion_attestation,
+                partition_input_batch_count,
+                partition_input_bytes,
+                partition_watermark,
             ))
         }
         .instrument(partition_span)
@@ -3564,6 +3711,9 @@ where
             partition_observation_id,
             partition_observed_rows,
             completion_attestation,
+            partition_input_batch_count,
+            partition_input_bytes,
+            partition_watermark,
         ) = partition_result?;
         checkpoint_eligible &= fully_processed;
         let partial_retry_attestation = if open_evidence.retry_pre_attestation.is_some()
@@ -3766,6 +3916,44 @@ where
                 }
             }
         }
+        consumed_partition_count = consumed_partition_count.saturating_add(1);
+        if let Some(controller) = drain_controller.as_deref_mut() {
+            let frontier = drain_resource_frontier(
+                resource.descriptor(),
+                resource_schema.as_ref(),
+                controller.committed_frontier(),
+                &processed_observations,
+            )?;
+            let decision = controller.observe_safe_frontier(
+                cdf_runtime::DrainSafeFrontierObservation {
+                    frontier,
+                    carryover: None,
+                    admitted_batches: partition_input_batch_count,
+                    admitted_rows: partition_observed_rows,
+                    admitted_bytes: partition_input_bytes,
+                    admitted_positions: 1,
+                    global_watermark: partition_watermark,
+                    source_exhausted: consumed_partition_count == frontier_partition_count,
+                    monotonic_milliseconds: drain_clock_base.saturating_add(
+                        u64::try_from(drain_epoch_started.elapsed().as_millis())
+                            .unwrap_or(u64::MAX),
+                    ),
+                    observed_at_unix_milliseconds: current_observed_at_u64_ms()?,
+                },
+            )?;
+            match decision {
+                cdf_runtime::DrainEpochDecision::Continue => {}
+                cdf_runtime::DrainEpochDecision::Close(closure) => {
+                    drain_epoch_closure = Some(*closure);
+                    break;
+                }
+                cdf_runtime::DrainEpochDecision::FinishedNoOp => {
+                    return Err(CdfError::internal(
+                        "drain controller classified a processed source position as an empty epoch",
+                    ));
+                }
+            }
+        }
     }
 
     if apply_package_dedup {
@@ -3848,6 +4036,9 @@ where
                 cleanup_error,
             )),
         };
+    }
+    if drain_epoch_closure.is_some() && consumed_partition_count < frontier_partition_count {
+        source_frontier.terminate_and_join().await?;
     }
     let source_frontier_report = source_frontier.report();
 
@@ -4002,6 +4193,10 @@ where
         plan.partition_schedule.as_ref(),
         checkpoint_eligible,
     )?;
+    if let Some(closure) = &drain_epoch_closure {
+        builder.write_json_artifact("plan/epoch-frontier.json", &closure.frontier)?;
+        builder.write_json_artifact("plan/epoch-closure.json", &closure.evidence)?;
+    }
     if let Some(stream_finalize) = stream_finalize {
         stream_finalize()?;
     }
@@ -4044,6 +4239,10 @@ where
         segment_positions,
         phase_metrics: phase_measurements.into_metrics(),
         source_frontier: source_frontier_report,
+        drain_epoch: drain_epoch_closure.map(|closure| EngineDrainEpoch {
+            closure,
+            consumed_partition_count,
+        }),
         execution_evidence,
     })
 }
@@ -4317,6 +4516,24 @@ fn aggregate_processed_partition_positions(
             "processed observation {observation_id:?} completed without source-position evidence"
         ))),
     }
+}
+
+fn drain_resource_frontier(
+    descriptor: &cdf_kernel::ResourceDescriptor,
+    schema: &Schema,
+    committed_frontier: Option<&SourcePosition>,
+    processed: &[ProcessedObservationPosition],
+) -> Result<SourcePosition> {
+    let positions = processed
+        .iter()
+        .map(|observation| observation.source_position.clone())
+        .collect::<Vec<_>>();
+    aggregate_resource_closed_output_position(descriptor, schema, committed_frontier, &positions)
+        .map_err(|error| {
+            CdfError::data(format!(
+                "drain epoch cannot form a canonical safe source frontier: {error}"
+            ))
+        })
 }
 
 fn merge_verdict_summary(total: &mut VerdictSummary, batch: VerdictSummary) {
@@ -5784,6 +6001,14 @@ fn current_observed_at_ms() -> Result<i64> {
     i64::try_from(duration.as_millis()).map_err(|_| {
         CdfError::internal("system time milliseconds do not fit in i64 evaluation context")
     })
+}
+
+fn current_observed_at_u64_ms() -> Result<u64> {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| CdfError::internal(format!("system clock before Unix epoch: {error}")))?;
+    u64::try_from(duration.as_millis())
+        .map_err(|_| CdfError::internal("system time milliseconds do not fit in u64"))
 }
 
 fn elapsed_ns(started: Option<Instant>, label: &str) -> Result<u64> {

@@ -17,6 +17,7 @@ pub struct DrainSafeFrontierObservation {
     pub admitted_batches: u64,
     pub admitted_rows: u64,
     pub admitted_bytes: u64,
+    pub admitted_positions: u64,
     pub global_watermark: Option<WatermarkClaim>,
     pub source_exhausted: bool,
     pub monotonic_milliseconds: u64,
@@ -60,6 +61,7 @@ struct Counts {
     batches: u64,
     rows: u64,
     bytes: u64,
+    positions: u64,
 }
 
 impl Counts {
@@ -76,11 +78,15 @@ impl Counts {
             .bytes
             .checked_add(observation.admitted_bytes)
             .ok_or_else(|| CdfError::data("drain epoch byte count overflow"))?;
+        self.positions = self
+            .positions
+            .checked_add(observation.admitted_positions)
+            .ok_or_else(|| CdfError::data("drain epoch position count overflow"))?;
         Ok(())
     }
 
     const fn is_empty(self) -> bool {
-        self.batches == 0 && self.rows == 0 && self.bytes == 0
+        self.positions == 0
     }
 }
 
@@ -132,8 +138,11 @@ impl DrainEpochController {
             epoch_ordinal: 0,
             epoch: Counts::default(),
             total: Counts::default(),
-            started_monotonic_milliseconds: None,
-            last_monotonic_milliseconds: None,
+            // The controller clock is elapsed time since the drain began. Starting at zero keeps
+            // time-trigger accounting honest even when the first canonical safe frontier is
+            // reached only after a long-running partition has drained.
+            started_monotonic_milliseconds: Some(0),
+            last_monotonic_milliseconds: Some(0),
             committed_frontier: None,
             committed_watermark: None,
             epoch_watermark_start: None,
@@ -142,6 +151,41 @@ impl DrainEpochController {
 
     pub const fn epoch_ordinal(&self) -> u64 {
         self.epoch_ordinal
+    }
+
+    pub fn committed_frontier(&self) -> Option<&SourcePosition> {
+        self.committed_frontier.as_ref()
+    }
+
+    /// Seeds the input-low frontier from the checkpoint committed before this drain command.
+    /// The new command still begins at epoch zero and its record/byte termination counters begin
+    /// at zero; only source-position aggregation inherits the prior durable head.
+    pub fn bind_initial_committed_frontier(
+        &mut self,
+        committed_frontier: Option<SourcePosition>,
+    ) -> Result<()> {
+        if !matches!(self.state, ControllerState::Open)
+            || self.epoch_ordinal != 0
+            || !self.epoch.is_empty()
+            || !self.total.is_empty()
+            || self.committed_frontier.is_some()
+        {
+            return Err(CdfError::contract(
+                "initial drain frontier must be bound before the first source observation",
+            ));
+        }
+        if let Some(frontier) = &committed_frontier {
+            frontier.validate()?;
+        }
+        self.committed_frontier = committed_frontier;
+        Ok(())
+    }
+
+    pub const fn monotonic_milliseconds(&self) -> u64 {
+        match self.last_monotonic_milliseconds {
+            Some(value) => value,
+            None => 0,
+        }
     }
 
     pub fn pending_closure(&self) -> Option<&DrainEpochClosure> {
@@ -155,24 +199,24 @@ impl DrainEpochController {
         matches!(self.state, ControllerState::Finished)
     }
 
+    pub fn validate_ready_for_epoch(&self) -> Result<()> {
+        match &self.state {
+            ControllerState::Open => Ok(()),
+            ControllerState::AwaitingSettlement(closure) => Err(CdfError::contract(format!(
+                "drain epoch {} cannot admit later progress before frontier settlement",
+                closure.frontier.epoch_ordinal
+            ))),
+            ControllerState::Finished => Err(CdfError::contract(
+                "finished drain execution cannot admit another source frontier",
+            )),
+        }
+    }
+
     pub fn observe_safe_frontier(
         &mut self,
         observation: DrainSafeFrontierObservation,
     ) -> Result<DrainEpochDecision> {
-        match &self.state {
-            ControllerState::AwaitingSettlement(closure) => {
-                return Err(CdfError::contract(format!(
-                    "drain epoch {} cannot admit later progress before frontier settlement",
-                    closure.frontier.epoch_ordinal
-                )));
-            }
-            ControllerState::Finished => {
-                return Err(CdfError::contract(
-                    "finished drain execution cannot admit another source frontier",
-                ));
-            }
-            ControllerState::Open => {}
-        }
+        self.validate_ready_for_epoch()?;
         observation.validate()?;
         self.observe_clock(observation.monotonic_milliseconds)?;
         self.observe_watermark(observation.global_watermark.as_ref())?;
@@ -721,6 +765,52 @@ mod tests {
         assert_eq!(closure.frontier.frontier, cursor(12));
     }
 
+    #[test]
+    fn elapsed_trigger_includes_work_before_the_first_safe_frontier() {
+        let mut controller = DrainEpochController::new(&extent(
+            EpochClosureTrigger::Elapsed { milliseconds: 100 },
+            EpochClosureTrigger::Bytes { count: 1_000 },
+            DrainTermination::Duration {
+                milliseconds: 1_000,
+            },
+        ))
+        .unwrap();
+        let DrainEpochDecision::Close(closure) = controller
+            .observe_safe_frontier(observation(1, 10, 120, false))
+            .unwrap()
+        else {
+            panic!("elapsed work before the first frontier must request closure");
+        };
+        assert_eq!(
+            closure.evidence.observation,
+            EpochClosureObservation::Elapsed {
+                observed_milliseconds: 120,
+                overshoot_milliseconds: 20,
+            }
+        );
+    }
+
+    #[test]
+    fn prior_checkpoint_frontier_seeds_input_low_without_consuming_command_budget() {
+        let mut controller = DrainEpochController::new(&extent(
+            EpochClosureTrigger::Rows { count: 1 },
+            EpochClosureTrigger::Bytes { count: 1_000 },
+            DrainTermination::Records { count: 2 },
+        ))
+        .unwrap();
+        controller
+            .bind_initial_committed_frontier(Some(cursor(40)))
+            .unwrap();
+        let DrainEpochDecision::Close(closure) = controller
+            .observe_safe_frontier(observation(1, 10, 41, false))
+            .unwrap()
+        else {
+            panic!("row cadence must close");
+        };
+        assert_eq!(closure.frontier.input_low, Some(cursor(40)));
+        assert!(!closure.terminate_after_settlement);
+    }
+
     fn extent(
         checkpoint_cadence: EpochClosureTrigger,
         package_rotation: EpochClosureTrigger,
@@ -752,6 +842,7 @@ mod tests {
             admitted_batches: u64::from(rows != 0),
             admitted_rows: rows,
             admitted_bytes: bytes,
+            admitted_positions: u64::from(rows != 0),
             global_watermark: None,
             source_exhausted,
             monotonic_milliseconds: position,

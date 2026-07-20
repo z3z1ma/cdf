@@ -285,6 +285,21 @@ impl EnginePlan {
         Ok(self)
     }
 
+    /// Rebinds the physical package sink for one finite drain epoch while
+    /// preserving every compiled source, expression, schema, and graph
+    /// authority. Package identity is epoch-local; the logical scan plan is
+    /// not recompiled or reinterpreted.
+    pub fn rebind_package_id(mut self, package_id: impl Into<String>) -> Result<Self> {
+        let package_id = package_id.into();
+        if package_id.trim().is_empty() {
+            return Err(CdfError::contract("epoch package id cannot be empty"));
+        }
+        rebind_package_sink(&mut self.operator_chain, &package_id)?;
+        rebind_package_sink(&mut self.explain.operator_chain, &package_id)?;
+        self.package_id = package_id;
+        Ok(self)
+    }
+
     pub fn effective_schema_evidence(&self) -> Option<&EffectiveSchemaPlanEvidence> {
         self.effective_schema_evidence.as_ref()
     }
@@ -320,6 +335,23 @@ impl EnginePlan {
         policy.validate()?;
         Ok(policy)
     }
+}
+
+fn rebind_package_sink(operators: &mut [OperatorNode], package_id: &str) -> Result<()> {
+    let mut sinks = operators.iter_mut().filter_map(|operator| match operator {
+        OperatorNode::PackageSink { package_id, .. } => Some(package_id),
+        _ => None,
+    });
+    let sink = sinks
+        .next()
+        .ok_or_else(|| CdfError::data("engine plan has no package sink to bind to an epoch"))?;
+    *sink = package_id.to_owned();
+    if sinks.next().is_some() {
+        return Err(CdfError::data(
+            "engine plan has multiple package sinks and cannot bind one epoch identity",
+        ));
+    }
+    Ok(())
 }
 
 pub const COMPILED_SCHEMA_ADMISSION_VERSION: u16 = 3;
@@ -1768,7 +1800,14 @@ pub struct EngineRunOutputWithSegmentPositions {
     pub segment_positions: Vec<EngineSegmentPosition>,
     pub phase_metrics: Vec<RunPhaseMetric>,
     pub source_frontier: cdf_runtime::SourceFrontierReport,
+    pub drain_epoch: Option<EngineDrainEpoch>,
     pub(crate) execution_evidence: EngineExecutionEvidence,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EngineDrainEpoch {
+    pub closure: cdf_runtime::DrainEpochClosure,
+    pub consumed_partition_count: usize,
 }
 
 impl EngineRunOutputWithSegmentPositions {
@@ -1782,6 +1821,7 @@ impl EngineRunOutputWithSegmentPositions {
             segment_positions,
             phase_metrics: Vec::new(),
             source_frontier: cdf_runtime::SourceFrontierReport::default(),
+            drain_epoch: None,
             execution_evidence,
         }
     }

@@ -113,17 +113,11 @@ impl ExecutionExtent {
         Ok(())
     }
 
-    /// Only bounded execution is installed until P3 A8 supplies the finite
-    /// epoch executor. Recording and planning a drain policy cannot silently
-    /// select the bounded one-package path.
+    /// Resident execution remains plan-invalid until its supervisor exists.
+    /// Drain execution is legal only through the runtime's finite epoch gate;
+    /// engine entry points enforce that execution-context join.
     pub fn validate_for_execution(&self) -> Result<()> {
-        self.validate_for_plan()?;
-        if matches!(self, Self::Drain { .. }) {
-            return Err(CdfError::contract(
-                "drain execution is not enabled; compile the policy for inspection only until the finite epoch executor is installed",
-            ));
-        }
-        Ok(())
+        self.validate_for_plan()
     }
 
     pub const fn is_bounded(&self) -> bool {

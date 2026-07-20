@@ -2345,6 +2345,141 @@ fn mock_compiled_source_plan_with_speculation(
     .unwrap()
 }
 
+fn mock_unbounded_source_plan(resource: &MockResource) -> cdf_runtime::CompiledSourcePlan {
+    let mut source = mock_compiled_source_plan(resource, None);
+    source.execution_capabilities.bounded = false;
+    source.execution_capabilities.speculative_safe = false;
+    source.stream_capabilities = Some(cdf_runtime::SourceStreamCapabilities {
+        quiescence: true,
+        watermark_behavior: cdf_kernel::OperatorWatermarkBehavior::Drop,
+        watermark: None,
+        safe_frontiers: vec![SafeFrontierPolicy::CanonicalAdmittedSourcePosition],
+        source_frontiers: vec![cdf_runtime::SourceFrontierCapability::FileManifest],
+        idleness_capabilities: Vec::new(),
+    });
+    source.validate().unwrap();
+    source
+}
+
+#[test]
+fn drain_epochs_stop_at_canonical_partition_frontiers_and_require_settlement() {
+    let mut batches = sample_batches();
+    for (ordinal, batch) in batches.iter_mut().enumerate() {
+        batch.header.source_position = Some(SourcePosition::FileManifest(FileManifest {
+            version: 1,
+            files: vec![FilePosition {
+                path: format!("input-{ordinal}.arrow"),
+                size_bytes: batch.header.byte_count,
+                source_generation: Some(format!("generation-{ordinal}")),
+                etag: None,
+                object_version: None,
+                sha256: None,
+            }],
+        }));
+    }
+    let resource = MockResource::tier_b(batches).without_control_keys();
+    let extent = ExecutionExtent::Drain {
+        version: EXECUTION_EXTENT_VERSION,
+        policy: StreamEpochPolicy {
+            version: STREAM_EPOCH_POLICY_VERSION,
+            checkpoint_cadence: EpochClosureTrigger::Rows { count: 3 },
+            package_rotation: EpochClosureTrigger::Bytes { count: 1 << 20 },
+            watermark: WatermarkPolicy::Disabled,
+            late_data: LateDataAction::Quarantine,
+            safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+        },
+        termination: DrainTermination::Records { count: 6 },
+    };
+    let source = mock_unbounded_source_plan(&resource);
+    resource.bind_compiled_source(&source);
+    let plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(Vec::new(), None, None, extent.clone()),
+        )
+        .unwrap()
+        .bind_compiled_source(&source)
+        .unwrap()
+        .bind_operator_graph(
+            &source,
+            &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        )
+        .unwrap();
+    let mut controller = cdf_runtime::DrainEpochController::new(&extent).unwrap();
+    let pre_finalize =
+        |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
+    let root = TempDir::new().unwrap();
+    let first_dir = root.path().join("epoch-0");
+    let first = block_on(super::execute_drain_epoch_with_hooks(
+        &plan,
+        &resource,
+        &first_dir,
+        &pre_finalize,
+        super::DrainEpochExecution::new(&mut controller),
+        executable_mock_options(EngineExecutionOptions::default()).unwrap(),
+    ))
+    .unwrap();
+    let first_epoch = first.drain_epoch.as_ref().unwrap();
+    assert_eq!(first_epoch.consumed_partition_count, 1);
+    assert_eq!(first.output.profile.output_rows, 3);
+    assert!(matches!(
+        first_epoch.closure.evidence.cause,
+        cdf_kernel::EpochClosureCause::CheckpointCadence { .. }
+    ));
+    assert!(first_dir.join("plan/epoch-frontier.json").is_file());
+    let opened_after_first = resource.open_count.load(Ordering::SeqCst);
+
+    let selected = BTreeSet::from([PartitionId::new("part-1").unwrap()]);
+    let second_plan = plan
+        .clone()
+        .select_partitions(&selected)
+        .unwrap()
+        .rebind_package_id("pkg-engine-test-e000001")
+        .unwrap();
+    let blocked_dir = root.path().join("blocked");
+    let blocked = block_on(super::execute_drain_epoch_with_hooks(
+        &second_plan,
+        &resource,
+        &blocked_dir,
+        &pre_finalize,
+        super::DrainEpochExecution::new(&mut controller),
+        executable_mock_options(EngineExecutionOptions::default()).unwrap(),
+    ))
+    .unwrap_err();
+    assert!(blocked.message.contains("before frontier settlement"));
+    assert_eq!(
+        resource.open_count.load(Ordering::SeqCst),
+        opened_after_first
+    );
+    controller
+        .acknowledge_settlement(&first_epoch.closure.frontier.frontier)
+        .unwrap();
+
+    let second_dir = root.path().join("epoch-1");
+    let second = block_on(super::execute_drain_epoch_with_hooks(
+        &second_plan,
+        &resource,
+        &second_dir,
+        &pre_finalize,
+        super::DrainEpochExecution::new(&mut controller),
+        executable_mock_options(EngineExecutionOptions::default()).unwrap(),
+    ))
+    .unwrap();
+    let second_epoch = second.drain_epoch.as_ref().unwrap();
+    assert_eq!(second_epoch.consumed_partition_count, 1);
+    assert!(second_epoch.closure.terminate_after_settlement);
+    assert!(matches!(
+        second_epoch.closure.evidence.cause,
+        cdf_kernel::EpochClosureCause::DrainTermination {
+            termination: DrainTermination::Records { count: 6 }
+        }
+    ));
+    controller
+        .acknowledge_settlement(&second_epoch.closure.frontier.frontier)
+        .unwrap();
+    assert!(controller.is_finished());
+}
+
 #[test]
 fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
     let resource = MockResource::tier_b(sample_batches());
