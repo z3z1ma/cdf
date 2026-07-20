@@ -1,10 +1,12 @@
 use std::{
     collections::BTreeMap,
     fs::{self, OpenOptions},
-    io::Write,
+    io::{BufRead, BufReader, BufWriter, Write},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
+use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
 use cdf_kernel::{
     CapabilitySupport, CdfError, CommitCounts, CommitPlan, CommitSegmentIterator, CommitSession,
     ConcurrencyLimit, DeliveryGuarantee, DestinationCommitRequest, DestinationId,
@@ -21,9 +23,12 @@ use cdf_runtime::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{LogicalRow, logical_rows_from_batch};
+use super::LogicalRow;
 
 const SCHEMES: &[&str] = &["quasar"];
+const RECEIPT_FILE_NAME: &str = "receipt.json";
+const PAYLOAD_FILE_NAME: &str = "payload.ndjson";
+static NEXT_STAGING_ID: AtomicU64 = AtomicU64::new(1);
 
 pub(super) struct QuasarDriver;
 
@@ -46,12 +51,21 @@ pub(super) fn payload(root: &Path) -> cdf_kernel::Result<Vec<LogicalRow>> {
     paths.sort();
     let mut payload = Vec::new();
     for path in paths {
-        let bytes = fs::read(&path)
-            .map_err(|error| CdfError::destination(format!("read {}: {error}", path.display())))?;
-        let record: QuasarCommitRecord = serde_json::from_slice(&bytes).map_err(|error| {
-            CdfError::destination(format!("decode {}: {error}", path.display()))
+        if !path.is_dir() {
+            continue;
+        }
+        let payload_path = path.join(PAYLOAD_FILE_NAME);
+        let file = fs::File::open(&payload_path).map_err(|error| {
+            CdfError::destination(format!("open {}: {error}", payload_path.display()))
         })?;
-        payload.extend(record.payload);
+        for line in BufReader::new(file).lines() {
+            let line = line.map_err(|error| {
+                CdfError::destination(format!("read {}: {error}", payload_path.display()))
+            })?;
+            payload.push(serde_json::from_str(&line).map_err(|error| {
+                CdfError::destination(format!("decode {}: {error}", payload_path.display()))
+            })?);
+        }
     }
     Ok(payload)
 }
@@ -144,6 +158,14 @@ impl FinalizedPackageIngress for QuasarRuntime {
             ));
         }
         let duplicate = read_record(&self.root, prepared.commit().idempotency_token.as_str())?;
+        let payload = if duplicate.is_none() {
+            Some(QuasarPayloadWriter::create(
+                &self.root,
+                prepared.commit().idempotency_token.as_str(),
+            )?)
+        } else {
+            None
+        };
         Ok(Box::new(QuasarCommitSession {
             root: self.root.clone(),
             request: prepared.commit().clone(),
@@ -151,7 +173,7 @@ impl FinalizedPackageIngress for QuasarRuntime {
             schema_hash: prepared.schema_hash().clone(),
             duplicate,
             acknowledgements: Vec::new(),
-            payload: Vec::new(),
+            payload,
         }))
     }
 }
@@ -246,7 +268,7 @@ struct QuasarCommitSession {
     schema_hash: SchemaHash,
     duplicate: Option<QuasarCommitRecord>,
     acknowledgements: Vec<SegmentAck>,
-    payload: Vec<LogicalRow>,
+    payload: Option<QuasarPayloadWriter>,
 }
 
 impl CommitSession for QuasarCommitSession {
@@ -261,6 +283,10 @@ impl CommitSession for QuasarCommitSession {
         if let Some(record) = &self.duplicate {
             return Ok(record.receipt.segment_acks.clone());
         }
+        let payload = self
+            .payload
+            .as_mut()
+            .expect("quasar payload writer was initialized");
         let mut acknowledgements = Vec::new();
         for segment in segments {
             let segment = segment?;
@@ -276,7 +302,7 @@ impl CommitSession for QuasarCommitSession {
                 ));
             }
             for batch in segment.into_batches()? {
-                self.payload.extend(logical_rows_from_batch(&batch.batch)?);
+                payload.write_batch(&batch.batch)?;
             }
             let acknowledgement = SegmentAck {
                 segment_id: expected.segment_id.clone(),
@@ -289,8 +315,8 @@ impl CommitSession for QuasarCommitSession {
         Ok(acknowledgements)
     }
 
-    fn finalize(self: Box<Self>) -> cdf_kernel::Result<Receipt> {
-        if let Some(record) = self.duplicate {
+    fn finalize(mut self: Box<Self>) -> cdf_kernel::Result<Receipt> {
+        if let Some(record) = self.duplicate.take() {
             return Ok(record.receipt);
         }
         if self.acknowledgements.len() != self.request.segments.len() {
@@ -331,18 +357,17 @@ impl CommitSession for QuasarCommitSession {
                 parameters: BTreeMap::new(),
             },
         };
-        write_record(
-            &root,
-            receipt.idempotency_token.as_str(),
-            &QuasarCommitRecord {
-                receipt: receipt.clone(),
-                payload: self.payload,
-            },
-        )?;
+        let payload = self.payload.take().ok_or_else(|| {
+            CdfError::destination("quasar destination received no payload writer")
+        })?;
+        payload.publish(&QuasarCommitRecord {
+            receipt: receipt.clone(),
+        })?;
         Ok(receipt)
     }
 
-    fn abort(self: Box<Self>) -> cdf_kernel::Result<()> {
+    fn abort(mut self: Box<Self>) -> cdf_kernel::Result<()> {
+        self.payload.take();
         Ok(())
     }
 }
@@ -350,7 +375,121 @@ impl CommitSession for QuasarCommitSession {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct QuasarCommitRecord {
     receipt: Receipt,
-    payload: Vec<LogicalRow>,
+}
+
+struct QuasarPayloadWriter {
+    writer: Option<BufWriter<fs::File>>,
+    staging_root: Option<PathBuf>,
+    final_root: PathBuf,
+}
+
+impl QuasarPayloadWriter {
+    fn create(root: &Path, token: &str) -> cdf_kernel::Result<Self> {
+        let commits = root.join("commits");
+        fs::create_dir_all(&commits).map_err(|error| {
+            CdfError::destination(format!("create {}: {error}", commits.display()))
+        })?;
+        let encoded = encoded_token(token);
+        let staging_id = NEXT_STAGING_ID.fetch_add(1, Ordering::Relaxed);
+        let staging_root = commits.join(format!(
+            ".{encoded}.tmp-{}-{staging_id}",
+            std::process::id()
+        ));
+        fs::create_dir(&staging_root).map_err(|error| {
+            CdfError::destination(format!("create {}: {error}", staging_root.display()))
+        })?;
+        let payload_path = staging_root.join(PAYLOAD_FILE_NAME);
+        let file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&payload_path)
+            .map_err(|error| {
+                CdfError::destination(format!("create {}: {error}", payload_path.display()))
+            })?;
+        Ok(Self {
+            writer: Some(BufWriter::new(file)),
+            staging_root: Some(staging_root),
+            final_root: commits.join(encoded),
+        })
+    }
+
+    fn write_batch(&mut self, batch: &RecordBatch) -> cdf_kernel::Result<()> {
+        let id_index = batch
+            .schema()
+            .index_of("id")
+            .map_err(|error| CdfError::data(format!("quasar payload misses id: {error}")))?;
+        let name_index = batch
+            .schema()
+            .index_of("name")
+            .map_err(|error| CdfError::data(format!("quasar payload misses name: {error}")))?;
+        let ids = batch
+            .column(id_index)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .ok_or_else(|| CdfError::data("quasar payload id is not int64"))?;
+        let names = batch
+            .column(name_index)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or_else(|| CdfError::data("quasar payload name is not utf8"))?;
+        for index in 0..batch.num_rows() {
+            let row = QuasarPayloadRow {
+                id: ids.value(index),
+                name: (!names.is_null(index)).then(|| names.value(index)),
+            };
+            let writer = self
+                .writer
+                .as_mut()
+                .expect("quasar payload writer exists until publish");
+            writer
+                .write_all(&cdf_package::canonical_json_bytes(&row)?)
+                .map_err(|error| CdfError::destination(format!("write quasar payload: {error}")))?;
+            writer
+                .write_all(b"\n")
+                .map_err(|error| CdfError::destination(format!("write quasar payload: {error}")))?;
+        }
+        Ok(())
+    }
+
+    fn publish(mut self, record: &QuasarCommitRecord) -> cdf_kernel::Result<()> {
+        let mut writer = self
+            .writer
+            .take()
+            .expect("quasar payload writer exists until publish");
+        writer
+            .flush()
+            .and_then(|()| writer.get_ref().sync_all())
+            .map_err(|error| CdfError::destination(format!("sync quasar payload: {error}")))?;
+        drop(writer);
+        let staging_root = self
+            .staging_root
+            .as_ref()
+            .expect("quasar staging root exists until publish");
+        write_record(&staging_root.join(RECEIPT_FILE_NAME), record)?;
+        fs::rename(staging_root, &self.final_root).map_err(|error| {
+            CdfError::destination(format!(
+                "publish {} to {}: {error}",
+                staging_root.display(),
+                self.final_root.display()
+            ))
+        })?;
+        self.staging_root = None;
+        Ok(())
+    }
+}
+
+#[derive(Serialize)]
+struct QuasarPayloadRow<'a> {
+    id: i64,
+    name: Option<&'a str>,
+}
+
+impl Drop for QuasarPayloadWriter {
+    fn drop(&mut self) {
+        if let Some(staging_root) = self.staging_root.take() {
+            let _ = fs::remove_dir_all(staging_root);
+        }
+    }
 }
 
 fn description() -> cdf_kernel::Result<DestinationDescription> {
@@ -404,12 +543,17 @@ fn parse_root(uri: &str) -> cdf_kernel::Result<PathBuf> {
 }
 
 fn record_path(root: &Path, token: &str) -> PathBuf {
-    let encoded = token
+    root.join("commits")
+        .join(encoded_token(token))
+        .join(RECEIPT_FILE_NAME)
+}
+
+fn encoded_token(token: &str) -> String {
+    token
         .as_bytes()
         .iter()
         .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    root.join("commits").join(format!("{encoded}.json"))
+        .collect()
 }
 
 fn read_record(root: &Path, token: &str) -> cdf_kernel::Result<Option<QuasarCommitRecord>> {
@@ -431,32 +575,121 @@ fn read_record_from_receipt(receipt: &Receipt) -> cdf_kernel::Result<Option<Quas
     )
 }
 
-fn write_record(root: &Path, token: &str, record: &QuasarCommitRecord) -> cdf_kernel::Result<()> {
-    let path = record_path(root, token);
+fn write_record(path: &Path, record: &QuasarCommitRecord) -> cdf_kernel::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| CdfError::destination("quasar commit path has no parent"))?;
     fs::create_dir_all(parent)
         .map_err(|error| CdfError::destination(format!("create {}: {error}", parent.display())))?;
-    let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
     let mut file = OpenOptions::new()
         .create_new(true)
         .write(true)
-        .open(&temporary)
-        .map_err(|error| {
-            CdfError::destination(format!("create {}: {error}", temporary.display()))
-        })?;
+        .open(path)
+        .map_err(|error| CdfError::destination(format!("create {}: {error}", path.display())))?;
     file.write_all(&cdf_package::canonical_json_bytes(record)?)
         .and_then(|()| file.sync_all())
-        .map_err(|error| {
-            CdfError::destination(format!("write {}: {error}", temporary.display()))
-        })?;
-    fs::rename(&temporary, &path).map_err(|error| {
-        CdfError::destination(format!(
-            "publish {} to {}: {error}",
-            temporary.display(),
-            path.display()
-        ))
-    })?;
-    Ok(())
+        .map_err(|error| CdfError::destination(format!("write {}: {error}", path.display())))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow_array::{Int64Array, RecordBatch, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
+    use cdf_kernel::{
+        CommitCounts, DestinationId, Receipt, ReceiptId, SchemaHash, VerifyClause, WriteDisposition,
+    };
+
+    use super::*;
+
+    #[test]
+    fn quasar_payload_is_streamed_to_an_atomic_external_commit() {
+        let temp = tempfile::tempdir().unwrap();
+        let token = "sha256:quasar-streaming-payload";
+        let mut writer = QuasarPayloadWriter::create(temp.path(), token).unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+        writer
+            .write_batch(
+                &RecordBatch::try_new(
+                    schema,
+                    vec![
+                        Arc::new(Int64Array::from(vec![1, 2])),
+                        Arc::new(StringArray::from(vec![Some("ada"), None])),
+                    ],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let request = crate::destination::representative_commit_request(WriteDisposition::Append);
+        let receipt = Receipt {
+            receipt_id: ReceiptId::new("quasar-streaming-receipt").unwrap(),
+            destination: DestinationId::new("quasar").unwrap(),
+            target: request.target,
+            package_hash: request.package_hash,
+            segment_acks: Vec::new(),
+            disposition: request.disposition,
+            idempotency_token: cdf_kernel::IdempotencyToken::new(token).unwrap(),
+            transaction: None,
+            counts: CommitCounts {
+                rows_written: 2,
+                rows_inserted: Some(2),
+                rows_updated: Some(0),
+                rows_deleted: Some(0),
+            },
+            schema_hash: SchemaHash::new("schema-quasar-streaming").unwrap(),
+            migrations: Vec::new(),
+            committed_at_ms: 1_700_000_000_000,
+            verify: VerifyClause {
+                kind: "quasar_file".to_owned(),
+                statement: temp.path().display().to_string(),
+                parameters: BTreeMap::new(),
+            },
+        };
+        writer
+            .publish(&QuasarCommitRecord {
+                receipt: receipt.clone(),
+            })
+            .unwrap();
+
+        assert_eq!(
+            read_record(temp.path(), token).unwrap().unwrap().receipt,
+            receipt
+        );
+        assert_eq!(
+            payload(temp.path()).unwrap(),
+            vec![
+                LogicalRow {
+                    id: 1,
+                    name: Some("ada".to_owned()),
+                },
+                LogicalRow { id: 2, name: None },
+            ]
+        );
+        let record_bytes = fs::read(record_path(temp.path(), token)).unwrap();
+        let record_json: serde_json::Value = serde_json::from_slice(&record_bytes).unwrap();
+        assert!(!record_json.as_object().unwrap().contains_key("payload"));
+        assert!(
+            fs::read_dir(temp.path().join("commits"))
+                .unwrap()
+                .all(|entry| !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with('.'))
+        );
+    }
+
+    #[test]
+    fn quasar_aborted_payload_removes_external_staging() {
+        let temp = tempfile::tempdir().unwrap();
+        drop(QuasarPayloadWriter::create(temp.path(), "aborted").unwrap());
+        assert_eq!(
+            fs::read_dir(temp.path().join("commits")).unwrap().count(),
+            0
+        );
+    }
 }
