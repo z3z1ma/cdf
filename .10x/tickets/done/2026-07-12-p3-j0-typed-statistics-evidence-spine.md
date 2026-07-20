@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-12
 Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-12-p3-ws-j-datafusion-currency-bridges.md
@@ -265,13 +265,24 @@ No significant-or-higher finding. The surviving API is package-generic and DataF
 
 No critical or significant finding. `Float16` preserves bit identity and uses the type's total order only after rejecting NaN and infinities; `Decimal256` preserves all 256 bits and reconstructs the signed Arrow integer for comparisons. The profile v2 scalar discriminator permits exactly one corresponding physical value column, so malformed lengths and cross-column payloads fail closed. Both dependencies were already transitive Arrow tuple members and add no new package to the graph. The measurement path is outside fast checks and now terminates in the slim measurement crate; its unsupported-nested cell reports row classification only and cannot claim payload-byte throughput. Verdict: **pass for this slice**. Residual risk remains the explicitly named profile-enabled end-to-end RSS/overhead law and J1 grain/distinct-readiness decision; this slice does not claim J0 closure.
 
+### 2026-07-18 closure evidence and judgment
+
+- Ran two paired, order-reversed release executions of the same local 2,147,509,487-byte FineWeb Parquet object (1,058,640 rows, 115 canonical segments) into fresh DuckDB environments. Profile-disabled wall times were 13.69s and 13.45s; profile-enabled wall times were 13.19s and 14.57s. The two-sample means were 13.57s disabled and 13.88s enabled: 2.3% observed wall overhead, within the program's 10% budget. User+system CPU means were 35.28s disabled and 35.99s enabled (2.0% overhead). The order reversal limits warm-cache bias; two samples remain a local-host, warm-I/O observation rather than a universal throughput claim.
+- Maximum RSS was 4,746,067,968 and 4,856,938,496 bytes without the profile versus 4,508,352,512 and 4,141,236,224 bytes with it. The opt-in statistics path did not increase peak RSS in this paired workload; the peak is dominated by the existing package/DuckDB path and native headroom. Each enabled run emitted exactly 710,688 bytes of `stats/profile.parquet`; each disabled run omitted it.
+- `cdf package verify` passed for both profile-enabled packages (131 identity files each), preserving manifest binding after the large-file runs.
+- No exact distinct sketch is added. The governing spec makes it optional, exact sets are forbidden, and DataFusion pruning requires row/null/min/max rather than distinct counts. Adding an algorithm/version/error-bearing sketch without a measured consumer would add hot-path work contrary to J0's acceptance boundary.
+- No separate file/source rows are added to the canonical profile. Segment rows are the finest CDF-produced typed evidence and package rows are their deterministic aggregate. J1 may aggregate/associate them with file evidence when the mapping is proven, while absent file-grain facts conservatively retain the file. This avoids inventing duplicate physical-file statistics in the post-normalization artifact.
+
+Closure review: **pass**. Every acceptance criterion is now supported by the typed model, vectorized computation, ledger ownership, deterministic segment/package aggregation, opt-in canonical profile writer, streaming verified reader, corruption/type/order adversaries, slim kernel envelope, paired end-to-end overhead/RSS evidence, strict workspace Clippy, and the prior significant-only adversarial review. Residual risk is explicitly limited to host/workload variance in the two-sample end-to-end measurement and Arrow Parquet writer internals during explicitly requested profile generation; profile emission remains opt-in and missing evidence is conservative. Those limits do not block J1's adapter work and do not impose default hot-path cost.
+
 ## Retrospective
 
 - Reusing `CanonicalArrowType` avoided a second type-declaration vocabulary and kept the kernel DataFusion-free.
 - Computing only after canonical batch shaping makes the jobs-invariance argument structural: segment membership and order already belong to A5, and statistics no longer depend on source batch scheduling.
-- The old aggregate JSON artifact cannot safely evolve into the typed contract, but deleting it before canonical Parquet lands creates an incoherent identity boundary. Keep it byte-compatible and exclude typed in-memory evidence from its serializer until writer, reader, verification, corruption checks, and golden promotion replace it together.
+- Replacing the old aggregate JSON artifact was safe only when the typed Parquet writer, manifest-bound streaming reader, corruption checks, and golden promotion landed together. That kept one statistics authority throughout the migration and left no compatibility reader behind.
 - Rust generic abstraction over Arrow string/binary arrays increased compile complexity without reuse value. Concrete array branches are clearer and match the type-specialized hot-path requirement.
-- No follow-up ticket was opened for the remaining artifact/read/performance work because this active J0 ticket is already its exact durable owner; duplicating it would split authority. The next executor should define the one versioned Parquet row schema, stream canonical segment rows as registration occurs, derive bounded package/file rows, bind and verify them against the finalized manifest, then promote package goldens and run corruption/jobs/RSS/overhead evidence.
+- The fat-LTO benchmark package was the wrong measurement boundary for a hot kernel. The retained slim measurement binary compiles only the Arrow/kernel dependencies and reports bytes actually inspected, preventing unsupported nested columns from inflating throughput claims.
+- Profile emission remains explicit because the evidence is optional for ordinary execution. The paired large-file run shows it fits the overhead envelope on this host, while the default path pays no artifact-writing cost and J1 must remain conservative when the artifact is absent.
 
 ## References
 

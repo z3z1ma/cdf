@@ -12,7 +12,7 @@ Marshal CDF's existing statistics, memory/object-store authority, expression sem
 
 ## Activated children and existing owners
 
-- `.10x/tickets/2026-07-12-p3-j0-typed-statistics-evidence-spine.md`
+- `.10x/tickets/done/2026-07-12-p3-j0-typed-statistics-evidence-spine.md`
 - `.10x/tickets/2026-07-12-p3-j1-evidence-statistics-pruning.md`
 - `.10x/tickets/2026-07-12-p3-j2-datafusion-object-store-registry.md`
 - `.10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md` — shared `MemoryPool` authority already complete

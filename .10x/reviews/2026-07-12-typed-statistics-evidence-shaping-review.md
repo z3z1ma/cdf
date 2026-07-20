@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-12
 Updated: 2026-07-12
-Target: .10x/specs/typed-statistics-evidence.md, .10x/tickets/2026-07-12-p3-j0-typed-statistics-evidence-spine.md, .10x/tickets/2026-07-12-p3-j1-evidence-statistics-pruning.md
+Target: .10x/specs/typed-statistics-evidence.md, .10x/tickets/done/2026-07-12-p3-j0-typed-statistics-evidence-spine.md, .10x/tickets/2026-07-12-p3-j1-evidence-statistics-pruning.md
 Verdict: pass
 
 # Typed statistics evidence shaping review
