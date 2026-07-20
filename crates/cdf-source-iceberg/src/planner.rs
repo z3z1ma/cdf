@@ -18,10 +18,12 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     ICEBERG_SCAN_TASK_VERSION, ICEBERG_SOURCE_BLOCKING_LANE_ID, ICEBERG_SOURCE_DRIVER_VERSION,
-    ICEBERG_TASK_SET_AUTHORITY_VERSION, ICEBERG_TASK_SET_TYPE, IcebergDataFile, IcebergFileFormat,
-    IcebergJsonAuthority, IcebergReaderRequirements, IcebergScanTask, IcebergSourceOptions,
-    IcebergTaskSetAuthority, LoadedIcebergTable,
+    ICEBERG_TASK_SET_AUTHORITY_VERSION, ICEBERG_TASK_SET_TYPE, IcebergDataFile,
+    IcebergDeleteContent, IcebergDeleteFile, IcebergFileFormat, IcebergJsonAuthority,
+    IcebergReaderRequirements, IcebergScanTask, IcebergSourceOptions, IcebergTaskSetAuthority,
+    LoadedIcebergTable,
     catalog::{load_catalog_object, reserve_parse_memory},
+    delete_index::IcebergDeleteIndex,
 };
 
 pub(crate) struct IcebergPlanningContext<'a> {
@@ -67,28 +69,7 @@ pub(crate) fn plan_snapshot_scan(
         limit: None,
         order_by: Vec::new(),
     };
-    let authority = task_authority(table, output_schema_id, projected_field_ids, scan_intent)?;
-    let spill = context.catalog.execution.spill();
-    let mut writer = context.task_store.writer(
-        ICEBERG_TASK_SET_TYPE,
-        TaskSetLimits {
-            maximum_task_bytes: source.maximum_task_bytes,
-            maximum_authority_bytes: source.maximum_task_authority_bytes,
-            writer_buffer_bytes: source.task_writer_buffer_bytes,
-        },
-        context.catalog.execution.memory(),
-        spill.as_ref(),
-        |output| authority.encode_to(output),
-    )?;
-    let authority_sha256 = writer.authority_sha256().to_owned();
-    if authority_sha256 != authority.content_sha256()? {
-        return Err(CdfError::internal(
-            "Iceberg task-store authority hash does not match its canonical model",
-        ));
-    }
-
-    let mut estimated_rows = 0_u64;
-    let mut estimated_bytes = 0_u64;
+    let mut manifests = Vec::new();
     if let Some(selected) = &table.selected {
         let manifest_list = load_catalog_object(
             context.catalog,
@@ -108,7 +89,7 @@ pub(crate) fn plan_snapshot_scan(
             table.metadata.format_version(),
         )
         .map_err(|error| CdfError::data(format!("parse Iceberg manifest list: {error}")))?;
-        let mut manifests = list.consume_entries().into_iter().collect::<Vec<_>>();
+        manifests = list.consume_entries().into_iter().collect::<Vec<_>>();
         if manifests.len() > source.maximum_metadata_files {
             return Err(CdfError::data(format!(
                 "Iceberg snapshot contains {} manifests but maximum_metadata_files is {}",
@@ -132,20 +113,97 @@ pub(crate) fn plan_snapshot_scan(
         }
         for manifest_file in &manifests {
             validate_manifest_list_entry(manifest_file)?;
+            if table.metadata.format_version() == FormatVersion::V1
+                && manifest_file.content == ManifestContentType::Deletes
+            {
+                return Err(CdfError::data(
+                    "Iceberg format v1 snapshot cannot contain delete manifests",
+                ));
+            }
         }
-        plan_manifests_canonical(
-            manifests,
+        drop(manifest_list_parse);
+    }
+    let has_deletes = manifests
+        .iter()
+        .any(|manifest| manifest.content == ManifestContentType::Deletes);
+    let authority = task_authority(
+        table,
+        output_schema_id,
+        projected_field_ids,
+        scan_intent,
+        has_deletes,
+    )?;
+    let spill = context.catalog.execution.spill();
+    let mut writer = context.task_store.writer(
+        ICEBERG_TASK_SET_TYPE,
+        TaskSetLimits {
+            maximum_task_bytes: source.maximum_task_bytes,
+            maximum_authority_bytes: source.maximum_task_authority_bytes,
+            writer_buffer_bytes: source.task_writer_buffer_bytes,
+        },
+        context.catalog.execution.memory(),
+        spill.as_ref(),
+        |output| authority.encode_to(output),
+    )?;
+    let authority_sha256 = writer.authority_sha256().to_owned();
+    if authority_sha256 != authority.content_sha256()? {
+        return Err(CdfError::internal(
+            "Iceberg task-store authority hash does not match its canonical model",
+        ));
+    }
+
+    let mut estimated_rows = 0_u64;
+    let mut estimated_bytes = 0_u64;
+    if !manifests.is_empty() {
+        let delete_manifests = manifests
+            .iter()
+            .filter(|manifest| manifest.content == ManifestContentType::Deletes)
+            .cloned()
+            .collect::<Vec<_>>();
+        let data_manifests = manifests
+            .into_iter()
+            .filter(|manifest| manifest.content == ManifestContentType::Data)
+            .collect::<Vec<_>>();
+        let mut delete_index = if delete_manifests.is_empty() {
+            None
+        } else {
+            Some(IcebergDeleteIndex::create(
+                context.task_store,
+                source,
+                context.catalog.execution.memory(),
+                context.catalog.execution.spill(),
+            )?)
+        };
+        if let Some(index) = delete_index.as_mut() {
+            process_manifests_canonical(
+                delete_manifests,
+                source,
+                context.catalog,
+                context.cancellation.clone(),
+                |work| emit_delete_manifest(work, table, index),
+            )?;
+        }
+        let mut task_ordinal = 0_u64;
+        process_manifests_canonical(
+            data_manifests,
             source,
-            table,
             context.catalog,
             context.cancellation.clone(),
-            &authority,
-            &authority_sha256,
-            &mut writer,
-            &mut estimated_rows,
-            &mut estimated_bytes,
+            |work| {
+                emit_manifest_tasks(
+                    work,
+                    table,
+                    &authority,
+                    &authority_sha256,
+                    &mut writer,
+                    &mut task_ordinal,
+                    &mut estimated_rows,
+                    &mut estimated_bytes,
+                    delete_index.as_ref(),
+                    source.maximum_task_bytes,
+                )
+            },
         )?;
-        drop(manifest_list_parse);
     }
     let artifact = writer.finalize()?;
     let reference = artifact.reference;
@@ -172,17 +230,12 @@ struct ManifestWork {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn plan_manifests_canonical(
+fn process_manifests_canonical(
     manifests: Vec<iceberg::spec::ManifestFile>,
     source: &IcebergSourceOptions,
-    table: &LoadedIcebergTable,
     catalog: &crate::IcebergCatalogContext,
     cancellation: cdf_runtime::RunCancellation,
-    authority: &IcebergTaskSetAuthority,
-    authority_sha256: &str,
-    writer: &mut ExternalTaskSetWriter,
-    estimated_rows: &mut u64,
-    estimated_bytes: &mut u64,
+    mut emit: impl FnMut(ManifestWork) -> Result<()>,
 ) -> Result<()> {
     if manifests.is_empty() {
         return Ok(());
@@ -251,7 +304,6 @@ fn plan_manifests_canonical(
     let mut next_assignment = initially_assigned;
     let mut next_canonical_manifest = 0_usize;
     let mut pending = BTreeMap::<usize, Result<ManifestWork>>::new();
-    let mut task_ordinal = 0_u64;
     let drain_result = (|| -> Result<()> {
         while next_canonical_manifest < manifests.len() {
             cancellation.check()?;
@@ -266,16 +318,7 @@ fn plan_manifests_canonical(
                 ));
             }
             while let Some(work) = pending.remove(&next_canonical_manifest) {
-                emit_manifest_tasks(
-                    work?,
-                    table,
-                    authority,
-                    authority_sha256,
-                    writer,
-                    &mut task_ordinal,
-                    estimated_rows,
-                    estimated_bytes,
-                )?;
+                emit(work?)?;
                 next_canonical_manifest += 1;
                 if next_assignment < manifests.len() {
                     job_sender.send(next_assignment).map_err(|_| {
@@ -306,11 +349,6 @@ fn plan_manifests_canonical(
 }
 
 fn validate_manifest_list_entry(manifest_file: &iceberg::spec::ManifestFile) -> Result<()> {
-    if manifest_file.content == ManifestContentType::Deletes {
-        return Err(CdfError::contract(
-            "Iceberg delete manifests require the delete-planning capability owned by I2; no data task was admitted",
-        ));
-    }
     if manifest_file.key_metadata.is_some() {
         return Err(CdfError::contract(
             "encrypted Iceberg manifests require a configured KMS capability; plaintext key metadata is never admitted",
@@ -364,6 +402,8 @@ fn emit_manifest_tasks(
     ordinal: &mut u64,
     estimated_rows: &mut u64,
     estimated_bytes: &mut u64,
+    delete_index: Option<&IcebergDeleteIndex>,
+    maximum_task_bytes: u64,
 ) -> Result<()> {
     validate_manifest_authority(table, &work.manifest, &work.listed)?;
     for (entry_index, entry) in work.manifest.entries().iter().enumerate() {
@@ -371,9 +411,10 @@ fn emit_manifest_tasks(
             continue;
         }
         if entry.content_type() != DataContentType::Data {
-            return Err(CdfError::contract(
-                "Iceberg delete entries require the delete-planning capability owned by I2; no incomplete task set was published",
-            ));
+            return Err(CdfError::data(format!(
+                "Iceberg data manifest `{}` contains a delete entry",
+                work.listed.manifest_path
+            )));
         }
         if entry.file_format() != DataFileFormat::Parquet {
             return Err(CdfError::contract(format!(
@@ -390,12 +431,16 @@ fn emit_manifest_tasks(
         }
         let task = data_task(
             *ordinal,
-            authority_sha256,
-            &work.manifest_sha256,
             entry_index,
-            &work.listed,
-            &work.manifest,
             entry,
+            DataTaskContext {
+                authority_sha256,
+                manifest_sha256: &work.manifest_sha256,
+                manifest_file: &work.listed,
+                manifest: &work.manifest,
+                delete_index,
+                maximum_task_bytes,
+            },
         )?;
         *estimated_rows = estimated_rows
             .checked_add(entry.record_count())
@@ -411,11 +456,54 @@ fn emit_manifest_tasks(
     Ok(())
 }
 
+fn emit_delete_manifest(
+    work: ManifestWork,
+    table: &LoadedIcebergTable,
+    index: &mut IcebergDeleteIndex,
+) -> Result<()> {
+    validate_manifest_authority(table, &work.manifest, &work.listed)?;
+    for (entry_index, entry) in work.manifest.entries().iter().enumerate() {
+        if !entry.is_alive() {
+            continue;
+        }
+        if entry.content_type() == DataContentType::Data {
+            return Err(CdfError::data(format!(
+                "Iceberg delete manifest `{}` contains a data entry",
+                work.listed.manifest_path
+            )));
+        }
+        let (delete, partition_values) = delete_file(
+            &work.manifest_sha256,
+            entry_index,
+            &work.listed,
+            &work.manifest,
+            entry,
+        )?;
+        let global_equality = delete.content == IcebergDeleteContent::Equality
+            && work
+                .manifest
+                .metadata()
+                .partition_spec()
+                .fields()
+                .is_empty();
+        let partition_key = if global_equality {
+            Vec::new()
+        } else {
+            serde_json::to_vec(&partition_values).map_err(|error| {
+                CdfError::internal(format!("encode Iceberg delete partition key: {error}"))
+            })?
+        };
+        index.insert(&delete, &partition_key, global_equality)?;
+    }
+    Ok(())
+}
+
 fn task_authority(
     table: &LoadedIcebergTable,
     output_schema_id: i32,
     projected_field_ids: Vec<i32>,
     scan_intent: CompiledScanIntent,
+    has_deletes: bool,
 ) -> Result<IcebergTaskSetAuthority> {
     let schemas = table
         .metadata
@@ -472,6 +560,10 @@ fn task_authority(
     ]);
     if name_mapping.is_some() {
         required_capabilities.insert("name-mapping".to_owned());
+    }
+    if has_deletes {
+        required_capabilities.insert("equality-delete".to_owned());
+        required_capabilities.insert("position-delete".to_owned());
     }
     let authority = IcebergTaskSetAuthority {
         version: ICEBERG_TASK_SET_AUTHORITY_VERSION,
@@ -578,15 +670,29 @@ fn validate_manifest_authority(
     Ok(())
 }
 
+struct DataTaskContext<'a> {
+    authority_sha256: &'a str,
+    manifest_sha256: &'a str,
+    manifest_file: &'a iceberg::spec::ManifestFile,
+    manifest: &'a Manifest,
+    delete_index: Option<&'a IcebergDeleteIndex>,
+    maximum_task_bytes: u64,
+}
+
 fn data_task(
     ordinal: u64,
-    authority_sha256: &str,
-    manifest_sha256: &str,
     entry_index: usize,
-    manifest_file: &iceberg::spec::ManifestFile,
-    manifest: &Manifest,
     entry: &iceberg::spec::ManifestEntry,
+    context: DataTaskContext<'_>,
 ) -> Result<IcebergScanTask> {
+    let DataTaskContext {
+        authority_sha256,
+        manifest_sha256,
+        manifest_file,
+        manifest,
+        delete_index,
+        maximum_task_bytes,
+    } = context;
     let data_file = entry.data_file();
     let file_size_bytes = data_file.file_size_in_bytes();
     if file_size_bytes == 0 {
@@ -595,6 +701,137 @@ fn data_task(
             data_file.file_path()
         )));
     }
+    let partition_values = encoded_partition_values(manifest, data_file)?;
+    let (inherited_sequence, inherited_file_sequence) = inherited_sequences(entry, manifest_file);
+    let object_generation = artifact_hash(&serde_json::json!({
+        "version": 1,
+        "manifest_sha256": manifest_sha256,
+        "entry_index": entry_index,
+        "path": data_file.file_path(),
+        "size_bytes": file_size_bytes,
+        "sequence_number": inherited_sequence,
+        "file_sequence_number": inherited_file_sequence,
+    }))?;
+    let deletes = match delete_index {
+        Some(index) => {
+            let partition_key = serde_json::to_vec(&partition_values).map_err(|error| {
+                CdfError::internal(format!("encode Iceberg data partition key: {error}"))
+            })?;
+            index.applicable(
+                manifest_file.partition_spec_id,
+                &partition_key,
+                data_file.file_path(),
+                inherited_sequence,
+                maximum_task_bytes,
+            )?
+        }
+        None => Vec::new(),
+    };
+    Ok(IcebergScanTask {
+        version: ICEBERG_SCAN_TASK_VERSION,
+        canonical_ordinal: ordinal,
+        authority_sha256: authority_sha256.to_owned(),
+        data_file: IcebergDataFile {
+            path: data_file.file_path().to_owned(),
+            format: IcebergFileFormat::Parquet,
+            file_size_bytes,
+            range_start: 0,
+            range_length: file_size_bytes,
+            object_generation,
+            content_sha256: None,
+            record_count: Some(data_file.record_count()),
+            sequence_number: inherited_sequence,
+            file_sequence_number: inherited_file_sequence,
+            sort_order_id: data_file.sort_order_id(),
+            first_row_id: data_file.first_row_id(),
+        },
+        file_schema_id: manifest.metadata().schema_id(),
+        partition_spec_id: manifest_file.partition_spec_id,
+        partition_values,
+        deletes,
+    })
+}
+
+fn delete_file(
+    manifest_sha256: &str,
+    entry_index: usize,
+    manifest_file: &iceberg::spec::ManifestFile,
+    manifest: &Manifest,
+    entry: &iceberg::spec::ManifestEntry,
+) -> Result<(IcebergDeleteFile, Vec<Option<serde_json::Value>>)> {
+    let data_file = entry.data_file();
+    if data_file.file_format() != DataFileFormat::Parquet {
+        return Err(CdfError::contract(format!(
+            "Iceberg delete file `{}` uses unsupported format {}; v1/v2 Parquet is required",
+            data_file.file_path(),
+            data_file.file_format()
+        )));
+    }
+    if data_file.key_metadata().is_some() {
+        return Err(CdfError::contract(format!(
+            "Iceberg delete file `{}` is encrypted but no KMS reader capability is compiled",
+            data_file.file_path()
+        )));
+    }
+    if data_file.content_offset().is_some() || data_file.content_size_in_bytes().is_some() {
+        return Err(CdfError::contract(format!(
+            "Iceberg delete file `{}` is a v3 deletion vector; v1/v2 Parquet deletes are required",
+            data_file.file_path()
+        )));
+    }
+    let file_size_bytes = data_file.file_size_in_bytes();
+    if file_size_bytes == 0 {
+        return Err(CdfError::data(format!(
+            "Iceberg delete file `{}` has zero bytes",
+            data_file.file_path()
+        )));
+    }
+    let partition_values = encoded_partition_values(manifest, data_file)?;
+    let (sequence_number, file_sequence_number) = inherited_sequences(entry, manifest_file);
+    let content = match entry.content_type() {
+        DataContentType::PositionDeletes => IcebergDeleteContent::Position,
+        DataContentType::EqualityDeletes => IcebergDeleteContent::Equality,
+        DataContentType::Data => {
+            return Err(CdfError::data(
+                "Iceberg delete descriptor was requested for a data file",
+            ));
+        }
+    };
+    let mut equality_field_ids = data_file.equality_ids().unwrap_or_default();
+    equality_field_ids.sort_unstable();
+    equality_field_ids.dedup();
+    let referenced_data_file = data_file.referenced_data_file();
+    let object_generation = artifact_hash(&serde_json::json!({
+        "version": 1,
+        "manifest_sha256": manifest_sha256,
+        "entry_index": entry_index,
+        "path": data_file.file_path(),
+        "size_bytes": file_size_bytes,
+        "sequence_number": sequence_number,
+        "file_sequence_number": file_sequence_number,
+    }))?;
+    let delete = IcebergDeleteFile {
+        path: data_file.file_path().to_owned(),
+        format: IcebergFileFormat::Parquet,
+        content,
+        file_size_bytes,
+        object_generation,
+        content_sha256: None,
+        partition_spec_id: manifest_file.partition_spec_id,
+        record_count: Some(data_file.record_count()),
+        sequence_number,
+        file_sequence_number,
+        equality_field_ids,
+        referenced_data_file,
+    };
+    delete.validate()?;
+    Ok((delete, partition_values))
+}
+
+fn encoded_partition_values(
+    manifest: &Manifest,
+    data_file: &iceberg::spec::DataFile,
+) -> Result<Vec<Option<serde_json::Value>>> {
     let partition_type = manifest
         .metadata()
         .partition_spec()
@@ -622,49 +859,25 @@ fn data_task(
         .collect::<Result<Vec<_>>>()?;
     if partition_values.len() != data_file.partition().fields().len() {
         return Err(CdfError::data(
-            "Iceberg data-file partition tuple does not match its manifest partition type",
+            "Iceberg file partition tuple does not match its manifest partition type",
         ));
     }
-    let inherited_sequence = entry.sequence_number.or_else(|| {
+    Ok(partition_values)
+}
+
+fn inherited_sequences(
+    entry: &iceberg::spec::ManifestEntry,
+    manifest_file: &iceberg::spec::ManifestFile,
+) -> (Option<i64>, Option<i64>) {
+    let sequence = entry.sequence_number.or_else(|| {
         (entry.status == ManifestStatus::Added || manifest_file.sequence_number == 0)
             .then_some(manifest_file.sequence_number)
     });
-    let inherited_file_sequence = entry.file_sequence_number.or_else(|| {
+    let file_sequence = entry.file_sequence_number.or_else(|| {
         (entry.status == ManifestStatus::Added || manifest_file.sequence_number == 0)
             .then_some(manifest_file.sequence_number)
     });
-    let object_generation = artifact_hash(&serde_json::json!({
-        "version": 1,
-        "manifest_sha256": manifest_sha256,
-        "entry_index": entry_index,
-        "path": data_file.file_path(),
-        "size_bytes": file_size_bytes,
-        "sequence_number": inherited_sequence,
-        "file_sequence_number": inherited_file_sequence,
-    }))?;
-    Ok(IcebergScanTask {
-        version: ICEBERG_SCAN_TASK_VERSION,
-        canonical_ordinal: ordinal,
-        authority_sha256: authority_sha256.to_owned(),
-        data_file: IcebergDataFile {
-            path: data_file.file_path().to_owned(),
-            format: IcebergFileFormat::Parquet,
-            file_size_bytes,
-            range_start: 0,
-            range_length: file_size_bytes,
-            object_generation,
-            content_sha256: None,
-            record_count: Some(data_file.record_count()),
-            sequence_number: inherited_sequence,
-            file_sequence_number: inherited_file_sequence,
-            sort_order_id: data_file.sort_order_id(),
-            first_row_id: data_file.first_row_id(),
-        },
-        file_schema_id: manifest.metadata().schema_id(),
-        partition_spec_id: manifest_file.partition_spec_id,
-        partition_values,
-        deletes: Vec::new(),
-    })
+    (sequence, file_sequence)
 }
 
 fn sha256_bytes(bytes: &[u8]) -> String {

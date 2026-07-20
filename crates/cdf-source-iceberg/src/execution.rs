@@ -27,6 +27,16 @@ pub(crate) struct PreparedIcebergTaskScan {
     file_io: iceberg::io::FileIO,
 }
 
+pub(crate) struct IcebergTaskExecution {
+    pub descriptor: ResourceDescriptor,
+    pub output_schema: SchemaRef,
+    pub partition: PartitionPlan,
+    pub source: IcebergSourceOptions,
+    pub memory: Arc<dyn MemoryCoordinator>,
+    pub sender: TaskStreamSender<Batch>,
+    pub cancellation: RunCancellation,
+}
+
 pub(crate) fn prepare_task_scan(
     context: &IcebergCatalogContext,
     source: &IcebergSourceOptions,
@@ -43,14 +53,17 @@ pub(crate) fn prepare_task_scan(
 
 pub(crate) async fn execute_task_scan(
     prepared: PreparedIcebergTaskScan,
-    descriptor: ResourceDescriptor,
-    output_schema: SchemaRef,
-    partition: PartitionPlan,
-    source: IcebergSourceOptions,
-    memory: Arc<dyn MemoryCoordinator>,
-    mut sender: TaskStreamSender<Batch>,
-    cancellation: RunCancellation,
+    execution: IcebergTaskExecution,
 ) -> Result<PartitionCompletion> {
+    let IcebergTaskExecution {
+        descriptor,
+        output_schema,
+        partition,
+        source,
+        memory,
+        mut sender,
+        cancellation,
+    } = execution;
     cancellation.check()?;
     let task = upstream_task(&prepared.executable)?;
     let snapshot = prepared

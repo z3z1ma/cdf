@@ -6,6 +6,7 @@ use cdf_runtime::{SourceDriverDescriptor, SourceDriverId, artifact_hash};
 
 mod catalog;
 mod config;
+mod delete_index;
 mod driver;
 mod execution;
 mod glue;
@@ -20,6 +21,7 @@ pub use catalog::{
     SelectedIcebergSnapshot, UnsupportedGlueCatalogClient, annotated_arrow_schema,
 };
 pub use config::{
+    DEFAULT_DELETE_INDEX_CACHE_BYTES, DEFAULT_DELETE_INDEX_SPILL_GROWTH_BYTES,
     DEFAULT_MAXIMUM_BATCH_BYTES, DEFAULT_MAXIMUM_CONCURRENCY, DEFAULT_MAXIMUM_METADATA_BYTES,
     DEFAULT_MAXIMUM_METADATA_FILES, DEFAULT_MAXIMUM_TASK_AUTHORITY_BYTES,
     DEFAULT_MAXIMUM_TASK_BYTES, DEFAULT_METADATA_PARSE_AMPLIFICATION_BPS,
@@ -116,6 +118,8 @@ pub fn iceberg_option_schema() -> serde_json::Value {
                 "parquet_range_coalesce_bytes": {"type": "integer", "minimum": 1, "default": 1048576},
                 "parquet_range_fetch_concurrency": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 10}
                 ,"stream_buffer_batches": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 2}
+                ,"delete_index_cache_bytes": {"type": "integer", "minimum": 1, "default": 8388608}
+                ,"delete_index_spill_growth_bytes": {"type": "integer", "minimum": 8192, "default": 67108864}
             }
         },
         "resource": {
@@ -219,7 +223,7 @@ mod tests {
         assert!(descriptor.schemes.is_empty());
         assert_eq!(
             descriptor.option_schema_hash,
-            "sha256:b648b49154d421cb1ef5fbf1e2d29343d497bd5a395cb48577b0a98697b5b0c7"
+            "sha256:2ff78c84e8aef1245ec0c9183dbc026ed48b2497831d84e798a6cc3b6ceab049"
         );
         assert_eq!(
             descriptor.option_schema_hash,

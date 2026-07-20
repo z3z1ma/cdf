@@ -491,7 +491,7 @@ pub struct IcebergDeleteFile {
 }
 
 impl IcebergDeleteFile {
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         validate_object_location("Iceberg delete file", &self.path)?;
         require_text("Iceberg delete file generation", &self.object_generation)?;
         if self.file_size_bytes == 0 {

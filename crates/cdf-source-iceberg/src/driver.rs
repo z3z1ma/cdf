@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     GlueCatalogClient, IcebergCatalogContext, IcebergCatalogLoadRequest, IcebergCatalogRegistry,
     IcebergResourceOptions, IcebergSourceOptions, LoadedIcebergTable,
-    execution::{execute_task_scan, prepare_task_scan},
+    execution::{IcebergTaskExecution, execute_task_scan, prepare_task_scan},
     iceberg_option_schema, iceberg_source_descriptor,
     planner::{IcebergPlanningContext, plan_snapshot_scan},
     task_reader::{IcebergExecutableTask, IcebergPlannedPartitionReader},
@@ -702,7 +702,9 @@ impl ResourceStream for IcebergResource {
             }));
         };
         let execution = self.catalog.execution.clone();
-        if let Err(error) = execution.ensure_blocking_lanes(&[self.catalog.blocking_lane.clone()]) {
+        if let Err(error) =
+            execution.ensure_blocking_lanes(std::slice::from_ref(&self.catalog.blocking_lane))
+        {
             return PartitionOpenAttempt::materialized(Box::pin(async move { Err(error) }));
         }
         let partition = partition.into_plan();
@@ -731,13 +733,15 @@ impl ResourceStream for IcebergResource {
             move |prepared, sender, cancellation| async move {
                 let completion = execute_task_scan(
                     prepared,
-                    descriptor,
-                    output_schema,
-                    producer_partition,
-                    producer_source,
-                    memory,
-                    sender,
-                    cancellation,
+                    IcebergTaskExecution {
+                        descriptor,
+                        output_schema,
+                        partition: producer_partition,
+                        source: producer_source,
+                        memory,
+                        sender,
+                        cancellation,
+                    },
                 )
                 .await?;
                 let _ = completion_sender.send(completion);
@@ -1357,6 +1361,48 @@ mod tests {
                 current_data.write(&current_batch).unwrap();
                 current_data.close().unwrap();
 
+                let position_delete_path = data_dir.join("position-delete.parquet");
+                let position_delete_schema = Arc::new(Schema::new(vec![
+                    Field::new("file_path", DataType::Utf8, false)
+                        .with_metadata(field_id(i32::MAX - 101)),
+                    Field::new("pos", DataType::Int64, false)
+                        .with_metadata(field_id(i32::MAX - 102)),
+                ]));
+                let position_delete_batch = RecordBatch::try_new(
+                    Arc::clone(&position_delete_schema),
+                    vec![
+                        Arc::new(StringArray::from(vec![old_data_path.display().to_string()])),
+                        Arc::new(Int64Array::from(vec![1_i64])),
+                    ],
+                )
+                .unwrap();
+                let mut position_delete = ArrowWriter::try_new(
+                    fs::File::create(&position_delete_path).unwrap(),
+                    position_delete_schema,
+                    None,
+                )
+                .unwrap();
+                position_delete.write(&position_delete_batch).unwrap();
+                position_delete.close().unwrap();
+
+                let equality_delete_path = data_dir.join("equality-delete.parquet");
+                let equality_delete_schema = Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Int64, false).with_metadata(field_id(1)),
+                ]));
+                let equality_delete_batch = RecordBatch::try_new(
+                    Arc::clone(&equality_delete_schema),
+                    vec![Arc::new(Int64Array::from(vec![5_i64]))],
+                )
+                .unwrap();
+                let mut equality_delete = ArrowWriter::try_new(
+                    fs::File::create(&equality_delete_path).unwrap(),
+                    equality_delete_schema,
+                    None,
+                )
+                .unwrap();
+                equality_delete.write(&equality_delete_batch).unwrap();
+                equality_delete.close().unwrap();
+
                 let manifest_list_path = metadata_dir.join("snap-101.avro");
                 let metadata_bytes = nonempty_table_metadata(&table, &manifest_list_path);
                 let table_metadata: TableMetadata =
@@ -1422,6 +1468,54 @@ mod tests {
                     .unwrap();
                 let current_manifest = current_writer.write_manifest_file().await.unwrap();
 
+                let delete_manifest_path = metadata_dir.join("manifest-deletes.avro");
+                let mut delete_writer = ManifestWriterBuilder::new(
+                    file_io
+                        .new_output(delete_manifest_path.to_string_lossy())
+                        .unwrap(),
+                    Some(101),
+                    table_metadata.schema_by_id(1).unwrap().clone(),
+                    table_metadata
+                        .partition_spec_by_id(0)
+                        .unwrap()
+                        .as_ref()
+                        .clone(),
+                )
+                .build_v2_deletes();
+                delete_writer
+                    .add_file(
+                        DataFileBuilder::default()
+                            .partition_spec_id(0)
+                            .content(DataContentType::PositionDeletes)
+                            .file_path(position_delete_path.display().to_string())
+                            .file_format(DataFileFormat::Parquet)
+                            .file_size_in_bytes(fs::metadata(&position_delete_path).unwrap().len())
+                            .record_count(1)
+                            .partition(Struct::empty())
+                            .referenced_data_file(Some(old_data_path.display().to_string()))
+                            .build()
+                            .unwrap(),
+                        2,
+                    )
+                    .unwrap();
+                delete_writer
+                    .add_file(
+                        DataFileBuilder::default()
+                            .partition_spec_id(0)
+                            .content(DataContentType::EqualityDeletes)
+                            .file_path(equality_delete_path.display().to_string())
+                            .file_format(DataFileFormat::Parquet)
+                            .file_size_in_bytes(fs::metadata(&equality_delete_path).unwrap().len())
+                            .record_count(1)
+                            .partition(Struct::empty())
+                            .equality_ids(Some(vec![1]))
+                            .build()
+                            .unwrap(),
+                        2,
+                    )
+                    .unwrap();
+                let delete_manifest = delete_writer.write_manifest_file().await.unwrap();
+
                 let list_output = file_io
                     .new_output(manifest_list_path.to_string_lossy())
                     .unwrap()
@@ -1431,7 +1525,7 @@ mod tests {
                 let mut list_writer = ManifestListWriter::v2(list_output, 101, None, 1);
                 // Deliberately reverse canonical path order; CDF planning must normalize it.
                 list_writer
-                    .add_manifests([current_manifest, old_manifest].into_iter())
+                    .add_manifests([current_manifest, delete_manifest, old_manifest].into_iter())
                     .unwrap();
                 list_writer.close().await.unwrap();
 
@@ -1899,6 +1993,18 @@ mod tests {
         assert_eq!(authority.output_schema_id, 1);
         assert_eq!(authority.projected_field_ids, vec![1, 2]);
         assert_eq!(authority.default_sort_order_id, 0);
+        assert!(
+            authority
+                .reader
+                .required_capabilities
+                .contains("position-delete")
+        );
+        assert!(
+            authority
+                .reader
+                .required_capabilities
+                .contains("equality-delete")
+        );
         assert_eq!(
             authority.sort_orders.keys().copied().collect::<Vec<_>>(),
             [0]
@@ -1914,9 +2020,19 @@ mod tests {
         assert_eq!(tasks[0].canonical_ordinal, 0);
         assert_eq!(tasks[0].file_schema_id, 0);
         assert!(tasks[0].data_file.path.ends_with("data/old.parquet"));
+        assert_eq!(tasks[0].deletes.len(), 2);
+        assert!(tasks[0].deletes.iter().any(|delete| {
+            delete.content == crate::IcebergDeleteContent::Position
+                && delete.referenced_data_file.as_deref() == Some(tasks[0].data_file.path.as_str())
+        }));
         assert_eq!(tasks[1].canonical_ordinal, 1);
         assert_eq!(tasks[1].file_schema_id, 1);
         assert!(tasks[1].data_file.path.ends_with("data/current.parquet"));
+        assert_eq!(tasks[1].deletes.len(), 1);
+        assert_eq!(
+            tasks[1].deletes[0].content,
+            crate::IcebergDeleteContent::Equality
+        );
         assert_eq!(
             one_job_scan.estimated_bytes,
             Some(
@@ -1984,8 +2100,8 @@ mod tests {
                 Ok((rows, null_labels))
             })
             .unwrap();
-        assert_eq!(rows, 8);
-        assert_eq!(null_labels, 4);
+        assert_eq!(rows, 6);
+        assert_eq!(null_labels, 3);
 
         let mut many_jobs_request = compile_request(root.path());
         many_jobs_request

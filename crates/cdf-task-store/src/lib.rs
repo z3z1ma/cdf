@@ -262,6 +262,24 @@ impl ExternalTaskStore {
         Ok(reader)
     }
 
+    /// Creates an invocation-local workspace beside task artifacts.
+    ///
+    /// The workspace is never serialized into a task reference and is removed on drop. Callers
+    /// remain responsible for accounting every byte written through the shared spill authority.
+    pub fn temporary_workspace(&self, label: &str) -> Result<ExternalTaskWorkspace> {
+        require_token("task-store workspace label", label)?;
+        let directory = self.root.join(self.namespace.as_str()).join("scratch");
+        fs::create_dir_all(&directory)
+            .map_err(|error| io_error("create task-store scratch directory", &directory, error))?;
+        let directory = tempfile::Builder::new()
+            .prefix(&format!("{label}-"))
+            .tempdir_in(&directory)
+            .map_err(|error| {
+                io_error("create task-store temporary workspace", &directory, error)
+            })?;
+        Ok(ExternalTaskWorkspace { directory })
+    }
+
     fn path_for_reference(&self, reference: &PlannedTaskSetReference) -> Result<PathBuf> {
         let key = Path::new(reference.object_key.as_str());
         if key.is_absolute()
@@ -274,6 +292,17 @@ impl ExternalTaskStore {
             ));
         }
         Ok(self.root.join(self.namespace.as_str()).join(key))
+    }
+}
+
+/// RAII ownership for invocation-local planner scratch.
+pub struct ExternalTaskWorkspace {
+    directory: tempfile::TempDir,
+}
+
+impl ExternalTaskWorkspace {
+    pub fn path(&self) -> &Path {
+        self.directory.path()
     }
 }
 
