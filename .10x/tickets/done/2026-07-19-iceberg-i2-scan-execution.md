@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-19
 Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-19-iceberg-glue-source-program.md

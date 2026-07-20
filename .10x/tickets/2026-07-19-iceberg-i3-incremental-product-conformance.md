@@ -1,8 +1,8 @@
-Status: blocked
+Status: active
 Created: 2026-07-19
 Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-19-iceberg-glue-source-program.md
-Depends-On: .10x/tickets/2026-07-19-iceberg-i2-scan-execution.md
+Depends-On: .10x/tickets/done/2026-07-19-iceberg-i2-scan-execution.md
 
 # Iceberg I3: snapshot incrementality, product parity, and full conformance
 
@@ -36,10 +36,11 @@ No changelog/tailing approximation, catalog writes, ORC/Avro/v3/encryption silen
 - 2026-07-19: I2's authorized FQ12 smoke run exposed the first concrete I3 acceptance failure. Two bounded runs selected the exact same Glue Iceberg snapshot (`snapshot_id=2229073605200099107`, sequence 7, identical metadata generation) and each appended 1,097 rows to DuckDB. The checkpoint head correctly records identical input/output `TableSnapshotPosition` values, proving the missing behavior is generic bounded-source resume/no-op binding before package creation rather than catalog drift. I3 MUST replace this duplicate execution with the specified visible fast no-op and a permanent local two-run regression scenario before closure.
 - 2026-07-19: Implemented the source-neutral unchanged-position path through the existing `ResourceStream::rebind_scan_for_resume` seam. Bounded orchestration now loads the committed frontier before package creation, the Iceberg adapter removes task authority only when the selected `TableSnapshotPosition` is byte-for-byte identical, and the engine recompiles an empty deterministic schedule. No generic runtime branch names Iceberg. A permanent two-run project test proves that the second run opens no partition, emits no package/destination/checkpoint write, creates no package directory, and returns `source_position_unchanged`; the existing FileManifest no-op law remains green.
 - 2026-07-19: Live FQ12 verification against `gold.dim_date` selected the already-committed snapshot `2229073605200099107` and returned an explicit no-op with `planned_packages=0`, three lifecycle events, and all three write flags false. DuckDB remained at 2,194 rows/2,194 distinct row keys, so the prior duplicate-load regression is closed for an exact unchanged snapshot. The run still took 3.44 seconds because task planning currently precedes resume rebinding; telemetry also showed 68,157,455 peak bytes for the external task-set writer and 9,502,720 for the Iceberg planning index on only four tasks. That is now concrete I2 control-plane performance evidence, not accepted I3 overhead.
+- 2026-07-19: Activated after I2 closed with bounded execution at the measured remote-transfer roofline. I3 retains the already-landed source-neutral unchanged-position no-op and now owns the remaining append-ancestry, time-travel, replay, unsupported-capability, and final FQ12/local conformance acceptance criteria.
 
 ## Blockers
 
-I2. AWS external writes require confirmation at execution time.
+AWS external writes require confirmation at execution time.
 
 ## Evidence
 
