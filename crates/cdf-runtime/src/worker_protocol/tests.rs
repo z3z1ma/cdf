@@ -1191,6 +1191,94 @@ fn local_isolated_host_round_trips_only_an_admitted_result() {
 }
 
 #[test]
+fn isolated_worker_rejects_missing_capability_and_source_binding_before_execution() {
+    let fixture = Fixture::new();
+    let compatibility = compatibility();
+    let capabilities = worker_capabilities();
+    let registry = fixture.registry();
+    let executor = FixtureIsolatedExecutor { fixture: &fixture };
+
+    let mut missing_capability = fixture.task.clone();
+    missing_capability
+        .capabilities
+        .services
+        .push("missing-worker-service-v1".to_owned());
+    missing_capability.capabilities.services.sort();
+    missing_capability.task_sha256 = missing_capability.compute_hash().unwrap();
+    let mut capability_attempt = fixture.attempt();
+    capability_attempt.write_permit.task_sha256 = missing_capability.task_sha256.clone();
+    let worker = LocalIsolatedWorkerHost::new(
+        &compatibility,
+        &capabilities,
+        &registry,
+        &fixture.store,
+        &executor,
+    )
+    .unwrap();
+    let error = futures_executor::block_on(execute_local_isolated_partition(
+        &missing_capability,
+        &capability_attempt,
+        &worker,
+        &registry,
+        &fixture.store,
+        &fixture.lease(),
+        2_000,
+    ))
+    .unwrap_err();
+    assert!(
+        error.message.contains("missing required service"),
+        "{}",
+        error.message
+    );
+
+    let empty_registry = SourceRegistry::new();
+    let worker = LocalIsolatedWorkerHost::new(
+        &compatibility,
+        &capabilities,
+        &empty_registry,
+        &fixture.store,
+        &executor,
+    )
+    .unwrap();
+    let error = futures_executor::block_on(execute_local_isolated_partition(
+        &fixture.task,
+        &fixture.attempt(),
+        &worker,
+        &registry,
+        &fixture.store,
+        &fixture.lease(),
+        2_000,
+    ))
+    .unwrap_err();
+    assert!(error.message.contains("unregistered source driver"));
+
+    let mut stale_driver = fixture.task.clone();
+    stale_driver.source.driver_version = "2.0.0".to_owned();
+    stale_driver.task_sha256 = stale_driver.compute_hash().unwrap();
+    let mut stale_attempt = fixture.attempt();
+    stale_attempt.write_permit.task_sha256 = stale_driver.task_sha256.clone();
+    let worker = LocalIsolatedWorkerHost::new(
+        &compatibility,
+        &capabilities,
+        &registry,
+        &fixture.store,
+        &executor,
+    )
+    .unwrap();
+    let error = futures_executor::block_on(execute_local_isolated_partition(
+        &stale_driver,
+        &stale_attempt,
+        &worker,
+        &registry,
+        &fixture.store,
+        &fixture.lease(),
+        2_000,
+    ))
+    .unwrap_err();
+    assert!(error.message.contains("version/schema"));
+}
+
+#[test]
 fn forged_execution_artifact_and_semantic_authority_fail_closed() {
     let mut fixture = Fixture::new();
     let replacement = fixture.store.insert_semantic(
