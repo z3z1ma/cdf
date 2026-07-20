@@ -407,6 +407,29 @@ struct Fixture {
     store: MockArtifactStore,
 }
 
+struct FixtureIsolatedExecutor<'a> {
+    fixture: &'a Fixture,
+}
+
+impl IsolatedPartitionExecutor for FixtureIsolatedExecutor<'_> {
+    fn execute(
+        &self,
+        invocation: IsolatedPartitionInvocation,
+    ) -> cdf_kernel::BoxFuture<'_, Result<PartitionWorkerResult>> {
+        let result = if invocation.task() != &self.fixture.task
+            || invocation.authority().partition() != &partition_plan()
+            || invocation.authority().source() != &source_plan()
+        {
+            Err(CdfError::contract(
+                "isolated executor received authority other than its reconstructed task",
+            ))
+        } else {
+            Ok(self.fixture.result(invocation.attempt()))
+        };
+        Box::pin(async move { result })
+    }
+}
+
 #[derive(Default)]
 struct CountingArtifactSink {
     writes: usize,
@@ -767,6 +790,51 @@ fn isolated_worker_reconstructs_every_authority_from_artifacts() {
             2_000,
         )
         .unwrap();
+}
+
+#[test]
+fn local_isolated_host_round_trips_only_an_admitted_result() {
+    let fixture = Fixture::new();
+    let registry = fixture.registry();
+    let compatibility = compatibility();
+    let capabilities = worker_capabilities();
+    let executor = FixtureIsolatedExecutor { fixture: &fixture };
+    let worker = LocalIsolatedWorkerHost::new(
+        &compatibility,
+        &capabilities,
+        &registry,
+        &fixture.store,
+        &executor,
+    )
+    .unwrap();
+    let attempt = fixture.attempt();
+    let admitted = futures_executor::block_on(execute_local_isolated_partition(
+        &fixture.task,
+        &attempt,
+        &worker,
+        &registry,
+        &fixture.store,
+        &fixture.lease(),
+        2_000,
+    ))
+    .unwrap();
+    assert_eq!(admitted.result(), &fixture.result(&attempt));
+
+    let stale = WorkerLeaseState {
+        fencing_token: FencingToken::new(5).unwrap(),
+        ..fixture.lease()
+    };
+    let error = futures_executor::block_on(execute_local_isolated_partition(
+        &fixture.task,
+        &attempt,
+        &worker,
+        &registry,
+        &fixture.store,
+        &stale,
+        2_000,
+    ))
+    .unwrap_err();
+    assert!(error.message.contains("stale"));
 }
 
 #[test]

@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-11
 Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-10-p3-ws-c-deterministic-parallelism.md
@@ -33,3 +33,8 @@ None. WX1, C2, C4, and A8 are done; the local jobs-invariance/scaling closeout i
 ## References
 
 - `.10x/specs/portable-partition-task-protocol.md`
+
+## Journal
+
+- 2026-07-19: Activated after WS-A and its A9 conformance tail closed. Workspace-wide `cargo fmt --all -- --check`, strict all-target workspace Clippy, and strict all-features workspace Clippy pass at commit `1201792e`. The concurrent Iceberg/dependency lane remains dirty and is explicitly outside this ticket's edit and staging boundary.
+- 2026-07-19: Added the neutral local isolated-host round trip in `cdf-runtime`. The host accepts only bounded serialized task/attempt bytes, reconstructs one owned source/partition/execution authority through its own registry and verifier, invokes a worker-owned executor, and returns only serialized result bytes. The coordinator API independently decodes and admits that result against its current lease, registry, artifacts, and source facts before exposing the private `AdmittedPartitionWorkerResult`. The API executes one task at a time so callers can bound the concurrent frontier without retaining cardinality-sized metadata; bulk data remains referenced rather than entering control messages. The focused round-trip/stale-fence test, all 11 worker-protocol tests, formatting, and strict all-target runtime Clippy pass.

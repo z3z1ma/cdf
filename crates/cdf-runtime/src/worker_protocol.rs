@@ -1,10 +1,10 @@
 use std::collections::BTreeSet;
 
 use cdf_kernel::{
-    CdfError, CheckpointId, ContentObjectKey, ContentProviderGeneration, ContentStoreNamespace,
-    CursorPosition, CursorValue, FencingToken, LeaseAuthorityDomainId, PartitionId, PipelineId,
-    PlanId, ProcessedObservationOutcome, ResourceId, Result, SchemaHash, ScopeKey, SecretReference,
-    SegmentId, SourcePosition, partition_source_identity_binding,
+    BoxFuture, CdfError, CheckpointId, ContentObjectKey, ContentProviderGeneration,
+    ContentStoreNamespace, CursorPosition, CursorValue, FencingToken, LeaseAuthorityDomainId,
+    PartitionId, PipelineId, PlanId, ProcessedObservationOutcome, ResourceId, Result, SchemaHash,
+    ScopeKey, SecretReference, SegmentId, SourcePosition, partition_source_identity_binding,
 };
 use serde::{Deserialize, Serialize};
 
@@ -995,6 +995,166 @@ pub trait WorkerAdmissionVerifier {
         attestation: &WorkerSourceAttestation,
         observations: &[WorkerProcessedObservation],
     ) -> Result<VerifiedWorkerSourceFacts>;
+}
+
+/// One fully owned worker invocation reconstructed from serialized control messages.
+///
+/// This value deliberately contains no borrowed coordinator resource, store, path, secret, or
+/// runtime object. Worker-host services remain injected through the executor implementation and
+/// bulk data moves through the referenced source/artifact authorities rather than these control
+/// messages.
+pub struct IsolatedPartitionInvocation {
+    task: PortablePartitionTask,
+    attempt: PartitionAttemptEnvelope,
+    authority: ReconstructedWorkerTaskAuthority,
+}
+
+impl IsolatedPartitionInvocation {
+    pub fn task(&self) -> &PortablePartitionTask {
+        &self.task
+    }
+
+    pub fn attempt(&self) -> &PartitionAttemptEnvelope {
+        &self.attempt
+    }
+
+    pub fn authority(&self) -> &ReconstructedWorkerTaskAuthority {
+        &self.authority
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        PortablePartitionTask,
+        PartitionAttemptEnvelope,
+        ReconstructedWorkerTaskAuthority,
+    ) {
+        (self.task, self.attempt, self.authority)
+    }
+}
+
+/// Worker-owned execution behind the portable task boundary.
+///
+/// Implementations resolve secrets, source/format drivers, memory, and artifact sinks from their
+/// own host services. The executor never receives coordinator execution objects.
+pub trait IsolatedPartitionExecutor {
+    fn execute(
+        &self,
+        invocation: IsolatedPartitionInvocation,
+    ) -> BoxFuture<'_, Result<PartitionWorkerResult>>;
+}
+
+/// A local process host that exercises the exact serialization boundary required by remote hosts.
+///
+/// It accepts only task/attempt bytes, performs bounded decoding and independent authority
+/// reconstruction, then returns only result bytes. Keeping this host transport-free makes it the
+/// conformance implementation for future RPC, container, Spark, Flink, or Ballista adapters.
+pub struct LocalIsolatedWorkerHost<'a> {
+    compatibility: &'a WorkerCompatibility,
+    capabilities: &'a WorkerRuntimeCapabilities,
+    registry: &'a crate::SourceRegistry,
+    verifier: &'a dyn WorkerAdmissionVerifier,
+    executor: &'a dyn IsolatedPartitionExecutor,
+}
+
+impl<'a> LocalIsolatedWorkerHost<'a> {
+    pub fn new(
+        compatibility: &'a WorkerCompatibility,
+        capabilities: &'a WorkerRuntimeCapabilities,
+        registry: &'a crate::SourceRegistry,
+        verifier: &'a dyn WorkerAdmissionVerifier,
+        executor: &'a dyn IsolatedPartitionExecutor,
+    ) -> Result<Self> {
+        compatibility.validate()?;
+        capabilities.validate()?;
+        Ok(Self {
+            compatibility,
+            capabilities,
+            registry,
+            verifier,
+            executor,
+        })
+    }
+
+    /// Executes exactly one task so resident control metadata remains bounded independently of
+    /// partition cardinality. Task-set enumeration and result persistence belong to external,
+    /// content-addressed stores rather than a resident `Vec` in this host.
+    pub async fn execute_serialized(
+        &self,
+        task_bytes: &[u8],
+        attempt_bytes: &[u8],
+    ) -> Result<Vec<u8>> {
+        let task = PortablePartitionTask::decode_bounded(
+            task_bytes,
+            self.compatibility,
+            self.capabilities,
+        )?;
+        let attempt =
+            PartitionAttemptEnvelope::decode_bounded(attempt_bytes, &task, self.capabilities)?;
+        let authority = task.reconstruct_and_validate_authority(self.registry, self.verifier)?;
+        let result = self
+            .executor
+            .execute(IsolatedPartitionInvocation {
+                task,
+                attempt,
+                authority,
+            })
+            .await?;
+        result.validate()?;
+        serde_json::to_vec(&result)
+            .map_err(|error| CdfError::internal(format!("encode partition worker result: {error}")))
+    }
+}
+
+/// A result that has passed independent coordinator admission.
+///
+/// The private constructor prevents orchestration from accidentally advancing package/state
+/// authority from a merely well-formed worker claim.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdmittedPartitionWorkerResult(PartitionWorkerResult);
+
+impl AdmittedPartitionWorkerResult {
+    pub fn result(&self) -> &PartitionWorkerResult {
+        &self.0
+    }
+
+    pub fn into_result(self) -> PartitionWorkerResult {
+        self.0
+    }
+}
+
+/// Runs one local isolated-worker round trip and returns only an independently admitted result.
+///
+/// This function is intentionally one-at-a-time: callers may maintain a bounded concurrent
+/// frontier, but neither this API nor the worker host accumulates task/result metadata in memory.
+pub async fn execute_local_isolated_partition(
+    task: &PortablePartitionTask,
+    attempt: &PartitionAttemptEnvelope,
+    worker: &LocalIsolatedWorkerHost<'_>,
+    coordinator_registry: &crate::SourceRegistry,
+    coordinator_verifier: &dyn WorkerAdmissionVerifier,
+    current_lease: &WorkerLeaseState,
+    now_ms: i64,
+) -> Result<AdmittedPartitionWorkerResult> {
+    task.validate_for_worker(worker.compatibility, worker.capabilities)?;
+    attempt.validate_for_task(task)?;
+    let task_bytes = serde_json::to_vec(task)
+        .map_err(|error| CdfError::internal(format!("encode portable partition task: {error}")))?;
+    let attempt_bytes = serde_json::to_vec(attempt)
+        .map_err(|error| CdfError::internal(format!("encode partition attempt: {error}")))?;
+    let result_bytes = worker
+        .execute_serialized(&task_bytes, &attempt_bytes)
+        .await?;
+    let result = PartitionWorkerResult::decode_bounded(&result_bytes, task, worker.capabilities)?;
+    result.validate_for_admission(
+        task,
+        attempt,
+        coordinator_registry,
+        current_lease,
+        coordinator_verifier,
+        now_ms,
+    )?;
+    Ok(AdmittedPartitionWorkerResult(result))
 }
 
 impl PortablePartitionTask {
