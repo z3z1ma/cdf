@@ -14,11 +14,10 @@ pub use airbyte::{
 };
 pub use command::{
     BoundedCommandBytes, BoundedCommandOutput, CommandSpec, DEFAULT_STDERR_LINE_LIMIT, StderrTrace,
-    StdoutFormat, SubprocessCompletion, SubprocessCompletionHandle, SubprocessOutput,
-    SubprocessRead, SubprocessStreamOutput, SupervisionOptions,
+    StdoutFormat, SubprocessOutput, SubprocessRead, SupervisionOptions,
 };
 pub use protocol::{ProtocolState, ProtocolStreamRead, StreamIdentity};
-pub use runner::{run_bounded_command, run_bounded_stdout_adapter, run_stdout_adapter_streaming};
+pub use runner::{SubprocessProducer, run_bounded_command, run_bounded_stdout_adapter};
 pub use singer::{
     SingerMessage, SingerOther, SingerRead, SingerRecord, SingerSchema, SingerState,
     parse_singer_ndjson, read_singer_ndjson_bytes,

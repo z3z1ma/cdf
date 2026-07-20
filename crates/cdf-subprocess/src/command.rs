@@ -1,10 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    path::PathBuf,
-    process::ExitStatus,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{collections::BTreeMap, path::PathBuf, process::ExitStatus, time::Duration};
 
 use cdf_kernel::{
     Batch, ResourceDescriptor, ResourceId, SchemaHash, SchemaSnapshotReference, SchemaSource,
@@ -60,6 +54,8 @@ pub enum StdoutFormat {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SupervisionOptions {
     pub timeout: Option<Duration>,
+    /// Grace period between cooperative process-group termination and forced termination.
+    pub termination_grace: Duration,
     pub stderr_line_limit: usize,
     pub maximum_stdout_bytes: u64,
     pub maximum_stderr_bytes: u64,
@@ -69,6 +65,7 @@ impl Default for SupervisionOptions {
     fn default() -> Self {
         Self {
             timeout: None,
+            termination_grace: Duration::from_millis(250),
             stderr_line_limit: DEFAULT_STDERR_LINE_LIMIT,
             maximum_stdout_bytes: 64 * 1024 * 1024,
             maximum_stderr_bytes: 256 * 1024,
@@ -124,6 +121,7 @@ impl AsRef<[u8]> for BoundedCommandBytes {
 pub struct StderrTrace {
     bytes: BoundedCommandBytes,
     line_limit: usize,
+    discarded_bytes: u64,
 }
 
 #[derive(Debug)]
@@ -131,48 +129,6 @@ pub struct SubprocessOutput {
     pub read: SubprocessRead,
     pub stderr: StderrTrace,
     pub exit_status: ExitStatus,
-}
-
-pub struct SubprocessStreamOutput {
-    pub descriptor: ResourceDescriptor,
-    pub batches: cdf_runtime::FormatBatchStream,
-    pub completion: SubprocessCompletionHandle,
-}
-
-#[derive(Debug)]
-pub struct SubprocessCompletion {
-    pub stderr: StderrTrace,
-    pub exit_status: ExitStatus,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct SubprocessCompletionHandle {
-    inner: Arc<Mutex<Option<SubprocessCompletion>>>,
-}
-
-impl SubprocessCompletionHandle {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
-    pub(crate) fn complete(&self, completion: SubprocessCompletion) -> cdf_kernel::Result<()> {
-        let mut guard = self.inner.lock().unwrap();
-        if guard.is_some() {
-            return Err(cdf_kernel::CdfError::internal(
-                "subprocess stream completion was recorded twice",
-            ));
-        }
-        *guard = Some(completion);
-        Ok(())
-    }
-
-    pub fn take(&self) -> cdf_kernel::Result<SubprocessCompletion> {
-        self.inner
-            .lock()
-            .unwrap()
-            .take()
-            .ok_or_else(|| cdf_kernel::CdfError::internal("subprocess stream has not completed"))
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -234,8 +190,12 @@ pub(crate) fn descriptor_for_schema_hash(
 }
 
 impl StderrTrace {
-    pub(crate) fn new(bytes: BoundedCommandBytes, line_limit: usize) -> Self {
-        Self { bytes, line_limit }
+    pub(crate) fn new(bytes: BoundedCommandBytes, line_limit: usize, discarded_bytes: u64) -> Self {
+        Self {
+            bytes,
+            line_limit,
+            discarded_bytes,
+        }
     }
 
     pub fn lines(&self) -> Vec<String> {
@@ -251,10 +211,15 @@ impl StderrTrace {
     }
 
     pub fn is_truncated(&self) -> bool {
-        String::from_utf8_lossy(self.bytes.as_bytes())
-            .lines()
-            .nth(self.line_limit)
-            .is_some()
+        self.discarded_bytes > 0
+            || String::from_utf8_lossy(self.bytes.as_bytes())
+                .lines()
+                .nth(self.line_limit)
+                .is_some()
+    }
+
+    pub fn discarded_bytes(&self) -> u64 {
+        self.discarded_bytes
     }
 
     pub fn summary(&self) -> String {

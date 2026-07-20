@@ -553,6 +553,7 @@ fn probe_interpreter(
         stderr_line_limit: 1,
         maximum_stdout_bytes: budget.limits().maximum_subprocess_output_bytes,
         maximum_stderr_bytes: 1024,
+        ..cdf_subprocess::SupervisionOptions::default()
     };
     let output = match execution.run_io(cdf_subprocess::run_bounded_command(
         command,

@@ -11,12 +11,16 @@ use std::{
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
+use cdf_foreign_stream::{
+    ForeignControlKind, ForeignProducer, ForeignStreamEvent, ForeignStreamOpenRequest,
+    ForeignTerminalStatus, ForeignTransferMode,
+};
 use cdf_kernel::{
     ErrorKind, ForeignState, PartitionId, ResourceId, ScopeKey, SegmentId, SourcePosition,
 };
 use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
 use cdf_runtime::{DecodeSchemaPlan, ReadOptions};
-use futures_util::TryStreamExt;
+use futures_util::StreamExt;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -314,27 +318,49 @@ async fn arrow_ipc_stdout_adapter_streams_unknown_length_without_executor_deadlo
     }
     let command = CommandSpec::new("cat").with_args([ipc_path.to_str().unwrap()]);
 
-    let output = run_stdout_adapter_streaming(
-        &command,
+    let producer = SubprocessProducer::new(
+        command,
         StdoutFormat::ArrowIpc,
-        &read_options(),
+        read_options(),
         DecodeSchemaPlan::fixed_admission(Arc::clone(&schema)),
-        &SupervisionOptions {
+        SupervisionOptions {
             maximum_stdout_bytes: 1024 * 1024,
             ..SupervisionOptions::default()
         },
         memory(),
     )
-    .await
     .unwrap();
-    let batches = output.batches.try_collect::<Vec<_>>().await.unwrap();
-    let completion = output.completion.take().unwrap();
+    let mut opened = producer
+        .open(ForeignStreamOpenRequest {
+            resource_id: ResourceId::new("orders").unwrap(),
+            partition_id: PartitionId::new("p0").unwrap(),
+            cancellation: Default::default(),
+        })
+        .await
+        .unwrap();
+    let mut batches = Vec::new();
+    let mut terminal = None;
+    while let Some(event) = opened.events.next().await {
+        match event.unwrap() {
+            ForeignStreamEvent::Outcome(outcome) => batches.push(outcome),
+            ForeignStreamEvent::Control(_) => {}
+            ForeignStreamEvent::Terminal(status) => terminal = Some(status),
+        }
+    }
+    opened.termination.join().await.unwrap();
 
-    assert!(completion.exit_status.success());
+    assert!(matches!(
+        terminal,
+        Some(ForeignTerminalStatus::Succeeded { .. })
+    ));
     assert_eq!(batches.len(), 1);
-    assert_eq!(batches[0].header.row_count, 2);
     assert_eq!(
-        batches[0].record_batch().unwrap().schema().as_ref(),
+        batches[0].transfer_mode,
+        ForeignTransferMode::ArrowIpcStream
+    );
+    assert_eq!(batches[0].batch.header.row_count, 2);
+    assert_eq!(
+        batches[0].batch.record_batch().unwrap().schema().as_ref(),
         schema.as_ref()
     );
 }
@@ -352,31 +378,166 @@ async fn ndjson_stdout_adapter_streams_with_compiled_schema_without_reserving_st
         "printf 'stream trace\\n' >&2; i=0; while [ \"$i\" -lt 4096 ]; do printf '{\"id\":%s,\"name\":\"ada\"}\\n' \"$i\"; i=$((i + 1)); done",
     ]);
 
-    let output = run_stdout_adapter_streaming(
-        &command,
+    let producer = SubprocessProducer::new(
+        command,
         StdoutFormat::Ndjson,
-        &read_options(),
+        read_options(),
         DecodeSchemaPlan::fixed_admission(schema),
-        &SupervisionOptions {
+        SupervisionOptions {
             maximum_stdout_bytes: 256 * 1024 * 1024,
             maximum_stderr_bytes: 64 * 1024,
             ..SupervisionOptions::default()
         },
         constrained,
     )
-    .await
     .unwrap();
-    let batches = output.batches.try_collect::<Vec<_>>().await.unwrap();
-    let completion = output.completion.take().unwrap();
+    let mut opened = producer
+        .open(ForeignStreamOpenRequest {
+            resource_id: ResourceId::new("orders").unwrap(),
+            partition_id: PartitionId::new("p0").unwrap(),
+            cancellation: Default::default(),
+        })
+        .await
+        .unwrap();
+    let mut batches = Vec::new();
+    let mut diagnostics = Vec::new();
+    let mut terminal = None;
+    while let Some(event) = opened.events.next().await {
+        match event.unwrap() {
+            ForeignStreamEvent::Outcome(outcome) => batches.push(outcome.batch),
+            ForeignStreamEvent::Control(control) => {
+                if let ForeignControlKind::Diagnostic { message, .. } = control.kind {
+                    diagnostics.push(message);
+                }
+            }
+            ForeignStreamEvent::Terminal(status) => terminal = Some(status),
+        }
+    }
+    opened.termination.join().await.unwrap();
 
-    assert!(completion.exit_status.success());
-    assert_eq!(completion.stderr.lines(), vec!["stream trace"]);
+    assert!(matches!(
+        terminal,
+        Some(ForeignTerminalStatus::Succeeded { .. })
+    ));
+    assert_eq!(diagnostics, vec!["stream trace"]);
     assert_eq!(
         batches
             .iter()
             .map(|batch| batch.header.row_count)
             .sum::<u64>(),
         4096
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn nonzero_exit_after_data_emits_a_failed_terminal_and_cannot_gate() {
+    let temp = tempfile::tempdir().unwrap();
+    let ipc_path = temp.path().join("late-failure.arrow");
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int64Array::from(vec![1])) as ArrayRef],
+    )
+    .unwrap();
+    {
+        let mut file = File::create(&ipc_path).unwrap();
+        let mut writer = StreamWriter::try_new(&mut file, schema.as_ref()).unwrap();
+        writer.write(&batch).unwrap();
+        writer.finish().unwrap();
+        file.flush().unwrap();
+    }
+    let producer = SubprocessProducer::new(
+        shell([
+            "-c",
+            "cat \"$1\"; printf 'late failure\n' >&2; exit 7",
+            "cdf-test",
+            ipc_path.to_str().unwrap(),
+        ]),
+        StdoutFormat::ArrowIpc,
+        read_options(),
+        DecodeSchemaPlan::fixed_admission(schema),
+        SupervisionOptions::default(),
+        memory(),
+    )
+    .unwrap();
+    let opened = producer
+        .open(ForeignStreamOpenRequest {
+            resource_id: ResourceId::new("orders").unwrap(),
+            partition_id: PartitionId::new("p0").unwrap(),
+            cancellation: Default::default(),
+        })
+        .await
+        .unwrap();
+    let termination = opened.termination.clone();
+    let mut batches = cdf_foreign_stream::batch_stream_from_foreign_events(opened.events);
+
+    let first = batches.next().await.unwrap().unwrap();
+    assert_eq!(first.header.row_count, 1);
+    let error = batches.next().await.unwrap().unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Transient);
+    assert!(error.message.contains("exit code 7"));
+    assert!(error.message.contains("late failure"));
+    assert!(batches.next().await.is_none());
+    termination.join().await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn cancellation_before_first_frame_kills_descendants_and_joins() {
+    let temp = tempfile::tempdir().unwrap();
+    let descendant_pid = temp.path().join("stream-descendant.pid");
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+    let producer = SubprocessProducer::new(
+        shell([
+            "-c",
+            "sleep 30 & child=$!; printf '%s' \"$child\" > \"$1\"; wait",
+            "cdf-test",
+            descendant_pid.to_str().unwrap(),
+        ]),
+        StdoutFormat::Ndjson,
+        read_options(),
+        DecodeSchemaPlan::fixed_admission(schema),
+        SupervisionOptions {
+            termination_grace: Duration::from_millis(100),
+            ..SupervisionOptions::default()
+        },
+        memory(),
+    )
+    .unwrap();
+    let mut opened = producer
+        .open(ForeignStreamOpenRequest {
+            resource_id: ResourceId::new("orders").unwrap(),
+            partition_id: PartitionId::new("p0").unwrap(),
+            cancellation: Default::default(),
+        })
+        .await
+        .unwrap();
+    let termination = opened.termination.clone();
+    let terminal = {
+        let next = opened.events.next();
+        tokio::pin!(next);
+        tokio::select! {
+            event = &mut next => panic!("subprocess unexpectedly terminated before cancellation: {event:?}"),
+            () = tokio::time::sleep(Duration::from_millis(100)) => termination.cancel(),
+        }
+        next.as_mut().await.unwrap().unwrap()
+    };
+    assert!(matches!(
+        terminal,
+        ForeignStreamEvent::Terminal(ForeignTerminalStatus::Cancelled)
+    ));
+    drop(opened.events);
+    termination.join().await.unwrap();
+
+    let pid = fs::read_to_string(&descendant_pid)
+        .unwrap()
+        .trim()
+        .parse::<i32>()
+        .unwrap();
+    let pid = rustix::process::Pid::from_raw(pid).unwrap();
+    assert!(
+        rustix::process::test_kill_process(pid).is_err(),
+        "subprocess descendant {pid:?} survived cancellation"
     );
 }
 
@@ -465,6 +626,82 @@ async fn command_supervisor_bounds_output_and_observes_cancellation() {
     .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Internal);
     assert!(error.message.contains("cancelled"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn stderr_flood_is_drained_while_only_the_diagnostic_ring_is_retained() {
+    let output = run_bounded_command(
+        shell(["-c", "yes diagnostic-line | head -c 1048576 >&2; printf ok"]),
+        SupervisionOptions {
+            maximum_stdout_bytes: 8,
+            maximum_stderr_bytes: 1024,
+            ..SupervisionOptions::default()
+        },
+        cdf_runtime::RunCancellation::default(),
+        memory(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(output.stdout.as_bytes(), b"ok");
+    assert!(output.stderr.is_truncated());
+    assert!(output.stderr.discarded_bytes() > 1_000_000);
+    assert!(output.stderr.summary().contains("<truncated>"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn retained_stderr_redacts_injected_environment_values() {
+    let command = shell(["-c", "printf '%s\n' \"$CDF_TEST_SECRET\" >&2; printf ok"])
+        .with_env("CDF_TEST_SECRET", "super-secret-value");
+    let output = run_bounded_command(
+        command,
+        SupervisionOptions {
+            maximum_stdout_bytes: 8,
+            maximum_stderr_bytes: 1024,
+            ..SupervisionOptions::default()
+        },
+        cdf_runtime::RunCancellation::default(),
+        memory(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(output.stderr.lines(), vec!["<redacted>"]);
+    assert!(!output.stderr.summary().contains("super-secret-value"));
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn timeout_terminates_the_entire_subprocess_process_group() {
+    let temp = tempfile::tempdir().unwrap();
+    let descendant_pid = temp.path().join("descendant.pid");
+    let command = shell([
+        "-c",
+        "sleep 30 & child=$!; printf '%s' \"$child\" > \"$1\"; wait",
+        "cdf-test",
+        descendant_pid.to_str().unwrap(),
+    ]);
+    let error = run_bounded_command(
+        command,
+        SupervisionOptions {
+            timeout: Some(Duration::from_millis(100)),
+            termination_grace: Duration::from_millis(100),
+            ..SupervisionOptions::default()
+        },
+        cdf_runtime::RunCancellation::default(),
+        memory(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::Transient);
+    let pid = fs::read_to_string(&descendant_pid).unwrap();
+    let pid = pid.trim().parse::<i32>().unwrap();
+    let pid = rustix::process::Pid::from_raw(pid).unwrap();
+    assert!(
+        rustix::process::test_kill_process(pid).is_err(),
+        "subprocess descendant {pid:?} survived timeout"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

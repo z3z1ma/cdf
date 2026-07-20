@@ -9,6 +9,7 @@ description = "Subprocess adapter boundary for cdf."
 [dependencies]
 cdf-format-arrow-ipc = { path = "../cdf-format-arrow-ipc" }
 cdf-format-json = { path = "../cdf-format-json" }
+cdf-foreign-stream = { path = "../cdf-foreign-stream" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-memory = { path = "../cdf-memory" }
 cdf-runtime = { path = "../cdf-runtime" }
@@ -19,6 +20,9 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 sha2 = "0.10.9"
 tokio = { version = "=1.52.3", features = ["io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.4", features = ["process"] }
 
 [dev-dependencies]
 arrow-array = "58.3.0"
