@@ -170,6 +170,21 @@ impl DrainEpochController {
         self.committed_source_continuation.as_ref()
     }
 
+    /// Receipt-gated global completeness floor inherited by the next epoch.
+    pub fn committed_watermark(&self) -> Option<&WatermarkClaim> {
+        self.committed_watermark.as_ref()
+    }
+
+    /// Strongest global completeness claim observed by the open epoch.
+    ///
+    /// Batch admission compares event time against this value before admitting the batch's new
+    /// claim, so a source cannot classify its own rows using a future completeness assertion.
+    pub fn late_data_watermark(&self) -> Option<&WatermarkClaim> {
+        self.last_observed_watermark
+            .as_ref()
+            .or(self.committed_watermark.as_ref())
+    }
+
     /// Seeds the input-low frontier and next package ordinal from the durable prefix recovered
     /// before this process admits source work. Record/byte termination counters remain
     /// invocation-local; only package identity and source-position authority resume.

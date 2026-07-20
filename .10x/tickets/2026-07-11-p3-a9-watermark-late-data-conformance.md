@@ -37,3 +37,4 @@ None. A8 is done.
 ## Journal
 
 - 2026-07-19: Activated immediately after A8 closure. This ticket consumes the implemented epoch, continuation, watermark-aggregation, replay-retention, and crash-recovery authorities; it will add total late-data/idleness/operator-propagation conformance without reopening A8's runtime architecture.
+- 2026-07-19: Corrected the first resumed-partition defect before adding row verdicts. `PartitionWatermarkTracker` now carries a receipt-gated effective floor: a missing, newly eligible, or resumed partition can make its rows late but can never retract completeness already committed by an earlier epoch. The tracker still refuses partition-local claim regression and advances only to the minimum of all eligible claims. Focused runtime coverage proves both new-partition and resumed-partition behavior.

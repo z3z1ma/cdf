@@ -3220,14 +3220,15 @@ where
     let drain_clock =
         DrainExecutionClock::new(drain_controller.as_deref(), options.services.as_ref());
     let mut partition_watermarks = match (&plan.execution_extent, drain_controller.as_ref()) {
-        (ExecutionExtent::Drain { policy, .. }, Some(_)) => {
-            Some(cdf_runtime::PartitionWatermarkTracker::new(
+        (ExecutionExtent::Drain { policy, .. }, Some(controller)) => {
+            Some(cdf_runtime::PartitionWatermarkTracker::new_with_floor(
                 &policy.watermark,
                 plan.scan
                     .partitions
                     .iter()
                     .map(|partition| &partition.partition_id),
                 drain_clock.monotonic_milliseconds(options.services.as_ref()),
+                controller.committed_watermark().cloned(),
             )?)
         }
         _ => None,
@@ -4297,7 +4298,7 @@ where
                     let monotonic_milliseconds =
                         drain_clock.monotonic_milliseconds(options.services.as_ref());
                     let effective_watermark = partition_watermarks
-                        .as_ref()
+                        .as_mut()
                         .map(|watermarks| {
                             watermarks.effective_watermark(monotonic_milliseconds)
                         })

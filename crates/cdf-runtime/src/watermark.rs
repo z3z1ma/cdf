@@ -20,6 +20,7 @@ struct PartitionWatermarkState {
 pub struct PartitionWatermarkTracker {
     policy: WatermarkPolicy,
     partitions: BTreeMap<PartitionId, PartitionWatermarkState>,
+    effective_floor: Option<WatermarkClaim>,
 }
 
 impl PartitionWatermarkTracker {
@@ -28,6 +29,20 @@ impl PartitionWatermarkTracker {
         partitions: impl IntoIterator<Item = &'a PartitionId>,
         started_milliseconds: u64,
     ) -> Result<Self> {
+        Self::new_with_floor(policy, partitions, started_milliseconds, None)
+    }
+
+    /// Restores the last receipt-gated global watermark before observing a new epoch.
+    ///
+    /// A newly eligible or resumed partition may be behind this floor. Its rows are then late;
+    /// the already-committed completeness claim must never be retracted to accommodate it.
+    pub fn new_with_floor<'a>(
+        policy: &WatermarkPolicy,
+        partitions: impl IntoIterator<Item = &'a PartitionId>,
+        started_milliseconds: u64,
+        effective_floor: Option<WatermarkClaim>,
+    ) -> Result<Self> {
+        validate_floor(policy, effective_floor.as_ref())?;
         let mut states = BTreeMap::new();
         for partition_id in partitions {
             if states
@@ -48,6 +63,7 @@ impl PartitionWatermarkTracker {
         Ok(Self {
             policy: policy.clone(),
             partitions: states,
+            effective_floor,
         })
     }
 
@@ -99,7 +115,7 @@ impl PartitionWatermarkTracker {
     }
 
     pub fn effective_watermark(
-        &self,
+        &mut self,
         monotonic_milliseconds: u64,
     ) -> Result<Option<WatermarkClaim>> {
         let WatermarkPolicy::Enabled {
@@ -127,7 +143,7 @@ impl PartitionWatermarkTracker {
             }
             eligible_count = eligible_count.saturating_add(1);
             let Some(claim) = state.claim.as_ref() else {
-                return Ok(None);
+                return Ok(self.effective_floor.clone());
             };
             if match minimum {
                 None => true,
@@ -137,9 +153,52 @@ impl PartitionWatermarkTracker {
             }
         }
         if eligible_count == 0 {
-            return Ok(None);
+            return Ok(self.effective_floor.clone());
         }
-        Ok(minimum.cloned())
+        let Some(candidate) = minimum.cloned() else {
+            return Ok(self.effective_floor.clone());
+        };
+        if let Some(floor) = self.effective_floor.as_ref()
+            && compare_claims(&candidate, floor)? == Ordering::Less
+        {
+            return Ok(Some(floor.clone()));
+        }
+        self.effective_floor = Some(candidate.clone());
+        Ok(Some(candidate))
+    }
+
+    /// The strongest global completeness claim already admitted in this execution.
+    pub fn effective_floor(&self) -> Option<&WatermarkClaim> {
+        self.effective_floor.as_ref()
+    }
+}
+
+fn validate_floor(policy: &WatermarkPolicy, floor: Option<&WatermarkClaim>) -> Result<()> {
+    match (policy, floor) {
+        (WatermarkPolicy::Disabled, Some(_)) => Err(CdfError::contract(
+            "disabled watermark policy cannot restore a committed watermark",
+        )),
+        (WatermarkPolicy::Disabled, None) | (WatermarkPolicy::Enabled { .. }, None) => Ok(()),
+        (
+            WatermarkPolicy::Enabled {
+                event_time_field,
+                domain,
+                authority,
+                ..
+            },
+            Some(floor),
+        ) => {
+            floor.validate()?;
+            if floor.event_time_field.as_ref() != event_time_field.as_ref()
+                || &floor.domain != domain
+                || &floor.authority != authority
+            {
+                return Err(CdfError::data(
+                    "committed watermark floor does not match the compiled field/domain/authority",
+                ));
+            }
+            Ok(())
+        }
     }
 }
 
@@ -253,6 +312,81 @@ mod tests {
         assert_eq!(
             tracker.effective_watermark(10).unwrap().unwrap().value,
             WatermarkValue::Unsigned(100)
+        );
+    }
+
+    #[test]
+    fn resumed_partition_cannot_retract_a_committed_global_watermark() {
+        let a = PartitionId::new("a").unwrap();
+        let b = PartitionId::new("b").unwrap();
+        let mut tracker = PartitionWatermarkTracker::new_with_floor(
+            &policy(PartitionWatermarkAggregation::MinimumEligible {
+                idle_after_milliseconds: 10,
+                capability_id: "source-idleness-v1".into(),
+            }),
+            [&a, &b],
+            100,
+            Some(claim("a", 50)),
+        )
+        .unwrap();
+
+        assert_eq!(
+            tracker
+                .observe_partition_progress(&b, Some(&claim("b", 5)), 101)
+                .unwrap()
+                .unwrap()
+                .value,
+            WatermarkValue::Unsigned(50)
+        );
+        assert_eq!(
+            tracker.effective_floor().unwrap().value,
+            WatermarkValue::Unsigned(50)
+        );
+        assert_eq!(
+            tracker
+                .observe_partition_progress(&b, Some(&claim("b", 55)), 102)
+                .unwrap()
+                .unwrap()
+                .value,
+            WatermarkValue::Unsigned(50)
+        );
+        assert_eq!(
+            tracker
+                .observe_partition_progress(&a, Some(&claim("a", 60)), 103)
+                .unwrap()
+                .unwrap()
+                .value,
+            WatermarkValue::Unsigned(55)
+        );
+    }
+
+    #[test]
+    fn missing_new_partition_claim_does_not_erase_committed_completeness() {
+        let a = PartitionId::new("a").unwrap();
+        let b = PartitionId::new("b").unwrap();
+        let mut tracker = PartitionWatermarkTracker::new_with_floor(
+            &policy(PartitionWatermarkAggregation::MinimumAll),
+            [&a, &b],
+            0,
+            Some(claim("a", 50)),
+        )
+        .unwrap();
+
+        assert_eq!(
+            tracker
+                .observe_partition_progress(&a, Some(&claim("a", 60)), 1)
+                .unwrap()
+                .unwrap()
+                .value,
+            WatermarkValue::Unsigned(50)
+        );
+        assert_eq!(
+            tracker
+                .observe_partition_progress(&b, Some(&claim("b", 70)), 2)
+                .unwrap()
+                .unwrap()
+                .value,
+            WatermarkValue::Unsigned(60)
         );
     }
 }
