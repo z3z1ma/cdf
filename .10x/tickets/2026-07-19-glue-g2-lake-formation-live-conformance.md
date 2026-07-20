@@ -2,7 +2,7 @@ Status: blocked
 Created: 2026-07-19
 Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-19-iceberg-glue-source-program.md
-Depends-On: .10x/tickets/2026-07-19-glue-g1-external-table-source.md, .10x/tickets/2026-07-19-iceberg-i1-catalog-discovery.md
+Depends-On: .10x/tickets/2026-07-19-glue-g1-external-table-source.md, .10x/tickets/done/2026-07-19-iceberg-i1-catalog-discovery.md
 
 # Glue G2: Lake Formation authority and live conformance
 

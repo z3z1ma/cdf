@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-19
 Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-19-iceberg-glue-source-program.md
@@ -61,12 +61,16 @@ None.
 
 ## Evidence
 
-Pending execution.
+- Catalog parity: `driver::tests::{filesystem_discovery_reuses_exact_empty_table_metadata_and_plans_no_tasks,rest_discovery_reuses_negotiated_table_response_without_a_second_catalog_read,glue_binding_produces_the_same_pinned_table_semantics}` exercise the public driver with real metadata bytes. They prove equivalent table/schema identity, catalog-specific pointer semantics, and same-command prepared-observation reuse across filesystem, REST, and Glue. Limits: AWS service behavior remains I3 live conformance.
+- Discovery/pinning: `tests::schema_bridge_is_arrow_58_native_and_preserves_field_ids`, the empty/nonempty driver fixtures, and the gzip fixture prove metadata-only discovery, Iceberg field IDs/schema evolution, bounded compressed metadata, exact snapshot identity, and ordinary `SourceDiscoverySession` output. The CLI registry composition test `CARGO_BUILD_JOBS=12 cargo test -p cdf-cli source_registry::tests::builtin_registry_is_process_scoped --lib` exited successfully on 2026-07-19, proving the production registry installs the driver used by add/deep-validation/doctor.
+- Plan authority: `driver::tests::nonempty_snapshot_plans_canonical_tasks_independent_of_source_jobs` proves exact table/snapshot, historical and output schemas, partition specs, sort orders, projection, capability requirements, canonical file tasks, external task identity, and jobs-1/16 identical `ScanPlan`/task hashes. Scan-task tamper tests prove authority and secret boundaries fail closed.
+- Product hooks: add-hook tests prove explicit filesystem/REST/Glue proposal ownership and typed option compilation; the filesystem health assertion proves registry doctor behavior. Generic inspect consumes the compiled descriptor and deep validation consumes the same compile/discovery/resolve/negotiate hooks; no generic command contains an Iceberg branch.
+- Focused verification at closure: `CARGO_BUILD_JOBS=12 cargo test -p cdf-source-iceberg --lib` passed 25/25; `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-source-iceberg --all-targets -- -D warnings` passed. These prove the assertions and lint cleanliness, not payload execution, which is I2.
 
 ## Review
 
-Pending.
+Fresh-hat adversarial review: pass. It found and corrected three significant pre-closure gaps: compressed Hadoop metadata version parsing/accounting, Glue semantic parity through the common driver path, and missing sort-order authority in the external task set. Review also confirmed that retrying immutable data tasks belongs to I2 and live AWS service/cancellation/product-matrix evidence belongs to I3; neither is represented as complete here. Residual risk: REST/Glue control-plane retry currently returns typed retryable errors to command authority rather than owning an adapter-local retry loop, preserving the single-retry-authority constraint.
 
 ## Retrospective
 
-Pending.
+The useful seam was not “an Iceberg client”; it was catalog pointer → immutable metadata observation → canonical task authority. Keeping AWS signing, catalog routing, object access, task storage, and runtime pools behind their existing owners made three catalogs converge without a generic Iceberg branch. The main recurring risk was authority that looked complete but omitted one metadata family (historical schemas first, then sort orders); constructing nonempty evolved fixtures early was more effective than adding mocks. For subsequent work, build execution against the external task artifact and neutral object source directly, and treat every upstream metadata field as either explicitly identity-bearing, execution-bearing, evidence-only, or rejected—never silently ignored.
