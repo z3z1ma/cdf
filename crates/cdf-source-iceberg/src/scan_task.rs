@@ -10,9 +10,9 @@ use cdf_runtime::artifact_hash;
 use cdf_task_store::ExternalTaskSetWriter;
 use serde::{Deserialize, Serialize};
 
-pub const ICEBERG_SCAN_TASK_VERSION: u16 = 2;
-pub const ICEBERG_TASK_SET_AUTHORITY_VERSION: u16 = 2;
-pub const ICEBERG_TASK_SET_TYPE: &str = "iceberg-scan-v2";
+pub const ICEBERG_SCAN_TASK_VERSION: u16 = 3;
+pub const ICEBERG_TASK_SET_AUTHORITY_VERSION: u16 = 3;
+pub const ICEBERG_TASK_SET_TYPE: &str = "iceberg-scan-v3";
 
 /// Shared, immutable authority for every task in one Iceberg task-set artifact.
 ///
@@ -502,6 +502,11 @@ pub struct IcebergDataFile {
     pub range_start: u64,
     pub range_length: u64,
     pub object_generation: String,
+    /// Snapshot that first added the manifest containing this live data-file entry.
+    ///
+    /// This is distinct from the file sequence number (which is always zero in v1) and is the
+    /// portable authority used to select exact append-only snapshot deltas.
+    pub added_snapshot_id: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -523,6 +528,11 @@ impl IcebergDataFile {
         if self.file_size_bytes == 0 || self.range_length == 0 {
             return Err(CdfError::contract(format!(
                 "{label} size and range length must be nonzero"
+            )));
+        }
+        if self.added_snapshot_id <= 0 {
+            return Err(CdfError::contract(format!(
+                "{label} added snapshot id must be positive"
             )));
         }
         let range_end = self
@@ -889,6 +899,7 @@ mod tests {
                 range_start: 0,
                 range_length: 1024,
                 object_generation: "version:v4".to_owned(),
+                added_snapshot_id: 7,
                 content_sha256: None,
                 record_count: Some(10),
                 sequence_number: Some(3),

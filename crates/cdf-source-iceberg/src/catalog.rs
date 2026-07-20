@@ -1445,6 +1445,7 @@ mod tests {
                 namespace: vec!["org".to_owned(), "analytics".to_owned()],
                 table: "events".to_owned(),
                 selector: IcebergSnapshotSelector::Current,
+                mode: crate::IcebergScanMode::Snapshot,
             },
         )
         .unwrap();
@@ -1481,6 +1482,7 @@ mod tests {
                 namespace: vec!["analytics".to_owned()],
                 table: "events".to_owned(),
                 selector: IcebergSnapshotSelector::Current,
+                mode: crate::IcebergScanMode::Snapshot,
             },
         )
         .unwrap();

@@ -8,6 +8,8 @@ contributors.
   verified package without source contact.
 - [Architecture](architecture.md) gives the short map and links to the book and
   active specs for the full contract.
+- [Iceberg source](iceberg.md) documents catalog bindings, snapshot selectors,
+  append-only incrementality, and the explicit capability boundary.
 - [Performance envelope](performance-envelope.md) is generated from the P3
   machine report and is the only authority for performance claims. Its current
   pre-baseline banner means no claim is yet authorized.

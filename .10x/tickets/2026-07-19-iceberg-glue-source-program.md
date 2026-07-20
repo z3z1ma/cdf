@@ -29,7 +29,7 @@ This parent is not executable. It does not own Iceberg/Delta destinations, Glue 
 4. `.10x/tickets/done/2026-07-19-iceberg-f4-externalized-scan-tasks.md` — done
 5. `.10x/tickets/done/2026-07-19-iceberg-i1-catalog-discovery.md` — done
 6. `.10x/tickets/done/2026-07-19-iceberg-i2-scan-execution.md` — done
-7. `.10x/tickets/2026-07-19-iceberg-i3-incremental-product-conformance.md`
+7. `.10x/tickets/done/2026-07-19-iceberg-i3-incremental-product-conformance.md` — done
 8. `.10x/tickets/2026-07-19-glue-g1-external-table-source.md`
 9. `.10x/tickets/2026-07-19-glue-g2-lake-formation-live-conformance.md`
 
@@ -62,6 +62,7 @@ F1 and F2 are parallel. F3 is independent of F1/F2 but must avoid the active WX1
 - 2026-07-19: F4 closed. High-cardinality plans now use one source-neutral, content-addressed, spill-backed task-set authority with no inline fallback. Iceberg tasks hash-bind shared table/snapshot/schema/spec/predicate authority once and retain only per-file facts; one-million-task conformance held 64 KiB managed memory. I2 now depends only on I1.
 - 2026-07-19: I1 closed. One driver now compiles explicit filesystem/REST/Glue catalog configuration, performs bounded generation-bound metadata discovery, freezes exact snapshot/schema/spec/sort/predicate/capability authority into canonical external tasks, supports ordinary add/deep-validation/inspect/doctor registry paths, and produces jobs-invariant planning identity. I2 is unblocked.
 - 2026-07-19: I2 closed. Canonical v1/v2 Parquet tasks now execute through neutral object access with exact evolution, projection, predicate residuals, position/equality deletes, bounded task/spill authority, deterministic retry/cancellation/generation evidence, and preview/run parity. The release FQ12 path processes 3,513,266 rows from 84 objects in about 2.22 seconds of execution versus a 2.01-second isolated S3 transfer roofline; its measured 2 MiB small-object prefetch is disableable and reduced both wall time and RSS without changing segment bytes. I3 is active for ancestry, time travel, unchanged-snapshot product behavior, and final conformance.
+- 2026-07-20: I3 closed. Explicit fixed-snapshot and append-snapshot modes now preserve exact historical selection, prove append ancestry, select only newly added manifests, and fail closed on missing/divergent/non-append history. The local matrix, strict static analysis, existing read-only FQ12 no-op, and operator capability documentation are recorded in the child. The avoidable post-plan resume ordering cost moved to the source-neutral ticket `.10x/tickets/2026-07-20-source-resume-aware-negotiation.md`; it is not hidden as an Iceberg workaround.
 
 ## Blockers
 

@@ -225,6 +225,8 @@ pub struct IcebergResourceOptions {
     pub table: String,
     #[serde(default)]
     pub selector: IcebergSnapshotSelector,
+    #[serde(default)]
+    pub mode: IcebergScanMode,
 }
 
 impl IcebergResourceOptions {
@@ -244,6 +246,14 @@ impl IcebergResourceOptions {
     pub fn display_name(&self) -> String {
         format!("{}.{}", self.namespace.join("."), self.table)
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IcebergScanMode {
+    #[default]
+    Snapshot,
+    AppendSnapshots,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -441,6 +451,7 @@ mod tests {
         }))
         .unwrap();
         resource.validate().unwrap();
+        assert_eq!(resource.mode, IcebergScanMode::Snapshot);
         assert_eq!(
             resource.selector.position_selector(),
             TableSnapshotSelector::Branch {
@@ -455,6 +466,13 @@ mod tests {
             }))
             .is_err()
         );
+        let append: IcebergResourceOptions = serde_json::from_value(serde_json::json!({
+            "namespace": ["analytics"],
+            "table": "events",
+            "mode": "append_snapshots"
+        }))
+        .unwrap();
+        assert_eq!(append.mode, IcebergScanMode::AppendSnapshots);
     }
 
     #[test]

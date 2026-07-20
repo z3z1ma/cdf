@@ -984,6 +984,7 @@ fn data_task(
             range_start: 0,
             range_length: file_size_bytes,
             object_generation,
+            added_snapshot_id: manifest_file.added_snapshot_id,
             content_sha256: None,
             record_count: Some(data_file.record_count()),
             sequence_number: inherited_sequence,

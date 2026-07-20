@@ -28,7 +28,7 @@ pub use config::{
     DEFAULT_PARQUET_RANGE_COALESCE_BYTES, DEFAULT_PARQUET_RANGE_FETCH_CONCURRENCY,
     DEFAULT_PLANNING_INDEX_CACHE_BYTES, DEFAULT_PLANNING_INDEX_SPILL_GROWTH_BYTES,
     DEFAULT_STREAM_BUFFER_BATCHES, DEFAULT_TASK_WRITER_BUFFER_BYTES, IcebergCatalogOptions,
-    IcebergResourceOptions, IcebergSnapshotSelector, IcebergSourceOptions,
+    IcebergResourceOptions, IcebergScanMode, IcebergSnapshotSelector, IcebergSourceOptions,
 };
 pub use driver::{
     ICEBERG_SOURCE_BLOCKING_LANE_ID, IcebergRuntimeDependencies, IcebergSourceDriver,
@@ -42,7 +42,7 @@ pub use scan_task::{
     IcebergTaskSetAuthority, ValidatedIcebergTaskSetAuthority,
 };
 
-pub const ICEBERG_SOURCE_DRIVER_VERSION: &str = "1.0.0";
+pub const ICEBERG_SOURCE_DRIVER_VERSION: &str = "1.1.0";
 
 /// Returns the versioned, deterministic configuration schema owned by the Iceberg source.
 ///
@@ -134,6 +134,11 @@ pub fn iceberg_option_schema() -> serde_json::Value {
                     "items": {"type": "string", "minLength": 1}
                 },
                 "table": {"type": "string", "minLength": 1},
+                "mode": {
+                    "type": "string",
+                    "enum": ["snapshot", "append_snapshots"],
+                    "default": "snapshot"
+                },
                 "selector": {
                     "oneOf": [
                         {
@@ -219,12 +224,12 @@ mod tests {
         let descriptor = iceberg_source_descriptor().unwrap();
         descriptor.validate().unwrap();
         assert_eq!(descriptor.driver_id.as_str(), "iceberg");
-        assert_eq!(descriptor.driver_version, "1.0.0");
+        assert_eq!(descriptor.driver_version, "1.1.0");
         assert_eq!(descriptor.kinds, ["iceberg"]);
         assert!(descriptor.schemes.is_empty());
         assert_eq!(
             descriptor.option_schema_hash,
-            "sha256:220fa60ca488268f99efd1b146426c6c2d7c35ae8c6dca4e7137add0dafd1467"
+            "sha256:3c0de1232e4fa449f3188926a4ef19a6eb4c421db2f85e9cd199060e530c39d3"
         );
         assert_eq!(
             descriptor.option_schema_hash,

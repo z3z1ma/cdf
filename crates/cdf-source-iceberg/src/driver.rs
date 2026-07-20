@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, path::Path, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    sync::Arc,
+};
 
 use cdf_http::{HttpTransport, SecretProvider};
 use cdf_kernel::{
@@ -21,12 +25,13 @@ use cdf_runtime::{
     SourceHealthResult, SourceHealthSink, SourceHealthStatus, SourceResolutionContext,
     SourceRetryGranularity, artifact_hash,
 };
-use cdf_task_store::ExternalTaskStore;
+use cdf_task_store::{ExternalTaskStore, TaskSetLimits};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    GlueCatalogClient, IcebergCatalogContext, IcebergCatalogLoadRequest, IcebergCatalogRegistry,
-    IcebergResourceOptions, IcebergSourceOptions, LoadedIcebergTable,
+    GlueCatalogClient, ICEBERG_TASK_SET_TYPE, IcebergCatalogContext, IcebergCatalogLoadRequest,
+    IcebergCatalogRegistry, IcebergResourceOptions, IcebergScanMode, IcebergScanTask,
+    IcebergSourceOptions, IcebergTaskSetAuthority, LoadedIcebergTable,
     execution::{
         IcebergTaskExecution, execute_task_scan, prepare_task_scan, project_output_schema,
     },
@@ -403,6 +408,16 @@ impl SourceAddPlanner for IcebergSourceDriver {
             || Ok(serde_json::json!({"kind": "current"})),
             |value| parse_add_selector(value),
         )?;
+        let mode = request.options.get("mode").map_or_else(
+            || Ok(IcebergScanMode::Snapshot),
+            |value| match value.as_str() {
+                "snapshot" => Ok(IcebergScanMode::Snapshot),
+                "append_snapshots" => Ok(IcebergScanMode::AppendSnapshots),
+                other => Err(CdfError::contract(format!(
+                    "Iceberg cdf add mode must be `snapshot` or `append_snapshots`, not `{other}`"
+                ))),
+            },
+        )?;
         let mut catalog = serde_json::Map::new();
         catalog.insert("kind".to_owned(), serde_json::Value::String(kind.clone()));
         let allowed = match kind.as_str() {
@@ -416,6 +431,7 @@ impl SourceAddPlanner for IcebergSourceDriver {
                     "namespace",
                     "table",
                     "selector",
+                    "mode",
                     "object_credentials",
                     "egress_allowlist",
                 ] as &[_]
@@ -432,6 +448,7 @@ impl SourceAddPlanner for IcebergSourceDriver {
                     "namespace",
                     "table",
                     "selector",
+                    "mode",
                     "warehouse",
                     "credentials",
                     "object_credentials",
@@ -451,6 +468,7 @@ impl SourceAddPlanner for IcebergSourceDriver {
                     "namespace",
                     "table",
                     "selector",
+                    "mode",
                     "catalog_id",
                     "warehouse",
                     "endpoint",
@@ -500,6 +518,7 @@ impl SourceAddPlanner for IcebergSourceDriver {
             selector: serde_json::from_value(selector.clone()).map_err(|error| {
                 CdfError::contract(format!("Iceberg cdf add selector is invalid: {error}"))
             })?,
+            mode,
         };
         resource.validate()?;
         let source: IcebergSourceOptions = serde_json::from_value(serde_json::Value::Object(
@@ -519,6 +538,7 @@ impl SourceAddPlanner for IcebergSourceDriver {
                 ),
                 ("table".to_owned(), serde_json::json!(resource.table)),
                 ("selector".to_owned(), selector),
+                ("mode".to_owned(), serde_json::json!(resource.mode)),
             ]),
             cursor: None,
             display_location: SourceEvidenceLocation::from_operational(&request.location)?,
@@ -706,6 +726,11 @@ impl ResourceStream for IcebergResource {
         if committed.as_ref() == &selected.position {
             scan.partitions.clear();
             scan.planned_task_set = None;
+            return Ok(());
+        }
+        if self.table.resource.mode == IcebergScanMode::AppendSnapshots {
+            let admitted_snapshots = append_snapshot_ancestry(&self.table, committed, selected)?;
+            self.retain_append_snapshot_tasks(scan, &admitted_snapshots)?;
         }
         Ok(())
     }
@@ -838,6 +863,146 @@ impl ResourceStream for IcebergResource {
     fn type_policy_allowances(&self) -> TypePolicyAllowances {
         self.type_policy_allowances
     }
+}
+
+impl IcebergResource {
+    fn retain_append_snapshot_tasks(
+        &self,
+        scan: &mut ScanPlan,
+        admitted_snapshots: &BTreeSet<i64>,
+    ) -> Result<()> {
+        let reference = scan.planned_task_set.take().ok_or_else(|| {
+            CdfError::data(format!(
+                "Iceberg append_snapshots resource `{}` has no planned task-set authority",
+                self.descriptor.resource_id
+            ))
+        })?;
+        let mut reader = self.task_store.reader(
+            reference,
+            ICEBERG_TASK_SET_TYPE,
+            self.source.maximum_task_bytes,
+            self.source.maximum_task_authority_bytes,
+            self.catalog.execution.memory(),
+        )?;
+        let authority: IcebergTaskSetAuthority =
+            serde_json::from_slice(reader.authority().payload()).map_err(|error| {
+                CdfError::data(format!("decode Iceberg task-set authority: {error}"))
+            })?;
+        let authority = authority.into_validated()?;
+        let spill = self.catalog.execution.spill();
+        let mut writer = self.task_store.writer(
+            ICEBERG_TASK_SET_TYPE,
+            TaskSetLimits {
+                maximum_task_bytes: self.source.maximum_task_bytes,
+                maximum_authority_bytes: self.source.maximum_task_authority_bytes,
+                writer_buffer_bytes: self.source.task_writer_buffer_bytes,
+            },
+            self.catalog.execution.memory(),
+            spill.as_ref(),
+        )?;
+        let mut next_ordinal = 0_u64;
+        let mut estimated_rows = 0_u64;
+        let mut estimated_bytes = 0_u64;
+        while let Some(record) = reader.next_record()? {
+            let mut task: IcebergScanTask = serde_json::from_slice(record.payload.payload())
+                .map_err(|error| CdfError::data(format!("decode Iceberg scan task: {error}")))?;
+            task.validate_against(&authority)?;
+            if !admitted_snapshots.contains(&task.data_file.added_snapshot_id) {
+                continue;
+            }
+            task.canonical_ordinal = next_ordinal;
+            estimated_rows = estimated_rows
+                .checked_add(task.data_file.record_count.unwrap_or(0))
+                .ok_or_else(|| CdfError::data("Iceberg append row estimate exceeds u64"))?;
+            estimated_bytes = estimated_bytes
+                .checked_add(task.data_file.file_size_bytes)
+                .ok_or_else(|| CdfError::data("Iceberg append byte estimate exceeds u64"))?;
+            task.append_to(&mut writer)?;
+            next_ordinal = next_ordinal
+                .checked_add(1)
+                .ok_or_else(|| CdfError::data("Iceberg append task ordinal exceeds u64"))?;
+        }
+        if next_ordinal == 0 {
+            scan.partitions.clear();
+            scan.planned_task_set = None;
+            scan.estimated_rows = Some(0);
+            scan.estimated_bytes = Some(0);
+            return Ok(());
+        }
+        let artifact = writer.finalize(|output| authority.encode_to(output))?;
+        if artifact.authority_sha256 != authority.content_sha256() {
+            return Err(CdfError::internal(
+                "filtered Iceberg task-set authority hash changed during append binding",
+            ));
+        }
+        scan.planned_task_set = Some(artifact.reference);
+        scan.estimated_rows = Some(estimated_rows);
+        scan.estimated_bytes = Some(estimated_bytes);
+        Ok(())
+    }
+}
+
+fn append_snapshot_ancestry(
+    table: &LoadedIcebergTable,
+    committed: &cdf_kernel::TableSnapshotPosition,
+    selected: &crate::SelectedIcebergSnapshot,
+) -> Result<BTreeSet<i64>> {
+    const REMEDIES: &str =
+        "use mode = `snapshot` with replace semantics, or use a changelog-capable disposition";
+    if committed.protocol != "iceberg"
+        || committed.catalog != selected.position.catalog
+        || committed.namespace != selected.position.namespace
+        || committed.table != selected.position.table
+        || committed.selector != selected.position.selector
+    {
+        return Err(CdfError::data(format!(
+            "Iceberg append_snapshots checkpoint does not identify the selected catalog, table, and ref; {REMEDIES}"
+        )));
+    }
+    let committed_snapshot = table
+        .metadata
+        .snapshot_by_id(committed.snapshot_id)
+        .ok_or_else(|| {
+            CdfError::data(format!(
+                "Iceberg append_snapshots history no longer contains committed snapshot {}; {REMEDIES}",
+                committed.snapshot_id
+            ))
+        })?;
+    if committed_snapshot.sequence_number() != committed.sequence_number
+        || committed_snapshot.parent_snapshot_id() != committed.parent_snapshot_id
+    {
+        return Err(CdfError::data(format!(
+            "Iceberg committed snapshot {} does not match its recorded sequence/parent authority; {REMEDIES}",
+            committed.snapshot_id
+        )));
+    }
+
+    let mut admitted = BTreeSet::new();
+    let mut current_id = selected.position.snapshot_id;
+    while current_id != committed.snapshot_id {
+        if !admitted.insert(current_id) {
+            return Err(CdfError::data("Iceberg snapshot ancestry contains a cycle"));
+        }
+        let snapshot = table.metadata.snapshot_by_id(current_id).ok_or_else(|| {
+            CdfError::data(format!(
+                "Iceberg append_snapshots history is missing intervening snapshot {current_id}; {REMEDIES}"
+            ))
+        })?;
+        if snapshot.summary().operation != iceberg::spec::Operation::Append {
+            return Err(CdfError::data(format!(
+                "Iceberg append_snapshots cannot cross snapshot {current_id} operation `{}`; {REMEDIES}",
+                snapshot.summary().operation.as_str()
+            )));
+        }
+        let Some(parent_id) = snapshot.parent_snapshot_id() else {
+            return Err(CdfError::data(format!(
+                "Iceberg committed snapshot {} is not an ancestor of selected snapshot {}; {REMEDIES}",
+                committed.snapshot_id, selected.position.snapshot_id
+            )));
+        };
+        current_id = parent_id;
+    }
+    Ok(admitted)
 }
 
 impl QueryableResource for IcebergResource {
@@ -1774,6 +1939,168 @@ mod tests {
             .unwrap();
     }
 
+    fn write_append_history_fixture(
+        execution: &ExecutionServices,
+        table: &Path,
+        current_operation: &'static str,
+    ) {
+        let table = table.to_path_buf();
+        execution
+            .run_io(async move {
+                let metadata_dir = table.join("metadata");
+                let data_dir = table.join("data");
+                fs::create_dir_all(&metadata_dir).unwrap();
+                fs::create_dir_all(&data_dir).unwrap();
+                let old_data = data_dir.join("old.parquet");
+                let appended_data = data_dir.join("appended.parquet");
+                fs::write(&old_data, [0_u8]).unwrap();
+                fs::write(&appended_data, [1_u8]).unwrap();
+                let old_list = metadata_dir.join("snap-100.avro");
+                let current_list = metadata_dir.join("snap-101.avro");
+                let metadata_bytes = serde_json::to_vec(&serde_json::json!({
+                    "format-version": 2,
+                    "table-uuid": "a9eac340-e346-4a86-9b8e-68aef02da467",
+                    "location": table.display().to_string(),
+                    "last-sequence-number": 2,
+                    "last-updated-ms": 2000_i64,
+                    "last-column-id": 1,
+                    "current-schema-id": 0,
+                    "schemas": [{
+                        "type": "struct",
+                        "schema-id": 0,
+                        "fields": [{"id": 1, "name": "id", "required": true, "type": "long"}]
+                    }],
+                    "default-spec-id": 0,
+                    "partition-specs": [{"spec-id": 0, "fields": []}],
+                    "last-partition-id": 999,
+                    "default-sort-order-id": 0,
+                    "sort-orders": [{"order-id": 0, "fields": []}],
+                    "properties": {},
+                    "current-snapshot-id": 101,
+                    "snapshots": [
+                        {
+                            "snapshot-id": 99,
+                            "timestamp-ms": 900_i64,
+                            "sequence-number": 1,
+                            "schema-id": 0,
+                            "summary": {"operation": "append"},
+                            "manifest-list": metadata_dir.join("snap-99.avro").display().to_string()
+                        },
+                        {
+                            "snapshot-id": 100,
+                            "timestamp-ms": 1000_i64,
+                            "sequence-number": 1,
+                            "schema-id": 0,
+                            "summary": {"operation": "append"},
+                            "manifest-list": old_list.display().to_string()
+                        },
+                        {
+                            "snapshot-id": 101,
+                            "parent-snapshot-id": 100,
+                            "timestamp-ms": 2000_i64,
+                            "sequence-number": 2,
+                            "schema-id": 0,
+                            "summary": {"operation": current_operation},
+                            "manifest-list": current_list.display().to_string()
+                        }
+                    ],
+                    "snapshot-log": [
+                        {"snapshot-id": 99, "timestamp-ms": 900_i64},
+                        {"snapshot-id": 100, "timestamp-ms": 1000_i64},
+                        {"snapshot-id": 101, "timestamp-ms": 2000_i64}
+                    ],
+                    "metadata-log": [],
+                    "refs": {"main": {"snapshot-id": 101, "type": "branch"}}
+                }))
+                .unwrap();
+                let metadata: TableMetadata = serde_json::from_slice(&metadata_bytes).unwrap();
+                let file_io = FileIO::new_with_fs();
+                let schema = metadata.current_schema().clone();
+                let spec = metadata.default_partition_spec().as_ref().clone();
+                let mut old_writer = ManifestWriterBuilder::new(
+                    file_io
+                        .new_output(metadata_dir.join("manifest-old.avro").to_string_lossy())
+                        .unwrap(),
+                    Some(100),
+                    Arc::clone(&schema),
+                    spec.clone(),
+                )
+                .build_v2_data();
+                old_writer
+                    .add_file(
+                        DataFileBuilder::default()
+                            .partition_spec_id(0)
+                            .content(DataContentType::Data)
+                            .file_path(old_data.display().to_string())
+                            .file_format(DataFileFormat::Parquet)
+                            .file_size_in_bytes(1)
+                            .record_count(3)
+                            .partition(Struct::empty())
+                            .build()
+                            .unwrap(),
+                        1,
+                    )
+                    .unwrap();
+                let mut old_manifest = old_writer.write_manifest_file().await.unwrap();
+                old_manifest.sequence_number = 1;
+                old_manifest.min_sequence_number = 1;
+                let old_output = file_io
+                    .new_output(old_list.to_string_lossy())
+                    .unwrap()
+                    .writer()
+                    .await
+                    .unwrap();
+                let mut old_list_writer = ManifestListWriter::v2(old_output, 100, None, 1);
+                old_list_writer
+                    .add_manifests([old_manifest.clone()].into_iter())
+                    .unwrap();
+                old_list_writer.close().await.unwrap();
+                let mut appended_writer = ManifestWriterBuilder::new(
+                    file_io
+                        .new_output(
+                            metadata_dir
+                                .join("manifest-appended.avro")
+                                .to_string_lossy(),
+                        )
+                        .unwrap(),
+                    Some(101),
+                    schema,
+                    spec,
+                )
+                .build_v2_data();
+                appended_writer
+                    .add_file(
+                        DataFileBuilder::default()
+                            .partition_spec_id(0)
+                            .content(DataContentType::Data)
+                            .file_path(appended_data.display().to_string())
+                            .file_format(DataFileFormat::Parquet)
+                            .file_size_in_bytes(1)
+                            .record_count(5)
+                            .partition(Struct::empty())
+                            .build()
+                            .unwrap(),
+                        2,
+                    )
+                    .unwrap();
+                let appended_manifest = appended_writer.write_manifest_file().await.unwrap();
+                let output = file_io
+                    .new_output(current_list.to_string_lossy())
+                    .unwrap()
+                    .writer()
+                    .await
+                    .unwrap();
+                let mut list = ManifestListWriter::v2(output, 101, Some(100), 2);
+                list.add_manifests([old_manifest, appended_manifest].into_iter())
+                    .unwrap();
+                list.close().await.unwrap();
+                fs::write(metadata_dir.join("v1.metadata.json"), metadata_bytes).unwrap();
+                fs::write(metadata_dir.join("version-hint.text"), "1\n").unwrap();
+                Ok(())
+            })
+            .unwrap();
+    }
+
     fn write_v1_table_fixture(execution: &ExecutionServices, table: &Path) {
         let table = table.to_path_buf();
         execution
@@ -1926,6 +2253,74 @@ mod tests {
             effective_schema_runtime: None,
             baseline_observation_schema_catalog: Vec::new(),
         }
+    }
+
+    fn planned_append_resource(
+        root: &Path,
+        operation: &'static str,
+    ) -> (
+        ExecutionServices,
+        Arc<dyn QueryableResource>,
+        ScanPlan,
+        cdf_kernel::TableSnapshotPosition,
+    ) {
+        let table = root.join("analytics/events");
+        let execution = execution_services();
+        write_append_history_fixture(&execution, &table, operation);
+        let driver = filesystem_driver();
+        let mut request = compile_request(root);
+        request
+            .resource_options
+            .insert("mode".to_owned(), serde_json::json!("append_snapshots"));
+        let mut plan = driver.compile(request).unwrap();
+        let context = SourceResolutionContext::new(
+            root,
+            Arc::new(NoopSecretProvider),
+            &execution,
+            Arc::new(cdf_http::EgressAllowlist::allow_any()),
+        );
+        let session = driver.discovery_session(&plan, &context).unwrap();
+        let candidate = session.candidates().unwrap().remove(0);
+        let observation = session
+            .observe(
+                &candidate,
+                &SourceDiscoveryRequest::new(64 * 1024 * 1024, 1).unwrap(),
+            )
+            .unwrap();
+        plan.schema = observation.schema.as_ref().clone();
+        let resource = driver.resolve(&plan, &context).unwrap();
+        let scan = resource
+            .negotiate(&ScanRequest {
+                resource_id: plan.descriptor.resource_id.clone(),
+                projection: None,
+                filters: Vec::new(),
+                limit: None,
+                order_by: Vec::new(),
+                scope: ScopeKey::Resource,
+            })
+            .unwrap();
+        let store = ExternalTaskStore::new(
+            root.join(".cdf"),
+            ContentStoreNamespace::new(PLANNING_ARTIFACT_NAMESPACE).unwrap(),
+        )
+        .unwrap();
+        let mut reader = store
+            .reader(
+                scan.planned_task_set.clone().unwrap(),
+                crate::ICEBERG_TASK_SET_TYPE,
+                crate::DEFAULT_MAXIMUM_TASK_BYTES,
+                crate::DEFAULT_MAXIMUM_TASK_AUTHORITY_BYTES,
+                execution.memory(),
+            )
+            .unwrap();
+        let authority: IcebergTaskSetAuthority =
+            serde_json::from_slice(reader.authority().payload()).unwrap();
+        while reader.next_record().unwrap().is_some() {}
+        let mut committed = authority.snapshot.unwrap();
+        committed.snapshot_id = 100;
+        committed.sequence_number = 1;
+        committed.parent_snapshot_id = None;
+        (execution, resource, scan, committed)
     }
 
     fn rest_compile_request(project_root: &Path) -> SourceCompileRequest {
@@ -2805,6 +3200,145 @@ mod tests {
                 .contains("generation changed between attempts"),
             "{generation_error}"
         );
+    }
+
+    #[test]
+    fn append_snapshot_resume_selects_only_new_files_and_rejects_nonappend_history() {
+        let root = tempfile::tempdir().unwrap();
+        let (execution, resource, mut scan, committed) =
+            planned_append_resource(root.path(), "append");
+        assert_eq!(scan.planned_task_set.as_ref().unwrap().task_count, 2);
+        let full_scan = scan.clone();
+        resource
+            .rebind_scan_for_resume(
+                &mut scan,
+                &SourcePosition::TableSnapshot(Box::new(committed.clone())),
+            )
+            .unwrap();
+        assert_eq!(scan.estimated_rows, Some(5));
+        assert_eq!(scan.estimated_bytes, Some(1));
+        let reference = scan.planned_task_set.clone().unwrap();
+        assert_eq!(reference.task_count, 1);
+        let store = ExternalTaskStore::new(
+            root.path().join(".cdf"),
+            ContentStoreNamespace::new(PLANNING_ARTIFACT_NAMESPACE).unwrap(),
+        )
+        .unwrap();
+        let mut reader = store
+            .reader(
+                reference,
+                crate::ICEBERG_TASK_SET_TYPE,
+                crate::DEFAULT_MAXIMUM_TASK_BYTES,
+                crate::DEFAULT_MAXIMUM_TASK_AUTHORITY_BYTES,
+                execution.memory(),
+            )
+            .unwrap();
+        let task: IcebergScanTask =
+            serde_json::from_slice(reader.next_record().unwrap().unwrap().payload.payload())
+                .unwrap();
+        assert_eq!(task.canonical_ordinal, 0);
+        assert_eq!(task.data_file.added_snapshot_id, 101);
+        assert!(task.data_file.path.ends_with("appended.parquet"));
+        assert!(reader.next_record().unwrap().is_none());
+
+        let driver = filesystem_driver();
+        let mut historical_request = compile_request(root.path());
+        historical_request.resource_options.insert(
+            "selector".to_owned(),
+            serde_json::json!({"kind": "snapshot", "snapshot_id": 100}),
+        );
+        let mut historical_plan = driver.compile(historical_request).unwrap();
+        let historical_context = SourceResolutionContext::new(
+            root.path(),
+            Arc::new(NoopSecretProvider),
+            &execution,
+            Arc::new(cdf_http::EgressAllowlist::allow_any()),
+        );
+        let session = driver
+            .discovery_session(&historical_plan, &historical_context)
+            .unwrap();
+        let candidate = session.candidates().unwrap().remove(0);
+        historical_plan.schema = session
+            .observe(
+                &candidate,
+                &SourceDiscoveryRequest::new(64 * 1024 * 1024, 1).unwrap(),
+            )
+            .unwrap()
+            .schema
+            .as_ref()
+            .clone();
+        let historical = driver
+            .resolve(&historical_plan, &historical_context)
+            .unwrap();
+        let historical_scan = historical
+            .negotiate(&ScanRequest {
+                resource_id: historical_plan.descriptor.resource_id.clone(),
+                projection: None,
+                filters: Vec::new(),
+                limit: None,
+                order_by: Vec::new(),
+                scope: ScopeKey::Resource,
+            })
+            .unwrap();
+        assert_eq!(
+            historical_scan
+                .planned_task_set
+                .as_ref()
+                .unwrap()
+                .task_count,
+            1
+        );
+        let historical_store = ExternalTaskStore::new(
+            root.path().join(".cdf"),
+            ContentStoreNamespace::new(PLANNING_ARTIFACT_NAMESPACE).unwrap(),
+        )
+        .unwrap();
+        let historical_reader = historical_store
+            .reader(
+                historical_scan.planned_task_set.unwrap(),
+                crate::ICEBERG_TASK_SET_TYPE,
+                crate::DEFAULT_MAXIMUM_TASK_BYTES,
+                crate::DEFAULT_MAXIMUM_TASK_AUTHORITY_BYTES,
+                execution.memory(),
+            )
+            .unwrap();
+        let historical_authority: IcebergTaskSetAuthority =
+            serde_json::from_slice(historical_reader.authority().payload()).unwrap();
+        assert_eq!(historical_authority.snapshot.unwrap().snapshot_id, 100);
+
+        let mut divergent_position = committed.clone();
+        divergent_position.snapshot_id = 99;
+        let mut divergent_scan = full_scan.clone();
+        let divergent = resource
+            .rebind_scan_for_resume(
+                &mut divergent_scan,
+                &SourcePosition::TableSnapshot(Box::new(divergent_position)),
+            )
+            .unwrap_err();
+        assert!(divergent.message.contains("is not an ancestor"));
+        let mut missing_position = committed;
+        missing_position.snapshot_id = 98;
+        let mut missing_scan = full_scan;
+        let missing = resource
+            .rebind_scan_for_resume(
+                &mut missing_scan,
+                &SourcePosition::TableSnapshot(Box::new(missing_position)),
+            )
+            .unwrap_err();
+        assert!(missing.message.contains("history no longer contains"));
+
+        let rejected = tempfile::tempdir().unwrap();
+        let (_execution, resource, mut scan, committed) =
+            planned_append_resource(rejected.path(), "overwrite");
+        let error = resource
+            .rebind_scan_for_resume(
+                &mut scan,
+                &SourcePosition::TableSnapshot(Box::new(committed)),
+            )
+            .unwrap_err();
+        assert!(error.message.contains("snapshot 101 operation `overwrite`"));
+        assert!(error.message.contains("mode = `snapshot`"));
+        assert!(error.message.contains("changelog-capable disposition"));
     }
 
     #[test]
