@@ -117,6 +117,7 @@ pub struct HttpRequest {
     pub method: HttpMethod,
     pub url: String,
     pub headers: HeaderMap,
+    body: Option<Bytes>,
 }
 
 impl HttpRequest {
@@ -125,12 +126,22 @@ impl HttpRequest {
             method,
             url: url.into(),
             headers: HeaderMap::new(),
+            body: None,
         }
     }
 
     pub fn with_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         set_header(&mut self.headers, name, value);
         self
+    }
+
+    pub fn with_body(mut self, body: impl Into<Bytes>) -> Self {
+        self.body = Some(body.into());
+        self
+    }
+
+    pub fn body(&self) -> Option<&Bytes> {
+        self.body.as_ref()
     }
 }
 
@@ -141,6 +152,7 @@ impl fmt::Debug for HttpRequest {
             .field("method", &self.method)
             .field("url", &redactor.redact_url(&self.url))
             .field("headers", &redactor.redact_headers(&self.headers))
+            .field("body_bytes", &self.body.as_ref().map(Bytes::len))
             .finish()
     }
 }

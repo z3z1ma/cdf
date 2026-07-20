@@ -3,6 +3,7 @@ use cdf_object_access::{FileTransportFacade, ObjectStoreClientPool};
 use cdf_python::PythonSourceDriver;
 use cdf_runtime::{ByteTransformRegistry, FormatRegistry, SourceRegistry};
 use cdf_source_files::{FileRuntimeDependencies, FileSourceDriver, file_source_blocking_lane};
+use cdf_source_iceberg::{AwsGlueCatalogClient, IcebergRuntimeDependencies, IcebergSourceDriver};
 use cdf_source_postgres::PostgresSourceDriver;
 use cdf_source_rest::RestSourceDriver;
 use std::sync::{Arc, OnceLock};
@@ -31,8 +32,29 @@ fn build_builtin_source_registry() -> Result<SourceRegistry> {
     registry.register(RestSourceDriver::new(move || {
         Ok(Box::new(rest_http.clone()))
     })?)?;
+    let iceberg_http = http.clone();
     let file_http = http;
     let object_store_clients = ObjectStoreClientPool::default();
+    let iceberg_object_store_clients = object_store_clients.clone();
+    registry.register(IcebergSourceDriver::new(
+        move |secrets, execution, egress, local_listing_lane| {
+            let rest_http: Arc<dyn cdf_http::HttpTransport> = Arc::new(iceberg_http.clone());
+            Ok(IcebergRuntimeDependencies::new(
+                Arc::new(
+                    FileTransportFacade::new()
+                        .with_http_transport(iceberg_http.clone())
+                        .with_shared_secret_provider(Arc::clone(&secrets))
+                        .with_shared_object_store_clients(iceberg_object_store_clients.clone())
+                        .with_execution_services(execution.clone())
+                        .with_local_listing_lane(local_listing_lane)?,
+                ),
+                Arc::clone(&rest_http),
+                Arc::new(AwsGlueCatalogClient::new(
+                    rest_http, secrets, execution, egress,
+                )),
+            ))
+        },
+    )?)?;
     let formats = builtin_format_registry()?;
     let runtime_formats = std::sync::Arc::clone(&formats);
     registry.register(FileSourceDriver::new(
@@ -140,6 +162,12 @@ mod tests {
         let second = builtin_source_registry().unwrap();
 
         assert!(std::ptr::eq(first, second));
+        assert!(
+            first
+                .descriptors()
+                .iter()
+                .any(|descriptor| descriptor.driver_id.as_str() == "iceberg")
+        );
     }
 
     #[test]

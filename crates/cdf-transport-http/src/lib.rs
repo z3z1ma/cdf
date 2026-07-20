@@ -75,6 +75,7 @@ impl HttpTransport for ReqwestHttpProvider {
                     &request.method,
                     &request.url,
                     &request.headers,
+                    request.body(),
                     "REST",
                     &budget,
                 )
@@ -150,6 +151,7 @@ impl ReqwestHttpProvider {
         method: &HttpMethod,
         url: &str,
         headers: &HeaderMap,
+        body: Option<&Bytes>,
         context: &str,
         budget: &HttpResponseBudget,
     ) -> Result<RawHttpResponse> {
@@ -158,6 +160,9 @@ impl ReqwestHttpProvider {
         let mut builder = self.asynchronous.request(method, url);
         for (name, value) in headers {
             builder = builder.header(name.as_str(), value.as_str());
+        }
+        if let Some(body) = body {
+            builder = builder.body(body.clone());
         }
         let response = builder.send().await.map_err(|error| {
             CdfError::transient(format!(
@@ -1187,6 +1192,52 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status, 200);
+        assert_eq!(response.body().unwrap(), b"ok");
+        server.join().unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn control_transport_sends_post_body_without_copying_it_into_diagnostics() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while request.len() < 7
+                || request
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .is_none_or(|header_end| request.len() < header_end + 4 + 7)
+            {
+                let read = socket.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let header_end = request
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .unwrap();
+            assert!(String::from_utf8_lossy(&request[..header_end]).starts_with("POST /glue "));
+            assert_eq!(&request[header_end + 4..], br#"{"x":1}"#);
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .unwrap();
+        });
+        let coordinator =
+            Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
+        let transport = ReqwestHttpProvider::new().unwrap();
+        let request = HttpRequest::new(HttpMethod::Post, format!("http://{address}/glue"))
+            .with_body(br#"{"x":1}"#.as_slice());
+        assert!(!format!("{request:?}").contains(r#"{"x":1}"#));
+
+        let response = transport
+            .send(request, rest_response_budget(1024, coordinator))
+            .await
+            .unwrap();
+
         assert_eq!(response.body().unwrap(), b"ok");
         server.join().unwrap();
     }

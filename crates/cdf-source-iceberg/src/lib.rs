@@ -7,6 +7,7 @@ use cdf_runtime::{SourceDriverDescriptor, SourceDriverId, artifact_hash};
 mod catalog;
 mod config;
 mod driver;
+mod glue;
 mod planner;
 mod scan_task;
 
@@ -21,7 +22,11 @@ pub use config::{
     DEFAULT_METADATA_PARSE_AMPLIFICATION_BPS, DEFAULT_TASK_WRITER_BUFFER_BYTES,
     IcebergCatalogOptions, IcebergResourceOptions, IcebergSnapshotSelector, IcebergSourceOptions,
 };
-pub use driver::{IcebergRuntimeDependencies, IcebergSourceDriver};
+pub use driver::{
+    ICEBERG_SOURCE_BLOCKING_LANE_ID, IcebergRuntimeDependencies, IcebergSourceDriver,
+    iceberg_source_blocking_lane,
+};
+pub use glue::AwsGlueCatalogClient;
 pub use scan_task::{
     ICEBERG_SCAN_TASK_VERSION, ICEBERG_TASK_SET_AUTHORITY_VERSION, ICEBERG_TASK_SET_TYPE,
     IcebergDataFile, IcebergDeleteContent, IcebergDeleteFile, IcebergFileFormat,

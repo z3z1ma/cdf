@@ -59,6 +59,7 @@ pub struct LoadedIcebergTable {
     pub resource: IcebergResourceOptions,
     pub metadata_location: String,
     pub metadata_generation: String,
+    pub catalog_generation: Option<String>,
     pub metadata: Arc<TableMetadata>,
     pub metadata_json: Arc<serde_json::Value>,
     pub selected: Option<SelectedIcebergSnapshot>,
@@ -76,6 +77,7 @@ impl std::fmt::Debug for LoadedIcebergTable {
             .field("resource", &self.resource.display_name())
             .field("metadata_location", &self.metadata_location)
             .field("metadata_generation", &self.metadata_generation)
+            .field("catalog_generation", &self.catalog_generation)
             .field("selected", &self.selected)
             .field("bytes_read", &self.bytes_read)
             .field("objects_read", &self.objects_read)
@@ -116,6 +118,7 @@ struct RetainedMetadata {
 
 struct CatalogObservation {
     metadata_location: String,
+    catalog_generation: Option<String>,
     payloads: Vec<AccountedBytes>,
     metadata_json: Option<serde_json::Value>,
     bytes_read: u64,
@@ -190,6 +193,7 @@ pub struct GlueGetTableRequest {
     pub table: String,
     pub endpoint: Option<String>,
     pub credentials: Option<SecretUri>,
+    pub maximum_response_bytes: u64,
     pub cancellation: RunCancellation,
 }
 
@@ -275,6 +279,8 @@ pub trait IcebergCatalogBinding: Send + Sync {
 
 struct FilesystemCatalogBinding;
 
+const VERSION_HINT_FILE: &str = "version-hint.text";
+
 impl IcebergCatalogBinding for FilesystemCatalogBinding {
     fn kind(&self) -> &'static str {
         "filesystem"
@@ -315,7 +321,31 @@ impl IcebergCatalogBinding for FilesystemCatalogBinding {
             }
             Ok::<_, CdfError>(identities)
         })?;
-        let selected = select_latest_metadata_file(identities)?;
+        let version_hint = identities
+            .iter()
+            .find(|identity| location_name(&identity.location) == VERSION_HINT_FILE)
+            .cloned();
+        let (selected, hint_bytes, hint_objects) = match version_hint {
+            Some(hint) => {
+                let hint_resource = transport_resource(&hint.location, &request.source, None)?;
+                let payload = read_metadata_object(
+                    context,
+                    &hint_resource,
+                    &hint,
+                    request.source.maximum_metadata_bytes,
+                    request.cancellation.clone(),
+                )?;
+                let bytes = u64::try_from(payload.payload().len()).unwrap_or(u64::MAX);
+                let selected = match parse_version_hint(payload.payload())
+                    .and_then(|version| select_metadata_file_from_hint(&identities, version))
+                {
+                    Ok(selected) => selected,
+                    Err(_) => select_latest_metadata_file(identities.clone())?,
+                };
+                (selected, bytes, 1)
+            }
+            None => (select_latest_metadata_file(identities)?, 0, 0),
+        };
         let access = transport_resource(&selected.location, &request.source, None)?;
         let payload = read_metadata_object(
             context,
@@ -329,10 +359,12 @@ impl IcebergCatalogBinding for FilesystemCatalogBinding {
             context,
             CatalogObservation {
                 metadata_location: selected.location.clone(),
+                catalog_generation: metadata_file_version(&selected.location)
+                    .map(|version| format!("hadoop-version:{version}")),
                 payloads: vec![payload],
                 metadata_json: None,
-                bytes_read: selected.size_bytes.unwrap_or(0),
-                objects_read: 1,
+                bytes_read: selected.size_bytes.unwrap_or(0).saturating_add(hint_bytes),
+                objects_read: 1_u64.saturating_add(hint_objects),
                 control_leases: Vec::new(),
             },
         )
@@ -420,6 +452,7 @@ impl IcebergCatalogBinding for RestCatalogBinding {
             context,
             CatalogObservation {
                 metadata_location,
+                catalog_generation: None,
                 payloads: vec![config_payload, payload],
                 metadata_json: Some(envelope.metadata),
                 bytes_read: config_bytes.saturating_add(response_bytes),
@@ -505,6 +538,7 @@ impl IcebergCatalogBinding for GlueCatalogBinding {
             table: request.resource.table.clone(),
             endpoint: endpoint.clone(),
             credentials,
+            maximum_response_bytes: request.source.maximum_metadata_bytes,
             cancellation: request.cancellation.clone(),
         };
         let pointer = context
@@ -535,6 +569,7 @@ impl IcebergCatalogBinding for GlueCatalogBinding {
             context,
             CatalogObservation {
                 metadata_location: pointer.metadata_location.clone(),
+                catalog_generation: pointer.catalog_generation,
                 payloads: vec![payload],
                 metadata_json: None,
                 bytes_read: pointer
@@ -669,6 +704,7 @@ fn build_loaded_table(
         resource: request.resource.clone(),
         metadata_location: observation.metadata_location,
         metadata_generation,
+        catalog_generation: observation.catalog_generation,
         metadata: Arc::new(metadata),
         metadata_json: Arc::new(metadata_json),
         selected,
@@ -992,7 +1028,7 @@ fn read_metadata_object(
     })
 }
 
-fn reserve_discovery_memory(
+pub(crate) fn reserve_discovery_memory(
     memory: Arc<dyn MemoryCoordinator>,
     bytes: u64,
     consumer: &str,
@@ -1040,8 +1076,59 @@ fn select_latest_metadata_file(
     })
 }
 
+fn select_metadata_file_from_hint(
+    identities: &[FileIdentityMetadata],
+    hinted_version: u64,
+) -> Result<FileIdentityMetadata> {
+    let mut by_version = BTreeMap::<u64, FileIdentityMetadata>::new();
+    for identity in identities {
+        let Some(version) = metadata_file_version(&identity.location) else {
+            continue;
+        };
+        by_version
+            .entry(version)
+            .and_modify(|selected| {
+                if identity.location < selected.location {
+                    *selected = identity.clone();
+                }
+            })
+            .or_insert_with(|| identity.clone());
+    }
+    let mut selected = by_version.get(&hinted_version).cloned().ok_or_else(|| {
+        CdfError::data(format!(
+            "Iceberg version hint references missing metadata version {hinted_version}"
+        ))
+    })?;
+    let mut version = hinted_version;
+    while let Some(next_version) = version.checked_add(1)
+        && let Some(next) = by_version.get(&next_version)
+    {
+        selected = next.clone();
+        version = next_version;
+    }
+    Ok(selected)
+}
+
+fn parse_version_hint(payload: &[u8]) -> Result<u64> {
+    let value = std::str::from_utf8(payload)
+        .map_err(|_| CdfError::data("Iceberg version hint is not UTF-8"))?
+        .trim();
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(CdfError::data(
+            "Iceberg version hint must contain one nonnegative decimal version",
+        ));
+    }
+    value
+        .parse()
+        .map_err(|_| CdfError::data("Iceberg version hint exceeds u64"))
+}
+
+fn location_name(location: &str) -> &str {
+    location.rsplit('/').next().unwrap_or(location)
+}
+
 fn metadata_file_version(location: &str) -> Option<u64> {
-    let name = location.rsplit('/').next().unwrap_or(location);
+    let name = location_name(location);
     if !name.ends_with(".metadata.json") {
         return None;
     }
@@ -1292,5 +1379,15 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(selected.location, "/table/metadata/v2.metadata.json");
+
+        let identities = vec![
+            identity("/table/metadata/v1.metadata.json"),
+            identity("/table/metadata/v2.metadata.json"),
+            identity("/table/metadata/v4.metadata.json"),
+        ];
+        let selected = select_metadata_file_from_hint(&identities, 1).unwrap();
+        assert_eq!(selected.location, "/table/metadata/v2.metadata.json");
+        assert_eq!(parse_version_hint(b" 2\n").unwrap(), 2);
+        assert!(parse_version_hint(b"v2").is_err());
     }
 }
