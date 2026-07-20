@@ -4,10 +4,11 @@ use cdf_http::{HttpTransport, SecretProvider};
 use cdf_kernel::{
     BackpressureSupport, BatchStream, CapabilitySupport, CdfError, EffectiveSchemaCatalogEntry,
     EffectiveSchemaRuntime, EstimateSupport, ExecutablePartition, FilterCapabilities,
-    IncrementalShape, PartitionOpenAttempt, PartitionPlan, PartitionStreamPayload,
-    PartitioningCapabilities, PayloadRetention, PlannedPartitionReader, PlannedTaskSetReference,
-    QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceStream,
-    Result, ScanPlan, ScanRequest, ScopeKind, TypePolicyAllowances,
+    IncrementalShape, PartitionAttestation, PartitionAttestationAttempt, PartitionOpenAttempt,
+    PartitionPlan, PartitionStreamPayload, PartitioningCapabilities, PayloadRetention,
+    PlannedPartitionReader, PlannedTaskSetReference, QueryableResource, ReplaySupport,
+    ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, ScanPlan, ScanRequest,
+    ScopeKind, SourcePosition, TypePolicyAllowances,
 };
 use cdf_object_access::FileTransport;
 use cdf_runtime::{
@@ -767,6 +768,31 @@ impl ResourceStream for IcebergResource {
             Ok(PartitionStreamPayload::new(stream, completion))
         });
         PartitionOpenAttempt::with_termination(opening, termination)
+    }
+
+    fn attest_executable(&self, partition: ExecutablePartition) -> PartitionAttestationAttempt<'_> {
+        let executable = partition
+            .retention()
+            .and_then(PayloadRetention::downcast_ref::<IcebergExecutableTask>)
+            .cloned();
+        let output_schema = Arc::clone(&self.schema);
+        PartitionAttestationAttempt::materialized(Box::pin(async move {
+            let executable = executable.ok_or_else(|| {
+                CdfError::contract(
+                    "Iceberg executable attestation omitted its retained canonical task payload",
+                )
+            })?;
+            executable.task.validate_against(executable.authority())?;
+            let snapshot = executable.authority().snapshot.clone().ok_or_else(|| {
+                CdfError::contract("Iceberg executable task omitted immutable snapshot authority")
+            })?;
+            Ok(Some(PartitionAttestation::new(
+                SourcePosition::TableSnapshot(Box::new(snapshot)),
+                Some(cdf_kernel::canonical_arrow_schema_hash(
+                    output_schema.as_ref(),
+                )?),
+            )))
+        }))
     }
 
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
@@ -2171,6 +2197,20 @@ mod tests {
                 let mut rows = 0_usize;
                 let mut null_labels = 0_usize;
                 for task in executable {
+                    let attestation = resource
+                        .attest_executable(task.clone())
+                        .await?
+                        .expect("Iceberg task has immutable snapshot authority");
+                    assert!(matches!(
+                        attestation.processed_position(),
+                        cdf_kernel::SourcePosition::TableSnapshot(_)
+                    ));
+                    assert_eq!(
+                        attestation.physical_schema_hash(),
+                        Some(&cdf_kernel::canonical_arrow_schema_hash(
+                            resource.schema().as_ref()
+                        )?)
+                    );
                     let mut opened = resource.open_executable(task).await?;
                     while let Some(batch) = opened.try_next().await? {
                         assert!(batch.retained_bytes() > 0);
