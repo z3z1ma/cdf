@@ -348,9 +348,13 @@ impl WorkerAdmissionVerifier for EngineWorkerAdmissionVerifier<'_> {
         )?;
         Ok(ReconstructedWorkerTaskAuthority::from_verified_artifacts(
             source,
-            partition,
+            partition.clone(),
             execution,
-            Box::new(ReconstructedEngineWorkerProgram { plan }),
+            Box::new(ReconstructedEngineWorkerProgram {
+                plan,
+                partition,
+                canonical_partition_ordinal: task.partition.canonical_partition_ordinal,
+            }),
         ))
     }
 
@@ -628,6 +632,8 @@ pub struct WorkerSegmentAuthorityArtifact {
 /// never serialized as worker control data.
 pub struct ReconstructedEngineWorkerProgram {
     plan: EnginePlan,
+    partition: cdf_kernel::PartitionPlan,
+    canonical_partition_ordinal: u32,
 }
 
 impl cdf_runtime::ReconstructedWorkerExecutionProgram for ReconstructedEngineWorkerProgram {
@@ -640,6 +646,61 @@ impl ReconstructedEngineWorkerProgram {
     pub fn plan(&self) -> &EnginePlan {
         &self.plan
     }
+
+    /// Derives the nonidentity execution slice for exactly the partition bound by the capsule.
+    ///
+    /// The verified full plan remains the semantic authority. The slice only narrows source work;
+    /// it is never serialized, hashed as a project/package plan, or accepted for package commit.
+    pub fn partition_execution_plan(&self) -> Result<EnginePlan> {
+        validate_partition_isolation(&self.plan)?;
+        if self.plan.scan.planned_task_set.is_some() {
+            return Err(CdfError::contract(
+                "isolated external task-set execution requires source-owned retained task reconstruction",
+            ));
+        }
+        let source = self
+            .plan
+            .compiled_source_execution
+            .as_ref()
+            .ok_or_else(|| CdfError::contract("isolated engine plan lacks compiled source"))?;
+        self.plan
+            .partition_schedule
+            .as_ref()
+            .ok_or_else(|| CdfError::contract("isolated engine plan lacks partition schedule"))?
+            .scheduled_partition(
+                source,
+                usize::try_from(self.canonical_partition_ordinal)
+                    .map_err(|_| CdfError::contract("isolated partition ordinal exceeds usize"))?,
+                &self.partition,
+            )?;
+        let mut slice = self.plan.clone();
+        slice.scan.partitions = vec![self.partition.clone()];
+        let schedule = cdf_runtime::CanonicalPartitionSchedule::compile(source, &slice.scan)?;
+        slice.partition_schedule = Some(schedule.clone());
+        slice.explain.partition_schedule = Some(schedule);
+        slice.validate_partition_schedule()?;
+        Ok(slice)
+    }
+}
+
+fn validate_partition_isolation(plan: &EnginePlan) -> Result<()> {
+    if plan.scan.partition_count()? <= 1 {
+        return Ok(());
+    }
+    if plan.scan.request.limit.is_some()
+        || plan.validation_program.has_exact_row_dedup_rule()
+        || (plan.write_disposition == cdf_kernel::WriteDisposition::Merge
+            && plan.validation_program.has_keyed_dedup_rule())
+        || !matches!(
+            plan.execution_extent,
+            cdf_kernel::ExecutionExtent::Bounded { .. }
+        )
+    {
+        return Err(CdfError::contract(
+            "multi-partition isolation requires partition-separable bounded semantics; package-global limit, deduplication, and drain policies require one whole-package worker",
+        ));
+    }
+    Ok(())
 }
 
 pub struct EnginePartitionTaskInput<'a> {
