@@ -3954,13 +3954,13 @@ fn drain_project_settles_each_frontier_before_committing_the_next_epoch() {
     let mut plan = live_plan_for_queryable(&resource, package_id);
     plan.execution_extent = extent.clone();
     plan.explain.execution_extent = extent;
-    let destination =
+    let resolved_destination =
         ResolvedProjectDestination::duckdb(&duckdb_path, TargetName::new("events").unwrap())
             .unwrap();
     let plan = plan
         .bind_compiled_source(&source)
         .unwrap()
-        .bind_operator_graph(&source, &destination.runtime_capabilities())
+        .bind_operator_graph(&source, &resolved_destination.runtime_capabilities())
         .unwrap();
 
     let report = futures_executor::block_on(run_project(ProjectRunRequest {
@@ -3971,7 +3971,7 @@ fn drain_project_settles_each_frontier_before_committing_the_next_epoch() {
         pipeline_id: PipelineId::new("pipeline-drain").unwrap(),
         package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new("checkpoint-drain").unwrap(),
-        destination,
+        destination: resolved_destination,
         run_id: Some(RunId::new("run-drain").unwrap()),
         event_sink: None,
         after_receipt_verified: None,
@@ -4023,6 +4023,101 @@ fn drain_project_settles_each_frontier_before_committing_the_next_epoch() {
         output_manifest_paths(&report),
         vec!["events-a.ndjson", "events-b.ndjson"]
     );
+}
+
+#[test]
+fn drain_project_does_not_publish_a_later_epoch_before_checkpoint_settlement() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = multi_file_resource(temp.path());
+    let package_root = temp.path().join(".cdf/packages");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+    let package_id = "pkg-drain-settlement-failure";
+    let pipeline_id = PipelineId::new("pipeline-drain-settlement-failure").unwrap();
+    let source = compiled_drain_test_source_plan(&resource);
+    let bound = BoundTestResource {
+        inner: &resource,
+        compiled_source_plan_hash: cdf_runtime::artifact_hash(&source).unwrap(),
+    };
+    let extent = ExecutionExtent::Drain {
+        version: cdf_kernel::EXECUTION_EXTENT_VERSION,
+        policy: cdf_kernel::StreamEpochPolicy {
+            version: cdf_kernel::STREAM_EPOCH_POLICY_VERSION,
+            checkpoint_cadence: cdf_kernel::EpochClosureTrigger::Rows { count: 1 },
+            package_rotation: cdf_kernel::EpochClosureTrigger::Bytes { count: 1 << 20 },
+            watermark: cdf_kernel::WatermarkPolicy::Disabled,
+            late_data: cdf_kernel::LateDataAction::Quarantine,
+            safe_frontier: cdf_kernel::SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+        },
+        termination: cdf_kernel::DrainTermination::Records { count: 2 },
+    };
+    let mut plan = live_plan_for_queryable(&resource, package_id);
+    plan.execution_extent = extent.clone();
+    plan.explain.execution_extent = extent;
+    let resolved_destination =
+        ResolvedProjectDestination::duckdb(&duckdb_path, TargetName::new("events").unwrap())
+            .unwrap();
+    let plan = plan
+        .bind_compiled_source(&source)
+        .unwrap()
+        .bind_operator_graph(&source, &resolved_destination.runtime_capabilities())
+        .unwrap();
+    let hook = |_receipt: &Receipt| {
+        Err(CdfError::internal(
+            "injected drain checkpoint settlement failure",
+        ))
+    };
+
+    let error = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunSource::new(&bound),
+        plan,
+        package_root: package_root.clone(),
+        state_store_path: state_path.clone(),
+        pipeline_id: pipeline_id.clone(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-drain-settlement-failure").unwrap(),
+        destination: resolved_destination,
+        run_id: Some(RunId::new("run-drain-settlement-failure").unwrap()),
+        event_sink: None,
+        after_receipt_verified: Some(&hook),
+    }))
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("injected drain checkpoint settlement failure"),
+        "{error}"
+    );
+    let first_package = package_root.join(package_id);
+    assert_eq!(package_status(&first_package), PackageStatus::Loading);
+    let receipts = package_receipts(&first_package);
+    assert_eq!(receipts.len(), 1);
+    assert!(
+        destination(&duckdb_path)
+            .verify_receipt(&receipts[0])
+            .unwrap()
+            .verified
+    );
+    assert!(
+        !package_root
+            .join("pkg-drain-settlement-failure-epoch-00000000000000000001")
+            .exists()
+    );
+
+    let store = SqliteCheckpointStore::open(&state_path).unwrap();
+    let scope = resource.descriptor().state_scope.clone();
+    assert!(
+        store
+            .head(&pipeline_id, &resource.descriptor().resource_id, &scope)
+            .unwrap()
+            .is_none()
+    );
+    let history = store
+        .history(&pipeline_id, &resource.descriptor().resource_id, &scope)
+        .unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].status, CheckpointStatus::Proposed);
 }
 
 #[test]
