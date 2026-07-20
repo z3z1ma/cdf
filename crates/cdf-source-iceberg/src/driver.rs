@@ -861,6 +861,23 @@ mod tests {
     }
 
     #[derive(Clone)]
+    struct StaticGlueCatalogClient {
+        pointer: crate::GlueTablePointer,
+        requests: Arc<Mutex<Vec<crate::GlueGetTableRequest>>>,
+    }
+
+    impl crate::GlueCatalogClient for StaticGlueCatalogClient {
+        fn get_table(
+            &self,
+            request: crate::GlueGetTableRequest,
+        ) -> cdf_kernel::BoxFuture<'_, Result<crate::GlueTablePointer>> {
+            self.requests.lock().unwrap().push(request);
+            let pointer = self.pointer.clone();
+            Box::pin(async move { Ok(pointer) })
+        }
+    }
+
+    #[derive(Clone)]
     struct NoopHttpTransport;
 
     impl HttpTransport for NoopHttpTransport {
@@ -1562,6 +1579,105 @@ mod tests {
             observation.source_identity["catalog_generation"],
             "hadoop-version:1"
         );
+    }
+
+    #[test]
+    fn glue_binding_produces_the_same_pinned_table_semantics() {
+        let root = tempfile::tempdir().unwrap();
+        let table = root.path().join("analytics/events");
+        let metadata_dir = table.join("metadata");
+        fs::create_dir_all(&metadata_dir).unwrap();
+        let metadata_location = metadata_dir.join("v1.metadata.json");
+        fs::write(&metadata_location, empty_table_metadata(&table)).unwrap();
+
+        let execution = execution_services();
+        let filesystem_driver = filesystem_driver();
+        let filesystem_plan = filesystem_driver
+            .compile(compile_request(root.path()))
+            .unwrap();
+        let filesystem_context = SourceResolutionContext::new(
+            root.path(),
+            Arc::new(NoopSecretProvider),
+            &execution,
+            Arc::new(cdf_http::EgressAllowlist::allow_any()),
+        );
+        let filesystem_session = filesystem_driver
+            .discovery_session(&filesystem_plan, &filesystem_context)
+            .unwrap();
+        let filesystem_candidate = filesystem_session.candidates().unwrap().remove(0);
+        let filesystem_observation = filesystem_session
+            .observe(
+                &filesystem_candidate,
+                &SourceDiscoveryRequest::new(64 * 1024 * 1024, 1).unwrap(),
+            )
+            .unwrap();
+
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let glue = StaticGlueCatalogClient {
+            pointer: crate::GlueTablePointer {
+                metadata_location: metadata_location.display().to_string(),
+                catalog_generation: Some("glue-version-7".to_owned()),
+                bytes_read: 123,
+                retained_bytes: 64,
+            },
+            requests: Arc::clone(&requests),
+        };
+        let driver = IcebergSourceDriver::new(move |secrets, execution, _egress, lane| {
+            Ok(IcebergRuntimeDependencies::new(
+                Arc::new(
+                    FileTransportFacade::new()
+                        .with_shared_secret_provider(secrets)
+                        .with_execution_services(execution)
+                        .with_local_listing_lane(lane)?,
+                ),
+                Arc::new(NoopHttpTransport),
+                Arc::new(glue.clone()),
+            ))
+        })
+        .unwrap();
+        let mut glue_request = compile_request(root.path());
+        glue_request.source_options.insert(
+            "catalog".to_owned(),
+            serde_json::json!({"kind": "glue", "region": "us-east-1"}),
+        );
+        let glue_plan = driver.compile(glue_request).unwrap();
+        let glue_context = SourceResolutionContext::new(
+            root.path(),
+            Arc::new(NoopSecretProvider),
+            &execution,
+            Arc::new(cdf_http::EgressAllowlist::allow_any()),
+        );
+        let glue_session = driver.discovery_session(&glue_plan, &glue_context).unwrap();
+        let glue_candidate = glue_session.candidates().unwrap().remove(0);
+        let glue_observation = glue_session
+            .observe(
+                &glue_candidate,
+                &SourceDiscoveryRequest::new(64 * 1024 * 1024, 1).unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(glue_observation.schema, filesystem_observation.schema);
+        assert_eq!(
+            glue_observation.source_identity["table_uuid"],
+            filesystem_observation.source_identity["table_uuid"]
+        );
+        assert_eq!(
+            glue_observation.source_identity["metadata_generation"],
+            filesystem_observation.source_identity["metadata_generation"]
+        );
+        assert_eq!(
+            glue_observation.source_identity["catalog_generation"],
+            "glue-version-7"
+        );
+        {
+            let observed = requests.lock().unwrap();
+            assert_eq!(observed.len(), 1);
+            assert_eq!(observed[0].database, "analytics");
+            assert_eq!(observed[0].table, "events");
+        }
+        assert_eq!(glue_context.prepared_payloads().pending_count().unwrap(), 1);
+        driver.resolve(&glue_plan, &glue_context).unwrap();
+        assert_eq!(requests.lock().unwrap().len(), 1);
     }
 
     #[test]
