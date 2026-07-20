@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 use cdf_kernel::{
     CdfError, CompiledScanIntent, ExecutablePartition, PartitionId, PartitionPlan,
@@ -14,6 +17,7 @@ use crate::{
 };
 
 const TASK_CONTENT_HASH_KEY: &str = "cdf:external_task_sha256";
+const GENERATION_ATTESTATION_MEMORY_BYTES: u64 = 256;
 
 struct RetainedTaskAuthority {
     model: IcebergTaskSetAuthority,
@@ -21,11 +25,17 @@ struct RetainedTaskAuthority {
     _parse: MemoryLease,
 }
 
+struct IcebergTaskGenerationAttestation {
+    observed_hash: Mutex<Option<String>>,
+    _memory: MemoryLease,
+}
+
 /// Source-private payload carried through bounded scheduler lookahead.
 #[derive(Clone)]
 pub(crate) struct IcebergExecutableTask {
     pub(crate) task: IcebergScanTask,
     authority: Arc<RetainedTaskAuthority>,
+    generation_attestation: Arc<IcebergTaskGenerationAttestation>,
     _encoded: AccountedBytes,
     _parse: MemoryLease,
 }
@@ -33,6 +43,25 @@ pub(crate) struct IcebergExecutableTask {
 impl IcebergExecutableTask {
     pub(crate) fn authority(&self) -> &IcebergTaskSetAuthority {
         &self.authority.model
+    }
+
+    pub(crate) fn attest_attempt_generation(&self, observed_hash: &str) -> Result<()> {
+        cdf_runtime::validate_artifact_hash("Iceberg attempt generation", observed_hash)?;
+        let mut retained = self
+            .generation_attestation
+            .observed_hash
+            .lock()
+            .map_err(|_| CdfError::internal("Iceberg generation attestation is poisoned"))?;
+        match retained.as_deref() {
+            Some(expected) if expected != observed_hash => Err(CdfError::data(
+                "Iceberg object generation changed between attempts for one immutable scan task",
+            )),
+            Some(_) => Ok(()),
+            None => {
+                *retained = Some(observed_hash.to_owned());
+                Ok(())
+            }
+        }
     }
 }
 
@@ -107,6 +136,12 @@ impl IcebergPlannedPartitionReader {
                 "Iceberg scan task ordinal or content does not match its task-store record",
             ));
         }
+        let generation_memory = reserve_parse_memory(
+            Arc::clone(&self.memory),
+            GENERATION_ATTESTATION_MEMORY_BYTES,
+            10_000,
+            "iceberg-task-generation-attestation",
+        )?;
         let partition_id =
             PartitionId::new(format!("iceberg-task-{:020}", record.canonical_ordinal))?;
         let planned_position = self
@@ -134,10 +169,15 @@ impl IcebergPlannedPartitionReader {
         };
         let retained_bytes = encoded_bytes
             .checked_add(parse.bytes())
+            .and_then(|bytes| bytes.checked_add(generation_memory.bytes()))
             .ok_or_else(|| CdfError::data("Iceberg retained task bytes overflowed u64"))?;
         let retained = IcebergExecutableTask {
             task,
             authority: Arc::clone(&self.authority),
+            generation_attestation: Arc::new(IcebergTaskGenerationAttestation {
+                observed_hash: Mutex::new(None),
+                _memory: generation_memory,
+            }),
             _encoded: record.payload,
             _parse: parse,
         };

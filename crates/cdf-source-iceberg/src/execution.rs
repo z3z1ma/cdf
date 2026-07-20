@@ -44,7 +44,9 @@ pub(crate) fn prepare_task_scan(
     cancellation: RunCancellation,
 ) -> Result<PreparedIcebergTaskScan> {
     executable.task.validate_against(executable.authority())?;
-    let file_io = prepare_task_file_io(context, source, &executable.task, cancellation)?;
+    let (file_io, generation_hash) =
+        prepare_task_file_io(context, source, &executable.task, cancellation)?;
+    executable.attest_attempt_generation(&generation_hash)?;
     Ok(PreparedIcebergTaskScan {
         executable,
         file_io,

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use cdf_kernel::{CdfError, ErrorKind as CdfErrorKind, Result};
 use cdf_object_access::{FileIdentityMetadata, FileTransportControl};
-use cdf_runtime::{ByteExtent, ByteSource, RunCancellation};
+use cdf_runtime::{ByteExtent, ByteSource, RunCancellation, artifact_hash};
 use futures_util::stream::BoxStream;
 use iceberg::{
     Error as IcebergError, ErrorKind as IcebergErrorKind,
@@ -14,6 +14,7 @@ use iceberg::{
     },
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _, ser::Error as _};
+use sha2::{Digest, Sha256};
 
 use crate::{
     IcebergCatalogContext, IcebergScanTask, IcebergSourceOptions, catalog::transport_resource,
@@ -118,7 +119,7 @@ pub(crate) fn prepare_task_file_io(
     source: &IcebergSourceOptions,
     task: &IcebergScanTask,
     cancellation: RunCancellation,
-) -> Result<FileIO> {
+) -> Result<(FileIO, String)> {
     cancellation.check()?;
     let mut planned = BTreeMap::<String, PlannedObject>::new();
     insert_planned_object(
@@ -139,6 +140,7 @@ pub(crate) fn prepare_task_file_io(
     let control = FileTransportControl::new(cancellation.clone(), None);
     let memory = context.execution.memory();
     let mut objects = BTreeMap::new();
+    let mut generation_hasher = Sha256::new();
     for (path, planned) in planned {
         cancellation.check()?;
         let logical = transport_resource(&path, source, None)?;
@@ -173,6 +175,7 @@ pub(crate) fn prepare_task_file_io(
                 "Iceberg object `{path}` byte source does not preserve its manifest size authority"
             )));
         }
+        generation_hasher.update(artifact_hash(&identity)?.as_bytes());
         objects.insert(
             path,
             PreparedIcebergObject {
@@ -185,7 +188,11 @@ pub(crate) fn prepare_task_file_io(
         objects: Arc::new(objects),
         cancellation,
     };
-    Ok(FileIOBuilder::new(Arc::new(CdfIcebergStorageFactory { storage })).build())
+    let generation_hash = format!("sha256:{}", hex::encode(generation_hasher.finalize()));
+    Ok((
+        FileIOBuilder::new(Arc::new(CdfIcebergStorageFactory { storage })).build(),
+        generation_hash,
+    ))
 }
 
 fn insert_planned_object(

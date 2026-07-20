@@ -1000,11 +1000,12 @@ mod tests {
     struct FaultInjectingFileTransport {
         inner: Arc<dyn FileTransport>,
         metadata_failures: Arc<AtomicUsize>,
+        metadata_cancellation: Arc<Mutex<Option<RunCancellation>>>,
         target_suffix: Arc<str>,
     }
 
     impl FaultInjectingFileTransport {
-        fn should_fail(&self, resource: &FileTransportResource) -> bool {
+        fn targets(&self, resource: &FileTransportResource) -> bool {
             let location = match &resource.location {
                 FileTransportLocation::LocalPath { path } => path,
                 FileTransportLocation::FileUrl { url }
@@ -1012,12 +1013,32 @@ mod tests {
                 | FileTransportLocation::RemoteUrl { url } => url,
             };
             location.ends_with(self.target_suffix.as_ref())
-                && self
-                    .metadata_failures
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
-                        remaining.checked_sub(1)
-                    })
-                    .is_ok()
+        }
+
+        fn before_metadata(&self, resource: &FileTransportResource) -> Result<()> {
+            if !self.targets(resource) {
+                return Ok(());
+            }
+            if let Some(cancellation) = self
+                .metadata_cancellation
+                .lock()
+                .map_err(|_| CdfError::internal("Iceberg test fault control is poisoned"))?
+                .take()
+            {
+                cancellation.cancel();
+            }
+            if self
+                .metadata_failures
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(CdfError::transient(
+                    "injected Iceberg data-object metadata failure",
+                ));
+            }
+            Ok(())
         }
     }
 
@@ -1028,11 +1049,7 @@ mod tests {
             resource: &FileTransportResource,
             control: &FileTransportControl,
         ) -> Result<FileMetadataObservation> {
-            if self.should_fail(resource) {
-                return Err(CdfError::transient(
-                    "injected Iceberg data-object metadata failure",
-                ));
-            }
+            self.before_metadata(resource)?;
             self.inner.metadata(egress, resource, control)
         }
 
@@ -1042,11 +1059,7 @@ mod tests {
             resource: &FileTransportResource,
             control: &FileTransportControl,
         ) -> Result<Option<FileMetadataObservation>> {
-            if self.should_fail(resource) {
-                return Err(CdfError::transient(
-                    "injected Iceberg data-object metadata failure",
-                ));
-            }
+            self.before_metadata(resource)?;
             self.inner.metadata_if_exists(egress, resource, control)
         }
 
@@ -1779,8 +1792,9 @@ mod tests {
         .unwrap()
     }
 
-    fn filesystem_driver_with_metadata_failures(
+    fn filesystem_driver_with_metadata_faults(
         metadata_failures: Arc<AtomicUsize>,
+        metadata_cancellation: Arc<Mutex<Option<RunCancellation>>>,
         target_suffix: &'static str,
     ) -> IcebergSourceDriver {
         let http = NoopHttpTransport;
@@ -1795,6 +1809,7 @@ mod tests {
                 Arc::new(FaultInjectingFileTransport {
                     inner,
                     metadata_failures: Arc::clone(&metadata_failures),
+                    metadata_cancellation: Arc::clone(&metadata_cancellation),
                     target_suffix: Arc::from(target_suffix),
                 }),
                 Arc::new(http.clone()),
@@ -2149,8 +2164,10 @@ mod tests {
         let execution = execution_services();
         write_nonempty_table_fixture(&execution, &table);
         let metadata_failures = Arc::new(AtomicUsize::new(0));
-        let driver = filesystem_driver_with_metadata_failures(
+        let metadata_cancellation = Arc::new(Mutex::new(None));
+        let driver = filesystem_driver_with_metadata_faults(
             Arc::clone(&metadata_failures),
+            Arc::clone(&metadata_cancellation),
             "data/old.parquet",
         );
         let context = SourceResolutionContext::new(
@@ -2420,6 +2437,34 @@ mod tests {
         assert!(retry_evidence[0].history()[0].selected_delay_ms.is_some());
         assert!(retry_evidence[0].history()[0].exhaustion.is_none());
 
+        let cancellation = RunCancellation::default();
+        *metadata_cancellation.lock().unwrap() = Some(cancellation.clone());
+        let cancelled_package = tempfile::tempdir().unwrap();
+        let cancelled_options = EngineExecutionOptions::default()
+            .with_execution_services(execution.clone())
+            .with_cancellation(cancellation.clone());
+        let cancellation_error = futures_executor::block_on(
+            cdf_engine::execute_to_package_with_segment_positions_and_pre_finalize(
+                &engine_plan,
+                resource.as_ref(),
+                cancelled_package.path(),
+                &|_, _| Ok(()),
+                cancelled_options,
+            ),
+        )
+        .unwrap_err();
+        assert!(cancellation.is_cancelled());
+        assert!(metadata_cancellation.lock().unwrap().is_none());
+        assert!(
+            cancellation_error.message.contains("cancel"),
+            "{cancellation_error}"
+        );
+        let cancelled_manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(cancelled_package.path().join("manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cancelled_manifest["lifecycle"]["status"], "extracting");
+
         let mut many_jobs_request = compile_request(root.path());
         many_jobs_request
             .source_options
@@ -2439,6 +2484,50 @@ mod tests {
         assert_eq!(
             artifact_hash(&many_jobs_scan).unwrap(),
             artifact_hash(&one_job_scan).unwrap()
+        );
+
+        let generation_context = driver.catalog_context(&one_job_plan, &context).unwrap();
+        let generation_source = driver.physical_plan(&one_job_plan).unwrap().source;
+        let mut generation_reader = resource.planned_partition_reader(&reference).unwrap();
+        let generation_partition = generation_reader.next_partition(0).unwrap().unwrap();
+        let generation_task = generation_partition
+            .retention()
+            .and_then(PayloadRetention::downcast_ref::<IcebergExecutableTask>)
+            .unwrap()
+            .clone();
+        drop(
+            prepare_task_scan(
+                &generation_context,
+                &generation_source,
+                generation_task.clone(),
+                RunCancellation::default(),
+            )
+            .unwrap(),
+        );
+        let old_data_path = table.join("data/old.parquet");
+        let mut replacement = fs::read(&old_data_path).unwrap();
+        let replacement_size = replacement.len();
+        replacement[0] ^= 1;
+        fs::write(&old_data_path, replacement).unwrap();
+        assert_eq!(
+            usize::try_from(fs::metadata(&old_data_path).unwrap().len()).unwrap(),
+            replacement_size
+        );
+        let generation_error = match prepare_task_scan(
+            &generation_context,
+            &generation_source,
+            generation_task,
+            RunCancellation::default(),
+        ) {
+            Ok(_) => panic!("same-sized Iceberg replacement escaped attempt attestation"),
+            Err(error) => error,
+        };
+        assert_eq!(generation_error.kind, cdf_kernel::ErrorKind::Data);
+        assert!(
+            generation_error
+                .message
+                .contains("generation changed between attempts"),
+            "{generation_error}"
         );
     }
 
