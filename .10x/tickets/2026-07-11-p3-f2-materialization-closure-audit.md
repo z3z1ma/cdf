@@ -71,6 +71,7 @@ No unrelated product feature or performance tuning beyond closure blockers.
 - 2026-07-18: Removed four package-cardinality `BTreeSet` allocations from direct engine finalization and the equivalent isolated-lineage set. Lineage, processed-observation, and terminal-quarantine vectors are now canonicalized once in place, reject adjacent duplicate identities, and compare against ordered stream-admission/quarantine authority with linear iterators. This preserves exact-set semantics and strengthens duplicate terminal-quarantine rejection without another resident identity index.
 - 2026-07-18: Began the resident-manifest removal without changing `manifest.json` bytes, package hashes, or layout. A callback-driven parser now returns only constant-cardinality manifest/identity headers while visiting file and segment arrays one entry at a time in stored order. It rejects unknown, duplicate, and missing fields and stops immediately on consumer failure. Production reader/finalizer migration remains open; this is the parser boundary they will consume, not a second artifact format.
 - 2026-07-18: Moved the process-wide spill budget/reservation authority from `cdf-runtime` into the runtime-neutral `cdf-memory` resource layer. `cdf-runtime` re-exports the exact types, so existing sources, destinations, task stores, and the concurrent connector lane remain source-compatible without an import migration. The lower-level package layer can now account metadata spill directly without depending upward on orchestration or inventing a package-specific disk-budget trait.
+- 2026-07-18: Put the first production control-plane consumers on streamed manifest access. Package list counts segments with checked `u64`; GC classification reads the constant header before independent verification; and `cdf sql` inserts file/segment rows directly into its SQLite evidence catalog. None of these paths retains a second manifest-sized file/segment collection. GC verification itself still uses the resident verifier and remains part of the larger migration.
 
 ## Evidence
 
@@ -190,6 +191,11 @@ No unrelated product feature or performance tuning beyond closure blockers.
   - `CARGO_BUILD_JOBS=12 cargo test -p cdf-memory reservations_enforce_shared_budget_and_release_on_drop --locked -j 12` — passed. The moved authority still enforces aggregate capacity, growth, shrink/release, peak accounting, and failure counts.
   - `CARGO_BUILD_JOBS=12 cargo check -p cdf-runtime -p cdf-task-store -p cdf-package --all-targets --locked -j 12` and matching strict Clippy passed. This proves the runtime re-export preserves existing consumers while `cdf-package` can depend only on the lower resource layer.
   - `cargo fmt --all` and `git diff --check` passed.
+- 2026-07-18 streamed CLI manifest consumers:
+  - All three package-GC planning laws passed after classification moved to the manifest header, including checkpoint protection, residual-promotion reporting, and dry-run non-deletion.
+  - `sql_mounts_checkpoint_package_and_receipt_tables_as_json_rows` passed. It proves header counts and callback-inserted file/segment rows preserve the queryable package/receipt catalog.
+  - `CARGO_BUILD_JOBS=12 cargo check -p cdf-cli --all-targets --locked -j 12` and strict Clippy for `cdf-package` plus `cdf-cli` passed; `cargo fmt --all` and `git diff --check` passed.
+  - Limit: package verification and the ordinary `PackageReader` still deserialize the resident stored model; those are the next owners, so this slice does not close the manifest blocker.
 - This is partial F2 evidence only. The ticket remains active because its cross-codebase owner matrix, static architecture gates, remaining metadata-cardinality closure, and geometric stress proof are not complete.
 
 ## Review

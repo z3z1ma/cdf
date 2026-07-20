@@ -167,7 +167,7 @@ fn classify_package_artifact(
         };
     }
 
-    let manifest = match cdf_package::read_manifest(package_dir) {
+    let manifest = match cdf_package::read_manifest_header(package_dir) {
         Ok(manifest) => manifest,
         Err(_) => {
             return PackageGcArtifact {
@@ -299,12 +299,19 @@ fn list_packages(root: PathBuf) -> Result<Vec<PackageListEntry>, CliError> {
     for entry in sorted_child_entries(&root)? {
         let path = entry.path();
         if path.join(MANIFEST_FILE).exists() {
-            let manifest = cdf_package::read_manifest(&path)?;
+            let mut segments = 0_u64;
+            let manifest =
+                cdf_package::visit_manifest_entries(&path, &mut |_| Ok(()), &mut |_| {
+                    segments = segments
+                        .checked_add(1)
+                        .ok_or_else(|| CdfError::data("package segment count overflowed u64"))?;
+                    Ok(())
+                })?;
             packages.push(PackageListEntry {
                 path: path.display().to_string(),
                 package_hash: manifest.package_hash,
                 status: manifest.lifecycle.status.as_str().to_owned(),
-                segments: manifest.identity.segments.len(),
+                segments,
             });
         }
     }
@@ -377,7 +384,7 @@ struct PackageListEntry {
     path: String,
     package_hash: String,
     status: String,
-    segments: usize,
+    segments: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

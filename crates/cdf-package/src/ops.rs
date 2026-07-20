@@ -11,12 +11,40 @@ use cdf_package_contract::{
 use crate::{
     archive::verify_parquet_archive_metadata,
     json::{canonical_json_bytes, json_error, manifest_identity_hash},
+    manifest_stream::{PackageManifestHeader, visit_package_manifest},
     package_fs::{PackageEntryKind, PackageRoot},
     storage::{
         atomic_write, io_error, package_path, validate_manifest_identity_paths,
         write_manifest_atomic,
     },
 };
+
+pub fn read_manifest_header(package_dir: impl AsRef<Path>) -> Result<PackageManifestHeader> {
+    let root = PackageRoot::open(package_dir.as_ref())?;
+    read_manifest_header_from_root(&root)
+}
+
+pub fn visit_manifest_entries(
+    package_dir: impl AsRef<Path>,
+    file_visitor: &mut dyn FnMut(FileEntry) -> Result<()>,
+    segment_visitor: &mut dyn FnMut(cdf_package_contract::SegmentEntry) -> Result<()>,
+) -> Result<PackageManifestHeader> {
+    let root = PackageRoot::open(package_dir.as_ref())?;
+    visit_manifest_entries_from_root(&root, file_visitor, segment_visitor)
+}
+
+pub(crate) fn read_manifest_header_from_root(root: &PackageRoot) -> Result<PackageManifestHeader> {
+    visit_manifest_entries_from_root(root, &mut |_| Ok(()), &mut |_| Ok(()))
+}
+
+pub(crate) fn visit_manifest_entries_from_root(
+    root: &PackageRoot,
+    file_visitor: &mut dyn FnMut(FileEntry) -> Result<()>,
+    segment_visitor: &mut dyn FnMut(cdf_package_contract::SegmentEntry) -> Result<()>,
+) -> Result<PackageManifestHeader> {
+    let file = root.open_regular_file(MANIFEST_FILE)?.into_std();
+    visit_package_manifest(BufReader::new(file), file_visitor, segment_visitor)
+}
 
 pub fn read_manifest(package_dir: impl AsRef<Path>) -> Result<PackageManifest> {
     let root = PackageRoot::open(package_dir.as_ref())?;

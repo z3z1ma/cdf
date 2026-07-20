@@ -4,7 +4,7 @@ use std::{
 };
 
 use cdf_kernel::CdfError;
-use cdf_package::{read_manifest, read_receipts};
+use cdf_package::read_receipts;
 use cdf_package_contract::MANIFEST_FILE;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Statement, params, types::ValueRef};
 use serde::Serialize;
@@ -258,10 +258,27 @@ fn mount_packages(conn: &Connection, root: PathBuf) -> Result<(), CliError> {
 }
 
 fn mount_package(conn: &Connection, path: &Path) -> Result<(), CliError> {
-    let manifest = read_manifest(path)?;
+    let manifest = cdf_package::read_manifest_header(path)?;
     let package_id = manifest.identity.package_id.as_str();
     let package_hash = manifest.package_hash.as_str();
     let receipts = read_receipts(path)?;
+    let mut identity_file_count = 0_u64;
+    let mut segment_count = 0_u64;
+    cdf_package::visit_manifest_entries(
+        path,
+        &mut |_| {
+            identity_file_count = identity_file_count
+                .checked_add(1)
+                .ok_or_else(|| CdfError::data("package identity file count overflowed u64"))?;
+            Ok(())
+        },
+        &mut |_| {
+            segment_count = segment_count
+                .checked_add(1)
+                .ok_or_else(|| CdfError::data("package segment count overflowed u64"))?;
+            Ok(())
+        },
+    )?;
     conn.execute(
         "
         INSERT INTO packages (
@@ -283,8 +300,8 @@ fn mount_package(conn: &Connection, path: &Path) -> Result<(), CliError> {
             manifest.lifecycle.status.as_str(),
             &manifest.signature.signing_input,
             manifest.signature.value.as_deref(),
-            to_i64(manifest.identity.files.len())?,
-            to_i64(manifest.identity.segments.len())?,
+            to_i64(identity_file_count)?,
+            to_i64(segment_count)?,
             to_i64(receipts.len())?,
         ],
     )
@@ -303,18 +320,6 @@ fn mount_package(conn: &Connection, path: &Path) -> Result<(), CliError> {
             ",
         )
         .map_err(sqlite_cli_error)?;
-    for file in &manifest.identity.files {
-        insert_file
-            .execute(params![
-                package_hash,
-                package_id,
-                &file.path,
-                to_i64(file.byte_count)?,
-                &file.sha256,
-            ])
-            .map_err(sqlite_cli_error)?;
-    }
-
     let mut insert_segment = conn
         .prepare(
             "
@@ -330,19 +335,35 @@ fn mount_package(conn: &Connection, path: &Path) -> Result<(), CliError> {
             ",
         )
         .map_err(sqlite_cli_error)?;
-    for segment in &manifest.identity.segments {
-        insert_segment
-            .execute(params![
-                package_hash,
-                package_id,
-                segment.segment_id.as_str(),
-                &segment.path,
-                to_i64(segment.row_count)?,
-                to_i64(segment.byte_count)?,
-                &segment.sha256,
-            ])
-            .map_err(sqlite_cli_error)?;
-    }
+    cdf_package::visit_manifest_entries(
+        path,
+        &mut |file| {
+            insert_file
+                .execute(params![
+                    package_hash,
+                    package_id,
+                    &file.path,
+                    to_i64(file.byte_count)?,
+                    &file.sha256,
+                ])
+                .map_err(sqlite_cli_error)?;
+            Ok(())
+        },
+        &mut |segment| {
+            insert_segment
+                .execute(params![
+                    package_hash,
+                    package_id,
+                    segment.segment_id.as_str(),
+                    &segment.path,
+                    to_i64(segment.row_count)?,
+                    to_i64(segment.byte_count)?,
+                    &segment.sha256,
+                ])
+                .map_err(sqlite_cli_error)?;
+            Ok(())
+        },
+    )?;
 
     let mut insert_receipt = conn
         .prepare(
