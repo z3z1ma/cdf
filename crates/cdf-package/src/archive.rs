@@ -348,6 +348,15 @@ pub(crate) fn verify_parquet_archive_metadata(
     Ok(metadata.segments.len())
 }
 
+pub(crate) fn verify_parquet_archive_absence(package_root: &PackageRoot) -> Result<usize> {
+    if let Some((path, _)) = first_archive_entry(package_root, |_| false)? {
+        return Err(archive_verification_failure(format!(
+            "orphan archive sidecar {path}"
+        )));
+    }
+    Ok(0)
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }

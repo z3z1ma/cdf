@@ -9,8 +9,138 @@ use cdf_package_contract::{
     FileEntry, LifecycleState, MANIFEST_VERSION, SegmentEntry, SignatureSlot,
 };
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use sha2::{Digest, Sha256};
 
 use crate::json::json_error;
+
+/// Hashes the exact canonical identity object stored in `manifest.json` without retaining it.
+///
+/// Current-format manifests write optional archive metadata before identity. Archive metadata is
+/// deliberately outside package identity, so it is skipped before hashing the balanced identity
+/// object byte-for-byte.
+pub fn stored_manifest_identity_hash(reader: impl Read) -> Result<String> {
+    let mut reader = BufReader::new(reader);
+    expect_byte(&mut reader, b'{', "package manifest object")?;
+    let mut key = read_top_level_key(&mut reader)?;
+    expect_byte(&mut reader, b':', "package manifest field separator")?;
+    if key == "archives" {
+        let first = read_non_whitespace_byte(&mut reader)?.ok_or_else(|| {
+            CdfError::data("package manifest archive metadata ended before its value")
+        })?;
+        skip_balanced_object(&mut reader, first, "archive metadata")?;
+        expect_byte(&mut reader, b',', "package manifest archive separator")?;
+        key = read_top_level_key(&mut reader)?;
+        expect_byte(&mut reader, b':', "package manifest field separator")?;
+    }
+    if key != "identity" {
+        return Err(CdfError::data(format!(
+            "canonical package manifest must begin with optional archives then identity; observed {key:?}"
+        )));
+    }
+    let first = read_non_whitespace_byte(&mut reader)?
+        .ok_or_else(|| CdfError::data("package manifest identity ended before its object"))?;
+    if first != b'{' {
+        return Err(CdfError::data(
+            "package manifest identity must be a JSON object",
+        ));
+    }
+    let mut hasher = Sha256::new();
+    hasher.update([first]);
+    hash_balanced_object(&mut reader, &mut hasher, "identity")?;
+    Ok(format!("sha256:{}", hex::encode(hasher.finalize())))
+}
+
+fn read_top_level_key(reader: &mut impl Read) -> Result<String> {
+    expect_byte(reader, b'"', "package manifest field name")?;
+    let mut key = String::new();
+    loop {
+        let byte = read_byte(reader)?
+            .ok_or_else(|| CdfError::data("package manifest field name ended before `\"`"))?;
+        match byte {
+            b'"' => return Ok(key),
+            b'\\' => {
+                return Err(CdfError::data(
+                    "canonical package manifest top-level field names cannot be escaped",
+                ));
+            }
+            byte if byte.is_ascii() && !byte.is_ascii_control() => key.push(char::from(byte)),
+            _ => {
+                return Err(CdfError::data(
+                    "canonical package manifest top-level field name is not ASCII",
+                ));
+            }
+        }
+    }
+}
+
+fn expect_byte(reader: &mut impl Read, expected: u8, label: &str) -> Result<()> {
+    let observed = read_non_whitespace_byte(reader)?
+        .ok_or_else(|| CdfError::data(format!("{label} ended before byte {expected:?}")))?;
+    if observed != expected {
+        return Err(CdfError::data(format!(
+            "{label} expected byte {expected:?}, observed {observed:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn read_non_whitespace_byte(reader: &mut impl Read) -> Result<Option<u8>> {
+    loop {
+        match read_byte(reader)? {
+            Some(byte) if byte.is_ascii_whitespace() => {}
+            other => return Ok(other),
+        }
+    }
+}
+
+fn skip_balanced_object(reader: &mut impl Read, first: u8, label: &str) -> Result<()> {
+    if first != b'{' {
+        return Err(CdfError::data(format!(
+            "canonical package manifest {label} must be a JSON object"
+        )));
+    }
+    consume_balanced_object(reader, |_| {}, label)
+}
+
+fn hash_balanced_object(reader: &mut impl Read, hasher: &mut Sha256, label: &str) -> Result<()> {
+    consume_balanced_object(reader, |byte| hasher.update([byte]), label)
+}
+
+fn consume_balanced_object(
+    reader: &mut impl Read,
+    mut consume: impl FnMut(u8),
+    label: &str,
+) -> Result<()> {
+    let mut depth = 1_u64;
+    let mut in_string = false;
+    let mut escaped = false;
+    while depth > 0 {
+        let byte = read_byte(reader)?
+            .ok_or_else(|| CdfError::data(format!("package manifest {label} ended early")))?;
+        consume(byte);
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'{' => {
+                depth = depth
+                    .checked_add(1)
+                    .ok_or_else(|| CdfError::data("manifest JSON nesting overflowed u64"))?;
+            }
+            b'}' => depth -= 1,
+            _ => {}
+        }
+    }
+    Ok(())
+}
 
 /// Constant-cardinality facts from a package manifest.
 ///
@@ -573,11 +703,12 @@ mod tests {
 
     use cdf_kernel::SegmentId;
     use cdf_package_contract::{
-        LifecycleState, ManifestIdentity, PackageManifest, PackageStatus, SignatureSlot,
+        LifecycleState, ManifestArchives, ManifestIdentity, PackageManifest, PackageStatus,
+        SignatureSlot,
     };
 
     use super::*;
-    use crate::json::write_package_manifest_canonical;
+    use crate::json::{manifest_identity_hash, write_package_manifest_canonical};
 
     fn fixture() -> PackageManifest {
         PackageManifest {
@@ -648,6 +779,21 @@ mod tests {
         assert!(!header.has_archives);
         assert_eq!(files, manifest.identity.files);
         assert_eq!(segments, manifest.identity.segments);
+    }
+
+    #[test]
+    fn stored_identity_hash_ignores_optional_archive_metadata() {
+        let mut manifest = fixture();
+        let expected = manifest_identity_hash(&manifest.identity).unwrap();
+        for archives in [None, Some(ManifestArchives { parquet: None })] {
+            manifest.archives = archives;
+            let mut bytes = Vec::new();
+            write_package_manifest_canonical(&manifest, &mut bytes).unwrap();
+            assert_eq!(
+                stored_manifest_identity_hash(Cursor::new(bytes)).unwrap(),
+                expected
+            );
+        }
     }
 
     #[test]

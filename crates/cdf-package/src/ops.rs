@@ -9,12 +9,15 @@ use cdf_package_contract::{
 };
 
 use crate::{
-    archive::verify_parquet_archive_metadata,
-    json::{canonical_json_bytes, json_error, manifest_identity_hash},
-    manifest_stream::{PackageManifestHeader, visit_package_manifest},
+    archive::{verify_parquet_archive_absence, verify_parquet_archive_metadata},
+    json::{canonical_json_bytes, json_error},
+    manifest_stream::{
+        ManifestFileStream, ManifestSegmentStream, PackageManifestHeader,
+        stored_manifest_identity_hash, visit_package_manifest,
+    },
     package_fs::{PackageEntryKind, PackageRoot},
     storage::{
-        atomic_write, io_error, package_path, validate_manifest_identity_paths,
+        atomic_write, io_error, package_path, portable_path_cmp, validate_manifest_identity_path,
         write_manifest_atomic,
     },
 };
@@ -80,7 +83,7 @@ pub fn update_package_status(
 
 pub fn append_receipt(package_dir: impl AsRef<Path>, receipt: Receipt) -> Result<Vec<Receipt>> {
     let package_dir = package_dir.as_ref();
-    let manifest = read_manifest(package_dir)?;
+    let manifest = read_manifest_header(package_dir)?;
     if receipt.package_hash.as_str() != manifest.package_hash {
         return Err(CdfError::data(format!(
             "receipt package hash {} does not match manifest package hash {}",
@@ -109,26 +112,31 @@ pub fn read_receipts(package_dir: impl AsRef<Path>) -> Result<Vec<Receipt>> {
 
 pub fn verify_package(package_dir: impl AsRef<Path>) -> Result<VerificationReport> {
     let root = PackageRoot::open(package_dir.as_ref())?;
-    let manifest = read_manifest_from_root(&root)?;
+    let manifest = read_manifest_header_from_root(&root)?;
     verify_package_from_root(&root, &manifest)
 }
 
 pub(crate) fn verify_package_from_root(
     root: &PackageRoot,
-    manifest: &PackageManifest,
+    manifest: &PackageManifestHeader,
 ) -> Result<VerificationReport> {
     let mut report = verify_package_identity_with(root, manifest)?;
     verify_contract_evolution_versions(root, manifest)?;
-    report.checked_archive_count = verify_parquet_archive_metadata(root, manifest)?;
+    report.checked_archive_count = if manifest.has_archives {
+        let resident = read_manifest_from_root(root)?;
+        verify_parquet_archive_metadata(root, &resident)?
+    } else {
+        verify_parquet_archive_absence(root)?
+    };
     Ok(report)
 }
 
 fn verify_contract_evolution_versions(
     root: &PackageRoot,
-    manifest: &PackageManifest,
+    _manifest: &PackageManifestHeader,
 ) -> Result<()> {
     const PATH: &str = "schema/contract-evolution.json";
-    if !manifest.identity.files.iter().any(|file| file.path == PATH) {
+    if !manifest_contains_file(root, PATH)? {
         return Ok(());
     }
     let bytes = root.read(PATH)?;
@@ -163,17 +171,16 @@ fn verify_contract_evolution_versions(
 
 pub fn verify_package_identity(package_dir: impl AsRef<Path>) -> Result<VerificationReport> {
     let root = PackageRoot::open(package_dir.as_ref())?;
-    let manifest = read_manifest_from_root(&root)?;
+    let manifest = read_manifest_header_from_root(&root)?;
     verify_package_identity_with(&root, &manifest)
 }
 
 fn verify_package_identity_with(
     root: &PackageRoot,
-    manifest: &PackageManifest,
+    manifest: &PackageManifestHeader,
 ) -> Result<VerificationReport> {
-    validate_manifest_identity_paths(&manifest.identity.files)?;
-
-    let actual_hash = manifest_identity_hash(&manifest.identity)?;
+    let actual_hash =
+        stored_manifest_identity_hash(root.open_regular_file(MANIFEST_FILE)?.into_std())?;
     if actual_hash != manifest.package_hash {
         return Err(verification_failure(format!(
             "manifest identity hash mismatch: expected {}, got {}",
@@ -187,11 +194,10 @@ fn verify_package_identity_with(
         )));
     }
 
-    if let Some(failure) = first_unexpected_identity_failure(root, &manifest.identity.files)? {
-        return Err(verification_failure(failure));
-    }
-
-    for expected in &manifest.identity.files {
+    validate_manifest_file_paths(root)?;
+    let mut checked_file_count = 0_usize;
+    for expected in manifest_file_stream(root)? {
+        let expected = expected?;
         match root.file_entry(&expected.path)? {
             Some(actual)
                 if actual.byte_count == expected.byte_count && actual.sha256 == expected.sha256 => {
@@ -213,54 +219,44 @@ fn verify_package_identity_with(
                 )));
             }
         }
+        checked_file_count = checked_file_count
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("verified package file count overflowed usize"))?;
     }
 
-    for segment in &manifest.identity.segments {
-        match manifest
-            .identity
-            .files
-            .binary_search_by(|entry| crate::storage::portable_path_cmp(&entry.path, &segment.path))
-        {
-            Ok(index) => match &manifest.identity.files[index] {
-                file if file.byte_count == segment.byte_count && file.sha256 == segment.sha256 => {}
-                file => {
-                    return Err(verification_failure(format!(
-                        "segment {} does not match file entry {}: segment {} bytes sha256 {}, file {} bytes sha256 {}",
-                        segment.segment_id.as_str(),
-                        segment.path,
-                        segment.byte_count,
-                        segment.sha256,
-                        file.byte_count,
-                        file.sha256
-                    )));
-                }
-            },
-            Err(_) => {
-                return Err(verification_failure(format!(
-                    "segment {} references missing file entry {}",
-                    segment.segment_id.as_str(),
-                    segment.path
-                )));
-            }
+    let actual_entry_count = identity_entry_count(root)?;
+    if actual_entry_count != checked_file_count {
+        if let Some(failure) = first_unexpected_identity_failure(root)? {
+            return Err(verification_failure(failure));
         }
+        return Err(verification_failure(format!(
+            "identity entry count mismatch: manifest has {checked_file_count}, package has {actual_entry_count}"
+        )));
     }
+
+    verify_segment_authority(root)?;
 
     Ok(VerificationReport {
         package_hash: manifest.package_hash.clone(),
-        checked_file_count: manifest.identity.files.len(),
+        checked_file_count,
         checked_archive_count: 0,
     })
 }
 
-fn first_unexpected_identity_failure(
-    root: &PackageRoot,
-    expected: &[FileEntry],
-) -> Result<Option<String>> {
+fn validate_manifest_file_paths(root: &PackageRoot) -> Result<()> {
+    let mut previous_path = None;
+    for entry in manifest_file_stream(root)? {
+        let entry = entry?;
+        validate_manifest_identity_path(previous_path.as_deref(), &entry.path)?;
+        previous_path = Some(entry.path);
+    }
+    Ok(())
+}
+
+fn first_unexpected_identity_failure(root: &PackageRoot) -> Result<Option<String>> {
     let mut first: Option<(String, PackageEntryKind)> = None;
     root.visit_identity_entries(|path, kind| {
-        let is_expected = expected
-            .binary_search_by(|entry| crate::storage::portable_path_cmp(&entry.path, &path))
-            .is_ok();
+        let is_expected = manifest_contains_file(root, &path)?;
         let is_before_first = first.as_ref().is_none_or(|(candidate, _)| {
             crate::storage::portable_path_cmp(&path, candidate).is_lt()
         });
@@ -276,6 +272,104 @@ fn first_unexpected_identity_failure(
         };
         format!("{label} {path}")
     }))
+}
+
+fn identity_entry_count(root: &PackageRoot) -> Result<usize> {
+    let mut count = 0_usize;
+    root.visit_identity_entries(|_, _| {
+        count = count
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("package identity entry count overflowed usize"))?;
+        Ok(())
+    })?;
+    Ok(count)
+}
+
+fn manifest_contains_file(root: &PackageRoot, path: &str) -> Result<bool> {
+    for entry in manifest_file_stream(root)? {
+        let entry = entry?;
+        match portable_path_cmp(&entry.path, path) {
+            std::cmp::Ordering::Less => {}
+            std::cmp::Ordering::Equal => return Ok(true),
+            std::cmp::Ordering::Greater => return Ok(false),
+        }
+    }
+    Ok(false)
+}
+
+fn manifest_file_stream(root: &PackageRoot) -> Result<ManifestFileStream<std::fs::File>> {
+    Ok(ManifestFileStream::new(
+        root.open_regular_file(MANIFEST_FILE)?.into_std(),
+    ))
+}
+
+fn manifest_segment_stream(root: &PackageRoot) -> Result<ManifestSegmentStream<std::fs::File>> {
+    Ok(ManifestSegmentStream::new(
+        root.open_regular_file(MANIFEST_FILE)?.into_std(),
+    ))
+}
+
+fn verify_segment_authority(root: &PackageRoot) -> Result<()> {
+    let mut files = manifest_file_stream(root)?;
+    let mut current_file = files.next().transpose()?;
+    let mut previous_segment_path: Option<String> = None;
+    let mut next_package_row_ord = 0_u64;
+    for segment in manifest_segment_stream(root)? {
+        let segment = segment?;
+        if segment.row_count == 0 {
+            return Err(CdfError::data(format!(
+                "canonical segment {} must contain at least one row",
+                segment.segment_id
+            )));
+        }
+        if segment.package_row_ord_start != next_package_row_ord {
+            return Err(CdfError::data(format!(
+                "canonical segment {} package row ordinal starts at {} but manifest order requires {next_package_row_ord}",
+                segment.segment_id, segment.package_row_ord_start
+            )));
+        }
+        next_package_row_ord = next_package_row_ord
+            .checked_add(segment.row_count)
+            .ok_or_else(|| CdfError::data("package row ordinal range overflow"))?;
+        if previous_segment_path
+            .as_deref()
+            .is_some_and(|previous| portable_path_cmp(previous, &segment.path).is_ge())
+        {
+            return Err(CdfError::data(
+                "package manifest segment paths must be strictly portable-path-sorted",
+            ));
+        }
+        previous_segment_path = Some(segment.path.clone());
+
+        while current_file
+            .as_ref()
+            .is_some_and(|file| portable_path_cmp(&file.path, &segment.path).is_lt())
+        {
+            current_file = files.next().transpose()?;
+        }
+        let Some(file) = current_file
+            .as_ref()
+            .filter(|file| file.path == segment.path)
+        else {
+            return Err(verification_failure(format!(
+                "segment {} references missing file entry {}",
+                segment.segment_id.as_str(),
+                segment.path
+            )));
+        };
+        if file.byte_count != segment.byte_count || file.sha256 != segment.sha256 {
+            return Err(verification_failure(format!(
+                "segment {} does not match file entry {}: segment {} bytes sha256 {}, file {} bytes sha256 {}",
+                segment.segment_id.as_str(),
+                segment.path,
+                segment.byte_count,
+                segment.sha256,
+                file.byte_count,
+                file.sha256
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn verification_failure(message: impl std::fmt::Display) -> CdfError {

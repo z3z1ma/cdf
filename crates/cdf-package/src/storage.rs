@@ -561,21 +561,25 @@ pub(crate) fn normalize_relative_path(path: &Path) -> Result<String> {
 pub(crate) fn validate_manifest_identity_paths(files: &[FileEntry]) -> Result<()> {
     let mut previous: Option<&str> = None;
     for entry in files {
-        validate_canonical_artifact_path(&entry.path)?;
-        if let Some(prior) = previous {
-            if portable_casefold_cmp(prior, &entry.path) == CmpOrdering::Equal {
-                return Err(CdfError::data(format!(
-                    "package manifest identity paths collide after portable case folding: {}",
-                    entry.path
-                )));
-            }
-            if portable_path_cmp(prior, &entry.path) != CmpOrdering::Less {
-                return Err(CdfError::data(
-                    "package manifest identity files must be strictly portable-path-sorted",
-                ));
-            }
-        }
+        validate_manifest_identity_path(previous, &entry.path)?;
         previous = Some(&entry.path);
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_manifest_identity_path(previous: Option<&str>, path: &str) -> Result<()> {
+    validate_canonical_artifact_path(path)?;
+    if let Some(prior) = previous {
+        if portable_casefold_cmp(prior, path) == CmpOrdering::Equal {
+            return Err(CdfError::data(format!(
+                "package manifest identity paths collide after portable case folding: {path}"
+            )));
+        }
+        if portable_path_cmp(prior, path) != CmpOrdering::Less {
+            return Err(CdfError::data(
+                "package manifest identity files must be strictly portable-path-sorted",
+            ));
+        }
     }
     Ok(())
 }

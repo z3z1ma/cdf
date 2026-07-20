@@ -31,9 +31,8 @@ use crate::{
     artifacts::{read_json_artifact, read_optional_json_artifact},
     manifest_stream::{ManifestFileStream, ManifestSegmentStream, PackageManifestHeader},
     ops::{
-        append_receipt, read_manifest_from_root, read_manifest_header_from_root, read_receipts,
-        read_segment_file_from_root, tombstone_package, update_package_status,
-        verify_package_from_root,
+        append_receipt, read_manifest_header_from_root, read_receipts, read_segment_file_from_root,
+        tombstone_package, update_package_status, verify_package_from_root,
     },
     package_fs::PackageRoot,
     quarantine::{
@@ -626,8 +625,7 @@ impl PackageReader {
     }
 
     pub fn verify(&self) -> Result<VerificationReport> {
-        let manifest = read_manifest_from_root(&self.package_root)?;
-        verify_package_from_root(&self.package_root, &manifest)
+        verify_package_from_root(&self.package_root, &self.manifest)
     }
 
     pub fn verify_for_consumption(&self) -> Result<VerifiedPackage> {
