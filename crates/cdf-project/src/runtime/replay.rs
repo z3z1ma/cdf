@@ -1377,6 +1377,44 @@ where
     )
 }
 
+pub(crate) fn settle_existing_package_with_runtime<Store>(
+    package_dir: &std::path::Path,
+    runtime: &mut dyn ProjectDestinationRuntime,
+    checkpoint_store: &Store,
+    memory: Arc<dyn MemoryCoordinator>,
+    execution: Option<&ExecutionServices>,
+) -> Result<PackageReplayReport>
+where
+    Store: CheckpointStore + ?Sized,
+{
+    let package = PackageReader::open(package_dir)?.into_verified()?;
+    validate_package_compiled_expression_plan(&package)?;
+    validate_package_compiled_schema_admission(&package)?;
+    let receipts = package.reader().receipts()?;
+    match receipts.as_slice() {
+        [] => replay_package_with_runtime(
+            package,
+            runtime,
+            checkpoint_store,
+            memory,
+            PackageReplayHooks::default(),
+            execution,
+        ),
+        [receipt] => recover_package_with_runtime(
+            package,
+            runtime,
+            checkpoint_store,
+            receipt.clone(),
+            PackageReplayHooks::default(),
+        ),
+        _ => Err(CdfError::data(format!(
+            "drain package {} contains {} receipts; one package must have exactly one durable destination settlement",
+            package_dir.display(),
+            receipts.len()
+        ))),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn replay_package_with_runtime_and_staged<Store>(
     mut package: VerifiedPackageReader,

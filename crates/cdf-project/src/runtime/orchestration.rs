@@ -9,7 +9,7 @@ use super::{
     prelude::*,
     replay::{
         ActiveStagedIngress, PackageReplayHooks, PackageReplayStage, StagedIngressPlan,
-        replay_package_with_runtime_and_staged,
+        replay_package_with_runtime_and_staged, settle_existing_package_with_runtime,
     },
     resources::ProjectRunSource,
     types::*,
@@ -203,6 +203,14 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
         run_ledger,
         checkpoint_store,
     } = execution;
+    let recovered_epoch_count = settle_existing_drain_prefix(
+        &package_root,
+        &base_package_id,
+        &base_checkpoint_id,
+        destination,
+        checkpoint_store,
+        &services,
+    )?;
     let mut controller = cdf_runtime::DrainEpochController::new(&plan.execution_extent)?;
     let initial_head = checkpoint_store.head(
         &pipeline_id,
@@ -213,6 +221,7 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
         initial_head
             .as_ref()
             .map(|checkpoint| checkpoint.delta.output_position.clone()),
+        recovered_epoch_count,
     )?;
     let initial_manifest =
         plan_file_manifest_incrementality(&plan, resource.descriptor(), initial_head.as_ref())?;
@@ -241,7 +250,7 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
         let package_dir = package_root.join(&package_id);
         refuse_existing_package_dir(&package_dir)?;
 
-        let supplied_run_id = if epoch_ordinal == 0 {
+        let supplied_run_id = if first_run_id.is_none() {
             run_id.take()
         } else {
             Some(RunId::new(format!(
@@ -302,7 +311,7 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
             // File-manifest incrementality can prove that a requested drain has no new source
             // positions. That is the ordinary verified no-op; it must not manufacture an empty
             // epoch package merely to populate drain telemetry.
-            if epoch_count == 0 && unit.report.row_count == 0 {
+            if unit.report.row_count == 0 {
                 return Ok(unit.report);
             }
             return Err(CdfError::internal(
@@ -356,6 +365,61 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
             ));
         }
         next_manifest_summary = preselected_manifest_summary(&remaining_plan)?;
+    }
+}
+
+fn settle_existing_drain_prefix<Store>(
+    package_root: &Path,
+    base_package_id: &str,
+    base_checkpoint_id: &CheckpointId,
+    destination: &mut ResolvedProjectDestination,
+    checkpoint_store: &Store,
+    services: &ExecutionServices,
+) -> Result<u64>
+where
+    Store: CheckpointStore + ?Sized,
+{
+    let mut ordinal = 0_u64;
+    loop {
+        let package_id = drain_epoch_string_id(base_package_id, ordinal);
+        let package_dir = package_root.join(&package_id);
+        if !package_dir.exists() {
+            return Ok(ordinal);
+        }
+        let expected_checkpoint_id =
+            CheckpointId::new(drain_epoch_string_id(base_checkpoint_id.as_str(), ordinal))?;
+        let replay = settle_existing_package_with_runtime(
+            &package_dir,
+            destination.runtime_mut(),
+            checkpoint_store,
+            services.memory(),
+            Some(services),
+        )?;
+        if replay.checkpoint.delta.checkpoint_id != expected_checkpoint_id {
+            return Err(CdfError::data(format!(
+                "drain package {} belongs to checkpoint {}, expected {} for epoch {}",
+                package_dir.display(),
+                replay.checkpoint.delta.checkpoint_id,
+                expected_checkpoint_id,
+                ordinal
+            )));
+        }
+        let package = PackageReader::open(&package_dir)?.into_verified()?;
+        let closure: cdf_kernel::EpochClosureEvidence = package
+            .reader()
+            .verified_json_artifact(package.verification(), "plan/epoch-closure.json")?;
+        closure.validate()?;
+        if closure.frontier.epoch_ordinal != ordinal
+            || closure.frontier.frontier != replay.checkpoint.delta.output_position
+        {
+            return Err(CdfError::data(format!(
+                "drain package {} closure does not match its ordinal and committed checkpoint frontier",
+                package_dir.display()
+            )));
+        }
+        ordinal = ordinal
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("recovered drain epoch ordinal overflow"))?;
     }
 }
 

@@ -162,12 +162,13 @@ impl DrainEpochController {
         self.committed_frontier.as_ref()
     }
 
-    /// Seeds the input-low frontier from the checkpoint committed before this drain command.
-    /// The new command still begins at epoch zero and its record/byte termination counters begin
-    /// at zero; only source-position aggregation inherits the prior durable head.
+    /// Seeds the input-low frontier and next package ordinal from the durable prefix recovered
+    /// before this process admits source work. Record/byte termination counters remain
+    /// invocation-local; only package identity and source-position authority resume.
     pub fn bind_initial_committed_frontier(
         &mut self,
         committed_frontier: Option<SourcePosition>,
+        next_epoch_ordinal: u64,
     ) -> Result<()> {
         if !matches!(self.state, ControllerState::Open)
             || self.epoch_ordinal != 0
@@ -182,7 +183,13 @@ impl DrainEpochController {
         if let Some(frontier) = &committed_frontier {
             frontier.validate()?;
         }
+        if next_epoch_ordinal != 0 && committed_frontier.is_none() {
+            return Err(CdfError::contract(
+                "recovered drain epoch ordinal requires a committed source frontier",
+            ));
+        }
         self.committed_frontier = committed_frontier;
+        self.epoch_ordinal = next_epoch_ordinal;
         Ok(())
     }
 
@@ -875,7 +882,7 @@ mod tests {
         ))
         .unwrap();
         controller
-            .bind_initial_committed_frontier(Some(cursor(40)))
+            .bind_initial_committed_frontier(Some(cursor(40)), 0)
             .unwrap();
         let DrainEpochDecision::Close(closure) = controller
             .observe_safe_frontier(observation(1, 10, 41, false))
