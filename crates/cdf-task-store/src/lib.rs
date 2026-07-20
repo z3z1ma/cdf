@@ -471,6 +471,28 @@ impl CanonicalTaskSetBuilder {
         sort_key: &[u8],
         encode: impl FnOnce(&mut dyn Write) -> Result<()>,
     ) -> Result<()> {
+        self.push_encoded(sort_key, encode, false).map(|_| ())
+    }
+
+    /// Inserts one record or collapses an exact duplicate provider observation.
+    ///
+    /// The same ordering key with different canonical bytes remains an error. This is useful for
+    /// listing providers and recursive globs that can legitimately report the same object through
+    /// multiple traversal paths without allowing contradictory metadata to become schedule input.
+    pub fn push_idempotent_with(
+        &mut self,
+        sort_key: &[u8],
+        encode: impl FnOnce(&mut dyn Write) -> Result<()>,
+    ) -> Result<bool> {
+        self.push_encoded(sort_key, encode, true)
+    }
+
+    fn push_encoded(
+        &mut self,
+        sort_key: &[u8],
+        encode: impl FnOnce(&mut dyn Write) -> Result<()>,
+        accept_identical_duplicate: bool,
+    ) -> Result<bool> {
         if sort_key.is_empty()
             || u64::try_from(sort_key.len()).unwrap_or(u64::MAX)
                 > self.limits.maximum_sort_key_bytes
@@ -496,8 +518,28 @@ impl CanonicalTaskSetBuilder {
                 Ok(_) => break,
                 Err(error) if is_sqlite_full(&error) => self.grow_spill()?,
                 Err(error) if is_sqlite_constraint(&error) => {
+                    if accept_identical_duplicate {
+                        let identical = self
+                            .connection
+                            .query_row(
+                                "SELECT payload FROM tasks WHERE sort_key = ?1",
+                                params![sort_key],
+                                |row| match row.get_ref(0)? {
+                                    ValueRef::Blob(payload) => {
+                                        Ok(payload == self.payload.as_slice())
+                                    }
+                                    _ => Ok(false),
+                                },
+                            )
+                            .map_err(|lookup| {
+                                sqlite_error("compare duplicate canonical task", lookup)
+                            })?;
+                        if identical {
+                            return Ok(false);
+                        }
+                    }
                     return Err(CdfError::data(
-                        "canonical task input repeats a canonical ordering key",
+                        "canonical task input repeats one ordering key with conflicting payloads",
                     ));
                 }
                 Err(error) => return Err(sqlite_error("insert canonical task", error)),
@@ -507,7 +549,7 @@ impl CanonicalTaskSetBuilder {
             .task_count
             .checked_add(1)
             .ok_or_else(|| CdfError::data("canonical task count exceeds u64"))?;
-        Ok(())
+        Ok(true)
     }
 
     pub fn task_count(&self) -> u64 {
@@ -1170,9 +1212,10 @@ fn configure_canonical_index(connection: &Connection, cache_bytes: u64) -> Resul
             "page_size",
             i64::try_from(SQLITE_PAGE_BYTES).expect("SQLite page size fits i64"),
         )
-        .and_then(|_| connection.pragma_update(None, "journal_mode", "DELETE"))
+        .and_then(|_| connection.pragma_update(None, "journal_mode", "OFF"))
         .and_then(|_| connection.pragma_update(None, "synchronous", "OFF"))
-        .and_then(|_| connection.pragma_update(None, "locking_mode", "NORMAL"))
+        .and_then(|_| connection.pragma_update(None, "locking_mode", "EXCLUSIVE"))
+        .and_then(|_| connection.pragma_update(None, "temp_store", "FILE"))
         .and_then(|_| connection.pragma_update(None, "mmap_size", 0_i64))
         .and_then(|_| connection.pragma_update(None, "cache_spill", true))
         .map_err(|error| sqlite_error("configure canonical task index", error))?;
@@ -1466,6 +1509,53 @@ mod tests {
     }
 
     #[test]
+    fn idempotent_provider_input_collapses_only_identical_observations() {
+        let root = TempDir::new().unwrap();
+        let store = store(&root);
+        let (memory, spill) = authorities(256 * 1024, 4 * 1024 * 1024);
+        let mut builder = store
+            .canonical_builder(
+                "synthetic-v1",
+                canonical_limits(),
+                Arc::clone(&memory),
+                Arc::new(spill),
+            )
+            .unwrap();
+        let task = SyntheticTask {
+            partition: 0,
+            path: "s3://bucket/same.parquet".to_owned(),
+        };
+        assert!(
+            builder
+                .push_idempotent_with(task.path.as_bytes(), |output| {
+                    serde_json::to_writer(output, &task)
+                        .map_err(|error| CdfError::data(format!("encode synthetic task: {error}")))
+                })
+                .unwrap()
+        );
+        assert!(
+            !builder
+                .push_idempotent_with(task.path.as_bytes(), |output| {
+                    serde_json::to_writer(output, &task)
+                        .map_err(|error| CdfError::data(format!("encode synthetic task: {error}")))
+                })
+                .unwrap()
+        );
+        let conflicting = SyntheticTask {
+            partition: 1,
+            path: task.path.clone(),
+        };
+        let error = builder
+            .push_idempotent_with(conflicting.path.as_bytes(), |output| {
+                serde_json::to_writer(output, &conflicting)
+                    .map_err(|error| CdfError::data(format!("encode synthetic task: {error}")))
+            })
+            .unwrap_err();
+        assert!(error.message.contains("conflicting payloads"));
+        assert_eq!(builder.task_count(), 1);
+    }
+
+    #[test]
     fn jobs_timing_and_store_location_do_not_change_identity() {
         let first_root = TempDir::new().unwrap();
         let second_root = TempDir::new().unwrap();
@@ -1575,25 +1665,55 @@ mod tests {
     fn million_tasks_hold_the_configured_metadata_budget() {
         let root = TempDir::new().unwrap();
         let store = store(&root);
-        let (memory, spill) = authorities(64 * 1024, 256 * 1024 * 1024);
-        let mut writer = store
-            .writer("million-v1", limits(), Arc::clone(&memory), &spill)
-            .unwrap();
-        for ordinal in 0..1_000_000 {
-            push_task(
-                &mut writer,
-                ordinal,
-                &SyntheticTask {
-                    partition: ordinal,
-                    path: format!("s3://b/{ordinal:08}"),
-                },
+        let (memory, spill) = authorities(16 * 1024 * 1024, 512 * 1024 * 1024);
+        let spill = Arc::new(spill);
+        let production_limits = CanonicalTaskSetLimits {
+            tasks: limits(),
+            maximum_sort_key_bytes: 64 * 1024,
+            index_cache_bytes: 8 * 1024 * 1024,
+            spill_growth_bytes: 64 * 1024 * 1024,
+        };
+        let mut builder = store
+            .canonical_builder(
+                "million-v1",
+                production_limits.clone(),
+                Arc::clone(&memory),
+                spill.clone(),
             )
             .unwrap();
+        for partition in (0..1_000_000).rev() {
+            let task = SyntheticTask {
+                partition,
+                path: format!("s3://b/{partition:08}"),
+            };
+            builder
+                .push_with(task.path.as_bytes(), |output| {
+                    serde_json::to_writer(output, &task)
+                        .map_err(|error| CdfError::data(format!("encode synthetic task: {error}")))
+                })
+                .unwrap();
         }
-        let artifact = writer.finalize(encode_authority).unwrap();
+        let artifact = builder.finalize(encode_authority).unwrap();
         assert_eq!(artifact.task_count, 1_000_000);
-        assert!(memory.snapshot().peak_bytes <= 64 * 1024);
-        assert!(spill.snapshot().peak_bytes <= 256 * 1024 * 1024);
+        let mut reader = store
+            .reader(
+                artifact.reference,
+                "million-v1",
+                production_limits.tasks.maximum_task_bytes,
+                production_limits.tasks.maximum_authority_bytes,
+                Arc::clone(&memory),
+            )
+            .unwrap();
+        let mut expected = 0_u64;
+        while let Some(record) = reader.next_record().unwrap() {
+            let task: SyntheticTask = serde_json::from_slice(record.payload.payload()).unwrap();
+            assert_eq!(record.canonical_ordinal, expected);
+            assert_eq!(task.partition, expected);
+            expected += 1;
+        }
+        assert_eq!(expected, 1_000_000);
+        assert!(memory.snapshot().peak_bytes <= 16 * 1024 * 1024);
+        assert!(spill.snapshot().peak_bytes <= 512 * 1024 * 1024);
     }
 
     fn writer_authority_hash() -> &'static str {

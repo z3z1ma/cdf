@@ -49,7 +49,8 @@ use cdf_runtime::{
     resolve_decode_unit_concurrency,
 };
 use cdf_task_store::{
-    CanonicalTaskSetLimits, ExternalTaskSetReader, ExternalTaskStore, TaskSetLimits,
+    CanonicalTaskSetBuilder, CanonicalTaskSetLimits, ExternalTaskSetReader, ExternalTaskStore,
+    TaskSetLimits,
 };
 #[cfg(test)]
 use futures_util::StreamExt;
@@ -71,6 +72,7 @@ const NATIVE_UNIT_BUFFERED_BATCHES: u16 = 2;
 pub const FILE_SOURCE_BLOCKING_LANE_ID: &str = "file-source.control";
 pub const FILE_SOURCE_ADVERTISED_PARALLELISM: u16 = 16;
 const FILE_PARTITION_TASK_TYPE: &str = "file-partition-v1";
+const FILE_INVENTORY_TASK_TYPE: &str = "file-inventory-v1";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileTaskStoreOptions {
@@ -900,6 +902,90 @@ struct FilePartitionTaskAuthority {
     request_hash: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileInventoryTaskAuthority {
+    version: u16,
+    resource_id: ResourceId,
+    compiled_source_plan_hash: String,
+}
+
+impl FileInventoryTaskAuthority {
+    fn validate_against(&self, resource: &FileResource) -> Result<()> {
+        if self.version != 1
+            || self.resource_id != resource.descriptor.resource_id
+            || Some(self.compiled_source_plan_hash.as_str())
+                != resource.compiled_source_plan_hash.as_deref()
+        {
+            return Err(CdfError::data(
+                "file inventory task authority does not match the compiled resource",
+            ));
+        }
+        cdf_runtime::validate_artifact_hash(
+            "file inventory compiled source plan",
+            &self.compiled_source_plan_hash,
+        )
+    }
+}
+
+struct FileInventoryTaskBuilder {
+    inner: CanonicalTaskSetBuilder,
+    authority: FileInventoryTaskAuthority,
+}
+
+impl FileInventoryTaskBuilder {
+    fn push(&mut self, file: &ResolvedFileMatch) -> Result<()> {
+        let record = FileInventoryRecord::from(file);
+        self.inner
+            .push_idempotent_with(file.path_text.as_bytes(), |output| {
+                serde_json::to_writer(output, &record)
+                    .map_err(|error| CdfError::data(format!("encode file inventory task: {error}")))
+            })
+            .map(|_| ())
+    }
+
+    fn task_count(&self) -> u64 {
+        self.inner.task_count()
+    }
+
+    fn finalize(self) -> Result<PlannedTaskSetReference> {
+        self.inner
+            .finalize(|output| {
+                serde_json::to_writer(output, &self.authority).map_err(|error| {
+                    CdfError::data(format!("encode file inventory task authority: {error}"))
+                })
+            })
+            .map(|artifact| artifact.reference)
+    }
+}
+
+trait FileMatchSink: Send {
+    fn admit(&mut self, file: ResolvedFileMatch) -> Result<()>;
+    fn admitted_count(&self) -> u64;
+}
+
+impl FileMatchSink for FileInventoryTaskBuilder {
+    fn admit(&mut self, file: ResolvedFileMatch) -> Result<()> {
+        self.push(&file)
+    }
+
+    fn admitted_count(&self) -> u64 {
+        self.task_count()
+    }
+}
+
+#[cfg(test)]
+impl FileMatchSink for Vec<ResolvedFileMatch> {
+    fn admit(&mut self, file: ResolvedFileMatch) -> Result<()> {
+        self.push(file);
+        Ok(())
+    }
+
+    fn admitted_count(&self) -> u64 {
+        u64::try_from(self.len()).unwrap_or(u64::MAX)
+    }
+}
+
 impl FilePartitionTaskAuthority {
     fn validate_against(&self, resource: &FileResource) -> Result<()> {
         if self.version != 1
@@ -918,6 +1004,72 @@ impl FilePartitionTaskAuthority {
 struct RetainedFileTask {
     _encoded: AccountedBytes,
     _parse: MemoryLease,
+}
+
+struct DecodedFileInventoryRecord {
+    record: FileInventoryRecord,
+    _encoded: AccountedBytes,
+    _parse: MemoryLease,
+}
+
+struct FileInventoryTaskReader {
+    reader: ExternalTaskSetReader,
+    memory: Arc<dyn MemoryCoordinator>,
+    parse_amplification_bps: u32,
+    _authority_parse: MemoryLease,
+}
+
+impl FileInventoryTaskReader {
+    fn open(resource: &FileResource, reference: PlannedTaskSetReference) -> Result<Self> {
+        let (store, options) = resource.dependencies.task_store()?;
+        let memory = resource.dependencies.execution().memory();
+        let reader = store.reader(
+            reference,
+            FILE_INVENTORY_TASK_TYPE,
+            options.maximum_task_bytes,
+            options.maximum_authority_bytes,
+            Arc::clone(&memory),
+        )?;
+        let authority_parse = reserve_file_task_parse_memory(
+            Arc::clone(&memory),
+            u64::try_from(reader.authority().payload().len())
+                .map_err(|_| CdfError::data("file inventory authority exceeds u64"))?,
+            options.metadata_parse_amplification_bps,
+            "file-inventory-authority-parse",
+        )?;
+        let authority: FileInventoryTaskAuthority =
+            serde_json::from_slice(reader.authority().payload()).map_err(|error| {
+                CdfError::data(format!("decode file inventory task authority: {error}"))
+            })?;
+        authority.validate_against(resource)?;
+        Ok(Self {
+            reader,
+            memory,
+            parse_amplification_bps: options.metadata_parse_amplification_bps,
+            _authority_parse: authority_parse,
+        })
+    }
+
+    fn next_record(&mut self) -> Result<Option<DecodedFileInventoryRecord>> {
+        let Some(record) = self.reader.next_record()? else {
+            return Ok(None);
+        };
+        let encoded_bytes = u64::try_from(record.payload.payload().len())
+            .map_err(|_| CdfError::data("file inventory task exceeds u64"))?;
+        let parse = reserve_file_task_parse_memory(
+            Arc::clone(&self.memory),
+            encoded_bytes,
+            self.parse_amplification_bps,
+            "file-inventory-task-parse",
+        )?;
+        let decoded = serde_json::from_slice(record.payload.payload())
+            .map_err(|error| CdfError::data(format!("decode file inventory task: {error}")))?;
+        Ok(Some(DecodedFileInventoryRecord {
+            record: decoded,
+            _encoded: record.payload,
+            _parse: parse,
+        }))
+    }
 }
 
 struct FilePlannedPartitionReader {
@@ -1078,21 +1230,110 @@ impl FileResource {
         self
     }
 
-    fn partitions_for_intent(
-        &self,
-        scan_intent: &CompiledScanIntent,
-    ) -> Result<Vec<PartitionPlan>> {
-        self.partitions_for_intent_with_inventory_limit(
-            scan_intent,
-            usize::MAX,
-            &self.transport_control,
-        )
+    fn inventory_builder(&self) -> Result<FileInventoryTaskBuilder> {
+        let (store, options) = self.dependencies.task_store()?;
+        let compiled_source_plan_hash =
+            self.compiled_source_plan_hash.clone().ok_or_else(|| {
+                CdfError::contract("file inventory planning requires compiled source-plan identity")
+            })?;
+        Ok(FileInventoryTaskBuilder {
+            inner: store.canonical_builder(
+                FILE_INVENTORY_TASK_TYPE,
+                options.canonical_limits(),
+                self.dependencies.execution().memory(),
+                self.dependencies.execution().spill(),
+            )?,
+            authority: FileInventoryTaskAuthority {
+                version: 1,
+                resource_id: self.descriptor.resource_id.clone(),
+                compiled_source_plan_hash,
+            },
+        })
     }
 
-    fn externalize_partitions(
+    fn inventory_reader(
+        &self,
+        reference: PlannedTaskSetReference,
+    ) -> Result<FileInventoryTaskReader> {
+        FileInventoryTaskReader::open(self, reference)
+    }
+
+    fn inventory_reference_with_limit(
+        &self,
+        maximum_matches: usize,
+        control: &FileTransportControl,
+    ) -> Result<PlannedTaskSetReference> {
+        if let Some(key) = &self.prepared_inventory_key
+            && let Some(payload) = self.dependencies.prepared_payloads().take(key)?
+        {
+            let (reference, _retention) =
+                payload.into_typed::<PlannedTaskSetReference>("file inventory task reference")?;
+            if reference.task_count > u64::try_from(maximum_matches).unwrap_or(u64::MAX) {
+                return Err(CdfError::data(format!(
+                    "file inventory exceeds the {maximum_matches}-entry boundary"
+                )));
+            }
+            let _verified = self.inventory_reader(reference.clone())?;
+            return Ok(reference);
+        }
+        let execution = self.dependencies.execution().clone();
+        execution.ensure_blocking_lanes(&[file_source_blocking_lane()])?;
+        let (transport, egress) = self.dependencies.transport_and_egress();
+        let resource_id = self.descriptor.resource_id.clone();
+        let plan = self.plan.clone();
+        let formats = Arc::clone(self.dependencies.formats());
+        let transforms = Arc::clone(self.dependencies.transforms());
+        let control = control.clone();
+        let builder = self.inventory_builder()?;
+        execution
+            .clone()
+            .run_blocking(FILE_SOURCE_BLOCKING_LANE_ID, move || {
+                build_file_inventory_with_transport(
+                    &resource_id,
+                    &plan,
+                    FilePlanningContext {
+                        transport: transport.as_ref(),
+                        egress: &egress,
+                        formats: formats.as_ref(),
+                        transforms: transforms.as_ref(),
+                        maximum_matches,
+                        control: &control,
+                        execution,
+                    },
+                    builder,
+                )
+            })
+    }
+
+    pub(crate) fn discovery_partitions_with_inventory(
+        &self,
+        maximum_matches: usize,
+        control: &FileTransportControl,
+    ) -> Result<(PlannedTaskSetReference, Vec<PartitionPlan>)> {
+        let inventory = self.inventory_reference_with_limit(maximum_matches, control)?;
+        let mut reader = self.inventory_reader(inventory.clone())?;
+        let mut partitions = Vec::with_capacity(
+            usize::try_from(inventory.task_count)
+                .unwrap_or(maximum_matches)
+                .min(maximum_matches),
+        );
+        while let Some(decoded) = reader.next_record()? {
+            partitions.push(partition_for_file_record(
+                &self.descriptor,
+                &self.plan,
+                &CompiledScanIntent::full_scan(),
+                &decoded.record,
+                inventory.task_count,
+            )?);
+        }
+        Ok((inventory, partitions))
+    }
+
+    fn partition_tasks_from_inventory(
         &self,
         request: &ScanRequest,
-        partitions: Vec<PartitionPlan>,
+        scan_intent: &CompiledScanIntent,
+        inventory: &PlannedTaskSetReference,
     ) -> Result<PlannedTaskSetReference> {
         let (store, options) = self.dependencies.task_store()?;
         let compiled_source_plan_hash =
@@ -1105,102 +1346,92 @@ impl FileResource {
             compiled_source_plan_hash,
             request_hash: cdf_runtime::artifact_hash(request)?,
         };
-        let spill = self.dependencies.execution().spill();
-        let mut builder = store.canonical_builder(
+        let mut input = self.inventory_reader(inventory.clone())?;
+        let mut output = store.writer(
             FILE_PARTITION_TASK_TYPE,
-            options.canonical_limits(),
+            options.canonical_limits().tasks,
             self.dependencies.execution().memory(),
-            spill,
+            self.dependencies.execution().spill().as_ref(),
         )?;
-        for partition in partitions {
-            let sort_key = match &partition.scope {
-                ScopeKey::File { path } => path.as_bytes(),
-                _ => {
-                    return Err(CdfError::internal(
-                        "file partition task does not carry file scope",
-                    ));
-                }
-            };
-            builder.push_with(sort_key, |output| {
-                serde_json::to_writer(output, &partition)
+        let mut ordinal = 0_u64;
+        while let Some(decoded) = input.next_record()? {
+            let partition = partition_for_file_record(
+                &self.descriptor,
+                &self.plan,
+                scan_intent,
+                &decoded.record,
+                inventory.task_count,
+            )?;
+            output.push_with(ordinal, |writer| {
+                serde_json::to_writer(writer, &partition)
                     .map_err(|error| CdfError::data(format!("encode file partition task: {error}")))
             })?;
+            ordinal = ordinal
+                .checked_add(1)
+                .ok_or_else(|| CdfError::data("file partition task count exceeds u64"))?;
         }
-        builder
-            .finalize(|output| {
-                serde_json::to_writer(output, &authority).map_err(|error| {
+        if ordinal != inventory.task_count {
+            return Err(CdfError::data(
+                "file inventory task count changed while producing partition authority",
+            ));
+        }
+        output
+            .finalize(|writer| {
+                serde_json::to_writer(writer, &authority).map_err(|error| {
                     CdfError::data(format!("encode file partition task authority: {error}"))
                 })
             })
             .map(|artifact| artifact.reference)
     }
 
-    pub(crate) fn partitions_for_intent_with_inventory_limit(
+    fn reconcile_exact_predicates_from_inventory(
         &self,
-        scan_intent: &CompiledScanIntent,
-        maximum_matches: usize,
-        control: &FileTransportControl,
-    ) -> Result<Vec<PartitionPlan>> {
-        if let Some(key) = &self.prepared_inventory_key
-            && let Some(payload) = self.dependencies.prepared_payloads().take(key)?
-        {
-            let (encoded, _retention) =
-                payload.into_typed::<Vec<u8>>("file partition inventory")?;
-            let mut partitions: Vec<PartitionPlan> =
-                serde_json::from_slice(&encoded).map_err(|error| {
-                    CdfError::internal(format!("decode prepared file inventory: {error}"))
-                })?;
-            if partitions.is_empty() {
-                return Err(CdfError::internal(
-                    "prepared file inventory did not contain any partitions",
-                ));
-            }
-            if partitions.len() > maximum_matches {
-                return Err(CdfError::data(format!(
-                    "file inventory exceeds the {maximum_matches}-entry boundary"
-                )));
-            }
-            for partition in &mut partitions {
-                if partition.metadata.get("resource_id").map(String::as_str)
-                    != Some(self.descriptor.resource_id.as_str())
-                    || partition.metadata.get("glob").map(String::as_str)
-                        != Some(self.plan.glob.as_str())
-                {
-                    return Err(CdfError::internal(
-                        "prepared file inventory does not match its compiled resource plan",
-                    ));
+        negotiation: FileScanNegotiation,
+        inventory: &PlannedTaskSetReference,
+    ) -> Result<FileScanNegotiation> {
+        let mut exact_for_every_partition = vec![true; negotiation.pushed_predicates.len()];
+        let mut input = self.inventory_reader(inventory.clone())?;
+        while let Some(decoded) = input.next_record()? {
+            let partition = partition_for_file_record(
+                &self.descriptor,
+                &self.plan,
+                &negotiation.intent,
+                &decoded.record,
+                inventory.task_count,
+            )?;
+            for (index, pushed) in negotiation.pushed_predicates.iter().enumerate() {
+                if exact_for_every_partition[index] && pushed.fidelity == PushdownFidelity::Exact {
+                    exact_for_every_partition[index] = exact_predicate_is_partition_equivalent(
+                        &pushed.predicate,
+                        std::slice::from_ref(&partition),
+                        self.schema.as_ref(),
+                        self.effective_schema_runtime.as_deref(),
+                    )?;
                 }
-                partition.scan_intent = scan_intent.clone();
             }
-            return Ok(partitions);
         }
-        let execution = self.dependencies.execution().clone();
-        execution.ensure_blocking_lanes(&[file_source_blocking_lane()])?;
-        let (transport, egress) = self.dependencies.transport_and_egress();
-        let descriptor = self.descriptor.clone();
-        let plan = self.plan.clone();
-        let scan_intent = scan_intent.clone();
-        let formats = Arc::clone(self.dependencies.formats());
-        let transforms = Arc::clone(self.dependencies.transforms());
-        let control = control.clone();
-        execution
-            .clone()
-            .run_blocking(FILE_SOURCE_BLOCKING_LANE_ID, move || {
-                file_partitions_for_plan_with_transport(
-                    &descriptor,
-                    &plan,
-                    &scan_intent,
-                    FilePlanningContext {
-                        transport: transport.as_ref(),
-                        egress: &egress,
-                        formats: formats.as_ref(),
-                        transforms: transforms.as_ref(),
-                        maximum_matches,
-                        control: &control,
-                        execution,
-                    },
-                )
-            })
+        let mut pushed_predicates = Vec::with_capacity(negotiation.pushed_predicates.len());
+        let mut unsupported_predicates = negotiation.unsupported_predicates;
+        for (pushed, exact) in negotiation
+            .pushed_predicates
+            .into_iter()
+            .zip(exact_for_every_partition)
+        {
+            if pushed.fidelity != PushdownFidelity::Exact || exact {
+                pushed_predicates.push(pushed);
+            } else {
+                unsupported_predicates.push(pushed.predicate);
+            }
+        }
+        let intent = CompiledScanIntent {
+            predicates: pushed_predicates.clone(),
+            ..negotiation.intent
+        };
+        Ok(FileScanNegotiation {
+            intent,
+            pushed_predicates,
+            unsupported_predicates,
+        })
     }
 
     pub fn validate_runtime_dependencies(&self) -> Result<()> {
@@ -1313,7 +1544,9 @@ impl ResourceStream for FileResource {
                 request.resource_id, self.descriptor.resource_id
             )));
         }
-        self.partitions_for_intent(&CompiledScanIntent::full_scan())
+        Err(CdfError::contract(
+            "file resources require query negotiation so their canonical partition authority can remain external",
+        ))
     }
 
     fn planned_partition_reader(
@@ -1324,6 +1557,86 @@ impl ResourceStream for FileResource {
             self.clone(),
             reference.clone(),
         )?))
+    }
+
+    fn rebind_scan_for_resume(
+        &self,
+        scan: &mut ScanPlan,
+        committed_frontier: &SourcePosition,
+    ) -> Result<()> {
+        committed_frontier.validate()?;
+        let SourcePosition::FileManifest(committed) = committed_frontier else {
+            return Err(CdfError::contract(format!(
+                "file resource `{}` requires a committed file manifest for incremental partition selection",
+                self.descriptor.resource_id
+            )));
+        };
+        let reference = scan.planned_task_set.clone().ok_or_else(|| {
+            CdfError::contract(
+                "file incremental partition selection requires external task authority",
+            )
+        })?;
+        let mut previous = BTreeMap::new();
+        for file in &committed.files {
+            if previous.insert(file.path.as_str(), file).is_some() {
+                return Err(CdfError::data(format!(
+                    "committed file manifest contains duplicate path `{}`",
+                    file.path
+                )));
+            }
+        }
+        let (store, options) = self.dependencies.task_store()?;
+        let mut input = FilePlannedPartitionReader::open(self.clone(), reference)?;
+        let mut output = store.writer(
+            FILE_PARTITION_TASK_TYPE,
+            options.canonical_limits().tasks,
+            self.dependencies.execution().memory(),
+            self.dependencies.execution().spill().as_ref(),
+        )?;
+        let mut input_ordinal = 0_u64;
+        let mut output_ordinal = 0_u64;
+        while let Some(executable) = input.next_partition(input_ordinal)? {
+            let partition = executable.plan();
+            let file = partition.planned_file()?.ok_or_else(|| {
+                CdfError::contract("file partition task omitted its typed planned file position")
+            })?;
+            if previous
+                .get(file.path.as_str())
+                .is_none_or(|prior| !cdf_kernel::same_file_position_identity(prior, file))
+            {
+                output.push_with(output_ordinal, |writer| {
+                    serde_json::to_writer(writer, partition).map_err(|error| {
+                        CdfError::data(format!("encode selected file partition task: {error}"))
+                    })
+                })?;
+                output_ordinal = output_ordinal
+                    .checked_add(1)
+                    .ok_or_else(|| CdfError::data("selected file partition count exceeds u64"))?;
+            }
+            input_ordinal = input_ordinal
+                .checked_add(1)
+                .ok_or_else(|| CdfError::data("file partition count exceeds u64"))?;
+        }
+        let compiled_source_plan_hash =
+            self.compiled_source_plan_hash.clone().ok_or_else(|| {
+                CdfError::contract("file task selection requires compiled source-plan identity")
+            })?;
+        let authority = FilePartitionTaskAuthority {
+            version: 1,
+            resource_id: self.descriptor.resource_id.clone(),
+            compiled_source_plan_hash,
+            request_hash: cdf_runtime::artifact_hash(&scan.request)?,
+        };
+        scan.planned_task_set = Some(
+            output
+                .finalize(|writer| {
+                    serde_json::to_writer(writer, &authority).map_err(|error| {
+                        CdfError::data(format!("encode selected file partition authority: {error}"))
+                    })
+                })?
+                .reference,
+        );
+        Ok(())
     }
 
     fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
@@ -1397,20 +1710,15 @@ impl QueryableResource for FileResource {
             &self.compiled_format.descriptor,
             self.schema.as_ref(),
         )?;
-        let mut partitions = self.partitions_for_intent(&negotiation.intent)?;
-        let negotiation = reconcile_exact_file_predicates(
-            negotiation,
-            &partitions,
-            self.schema.as_ref(),
-            self.effective_schema_runtime.as_deref(),
-        )?;
-        for partition in &mut partitions {
-            partition.scan_intent = negotiation.intent.clone();
-        }
+        let inventory = self.inventory_reference_with_limit(usize::MAX, &self.transport_control)?;
+        let negotiation =
+            self.reconcile_exact_predicates_from_inventory(negotiation, &inventory)?;
+        let planned_task_set =
+            self.partition_tasks_from_inventory(request, &negotiation.intent, &inventory)?;
         Ok(ScanPlan {
             plan_id: PlanId::new(format!("plan-{}", self.descriptor.resource_id))?,
             request: request.clone(),
-            planned_task_set: Some(self.externalize_partitions(request, partitions)?),
+            planned_task_set: Some(planned_task_set),
             partitions: Vec::new(),
             pushed_predicates: negotiation.pushed_predicates,
             unsupported_predicates: negotiation.unsupported_predicates,
@@ -1471,39 +1779,6 @@ fn compile_file_scan(
         order_by: Vec::new(),
     };
     intent.validate()?;
-    Ok(FileScanNegotiation {
-        intent,
-        pushed_predicates,
-        unsupported_predicates,
-    })
-}
-
-fn reconcile_exact_file_predicates(
-    negotiation: FileScanNegotiation,
-    partitions: &[PartitionPlan],
-    effective_schema: &Schema,
-    runtime: Option<&EffectiveSchemaRuntime>,
-) -> Result<FileScanNegotiation> {
-    let mut pushed_predicates = Vec::with_capacity(negotiation.pushed_predicates.len());
-    let mut unsupported_predicates = negotiation.unsupported_predicates;
-    for pushed in negotiation.pushed_predicates {
-        let exact_for_every_partition = pushed.fidelity != PushdownFidelity::Exact
-            || exact_predicate_is_partition_equivalent(
-                &pushed.predicate,
-                partitions,
-                effective_schema,
-                runtime,
-            )?;
-        if exact_for_every_partition {
-            pushed_predicates.push(pushed);
-        } else {
-            unsupported_predicates.push(pushed.predicate);
-        }
-    }
-    let intent = CompiledScanIntent {
-        predicates: pushed_predicates.clone(),
-        ..negotiation.intent
-    };
     Ok(FileScanNegotiation {
         intent,
         pushed_predicates,
@@ -1612,6 +1887,40 @@ pub(crate) struct ResolvedFileMatch {
     bytes_loaded: Option<u64>,
     compression: CompressionEvidence,
     format: FormatEvidence,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileInventoryRecord {
+    path_text: String,
+    size_bytes: u64,
+    source_generation: Option<String>,
+    identity_strength: GenerationStrength,
+    sha256: Option<String>,
+    etag: Option<String>,
+    version: Option<String>,
+    modified_ms: Option<String>,
+    bytes_loaded: Option<u64>,
+    compression: CompressionEvidence,
+    format: FormatEvidence,
+}
+
+impl From<&ResolvedFileMatch> for FileInventoryRecord {
+    fn from(file: &ResolvedFileMatch) -> Self {
+        Self {
+            path_text: file.path_text.clone(),
+            size_bytes: file.size_bytes,
+            source_generation: file.source_generation.clone(),
+            identity_strength: file.identity_strength,
+            sha256: file.sha256.clone(),
+            etag: file.etag.clone(),
+            version: file.version.clone(),
+            modified_ms: file.modified_ms.clone(),
+            bytes_loaded: file.bytes_loaded,
+            compression: file.compression.clone(),
+            format: file.format.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2174,17 +2483,20 @@ fn file_payload_cache_key(
     }))?)
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CompressionEvidence {
     transform_id: Option<ByteTransformId>,
     extension_signal: CompressionSignal,
     magic_signal: CompressionSignal,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 struct CompressionSignal(Option<ByteTransformId>);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FormatEvidence {
     format_id: String,
     driver_version: String,
@@ -2238,13 +2550,14 @@ struct FilePartitionPreparation<'a> {
     control: &'a FileTransportControl,
 }
 
+#[cfg(test)]
 fn file_partitions_for_plan_with_transport(
     descriptor: &ResourceDescriptor,
     plan: &FileResourcePlan,
     scan_intent: &CompiledScanIntent,
     context: FilePlanningContext<'_>,
 ) -> Result<Vec<PartitionPlan>> {
-    let matches = resolve_file_matches_bounded(&descriptor.resource_id, plan, context)?;
+    let matches = resolve_file_matches_bounded(&descriptor.resource_id, plan, context, Vec::new())?;
     if matches.is_empty() {
         return Err(no_file_matches_error(&descriptor.resource_id, plan));
     }
@@ -2252,8 +2565,30 @@ fn file_partitions_for_plan_with_transport(
     let total_matches = matches.len();
     matches
         .iter()
-        .map(|file| partition_for_file_match(descriptor, plan, scan_intent, file, total_matches))
+        .map(|file| {
+            partition_for_file_record(
+                descriptor,
+                plan,
+                scan_intent,
+                &FileInventoryRecord::from(file),
+                u64::try_from(total_matches)
+                    .map_err(|_| CdfError::data("file match count exceeds u64"))?,
+            )
+        })
         .collect()
+}
+
+fn build_file_inventory_with_transport(
+    resource_id: &ResourceId,
+    plan: &FileResourcePlan,
+    context: FilePlanningContext<'_>,
+    mut builder: FileInventoryTaskBuilder,
+) -> Result<PlannedTaskSetReference> {
+    builder = resolve_file_matches_bounded(resource_id, plan, context, builder)?;
+    if builder.task_count() == 0 {
+        return Err(no_file_matches_error(resource_id, plan));
+    }
+    builder.finalize()
 }
 
 fn open_file_resource_with_dependencies(
@@ -3710,7 +4045,7 @@ fn validate_partition_plan_shape<'a>(
     descriptor: &ResourceDescriptor,
     plan: &FileResourcePlan,
     partition: &'a PartitionPlan,
-) -> Result<(&'a str, usize)> {
+) -> Result<(&'a str, u64)> {
     if partition.metadata.get("kind").map(String::as_str) != Some("files") {
         return Err(CdfError::contract(format!(
             "declarative file resource `{}` expected a file partition plan",
@@ -3753,7 +4088,7 @@ fn validate_partition_plan_shape<'a>(
         .metadata
         .get("match_count")
         .ok_or_else(|| CdfError::contract("file partition omitted planned match count"))?
-        .parse::<usize>()
+        .parse::<u64>()
         .map_err(|_| CdfError::contract("file partition match count is invalid"))?;
     if match_count == 0 {
         return Err(CdfError::contract(
@@ -3854,7 +4189,7 @@ fn validate_compression_metadata(
     declared: &FileCompressionDeclaration,
     path: &str,
 ) -> Result<()> {
-    let expects_metadata = records_compression_metadata(resolved, declared);
+    let expects_metadata = records_compression_evidence(&resolved.compression, declared);
     if expects_metadata {
         validate_partition_metadata_value(
             partition,
@@ -3908,12 +4243,12 @@ fn validate_partition_metadata_value(
     Ok(())
 }
 
-fn partition_for_file_match(
+fn partition_for_file_record(
     descriptor: &ResourceDescriptor,
     plan: &FileResourcePlan,
     scan_intent: &CompiledScanIntent,
-    file: &ResolvedFileMatch,
-    total_matches: usize,
+    file: &FileInventoryRecord,
+    total_matches: u64,
 ) -> Result<PartitionPlan> {
     let mut metadata = BTreeMap::new();
     metadata.insert("kind".to_owned(), "files".to_owned());
@@ -3971,7 +4306,7 @@ fn partition_for_file_match(
         "format_detection_reason".to_owned(),
         file.format.detection.reason.clone(),
     );
-    if records_compression_metadata(file, &plan.compression) {
+    if records_compression_evidence(&file.compression, &plan.compression) {
         metadata.insert(
             "compression".to_owned(),
             file.compression.mode_name().to_owned(),
@@ -4028,7 +4363,7 @@ fn planned_file_path_binding(
     resource_id: &ResourceId,
     glob: &str,
     path: &str,
-    match_count: usize,
+    match_count: u64,
 ) -> Result<String> {
     cdf_runtime::artifact_hash(&serde_json::json!({
         "resource_id": resource_id,
@@ -4195,7 +4530,7 @@ fn resolve_planned_local_file_match(
     )
 }
 
-fn file_schema_observation_binding(file: &ResolvedFileMatch) -> String {
+fn file_schema_observation_binding(file: &FileInventoryRecord) -> String {
     let mut hasher = Sha256::new();
     let size = file.size_bytes.to_string();
     for value in [
@@ -4235,14 +4570,19 @@ fn resolve_file_matches(
             control: &FileTransportControl::default(),
             execution: crate::test_execution_services(),
         },
+        Vec::new(),
     )
 }
 
-fn resolve_file_matches_bounded(
+fn resolve_file_matches_bounded<S>(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,
     context: FilePlanningContext<'_>,
-) -> Result<Vec<ResolvedFileMatch>> {
+    mut sink: S,
+) -> Result<S>
+where
+    S: FileMatchSink + 'static,
+{
     match file_transport_scheme(&plan.root)? {
         Some(FileTransportScheme::Http | FileTransportScheme::Https) => {
             if context.maximum_matches == 0 {
@@ -4250,18 +4590,10 @@ fn resolve_file_matches_bounded(
                     "file inventory exceeds the 0-entry boundary",
                 ));
             }
-            return resolve_http_file_match(
-                resource_id,
-                plan,
-                context.transport,
-                context.egress,
-                context.formats,
-                context.transforms,
-                context.control,
-            );
+            return resolve_http_file_matches_into(resource_id, plan, context, sink);
         }
         Some(FileTransportScheme::Remote(_)) => {
-            return resolve_remote_matches_bounded(resource_id, plan, context);
+            return resolve_remote_matches_bounded(resource_id, plan, context, sink);
         }
         Some(FileTransportScheme::File) => {
             let mut local_plan = plan.clone();
@@ -4269,7 +4601,7 @@ fn resolve_file_matches_bounded(
                 .to_str()
                 .map(str::to_owned)
                 .ok_or_else(|| CdfError::data("file URL path is not valid UTF-8"))?;
-            return resolve_file_matches_bounded(resource_id, &local_plan, context);
+            return resolve_file_matches_bounded(resource_id, &local_plan, context, sink);
         }
         None => {}
     }
@@ -4283,30 +4615,26 @@ fn resolve_file_matches_bounded(
     }
 
     let components = pattern_components(&plan.glob)?;
-    let mut matches = Vec::new();
     let mut budget = LocalInventoryBudget::new(
         context.maximum_matches,
         context.control.clone(),
         context.execution.clone(),
     );
-    collect_matches(&root, &components, &mut matches, &mut budget)?;
-    matches.sort();
-    matches.dedup();
-
-    let matches = contained_matches(&root, matches)?;
-    matches
-        .into_iter()
-        .map(|path| {
-            resolved_file_match(
-                resource_id,
-                &root,
-                path,
-                plan,
-                context.formats,
-                context.transforms,
-            )
-        })
-        .collect()
+    let canonical_root = fs::canonicalize(&root).map_err(|error| {
+        CdfError::data(format!(
+            "canonicalize file source root {}: {error}",
+            root.display()
+        ))
+    })?;
+    let local = LocalMatchContext {
+        canonical_root: &canonical_root,
+        resource_id,
+        plan,
+        formats: context.formats,
+        transforms: context.transforms,
+    };
+    collect_matches(&root, &components, &local, &mut sink, &mut budget)?;
+    Ok(sink)
 }
 
 #[cfg(test)]
@@ -4330,14 +4658,19 @@ fn resolve_remote_matches(
             control: &FileTransportControl::default(),
             execution: crate::test_execution_services(),
         },
+        Vec::new(),
     )
 }
 
-fn resolve_remote_matches_bounded(
+fn resolve_remote_matches_bounded<S>(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,
     context: FilePlanningContext<'_>,
-) -> Result<Vec<ResolvedFileMatch>> {
+    sink: S,
+) -> Result<S>
+where
+    S: FileMatchSink + 'static,
+{
     let root_resource = FileTransportResource::remote_url(plan.root.clone())
         .with_egress_allowlist(plan.allowlist.clone());
     let root_resource = match &plan.credentials {
@@ -4345,7 +4678,6 @@ fn resolve_remote_matches_bounded(
         None => root_resource,
     };
     let components = pattern_components(&plan.glob)?;
-    let mut matches = Vec::new();
     let listing = context.transport.list(
         context.egress,
         &root_resource,
@@ -4353,25 +4685,57 @@ fn resolve_remote_matches_bounded(
         context.control,
     )?;
     let termination = listing.termination();
+    let no_matches = no_file_matches_error(resource_id, plan);
     let root = plan.root.clone();
     let components_for_listing = components.clone();
-    let matched_metadata = context.execution.run_io(async move {
+    let plan = plan.clone();
+    let resource_id = resource_id.clone();
+    let formats = context.formats.clone();
+    let transforms = context.transforms.clone();
+    let maximum_matches = context.maximum_matches;
+    let sink = context.execution.run_io(async move {
         let mut listing = listing;
-        let mut matched = Vec::new();
-        let result: Result<Vec<FileIdentityMetadata>> = async {
+        let mut sink = sink;
+        let result: Result<()> = async {
             while let Some(identity) = listing.try_next().await? {
                 let metadata = identity.into_identity();
                 let relative = remote_relative_path(&root, &metadata.location)?;
                 if glob_path_matches(&components_for_listing, &relative) {
-                    matched.push(metadata);
+                    if sink.admitted_count() >= u64::try_from(maximum_matches).unwrap_or(u64::MAX) {
+                        return Err(CdfError::data(format!(
+                            "file inventory exceeds the {}-entry boundary",
+                            maximum_matches
+                        )));
+                    }
+                    let resource = FileTransportResource::remote_url(metadata.location.clone())
+                        .with_egress_allowlist(plan.allowlist.clone());
+                    let resource = match &plan.credentials {
+                        Some(credentials) => resource.with_credentials(credentials.clone()),
+                        None => resource,
+                    };
+                    let compression =
+                        resolve_transport_compression(&plan, &metadata.location, &transforms)?;
+                    let format = resolve_transport_format(
+                        &resource_id,
+                        &plan,
+                        &metadata.location,
+                        &compression,
+                        &formats,
+                    )?;
+                    sink.admit(resolved_transport_file_match(
+                        resource,
+                        metadata,
+                        compression,
+                        format,
+                    )?)?;
                 }
             }
             termination.join().await?;
-            Ok(matched)
+            Ok(())
         }
         .await;
         match result {
-            Ok(matched) => Ok(matched),
+            Ok(()) => Ok(sink),
             Err(mut error) => {
                 if let Err(cleanup) = termination.terminate_and_join().await {
                     error.message = format!(
@@ -4383,31 +4747,10 @@ fn resolve_remote_matches_bounded(
             }
         }
     })?;
-    for metadata in matched_metadata {
-        let resource = FileTransportResource::remote_url(metadata.location.clone())
-            .with_egress_allowlist(plan.allowlist.clone());
-        let resource = match &plan.credentials {
-            Some(credentials) => resource.with_credentials(credentials.clone()),
-            None => resource,
-        };
-        let compression =
-            resolve_transport_compression(plan, &metadata.location, context.transforms)?;
-        let format = resolve_transport_format(
-            resource_id,
-            plan,
-            &metadata.location,
-            &compression,
-            context.formats,
-        )?;
-        matches.push(resolved_transport_file_match(
-            resource,
-            metadata,
-            compression,
-            format,
-        )?);
+    if sink.admitted_count() == 0 {
+        return Err(no_matches);
     }
-    matches.sort_by(|left, right| left.path_text.cmp(&right.path_text));
-    Ok(matches)
+    Ok(sink)
 }
 
 fn remote_relative_path(root: &str, location: &str) -> Result<String> {
@@ -4418,18 +4761,17 @@ fn remote_relative_path(root: &str, location: &str) -> Result<String> {
         .ok_or_else(|| CdfError::data("object-store listing escaped its configured root prefix"))
 }
 
-fn resolve_http_file_match(
+fn resolve_http_file_matches_into<S>(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,
-    transport: &dyn FileTransport,
-    egress: &SourceEgressScope,
-    formats: &FormatRegistry,
-    transforms: &ByteTransformRegistry,
-    control: &FileTransportControl,
-) -> Result<Vec<ResolvedFileMatch>> {
-    let globs = expand_http_glob(resource_id, &plan.glob)?;
-    let mut matches = Vec::with_capacity(globs.len());
-    for glob in globs {
+    context: FilePlanningContext<'_>,
+    mut sink: S,
+) -> Result<S>
+where
+    S: FileMatchSink,
+{
+    let mut globs = HttpGlobExpansion::new(resource_id, &plan.glob)?;
+    while let Some(glob) = globs.next_glob() {
         let url = join_http_root_and_glob(&plan.root, &glob);
         let mut resource =
             FileTransportResource::http_url(url).with_egress_allowlist(plan.allowlist.clone());
@@ -4439,29 +4781,44 @@ fn resolve_http_file_match(
         if let Some(credentials) = &plan.credentials {
             resource = resource.with_credentials(credentials.clone());
         }
-        let Some(observation) = transport.metadata_if_exists(egress, &resource, control)? else {
+        let Some(observation) =
+            context
+                .transport
+                .metadata_if_exists(context.egress, &resource, context.control)?
+        else {
             continue;
         };
         let logical_location = match &resource.location {
             FileTransportLocation::HttpUrl { url } => url.as_str(),
             _ => unreachable!("HTTP resolver constructed an HTTP transport resource"),
         };
-        let compression = resolve_transport_compression(plan, logical_location, transforms)?;
-        let format =
-            resolve_transport_format(resource_id, plan, logical_location, &compression, formats)?;
+        let compression =
+            resolve_transport_compression(plan, logical_location, context.transforms)?;
+        let format = resolve_transport_format(
+            resource_id,
+            plan,
+            logical_location,
+            &compression,
+            context.formats,
+        )?;
         let access_resource = observation.access_resource(&resource);
-        matches.push(resolved_transport_file_match(
+        if sink.admitted_count() >= u64::try_from(context.maximum_matches).unwrap_or(u64::MAX) {
+            return Err(CdfError::data(format!(
+                "file inventory exceeds the {}-entry boundary",
+                context.maximum_matches
+            )));
+        }
+        sink.admit(resolved_transport_file_match(
             access_resource,
             observation.into_identity(),
             compression,
             format,
-        )?);
+        )?)?;
     }
-    matches.sort_by(|left, right| left.path_text.cmp(&right.path_text));
-    if matches.is_empty() {
+    if sink.admitted_count() == 0 {
         Err(no_file_matches_error(resource_id, plan))
     } else {
-        Ok(matches)
+        Ok(sink)
     }
 }
 
@@ -4516,6 +4873,14 @@ struct LocalInventoryBudget {
     execution: ExecutionServices,
 }
 
+struct LocalMatchContext<'a> {
+    canonical_root: &'a Path,
+    resource_id: &'a ResourceId,
+    plan: &'a FileResourcePlan,
+    formats: &'a FormatRegistry,
+    transforms: &'a ByteTransformRegistry,
+}
+
 impl LocalInventoryBudget {
     fn new(
         maximum_entries: usize,
@@ -4546,9 +4911,9 @@ impl LocalInventoryBudget {
         Ok(())
     }
 
-    fn admit_match(&self, matches: &[PathBuf]) -> Result<()> {
+    fn admit_match(&self, admitted_count: u64) -> Result<()> {
         self.check()?;
-        if matches.len() >= self.maximum_entries {
+        if admitted_count >= u64::try_from(self.maximum_entries).unwrap_or(u64::MAX) {
             return Err(CdfError::data(format!(
                 "file inventory exceeds the {}-entry boundary",
                 self.maximum_entries
@@ -4558,84 +4923,148 @@ impl LocalInventoryBudget {
     }
 }
 
-fn collect_matches(
+fn collect_matches<S>(
     current: &Path,
     components: &[String],
-    matches: &mut Vec<PathBuf>,
+    context: &LocalMatchContext<'_>,
+    sink: &mut S,
     budget: &mut LocalInventoryBudget,
-) -> Result<()> {
+) -> Result<()>
+where
+    S: FileMatchSink,
+{
     budget.check()?;
     let Some((component, rest)) = components.split_first() else {
-        return collect_leaf_match(current, matches, budget);
+        return collect_leaf_match(current, context, sink, budget);
     };
 
     if component == "**" {
-        return collect_recursive_matches(current, components, rest, matches, budget);
+        return collect_recursive_matches(current, components, rest, context, sink, budget);
     }
 
     if has_wildcards(component) {
-        return collect_wildcard_matches(current, component, rest, matches, budget);
+        return collect_wildcard_matches(current, component, rest, context, sink, budget);
     }
 
-    collect_literal_matches(current, component, rest, matches, budget)
+    collect_literal_matches(current, component, rest, context, sink, budget)
 }
 
-fn collect_leaf_match(
+fn collect_leaf_match<S>(
     current: &Path,
-    matches: &mut Vec<PathBuf>,
+    context: &LocalMatchContext<'_>,
+    sink: &mut S,
     budget: &LocalInventoryBudget,
-) -> Result<()> {
+) -> Result<()>
+where
+    S: FileMatchSink,
+{
     if current.is_file() {
-        budget.admit_match(matches)?;
-        matches.push(current.to_path_buf());
+        budget.admit_match(sink.admitted_count())?;
+        let canonical_path = fs::canonicalize(current).map_err(|error| {
+            CdfError::data(format!(
+                "canonicalize matched file {}: {error}",
+                current.display()
+            ))
+        })?;
+        if !canonical_path.starts_with(context.canonical_root) {
+            return Err(CdfError::contract(format!(
+                "matched file {} escapes declared file source root {}",
+                current.display(),
+                context.canonical_root.display()
+            )));
+        }
+        sink.admit(resolved_canonical_file_match(
+            context.resource_id,
+            context.canonical_root,
+            canonical_path,
+            context.plan,
+            context.formats,
+            context.transforms,
+        )?)?;
     }
     Ok(())
 }
 
-fn collect_recursive_matches(
+fn collect_recursive_matches<S>(
     current: &Path,
     components: &[String],
     rest: &[String],
-    matches: &mut Vec<PathBuf>,
+    context: &LocalMatchContext<'_>,
+    sink: &mut S,
     budget: &mut LocalInventoryBudget,
-) -> Result<()> {
-    collect_matches(current, rest, matches, budget)?;
-    for path in read_dir_paths(current, budget)? {
+) -> Result<()>
+where
+    S: FileMatchSink,
+{
+    collect_matches(current, rest, context, sink, budget)?;
+    let Some(entries) = read_dir_entries(current)? else {
+        return Ok(());
+    };
+    for entry in entries {
+        budget.observe_entry()?;
+        let path = entry
+            .map_err(|error| {
+                CdfError::data(format!(
+                    "read file source directory {}: {error}",
+                    current.display()
+                ))
+            })?
+            .path();
         if is_physical_dir(&path)? {
-            collect_matches(&path, components, matches, budget)?;
+            collect_matches(&path, components, context, sink, budget)?;
         }
     }
     Ok(())
 }
 
-fn collect_wildcard_matches(
+fn collect_wildcard_matches<S>(
     current: &Path,
     component: &str,
     rest: &[String],
-    matches: &mut Vec<PathBuf>,
+    context: &LocalMatchContext<'_>,
+    sink: &mut S,
     budget: &mut LocalInventoryBudget,
-) -> Result<()> {
-    for path in read_dir_paths(current, budget)? {
+) -> Result<()>
+where
+    S: FileMatchSink,
+{
+    let Some(entries) = read_dir_entries(current)? else {
+        return Ok(());
+    };
+    for entry in entries {
+        budget.observe_entry()?;
+        let path = entry
+            .map_err(|error| {
+                CdfError::data(format!(
+                    "read file source directory {}: {error}",
+                    current.display()
+                ))
+            })?
+            .path();
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
         if glob_component_matches(component, name) && can_descend_for_rest(&path, rest)? {
-            collect_matches(&path, rest, matches, budget)?;
+            collect_matches(&path, rest, context, sink, budget)?;
         }
     }
     Ok(())
 }
 
-fn collect_literal_matches(
+fn collect_literal_matches<S>(
     current: &Path,
     component: &str,
     rest: &[String],
-    matches: &mut Vec<PathBuf>,
+    context: &LocalMatchContext<'_>,
+    sink: &mut S,
     budget: &mut LocalInventoryBudget,
-) -> Result<()> {
+) -> Result<()>
+where
+    S: FileMatchSink,
+{
     let next = current.join(component);
     if can_descend_for_rest(&next, rest)? {
-        collect_matches(&next, rest, matches, budget)
+        collect_matches(&next, rest, context, sink, budget)
     } else {
         Ok(())
     }
@@ -4645,7 +5074,7 @@ fn can_descend_for_rest(path: &Path, rest: &[String]) -> Result<bool> {
     Ok(rest.is_empty() || is_physical_dir(path)?)
 }
 
-fn read_dir_paths(path: &Path, budget: &mut LocalInventoryBudget) -> Result<Vec<PathBuf>> {
+fn read_dir_entries(path: &Path) -> Result<Option<fs::ReadDir>> {
     let entries = match fs::read_dir(path) {
         Ok(entries) => entries,
         Err(error)
@@ -4654,7 +5083,7 @@ fn read_dir_paths(path: &Path, budget: &mut LocalInventoryBudget) -> Result<Vec<
                 std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
             ) =>
         {
-            return Ok(Vec::new());
+            return Ok(None);
         }
         Err(error) => {
             return Err(CdfError::data(format!(
@@ -4664,22 +5093,7 @@ fn read_dir_paths(path: &Path, budget: &mut LocalInventoryBudget) -> Result<Vec<
         }
     };
 
-    let mut paths = Vec::new();
-    for entry in entries {
-        budget.observe_entry()?;
-        paths.push(
-            entry
-                .map_err(|error| {
-                    CdfError::data(format!(
-                        "read file source directory {}: {error}",
-                        path.display()
-                    ))
-                })?
-                .path(),
-        );
-    }
-    paths.sort();
-    Ok(paths)
+    Ok(Some(entries))
 }
 
 fn is_physical_dir(path: &Path) -> Result<bool> {
@@ -4700,42 +5114,46 @@ fn is_physical_dir(path: &Path) -> Result<bool> {
     }
 }
 
-fn contained_matches(root: &Path, matches: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
-    if matches.is_empty() {
-        return Ok(matches);
-    }
-
+fn resolved_file_match(
+    resource_id: &ResourceId,
+    root: &Path,
+    path: PathBuf,
+    plan: &FileResourcePlan,
+    formats: &FormatRegistry,
+    transforms: &ByteTransformRegistry,
+) -> Result<ResolvedFileMatch> {
     let canonical_root = fs::canonicalize(root).map_err(|error| {
         CdfError::data(format!(
             "canonicalize file source root {}: {error}",
             root.display()
         ))
     })?;
-
-    matches
-        .into_iter()
-        .map(|path| {
-            let canonical_path = fs::canonicalize(&path).map_err(|error| {
-                CdfError::data(format!(
-                    "canonicalize matched file {}: {error}",
-                    path.display()
-                ))
-            })?;
-            if !canonical_path.starts_with(&canonical_root) {
-                return Err(CdfError::contract(format!(
-                    "matched file {} escapes declared file source root {}",
-                    path.display(),
-                    root.display()
-                )));
-            }
-            Ok(canonical_path)
-        })
-        .collect()
+    let canonical_path = fs::canonicalize(&path).map_err(|error| {
+        CdfError::data(format!(
+            "canonicalize matched file {}: {error}",
+            path.display()
+        ))
+    })?;
+    if !canonical_path.starts_with(&canonical_root) {
+        return Err(CdfError::contract(format!(
+            "matched file {} escapes declared file source root {}",
+            path.display(),
+            root.display()
+        )));
+    }
+    resolved_canonical_file_match(
+        resource_id,
+        &canonical_root,
+        canonical_path,
+        plan,
+        formats,
+        transforms,
+    )
 }
 
-fn resolved_file_match(
+fn resolved_canonical_file_match(
     resource_id: &ResourceId,
-    root: &Path,
+    canonical_root: &Path,
     path: PathBuf,
     plan: &FileResourcePlan,
     formats: &FormatRegistry,
@@ -4749,13 +5167,7 @@ fn resolved_file_match(
         .ok()
         .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
         .map(|duration| duration.as_millis().to_string());
-    let canonical_root = fs::canonicalize(root).map_err(|error| {
-        CdfError::data(format!(
-            "canonicalize file source root {}: {error}",
-            root.display()
-        ))
-    })?;
-    let relative_path = path.strip_prefix(&canonical_root).map_err(|error| {
+    let relative_path = path.strip_prefix(canonical_root).map_err(|error| {
         CdfError::internal(format!(
             "matched file {} did not remain relative to canonical root {}: {error}",
             path.display(),
@@ -5098,28 +5510,60 @@ fn compression_signal_error(
     ))
 }
 
-fn records_compression_metadata(
-    file: &ResolvedFileMatch,
+fn records_compression_evidence(
+    compression: &CompressionEvidence,
     declared: &FileCompressionDeclaration,
 ) -> bool {
-    file.compression.transform_id.is_some()
+    compression.transform_id.is_some()
         || !declared.is_auto()
-        || file.compression.extension_signal.transform_id().is_some()
-        || file.compression.magic_signal.transform_id().is_some()
+        || compression.extension_signal.transform_id().is_some()
+        || compression.magic_signal.transform_id().is_some()
 }
 
+enum HttpGlobExpansion<'a> {
+    Bounded(std::vec::IntoIter<String>),
+    Numeric {
+        template: HttpNumericTemplate<'a>,
+        next: Option<u64>,
+    },
+    Single(Option<String>),
+}
+
+impl<'a> HttpGlobExpansion<'a> {
+    fn new(resource_id: &ResourceId, glob: &'a str) -> Result<Self> {
+        if let Some(months) = expand_http_year_month_glob(glob) {
+            return Ok(Self::Bounded(months.into_iter()));
+        }
+        let Some(template) = parse_http_numeric_template(resource_id, glob)? else {
+            return Ok(Self::Single(Some(glob.to_owned())));
+        };
+        let next = Some(template.start);
+        Ok(Self::Numeric { template, next })
+    }
+
+    fn next_glob(&mut self) -> Option<String> {
+        match self {
+            Self::Bounded(values) => values.next(),
+            Self::Numeric { template, next } => {
+                let value = next.take()?;
+                if value < template.end {
+                    *next = Some(value + 1);
+                }
+                Some(template.render(value))
+            }
+            Self::Single(value) => value.take(),
+        }
+    }
+}
+
+#[cfg(test)]
 fn expand_http_glob(resource_id: &ResourceId, glob: &str) -> Result<Vec<String>> {
-    if let Some(months) = expand_http_year_month_glob(glob) {
-        return Ok(months);
+    let mut expansion = HttpGlobExpansion::new(resource_id, glob)?;
+    let mut values = Vec::new();
+    while let Some(value) = expansion.next_glob() {
+        values.push(value);
     }
-    let Some(template) = parse_http_numeric_template(resource_id, glob)? else {
-        return Ok(vec![glob.to_owned()]);
-    };
-    let mut expanded = Vec::with_capacity(template.count as usize);
-    for value in template.start..=template.end {
-        expanded.push(template.render(value));
-    }
-    Ok(expanded)
+    Ok(values)
 }
 
 fn http_glob_contains(resource_id: &ResourceId, glob: &str, candidate: &str) -> Result<bool> {
@@ -5152,7 +5596,6 @@ struct HttpNumericTemplate<'a> {
     start: u64,
     end: u64,
     width: usize,
-    count: u64,
 }
 
 impl HttpNumericTemplate<'_> {
@@ -5234,12 +5677,6 @@ fn parse_http_numeric_template<'a>(
             "HTTP(S) file resource `{resource_id}` template start {start} exceeds end {end}"
         )));
     }
-    let count = end - start + 1;
-    if count > 1_000_000 {
-        return Err(CdfError::contract(format!(
-            "HTTP(S) file resource `{resource_id}` template expands to {count} files; split it into ranges of at most 1000000 files"
-        )));
-    }
     let width = if start_text.starts_with('0') || end_text.starts_with('0') {
         start_text.len().max(end_text.len())
     } else {
@@ -5251,7 +5688,6 @@ fn parse_http_numeric_template<'a>(
         start,
         end,
         width,
-        count,
     }))
 }
 
@@ -6258,8 +6694,12 @@ mod tests {
             order_by: Vec::new(),
             scope: ScopeKey::Resource,
         };
-        let tier_a = resource.plan_partitions(&request).unwrap();
-        assert_eq!(tier_a[0].scan_intent, CompiledScanIntent::full_scan());
+        let eager_error = resource.plan_partitions(&request).unwrap_err();
+        assert!(
+            eager_error
+                .message
+                .contains("canonical partition authority")
+        );
         let scan = resource.negotiate(&request).unwrap();
         assert!(scan.partitions.is_empty());
         let task_reference = scan.planned_task_set.as_ref().unwrap();

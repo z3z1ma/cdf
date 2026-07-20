@@ -860,9 +860,9 @@ pub(crate) fn replay_event_details(
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct RunFileManifestReport {
-    total_file_count: usize,
-    changed_file_count: usize,
-    unchanged_file_count: usize,
+    total_file_count: u64,
+    changed_file_count: u64,
+    unchanged_file_count: u64,
     no_changed_files: bool,
 }
 

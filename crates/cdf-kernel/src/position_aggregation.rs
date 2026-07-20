@@ -281,6 +281,30 @@ pub fn merge_file_position_evidence(
     })
 }
 
+/// Returns whether two manifest entries prove the same source generation.
+///
+/// Size participates in every comparison. Stronger identities win in deterministic order so
+/// incremental planners across adapters cannot disagree about whether a file changed.
+pub fn same_file_position_identity(previous: &FilePosition, current: &FilePosition) -> bool {
+    previous.size_bytes == current.size_bytes
+        && match (
+            &previous.sha256,
+            &current.sha256,
+            &previous.etag,
+            &current.etag,
+        ) {
+            (Some(previous), Some(current), _, _) => previous == current,
+            (_, _, Some(previous), Some(current)) => previous == current,
+            _ => match (&previous.object_version, &current.object_version) {
+                (Some(previous), Some(current)) => previous == current,
+                _ => match (&previous.source_generation, &current.source_generation) {
+                    (Some(previous), Some(current)) => previous == current,
+                    _ => false,
+                },
+            },
+        }
+}
+
 /// Enriches a segment's source position with evidence available only after its source stream
 /// reached EOF. This is the sole source-position authority for terminal enrichment; orchestration
 /// must not branch on source kind.

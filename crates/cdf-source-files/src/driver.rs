@@ -1,13 +1,12 @@
 use std::{
     collections::BTreeMap,
     fs,
-    io::Write,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use cdf_http::{AuthScheme, EgressAllowlist, SecretProvider, SecretUri};
-use cdf_kernel::{CdfError, CompiledScanIntent, PayloadRetention, QueryableResource, Result};
+use cdf_kernel::{CdfError, PayloadRetention, QueryableResource, Result};
 use cdf_memory::{ConsumerKey, MemoryClass, ReservationRequest};
 use cdf_object_access::{
     FilePayloadCache, FileTransportControl, FileTransportResource, file_url_path,
@@ -696,14 +695,12 @@ fn file_discovery_entries(
             compiled_format: compiled_format.clone(),
         },
         dependencies.clone(),
-    )?;
-    let partitions = runtime.partitions_for_intent_with_inventory_limit(
-        &CompiledScanIntent::full_scan(),
-        maximum_entries,
-        control,
-    )?;
+    )?
+    .with_compiled_source_plan_hash(artifact_hash(source_plan)?);
+    let (inventory, partitions) =
+        runtime.discovery_partitions_with_inventory(maximum_entries, control)?;
     if retain_inventory {
-        install_prepared_file_inventory(source_plan, dependencies, &partitions)?;
+        install_prepared_file_inventory(source_plan, dependencies, inventory)?;
     }
     let local_root = match file_transport_scheme(&plan.root)? {
         None => Some(PathBuf::from(&plan.root)),
@@ -790,7 +787,7 @@ fn prepared_file_inventory_key(plan: &CompiledSourcePlan) -> Result<PreparedSour
         plan.descriptor.resource_id.clone(),
         plan.driver.driver_id.clone(),
         artifact_hash(&serde_json::json!({
-            "kind": "file_partition_inventory_v1",
+            "kind": "file_inventory_task_reference_v1",
             "source_discovery_binding": plan.discovery_binding_hash()?,
         }))?,
     )
@@ -799,15 +796,19 @@ fn prepared_file_inventory_key(plan: &CompiledSourcePlan) -> Result<PreparedSour
 fn install_prepared_file_inventory(
     plan: &CompiledSourcePlan,
     dependencies: &FileRuntimeDependencies,
-    partitions: &[cdf_kernel::PartitionPlan],
+    inventory: cdf_kernel::PlannedTaskSetReference,
 ) -> Result<()> {
-    let mut counter = CountingWriter::default();
-    serde_json::to_writer(&mut counter, partitions)
-        .map_err(|error| CdfError::internal(format!("size prepared file inventory: {error}")))?;
-    let encoded_bytes = counter.bytes;
+    let encoded_bytes = u64::try_from(
+        serde_json::to_vec(&inventory)
+            .map_err(|error| {
+                CdfError::internal(format!("size prepared file inventory reference: {error}"))
+            })?
+            .len(),
+    )
+    .map_err(|_| CdfError::data("prepared file inventory reference length exceeds u64"))?;
     if encoded_bytes == 0 {
         return Err(CdfError::internal(
-            "prepared file inventory encoded to zero bytes",
+            "prepared file inventory reference encoded to zero bytes",
         ));
     }
     let request = ReservationRequest::new(
@@ -820,45 +821,14 @@ fn install_prepared_file_inventory(
         .try_reserve(&request)?
         .ok_or_else(|| {
             CdfError::data(format!(
-                "prepared file inventory requires {encoded_bytes} bytes but the discovery memory budget cannot admit it"
+                "prepared file inventory reference requires {encoded_bytes} bytes but the discovery memory budget cannot admit it"
             ))
         })?;
-    let capacity = usize::try_from(encoded_bytes)
-        .map_err(|_| CdfError::data("prepared file inventory length exceeds usize"))?;
-    let mut encoded = Vec::with_capacity(capacity);
-    serde_json::to_writer(&mut encoded, partitions)
-        .map_err(|error| CdfError::internal(format!("encode prepared file inventory: {error}")))?;
-    let observed = u64::try_from(encoded.len())
-        .map_err(|_| CdfError::data("prepared file inventory length exceeds u64"))?;
-    if observed != encoded_bytes {
-        return Err(CdfError::internal(
-            "prepared file inventory sizing pass was not deterministic",
-        ));
-    }
     let retention = PayloadRetention::new(Arc::new(lease), encoded_bytes)?;
     dependencies.prepared_payloads().install(
         prepared_file_inventory_key(plan)?,
-        PreparedSourcePayload::new(encoded, retention),
+        PreparedSourcePayload::new(inventory, retention),
     )
-}
-
-#[derive(Default)]
-struct CountingWriter {
-    bytes: u64,
-}
-
-impl Write for CountingWriter {
-    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        self.bytes = self
-            .bytes
-            .checked_add(u64::try_from(buffer.len()).unwrap_or(u64::MAX))
-            .ok_or_else(|| std::io::Error::other("prepared file inventory length overflow"))?;
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
 }
 
 fn transport_resource_for_location(

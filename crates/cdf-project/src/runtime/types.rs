@@ -182,7 +182,7 @@ pub struct ProjectDrainEpochReport {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileManifestRunSummary {
-    pub total_file_count: usize,
-    pub changed_file_count: usize,
-    pub unchanged_file_count: usize,
+    pub total_file_count: u64,
+    pub changed_file_count: u64,
+    pub unchanged_file_count: u64,
 }

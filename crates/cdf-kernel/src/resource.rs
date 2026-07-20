@@ -854,6 +854,18 @@ impl ExecutablePartition {
     pub fn retention(&self) -> Option<&PayloadRetention> {
         self.retention.as_ref()
     }
+
+    /// Transforms source-neutral partition metadata while preserving the source-owned retained
+    /// task payload exactly once.
+    ///
+    /// Resource decorators use this when they rewrite scopes or windows. Reconstructing an inline
+    /// partition would discard the bounded decoder authority required by external task sets.
+    pub fn map_plan(self, map: impl FnOnce(PartitionPlan) -> PartitionPlan) -> Self {
+        Self {
+            plan: map(self.plan),
+            retention: self.retention,
+        }
+    }
 }
 
 pub const PLANNED_TASK_SET_REFERENCE_VERSION: u16 = 1;

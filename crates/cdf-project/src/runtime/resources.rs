@@ -47,6 +47,30 @@ pub struct WindowScopedResource<'a> {
     inner_scope: ScopeKey,
 }
 
+struct WindowScopedPartitionReader {
+    inner: Box<dyn cdf_kernel::PlannedPartitionReader>,
+    outer_scope: ScopeKey,
+}
+
+impl cdf_kernel::PlannedPartitionReader for WindowScopedPartitionReader {
+    fn next_partition(
+        &mut self,
+        expected_ordinal: u64,
+    ) -> Result<Option<cdf_kernel::ExecutablePartition>> {
+        self.inner
+            .next_partition(expected_ordinal)
+            .map(|partition| {
+                partition.map(|partition| {
+                    let outer_scope = self.outer_scope.clone();
+                    partition.map_plan(|mut plan| {
+                        plan.scope = outer_scope;
+                        plan
+                    })
+                })
+            })
+    }
+}
+
 impl<'a> WindowScopedResource<'a> {
     pub fn new(inner: &'a dyn QueryableResource, scope: ScopeKey) -> Self {
         let mut descriptor = inner.descriptor().clone();
@@ -104,6 +128,16 @@ impl ResourceStream for WindowScopedResource<'_> {
             })
     }
 
+    fn planned_partition_reader(
+        &self,
+        reference: &cdf_kernel::PlannedTaskSetReference,
+    ) -> Result<Box<dyn cdf_kernel::PlannedPartitionReader>> {
+        Ok(Box::new(WindowScopedPartitionReader {
+            inner: self.inner.planned_partition_reader(reference)?,
+            outer_scope: self.descriptor.state_scope.clone(),
+        }))
+    }
+
     fn rebind_scan_for_resume(
         &self,
         scan: &mut cdf_kernel::ScanPlan,
@@ -131,11 +165,33 @@ impl ResourceStream for WindowScopedResource<'_> {
         self.inner.open(self.inner_partition(partition))
     }
 
+    fn open_executable(
+        &self,
+        partition: cdf_kernel::ExecutablePartition,
+    ) -> cdf_kernel::PartitionOpenAttempt<'_> {
+        let inner_scope = self.inner_scope.clone();
+        self.inner.open_executable(partition.map_plan(|mut plan| {
+            plan.scope = inner_scope;
+            plan
+        }))
+    }
+
     fn attest_partition(
         &self,
         partition: PartitionPlan,
     ) -> cdf_kernel::PartitionAttestationAttempt<'_> {
         self.inner.attest_partition(self.inner_partition(partition))
+    }
+
+    fn attest_executable(
+        &self,
+        partition: cdf_kernel::ExecutablePartition,
+    ) -> cdf_kernel::PartitionAttestationAttempt<'_> {
+        let inner_scope = self.inner_scope.clone();
+        self.inner.attest_executable(partition.map_plan(|mut plan| {
+            plan.scope = inner_scope;
+            plan
+        }))
     }
 
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {

@@ -272,7 +272,7 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
         recovered_epoch_count,
     )?;
     let initial_manifest =
-        plan_file_manifest_incrementality(&plan, resource.descriptor(), initial_head.as_ref())?;
+        plan_file_manifest_incrementality(&plan, resource, initial_head.as_ref())?;
     let mut next_manifest_summary = initial_manifest.summary;
     let mut remaining_plan = initial_manifest.plan.into_owned();
     if let Some(frontier) = initial_head
@@ -659,7 +659,7 @@ async fn run_project_inner(
     };
     let manifest_plan = match &execution.manifest_planning {
         ManifestPlanning::ResolveAgainstCheckpoint => {
-            plan_file_manifest_incrementality(execution.plan, descriptor, head.as_ref())?
+            plan_file_manifest_incrementality(execution.plan, execution.resource, head.as_ref())?
         }
         ManifestPlanning::Preselected(summary) => FileManifestPlanning {
             plan: Cow::Borrowed(execution.plan),
@@ -1037,9 +1037,50 @@ impl FileManifestPlanning<'_> {
 
 fn plan_file_manifest_incrementality<'a>(
     plan: &'a EnginePlan,
-    descriptor: &ResourceDescriptor,
+    resource: ProjectRunSource<'_>,
     head: Option<&Checkpoint>,
 ) -> Result<FileManifestPlanning<'a>> {
+    let descriptor = resource.descriptor();
+    if resource.capabilities().incremental != IncrementalShape::File {
+        return Ok(FileManifestPlanning {
+            plan: Cow::Borrowed(plan),
+            summary: None,
+        });
+    }
+    if plan.scan.planned_task_set.is_some() {
+        let total_file_count = plan.scan.partition_count()?;
+        if descriptor.write_disposition != WriteDisposition::Append {
+            return Ok(FileManifestPlanning {
+                plan: Cow::Borrowed(plan),
+                summary: Some(FileManifestRunSummary {
+                    total_file_count,
+                    changed_file_count: total_file_count,
+                    unchanged_file_count: 0,
+                }),
+            });
+        }
+        let Some(committed) = head.map(|checkpoint| &checkpoint.delta.output_position) else {
+            return Ok(FileManifestPlanning {
+                plan: Cow::Borrowed(plan),
+                summary: Some(FileManifestRunSummary {
+                    total_file_count,
+                    changed_file_count: total_file_count,
+                    unchanged_file_count: 0,
+                }),
+            });
+        };
+        let mut selected = plan.clone();
+        selected.rebind_initial_committed_frontier(resource.stream(), committed)?;
+        let changed_file_count = selected.scan.partition_count()?;
+        return Ok(FileManifestPlanning {
+            plan: Cow::Owned(selected),
+            summary: Some(FileManifestRunSummary {
+                total_file_count,
+                changed_file_count,
+                unchanged_file_count: total_file_count.saturating_sub(changed_file_count),
+            }),
+        });
+    }
     let Some(current_files) = file_positions_from_partitions(&plan.scan.partitions)? else {
         return Ok(FileManifestPlanning {
             plan: Cow::Borrowed(plan),
@@ -1047,11 +1088,13 @@ fn plan_file_manifest_incrementality<'a>(
         });
     };
     if descriptor.write_disposition != WriteDisposition::Append {
+        let current_file_count = u64::try_from(current_files.len())
+            .map_err(|_| CdfError::data("file manifest count exceeds u64"))?;
         return Ok(FileManifestPlanning {
             plan: Cow::Borrowed(plan),
             summary: Some(FileManifestRunSummary {
-                total_file_count: current_files.len(),
-                changed_file_count: current_files.len(),
+                total_file_count: current_file_count,
+                changed_file_count: current_file_count,
                 unchanged_file_count: 0,
             }),
         });
@@ -1066,11 +1109,14 @@ fn plan_file_manifest_incrementality<'a>(
         .filter(|file| {
             previous_files
                 .get(file.path.as_str())
-                .is_none_or(|previous| !same_file_identity(previous, file))
+                .is_none_or(|previous| !cdf_kernel::same_file_position_identity(previous, file))
         })
         .map(|file| file.path.clone())
         .collect::<BTreeSet<_>>();
-    let changed_file_count = changed_paths.len();
+    let total_file_count = u64::try_from(current_files.len())
+        .map_err(|_| CdfError::data("file manifest count exceeds u64"))?;
+    let changed_file_count = u64::try_from(changed_paths.len())
+        .map_err(|_| CdfError::data("changed file manifest count exceeds u64"))?;
     let selected = plan
         .scan
         .partitions
@@ -1084,9 +1130,9 @@ fn plan_file_manifest_incrementality<'a>(
     Ok(FileManifestPlanning {
         plan: Cow::Owned(filtered),
         summary: Some(FileManifestRunSummary {
-            total_file_count: current_files.len(),
+            total_file_count,
             changed_file_count,
-            unchanged_file_count: current_files.len().saturating_sub(changed_file_count),
+            unchanged_file_count: total_file_count.saturating_sub(changed_file_count),
         }),
     })
 }
@@ -1095,9 +1141,11 @@ fn preselected_manifest_summary(plan: &EnginePlan) -> Result<Option<FileManifest
     let Some(files) = file_positions_from_partitions(&plan.scan.partitions)? else {
         return Ok(None);
     };
+    let file_count = u64::try_from(files.len())
+        .map_err(|_| CdfError::data("file manifest count exceeds u64"))?;
     Ok(Some(FileManifestRunSummary {
-        total_file_count: files.len(),
-        changed_file_count: files.len(),
+        total_file_count: file_count,
+        changed_file_count: file_count,
         unchanged_file_count: 0,
     }))
 }
@@ -1139,26 +1187,6 @@ fn manifest_files_by_path(files: &[FilePosition]) -> Result<BTreeMap<&str, &File
         }
     }
     Ok(by_path)
-}
-
-fn same_file_identity(previous: &FilePosition, current: &FilePosition) -> bool {
-    previous.size_bytes == current.size_bytes
-        && match (
-            &previous.sha256,
-            &current.sha256,
-            &previous.etag,
-            &current.etag,
-        ) {
-            (Some(previous), Some(current), _, _) => previous == current,
-            (_, _, Some(previous), Some(current)) => previous == current,
-            _ => match (&previous.object_version, &current.object_version) {
-                (Some(previous), Some(current)) => previous == current,
-                _ => match (&previous.source_generation, &current.source_generation) {
-                    (Some(previous), Some(current)) => previous == current,
-                    _ => false,
-                },
-            },
-        }
 }
 
 fn no_op_report(

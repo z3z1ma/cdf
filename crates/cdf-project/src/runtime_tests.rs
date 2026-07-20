@@ -304,6 +304,13 @@ impl ResourceStream for BoundTestResource<'_> {
         self.inner.plan_partitions(request)
     }
 
+    fn planned_partition_reader(
+        &self,
+        reference: &cdf_kernel::PlannedTaskSetReference,
+    ) -> Result<Box<dyn cdf_kernel::PlannedPartitionReader>> {
+        self.inner.planned_partition_reader(reference)
+    }
+
     fn rebind_scan_for_resume(
         &self,
         scan: &mut cdf_kernel::ScanPlan,
@@ -316,11 +323,25 @@ impl ResourceStream for BoundTestResource<'_> {
         self.inner.open(partition)
     }
 
+    fn open_executable(
+        &self,
+        partition: cdf_kernel::ExecutablePartition,
+    ) -> cdf_kernel::PartitionOpenAttempt<'_> {
+        self.inner.open_executable(partition)
+    }
+
     fn attest_partition(
         &self,
         partition: cdf_kernel::PartitionPlan,
     ) -> cdf_kernel::PartitionAttestationAttempt<'_> {
         self.inner.attest_partition(partition)
+    }
+
+    fn attest_executable(
+        &self,
+        partition: cdf_kernel::ExecutablePartition,
+    ) -> cdf_kernel::PartitionAttestationAttempt<'_> {
+        self.inner.attest_executable(partition)
     }
 
     fn effective_schema_runtime(&self) -> Option<&cdf_kernel::EffectiveSchemaRuntime> {
@@ -822,8 +843,30 @@ impl ResourceStream for OwnedTestResource {
         self.inner.plan_partitions(request)
     }
 
+    fn planned_partition_reader(
+        &self,
+        reference: &cdf_kernel::PlannedTaskSetReference,
+    ) -> Result<Box<dyn cdf_kernel::PlannedPartitionReader>> {
+        self.inner.planned_partition_reader(reference)
+    }
+
+    fn rebind_scan_for_resume(
+        &self,
+        scan: &mut cdf_kernel::ScanPlan,
+        committed_frontier: &SourcePosition,
+    ) -> Result<()> {
+        self.inner.rebind_scan_for_resume(scan, committed_frontier)
+    }
+
     fn open(&self, partition: cdf_kernel::PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
         self.inner.open(partition)
+    }
+
+    fn open_executable(
+        &self,
+        partition: cdf_kernel::ExecutablePartition,
+    ) -> cdf_kernel::PartitionOpenAttempt<'_> {
+        self.inner.open_executable(partition)
     }
 
     fn attest_partition(
@@ -831,6 +874,13 @@ impl ResourceStream for OwnedTestResource {
         partition: cdf_kernel::PartitionPlan,
     ) -> cdf_kernel::PartitionAttestationAttempt<'_> {
         self.inner.attest_partition(partition)
+    }
+
+    fn attest_executable(
+        &self,
+        partition: cdf_kernel::ExecutablePartition,
+    ) -> cdf_kernel::PartitionAttestationAttempt<'_> {
+        self.inner.attest_executable(partition)
     }
 
     fn effective_schema_runtime(&self) -> Option<&cdf_kernel::EffectiveSchemaRuntime> {
