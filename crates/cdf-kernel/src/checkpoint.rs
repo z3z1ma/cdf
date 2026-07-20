@@ -182,5 +182,31 @@ pub trait CheckpointStore: Send + Sync {
         scope: &ScopeKey,
     ) -> Result<Vec<Checkpoint>>;
 
+    /// Returns the length of the newest contiguous committed suffix carrying `schema_hash`,
+    /// saturated at `limit`. Stores should override this with a bounded projection so hot-path
+    /// policy checks do not decode unbounded checkpoint history.
+    fn committed_schema_streak(
+        &self,
+        pipeline_id: &PipelineId,
+        resource_id: &ResourceId,
+        scope: &ScopeKey,
+        schema_hash: &SchemaHash,
+        limit: u32,
+    ) -> Result<u32> {
+        let history = self.history(pipeline_id, resource_id, scope)?;
+        let mut count = 0_u32;
+        for checkpoint in history
+            .iter()
+            .rev()
+            .filter(|checkpoint| checkpoint.status == CheckpointStatus::Committed)
+        {
+            if checkpoint.delta.schema_hash != *schema_hash || count == limit {
+                break;
+            }
+            count = count.saturating_add(1);
+        }
+        Ok(count)
+    }
+
     fn rewind(&self, request: RewindRequest) -> Result<RewindReport>;
 }

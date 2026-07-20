@@ -166,6 +166,67 @@ fn assert_plausible_created_at(checkpoint: &Checkpoint) {
     );
 }
 
+#[test]
+fn committed_schema_streak_reads_only_the_bounded_newest_suffix() {
+    let store = SqliteCheckpointStore::open_in_memory().unwrap();
+    let scope = partition_scope();
+    let mut parent = None;
+    for (ordinal, schema) in ["schema-a", "schema-a", "schema-b", "schema-b"]
+        .into_iter()
+        .enumerate()
+    {
+        let mut next = delta(
+            &format!("streak-{ordinal}"),
+            parent.as_ref(),
+            scope.clone(),
+            cursor_position(i64::try_from(ordinal + 1).unwrap()),
+            &format!("package-streak-{ordinal}"),
+        );
+        next.schema_hash = SchemaHash::new(schema).unwrap();
+        let checkpoint_id = next.checkpoint_id.clone();
+        store.propose(next.clone()).unwrap();
+        store.commit(&checkpoint_id, receipt(&next)).unwrap();
+        parent = Some(checkpoint_id);
+    }
+
+    assert_eq!(
+        store
+            .committed_schema_streak(
+                &pipeline_id(),
+                &resource_id(),
+                &scope,
+                &SchemaHash::new("schema-b").unwrap(),
+                10,
+            )
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        store
+            .committed_schema_streak(
+                &pipeline_id(),
+                &resource_id(),
+                &scope,
+                &SchemaHash::new("schema-b").unwrap(),
+                1,
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .committed_schema_streak(
+                &pipeline_id(),
+                &resource_id(),
+                &scope,
+                &SchemaHash::new("schema-a").unwrap(),
+                10,
+            )
+            .unwrap(),
+        0
+    );
+}
+
 fn commit_delta<S: CheckpointStore>(store: &S, delta: StateDelta) -> Checkpoint {
     let checkpoint_id = delta.checkpoint_id.clone();
     let receipt = receipt(&delta);

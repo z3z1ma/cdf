@@ -6,8 +6,8 @@ use std::{
 use cdf_kernel::{
     Checkpoint, CheckpointId, CheckpointStatus, CheckpointStore, LeaseOwnerId, PipelineId,
     PromotionId, PromotionPublicationEvent, PromotionSettlementStore, Receipt, ResourceId, Result,
-    RewindReport, RewindRequest, ScopeKey, ScopeLease, ScopeLeaseClock, ScopeLeaseStore,
-    StateDelta,
+    RewindReport, RewindRequest, SchemaHash, ScopeKey, ScopeLease, ScopeLeaseClock,
+    ScopeLeaseStore, StateDelta,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
@@ -82,6 +82,23 @@ impl CheckpointStore for SqlitePromotionSettlementStore {
         scope: &ScopeKey,
     ) -> Result<Vec<Checkpoint>> {
         self.checkpoints.history(pipeline_id, resource_id, scope)
+    }
+
+    fn committed_schema_streak(
+        &self,
+        pipeline_id: &PipelineId,
+        resource_id: &ResourceId,
+        scope: &ScopeKey,
+        schema_hash: &SchemaHash,
+        limit: u32,
+    ) -> Result<u32> {
+        self.checkpoints.committed_schema_streak(
+            pipeline_id,
+            resource_id,
+            scope,
+            schema_hash,
+            limit,
+        )
     }
 
     fn rewind(&self, request: RewindRequest) -> Result<RewindReport> {

@@ -437,11 +437,28 @@ async fn run_project_inner(
         execution
             .checkpoint_store
             .head(execution.pipeline_id, &descriptor.resource_id, &scope)?;
-    let history = execution.checkpoint_store.history(
-        execution.pipeline_id,
-        &descriptor.resource_id,
-        &scope,
-    )?;
+    let prior_schema_streak = match head.as_ref() {
+        Some(checkpoint)
+            if execution
+                .plan
+                .validation_program
+                .promotion
+                .allow_sampled_fast_path =>
+        {
+            execution.checkpoint_store.committed_schema_streak(
+                execution.pipeline_id,
+                &descriptor.resource_id,
+                &scope,
+                &checkpoint.delta.schema_hash,
+                execution
+                    .plan
+                    .validation_program
+                    .promotion
+                    .clean_runs_required,
+            )?
+        }
+        Some(_) | None => 0,
+    };
     let manifest_plan = match &execution.manifest_planning {
         ManifestPlanning::ResolveAgainstCheckpoint => {
             plan_file_manifest_incrementality(execution.plan, descriptor, head.as_ref())?
@@ -661,7 +678,7 @@ async fn run_project_inner(
     for transition in validation_depth_transitions_recorded(
         &execution.plan.validation_program,
         head.as_ref(),
-        &history,
+        prior_schema_streak,
         &execution.schema_hash,
         has_quarantine_artifacts,
     ) {
@@ -964,7 +981,7 @@ fn notify_run_replay_stage(
 fn validation_depth_transitions_recorded<'a>(
     program: &'a ValidationProgram,
     head: Option<&'a Checkpoint>,
-    history: &'a [Checkpoint],
+    prior_schema_streak: u32,
     schema_hash: &'a SchemaHash,
     has_quarantine_artifacts: bool,
 ) -> Vec<ValidationDepthTransitionRecord<'a>> {
@@ -988,12 +1005,7 @@ fn validation_depth_transitions_recorded<'a>(
     let sampled_fast_path = ValidationDepth::SampledFastPath {
         clean_runs_required: promotion.clean_runs_required,
     };
-    let prior_promoted = head
-        .map(|checkpoint| {
-            consecutive_committed_schema_hash_count(history, &checkpoint.delta.schema_hash)
-                >= promotion.clean_runs_required
-        })
-        .unwrap_or(false);
+    let prior_promoted = head.is_some() && prior_schema_streak >= promotion.clean_runs_required;
     let drift = head
         .map(|checkpoint| checkpoint.delta.schema_hash != *schema_hash)
         .unwrap_or(false);
@@ -1039,7 +1051,12 @@ fn validation_depth_transitions_recorded<'a>(
     {
         return transitions;
     }
-    let prior_stable_count = consecutive_committed_schema_hash_count(history, schema_hash);
+    let prior_stable_count =
+        if head.is_some_and(|checkpoint| checkpoint.delta.schema_hash == *schema_hash) {
+            prior_schema_streak
+        } else {
+            0
+        };
     let clean_run_count = prior_stable_count.saturating_add(1);
     if prior_stable_count < promotion.clean_runs_required
         && clean_run_count >= promotion.clean_runs_required
@@ -1061,22 +1078,4 @@ fn validation_depth_transitions_recorded<'a>(
 
 fn explicit_anomaly_for_run(program: &ValidationProgram) -> Option<&AnomalyFact> {
     program.explicit_anomalies.first()
-}
-
-fn consecutive_committed_schema_hash_count(
-    history: &[Checkpoint],
-    schema_hash: &SchemaHash,
-) -> u32 {
-    let mut count = 0_u32;
-    for checkpoint in history
-        .iter()
-        .rev()
-        .filter(|checkpoint| checkpoint.status == CheckpointStatus::Committed)
-    {
-        if checkpoint.delta.schema_hash != *schema_hash {
-            break;
-        }
-        count = count.saturating_add(1);
-    }
-    count
 }

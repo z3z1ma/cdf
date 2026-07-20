@@ -6,8 +6,8 @@ use std::{
 
 use cdf_kernel::{
     CdfError, Checkpoint, CheckpointId, CheckpointStatus, CheckpointStore, PackageHash, PipelineId,
-    PromotionPublicationEvent, Receipt, ResourceId, Result, RewindReport, RewindRequest, ScopeKey,
-    SourcePosition, StateDelta,
+    PromotionPublicationEvent, Receipt, ResourceId, Result, RewindReport, RewindRequest,
+    SchemaHash, ScopeKey, SourcePosition, StateDelta,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Transaction, params};
 
@@ -232,6 +232,48 @@ impl CheckpointStore for SqliteCheckpointStore {
             .map_err(sqlite_error)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(sqlite_error)
+    }
+
+    fn committed_schema_streak(
+        &self,
+        pipeline_id: &PipelineId,
+        resource_id: &ResourceId,
+        scope: &ScopeKey,
+        schema_hash: &SchemaHash,
+        limit: u32,
+    ) -> Result<u32> {
+        if limit == 0 {
+            return Ok(0);
+        }
+        let conn = self.lock_conn()?;
+        let scope_json = encode_json(scope)?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT schema_hash FROM cdf_checkpoints \
+                 WHERE pipeline_id = ? AND resource_id = ? AND scope_json = ? \
+                   AND status = 'committed' \
+                 ORDER BY sequence DESC LIMIT ?",
+            )
+            .map_err(sqlite_error)?;
+        let rows = stmt
+            .query_map(
+                params![
+                    pipeline_id.as_str(),
+                    resource_id.as_str(),
+                    scope_json,
+                    i64::from(limit)
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(sqlite_error)?;
+        let mut count = 0_u32;
+        for row in rows {
+            if row.map_err(sqlite_error)? != schema_hash.as_str() {
+                break;
+            }
+            count = count.saturating_add(1);
+        }
+        Ok(count)
     }
 
     fn rewind(&self, request: RewindRequest) -> Result<RewindReport> {
