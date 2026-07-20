@@ -36,6 +36,7 @@ typetag = "0.2.23"
 [dev-dependencies]
 cdf-contract = { path = "../cdf-contract" }
 cdf-engine = { path = "../cdf-engine" }
+cdf-package = { path = "../cdf-package" }
 futures-executor = "0.3.32"
 parquet = { version = "58.3.0", default-features = false, features = ["arrow"] }
 tempfile = "3.27.0"

@@ -1572,6 +1572,7 @@ dependencies = [
  "cdf-kernel",
  "cdf-memory",
  "cdf-object-access",
+ "cdf-package",
  "cdf-runtime",
  "cdf-task-store",
  "flate2",

@@ -957,8 +957,8 @@ mod tests {
         SecretValue,
     };
     use cdf_kernel::{
-        BoxFuture, ContentStoreNamespace, ExecutionExtent, ResourceDescriptor, ResourceId,
-        SchemaSource, ScopeKey, TrustLevel, WriteDisposition,
+        BoxFuture, ContentStoreNamespace, ExecutionExtent, PredicateId, ResourceDescriptor,
+        ResourceId, SchemaSource, ScopeKey, TrustLevel, WriteDisposition,
     };
     use cdf_object_access::{
         FileIdentityMetadata, FileIdentityStream, FileMetadataObservation, FileTransport,
@@ -2584,6 +2584,78 @@ mod tests {
         );
         assert!(retry_evidence[0].history()[0].selected_delay_ms.is_some());
         assert!(retry_evidence[0].history()[0].exhaustion.is_none());
+
+        let filtered_request = ScanRequest {
+            resource_id: one_job_plan.descriptor.resource_id.clone(),
+            projection: Some(vec!["label".to_owned()]),
+            filters: vec![
+                cdf_kernel::ScanPredicate::new(
+                    PredicateId::new("iceberg-residual-id").unwrap(),
+                    "id > 4",
+                )
+                .unwrap(),
+            ],
+            limit: None,
+            order_by: Vec::new(),
+            scope: ScopeKey::Resource,
+        };
+        let filtered_validation = compile_validation_program(
+            &ContractPolicy::for_trust(TrustLevel::Governed),
+            &ObservedSchema::from_arrow(resource.schema().as_ref()),
+        )
+        .unwrap();
+        let filtered_plan = Planner::new()
+            .plan_tier_b(
+                resource.as_ref(),
+                EnginePlanInput {
+                    request: filtered_request,
+                    validation_program: filtered_validation,
+                    execution_extent: ExecutionExtent::bounded(),
+                    package_id: "pkg-iceberg-residual-projection".to_owned(),
+                },
+            )
+            .unwrap()
+            .bind_compiled_source(&one_job_plan)
+            .unwrap();
+        assert_eq!(filtered_plan.scan.pushed_predicates.len(), 0);
+        assert_eq!(filtered_plan.scan.unsupported_predicates.len(), 1);
+        let filtered_package = tempfile::tempdir().unwrap();
+        let filtered = futures_executor::block_on(
+            cdf_engine::execute_to_package_with_segment_positions_and_pre_finalize(
+                &filtered_plan,
+                resource.as_ref(),
+                filtered_package.path(),
+                &|_, _| Ok(()),
+                EngineExecutionOptions::default().with_execution_services(execution.clone()),
+            ),
+        )
+        .unwrap();
+        assert_eq!(filtered.output.profile.output_rows, 2);
+        let filtered_reader = cdf_package::PackageReader::open(filtered_package.path()).unwrap();
+        let mut labels = Vec::new();
+        for segment in &filtered.output.segments {
+            for batch in filtered_reader.read_segment(&segment.segment_id).unwrap() {
+                assert_eq!(
+                    batch
+                        .schema()
+                        .fields()
+                        .iter()
+                        .map(|field| field.name().as_str())
+                        .collect::<Vec<_>>(),
+                    ["label", "_cdf_variant", "_cdf_package_row_ord"]
+                );
+                let values = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap();
+                labels.extend(
+                    (0..values.len())
+                        .map(|row| (!values.is_null(row)).then(|| values.value(row).to_owned())),
+                );
+            }
+        }
+        assert_eq!(labels, [None, Some("eight".to_owned())]);
 
         let cancellation = RunCancellation::default();
         *metadata_cancellation.lock().unwrap() = Some(cancellation.clone());
