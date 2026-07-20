@@ -104,6 +104,29 @@ impl ResourceStream for WindowScopedResource<'_> {
             })
     }
 
+    fn rebind_scan_for_resume(
+        &self,
+        scan: &mut cdf_kernel::ScanPlan,
+        committed_frontier: &SourcePosition,
+    ) -> Result<()> {
+        let mut inner = scan.clone();
+        inner.request = self.inner_request(&scan.request);
+        inner.partitions = inner
+            .partitions
+            .into_iter()
+            .map(|partition| self.inner_partition(partition))
+            .collect();
+        self.inner
+            .rebind_scan_for_resume(&mut inner, committed_frontier)?;
+        scan.partitions = inner
+            .partitions
+            .into_iter()
+            .map(|partition| self.outer_partition(partition))
+            .collect();
+        scan.planned_task_set = inner.planned_task_set;
+        Ok(())
+    }
+
     fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
         self.inner.open(self.inner_partition(partition))
     }

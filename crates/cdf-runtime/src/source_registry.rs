@@ -516,6 +516,14 @@ impl ResourceStream for RegistryBoundResource {
         self.inner.plan_partitions(request)
     }
 
+    fn rebind_scan_for_resume(
+        &self,
+        scan: &mut cdf_kernel::ScanPlan,
+        committed_frontier: &cdf_kernel::SourcePosition,
+    ) -> Result<()> {
+        self.inner.rebind_scan_for_resume(scan, committed_frontier)
+    }
+
     fn open(&self, partition: PartitionPlan) -> PartitionOpenAttempt<'_> {
         self.inner.open(partition)
     }

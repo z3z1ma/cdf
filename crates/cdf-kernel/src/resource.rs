@@ -1862,6 +1862,59 @@ pub trait ResourceStream: Send + Sync {
         Ok(())
     }
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>>;
+    /// Rebinds a recorded partition set to the last committed resource frontier before any
+    /// partition is opened. The default covers the ubiquitous single-partition stream and a
+    /// composite frontier keyed exactly by partition id; adapters with another partition-local
+    /// checkpoint model must own that mapping here rather than leak source semantics into the
+    /// engine or project orchestrator.
+    fn rebind_scan_for_resume(
+        &self,
+        scan: &mut ScanPlan,
+        committed_frontier: &SourcePosition,
+    ) -> Result<()> {
+        committed_frontier.validate()?;
+        if scan.planned_task_set.is_some() {
+            return Err(CdfError::contract(format!(
+                "resource `{}` uses an external planned task set; its source adapter must implement resume binding",
+                self.descriptor().resource_id
+            )));
+        }
+        let partitions = &mut scan.partitions;
+        if partitions.len() == 1 {
+            partitions[0].start_position = Some(committed_frontier.clone());
+            return Ok(());
+        }
+        let SourcePosition::Composite(composite) = committed_frontier else {
+            return Err(CdfError::contract(format!(
+                "resource `{}` has {} partitions but its committed frontier is not partition-keyed; the source adapter must implement resume binding",
+                self.descriptor().resource_id,
+                partitions.len()
+            )));
+        };
+        if composite.positions.len() != partitions.len() {
+            return Err(CdfError::data(format!(
+                "resource `{}` committed composite frontier does not exactly cover its {} planned partitions",
+                self.descriptor().resource_id,
+                partitions.len()
+            )));
+        }
+        for partition in partitions {
+            partition.start_position = Some(
+                composite
+                    .positions
+                    .get(partition.partition_id.as_str())
+                    .ok_or_else(|| {
+                        CdfError::data(format!(
+                            "resource `{}` committed composite frontier omits partition `{}`",
+                            self.descriptor().resource_id,
+                            partition.partition_id
+                        ))
+                    })?
+                    .clone(),
+            );
+        }
+        Ok(())
+    }
     /// Opens one invocation-bound partition stream.
     ///
     /// The returned attempt exposes invocation termination before its opening future is polled.
@@ -1929,6 +1982,11 @@ impl SourceReplayRetentionStatus {
 
 pub trait SourceReplayRetention: Send + Sync {
     fn status(&self) -> Result<SourceReplayRetentionStatus>;
+    /// Proves before destination mutation that the proposed checkpoint boundary is durably
+    /// retained or already committed.
+    fn validate_checkpoint_frontier(&self, frontier: &SourcePosition) -> Result<()>;
+    /// Idempotently reconciles replay eviction to an already committed checkpoint head.
+    fn reconcile_committed_frontier(&self, frontier: &SourcePosition) -> Result<()>;
     fn commit_checkpoint_frontier(&self, frontier: &SourcePosition) -> Result<()>;
 }
 

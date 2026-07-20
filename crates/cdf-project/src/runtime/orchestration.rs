@@ -217,6 +217,11 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
         &resource.descriptor().resource_id,
         &resource.descriptor().state_scope,
     )?;
+    if let (Some(retention), Some(head)) =
+        (resource.stream().replay_retention(), initial_head.as_ref())
+    {
+        retention.reconcile_committed_frontier(&head.delta.output_position)?;
+    }
     controller.bind_initial_committed_frontier(
         initial_head
             .as_ref()
@@ -227,6 +232,13 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
         plan_file_manifest_incrementality(&plan, resource.descriptor(), initial_head.as_ref())?;
     let mut next_manifest_summary = initial_manifest.summary;
     let mut remaining_plan = initial_manifest.plan.into_owned();
+    if let Some(frontier) = initial_head
+        .as_ref()
+        .map(|checkpoint| &checkpoint.delta.output_position)
+        .filter(|position| !matches!(position, SourcePosition::FileManifest(_)))
+    {
+        remaining_plan.rebind_initial_committed_frontier(resource.stream(), frontier)?;
+    }
     let mut first_run_id = None;
     let mut epoch_count = 0_u64;
     let mut total_row_count = 0_u64;
@@ -757,6 +769,11 @@ async fn run_project_inner(
 
     let stage_hook =
         |stage: PackageReplayStage<'_>| notify_run_replay_stage(execution.recorder, stage);
+    if drain_controller.is_some()
+        && let Some(retention) = resource.replay_retention()
+    {
+        retention.validate_checkpoint_frontier(&replay_inputs.state_delta.output_position)?;
+    }
     let replay_memory = execution.services.memory();
     let replay_report = replay_package_with_runtime_and_staged(
         package,

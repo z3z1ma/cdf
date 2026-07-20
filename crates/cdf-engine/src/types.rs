@@ -372,6 +372,41 @@ impl EnginePlan {
         Ok(())
     }
 
+    /// Rebinds this invocation to the checkpoint committed before source contact. Source-local
+    /// partition/task semantics remain behind `ResourceStream`; the engine owns recompiling the
+    /// canonical schedule and explain join after that mutation.
+    pub fn rebind_initial_committed_frontier(
+        &mut self,
+        resource: &dyn ResourceStream,
+        frontier: &SourcePosition,
+    ) -> Result<()> {
+        resource.rebind_scan_for_resume(&mut self.scan, frontier)?;
+        if self.explain.partitions.len() == self.scan.partitions.len() {
+            for (explained, planned) in self
+                .explain
+                .partitions
+                .iter_mut()
+                .zip(&self.scan.partitions)
+            {
+                if explained.partition_id != planned.partition_id.as_str() {
+                    return Err(CdfError::data(
+                        "engine scan and explain partition authorities diverged during resume binding",
+                    ));
+                }
+            }
+        } else if self.scan.planned_task_set.is_none() {
+            return Err(CdfError::data(
+                "engine scan and explain partition counts diverged during resume binding",
+            ));
+        }
+        if let Some(source) = &self.compiled_source_execution {
+            let schedule = cdf_runtime::CanonicalPartitionSchedule::compile(source, &self.scan)?;
+            self.explain.partition_schedule = Some(schedule.clone());
+            self.partition_schedule = Some(schedule);
+        }
+        Ok(())
+    }
+
     /// Rebinds the physical package sink for one finite drain epoch while
     /// preserving every compiled source, expression, schema, and graph
     /// authority. Package identity is epoch-local; the logical scan plan is

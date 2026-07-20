@@ -394,6 +394,27 @@ impl SourceReplayRetention for RollingReplayStore {
         Ok(status)
     }
 
+    fn validate_checkpoint_frontier(&self, frontier: &SourcePosition) -> Result<()> {
+        frontier.validate()?;
+        let state = self.lock_state()?;
+        if state.manifest.committed_low_watermark.as_ref() == Some(frontier)
+            || state
+                .manifest
+                .entries
+                .iter()
+                .any(|entry| &entry.position == frontier)
+        {
+            return Ok(());
+        }
+        Err(CdfError::data(
+            "rolling replay checkpoint frontier is not durably retained; refuse destination mutation and retain the source unit before retrying",
+        ))
+    }
+
+    fn reconcile_committed_frontier(&self, frontier: &SourcePosition) -> Result<()> {
+        self.commit_low_watermark(frontier)
+    }
+
     fn commit_checkpoint_frontier(&self, frontier: &SourcePosition) -> Result<()> {
         self.commit_low_watermark(frontier)
     }
@@ -918,8 +939,11 @@ mod tests {
         store.append(position(2), 110, b"22").unwrap();
         store.append(position(3), 120, b"33").unwrap();
 
+        store.validate_checkpoint_frontier(&position(2)).unwrap();
+        assert!(store.validate_checkpoint_frontier(&position(4)).is_err());
         assert!(store.commit_low_watermark(&position(4)).is_err());
         store.commit_low_watermark(&position(2)).unwrap();
+        store.validate_checkpoint_frontier(&position(2)).unwrap();
         assert_eq!(store.committed_low_watermark().unwrap(), Some(position(2)));
         assert_eq!(
             store

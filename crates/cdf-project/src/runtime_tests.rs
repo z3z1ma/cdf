@@ -333,6 +333,14 @@ impl cdf_kernel::SourceReplayRetention for CheckpointBoundReplayRetention {
         })
     }
 
+    fn validate_checkpoint_frontier(&self, frontier: &SourcePosition) -> Result<()> {
+        frontier.validate()
+    }
+
+    fn reconcile_committed_frontier(&self, frontier: &SourcePosition) -> Result<()> {
+        self.commit_checkpoint_frontier(frontier)
+    }
+
     fn commit_checkpoint_frontier(&self, frontier: &SourcePosition) -> Result<()> {
         let store = SqliteCheckpointStore::open(&self.state_path)?;
         let head = store
@@ -347,7 +355,10 @@ impl cdf_kernel::SourceReplayRetention for CheckpointBoundReplayRetention {
                 "replay retention frontier differs from the committed checkpoint head",
             ));
         }
-        self.committed.lock().unwrap().push(frontier.clone());
+        let mut committed = self.committed.lock().unwrap();
+        if committed.last() != Some(frontier) {
+            committed.push(frontier.clone());
+        }
         Ok(())
     }
 }

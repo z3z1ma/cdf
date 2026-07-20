@@ -2549,6 +2549,26 @@ fn drain_epochs_resume_one_unbounded_partition_from_each_settled_batch_frontier(
         |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
     let root = TempDir::new().unwrap();
 
+    let mut fresh_process_plan = plan.clone();
+    fresh_process_plan
+        .rebind_initial_committed_frontier(
+            &resource,
+            &SourcePosition::Cursor(CursorPosition {
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
+                field: "id".to_owned(),
+                value: CursorValue::I64(1),
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        fresh_process_plan.scan.partitions[0].start_position,
+        Some(SourcePosition::Cursor(CursorPosition {
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
+            field: "id".to_owned(),
+            value: CursorValue::I64(1),
+        }))
+    );
+
     for epoch in 0..3_u64 {
         let package_id = format!("pkg-cursor-epoch-{epoch}");
         plan = plan.rebind_package_id(package_id).unwrap();
@@ -2593,6 +2613,88 @@ fn drain_epochs_resume_one_unbounded_partition_from_each_settled_batch_frontier(
     assert!(controller.is_finished());
     assert_eq!(resource.open_count.load(Ordering::SeqCst), 3);
     assert_eq!(resource.batch_poll_count.load(Ordering::SeqCst), 3);
+}
+
+#[test]
+fn drain_partition_resume_stays_local_when_resource_frontier_is_a_larger_cursor() {
+    let batches = [("part-0", 100_i64), ("part-1", 1), ("part-1", 2)]
+        .into_iter()
+        .map(|(partition, position)| {
+            let mut batch = batch_for_partition(
+                &format!("{partition}-{position}"),
+                partition,
+                vec![i32::try_from(position).unwrap()],
+                vec!["event"],
+                vec![true],
+            );
+            batch.header.source_position = Some(SourcePosition::Cursor(CursorPosition {
+                version: cdf_kernel::SOURCE_POSITION_VERSION,
+                field: "id".to_owned(),
+                value: CursorValue::I64(position),
+            }));
+            batch
+        })
+        .collect::<Vec<_>>();
+    let resource = MockResource::tier_b(batches).without_control_keys();
+    let extent = ExecutionExtent::Drain {
+        version: EXECUTION_EXTENT_VERSION,
+        policy: StreamEpochPolicy {
+            version: STREAM_EPOCH_POLICY_VERSION,
+            checkpoint_cadence: EpochClosureTrigger::Rows { count: 2 },
+            package_rotation: EpochClosureTrigger::Bytes { count: 1 << 20 },
+            watermark: WatermarkPolicy::Disabled,
+            late_data: LateDataAction::Quarantine,
+            safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+        },
+        termination: DrainTermination::Records { count: 3 },
+    };
+    let source = mock_unbounded_cursor_source_plan(&resource);
+    resource.bind_compiled_source(&source);
+    let plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(Vec::new(), None, None, extent.clone()),
+        )
+        .unwrap()
+        .bind_compiled_source(&source)
+        .unwrap()
+        .bind_operator_graph(
+            &source,
+            &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        )
+        .unwrap();
+    let mut controller = cdf_runtime::DrainEpochController::new(&extent).unwrap();
+    let root = TempDir::new().unwrap();
+    let output = block_on(super::execute_drain_epoch_with_hooks(
+        &plan,
+        &resource,
+        root.path().join("epoch-0"),
+        &|_, _| Ok(()),
+        super::DrainEpochExecution::new(&mut controller),
+        executable_mock_options(EngineExecutionOptions::default()).unwrap(),
+    ))
+    .unwrap();
+    let drain = output.drain_epoch.unwrap();
+    assert_eq!(drain.consumed_partition_count, 1);
+    assert_eq!(
+        drain.closure.frontier.frontier,
+        SourcePosition::Cursor(CursorPosition {
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
+            field: "id".to_owned(),
+            value: CursorValue::I64(100),
+        })
+    );
+    assert_eq!(
+        drain
+            .resume_partition
+            .as_deref()
+            .map(|resume| &resume.start_position),
+        Some(&SourcePosition::Cursor(CursorPosition {
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
+            field: "id".to_owned(),
+            value: CursorValue::I64(1),
+        }))
+    );
 }
 
 fn run_fixed_drain_epochs_with_jobs(
