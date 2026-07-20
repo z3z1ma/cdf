@@ -27,16 +27,16 @@ use cdf_expression::{
 };
 use cdf_kernel::{
     Batch, CdfError, CompositePosition, ExecutablePartition, ExecutionExtent,
-    PHYSICAL_TYPE_METADATA_KEY, PLAN_PHYSICAL_SCHEMA_HASH_KEY, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
-    PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation, PartitionPlan,
-    PhysicalObservationRepresentation, PreContractObservedValue, PreContractQuarantineFact,
-    PreContractResidualCandidate, ProcessedObservationOutcome, ProcessedObservationPosition,
-    ResourceStream, Result, RunId, RunPhase, RunPhaseContext, RunPhaseMetric, RunPhaseStatus,
-    SOURCE_NAME_METADATA_KEY, SOURCE_POSITION_VERSION, ScopeKey, SourcePosition,
-    StratifiedHashBoundedIdentity, StratifiedHashCandidate, StratifiedHashIdentityStrength,
-    TerminalSchemaObservationQuarantine, WatermarkClaim, WatermarkPolicy, WriteDisposition,
-    aggregate_resource_closed_output_position, aggregate_resource_output_position,
-    merge_terminal_position_evidence, semantic, source_name,
+    OrderedStratifiedHashV1, PHYSICAL_TYPE_METADATA_KEY, PLAN_PHYSICAL_SCHEMA_HASH_KEY,
+    PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation,
+    PartitionPlan, PhysicalObservationRepresentation, PreContractObservedValue,
+    PreContractQuarantineFact, PreContractResidualCandidate, ProcessedObservationOutcome,
+    ProcessedObservationPosition, ResourceStream, Result, RunId, RunPhase, RunPhaseContext,
+    RunPhaseMetric, RunPhaseStatus, SOURCE_NAME_METADATA_KEY, SOURCE_POSITION_VERSION, ScopeKey,
+    SourcePosition, StratifiedHashBoundedIdentity, StratifiedHashCandidate,
+    StratifiedHashIdentityStrength, TerminalSchemaObservationQuarantine, WatermarkClaim,
+    WatermarkPolicy, WriteDisposition, aggregate_resource_closed_output_position,
+    aggregate_resource_output_position, merge_terminal_position_evidence, semantic, source_name,
 };
 use cdf_memory::{
     ConsumerKey, DEFAULT_PROCESS_BUDGET_BYTES, DeterministicMemoryCoordinator, MemoryClass,
@@ -371,46 +371,140 @@ where
     let mut truncated = false;
     let mut terminal = Vec::new();
     let mut payload_candidates = Vec::new();
-    let mut location_counts = BTreeMap::<String, usize>::new();
-    for partition in &plan.scan.partitions {
-        let disposition = effective_schema_evidence
-            .map(|evidence| partition_schema_disposition(partition, evidence))
-            .transpose()?;
-        match disposition {
-            Some(PartitionSchemaDisposition::Quarantined(quarantine)) => {
-                terminal.push((partition.clone(), quarantine));
+    let planned_partition_count = plan
+        .partition_schedule
+        .as_ref()
+        .ok_or_else(|| CdfError::contract("preview requires a compiled partition schedule"))?
+        .partition_count();
+    let external_tasks = plan.scan.planned_task_set.is_some();
+    let payload_eligible_partition_count = if external_tasks {
+        let mut payload_count = 0_u64;
+        let mut partitions = executable_partition_plans(plan, resource)?;
+        for ordinal in 0..planned_partition_count {
+            let executable = partitions.next(usize::try_from(ordinal).map_err(|_| {
+                CdfError::data("preview external partition ordinal exceeds usize")
+            })?)?;
+            let disposition = effective_schema_evidence
+                .map(|evidence| partition_schema_disposition(executable.plan(), evidence))
+                .transpose()?;
+            if let Some(PartitionSchemaDisposition::Quarantined(quarantine)) = disposition {
+                required_preview_attestation(
+                    resource,
+                    &executable,
+                    quarantine.observation_id(),
+                    quarantine.physical_schema_hash(),
+                    &mut observation_attestations,
+                )
+                .await?;
+                attested_partition_count += 1;
+                terminal_quarantines.insert(quarantine.observation_id().to_owned());
+            } else {
+                payload_count = payload_count
+                    .checked_add(1)
+                    .ok_or_else(|| CdfError::data("preview payload count exceeds u64"))?;
             }
-            disposition => {
+        }
+        let selection = if payload_count > 0 {
+            let mut selector = OrderedStratifiedHashV1::new(
+                plan.scan.request.resource_id.clone(),
+                limits.max_batches,
+                payload_count,
+            )?;
+            let mut retained = BTreeMap::<String, PreviewPayloadCandidate>::new();
+            let mut partitions = executable_partition_plans(plan, resource)?;
+            for ordinal in 0..planned_partition_count {
+                let executable = partitions.next(usize::try_from(ordinal).map_err(|_| {
+                    CdfError::data("preview external partition ordinal exceeds usize")
+                })?)?;
+                let disposition = effective_schema_evidence
+                    .map(|evidence| partition_schema_disposition(executable.plan(), evidence))
+                    .transpose()?;
+                if matches!(
+                    disposition,
+                    Some(PartitionSchemaDisposition::Quarantined(_))
+                ) {
+                    continue;
+                }
                 let expected = disposition.and_then(|item| match item {
                     PartitionSchemaDisposition::Admitted(evidence) => Some(evidence),
                     PartitionSchemaDisposition::Quarantined(_)
                     | PartitionSchemaDisposition::Unobserved => None,
                 });
-                let (location, bounded_identity) = preview_partition_identity(partition)?;
-                *location_counts.entry(location.clone()).or_default() += 1;
-                payload_candidates.push(PreviewPayloadCandidate {
-                    partition: partition.clone(),
-                    expected,
-                    location,
-                    bounded_identity,
-                });
+                let (display_location, bounded_identity) =
+                    preview_partition_identity(executable.plan())?;
+                // External task ordinals are already canonical. Prefixing their display location
+                // gives the ordered accumulator a unique key without retaining a cardinality-sized
+                // duplicate-location map.
+                let location = format!("{ordinal:020}:{display_location}");
+                let change = selector.push(StratifiedHashCandidate::from_bounded_identity(
+                    location.clone(),
+                    &bounded_identity,
+                )?)?;
+                if let Some(evicted) = change.evicted_location {
+                    retained.remove(&evicted);
+                }
+                if change.retained {
+                    retained.insert(
+                        location.clone(),
+                        PreviewPayloadCandidate {
+                            executable,
+                            expected,
+                            location,
+                            bounded_identity,
+                        },
+                    );
+                }
+            }
+            let plan = selector.finish()?;
+            payload_candidates.extend(retained.into_values());
+            Some(plan)
+        } else {
+            None
+        };
+        Some((payload_count, selection))
+    } else {
+        let mut location_counts = BTreeMap::<String, usize>::new();
+        for partition in &plan.scan.partitions {
+            let disposition = effective_schema_evidence
+                .map(|evidence| partition_schema_disposition(partition, evidence))
+                .transpose()?;
+            match disposition {
+                Some(PartitionSchemaDisposition::Quarantined(quarantine)) => {
+                    terminal.push((ExecutablePartition::inline(partition.clone()), quarantine));
+                }
+                disposition => {
+                    let expected = disposition.and_then(|item| match item {
+                        PartitionSchemaDisposition::Admitted(evidence) => Some(evidence),
+                        PartitionSchemaDisposition::Quarantined(_)
+                        | PartitionSchemaDisposition::Unobserved => None,
+                    });
+                    let (location, bounded_identity) = preview_partition_identity(partition)?;
+                    *location_counts.entry(location.clone()).or_default() += 1;
+                    payload_candidates.push(PreviewPayloadCandidate {
+                        executable: ExecutablePartition::inline(partition.clone()),
+                        expected,
+                        location,
+                        bounded_identity,
+                    });
+                }
             }
         }
-    }
-    for candidate in &mut payload_candidates {
-        if location_counts
-            .get(&candidate.location)
-            .copied()
-            .unwrap_or(0)
-            > 1
-        {
-            candidate.location = serde_json::to_string(&(
-                candidate.location.as_str(),
-                candidate.partition.partition_id.as_str(),
-            ))
-            .map_err(|error| CdfError::internal(error.to_string()))?;
+        for candidate in &mut payload_candidates {
+            if location_counts
+                .get(&candidate.location)
+                .copied()
+                .unwrap_or(0)
+                > 1
+            {
+                candidate.location = serde_json::to_string(&(
+                    candidate.location.as_str(),
+                    candidate.partition().partition_id.as_str(),
+                ))
+                .map_err(|error| CdfError::internal(error.to_string()))?;
+            }
         }
-    }
+        None
+    };
 
     for (partition, quarantine) in terminal {
         let attestation = required_preview_attestation(
@@ -426,22 +520,30 @@ where
         terminal_quarantines.insert(quarantine.observation_id().to_owned());
     }
 
-    let selection_plan = if payload_candidates.is_empty() {
-        None
+    let (payload_eligible_partition_count, selection_plan) = if external_tasks {
+        payload_eligible_partition_count
+            .expect("external preview payload accounting was initialized")
     } else {
-        Some(cdf_kernel::plan_stratified_hash_v1(
-            &plan.scan.request.resource_id,
-            limits.max_batches,
-            &payload_candidates
-                .iter()
-                .map(|candidate| {
-                    StratifiedHashCandidate::from_bounded_identity(
-                        candidate.location.clone(),
-                        &candidate.bounded_identity,
-                    )
-                })
-                .collect::<Result<Vec<_>>>()?,
-        )?)
+        let count = u64::try_from(payload_candidates.len())
+            .map_err(|_| CdfError::data("preview payload count exceeds u64"))?;
+        let selection = if payload_candidates.is_empty() {
+            None
+        } else {
+            Some(cdf_kernel::plan_stratified_hash_v1(
+                &plan.scan.request.resource_id,
+                limits.max_batches,
+                &payload_candidates
+                    .iter()
+                    .map(|candidate| {
+                        StratifiedHashCandidate::from_bounded_identity(
+                            candidate.location.clone(),
+                            &candidate.bounded_identity,
+                        )
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            )?)
+        };
+        (count, selection)
     };
     let selected_locations = selection_plan
         .as_ref()
@@ -472,7 +574,7 @@ where
             let mut admitted = 0_u64;
             let mut complete = false;
             if remaining_rows > 0 && remaining_bytes > 0 && remaining_batches > 0 {
-                let mut opening = resource.open(candidate.partition.clone());
+                let mut opening = resource.open_executable(candidate.executable.clone());
                 let mut stream = match (&mut opening).await {
                     Ok(stream) => stream,
                     Err(error) => {
@@ -501,7 +603,7 @@ where
                         validate_batch_partition_ownership(
                             &batch,
                             &plan.scan.request.resource_id,
-                            &candidate.partition,
+                            candidate.partition(),
                         )?;
                         let record_batch = batch.record_batch().cloned().ok_or_else(|| {
                             CdfError::data(
@@ -519,7 +621,7 @@ where
                             &record_batch,
                             BatchSchemaAdmissionContext {
                                 planned_observation_id: cdf_kernel::partition_schema_observation_id(
-                                    &candidate.partition,
+                                    candidate.partition(),
                                 ),
                                 expected: candidate.expected.as_ref(),
                                 expected_physical_observation: preobserved_physical_observation(
@@ -681,16 +783,16 @@ where
                 }
             }
             if admitted == 0 && !complete {
-                selected_but_uninspected.push(candidate.partition.partition_id.to_string());
-                payload_uninspected.push(candidate.partition.partition_id.to_string());
+                selected_but_uninspected.push(candidate.partition().partition_id.to_string());
+                payload_uninspected.push(candidate.partition().partition_id.to_string());
             } else {
                 inspected_partition_count += 1;
                 if !complete {
-                    partially_inspected.push(candidate.partition.partition_id.to_string());
+                    partially_inspected.push(candidate.partition().partition_id.to_string());
                 }
             }
             selected_evidence.push(crate::EnginePreviewSelectedPartition {
-                partition_id: candidate.partition.partition_id.to_string(),
+                partition_id: candidate.partition().partition_id.to_string(),
                 canonical_location: selected.canonical_location.clone(),
                 score_sha256: selected.score_sha256.clone(),
                 bounded_identity_sha256: selected.bounded_identity_sha256.clone(),
@@ -704,7 +806,7 @@ where
         if selected_locations.contains(&candidate.location) {
             continue;
         }
-        payload_uninspected.push(candidate.partition.partition_id.to_string());
+        payload_uninspected.push(candidate.partition().partition_id.to_string());
     }
     payload_uninspected.sort();
     payload_uninspected.dedup();
@@ -712,12 +814,12 @@ where
     partially_inspected.sort();
     let uninspected_ids = payload_uninspected.iter().cloned().collect::<BTreeSet<_>>();
     for candidate in &payload_candidates {
-        if !uninspected_ids.contains(candidate.partition.partition_id.as_str()) {
+        if !uninspected_ids.contains(candidate.partition().partition_id.as_str()) {
             continue;
         }
         if optional_preview_attestation(
             resource,
-            &candidate.partition,
+            &candidate.executable,
             candidate.expected.as_ref(),
             &mut observation_attestations,
         )
@@ -727,14 +829,13 @@ where
         }
     }
 
-    let planned_partition_count = u64::try_from(plan.scan.partitions.len())
-        .map_err(|error| CdfError::internal(error.to_string()))?;
-    let payload_eligible_partition_count = u64::try_from(payload_candidates.len())
-        .map_err(|error| CdfError::internal(error.to_string()))?;
     let partially_inspected_partition_count = u64::try_from(partially_inspected.len())
         .map_err(|error| CdfError::internal(error.to_string()))?;
-    let payload_uninspected_partition_count = u64::try_from(payload_uninspected.len())
-        .map_err(|error| CdfError::internal(error.to_string()))?;
+    let payload_uninspected_partition_count = payload_eligible_partition_count
+        .checked_sub(inspected_partition_count)
+        .ok_or_else(|| {
+            CdfError::internal("preview inspected more partitions than were eligible")
+        })?;
     if remaining_rows == 0
         || remaining_bytes == 0
         || remaining_batches == 0
@@ -780,10 +881,16 @@ where
 
 #[derive(Clone, Debug)]
 struct PreviewPayloadCandidate {
-    partition: cdf_kernel::PartitionPlan,
+    executable: ExecutablePartition,
     expected: Option<EffectiveSchemaObservationCoercion>,
     location: String,
     bounded_identity: StratifiedHashBoundedIdentity,
+}
+
+impl PreviewPayloadCandidate {
+    fn partition(&self) -> &PartitionPlan {
+        self.executable.plan()
+    }
 }
 
 fn preview_partition_identity(
@@ -866,7 +973,7 @@ pub fn preview_partition_selector_candidate(
 
 async fn required_preview_attestation<R>(
     resource: &R,
-    partition: &cdf_kernel::PartitionPlan,
+    partition: &ExecutablePartition,
     observation_id: &str,
     expected_schema_hash: &cdf_kernel::SchemaHash,
     cache: &mut BTreeMap<String, PartitionAttestation>,
@@ -878,7 +985,7 @@ where
         Some(attestation) => attestation.clone(),
         None => {
             let attestation = resource
-                .attest_partition(partition.clone())
+                .attest_executable(partition.clone())
                 .await?
                 .ok_or_else(|| {
                 CdfError::data(format!(
@@ -900,18 +1007,21 @@ where
 
 async fn optional_preview_attestation<R>(
     resource: &R,
-    partition: &cdf_kernel::PartitionPlan,
+    partition: &ExecutablePartition,
     expected: Option<&EffectiveSchemaObservationCoercion>,
     cache: &mut BTreeMap<String, PartitionAttestation>,
 ) -> Result<bool>
 where
     R: ResourceStream + ?Sized,
 {
-    let observation_id = partition.metadata.get(PLAN_SCHEMA_OBSERVATION_ID_KEY);
+    let observation_id = partition
+        .plan()
+        .metadata
+        .get(PLAN_SCHEMA_OBSERVATION_ID_KEY);
     let cached = observation_id.and_then(|id| cache.get(id)).cloned();
     let attestation = match cached {
         Some(attestation) => Some(attestation),
-        None => resource.attest_partition(partition.clone()).await?,
+        None => resource.attest_executable(partition.clone()).await?,
     };
     let Some(attestation) = attestation else {
         return Ok(false);
@@ -3027,6 +3137,23 @@ impl ExecutablePartitionPlans {
     }
 }
 
+fn executable_partition_plans<R>(
+    plan: &EnginePlan,
+    resource: &R,
+) -> Result<ExecutablePartitionPlans>
+where
+    R: ResourceStream + ?Sized,
+{
+    match &plan.scan.planned_task_set {
+        Some(reference) => Ok(ExecutablePartitionPlans::External(
+            resource.planned_partition_reader(reference)?,
+        )),
+        None => Ok(ExecutablePartitionPlans::Inline(
+            plan.scan.partitions.clone(),
+        )),
+    }
+}
+
 fn source_partition_opener<'a, R>(
     resource: &'a R,
     mut partitions: ExecutablePartitionPlans,
@@ -3359,12 +3486,7 @@ where
     } else {
         planned_partition_count
     };
-    let executable_partitions = match &plan.scan.planned_task_set {
-        Some(reference) => {
-            ExecutablePartitionPlans::External(resource.planned_partition_reader(reference)?)
-        }
-        None => ExecutablePartitionPlans::Inline(plan.scan.partitions.clone()),
-    };
+    let executable_partitions = executable_partition_plans(plan, resource)?;
     let source_opener = source_partition_opener(
         resource,
         executable_partitions,

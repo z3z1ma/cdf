@@ -947,13 +947,15 @@ mod tests {
 
     use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
+    use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
+    use cdf_engine::{EnginePlanInput, EnginePreviewLimits, Planner};
     use cdf_http::{
         HttpRequest, HttpResponse, HttpResponseBudget, HttpTransport, SecretProvider, SecretUri,
         SecretValue,
     };
     use cdf_kernel::{
-        BoxFuture, ContentStoreNamespace, ResourceDescriptor, ResourceId, SchemaSource, ScopeKey,
-        TrustLevel, WriteDisposition,
+        BoxFuture, ContentStoreNamespace, ExecutionExtent, ResourceDescriptor, ResourceId,
+        SchemaSource, ScopeKey, TrustLevel, WriteDisposition,
     };
     use cdf_object_access::FileTransportFacade;
     use cdf_runtime::{
@@ -2192,53 +2194,97 @@ mod tests {
             executable_reader.next_partition(0).unwrap().unwrap(),
             executable_reader.next_partition(1).unwrap().unwrap(),
         ];
-        let (rows, null_labels) = execution
-            .run_io(async move {
-                let mut rows = 0_usize;
-                let mut null_labels = 0_usize;
-                for task in executable {
-                    let attestation = resource
-                        .attest_executable(task.clone())
-                        .await?
-                        .expect("Iceberg task has immutable snapshot authority");
+        let (rows, null_labels) = futures_executor::block_on(async {
+            let mut rows = 0_usize;
+            let mut null_labels = 0_usize;
+            for task in executable {
+                let attestation = resource
+                    .attest_executable(task.clone())
+                    .await?
+                    .expect("Iceberg task has immutable snapshot authority");
+                assert!(matches!(
+                    attestation.processed_position(),
+                    cdf_kernel::SourcePosition::TableSnapshot(_)
+                ));
+                assert_eq!(
+                    attestation.physical_schema_hash(),
+                    Some(&cdf_kernel::canonical_arrow_schema_hash(
+                        resource.schema().as_ref()
+                    )?)
+                );
+                let mut opened = resource.open_executable(task).await?;
+                while let Some(batch) = opened.try_next().await? {
+                    assert!(batch.retained_bytes() > 0);
                     assert!(matches!(
-                        attestation.processed_position(),
-                        cdf_kernel::SourcePosition::TableSnapshot(_)
+                        batch.header.source_position,
+                        Some(cdf_kernel::SourcePosition::TableSnapshot(_))
                     ));
-                    assert_eq!(
-                        attestation.physical_schema_hash(),
-                        Some(&cdf_kernel::canonical_arrow_schema_hash(
-                            resource.schema().as_ref()
-                        )?)
-                    );
-                    let mut opened = resource.open_executable(task).await?;
-                    while let Some(batch) = opened.try_next().await? {
-                        assert!(batch.retained_bytes() > 0);
-                        assert!(matches!(
-                            batch.header.source_position,
-                            Some(cdf_kernel::SourcePosition::TableSnapshot(_))
-                        ));
-                        let record_batch = batch.record_batch().unwrap();
-                        assert_eq!(record_batch.schema().fields().len(), 2);
-                        rows += record_batch.num_rows();
-                        null_labels += record_batch
-                            .column(1)
-                            .as_any()
-                            .downcast_ref::<StringArray>()
-                            .unwrap()
-                            .null_count();
-                    }
-                    let completion = opened.completion().await?;
-                    assert!(matches!(
-                        completion.attestation().unwrap().processed_position(),
-                        cdf_kernel::SourcePosition::TableSnapshot(_)
-                    ));
+                    let record_batch = batch.record_batch().unwrap();
+                    assert_eq!(record_batch.schema().fields().len(), 2);
+                    rows += record_batch.num_rows();
+                    null_labels += record_batch
+                        .column(1)
+                        .as_any()
+                        .downcast_ref::<StringArray>()
+                        .unwrap()
+                        .null_count();
                 }
-                Ok((rows, null_labels))
-            })
-            .unwrap();
+                let completion = opened.completion().await?;
+                assert!(matches!(
+                    completion.attestation().unwrap().processed_position(),
+                    cdf_kernel::SourcePosition::TableSnapshot(_)
+                ));
+            }
+            Ok::<_, CdfError>((rows, null_labels))
+        })
+        .unwrap();
         assert_eq!(rows, 5);
         assert_eq!(null_labels, 3);
+
+        let validation_program = compile_validation_program(
+            &ContractPolicy::for_trust(TrustLevel::Governed),
+            &ObservedSchema::from_arrow(resource.schema().as_ref()),
+        )
+        .unwrap();
+        let engine_plan = Planner::new()
+            .plan_tier_b(
+                resource.as_ref(),
+                EnginePlanInput {
+                    request: request.clone(),
+                    validation_program,
+                    execution_extent: ExecutionExtent::bounded(),
+                    package_id: "pkg-iceberg-external-preview-run".to_owned(),
+                },
+            )
+            .unwrap()
+            .bind_compiled_source(&one_job_plan)
+            .unwrap();
+        let preview = futures_executor::block_on(cdf_engine::preview_resource(
+            &engine_plan,
+            resource.as_ref(),
+            EnginePreviewLimits::default(),
+        ))
+        .unwrap();
+        assert_eq!(preview.planned_partition_count, 2);
+        assert_eq!(preview.payload_eligible_partition_count, 2);
+        assert_eq!(preview.payload_opened_partition_count, 2);
+        assert_eq!(preview.row_count, 5);
+
+        let package = tempfile::tempdir().unwrap();
+        let run =
+            futures_executor::block_on(cdf_engine::execute_to_package_with_segment_positions(
+                &engine_plan,
+                resource.as_ref(),
+                package.path(),
+            ))
+            .unwrap();
+        assert_eq!(run.output.profile.output_rows, 5);
+        assert_eq!(run.output.lineage.input_partitions.len(), 2);
+        assert!(run.execution_evidence().checkpoint_eligible());
+        assert!(run.segment_positions.iter().all(|position| matches!(
+            position.output_position,
+            Some(cdf_kernel::SourcePosition::TableSnapshot(_))
+        )));
 
         let mut many_jobs_request = compile_request(root.path());
         many_jobs_request

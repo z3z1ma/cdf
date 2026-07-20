@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -96,6 +94,197 @@ pub struct StratifiedHashPlan {
     pub interior_strata: Vec<StratifiedHashStratum>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StratifiedHashSelectionChange {
+    pub retained: bool,
+    pub evicted_location: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct OrderedSelection {
+    candidate: StratifiedHashCandidate,
+    score: String,
+}
+
+/// Bounded form of the v1 selector for already-canonical candidate streams.
+///
+/// External task stores know their exact cardinality but must not materialize every task merely
+/// to choose a preview sample. This accumulator preserves the exact v1 edge/stratum policy while
+/// retaining at most `membership_limit` candidates. Callers must supply strictly increasing
+/// canonical locations; the ordinary slice API sorts before delegating here.
+#[derive(Clone, Debug)]
+pub struct OrderedStratifiedHashV1 {
+    resource_id: ResourceId,
+    membership_limit: u64,
+    candidate_count: u64,
+    next_index: u64,
+    previous_location: Option<String>,
+    strata: Vec<(u64, u64)>,
+    selected: Vec<Option<OrderedSelection>>,
+}
+
+impl OrderedStratifiedHashV1 {
+    pub fn new(
+        resource_id: ResourceId,
+        membership_limit: u64,
+        candidate_count: u64,
+    ) -> Result<Self> {
+        if membership_limit == 0 {
+            return Err(CdfError::contract(
+                "stratified selector membership limit must be positive",
+            ));
+        }
+        if candidate_count == 0 {
+            return Err(CdfError::data("stratified selector received no candidates"));
+        }
+        let selected_count = candidate_count.min(membership_limit);
+        let selected_len = usize::try_from(selected_count).map_err(|_| {
+            CdfError::contract("stratified selector membership exceeds address space")
+        })?;
+        let mut strata = Vec::new();
+        if selected_count > 2 && selected_count < candidate_count {
+            let stratum_count = selected_count - 2;
+            let interior_count = candidate_count - 2;
+            let base_size = interior_count / stratum_count;
+            let remainder = interior_count % stratum_count;
+            let mut start = 1_u64;
+            for stratum_index in 0..stratum_count {
+                let size = base_size + u64::from(stratum_index < remainder);
+                let end = start
+                    .checked_add(size)
+                    .ok_or_else(|| CdfError::contract("selector stratum index exceeds u64"))?;
+                strata.push((start, end));
+                start = end;
+            }
+        }
+        Ok(Self {
+            resource_id,
+            membership_limit,
+            candidate_count,
+            next_index: 0,
+            previous_location: None,
+            strata,
+            selected: vec![None; selected_len],
+        })
+    }
+
+    pub fn push(
+        &mut self,
+        candidate: StratifiedHashCandidate,
+    ) -> Result<StratifiedHashSelectionChange> {
+        if self.next_index >= self.candidate_count {
+            return Err(CdfError::contract(
+                "ordered stratified selector received more candidates than declared",
+            ));
+        }
+        if self
+            .previous_location
+            .as_deref()
+            .is_some_and(|previous| previous >= candidate.canonical_location())
+        {
+            return Err(CdfError::contract(
+                "ordered stratified selector candidates require strictly increasing canonical locations",
+            ));
+        }
+        self.previous_location = Some(candidate.canonical_location().to_owned());
+        let slot = self.selection_slot(self.next_index);
+        self.next_index += 1;
+        let Some(slot) = slot else {
+            return Ok(StratifiedHashSelectionChange {
+                retained: false,
+                evicted_location: None,
+            });
+        };
+        let score = stratified_hash_v1_score(&self.resource_id, &candidate)?;
+        let replace = self.selected[slot].as_ref().is_none_or(|current| {
+            (
+                score.as_str(),
+                candidate.canonical_location(),
+                candidate.bounded_identity(),
+            ) < (
+                current.score.as_str(),
+                current.candidate.canonical_location(),
+                current.candidate.bounded_identity(),
+            )
+        });
+        if !replace {
+            return Ok(StratifiedHashSelectionChange {
+                retained: false,
+                evicted_location: None,
+            });
+        }
+        let evicted_location = self.selected[slot]
+            .replace(OrderedSelection { candidate, score })
+            .map(|selection| selection.candidate.canonical_location);
+        Ok(StratifiedHashSelectionChange {
+            retained: true,
+            evicted_location,
+        })
+    }
+
+    pub fn finish(self) -> Result<StratifiedHashPlan> {
+        if self.next_index != self.candidate_count || self.selected.iter().any(Option::is_none) {
+            return Err(CdfError::data(
+                "ordered stratified selector ended before its declared candidate count",
+            ));
+        }
+        let selected = self
+            .selected
+            .into_iter()
+            .map(|selection| {
+                let selection = selection.expect("validated ordered selection is complete");
+                StratifiedHashSelection {
+                    canonical_location: selection.candidate.canonical_location,
+                    score_sha256: selection.score,
+                    bounded_identity_sha256: format!(
+                        "sha256:{}",
+                        hex::encode(Sha256::digest(&selection.candidate.bounded_identity))
+                    ),
+                }
+            })
+            .collect::<Vec<_>>();
+        let interior_strata = self
+            .strata
+            .into_iter()
+            .zip(selected.iter().skip(1))
+            .map(
+                |((start_index_inclusive, end_index_exclusive), selection)| StratifiedHashStratum {
+                    start_index_inclusive,
+                    end_index_exclusive,
+                    selected_location: selection.canonical_location.clone(),
+                },
+            )
+            .collect();
+        Ok(StratifiedHashPlan {
+            selector: STRATIFIED_HASH_SELECTOR_V1.to_owned(),
+            candidate_count: self.candidate_count,
+            membership_limit: self.membership_limit,
+            selected,
+            interior_strata,
+        })
+    }
+
+    fn selection_slot(&self, index: u64) -> Option<usize> {
+        let selected_count = u64::try_from(self.selected.len()).expect("selection fits u64");
+        if selected_count == 1 {
+            return Some(0);
+        }
+        if selected_count == self.candidate_count {
+            return usize::try_from(index).ok();
+        }
+        if index == 0 {
+            return Some(0);
+        }
+        if index + 1 == self.candidate_count {
+            return self.selected.len().checked_sub(1);
+        }
+        self.strata
+            .iter()
+            .position(|(start, end)| index >= *start && index < *end)
+            .map(|stratum| stratum + 1)
+    }
+}
+
 impl StratifiedHashPlan {
     pub fn selects(&self, canonical_location: &str) -> bool {
         self.selected
@@ -133,85 +322,12 @@ pub fn plan_stratified_hash_v1(
     }
     let candidate_count = u64::try_from(candidates.len())
         .map_err(|_| CdfError::contract("stratified selector candidate count exceeds u64"))?;
-    let selected_count = usize::try_from(candidate_count.min(membership_limit))
-        .map_err(|_| CdfError::contract("stratified selector membership exceeds address space"))?;
-    let mut selected_indexes = Vec::with_capacity(selected_count);
-    let mut interior_strata = Vec::new();
-    match selected_count {
-        1 => selected_indexes.push(lowest_score_index(
-            resource_id,
-            &candidates,
-            0,
-            candidates.len(),
-        )?),
-        2 => {
-            selected_indexes.push(0);
-            selected_indexes.push(candidates.len() - 1);
-        }
-        _ if selected_count == candidates.len() => {
-            selected_indexes.extend(0..candidates.len());
-        }
-        _ => {
-            selected_indexes.push(0);
-            let stratum_count = selected_count - 2;
-            let interior_count = candidates.len() - 2;
-            let base_size = interior_count / stratum_count;
-            let remainder = interior_count % stratum_count;
-            let mut start = 1_usize;
-            for stratum_index in 0..stratum_count {
-                let size = base_size + usize::from(stratum_index < remainder);
-                let end = start + size;
-                let selected = lowest_score_index(resource_id, &candidates, start, end)?;
-                interior_strata.push(StratifiedHashStratum {
-                    start_index_inclusive: u64::try_from(start)
-                        .map_err(|_| CdfError::contract("selector stratum index exceeds u64"))?,
-                    end_index_exclusive: u64::try_from(end)
-                        .map_err(|_| CdfError::contract("selector stratum index exceeds u64"))?,
-                    selected_location: candidates[selected].canonical_location.clone(),
-                });
-                selected_indexes.push(selected);
-                start = end;
-            }
-            selected_indexes.push(candidates.len() - 1);
-        }
+    let mut ordered =
+        OrderedStratifiedHashV1::new(resource_id.clone(), membership_limit, candidate_count)?;
+    for candidate in candidates {
+        ordered.push(candidate)?;
     }
-    selected_indexes.sort_unstable();
-    selected_indexes.dedup();
-    if selected_indexes.len() != selected_count {
-        return Err(CdfError::internal(
-            "stratified selector produced duplicate membership",
-        ));
-    }
-    let selected = selected_indexes
-        .into_iter()
-        .map(|index| {
-            let candidate = &candidates[index];
-            Ok(StratifiedHashSelection {
-                canonical_location: candidate.canonical_location.clone(),
-                score_sha256: stratified_hash_v1_score(resource_id, candidate)?,
-                bounded_identity_sha256: format!(
-                    "sha256:{}",
-                    hex::encode(Sha256::digest(&candidate.bounded_identity))
-                ),
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let unique = selected
-        .iter()
-        .map(|item| item.canonical_location.as_str())
-        .collect::<BTreeSet<_>>();
-    if unique.len() != selected.len() {
-        return Err(CdfError::internal(
-            "stratified selector emitted duplicate locations",
-        ));
-    }
-    Ok(StratifiedHashPlan {
-        selector: STRATIFIED_HASH_SELECTOR_V1.to_owned(),
-        candidate_count,
-        membership_limit,
-        selected,
-        interior_strata,
-    })
+    ordered.finish()
 }
 
 pub fn stratified_hash_v1_score(
@@ -233,31 +349,10 @@ pub fn stratified_hash_v1_score(
     Ok(hex::encode(hasher.finalize()))
 }
 
-fn lowest_score_index(
-    resource_id: &ResourceId,
-    candidates: &[StratifiedHashCandidate],
-    start: usize,
-    end: usize,
-) -> Result<usize> {
-    let mut scored = (start..end)
-        .map(|index| {
-            Ok((
-                stratified_hash_v1_score(resource_id, &candidates[index])?,
-                candidates[index].canonical_location.as_str(),
-                candidates[index].bounded_identity.as_slice(),
-                index,
-            ))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    scored.sort();
-    scored
-        .first()
-        .map(|(_, _, _, index)| *index)
-        .ok_or_else(|| CdfError::internal("stratified selector received an empty stratum"))
-}
-
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     fn candidates(count: usize) -> Vec<StratifiedHashCandidate> {
@@ -312,6 +407,38 @@ mod tests {
         assert_eq!(plan.membership_limit, 64);
         assert_eq!(plan.selected.len(), 64);
         assert_eq!(plan.interior_strata.len(), 62);
+    }
+
+    #[test]
+    fn ordered_selector_exposes_exact_bounded_retention_changes() {
+        let resource_id = ResourceId::new("events.external").unwrap();
+        let source = candidates(10_000);
+        let expected = plan_stratified_hash_v1(&resource_id, 64, &source).unwrap();
+        let mut selector =
+            OrderedStratifiedHashV1::new(resource_id, 64, u64::try_from(source.len()).unwrap())
+                .unwrap();
+        let mut retained = BTreeSet::new();
+        for candidate in source {
+            let location = candidate.canonical_location().to_owned();
+            let change = selector.push(candidate).unwrap();
+            if let Some(evicted) = change.evicted_location {
+                assert!(retained.remove(&evicted));
+            }
+            if change.retained {
+                retained.insert(location);
+            }
+            assert!(retained.len() <= 64);
+        }
+        let actual = selector.finish().unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(
+            retained,
+            actual
+                .selected
+                .iter()
+                .map(|selected| selected.canonical_location.clone())
+                .collect()
+        );
     }
 
     #[test]
