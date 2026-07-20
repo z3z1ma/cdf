@@ -18,7 +18,7 @@ use cdf_package_contract::{
     DEDUP_SUMMARY_VERSION, DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage,
     LATE_DATA_EVIDENCE_FILE, LATE_DATA_PAYLOAD_CATALOG_FILE, LateDataEvidence,
     LateDataPayloadCatalog, PROCESSED_OBSERVATIONS_FILE, PackageReplayInputs, PackageStatus,
-    ProcessedObservationEvidenceArtifact, QuarantineRecord, ReplayView, SCAN_PLAN_FILE,
+    ProcessedObservationEvidenceArtifact, QuarantineRecord, SCAN_PLAN_FILE,
     STATE_INPUT_CHECKPOINT_FILE, STATE_PROPOSED_DELTA_FILE, SegmentEntry, StateDeltaPreimage,
     TombstoneReport, VerificationReport, VerifiedPackageAccess, dedup_provenance_shard_path,
 };
@@ -811,27 +811,6 @@ impl PackageReader {
         read_receipts(&self.package_dir)
     }
 
-    pub fn replay_view(&self) -> Result<ReplayView> {
-        if !self.manifest.lifecycle.status.is_replayable() {
-            return Err(CdfError::data(format!(
-                "package {} is not replayable at status {}",
-                self.manifest.package_hash,
-                self.manifest.lifecycle.status.as_str()
-            )));
-        }
-        let mut segments = Vec::new();
-        self.for_each_identity_segment(&mut |segment| {
-            segments.push(segment);
-            Ok(())
-        })?;
-        Ok(ReplayView {
-            package_hash: PackageHash::new(self.manifest.package_hash.clone())?,
-            status: self.manifest.lifecycle.status.clone(),
-            segments,
-            receipts: self.receipts()?,
-        })
-    }
-
     pub fn input_checkpoint(&self) -> Result<Option<Checkpoint>> {
         read_json_artifact(&self.package_dir, STATE_INPUT_CHECKPOINT_FILE)
     }
@@ -872,13 +851,22 @@ impl PackageReader {
         &self,
         verified: &VerifiedPackage,
     ) -> Result<PackageReplayInputs> {
-        let replay = self.replay_view()?;
+        if !self.manifest.lifecycle.status.is_replayable() {
+            return Err(CdfError::data(format!(
+                "package {} is not replayable at status {}",
+                self.manifest.package_hash,
+                self.manifest.lifecycle.status.as_str()
+            )));
+        }
         PackageReplayInputs::from_preimages_with_processed(
-            replay.package_hash,
+            PackageHash::new(self.manifest.package_hash.clone())?,
             self.verified_json_artifact(verified, STATE_INPUT_CHECKPOINT_FILE)?,
             self.verified_json_artifact(verified, STATE_PROPOSED_DELTA_FILE)?,
             self.verified_json_artifact(verified, DESTINATION_COMMIT_PLAN_FILE)?,
-            &replay.segments,
+            ManifestSegmentStream::new(
+                self.package_root
+                    .open_std_file(cdf_package_contract::MANIFEST_FILE)?,
+            ),
             self.verified_optional_json_artifact(verified, PROCESSED_OBSERVATIONS_FILE)?,
         )
     }

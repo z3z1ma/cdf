@@ -58,6 +58,12 @@ fn collect_dedup_dropped_provenance(reader: &PackageReader) -> Vec<(u64, u64)> {
     rows
 }
 
+fn replay_segment_stream(
+    segments: &[SegmentEntry],
+) -> impl Iterator<Item = Result<SegmentEntry>> + '_ {
+    segments.iter().cloned().map(Ok)
+}
+
 fn table_snapshot_position() -> SourcePosition {
     SourcePosition::TableSnapshot(Box::new(TableSnapshotPosition {
         version: CHECKPOINT_STATE_VERSION,
@@ -1016,9 +1022,8 @@ fn arrow_ipc_segments_round_trip_for_replay() {
     assert_eq!(batches.len(), 1);
     assert_eq!(batches[0].num_rows(), 3);
 
-    let replay = reader.replay_view().unwrap();
-    assert_eq!(replay.package_hash.as_str(), manifest.package_hash);
-    assert_eq!(replay.segments.len(), 1);
+    assert_eq!(reader.manifest().package_hash, manifest.package_hash);
+    assert_eq!(reader.manifest().identity.segment_count, 1);
 }
 
 #[test]
@@ -1465,6 +1470,57 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
         rewind_target_checkpoint_id: None,
     };
 
+    let stream_error = PackageReplayInputs::from_preimages(
+        package_hash.clone(),
+        Some(valid_input_checkpoint.clone()),
+        state_delta.clone(),
+        commit_plan.clone(),
+        std::iter::once(Err(CdfError::data("manifest segment stream failed"))),
+    )
+    .unwrap_err();
+    assert!(
+        stream_error
+            .to_string()
+            .contains("manifest segment stream failed"),
+        "{stream_error}"
+    );
+
+    let second_segment = SegmentEntry {
+        segment_id: SegmentId::new("seg-000002").unwrap(),
+        path: "data/seg-000002.arrow".to_owned(),
+        package_row_ord_start: segment.row_count,
+        row_count: 5,
+        byte_count: 101,
+        sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_owned(),
+    };
+    let mut two_segment_delta = state_delta.clone();
+    let mut second_state_segment = two_segment_delta.segments[0].clone();
+    second_state_segment.segment_id = second_segment.segment_id.clone();
+    second_state_segment.row_count = second_segment.row_count;
+    second_state_segment.byte_count = second_segment.byte_count;
+    two_segment_delta.segments.push(second_state_segment);
+    let two_segment_commit_plan = DestinationCommitPlanPreimage::package_hash_token(
+        TargetName::new("orders").unwrap(),
+        WriteDisposition::Append,
+        Vec::new(),
+        SchemaHash::new("schema-fixture").unwrap(),
+        two_segment_delta.segments.clone(),
+    );
+    let order_error = PackageReplayInputs::from_preimages(
+        package_hash.clone(),
+        Some(valid_input_checkpoint.clone()),
+        two_segment_delta,
+        two_segment_commit_plan,
+        [second_segment, segment.clone()].into_iter().map(Ok),
+    )
+    .unwrap_err();
+    assert!(
+        order_error
+            .to_string()
+            .contains("does not match canonical package segment"),
+        "{order_error}"
+    );
+
     let mut non_committed_checkpoint = valid_input_checkpoint.clone();
     non_committed_checkpoint.status = CheckpointStatus::Proposed;
     let error = PackageReplayInputs::from_preimages(
@@ -1472,7 +1528,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
         Some(non_committed_checkpoint),
         state_delta.clone(),
         commit_plan.clone(),
-        std::slice::from_ref(&segment),
+        replay_segment_stream(std::slice::from_ref(&segment)),
     )
     .unwrap_err();
     assert!(
@@ -1489,7 +1545,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
         Some(non_head_checkpoint),
         state_delta.clone(),
         commit_plan.clone(),
-        std::slice::from_ref(&segment),
+        replay_segment_stream(std::slice::from_ref(&segment)),
     )
     .unwrap_err();
     assert!(
@@ -1506,7 +1562,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
         Some(input_checkpoint),
         state_delta.clone(),
         commit_plan.clone(),
-        std::slice::from_ref(&segment),
+        replay_segment_stream(std::slice::from_ref(&segment)),
     )
     .unwrap_err();
     assert!(
@@ -1523,7 +1579,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
         Some(input_checkpoint),
         state_delta.clone(),
         commit_plan.clone(),
-        std::slice::from_ref(&segment),
+        replay_segment_stream(std::slice::from_ref(&segment)),
     )
     .unwrap_err();
     assert!(
@@ -1540,7 +1596,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
         Some(input_checkpoint),
         state_delta.clone(),
         commit_plan.clone(),
-        std::slice::from_ref(&segment),
+        replay_segment_stream(std::slice::from_ref(&segment)),
     )
     .unwrap_err();
     assert!(
@@ -1557,7 +1613,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
         Some(valid_input_checkpoint.clone()),
         mismatched_parent,
         commit_plan.clone(),
-        std::slice::from_ref(&segment),
+        replay_segment_stream(std::slice::from_ref(&segment)),
     )
     .unwrap_err();
     assert!(
@@ -1578,7 +1634,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
         Some(valid_input_checkpoint.clone()),
         mismatched_input_position,
         commit_plan.clone(),
-        std::slice::from_ref(&segment),
+        replay_segment_stream(std::slice::from_ref(&segment)),
     )
     .unwrap_err();
     assert!(
@@ -1595,7 +1651,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
         None,
         parent_without_checkpoint,
         commit_plan.clone(),
-        std::slice::from_ref(&segment),
+        replay_segment_stream(std::slice::from_ref(&segment)),
     )
     .unwrap_err();
     assert!(
@@ -1612,7 +1668,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
         None,
         input_without_checkpoint,
         commit_plan.clone(),
-        std::slice::from_ref(&segment),
+        replay_segment_stream(std::slice::from_ref(&segment)),
     )
     .unwrap_err();
     assert!(
@@ -1636,7 +1692,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
         Some(valid_input_checkpoint.clone()),
         empty_segments,
         empty_commit_plan,
-        std::slice::from_ref(&segment),
+        replay_segment_stream(std::slice::from_ref(&segment)),
     )
     .unwrap_err();
     assert!(
@@ -1660,7 +1716,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
         Some(valid_input_checkpoint.clone()),
         row_mismatch,
         row_mismatch_commit_plan,
-        std::slice::from_ref(&segment),
+        replay_segment_stream(std::slice::from_ref(&segment)),
     )
     .unwrap_err();
     assert!(error.to_string().contains("rows/"), "{error}");
@@ -1679,7 +1735,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
         Some(valid_input_checkpoint),
         byte_mismatch,
         byte_mismatch_commit_plan,
-        std::slice::from_ref(&segment),
+        replay_segment_stream(std::slice::from_ref(&segment)),
     )
     .unwrap_err();
     assert!(error.to_string().contains("rows/"), "{error}");
@@ -1691,7 +1747,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
         None,
         unsupported,
         commit_plan,
-        std::slice::from_ref(&segment),
+        replay_segment_stream(std::slice::from_ref(&segment)),
     )
     .unwrap_err();
     assert!(
@@ -1753,7 +1809,7 @@ fn zero_segment_replay_requires_exact_typed_processed_observation_evidence() {
         None,
         state_delta.clone(),
         commit_plan.clone(),
-        &[],
+        replay_segment_stream(&[]),
         None,
     )
     .unwrap_err();
@@ -1775,7 +1831,7 @@ fn zero_segment_replay_requires_exact_typed_processed_observation_evidence() {
         None,
         state_delta.clone(),
         commit_plan,
-        &[],
+        replay_segment_stream(&[]),
         Some(processed.clone()),
     )
     .unwrap();
@@ -1805,7 +1861,7 @@ fn zero_segment_replay_requires_exact_typed_processed_observation_evidence() {
             SchemaHash::new("schema-fixture").unwrap(),
             Vec::new(),
         ),
-        &[],
+        replay_segment_stream(&[]),
         Some(mismatched),
     )
     .unwrap_err();
@@ -1860,7 +1916,7 @@ fn table_snapshot_replay_preserves_exact_processed_authority_and_rejects_tamper(
         None,
         state_delta.clone(),
         commit_plan.clone(),
-        &[],
+        replay_segment_stream(&[]),
         Some(processed.clone()),
     )
     .unwrap();
@@ -1879,7 +1935,7 @@ fn table_snapshot_replay_preserves_exact_processed_authority_and_rejects_tamper(
         None,
         state_delta,
         commit_plan,
-        &[],
+        replay_segment_stream(&[]),
         Some(tampered),
     )
     .unwrap_err();
@@ -2193,7 +2249,6 @@ fn receipt_append_is_stored_outside_identity_and_exposed_to_replay() {
 
     let reread = PackageReader::open(temp.path()).unwrap();
     assert_eq!(reread.receipts().unwrap().len(), 1);
-    assert_eq!(reread.replay_view().unwrap().receipts.len(), 1);
     assert_eq!(reread.manifest().package_hash, before_receipt_hash);
     verify_package(temp.path()).unwrap();
 }
@@ -2219,7 +2274,7 @@ fn tombstone_removes_identity_files_but_preserves_manifest_hashes() {
         tombstoned_manifest.lifecycle.status,
         PackageStatus::Archived
     );
-    assert!(reader.replay_view().is_err());
+    assert!(!reader.manifest().lifecycle.status.is_replayable());
     assert!(verify_package(temp.path()).is_err());
 }
 
@@ -2334,10 +2389,14 @@ fn persisted_archive_writes_sidecars_manifest_metadata_and_fidelity_json() {
     let verification = verify_package(temp.path()).unwrap();
     assert_eq!(verification.checked_archive_count, metadata.segments.len());
     let reader = PackageReader::open(temp.path()).unwrap();
-    assert_eq!(
-        reader.replay_view().unwrap().segments[0].path,
-        "data/seg-000001.arrow"
-    );
+    let mut first_segment_path = None;
+    reader
+        .for_each_identity_segment(&mut |segment| {
+            first_segment_path.get_or_insert(segment.path);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(first_segment_path.as_deref(), Some("data/seg-000001.arrow"));
     assert_eq!(
         reader
             .read_segment(&SegmentId::new("seg-000001").unwrap())

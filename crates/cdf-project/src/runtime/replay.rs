@@ -2273,12 +2273,19 @@ fn default_replay_memory() -> Result<Arc<dyn MemoryCoordinator>> {
 fn validate_package_replay_inputs(
     reader: &PackageReader,
     inputs: &PackageReplayInputs,
-) -> Result<cdf_package_contract::ReplayView> {
-    let replay = reader.replay_view()?;
-    if replay.package_hash != inputs.state_delta.package_hash {
+) -> Result<()> {
+    if !reader.manifest().lifecycle.status.is_replayable() {
+        return Err(CdfError::data(format!(
+            "package {} is not replayable at status {}",
+            reader.manifest().package_hash,
+            reader.manifest().lifecycle.status.as_str()
+        )));
+    }
+    let package_hash = PackageHash::new(reader.manifest().package_hash.clone())?;
+    if package_hash != inputs.state_delta.package_hash {
         return Err(CdfError::data(format!(
             "package hash {} does not match StateDelta package hash {}",
-            replay.package_hash, inputs.state_delta.package_hash
+            package_hash, inputs.state_delta.package_hash
         )));
     }
     if inputs.schema_hash != inputs.state_delta.schema_hash {
@@ -2306,8 +2313,8 @@ fn validate_package_replay_inputs(
             inputs.destination_commit.idempotency_token, inputs.state_delta.package_hash
         )));
     }
-    validate_package_segments_match_delta(reader, &replay.segments, &inputs.state_delta)?;
-    Ok(replay)
+    validate_package_segments_match_delta(reader, &inputs.state_delta)?;
+    Ok(())
 }
 
 fn notify_runtime_replay_stage(
@@ -2425,12 +2432,11 @@ where
 
 fn validate_package_segments_match_delta(
     reader: &PackageReader,
-    package_segments: &[SegmentEntry],
     state_delta: &StateDelta,
 ) -> Result<()> {
     let state_segments = &state_delta.segments;
     if state_segments.is_empty() {
-        if !package_segments.is_empty() {
+        if reader.manifest().identity.segment_count != 0 {
             return Err(CdfError::contract(
                 "zero-segment StateDelta cannot cover package data segments",
             ));
@@ -2450,50 +2456,49 @@ fn validate_package_segments_match_delta(
         }
         return Ok(());
     }
-    if package_segments.len() != state_segments.len() {
+    let state_segment_count = u64::try_from(state_segments.len())
+        .map_err(|_| CdfError::data("StateDelta segment count exceeds u64"))?;
+    if reader.manifest().identity.segment_count != state_segment_count {
         return Err(CdfError::data(format!(
             "package has {} segment(s) but StateDelta has {} segment(s)",
-            package_segments.len(),
+            reader.manifest().identity.segment_count,
             state_segments.len()
         )));
     }
 
-    let package_by_id = package_segments
-        .iter()
-        .map(|segment| (&segment.segment_id, segment))
-        .collect::<BTreeMap<_, _>>();
-    if package_by_id.len() != package_segments.len() {
-        return Err(CdfError::data(
-            "package manifest contains duplicate segment ids",
-        ));
-    }
-
-    let mut seen_state_segments = BTreeSet::<&SegmentId>::new();
-    for segment in state_segments {
-        if !seen_state_segments.insert(&segment.segment_id) {
-            return Err(CdfError::contract(format!(
-                "StateDelta contains duplicate segment {}",
-                segment.segment_id
+    let mut state_segments = state_segments.iter();
+    reader.for_each_identity_segment(&mut |package_segment| {
+        let state_segment = state_segments.next().ok_or_else(|| {
+            CdfError::data(format!(
+                "package segment {} is not present in the StateDelta",
+                package_segment.segment_id
+            ))
+        })?;
+        if package_segment.segment_id != state_segment.segment_id {
+            return Err(CdfError::data(format!(
+                "StateDelta segment {} does not match canonical package segment {}",
+                state_segment.segment_id, package_segment.segment_id
             )));
         }
-        let Some(package_segment) = package_by_id.get(&segment.segment_id) else {
-            return Err(CdfError::data(format!(
-                "StateDelta segment {} is not present in the package manifest",
-                segment.segment_id
-            )));
-        };
-        if package_segment.row_count != segment.row_count
-            || package_segment.byte_count != segment.byte_count
+        if package_segment.row_count != state_segment.row_count
+            || package_segment.byte_count != state_segment.byte_count
         {
             return Err(CdfError::data(format!(
                 "StateDelta segment {} has {} rows/{} bytes but package manifest has {} rows/{} bytes",
-                segment.segment_id,
-                segment.row_count,
-                segment.byte_count,
+                state_segment.segment_id,
+                state_segment.row_count,
+                state_segment.byte_count,
                 package_segment.row_count,
                 package_segment.byte_count
             )));
         }
+        Ok(())
+    })?;
+    if let Some(segment) = state_segments.next() {
+        return Err(CdfError::data(format!(
+            "StateDelta segment {} is not present in the package manifest",
+            segment.segment_id
+        )));
     }
 
     Ok(())

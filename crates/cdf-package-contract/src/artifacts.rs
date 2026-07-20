@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId, CheckpointStatus,
     DestinationCommitRequest, IdempotencyToken, PackageHash, PipelineId,
@@ -220,13 +218,16 @@ pub struct PackageReplayInputs {
 }
 
 impl PackageReplayInputs {
-    pub fn from_preimages(
+    pub fn from_preimages<I>(
         package_hash: PackageHash,
         input_checkpoint: Option<Checkpoint>,
         state_delta: StateDeltaPreimage,
         commit_plan: DestinationCommitPlanPreimage,
-        package_segments: &[SegmentEntry],
-    ) -> Result<Self> {
+        package_segments: I,
+    ) -> Result<Self>
+    where
+        I: IntoIterator<Item = Result<SegmentEntry>>,
+    {
         Self::from_preimages_with_processed(
             package_hash,
             input_checkpoint,
@@ -237,14 +238,17 @@ impl PackageReplayInputs {
         )
     }
 
-    pub fn from_preimages_with_processed(
+    pub fn from_preimages_with_processed<I>(
         package_hash: PackageHash,
         input_checkpoint: Option<Checkpoint>,
         state_delta: StateDeltaPreimage,
         commit_plan: DestinationCommitPlanPreimage,
-        package_segments: &[SegmentEntry],
+        package_segments: I,
         processed: Option<ProcessedObservationEvidenceArtifact>,
-    ) -> Result<Self> {
+    ) -> Result<Self>
+    where
+        I: IntoIterator<Item = Result<SegmentEntry>>,
+    {
         state_delta.validate()?;
         validate_input_checkpoint(&input_checkpoint, &state_delta)?;
         if commit_plan.schema_hash != state_delta.schema_hash {
@@ -337,43 +341,36 @@ fn validate_input_checkpoint(
     Ok(())
 }
 
-fn validate_package_segments(
-    package_segments: &[SegmentEntry],
+fn validate_package_segments<I>(
+    package_segments: I,
     state_segments: &[StateSegment],
     processed: Option<&ProcessedObservationEvidenceArtifact>,
-) -> Result<()> {
+) -> Result<()>
+where
+    I: IntoIterator<Item = Result<SegmentEntry>>,
+{
+    let mut package_segments = package_segments.into_iter();
     if state_segments.is_empty() {
-        if !package_segments.is_empty() || processed.is_none() {
+        if package_segments.next().transpose()?.is_some() || processed.is_none() {
             return Err(CdfError::data(
                 "zero-segment state advancement requires a zero-segment package and typed processed-observation evidence",
             ));
         }
         return Ok(());
     }
-    if package_segments.len() != state_segments.len() {
-        return Err(CdfError::data(format!(
-            "package has {} segment(s) but state delta preimage has {} segment(s)",
-            package_segments.len(),
-            state_segments.len()
-        )));
-    }
-    let mut seen_state_segments = BTreeSet::<&cdf_kernel::SegmentId>::new();
     for state_segment in state_segments {
-        if !seen_state_segments.insert(&state_segment.segment_id) {
+        let Some(package_segment) = package_segments.next().transpose()? else {
             return Err(CdfError::data(format!(
-                "state delta preimage contains duplicate segment {}",
-                state_segment.segment_id
-            )));
-        }
-        let Some(package_segment) = package_segments
-            .iter()
-            .find(|segment| segment.segment_id == state_segment.segment_id)
-        else {
-            return Err(CdfError::data(format!(
-                "state delta segment {} is not present in the package manifest",
-                state_segment.segment_id
+                "package ended before state delta segment {}",
+                state_segment.segment_id,
             )));
         };
+        if package_segment.segment_id != state_segment.segment_id {
+            return Err(CdfError::data(format!(
+                "state delta segment {} does not match canonical package segment {}",
+                state_segment.segment_id, package_segment.segment_id
+            )));
+        }
         if package_segment.row_count != state_segment.row_count
             || package_segment.byte_count != state_segment.byte_count
         {
@@ -386,6 +383,12 @@ fn validate_package_segments(
                 package_segment.byte_count
             )));
         }
+    }
+    if let Some(extra) = package_segments.next().transpose()? {
+        return Err(CdfError::data(format!(
+            "package segment {} is not present in the state delta preimage",
+            extra.segment_id
+        )));
     }
     Ok(())
 }

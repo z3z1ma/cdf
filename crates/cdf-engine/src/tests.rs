@@ -8011,7 +8011,7 @@ fn variant_capture_materializes_nested_values_and_contract_evolution_evidence() 
         cdf_package::canonical_json_bytes(&evolution).unwrap()
     );
     assert!(package_identity_file_paths(&reader).contains("schema/contract-evolution.json"));
-    assert_eq!(reader.replay_view().unwrap().segments.len(), 1);
+    assert_eq!(reader.manifest().identity.segment_count, 1);
 
     let quarantine = collect_quarantine_records(&reader);
     assert_eq!(quarantine.len(), 1);

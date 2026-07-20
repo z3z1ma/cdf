@@ -1,4 +1,4 @@
-use cdf_kernel::{CdfError, PackageHash, Receipt, Result, SegmentId};
+use cdf_kernel::{CdfError, Result, SegmentId};
 use serde::{Deserialize, Serialize};
 
 pub const MANIFEST_VERSION: u16 = 2;
@@ -180,12 +180,4 @@ pub struct VerificationReport {
 pub struct TombstoneReport {
     pub package_hash: String,
     pub removed_file_count: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReplayView {
-    pub package_hash: PackageHash,
-    pub status: PackageStatus,
-    pub segments: Vec<SegmentEntry>,
-    pub receipts: Vec<Receipt>,
 }
