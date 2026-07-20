@@ -372,9 +372,13 @@ impl EngineWorkerArtifactAuthority for SharedEngineWorkerArtifacts {
                 "stored worker output bytes do not match their result reference",
             ));
         }
-        let row_count = (reference.kind == cdf_runtime::WorkerArtifactKind::CanonicalSegment)
-            .then(|| Self::observed_output_rows(bytes))
-            .transpose()?;
+        let row_count = matches!(
+            reference.kind,
+            cdf_runtime::WorkerArtifactKind::PreparedSegment
+                | cdf_runtime::WorkerArtifactKind::CanonicalSegment
+        )
+        .then(|| Self::observed_output_rows(bytes))
+        .transpose()?;
         cdf_runtime::VerifiedWorkerArtifactFacts::new(reference.clone(), row_count)
     }
 }

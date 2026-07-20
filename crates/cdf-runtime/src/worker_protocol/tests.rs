@@ -357,7 +357,11 @@ impl WorkerAdmissionVerifier for MockArtifactStore {
                 "mock artifact bytes/hash/generation do not match reference",
             ));
         }
-        let row_count = (reference.kind == WorkerArtifactKind::CanonicalSegment).then_some(50);
+        let row_count = matches!(
+            reference.kind,
+            WorkerArtifactKind::PreparedSegment | WorkerArtifactKind::CanonicalSegment
+        )
+        .then_some(50);
         VerifiedWorkerArtifactFacts::new(reference.clone(), row_count)
     }
 
@@ -453,7 +457,8 @@ impl WorkerAuthorizedArtifactSink for CountingArtifactSink {
         }
         let receipt = authorization.receipt();
         let row_count = match receipt.role {
-            WorkerArtifactRole::CanonicalSegment { row_count, .. } => Some(row_count),
+            WorkerArtifactRole::PreparedSegment { row_count, .. }
+            | WorkerArtifactRole::CanonicalSegment { row_count, .. } => Some(row_count),
             _ => None,
         };
         VerifiedWorkerArtifactFacts::new(receipt.artifact.clone(), row_count)
@@ -764,6 +769,79 @@ fn canonical_task_attempt_and_result_fixtures_round_trip() {
         )
         .unwrap(),
         result
+    );
+}
+
+#[test]
+fn prepared_segment_receipts_are_row_verified_without_becoming_package_identity() {
+    let fixture = Fixture::new();
+    let mut task = fixture.task.clone();
+    task.output_policy
+        .allowed_kinds
+        .insert(0, WorkerArtifactKind::PreparedSegment);
+    task.task_sha256 = task.compute_hash().unwrap();
+    task.validate().unwrap();
+
+    let mut attempt = fixture.attempt();
+    attempt.write_permit.task_sha256 = task.task_sha256.clone();
+    let prepared = fixture.store.insert_semantic(
+        WorkerArtifactKind::PreparedSegment,
+        "attempts/attempt-4/prepared/p00000003-s00000000.arrow",
+        hash(51),
+    );
+    let artifact_bytes = prepared.byte_count;
+    let result = PartitionWorkerResult::new(
+        &attempt,
+        PartitionWorkerResultInput {
+            status: WorkerTerminalStatus::Succeeded,
+            source_attestation: Some(WorkerSourceAttestation {
+                processed_position: WorkerPosition::inline(position(150)).unwrap(),
+                physical_schema_hash: task.execution.output_schema_hash.clone(),
+            }),
+            processed_observations: vec![
+                WorkerProcessedObservation::new(
+                    "partition-00000003",
+                    ProcessedObservationOutcome::Admitted,
+                    WorkerPosition::inline(position(150)).unwrap(),
+                )
+                .unwrap(),
+            ],
+            artifacts: vec![WorkerArtifactReceipt {
+                role: WorkerArtifactRole::PreparedSegment {
+                    segment_id: SegmentId::new("p00000003-s00000000").unwrap(),
+                    partition_ordinal: 3,
+                    segment_ordinal: 0,
+                    row_count: 50,
+                },
+                artifact: prepared,
+            }],
+            counts: WorkerResultCounts {
+                input_rows: 50,
+                output_rows: 50,
+                quarantined_rows: 0,
+                source_bytes: 4096,
+                artifact_bytes,
+            },
+            telemetry: WorkerTelemetry::default(),
+        },
+    )
+    .unwrap();
+
+    result
+        .validate_for_admission(
+            &task,
+            &attempt,
+            &fixture.registry(),
+            &fixture.lease(),
+            &fixture.store,
+            2_000,
+        )
+        .unwrap();
+    assert!(
+        result
+            .artifacts
+            .iter()
+            .all(|receipt| receipt.artifact.kind == WorkerArtifactKind::PreparedSegment)
     );
 }
 

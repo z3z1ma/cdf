@@ -43,7 +43,8 @@ impl VerifiedWorkerCompilerArtifact {
         reference.validate()?;
         if matches!(
             reference.kind,
-            WorkerArtifactKind::CanonicalSegment
+            WorkerArtifactKind::PreparedSegment
+                | WorkerArtifactKind::CanonicalSegment
                 | WorkerArtifactKind::Quarantine
                 | WorkerArtifactKind::Residual
                 | WorkerArtifactKind::Verdict
@@ -234,7 +235,8 @@ impl WorkerAdmissionVerifier for EngineWorkerAdmissionVerifier<'_> {
         reference: &WorkerArtifactReference,
     ) -> Result<VerifiedWorkerArtifactFacts> {
         match reference.kind {
-            WorkerArtifactKind::CanonicalSegment
+            WorkerArtifactKind::PreparedSegment
+            | WorkerArtifactKind::CanonicalSegment
             | WorkerArtifactKind::Quarantine
             | WorkerArtifactKind::Residual
             | WorkerArtifactKind::Verdict

@@ -70,6 +70,7 @@ pub enum WorkerArtifactKind {
     PlannedTaskSet,
     InputPayload,
     ForeignState,
+    PreparedSegment,
     CanonicalSegment,
     Quarantine,
     Residual,
@@ -81,7 +82,8 @@ impl WorkerArtifactKind {
     fn is_worker_output(self) -> bool {
         matches!(
             self,
-            Self::CanonicalSegment
+            Self::PreparedSegment
+                | Self::CanonicalSegment
                 | Self::Quarantine
                 | Self::Residual
                 | Self::Verdict
@@ -945,9 +947,12 @@ impl VerifiedWorkerArtifactFacts {
     pub fn new(reference: WorkerArtifactReference, row_count: Option<u64>) -> Result<Self> {
         reference.validate()?;
         match (reference.kind, row_count) {
-            (WorkerArtifactKind::CanonicalSegment, None | Some(0)) => {
+            (
+                WorkerArtifactKind::PreparedSegment | WorkerArtifactKind::CanonicalSegment,
+                None | Some(0),
+            ) => {
                 return Err(CdfError::contract(
-                    "verified canonical segment must contain an observed nonzero row count",
+                    "verified prepared or canonical segment must contain an observed nonzero row count",
                 ));
             }
             (WorkerArtifactKind::Quarantine, None) => {
@@ -955,10 +960,15 @@ impl VerifiedWorkerArtifactFacts {
                     "verified quarantine artifact must contain an observed row count",
                 ));
             }
-            (WorkerArtifactKind::CanonicalSegment | WorkerArtifactKind::Quarantine, Some(_)) => {}
+            (
+                WorkerArtifactKind::PreparedSegment
+                | WorkerArtifactKind::CanonicalSegment
+                | WorkerArtifactKind::Quarantine,
+                Some(_),
+            ) => {}
             (_, Some(_)) => {
                 return Err(CdfError::contract(
-                    "verified row count is only valid for canonical segment or quarantine artifacts",
+                    "verified row count is only valid for prepared, canonical, or quarantine artifacts",
                 ));
             }
             (_, None) => {}
@@ -1802,6 +1812,12 @@ impl PartitionAttemptEnvelope {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WorkerArtifactRole {
+    PreparedSegment {
+        segment_id: SegmentId,
+        partition_ordinal: u32,
+        segment_ordinal: u32,
+        row_count: u64,
+    },
     CanonicalSegment {
         segment_id: SegmentId,
         partition_ordinal: u32,
@@ -1817,6 +1833,7 @@ pub enum WorkerArtifactRole {
 impl WorkerArtifactRole {
     fn expected_kind(&self) -> WorkerArtifactKind {
         match self {
+            Self::PreparedSegment { .. } => WorkerArtifactKind::PreparedSegment,
             Self::CanonicalSegment { .. } => WorkerArtifactKind::CanonicalSegment,
             Self::Quarantine => WorkerArtifactKind::Quarantine,
             Self::Residual => WorkerArtifactKind::Residual,
@@ -1841,7 +1858,12 @@ impl WorkerArtifactReceipt {
                 "worker artifact receipt role does not match its typed artifact reference",
             ));
         }
-        if let WorkerArtifactRole::CanonicalSegment {
+        if let WorkerArtifactRole::PreparedSegment {
+            segment_id,
+            row_count,
+            ..
+        }
+        | WorkerArtifactRole::CanonicalSegment {
             segment_id,
             row_count,
             ..
@@ -2096,7 +2118,8 @@ impl PartitionWorkerResult {
         }
         let segment_rows = self.artifacts.iter().try_fold(0_u64, |total, receipt| {
             let rows = match receipt.role {
-                WorkerArtifactRole::CanonicalSegment { row_count, .. } => row_count,
+                WorkerArtifactRole::PreparedSegment { row_count, .. }
+                | WorkerArtifactRole::CanonicalSegment { row_count, .. } => row_count,
                 _ => 0,
             };
             total
@@ -2164,7 +2187,10 @@ impl PartitionWorkerResult {
                     "partition worker result contains an unauthorized artifact reference",
                 ));
             }
-            if let WorkerArtifactRole::CanonicalSegment {
+            if let WorkerArtifactRole::PreparedSegment {
+                partition_ordinal, ..
+            }
+            | WorkerArtifactRole::CanonicalSegment {
                 partition_ordinal, ..
             } = receipt.role
                 && partition_ordinal != task.partition.canonical_partition_ordinal
@@ -2176,15 +2202,16 @@ impl PartitionWorkerResult {
             let facts = verifier.verify_artifact(&receipt.artifact)?;
             facts.validate_for(&receipt.artifact)?;
             match receipt.role {
-                WorkerArtifactRole::CanonicalSegment { row_count, .. } => {
+                WorkerArtifactRole::PreparedSegment { row_count, .. }
+                | WorkerArtifactRole::CanonicalSegment { row_count, .. } => {
                     let observed_rows = facts.row_count().ok_or_else(|| {
                         CdfError::contract(
-                            "verified canonical segment is missing an observed row count",
+                            "verified prepared or canonical segment is missing an observed row count",
                         )
                     })?;
                     if observed_rows != row_count {
                         return Err(CdfError::contract(
-                            "worker segment receipt row count does not match stored content",
+                            "worker prepared or canonical segment receipt row count does not match stored content",
                         ));
                     }
                     verified_output_rows = verified_output_rows
@@ -2324,7 +2351,12 @@ fn validate_worker_receipts(receipts: &[WorkerArtifactReceipt]) -> Result<()> {
                 "partition worker result contains a duplicate artifact receipt",
             ));
         }
-        if let WorkerArtifactRole::CanonicalSegment {
+        if let WorkerArtifactRole::PreparedSegment {
+            segment_id,
+            segment_ordinal,
+            ..
+        }
+        | WorkerArtifactRole::CanonicalSegment {
             segment_id,
             segment_ordinal,
             ..
