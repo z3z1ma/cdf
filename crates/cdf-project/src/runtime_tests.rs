@@ -2630,6 +2630,23 @@ fn compiled_test_source_plan(resource: &dyn QueryableResource) -> cdf_runtime::C
     .unwrap()
 }
 
+fn compiled_drain_test_source_plan(
+    resource: &dyn QueryableResource,
+) -> cdf_runtime::CompiledSourcePlan {
+    let mut source = compiled_test_source_plan(resource);
+    source.execution_capabilities.bounded = false;
+    source.stream_capabilities = Some(cdf_runtime::SourceStreamCapabilities {
+        quiescence: true,
+        watermark_behavior: cdf_kernel::OperatorWatermarkBehavior::Drop,
+        watermark: None,
+        safe_frontiers: vec![cdf_kernel::SafeFrontierPolicy::CanonicalAdmittedSourcePosition],
+        source_frontiers: vec![cdf_runtime::SourceFrontierCapability::FileManifest],
+        idleness_capabilities: Vec::new(),
+    });
+    source.validate().unwrap();
+    source
+}
+
 fn replace_multi_file_resource(root: &Path) -> OwnedTestResource {
     multi_file_resource_with_document(root, MULTI_FILE_RESOURCE_REPLACE)
 }
@@ -3906,6 +3923,105 @@ fn general_project_run_records_ledger_events_in_commit_gate_order() {
             .details
             .attributes
             .contains_key("elapsed_ms")
+    );
+}
+
+#[test]
+fn drain_project_settles_each_frontier_before_committing_the_next_epoch() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = multi_file_resource(temp.path());
+    let package_root = temp.path().join(".cdf/packages");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+    let package_id = "pkg-drain-epochs";
+    let source = compiled_drain_test_source_plan(&resource);
+    let bound = BoundTestResource {
+        inner: &resource,
+        compiled_source_plan_hash: cdf_runtime::artifact_hash(&source).unwrap(),
+    };
+    let extent = ExecutionExtent::Drain {
+        version: cdf_kernel::EXECUTION_EXTENT_VERSION,
+        policy: cdf_kernel::StreamEpochPolicy {
+            version: cdf_kernel::STREAM_EPOCH_POLICY_VERSION,
+            checkpoint_cadence: cdf_kernel::EpochClosureTrigger::Rows { count: 1 },
+            package_rotation: cdf_kernel::EpochClosureTrigger::Bytes { count: 1 << 20 },
+            watermark: cdf_kernel::WatermarkPolicy::Disabled,
+            late_data: cdf_kernel::LateDataAction::Quarantine,
+            safe_frontier: cdf_kernel::SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+        },
+        termination: cdf_kernel::DrainTermination::Records { count: 2 },
+    };
+    let mut plan = live_plan_for_queryable(&resource, package_id);
+    plan.execution_extent = extent.clone();
+    plan.explain.execution_extent = extent;
+    let destination =
+        ResolvedProjectDestination::duckdb(&duckdb_path, TargetName::new("events").unwrap())
+            .unwrap();
+    let plan = plan
+        .bind_compiled_source(&source)
+        .unwrap()
+        .bind_operator_graph(&source, &destination.runtime_capabilities())
+        .unwrap();
+
+    let report = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunSource::new(&bound),
+        plan,
+        package_root: package_root.clone(),
+        state_store_path: state_path.clone(),
+        pipeline_id: PipelineId::new("pipeline-drain").unwrap(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-drain").unwrap(),
+        destination,
+        run_id: Some(RunId::new("run-drain").unwrap()),
+        event_sink: None,
+        after_receipt_verified: None,
+    }))
+    .unwrap();
+
+    let drain = report.drain.as_ref().expect("drain summary");
+    assert_eq!(drain.epoch_count, 2);
+    assert_eq!(drain.total_row_count, 2);
+    assert_eq!(drain.total_segment_count, 2);
+    assert_eq!(drain.first_run_id.as_str(), "run-drain");
+    assert_eq!(drain.last_epoch.epoch_ordinal, 1);
+    assert_eq!(
+        drain.last_epoch.package_id,
+        "pkg-drain-epochs-epoch-00000000000000000001"
+    );
+    assert!(matches!(
+        drain.last_epoch.closure.cause,
+        cdf_kernel::EpochClosureCause::DrainTermination { .. }
+    ));
+    assert!(
+        package_root
+            .join(package_id)
+            .join("plan/epoch-closure.json")
+            .is_file()
+    );
+    assert!(
+        package_root
+            .join(&drain.last_epoch.package_id)
+            .join("plan/epoch-closure.json")
+            .is_file()
+    );
+
+    let store = SqliteCheckpointStore::open(&state_path).unwrap();
+    let history = store
+        .history(
+            &PipelineId::new("pipeline-drain").unwrap(),
+            &resource.descriptor().resource_id,
+            &resource.descriptor().state_scope,
+        )
+        .unwrap();
+    assert_eq!(history.len(), 2);
+    assert_eq!(
+        history[1].delta.parent_checkpoint_id,
+        Some(history[0].delta.checkpoint_id.clone())
+    );
+    assert_eq!(report.checkpoint, history[1]);
+    assert_eq!(
+        output_manifest_paths(&report),
+        vec!["events-a.ndjson", "events-b.ndjson"]
     );
 }
 

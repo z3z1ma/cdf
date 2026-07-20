@@ -306,6 +306,23 @@ pub struct RuntimeSchedulerResolution {
 }
 
 impl RuntimeSchedulerResolution {
+    /// Narrows a previously resolved run ceiling to the partitions remaining in one execution
+    /// unit. This never re-runs host or connector heuristics and can only reduce concurrency.
+    pub fn narrow_to_partition_count(&self, partition_count: usize) -> Self {
+        let mut narrowed = self.clone();
+        let partition_ceiling = u16::try_from(partition_count).unwrap_or(u16::MAX);
+        if narrowed.effective_jobs.jobs > partition_ceiling {
+            narrowed.effective_jobs.jobs = partition_ceiling;
+            narrowed
+                .effective_jobs
+                .limiting_factors
+                .push("remaining_partitions".to_owned());
+            narrowed.effective_jobs.limiting_factors.sort();
+            narrowed.effective_jobs.limiting_factors.dedup();
+        }
+        narrowed
+    }
+
     /// Revalidates the source-owned half of a recorded scheduler join immediately before work.
     /// Destination limits may narrow this result, but no caller may widen or substitute source
     /// concurrency, lane, quota, rate, or boundedness authority after planning.
@@ -1024,6 +1041,18 @@ mod tests {
             destination_in_flight_segments: None,
         };
         runtime.validate_for_source(100, &source).unwrap();
+        let narrowed = runtime.narrow_to_partition_count(1);
+        assert_eq!(narrowed.effective_jobs.jobs, 1);
+        assert!(
+            narrowed
+                .effective_jobs
+                .limiting_factors
+                .contains(&"remaining_partitions".to_owned())
+        );
+        narrowed.validate_for_source(1, &source).unwrap();
+        let empty = runtime.narrow_to_partition_count(0);
+        assert_eq!(empty.effective_jobs.jobs, 0);
+        empty.validate_for_source(0, &source).unwrap();
         let mut stale = runtime.clone();
         stale.source_quota_authority = Some("other-origin".to_owned());
         assert!(stale.validate_for_source(100, &source).is_err());

@@ -67,13 +67,12 @@ async fn run_project_with_context(
         .destination
         .output_schema(&request.plan)?
         .schema_hash;
-    let package_dir = request.package_root.join(&request.package_id);
-    refuse_existing_package_dir(&package_dir)?;
     ensure_parent_directory(&request.state_store_path)?;
 
     let ProjectRunRequest {
         resource,
         plan,
+        package_root,
         state_store_path,
         pipeline_id,
         package_id,
@@ -95,8 +94,35 @@ async fn run_project_with_context(
     ));
     destination.bind_execution_services(services.clone())?;
     let run_ledger = SqliteRunLedger::open(&state_store_path)?;
-    let run = run_ledger.create_run(run_id)?;
     let checkpoint_store = SqliteCheckpointStore::open(&state_store_path)?;
+    if matches!(
+        plan.execution_extent,
+        cdf_kernel::ExecutionExtent::Drain { .. }
+    ) {
+        return run_project_drain(DrainProjectExecution {
+            resource,
+            plan,
+            package_root,
+            pipeline_id,
+            base_package_id: package_id,
+            base_checkpoint_id: checkpoint_id,
+            destination: &mut destination,
+            run_id,
+            event_sink,
+            after_receipt_verified,
+            schema_hash,
+            services,
+            scheduler,
+            telemetry,
+            run_ledger: &run_ledger,
+            checkpoint_store: &checkpoint_store,
+        })
+        .await;
+    }
+
+    let package_dir = package_root.join(&package_id);
+    refuse_existing_package_dir(&package_dir)?;
+    let run = run_ledger.create_run(run_id)?;
     let recorder = ProjectRunRecorder::new(
         &run_ledger,
         run.run_id,
@@ -128,12 +154,207 @@ async fn run_project_with_context(
         scheduler,
         telemetry,
     };
-    match run_project_inner(execution).await {
-        Ok(report) => Ok(report),
+    match run_project_inner(execution, None).await {
+        Ok(unit) => Ok(unit.report),
         Err(error) => {
             let _ = recorder.append_run_failed(&error);
             Err(error)
         }
+    }
+}
+
+struct DrainProjectExecution<'a> {
+    resource: ProjectRunSource<'a>,
+    plan: EnginePlan,
+    package_root: PathBuf,
+    pipeline_id: PipelineId,
+    base_package_id: String,
+    base_checkpoint_id: CheckpointId,
+    destination: &'a mut ResolvedProjectDestination,
+    run_id: Option<RunId>,
+    event_sink: Option<&'a dyn RunEventSink>,
+    after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
+    schema_hash: SchemaHash,
+    services: ExecutionServices,
+    scheduler: Option<cdf_runtime::RuntimeSchedulerResolution>,
+    telemetry: RunTelemetryConfig,
+    run_ledger: &'a SqliteRunLedger,
+    checkpoint_store: &'a SqliteCheckpointStore,
+}
+
+async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<ProjectRunReport> {
+    let DrainProjectExecution {
+        resource,
+        plan,
+        package_root,
+        pipeline_id,
+        base_package_id,
+        base_checkpoint_id,
+        destination,
+        mut run_id,
+        event_sink,
+        after_receipt_verified,
+        schema_hash,
+        services,
+        scheduler,
+        telemetry,
+        run_ledger,
+        checkpoint_store,
+    } = execution;
+    let mut controller = cdf_runtime::DrainEpochController::new(&plan.execution_extent)?;
+    let initial_head = checkpoint_store.head(
+        &pipeline_id,
+        &resource.descriptor().resource_id,
+        &resource.descriptor().state_scope,
+    )?;
+    controller.bind_initial_committed_frontier(
+        initial_head.map(|checkpoint| checkpoint.delta.output_position),
+    )?;
+    let mut remaining_plan = plan;
+    let mut first_run_id = None;
+    let mut epoch_count = 0_u64;
+    let mut total_row_count = 0_u64;
+    let mut total_segment_count = 0_u64;
+
+    loop {
+        controller.validate_ready_for_epoch()?;
+        let epoch_ordinal = controller.epoch_ordinal();
+        let package_id = drain_epoch_string_id(&base_package_id, epoch_ordinal);
+        let checkpoint_id = CheckpointId::new(drain_epoch_string_id(
+            base_checkpoint_id.as_str(),
+            epoch_ordinal,
+        ))?;
+        let epoch_plan = remaining_plan
+            .clone()
+            .rebind_package_id(package_id.clone())?;
+        let package_dir = package_root.join(&package_id);
+        refuse_existing_package_dir(&package_dir)?;
+
+        let supplied_run_id = if epoch_ordinal == 0 {
+            run_id.take()
+        } else {
+            Some(RunId::new(format!(
+                "{}-epoch-{epoch_ordinal:020}",
+                first_run_id
+                    .as_ref()
+                    .ok_or_else(|| CdfError::internal("drain run omitted its first run id"))?
+            ))?)
+        };
+        let run = run_ledger.create_run(supplied_run_id)?;
+        first_run_id.get_or_insert_with(|| run.run_id.clone());
+        let recorder = ProjectRunRecorder::new(
+            run_ledger,
+            run.run_id,
+            recorder_context(
+                resource,
+                &epoch_plan,
+                &pipeline_id,
+                &package_id,
+                &package_dir,
+                destination.describe().destination_id,
+            ),
+            event_sink,
+            telemetry,
+        );
+        let unit = match run_project_inner(
+            ProjectRunExecution {
+                resource,
+                plan: &epoch_plan,
+                package_id: &package_id,
+                package_dir,
+                pipeline_id: &pipeline_id,
+                checkpoint_id: &checkpoint_id,
+                target: destination.target().clone(),
+                checkpoint_store,
+                destination: &mut *destination,
+                recorder: &recorder,
+                after_receipt_verified,
+                schema_hash: schema_hash.clone(),
+                services: services.clone(),
+                scheduler: scheduler.clone(),
+                telemetry,
+            },
+            Some(&mut controller),
+        )
+        .await
+        {
+            Ok(unit) => unit,
+            Err(error) => {
+                let _ = recorder.append_run_failed(&error);
+                return Err(error);
+            }
+        };
+
+        let Some(drain_epoch) = unit.drain_epoch else {
+            // File-manifest incrementality can prove that a requested drain has no new source
+            // positions. That is the ordinary verified no-op; it must not manufacture an empty
+            // epoch package merely to populate drain telemetry.
+            if epoch_count == 0 && unit.report.row_count == 0 {
+                return Ok(unit.report);
+            }
+            return Err(CdfError::internal(
+                "nonempty drain execution completed without canonical epoch closure evidence",
+            ));
+        };
+        if drain_epoch.consumed_partition_count == 0 {
+            return Err(CdfError::internal(
+                "drain epoch reported an invalid consumed partition count",
+            ));
+        }
+
+        let selected_remaining = unit.remaining_partition_ids.ok_or_else(|| {
+            CdfError::internal("drain epoch omitted its remaining partition authority")
+        })?;
+        remaining_plan = remaining_plan.select_partitions(&selected_remaining)?;
+        epoch_count = epoch_count
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("drain epoch count overflow"))?;
+        total_row_count = total_row_count
+            .checked_add(unit.report.row_count)
+            .ok_or_else(|| CdfError::data("drain row count overflow"))?;
+        total_segment_count = total_segment_count
+            .checked_add(
+                u64::try_from(unit.report.segment_count)
+                    .map_err(|error| CdfError::internal(error.to_string()))?,
+            )
+            .ok_or_else(|| CdfError::data("drain segment count overflow"))?;
+        let last_epoch = ProjectDrainEpochReport {
+            epoch_ordinal,
+            run_id: unit.report.run_id.clone(),
+            package_dir: unit.report.package_dir.clone(),
+            package_id: unit.report.package_id.clone(),
+            package_hash: unit.report.package_hash.clone(),
+            checkpoint: unit.report.checkpoint.clone(),
+            receipt: unit.report.receipt.clone(),
+            row_count: unit.report.row_count,
+            segment_count: unit.report.segment_count,
+            closure: drain_epoch.closure.evidence,
+        };
+        if controller.is_finished() {
+            let mut report = unit.report;
+            report.drain = Some(ProjectDrainRunReport {
+                epoch_count,
+                total_row_count,
+                total_segment_count,
+                first_run_id: first_run_id
+                    .ok_or_else(|| CdfError::internal("drain run omitted its first run id"))?,
+                last_epoch: Box::new(last_epoch),
+            });
+            return Ok(report);
+        }
+        if remaining_plan.scan.partitions.is_empty() {
+            return Err(CdfError::internal(
+                "drain source exhausted without a terminal epoch closure",
+            ));
+        }
+    }
+}
+
+fn drain_epoch_string_id(base: &str, epoch_ordinal: u64) -> String {
+    if epoch_ordinal == 0 {
+        base.to_owned()
+    } else {
+        format!("{base}-epoch-{epoch_ordinal:020}")
     }
 }
 
@@ -174,7 +395,16 @@ struct ProjectRunExecution<'a> {
     telemetry: RunTelemetryConfig,
 }
 
-async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<ProjectRunReport> {
+struct ProjectRunUnit {
+    report: ProjectRunReport,
+    drain_epoch: Option<cdf_engine::EngineDrainEpoch>,
+    remaining_partition_ids: Option<BTreeSet<cdf_kernel::PartitionId>>,
+}
+
+async fn run_project_inner(
+    execution: ProjectRunExecution<'_>,
+    mut drain_controller: Option<&mut cdf_runtime::DrainEpochController>,
+) -> Result<ProjectRunUnit> {
     execution.recorder.append_run_started()?;
 
     let resource = execution.resource.stream();
@@ -207,7 +437,13 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
             1
         })?;
     if manifest_plan.no_changed_files() {
-        return no_changed_files_report(execution, head, manifest_plan.summary);
+        return no_changed_files_report(execution, head, manifest_plan.summary).map(|report| {
+            ProjectRunUnit {
+                report,
+                drain_epoch: None,
+                remaining_partition_ids: None,
+            }
+        });
     }
 
     execution.recorder.append_package_started()?;
@@ -252,13 +488,44 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
         .with_phase_metrics(execution.recorder.phase_telemetry_enabled())
         .with_statistics_profile(execution.telemetry.statistics_profile)
         .with_execution_services(execution.services.clone());
-    let options = match execution.scheduler.clone() {
-        Some(scheduler) => options.with_scheduler_resolution(scheduler),
+    let options = match execution.scheduler.as_ref() {
+        Some(scheduler) => options.with_scheduler_resolution(
+            scheduler.narrow_to_partition_count(manifest_plan.plan.scan.partitions.len()),
+        ),
         None => options,
     };
     let retry_evidence = options.source_retry_evidence();
-    let output_result = match active_staged.as_mut() {
-        Some(staged) => {
+    let output_result = match (active_staged.as_mut(), drain_controller.as_deref_mut()) {
+        (Some(staged), Some(controller)) => {
+            let staged = std::cell::RefCell::new(staged);
+            let mut durable_segment =
+                |entry: &SegmentEntry, payload: cdf_engine::DurableSegmentPayload| {
+                    staged.borrow_mut().stage_segment(entry, payload)
+                };
+            let mut stream_finalize = || staged.borrow_mut().finish_background();
+            cdf_engine::execute_drain_epoch_with_hooks(
+                &manifest_plan.plan,
+                resource,
+                &execution.package_dir,
+                &write_package_pre_finalize_artifacts,
+                cdf_engine::DrainEpochExecution::new(controller)
+                    .with_streaming_hooks(&mut durable_segment, &mut stream_finalize),
+                options,
+            )
+            .await
+        }
+        (None, Some(controller)) => {
+            cdf_engine::execute_drain_epoch_with_hooks(
+                &manifest_plan.plan,
+                resource,
+                &execution.package_dir,
+                &write_package_pre_finalize_artifacts,
+                cdf_engine::DrainEpochExecution::new(controller),
+                options,
+            )
+            .await
+        }
+        (Some(staged), None) => {
             let staged = std::cell::RefCell::new(staged);
             let mut durable_segment =
                 |entry: &SegmentEntry, payload: cdf_engine::DurableSegmentPayload| {
@@ -276,7 +543,7 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
             )
             .await
         }
-        None => {
+        (None, None) => {
             execute_to_package_with_segment_positions_and_pre_finalize(
                 &manifest_plan.plan,
                 resource,
@@ -401,25 +668,62 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
         active_staged,
         Some(&execution.services),
     )?;
+    let drain_epoch = output.drain_epoch.clone();
+    let remaining_partition_ids = drain_epoch.as_ref().map(|epoch| {
+        manifest_plan
+            .plan
+            .scan
+            .partitions
+            .iter()
+            .skip(epoch.consumed_partition_count)
+            .map(|partition| partition.partition_id.clone())
+            .collect::<BTreeSet<_>>()
+    });
+    match (drain_controller, drain_epoch.as_ref()) {
+        (Some(controller), Some(epoch)) => {
+            if replay_report.checkpoint.delta.output_position != epoch.closure.frontier.frontier {
+                return Err(CdfError::data(
+                    "drain checkpoint output position does not match the package's canonical epoch frontier",
+                ));
+            }
+            controller.acknowledge_settlement(&replay_report.checkpoint.delta.output_position)?;
+        }
+        (Some(_), None) => {
+            return Err(CdfError::internal(
+                "drain package reached settlement without epoch closure evidence",
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(CdfError::internal(
+                "bounded project execution produced drain epoch closure evidence",
+            ));
+        }
+        (None, None) => {}
+    }
     execution.recorder.append_run_succeeded()?;
     let ledger_snapshot = execution.recorder.snapshot()?;
 
-    Ok(ProjectRunReport {
-        run_id: execution.recorder.run_id.clone(),
-        ledger_snapshot,
-        package_dir: execution.package_dir,
-        package_id: execution.package_id.to_owned(),
-        package_hash,
-        package_status: replay_report.package_status,
-        checkpoint: replay_report.checkpoint,
-        receipt: replay_report.receipt,
-        receipt_source: replay_report.receipt_source,
-        row_count,
-        segment_count,
-        file_manifest: manifest_plan.summary,
-        terminal_schema_quarantines: output.output.terminal_schema_quarantines.clone(),
-        runtime_scheduler: execution.services.scheduler_report()?,
-        source_frontier: output.source_frontier.clone(),
+    Ok(ProjectRunUnit {
+        report: ProjectRunReport {
+            run_id: execution.recorder.run_id.clone(),
+            ledger_snapshot,
+            package_dir: execution.package_dir,
+            package_id: execution.package_id.to_owned(),
+            package_hash,
+            package_status: replay_report.package_status,
+            checkpoint: replay_report.checkpoint,
+            receipt: replay_report.receipt,
+            receipt_source: replay_report.receipt_source,
+            row_count,
+            segment_count,
+            file_manifest: manifest_plan.summary,
+            terminal_schema_quarantines: output.output.terminal_schema_quarantines.clone(),
+            runtime_scheduler: execution.services.scheduler_report()?,
+            source_frontier: output.source_frontier.clone(),
+            drain: None,
+        },
+        drain_epoch,
+        remaining_partition_ids,
     })
 }
 
@@ -587,6 +891,7 @@ fn no_changed_files_report(
             .unwrap_or_default(),
         runtime_scheduler: execution.services.scheduler_report()?,
         source_frontier: cdf_runtime::SourceFrontierReport::default(),
+        drain: None,
     })
 }
 

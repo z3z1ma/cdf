@@ -107,6 +107,30 @@ pub struct ProjectRunReport {
     pub terminal_schema_quarantines: Vec<TerminalSchemaObservationQuarantine>,
     pub runtime_scheduler: cdf_runtime::RuntimeSchedulerReport,
     pub source_frontier: cdf_runtime::SourceFrontierReport,
+    pub drain: Option<ProjectDrainRunReport>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectDrainRunReport {
+    pub epoch_count: u64,
+    pub total_row_count: u64,
+    pub total_segment_count: u64,
+    pub first_run_id: RunId,
+    pub last_epoch: Box<ProjectDrainEpochReport>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectDrainEpochReport {
+    pub epoch_ordinal: u64,
+    pub run_id: RunId,
+    pub package_dir: PathBuf,
+    pub package_id: String,
+    pub package_hash: PackageHash,
+    pub checkpoint: Checkpoint,
+    pub receipt: Receipt,
+    pub row_count: u64,
+    pub segment_count: usize,
+    pub closure: cdf_kernel::EpochClosureEvidence,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
