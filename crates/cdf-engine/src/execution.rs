@@ -5438,12 +5438,7 @@ where
         RunPhase::PackageFinalize,
         elapsed_ns(finalize_started, "package finalize")?,
         profile.output_bytes,
-        manifest
-            .identity
-            .files
-            .iter()
-            .map(|file| file.byte_count)
-            .sum(),
+        manifest.identity.file_bytes,
     );
 
     Ok(PackageExecutionOutcome::Package(Box::new(

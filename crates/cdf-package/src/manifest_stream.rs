@@ -161,6 +161,9 @@ pub struct ManifestIdentityHeader {
     pub manifest_version: u16,
     pub package_id: String,
     pub layout: Vec<String>,
+    pub file_count: u64,
+    pub file_bytes: u64,
+    pub segment_count: u64,
 }
 
 /// Parses one canonical package manifest while visiting file and segment entries in stored order.
@@ -174,16 +177,39 @@ pub fn visit_package_manifest(
 ) -> Result<PackageManifestHeader> {
     let mut deserializer = serde_json::Deserializer::from_reader(reader);
     let mut callback_error = None;
-    let parsed = PackageManifestSeed {
-        file_visitor,
-        segment_visitor,
-        callback_error: &mut callback_error,
-    }
-    .deserialize(&mut deserializer);
+    let mut file_count = 0_u64;
+    let mut file_bytes = 0_u64;
+    let mut segment_count = 0_u64;
+    let parsed = {
+        let mut counted_file_visitor = |entry: FileEntry| {
+            file_count = file_count
+                .checked_add(1)
+                .ok_or_else(|| CdfError::data("package manifest file count overflowed u64"))?;
+            file_bytes = file_bytes.checked_add(entry.byte_count).ok_or_else(|| {
+                CdfError::data("package manifest identity file bytes overflowed u64")
+            })?;
+            file_visitor(entry)
+        };
+        let mut counted_segment_visitor = |entry: SegmentEntry| {
+            segment_count = segment_count
+                .checked_add(1)
+                .ok_or_else(|| CdfError::data("package manifest segment count overflowed u64"))?;
+            segment_visitor(entry)
+        };
+        PackageManifestSeed {
+            file_visitor: &mut counted_file_visitor,
+            segment_visitor: &mut counted_segment_visitor,
+            callback_error: &mut callback_error,
+        }
+        .deserialize(&mut deserializer)
+    };
     if let Some(error) = callback_error {
         return Err(error);
     }
-    let header = parsed.map_err(json_error)?;
+    let mut header = parsed.map_err(json_error)?;
+    header.identity.file_count = file_count;
+    header.identity.file_bytes = file_bytes;
+    header.identity.segment_count = segment_count;
     deserializer.end().map_err(json_error)?;
     if header.manifest_version != MANIFEST_VERSION
         || header.identity.manifest_version != MANIFEST_VERSION
@@ -373,6 +399,9 @@ impl<'de> Visitor<'de> for ManifestIdentityVisitor<'_> {
             manifest_version: required(manifest_version, "manifest_version")?,
             package_id: required(package_id, "package_id")?,
             layout: required(layout, "layout")?,
+            file_count: 0,
+            file_bytes: 0,
+            segment_count: 0,
         })
     }
 }
@@ -774,6 +803,9 @@ mod tests {
         assert_eq!(header.package_hash, manifest.package_hash);
         assert_eq!(header.identity.package_id, manifest.identity.package_id);
         assert_eq!(header.identity.layout, manifest.identity.layout);
+        assert_eq!(header.identity.file_count, 2);
+        assert_eq!(header.identity.file_bytes, 30);
+        assert_eq!(header.identity.segment_count, 1);
         assert_eq!(header.lifecycle, manifest.lifecycle);
         assert_eq!(header.signature, manifest.signature);
         assert!(!header.has_archives);

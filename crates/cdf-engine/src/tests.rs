@@ -1704,8 +1704,8 @@ fn run_actual_isolated_engine_equivalence(
     partition_count: usize,
     extent: ExecutionExtent,
 ) -> (
-    EngineRunOutputWithSegmentPositions,
-    EngineRunOutputWithSegmentPositions,
+    RetainedEngineRun,
+    RetainedEngineRun,
     Vec<cdf_runtime::PartitionWorkerResult>,
     Vec<cdf_runtime::SegmentWorkerResult>,
 ) {
@@ -1727,8 +1727,8 @@ fn run_actual_isolated_engine_equivalence_for_resource(
     direct_resource: MockResource,
     extent: ExecutionExtent,
 ) -> (
-    EngineRunOutputWithSegmentPositions,
-    EngineRunOutputWithSegmentPositions,
+    RetainedEngineRun,
+    RetainedEngineRun,
     Vec<cdf_runtime::PartitionWorkerResult>,
     Vec<cdf_runtime::SegmentWorkerResult>,
 ) {
@@ -2094,8 +2094,14 @@ fn run_actual_isolated_engine_equivalence_for_resource(
     )
     .unwrap();
     (
-        direct,
-        assembled,
+        RetainedEngineRun {
+            run: direct,
+            _package: direct_root,
+        },
+        RetainedEngineRun {
+            run: assembled,
+            _package: assembled_root,
+        },
         preparations
             .into_iter()
             .map(cdf_runtime::AdmittedPartitionWorkerResult::into_result)
@@ -6515,12 +6521,26 @@ fn skewed_plan(
     (plan, source)
 }
 
+#[derive(Debug)]
+struct RetainedEngineRun {
+    run: EngineRunOutputWithSegmentPositions,
+    _package: TempDir,
+}
+
+impl std::ops::Deref for RetainedEngineRun {
+    type Target = EngineRunOutputWithSegmentPositions;
+
+    fn deref(&self) -> &Self::Target {
+        &self.run
+    }
+}
+
 fn run_skewed_jobs(
     resource: &SkewedMockResource,
     plan: &EnginePlan,
     source: &cdf_runtime::CompiledSourcePlan,
     jobs: u16,
-) -> Result<EngineRunOutputWithSegmentPositions> {
+) -> Result<RetainedEngineRun> {
     let (_, services) = StandaloneExecutionHost::default_services(4 * 1024 * 1024 * 1024)?;
     let services = services.with_run_job_ceiling(jobs)?;
     let scheduler = cdf_runtime::resolve_runtime_scheduler(
@@ -6534,7 +6554,7 @@ fn run_skewed_jobs(
     let package = TempDir::new().unwrap();
     let pre_finalize =
         |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
-    block_on(
+    let run = block_on(
         super::execute_to_package_with_segment_positions_and_pre_finalize(
             plan,
             resource,
@@ -6544,7 +6564,11 @@ fn run_skewed_jobs(
                 .with_execution_services(services)
                 .with_scheduler_resolution(scheduler),
         ),
-    )
+    )?;
+    Ok(RetainedEngineRun {
+        run,
+        _package: package,
+    })
 }
 
 #[test]
@@ -9152,23 +9176,16 @@ fn parallel_segment_encoding_is_identical_to_inline_canonical_registration() {
     .unwrap();
 
     assert_eq!(parallel.output.manifest.identity, inline.manifest.identity);
+    let parallel_segments = parallel.output.identity_segments();
     assert_eq!(
-        parallel
-            .output
-            .manifest
-            .identity
-            .segments
+        parallel_segments
             .iter()
             .map(|segment| segment.package_row_ord_start)
             .collect::<Vec<_>>(),
         vec![0, 2]
     );
     let parallel_reader = cdf_package::PackageReader::open(parallel_dir.path()).unwrap();
-    let persisted_ordinals = parallel
-        .output
-        .manifest
-        .identity
-        .segments
+    let persisted_ordinals = parallel_segments
         .iter()
         .flat_map(|segment| {
             parallel_reader

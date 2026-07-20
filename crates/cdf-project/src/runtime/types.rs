@@ -101,7 +101,7 @@ pub struct ProjectRunReport {
     pub receipt: Receipt,
     pub receipt_source: ProjectReceiptSource,
     pub row_count: u64,
-    pub segment_count: usize,
+    pub segment_count: u64,
     pub file_manifest: Option<FileManifestRunSummary>,
     pub terminal_schema_quarantines: Vec<TerminalSchemaObservationQuarantine>,
     pub runtime_scheduler: cdf_runtime::RuntimeSchedulerReport,
@@ -175,7 +175,7 @@ pub struct ProjectDrainEpochReport {
     pub checkpoint: Checkpoint,
     pub receipt: Receipt,
     pub row_count: u64,
-    pub segment_count: usize,
+    pub segment_count: u64,
     pub closure: cdf_kernel::EpochClosureEvidence,
     pub observed_at_unix_milliseconds: u64,
 }

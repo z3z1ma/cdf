@@ -17,11 +17,10 @@ use cdf_package_contract::{
     DEDUP_PROVENANCE_DIRECTORY, DEDUP_PROVENANCE_VERSION, DEDUP_SUMMARY_FILE,
     DEDUP_SUMMARY_VERSION, DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage,
     LATE_DATA_EVIDENCE_FILE, LATE_DATA_PAYLOAD_CATALOG_FILE, LateDataEvidence,
-    LateDataPayloadCatalog, PROCESSED_OBSERVATIONS_FILE, PackageManifest, PackageReplayInputs,
-    PackageStatus, ProcessedObservationEvidenceArtifact, QuarantineRecord, ReplayView,
-    SCAN_PLAN_FILE, STATE_INPUT_CHECKPOINT_FILE, STATE_PROPOSED_DELTA_FILE, SegmentEntry,
-    StateDeltaPreimage, TombstoneReport, VerificationReport, VerifiedPackageAccess,
-    dedup_provenance_shard_path,
+    LateDataPayloadCatalog, PROCESSED_OBSERVATIONS_FILE, PackageReplayInputs, PackageStatus,
+    ProcessedObservationEvidenceArtifact, QuarantineRecord, ReplayView, SCAN_PLAN_FILE,
+    STATE_INPUT_CHECKPOINT_FILE, STATE_PROPOSED_DELTA_FILE, SegmentEntry, StateDeltaPreimage,
+    TombstoneReport, VerificationReport, VerifiedPackageAccess, dedup_provenance_shard_path,
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::de::DeserializeOwned;
@@ -126,7 +125,7 @@ impl VerifiedPackageReader {
 impl VerifiedPackage {
     pub(crate) fn from_finalization(
         package_dir: &Path,
-        manifest: &PackageManifest,
+        manifest: &PackageManifestHeader,
     ) -> Result<Self> {
         let package_root = Arc::new(PackageRoot::open(package_dir)?);
         Ok(Self {
@@ -137,6 +136,32 @@ impl VerifiedPackage {
 
     pub fn package_hash(&self) -> &str {
         &self.package_hash
+    }
+
+    pub fn for_each_identity_segment(
+        &self,
+        visitor: &mut dyn FnMut(SegmentEntry) -> Result<()>,
+    ) -> Result<()> {
+        let manifest = self
+            ._package_root
+            .open_std_file(cdf_package_contract::MANIFEST_FILE)?;
+        for entry in ManifestSegmentStream::new(manifest) {
+            visitor(entry?)?;
+        }
+        Ok(())
+    }
+
+    pub fn for_each_identity_file(
+        &self,
+        visitor: &mut dyn FnMut(cdf_package_contract::FileEntry) -> Result<()>,
+    ) -> Result<()> {
+        let manifest = self
+            ._package_root
+            .open_std_file(cdf_package_contract::MANIFEST_FILE)?;
+        for entry in ManifestFileStream::new(manifest) {
+            visitor(entry?)?;
+        }
+        Ok(())
     }
 }
 

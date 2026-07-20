@@ -58,7 +58,7 @@ pub const LIVE_LOCAL_FILE_V1_SOURCE_SHA256: &str =
     "sha256:b8ecb46f86694505cef18e88722db9f4bc3a7c07cfb62230bf7ad123e61c9cb6";
 pub const LIVE_LOCAL_FILE_V1_SOURCE_SIZE_BYTES: u64 = 46;
 pub const LIVE_LOCAL_FILE_V1_ROW_COUNT: u64 = 2;
-pub const LIVE_LOCAL_FILE_V1_SEGMENT_COUNT: usize = 1;
+pub const LIVE_LOCAL_FILE_V1_SEGMENT_COUNT: u64 = 1;
 
 const CDF_PROJECT_TOML: &str = r#"
 [project]
@@ -199,7 +199,7 @@ pub struct LiveRunGoldenEvidence {
     pub source_size_bytes: u64,
     pub destination_rows: u64,
     pub destination_row_counts: BTreeMap<String, u64>,
-    pub segment_count: usize,
+    pub segment_count: u64,
     pub mirror_load_rows: usize,
     pub mirror_state_rows: usize,
     pub package: GoldenPackageEvidence,

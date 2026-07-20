@@ -395,10 +395,7 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
             .checked_add(unit.report.row_count)
             .ok_or_else(|| CdfError::data("drain row count overflow"))?;
         total_segment_count = total_segment_count
-            .checked_add(
-                u64::try_from(unit.report.segment_count)
-                    .map_err(|error| CdfError::internal(error.to_string()))?,
-            )
+            .checked_add(unit.report.segment_count)
             .ok_or_else(|| CdfError::data("drain segment count overflow"))?;
         let last_epoch = ProjectDrainEpochReport {
             epoch_ordinal,
@@ -901,14 +898,16 @@ async fn run_project_inner(
     let package_hash = replay_inputs.state_delta.package_hash.clone();
     let profile = &output.output.profile;
     let row_count = profile.output_rows;
-    let segment_count = output.output.identity_segments().len();
-    for (index, segment) in output.output.identity_segments().iter().enumerate() {
-        execution.recorder.append_package_segment_recorded(
-            segment,
-            index.saturating_add(1),
-            segment_count,
-        )?;
-    }
+    let segment_count = output.output.identity_segment_count();
+    let mut segment_index = 0_u64;
+    output.output.for_each_identity_segment(&mut |segment| {
+        segment_index = segment_index
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("package progress segment index overflowed u64"))?;
+        execution
+            .recorder
+            .append_package_segment_recorded(&segment, segment_index, segment_count)
+    })?;
     let quarantine_record_count = package.reader().quarantine_record_count()?;
     execution.recorder.append_package_finalized(
         &package_hash,
@@ -918,13 +917,11 @@ async fn run_project_inner(
         segment_count,
         quarantine_record_count,
     )?;
-    let has_quarantine_artifacts = output
-        .output
-        .manifest
-        .identity
-        .files
-        .iter()
-        .any(|file| file.path.starts_with("quarantine/"));
+    let mut has_quarantine_artifacts = false;
+    output.output.for_each_identity_file(&mut |file| {
+        has_quarantine_artifacts |= file.path.starts_with("quarantine/");
+        Ok(())
+    })?;
     for transition in validation_depth_transitions_recorded(
         &execution.plan.validation_program,
         head.as_ref(),

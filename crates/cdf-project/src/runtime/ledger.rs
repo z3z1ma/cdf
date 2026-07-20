@@ -97,8 +97,8 @@ impl<'a> ProjectRunRecorder<'a> {
     pub(super) fn append_package_segment_recorded(
         &self,
         segment: &SegmentEntry,
-        segment_index: usize,
-        segment_count: usize,
+        segment_index: u64,
+        segment_count: u64,
     ) -> Result<()> {
         let mut event = self.base_event(RunEventKind::PackageSegmentRecorded);
         let mut details = details_for_phase("package");
@@ -116,11 +116,11 @@ impl<'a> ProjectRunRecorder<'a> {
         );
         details.insert(
             "segment_index".to_owned(),
-            RunEventValue::U64(u64_from_usize(segment_index)?),
+            RunEventValue::U64(segment_index),
         );
         details.insert(
             "segment_count".to_owned(),
-            RunEventValue::U64(u64_from_usize(segment_count)?),
+            RunEventValue::U64(segment_count),
         );
         event.details = RunEventDetails {
             attributes: details,
@@ -134,7 +134,7 @@ impl<'a> ProjectRunRecorder<'a> {
         row_count: u64,
         byte_count: u64,
         batch_count: u64,
-        segment_count: usize,
+        segment_count: u64,
         quarantine_record_count: u64,
     ) -> Result<()> {
         let mut event = self.base_event(RunEventKind::PackageFinalized);
@@ -145,7 +145,7 @@ impl<'a> ProjectRunRecorder<'a> {
         details.insert("batch_count".to_owned(), RunEventValue::U64(batch_count));
         details.insert(
             "segment_count".to_owned(),
-            RunEventValue::U64(u64_from_usize(segment_count)?),
+            RunEventValue::U64(segment_count),
         );
         details.insert(
             "quarantine_record_count".to_owned(),
@@ -238,7 +238,7 @@ impl<'a> ProjectRunRecorder<'a> {
                 let mut details = details_for_phase("destination");
                 details.insert(
                     "segment_count".to_owned(),
-                    RunEventValue::U64(u64_from_usize(segment_count)?),
+                    RunEventValue::U64(segment_count),
                 );
                 details.insert(
                     "bulk_path_id".to_owned(),

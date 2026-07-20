@@ -355,9 +355,17 @@ fn build_package<S: AsRef<str>>(
     }
 
     let manifest = builder.finish().unwrap();
+    let reader = cdf_package::PackageReader::open(builder.package_dir()).unwrap();
+    let mut finalized_segments = Vec::new();
+    reader
+        .for_each_identity_segment(&mut |segment| {
+            finalized_segments.push(segment);
+            Ok(())
+        })
+        .unwrap();
     BuiltPackage {
         hash: PackageHash::new(manifest.package_hash).unwrap(),
-        segments: manifest.identity.segments,
+        segments: finalized_segments,
     }
 }
 

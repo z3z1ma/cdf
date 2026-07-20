@@ -114,7 +114,7 @@ pub(crate) struct RunCliReport {
     receipt: RunReceiptReport,
     receipt_source: RunReceiptSourceReport,
     row_count: u64,
-    segment_count: usize,
+    segment_count: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     file_manifest: Option<RunFileManifestReport>,
     terminal_schema_quarantines: Vec<TerminalSchemaObservationQuarantine>,

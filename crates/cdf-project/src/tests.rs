@@ -113,6 +113,19 @@ fn package_identity_file_paths(reader: &cdf_package::PackageReader) -> BTreeSet<
     paths
 }
 
+fn engine_identity_segments(
+    output: &cdf_engine::EngineRunOutput,
+) -> Vec<cdf_package_contract::SegmentEntry> {
+    let mut segments = Vec::new();
+    output
+        .for_each_identity_segment(&mut |segment| {
+            segments.push(segment);
+            Ok(())
+        })
+        .unwrap();
+    segments
+}
+
 fn test_execution_services_with_slots(
     logical_cpu_slots: u16,
     memory_budget_bytes: u64,
@@ -2853,8 +2866,8 @@ schema = { fields = [
         serial.output.manifest.package_hash
     );
     assert_eq!(
-        parallel.output.identity_segments(),
-        serial.output.identity_segments()
+        engine_identity_segments(&parallel.output),
+        engine_identity_segments(&serial.output)
     );
     assert_eq!(parallel.output.profile, serial.output.profile);
     assert_eq!(parallel.output.lineage, serial.output.lineage);

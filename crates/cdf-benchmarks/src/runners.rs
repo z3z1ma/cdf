@@ -611,8 +611,7 @@ pub fn run_prepared_file_to_package(
             .with_execution_services(execution.clone())
             .with_scheduler_resolution(scheduler.clone()),
     ))?;
-    let identity_artifacts = non_segment_identity_artifacts(&output.output.manifest);
-    let segments = output.output.identity_segments().to_vec();
+    let (segments, identity_artifacts) = package_identity_parts(&output.output)?;
     Ok(PreparedSourcePackageRun {
         measurement: WorkerMeasurement {
             timed_wall_time_ns: None,
@@ -818,8 +817,7 @@ pub fn run_prepared_iceberg_to_package(
             &runtime_scheduler.source_io_controller,
         ),
     ];
-    let identity_artifacts = non_segment_identity_artifacts(&output.output.manifest);
-    let segments = output.output.identity_segments().to_vec();
+    let (segments, identity_artifacts) = package_identity_parts(&output.output)?;
     Ok(PreparedSourcePackageRun {
         measurement: WorkerMeasurement {
             timed_wall_time_ns: None,
@@ -842,22 +840,27 @@ pub fn run_prepared_iceberg_to_package(
     })
 }
 
-fn non_segment_identity_artifacts(
-    manifest: &cdf_package_contract::PackageManifest,
-) -> Vec<cdf_package_contract::FileEntry> {
-    let segment_paths = manifest
-        .identity
-        .segments
-        .iter()
-        .map(|segment| segment.path.as_str())
-        .collect::<BTreeSet<_>>();
-    manifest
-        .identity
-        .files
-        .iter()
-        .filter(|entry| !segment_paths.contains(entry.path.as_str()))
-        .cloned()
-        .collect()
+fn package_identity_parts(
+    output: &cdf_engine::EngineRunOutput,
+) -> BenchResult<(
+    Vec<cdf_package_contract::SegmentEntry>,
+    Vec<cdf_package_contract::FileEntry>,
+)> {
+    let mut segments = Vec::new();
+    let mut segment_paths = BTreeSet::new();
+    output.for_each_identity_segment(&mut |segment| {
+        segment_paths.insert(segment.path.clone());
+        segments.push(segment);
+        Ok(())
+    })?;
+    let mut identity_artifacts = Vec::new();
+    output.for_each_identity_file(&mut |entry| {
+        if !segment_paths.contains(&entry.path) {
+            identity_artifacts.push(entry);
+        }
+        Ok(())
+    })?;
+    Ok((segments, identity_artifacts))
 }
 
 fn prepared_iceberg_registry(catalog: &PreparedIcebergCatalog) -> BenchResult<SourceRegistry> {

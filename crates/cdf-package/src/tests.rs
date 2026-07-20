@@ -130,16 +130,18 @@ fn finalization_does_not_reopen_registered_artifact_content() {
     let artifact = package_dir.join("stats/receipt-backed.bin");
     fs::set_permissions(&artifact, fs::Permissions::from_mode(0o000)).unwrap();
 
-    let manifest = builder.finish().unwrap();
+    builder.finish().unwrap();
+    let reader = PackageReader::open(&package_dir).unwrap();
+    let mut found = false;
+    reader
+        .for_each_identity_file(&mut |entry| {
+            found |= entry.path == "stats/receipt-backed.bin";
+            Ok(())
+        })
+        .unwrap();
 
     fs::set_permissions(&artifact, fs::Permissions::from_mode(0o600)).unwrap();
-    assert!(
-        manifest
-            .identity
-            .files
-            .iter()
-            .any(|entry| entry.path == "stats/receipt-backed.bin")
-    );
+    assert!(found);
 }
 
 #[cfg(unix)]
@@ -219,13 +221,19 @@ fn segment_encoding_completion_cannot_override_canonical_registration_order() {
         })
         .unwrap();
     assert_eq!(journal, [first, second, third]);
-    let manifest = builder.finish().unwrap();
+    builder.finish().unwrap();
+    let reader = PackageReader::open(directory.path()).unwrap();
+    let mut segment_ids = Vec::new();
+    reader
+        .for_each_identity_segment(&mut |segment| {
+            segment_ids.push(segment.segment_id);
+            Ok(())
+        })
+        .unwrap();
     assert_eq!(
-        manifest
-            .identity
-            .segments
+        segment_ids
             .iter()
-            .map(|segment| segment.segment_id.as_str())
+            .map(SegmentId::as_str)
             .collect::<Vec<_>>(),
         ["seg-000001", "seg-000002", "seg-000003"]
     );
@@ -518,7 +526,8 @@ fn build_fixture(package_dir: &Path) -> PackageManifest {
         )
         .unwrap();
     write_state_commit_artifacts(&builder, segment);
-    builder.finish().unwrap()
+    builder.finish().unwrap();
+    read_manifest(package_dir).unwrap()
 }
 
 fn write_state_commit_artifacts(builder: &PackageBuilder, segment: SegmentEntry) {
@@ -635,7 +644,8 @@ fn build_archive_fixture(package_dir: &Path) -> PackageManifest {
             )],
         )
         .unwrap();
-    builder.finish().unwrap()
+    builder.finish().unwrap();
+    read_manifest(package_dir).unwrap()
 }
 
 fn sample_receipt(package_hash: &str) -> Receipt {
@@ -764,14 +774,18 @@ fn quarantine_records_round_trip_as_parquet_identity_evidence() {
     assert_eq!(reader.quarantine_record_count().unwrap(), 2);
 
     let report = verify_package(temp.path()).unwrap();
-    assert_eq!(report.checked_file_count, manifest.identity.files.len());
-    assert!(
-        manifest
-            .identity
-            .files
-            .iter()
-            .any(|file| file.path == "quarantine/part-000001.parquet")
+    assert_eq!(
+        report.checked_file_count as u64,
+        manifest.identity.file_count
     );
+    let mut found_quarantine = false;
+    reader
+        .for_each_identity_file(&mut |file| {
+            found_quarantine |= file.path == "quarantine/part-000001.parquet";
+            Ok(())
+        })
+        .unwrap();
+    assert!(found_quarantine);
 
     let mut file = OpenOptions::new()
         .append(true)
@@ -792,7 +806,8 @@ fn quarantine_records_round_trip_as_parquet_identity_evidence() {
     builder
         .write_quarantine_records("part-000001.parquet", &records)
         .unwrap();
-    let mut manifest = builder.finish().unwrap();
+    builder.finish().unwrap();
+    let mut manifest = read_manifest(traversal.path()).unwrap();
     manifest.identity.files.push(FileEntry {
         path: "quarantine/../escape.parquet".to_owned(),
         byte_count: 0,
@@ -889,16 +904,17 @@ fn dedup_summary_round_trips_as_json_identity_evidence() {
         collect_dedup_dropped_provenance(&reader),
         vec![(0, 2), (4, 5), (7, 9)]
     );
-    assert!(
-        manifest
-            .identity
-            .files
-            .iter()
-            .any(|file| file.path == DEDUP_SUMMARY_FILE)
-    );
+    let mut found_summary = false;
+    reader
+        .for_each_identity_file(&mut |file| {
+            found_summary |= file.path == DEDUP_SUMMARY_FILE;
+            Ok(())
+        })
+        .unwrap();
+    assert!(found_summary);
     assert_eq!(
-        verify_package(temp.path()).unwrap().checked_file_count,
-        manifest.identity.files.len()
+        verify_package(temp.path()).unwrap().checked_file_count as u64,
+        manifest.identity.file_count
     );
 
     let mut file = OpenOptions::new()
@@ -934,18 +950,21 @@ fn streaming_identity_artifact_is_atomic_hashed_and_manifest_owned() {
     let receipt = artifact.finish().unwrap();
     assert_eq!(receipt.path, "stats/large-array.json");
 
-    let manifest = builder.finish().unwrap();
+    builder.finish().unwrap();
+    let reader = PackageReader::open(temp.path()).unwrap();
     let bytes = fs::read(temp.path().join(&receipt.path)).unwrap();
     assert_eq!(bytes, br#"["alpha","beta","gamma"]"#);
     assert_eq!(receipt.byte_count, bytes.len() as u64);
-    assert_eq!(
-        manifest
-            .identity
-            .files
-            .iter()
-            .find(|entry| entry.path == receipt.path),
-        Some(&receipt)
-    );
+    let mut observed = None;
+    reader
+        .for_each_identity_file(&mut |entry| {
+            if entry.path == receipt.path {
+                observed = Some(entry);
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(observed.as_ref(), Some(&receipt));
 }
 
 #[test]

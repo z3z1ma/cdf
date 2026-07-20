@@ -392,7 +392,7 @@ impl BackfillCliReport {
             .sum()
     }
 
-    fn executed_segment_count(&self) -> usize {
+    fn executed_segment_count(&self) -> u64 {
         self.slices
             .iter()
             .filter_map(|slice| slice.executed.as_ref())
@@ -469,7 +469,7 @@ struct BackfillSliceExecutionReport {
     checkpoint_id: String,
     receipt_id: String,
     row_count: u64,
-    segment_count: usize,
+    segment_count: u64,
     destination: RunDestinationReport,
 }
 

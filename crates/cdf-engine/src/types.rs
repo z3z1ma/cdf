@@ -18,8 +18,8 @@ use cdf_kernel::{
     SchemaObservationFieldQuarantine, SchemaObservationPolicy, SegmentId, SourcePosition,
     TerminalSchemaObservationQuarantine, WriteDisposition, source_name,
 };
-use cdf_package::VerifiedPackage;
-use cdf_package_contract::{PackageManifest, SegmentEntry};
+use cdf_package::{PackageManifestHeader, VerifiedPackage};
+use cdf_package_contract::{FileEntry, SegmentEntry};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1836,20 +1836,63 @@ pub struct EstimateExplain {
     pub bytes: Option<u64>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct EngineRunOutput {
-    pub manifest: PackageManifest,
+    pub manifest: PackageManifestHeader,
     pub verification: VerifiedPackage,
     pub profile: ExecutionProfile,
     pub lineage: LineageSummary,
     pub terminal_schema_quarantines: Vec<TerminalSchemaObservationQuarantine>,
 }
 
+impl PartialEq for EngineRunOutput {
+    fn eq(&self, other: &Self) -> bool {
+        self.manifest == other.manifest
+            && self.verification.package_hash() == other.verification.package_hash()
+            && self.profile == other.profile
+            && self.lineage == other.lineage
+            && self.terminal_schema_quarantines == other.terminal_schema_quarantines
+    }
+}
+
+impl Eq for EngineRunOutput {}
+
 impl EngineRunOutput {
-    /// Canonical finalized segment authority. The engine does not retain a second package-sized
-    /// segment collection after the package manifest is published.
-    pub fn identity_segments(&self) -> &[SegmentEntry] {
-        &self.manifest.identity.segments
+    pub fn for_each_identity_segment(
+        &self,
+        visitor: &mut dyn FnMut(SegmentEntry) -> Result<()>,
+    ) -> Result<()> {
+        self.verification.for_each_identity_segment(visitor)
+    }
+
+    pub fn for_each_identity_file(
+        &self,
+        visitor: &mut dyn FnMut(FileEntry) -> Result<()>,
+    ) -> Result<()> {
+        self.verification.for_each_identity_file(visitor)
+    }
+
+    pub const fn identity_segment_count(&self) -> u64 {
+        self.manifest.identity.segment_count
+    }
+
+    pub const fn identity_file_count(&self) -> u64 {
+        self.manifest.identity.file_count
+    }
+
+    pub const fn identity_file_bytes(&self) -> u64 {
+        self.manifest.identity.file_bytes
+    }
+
+    #[cfg(test)]
+    pub(crate) fn identity_segments(&self) -> Vec<SegmentEntry> {
+        let mut segments = Vec::new();
+        self.for_each_identity_segment(&mut |segment| {
+            segments.push(segment);
+            Ok(())
+        })
+        .expect("test assertion boundary must read the finalized segment authority");
+        segments
     }
 }
 

@@ -190,7 +190,8 @@ pub fn build_prepared_package_fixture(
     let segment = builder.write_segment(spec.segment_id.clone(), 0, &batch)?;
     write_stream_admission_artifacts(&builder, &admission, segment.row_count, schema.as_ref())?;
     write_prepared_state_commit_artifacts(&builder, &spec, segment)?;
-    let manifest = builder.finish_with_status(spec.status)?;
+    builder.finish_with_status(spec.status)?;
+    let manifest = cdf_package::read_manifest(&spec.package_dir)?;
 
     Ok(PreparedPackageFixture {
         package_dir: spec.package_dir,

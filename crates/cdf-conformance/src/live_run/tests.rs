@@ -146,7 +146,7 @@ fn live_local_file_expected_fixtures_contain_required_evidence() {
                 .any(|file| file.path == "stats/profile.json")
         );
         assert_eq!(
-            expected.package.segments.len(),
+            u64::try_from(expected.package.segments.len()).unwrap(),
             LIVE_LOCAL_FILE_V1_SEGMENT_COUNT
         );
         assert_eq!(

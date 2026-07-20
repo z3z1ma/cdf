@@ -718,7 +718,10 @@ fn p2_preview_run_parity_law_covers_supported_archetypes() {
             cell.source_archetype.as_str()
         );
         assert_eq!(preview.row_count, core::ROW_COUNT);
-        assert_eq!(preview.partition_count, core::SEGMENT_COUNT);
+        assert_eq!(
+            u64::try_from(preview.partition_count).unwrap(),
+            core::SEGMENT_COUNT
+        );
         assert!(
             preview.field_names.iter().any(|name| name == "id"),
             "{} preview schema should expose the id column consumed by run",

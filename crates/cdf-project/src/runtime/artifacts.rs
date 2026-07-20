@@ -231,12 +231,7 @@ pub(crate) fn state_delta_from_run(
         schema_hash,
         scope,
         head,
-        |visitor| {
-            for segment in output.output.identity_segments() {
-                visitor(segment.clone())?;
-            }
-            Ok(())
-        },
+        |visitor| output.output.for_each_identity_segment(visitor),
     )?;
     Ok(preimage.into_state_delta(PackageHash::new(
         output.output.manifest.package_hash.clone(),

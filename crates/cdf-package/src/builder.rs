@@ -706,17 +706,22 @@ impl PackageBuilder {
             .visit_segments(visitor)
     }
 
-    pub fn finish(&self) -> Result<PackageManifest> {
+    pub fn finish(&self) -> Result<crate::PackageManifestHeader> {
         self.finish_with_status(PackageStatus::Packaged)
     }
 
-    pub fn finish_verified(&self) -> Result<(PackageManifest, crate::VerifiedPackage)> {
+    pub fn finish_verified(
+        &self,
+    ) -> Result<(crate::PackageManifestHeader, crate::VerifiedPackage)> {
         let manifest = self.finish()?;
         let verified = crate::VerifiedPackage::from_finalization(&self.package_dir, &manifest)?;
         Ok((manifest, verified))
     }
 
-    pub fn finish_with_status(&self, status: PackageStatus) -> Result<PackageManifest> {
+    pub fn finish_with_status(
+        &self,
+        status: PackageStatus,
+    ) -> Result<crate::PackageManifestHeader> {
         let trace_entry = {
             let mut trace = self
                 .trace
@@ -840,6 +845,6 @@ impl PackageBuilder {
             sink.writer_mut()?,
         )?;
         sink.finish()?;
-        crate::read_manifest(&self.package_dir)
+        crate::read_manifest_header(&self.package_dir)
     }
 }

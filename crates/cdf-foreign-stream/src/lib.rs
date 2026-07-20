@@ -741,11 +741,17 @@ mod tests {
                 .unwrap();
             package_row_ord_start += row_count;
         }
-        let manifest = builder.finish().unwrap();
+        builder.finish().unwrap();
+        let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
+        let mut row_counts = Vec::new();
+        reader
+            .for_each_identity_segment(&mut |segment| {
+                row_counts.push(segment.row_count);
+                Ok(())
+            })
+            .unwrap();
         assert_eq!(segment_count, 2);
-        assert_eq!(manifest.identity.segments.len(), 2);
-        assert_eq!(manifest.identity.segments[0].row_count, 2);
-        assert_eq!(manifest.identity.segments[1].row_count, 2);
+        assert_eq!(row_counts, [2, 2]);
     }
 
     #[test]

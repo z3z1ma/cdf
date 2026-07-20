@@ -492,7 +492,8 @@ fn build_package(
             .unwrap();
         package_row_ord_start += rows;
     }
-    builder.finish().unwrap()
+    builder.finish().unwrap();
+    cdf_package::read_manifest(root).unwrap()
 }
 
 fn replay_merge_keys(disposition: &WriteDisposition) -> Vec<String> {
@@ -590,7 +591,8 @@ fn build_replay_package(
         package_row_ord_start += rows;
     }
     write_replay_artifacts(&builder, target, disposition, checkpoint_id, &entries);
-    builder.finish().unwrap()
+    builder.finish().unwrap();
+    cdf_package::read_manifest(root).unwrap()
 }
 
 fn columns() -> Vec<PostgresColumn> {

@@ -136,10 +136,7 @@ impl<'a> ReplayProgressRecorder<'a> {
                 event.plan_id = Some(plan_id.clone());
                 event.details = RunEventDetails::new([
                     ("phase", RunEventValue::String("destination".to_owned())),
-                    (
-                        "segment_count",
-                        RunEventValue::U64(u64_from_usize(segment_count)?),
-                    ),
+                    ("segment_count", RunEventValue::U64(segment_count)),
                     (
                         "bulk_path_id",
                         RunEventValue::String(bulk_path.descriptor.path_id.clone()),

@@ -745,7 +745,7 @@ pub(crate) enum PackageReplayStage<'a> {
     DestinationWriteReady,
     DestinationCommitStarted {
         plan_id: &'a PlanId,
-        segment_count: usize,
+        segment_count: u64,
         bulk_path: &'a cdf_runtime::PreparedBulkPath,
     },
     DestinationSegmentAcknowledged {
@@ -760,6 +760,10 @@ pub(crate) enum PackageReplayStage<'a> {
     PackageStatusUpdated {
         status: &'a PackageStatus,
     },
+}
+
+fn cardinality_u64(value: usize, label: &str) -> Result<u64> {
+    u64::try_from(value).map_err(|_| CdfError::data(format!("{label} exceeds u64")))
 }
 
 #[derive(Default)]
@@ -1561,7 +1565,10 @@ where
                 &hooks,
                 PackageReplayStage::DestinationCommitStarted {
                     plan_id: &prepared.plan().plan_id,
-                    segment_count: prepared.commit().segments.len(),
+                    segment_count: cardinality_u64(
+                        prepared.commit().segments.len(),
+                        "prepared destination segment count",
+                    )?,
                     bulk_path: prepared.bulk_path(),
                 },
             ) {
@@ -1885,7 +1892,10 @@ fn commit_package_through_staged_ingress(
             hooks,
             PackageReplayStage::DestinationCommitStarted {
                 plan_id: &plan.plan_id,
-                segment_count: inputs.destination_commit.segments.len(),
+                segment_count: cardinality_u64(
+                    inputs.destination_commit.segments.len(),
+                    "destination commit segment count",
+                )?,
                 bulk_path,
             },
         )?;
@@ -1976,7 +1986,10 @@ fn finalize_active_staged_ingress(
             hooks,
             PackageReplayStage::DestinationCommitStarted {
                 plan_id: &plan.plan_id,
-                segment_count: active.staged.len(),
+                segment_count: cardinality_u64(
+                    active.staged.len(),
+                    "staged destination segment count",
+                )?,
                 bulk_path: &active.bulk_path,
             },
         )?;

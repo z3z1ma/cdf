@@ -15,7 +15,7 @@ use super::{
 };
 
 pub(crate) const ROW_COUNT: u64 = 2;
-pub(crate) const SEGMENT_COUNT: usize = 1;
+pub(crate) const SEGMENT_COUNT: u64 = 1;
 
 pub(crate) fn execute_cell(
     cell: RunMatrixCell,

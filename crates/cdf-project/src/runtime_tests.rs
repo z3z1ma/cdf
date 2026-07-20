@@ -1945,7 +1945,8 @@ fn build_package_with_carryover(
         vec![reference.clone()],
     );
     write_compiled_expression_artifacts(&builder, false, true, None, false);
-    let manifest = builder.finish().unwrap();
+    builder.finish().unwrap();
+    let manifest = cdf_package::read_manifest(package_dir).unwrap();
     (manifest, reference)
 }
 
@@ -2059,7 +2060,8 @@ fn build_package_with_options_and_scan_tamper(
         .unwrap();
     write_state_commit_artifacts(&builder, &segment, disposition, checkpoint_id, Vec::new());
     write_compiled_expression_artifacts(&builder, stale, true, None, duplicate_scan_observation);
-    builder.finish_with_status(status).unwrap()
+    builder.finish_with_status(status).unwrap();
+    cdf_package::read_manifest(package_dir).unwrap()
 }
 
 fn build_zero_segment_processed_package(package_dir: &Path, package_id: &str) -> PackageManifest {
@@ -2218,7 +2220,8 @@ fn build_zero_segment_processed_package(package_dir: &Path, package_id: &str) ->
         )),
         false,
     );
-    builder.finish().unwrap()
+    builder.finish().unwrap();
+    cdf_package::read_manifest(package_dir).unwrap()
 }
 
 fn write_compiled_expression_artifacts(
@@ -3687,24 +3690,35 @@ fn engine_output_with_positions_and_checkpoint_eligibility(
     positions: Vec<SourcePosition>,
     checkpoint_eligible: bool,
 ) -> EngineRunOutputWithSegmentPositions {
-    let mut manifest = build_package(package_dir, package_id, PackageStatus::Packaged);
-    let verification = PackageReader::open(package_dir)
-        .unwrap()
-        .into_verified()
-        .unwrap()
-        .verification()
-        .clone();
-    let template = manifest.identity.segments[0].clone();
-    let segments = positions
-        .iter()
-        .enumerate()
-        .map(|(index, _)| {
-            let mut segment = template.clone();
-            segment.segment_id = SegmentId::new(format!("seg-{:06}", index + 1)).unwrap();
-            segment.path = format!("data/seg-{:06}.arrow", index + 1);
-            segment
-        })
-        .collect::<Vec<_>>();
+    let builder = PackageBuilder::create(
+        package_dir,
+        package_id,
+        cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
+            .unwrap(),
+    )
+    .unwrap();
+    let mut segments = Vec::with_capacity(positions.len());
+    let mut package_row_ord_start = 0_u64;
+    for index in 0..positions.len() {
+        let batches = cdf_package_contract::append_package_row_ord(
+            vec![sample_batch(
+                vec![1, 2, 3],
+                vec![Some("ada"), Some("grace"), None],
+            )],
+            package_row_ord_start,
+        )
+        .unwrap();
+        let segment = builder
+            .write_segment(
+                SegmentId::new(format!("seg-{:06}", index + 1)).unwrap(),
+                package_row_ord_start,
+                &batches,
+            )
+            .unwrap();
+        package_row_ord_start = package_row_ord_start.checked_add(3).unwrap();
+        segments.push(segment);
+    }
+    let (manifest, verification) = builder.finish_verified().unwrap();
     let processed_observations = positions
         .iter()
         .enumerate()
@@ -3726,7 +3740,6 @@ fn engine_output_with_positions_and_checkpoint_eligibility(
             output_position: Some(position),
         })
         .collect();
-    manifest.identity.segments = segments.clone();
     let execution_evidence = cdf_engine::EngineExecutionEvidence::new(
         processed_observations,
         Vec::new(),
@@ -8859,8 +8872,14 @@ fn ordinary_run_stages_each_segment_at_durable_publish_before_final_binding() {
     let report = futures_executor::block_on(run_project(request)).unwrap();
 
     assert_eq!(report.segment_count, 2);
-    assert_eq!(destination.write_count(), report.segment_count);
-    assert_eq!(destination.stage_threads().len(), report.segment_count);
+    assert_eq!(
+        u64::try_from(destination.write_count()).unwrap(),
+        report.segment_count
+    );
+    assert_eq!(
+        u64::try_from(destination.stage_threads().len()).unwrap(),
+        report.segment_count
+    );
     assert!(
         destination
             .stage_threads()

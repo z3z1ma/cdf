@@ -3093,7 +3093,15 @@ mod tests {
         assert_eq!(filtered.output.profile.output_rows, 2);
         let filtered_reader = cdf_package::PackageReader::open(filtered_package.path()).unwrap();
         let mut labels = Vec::new();
-        for segment in filtered.output.identity_segments() {
+        let mut filtered_segments = Vec::new();
+        filtered
+            .output
+            .for_each_identity_segment(&mut |segment| {
+                filtered_segments.push(segment);
+                Ok(())
+            })
+            .unwrap();
+        for segment in filtered_segments {
             for batch in filtered_reader.read_segment(&segment.segment_id).unwrap() {
                 assert_eq!(
                     batch
