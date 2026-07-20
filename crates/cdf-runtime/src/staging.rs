@@ -459,11 +459,10 @@ impl VerifiedFinalBinding {
             cdf_kernel::canonical_arrow_schema_hash(output_schema.as_ref())?;
         let schema_hash = inputs.schema_hash.clone();
         let mut seen = BTreeSet::new();
-        let ordered_segments = package
-            .identity_segments()
-            .iter()
-            .enumerate()
-            .map(|(ordinal, entry)| {
+        let mut ordered_segments = Vec::new();
+        package.for_each_identity_segment(&mut |entry| {
+            let ordinal = ordered_segments.len();
+            let segment = (|| {
                 if !seen.insert(entry.segment_id.clone()) {
                     return Err(CdfError::data(format!(
                         "final package repeats segment {}",
@@ -472,9 +471,11 @@ impl VerifiedFinalBinding {
                 }
                 let ordinal = u32::try_from(ordinal)
                     .map_err(|_| CdfError::data("final package has too many segments"))?;
-                StagedSegmentIdentity::from_manifest_entry(entry, schema_hash.clone(), ordinal)
-            })
-            .collect::<Result<Vec<_>>>()?;
+                StagedSegmentIdentity::from_manifest_entry(&entry, schema_hash.clone(), ordinal)
+            })()?;
+            ordered_segments.push(segment);
+            Ok(())
+        })?;
         let package_hash = PackageHash::new(package.package_hash())?;
         let commit = inputs.destination_commit;
         if commit.package_hash != package_hash

@@ -76,8 +76,14 @@ impl VerifiedPackageAccess for VerifiedPackageReader {
         self.verified.package_hash()
     }
 
-    fn identity_segments(&self) -> &[SegmentEntry] {
-        &self.reader.manifest.identity.segments
+    fn for_each_identity_segment(
+        &self,
+        visitor: &mut dyn FnMut(SegmentEntry) -> Result<()>,
+    ) -> Result<()> {
+        for segment in &self.reader.manifest.identity.segments {
+            visitor(segment.clone())?;
+        }
+        Ok(())
     }
 
     fn recorded_scan_plan(&self) -> Result<ScanPlan> {

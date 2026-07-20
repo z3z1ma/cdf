@@ -21,7 +21,6 @@ pub(crate) fn expected_segments_for_session(
     plan: &PostgresLoadPlan,
     request: &DestinationCommitRequest,
 ) -> Result<PostgresSessionSegments> {
-    let manifest_segments = package.identity_segments();
     let plan_hash = plan_package_hash(plan)?;
     if package.package_hash() != plan_hash.as_str() {
         return Err(CdfError::data(format!(
@@ -40,10 +39,10 @@ pub(crate) fn expected_segments_for_session(
 
     let plan_by_id = plan_segment_map(plan)?;
     let mut manifest_by_id = BTreeMap::new();
-    let mut order = Vec::with_capacity(manifest_segments.len());
-    for segment in manifest_segments {
+    let mut order = Vec::new();
+    package.for_each_identity_segment(&mut |segment| {
         if manifest_by_id
-            .insert(segment.segment_id.clone(), segment)
+            .insert(segment.segment_id.clone(), segment.clone())
             .is_some()
         {
             return Err(CdfError::data(format!(
@@ -52,7 +51,8 @@ pub(crate) fn expected_segments_for_session(
             )));
         }
         order.push(segment.segment_id.clone());
-    }
+        Ok(())
+    })?;
 
     let states = request.segments.clone();
     let mut state_by_id = BTreeMap::new();

@@ -630,16 +630,21 @@ fn validate_correction_package(
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let actual = package
-        .identity_segments()
-        .iter()
-        .map(|segment| {
-            (
+    let mut actual = BTreeMap::new();
+    package.for_each_identity_segment(&mut |segment| {
+        if actual
+            .insert(
                 segment.segment_id.clone(),
                 (segment.row_count, segment.byte_count),
             )
-        })
-        .collect::<BTreeMap<_, _>>();
+            .is_some()
+        {
+            return Err(CdfError::data(
+                "Postgres correction package contains duplicate manifest segments",
+            ));
+        }
+        Ok(())
+    })?;
     if expected != actual {
         return Err(CdfError::data(
             "Postgres correction request segments do not match verified package manifest",

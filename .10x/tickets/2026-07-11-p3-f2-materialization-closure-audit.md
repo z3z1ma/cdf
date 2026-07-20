@@ -72,6 +72,7 @@ No unrelated product feature or performance tuning beyond closure blockers.
 - 2026-07-18: Began the resident-manifest removal without changing `manifest.json` bytes, package hashes, or layout. A callback-driven parser now returns only constant-cardinality manifest/identity headers while visiting file and segment arrays one entry at a time in stored order. It rejects unknown, duplicate, and missing fields and stops immediately on consumer failure. Production reader/finalizer migration remains open; this is the parser boundary they will consume, not a second artifact format.
 - 2026-07-18: Moved the process-wide spill budget/reservation authority from `cdf-runtime` into the runtime-neutral `cdf-memory` resource layer. `cdf-runtime` re-exports the exact types, so existing sources, destinations, task stores, and the concurrent connector lane remain source-compatible without an import migration. The lower-level package layer can now account metadata spill directly without depending upward on orchestration or inventing a package-specific disk-budget trait.
 - 2026-07-18: Put the first production control-plane consumers on streamed manifest access. Package list counts segments with checked `u64`; GC classification reads the constant header before independent verification; and `cdf sql` inserts file/segment rows directly into its SQLite evidence catalog. None of these paths retains a second manifest-sized file/segment collection. GC verification itself still uses the resident verifier and remains part of the larger migration.
+- 2026-07-18: Removed the slice-returning segment collection from the destination-neutral verified-package contract. Adapters and final staged binding now receive canonical manifest segments through a fallible visitor, so future package persistence can stream authority without changing every destination again. PostgreSQL, Parquet conformance, and generic staging were migrated in place; no old slice method or adapter-specific package-reader escape remains.
 
 ## Evidence
 
@@ -196,6 +197,12 @@ No unrelated product feature or performance tuning beyond closure blockers.
   - `sql_mounts_checkpoint_package_and_receipt_tables_as_json_rows` passed. It proves header counts and callback-inserted file/segment rows preserve the queryable package/receipt catalog.
   - `CARGO_BUILD_JOBS=12 cargo check -p cdf-cli --all-targets --locked -j 12` and strict Clippy for `cdf-package` plus `cdf-cli` passed; `cargo fmt --all` and `git diff --check` passed.
   - Limit: package verification and the ordinary `PackageReader` still deserialize the resident stored model; those are the next owners, so this slice does not close the manifest blocker.
+- 2026-07-18 destination-neutral manifest segment visitor:
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-runtime --lib --locked -j 12` — passed, 143 tests and 2 explicit performance tests ignored. Exact staged final binding, extension registries, resource scheduling, and worker protocol remain green through the visitor contract.
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-dest-postgres --lib --locked -j 12` — passed, 26 tests and 2 release benchmarks ignored, including live append/merge/replace/correction/rollback/receipt paths.
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-dest-parquet --lib --locked -j 12` — passed, 36 tests and 1 release benchmark ignored, including staged ordering and exact manifest receipt verification.
+  - Strict Clippy for package contract/package/runtime/PostgreSQL/Parquet passed; `cargo fmt --all` and `git diff --check` passed.
+  - Limit: `VerifiedPackageReader` still visits its resident manifest vector internally. The contract no longer requires that representation, but the reader migration remains open.
 - This is partial F2 evidence only. The ticket remains active because its cross-codebase owner matrix, static architecture gates, remaining metadata-cardinality closure, and geometric stress proof are not complete.
 
 ## Review

@@ -561,8 +561,14 @@ impl VerifiedPackageAccess for TestVerifiedPackage {
         &self.package_hash
     }
 
-    fn identity_segments(&self) -> &[SegmentEntry] {
-        &self.segments
+    fn for_each_identity_segment(
+        &self,
+        visitor: &mut dyn FnMut(SegmentEntry) -> Result<()>,
+    ) -> Result<()> {
+        for segment in &self.segments {
+            visitor(segment.clone())?;
+        }
+        Ok(())
     }
 
     fn recorded_scan_plan(&self) -> Result<ScanPlan> {

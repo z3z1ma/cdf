@@ -13,7 +13,10 @@ use crate::{PackageReplayInputs, QuarantineRecord, SegmentEntry};
 /// consume verified facts without depending on package persistence.
 pub trait VerifiedPackageAccess: Send + Sync {
     fn package_hash(&self) -> &str;
-    fn identity_segments(&self) -> &[SegmentEntry];
+    fn for_each_identity_segment(
+        &self,
+        visitor: &mut dyn FnMut(SegmentEntry) -> Result<()>,
+    ) -> Result<()>;
     fn recorded_scan_plan(&self) -> Result<ScanPlan>;
     fn replay_inputs(&self) -> Result<PackageReplayInputs>;
     fn runtime_arrow_schema(&self) -> Result<SchemaRef>;
