@@ -67,6 +67,7 @@ No unrelated product feature or performance tuning beyond closure blockers.
 - 2026-07-18: Removed the engine's package-lifetime build-time `Vec<SegmentEntry>`. The package segment journal now records the complete durable entry once and exposes a canonical streaming visitor. Project pre-finalization joins that stream directly with segment-position evidence to construct state artifacts; isolated assembly no longer accumulates imported entries it never consumed. Visitor failure restores the append cursor before returning, so inspection cannot corrupt later registration. Final manifest construction still materializes its own segment array and remains an explicit F2 blocker.
 - 2026-07-18: Removed the quarantine-mirror outcome's per-part path array. The package manifest remains the artifact identity authority; mirror evidence is now constant-size and records its version, canonical quarantine directory, Parquet part count, and schema-observation presence. Directory inspection counts with checked `u64` arithmetic and the conformance laws assert the superseded `quarantine_artifacts` field is absent.
 - 2026-07-18: Deleted the tombstone report's package-sized removed-path list and its redundant sort. The manifest already owns those identities; tombstoning now returns only package hash plus a checked `u64` removed-file count.
+- 2026-07-18: Removed state pre-finalization's package-sized segment-position `BTreeMap`. The package journal and engine position evidence are both canonical streams, so state construction now joins them lockstep and fails at the first missing, reordered, or mismatched segment identity.
 
 ## Evidence
 
@@ -171,6 +172,9 @@ No unrelated product feature or performance tuning beyond closure blockers.
 - 2026-07-18 constant-size tombstone report:
   - `tombstone_removes_identity_files_but_preserves_manifest_hashes` passed and asserts the checked removed count equals manifest cardinality while identity hash/status semantics remain unchanged.
   - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-package-contract -p cdf-package --all-targets --locked -j 12 -- -D warnings`, `cargo fmt --all`, and `git diff --check` passed.
+- 2026-07-18 lockstep state segment join:
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-project state_delta_ --lib --locked -j 12` — passed all 12 state aggregation, merge, conflict, mixed-position, cursor, and receipt-count laws without the temporary ordered map.
+  - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-project --all-targets --locked -j 12 -- -D warnings`, `cargo fmt --all`, and `git diff --check` passed.
 - This is partial F2 evidence only. The ticket remains active because its cross-codebase owner matrix, static architecture gates, remaining metadata-cardinality closure, and geometric stress proof are not complete.
 
 ## Review

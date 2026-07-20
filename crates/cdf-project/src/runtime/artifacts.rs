@@ -266,18 +266,22 @@ fn state_delta_preimage_from_run_draft(
             "checkpoint state requires complete source execution; a partial or limited source execution cannot advance state",
         ));
     }
-    let mut positions = segment_positions_by_id(draft.segment_positions)?;
+    let mut positions = draft.segment_positions.iter();
     let mut state_segments = Vec::with_capacity(draft.segment_positions.len());
     visit_segments(&mut |segment| {
-        let segment_position = positions
-            .remove(&segment.segment_id)
-            .ok_or_else(|| {
-                CdfError::internal(format!(
-                    "engine output omitted source position evidence for segment {}",
-                    segment.segment_id
-                ))
-            })?
-            .ok_or_else(|| {
+        let segment_position = positions.next().ok_or_else(|| {
+            CdfError::internal(format!(
+                "engine output omitted canonical source-position evidence for segment {}",
+                segment.segment_id
+            ))
+        })?;
+        if segment_position.segment_id != segment.segment_id {
+            return Err(CdfError::internal(format!(
+                "engine source-position segment {} does not match canonical package segment {}",
+                segment_position.segment_id, segment.segment_id
+            )));
+        }
+        let output_position = segment_position.output_position.clone().ok_or_else(|| {
                 CdfError::data(format!(
                     "package segment {} has no source position evidence; cdf run cannot checkpoint without source position evidence",
                     segment.segment_id
@@ -286,13 +290,13 @@ fn state_delta_preimage_from_run_draft(
         state_segments.push(StateSegment {
             segment_id: segment.segment_id,
             scope: scope.clone(),
-            output_position: segment_position,
+            output_position,
             row_count: segment.row_count,
             byte_count: segment.byte_count,
         });
         Ok(())
     })?;
-    if !positions.is_empty() || state_segments.len() != draft.segment_positions.len() {
+    if positions.next().is_some() || state_segments.len() != draft.segment_positions.len() {
         return Err(CdfError::internal(format!(
             "engine output has {} segment source-position record(s) but the package builder exposed {} durable segment(s)",
             draft.segment_positions.len(),
@@ -360,24 +364,4 @@ fn state_delta_preimage_from_run_draft(
         schema_hash: schema_hash.clone(),
         segments: state_segments,
     })
-}
-
-fn segment_positions_by_id(
-    segment_positions: &[cdf_engine::EngineSegmentPosition],
-) -> Result<BTreeMap<SegmentId, Option<SourcePosition>>> {
-    let positions = segment_positions
-        .iter()
-        .map(|position| {
-            (
-                position.segment_id.clone(),
-                position.output_position.clone(),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-    if positions.len() != segment_positions.len() {
-        return Err(CdfError::internal(
-            "engine output contains duplicate segment source position records",
-        ));
-    }
-    Ok(positions)
 }
