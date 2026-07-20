@@ -1070,6 +1070,24 @@ fn verified_commit_stream_holds_one_accounted_segment_window() {
 }
 
 #[test]
+fn package_reader_clones_share_manifest_cardinality_authority() {
+    let temp = tempfile::tempdir().unwrap();
+    build_archive_fixture(temp.path());
+    let reader = PackageReader::open(temp.path()).unwrap();
+    let cloned = reader.clone();
+
+    assert!(std::ptr::eq(reader.manifest(), cloned.manifest()));
+
+    let memory: Arc<dyn MemoryCoordinator> =
+        Arc::new(DeterministicMemoryCoordinator::new(64 * 1024, BTreeMap::new()).unwrap());
+    let mut stream = cloned.verified_segment_stream(memory, 64 * 1024).unwrap();
+    assert_eq!(
+        stream.next().unwrap().unwrap().entry.segment_id,
+        reader.manifest().identity.segments[0].segment_id
+    );
+}
+
+#[test]
 fn concurrent_commit_segments_retain_independent_accounted_windows() {
     let temp = tempfile::tempdir().unwrap();
     let manifest = build_archive_fixture(temp.path());
@@ -1204,6 +1222,18 @@ fn verified_commit_stream_rejects_bad_segment_requests_and_row_counts() {
         "{error}"
     );
 
+    let reordered = tempfile::tempdir().unwrap();
+    let reordered_manifest = build_archive_fixture(reordered.path());
+    let reordered_reader = PackageReader::open(reordered.path()).unwrap();
+    let mut reordered_segments = state_segments_for_manifest(&reordered_manifest);
+    reordered_segments.swap(0, 1);
+    let error =
+        collect_commit_segments_for_test(&reordered_reader, &reordered_segments).unwrap_err();
+    assert!(
+        error.to_string().contains("canonical package order"),
+        "{error}"
+    );
+
     let requested_row_mismatch = tempfile::tempdir().unwrap();
     let requested_row_mismatch_manifest = build_archive_fixture(requested_row_mismatch.path());
     let requested_row_mismatch_reader = PackageReader::open(requested_row_mismatch.path()).unwrap();
@@ -1223,6 +1253,10 @@ fn verified_commit_stream_rejects_bad_segment_requests_and_row_counts() {
     let package_row_mismatch = tempfile::tempdir().unwrap();
     let mut package_row_mismatch_manifest = build_archive_fixture(package_row_mismatch.path());
     package_row_mismatch_manifest.identity.segments[1].row_count += 1;
+    package_row_mismatch_manifest.package_hash =
+        manifest_identity_hash(&package_row_mismatch_manifest.identity).unwrap();
+    package_row_mismatch_manifest.signature.signing_input =
+        package_row_mismatch_manifest.package_hash.clone();
     fs::write(
         package_row_mismatch.path().join(MANIFEST_FILE),
         canonical_json_bytes(&package_row_mismatch_manifest).unwrap(),
