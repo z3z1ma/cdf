@@ -4,13 +4,25 @@ use arrow_schema::Schema;
 use cdf_kernel::{CdfError, Result};
 use cdf_runtime::{SourceDriverDescriptor, SourceDriverId, artifact_hash};
 
+mod catalog;
+mod config;
 mod scan_task;
 
+pub use catalog::{
+    GlueCatalogClient, GlueGetTableRequest, GlueTablePointer, IcebergCatalogBinding,
+    IcebergCatalogContext, IcebergCatalogLoadRequest, IcebergCatalogRegistry, LoadedIcebergTable,
+    SelectedIcebergSnapshot, UnsupportedGlueCatalogClient, annotated_arrow_schema,
+};
+pub use config::{
+    DEFAULT_MAXIMUM_METADATA_BYTES, DEFAULT_MAXIMUM_METADATA_FILES,
+    DEFAULT_METADATA_PARSE_AMPLIFICATION_BPS, IcebergCatalogOptions, IcebergResourceOptions,
+    IcebergSnapshotSelector, IcebergSourceOptions,
+};
 pub use scan_task::{
     ICEBERG_SCAN_TASK_VERSION, ICEBERG_TASK_SET_AUTHORITY_VERSION, ICEBERG_TASK_SET_TYPE,
     IcebergDataFile, IcebergDeleteContent, IcebergDeleteFile, IcebergFileFormat,
-    IcebergJsonAuthority, IcebergReaderRequirements, IcebergScanTask, IcebergTaskSetAuthority,
-    IcebergTableIdentity,
+    IcebergJsonAuthority, IcebergReaderRequirements, IcebergScanTask, IcebergTableIdentity,
+    IcebergTaskSetAuthority,
 };
 
 pub const ICEBERG_SOURCE_DRIVER_VERSION: &str = "1.0.0";
@@ -75,7 +87,10 @@ pub fn iceberg_option_schema() -> serde_json::Value {
                     ]
                 },
                 "object_credentials": secret_reference,
-                "egress_allowlist": egress_allowlist
+                "egress_allowlist": egress_allowlist,
+                "maximum_metadata_bytes": {"type": "integer", "minimum": 1, "default": 67108864},
+                "metadata_parse_amplification_bps": {"type": "integer", "minimum": 10000, "default": 40000},
+                "maximum_metadata_files": {"type": "integer", "minimum": 1, "default": 1000000}
             }
         },
         "resource": {
@@ -91,6 +106,12 @@ pub fn iceberg_option_schema() -> serde_json::Value {
                 "table": {"type": "string", "minLength": 1},
                 "selector": {
                     "oneOf": [
+                        {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["kind"],
+                            "properties": {"kind": {"const": "current"}}
+                        },
                         {
                             "type": "object",
                             "additionalProperties": false,
@@ -173,7 +194,7 @@ mod tests {
         assert!(descriptor.schemes.is_empty());
         assert_eq!(
             descriptor.option_schema_hash,
-            "sha256:044c3e033767575a7bf2a877791977340c769d0fcc75c0023aae6823b2ca7444"
+            "sha256:e19e88e70e74eb7ecc955e7450c07416974e8e1fc6d8f630b84fedbc8b314545"
         );
         assert_eq!(
             descriptor.option_schema_hash,

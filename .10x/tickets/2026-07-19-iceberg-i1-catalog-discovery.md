@@ -1,4 +1,4 @@
-Status: blocked
+Status: active
 Created: 2026-07-19
 Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-19-iceberg-glue-source-program.md
@@ -32,11 +32,15 @@ No data-file scan, deletes, incrementality, Glue conventional external tables, c
 
 ## Journal
 
-None yet.
+- 2026-07-19: Activated after F1-F4 closure. This lane owns only metadata/catalog discovery and compiled snapshot planning; payload reads/deletes remain I2. The implementation will compose injected object access and the source registry, and will not introduce generic Iceberg/Glue branches.
+- 2026-07-19: Added strict typed source/resource configuration and a catalog-local registry with filesystem, Iceberg REST, and injected Glue bindings. All object metadata reads use `cdf-object-access`; REST uses injected `cdf-http`; Glue exposes only a CDF-owned pointer contract to its host adapter. Metadata bodies, JSON parse amplification, REST control responses, and Glue pointer state are charged to the shared discovery ledger through explicit configurable limits.
+- 2026-07-19: Corrected REST routing to follow the protocol lifecycle: `GET /v1/config?warehouse=...` negotiates `uri`/`prefix`, then load-table uses the negotiated path. Warehouse is never treated as a path prefix. Both responses are retained for same-command reuse and report actual transferred bytes without counting internal copies.
+- 2026-07-19: Catalog selection now freezes exact snapshot/ref/timestamp authority, accepts truly empty current tables without fabricating a snapshot, rejects invalid refs and unsupported format versions, and preserves Iceberg field/schema IDs, docs, defaults, source names, required flags, and physical types in the Arrow schema.
+- 2026-07-19: Focused verification: `CARGO_BUILD_JOBS=12 cargo test -p cdf-source-iceberg --lib` passed 14 tests; `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-source-iceberg --lib -- -D warnings` passed. These observations cover typed configuration, protocol routing, schema conversion, task invariants, and lint cleanliness; driver/manifest/live catalog conformance remains pending.
 
 ## Blockers
 
-Dependencies above.
+None.
 
 ## Evidence
 

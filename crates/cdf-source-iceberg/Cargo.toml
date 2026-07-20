@@ -8,13 +8,18 @@ description = "Apache Iceberg source adapter for cdf."
 
 [dependencies]
 arrow-schema = "58.3.0"
+bytes = "1.11.0"
+cdf-http = { path = "../cdf-http" }
 cdf-kernel = { path = "../cdf-kernel" }
+cdf-memory = { path = "../cdf-memory" }
+cdf-object-access = { path = "../cdf-object-access" }
 cdf-runtime = { path = "../cdf-runtime" }
 cdf-task-store = { path = "../cdf-task-store" }
+futures-util = "0.3.32"
 iceberg = { git = "https://github.com/apache/iceberg-rust.git", rev = "db4f6091850814b83989721afe12aa9e4406d6b3" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+url = "2.5.8"
 
 [dev-dependencies]
-cdf-memory = { path = "../cdf-memory" }
 tempfile = "3.27.0"

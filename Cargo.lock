@@ -1420,14 +1420,19 @@ name = "cdf-source-iceberg"
 version = "0.1.0"
 dependencies = [
  "arrow-schema",
+ "bytes",
+ "cdf-http",
  "cdf-kernel",
  "cdf-memory",
+ "cdf-object-access",
  "cdf-runtime",
  "cdf-task-store",
+ "futures-util",
  "iceberg",
  "serde",
  "serde_json",
  "tempfile",
+ "url",
 ]
 
 [[package]]
