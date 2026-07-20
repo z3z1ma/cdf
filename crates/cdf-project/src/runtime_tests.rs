@@ -224,7 +224,12 @@ fn rejecting_mock_staging_submission_services() -> cdf_runtime::ExecutionService
 
 async fn run_project(request: ProjectRunRequest<'_>) -> Result<ProjectRunReport> {
     let services = test_execution_services();
-    run_project_fixture(request, &services, RunTelemetryConfig::disabled()).await
+    Box::pin(run_project_fixture(
+        request,
+        &services,
+        RunTelemetryConfig::disabled(),
+    ))
+    .await
 }
 
 async fn run_project_with_telemetry(

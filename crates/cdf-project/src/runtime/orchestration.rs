@@ -99,7 +99,7 @@ async fn run_project_with_context(
         plan.execution_extent,
         cdf_kernel::ExecutionExtent::Drain { .. }
     ) {
-        return run_project_drain(DrainProjectExecution {
+        return Box::pin(run_project_drain(DrainProjectExecution {
             resource,
             plan,
             package_root,
@@ -116,7 +116,7 @@ async fn run_project_with_context(
             telemetry,
             run_ledger: &run_ledger,
             checkpoint_store: &checkpoint_store,
-        })
+        }))
         .await;
     }
 
@@ -262,7 +262,7 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
             event_sink,
             telemetry,
         );
-        let unit = match run_project_inner(
+        let unit = match Box::pin(run_project_inner(
             ProjectRunExecution {
                 resource,
                 plan: &remaining_plan,
@@ -282,7 +282,7 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
                 manifest_planning: ManifestPlanning::Preselected(next_manifest_summary.take()),
             },
             Some(&mut controller),
-        )
+        ))
         .await
         {
             Ok(unit) => unit,
@@ -303,13 +303,10 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
                 "nonempty drain execution completed without canonical epoch closure evidence",
             ));
         };
-        if drain_epoch.consumed_partition_count == 0 {
-            return Err(CdfError::internal(
-                "drain epoch reported an invalid consumed partition count",
-            ));
-        }
-
-        remaining_plan.advance_committed_partition_prefix(drain_epoch.consumed_partition_count)?;
+        remaining_plan.advance_committed_drain_frontier(
+            drain_epoch.consumed_partition_count,
+            drain_epoch.resume_partition.as_deref(),
+        )?;
         epoch_count = epoch_count
             .checked_add(1)
             .ok_or_else(|| CdfError::data("drain epoch count overflow"))?;

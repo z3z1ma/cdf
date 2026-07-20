@@ -32,7 +32,7 @@ use cdf_kernel::{
     ProcessedObservationPosition, ResourceStream, Result, RunId, RunPhase, RunPhaseContext,
     RunPhaseMetric, RunPhaseStatus, SOURCE_NAME_METADATA_KEY, ScopeKey, SourcePosition,
     StratifiedHashBoundedIdentity, StratifiedHashCandidate, StratifiedHashIdentityStrength,
-    TerminalSchemaObservationQuarantine, WriteDisposition,
+    TerminalSchemaObservationQuarantine, WatermarkClaim, WriteDisposition,
     aggregate_resource_closed_output_position, aggregate_resource_output_position,
     merge_terminal_position_evidence, semantic, source_name,
 };
@@ -2310,7 +2310,7 @@ pub async fn execute_drain_epoch_with_hooks<'a, R>(
 where
     R: ResourceStream + ?Sized,
 {
-    execute_to_package_inner(
+    Box::pin(execute_to_package_inner(
         None,
         plan,
         resource,
@@ -2320,7 +2320,7 @@ where
         epoch.stream_finalize,
         Some(epoch.controller),
         options,
-    )
+    ))
     .await
 }
 
@@ -2992,6 +2992,7 @@ where
         BTreeMap::<cdf_kernel::SchemaHash, cdf_contract::SchemaCoercionPlan>::new();
     let mut processed_observations = Vec::new();
     let mut checkpoint_eligible = true;
+    let mut drain_partition_resume = None;
     let mut completion_positions = Vec::<(u32, PartitionPlan, SourcePosition)>::new();
     let mut terminal_quarantines = Vec::new();
     let mut quarantine_physical_observations =
@@ -3096,6 +3097,15 @@ where
     let drain_clock_base = drain_controller
         .as_deref()
         .map_or(0, cdf_runtime::DrainEpochController::monotonic_milliseconds);
+    let drain_batch_frontiers_enabled = drain_controller.is_some()
+        && !plan
+            .compiled_source_execution
+            .as_ref()
+            .ok_or_else(|| {
+                CdfError::contract("drain execution requires compiled source authority")
+            })?
+            .execution_capabilities()
+            .bounded;
     let mut drain_epoch_closure = None;
     let mut consumed_partition_count = 0_usize;
 
@@ -3108,6 +3118,8 @@ where
         let partition_ordinal = u32::try_from(partition_ordinal_usize)
             .map_err(|_| CdfError::data("partition ordinal exceeds u32"))?;
         let partition_scope = partition.scope.clone();
+        let partition_drain_batch_frontiers_enabled =
+            drain_batch_frontiers_enabled && partition.planned_file()?.is_none();
         let current_schema_disposition = effective_schema_evidence
             .map(|evidence| partition_schema_disposition(&partition, evidence))
             .transpose()?;
@@ -3245,6 +3257,8 @@ where
             let mut partition_input_bytes = 0_u64;
             let mut partition_watermark = None;
             let mut partition_source_row_ordinal = 0_u64;
+            let mut partition_epoch_closed = false;
+            let mut partition_batch_frontiers_observed = false;
             loop {
                 if remaining_limit == Some(0) {
                     fully_processed = false;
@@ -3488,6 +3502,42 @@ where
                         !limit_truncated || position.is_batch_slice_invariant()
                     })
                     .cloned();
+                macro_rules! close_drain_epoch_at_batch_frontier {
+                    () => {
+                        if partition_drain_batch_frontiers_enabled
+                            && !matches!(
+                                batch.header.source_position.as_ref(),
+                                Some(SourcePosition::FileManifest(_))
+                            )
+                        {
+                            partition_batch_frontiers_observed = true;
+                            if let Some(closure) = observe_drain_batch_frontier(
+                                drain_controller.as_deref_mut(),
+                                resource.descriptor(),
+                                resource_schema.as_ref(),
+                                &processed_observations,
+                                &partition,
+                                &observed_positions,
+                                batch.header.row_count,
+                                batch.header.byte_count,
+                                partition_watermark.clone(),
+                                drain_clock_base.saturating_add(
+                                    u64::try_from(drain_epoch_started.elapsed().as_millis())
+                                        .unwrap_or(u64::MAX),
+                                ),
+                            )? {
+                                drain_partition_resume = Some(Box::new(crate::DrainPartitionResume {
+                                    partition_id: partition.partition_id.clone(),
+                                    start_position: closure.frontier.frontier.clone(),
+                                }));
+                                drain_epoch_closure = Some(closure);
+                                fully_processed = false;
+                                partition_epoch_closed = true;
+                                break;
+                            }
+                        }
+                    };
+                }
                 if output.num_rows() == 0 {
                     phase_measurements.add(
                         RunPhase::ValidationNormalization,
@@ -3495,6 +3545,7 @@ where
                         validation_input_bytes,
                         0,
                     );
+                    close_drain_epoch_at_batch_frontier!();
                     continue;
                 }
 
@@ -3555,6 +3606,7 @@ where
                         validation_input_bytes,
                         0,
                     );
+                    close_drain_epoch_at_batch_frontier!();
                     continue;
                 }
                 let validation_output_bytes =
@@ -3599,6 +3651,7 @@ where
                             _memory_lease: memory_lease,
                         });
                     }
+                    close_drain_epoch_at_batch_frontier!();
                     continue;
                 }
                 phase_measurements.add(
@@ -3640,6 +3693,7 @@ where
                         durable: &mut durable_segment_observer,
                     },
                 )?;
+                close_drain_epoch_at_batch_frontier!();
             }
             persist_canonical_segments(
                 segment_assembler.finish()?,
@@ -3700,6 +3754,8 @@ where
                 partition_input_batch_count,
                 partition_input_bytes,
                 partition_watermark,
+                partition_epoch_closed,
+                partition_batch_frontiers_observed,
             ))
         }
         .instrument(partition_span)
@@ -3714,8 +3770,10 @@ where
             partition_input_batch_count,
             partition_input_bytes,
             partition_watermark,
+            partition_epoch_closed,
+            partition_batch_frontiers_observed,
         ) = partition_result?;
-        checkpoint_eligible &= fully_processed;
+        checkpoint_eligible &= fully_processed || partition_epoch_closed;
         let partial_retry_attestation = if open_evidence.retry_pre_attestation.is_some()
             && completion_attestation.is_none()
         {
@@ -3883,7 +3941,7 @@ where
                             "admitted observation {observation_id:?} omitted stream-admission evidence"
                         ))
                     })?;
-                if fully_processed {
+                if fully_processed || partition_epoch_closed {
                     evidence.bind_source_position(source_position.clone())?;
                     processed_observations.push(ProcessedObservationPosition::new(
                         observation_id,
@@ -3916,8 +3974,13 @@ where
                 }
             }
         }
-        consumed_partition_count = consumed_partition_count.saturating_add(1);
+        if fully_processed {
+            consumed_partition_count = consumed_partition_count.saturating_add(1);
+        }
         if let Some(controller) = drain_controller.as_deref_mut() {
+            if partition_epoch_closed {
+                break;
+            }
             let frontier = drain_resource_frontier(
                 resource.descriptor(),
                 resource_schema.as_ref(),
@@ -3928,10 +3991,22 @@ where
                 cdf_runtime::DrainSafeFrontierObservation {
                     frontier,
                     carryover: None,
-                    admitted_batches: partition_input_batch_count,
-                    admitted_rows: partition_observed_rows,
-                    admitted_bytes: partition_input_bytes,
-                    admitted_positions: 1,
+                    admitted_batches: if partition_batch_frontiers_observed {
+                        0
+                    } else {
+                        partition_input_batch_count
+                    },
+                    admitted_rows: if partition_batch_frontiers_observed {
+                        0
+                    } else {
+                        partition_observed_rows
+                    },
+                    admitted_bytes: if partition_batch_frontiers_observed {
+                        0
+                    } else {
+                        partition_input_bytes
+                    },
+                    admitted_positions: u64::from(!partition_batch_frontiers_observed),
                     global_watermark: partition_watermark,
                     source_exhausted: consumed_partition_count == frontier_partition_count,
                     monotonic_milliseconds: drain_clock_base.saturating_add(
@@ -4242,6 +4317,7 @@ where
         drain_epoch: drain_epoch_closure.map(|closure| EngineDrainEpoch {
             closure,
             consumed_partition_count,
+            resume_partition: drain_partition_resume,
         }),
         execution_evidence,
     })
@@ -4534,6 +4610,66 @@ fn drain_resource_frontier(
                 "drain epoch cannot form a canonical safe source frontier: {error}"
             ))
         })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn observe_drain_batch_frontier(
+    controller: Option<&mut cdf_runtime::DrainEpochController>,
+    descriptor: &cdf_kernel::ResourceDescriptor,
+    schema: &Schema,
+    processed: &[ProcessedObservationPosition],
+    partition: &PartitionPlan,
+    observed_partition_positions: &[SourcePosition],
+    admitted_rows: u64,
+    admitted_bytes: u64,
+    global_watermark: Option<WatermarkClaim>,
+    monotonic_milliseconds: u64,
+) -> Result<Option<cdf_runtime::DrainEpochClosure>> {
+    let Some(controller) = controller else {
+        return Ok(None);
+    };
+    let observation_id = cdf_kernel::partition_schema_observation_id(partition);
+    let partition_position = aggregate_processed_partition_positions(
+        observation_id,
+        descriptor,
+        schema,
+        observed_partition_positions,
+        None,
+    )?;
+    let mut positions = processed
+        .iter()
+        .map(|observation| observation.source_position.clone())
+        .collect::<Vec<_>>();
+    positions.push(partition_position);
+    let frontier = aggregate_resource_closed_output_position(
+        descriptor,
+        schema,
+        controller.committed_frontier(),
+        &positions,
+    )
+    .map_err(|error| {
+        CdfError::data(format!(
+            "drain batch cannot form a canonical safe source frontier: {error}"
+        ))
+    })?;
+    match controller.observe_safe_frontier(cdf_runtime::DrainSafeFrontierObservation {
+        frontier,
+        carryover: None,
+        admitted_batches: 1,
+        admitted_rows,
+        admitted_bytes,
+        admitted_positions: 1,
+        global_watermark,
+        source_exhausted: false,
+        monotonic_milliseconds,
+        observed_at_unix_milliseconds: current_observed_at_u64_ms()?,
+    })? {
+        cdf_runtime::DrainEpochDecision::Continue => Ok(None),
+        cdf_runtime::DrainEpochDecision::Close(closure) => Ok(Some(*closure)),
+        cdf_runtime::DrainEpochDecision::FinishedNoOp => Err(CdfError::internal(
+            "drain controller classified a processed batch position as an empty epoch",
+        )),
+    }
 }
 
 fn merge_verdict_summary(total: &mut VerdictSummary, batch: VerdictSummary) {

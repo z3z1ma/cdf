@@ -319,6 +319,46 @@ impl EnginePlan {
         Ok(())
     }
 
+    /// Advances one settled drain epoch, retaining a partially consumed head partition when the
+    /// canonical closure occurred inside that partition.
+    pub fn advance_committed_drain_frontier(
+        &mut self,
+        consumed: usize,
+        resume: Option<&DrainPartitionResume>,
+    ) -> Result<()> {
+        if consumed > self.scan.partitions.len() {
+            return Err(CdfError::contract(
+                "committed drain prefix exceeds the remaining planned partitions",
+            ));
+        }
+        if consumed > 0 {
+            self.advance_committed_partition_prefix(consumed)?;
+        }
+        if let Some(resume) = resume {
+            let partition = self.scan.partitions.first_mut().ok_or_else(|| {
+                CdfError::data("drain continuation references an absent remaining partition")
+            })?;
+            if partition.partition_id != resume.partition_id {
+                return Err(CdfError::data(
+                    "drain continuation does not match the canonical remaining partition",
+                ));
+            }
+            resume.start_position.validate()?;
+            partition.start_position = Some(resume.start_position.clone());
+            if let Some(source) = &self.compiled_source_execution {
+                let schedule =
+                    cdf_runtime::CanonicalPartitionSchedule::compile(source, &self.scan)?;
+                self.explain.partition_schedule = Some(schedule.clone());
+                self.partition_schedule = Some(schedule);
+            }
+        } else if consumed == 0 {
+            return Err(CdfError::contract(
+                "drain epoch must consume a partition prefix or provide one continuation",
+            ));
+        }
+        Ok(())
+    }
+
     /// Rebinds the physical package sink for one finite drain epoch while
     /// preserving every compiled source, expression, schema, and graph
     /// authority. Package identity is epoch-local; the logical scan plan is
@@ -1842,6 +1882,13 @@ pub struct EngineRunOutputWithSegmentPositions {
 pub struct EngineDrainEpoch {
     pub closure: cdf_runtime::DrainEpochClosure,
     pub consumed_partition_count: usize,
+    pub resume_partition: Option<Box<DrainPartitionResume>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DrainPartitionResume {
+    pub partition_id: PartitionId,
+    pub start_position: SourcePosition,
 }
 
 impl EngineRunOutputWithSegmentPositions {
