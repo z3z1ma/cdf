@@ -171,6 +171,57 @@ fn segment_encoding_completion_cannot_override_canonical_registration_order() {
 }
 
 #[test]
+fn imported_canonical_segment_preserves_native_package_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let direct_root = directory.path().join("direct");
+    let imported_root = directory.path().join("imported");
+    let segment_id = SegmentId::new("seg-000001").unwrap();
+    let batch = canonical_batch(sample_batch(), 0);
+
+    let direct = PackageBuilder::create(&direct_root, "pkg-import-equivalence").unwrap();
+    let direct_segment = direct
+        .write_segment(segment_id.clone(), 0, std::slice::from_ref(&batch))
+        .unwrap();
+    let direct_manifest = direct.finish().unwrap();
+
+    let mut encoded = Vec::new();
+    encode_canonical_segment_ipc(
+        &mut encoded,
+        batch.schema().as_ref(),
+        std::slice::from_ref(&batch),
+    )
+    .unwrap();
+    let imported = PackageBuilder::create(&imported_root, "pkg-import-equivalence").unwrap();
+    let imported_segment = imported
+        .import_canonical_segment(segment_id, 0, 3, &encoded)
+        .unwrap()
+        .segment;
+    let imported_manifest = imported.finish().unwrap();
+
+    assert_eq!(imported_segment, direct_segment);
+    assert_eq!(imported_manifest, direct_manifest);
+
+    let invalid = PackageBuilder::create(
+        directory.path().join("invalid"),
+        "pkg-import-invalid-ordinal",
+    )
+    .unwrap();
+    assert!(
+        invalid
+            .import_canonical_segment(SegmentId::new("seg-invalid").unwrap(), 1, 3, &encoded)
+            .unwrap_err()
+            .message
+            .contains("ordinal")
+    );
+    assert!(
+        !invalid
+            .package_dir()
+            .join("data/seg-invalid.arrow")
+            .exists()
+    );
+}
+
+#[test]
 fn unpublished_segment_encoding_is_rolled_back_on_drop() {
     let directory = tempfile::tempdir().unwrap();
     let builder = PackageBuilder::create(directory.path(), "pkg-encode-rollback").unwrap();

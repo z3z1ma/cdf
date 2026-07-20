@@ -389,6 +389,27 @@ pub(crate) fn write_arrow_ipc_file(
     })
 }
 
+pub(crate) fn write_canonical_segment_ipc_bytes(
+    path: &Path,
+    bytes: &[u8],
+) -> Result<IpcWriteReceipt> {
+    let mut sink = AtomicArtifactSink::create(path, ArtifactDurability::SegmentPublish)?;
+    let persist_started = std::time::Instant::now();
+    sink.writer_mut()?
+        .write_all(bytes)
+        .map_err(|error| io_error(format!("write {}", path.display()), error))?;
+    let persist_hash_duration_ns = duration_ns(persist_started, "IPC import/hash")?;
+    let publish_started = std::time::Instant::now();
+    let artifact = sink.finish()?;
+    Ok(IpcWriteReceipt {
+        artifact,
+        encode_hash_duration_ns: 0,
+        publish_duration_ns: persist_hash_duration_ns
+            .checked_add(duration_ns(publish_started, "IPC import publish")?)
+            .ok_or_else(|| CdfError::internal("IPC import duration overflow"))?,
+    })
+}
+
 /// Encodes the canonical LZ4 Arrow IPC file representation used by package segments.
 ///
 /// Isolated workers use the same byte authority for durable prepared/finalized handoffs; keeping

@@ -26,7 +26,8 @@ use crate::{
         ArtifactDurability, HashingWriter, atomic_write, build_manifest,
         collect_identity_file_entries, create_layout, io_error, nested_artifact_path,
         normalize_artifact_path, package_path, remove_artifact_and_sync, segment_relative_path,
-        sync_directory, visit_identity_file_paths, write_arrow_ipc_file, write_manifest_atomic,
+        sync_directory, visit_identity_file_paths, write_arrow_ipc_file,
+        write_canonical_segment_ipc_bytes, write_manifest_atomic,
     },
 };
 
@@ -301,6 +302,51 @@ impl PackageBuilder {
         PackageSegmentEncoder {
             package_dir: self.package_dir.clone(),
         }
+    }
+
+    /// Imports already-canonical segment bytes without decoding and re-encoding their payload.
+    ///
+    /// The import validates the exact ordinal range before publishing the bytes and then crosses
+    /// the same durable receipt/segment-draft boundary as locally encoded segments.
+    pub fn import_canonical_segment(
+        &self,
+        segment_id: SegmentId,
+        package_row_ord_start: u64,
+        row_count: u64,
+        bytes: &[u8],
+    ) -> Result<SegmentWriteMetrics> {
+        if row_count == 0 {
+            return Err(CdfError::data(
+                "imported canonical segment must contain at least one row",
+            ));
+        }
+        let batches = arrow_ipc::reader::FileReader::try_new(std::io::Cursor::new(bytes), None)
+            .map_err(CdfError::from)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(CdfError::from)?;
+        cdf_package_contract::validate_package_row_ord_batches(
+            &batches,
+            package_row_ord_start,
+            row_count,
+        )?;
+        let relative_path = segment_relative_path(&segment_id)?;
+        let path = package_path(&self.package_dir, &relative_path);
+        if path.exists() {
+            return Err(CdfError::data(format!(
+                "package segment is already encoded: {}",
+                segment_id.as_str()
+            )));
+        }
+        let receipt = write_canonical_segment_ipc_bytes(&path, bytes)?;
+        self.register_encoded_segment(EncodedPackageSegment {
+            segment_id,
+            relative_path,
+            package_row_ord_start,
+            row_count,
+            receipt,
+            measure: false,
+            unpublished_path: Some(path),
+        })
     }
 
     pub fn update_status(&self, status: PackageStatus) -> Result<PackageManifest> {
