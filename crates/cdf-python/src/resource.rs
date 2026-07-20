@@ -696,6 +696,7 @@ impl QueryableResource for PythonResource {
             plan_id: PlanId::new(format!("python-plan-{}", self.descriptor.resource_id))?,
             request: request.clone(),
             partitions,
+            planned_task_set: None,
             pushed_predicates: Vec::new(),
             unsupported_predicates: request.filters.clone(),
             estimated_rows: None,

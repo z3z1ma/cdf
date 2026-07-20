@@ -373,6 +373,7 @@ impl QueryableResource for RestResource {
             plan_id: PlanId::new(format!("plan-{}", self.descriptor.resource_id))?,
             request: request.clone(),
             partitions: vec![partition],
+            planned_task_set: None,
             pushed_predicates,
             unsupported_predicates,
             estimated_rows: None,

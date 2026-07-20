@@ -400,6 +400,7 @@ pub fn negotiate_postgres_table_scan(
         partitions: vec![plan_postgres_table_partition(
             descriptor, schema, target, request,
         )?],
+        planned_task_set: None,
         pushed_predicates,
         unsupported_predicates,
         estimated_rows: None,

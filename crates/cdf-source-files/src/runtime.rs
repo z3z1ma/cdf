@@ -1113,6 +1113,7 @@ impl QueryableResource for FileResource {
             plan_id: PlanId::new(format!("plan-{}", self.descriptor.resource_id))?,
             request: request.clone(),
             partitions,
+            planned_task_set: None,
             pushed_predicates: negotiation.pushed_predicates,
             unsupported_predicates: negotiation.unsupported_predicates,
             estimated_rows: None,

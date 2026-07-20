@@ -16,7 +16,10 @@ use crate::{
     canonical_arrow::CanonicalArrowField,
     destination::DeliveryGuarantee,
     error::{CdfError, Result},
-    ids::{ContractRef, PartitionId, PlanId, PredicateId, ResourceId, SchemaHash},
+    ids::{
+        ContentObjectKey, ContentProviderGeneration, ContentStoreNamespace, ContractRef,
+        PartitionId, PlanId, PredicateId, ResourceId, SchemaHash,
+    },
     position::{FilePosition, SourcePosition},
     scope::{ScopeKey, ScopeKind},
 };
@@ -788,11 +791,119 @@ pub struct ScanPlan {
     pub plan_id: PlanId,
     pub request: ScanRequest,
     pub partitions: Vec<PartitionPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planned_task_set: Option<PlannedTaskSetReference>,
     pub pushed_predicates: Vec<PushedPredicate>,
     pub unsupported_predicates: Vec<ScanPredicate>,
     pub estimated_rows: Option<u64>,
     pub estimated_bytes: Option<u64>,
     pub delivery_guarantee: DeliveryGuarantee,
+}
+
+pub const PLANNED_TASK_SET_REFERENCE_VERSION: u16 = 1;
+
+/// Source-neutral reference to an external canonical partition/task authority.
+///
+/// High-cardinality sources leave `ScanPlan::partitions` empty and name this artifact instead;
+/// they may not retain an unbounded inline fallback. The execution host streams the artifact
+/// through its registered content-store authority.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlannedTaskSetReference {
+    pub version: u16,
+    pub task_type: String,
+    pub task_count: u64,
+    pub store_namespace: ContentStoreNamespace,
+    pub object_key: ContentObjectKey,
+    pub byte_count: u64,
+    pub content_sha256: String,
+    pub provider_generation: ContentProviderGeneration,
+}
+
+impl PlannedTaskSetReference {
+    pub fn validate(&self) -> Result<()> {
+        if self.version != PLANNED_TASK_SET_REFERENCE_VERSION {
+            return Err(CdfError::contract(format!(
+                "planned task-set reference version {} is unsupported; expected {}",
+                self.version, PLANNED_TASK_SET_REFERENCE_VERSION
+            )));
+        }
+        if self.task_type.is_empty()
+            || !self
+                .task_type
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        {
+            return Err(CdfError::contract(
+                "planned task-set type must be a canonical ASCII token",
+            ));
+        }
+        ContentStoreNamespace::new(self.store_namespace.as_str())?;
+        ContentObjectKey::new(self.object_key.as_str())?;
+        ContentProviderGeneration::new(self.provider_generation.as_str())?;
+        if self.byte_count == 0 {
+            return Err(CdfError::contract(
+                "planned task-set artifact byte count must be nonzero",
+            ));
+        }
+        let path = std::path::Path::new(self.object_key.as_str());
+        if path.is_absolute()
+            || path.components().any(|component| {
+                !matches!(
+                    component,
+                    std::path::Component::Normal(_) | std::path::Component::CurDir
+                )
+            })
+        {
+            return Err(CdfError::contract(
+                "planned task-set object key must be a safe relative path",
+            ));
+        }
+        validate_sha256_identity("planned task-set", &self.content_sha256)
+    }
+}
+
+impl ScanPlan {
+    pub fn validate_partition_authority(&self) -> Result<()> {
+        if let Some(task_set) = &self.planned_task_set {
+            task_set.validate()?;
+            if !self.partitions.is_empty() {
+                return Err(CdfError::contract(
+                    "scan plan cannot carry both external task authority and inline partitions",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn partition_count(&self) -> Result<u64> {
+        self.validate_partition_authority()?;
+        self.planned_task_set.as_ref().map_or_else(
+            || {
+                u64::try_from(self.partitions.len())
+                    .map_err(|_| CdfError::data("scan partition count exceeds u64"))
+            },
+            |task_set| Ok(task_set.task_count),
+        )
+    }
+}
+
+fn validate_sha256_identity(label: &str, value: &str) -> Result<()> {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        return Err(CdfError::contract(format!(
+            "{label} identity must use sha256:<64 lowercase hex>"
+        )));
+    };
+    if hex.len() != 64
+        || !hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return Err(CdfError::contract(format!(
+            "{label} identity must use sha256:<64 lowercase hex>"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -814,6 +925,7 @@ pub fn partition_schema_observation_id(partition: &PartitionPlan) -> &str {
 }
 
 pub fn validate_scan_partition_observation_identities(scan: &ScanPlan) -> Result<()> {
+    scan.validate_partition_authority()?;
     let mut partitions_by_observation = BTreeMap::new();
     for partition in &scan.partitions {
         let observation_id = partition_schema_observation_id(partition);
@@ -840,6 +952,7 @@ pub fn validate_scan_partition_observation_identities(scan: &ScanPlan) -> Result
 /// the scan plan. This is intentionally source-neutral and is safe to repeat
 /// when loading a recorded plan for execution or replay.
 pub fn validate_compiled_scan_intents(scan: &ScanPlan) -> Result<()> {
+    scan.validate_partition_authority()?;
     let mut expected: Option<&CompiledScanIntent> = None;
     for partition in &scan.partitions {
         let intent = &partition.scan_intent;

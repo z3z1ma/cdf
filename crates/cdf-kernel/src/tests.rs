@@ -12,6 +12,74 @@ use futures_core::Stream;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 
+fn planned_task_set_reference() -> PlannedTaskSetReference {
+    PlannedTaskSetReference {
+        version: PLANNED_TASK_SET_REFERENCE_VERSION,
+        task_type: "iceberg-scan-v1".to_owned(),
+        task_count: 1_000_000,
+        store_namespace: ContentStoreNamespace::new("planner-artifacts").unwrap(),
+        object_key: ContentObjectKey::new(
+            "task-sets/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.cdftasks",
+        )
+        .unwrap(),
+        byte_count: 64,
+        content_sha256:
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+        provider_generation: ContentProviderGeneration::new(
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .unwrap(),
+    }
+}
+
+#[test]
+fn external_task_authority_replaces_inline_partitions_without_a_fallback() {
+    let mut scan = ScanPlan {
+        plan_id: PlanId::new("external-task-plan").unwrap(),
+        request: ScanRequest {
+            resource_id: ResourceId::new("lake.events").unwrap(),
+            projection: None,
+            filters: Vec::new(),
+            limit: None,
+            order_by: Vec::new(),
+            scope: ScopeKey::Resource,
+        },
+        partitions: Vec::new(),
+        planned_task_set: Some(planned_task_set_reference()),
+        pushed_predicates: Vec::new(),
+        unsupported_predicates: Vec::new(),
+        estimated_rows: None,
+        estimated_bytes: None,
+        delivery_guarantee: DeliveryGuarantee::AtLeastOnceDuplicateRisk,
+    };
+    assert_eq!(scan.partition_count().unwrap(), 1_000_000);
+    scan.partitions.push(PartitionPlan {
+        partition_id: PartitionId::new("forbidden-inline").unwrap(),
+        scope: ScopeKey::Resource,
+        planned_position: None,
+        start_position: None,
+        scan_intent: CompiledScanIntent::full_scan(),
+        retry_safety: PartitionRetrySafety::Forbidden,
+        metadata: BTreeMap::new(),
+    });
+    assert!(
+        scan.validate_partition_authority()
+            .unwrap_err()
+            .message
+            .contains("both external task authority and inline partitions")
+    );
+}
+
+#[test]
+fn external_task_authority_rejects_tampered_identity_and_paths() {
+    let mut reference = planned_task_set_reference();
+    reference.content_sha256 = "sha256:NOT-CANONICAL".to_owned();
+    assert!(reference.validate().is_err());
+    let mut reference = planned_task_set_reference();
+    reference.object_key = ContentObjectKey::new("../escape.cdftasks").unwrap();
+    assert!(reference.validate().is_err());
+}
+
 #[test]
 fn schema_observation_identity_is_partition_scoped_for_file_partitions() {
     let partition = PartitionPlan {

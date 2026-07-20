@@ -831,6 +831,7 @@ fn stage_through_ingress_with_lease(
                 scope: ScopeKey::Resource,
             },
             partitions: Vec::new(),
+            planned_task_set: None,
             pushed_predicates: Vec::new(),
             unsupported_predicates: Vec::new(),
             estimated_rows: None,

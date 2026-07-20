@@ -6486,6 +6486,7 @@ impl QueryableResource for DataFusionMockResource {
             ))?,
             request: request.clone(),
             partitions,
+            planned_task_set: None,
             pushed_predicates,
             unsupported_predicates,
             estimated_rows: Some(6),

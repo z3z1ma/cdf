@@ -274,6 +274,7 @@ fn write_current_plan_artifacts(builder: &PackageBuilder, schema: &Schema) {
                     scope: ScopeKey::Resource,
                 },
                 partitions: Vec::new(),
+                planned_task_set: None,
                 pushed_predicates: Vec::new(),
                 unsupported_predicates: Vec::new(),
                 estimated_rows: None,

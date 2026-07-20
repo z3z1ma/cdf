@@ -976,6 +976,7 @@ mod tests {
                 plan_id: PlanId::new("plan-orders").unwrap(),
                 request: plan_request,
                 partitions: self.plan_partitions(request)?,
+                planned_task_set: None,
                 pushed_predicates,
                 unsupported_predicates,
                 estimated_rows: None,

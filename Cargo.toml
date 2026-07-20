@@ -7,6 +7,7 @@ members = [
     "crates/cdf-package-contract",
     "crates/cdf-package",
     "crates/cdf-runtime",
+    "crates/cdf-task-store",
     "crates/cdf-foreign-stream",
     "crates/cdf-memory",
     "crates/cdf-object-access",

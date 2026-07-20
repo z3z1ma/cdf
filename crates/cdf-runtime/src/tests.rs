@@ -1214,6 +1214,7 @@ impl QueryableResource for MockSourceResource {
             plan_id: PlanId::new("mock-source-plan")?,
             request: request.clone(),
             partitions: self.plan_partitions(request)?,
+            planned_task_set: None,
             pushed_predicates: Vec::new(),
             unsupported_predicates: request.filters.clone(),
             estimated_rows: Some(0),

@@ -67,6 +67,7 @@ pub enum WorkerArtifactKind {
     ExecutionExtent,
     DecodeUnitPlan,
     SegmentPlan,
+    PlannedTaskSet,
     InputPayload,
     ForeignState,
     CanonicalSegment,
@@ -99,6 +100,19 @@ pub struct WorkerArtifactReference {
     pub content_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_generation: Option<ContentProviderGeneration>,
+}
+
+impl From<&cdf_kernel::PlannedTaskSetReference> for WorkerArtifactReference {
+    fn from(value: &cdf_kernel::PlannedTaskSetReference) -> Self {
+        Self {
+            kind: WorkerArtifactKind::PlannedTaskSet,
+            store_namespace: value.store_namespace.clone(),
+            object_key: value.object_key.clone(),
+            byte_count: value.byte_count,
+            content_sha256: value.content_sha256.clone(),
+            provider_generation: Some(value.provider_generation.clone()),
+        }
+    }
 }
 
 impl WorkerArtifactReference {

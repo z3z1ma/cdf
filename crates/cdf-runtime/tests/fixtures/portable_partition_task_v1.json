@@ -3,7 +3,7 @@
   "compatibility": {
     "cdf_version": "0.1.0",
     "artifact_version": "package-v2",
-    "arrow_version": "59.1.0",
+    "arrow_version": "58.3.0",
     "relational_engine": {
       "component": "datafusion",
       "version": "51.0.0"
@@ -210,5 +210,5 @@
     ],
     "maximum_artifact_bytes": 1073741824
   },
-  "task_sha256": "sha256:a0bb8ac13b94da60feb8c1b5e7ade39b6b72b20f1d30507b23f0f3a39e12128b"
+  "task_sha256": "sha256:04c759030d33ed628c6fa2630faa377bedb116f11fa735f058f8345d631f02b3"
 }

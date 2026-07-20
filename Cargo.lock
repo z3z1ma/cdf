@@ -1421,9 +1421,13 @@ version = "0.1.0"
 dependencies = [
  "arrow-schema",
  "cdf-kernel",
+ "cdf-memory",
  "cdf-runtime",
+ "cdf-task-store",
  "iceberg",
+ "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -1499,6 +1503,22 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "cdf-task-store"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "cdf-kernel",
+ "cdf-memory",
+ "cdf-runtime",
+ "futures-executor",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]
