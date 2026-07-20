@@ -20,7 +20,7 @@ use super::{
 };
 use cdf_contract::{AnomalyFact, ValidationDepth, ValidationProgram, ValidationTransitionTrigger};
 use cdf_kernel::ScopeLeaseStore;
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 pub async fn run_project(
     request: ProjectRunRequest<'_>,
@@ -153,6 +153,7 @@ async fn run_project_with_context(
         services,
         scheduler,
         telemetry,
+        manifest_planning: ManifestPlanning::ResolveAgainstCheckpoint,
     };
     match run_project_inner(execution, None).await {
         Ok(unit) => Ok(unit.report),
@@ -208,9 +209,14 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
         &resource.descriptor().state_scope,
     )?;
     controller.bind_initial_committed_frontier(
-        initial_head.map(|checkpoint| checkpoint.delta.output_position),
+        initial_head
+            .as_ref()
+            .map(|checkpoint| checkpoint.delta.output_position.clone()),
     )?;
-    let mut remaining_plan = plan;
+    let initial_manifest =
+        plan_file_manifest_incrementality(&plan, resource.descriptor(), initial_head.as_ref())?;
+    let mut next_manifest_summary = initial_manifest.summary;
+    let mut remaining_plan = initial_manifest.plan.into_owned();
     let mut first_run_id = None;
     let mut epoch_count = 0_u64;
     let mut total_row_count = 0_u64;
@@ -224,9 +230,9 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
             base_checkpoint_id.as_str(),
             epoch_ordinal,
         ))?;
-        let epoch_plan = remaining_plan
-            .clone()
-            .rebind_package_id(package_id.clone())?;
+        if remaining_plan.package_id != package_id {
+            remaining_plan = remaining_plan.rebind_package_id(package_id.clone())?;
+        }
         let package_dir = package_root.join(&package_id);
         refuse_existing_package_dir(&package_dir)?;
 
@@ -247,7 +253,7 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
             run.run_id,
             recorder_context(
                 resource,
-                &epoch_plan,
+                &remaining_plan,
                 &pipeline_id,
                 &package_id,
                 &package_dir,
@@ -259,7 +265,7 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
         let unit = match run_project_inner(
             ProjectRunExecution {
                 resource,
-                plan: &epoch_plan,
+                plan: &remaining_plan,
                 package_id: &package_id,
                 package_dir,
                 pipeline_id: &pipeline_id,
@@ -273,6 +279,7 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
                 services: services.clone(),
                 scheduler: scheduler.clone(),
                 telemetry,
+                manifest_planning: ManifestPlanning::Preselected(next_manifest_summary.take()),
             },
             Some(&mut controller),
         )
@@ -302,10 +309,7 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
             ));
         }
 
-        let selected_remaining = unit.remaining_partition_ids.ok_or_else(|| {
-            CdfError::internal("drain epoch omitted its remaining partition authority")
-        })?;
-        remaining_plan = remaining_plan.select_partitions(&selected_remaining)?;
+        remaining_plan.advance_committed_partition_prefix(drain_epoch.consumed_partition_count)?;
         epoch_count = epoch_count
             .checked_add(1)
             .ok_or_else(|| CdfError::data("drain epoch count overflow"))?;
@@ -347,6 +351,7 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
                 "drain source exhausted without a terminal epoch closure",
             ));
         }
+        next_manifest_summary = preselected_manifest_summary(&remaining_plan)?;
     }
 }
 
@@ -393,12 +398,17 @@ struct ProjectRunExecution<'a> {
     services: ExecutionServices,
     scheduler: Option<cdf_runtime::RuntimeSchedulerResolution>,
     telemetry: RunTelemetryConfig,
+    manifest_planning: ManifestPlanning,
 }
 
 struct ProjectRunUnit {
     report: ProjectRunReport,
     drain_epoch: Option<cdf_engine::EngineDrainEpoch>,
-    remaining_partition_ids: Option<BTreeSet<cdf_kernel::PartitionId>>,
+}
+
+enum ManifestPlanning {
+    ResolveAgainstCheckpoint,
+    Preselected(Option<FileManifestRunSummary>),
 }
 
 async fn run_project_inner(
@@ -427,8 +437,15 @@ async fn run_project_inner(
         &descriptor.resource_id,
         &scope,
     )?;
-    let manifest_plan =
-        plan_file_manifest_incrementality(execution.plan, descriptor, head.as_ref())?;
+    let manifest_plan = match &execution.manifest_planning {
+        ManifestPlanning::ResolveAgainstCheckpoint => {
+            plan_file_manifest_incrementality(execution.plan, descriptor, head.as_ref())?
+        }
+        ManifestPlanning::Preselected(summary) => FileManifestPlanning {
+            plan: Cow::Borrowed(execution.plan),
+            summary: summary.clone(),
+        },
+    };
     execution
         .recorder
         .append_plan_recorded(if manifest_plan.no_changed_files() {
@@ -441,7 +458,6 @@ async fn run_project_inner(
             ProjectRunUnit {
                 report,
                 drain_epoch: None,
-                remaining_partition_ids: None,
             }
         });
     }
@@ -669,16 +685,6 @@ async fn run_project_inner(
         Some(&execution.services),
     )?;
     let drain_epoch = output.drain_epoch.clone();
-    let remaining_partition_ids = drain_epoch.as_ref().map(|epoch| {
-        manifest_plan
-            .plan
-            .scan
-            .partitions
-            .iter()
-            .skip(epoch.consumed_partition_count)
-            .map(|partition| partition.partition_id.clone())
-            .collect::<BTreeSet<_>>()
-    });
     match (drain_controller, drain_epoch.as_ref()) {
         (Some(controller), Some(epoch)) => {
             if replay_report.checkpoint.delta.output_position != epoch.closure.frontier.frontier {
@@ -723,16 +729,15 @@ async fn run_project_inner(
             drain: None,
         },
         drain_epoch,
-        remaining_partition_ids,
     })
 }
 
-struct FileManifestPlanning {
-    plan: EnginePlan,
+struct FileManifestPlanning<'a> {
+    plan: Cow<'a, EnginePlan>,
     summary: Option<FileManifestRunSummary>,
 }
 
-impl FileManifestPlanning {
+impl FileManifestPlanning<'_> {
     fn no_changed_files(&self) -> bool {
         self.summary
             .as_ref()
@@ -740,20 +745,20 @@ impl FileManifestPlanning {
     }
 }
 
-fn plan_file_manifest_incrementality(
-    plan: &EnginePlan,
+fn plan_file_manifest_incrementality<'a>(
+    plan: &'a EnginePlan,
     descriptor: &ResourceDescriptor,
     head: Option<&Checkpoint>,
-) -> Result<FileManifestPlanning> {
+) -> Result<FileManifestPlanning<'a>> {
     let Some(current_files) = file_positions_from_partitions(&plan.scan.partitions)? else {
         return Ok(FileManifestPlanning {
-            plan: plan.clone(),
+            plan: Cow::Borrowed(plan),
             summary: None,
         });
     };
     if descriptor.write_disposition != WriteDisposition::Append {
         return Ok(FileManifestPlanning {
-            plan: plan.clone(),
+            plan: Cow::Borrowed(plan),
             summary: Some(FileManifestRunSummary {
                 total_file_count: current_files.len(),
                 changed_file_count: current_files.len(),
@@ -787,13 +792,24 @@ fn plan_file_manifest_incrementality(
     let filtered = plan.clone().select_partitions(&selected)?;
 
     Ok(FileManifestPlanning {
-        plan: filtered,
+        plan: Cow::Owned(filtered),
         summary: Some(FileManifestRunSummary {
             total_file_count: current_files.len(),
             changed_file_count,
             unchanged_file_count: current_files.len().saturating_sub(changed_file_count),
         }),
     })
+}
+
+fn preselected_manifest_summary(plan: &EnginePlan) -> Result<Option<FileManifestRunSummary>> {
+    let Some(files) = file_positions_from_partitions(&plan.scan.partitions)? else {
+        return Ok(None);
+    };
+    Ok(Some(FileManifestRunSummary {
+        total_file_count: files.len(),
+        changed_file_count: files.len(),
+        unchanged_file_count: 0,
+    }))
 }
 
 fn file_positions_from_partitions(

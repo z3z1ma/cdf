@@ -285,6 +285,40 @@ impl EnginePlan {
         Ok(self)
     }
 
+    /// Advances an already-selected drain plan past one committed partition prefix.
+    ///
+    /// This is deliberately narrower than [`Self::select_partitions`]: epoch settlement may only
+    /// move forward through the exact canonical prefix returned by execution. Keeping one owned
+    /// plan and draining that prefix avoids cloning and re-filtering the entire remaining scan for
+    /// every epoch.
+    pub fn advance_committed_partition_prefix(&mut self, consumed: usize) -> Result<()> {
+        if consumed == 0 || consumed > self.scan.partitions.len() {
+            return Err(CdfError::contract(
+                "committed drain prefix must consume at least one and no more than the remaining planned partitions",
+            ));
+        }
+        if self.explain.partitions.len() != self.scan.partitions.len()
+            || !self
+                .scan
+                .partitions
+                .iter()
+                .zip(&self.explain.partitions)
+                .all(|(planned, explained)| planned.partition_id.as_str() == explained.partition_id)
+        {
+            return Err(CdfError::data(
+                "engine scan and explain partition authorities diverged before drain advancement",
+            ));
+        }
+        self.scan.partitions.drain(..consumed);
+        self.explain.partitions.drain(..consumed);
+        if let Some(source) = &self.compiled_source_execution {
+            let schedule = cdf_runtime::CanonicalPartitionSchedule::compile(source, &self.scan)?;
+            self.explain.partition_schedule = Some(schedule.clone());
+            self.partition_schedule = Some(schedule);
+        }
+        Ok(())
+    }
+
     /// Rebinds the physical package sink for one finite drain epoch while
     /// preserving every compiled source, expression, schema, and graph
     /// authority. Package identity is epoch-local; the logical scan plan is
