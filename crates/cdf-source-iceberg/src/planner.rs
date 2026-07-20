@@ -1,11 +1,15 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{Arc, Mutex, mpsc::sync_channel},
+};
 
 use cdf_kernel::{
     CdfError, CompiledScanIntent, DeliveryGuarantee, PlanId, Result, ScanPlan, ScanRequest,
     WriteDisposition,
 };
+use cdf_memory::{AccountedBytes, MemoryLease};
 use cdf_runtime::artifact_hash;
-use cdf_task_store::{ExternalTaskStore, TaskSetLimits};
+use cdf_task_store::{ExternalTaskSetWriter, ExternalTaskStore, TaskSetLimits};
 use iceberg::spec::{
     DEFAULT_SCHEMA_NAME_MAPPING, DataContentType, DataFileFormat, FormatVersion, Manifest,
     ManifestContentType, ManifestList, ManifestStatus,
@@ -13,10 +17,10 @@ use iceberg::spec::{
 use sha2::{Digest, Sha256};
 
 use crate::{
-    ICEBERG_SCAN_TASK_VERSION, ICEBERG_SOURCE_DRIVER_VERSION, ICEBERG_TASK_SET_AUTHORITY_VERSION,
-    ICEBERG_TASK_SET_TYPE, IcebergDataFile, IcebergFileFormat, IcebergJsonAuthority,
-    IcebergReaderRequirements, IcebergScanTask, IcebergSourceOptions, IcebergTaskSetAuthority,
-    LoadedIcebergTable,
+    ICEBERG_SCAN_TASK_VERSION, ICEBERG_SOURCE_BLOCKING_LANE_ID, ICEBERG_SOURCE_DRIVER_VERSION,
+    ICEBERG_TASK_SET_AUTHORITY_VERSION, ICEBERG_TASK_SET_TYPE, IcebergDataFile, IcebergFileFormat,
+    IcebergJsonAuthority, IcebergReaderRequirements, IcebergScanTask, IcebergSourceOptions,
+    IcebergTaskSetAuthority, LoadedIcebergTable,
     catalog::{load_catalog_object, reserve_parse_memory},
 };
 
@@ -126,82 +130,21 @@ pub(crate) fn plan_snapshot_scan(
                 "Iceberg manifest list contains a duplicate manifest path",
             ));
         }
-        let mut ordinal = 0_u64;
-        for manifest_file in manifests {
-            if manifest_file.content == ManifestContentType::Deletes {
-                return Err(CdfError::contract(
-                    "Iceberg delete manifests require the delete-planning capability owned by I2; no data task was admitted",
-                ));
-            }
-            if manifest_file.key_metadata.is_some() {
-                return Err(CdfError::contract(
-                    "encrypted Iceberg manifests require a configured KMS capability; plaintext key metadata is never admitted",
-                ));
-            }
-            let expected_size = u64::try_from(manifest_file.manifest_length).map_err(|_| {
-                CdfError::data("Iceberg manifest length is negative or exceeds u64")
-            })?;
-            let loaded = load_catalog_object(
-                context.catalog,
-                source,
-                &manifest_file.manifest_path,
-                Some(expected_size),
-                context.cancellation.clone(),
-            )?;
-            let parse_lease = reserve_parse_memory(
-                context.catalog.execution.memory(),
-                expected_size,
-                source.metadata_parse_amplification_bps,
-                "iceberg-manifest-parse",
-            )?;
-            let manifest_sha256 = sha256_bytes(loaded.payload.payload());
-            let manifest = Manifest::parse_avro(loaded.payload.payload())
-                .map_err(|error| CdfError::data(format!("parse Iceberg manifest: {error}")))?;
-            validate_manifest_authority(table, &manifest, &manifest_file)?;
-            for (entry_index, entry) in manifest.entries().iter().enumerate() {
-                if !entry.is_alive() {
-                    continue;
-                }
-                if entry.content_type() != DataContentType::Data {
-                    return Err(CdfError::contract(
-                        "Iceberg delete entries require the delete-planning capability owned by I2; no incomplete task set was published",
-                    ));
-                }
-                if entry.file_format() != DataFileFormat::Parquet {
-                    return Err(CdfError::contract(format!(
-                        "Iceberg data file `{}` uses unsupported format {}; v1/v2 Parquet is required",
-                        entry.file_path(),
-                        entry.file_format()
-                    )));
-                }
-                if entry.data_file().key_metadata().is_some() {
-                    return Err(CdfError::contract(format!(
-                        "Iceberg data file `{}` is encrypted but no KMS reader capability is compiled",
-                        entry.file_path()
-                    )));
-                }
-                let task = data_task(
-                    ordinal,
-                    &authority_sha256,
-                    &manifest_sha256,
-                    entry_index,
-                    &manifest_file,
-                    &manifest,
-                    entry,
-                )?;
-                estimated_rows = estimated_rows
-                    .checked_add(entry.record_count())
-                    .ok_or_else(|| CdfError::data("Iceberg row estimate exceeds u64"))?;
-                estimated_bytes = estimated_bytes
-                    .checked_add(entry.file_size_in_bytes())
-                    .ok_or_else(|| CdfError::data("Iceberg byte estimate exceeds u64"))?;
-                task.append_to(&authority, &mut writer)?;
-                ordinal = ordinal
-                    .checked_add(1)
-                    .ok_or_else(|| CdfError::data("Iceberg task ordinal exceeds u64"))?;
-            }
-            drop(parse_lease);
+        for manifest_file in &manifests {
+            validate_manifest_list_entry(manifest_file)?;
         }
+        plan_manifests_canonical(
+            manifests,
+            source,
+            table,
+            context.catalog,
+            context.cancellation.clone(),
+            &authority,
+            &authority_sha256,
+            &mut writer,
+            &mut estimated_rows,
+            &mut estimated_bytes,
+        )?;
         drop(manifest_list_parse);
     }
     let artifact = writer.finalize()?;
@@ -218,6 +161,254 @@ pub(crate) fn plan_snapshot_scan(
         estimated_bytes: Some(estimated_bytes),
         delivery_guarantee: delivery_guarantee(descriptor.write_disposition.clone()),
     })
+}
+
+struct ManifestWork {
+    listed: iceberg::spec::ManifestFile,
+    manifest_sha256: String,
+    manifest: Manifest,
+    _payload: AccountedBytes,
+    _parse_lease: MemoryLease,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn plan_manifests_canonical(
+    manifests: Vec<iceberg::spec::ManifestFile>,
+    source: &IcebergSourceOptions,
+    table: &LoadedIcebergTable,
+    catalog: &crate::IcebergCatalogContext,
+    cancellation: cdf_runtime::RunCancellation,
+    authority: &IcebergTaskSetAuthority,
+    authority_sha256: &str,
+    writer: &mut ExternalTaskSetWriter,
+    estimated_rows: &mut u64,
+    estimated_bytes: &mut u64,
+) -> Result<()> {
+    if manifests.is_empty() {
+        return Ok(());
+    }
+    let host_slots = usize::from(catalog.execution.capabilities().logical_cpu_slots.max(1));
+    let worker_count = manifests
+        .len()
+        .min(usize::from(source.maximum_concurrency))
+        .min(host_slots)
+        .max(1);
+    let manifests = Arc::new(manifests);
+    let (job_sender, job_receiver) = sync_channel::<usize>(worker_count);
+    let job_receiver = Arc::new(Mutex::new(job_receiver));
+    let (result_sender, result_receiver) =
+        sync_channel::<(usize, Result<ManifestWork>)>(worker_count);
+    let mut scope = catalog.execution.open_scope("iceberg-manifest-planning")?;
+
+    for _ in 0..worker_count {
+        let jobs = Arc::clone(&job_receiver);
+        let results = result_sender.clone();
+        let manifests = Arc::clone(&manifests);
+        let worker_catalog = catalog.clone();
+        let source = source.clone();
+        let cancellation = cancellation.clone();
+        if let Err(error) = scope.spawn_blocking(
+            ICEBERG_SOURCE_BLOCKING_LANE_ID,
+            Box::new(move || {
+                loop {
+                    cancellation.check()?;
+                    let index = match jobs
+                        .lock()
+                        .map_err(|_| CdfError::internal("Iceberg manifest work queue is poisoned"))?
+                        .recv()
+                    {
+                        Ok(index) => index,
+                        Err(_) => return Ok(()),
+                    };
+                    let result = load_manifest_work(
+                        &worker_catalog,
+                        &source,
+                        manifests[index].clone(),
+                        cancellation.clone(),
+                    );
+                    if results.send((index, result)).is_err() {
+                        return Ok(());
+                    }
+                }
+            }),
+        ) {
+            scope.cancel();
+            drop(job_sender);
+            drop(result_receiver);
+            let join = scope.join();
+            let _ = catalog.execution.run_io(join);
+            return Err(error);
+        }
+    }
+    drop(result_sender);
+
+    let initially_assigned = worker_count.min(manifests.len());
+    for index in 0..initially_assigned {
+        job_sender.send(index).map_err(|_| {
+            CdfError::internal("Iceberg manifest workers stopped before accepting initial work")
+        })?;
+    }
+    let mut next_assignment = initially_assigned;
+    let mut next_canonical_manifest = 0_usize;
+    let mut pending = BTreeMap::<usize, Result<ManifestWork>>::new();
+    let mut task_ordinal = 0_u64;
+    let drain_result = (|| -> Result<()> {
+        while next_canonical_manifest < manifests.len() {
+            cancellation.check()?;
+            let (index, result) = result_receiver.recv().map_err(|_| {
+                CdfError::internal(
+                    "Iceberg manifest workers stopped before publishing complete results",
+                )
+            })?;
+            if index < next_canonical_manifest || pending.insert(index, result).is_some() {
+                return Err(CdfError::internal(
+                    "Iceberg manifest workers published a duplicate canonical result",
+                ));
+            }
+            while let Some(work) = pending.remove(&next_canonical_manifest) {
+                emit_manifest_tasks(
+                    work?,
+                    table,
+                    authority,
+                    authority_sha256,
+                    writer,
+                    &mut task_ordinal,
+                    estimated_rows,
+                    estimated_bytes,
+                )?;
+                next_canonical_manifest += 1;
+                if next_assignment < manifests.len() {
+                    job_sender.send(next_assignment).map_err(|_| {
+                        CdfError::internal(
+                            "Iceberg manifest workers stopped before accepting bounded work",
+                        )
+                    })?;
+                    next_assignment += 1;
+                }
+            }
+        }
+        Ok(())
+    })();
+
+    drop(job_sender);
+    drop(result_receiver);
+    if drain_result.is_err() {
+        cancellation.cancel();
+        scope.cancel();
+    }
+    let join = scope.join();
+    let join_result = catalog.execution.run_io(join);
+    match (drain_result, join_result) {
+        (Err(error), _) => Err(error),
+        (Ok(()), Err(error)) => Err(error),
+        (Ok(()), Ok(_)) => Ok(()),
+    }
+}
+
+fn validate_manifest_list_entry(manifest_file: &iceberg::spec::ManifestFile) -> Result<()> {
+    if manifest_file.content == ManifestContentType::Deletes {
+        return Err(CdfError::contract(
+            "Iceberg delete manifests require the delete-planning capability owned by I2; no data task was admitted",
+        ));
+    }
+    if manifest_file.key_metadata.is_some() {
+        return Err(CdfError::contract(
+            "encrypted Iceberg manifests require a configured KMS capability; plaintext key metadata is never admitted",
+        ));
+    }
+    u64::try_from(manifest_file.manifest_length)
+        .map(|_| ())
+        .map_err(|_| CdfError::data("Iceberg manifest length is negative or exceeds u64"))
+}
+
+fn load_manifest_work(
+    catalog: &crate::IcebergCatalogContext,
+    source: &IcebergSourceOptions,
+    listed: iceberg::spec::ManifestFile,
+    cancellation: cdf_runtime::RunCancellation,
+) -> Result<ManifestWork> {
+    let expected_size = u64::try_from(listed.manifest_length)
+        .map_err(|_| CdfError::data("Iceberg manifest length is negative or exceeds u64"))?;
+    let loaded = load_catalog_object(
+        catalog,
+        source,
+        &listed.manifest_path,
+        Some(expected_size),
+        cancellation,
+    )?;
+    let parse_lease = reserve_parse_memory(
+        catalog.execution.memory(),
+        expected_size,
+        source.metadata_parse_amplification_bps,
+        "iceberg-manifest-parse",
+    )?;
+    let manifest_sha256 = sha256_bytes(loaded.payload.payload());
+    let manifest = Manifest::parse_avro(loaded.payload.payload())
+        .map_err(|error| CdfError::data(format!("parse Iceberg manifest: {error}")))?;
+    Ok(ManifestWork {
+        listed,
+        manifest_sha256,
+        manifest,
+        _payload: loaded.payload,
+        _parse_lease: parse_lease,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_manifest_tasks(
+    work: ManifestWork,
+    table: &LoadedIcebergTable,
+    authority: &IcebergTaskSetAuthority,
+    authority_sha256: &str,
+    writer: &mut ExternalTaskSetWriter,
+    ordinal: &mut u64,
+    estimated_rows: &mut u64,
+    estimated_bytes: &mut u64,
+) -> Result<()> {
+    validate_manifest_authority(table, &work.manifest, &work.listed)?;
+    for (entry_index, entry) in work.manifest.entries().iter().enumerate() {
+        if !entry.is_alive() {
+            continue;
+        }
+        if entry.content_type() != DataContentType::Data {
+            return Err(CdfError::contract(
+                "Iceberg delete entries require the delete-planning capability owned by I2; no incomplete task set was published",
+            ));
+        }
+        if entry.file_format() != DataFileFormat::Parquet {
+            return Err(CdfError::contract(format!(
+                "Iceberg data file `{}` uses unsupported format {}; v1/v2 Parquet is required",
+                entry.file_path(),
+                entry.file_format()
+            )));
+        }
+        if entry.data_file().key_metadata().is_some() {
+            return Err(CdfError::contract(format!(
+                "Iceberg data file `{}` is encrypted but no KMS reader capability is compiled",
+                entry.file_path()
+            )));
+        }
+        let task = data_task(
+            *ordinal,
+            authority_sha256,
+            &work.manifest_sha256,
+            entry_index,
+            &work.listed,
+            &work.manifest,
+            entry,
+        )?;
+        *estimated_rows = estimated_rows
+            .checked_add(entry.record_count())
+            .ok_or_else(|| CdfError::data("Iceberg row estimate exceeds u64"))?;
+        *estimated_bytes = estimated_bytes
+            .checked_add(entry.file_size_in_bytes())
+            .ok_or_else(|| CdfError::data("Iceberg byte estimate exceeds u64"))?;
+        task.append_to(authority, writer)?;
+        *ordinal = ordinal
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("Iceberg task ordinal exceeds u64"))?;
+    }
+    Ok(())
 }
 
 fn task_authority(

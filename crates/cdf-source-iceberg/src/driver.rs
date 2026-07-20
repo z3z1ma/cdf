@@ -31,11 +31,11 @@ use crate::{
 const PLANNING_ARTIFACT_NAMESPACE: &str = "planner-artifacts";
 pub const ICEBERG_SOURCE_BLOCKING_LANE_ID: &str = "iceberg-source.control";
 
-pub fn iceberg_source_blocking_lane(maximum_concurrency: u16) -> BlockingLaneSpec {
+pub fn iceberg_source_blocking_lane() -> BlockingLaneSpec {
     BlockingLaneSpec {
         lane_id: ICEBERG_SOURCE_BLOCKING_LANE_ID.to_owned(),
         binding: BlockingLaneBinding::RuntimeResolvedRequired,
-        maximum_concurrency,
+        maximum_concurrency: u16::MAX,
         cpu_slot_cost: 1,
         native_internal_parallelism: 1,
         affinity: LaneAffinity::Shared,
@@ -583,7 +583,7 @@ fn execution_capabilities(source: &IcebergSourceOptions) -> SourceExecutionCapab
         maximum_concurrency: source.maximum_concurrency,
         useful_concurrency: source.maximum_concurrency,
         executor_class: SourceExecutorClass::BlockingLane,
-        blocking_lane: Some(iceberg_source_blocking_lane(source.maximum_concurrency)),
+        blocking_lane: Some(iceberg_source_blocking_lane()),
         pausable: true,
         spillable: true,
         idempotent_reads: true,
@@ -622,8 +622,8 @@ mod tests {
         SecretValue,
     };
     use cdf_kernel::{
-        BoxFuture, ResourceDescriptor, ResourceId, SchemaSource, ScopeKey, TrustLevel,
-        WriteDisposition,
+        BoxFuture, ContentStoreNamespace, ResourceDescriptor, ResourceId, SchemaSource, ScopeKey,
+        TrustLevel, WriteDisposition,
     };
     use cdf_object_access::FileTransportFacade;
     use cdf_runtime::{
@@ -631,6 +631,14 @@ mod tests {
         ExecutionServices, ExecutionTaskScope, FixedSpillBudget, IoTask, IoValue, IoValueTask,
         RunCancellation, SourceCompileContext, SourceHealthStatus, SourceResolutionContext,
         SpillBudgetCoordinator, TaskScopeReport,
+    };
+    use cdf_task_store::ExternalTaskStore;
+    use iceberg::{
+        io::FileIO,
+        spec::{
+            DataContentType, DataFileBuilder, DataFileFormat, ManifestListWriter,
+            ManifestWriterBuilder, Struct, TableMetadata,
+        },
     };
 
     use super::*;
@@ -908,6 +916,153 @@ mod tests {
         .unwrap()
     }
 
+    fn nonempty_table_metadata(location: &Path, manifest_list: &Path) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "format-version": 2,
+            "table-uuid": "9c12d441-03fe-4693-9a96-a0705ddf69c1",
+            "location": location.display().to_string(),
+            "last-sequence-number": 1,
+            "last-updated-ms": 1_602_638_573_590_i64,
+            "last-column-id": 2,
+            "current-schema-id": 1,
+            "schemas": [
+                {
+                    "type": "struct",
+                    "schema-id": 0,
+                    "fields": [
+                        {"id": 1, "name": "id", "required": true, "type": "long"}
+                    ]
+                },
+                {
+                    "type": "struct",
+                    "schema-id": 1,
+                    "fields": [
+                        {"id": 1, "name": "id", "required": true, "type": "long"},
+                        {"id": 2, "name": "label", "required": false, "type": "string"}
+                    ]
+                }
+            ],
+            "default-spec-id": 0,
+            "partition-specs": [{"spec-id": 0, "fields": []}],
+            "last-partition-id": 999,
+            "default-sort-order-id": 0,
+            "sort-orders": [{"order-id": 0, "fields": []}],
+            "properties": {},
+            "current-snapshot-id": 101,
+            "snapshots": [{
+                "snapshot-id": 101,
+                "timestamp-ms": 1_602_638_573_590_i64,
+                "sequence-number": 1,
+                "schema-id": 1,
+                "summary": {
+                    "operation": "append",
+                    "added-data-files": "2",
+                    "added-records": "8",
+                    "added-files-size": "333"
+                },
+                "manifest-list": manifest_list.display().to_string()
+            }],
+            "snapshot-log": [{
+                "snapshot-id": 101,
+                "timestamp-ms": 1_602_638_573_590_i64
+            }],
+            "metadata-log": [],
+            "refs": {"main": {"snapshot-id": 101, "type": "branch"}}
+        }))
+        .unwrap()
+    }
+
+    fn write_nonempty_table_fixture(execution: &ExecutionServices, table: &Path) {
+        let table = table.to_path_buf();
+        execution
+            .run_io(async move {
+                let metadata_dir = table.join("metadata");
+                fs::create_dir_all(&metadata_dir).unwrap();
+                let manifest_list_path = metadata_dir.join("snap-101.avro");
+                let metadata_bytes = nonempty_table_metadata(&table, &manifest_list_path);
+                let table_metadata: TableMetadata =
+                    serde_json::from_slice(&metadata_bytes).unwrap();
+                let file_io = FileIO::new_with_fs();
+                let partition_spec = table_metadata
+                    .partition_spec_by_id(0)
+                    .unwrap()
+                    .as_ref()
+                    .clone();
+
+                let old_manifest_path = metadata_dir.join("manifest-a.avro");
+                let mut old_writer = ManifestWriterBuilder::new(
+                    file_io
+                        .new_output(old_manifest_path.to_string_lossy())
+                        .unwrap(),
+                    Some(101),
+                    table_metadata.schema_by_id(0).unwrap().clone(),
+                    partition_spec.clone(),
+                )
+                .build_v2_data();
+                old_writer
+                    .add_file(
+                        DataFileBuilder::default()
+                            .partition_spec_id(0)
+                            .content(DataContentType::Data)
+                            .file_path(table.join("data/old.parquet").display().to_string())
+                            .file_format(DataFileFormat::Parquet)
+                            .file_size_in_bytes(111)
+                            .record_count(3)
+                            .partition(Struct::empty())
+                            .build()
+                            .unwrap(),
+                        1,
+                    )
+                    .unwrap();
+                let old_manifest = old_writer.write_manifest_file().await.unwrap();
+
+                let current_manifest_path = metadata_dir.join("manifest-b.avro");
+                let mut current_writer = ManifestWriterBuilder::new(
+                    file_io
+                        .new_output(current_manifest_path.to_string_lossy())
+                        .unwrap(),
+                    Some(101),
+                    table_metadata.schema_by_id(1).unwrap().clone(),
+                    partition_spec,
+                )
+                .build_v2_data();
+                current_writer
+                    .add_file(
+                        DataFileBuilder::default()
+                            .partition_spec_id(0)
+                            .content(DataContentType::Data)
+                            .file_path(table.join("data/current.parquet").display().to_string())
+                            .file_format(DataFileFormat::Parquet)
+                            .file_size_in_bytes(222)
+                            .record_count(5)
+                            .partition(Struct::empty())
+                            .build()
+                            .unwrap(),
+                        1,
+                    )
+                    .unwrap();
+                let current_manifest = current_writer.write_manifest_file().await.unwrap();
+
+                let list_output = file_io
+                    .new_output(manifest_list_path.to_string_lossy())
+                    .unwrap()
+                    .writer()
+                    .await
+                    .unwrap();
+                let mut list_writer = ManifestListWriter::v2(list_output, 101, None, 1);
+                // Deliberately reverse canonical path order; CDF planning must normalize it.
+                list_writer
+                    .add_manifests([current_manifest, old_manifest].into_iter())
+                    .unwrap();
+                list_writer.close().await.unwrap();
+
+                fs::write(metadata_dir.join("v1.metadata.json"), metadata_bytes).unwrap();
+                fs::write(metadata_dir.join("version-hint.text"), "1\n").unwrap();
+                Ok(())
+            })
+            .unwrap();
+    }
+
     fn compile_request(warehouse: &Path) -> SourceCompileRequest {
         SourceCompileRequest {
             source_kind: "iceberg".to_owned(),
@@ -947,6 +1102,23 @@ mod tests {
         }
     }
 
+    fn filesystem_driver() -> IcebergSourceDriver {
+        let http = NoopHttpTransport;
+        IcebergSourceDriver::new(move |secrets, execution, _egress, lane| {
+            Ok(IcebergRuntimeDependencies::new(
+                Arc::new(
+                    FileTransportFacade::new()
+                        .with_shared_secret_provider(secrets)
+                        .with_execution_services(execution)
+                        .with_local_listing_lane(lane)?,
+                ),
+                Arc::new(http.clone()),
+                Arc::new(UnsupportedGlueCatalogClient),
+            ))
+        })
+        .unwrap()
+    }
+
     #[test]
     fn filesystem_discovery_reuses_exact_empty_table_metadata_and_plans_no_tasks() {
         let root = tempfile::tempdir().unwrap();
@@ -960,20 +1132,7 @@ mod tests {
         .unwrap();
         fs::write(metadata.join("version-hint.text"), "1\n").unwrap();
         let execution = execution_services();
-        let http = NoopHttpTransport;
-        let driver = IcebergSourceDriver::new(move |secrets, execution, _egress, lane| {
-            Ok(IcebergRuntimeDependencies::new(
-                Arc::new(
-                    FileTransportFacade::new()
-                        .with_shared_secret_provider(secrets)
-                        .with_execution_services(execution)
-                        .with_local_listing_lane(lane)?,
-                ),
-                Arc::new(http.clone()),
-                Arc::new(UnsupportedGlueCatalogClient),
-            ))
-        })
-        .unwrap();
+        let driver = filesystem_driver();
         let plan = driver.compile(compile_request(root.path())).unwrap();
         let context = SourceResolutionContext::new(
             root.path(),
@@ -1001,7 +1160,7 @@ mod tests {
             BlockingLaneSpec {
                 binding: BlockingLaneBinding::RuntimeResolved,
                 maximum_concurrency: 2,
-                ..iceberg_source_blocking_lane(u16::MAX)
+                ..iceberg_source_blocking_lane()
             }
         );
 
@@ -1040,6 +1199,103 @@ mod tests {
             )
             .unwrap();
         assert_eq!(sink.0[0].status, SourceHealthStatus::Passed);
+    }
+
+    #[test]
+    fn nonempty_snapshot_plans_canonical_tasks_independent_of_source_jobs() {
+        let root = tempfile::tempdir().unwrap();
+        let table = root.path().join("analytics/events");
+        let execution = execution_services();
+        write_nonempty_table_fixture(&execution, &table);
+        let driver = filesystem_driver();
+        let context = SourceResolutionContext::new(
+            root.path(),
+            Arc::new(NoopSecretProvider),
+            &execution,
+            Arc::new(cdf_http::EgressAllowlist::allow_any()),
+        );
+
+        let mut one_job_request = compile_request(root.path());
+        one_job_request
+            .source_options
+            .insert("maximum_concurrency".to_owned(), serde_json::json!(1));
+        let one_job_plan = driver.compile(one_job_request).unwrap();
+        let session = driver.discovery_session(&one_job_plan, &context).unwrap();
+        let candidate = session.candidates().unwrap().remove(0);
+        let observation = session
+            .observe(
+                &candidate,
+                &SourceDiscoveryRequest::new(64 * 1024 * 1024, 1).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(observation.schema.fields().len(), 2);
+        let resource = driver.resolve(&one_job_plan, &context).unwrap();
+        let request = ScanRequest {
+            resource_id: one_job_plan.descriptor.resource_id.clone(),
+            projection: None,
+            filters: Vec::new(),
+            limit: None,
+            order_by: Vec::new(),
+            scope: ScopeKey::Resource,
+        };
+        let one_job_scan = resource.negotiate(&request).unwrap();
+        assert_eq!(one_job_scan.estimated_rows, Some(8));
+        assert_eq!(one_job_scan.estimated_bytes, Some(333));
+        let reference = one_job_scan.planned_task_set.clone().unwrap();
+        assert_eq!(reference.task_count, 2);
+
+        let store = ExternalTaskStore::new(
+            root.path().join(".cdf"),
+            ContentStoreNamespace::new(PLANNING_ARTIFACT_NAMESPACE).unwrap(),
+        )
+        .unwrap();
+        let mut reader = store
+            .reader(
+                reference.clone(),
+                crate::ICEBERG_TASK_SET_TYPE,
+                crate::DEFAULT_MAXIMUM_TASK_BYTES,
+                crate::DEFAULT_MAXIMUM_TASK_AUTHORITY_BYTES,
+                execution.memory(),
+            )
+            .unwrap();
+        let authority: crate::IcebergTaskSetAuthority =
+            serde_json::from_slice(reader.authority().payload()).unwrap();
+        assert_eq!(authority.output_schema_id, 1);
+        assert_eq!(authority.projected_field_ids, vec![1, 2]);
+        let mut tasks = Vec::new();
+        while let Some(record) = reader.next_record().unwrap() {
+            let task: crate::IcebergScanTask =
+                serde_json::from_slice(record.payload.payload()).unwrap();
+            task.validate_against(&authority).unwrap();
+            tasks.push(task);
+        }
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].canonical_ordinal, 0);
+        assert_eq!(tasks[0].file_schema_id, 0);
+        assert!(tasks[0].data_file.path.ends_with("data/old.parquet"));
+        assert_eq!(tasks[1].canonical_ordinal, 1);
+        assert_eq!(tasks[1].file_schema_id, 1);
+        assert!(tasks[1].data_file.path.ends_with("data/current.parquet"));
+
+        let mut many_jobs_request = compile_request(root.path());
+        many_jobs_request
+            .source_options
+            .insert("maximum_concurrency".to_owned(), serde_json::json!(16));
+        let many_jobs_plan = driver.compile(many_jobs_request).unwrap();
+        let many_jobs_resource = driver.resolve(&many_jobs_plan, &context).unwrap();
+        let many_jobs_scan = many_jobs_resource.negotiate(&request).unwrap();
+        assert_eq!(
+            many_jobs_scan
+                .planned_task_set
+                .as_ref()
+                .unwrap()
+                .content_sha256,
+            reference.content_sha256
+        );
+        assert_eq!(
+            artifact_hash(&many_jobs_scan).unwrap(),
+            artifact_hash(&one_job_scan).unwrap()
+        );
     }
 
     #[test]
