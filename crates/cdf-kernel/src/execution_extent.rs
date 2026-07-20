@@ -507,6 +507,42 @@ impl WatermarkClaim {
         self.observation_context.validate()?;
         self.value.validate_against(&self.domain)
     }
+
+    /// Proves that `self` preserves or advances the same completeness authority as `previous`.
+    /// Partition and source-position evidence may change as the global minimum moves; the
+    /// compiled semantic domain and the monotone value may not.
+    pub fn validate_monotone_successor(&self, previous: &Self) -> Result<()> {
+        self.validate()?;
+        previous.validate()?;
+        if self.policy_version != previous.policy_version
+            || self.event_time_field != previous.event_time_field
+            || self.domain != previous.domain
+            || self.authority != previous.authority
+        {
+            return Err(CdfError::data(
+                "watermark successor does not share the committed semantic authority",
+            ));
+        }
+        let monotone = match (&previous.value, &self.value) {
+            (WatermarkValue::Signed(previous), WatermarkValue::Signed(next)) => next >= previous,
+            (WatermarkValue::Unsigned(previous), WatermarkValue::Unsigned(next)) => {
+                next >= previous
+            }
+            (WatermarkValue::Decimal(previous), WatermarkValue::Decimal(next)) => next >= previous,
+            (WatermarkValue::Date32(previous), WatermarkValue::Date32(next)) => next >= previous,
+            (WatermarkValue::Date64(previous), WatermarkValue::Date64(next))
+            | (WatermarkValue::Timestamp(previous), WatermarkValue::Timestamp(next)) => {
+                next >= previous
+            }
+            _ => false,
+        };
+        if !monotone {
+            return Err(CdfError::data(
+                "watermark successor regressed behind the committed completeness floor",
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -934,6 +970,19 @@ mod tests {
             observation_context: WatermarkObservationContext::SourcePoll,
         };
         claim.validate().unwrap();
+
+        let mut advanced = claim.clone();
+        advanced.value = WatermarkValue::Timestamp(1_700_000_000_000_001);
+        advanced.validate_monotone_successor(&claim).unwrap();
+        let mut regressed = claim.clone();
+        regressed.value = WatermarkValue::Timestamp(1_699_999_999_999_999);
+        assert!(
+            regressed
+                .validate_monotone_successor(&claim)
+                .unwrap_err()
+                .message
+                .contains("regressed")
+        );
 
         let mut mismatched = claim;
         mismatched.value = WatermarkValue::Signed(7);

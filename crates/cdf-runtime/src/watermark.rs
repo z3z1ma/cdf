@@ -137,23 +137,11 @@ impl PartitionWatermarkTracker {
             (WatermarkPolicy::Disabled, None) => return Ok(None),
             (WatermarkPolicy::Enabled { .. }, None) => {}
             (WatermarkPolicy::Enabled { .. }, Some(claim)) => {
-                validate_claim_against_policy(&self.policy, claim)?;
-                if &claim.partition_id != partition_id {
-                    return Err(CdfError::data(format!(
-                        "watermark claim partition `{}` does not match batch partition `{partition_id}`",
-                        claim.partition_id
-                    )));
-                }
-                if let Some(previous) = self
+                let previous = self
                     .partitions
                     .get(partition_id)
-                    .and_then(|state| state.claim.as_ref())
-                    && compare_claims(previous, claim)? == Ordering::Greater
-                {
-                    return Err(CdfError::data(format!(
-                        "watermark regressed within partition `{partition_id}`"
-                    )));
-                }
+                    .and_then(|state| state.claim.as_ref());
+                self.validate_partition_claim(partition_id, previous, claim)?;
             }
         }
 
@@ -243,6 +231,44 @@ impl PartitionWatermarkTracker {
     /// The strongest global completeness claim already admitted in this execution.
     pub fn effective_floor(&self) -> Option<&WatermarkClaim> {
         self.effective_floor.as_ref()
+    }
+
+    /// Validates one source claim without mutating aggregate state.
+    ///
+    /// Callers use this for every claim in an ordered batch header before passing the final claim
+    /// to [`Self::observe_partition_progress`]. That prevents a later valid claim from hiding an
+    /// earlier malformed or regressing claim in the same batch.
+    pub fn validate_partition_claim(
+        &self,
+        partition_id: &PartitionId,
+        previous: Option<&WatermarkClaim>,
+        claim: &WatermarkClaim,
+    ) -> Result<()> {
+        if !self.partitions.contains_key(partition_id) {
+            return Err(CdfError::data(format!(
+                "watermark claim references unplanned partition `{partition_id}`"
+            )));
+        }
+        validate_claim_against_policy(&self.policy, claim)?;
+        if &claim.partition_id != partition_id {
+            return Err(CdfError::data(format!(
+                "watermark claim partition `{}` does not match batch partition `{partition_id}`",
+                claim.partition_id
+            )));
+        }
+        let previous = previous.or_else(|| {
+            self.partitions
+                .get(partition_id)
+                .and_then(|state| state.claim.as_ref())
+        });
+        if let Some(previous) = previous
+            && compare_claims(previous, claim)? == Ordering::Greater
+        {
+            return Err(CdfError::data(format!(
+                "watermark regressed within partition `{partition_id}`"
+            )));
+        }
+        Ok(())
     }
 
     fn advance_clock(&mut self, monotonic_milliseconds: u64) -> Result<()> {
@@ -475,8 +501,12 @@ mod tests {
         .unwrap();
 
         assert_eq!(
+            tracker.effective_watermark(110).unwrap().unwrap().value,
+            WatermarkValue::Unsigned(50)
+        );
+        assert_eq!(
             tracker
-                .observe_partition_progress(&b, Some(&claim("b", 5)), 101)
+                .observe_partition_progress(&b, Some(&claim("b", 5)), 111)
                 .unwrap()
                 .unwrap()
                 .value,
@@ -488,19 +518,46 @@ mod tests {
         );
         assert_eq!(
             tracker
-                .observe_partition_progress(&b, Some(&claim("b", 55)), 102)
-                .unwrap()
-                .unwrap()
-                .value,
-            WatermarkValue::Unsigned(50)
-        );
-        assert_eq!(
-            tracker
-                .observe_partition_progress(&a, Some(&claim("a", 60)), 103)
+                .observe_partition_progress(&b, Some(&claim("b", 55)), 112)
                 .unwrap()
                 .unwrap()
                 .value,
             WatermarkValue::Unsigned(55)
+        );
+        assert_eq!(
+            tracker
+                .observe_partition_progress(&a, Some(&claim("a", 60)), 113)
+                .unwrap()
+                .unwrap()
+                .value,
+            WatermarkValue::Unsigned(55)
+        );
+    }
+
+    #[test]
+    fn every_ordered_claim_is_validated_before_the_batch_tail() {
+        let partition = PartitionId::new("p").unwrap();
+        let tracker = PartitionWatermarkTracker::new(
+            &policy(PartitionWatermarkAggregation::MinimumAll),
+            [&partition],
+            0,
+        )
+        .unwrap();
+        let baseline = claim("p", 100);
+        let regressed = claim("p", 90);
+        let recovered_tail = claim("p", 110);
+
+        assert!(
+            tracker
+                .validate_partition_claim(&partition, Some(&baseline), &regressed)
+                .unwrap_err()
+                .message
+                .contains("regressed")
+        );
+        assert!(
+            tracker
+                .validate_partition_claim(&partition, Some(&regressed), &recovered_tail)
+                .is_ok()
         );
     }
 

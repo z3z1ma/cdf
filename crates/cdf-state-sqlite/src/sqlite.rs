@@ -158,6 +158,16 @@ impl CheckpointStore for SqliteCheckpointStore {
         };
         let mut conn = self.lock_conn()?;
         let tx = conn.transaction().map_err(sqlite_error)?;
+        if let Some(head) = Self::head_tx(
+            &tx,
+            &checkpoint.delta.pipeline_id,
+            &checkpoint.delta.resource_id,
+            &checkpoint.delta.scope,
+        )? {
+            checkpoint
+                .delta
+                .validate_watermark_transition_from(&head.delta)?;
+        }
         insert_checkpoint(&tx, &checkpoint)?;
         tx.commit().map_err(sqlite_error)?;
         Ok(checkpoint)
@@ -365,6 +375,16 @@ pub(crate) fn commit_checkpoint_tx(
         )));
     }
     verify_receipt(receipt, &checkpoint.delta)?;
+    if let Some(head) = SqliteCheckpointStore::head_tx(
+        tx,
+        &checkpoint.delta.pipeline_id,
+        &checkpoint.delta.resource_id,
+        &checkpoint.delta.scope,
+    )? {
+        checkpoint
+            .delta
+            .validate_watermark_transition_from(&head.delta)?;
+    }
     verify_current_published_schema_tx(tx, &checkpoint.delta)?;
 
     let scope_json = encode_json(&checkpoint.delta.scope)?;

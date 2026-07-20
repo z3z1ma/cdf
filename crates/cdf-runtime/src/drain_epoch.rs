@@ -352,12 +352,16 @@ impl DrainEpochController {
 
     pub fn observe_safe_frontier(
         &mut self,
-        observation: DrainSafeFrontierObservation,
+        mut observation: DrainSafeFrontierObservation,
     ) -> Result<DrainEpochDecision> {
         self.validate_ready_for_epoch()?;
         observation.validate()?;
         self.observe_clock(observation.monotonic_milliseconds)?;
         self.observe_watermark(observation.global_watermark.as_ref())?;
+        // A missing current observation cannot retract an already admitted completeness floor.
+        // Normalize the safe frontier to the controller's monotone authority before it can be
+        // retained, tested by a trigger, or serialized into an epoch closure.
+        observation.global_watermark = self.last_observed_watermark.clone();
         self.epoch.checked_add(&observation)?;
         self.total.checked_add(&observation)?;
         self.last_safe_frontier = Some(observation.clone());
@@ -1103,6 +1107,32 @@ mod tests {
         assert_eq!(controller.committed_watermark(), Some(&committed));
         assert_eq!(controller.late_data_watermark(), Some(&committed));
         assert_eq!(controller.epoch_ordinal(), 1);
+    }
+
+    #[test]
+    fn missing_observation_cannot_erase_the_committed_watermark_floor() {
+        let mut extent = watermark_extent();
+        let ExecutionExtent::Drain { policy, .. } = &mut extent else {
+            unreachable!("watermark fixture is a drain extent");
+        };
+        policy.checkpoint_cadence = EpochClosureTrigger::Rows { count: 1 };
+        let mut controller = DrainEpochController::new(&extent).unwrap();
+        let committed = watermark_observation(40, 90).global_watermark.unwrap();
+        controller
+            .bind_initial_committed_frontier(Some(cursor(40)), None, Some(committed.clone()), 1)
+            .unwrap();
+
+        let DrainEpochDecision::Close(closure) = controller
+            .observe_safe_frontier(observation(1, 10, 41, false))
+            .unwrap()
+        else {
+            panic!("row cadence must close at the normalized safe frontier");
+        };
+        assert_eq!(closure.frontier.watermark, Some(committed.clone()));
+        controller
+            .acknowledge_settlement(&closure.frontier.frontier)
+            .unwrap();
+        assert_eq!(controller.committed_watermark(), Some(&committed));
     }
 
     fn watermark_extent() -> ExecutionExtent {

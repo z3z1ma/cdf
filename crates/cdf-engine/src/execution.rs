@@ -3860,14 +3860,23 @@ where
                 partition_input_bytes = partition_input_bytes
                     .checked_add(batch.header.byte_count)
                     .ok_or_else(|| CdfError::data("drain partition input byte count overflow"))?;
-                if let Some(watermark) = batch.header.watermarks.last() {
-                    partition_watermark = Some(watermark.clone());
-                }
                 validate_batch_partition_ownership(
                     &batch,
                     &plan.scan.request.resource_id,
                     &partition,
                 )?;
+                if let Some(watermarks) = partition_watermarks.as_ref() {
+                    for watermark in &batch.header.watermarks {
+                        watermarks.validate_partition_claim(
+                            &partition.partition_id,
+                            partition_watermark.as_ref(),
+                            watermark,
+                        )?;
+                        partition_watermark = Some(watermark.clone());
+                    }
+                } else if let Some(watermark) = batch.header.watermarks.last() {
+                    partition_watermark = Some(watermark.clone());
+                }
                 let decoded_input_bytes = batch.header.byte_count;
                 phase_measurements.add(
                     RunPhase::Decode,

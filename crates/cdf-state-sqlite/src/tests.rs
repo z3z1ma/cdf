@@ -13,12 +13,14 @@ use cdf_conformance::scope_lease::{
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, Checkpoint, CheckpointId, CheckpointStatus, CheckpointStore,
     CommitCounts, CompositePosition, ContractRef, CursorPosition, CursorValue, DestinationId,
-    FileManifest, FilePosition, ForeignState, IdempotencyToken, LeaseOwnerId, LogPosition,
-    MigrationRecord, PROMOTION_PUBLICATION_EVENT_VERSION, PackageHash, PageToken, PartitionId,
-    PipelineId, PlanId, PromotionId, PromotionPublicationEvent, PromotionPublicationTarget,
-    PromotionSettlementStore, Receipt, ReceiptId, ResourceId, RewindRequest, RunId, SchemaHash,
-    ScopeKey, ScopeLeaseStore, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment,
-    TableSnapshotPosition, TableSnapshotSelector, TargetName, VerifyClause, WriteDisposition,
+    EventTimeDomain, FileManifest, FilePosition, ForeignState, IdempotencyToken, LeaseOwnerId,
+    LogPosition, MigrationRecord, PROMOTION_PUBLICATION_EVENT_VERSION, PackageHash, PageToken,
+    PartitionId, PipelineId, PlanId, PromotionId, PromotionPublicationEvent,
+    PromotionPublicationTarget, PromotionSettlementStore, Receipt, ReceiptId, ResourceId,
+    RewindRequest, RunId, STREAM_EPOCH_POLICY_VERSION, SchemaHash, ScopeKey, ScopeLeaseStore,
+    SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment, TableSnapshotPosition,
+    TableSnapshotSelector, TargetName, VerifyClause, WATERMARK_CLAIM_VERSION, WatermarkAuthority,
+    WatermarkClaim, WatermarkObservationContext, WatermarkValue, WriteDisposition,
 };
 use rusqlite::params;
 use tempfile::tempdir;
@@ -241,6 +243,91 @@ fn commit_delta<S: CheckpointStore>(store: &S, delta: StateDelta) -> Checkpoint 
     assert_plausible_created_at(&committed);
     assert_eq!(committed.committed_at_ms, Some(receipt_committed_at_ms));
     committed
+}
+
+fn with_watermark(mut delta: StateDelta, value: i64) -> StateDelta {
+    delta.output_watermark = Some(WatermarkClaim {
+        version: WATERMARK_CLAIM_VERSION,
+        policy_version: STREAM_EPOCH_POLICY_VERSION,
+        event_time_field: "updated_at".into(),
+        domain: EventTimeDomain::SignedInteger,
+        value: WatermarkValue::Signed(value),
+        partition_id: PartitionId::new("p0").unwrap(),
+        source_position: delta.output_position.clone(),
+        authority: WatermarkAuthority::Source,
+        observation_context: WatermarkObservationContext::EpochBarrier,
+    });
+    delta
+}
+
+fn assert_store_rejects_watermark_erasure_and_commit_races<S: CheckpointStore>(store: &S) {
+    let first = commit_delta(
+        store,
+        with_watermark(
+            delta(
+                "checkpoint-watermark-100",
+                None,
+                partition_scope(),
+                cursor_position(1),
+                "package-watermark-100",
+            ),
+            100,
+        ),
+    );
+
+    let erased = delta(
+        "checkpoint-watermark-erased",
+        Some(&first.delta.checkpoint_id),
+        partition_scope(),
+        cursor_position(2),
+        "package-watermark-erased",
+    );
+    assert!(
+        store
+            .propose(erased)
+            .unwrap_err()
+            .message
+            .contains("cannot erase")
+    );
+
+    let stale = with_watermark(
+        delta(
+            "checkpoint-watermark-110",
+            Some(&first.delta.checkpoint_id),
+            partition_scope(),
+            cursor_position(3),
+            "package-watermark-110",
+        ),
+        110,
+    );
+    store.propose(stale.clone()).unwrap();
+    let newer = with_watermark(
+        delta(
+            "checkpoint-watermark-120",
+            Some(&first.delta.checkpoint_id),
+            partition_scope(),
+            cursor_position(4),
+            "package-watermark-120",
+        ),
+        120,
+    );
+    commit_delta(store, newer);
+
+    let error = store
+        .commit(&stale.checkpoint_id, receipt(&stale))
+        .unwrap_err();
+    assert!(error.message.contains("regressed"));
+    assert_eq!(
+        store
+            .head(&stale.pipeline_id, &stale.resource_id, &stale.scope)
+            .unwrap()
+            .unwrap()
+            .delta
+            .output_watermark
+            .unwrap()
+            .value,
+        WatermarkValue::Signed(120)
+    );
 }
 
 fn assert_store_rejects_bad_receipts<S: CheckpointStore>(store: &S) {
@@ -655,6 +742,14 @@ fn in_memory_passes_checkpoint_store_conformance() {
 #[test]
 fn sqlite_passes_checkpoint_store_conformance() {
     assert_checkpoint_store_conformance(|| SqliteCheckpointStore::open_in_memory().unwrap());
+}
+
+#[test]
+fn checkpoint_stores_preserve_committed_watermark_monotonicity() {
+    assert_store_rejects_watermark_erasure_and_commit_races(&InMemoryCheckpointStore::new());
+    assert_store_rejects_watermark_erasure_and_commit_races(
+        &SqliteCheckpointStore::open_in_memory().unwrap(),
+    );
 }
 
 #[test]

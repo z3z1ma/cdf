@@ -86,6 +86,29 @@ impl StateDelta {
         }
         Ok(())
     }
+
+    /// Validates the receipt-gated completeness transition against the currently committed head.
+    ///
+    /// A checkpoint may introduce the first watermark or preserve/advance an existing one. Once
+    /// completeness has been committed, a later ordinary checkpoint cannot erase or retract it;
+    /// explicit rewind remains the only state-history operation allowed to move the head backward.
+    pub fn validate_watermark_transition_from(&self, previous: &Self) -> Result<()> {
+        if self.pipeline_id != previous.pipeline_id
+            || self.resource_id != previous.resource_id
+            || self.scope != previous.scope
+        {
+            return Err(CdfError::internal(
+                "watermark transition comparison requires one checkpoint scope",
+            ));
+        }
+        match (&previous.output_watermark, &self.output_watermark) {
+            (Some(_), None) => Err(CdfError::data(
+                "checkpoint cannot erase the committed watermark completeness floor",
+            )),
+            (Some(previous), Some(next)) => next.validate_monotone_successor(previous),
+            (None, _) => Ok(()),
+        }
+    }
 }
 
 pub const LATE_DATA_CARRYOVER_VERSION: u16 = 1;
