@@ -1307,6 +1307,19 @@ impl cdf_runtime::IsolatedPartitionExecutor for ActualEngineIsolatedExecutor<'_>
 }
 
 #[test]
+fn lineage_summary_rejects_superseded_duplicate_identity_fields() {
+    for field in ["input_partitions", "output_segments"] {
+        let mut value = serde_json::json!({
+            "input_rows": 0,
+            "input_observations": []
+        });
+        value[field] = serde_json::json!([]);
+        let error = serde_json::from_value::<crate::LineageSummary>(value).unwrap_err();
+        assert!(error.to_string().contains("unknown field"));
+    }
+}
+
+#[test]
 fn engine_partition_task_compiles_every_authority_as_typed_artifacts() {
     let resource = MockResource::tier_a(sample_batches());
     let source = mock_compiled_source_plan(&resource, None);

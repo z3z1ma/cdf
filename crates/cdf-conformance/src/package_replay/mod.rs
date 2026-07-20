@@ -184,13 +184,7 @@ pub fn build_prepared_package_fixture(
     )?;
     let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0)?;
     let segment = builder.write_segment(spec.segment_id.clone(), 0, &batch)?;
-    write_stream_admission_artifacts(
-        &builder,
-        &admission,
-        segment.row_count,
-        &spec.segment_id,
-        schema.as_ref(),
-    )?;
+    write_stream_admission_artifacts(&builder, &admission, segment.row_count, schema.as_ref())?;
     write_prepared_state_commit_artifacts(&builder, &spec, segment)?;
     let manifest = builder.finish_with_status(spec.status)?;
 
@@ -245,7 +239,6 @@ fn write_stream_admission_artifacts(
     builder: &PackageBuilder,
     admission: &cdf_engine::CompiledSchemaAdmissionPlan,
     row_count: u64,
-    segment_id: &SegmentId,
     schema: &Schema,
 ) -> Result<()> {
     let physical = PhysicalObservationEvidence::arrow_schema(schema)?;
@@ -268,7 +261,6 @@ fn write_stream_admission_artifacts(
     builder.write_json_artifact("schema/stream-admission-evidence.json", &stream_evidence)?;
     let partition_id = prepared_partition_id()?;
     let lineage = LineageSummary {
-        input_partitions: vec![partition_id.clone()],
         input_rows: row_count,
         input_observations: vec![LineageInputObservation {
             observation_id: PREPARED_OBSERVATION_ID.to_owned(),
@@ -276,7 +268,6 @@ fn write_stream_admission_artifacts(
             observed_rows: row_count,
             output_position: Some(output_position),
         }],
-        output_segments: vec![segment_id.clone()],
     };
     builder.write_lineage_artifact(
         "lineage.json",

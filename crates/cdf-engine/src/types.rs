@@ -2127,12 +2127,15 @@ pub struct ExecutionProfile {
     pub statistics: cdf_kernel::BatchStats,
 }
 
+/// Package lineage facts that are not already authoritative elsewhere.
+///
+/// Partition identities are carried by `input_observations`; output segment identities are
+/// carried by canonical segment positions and the package manifest.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LineageSummary {
-    pub input_partitions: Vec<cdf_kernel::PartitionId>,
     pub input_rows: u64,
     pub input_observations: Vec<LineageInputObservation>,
-    pub output_segments: Vec<SegmentId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -1887,7 +1887,6 @@ fn build_package_with_carryover(
         .write_lineage_artifact(
             "lineage.json",
             &canonical_json_bytes(&LineageSummary {
-                input_partitions: vec![PartitionId::new("artifact-fixture").unwrap()],
                 input_rows: 3,
                 input_observations: vec![LineageInputObservation {
                     observation_id: "artifact-fixture".to_owned(),
@@ -1895,7 +1894,6 @@ fn build_package_with_carryover(
                     observed_rows: 3,
                     output_position: Some(position(3)),
                 }],
-                output_segments: vec![segment.segment_id.clone()],
             })
             .unwrap(),
         )
@@ -2014,7 +2012,6 @@ fn build_package_with_options_and_scan_tamper(
         .write_lineage_artifact(
             "lineage.json",
             &canonical_json_bytes(&LineageSummary {
-                input_partitions: vec![PartitionId::new("artifact-fixture").unwrap()],
                 input_rows: 3,
                 input_observations: vec![LineageInputObservation {
                     observation_id: "artifact-fixture".to_owned(),
@@ -2022,7 +2019,6 @@ fn build_package_with_options_and_scan_tamper(
                     observed_rows: 3,
                     output_position: Some(position(3)),
                 }],
-                output_segments: vec![segment.segment_id.clone()],
             })
             .unwrap(),
         )

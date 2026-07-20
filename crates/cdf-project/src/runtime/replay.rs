@@ -2626,7 +2626,6 @@ mod stream_admission_replay_tests {
 
         let attempted = cursor_position("updated_at");
         let lineage = LineageSummary {
-            input_partitions: vec![PartitionId::new("rest").unwrap()],
             input_rows: 7,
             input_observations: vec![LineageInputObservation {
                 observation_id: "rest".to_owned(),
@@ -2634,7 +2633,6 @@ mod stream_admission_replay_tests {
                 observed_rows: 7,
                 output_position: Some(attempted.clone()),
             }],
-            output_segments: Vec::new(),
         };
         assert!(partial_lineage_matches_exactly(
             &lineage,

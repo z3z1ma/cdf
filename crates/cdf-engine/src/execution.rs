@@ -1801,7 +1801,6 @@ struct PreparedKernelOutput {
 
 struct OutputWriteState<'a> {
     profile: &'a mut ExecutionProfile,
-    lineage: &'a mut LineageSummary,
     segments: &'a mut Vec<SegmentEntry>,
     segment_positions: &'a mut Vec<EngineSegmentPosition>,
     phase_measurements: &'a mut PhaseMeasurements,
@@ -2125,7 +2124,7 @@ impl SegmentEncodeQueue {
             let write = builder.register_encoded_segment(write)?;
             let SegmentEncodeWork {
                 ordinal: _,
-                segment_id,
+                segment_id: _,
                 package_row_ord_start: _,
                 partition_ordinal,
                 output_position,
@@ -2165,7 +2164,6 @@ impl SegmentEncodeQueue {
                 .output_bytes
                 .saturating_add(segment.byte_count);
             state.profile.output_batches = state.profile.output_batches.saturating_add(1);
-            state.lineage.output_segments.push(segment_id);
             state.segment_positions.push(EngineSegmentPosition {
                 segment_id: segment.segment_id.clone(),
                 partition_ordinal,
@@ -3655,7 +3653,6 @@ where
                         &mut carryover_assembler,
                         &mut OutputWriteState {
                             profile: &mut profile,
-                            lineage: &mut lineage,
                             segments: &mut segments,
                             segment_positions: &mut segment_positions,
                             phase_measurements: &mut phase_measurements,
@@ -3695,7 +3692,6 @@ where
                 carryover_assembler.finish()?,
                 &mut OutputWriteState {
                     profile: &mut profile,
-                    lineage: &mut lineage,
                     segments: &mut segments,
                     segment_positions: &mut segment_positions,
                     phase_measurements: &mut phase_measurements,
@@ -4075,9 +4071,6 @@ where
                     decoded_input_bytes,
                 );
                 let validation_started = phase_measurements.start();
-                if lineage.input_partitions.last() != Some(&batch.header.partition_id) {
-                    lineage.input_partitions.push(batch.header.partition_id.clone());
-                }
                 lineage.input_rows = lineage.input_rows.saturating_add(batch.header.row_count);
                 if !batch.header.pre_contract_quarantine.is_empty() {
                     merge_verdict_summary(
@@ -4700,7 +4693,6 @@ where
                     &mut segment_assembler,
                     &mut OutputWriteState {
                         profile: &mut profile,
-                        lineage: &mut lineage,
                         segments: &mut segments,
                         segment_positions: &mut segment_positions,
                         phase_measurements: &mut phase_measurements,
@@ -4725,7 +4717,6 @@ where
                 segment_assembler.finish()?,
                 &mut OutputWriteState {
                     profile: &mut profile,
-                    lineage: &mut lineage,
                     segments: &mut segments,
                     segment_positions: &mut segment_positions,
                     phase_measurements: &mut phase_measurements,
@@ -5140,7 +5131,6 @@ where
             &segmentation_policy,
             &mut OutputWriteState {
                 profile: &mut profile,
-                lineage: &mut lineage,
                 segments: &mut segments,
                 segment_positions: &mut segment_positions,
                 phase_measurements: &mut phase_measurements,
@@ -5165,7 +5155,6 @@ where
         &builder,
         &mut OutputWriteState {
             profile: &mut profile,
-            lineage: &mut lineage,
             segments: &mut segments,
             segment_positions: &mut segment_positions,
             phase_measurements: &mut phase_measurements,
@@ -7286,14 +7275,8 @@ pub fn assemble_isolated_worker_package(
             .checked_add(evidence.lineage.input_rows)
             .ok_or_else(|| CdfError::data("isolated lineage input rows overflowed u64"))?;
         lineage
-            .input_partitions
-            .extend(evidence.lineage.input_partitions.iter().cloned());
-        lineage
             .input_observations
             .extend(evidence.lineage.input_observations.iter().cloned());
-        lineage
-            .output_segments
-            .extend(evidence.lineage.output_segments.iter().cloned());
         segment_positions.extend(evidence.segment_positions.iter().cloned());
         processed_observations.extend(evidence.processed_observations.iter().cloned());
         source_retries.extend(evidence.source_retries.iter().cloned());
@@ -7457,12 +7440,11 @@ pub fn assemble_isolated_worker_package(
         .iter()
         .map(|(_, _, segment_id, ..)| segment_id.clone())
         .collect::<Vec<_>>();
-    if actual_segment_ids != lineage.output_segments
-        || segment_positions
-            .iter()
-            .map(|position| position.segment_id.clone())
-            .collect::<Vec<_>>()
-            != actual_segment_ids
+    if segment_positions
+        .iter()
+        .map(|position| position.segment_id.clone())
+        .collect::<Vec<_>>()
+        != actual_segment_ids
     {
         return Err(CdfError::contract(
             "isolated canonical segment results do not match partition evidence",

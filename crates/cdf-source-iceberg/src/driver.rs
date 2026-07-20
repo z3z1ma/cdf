@@ -3018,7 +3018,16 @@ mod tests {
         )
         .unwrap();
         assert_eq!(run.output.profile.output_rows, 5);
-        assert_eq!(run.output.lineage.input_partitions.len(), 2);
+        assert_eq!(
+            run.output
+                .lineage
+                .input_observations
+                .iter()
+                .map(|observation| &observation.partition_id)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            2
+        );
         assert!(run.execution_evidence().checkpoint_eligible());
         assert!(run.segment_positions.iter().all(|position| matches!(
             position.output_position,
@@ -3084,7 +3093,7 @@ mod tests {
         assert_eq!(filtered.output.profile.output_rows, 2);
         let filtered_reader = cdf_package::PackageReader::open(filtered_package.path()).unwrap();
         let mut labels = Vec::new();
-        for segment in &filtered.output.segments {
+        for segment in filtered.output.identity_segments() {
             for batch in filtered_reader.read_segment(&segment.segment_id).unwrap() {
                 assert_eq!(
                     batch

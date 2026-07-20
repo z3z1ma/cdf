@@ -35,16 +35,7 @@ impl EnginePartitionEvidence {
     ) -> Result<Self> {
         let segmentation = plan.segmentation_policy()?;
         let canonical_partition_ordinal = task.partition.canonical_partition_ordinal;
-        let mut lineage = output.output.lineage.clone();
-        lineage.output_segments = (0..output.output.identity_segments().len())
-            .map(|ordinal| {
-                segmentation.segment_id(
-                    canonical_partition_ordinal,
-                    u32::try_from(ordinal)
-                        .map_err(|_| CdfError::data("partition segment ordinal exceeds u32"))?,
-                )
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let lineage = output.output.lineage.clone();
         let segment_positions = output
             .segment_positions
             .iter()
@@ -113,19 +104,13 @@ impl EnginePartitionEvidence {
             && self.canonical_partition_ordinal == task.partition.canonical_partition_ordinal
             && self
                 .lineage
-                .input_partitions
+                .input_observations
                 .iter()
-                .all(|partition| partition == &self.partition_id)
+                .all(|observation| observation.partition_id == self.partition_id)
             && self
                 .segment_positions
                 .iter()
-                .all(|position| position.partition_ordinal == self.canonical_partition_ordinal)
-            && self.lineage.output_segments
-                == self
-                    .segment_positions
-                    .iter()
-                    .map(|position| position.segment_id.clone())
-                    .collect::<Vec<_>>();
+                .all(|position| position.partition_ordinal == self.canonical_partition_ordinal);
         if !partition_matches {
             return Err(CdfError::contract(
                 "partition evidence does not match its portable task or canonical segments",
@@ -186,7 +171,11 @@ impl EnginePartitionEvidence {
                 .collect::<Vec<_>>();
             if self.lineage.input_rows != result.counts.input_rows
                 || self.profile.output_rows != result.counts.output_rows
-                || self.lineage.output_segments != prepared_segments
+                || self
+                    .segment_positions
+                    .iter()
+                    .map(|position| &position.segment_id)
+                    .ne(prepared_segments.iter())
             {
                 return Err(CdfError::contract(
                     "partition evidence does not match its admitted worker result",
