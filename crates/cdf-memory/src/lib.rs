@@ -42,10 +42,7 @@ pub struct CgroupV2MemoryReport {
 pub fn current_cgroup_v2_memory_report() -> std::result::Result<CgroupV2MemoryReport, String> {
     #[cfg(target_os = "linux")]
     {
-        return current_cgroup_v2_memory_report_from(
-            Path::new(CGROUP_ROOT),
-            Path::new(PROC_SELF_CGROUP),
-        );
+        current_cgroup_v2_memory_report_from(Path::new(CGROUP_ROOT), Path::new(PROC_SELF_CGROUP))
     }
     #[cfg(not(target_os = "linux"))]
     {
