@@ -941,14 +941,17 @@ mod tests {
         fs,
         io::Write,
         path::Path,
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
         time::Duration,
     };
 
     use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
-    use cdf_engine::{EnginePlanInput, EnginePreviewLimits, Planner};
+    use cdf_engine::{EngineExecutionOptions, EnginePlanInput, EnginePreviewLimits, Planner};
     use cdf_http::{
         HttpRequest, HttpResponse, HttpResponseBudget, HttpTransport, SecretProvider, SecretUri,
         SecretValue,
@@ -957,7 +960,10 @@ mod tests {
         BoxFuture, ContentStoreNamespace, ExecutionExtent, ResourceDescriptor, ResourceId,
         SchemaSource, ScopeKey, TrustLevel, WriteDisposition,
     };
-    use cdf_object_access::FileTransportFacade;
+    use cdf_object_access::{
+        FileIdentityMetadata, FileIdentityStream, FileMetadataObservation, FileTransport,
+        FileTransportControl, FileTransportFacade, FileTransportLocation, FileTransportResource,
+    };
     use cdf_runtime::{
         BlockingTask, CanonicalPartitionSchedule, CompiledSourceExecutionPlan, CpuFutureTask,
         CpuTaskSpec, ExecutionHost, ExecutionHostCapabilities, ExecutionServices,
@@ -987,6 +993,82 @@ mod tests {
             Err(CdfError::auth(
                 "Iceberg local test does not resolve secrets",
             ))
+        }
+    }
+
+    #[derive(Clone)]
+    struct FaultInjectingFileTransport {
+        inner: Arc<dyn FileTransport>,
+        metadata_failures: Arc<AtomicUsize>,
+        target_suffix: Arc<str>,
+    }
+
+    impl FaultInjectingFileTransport {
+        fn should_fail(&self, resource: &FileTransportResource) -> bool {
+            let location = match &resource.location {
+                FileTransportLocation::LocalPath { path } => path,
+                FileTransportLocation::FileUrl { url }
+                | FileTransportLocation::HttpUrl { url }
+                | FileTransportLocation::RemoteUrl { url } => url,
+            };
+            location.ends_with(self.target_suffix.as_ref())
+                && self
+                    .metadata_failures
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                        remaining.checked_sub(1)
+                    })
+                    .is_ok()
+        }
+    }
+
+    impl FileTransport for FaultInjectingFileTransport {
+        fn metadata(
+            &self,
+            egress: &cdf_runtime::SourceEgressScope,
+            resource: &FileTransportResource,
+            control: &FileTransportControl,
+        ) -> Result<FileMetadataObservation> {
+            if self.should_fail(resource) {
+                return Err(CdfError::transient(
+                    "injected Iceberg data-object metadata failure",
+                ));
+            }
+            self.inner.metadata(egress, resource, control)
+        }
+
+        fn metadata_if_exists(
+            &self,
+            egress: &cdf_runtime::SourceEgressScope,
+            resource: &FileTransportResource,
+            control: &FileTransportControl,
+        ) -> Result<Option<FileMetadataObservation>> {
+            if self.should_fail(resource) {
+                return Err(CdfError::transient(
+                    "injected Iceberg data-object metadata failure",
+                ));
+            }
+            self.inner.metadata_if_exists(egress, resource, control)
+        }
+
+        fn list(
+            &self,
+            egress: &cdf_runtime::SourceEgressScope,
+            resource: &FileTransportResource,
+            maximum_results: usize,
+            control: &FileTransportControl,
+        ) -> Result<FileIdentityStream> {
+            self.inner.list(egress, resource, maximum_results, control)
+        }
+
+        fn open_byte_source(
+            &self,
+            egress: &cdf_runtime::SourceEgressScope,
+            resource: &FileTransportResource,
+            expected: &FileIdentityMetadata,
+            memory: Arc<dyn cdf_memory::MemoryCoordinator>,
+        ) -> Result<Arc<dyn cdf_runtime::ByteSource>> {
+            self.inner
+                .open_byte_source(egress, resource, expected, memory)
         }
     }
 
@@ -1096,9 +1178,15 @@ mod tests {
             duration: Duration,
             cancellation: RunCancellation,
         ) -> BoxFuture<'static, Result<()>> {
+            let runtime = self.runtime.handle().clone();
             Box::pin(async move {
                 cancellation.check()?;
-                tokio::time::sleep(duration).await;
+                let sleep = runtime.spawn(async move {
+                    tokio::time::sleep(duration).await;
+                });
+                sleep.await.map_err(|error| {
+                    CdfError::internal(format!("Iceberg test delay task failed: {error}"))
+                })?;
                 cancellation.check()
             })
         }
@@ -1691,6 +1779,31 @@ mod tests {
         .unwrap()
     }
 
+    fn filesystem_driver_with_metadata_failures(
+        metadata_failures: Arc<AtomicUsize>,
+        target_suffix: &'static str,
+    ) -> IcebergSourceDriver {
+        let http = NoopHttpTransport;
+        IcebergSourceDriver::new(move |secrets, execution, _egress, lane| {
+            let inner: Arc<dyn FileTransport> = Arc::new(
+                FileTransportFacade::new()
+                    .with_shared_secret_provider(secrets)
+                    .with_execution_services(execution)
+                    .with_local_listing_lane(lane)?,
+            );
+            Ok(IcebergRuntimeDependencies::new(
+                Arc::new(FaultInjectingFileTransport {
+                    inner,
+                    metadata_failures: Arc::clone(&metadata_failures),
+                    target_suffix: Arc::from(target_suffix),
+                }),
+                Arc::new(http.clone()),
+                Arc::new(UnsupportedGlueCatalogClient),
+            ))
+        })
+        .unwrap()
+    }
+
     fn add_request(
         location: &str,
         options: impl IntoIterator<Item = (&'static str, &'static str)>,
@@ -2035,7 +2148,11 @@ mod tests {
         let table = root.path().join("analytics/events");
         let execution = execution_services();
         write_nonempty_table_fixture(&execution, &table);
-        let driver = filesystem_driver();
+        let metadata_failures = Arc::new(AtomicUsize::new(0));
+        let driver = filesystem_driver_with_metadata_failures(
+            Arc::clone(&metadata_failures),
+            "data/old.parquet",
+        );
         let context = SourceResolutionContext::new(
             root.path(),
             Arc::new(NoopSecretProvider),
@@ -2270,14 +2387,20 @@ mod tests {
         assert_eq!(preview.payload_opened_partition_count, 2);
         assert_eq!(preview.row_count, 5);
 
+        metadata_failures.store(1, Ordering::SeqCst);
+        let options = EngineExecutionOptions::default().with_execution_services(execution.clone());
+        let retry_evidence = options.source_retry_evidence();
         let package = tempfile::tempdir().unwrap();
-        let run =
-            futures_executor::block_on(cdf_engine::execute_to_package_with_segment_positions(
+        let run = futures_executor::block_on(
+            cdf_engine::execute_to_package_with_segment_positions_and_pre_finalize(
                 &engine_plan,
                 resource.as_ref(),
                 package.path(),
-            ))
-            .unwrap();
+                &|_, _| Ok(()),
+                options,
+            ),
+        )
+        .unwrap();
         assert_eq!(run.output.profile.output_rows, 5);
         assert_eq!(run.output.lineage.input_partitions.len(), 2);
         assert!(run.execution_evidence().checkpoint_eligible());
@@ -2285,6 +2408,17 @@ mod tests {
             position.output_position,
             Some(cdf_kernel::SourcePosition::TableSnapshot(_))
         )));
+        assert_eq!(metadata_failures.load(Ordering::SeqCst), 0);
+        let retry_evidence = retry_evidence.snapshot().unwrap();
+        assert_eq!(retry_evidence.len(), 1);
+        assert_eq!(retry_evidence[0].partition_ordinal(), 0);
+        assert_eq!(retry_evidence[0].history().len(), 1);
+        assert_eq!(
+            retry_evidence[0].history()[0].cause,
+            cdf_kernel::ErrorKind::Transient
+        );
+        assert!(retry_evidence[0].history()[0].selected_delay_ms.is_some());
+        assert!(retry_evidence[0].history()[0].exhaustion.is_none());
 
         let mut many_jobs_request = compile_request(root.path());
         many_jobs_request
