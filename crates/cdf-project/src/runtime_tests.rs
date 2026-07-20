@@ -1796,13 +1796,7 @@ fn build_package_with_options_and_scan_tamper(
             .unwrap(),
         )
         .unwrap();
-    write_state_commit_artifacts(
-        &builder,
-        &segment,
-        disposition,
-        checkpoint_id,
-        Vec::new(),
-    );
+    write_state_commit_artifacts(&builder, &segment, disposition, checkpoint_id, Vec::new());
     write_compiled_expression_artifacts(&builder, stale, true, None, duplicate_scan_observation);
     builder.finish_with_status(status).unwrap()
 }
@@ -4495,12 +4489,9 @@ fn late_data_carryover_survives_the_receipt_to_checkpoint_crash_window() {
         vec![reference]
     );
     assert_eq!(
-        crate::runtime::load_late_data_carryover(
-            &package_root,
-            Some(&recovery.checkpoint),
-        )
-        .unwrap()
-        .len(),
+        crate::runtime::load_late_data_carryover(&package_root, Some(&recovery.checkpoint),)
+            .unwrap()
+            .len(),
         1
     );
 }
