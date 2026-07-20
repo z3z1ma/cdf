@@ -1311,7 +1311,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__run)
-            opts="-q -v -h --to --jobs --stats-profile --loop --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
+            opts="-q -v -h --to --jobs --stats-profile --explain-memory --loop --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

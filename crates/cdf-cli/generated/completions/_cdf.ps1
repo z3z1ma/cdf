@@ -181,6 +181,7 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--memory-budget', '--memory-budget', [CompletionResultType]::ParameterName, 'Process memory budget, e.g. 4GiB or 512MiB')
             [CompletionResult]::new('--spill-budget', '--spill-budget', [CompletionResultType]::ParameterName, 'Spill/disk budget, e.g. 64GiB or 512MiB')
             [CompletionResult]::new('--stats-profile', '--stats-profile', [CompletionResultType]::ParameterName, 'Write the typed statistics profile artifact')
+            [CompletionResult]::new('--explain-memory', '--explain-memory', [CompletionResultType]::ParameterName, 'Include memory-ledger detail in the run report')
             [CompletionResult]::new('--loop', '--loop', [CompletionResultType]::ParameterName, 'Continue polling for work')
             [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress progress and non-primary success narration')

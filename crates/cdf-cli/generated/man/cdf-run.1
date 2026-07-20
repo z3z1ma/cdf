@@ -4,7 +4,7 @@
 .SH NAME
 cdf\-run \- Execute a governed resource run
 .SH SYNOPSIS
-\fBcdf run\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-to\fR] [\fB\-\-jobs\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-stats\-profile\fR] [\fB\-\-loop\fR] [\fB\-\-progress\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-spill\-budget\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE\fR]
+\fBcdf run\fR [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-to\fR] [\fB\-\-jobs\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-stats\-profile\fR] [\fB\-\-explain\-memory\fR] [\fB\-\-progress\fR] [\fB\-\-loop\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-spill\-budget\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE\fR]
 .SH DESCRIPTION
 Execute a governed resource run
 .SH OPTIONS
@@ -39,8 +39,8 @@ never
 \fB\-\-stats\-profile\fR
 Write the typed statistics profile artifact
 .TP
-\fB\-\-loop\fR
-Continue polling for work
+\fB\-\-explain\-memory\fR
+Include memory\-ledger detail in the run report
 .TP
 \fB\-\-progress\fR \fI<WHEN>\fR
 Progress policy: auto, always, or never
@@ -56,6 +56,9 @@ always
 .IP \(bu 2
 never
 .RE
+.TP
+\fB\-\-loop\fR
+Continue polling for work
 .TP
 \fB\-\-unicode\fR \fI<WHEN>\fR
 Unicode policy: auto, always, or never

@@ -12,8 +12,9 @@ Options:
   -v, --verbose...             Show evidence detail; repeat for diagnostics
       --color <WHEN>           Color policy: auto, always, or never [possible values: auto, always, never]
       --stats-profile          Write the typed statistics profile artifact
-      --loop                   Continue polling for work
+      --explain-memory         Include memory-ledger detail in the run report
       --progress <WHEN>        Progress policy: auto, always, or never [possible values: auto, always, never]
+      --loop                   Continue polling for work
       --unicode <WHEN>         Unicode policy: auto, always, or never [possible values: auto, always, never]
       --memory-budget <BYTES>  Process memory budget, e.g. 4GiB or 512MiB
       --spill-budget <BYTES>   Spill/disk budget, e.g. 64GiB or 512MiB

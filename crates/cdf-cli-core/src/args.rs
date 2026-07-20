@@ -1151,6 +1151,7 @@ fn option_help(long: &str) -> &'static str {
         "pipeline" => "Pipeline identifier",
         "jobs" => "Maximum concurrent jobs",
         "stats-profile" => "Write the typed statistics profile artifact",
+        "explain-memory" => "Include memory-ledger detail in the run report",
         "loop" => "Continue polling for work",
         "deep" => "Run probes that may contact configured systems",
         "dry-run" => "Show the proposed change without writing it",

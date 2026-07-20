@@ -176,6 +176,7 @@ _arguments "${_arguments_options[@]}" : \
 '--memory-budget=[Process memory budget, e.g. 4GiB or 512MiB]:BYTES:_default' \
 '--spill-budget=[Spill/disk budget, e.g. 64GiB or 512MiB]:BYTES:_default' \
 '--stats-profile[Write the typed statistics profile artifact]' \
+'--explain-memory[Include memory-ledger detail in the run report]' \
 '--loop[Continue polling for work]' \
 '(-v --verbose)-q[Suppress progress and non-primary success narration]' \
 '(-v --verbose)--quiet[Suppress progress and non-primary success narration]' \

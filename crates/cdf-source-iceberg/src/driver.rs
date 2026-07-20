@@ -968,8 +968,8 @@ mod tests {
         BlockingTask, CanonicalPartitionSchedule, CompiledSourceExecutionPlan, CpuFutureTask,
         CpuTaskSpec, ExecutionHost, ExecutionHostCapabilities, ExecutionServices,
         ExecutionTaskScope, FixedSpillBudget, IoTask, IoValue, IoValueTask, RunCancellation,
-        SourceCompileContext, SourceHealthStatus, SourceResolutionContext, SpillBudgetCoordinator,
-        SourceRegistry, TaskScopeReport,
+        SourceCompileContext, SourceHealthStatus, SourceRegistry, SourceResolutionContext,
+        SpillBudgetCoordinator, TaskScopeReport,
     };
     use cdf_task_store::ExternalTaskStore;
     use flate2::{Compression, write::GzEncoder};
@@ -2332,9 +2332,7 @@ mod tests {
             .source_options
             .insert("maximum_concurrency".to_owned(), serde_json::json!(1));
         let mut one_job_plan = registry.compile(one_job_request).unwrap();
-        let session = registry
-            .discovery_session(&one_job_plan, &context)
-            .unwrap();
+        let session = registry.discovery_session(&one_job_plan, &context).unwrap();
         let candidate = session.candidates().unwrap().remove(0);
         let observation = session
             .observe(
