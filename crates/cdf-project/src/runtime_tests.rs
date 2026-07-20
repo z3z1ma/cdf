@@ -730,6 +730,16 @@ fn test_file_runtime_dependencies() -> FileRuntimeDependencies {
         .unwrap();
     formats
         .register(Arc::new(
+            cdf_format_avro::AvroOcfFormatDriver::new().unwrap(),
+        ))
+        .unwrap();
+    formats
+        .register(Arc::new(
+            cdf_format_avro::AvroSingleObjectFormatDriver::new().unwrap(),
+        ))
+        .unwrap();
+    formats
+        .register(Arc::new(
             cdf_format_delimited::CsvFormatDriver::new().unwrap(),
         ))
         .unwrap();

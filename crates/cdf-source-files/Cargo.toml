@@ -30,6 +30,7 @@ url = "2.5.8"
 arrow-array = "58.3.0"
 arrow-ipc = "58.3.0"
 cdf-format-arrow-ipc = { path = "../cdf-format-arrow-ipc" }
+cdf-format-avro = { path = "../cdf-format-avro" }
 cdf-format-delimited = { path = "../cdf-format-delimited" }
 cdf-format-json = { path = "../cdf-format-json" }
 cdf-format-parquet = { path = "../cdf-format-parquet" }

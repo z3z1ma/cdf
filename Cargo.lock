@@ -152,7 +152,7 @@ dependencies = [
  "serde_json",
  "snap",
  "strum",
- "strum_macros",
+ "strum_macros 0.27.2",
  "thiserror",
  "uuid",
  "zstd",
@@ -231,6 +231,32 @@ dependencies = [
  "num-complex",
  "num-integer",
  "num-traits",
+]
+
+[[package]]
+name = "arrow-avro"
+version = "58.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "049230728cd6e093088c8d231b4beede184e35cad7777c1505c0d5a8571f4376"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-schema",
+ "bytes",
+ "bzip2",
+ "crc",
+ "flate2",
+ "futures",
+ "indexmap 2.14.0",
+ "liblzma",
+ "rand 0.9.5",
+ "serde",
+ "serde_json",
+ "snap",
+ "strum_macros 0.28.0",
+ "tokio",
+ "uuid",
+ "zstd",
 ]
 
 [[package]]
@@ -996,6 +1022,7 @@ dependencies = [
  "cdf-dest-postgres",
  "cdf-engine",
  "cdf-format-arrow-ipc",
+ "cdf-format-avro",
  "cdf-format-delimited",
  "cdf-format-json",
  "cdf-format-parquet",
@@ -1277,6 +1304,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdf-format-avro"
+version = "0.1.0"
+dependencies = [
+ "apache-avro",
+ "arrow-array",
+ "arrow-avro",
+ "arrow-buffer",
+ "arrow-schema",
+ "bytes",
+ "cdf-kernel",
+ "cdf-memory",
+ "cdf-runtime",
+ "futures-executor",
+ "futures-util",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "cdf-format-delimited"
 version = "0.1.0"
 dependencies = [
@@ -1448,6 +1494,7 @@ dependencies = [
  "cdf-dest-postgres",
  "cdf-engine",
  "cdf-format-arrow-ipc",
+ "cdf-format-avro",
  "cdf-format-delimited",
  "cdf-format-json",
  "cdf-format-parquet",
@@ -1534,6 +1581,7 @@ dependencies = [
  "bytes",
  "cdf-expression",
  "cdf-format-arrow-ipc",
+ "cdf-format-avro",
  "cdf-format-delimited",
  "cdf-format-json",
  "cdf-format-parquet",
@@ -1656,9 +1704,9 @@ dependencies = [
  "arrow-ipc",
  "arrow-schema",
  "bytes",
+ "cdf-foreign-stream",
  "cdf-format-arrow-ipc",
  "cdf-format-json",
- "cdf-foreign-stream",
  "cdf-kernel",
  "cdf-memory",
  "cdf-package",
@@ -2049,6 +2097,21 @@ checksum = "8b2a41393f66f16b0823bb79094d54ac5fbd34ab292ddafb9a0456ac9f87d201"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "crc"
+version = "3.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5eb8a2a1cd12ab0d987a5d5e825195d372001a4094a0376319d5a0ad71c1ba0d"
+dependencies = [
+ "crc-catalog",
+]
+
+[[package]]
+name = "crc-catalog"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853"
 
 [[package]]
 name = "crc-fast"
@@ -5854,7 +5917,7 @@ version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
 dependencies = [
- "strum_macros",
+ "strum_macros 0.27.2",
 ]
 
 [[package]]
@@ -5862,6 +5925,18 @@ name = "strum_macros"
 version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7695ce3845ea4b33927c055a39dc438a45b059f7c1b3d91d38d10355fb8cbca7"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "strum_macros"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab85eea0270ee17587ed4156089e10b9e6880ee688791d45a905f5b1ca36f664"
 dependencies = [
  "heck",
  "proc-macro2",

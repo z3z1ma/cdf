@@ -105,6 +105,30 @@ fn accounted_batch_reconciles_reservation_and_error_drops_release() {
 }
 
 #[test]
+fn exclusive_lease_partitions_without_readmission_or_double_release() {
+    let coordinator = DeterministicMemoryCoordinator::new(1024, BTreeMap::new()).unwrap();
+    let request =
+        ReservationRequest::new(consumer("atomic-unit", MemoryClass::Decode), 512).unwrap();
+    let lease = coordinator.try_reserve(&request).unwrap().unwrap();
+
+    let mut partitions = lease.into_partitions(vec![100, 200]).unwrap();
+    assert_eq!(coordinator.snapshot().current_bytes, 300);
+    assert_eq!(partitions[0].bytes(), 100);
+    assert_eq!(partitions[1].bytes(), 200);
+    drop(partitions.pop());
+    assert_eq!(coordinator.snapshot().current_bytes, 100);
+    drop(partitions);
+    assert_eq!(coordinator.snapshot().current_bytes, 0);
+
+    let shared = coordinator.try_reserve(&request).unwrap().unwrap();
+    let clone = shared.clone();
+    assert!(shared.into_partitions(vec![64]).is_err());
+    assert_eq!(coordinator.snapshot().current_bytes, 512);
+    drop(clone);
+    assert_eq!(coordinator.snapshot().current_bytes, 0);
+}
+
+#[test]
 fn retained_bytes_count_shared_arrow_allocations_once() {
     let values = Arc::new(Int64Array::from_iter_values(0..1024)) as ArrayRef;
     let batch = RecordBatch::try_from_iter([

@@ -16,6 +16,7 @@ members = [
     "crates/cdf-cli-core",
     "crates/cdf-format-parquet",
     "crates/cdf-format-arrow-ipc",
+    "crates/cdf-format-avro",
     "crates/cdf-format-delimited",
     "crates/cdf-format-json",
     "crates/cdf-transform-gzip",

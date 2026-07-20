@@ -36,6 +36,7 @@ cdf-dest-duckdb = { path = "../cdf-dest-duckdb" }
 cdf-dest-parquet = { path = "../cdf-dest-parquet" }
 cdf-dest-postgres = { path = "../cdf-dest-postgres" }
 cdf-format-arrow-ipc = { path = "../cdf-format-arrow-ipc" }
+cdf-format-avro = { path = "../cdf-format-avro" }
 cdf-format-delimited = { path = "../cdf-format-delimited" }
 cdf-format-json = { path = "../cdf-format-json" }
 cdf-format-parquet = { path = "../cdf-format-parquet" }

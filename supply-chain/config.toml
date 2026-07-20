@@ -98,6 +98,10 @@ criteria = "safe-to-deploy"
 version = "58.3.0"
 criteria = "safe-to-deploy"
 
+[[exemptions.arrow-avro]]
+version = "58.3.0"
+criteria = "safe-to-deploy"
+
 [[exemptions.arrow-buffer]]
 version = "58.3.0"
 criteria = "safe-to-deploy"
@@ -412,6 +416,14 @@ criteria = "safe-to-deploy"
 
 [[exemptions.cpufeatures]]
 version = "0.3.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.crc]]
+version = "3.4.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.crc-catalog]]
+version = "2.5.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.crc-fast]]
@@ -1712,6 +1724,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.strum_macros]]
 version = "0.27.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.strum_macros]]
+version = "0.28.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.subtle]]

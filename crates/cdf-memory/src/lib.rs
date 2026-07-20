@@ -469,6 +469,55 @@ impl MemoryLease {
         state.bytes = observed_bytes;
         Ok(())
     }
+
+    /// Transfers one exclusive reservation into independently owned payload leases.
+    ///
+    /// This is the atomic-publication path for codecs that must validate a complete
+    /// decode unit before exposing any of its batches. The caller reserves the unit's
+    /// output authority once, builds every payload under that authority, and then
+    /// partitions the reservation without a second admission cycle. Unused authority
+    /// is released immediately.
+    pub fn into_partitions(self, partition_bytes: Vec<u64>) -> Result<Vec<Self>> {
+        if partition_bytes.is_empty() || partition_bytes.contains(&0) {
+            return Err(CdfError::contract(
+                "memory lease partitions must be nonempty and individually nonzero",
+            ));
+        }
+        let required = partition_bytes.iter().try_fold(0_u64, |total, bytes| {
+            total
+                .checked_add(*bytes)
+                .ok_or_else(|| CdfError::data("memory lease partition total overflowed"))
+        })?;
+        let mut inner = Arc::try_unwrap(self.inner).map_err(|_| {
+            CdfError::contract("only an exclusively owned memory lease can be partitioned")
+        })?;
+        let reserved = inner
+            .state
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .bytes;
+        if required > reserved {
+            return Err(CdfError::data(format!(
+                "memory lease partitions require {required} bytes but the lease owns {reserved}"
+            )));
+        }
+        let account = Arc::clone(&inner.account);
+        inner
+            .state
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .bytes = 0;
+        account.release(reserved - required);
+        Ok(partition_bytes
+            .into_iter()
+            .map(|bytes| Self {
+                inner: Arc::new(LeaseInner {
+                    account: Arc::clone(&account),
+                    state: Mutex::new(LeaseState { bytes }),
+                }),
+            })
+            .collect())
+    }
 }
 
 #[derive(Clone, Debug)]

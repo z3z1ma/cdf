@@ -126,6 +126,12 @@ pub(crate) fn builtin_format_registry() -> Result<Arc<FormatRegistry>> {
         cdf_format_arrow_ipc::ArrowIpcStreamFormatDriver::new()?,
     ))?;
     registry.register(std::sync::Arc::new(
+        cdf_format_avro::AvroOcfFormatDriver::new()?,
+    ))?;
+    registry.register(std::sync::Arc::new(
+        cdf_format_avro::AvroSingleObjectFormatDriver::new()?,
+    ))?;
+    registry.register(std::sync::Arc::new(
         cdf_format_delimited::CsvFormatDriver::new()?,
     ))?;
     registry.register(std::sync::Arc::new(
@@ -183,6 +189,23 @@ mod tests {
         assert_eq!(
             descriptor.source_access,
             cdf_runtime::FormatSourceAccess::Sequential
+        );
+    }
+
+    #[test]
+    fn builtin_format_catalog_contains_both_avro_framings() {
+        let formats = builtin_format_registry().unwrap();
+        let descriptors = formats.descriptors();
+
+        assert!(
+            descriptors
+                .iter()
+                .any(|descriptor| descriptor.format_id.as_str() == "avro_ocf")
+        );
+        assert!(
+            descriptors
+                .iter()
+                .any(|descriptor| descriptor.format_id.as_str() == "avro_single_object")
         );
     }
 }

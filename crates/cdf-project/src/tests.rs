@@ -139,6 +139,16 @@ fn test_format_registry() -> Arc<cdf_runtime::FormatRegistry> {
         .unwrap();
     registry
         .register(Arc::new(
+            cdf_format_avro::AvroOcfFormatDriver::new().unwrap(),
+        ))
+        .unwrap();
+    registry
+        .register(Arc::new(
+            cdf_format_avro::AvroSingleObjectFormatDriver::new().unwrap(),
+        ))
+        .unwrap();
+    registry
+        .register(Arc::new(
             cdf_format_delimited::CsvFormatDriver::new().unwrap(),
         ))
         .unwrap();
