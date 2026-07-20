@@ -45,8 +45,8 @@ use cdf_memory::{
 use cdf_package::PackageBuilder;
 use cdf_package_contract::{
     LATE_DATA_EVIDENCE_FILE, LATE_DATA_EVIDENCE_VERSION, LATE_DATA_PAYLOAD_CATALOG_FILE,
-    LateDataPayloadArtifact, LateDataPayloadCatalog, LateDataPayloadLocation, LateDataRecord,
-    PackageStatus, QuarantineObservedValue, QuarantineRecord, SegmentEntry,
+    LATE_DATA_PAYLOAD_CATALOG_VERSION, LateDataPayloadArtifact, LateDataPayloadLocation,
+    LateDataRecord, PackageStatus, QuarantineObservedValue, QuarantineRecord, SegmentEntry,
 };
 use futures_util::{StreamExt, future::Either};
 use serde::{Deserialize, Serialize};
@@ -1427,6 +1427,57 @@ impl LateDataEvidenceAccumulator {
             return Ok(());
         };
         artifact.write_all(format!("],\"version\":{LATE_DATA_EVIDENCE_VERSION}}}").as_bytes())?;
+        artifact.finish()?;
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct LateDataPayloadCatalogAccumulator {
+    artifact: Option<cdf_package::StreamingIdentityArtifact>,
+    artifact_count: u64,
+}
+
+impl LateDataPayloadCatalogAccumulator {
+    const fn next_ordinal(&self) -> u64 {
+        self.artifact_count
+    }
+
+    fn push(&mut self, builder: &PackageBuilder, payload: &LateDataPayloadArtifact) -> Result<u64> {
+        payload.validate()?;
+        if payload.artifact_ordinal != self.artifact_count {
+            return Err(CdfError::internal(
+                "late-data payload artifacts must enter canonical ordinal order",
+            ));
+        }
+        if self.artifact.is_none() {
+            let mut artifact =
+                builder.begin_streaming_identity_artifact(LATE_DATA_PAYLOAD_CATALOG_FILE)?;
+            artifact.write_all(b"{\"artifacts\":[")?;
+            self.artifact = Some(artifact);
+        }
+        let artifact = self
+            .artifact
+            .as_mut()
+            .ok_or_else(|| CdfError::internal("late-data payload catalog is unavailable"))?;
+        if self.artifact_count != 0 {
+            artifact.write_all(b",")?;
+        }
+        artifact.write_all(&cdf_package::canonical_json_bytes(payload)?)?;
+        let ordinal = self.artifact_count;
+        self.artifact_count = self
+            .artifact_count
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("late-data payload artifact count overflow"))?;
+        Ok(ordinal)
+    }
+
+    fn finish(mut self) -> Result<()> {
+        let Some(mut artifact) = self.artifact.take() else {
+            return Ok(());
+        };
+        artifact
+            .write_all(format!("],\"version\":{LATE_DATA_PAYLOAD_CATALOG_VERSION}}}").as_bytes())?;
         artifact.finish()?;
         Ok(())
     }
@@ -3220,7 +3271,7 @@ where
     let mut segment_positions = Vec::new();
     let mut quarantine_part_count = 0_usize;
     let mut late_data_evidence = LateDataEvidenceAccumulator::default();
-    let mut late_data_payloads = Vec::<LateDataPayloadArtifact>::new();
+    let mut late_data_payloads = LateDataPayloadCatalogAccumulator::default();
     let mut late_data_carryover = Vec::<cdf_kernel::LateDataCarryoverRef>::new();
     let mut remaining_limit = plan.scan.request.limit;
     let mut output_schema = Some(schema_artifact(runtime_output_schema.as_ref()));
@@ -4336,17 +4387,15 @@ where
                         );
                         let file = builder
                             .write_ipc_identity_batches(&relative_path, &[recaptured])?;
-                        let artifact_ordinal = u64::try_from(late_data_payloads.len()).map_err(
-                            |_| CdfError::data("late-data payload artifact count exceeds u64"),
-                        )?;
-                        late_data_payloads.push(LateDataPayloadArtifact {
+                        let artifact_ordinal = late_data_payloads.next_ordinal();
+                        late_data_payloads.push(&builder, &LateDataPayloadArtifact {
                             artifact_ordinal,
                             action: *action,
                             path: file.path.clone(),
                             byte_count: file.byte_count,
                             sha256: file.sha256.clone(),
                             row_count,
-                        });
+                        })?;
                         for (row_ordinal, record) in classification.records.iter_mut().enumerate() {
                             record.payload = LateDataPayloadLocation::ArtifactRow {
                                 artifact_ordinal,
@@ -4386,21 +4435,19 @@ where
                         })?;
                         let relative_path = format!(
                             "quarantine/late-data-{:020}.arrow",
-                            late_data_payloads.len()
+                            late_data_payloads.next_ordinal()
                         );
                         let file = builder
                             .write_ipc_identity_batches(&relative_path, &[quarantined])?;
-                        let artifact_ordinal = u64::try_from(late_data_payloads.len()).map_err(
-                            |_| CdfError::data("late-data payload artifact count exceeds u64"),
-                        )?;
-                        late_data_payloads.push(LateDataPayloadArtifact {
+                        let artifact_ordinal = late_data_payloads.next_ordinal();
+                        late_data_payloads.push(&builder, &LateDataPayloadArtifact {
                             artifact_ordinal,
                             action: *action,
                             path: file.path,
                             byte_count: file.byte_count,
                             sha256: file.sha256,
                             row_count,
-                        });
+                        })?;
                         for (row_ordinal, record) in classification.records.iter_mut().enumerate() {
                             record.payload = LateDataPayloadLocation::ArtifactRow {
                                 artifact_ordinal,
@@ -5157,12 +5204,7 @@ where
         write_quarantine_summary(&builder, &verdict_summary, quarantine_part_count)?;
     }
     late_data_evidence.finish()?;
-    if !late_data_payloads.is_empty() {
-        builder.write_json_artifact(
-            LATE_DATA_PAYLOAD_CATALOG_FILE,
-            &LateDataPayloadCatalog::new(late_data_payloads)?,
-        )?;
-    }
+    late_data_payloads.finish()?;
     builder.write_lineage_artifact(
         "lineage.json",
         &cdf_package::canonical_json_bytes(&lineage)?,
