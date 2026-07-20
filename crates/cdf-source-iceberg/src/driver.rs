@@ -12,11 +12,12 @@ use cdf_object_access::FileTransport;
 use cdf_runtime::{
     BlockingLaneBinding, BlockingLaneSpec, CompiledSourcePlan, ExecutionServices,
     InterruptionSafety, LaneAffinity, PreparedSourcePayload, PreparedSourcePayloadKey,
-    SourceAttestationStrength, SourceBatchMemoryContract, SourceCompileRequest,
-    SourceDiscoveryCandidate, SourceDiscoveryKind, SourceDiscoveryRequest, SourceDiscoverySession,
-    SourceDriver, SourceDriverDescriptor, SourceExecutionCapabilities, SourceExecutorClass,
-    SourceHealthRequest, SourceHealthResult, SourceHealthSink, SourceHealthStatus,
-    SourceResolutionContext, SourceRetryGranularity, artifact_hash,
+    SourceAddPlanner, SourceAddProposal, SourceAddRequest, SourceAttestationStrength,
+    SourceBatchMemoryContract, SourceCompileRequest, SourceDiscoveryCandidate, SourceDiscoveryKind,
+    SourceDiscoveryRequest, SourceDiscoverySession, SourceDriver, SourceDriverDescriptor,
+    SourceEvidenceLocation, SourceExecutionCapabilities, SourceExecutorClass, SourceHealthRequest,
+    SourceHealthResult, SourceHealthSink, SourceHealthStatus, SourceResolutionContext,
+    SourceRetryGranularity, artifact_hash,
 };
 use cdf_task_store::ExternalTaskStore;
 use serde::{Deserialize, Serialize};
@@ -212,6 +213,10 @@ impl SourceDriver for IcebergSourceDriver {
         Ok(())
     }
 
+    fn add_planner(&self) -> Option<&dyn SourceAddPlanner> {
+        Some(self)
+    }
+
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
         request.context.validate()?;
         let source: IcebergSourceOptions =
@@ -362,6 +367,205 @@ impl SourceDriver for IcebergSourceDriver {
             output.emit(result)?;
         }
         Ok(())
+    }
+}
+
+impl SourceAddPlanner for IcebergSourceDriver {
+    fn propose_add(&self, request: &SourceAddRequest) -> Result<Option<SourceAddProposal>> {
+        request.validate()?;
+        let Some(kind) = request.options.get("catalog") else {
+            return Ok(None);
+        };
+        let namespace = request.options.get("namespace").ok_or_else(|| {
+            CdfError::contract(
+                "Iceberg cdf add requires `--option namespace=<name>`; use a JSON string array for a multipart namespace",
+            )
+        })?;
+        let namespace = parse_add_string_list("Iceberg namespace", namespace)?;
+        if namespace.is_empty() {
+            return Err(CdfError::contract(
+                "Iceberg cdf add namespace must contain at least one component",
+            ));
+        }
+        let table = request
+            .options
+            .get("table")
+            .cloned()
+            .unwrap_or_else(|| request.resource_name.clone());
+        let selector = request.options.get("selector").map_or_else(
+            || Ok(serde_json::json!({"kind": "current"})),
+            |value| parse_add_selector(value),
+        )?;
+        let mut catalog = serde_json::Map::new();
+        catalog.insert("kind".to_owned(), serde_json::Value::String(kind.clone()));
+        let allowed = match kind.as_str() {
+            "filesystem" => {
+                catalog.insert(
+                    "warehouse".to_owned(),
+                    serde_json::Value::String(request.location.clone()),
+                );
+                &[
+                    "catalog",
+                    "namespace",
+                    "table",
+                    "selector",
+                    "object_credentials",
+                    "egress_allowlist",
+                ] as &[_]
+            }
+            "rest" => {
+                catalog.insert(
+                    "uri".to_owned(),
+                    serde_json::Value::String(request.location.clone()),
+                );
+                copy_add_option(&request.options, "warehouse", &mut catalog);
+                copy_add_option(&request.options, "credentials", &mut catalog);
+                &[
+                    "catalog",
+                    "namespace",
+                    "table",
+                    "selector",
+                    "warehouse",
+                    "credentials",
+                    "object_credentials",
+                    "egress_allowlist",
+                ] as &[_]
+            }
+            "glue" => {
+                catalog.insert(
+                    "region".to_owned(),
+                    serde_json::Value::String(request.location.clone()),
+                );
+                for key in ["catalog_id", "warehouse", "endpoint", "credentials"] {
+                    copy_add_option(&request.options, key, &mut catalog);
+                }
+                &[
+                    "catalog",
+                    "namespace",
+                    "table",
+                    "selector",
+                    "catalog_id",
+                    "warehouse",
+                    "endpoint",
+                    "credentials",
+                    "object_credentials",
+                    "egress_allowlist",
+                ] as &[_]
+            }
+            other => {
+                return Err(CdfError::contract(format!(
+                    "Iceberg cdf add catalog must be `filesystem`, `rest`, or `glue`, not `{other}`"
+                )));
+            }
+        };
+        let unknown = request
+            .options
+            .keys()
+            .filter(|key| !allowed.contains(&key.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !unknown.is_empty() {
+            return Err(CdfError::contract(format!(
+                "Iceberg {kind} cdf add received unsupported options: {}",
+                unknown.join(", ")
+            )));
+        }
+        let mut source_options =
+            BTreeMap::from([("catalog".to_owned(), serde_json::Value::Object(catalog))]);
+        if let Some(reference) = request.options.get("object_credentials") {
+            source_options.insert(
+                "object_credentials".to_owned(),
+                serde_json::Value::String(reference.clone()),
+            );
+        }
+        if let Some(hosts) = request.options.get("egress_allowlist") {
+            source_options.insert(
+                "egress_allowlist".to_owned(),
+                serde_json::to_value(parse_add_string_list("Iceberg egress allowlist", hosts)?)
+                    .map_err(|error| {
+                        CdfError::internal(format!("encode Iceberg add allowlist: {error}"))
+                    })?,
+            );
+        }
+        let resource = IcebergResourceOptions {
+            namespace,
+            table,
+            selector: serde_json::from_value(selector.clone()).map_err(|error| {
+                CdfError::contract(format!("Iceberg cdf add selector is invalid: {error}"))
+            })?,
+        };
+        resource.validate()?;
+        let source: IcebergSourceOptions = serde_json::from_value(serde_json::Value::Object(
+            source_options.clone().into_iter().collect(),
+        ))
+        .map_err(|error| {
+            CdfError::contract(format!("Iceberg cdf add source is invalid: {error}"))
+        })?;
+        source.validate()?;
+        Ok(Some(SourceAddProposal {
+            source_kind: "iceberg".to_owned(),
+            source_options,
+            resource_options: BTreeMap::from([
+                (
+                    "namespace".to_owned(),
+                    serde_json::json!(resource.namespace),
+                ),
+                ("table".to_owned(), serde_json::json!(resource.table)),
+                ("selector".to_owned(), selector),
+            ]),
+            cursor: None,
+            display_location: SourceEvidenceLocation::from_operational(&request.location)?,
+            display_selection: resource.display_name(),
+            private_files: Vec::new(),
+        }))
+    }
+}
+
+fn copy_add_option(
+    options: &BTreeMap<String, String>,
+    key: &str,
+    output: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    if let Some(value) = options.get(key) {
+        output.insert(key.to_owned(), serde_json::Value::String(value.clone()));
+    }
+}
+
+fn parse_add_string_list(label: &str, value: &str) -> Result<Vec<String>> {
+    if value.starts_with('[') {
+        return serde_json::from_str::<Vec<String>>(value).map_err(|error| {
+            CdfError::contract(format!("{label} JSON array is invalid: {error}"))
+        });
+    }
+    Ok(vec![value.to_owned()])
+}
+
+fn parse_add_selector(value: &str) -> Result<serde_json::Value> {
+    if value == "current" {
+        return Ok(serde_json::json!({"kind": "current"}));
+    }
+    let (kind, argument) = value.split_once(':').ok_or_else(|| {
+        CdfError::contract(
+            "Iceberg cdf add selector must be `current`, `branch:<name>`, `tag:<name>`, `snapshot:<id>`, or `timestamp:<epoch-ms>`",
+        )
+    })?;
+    match kind {
+        "branch" | "tag" => Ok(serde_json::json!({"kind": kind, "name": argument})),
+        "snapshot" => Ok(serde_json::json!({
+            "kind": "snapshot",
+            "snapshot_id": argument.parse::<i64>().map_err(|_| {
+                CdfError::contract("Iceberg snapshot selector id must be a positive integer")
+            })?
+        })),
+        "timestamp" => Ok(serde_json::json!({
+            "kind": "timestamp",
+            "timestamp_ms": argument.parse::<i64>().map_err(|_| {
+                CdfError::contract("Iceberg timestamp selector must be epoch milliseconds")
+            })?
+        })),
+        _ => Err(CdfError::contract(
+            "Iceberg cdf add selector must be `current`, `branch:<name>`, `tag:<name>`, `snapshot:<id>`, or `timestamp:<epoch-ms>`",
+        )),
     }
 }
 
@@ -1119,6 +1323,124 @@ mod tests {
             ))
         })
         .unwrap()
+    }
+
+    fn add_request(
+        location: &str,
+        options: impl IntoIterator<Item = (&'static str, &'static str)>,
+    ) -> SourceAddRequest {
+        SourceAddRequest {
+            source_name: "lake".to_owned(),
+            resource_name: "events".to_owned(),
+            location: location.to_owned(),
+            project_root: std::path::PathBuf::from("/project"),
+            current_dir: std::path::PathBuf::from("/project"),
+            options: options
+                .into_iter()
+                .map(|(key, value)| (key.to_owned(), value.to_owned()))
+                .collect(),
+            project_options: None,
+        }
+    }
+
+    #[test]
+    fn add_hook_compiles_explicit_catalogs_without_uri_guessing() {
+        let driver = filesystem_driver();
+        assert!(
+            driver
+                .propose_add(&add_request("/warehouse", []))
+                .unwrap()
+                .is_none()
+        );
+
+        let filesystem = driver
+            .propose_add(&add_request(
+                "/warehouse",
+                [
+                    ("catalog", "filesystem"),
+                    ("namespace", r#"["org","analytics"]"#),
+                    ("selector", "branch:main"),
+                ],
+            ))
+            .unwrap()
+            .unwrap();
+        filesystem.validate().unwrap();
+        assert_eq!(
+            filesystem.source_options["catalog"],
+            serde_json::json!({"kind": "filesystem", "warehouse": "/warehouse"})
+        );
+        assert_eq!(
+            filesystem.resource_options["namespace"],
+            serde_json::json!(["org", "analytics"])
+        );
+        assert_eq!(
+            filesystem.resource_options["selector"],
+            serde_json::json!({"kind": "branch", "name": "main"})
+        );
+
+        let glue = driver
+            .propose_add(&add_request(
+                "us-east-1",
+                [
+                    ("catalog", "glue"),
+                    ("namespace", "analytics"),
+                    ("catalog_id", "123456789012"),
+                    ("credentials", "secret://aws/lake-reader"),
+                    ("object_credentials", "secret://aws/lake-reader"),
+                    (
+                        "egress_allowlist",
+                        r#"["glue.us-east-1.amazonaws.com","lake.s3.us-east-1.amazonaws.com"]"#,
+                    ),
+                ],
+            ))
+            .unwrap()
+            .unwrap();
+        glue.validate().unwrap();
+        assert_eq!(glue.display_selection, "analytics.events");
+        assert_eq!(
+            glue.source_options["catalog"],
+            serde_json::json!({
+                "kind": "glue",
+                "region": "us-east-1",
+                "catalog_id": "123456789012",
+                "credentials": "secret://aws/lake-reader"
+            })
+        );
+        assert_eq!(
+            glue.source_options["egress_allowlist"],
+            serde_json::json!([
+                "glue.us-east-1.amazonaws.com",
+                "lake.s3.us-east-1.amazonaws.com"
+            ])
+        );
+    }
+
+    #[test]
+    fn add_hook_rejects_cross_catalog_and_ambiguous_selector_options() {
+        let driver = filesystem_driver();
+        let error = driver
+            .propose_add(&add_request(
+                "/warehouse",
+                [
+                    ("catalog", "filesystem"),
+                    ("namespace", "analytics"),
+                    ("region", "us-east-1"),
+                ],
+            ))
+            .unwrap_err();
+        assert!(error.message.contains("unsupported options: region"));
+
+        let error = driver
+            .propose_add(&add_request(
+                "https://catalog.example.test",
+                [
+                    ("catalog", "rest"),
+                    ("namespace", "analytics"),
+                    ("selector", "snapshot:not-a-number"),
+                ],
+            ))
+            .unwrap_err();
+        assert!(error.message.contains("positive integer"));
     }
 
     #[test]
