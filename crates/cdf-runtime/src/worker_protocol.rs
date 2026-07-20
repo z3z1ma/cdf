@@ -1421,6 +1421,7 @@ pub struct VerifiedWorkerSourceFacts {
     physical_schema_hash: SchemaHash,
     input_rows: u64,
     source_bytes: u64,
+    checkpoint_eligible: bool,
 }
 
 impl VerifiedWorkerSourceFacts {
@@ -1429,6 +1430,7 @@ impl VerifiedWorkerSourceFacts {
         physical_schema_hash: SchemaHash,
         input_rows: u64,
         source_bytes: u64,
+        checkpoint_eligible: bool,
     ) -> Result<Self> {
         processed_position.validate()?;
         validate_sha256(
@@ -1440,7 +1442,17 @@ impl VerifiedWorkerSourceFacts {
             physical_schema_hash,
             input_rows,
             source_bytes,
+            checkpoint_eligible,
         })
+    }
+
+    /// Whether independently observed source progress is sufficient to advance checkpoint state.
+    pub const fn checkpoint_eligible(&self) -> bool {
+        self.checkpoint_eligible
+    }
+
+    pub fn processed_position(&self) -> &WorkerPosition {
+        &self.processed_position
     }
 }
 
@@ -1566,6 +1578,8 @@ impl<'a> LocalIsolatedWorkerHost<'a> {
         let attempt =
             PartitionAttemptEnvelope::decode_bounded(attempt_bytes, &task, self.capabilities)?;
         let authority = task.reconstruct_and_validate_authority(self.registry, self.verifier)?;
+        let result_control = task.resources.control.clone();
+        let maximum_artifact_bytes = task.output_policy.maximum_artifact_bytes;
         let result = self
             .executor
             .execute(IsolatedPartitionInvocation {
@@ -1574,9 +1588,12 @@ impl<'a> LocalIsolatedWorkerHost<'a> {
                 authority,
             })
             .await?;
-        result.validate()?;
-        serde_json::to_vec(&result)
-            .map_err(|error| CdfError::internal(format!("encode partition worker result: {error}")))
+        result.validate_worker_output_limits(&result_control, maximum_artifact_bytes)?;
+        encode_json_bounded(
+            "partition worker result",
+            &result,
+            result_control.maximum_result_bytes,
+        )
     }
 }
 
@@ -1585,15 +1602,22 @@ impl<'a> LocalIsolatedWorkerHost<'a> {
 /// The private constructor prevents orchestration from accidentally advancing package/state
 /// authority from a merely well-formed worker claim.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AdmittedPartitionWorkerResult(PartitionWorkerResult);
+pub struct AdmittedPartitionWorkerResult {
+    result: PartitionWorkerResult,
+    source_facts: VerifiedWorkerSourceFacts,
+}
 
 impl AdmittedPartitionWorkerResult {
     pub fn result(&self) -> &PartitionWorkerResult {
-        &self.0
+        &self.result
+    }
+
+    pub fn source_facts(&self) -> &VerifiedWorkerSourceFacts {
+        &self.source_facts
     }
 
     pub fn into_result(self) -> PartitionWorkerResult {
-        self.0
+        self.result
     }
 }
 
@@ -1620,7 +1644,7 @@ pub async fn execute_local_isolated_partition(
         .execute_serialized(&task_bytes, &attempt_bytes)
         .await?;
     let result = PartitionWorkerResult::decode_bounded(&result_bytes, task, worker.capabilities)?;
-    result.validate_for_admission(
+    let source_facts = result.validate_for_admission(
         task,
         attempt,
         coordinator_registry,
@@ -1628,7 +1652,10 @@ pub async fn execute_local_isolated_partition(
         coordinator_verifier,
         now_ms,
     )?;
-    Ok(AdmittedPartitionWorkerResult(result))
+    Ok(AdmittedPartitionWorkerResult {
+        result,
+        source_facts,
+    })
 }
 
 /// Opaque, owned second-barrier program reconstructed from verified prepared/schema/policy bytes.
@@ -1785,6 +1812,8 @@ impl<'a> LocalIsolatedSegmentHost<'a> {
             PartitionAttemptEnvelope::decode_bounded(attempt_bytes, &task, self.capabilities)?;
         let reconstructed = self.reconstructor.reconstruct_segment_task(&task)?;
         reconstructed.validate_for(&task)?;
+        let result_control = task.resources.control.clone();
+        let maximum_artifact_bytes = task.output_policy.maximum_artifact_bytes;
         let result = self
             .executor
             .execute(IsolatedSegmentInvocation {
@@ -1793,22 +1822,65 @@ impl<'a> LocalIsolatedSegmentHost<'a> {
                 reconstructed,
             })
             .await?;
-        result.validate()?;
-        serde_json::to_vec(&result)
-            .map_err(|error| CdfError::internal(format!("encode segment worker result: {error}")))
+        result.validate_worker_output_limits(maximum_artifact_bytes)?;
+        encode_json_bounded(
+            "segment worker result",
+            &result,
+            result_control.maximum_result_bytes,
+        )
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AdmittedSegmentWorkerResult(SegmentWorkerResult);
+pub struct AdmittedSegmentWorkerResult {
+    result: SegmentWorkerResult,
+    task_sha256: String,
+    resource_id: ResourceId,
+    plan_id: PlanId,
+    partition_id: PartitionId,
+    canonical_partition_ordinal: u32,
+    preparation_result_sha256: String,
+    output_schema_hash: SchemaHash,
+    segmentation_policy_hash: String,
+}
 
 impl AdmittedSegmentWorkerResult {
     pub fn result(&self) -> &SegmentWorkerResult {
-        &self.0
+        &self.result
     }
 
     pub fn into_result(self) -> SegmentWorkerResult {
-        self.0
+        self.result
+    }
+
+    pub fn validate_chain(
+        &self,
+        resource_id: &ResourceId,
+        plan_id: &PlanId,
+        preparation_result_sha256: &str,
+        output_schema_hash: &SchemaHash,
+        segmentation_policy_hash: &str,
+    ) -> Result<()> {
+        if self.result.task_sha256 != self.task_sha256
+            || &self.resource_id != resource_id
+            || &self.plan_id != plan_id
+            || self.preparation_result_sha256 != preparation_result_sha256
+            || &self.output_schema_hash != output_schema_hash
+            || self.segmentation_policy_hash != segmentation_policy_hash
+        {
+            return Err(CdfError::contract(
+                "admitted canonical segment does not belong to the supplied plan and preparation chain",
+            ));
+        }
+        Ok(())
+    }
+
+    pub const fn canonical_partition_ordinal(&self) -> u32 {
+        self.canonical_partition_ordinal
+    }
+
+    pub fn partition_id(&self) -> &PartitionId {
+        &self.partition_id
     }
 }
 
@@ -1831,7 +1903,17 @@ pub async fn execute_local_isolated_segment(
         .await?;
     let result = SegmentWorkerResult::decode_bounded(&result_bytes, task, worker.capabilities)?;
     result.validate_for_admission(task, attempt, current_lease, coordinator_verifier, now_ms)?;
-    Ok(AdmittedSegmentWorkerResult(result))
+    Ok(AdmittedSegmentWorkerResult {
+        result,
+        task_sha256: task.task_sha256.clone(),
+        resource_id: task.resource_id.clone(),
+        plan_id: task.plan_id.clone(),
+        partition_id: task.partition_id.clone(),
+        canonical_partition_ordinal: task.canonical_partition_ordinal,
+        preparation_result_sha256: task.preparation_result_sha256.clone(),
+        output_schema_hash: task.output_schema_hash.clone(),
+        segmentation_policy_hash: task.segmentation_policy_hash.clone(),
+    })
 }
 
 impl PortablePartitionTask {
@@ -2161,6 +2243,14 @@ impl WorkerArtifactWritePermit {
             ));
         }
         current_lease.validate_permit(self, now_ms)?;
+        self.validate_object_precondition(reference, object_state)
+    }
+
+    fn validate_object_precondition(
+        &self,
+        reference: &WorkerArtifactReference,
+        object_state: &WorkerArtifactObjectState,
+    ) -> Result<()> {
         match (&self.generation_precondition, object_state) {
             (WorkerObjectGenerationPrecondition::CreateOnly, WorkerArtifactObjectState::Absent)
             | (
@@ -2230,6 +2320,22 @@ impl WorkerArtifactWriteAuthorization<'_> {
 
     pub fn receipt(&self) -> &WorkerArtifactReceipt {
         self.receipt
+    }
+
+    /// Rechecks provider-owned lease and object-generation state at the mutation boundary.
+    ///
+    /// A [`WorkerArtifactWriteSession`] validates task and cumulative authority before invoking a
+    /// sink. The sink MUST call this method while holding the same provider lock or transaction
+    /// that performs the object mutation, because a fence or generation may change after preflight.
+    pub fn validate_provider_preconditions(
+        &self,
+        current_lease: &WorkerLeaseState,
+        object_state: &WorkerArtifactObjectState,
+        now_ms: i64,
+    ) -> Result<()> {
+        current_lease.validate_permit(self.permit, now_ms)?;
+        self.permit
+            .validate_object_precondition(&self.receipt.artifact, object_state)
     }
 }
 
@@ -2786,6 +2892,23 @@ impl PartitionWorkerResult {
         Ok(())
     }
 
+    fn validate_worker_output_limits(
+        &self,
+        control: &WorkerControlBudget,
+        maximum_artifact_bytes: u64,
+    ) -> Result<()> {
+        self.validate()?;
+        if self.artifacts.len()
+            > usize::try_from(control.maximum_output_artifacts).unwrap_or(usize::MAX)
+            || self.counts.artifact_bytes > maximum_artifact_bytes
+        {
+            return Err(CdfError::contract(
+                "partition worker result exceeds its artifact-count or byte control authority",
+            ));
+        }
+        Ok(())
+    }
+
     pub fn validate_for_admission(
         &self,
         task: &PortablePartitionTask,
@@ -2794,7 +2917,7 @@ impl PartitionWorkerResult {
         current_lease: &WorkerLeaseState,
         verifier: &dyn WorkerAdmissionVerifier,
         now_ms: i64,
-    ) -> Result<()> {
+    ) -> Result<VerifiedWorkerSourceFacts> {
         self.validate()?;
         attempt.validate_for_task(task)?;
         let authority = task.reconstruct_and_validate_authority(registry, verifier)?;
@@ -2944,7 +3067,8 @@ impl PartitionWorkerResult {
             "partition worker result",
             self,
             task.resources.control.maximum_result_bytes,
-        )
+        )?;
+        Ok(source_facts)
     }
 
     fn compute_semantic_hash(&self) -> Result<String> {
@@ -3081,6 +3205,20 @@ impl SegmentWorkerResult {
         if self.result_sha256 != self.compute_semantic_hash()? {
             return Err(CdfError::contract(
                 "segment worker result digest does not match its canonical semantic payload",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_worker_output_limits(&self, maximum_artifact_bytes: u64) -> Result<()> {
+        self.validate()?;
+        if self
+            .artifact
+            .as_ref()
+            .is_some_and(|receipt| receipt.artifact.byte_count > maximum_artifact_bytes)
+        {
+            return Err(CdfError::contract(
+                "segment worker result exceeds its artifact-byte control authority",
             ));
         }
         Ok(())
@@ -3445,15 +3583,53 @@ fn validate_raw_size(label: &str, bytes: &[u8], maximum: u64) -> Result<()> {
 }
 
 fn validate_encoded_size(label: &str, value: &impl Serialize, maximum: u64) -> Result<()> {
-    let bytes = serde_json::to_vec(value).map_err(|error| CdfError::internal(error.to_string()))?;
-    let actual = u64::try_from(bytes.len())
-        .map_err(|_| CdfError::contract(format!("{label} size exceeds u64")))?;
-    if actual > maximum {
-        return Err(CdfError::contract(format!(
-            "{label} requires {actual} bytes above its {maximum}-byte control budget"
-        )));
-    }
+    encode_json_bounded(label, value, maximum)?;
     Ok(())
+}
+
+struct BoundedJsonWriter {
+    bytes: Vec<u8>,
+    maximum: usize,
+    exceeded: bool,
+}
+
+impl std::io::Write for BoundedJsonWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let next = self.bytes.len().checked_add(bytes.len()).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::FileTooLarge, "JSON size overflow")
+        })?;
+        if next > self.maximum {
+            self.exceeded = true;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::FileTooLarge,
+                "JSON exceeds its admitted control ceiling",
+            ));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn encode_json_bounded(label: &str, value: &impl Serialize, maximum: u64) -> Result<Vec<u8>> {
+    let maximum = usize::try_from(maximum).unwrap_or(usize::MAX);
+    let mut writer = BoundedJsonWriter {
+        bytes: Vec::with_capacity(maximum.min(4 * 1024)),
+        maximum,
+        exceeded: false,
+    };
+    if let Err(error) = serde_json::to_writer(&mut writer, value) {
+        if writer.exceeded {
+            return Err(CdfError::contract(format!(
+                "{label} exceeds its externally admitted {maximum}-byte control ceiling"
+            )));
+        }
+        return Err(CdfError::internal(format!("encode {label}: {error}")));
+    }
+    Ok(writer.bytes)
 }
 
 #[cfg(test)]

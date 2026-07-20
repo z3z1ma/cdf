@@ -42,7 +42,7 @@ This parent is an aggregate plan. Workstream records own sequencing and integrat
 - `.10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md`
 - `.10x/tickets/done/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md`
 - `.10x/tickets/2026-07-10-p3-ws-b-format-decode-engines.md`
-- `.10x/tickets/2026-07-10-p3-ws-c-deterministic-parallelism.md`
+- `.10x/tickets/done/2026-07-10-p3-ws-c-deterministic-parallelism.md`
 - `.10x/tickets/done/2026-07-10-p3-ws-d-destination-bulk-paths.md`
 - `.10x/tickets/done/2026-07-10-p3-ws-e-hashing-package-io.md`
 - `.10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md`
@@ -107,6 +107,7 @@ P3 does not implement a distributed scheduler, remote worker leases, resident st
 - 2026-07-19: Closed WS-V after the dedicated-host 64k matrix passed all 12 ratified single-core hot-kernel cells at 3.016-7.254 GB/s against a 1 GB/s/core threshold. The permanent scheduled gate separates kernel masks, selected-row evidence, and full-product validation/normalization costs, and its slim runner avoids linking unrelated source/destination graphs.
 - 2026-07-19: Closed WS-E after sustained package persistence reached 1,033.8 MiB/s, 0.903x the dedicated host's direct-I/O write roofline, with 0.06% hash-on versus hash-off wall across three alternating 32 GiB samples. E1-E4 leave one hash-while-write receipt path, bounded streaming manifests and verification, retained opened-object consumption, zero production content rereads, and no speculative hash backend or mmap path.
 - 2026-07-19: Closed WS-A after all executable children reached terminal evidence. The runtime now has injected execution ownership, one memory ledger, bounded/fused stage flow, byte-first deterministic segments, spillable package state, capability-driven staged destination ingress, and finite unbounded drain epochs with monotone receipt-gated watermarks and exact late-data recovery. C5 owns external isolated-worker equivalence; Z1 owns host-class whole-product overhead reconciliation.
+- 2026-07-20: Closed WS-C after all five children reached terminal evidence. Jobs invariance now spans the permanent source/destination matrix, shared CPU admission covers native/DataFusion/Python execution, and the canonical serialized isolated-worker seam reproduces direct package and verdict semantics without source/destination branches or a remote scheduler.
 
 ## Blockers
 

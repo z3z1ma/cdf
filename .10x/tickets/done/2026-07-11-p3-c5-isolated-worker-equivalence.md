@@ -1,7 +1,7 @@
-Status: active
+Status: done
 Created: 2026-07-11
-Updated: 2026-07-19
-Parent: .10x/tickets/2026-07-10-p3-ws-c-deterministic-parallelism.md
+Updated: 2026-07-20
+Parent: .10x/tickets/done/2026-07-10-p3-ws-c-deterministic-parallelism.md
 Depends-On: .10x/tickets/done/2026-07-11-p0-wx1-portable-partition-task-protocol.md, .10x/tickets/done/2026-07-11-p3-c2-parallel-frontier-execution.md, .10x/tickets/done/2026-07-11-p3-c4-jobs-invariance-scaling-matrix.md, .10x/tickets/done/2026-07-11-p3-a8-drain-epoch-executor.md
 
 # P3 C5: isolated worker serialization equivalence law
@@ -28,9 +28,9 @@ No RPC, remote state/artifact deployment, worker daemon, or Spark/Flink/Ballista
 
 ## Blockers
 
-None. The active canonicalization decision now scopes the two-barrier protocol to compiler-proven
+None. The active canonicalization decision scopes the two-barrier protocol to compiler-proven
 partition-separable tasks and requires package-global work to fail before artifacts or source I/O.
-WX1, C2, C4, and A8 are done.
+WX1, C2, C4, and A8 are done, and the isolated-worker equivalence law is closed below.
 
 ## References
 
@@ -60,3 +60,32 @@ WX1, C2, C4, and A8 are done.
 - 2026-07-20: The exact fast-quality commit gate passed in the detached C5 worktree: locked metadata; workspace formatting; strict core library Clippy including `cdf-engine`; 364 kernel/contract/package/runtime tests passed with 8 performance tests ignored; 35 CLI-core tests; 37 CLI-artifact tests; strict all-target/all-feature CLI Clippy; and Gitleaks over the exact staged source tree with no findings. This supports a CI-clean memory-ownership commit while preserving the separately recorded limits of the non-fast engine fixture suite.
 - 2026-07-20: Removed the parallel engine-owned source-authority extension seam. Coordinator source-result admission now resolves the exact compiled plan's ordinary `SourceDriver` and invokes that driver's fail-closed isolated verification hook; generic engine orchestration contains no source identity switch or second source registry. The protocol fixture and actual-engine mock are source additions implemented only by registering a driver, while the existing descriptor-only format fixture remains a registry-only format addition. The 14 worker-protocol tests and bounded, multi-partition jobs 1/4, and finite-drain engine capsule laws pass. Commit `6e55acd9` passed the exact detached-worktree fast-quality and tracked-source Gitleaks gate.
 - 2026-07-20: Superseded the overbroad two-barrier decision with `.10x/decisions/partition-separable-isolated-segment-canonicalization.md`. The compiler-proven safe-partition topology is the C5 authority; package-global limit/dedup/multi-partition drain continues on the ordinary whole-transfer runtime and is rejected before isolated compiler artifacts or source contact. Future typed global-operator distribution remains owned by the existing distributed-execution and J5 plan-marshaling tickets rather than being smuggled into a partition capsule.
+- 2026-07-20: Commit `c9937d90` added serialized-host failure coverage for missing worker services, an unregistered source driver, and a stale driver version. All fail during task/host admission, before execution or artifact authority can advance; the exact detached fast-quality and tracked-source Gitleaks gate passed.
+- 2026-07-20: A final distribution-seam review found three remaining authority-boundary defects in one pass. The repair seals engine package assembly behind `AdmittedEnginePartitionEvidence`, which can only be constructed by joining a generically admitted result to independently observed source facts and the frozen checkpoint/drain program. Checkpoint eligibility now comes from the source driver; drain frontier, closure cause, terminality, and compiled cadence/rotation/termination are checked before engine evidence is admitted. Raw decoded `EnginePartitionEvidence` can no longer enter assembly through the public API.
+- 2026-07-20: The artifact-provider seam now rechecks the current fencing lease and exact object-generation state inside the provider mutation transaction. The concrete shared C5 store holds lease/fence and object locks across validation and insertion. Protocol and concrete-provider falsifiers advance the fence after session preflight, then prove the stale mutation fails and no object appears. This closes the prior check-then-write race without adding destination or engine identity branches.
+- 2026-07-20: Extended the actual-engine matrix to terminal schema drift. The isolated source driver now preserves the complete registered mock resource rather than reconstructing a weaker batch-only facsimile; its result attestation derives the exact physical-schema identity from admitted/quarantined observation evidence. Coordinator assembly merges and validates referenced schema-quarantine catalogs/observations and writes the same package artifacts as direct execution. Direct and capsule manifest/package hashes, terminal quarantine evidence, and execution evidence are identical; no canonical segment is invented for a fully quarantined partition.
+- 2026-07-20: Final detached clean-worktree gate for this batch passed: workspace formatting; focused runtime protocol tests (16/16); focused actual-engine bounded jobs 1/4, multi-partition jobs invariance, finite drain, and terminal schema-quarantine laws (4/4); exact fast CI (366 core tests passed, 8 performance tests ignored, CLI 35/35 and artifact mode 37/37); strict workspace all-target/all-feature Clippy across every crate; and tracked-source Gitleaks with no findings. The concurrent Iceberg, benchmark, dependency-lock, and canonical-schema serialization edits were absent from the checked tree and remain outside C5.
+- 2026-07-20: The final focused adversarial pass first found five remaining critical/significant authority defects: cross-plan replay could reuse matching ids, drain state was not fully joined, host result encoding could allocate beyond its ceiling, lease rollback/domain collision remained possible, and processed/quarantined outcomes were not exactly reconciled. One consolidated repair sealed exact plan/task/preparation identities, rejected unsupported drain state before admission, bounded serialization while writing, made lease authority domain-scoped and monotonic, and joined every processed/quarantined outcome to its evidence. Falsifiers cover all five defects. The same reviewer then returned `pass` with no unresolved critical or significant finding.
+- 2026-07-20: The terminal detached clean-worktree gate passed over the exact closure diff: workspace formatting; 367 core tests passed with 8 performance tests ignored; CLI core 35/35 and artifact mode 37/37; strict workspace all-target/all-feature Clippy across every crate; and tracked-source Gitleaks with no findings. Focused runtime protocol coverage is 17/17 and the four direct/capsule engine equivalence laws pass. This is the closure evidence for C5.
+
+## Evidence
+
+- Harness isolation: serialized local hosts reconstruct source, partition, engine, and segment-finalization authority exclusively from bounded control bytes, registries, provider references, and worker-owned services. Protocol tests reject payloads, secrets, paths, borrowed runtime objects, missing capabilities/services, missing drivers, and version drift.
+- Direct/capsule equivalence: the four `actual_engine_capsule_*` laws compare direct and isolated manifest/package identity, canonical segment hashes, profile, lineage, positions, execution evidence, finite epoch closure, and terminal schema-quarantine evidence at jobs 1/4 and one/two partitions.
+- Authority failure matrix: protocol tests cover tampered compiler artifacts, semantic rehashes, stale attempt/fence, generation conflicts, row/count/ordinal mismatches, missing service/driver/version, and the post-preflight provider race. Both worker artifacts and engine evidence are opaque admitted wrappers before coordinator assembly.
+- Bounded control/data separation: one task/result is processed at a time; results stay below the recorded 2 KiB fixture ceiling; observations and Arrow payloads are content-addressed references; encoded and decoded artifact memory holds real `cdf-memory` leases; canonical reads validate one batch at a time.
+- Extension boundary: the engine has no source identity switch. The mock source implements ordinary `SourceDriver` registration and its isolated verification hook; the format fixture remains registry-only.
+- Static/security gate: detached `cargo fmt --all -- --check`, strict workspace `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`, the exact fast-CI test surface, and Gitleaks all pass.
+
+## Retrospective
+
+- The first one-partition proof hid two global boundaries: package-row ordinals and coordinator-owned evidence. Making those values explicit as separate prepared/finalized artifacts and sealed admitted types was simpler and safer than letting orchestration infer trust from call order.
+- Content hashes prove byte identity, not semantic authority. Durable admission must join stored bytes to independently observed source facts, compiled control policy, and current provider fencing at the last mutation boundary.
+- A source fixture reconstructed from batches was not equivalent to the registered source: it silently discarded effective-schema and terminal-attestation behavior. Preserving the complete source object made the schema-drift law both more realistic and architecturally cleaner.
+- Package-global operators remain a different task topology. Failing their partition-capsule compilation before artifact or source work preserves performance and correctness without contaminating the safe partition protocol with speculative scheduler machinery.
+
+## Review
+
+- Initial consolidated adversarial verdict: `fail`; three critical and four significant findings identified missing semantic admission, package assembly authority, provider fencing, bounded metadata/memory, and extension-boundary guarantees. Each finding was repaired and falsified rather than waived.
+- Final focused adversarial verdict: `pass`. Exact plan/task/preparation sealing, drain-state rejection, bounded result serialization, domain-scoped monotonic lease authority, and exact outcome reconciliation close the last five prior findings. No critical or significant issue remains.
+- Residual risk: statistics-profile distribution, observed-at contract context, package-global operators, multi-partition drain topology, and resident execution remain deliberately outside the partition-separable C5 contract. They fail closed here and retain their existing owners; C5 does not claim a remote scheduler or transport.

@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Target: .10x/decisions/portable-partition-task-capsule.md, .10x/specs/portable-partition-task-protocol.md, .10x/tickets/2026-07-11-p3-c5-isolated-worker-equivalence.md
+Target: .10x/decisions/portable-partition-task-capsule.md, .10x/specs/portable-partition-task-protocol.md, .10x/tickets/done/2026-07-11-p3-c5-isolated-worker-equivalence.md
 Verdict: pass
 
 # Portable partition task architecture review

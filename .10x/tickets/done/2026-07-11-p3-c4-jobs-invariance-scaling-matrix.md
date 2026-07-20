@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-11
 Updated: 2026-07-15
-Parent: .10x/tickets/2026-07-10-p3-ws-c-deterministic-parallelism.md
+Parent: .10x/tickets/done/2026-07-10-p3-ws-c-deterministic-parallelism.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-c3-engine-ffi-parallel-integration.md, .10x/tickets/done/2026-07-14-p3-d8-parquet-staged-parallel-ingress.md
 
 # P3 C4: jobs-invariance and scaling matrix

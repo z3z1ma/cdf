@@ -283,10 +283,13 @@ impl EngineWorkerArtifactAuthority for MemoryWorkerCompilerArtifacts {
 }
 
 type SharedEngineWorkerArtifactMap = BTreeMap<(String, String), bytes::Bytes>;
+type SharedEngineWorkerLeaseMap =
+    BTreeMap<(cdf_kernel::LeaseAuthorityDomainId, String), (cdf_runtime::WorkerLeaseState, i64)>;
 
 #[derive(Clone)]
 struct SharedEngineWorkerArtifacts {
     values: Arc<Mutex<SharedEngineWorkerArtifactMap>>,
+    leases: Arc<Mutex<SharedEngineWorkerLeaseMap>>,
     memory: Arc<dyn cdf_memory::MemoryCoordinator>,
 }
 
@@ -294,6 +297,7 @@ impl Default for SharedEngineWorkerArtifacts {
     fn default() -> Self {
         Self {
             values: Arc::new(Mutex::new(BTreeMap::new())),
+            leases: Arc::new(Mutex::new(BTreeMap::new())),
             memory: Arc::new(
                 cdf_memory::DeterministicMemoryCoordinator::new(
                     2 * 1024 * 1024 * 1024,
@@ -306,6 +310,34 @@ impl Default for SharedEngineWorkerArtifacts {
 }
 
 impl SharedEngineWorkerArtifacts {
+    fn lease_key(
+        domain: &cdf_kernel::LeaseAuthorityDomainId,
+        scope: &cdf_kernel::ScopeKey,
+    ) -> Result<(cdf_kernel::LeaseAuthorityDomainId, String)> {
+        Ok((domain.clone(), cdf_runtime::artifact_hash(scope)?))
+    }
+
+    fn admit_lease(&self, lease: cdf_runtime::WorkerLeaseState, now_ms: i64) -> Result<()> {
+        lease.validate()?;
+        let key = Self::lease_key(&lease.lease_authority_domain_id, &lease.lease_scope)?;
+        let mut leases = self.leases.lock().unwrap();
+        match leases.get(&key) {
+            Some((current, current_now_ms)) if current == &lease && *current_now_ms == now_ms => {}
+            Some((current, _)) if current.fencing_token.get() < lease.fencing_token.get() => {
+                leases.insert(key, (lease, now_ms));
+            }
+            Some(_) => {
+                return Err(cdf_kernel::CdfError::contract(
+                    "worker artifact lease authority cannot regress or rewrite an existing fence",
+                ));
+            }
+            None => {
+                leases.insert(key, (lease, now_ms));
+            }
+        }
+        Ok(())
+    }
+
     fn bytes_for(&self, reference: &cdf_runtime::WorkerArtifactReference) -> Result<bytes::Bytes> {
         self.values
             .lock()
@@ -359,6 +391,74 @@ impl SharedEngineWorkerArtifacts {
             },
             Err(_) => cdf_runtime::WorkerArtifactObjectState::Absent,
         }
+    }
+
+    fn atomic_write_authorized(
+        &self,
+        authorization: cdf_runtime::WorkerArtifactWriteAuthorization<'_>,
+        bytes: cdf_memory::AccountedBytes,
+    ) -> Result<cdf_runtime::VerifiedWorkerArtifactFacts> {
+        let reference = &authorization.receipt().artifact;
+        let observed = Self::reference(
+            reference.kind,
+            reference.store_namespace.as_str(),
+            reference.object_key.as_str().to_owned(),
+            bytes.payload(),
+        )?;
+        if &observed != reference {
+            return Err(cdf_kernel::CdfError::contract(
+                "authorized worker output bytes do not match their receipt",
+            ));
+        }
+
+        // Test-provider analogue of an object-store conditional transaction. Lease/fence updates
+        // use the same first lock, and object inspection plus mutation use the same second lock.
+        let leases = self.leases.lock().unwrap();
+        let (current_lease, now_ms) = leases
+            .get(&Self::lease_key(
+                &authorization.permit().lease_authority_domain_id,
+                &authorization.permit().lease_scope,
+            )?)
+            .ok_or_else(|| {
+                cdf_kernel::CdfError::contract(
+                    "worker artifact provider has no current lease authority",
+                )
+            })?;
+        let key = (
+            reference.store_namespace.as_str().to_owned(),
+            reference.object_key.as_str().to_owned(),
+        );
+        let mut values = self.values.lock().unwrap();
+        let object_state =
+            values
+                .get(&key)
+                .map_or(cdf_runtime::WorkerArtifactObjectState::Absent, |existing| {
+                    cdf_runtime::WorkerArtifactObjectState::Present {
+                        content_sha256: format!(
+                            "sha256:{:x}",
+                            <sha2::Sha256 as sha2::Digest>::digest(existing.as_ref())
+                        ),
+                        provider_generation: cdf_kernel::ContentProviderGeneration::new(
+                            "memory-generation-1",
+                        )
+                        .unwrap(),
+                    }
+                });
+        authorization.validate_provider_preconditions(current_lease, &object_state, *now_ms)?;
+        if matches!(object_state, cdf_runtime::WorkerArtifactObjectState::Absent) {
+            values.insert(key, bytes.into_retained_bytes());
+        }
+        drop(values);
+        drop(leases);
+
+        let row_count = match &authorization.receipt().role {
+            cdf_runtime::WorkerArtifactRole::PreparedSegment { row_count, .. }
+            | cdf_runtime::WorkerArtifactRole::CanonicalSegment { row_count, .. } => {
+                Some(*row_count)
+            }
+            _ => None,
+        };
+        cdf_runtime::VerifiedWorkerArtifactFacts::new(reference.clone(), row_count)
     }
 
     fn reference(
@@ -642,33 +742,7 @@ impl EngineWorkerOutputAuthority for SharedEngineWorkerArtifacts {
         authorization: cdf_runtime::WorkerArtifactWriteAuthorization<'_>,
         bytes: cdf_memory::AccountedBytes,
     ) -> Result<cdf_runtime::VerifiedWorkerArtifactFacts> {
-        let reference = &authorization.receipt().artifact;
-        let observed = Self::reference(
-            reference.kind,
-            reference.store_namespace.as_str(),
-            reference.object_key.as_str().to_owned(),
-            bytes.payload(),
-        )?;
-        if &observed != reference {
-            return Err(cdf_kernel::CdfError::contract(
-                "authorized worker output bytes do not match their receipt",
-            ));
-        }
-        self.values.lock().unwrap().insert(
-            (
-                reference.store_namespace.as_str().to_owned(),
-                reference.object_key.as_str().to_owned(),
-            ),
-            bytes.into_retained_bytes(),
-        );
-        let row_count = match &authorization.receipt().role {
-            cdf_runtime::WorkerArtifactRole::PreparedSegment { row_count, .. }
-            | cdf_runtime::WorkerArtifactRole::CanonicalSegment { row_count, .. } => {
-                Some(*row_count)
-            }
-            _ => None,
-        };
-        cdf_runtime::VerifiedWorkerArtifactFacts::new(reference.clone(), row_count)
+        self.atomic_write_authorized(authorization, bytes)
     }
 }
 
@@ -682,37 +756,11 @@ impl cdf_runtime::WorkerAuthorizedArtifactSink for PendingEngineWorkerWrite<'_> 
         &mut self,
         authorization: cdf_runtime::WorkerArtifactWriteAuthorization<'_>,
     ) -> Result<cdf_runtime::VerifiedWorkerArtifactFacts> {
-        let reference = &authorization.receipt().artifact;
         let bytes = self
             .bytes
             .take()
             .ok_or_else(|| cdf_kernel::CdfError::internal("worker output was already consumed"))?;
-        let observed = SharedEngineWorkerArtifacts::reference(
-            reference.kind,
-            reference.store_namespace.as_str(),
-            reference.object_key.as_str().to_owned(),
-            bytes.payload(),
-        )?;
-        if &observed != reference {
-            return Err(cdf_kernel::CdfError::contract(
-                "authorized worker output bytes do not match their receipt",
-            ));
-        }
-        self.store.values.lock().unwrap().insert(
-            (
-                reference.store_namespace.as_str().to_owned(),
-                reference.object_key.as_str().to_owned(),
-            ),
-            bytes.into_retained_bytes(),
-        );
-        let row_count = match &authorization.receipt().role {
-            cdf_runtime::WorkerArtifactRole::PreparedSegment { row_count, .. }
-            | cdf_runtime::WorkerArtifactRole::CanonicalSegment { row_count, .. } => {
-                Some(*row_count)
-            }
-            _ => None,
-        };
-        cdf_runtime::VerifiedWorkerArtifactFacts::new(reference.clone(), row_count)
+        self.store.atomic_write_authorized(authorization, bytes)
     }
 }
 
@@ -729,7 +777,7 @@ struct IsolatedEngineMockDriver {
     descriptor: cdf_runtime::SourceDriverDescriptor,
     option_schema: serde_json::Value,
     dataset_id: String,
-    batches: Vec<Batch>,
+    resource: MockResource,
 }
 
 impl cdf_runtime::SourceDriver for IsolatedEngineMockDriver {
@@ -752,11 +800,15 @@ impl cdf_runtime::SourceDriver for IsolatedEngineMockDriver {
 
     fn validate_portable_plan(&self, plan: &cdf_runtime::CompiledSourcePlan) -> Result<()> {
         plan.validate()?;
-        let expected_source_bytes = self.batches.iter().try_fold(0_u64, |total, batch| {
-            total.checked_add(batch.header.byte_count).ok_or_else(|| {
-                cdf_kernel::CdfError::data("isolated mock source byte count overflow")
-            })
-        })?;
+        let expected_source_bytes =
+            self.resource
+                .batches
+                .iter()
+                .try_fold(0_u64, |total, batch| {
+                    total.checked_add(batch.header.byte_count).ok_or_else(|| {
+                        cdf_kernel::CdfError::data("isolated mock source byte count overflow")
+                    })
+                })?;
         if plan.physical_plan["dataset_id"].as_str() != Some(self.dataset_id.as_str())
             || plan.physical_plan["source_bytes"].as_u64() != Some(expected_source_bytes)
         {
@@ -777,6 +829,7 @@ impl cdf_runtime::SourceDriver for IsolatedEngineMockDriver {
     ) -> Result<cdf_runtime::VerifiedWorkerSourceFacts> {
         self.validate_portable_plan(plan)?;
         let batches = self
+            .resource
             .batches
             .iter()
             .filter(|batch| batch.header.partition_id == partition.partition_id)
@@ -800,11 +853,11 @@ impl cdf_runtime::SourceDriver for IsolatedEngineMockDriver {
                 "isolated mock partition batches disagree on position or schema",
             ));
         }
-        let expected_observations = vec![cdf_runtime::WorkerProcessedObservation::new(
-            partition.partition_id.as_str(),
-            cdf_kernel::ProcessedObservationOutcome::Admitted,
-            cdf_runtime::WorkerPosition::inline(processed_position.clone())?,
-        )?];
+        let expected_observation_id = partition
+            .metadata
+            .get(PLAN_SCHEMA_OBSERVATION_ID_KEY)
+            .map(String::as_str)
+            .unwrap_or_else(|| partition.partition_id.as_str());
         let input_rows = batches.iter().try_fold(0_u64, |total, batch| {
             total
                 .checked_add(batch.header.row_count)
@@ -819,17 +872,34 @@ impl cdf_runtime::SourceDriver for IsolatedEngineMockDriver {
             || attestation.processed_position
                 != cdf_runtime::WorkerPosition::inline(processed_position.clone())?
             || attestation.physical_schema_hash != physical_schema_hash
-            || observations != expected_observations
+            || observations.len() != 1
+            || observations[0].observation_id != expected_observation_id
+            || observations[0].source_position
+                != cdf_runtime::WorkerPosition::inline(processed_position.clone())?
         {
-            return Err(cdf_kernel::CdfError::contract(
-                "isolated worker source result exceeds registered driver authority",
-            ));
+            return Err(cdf_kernel::CdfError::contract(format!(
+                "isolated worker source result exceeds registered driver authority: task_partition_match={}, position_match={}, schema_match={}, observation_count={}, observation_id={:?}, expected_observation_id={expected_observation_id:?}, observation_position_match={}",
+                task.partition.partition_id == partition.partition_id,
+                attestation.processed_position
+                    == cdf_runtime::WorkerPosition::inline(processed_position.clone())?,
+                attestation.physical_schema_hash == physical_schema_hash,
+                observations.len(),
+                observations
+                    .first()
+                    .map(|observation| observation.observation_id.as_str()),
+                observations
+                    .first()
+                    .is_some_and(|observation| observation.source_position
+                        == cdf_runtime::WorkerPosition::inline(processed_position.clone())
+                            .expect("validated fixture position")),
+            )));
         }
         cdf_runtime::VerifiedWorkerSourceFacts::new(
             cdf_runtime::WorkerPosition::inline(processed_position)?,
             physical_schema_hash,
             input_rows,
             source_bytes,
+            true,
         )
     }
 
@@ -860,15 +930,7 @@ impl cdf_runtime::SourceDriver for IsolatedEngineMockDriver {
         _context: &cdf_runtime::SourceResolutionContext<'_>,
     ) -> Result<Arc<dyn QueryableResource>> {
         self.validate_portable_plan(plan)?;
-        let partition_count = self
-            .batches
-            .iter()
-            .map(|batch| batch.header.partition_id.as_str())
-            .collect::<BTreeSet<_>>()
-            .len();
-        let resource = MockResource::tier_a(self.batches.clone())
-            .without_control_keys()
-            .with_partition_count(partition_count);
+        let resource = self.resource.clone();
         resource.bind_compiled_source(plan);
         Ok(Arc::new(resource))
     }
@@ -924,8 +986,6 @@ impl cdf_runtime::IsolatedPartitionExecutor for ActualEngineIsolatedExecutor<'_>
                     "isolated mock source plan omits its partition source byte count",
                 )
             })?;
-            let physical_schema_hash =
-                cdf_kernel::canonical_arrow_schema_hash(resource.schema().as_ref())?;
             let scheduler = cdf_runtime::resolve_runtime_scheduler(
                 1,
                 &authority.source().execution_capabilities,
@@ -1043,6 +1103,49 @@ impl cdf_runtime::IsolatedPartitionExecutor for ActualEngineIsolatedExecutor<'_>
                 stream_admission,
                 schema_quarantine_evidence,
             )?;
+            let mut outcome_tamper = partition_evidence.clone();
+            if let Some(observation) = outcome_tamper.processed_observations.first_mut() {
+                observation.outcome = match observation.outcome {
+                    cdf_kernel::ProcessedObservationOutcome::Admitted => {
+                        cdf_kernel::ProcessedObservationOutcome::Quarantined
+                    }
+                    cdf_kernel::ProcessedObservationOutcome::Quarantined => {
+                        cdf_kernel::ProcessedObservationOutcome::Admitted
+                    }
+                    _ => {
+                        return Err(cdf_kernel::CdfError::contract(
+                            "fixture encountered an unsupported processed-observation outcome",
+                        ));
+                    }
+                };
+                let error = outcome_tamper.validate(&task, &plan, None).unwrap_err();
+                if !error.message.contains("outcomes") {
+                    return Err(cdf_kernel::CdfError::contract(
+                        "partition outcome tamper did not fail at engine evidence admission",
+                    ));
+                }
+            }
+            let mut physical_schema_hashes = partition_evidence
+                .stream_admission
+                .physical_observation_catalog
+                .values()
+                .map(PhysicalObservationEvidence::identity_hash)
+                .chain(
+                    partition_evidence
+                        .schema_quarantine_evidence
+                        .iter()
+                        .flat_map(|evidence| evidence.physical_observation_catalog.values())
+                        .map(PhysicalObservationEvidence::identity_hash),
+                )
+                .collect::<Result<Vec<_>>>()?;
+            physical_schema_hashes.sort();
+            physical_schema_hashes.dedup();
+            let [physical_schema_hash] = physical_schema_hashes.as_slice() else {
+                return Err(cdf_kernel::CdfError::contract(
+                    "isolated partition source attestation requires one exact physical-schema identity",
+                ));
+            };
+            let physical_schema_hash = physical_schema_hash.clone();
             let partition_evidence_bytes = cdf_package::canonical_json_bytes(&partition_evidence)?;
             let mut write_session = cdf_runtime::WorkerArtifactWriteSession::new(
                 &task,
@@ -1469,6 +1572,74 @@ fn isolated_engine_attempt<T: cdf_runtime::PortableWorkerTask>(
     (attempt, lease)
 }
 
+fn assert_engine_store_rechecks_fence_at_mutation(
+    task: &cdf_runtime::PortablePartitionTask,
+    attempt: &cdf_runtime::PartitionAttemptEnvelope,
+    lease: &cdf_runtime::WorkerLeaseState,
+) -> Result<()> {
+    let artifacts = SharedEngineWorkerArtifacts::default();
+    artifacts.admit_lease(lease.clone(), 2_000)?;
+    let payload = bytes::Bytes::from_static(b"fence-probe");
+    let reference = SharedEngineWorkerArtifacts::reference(
+        cdf_runtime::WorkerArtifactKind::PartitionEvidence,
+        attempt.write_permit.output.store_namespace.as_str(),
+        format!(
+            "{}fence-probe.json",
+            attempt.write_permit.output.object_key_prefix
+        ),
+        &payload,
+    )?;
+    let receipt = cdf_runtime::WorkerArtifactReceipt {
+        role: cdf_runtime::WorkerArtifactRole::PartitionEvidence {
+            partition_ordinal: task.partition.canonical_partition_ordinal,
+        },
+        artifact: reference.clone(),
+    };
+    let memory_lease = reserve_worker_artifact_memory(
+        &artifacts.memory,
+        reference.byte_count,
+        reference.byte_count,
+        cdf_memory::MemoryClass::Control,
+    )?;
+    let accounted = cdf_memory::AccountedBytes::new(payload, memory_lease)?;
+    let mut session = cdf_runtime::WorkerArtifactWriteSession::new(task, attempt, lease, 2_000)?;
+    artifacts.admit_lease(
+        cdf_runtime::WorkerLeaseState {
+            fencing_token: cdf_kernel::FencingToken::new(
+                lease.fencing_token.get().checked_add(1).ok_or_else(|| {
+                    cdf_kernel::CdfError::contract("test fencing token overflowed")
+                })?,
+            )?,
+            ..lease.clone()
+        },
+        2_000,
+    )?;
+    let mut sink = PendingEngineWorkerWrite {
+        store: &artifacts,
+        bytes: Some(accounted),
+    };
+    let error = session
+        .write(
+            &receipt,
+            &cdf_runtime::WorkerArtifactObjectState::Absent,
+            2_000,
+            &mut sink,
+        )
+        .unwrap_err();
+    if !error.message.contains("stale") || artifacts.bytes_for(&reference).is_ok() {
+        return Err(cdf_kernel::CdfError::contract(
+            "engine artifact provider mutated under a stale fence",
+        ));
+    }
+    let rollback = artifacts.admit_lease(lease.clone(), 2_000).unwrap_err();
+    if !rollback.message.contains("cannot regress") {
+        return Err(cdf_kernel::CdfError::contract(
+            "engine artifact provider admitted a fencing rollback",
+        ));
+    }
+    Ok(())
+}
+
 fn run_actual_isolated_engine_equivalence(
     cpu_slots: u16,
     partition_count: usize,
@@ -1486,6 +1657,24 @@ fn run_actual_isolated_engine_equivalence(
     for batch in &mut batches {
         batch.header.source_position = Some(isolated_terminal_file_position());
     }
+    let direct_resource = MockResource::tier_a(batches.clone())
+        .without_control_keys()
+        .with_partition_count(partition_count);
+    run_actual_isolated_engine_equivalence_for_resource(cpu_slots, direct_resource, extent)
+}
+
+fn run_actual_isolated_engine_equivalence_for_resource(
+    cpu_slots: u16,
+    direct_resource: MockResource,
+    extent: ExecutionExtent,
+) -> (
+    EngineRunOutputWithSegmentPositions,
+    EngineRunOutputWithSegmentPositions,
+    Vec<cdf_runtime::PartitionWorkerResult>,
+    Vec<cdf_runtime::SegmentWorkerResult>,
+) {
+    let batches = direct_resource.batches.clone();
+    let partition_count = direct_resource.partition_count;
     let dataset_id = "isolated-orders-v1";
     let option_schema = isolated_mock_option_schema();
     let descriptor = cdf_runtime::SourceDriverDescriptor {
@@ -1495,9 +1684,6 @@ fn run_actual_isolated_engine_equivalence(
         kinds: vec!["isolated_engine_mock".to_owned()],
         schemes: vec!["isolated-engine-mock".to_owned()],
     };
-    let direct_resource = MockResource::tier_a(batches.clone())
-        .without_control_keys()
-        .with_partition_count(partition_count);
     let source = isolated_engine_source_plan(
         &direct_resource,
         descriptor.clone(),
@@ -1633,6 +1819,7 @@ fn run_actual_isolated_engine_equivalence(
         .collect::<Result<Vec<_>>>()
         .unwrap();
     let worker_services = isolated_engine_services(cpu_slots);
+    let worker_resource = direct_resource.clone();
     let worker_capabilities = cdf_runtime::WorkerRuntimeCapabilities {
         host: worker_services.capabilities().clone(),
         memory_bytes: 512 * 1024 * 1024,
@@ -1666,19 +1853,27 @@ fn run_actual_isolated_engine_equivalence(
                     let worker_services = worker_services.clone();
                     let descriptor = descriptor.clone();
                     let option_schema = option_schema.clone();
-                    let batches = batches.clone();
+                    let worker_resource = worker_resource.clone();
                     scope.spawn(move || {
                         let attempt_id = format!(
                             "jobs-{cpu_slots}-partition-{}",
                             fixture.task.partition.canonical_partition_ordinal
                         );
                         let (attempt, lease) = isolated_engine_attempt(&fixture.task, &attempt_id);
+                        artifacts.admit_lease(lease.clone(), 2_000)?;
+                        if fixture.task.partition.canonical_partition_ordinal == 0 {
+                            assert_engine_store_rechecks_fence_at_mutation(
+                                &fixture.task,
+                                &attempt,
+                                &lease,
+                            )?;
+                        }
                         let mut registry = cdf_runtime::SourceRegistry::new();
                         registry.register(IsolatedEngineMockDriver {
                             descriptor,
                             option_schema,
                             dataset_id: dataset_id.to_owned(),
-                            batches,
+                            resource: worker_resource,
                         })?;
                         let worker_root = TempDir::new().map_err(|error| {
                             cdf_kernel::CdfError::internal(format!(
@@ -1723,7 +1918,7 @@ fn run_actual_isolated_engine_equivalence(
                         let evidence = coordinator_verifier.read_partition_evidence(
                             &fixture.task,
                             plan_authority,
-                            admitted.result(),
+                            &admitted,
                         )?;
                         Ok::<_, cdf_kernel::CdfError>((chunk_ordinal, admitted, evidence))
                     })
@@ -1788,6 +1983,7 @@ fn run_actual_isolated_engine_equivalence(
                     fixture.task.partition.canonical_partition_ordinal
                 ),
             );
+            artifacts.admit_lease(segment_lease.clone(), 2_000).unwrap();
             let segment_executor =
                 EngineIsolatedSegmentExecutor::new(&artifacts, &segment_lease, 2_000);
             let segment_host = cdf_runtime::LocalIsolatedSegmentHost::new(
@@ -1812,6 +2008,21 @@ fn run_actual_isolated_engine_equivalence(
         }
     }
     let assembled_root = TempDir::new().unwrap();
+    if cpu_slots == 1 && partition_count == 1 && plan.execution_extent.is_bounded() {
+        let mut replay_plan = plan.clone();
+        replay_plan.package_id.push_str("-cross-plan-replay");
+        let replay_root = TempDir::new().unwrap();
+        let replay_error = assemble_isolated_worker_package(
+            &replay_plan,
+            replay_root.path(),
+            partition_evidence.clone(),
+            &finalized,
+            &artifacts,
+            &resources,
+        )
+        .unwrap_err();
+        assert!(replay_error.message.contains("different engine plan"));
+    }
     let assembled = assemble_isolated_worker_package(
         &plan,
         assembled_root.path(),
@@ -2006,6 +2217,35 @@ fn actual_engine_capsule_preserves_a_finite_drain_epoch() {
             .content_sha256,
         format!("sha256:{}", direct.output.segments[0].sha256)
     );
+}
+
+#[test]
+fn actual_engine_capsule_preserves_terminal_schema_quarantine_evidence() {
+    let mut batch =
+        missing_control_field_batch("isolated-schema-quarantine", "part-0", vec!["one", "two"]);
+    batch.header.source_position = Some(isolated_terminal_file_position());
+    let resource = MockResource::tier_a(vec![batch])
+        .with_schema(sample_schema())
+        .without_control_keys();
+    let (direct, isolated, admitted, finalized) =
+        run_actual_isolated_engine_equivalence_for_resource(
+            4,
+            resource,
+            ExecutionExtent::bounded(),
+        );
+
+    assert_eq!(isolated.output.manifest, direct.output.manifest);
+    assert_eq!(
+        isolated.output.verification.package_hash(),
+        direct.output.verification.package_hash()
+    );
+    assert_eq!(
+        isolated.output.terminal_schema_quarantines,
+        direct.output.terminal_schema_quarantines
+    );
+    assert_eq!(isolated.execution_evidence(), direct.execution_evidence());
+    assert_eq!(admitted[0].counts.output_rows, 0);
+    assert!(finalized.is_empty());
 }
 
 #[test]

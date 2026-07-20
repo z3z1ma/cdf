@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-11
 Updated: 2026-07-14
-Parent: .10x/tickets/2026-07-10-p3-ws-c-deterministic-parallelism.md
+Parent: .10x/tickets/done/2026-07-10-p3-ws-c-deterministic-parallelism.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-c2-parallel-frontier-execution.md, .10x/tickets/done/2026-07-11-p3-a4-injected-execution-host.md
 
 # P3 C3: DataFusion, Python, and native parallelism integration

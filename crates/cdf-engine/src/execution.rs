@@ -55,10 +55,10 @@ use sha2::{Digest, Sha256};
 use tracing::{Instrument, Span, info_span};
 
 use crate::{
-    CompiledSchemaAdmissionOutcome, CompiledSchemaAdmissionPlan, CompiledSchemaQuarantineEvidence,
-    CompiledStreamAdmissionEvidence, EffectiveSchemaObservationCoercion,
-    EffectiveSchemaPlanEvidence, EngineDrainEpoch, EngineDrainEpochOutcome,
-    EngineExecutionEvidence, EngineExecutionOptions, EnginePackageDraft, EnginePartitionEvidence,
+    AdmittedEnginePartitionEvidence, CompiledSchemaAdmissionOutcome, CompiledSchemaAdmissionPlan,
+    CompiledSchemaQuarantineEvidence, CompiledStreamAdmissionEvidence,
+    EffectiveSchemaObservationCoercion, EffectiveSchemaPlanEvidence, EngineDrainEpoch,
+    EngineDrainEpochOutcome, EngineExecutionEvidence, EngineExecutionOptions, EnginePackageDraft,
     EnginePlan, EnginePreviewLimits, EnginePreviewOutput, EngineRunOutput,
     EngineRunOutputWithSegmentPositions, EngineSegmentPosition, EngineWorkerArtifactAuthority,
     ExecutionProfile, LineageInputObservation, LineageSummary, PhysicalObservationEvidence,
@@ -7213,11 +7213,35 @@ fn quarantine_observed_value(
 pub fn assemble_isolated_worker_package(
     plan: &EnginePlan,
     package_dir: impl AsRef<Path>,
-    mut partition_evidence: Vec<EnginePartitionEvidence>,
+    partition_evidence: Vec<AdmittedEnginePartitionEvidence>,
     canonical_segments: &[cdf_runtime::AdmittedSegmentWorkerResult],
     artifacts: &dyn EngineWorkerArtifactAuthority,
     resources: &cdf_runtime::WorkerResourceBudget,
 ) -> Result<EngineRunOutputWithSegmentPositions> {
+    let mut preparation_results = BTreeMap::new();
+    for admitted in &partition_evidence {
+        admitted.validate_plan(plan)?;
+        let evidence = admitted.evidence();
+        if preparation_results
+            .insert(
+                (
+                    evidence.canonical_partition_ordinal,
+                    evidence.partition_id.clone(),
+                ),
+                admitted.preparation_result_sha256().to_owned(),
+            )
+            .is_some()
+        {
+            return Err(CdfError::contract(
+                "isolated package assembly contains duplicate admitted partition authority",
+            ));
+        }
+    }
+    let segmentation_policy_hash = cdf_runtime::artifact_hash(plan.segmentation_policy()?)?;
+    let mut partition_evidence = partition_evidence
+        .into_iter()
+        .map(AdmittedEnginePartitionEvidence::into_evidence)
+        .collect::<Vec<_>>();
     if partition_evidence.is_empty() {
         return Err(CdfError::contract(
             "isolated package assembly requires partition evidence",
@@ -7342,15 +7366,55 @@ pub fn assemble_isolated_worker_package(
         .iter()
         .flat_map(|evidence| evidence.terminal_schema_quarantines.iter().cloned())
         .collect::<Vec<_>>();
-    if !terminal_schema_quarantines.is_empty()
-        || partition_evidence
-            .iter()
-            .any(|evidence| evidence.schema_quarantine_evidence.is_some())
+    let mut schema_quarantine_catalog = BTreeMap::new();
+    let mut schema_quarantine_observations = BTreeMap::new();
+    for evidence in partition_evidence
+        .iter()
+        .filter_map(|evidence| evidence.schema_quarantine_evidence.as_ref())
     {
+        evidence.validate_admission(&plan.compiled_schema_admission)?;
+        for (hash, physical) in &evidence.physical_observation_catalog {
+            if let Some(existing) = schema_quarantine_catalog.insert(hash.clone(), physical.clone())
+                && existing != *physical
+            {
+                return Err(CdfError::contract(
+                    "isolated schema-quarantine catalog contains conflicting physical evidence",
+                ));
+            }
+        }
+        for observation in &evidence.observations {
+            if schema_quarantine_observations
+                .insert(observation.observation_id.clone(), observation.clone())
+                .is_some()
+            {
+                return Err(CdfError::contract(
+                    "isolated schema-quarantine evidence contains a duplicate observation",
+                ));
+            }
+        }
+    }
+    if terminal_schema_quarantines.len() != schema_quarantine_observations.len() {
         return Err(CdfError::contract(
-            "isolated package assembly does not yet admit schema-quarantine evidence",
+            "isolated schema quarantines do not exactly match their compiled evidence",
         ));
     }
+    for quarantine in &terminal_schema_quarantines {
+        schema_quarantine_observations
+            .get(quarantine.observation_id())
+            .ok_or_else(|| {
+                CdfError::contract("isolated schema quarantine omitted its observation evidence")
+            })?
+            .validate(quarantine)?;
+    }
+    let schema_quarantine_evidence = (!terminal_schema_quarantines.is_empty())
+        .then(|| {
+            CompiledSchemaQuarantineEvidence::new(
+                &plan.compiled_schema_admission,
+                schema_quarantine_catalog,
+                schema_quarantine_observations.into_values().collect(),
+            )
+        })
+        .transpose()?;
     if !profile.statistics.columns.is_empty() {
         return Err(CdfError::contract(
             "isolated package assembly requires referenced statistics-profile evidence",
@@ -7360,6 +7424,23 @@ pub fn assemble_isolated_worker_package(
     let mut canonical = canonical_segments
         .iter()
         .map(|admitted| {
+            let preparation_result_sha256 = preparation_results
+                .get(&(
+                    admitted.canonical_partition_ordinal(),
+                    admitted.partition_id().clone(),
+                ))
+                .ok_or_else(|| {
+                    CdfError::contract(
+                        "admitted canonical segment has no matching partition preparation",
+                    )
+                })?;
+            admitted.validate_chain(
+                &plan.scan.request.resource_id,
+                &plan.scan.plan_id,
+                preparation_result_sha256,
+                &plan.output_schema.arrow_schema_hash,
+                &segmentation_policy_hash,
+            )?;
             let result = admitted.result();
             let receipt = result.artifact.as_ref().ok_or_else(|| {
                 CdfError::contract("admitted canonical segment lacks its artifact receipt")
@@ -7444,6 +7525,13 @@ pub fn assemble_isolated_worker_package(
         builder.write_json_artifact("schema/coercion-plan.json", coercion)?;
     }
     builder.write_json_artifact("schema/stream-admission-evidence.json", &stream_admission)?;
+    if let Some(evidence) = &schema_quarantine_evidence {
+        builder.write_json_artifact(
+            "quarantine/schema-observations.json",
+            &terminal_schema_quarantines,
+        )?;
+        builder.write_json_artifact("quarantine/schema-admission-evidence.json", evidence)?;
+    }
     let runtime_output_schema = plan.output_arrow_schema()?;
     builder.write_json_artifact(
         "schema/output.json",

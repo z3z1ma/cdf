@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Target: .10x/decisions/canonical-frontier-parallel-scheduling.md, .10x/specs/deterministic-parallel-scheduler.md, .10x/tickets/2026-07-10-p3-ws-c-deterministic-parallelism.md
+Target: .10x/decisions/canonical-frontier-parallel-scheduling.md, .10x/specs/deterministic-parallel-scheduler.md, .10x/tickets/done/2026-07-10-p3-ws-c-deterministic-parallelism.md
 Verdict: pass
 
 # Deterministic scheduler shaping review

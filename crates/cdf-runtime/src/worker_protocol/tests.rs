@@ -67,6 +67,7 @@ impl SourceDriver for PortableMockDriver {
             task.execution.output_schema_hash.clone(),
             50,
             4096,
+            true,
         )
     }
 
@@ -542,6 +543,27 @@ impl IsolatedSegmentExecutor for FixtureIsolatedSegmentExecutor<'_> {
 struct CountingArtifactSink {
     writes: usize,
     fail_after_write: bool,
+}
+
+struct ProviderRecheckingSink {
+    current_lease: WorkerLeaseState,
+    object_state: WorkerArtifactObjectState,
+    writes: usize,
+}
+
+impl WorkerAuthorizedArtifactSink for ProviderRecheckingSink {
+    fn write_authorized(
+        &mut self,
+        authorization: WorkerArtifactWriteAuthorization<'_>,
+    ) -> Result<VerifiedWorkerArtifactFacts> {
+        authorization.validate_provider_preconditions(
+            &self.current_lease,
+            &self.object_state,
+            2_000,
+        )?;
+        self.writes += 1;
+        VerifiedWorkerArtifactFacts::new(authorization.receipt().artifact.clone(), None)
+    }
 }
 
 impl WorkerAuthorizedArtifactSink for CountingArtifactSink {
@@ -1430,6 +1452,42 @@ fn write_permit_is_checked_before_every_object_write() {
             .message
             .contains("generation precondition")
     );
+}
+
+#[test]
+fn provider_recheck_rejects_a_fence_advanced_after_session_preflight() {
+    let fixture = Fixture::new();
+    let attempt = fixture.attempt();
+    let original_lease = fixture.lease();
+    let mut session =
+        WorkerArtifactWriteSession::new(&fixture.task, &attempt, &original_lease, 2_000).unwrap();
+    let result = fixture.result(&attempt);
+    let mut sink = ProviderRecheckingSink {
+        current_lease: WorkerLeaseState {
+            fencing_token: FencingToken::new(5).unwrap(),
+            ..original_lease.clone()
+        },
+        object_state: WorkerArtifactObjectState::Absent,
+        writes: 0,
+    };
+
+    let error = session
+        .write(
+            &result.artifacts[0],
+            &WorkerArtifactObjectState::Absent,
+            2_000,
+            &mut sink,
+        )
+        .unwrap_err();
+    assert!(error.message.contains("stale"));
+    assert_eq!(sink.writes, 0, "stale fence must fail before mutation");
+}
+
+#[test]
+fn worker_result_encoder_stops_at_its_control_ceiling() {
+    let payload = "x".repeat(64 * 1024);
+    let error = encode_json_bounded("worker result fixture", &payload, 1_024).unwrap_err();
+    assert!(error.message.contains("control ceiling"));
 }
 
 #[test]

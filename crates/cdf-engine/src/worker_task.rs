@@ -1,5 +1,6 @@
 use cdf_kernel::{
-    CdfError, PipelineId, Result, SecretReference, partition_source_identity_binding,
+    CdfError, EpochClosureCause, ExecutionExtent, PipelineId, Result, SecretReference,
+    partition_source_identity_binding,
 };
 use cdf_memory::{AccountedBytes, MemoryLease};
 use cdf_runtime::{
@@ -136,6 +137,42 @@ impl EnginePartitionEvidence {
                 "partition schema quarantine rows and evidence must be present together",
             ));
         }
+        let admitted_observations = self
+            .processed_observations
+            .iter()
+            .filter(|observation| {
+                observation.outcome == cdf_kernel::ProcessedObservationOutcome::Admitted
+            })
+            .map(|observation| observation.observation_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        let quarantined_observations = self
+            .processed_observations
+            .iter()
+            .filter(|observation| {
+                observation.outcome == cdf_kernel::ProcessedObservationOutcome::Quarantined
+            })
+            .map(|observation| observation.observation_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        let stream_observations = self
+            .stream_admission
+            .observations
+            .iter()
+            .map(|observation| observation.observation_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        let schema_quarantines = self
+            .terminal_schema_quarantines
+            .iter()
+            .map(cdf_kernel::TerminalSchemaObservationQuarantine::observation_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        if admitted_observations != stream_observations
+            || quarantined_observations != schema_quarantines
+            || self.processed_observations.len()
+                != admitted_observations.len() + quarantined_observations.len()
+        {
+            return Err(CdfError::contract(
+                "partition processed-observation outcomes do not exactly match admitted and quarantined schema evidence",
+            ));
+        }
         if let Some(result) = result {
             let prepared_segments = result
                 .artifacts
@@ -180,6 +217,47 @@ pub struct VerifiedWorkerCompilerArtifact {
 
 pub struct VerifiedEnginePartitionEvidenceArtifact {
     evidence: EnginePartitionEvidence,
+}
+
+/// Engine evidence joined to a generically admitted result and frozen control authority.
+///
+/// The private payload prevents package assembly from accepting a merely decoded worker claim.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdmittedEnginePartitionEvidence {
+    plan_sha256: String,
+    resource_id: cdf_kernel::ResourceId,
+    plan_id: cdf_kernel::PlanId,
+    task_sha256: String,
+    result_sha256: String,
+    evidence: EnginePartitionEvidence,
+}
+
+impl AdmittedEnginePartitionEvidence {
+    pub(crate) fn validate_plan(&self, plan: &EnginePlan) -> Result<()> {
+        if self.plan_sha256 != artifact_hash(plan)?
+            || self.resource_id != plan.scan.request.resource_id
+            || self.plan_id != plan.scan.plan_id
+            || !self.task_sha256.starts_with("sha256:")
+            || !self.result_sha256.starts_with("sha256:")
+        {
+            return Err(CdfError::contract(
+                "admitted partition evidence belongs to a different engine plan",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn preparation_result_sha256(&self) -> &str {
+        &self.result_sha256
+    }
+
+    pub(crate) fn evidence(&self) -> &EnginePartitionEvidence {
+        &self.evidence
+    }
+
+    pub(crate) fn into_evidence(self) -> EnginePartitionEvidence {
+        self.evidence
+    }
 }
 
 impl VerifiedEnginePartitionEvidenceArtifact {
@@ -507,12 +585,92 @@ pub struct EngineWorkerAdmissionVerifier<'a> {
     artifacts: &'a dyn EngineWorkerArtifactAuthority,
 }
 
+fn validate_partition_drain_authority(
+    plan: &EnginePlan,
+    source_facts: &VerifiedWorkerSourceFacts,
+    drain: Option<&EnginePartitionDrainEvidence>,
+) -> Result<()> {
+    match &plan.execution_extent {
+        ExecutionExtent::Bounded { .. } => {
+            if drain.is_some() {
+                return Err(CdfError::contract(
+                    "bounded partition evidence cannot carry drain authority",
+                ));
+            }
+            Ok(())
+        }
+        ExecutionExtent::Drain {
+            policy,
+            termination,
+            ..
+        } => {
+            let drain = drain.ok_or_else(|| {
+                CdfError::contract("drain partition evidence requires closure authority")
+            })?;
+            if drain.frontier != drain.closure.frontier {
+                return Err(CdfError::contract(
+                    "drain partition frontier does not match its closure evidence",
+                ));
+            }
+            let cdf_runtime::WorkerPosition::Inline { position } =
+                source_facts.processed_position()
+            else {
+                return Err(CdfError::contract(
+                    "drain admission requires an independently verified inline source frontier",
+                ));
+            };
+            if position != &drain.frontier.frontier {
+                return Err(CdfError::contract(
+                    "drain frontier does not match independently verified source progress",
+                ));
+            }
+            let cause_matches = match &drain.closure.cause {
+                EpochClosureCause::CheckpointCadence { trigger } => {
+                    trigger == &policy.checkpoint_cadence
+                }
+                EpochClosureCause::PackageRotation { trigger } => {
+                    trigger == &policy.package_rotation
+                }
+                EpochClosureCause::DrainTermination {
+                    termination: observed,
+                } => observed == termination,
+                EpochClosureCause::SourceExhausted => true,
+            };
+            let terminal = matches!(
+                drain.closure.cause,
+                EpochClosureCause::DrainTermination { .. } | EpochClosureCause::SourceExhausted
+            );
+            if !cause_matches || drain.terminate_after_settlement != terminal {
+                return Err(CdfError::contract(
+                    "drain closure does not match the compiled cadence, rotation, or termination authority",
+                ));
+            }
+            if !matches!(policy.watermark, cdf_kernel::WatermarkPolicy::Disabled)
+                || drain.consumed_partition_count != 1
+                || drain.resume_partition.is_some()
+                || !drain.consumed_late_data_carryover.is_empty()
+                || !drain.late_data_carryover.is_empty()
+                || !drain.partition_watermarks.is_empty()
+                || drain.observed_at_unix_milliseconds == 0
+            {
+                return Err(CdfError::contract(
+                    "isolated drain admission supports exactly one completed partition with disabled watermarks and no resume or carryover state",
+                ));
+            }
+            Ok(())
+        }
+        ExecutionExtent::Resident { .. } => Err(CdfError::contract(
+            "resident partition evidence requires the resident supervisor",
+        )),
+    }
+}
+
 impl<'a> EngineWorkerAdmissionVerifier<'a> {
     pub fn new(artifacts: &'a dyn EngineWorkerArtifactAuthority) -> Self {
         Self { artifacts }
     }
 
-    pub fn read_partition_evidence(
+    fn read_unadmitted_partition_evidence(
         &self,
         task: &PortablePartitionTask,
         plan: &EnginePlan,
@@ -536,6 +694,43 @@ impl<'a> EngineWorkerAdmissionVerifier<'a> {
             .into_evidence();
         evidence.validate(task, plan, Some(result))?;
         Ok(evidence)
+    }
+
+    /// Reads engine evidence only from a result that crossed generic coordinator admission, then
+    /// joins its checkpoint/drain control claims to independently verified source facts and the
+    /// frozen execution extent. Transformation evidence remains worker-produced by design; its
+    /// referenced bytes and row counts were already verified by generic admission.
+    pub fn read_partition_evidence(
+        &self,
+        task: &PortablePartitionTask,
+        plan: &EnginePlan,
+        admitted: &AdmittedPartitionWorkerResult,
+    ) -> Result<AdmittedEnginePartitionEvidence> {
+        let plan_sha256 = artifact_hash(plan)?;
+        if task.execution.project_identity_hash != plan_sha256
+            || task.plan_id != plan.scan.plan_id
+            || task.resource_id != plan.scan.request.resource_id
+            || admitted.result().task_sha256 != task.task_sha256
+        {
+            return Err(CdfError::contract(
+                "admitted partition result does not belong to the supplied task and engine plan",
+            ));
+        }
+        let evidence = self.read_unadmitted_partition_evidence(task, plan, admitted.result())?;
+        if evidence.checkpoint_eligible != admitted.source_facts().checkpoint_eligible() {
+            return Err(CdfError::contract(
+                "partition checkpoint eligibility does not match independently verified source authority",
+            ));
+        }
+        validate_partition_drain_authority(plan, admitted.source_facts(), evidence.drain.as_ref())?;
+        Ok(AdmittedEnginePartitionEvidence {
+            plan_sha256,
+            resource_id: task.resource_id.clone(),
+            plan_id: task.plan_id.clone(),
+            task_sha256: task.task_sha256.clone(),
+            result_sha256: admitted.result().result_sha256.clone(),
+            evidence,
+        })
     }
 
     fn decode<T: serde::de::DeserializeOwned>(
@@ -704,7 +899,7 @@ impl WorkerAdmissionVerifier for EngineWorkerAdmissionVerifier<'_> {
         let plan = authority
             .execution_program::<ReconstructedEngineWorkerProgram>()?
             .plan();
-        let evidence = self.read_partition_evidence(task, plan, result)?;
+        let evidence = self.read_unadmitted_partition_evidence(task, plan, result)?;
         let observations = evidence
             .processed_observations
             .iter()

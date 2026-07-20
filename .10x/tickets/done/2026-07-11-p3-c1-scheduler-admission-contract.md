@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-11
 Updated: 2026-07-11
-Parent: .10x/tickets/2026-07-10-p3-ws-c-deterministic-parallelism.md
+Parent: .10x/tickets/done/2026-07-10-p3-ws-c-deterministic-parallelism.md
 Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md, .10x/decisions/scheduler-source-boundary-readiness.md, .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md, .10x/tickets/done/2026-07-11-p3-a4-injected-execution-host.md, .10x/specs/deterministic-parallel-scheduler.md
 
 # P3 C1: scheduler capabilities and hierarchical admission
