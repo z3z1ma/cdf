@@ -732,17 +732,39 @@ impl cdf_runtime::IsolatedPartitionExecutor for ActualEngineIsolatedExecutor<'_>
                         let pre_finalize =
                             |_builder: &cdf_package::PackageBuilder,
                              _draft: EnginePackageDraft<'_>| Ok(());
-                        block_on(
-                            super::execute_to_package_with_segment_positions_and_pre_finalize(
-                                &execution_plan,
-                                resource.as_ref(),
-                                execution_package_dir,
-                                &pre_finalize,
-                                EngineExecutionOptions::default()
-                                    .with_execution_services(execution_services)
-                                    .with_scheduler_resolution(scheduler),
+                        let options = EngineExecutionOptions::default()
+                            .with_execution_services(execution_services)
+                            .with_scheduler_resolution(scheduler);
+                        match &execution_plan.execution_extent {
+                            ExecutionExtent::Bounded { .. } => block_on(
+                                super::execute_to_package_with_segment_positions_and_pre_finalize(
+                                    &execution_plan,
+                                    resource.as_ref(),
+                                    execution_package_dir,
+                                    &pre_finalize,
+                                    options,
+                                ),
                             ),
-                        )
+                            ExecutionExtent::Drain { .. } => {
+                                let mut controller = cdf_runtime::DrainEpochController::new(
+                                    &execution_plan.execution_extent,
+                                )?;
+                                block_on(super::execute_drain_epoch_with_hooks(
+                                    &execution_plan,
+                                    resource.as_ref(),
+                                    execution_package_dir,
+                                    &pre_finalize,
+                                    super::DrainEpochExecution::new(&mut controller),
+                                    options,
+                                ))?
+                                .into_package()
+                            }
+                            ExecutionExtent::Resident { .. } => {
+                                Err(cdf_kernel::CdfError::contract(
+                                    "isolated resident execution is not enabled",
+                                ))
+                            }
+                        }
                     })
                     .join()
                     .map_err(|_| {
@@ -1003,6 +1025,7 @@ fn isolated_engine_source_plan(
     descriptor: cdf_runtime::SourceDriverDescriptor,
     dataset_id: &str,
     batches: &[Batch],
+    extent: &ExecutionExtent,
 ) -> cdf_runtime::CompiledSourcePlan {
     let source_bytes = batches
         .iter()
@@ -1017,7 +1040,11 @@ fn isolated_engine_source_plan(
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let mut source = mock_compiled_source_plan(resource, None);
+    let mut source = if extent.is_bounded() {
+        mock_compiled_source_plan(resource, None)
+    } else {
+        mock_unbounded_source_plan(resource)
+    };
     source.driver = descriptor;
     source.redacted_options = serde_json::json!({});
     source.redacted_options_hash = cdf_runtime::artifact_hash(&source.redacted_options).unwrap();
@@ -1073,6 +1100,7 @@ fn isolated_engine_attempt<T: cdf_runtime::PortableWorkerTask>(
 fn run_actual_isolated_engine_equivalence(
     cpu_slots: u16,
     partition_count: usize,
+    extent: ExecutionExtent,
 ) -> (
     EngineRunOutputWithSegmentPositions,
     Vec<EngineRunOutputWithSegmentPositions>,
@@ -1100,13 +1128,18 @@ fn run_actual_isolated_engine_equivalence(
     let direct_resource = MockResource::tier_a(batches.clone())
         .without_control_keys()
         .with_partition_count(partition_count);
-    let source =
-        isolated_engine_source_plan(&direct_resource, descriptor.clone(), dataset_id, &batches);
+    let source = isolated_engine_source_plan(
+        &direct_resource,
+        descriptor.clone(),
+        dataset_id,
+        &batches,
+        &extent,
+    );
     direct_resource.bind_compiled_source(&source);
     let plan = Planner::new()
         .plan_tier_a(
             &direct_resource,
-            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
+            plan_input(Vec::new(), None, None, extent.clone()),
         )
         .unwrap()
         .bind_compiled_source(&source)
@@ -1130,18 +1163,37 @@ fn run_actual_isolated_engine_equivalence(
     let direct_root = TempDir::new().unwrap();
     let pre_finalize =
         |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
-    let direct = block_on(
-        super::execute_to_package_with_segment_positions_and_pre_finalize(
-            &plan,
-            &direct_resource,
-            direct_root.path(),
-            &pre_finalize,
-            EngineExecutionOptions::default()
-                .with_execution_services(direct_services)
-                .with_scheduler_resolution(direct_scheduler),
-        ),
-    )
-    .unwrap();
+    let direct_options = EngineExecutionOptions::default()
+        .with_execution_services(direct_services)
+        .with_scheduler_resolution(direct_scheduler);
+    let direct = match &plan.execution_extent {
+        ExecutionExtent::Bounded { .. } => block_on(
+            super::execute_to_package_with_segment_positions_and_pre_finalize(
+                &plan,
+                &direct_resource,
+                direct_root.path(),
+                &pre_finalize,
+                direct_options,
+            ),
+        )
+        .unwrap(),
+        ExecutionExtent::Drain { .. } => {
+            let mut controller =
+                cdf_runtime::DrainEpochController::new(&plan.execution_extent).unwrap();
+            block_on(super::execute_drain_epoch_with_hooks(
+                &plan,
+                &direct_resource,
+                direct_root.path(),
+                &pre_finalize,
+                super::DrainEpochExecution::new(&mut controller),
+                direct_options,
+            ))
+            .unwrap()
+            .into_package()
+            .unwrap()
+        }
+        ExecutionExtent::Resident { .. } => unreachable!("resident plans do not compile"),
+    };
 
     let compatibility = cdf_runtime::WorkerCompatibility {
         cdf_version: "0.1.0".to_owned(),
@@ -1455,7 +1507,7 @@ fn run_actual_isolated_engine_equivalence(
 fn actual_engine_capsule_publishes_direct_segments_across_cpu_budgets() {
     for cpu_slots in [1, 4] {
         let (direct, isolated, admitted, finalized) =
-            run_actual_isolated_engine_equivalence(cpu_slots, 1);
+            run_actual_isolated_engine_equivalence(cpu_slots, 1, ExecutionExtent::bounded());
         let isolated = &isolated[0];
         let admitted = &admitted[0];
         assert_eq!(isolated.output.segments, direct.output.segments);
@@ -1495,9 +1547,9 @@ fn actual_engine_capsule_publishes_direct_segments_across_cpu_budgets() {
 #[test]
 fn actual_engine_capsules_are_jobs_invariant_for_multiple_partitions() {
     let (direct_serial, isolated_serial, admitted_serial, finalized_serial) =
-        run_actual_isolated_engine_equivalence(1, 2);
+        run_actual_isolated_engine_equivalence(1, 2, ExecutionExtent::bounded());
     let (direct_parallel, isolated_parallel, admitted_parallel, finalized_parallel) =
-        run_actual_isolated_engine_equivalence(4, 2);
+        run_actual_isolated_engine_equivalence(4, 2, ExecutionExtent::bounded());
 
     assert_eq!(
         direct_parallel.output.segments,
@@ -1552,6 +1604,54 @@ fn actual_engine_capsules_are_jobs_invariant_for_multiple_partitions() {
         .collect::<Vec<_>>();
     assert_eq!(finalized_hashes(&finalized_serial), direct_hashes);
     assert_eq!(finalized_hashes(&finalized_parallel), direct_hashes);
+}
+
+#[test]
+fn actual_engine_capsule_preserves_a_finite_drain_epoch() {
+    let extent = ExecutionExtent::Drain {
+        version: EXECUTION_EXTENT_VERSION,
+        policy: StreamEpochPolicy {
+            version: STREAM_EPOCH_POLICY_VERSION,
+            checkpoint_cadence: EpochClosureTrigger::Rows { count: 64 },
+            package_rotation: EpochClosureTrigger::Bytes { count: 1 << 20 },
+            watermark: WatermarkPolicy::Disabled,
+            late_data: cdf_kernel::LateDataAction::Quarantine,
+            safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
+        },
+        termination: DrainTermination::Records { count: 3 },
+    };
+    let (direct, isolated, admitted, finalized) =
+        run_actual_isolated_engine_equivalence(4, 1, extent);
+    let isolated = &isolated[0];
+    assert_eq!(isolated.output.segments, direct.output.segments);
+    assert_eq!(isolated.output.profile, direct.output.profile);
+    assert_eq!(isolated.output.lineage, direct.output.lineage);
+    assert_eq!(isolated.segment_positions, direct.segment_positions);
+    assert_eq!(isolated.execution_evidence(), direct.execution_evidence());
+    let direct_epoch = direct.drain_epoch.as_ref().unwrap();
+    let isolated_epoch = isolated.drain_epoch.as_ref().unwrap();
+    assert_eq!(
+        isolated_epoch.closure.frontier,
+        direct_epoch.closure.frontier
+    );
+    assert_eq!(
+        isolated_epoch.closure.evidence,
+        direct_epoch.closure.evidence
+    );
+    assert_eq!(isolated_epoch.consumed_partition_count, 1);
+    assert_eq!(
+        admitted[0].counts.output_rows,
+        direct.output.profile.output_rows
+    );
+    assert_eq!(
+        finalized[0]
+            .artifact
+            .as_ref()
+            .unwrap()
+            .artifact
+            .content_sha256,
+        format!("sha256:{}", direct.output.segments[0].sha256)
+    );
 }
 
 #[test]
