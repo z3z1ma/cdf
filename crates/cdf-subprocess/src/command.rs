@@ -1,12 +1,9 @@
 use std::{collections::BTreeMap, path::PathBuf, process::ExitStatus, time::Duration};
 
-use cdf_kernel::{
-    Batch, ResourceDescriptor, ResourceId, SchemaHash, SchemaSnapshotReference, SchemaSource,
-    ScopeKey, TrustLevel, WriteDisposition,
-};
 use cdf_memory::{AccountedBytes, MemoryLease};
-use cdf_runtime::BoundedFormatRead;
 use serde::{Deserialize, Serialize};
+
+use crate::StreamIdentity;
 
 pub const DEFAULT_STDERR_LINE_LIMIT: usize = 64;
 
@@ -44,11 +41,13 @@ impl CommandSpec {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum StdoutFormat {
+pub enum SubprocessProtocol {
     ArrowIpc,
     Ndjson,
+    Singer { stream: StreamIdentity },
+    Airbyte { stream: StreamIdentity },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,6 +63,15 @@ pub struct SupervisionOptions {
     pub maximum_streamed_stdout_bytes: Option<u64>,
     /// Maximum in-flight stdout chunk requested from the child pipe.
     pub maximum_stream_chunk_bytes: u64,
+    /// Maximum bytes in one Singer/Airbyte NDJSON message, excluding an optional line ending.
+    pub maximum_protocol_line_bytes: u64,
+    /// Accounted transient DOM/serialization scratch for one Singer/Airbyte message. Protocol
+    /// admission requires this to be at least 32 times the configured line payload boundary.
+    pub protocol_parser_scratch_bytes: u64,
+    /// Maximum record bytes accumulated before one protocol row-compat decode window is flushed.
+    pub protocol_row_window_bytes: u64,
+    /// Optional per-process virtual address-space fence inherited by child descendants.
+    pub maximum_child_address_space_bytes: Option<u64>,
     pub maximum_stderr_bytes: u64,
 }
 
@@ -76,6 +84,10 @@ impl Default for SupervisionOptions {
             maximum_stdout_bytes: 64 * 1024 * 1024,
             maximum_streamed_stdout_bytes: None,
             maximum_stream_chunk_bytes: 16 * 1024 * 1024,
+            maximum_protocol_line_bytes: 1024 * 1024,
+            protocol_parser_scratch_bytes: 32 * 1024 * 1024,
+            protocol_row_window_bytes: 16 * 1024 * 1024,
+            maximum_child_address_space_bytes: None,
             maximum_stderr_bytes: 256 * 1024,
         }
     }
@@ -130,71 +142,6 @@ pub struct StderrTrace {
     bytes: BoundedCommandBytes,
     line_limit: usize,
     discarded_bytes: u64,
-}
-
-#[derive(Debug)]
-pub struct SubprocessOutput {
-    pub read: SubprocessRead,
-    pub stderr: StderrTrace,
-    pub exit_status: ExitStatus,
-}
-
-#[derive(Clone, Debug)]
-pub struct SubprocessRead {
-    pub descriptor: ResourceDescriptor,
-    pub batches: Vec<Batch>,
-}
-
-impl SubprocessRead {
-    pub(crate) fn from_bounded(
-        read: BoundedFormatRead,
-        scope: ScopeKey,
-    ) -> cdf_kernel::Result<Self> {
-        let schema_hash = cdf_kernel::canonical_arrow_schema_hash(read.schema.as_ref())?;
-        let resource_id = read
-            .batches
-            .first()
-            .map(|batch| batch.header.resource_id.clone())
-            .ok_or_else(|| {
-                cdf_kernel::CdfError::internal("bounded subprocess read emitted no batch")
-            })?;
-        Ok(Self {
-            descriptor: descriptor_for_schema_hash(
-                resource_id,
-                schema_hash,
-                scope,
-                "subprocess-format-driver",
-            ),
-            batches: read.batches,
-        })
-    }
-}
-
-pub(crate) fn descriptor_for_schema_hash(
-    resource_id: ResourceId,
-    schema_hash: SchemaHash,
-    scope: ScopeKey,
-    probe: &'static str,
-) -> ResourceDescriptor {
-    ResourceDescriptor {
-        resource_id: resource_id.clone(),
-        schema_source: SchemaSource::Discovered {
-            snapshot: SchemaSnapshotReference {
-                schema_hash: schema_hash.clone(),
-                path: format!(".cdf/schemas/{resource_id}@{schema_hash}.json"),
-                metadata: BTreeMap::from([("probe".to_owned(), probe.to_owned())]),
-            },
-        },
-        primary_key: Vec::new(),
-        merge_key: Vec::new(),
-        cursor: None,
-        write_disposition: WriteDisposition::Append,
-        deduplication: None,
-        contract: None,
-        state_scope: scope,
-        freshness: None,
-        trust_level: TrustLevel::Experimental,
-    }
 }
 
 impl StderrTrace {

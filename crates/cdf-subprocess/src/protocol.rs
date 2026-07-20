@@ -1,14 +1,7 @@
-use std::{collections::BTreeMap, sync::Arc};
-
-use cdf_kernel::{CdfError, ForeignState, Result, ScopeKey, SourcePosition};
-use cdf_runtime::{
-    BoundedFormatRequest, ExecutionServices, MemoryByteSource, ReadOptions, decode_bounded_format,
-};
+use cdf_kernel::{CdfError, ForeignState, Result, SourcePosition};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
-
-use crate::SubprocessRead;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct StreamIdentity {
@@ -38,7 +31,25 @@ impl StreamIdentity {
         }
     }
 
-    fn batch_id_part(&self) -> String {
+    pub fn validate(&self) -> Result<()> {
+        if self.name.trim().is_empty() {
+            return Err(CdfError::contract(
+                "subprocess protocol stream name cannot be empty",
+            ));
+        }
+        if self
+            .namespace
+            .as_ref()
+            .is_some_and(|namespace| namespace.trim().is_empty())
+        {
+            return Err(CdfError::contract(
+                "subprocess protocol stream namespace cannot be empty when present",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn batch_id_part(&self) -> String {
         let value = match &self.namespace {
             Some(namespace) => format!("{namespace}-{}", self.name),
             None => self.name.clone(),
@@ -47,70 +58,21 @@ impl StreamIdentity {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct ProtocolStreamRead {
-    pub stream: StreamIdentity,
-    pub read: SubprocessRead,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProtocolState {
-    pub kind: String,
-    pub stream: Option<StreamIdentity>,
-    pub position: SourcePosition,
-}
-
-pub(crate) fn records_to_stream_reads(
-    records: impl IntoIterator<Item = (StreamIdentity, Value)>,
-    options: &ReadOptions,
-    execution: &ExecutionServices,
-) -> Result<Vec<ProtocolStreamRead>> {
-    let mut by_stream = BTreeMap::<StreamIdentity, Vec<Value>>::new();
-    for (stream, record) in records {
-        by_stream.entry(stream).or_default().push(record);
-    }
-
-    let mut streams = Vec::with_capacity(by_stream.len());
-    for (stream, rows) in by_stream {
-        let read_options = options.clone().with_batch_id_prefix(format!(
-            "{}-{}",
-            options.batch_id_prefix,
-            stream.batch_id_part()
-        ))?;
-        let bytes = ndjson_bytes(&rows)?;
-        let memory = execution.memory();
-        let location = format!("subprocess-protocol:{}", stream.scope_name());
-        let bounded = execution.run_io(async move {
-            let source = MemoryByteSource::from_bytes(location, bytes, Arc::clone(&memory)).await?;
-            decode_bounded_format(
-                Arc::new(cdf_format_json::NdjsonFormatDriver::new()?),
-                Arc::new(source),
-                BoundedFormatRequest::new(read_options, memory),
-            )
-            .await
-        })?;
-        let read = SubprocessRead::from_bounded(
-            bounded,
-            ScopeKey::Stream {
-                name: stream.scope_name(),
-            },
-        )?;
-        streams.push(ProtocolStreamRead { stream, read });
-    }
-
-    Ok(streams)
-}
-
 pub(crate) fn foreign_state(protocol: &str, value: &Value) -> Result<SourcePosition> {
     let opaque_blob = canonical_json_bytes(value)?;
     let mut hasher = Sha256::new();
     hasher.update(&opaque_blob);
     Ok(SourcePosition::ForeignState(ForeignState {
-        version: 1,
+        version: cdf_kernel::CHECKPOINT_STATE_VERSION,
         protocol: protocol.to_owned(),
         blob_sha256: format!("sha256:{}", hex::encode(hasher.finalize())),
         opaque_blob,
     }))
+}
+
+pub(crate) fn canonical_json_hash(value: &Value) -> Result<String> {
+    let bytes = canonical_json_bytes(value)?;
+    Ok(format!("sha256:{}", hex::encode(Sha256::digest(bytes))))
 }
 
 fn canonical_json_bytes(value: &Value) -> Result<Vec<u8>> {
@@ -158,27 +120,6 @@ fn write_canonical_string(value: &str, output: &mut Vec<u8>) -> Result<()> {
         serde_json::to_string(value).map_err(|error| CdfError::data(error.to_string()))?;
     output.extend_from_slice(escaped.as_bytes());
     Ok(())
-}
-
-pub(crate) fn json_lines(bytes: &[u8], protocol: &str) -> Result<Vec<(usize, Value)>> {
-    let text = std::str::from_utf8(bytes).map_err(|error| {
-        CdfError::data(format!("{protocol} stdout is not valid UTF-8: {error}"))
-    })?;
-    let mut values = Vec::new();
-    for (index, line) in text.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let value = serde_json::from_str(line).map_err(|error| {
-            CdfError::data(format!(
-                "{protocol} message line {} is not valid JSON: {error}",
-                index + 1
-            ))
-        })?;
-        values.push((index + 1, value));
-    }
-    Ok(values)
 }
 
 pub(crate) fn object_message<'a>(
@@ -328,16 +269,6 @@ pub(crate) fn malformed_field(
     CdfError::data(format!(
         "malformed {protocol} {message_type} message at line {line}: required field `{field}` must be {expected}"
     ))
-}
-
-fn ndjson_bytes(rows: &[Value]) -> Result<Vec<u8>> {
-    let mut output = Vec::new();
-    for row in rows {
-        serde_json::to_writer(&mut output, row)
-            .map_err(|error| CdfError::data(error.to_string()))?;
-        output.push(b'\n');
-    }
-    Ok(output)
 }
 
 fn sanitize_id_part(value: &str) -> String {

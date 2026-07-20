@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-11
 Updated: 2026-07-19
 Parent: .10x/tickets/2026-07-10-p3-ws-h-interop-boundaries.md
-Depends-On: .10x/tickets/done/2026-07-11-p3-h2-python-incremental-arrow-boundary.md, .10x/tickets/2026-07-11-p3-h3-subprocess-stream-supervision.md, .10x/tickets/2026-07-11-p3-h4-wasm-cost-interface-model.md, .10x/tickets/2026-07-11-p3-f3-stress-generators-laws.md
+Depends-On: .10x/tickets/done/2026-07-11-p3-h2-python-incremental-arrow-boundary.md, .10x/tickets/done/2026-07-11-p3-h3-subprocess-stream-supervision.md, .10x/tickets/2026-07-11-p3-h4-wasm-cost-interface-model.md, .10x/tickets/2026-07-11-p3-f3-stress-generators-laws.md
 
 # P3 H5: interop conformance and envelope closeout
 
@@ -33,6 +33,7 @@ Depends on H2–H4 and F3.
 
 - 2026-07-19: H2's adversarial review assigned two program-level conformance cells here rather than hiding them at the Python adapter: preserve `ForeignBatchOutcome` transfer/copy telemetry through ordinary runtime batches into explain/run evidence, and prove Arrow C release callbacks execute exactly once across producer deletion, cancellation, downstream-thread destruction, and error paths. H2 supplies real >2 MiB PyArrow alias/lifetime/cross-thread evidence but does not claim these remaining shared telemetry/release cells.
 - 2026-07-19: H2's closure review assigned the in-process native-memory envelope here. Calibrate PyArrow/CPython native scratch and transient pre-admission C Data retention separately from admitted zero-copy payload, record isolated process RSS for admitted and hostile oversized candidates, populate descriptor/headroom evidence from the measurement, and state plainly that only H3's isolated process boundary can enforce a total memory ceiling over arbitrary producer code before it yields. H2 leases every admitted payload/conversion window and emits no oversized candidate, but does not claim control over pre-yield allocation or retention before imported size is observable.
+- 2026-07-18: H3's closure review assigned the remaining control-plane retention law here. Singer/Airbyte schema, catalog, state, trace, and unknown metadata are emitted as small owned control events rather than memory-lease-bearing batch outcomes. The shared matrix must prove consumers process these events immediately without unbounded retention; if that law is falsified, introduce one neutral accounted control envelope rather than a subprocess-specific queue or protocol cap. H3 already proves row payloads, parser scratch, pipe chunks, and diagnostics are independently bounded.
 
 ## References
 

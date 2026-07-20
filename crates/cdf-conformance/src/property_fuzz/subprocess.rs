@@ -1,21 +1,39 @@
 use std::panic;
 
-use cdf_kernel::{ErrorKind, ForeignState, PartitionId, ResourceId, SourcePosition};
-use cdf_runtime::ReadOptions;
+use cdf_kernel::{ErrorKind, ForeignState, SourcePosition};
 use cdf_subprocess::{
-    AirbyteMessage, AirbyteStateKind, SingerMessage, StreamIdentity, parse_airbyte_ndjson,
-    parse_singer_ndjson, read_airbyte_ndjson_bytes, read_singer_ndjson_bytes,
+    AirbyteMessage, AirbyteStateKind, SingerMessage, StreamIdentity, decode_airbyte_message,
+    decode_singer_message,
 };
 use proptest::prelude::*;
 use serde_json::{Value, json};
 
-fn read_options() -> ReadOptions {
-    ReadOptions::new(
-        ResourceId::new("property_fuzz_protocol").unwrap(),
-        PartitionId::new("p0").unwrap(),
-    )
-    .with_batch_size(8)
-    .unwrap()
+fn singer_messages(bytes: &[u8]) -> cdf_kernel::Result<Vec<SingerMessage>> {
+    bytes
+        .split(|byte| *byte == b'\n')
+        .enumerate()
+        .filter_map(
+            |(index, line)| match decode_singer_message(index + 1, line) {
+                Ok(Some(message)) => Some(Ok(message)),
+                Ok(None) => None,
+                Err(error) => Some(Err(error)),
+            },
+        )
+        .collect()
+}
+
+fn airbyte_messages(bytes: &[u8]) -> cdf_kernel::Result<Vec<AirbyteMessage>> {
+    bytes
+        .split(|byte| *byte == b'\n')
+        .enumerate()
+        .filter_map(
+            |(index, line)| match decode_airbyte_message(index + 1, line) {
+                Ok(Some(message)) => Some(Ok(message)),
+                Ok(None) => None,
+                Err(error) => Some(Err(error)),
+            },
+        )
+        .collect()
 }
 
 fn ndjson(values: &[Value]) -> Vec<u8> {
@@ -42,17 +60,13 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
 
     #[test]
-    fn property_fuzz_protocol_parsers_never_panic_on_adversarial_bytes(
+    fn property_fuzz_protocol_decoders_never_panic_on_adversarial_bytes(
         bytes in prop::collection::vec(any::<u8>(), 0..=1024)
     ) {
-        prop_assert!(panic::catch_unwind(|| parse_singer_ndjson(&bytes)).is_ok());
-        prop_assert!(panic::catch_unwind(|| parse_airbyte_ndjson(&bytes)).is_ok());
-        prop_assert!(
-            panic::catch_unwind(|| read_singer_ndjson_bytes(&bytes, &read_options(), &crate::test_execution_services())).is_ok()
-        );
-        prop_assert!(
-            panic::catch_unwind(|| read_airbyte_ndjson_bytes(&bytes, &read_options(), &crate::test_execution_services())).is_ok()
-        );
+        prop_assert!(panic::catch_unwind(|| decode_singer_message(1, &bytes)).is_ok());
+        prop_assert!(panic::catch_unwind(|| decode_airbyte_message(1, &bytes)).is_ok());
+        prop_assert!(panic::catch_unwind(|| singer_messages(&bytes)).is_ok());
+        prop_assert!(panic::catch_unwind(|| airbyte_messages(&bytes)).is_ok());
     }
 }
 
@@ -80,7 +94,7 @@ fn property_fuzz_singer_unknown_messages_and_fields_follow_current_contract() {
         }),
     ]);
 
-    let messages = parse_singer_ndjson(&bytes).unwrap();
+    let messages = singer_messages(&bytes).unwrap();
     assert!(matches!(
         &messages[0],
         SingerMessage::Other(other)
@@ -97,13 +111,6 @@ fn property_fuzz_singer_unknown_messages_and_fields_follow_current_contract() {
         SingerMessage::Record(record)
             if record.raw["extra_record_field"]["retained"] == true
     ));
-
-    let read = read_singer_ndjson_bytes(&bytes, &read_options(), &crate::test_execution_services())
-        .unwrap();
-    assert_eq!(read.messages.len(), 3);
-    assert_eq!(read.schemas.len(), 1);
-    assert_eq!(read.streams.len(), 1);
-    assert!(read.states.is_empty());
 }
 
 #[test]
@@ -116,11 +123,7 @@ fn property_fuzz_singer_malformed_and_truncated_inputs_error() {
         b"{\"type\":\"STATE\"}\n",
         b"{\"type\":\"RECORD\",\"stream\":\"orders\",\"record\":{\"id\":1}\n",
     ] {
-        assert_data_error(parse_singer_ndjson(bytes).unwrap_err());
-        assert_data_error(
-            read_singer_ndjson_bytes(bytes, &read_options(), &crate::test_execution_services())
-                .unwrap_err(),
-        );
+        assert_data_error(singer_messages(bytes).unwrap_err());
     }
 }
 
@@ -135,12 +138,12 @@ fn property_fuzz_singer_foreign_state_payloads_round_trip() {
         "type": "STATE",
         "value": state_value
     })]);
-
-    let read = read_singer_ndjson_bytes(&bytes, &read_options(), &crate::test_execution_services())
-        .unwrap();
-
-    assert_eq!(read.states.len(), 1);
-    let state = foreign_state(&read.states[0].position);
+    let messages = singer_messages(&bytes).unwrap();
+    let SingerMessage::State(state) = &messages[0] else {
+        panic!("expected Singer state");
+    };
+    let position = state.source_position().unwrap();
+    let state = foreign_state(&position);
     assert_eq!(state.version, cdf_kernel::CHECKPOINT_STATE_VERSION);
     assert_eq!(state.protocol, "singer");
     assert_eq!(
@@ -170,7 +173,7 @@ fn property_fuzz_airbyte_unknown_messages_and_fields_follow_current_contract() {
         }),
     ]);
 
-    let messages = parse_airbyte_ndjson(&bytes).unwrap();
+    let messages = airbyte_messages(&bytes).unwrap();
     assert!(matches!(
         &messages[0],
         AirbyteMessage::Other(other)
@@ -182,14 +185,6 @@ fn property_fuzz_airbyte_unknown_messages_and_fields_follow_current_contract() {
             if record.raw["extra_top_field"]["retained"] == true
                 && record.raw["record"]["extra_record_field"]["retained"] == true
     ));
-
-    let read =
-        read_airbyte_ndjson_bytes(&bytes, &read_options(), &crate::test_execution_services())
-            .unwrap();
-    assert_eq!(read.messages.len(), 2);
-    assert_eq!(read.streams.len(), 1);
-    assert!(read.catalogs.is_empty());
-    assert!(read.states.is_empty());
 }
 
 #[test]
@@ -201,10 +196,9 @@ fn property_fuzz_airbyte_malformed_and_truncated_inputs_error() {
         b"{\"type\":\"RECORD\",\"record\":{\"stream\":\"users\",\"data\":[],\"emitted_at\":1}}\n",
         b"{\"type\":\"STATE\",\"state\":{\"type\":\"STREAM\",\"data\":{}}}\n",
         b"{\"type\":\"STATE\",\"state\":{\"type\":\"UNKNOWN\",\"data\":{}}}\n",
-        b"{\"type\":\"RECORD\",\"record\":{\"stream\":\"users\",\"data\":{\"id\":1},\"emitted_at\":",
+        b"{\"type\":\"RECORD\",\"record\":{\"stream\":\"users\",\"data\":{\"id\":1},\"emitted_at\":" ,
     ] {
-        assert_data_error(parse_airbyte_ndjson(bytes).unwrap_err());
-        assert_data_error(read_airbyte_ndjson_bytes(bytes, &read_options(), &crate::test_execution_services()).unwrap_err());
+        assert_data_error(airbyte_messages(bytes).unwrap_err());
     }
 }
 
@@ -229,34 +223,33 @@ fn property_fuzz_airbyte_foreign_state_payloads_round_trip() {
         json!({ "type": "STATE", "state": stream_state }),
     ]);
 
-    let read =
-        read_airbyte_ndjson_bytes(&bytes, &read_options(), &crate::test_execution_services())
-            .unwrap();
-
-    assert_eq!(read.states.len(), 2);
-    assert_eq!(read.states[0].kind, "legacy");
-    assert_eq!(read.states[0].stream, None);
-    assert_eq!(read.states[1].kind, "stream");
-    assert_eq!(
-        read.states[1].stream,
-        Some(StreamIdentity::airbyte(Some("crm".to_owned()), "users"))
-    );
+    let messages = airbyte_messages(&bytes).unwrap();
     assert!(matches!(
-        read.messages[0],
+        messages[0],
         AirbyteMessage::State(cdf_subprocess::AirbyteState {
             kind: AirbyteStateKind::Legacy,
             ..
         })
     ));
-
-    for (state, expected) in read.states.iter().zip([legacy_state, stream_state]) {
-        let position = foreign_state(&state.position);
-        assert_eq!(position.version, cdf_kernel::CHECKPOINT_STATE_VERSION);
-        assert_eq!(position.protocol, "airbyte");
+    let AirbyteMessage::State(stream) = &messages[1] else {
+        panic!("expected Airbyte stream state");
+    };
+    assert_eq!(
+        stream.stream,
+        Some(StreamIdentity::airbyte(Some("crm".to_owned()), "users"))
+    );
+    for (message, expected) in messages.iter().zip([legacy_state, stream_state]) {
+        let AirbyteMessage::State(state) = message else {
+            panic!("expected Airbyte state");
+        };
+        let position = state.source_position().unwrap();
+        let state = foreign_state(&position);
+        assert_eq!(state.version, cdf_kernel::CHECKPOINT_STATE_VERSION);
+        assert_eq!(state.protocol, "airbyte");
         assert_eq!(
-            serde_json::from_slice::<Value>(&position.opaque_blob).unwrap(),
+            serde_json::from_slice::<Value>(&state.opaque_blob).unwrap(),
             expected
         );
-        assert!(position.blob_sha256.starts_with("sha256:"));
+        assert!(state.blob_sha256.starts_with("sha256:"));
     }
 }

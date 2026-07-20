@@ -1314,7 +1314,10 @@ async fn decode_next(
                 let complete_record_boundary = available
                     .get(consumed.saturating_sub(1))
                     .is_some_and(|byte| *byte == b'\n');
-                if state.retained_bytes < state.window_target_bytes || !complete_record_boundary {
+                if !complete_record_boundary
+                    || (state.retained_bytes < state.window_target_bytes
+                        && state.decoder.len() < state.request.target_batch_rows)
+                {
                     continue;
                 }
             }
@@ -2002,7 +2005,7 @@ mod tests {
         BoundedFormatRequest, DecodeSchemaPlan, MemoryByteSource, ReadOptions,
         decode_bounded_format,
     };
-    use futures_util::{TryStreamExt, stream};
+    use futures_util::{FutureExt, StreamExt, TryStreamExt, stream};
 
     use super::*;
 
@@ -2915,6 +2918,66 @@ mod tests {
             vec![1, 1, 1]
         );
         drop(batches);
+        assert_eq!(coordinator.snapshot().current_bytes, 0);
+    }
+
+    #[test]
+    fn ndjson_tape_decode_flushes_at_the_row_target_before_source_eof() {
+        let input = br#"{"id":1}
+"#;
+        let coordinator = Arc::new(
+            DeterministicMemoryCoordinator::new(128 * 1024 * 1024, BTreeMap::new()).unwrap(),
+        );
+        let memory: Arc<dyn MemoryCoordinator> = coordinator.clone();
+        let lease = reserve_blocking(
+            Arc::clone(&memory),
+            &ReservationRequest::new(
+                ConsumerKey::new("json-row-target-input", MemoryClass::Source).unwrap(),
+                u64::try_from(input.len()).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let accounted = AccountedBytes::new(bytes::Bytes::copy_from_slice(input), lease).unwrap();
+        let request = PhysicalDecodeRequest {
+            unit: DecodeUnitPlan {
+                unit_id: "ndjson-row-target".to_owned(),
+                ordinal: 0,
+                extent: None,
+                estimated_working_set_bytes: 1024 * 1024,
+                independently_retryable: true,
+            },
+            resource_id: ResourceId::new("events.row_target").unwrap(),
+            partition_id: PartitionId::new("stream-0001").unwrap(),
+            batch_id_prefix: "events-row-target".to_owned(),
+            schema: cdf_runtime::DecodeSchemaPlan::verified_physical(Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, true),
+            ]))),
+            source_position: None,
+            projection: None,
+            predicates: Vec::new(),
+            target_batch_rows: 1,
+            target_batch_bytes: 16 * 1024 * 1024,
+            memory,
+            cancellation: cdf_runtime::RunCancellation::default(),
+        };
+        let (batch, decoded) = futures_executor::block_on(async move {
+            let input: AccountedByteStream =
+                Box::pin(stream::once(async { Ok(accounted) }).chain(stream::pending()));
+            let mut decoded = decode_ndjson_stream(input, request, DEFAULT_MAXIMUM_RECORD_BYTES)
+                .await
+                .unwrap();
+            let batch = decoded
+                .try_next()
+                .now_or_never()
+                .expect("row target did not flush before the unbounded source requested more data")
+                .unwrap()
+                .unwrap();
+            (batch, decoded)
+        });
+        assert_eq!(batch.batch().header.row_count, 1);
+        drop(batch);
+        drop(decoded);
         assert_eq!(coordinator.snapshot().current_bytes, 0);
     }
 

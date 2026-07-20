@@ -1,21 +1,11 @@
-use cdf_kernel::Result;
-use cdf_runtime::{ExecutionServices, ReadOptions};
+use cdf_kernel::{Result, SourcePosition};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::protocol::{
-    ProtocolState, ProtocolStreamRead, StreamIdentity, foreign_state, json_lines, malformed_field,
-    object_message, optional_array_strings, optional_string, records_to_stream_reads,
+    malformed_field, object_message, optional_array_strings, optional_string,
     required_array_strings, required_object, required_string,
 };
-
-#[derive(Clone, Debug)]
-pub struct SingerRead {
-    pub messages: Vec<SingerMessage>,
-    pub schemas: Vec<SingerSchema>,
-    pub streams: Vec<ProtocolStreamRead>,
-    pub states: Vec<ProtocolState>,
-}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum SingerMessage {
@@ -48,61 +38,30 @@ pub struct SingerState {
     pub raw: Value,
 }
 
+impl SingerState {
+    /// Converts the protocol checkpoint into CDF's opaque, hash-addressed position.
+    pub fn source_position(&self) -> Result<SourcePosition> {
+        crate::protocol::foreign_state("singer", &self.value)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SingerOther {
     pub message_type: String,
     pub raw: Value,
 }
 
-pub fn parse_singer_ndjson(bytes: &[u8]) -> Result<Vec<SingerMessage>> {
-    json_lines(bytes, "Singer")?
-        .into_iter()
-        .map(|(line, value)| parse_singer_message(line, value))
-        .collect()
-}
-
-pub fn read_singer_ndjson_bytes(
-    bytes: &[u8],
-    options: &ReadOptions,
-    execution: &ExecutionServices,
-) -> Result<SingerRead> {
-    let messages = parse_singer_ndjson(bytes)?;
-    let records = messages.iter().filter_map(|message| match message {
-        SingerMessage::Record(record) => Some((
-            StreamIdentity::singer(record.stream.clone()),
-            record.record.clone(),
-        )),
-        _ => None,
-    });
-    let streams = records_to_stream_reads(records, options, execution)?;
-    let schemas = messages
-        .iter()
-        .filter_map(|message| match message {
-            SingerMessage::Schema(schema) => Some(schema.clone()),
-            _ => None,
-        })
-        .collect();
-    let states = messages
-        .iter()
-        .filter_map(|message| match message {
-            SingerMessage::State(state) => Some(state),
-            _ => None,
-        })
-        .map(|state| {
-            Ok(ProtocolState {
-                kind: "state".to_owned(),
-                stream: None,
-                position: foreign_state("singer", &state.value)?,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    Ok(SingerRead {
-        messages,
-        schemas,
-        streams,
-        states,
-    })
+/// Decodes exactly one Singer NDJSON message without collecting a foreign stream.
+pub fn decode_singer_message(line: usize, bytes: &[u8]) -> Result<Option<SingerMessage>> {
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return Ok(None);
+    }
+    let value = serde_json::from_slice(bytes).map_err(|error| {
+        cdf_kernel::CdfError::data(format!(
+            "Singer message line {line} is not valid JSON: {error}"
+        ))
+    })?;
+    parse_singer_message(line, value).map(Some)
 }
 
 fn parse_singer_message(line: usize, value: Value) -> Result<SingerMessage> {

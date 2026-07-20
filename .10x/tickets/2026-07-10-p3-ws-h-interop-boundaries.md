@@ -14,7 +14,7 @@ Measure and document Python PyCapsule/C Data Interface, subprocess Arrow IPC fra
 
 - `.10x/tickets/done/2026-07-11-p3-h1-interop-measurement-copy-proof.md`
 - `.10x/tickets/done/2026-07-11-p3-h2-python-incremental-arrow-boundary.md`
-- `.10x/tickets/2026-07-11-p3-h3-subprocess-stream-supervision.md`
+- `.10x/tickets/done/2026-07-11-p3-h3-subprocess-stream-supervision.md`
 - `.10x/tickets/2026-07-11-p3-h4-wasm-cost-interface-model.md`
 - `.10x/tickets/2026-07-11-p3-h5-interop-envelope-closeout.md`
 
@@ -39,3 +39,4 @@ H2 is done. Remaining closure depends on H3, H4, and H5; no Wasmtime implementat
 ## Journal
 
 - 2026-07-19 — H2 closed after real GIL/free-threaded and PyArrow matrices, constant-memory/backpressure evidence, neutral `ForeignProducer` production integration, explicit runtime-resolved lane admission, and a final independent pass. H3/H4/H5 remain the active children; H5 owns the calibrated native-memory/copy/release envelope rather than H2 overstating it.
+- 2026-07-18 — H3 closed after incremental Arrow IPC/NDJSON/Singer/Airbyte production paths, cancellation-aware bounded supervision, process-tree cleanup, explicit Linux child-memory fencing, protocol-state preservation, release envelopes, a full adversarial repair pass, and workspace-wide static/fast checks. H4 and H5 remain; H5 owns exact copy accounting, aggregate process RSS/cgroup evidence, and the residual control-event retention law.

@@ -3,7 +3,7 @@ use super::*;
 use std::{
     collections::BTreeMap,
     fs::{self, File},
-    io::Write,
+    io::{BufWriter, Write},
     sync::Arc,
     time::Duration,
 };
@@ -15,9 +15,7 @@ use cdf_foreign_stream::{
     ForeignControlKind, ForeignProducer, ForeignStreamEvent, ForeignStreamOpenRequest,
     ForeignTerminalStatus, ForeignTransferMode,
 };
-use cdf_kernel::{
-    ErrorKind, ForeignState, PartitionId, ResourceId, ScopeKey, SegmentId, SourcePosition,
-};
+use cdf_kernel::{ErrorKind, ForeignState, PartitionId, ResourceId, SegmentId, SourcePosition};
 use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
 use cdf_runtime::{DecodeSchemaPlan, ReadOptions};
 use futures_util::StreamExt;
@@ -35,111 +33,25 @@ fn memory() -> Arc<dyn MemoryCoordinator> {
     Arc::new(DeterministicMemoryCoordinator::new(256 * 1024 * 1024, BTreeMap::new()).unwrap())
 }
 
-fn execution() -> cdf_runtime::ExecutionServices {
-    static SERVICES: std::sync::OnceLock<cdf_runtime::ExecutionServices> =
-        std::sync::OnceLock::new();
-    SERVICES
-        .get_or_init(|| {
-            cdf_runtime::ExecutionServices::new(Arc::new(TestIoHost::new().unwrap())).unwrap()
-        })
-        .clone()
-}
-
-struct TestIoHost {
-    runtime: tokio::runtime::Runtime,
-    memory: Arc<dyn MemoryCoordinator>,
-    spill: Arc<dyn cdf_runtime::SpillBudgetCoordinator>,
-}
-
-impl TestIoHost {
-    fn new() -> cdf_kernel::Result<Self> {
-        Ok(Self {
-            runtime: tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .build()
-                .map_err(|error| cdf_kernel::CdfError::internal(error.to_string()))?,
-            memory: memory(),
-            spill: Arc::new(cdf_runtime::FixedSpillBudget::new(256 * 1024 * 1024)?),
-        })
-    }
-}
-
-impl cdf_runtime::ExecutionHost for TestIoHost {
-    fn capabilities(&self) -> cdf_runtime::ExecutionHostCapabilities {
-        cdf_runtime::ExecutionHostCapabilities {
-            logical_cpu_slots: 2,
-            io_workers: 2,
-            blocking_lanes: Vec::new(),
-        }
-    }
-
-    fn memory(&self) -> Arc<dyn MemoryCoordinator> {
-        Arc::clone(&self.memory)
-    }
-
-    fn spill(&self) -> Arc<dyn cdf_runtime::SpillBudgetCoordinator> {
-        Arc::clone(&self.spill)
-    }
-
-    fn open_scope(
-        &self,
-        _run_id: &str,
-    ) -> cdf_kernel::Result<Box<dyn cdf_runtime::ExecutionTaskScope>> {
-        Err(cdf_kernel::CdfError::internal(
-            "subprocess protocol test does not open task scopes",
-        ))
-    }
-
-    fn run_io_blocking(
-        &self,
-        task: cdf_runtime::IoValueTask,
-    ) -> cdf_kernel::Result<cdf_runtime::IoValue> {
-        self.runtime.block_on(task)
-    }
-
-    fn delay(
-        &self,
-        duration: Duration,
-        cancellation: cdf_runtime::RunCancellation,
-    ) -> cdf_kernel::BoxFuture<'static, cdf_kernel::Result<()>> {
-        Box::pin(async move {
-            cancellation.check()?;
-            tokio::time::sleep(duration).await;
-            cancellation.check()
-        })
-    }
-
-    fn monotonic_now(&self) -> Duration {
-        Duration::ZERO
-    }
-
-    fn unix_now(&self) -> Duration {
-        Duration::ZERO
-    }
-
-    fn entropy_u64(&self) -> u64 {
-        0
-    }
-
-    fn ensure_blocking_lanes(
-        &self,
-        _lanes: &[cdf_runtime::BlockingLaneSpec],
-    ) -> cdf_kernel::Result<()> {
-        Ok(())
-    }
-
-    fn run_blocking_value(
-        &self,
-        _lane: &str,
-        task: cdf_runtime::BlockingValueTask,
-    ) -> cdf_kernel::Result<cdf_runtime::IoValue> {
-        task()
-    }
-}
-
 fn shell(args: impl IntoIterator<Item = impl Into<String>>) -> CommandSpec {
     CommandSpec::new("/bin/sh").with_args(args)
+}
+
+async fn collect_subprocess_events(producer: SubprocessProducer) -> Vec<ForeignStreamEvent> {
+    let mut opened = producer
+        .open(ForeignStreamOpenRequest {
+            resource_id: ResourceId::new("orders").unwrap(),
+            partition_id: PartitionId::new("p0").unwrap(),
+            cancellation: Default::default(),
+        })
+        .await
+        .unwrap();
+    let mut events = Vec::new();
+    while let Some(event) = opened.events.next().await {
+        events.push(event.unwrap());
+    }
+    opened.termination.join().await.unwrap();
+    events
 }
 
 fn ndjson(values: &[Value]) -> Vec<u8> {
@@ -220,24 +132,46 @@ async fn ndjson_stdout_adapter_captures_stderr_and_packages_output() {
         ndjson_path.to_str().unwrap(),
     ]);
 
-    let output = run_bounded_stdout_adapter(
-        &command,
-        StdoutFormat::Ndjson,
-        &read_options(),
-        &SupervisionOptions::default(),
-        memory(),
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, true),
+        Field::new("name", DataType::Utf8, true),
+    ]));
+    let events = collect_subprocess_events(
+        SubprocessProducer::new(
+            command,
+            SubprocessProtocol::Ndjson,
+            read_options(),
+            DecodeSchemaPlan::fixed_admission(schema),
+            SupervisionOptions::default(),
+            memory(),
+        )
+        .unwrap(),
     )
-    .await
-    .unwrap();
-
-    assert_eq!(output.stderr.lines(), vec!["fetch trace"]);
-    assert_eq!(output.read.batches[0].header.row_count, 1);
+    .await;
+    let mut batches = Vec::new();
+    let mut diagnostics = Vec::new();
+    let mut terminal = None;
+    for event in events {
+        match event {
+            ForeignStreamEvent::Outcome(outcome) => batches.push(outcome.batch),
+            ForeignStreamEvent::Control(control) => {
+                if let ForeignControlKind::Diagnostic { message, .. } = control.kind {
+                    diagnostics.push(message);
+                }
+            }
+            ForeignStreamEvent::Terminal(status) => terminal = Some(status),
+        }
+    }
+    assert_eq!(diagnostics, vec!["fetch trace"]);
+    assert!(matches!(
+        terminal,
+        Some(ForeignTerminalStatus::Succeeded { .. })
+    ));
+    assert_eq!(batches[0].header.row_count, 1);
 
     let package =
         cdf_package::PackageBuilder::create(temp.path().join("package"), "pkg-subprocess").unwrap();
-    let batches = output
-        .read
-        .batches
+    let batches = batches
         .iter()
         .map(|batch| batch.record_batch().unwrap().clone())
         .collect::<Vec<_>>();
@@ -250,47 +184,6 @@ async fn ndjson_stdout_adapter_captures_stderr_and_packages_output() {
         .unwrap()
         .verify()
         .unwrap();
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn arrow_ipc_stdout_adapter_reads_kernel_batches() {
-    let temp = tempfile::tempdir().unwrap();
-    let ipc_path = temp.path().join("orders.arrow");
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("name", DataType::Utf8, true),
-    ]));
-    let id: ArrayRef = Arc::new(Int64Array::from(vec![1, 2]));
-    let name: ArrayRef = Arc::new(StringArray::from(vec![Some("ada"), Some("grace")]));
-    let batch = RecordBatch::try_new(schema.clone(), vec![id, name]).unwrap();
-    {
-        let mut file = File::create(&ipc_path).unwrap();
-        let mut writer = StreamWriter::try_new(&mut file, schema.as_ref()).unwrap();
-        writer.write(&batch).unwrap();
-        writer.finish().unwrap();
-        file.flush().unwrap();
-    }
-    let command = CommandSpec::new("cat").with_args([ipc_path.to_str().unwrap()]);
-
-    let output = run_bounded_stdout_adapter(
-        &command,
-        StdoutFormat::ArrowIpc,
-        &read_options(),
-        &SupervisionOptions::default(),
-        memory(),
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(output.read.batches.len(), 1);
-    assert_eq!(
-        output.read.batches[0]
-            .record_batch()
-            .unwrap()
-            .schema()
-            .as_ref(),
-        schema.as_ref()
-    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -320,7 +213,7 @@ async fn arrow_ipc_stdout_adapter_streams_unknown_length_without_executor_deadlo
 
     let producer = SubprocessProducer::new(
         command,
-        StdoutFormat::ArrowIpc,
+        SubprocessProtocol::ArrowIpc,
         read_options(),
         DecodeSchemaPlan::fixed_admission(Arc::clone(&schema)),
         SupervisionOptions {
@@ -381,7 +274,7 @@ async fn ndjson_stdout_adapter_streams_with_compiled_schema_without_reserving_st
 
     let producer = SubprocessProducer::new(
         command,
-        StdoutFormat::Ndjson,
+        SubprocessProtocol::Ndjson,
         read_options(),
         DecodeSchemaPlan::fixed_admission(schema),
         SupervisionOptions {
@@ -480,7 +373,7 @@ async fn nonzero_exit_after_data_emits_a_failed_terminal_and_cannot_gate() {
             "cdf-test",
             ipc_path.to_str().unwrap(),
         ]),
-        StdoutFormat::ArrowIpc,
+        SubprocessProtocol::ArrowIpc,
         read_options(),
         DecodeSchemaPlan::fixed_admission(schema),
         SupervisionOptions::default(),
@@ -521,7 +414,7 @@ async fn cancellation_before_first_frame_kills_descendants_and_joins() {
             "cdf-test",
             descendant_pid.to_str().unwrap(),
         ]),
-        StdoutFormat::Ndjson,
+        SubprocessProtocol::Ndjson,
         read_options(),
         DecodeSchemaPlan::fixed_admission(schema),
         SupervisionOptions {
@@ -549,10 +442,13 @@ async fn cancellation_before_first_frame_kills_descendants_and_joins() {
         }
         next.as_mut().await.unwrap().unwrap()
     };
-    assert!(matches!(
-        terminal,
-        ForeignStreamEvent::Terminal(ForeignTerminalStatus::Cancelled)
-    ));
+    assert!(
+        matches!(
+            terminal,
+            ForeignStreamEvent::Terminal(ForeignTerminalStatus::Cancelled)
+        ),
+        "{terminal:?}"
+    );
     drop(opened.events);
     termination.join().await.unwrap();
 
@@ -577,7 +473,7 @@ async fn dropping_a_stream_cancels_the_child_and_join_releases_all_leases() {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
     let producer = SubprocessProducer::new(
         shell(["-c", "printf '{\"id\":1}\\n'; sleep 30"]),
-        StdoutFormat::Ndjson,
+        SubprocessProtocol::Ndjson,
         read_options().with_batch_size(1).unwrap(),
         DecodeSchemaPlan::fixed_admission(schema),
         SupervisionOptions {
@@ -598,7 +494,11 @@ async fn dropping_a_stream_cancels_the_child_and_join_releases_all_leases() {
         .unwrap();
     let termination = opened.termination.clone();
     let mut events = opened.events;
-    let event = events.next().await.unwrap().unwrap();
+    let event = tokio::time::timeout(Duration::from_secs(2), events.next())
+        .await
+        .expect("NDJSON batch waited for child EOF instead of the configured row boundary")
+        .unwrap()
+        .unwrap();
     assert!(matches!(event, ForeignStreamEvent::Outcome(_)));
     drop(event);
     drop(events);
@@ -610,43 +510,125 @@ async fn dropping_a_stream_cancels_the_child_and_join_releases_all_leases() {
     assert_eq!(coordinator.snapshot().current_bytes, 0);
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
-async fn nonzero_exit_maps_to_transient_with_stderr() {
-    let command = shell(["-c", "printf 'adapter failed\\n' >&2; exit 7"]);
-    let error = run_bounded_stdout_adapter(
-        &command,
-        StdoutFormat::Ndjson,
-        &read_options(),
-        &SupervisionOptions::default(),
-        memory(),
+async fn cancel_and_join_does_not_require_draining_a_full_stdout_channel() {
+    let coordinator =
+        Arc::new(DeterministicMemoryCoordinator::new(96 * 1024 * 1024, BTreeMap::new()).unwrap());
+    let admitted: Arc<dyn MemoryCoordinator> = coordinator.clone();
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+    let producer = SubprocessProducer::new(
+        shell([
+            "-c",
+            "i=0; while [ \"$i\" -lt 100000 ]; do printf '{\"id\":%s}\\n' \"$i\"; i=$((i + 1)); done; sleep 30",
+        ]),
+        SubprocessProtocol::Ndjson,
+        read_options().with_batch_size(1).unwrap(),
+        DecodeSchemaPlan::fixed_admission(schema),
+        SupervisionOptions {
+            termination_grace: Duration::from_millis(50),
+            maximum_stream_chunk_bytes: 64,
+            ..SupervisionOptions::default()
+        },
+        admitted,
+    )
+    .unwrap();
+    let mut opened = producer
+        .open(ForeignStreamOpenRequest {
+            resource_id: ResourceId::new("orders").unwrap(),
+            partition_id: PartitionId::new("p0").unwrap(),
+            cancellation: Default::default(),
+        })
+        .await
+        .unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(2), opened.events.next())
+        .await
+        .expect("subprocess did not publish its first row")
+        .unwrap()
+        .unwrap();
+    assert!(matches!(first, ForeignStreamEvent::Outcome(_)));
+    drop(first);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        opened.termination.terminate_and_join(),
     )
     .await
-    .unwrap_err();
+    .expect("cancel-and-join blocked behind undrained stdout")
+    .unwrap();
+    drop(opened.events);
+    assert_eq!(coordinator.snapshot().current_bytes, 0);
+}
 
+#[tokio::test(flavor = "current_thread")]
+async fn stalled_diagnostic_reader_is_bounded_and_aborted() {
+    let task = tokio::spawn(async {
+        std::future::pending::<cdf_kernel::Result<crate::runner::DiagnosticCapture>>().await
+    });
+    let error = tokio::time::timeout(
+        Duration::from_secs(1),
+        crate::runner::join_diagnostic_reader_bounded(task, Duration::from_millis(10)),
+    )
+    .await
+    .expect("diagnostic join exceeded its cleanup boundary")
+    .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Transient);
-    assert!(error.message.contains("exit code 7"));
-    assert!(error.message.contains("adapter failed"));
+    assert!(error.message.contains("stderr reader did not terminate"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn nonzero_exit_maps_to_transient_with_stderr() {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+    let events = collect_subprocess_events(
+        SubprocessProducer::new(
+            shell(["-c", "printf 'adapter failed\\n' >&2; exit 7"]),
+            SubprocessProtocol::Ndjson,
+            read_options(),
+            DecodeSchemaPlan::fixed_admission(schema),
+            SupervisionOptions::default(),
+            memory(),
+        )
+        .unwrap(),
+    )
+    .await;
+    let terminal = events.last().unwrap();
+    let ForeignStreamEvent::Terminal(ForeignTerminalStatus::Failed { retryable, message }) =
+        terminal
+    else {
+        panic!("expected a failed terminal, got {terminal:?}");
+    };
+    assert!(*retryable);
+    assert!(message.contains("exit code 7"));
+    assert!(message.contains("adapter failed"));
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn timeout_maps_to_transient() {
-    let command = shell(["-c", "sleep 2"]);
-    let error = run_bounded_stdout_adapter(
-        &command,
-        StdoutFormat::Ndjson,
-        &read_options(),
-        &SupervisionOptions {
-            timeout: Some(Duration::from_millis(10)),
-            stderr_line_limit: DEFAULT_STDERR_LINE_LIMIT,
-            ..SupervisionOptions::default()
-        },
-        memory(),
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+    let events = collect_subprocess_events(
+        SubprocessProducer::new(
+            shell(["-c", "sleep 2"]),
+            SubprocessProtocol::Ndjson,
+            read_options(),
+            DecodeSchemaPlan::fixed_admission(schema),
+            SupervisionOptions {
+                timeout: Some(Duration::from_millis(10)),
+                stderr_line_limit: DEFAULT_STDERR_LINE_LIMIT,
+                ..SupervisionOptions::default()
+            },
+            memory(),
+        )
+        .unwrap(),
     )
-    .await
-    .unwrap_err();
-
-    assert_eq!(error.kind, ErrorKind::Transient);
-    assert!(error.message.contains("timed out"));
+    .await;
+    let ForeignStreamEvent::Terminal(ForeignTerminalStatus::Failed { retryable, message }) =
+        events.last().unwrap()
+    else {
+        panic!("expected a failed terminal");
+    };
+    assert!(*retryable);
+    assert!(message.contains("timed out"));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -695,6 +677,114 @@ async fn command_supervisor_bounds_output_and_observes_cancellation() {
     .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Internal);
     assert!(error.message.contains("cancelled"));
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "current_thread")]
+async fn inherited_child_address_space_limit_is_declared_and_enforced() {
+    let maximum = 64_u64 * 1024 * 1024 * 1024;
+    let expected = effective_child_address_space_limit(
+        maximum,
+        rustix::process::getrlimit(rustix::process::Resource::As),
+    );
+    let supervision = SupervisionOptions {
+        maximum_child_address_space_bytes: Some(maximum),
+        maximum_stdout_bytes: 128,
+        ..SupervisionOptions::default()
+    };
+    let output = run_bounded_command(
+        shell(["-c", "ulimit -v"]),
+        supervision.clone(),
+        cdf_runtime::RunCancellation::default(),
+        memory(),
+    )
+    .await
+    .unwrap();
+    let reported_kib = std::str::from_utf8(output.stdout.as_bytes())
+        .unwrap()
+        .trim()
+        .parse::<u64>()
+        .unwrap();
+    assert_eq!(reported_kib, expected / 1024);
+
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+    let producer = SubprocessProducer::new(
+        shell(["-c", "printf '{\"id\":1}\\n'"]),
+        SubprocessProtocol::Ndjson,
+        read_options(),
+        DecodeSchemaPlan::fixed_admission(schema),
+        supervision,
+        memory(),
+    )
+    .unwrap();
+    assert_eq!(
+        producer.descriptor().memory.child_process_bytes,
+        Some(maximum)
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn child_address_space_limit_never_raises_an_inherited_soft_limit() {
+    assert_eq!(
+        effective_child_address_space_limit(
+            2 * 1024 * 1024 * 1024,
+            rustix::process::Rlimit {
+                current: Some(512 * 1024 * 1024),
+                maximum: None,
+            },
+        ),
+        512 * 1024 * 1024
+    );
+    assert_eq!(
+        effective_child_address_space_limit(
+            2 * 1024 * 1024 * 1024,
+            rustix::process::Rlimit {
+                current: None,
+                maximum: Some(1024 * 1024 * 1024),
+            },
+        ),
+        1024 * 1024 * 1024
+    );
+}
+
+#[test]
+fn child_address_space_limit_rejects_invalid_or_unsupported_authority() {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+    for invalid in [0, u64::MAX] {
+        let error = SubprocessProducer::new(
+            shell(["-c", "printf '{\"id\":1}\\n'"]),
+            SubprocessProtocol::Ndjson,
+            read_options(),
+            DecodeSchemaPlan::fixed_admission(Arc::clone(&schema)),
+            SupervisionOptions {
+                maximum_child_address_space_bytes: Some(invalid),
+                ..SupervisionOptions::default()
+            },
+            memory(),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error.kind, ErrorKind::Contract);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let error = SubprocessProducer::new(
+            shell(["-c", "printf '{\"id\":1}\\n'"]),
+            SubprocessProtocol::Ndjson,
+            read_options(),
+            DecodeSchemaPlan::fixed_admission(schema),
+            SupervisionOptions {
+                maximum_child_address_space_bytes: Some(64 * 1024 * 1024 * 1024),
+                ..SupervisionOptions::default()
+            },
+            memory(),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error.kind, ErrorKind::Contract);
+        assert!(error.message.contains("unsupported"));
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -820,394 +910,665 @@ async fn timeout_force_terminates_a_term_resistant_process_group() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn malformed_stdout_maps_to_data_with_stderr_context() {
-    let command = shell(["-c", "printf 'parser warning\\n' >&2; printf '{bad\\n'"]);
-    let error = run_bounded_stdout_adapter(
-        &command,
-        StdoutFormat::Ndjson,
-        &read_options(),
-        &SupervisionOptions::default(),
-        memory(),
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+    let events = collect_subprocess_events(
+        SubprocessProducer::new(
+            shell(["-c", "printf 'parser warning\\n' >&2; printf '{bad\\n'"]),
+            SubprocessProtocol::Ndjson,
+            read_options(),
+            DecodeSchemaPlan::fixed_admission(schema),
+            SupervisionOptions::default(),
+            memory(),
+        )
+        .unwrap(),
     )
-    .await
-    .unwrap_err();
-
-    assert_eq!(error.kind, ErrorKind::Data);
-    assert!(error.message.contains("parser warning"));
-    assert!(error.message.contains("malformed Ndjson"));
+    .await;
+    let ForeignStreamEvent::Terminal(ForeignTerminalStatus::Failed { retryable, message }) =
+        events.last().unwrap()
+    else {
+        panic!("expected a failed terminal");
+    };
+    assert!(!retryable);
+    assert!(message.contains("parser warning"), "{message}");
+    assert!(message.contains("decode NDJSON"), "{message}");
 }
 
-#[test]
-fn singer_protocol_parses_schema_record_state_and_batches_by_stream() {
+#[tokio::test(flavor = "current_thread")]
+async fn singer_protocol_streams_selected_rows_and_ordered_control_with_bounded_memory() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("singer.ndjson");
     let state_value = json!({
-        "bookmarks": {
-            "orders": {
-                "replication_key_value": "2026-07-06T00:00:00Z"
-            }
-        }
+        "bookmarks": {"orders": {"replication_key_value": "2026-07-06T00:00:00Z"}}
     });
-    let bytes = ndjson(&[
-        json!({
-            "type": "schema",
-            "stream": "orders",
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "id": { "type": "integer" },
-                    "status": { "type": "string" }
-                }
-            },
-            "key_properties": ["id"],
-            "bookmark_properties": ["updated_at"],
-            "tap_metadata": { "unknown": true }
-        }),
-        json!({
-            "type": "ReCoRd",
-            "stream": "orders",
-            "record": { "id": 1, "status": "open" },
-            "time_extracted": "2026-07-06T00:00:01Z",
-            "extra": { "retained": true }
-        }),
-        json!({
-            "type": "STATE",
-            "value": state_value
-        }),
-    ]);
-
-    let read = read_singer_ndjson_bytes(&bytes, &read_options(), &execution()).unwrap();
-
-    assert_eq!(read.schemas.len(), 1);
-    assert_eq!(read.schemas[0].raw["tap_metadata"]["unknown"], true);
-    assert_eq!(read.schemas[0].key_properties, vec!["id"]);
-    assert_eq!(read.schemas[0].bookmark_properties, vec!["updated_at"]);
-    assert_eq!(read.streams.len(), 1);
-    assert_eq!(read.streams[0].stream, StreamIdentity::singer("orders"));
-    assert_eq!(
-        read.streams[0].read.batches[0].header.batch_id.as_str(),
-        "orders-p0-orders-u00000000-b00000000"
-    );
-    assert_eq!(read.streams[0].read.batches[0].header.row_count, 1);
-    match &read.streams[0].read.descriptor.state_scope {
-        ScopeKey::Stream { name } => assert_eq!(name, "orders"),
-        other => panic!("expected stream scope, got {other:?}"),
-    }
-
-    assert_eq!(read.states.len(), 1);
-    let state = foreign_state(&read.states[0].position);
-    assert_eq!(state.protocol, "singer");
-    assert_eq!(
-        serde_json::from_slice::<Value>(&state.opaque_blob).unwrap(),
-        state_value
-    );
-    assert_eq!(state.blob_sha256, expected_hash(&state_value));
-}
-
-#[test]
-fn airbyte_protocol_parses_catalog_record_and_state_variants() {
-    let legacy_state = json!({
-        "type": "LEGACY",
-        "data": { "cursor": "old" }
+    let schema_message = json!({
+        "type": "SCHEMA",
+        "stream": "orders",
+        "schema": {"type": "object"},
+        "key_properties": ["id"],
+        "bookmark_properties": ["updated_at"],
+        "tap_metadata": {"unknown": true}
     });
-    let stream_state = json!({
-        "type": "STREAM",
-        "stream": {
-            "stream_descriptor": {
-                "namespace": "crm data",
-                "name": "users/new_v2"
-            },
-            "stream_state": { "cursor": 7 }
-        }
-    });
-    let global_state = json!({
-        "type": "GLOBAL",
-        "global": {
-            "shared_state": { "sync_id": "abc" },
-            "stream_states": []
-        }
-    });
-    let bytes = ndjson(&[
-        json!({
-            "type": "CATALOG",
-            "catalog": {
-                "streams": [{
-                    "name": "users/new_v2",
-                    "namespace": "crm data",
-                    "json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "id": { "type": "integer" },
-                            "email": { "type": "string" }
-                        }
-                    },
-                    "supported_sync_modes": ["full_refresh", "incremental"]
-                }]
-            },
-            "future_field": { "retained": true }
-        }),
-        json!({
-            "type": "RECORD",
-            "record": {
-                "namespace": "crm data",
-                "stream": "users/new_v2",
-                "data": { "id": 1, "email": "ada@example.com" },
-                "emitted_at": 1783296000000u64,
-                "unknown": "ok"
-            }
-        }),
-        json!({ "type": "STATE", "state": legacy_state }),
-        json!({ "type": "STATE", "state": stream_state }),
-        json!({ "type": "STATE", "state": global_state }),
-    ]);
-
-    let read = read_airbyte_ndjson_bytes(&bytes, &read_options(), &execution()).unwrap();
-
-    assert_eq!(read.catalogs.len(), 1);
-    assert_eq!(read.catalogs[0].raw["future_field"]["retained"], true);
-    assert_eq!(read.streams.len(), 1);
-    let users = StreamIdentity::airbyte(Some("crm data".to_owned()), "users/new_v2");
-    assert_eq!(read.streams[0].stream, users);
-    match &read.streams[0].read.descriptor.state_scope {
-        ScopeKey::Stream { name } => assert_eq!(name, "crm data.users/new_v2"),
-        other => panic!("expected stream scope, got {other:?}"),
-    }
-    assert_eq!(
-        read.streams[0].read.batches[0].header.batch_id.as_str(),
-        "orders-p0-crm-data-users-new_v2-u00000000-b00000000"
-    );
-    assert_eq!(read.streams[0].read.batches[0].header.row_count, 1);
-
-    assert_eq!(
-        read.states
-            .iter()
-            .map(|state| state.kind.as_str())
-            .collect::<Vec<_>>(),
-        vec!["legacy", "stream", "global"]
-    );
-    assert_eq!(read.states[1].stream, Some(users));
-    for (state, expected) in read
-        .states
-        .iter()
-        .zip([legacy_state, stream_state, global_state])
-    {
-        let position = foreign_state(&state.position);
-        assert_eq!(position.protocol, "airbyte");
-        assert_eq!(
-            serde_json::from_slice::<Value>(&position.opaque_blob).unwrap(),
-            expected
-        );
-        assert_eq!(position.blob_sha256, expected_hash(&expected));
-    }
-}
-
-#[test]
-fn malformed_protocol_messages_are_data_errors_without_raw_state() {
-    let singer =
-        parse_singer_ndjson(br#"{"type":"STATE","secret":"do-not-leak","token":"super-secret"}"#)
-            .unwrap_err();
-    assert_eq!(singer.kind, ErrorKind::Data);
-    assert!(singer.message.contains("Singer STATE"));
-    assert!(!singer.message.contains("super-secret"));
-
-    let airbyte = parse_airbyte_ndjson(
-        br#"{"type":"STATE","state":{"type":"STREAM","token":"super-secret"}}"#,
-    )
-    .unwrap_err();
-    assert_eq!(airbyte.kind, ErrorKind::Data);
-    assert!(airbyte.message.contains("Airbyte STATE"));
-    assert!(!airbyte.message.contains("super-secret"));
-
-    let malformed_record =
-        parse_airbyte_ndjson(br#"{"type":"RECORD","record":{"stream":"users","data":{"id":1}}}"#)
-            .unwrap_err();
-    assert_eq!(malformed_record.kind, ErrorKind::Data);
-    assert!(malformed_record.message.contains("emitted_at"));
-}
-
-#[test]
-fn protocol_parsers_validate_required_field_shapes_and_line_numbers() {
-    let singer_blank_stream =
-        parse_singer_ndjson(br#"{"type":"RECORD","stream":"  ","record":{"id":1}}"#).unwrap_err();
-    assert_eq!(singer_blank_stream.kind, ErrorKind::Data);
-    assert!(singer_blank_stream.message.contains("stream"));
-
-    let singer_record_object =
-        parse_singer_ndjson(br#"{"type":"RECORD","stream":"orders","record":[]}"#).unwrap_err();
-    assert_eq!(singer_record_object.kind, ErrorKind::Data);
-    assert!(singer_record_object.message.contains("record"));
-
-    let singer_schema_object = parse_singer_ndjson(
-        br#"{"type":"SCHEMA","stream":"orders","schema":"bad","key_properties":["id"]}"#,
-    )
-    .unwrap_err();
-    assert_eq!(singer_schema_object.kind, ErrorKind::Data);
-    assert!(singer_schema_object.message.contains("schema"));
-
-    let singer_key_properties = parse_singer_ndjson(
-        br#"{"type":"SCHEMA","stream":"orders","schema":{},"key_properties":[1]}"#,
-    )
-    .unwrap_err();
-    assert_eq!(singer_key_properties.kind, ErrorKind::Data);
-    assert!(singer_key_properties.message.contains("key_properties"));
-
-    let singer_bookmark_properties = parse_singer_ndjson(
-        br#"{"type":"SCHEMA","stream":"orders","schema":{},"key_properties":["id"],"bookmark_properties":[1]}"#,
-    )
-    .unwrap_err();
-    assert_eq!(singer_bookmark_properties.kind, ErrorKind::Data);
-    assert!(
-        singer_bookmark_properties
-            .message
-            .contains("bookmark_properties")
-    );
-
-    let line_number =
-        parse_singer_ndjson(b"\n{\"type\":\"RECORD\",\"stream\":\"orders\",\"record\":[]}\n")
-            .unwrap_err();
-    assert!(line_number.message.contains("line 2"));
-
-    let airbyte_catalog = parse_airbyte_ndjson(br#"{"type":"CATALOG","catalog":[]}"#).unwrap_err();
-    assert_eq!(airbyte_catalog.kind, ErrorKind::Data);
-    assert!(airbyte_catalog.message.contains("catalog"));
-
-    let airbyte_decimal_emitted_at = parse_airbyte_ndjson(
-        br#"{"type":"RECORD","record":{"stream":"users","data":{},"emitted_at":1.25}}"#,
-    )
-    .unwrap_err();
-    assert_eq!(airbyte_decimal_emitted_at.kind, ErrorKind::Data);
-    assert!(airbyte_decimal_emitted_at.message.contains("emitted_at"));
-
-    let airbyte_u64_emitted_at = parse_airbyte_ndjson(
-        br#"{"type":"RECORD","record":{"stream":"users","data":{},"emitted_at":18446744073709551615}}"#,
+    fs::write(
+        &input,
+        ndjson(&[
+            schema_message.clone(),
+            json!({"type":"RECORD","stream":"other","record":{"id":0,"status":"ignored"}}),
+            json!({"type":"RECORD","stream":"orders","record":{"id":1,"status":"open"}}),
+            json!({"type":"RECORD","stream":"orders","record":{"id":2,"status":"closed"}}),
+            json!({"type":"STATE","value":state_value}),
+            json!({"type":"ACTIVATE_VERSION","stream":"orders","version":7}),
+        ]),
     )
     .unwrap();
+    let coordinator =
+        Arc::new(DeterministicMemoryCoordinator::new(96 * 1024 * 1024, BTreeMap::new()).unwrap());
+    let admitted: Arc<dyn MemoryCoordinator> = coordinator.clone();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, true),
+        Field::new("status", DataType::Utf8, true),
+    ]));
+    let events = collect_subprocess_events(
+        SubprocessProducer::new(
+            CommandSpec::new("cat").with_args([input.to_str().unwrap()]),
+            SubprocessProtocol::Singer {
+                stream: StreamIdentity::singer("orders"),
+            },
+            read_options().with_batch_size(1).unwrap(),
+            DecodeSchemaPlan::fixed_admission(schema),
+            SupervisionOptions {
+                maximum_stream_chunk_bytes: 7,
+                maximum_protocol_line_bytes: 4096,
+                protocol_parser_scratch_bytes: 128 * 1024,
+                protocol_row_window_bytes: 64,
+                ..SupervisionOptions::default()
+            },
+            admitted,
+        )
+        .unwrap(),
+    )
+    .await;
+
+    let mut sequences = Vec::new();
+    let mut rows = 0_u64;
+    let mut metadata = Vec::new();
+    let mut state_position = None;
+    let mut terminal = None;
+    for event in events {
+        match event {
+            ForeignStreamEvent::Outcome(outcome) => {
+                sequences.push(outcome.sequence);
+                rows += outcome.batch.header.row_count;
+                assert_eq!(outcome.transfer_mode, ForeignTransferMode::RowCompat);
+            }
+            ForeignStreamEvent::Control(control) => {
+                sequences.push(control.sequence);
+                match control.kind {
+                    ForeignControlKind::ProtocolMetadata {
+                        protocol,
+                        message_type,
+                        payload_sha256,
+                    } => metadata.push((protocol, message_type, payload_sha256)),
+                    ForeignControlKind::ForeignState { position } => {
+                        state_position = Some(position)
+                    }
+                    other => panic!("unexpected Singer control: {other:?}"),
+                }
+            }
+            ForeignStreamEvent::Terminal(status) => terminal = Some(status),
+        }
+    }
+    assert_eq!(rows, 2);
+    assert_eq!(sequences, (1..=sequences.len() as u64).collect::<Vec<_>>());
+    assert_eq!(metadata[0].0, "singer");
+    assert_eq!(metadata[0].1, "schema");
+    assert_eq!(metadata[0].2, expected_hash(&schema_message));
+    assert_eq!(metadata[1].1, "activate_version");
+    let state_position = state_position.unwrap();
+    assert_eq!(
+        foreign_state(&state_position).blob_sha256,
+        expected_hash(&state_value)
+    );
     assert!(matches!(
-        airbyte_u64_emitted_at[0],
-        AirbyteMessage::Record(_)
+        terminal,
+        Some(ForeignTerminalStatus::Succeeded {
+            final_position: Some(ref final_position)
+        }) if final_position == &state_position
     ));
+    drop(terminal);
+    assert_eq!(coordinator.snapshot().current_bytes, 0);
 }
 
 #[test]
-fn airbyte_legacy_state_distinguishes_explicit_and_implicit_forms() {
-    let implicit = parse_airbyte_ndjson(br#"{"type":"STATE","state":{"cursor":"old"}}"#).unwrap();
+fn protocol_decoders_preserve_metadata_and_state_variants_without_collecting_streams() {
+    let singer = decode_singer_message(
+        7,
+        br#"{"type":"schema","stream":"orders","schema":{},"key_properties":["id"],"bookmark_properties":["updated_at"],"future":true}"#,
+    )
+    .unwrap()
+    .unwrap();
+    let SingerMessage::Schema(singer) = singer else {
+        panic!("expected Singer schema");
+    };
+    assert_eq!(singer.key_properties, vec!["id"]);
+    assert_eq!(singer.bookmark_properties, vec!["updated_at"]);
+    assert_eq!(singer.raw["future"], true);
+
+    let catalog = decode_airbyte_message(
+        8,
+        br#"{"type":"CATALOG","catalog":{"streams":[]},"future":{"retained":true}}"#,
+    )
+    .unwrap()
+    .unwrap();
+    let AirbyteMessage::Catalog(catalog) = catalog else {
+        panic!("expected Airbyte catalog");
+    };
+    assert_eq!(catalog.raw["future"]["retained"], true);
+
+    let legacy = decode_airbyte_message(9, br#"{"type":"STATE","state":{"cursor":"old"}}"#)
+        .unwrap()
+        .unwrap();
     assert!(matches!(
-        implicit[0],
+        legacy,
         AirbyteMessage::State(AirbyteState {
             kind: AirbyteStateKind::Legacy,
             ..
         })
     ));
+    let stream = decode_airbyte_message(
+        10,
+        br#"{"type":"STATE","state":{"type":"STREAM","stream":{"stream_descriptor":{"namespace":"crm","name":"users"}},"stream_state":{"cursor":7}}}"#,
+    )
+    .unwrap()
+    .unwrap();
+    let AirbyteMessage::State(stream) = stream else {
+        panic!("expected Airbyte stream state");
+    };
+    assert_eq!(stream.kind, AirbyteStateKind::Stream);
+    assert_eq!(
+        stream.stream,
+        Some(StreamIdentity::airbyte(Some("crm".to_owned()), "users"))
+    );
+    let global = decode_airbyte_message(
+        11,
+        br#"{"type":"STATE","state":{"type":"GLOBAL","global":{"shared_state":{},"stream_states":[]}}}"#,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(matches!(
+        global,
+        AirbyteMessage::State(AirbyteState {
+            kind: AirbyteStateKind::Global,
+            ..
+        })
+    ));
+}
 
-    let explicit_missing_data =
-        parse_airbyte_ndjson(br#"{"type":"STATE","state":{"type":"LEGACY"}}"#).unwrap_err();
-    assert_eq!(explicit_missing_data.kind, ErrorKind::Data);
-    assert!(explicit_missing_data.message.contains("state.data"));
+#[test]
+fn malformed_protocol_messages_are_data_errors_without_raw_state() {
+    let singer = decode_singer_message(
+        12,
+        br#"{"type":"STATE","secret":"do-not-leak","token":"super-secret"}"#,
+    )
+    .err()
+    .unwrap();
+    assert_eq!(singer.kind, ErrorKind::Data);
+    assert!(singer.message.contains("Singer STATE"));
+    assert!(singer.message.contains("line 12"));
+    assert!(!singer.message.contains("super-secret"));
+
+    let airbyte = decode_airbyte_message(
+        13,
+        br#"{"type":"STATE","state":{"type":"STREAM","token":"super-secret"}}"#,
+    )
+    .unwrap_err();
+    assert_eq!(airbyte.kind, ErrorKind::Data);
+    assert!(airbyte.message.contains("Airbyte STATE"));
+    assert!(airbyte.message.contains("line 13"));
+    assert!(!airbyte.message.contains("super-secret"));
+
+    let malformed_record = decode_airbyte_message(
+        14,
+        br#"{"type":"RECORD","record":{"stream":"users","data":{"id":1}}}"#,
+    )
+    .unwrap_err();
+    assert_eq!(malformed_record.kind, ErrorKind::Data);
+    assert!(malformed_record.message.contains("emitted_at"));
+}
+
+#[test]
+fn protocol_decoders_validate_required_field_shapes() {
+    for (line, bytes, field) in [
+        (
+            20,
+            br#"{"type":"RECORD","stream":"  ","record":{"id":1}}"#.as_slice(),
+            "stream",
+        ),
+        (
+            21,
+            br#"{"type":"RECORD","stream":"orders","record":[]}"#.as_slice(),
+            "record",
+        ),
+        (
+            22,
+            br#"{"type":"SCHEMA","stream":"orders","schema":"bad","key_properties":["id"]}"#
+                .as_slice(),
+            "schema",
+        ),
+        (
+            23,
+            br#"{"type":"SCHEMA","stream":"orders","schema":{},"key_properties":[1]}"#.as_slice(),
+            "key_properties",
+        ),
+    ] {
+        let error = decode_singer_message(line, bytes).unwrap_err();
+        assert!(error.message.contains(field));
+        assert!(error.message.contains(&format!("line {line}")));
+    }
+    let catalog = decode_airbyte_message(24, br#"{"type":"CATALOG","catalog":[]}"#).unwrap_err();
+    assert!(catalog.message.contains("catalog"));
+    let decimal = decode_airbyte_message(
+        25,
+        br#"{"type":"RECORD","record":{"stream":"users","data":{},"emitted_at":1.25}}"#,
+    )
+    .unwrap_err();
+    assert!(decimal.message.contains("emitted_at"));
+    let maximum = decode_airbyte_message(
+        26,
+        br#"{"type":"RECORD","record":{"stream":"users","data":{},"emitted_at":18446744073709551615}}"#,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(matches!(maximum, AirbyteMessage::Record(_)));
+    let missing_legacy =
+        decode_airbyte_message(27, br#"{"type":"STATE","state":{"type":"LEGACY"}}"#).unwrap_err();
+    assert!(missing_legacy.message.contains("state.data"));
 }
 
 #[test]
 fn protocol_state_hashes_are_deterministic() {
-    let singer_state = json!({
-        "z": 1,
-        "a": [true, false],
-        "m": {
-            "b": 2,
-            "a": 3
-        }
-    });
-    let singer_bytes = ndjson(&[json!({
-        "type": "STATE",
-        "value": singer_state
-    })]);
-    let first = read_singer_ndjson_bytes(&singer_bytes, &read_options(), &execution()).unwrap();
-    let second = read_singer_ndjson_bytes(&singer_bytes, &read_options(), &execution()).unwrap();
-    let first_state = foreign_state(&first.states[0].position);
-    let second_state = foreign_state(&second.states[0].position);
-    assert_eq!(first_state.blob_sha256, second_state.blob_sha256);
-    assert_eq!(first_state.blob_sha256, expected_hash(&singer_state));
+    let state = json!({"z":1,"a":[true,false],"m":{"b":2,"a":3}});
+    let first = decode_singer_message(
+        1,
+        br#"{"type":"STATE","value":{"z":1,"a":[true,false],"m":{"b":2,"a":3}}}"#,
+    )
+    .unwrap()
+    .unwrap();
+    let reordered = decode_singer_message(
+        1,
+        br#"{"type":"STATE","value":{"m":{"a":3,"b":2},"a":[true,false],"z":1}}"#,
+    )
+    .unwrap()
+    .unwrap();
+    let SingerMessage::State(first) = first else {
+        panic!("expected Singer state");
+    };
+    let SingerMessage::State(reordered) = reordered else {
+        panic!("expected Singer state");
+    };
+    let first = first.source_position().unwrap();
+    let reordered = reordered.source_position().unwrap();
+    assert_eq!(foreign_state(&first).blob_sha256, expected_hash(&state));
+    assert_eq!(first, reordered);
     assert_eq!(
-        foreign_state_blob(&first.states[0].position),
+        foreign_state_blob(&first),
         r#"{"a":[true,false],"m":{"a":3,"b":2},"z":1}"#
     );
-
-    let reordered_singer_bytes =
-        br#"{"type":"STATE","value":{"m":{"b":2,"a":3},"z":1,"a":[true,false]}}"#;
-    let reordered =
-        read_singer_ndjson_bytes(reordered_singer_bytes, &read_options(), &execution()).unwrap();
-    assert_eq!(
-        foreign_state(&reordered.states[0].position).blob_sha256,
-        first_state.blob_sha256
-    );
-
-    let airbyte_state = json!({
-        "type": "GLOBAL",
-        "global": {
-            "shared_state": { "cursor": "z" },
-            "stream_states": []
-        }
-    });
-    let airbyte_bytes = ndjson(&[json!({
-        "type": "STATE",
-        "state": airbyte_state
-    })]);
-    let first = read_airbyte_ndjson_bytes(&airbyte_bytes, &read_options(), &execution()).unwrap();
-    let second = read_airbyte_ndjson_bytes(&airbyte_bytes, &read_options(), &execution()).unwrap();
-    let first_state = foreign_state(&first.states[0].position);
-    let second_state = foreign_state(&second.states[0].position);
-    assert_eq!(first_state.blob_sha256, second_state.blob_sha256);
-    assert_eq!(first_state.blob_sha256, expected_hash(&airbyte_state));
 }
 
-#[test]
-fn protocol_batches_write_to_and_replay_from_package() {
+#[tokio::test(flavor = "current_thread")]
+async fn airbyte_protocol_streams_selected_rows_and_packages_for_replay() {
     let temp = tempfile::tempdir().unwrap();
-    let package_dir = temp.path().join("protocol-package");
-    let bytes = ndjson(&[
-        json!({
-            "type": "RECORD",
-            "record": {
-                "stream": "users",
-                "data": { "id": 1, "email": "ada@example.com" },
-                "emitted_at": 1783296000000u64
+    let input = temp.path().join("airbyte.ndjson");
+    let global_state = json!({
+        "type":"GLOBAL",
+        "global":{"shared_state":{"sync_id":"abc"},"stream_states":[]}
+    });
+    fs::write(
+        &input,
+        ndjson(&[
+            json!({"type":"CATALOG","catalog":{"streams":[]}}),
+            json!({"type":"RECORD","record":{"namespace":"crm","stream":"other","data":{"id":0,"email":"ignored"},"emitted_at":1}}),
+            json!({"type":"RECORD","record":{"namespace":"crm","stream":"users","data":{"id":1,"email":"ada@example.com"},"emitted_at":2}}),
+            json!({"type":"RECORD","record":{"namespace":"crm","stream":"users","data":{"id":2,"email":"grace@example.com"},"emitted_at":3}}),
+            json!({"type":"STATE","state":global_state}),
+        ]),
+    )
+    .unwrap();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, true),
+        Field::new("email", DataType::Utf8, true),
+    ]));
+    let events = collect_subprocess_events(
+        SubprocessProducer::new(
+            CommandSpec::new("cat").with_args([input.to_str().unwrap()]),
+            SubprocessProtocol::Airbyte {
+                stream: StreamIdentity::airbyte(Some("crm".to_owned()), "users"),
+            },
+            read_options().with_batch_size(1).unwrap(),
+            DecodeSchemaPlan::fixed_admission(schema),
+            SupervisionOptions {
+                maximum_stream_chunk_bytes: 11,
+                maximum_protocol_line_bytes: 4096,
+                protocol_parser_scratch_bytes: 128 * 1024,
+                protocol_row_window_bytes: 128,
+                ..SupervisionOptions::default()
+            },
+            memory(),
+        )
+        .unwrap(),
+    )
+    .await;
+    let mut batches = Vec::new();
+    let mut terminal = None;
+    for event in events {
+        match event {
+            ForeignStreamEvent::Outcome(outcome) => {
+                batches.push(outcome.batch.record_batch().unwrap().clone())
             }
-        }),
-        json!({
-            "type": "RECORD",
-            "record": {
-                "stream": "users",
-                "data": { "id": 2, "email": "grace@example.com" },
-                "emitted_at": 1783296001000u64
-            }
-        }),
-    ]);
-    let read = read_airbyte_ndjson_bytes(&bytes, &read_options(), &execution()).unwrap();
-
-    let package = cdf_package::PackageBuilder::create(&package_dir, "pkg-protocol").unwrap();
-    let mut package_row_ord_start = 0_u64;
-    for (index, stream) in read.streams.iter().enumerate() {
-        let batches = stream
-            .read
-            .batches
-            .iter()
-            .map(|batch| batch.record_batch().unwrap().clone())
-            .collect::<Vec<_>>();
-        let row_count = batches.iter().map(RecordBatch::num_rows).sum::<usize>() as u64;
-        let batches =
-            cdf_package_contract::append_package_row_ord(batches, package_row_ord_start).unwrap();
-        package
-            .write_segment(
-                SegmentId::new(format!("seg-protocol-{index}")).unwrap(),
-                package_row_ord_start,
-                &batches,
-            )
-            .unwrap();
-        package_row_ord_start += row_count;
+            ForeignStreamEvent::Terminal(status) => terminal = Some(status),
+            ForeignStreamEvent::Control(_) => {}
+        }
     }
-    package.finish().unwrap();
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+    let Some(ForeignTerminalStatus::Succeeded {
+        final_position: Some(position),
+    }) = terminal
+    else {
+        panic!("expected successful Airbyte terminal with state");
+    };
+    assert_eq!(
+        foreign_state(&position).blob_sha256,
+        expected_hash(&global_state)
+    );
 
+    let package_dir = temp.path().join("protocol-package");
+    let batches = cdf_package_contract::append_package_row_ord(batches, 0).unwrap();
+    let package = cdf_package::PackageBuilder::create(&package_dir, "pkg-protocol").unwrap();
+    package
+        .write_segment(SegmentId::new("seg-protocol-0").unwrap(), 0, &batches)
+        .unwrap();
+    package.finish().unwrap();
     let reader = cdf_package::PackageReader::open(&package_dir).unwrap();
     reader.verify().unwrap();
-    let replay = reader.replay_view().unwrap();
-    assert_eq!(replay.segments.len(), 1);
     let replayed = reader
         .read_segment(&SegmentId::new("seg-protocol-0").unwrap())
         .unwrap();
     assert_eq!(replayed.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn protocol_line_boundary_fails_closed_across_tiny_pipe_chunks() {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+    let events = collect_subprocess_events(
+        SubprocessProducer::new(
+            shell([
+                "-c",
+                "printf '%s\\n' '{\"type\":\"RECORD\",\"stream\":\"orders\",\"record\":{\"id\":123456789}}'",
+            ]),
+            SubprocessProtocol::Singer {
+                stream: StreamIdentity::singer("orders"),
+            },
+            read_options(),
+            DecodeSchemaPlan::fixed_admission(schema),
+            SupervisionOptions {
+                maximum_stream_chunk_bytes: 3,
+                maximum_protocol_line_bytes: 32,
+                protocol_parser_scratch_bytes: 1024,
+                protocol_row_window_bytes: 1024,
+                ..SupervisionOptions::default()
+            },
+            memory(),
+        )
+        .unwrap(),
+    )
+    .await;
+    let ForeignStreamEvent::Terminal(ForeignTerminalStatus::Failed { message, .. }) =
+        events.last().unwrap()
+    else {
+        panic!("expected oversized protocol line to fail");
+    };
+    assert!(message.contains("32-byte payload boundary"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn protocol_line_boundary_excludes_eof_lf_and_crlf_framing() {
+    const PREFIX: &[u8] = br#"{"type":"RECORD","stream":"orders","record":{"id":1,"pad":""#;
+    const SUFFIX: &[u8] = br#""}}"#;
+    const PAYLOAD_BYTES: usize = 256;
+
+    let mut payload = Vec::from(PREFIX);
+    payload.extend(std::iter::repeat_n(
+        b'x',
+        PAYLOAD_BYTES - PREFIX.len() - SUFFIX.len(),
+    ));
+    payload.extend_from_slice(SUFFIX);
+    assert_eq!(payload.len(), PAYLOAD_BYTES);
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, true),
+        Field::new("pad", DataType::Utf8, true),
+    ]));
+
+    for (name, terminator) in [
+        ("eof", &b""[..]),
+        ("lf", &b"\n"[..]),
+        ("crlf", &b"\r\n"[..]),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let input = temp.path().join(format!("singer-{name}.ndjson"));
+        let mut framed = payload.clone();
+        framed.extend_from_slice(terminator);
+        fs::write(&input, framed).unwrap();
+        let events = collect_subprocess_events(
+            SubprocessProducer::new(
+                CommandSpec::new("cat").with_args([input.to_str().unwrap()]),
+                SubprocessProtocol::Singer {
+                    stream: StreamIdentity::singer("orders"),
+                },
+                read_options(),
+                DecodeSchemaPlan::fixed_admission(Arc::clone(&schema)),
+                SupervisionOptions {
+                    maximum_stream_chunk_bytes: 3,
+                    maximum_protocol_line_bytes: PAYLOAD_BYTES as u64,
+                    protocol_parser_scratch_bytes: (PAYLOAD_BYTES as u64) * 32,
+                    protocol_row_window_bytes: 1024,
+                    ..SupervisionOptions::default()
+                },
+                memory(),
+            )
+            .unwrap(),
+        )
+        .await;
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ForeignStreamEvent::Outcome(outcome) if outcome.batch.header.row_count == 1
+        )));
+        assert!(matches!(
+            events.last(),
+            Some(ForeignStreamEvent::Terminal(
+                ForeignTerminalStatus::Succeeded { .. }
+            ))
+        ));
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("singer-too-long.ndjson");
+    let mut framed = payload;
+    framed.push(b'\n');
+    fs::write(&input, framed).unwrap();
+    let maximum = (PAYLOAD_BYTES - 1) as u64;
+    let events = collect_subprocess_events(
+        SubprocessProducer::new(
+            CommandSpec::new("cat").with_args([input.to_str().unwrap()]),
+            SubprocessProtocol::Singer {
+                stream: StreamIdentity::singer("orders"),
+            },
+            read_options(),
+            DecodeSchemaPlan::fixed_admission(schema),
+            SupervisionOptions {
+                maximum_stream_chunk_bytes: 3,
+                maximum_protocol_line_bytes: maximum,
+                protocol_parser_scratch_bytes: maximum * 32,
+                protocol_row_window_bytes: 1024,
+                ..SupervisionOptions::default()
+            },
+            memory(),
+        )
+        .unwrap(),
+    )
+    .await;
+    assert!(matches!(
+        events.last(),
+        Some(ForeignStreamEvent::Terminal(
+            ForeignTerminalStatus::Failed { message, .. }
+        )) if message.contains("255-byte payload boundary")
+    ));
+}
+
+#[test]
+fn protocol_parser_scratch_must_cover_preparse_dom_expansion() {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+    let error = SubprocessProducer::new(
+        shell(["-c", "printf ''"]),
+        SubprocessProtocol::Singer {
+            stream: StreamIdentity::singer("orders"),
+        },
+        read_options(),
+        DecodeSchemaPlan::fixed_admission(schema),
+        SupervisionOptions {
+            maximum_protocol_line_bytes: 1024,
+            protocol_parser_scratch_bytes: 32 * 1024 - 1,
+            ..SupervisionOptions::default()
+        },
+        memory(),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(error.kind, ErrorKind::Contract);
+    assert!(error.message.contains("32x"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "release performance envelope"]
+async fn subprocess_stream_release_envelope_reports_ipc_and_row_modes_separately() {
+    const ROWS: usize = 512 * 1024;
+    const BATCH_ROWS: usize = 64 * 1024;
+
+    async fn measure(
+        input: &std::path::Path,
+        protocol: SubprocessProtocol,
+        schema: Arc<Schema>,
+        source_bytes: u64,
+    ) -> (u64, u64, u64, u64, u64, String) {
+        let coordinator = Arc::new(
+            DeterministicMemoryCoordinator::new(512 * 1024 * 1024, BTreeMap::new()).unwrap(),
+        );
+        let admitted: Arc<dyn MemoryCoordinator> = coordinator.clone();
+        let producer = SubprocessProducer::new(
+            CommandSpec::new("cat").with_args([input.to_str().unwrap()]),
+            protocol,
+            read_options().with_batch_size(BATCH_ROWS).unwrap(),
+            DecodeSchemaPlan::fixed_admission(schema),
+            SupervisionOptions::default(),
+            admitted,
+        )
+        .unwrap();
+        let started = std::time::Instant::now();
+        let mut opened = producer
+            .open(ForeignStreamOpenRequest {
+                resource_id: ResourceId::new("orders").unwrap(),
+                partition_id: PartitionId::new("p0").unwrap(),
+                cancellation: Default::default(),
+            })
+            .await
+            .unwrap();
+        let mut rows = 0_u64;
+        let mut logical_bytes = 0_u64;
+        let mut batches = 0_u64;
+        let mut first_batch_ns = None;
+        let mut copy = None;
+        let mut terminal = None;
+        while let Some(event) = opened.events.next().await {
+            match event.unwrap() {
+                ForeignStreamEvent::Outcome(outcome) => {
+                    first_batch_ns.get_or_insert_with(|| {
+                        u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+                    });
+                    rows += outcome.batch.header.row_count;
+                    logical_bytes += outcome.batch.header.byte_count;
+                    batches += 1;
+                    copy.get_or_insert_with(|| format!("{:?}", outcome.copy));
+                }
+                ForeignStreamEvent::Control(_) => {}
+                ForeignStreamEvent::Terminal(status) => terminal = Some(status),
+            }
+        }
+        opened.termination.join().await.unwrap();
+        assert!(matches!(
+            terminal,
+            Some(ForeignTerminalStatus::Succeeded { .. })
+        ));
+        let elapsed_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        let peak = coordinator.snapshot().peak_bytes;
+        assert_eq!(coordinator.snapshot().current_bytes, 0);
+        (
+            rows,
+            batches,
+            logical_bytes,
+            first_batch_ns.unwrap(),
+            elapsed_ns,
+            format!(
+                "source_bytes={source_bytes} managed_peak_bytes={peak} copy={}",
+                copy.unwrap()
+            ),
+        )
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("value", DataType::Utf8, false),
+    ]));
+    let ipc = temp.path().join("subprocess-envelope.arrow");
+    {
+        let file = File::create(&ipc).unwrap();
+        let mut writer = StreamWriter::try_new(BufWriter::new(file), schema.as_ref()).unwrap();
+        for batch in 0..(ROWS / BATCH_ROWS) {
+            let start = i64::try_from(batch * BATCH_ROWS).unwrap();
+            let ids = Int64Array::from_iter_values(
+                (0..BATCH_ROWS).map(|offset| start + i64::try_from(offset).unwrap()),
+            );
+            let values = StringArray::from_iter_values((0..BATCH_ROWS).map(|_| "subprocess-value"));
+            writer
+                .write(
+                    &RecordBatch::try_new(
+                        Arc::clone(&schema),
+                        vec![Arc::new(ids) as ArrayRef, Arc::new(values)],
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        writer.finish().unwrap();
+    }
+    let row = temp.path().join("subprocess-envelope.ndjson");
+    {
+        let mut writer = BufWriter::new(File::create(&row).unwrap());
+        for id in 0..ROWS {
+            writeln!(writer, "{{\"id\":{id},\"value\":\"subprocess-value\"}}").unwrap();
+        }
+        writer.flush().unwrap();
+    }
+
+    for (name, path, protocol) in [
+        ("arrow_ipc_stream", &ipc, SubprocessProtocol::ArrowIpc),
+        ("row_compat_ndjson", &row, SubprocessProtocol::Ndjson),
+    ] {
+        let source_bytes = fs::metadata(path).unwrap().len();
+        let (rows, batches, logical_bytes, first_batch_ns, elapsed_ns, detail) =
+            measure(path, protocol, Arc::clone(&schema), source_bytes).await;
+        assert_eq!(rows, ROWS as u64);
+        println!(
+            "mode={name} rows={rows} batches={batches} logical_bytes={logical_bytes} first_batch_ns={first_batch_ns} elapsed_ns={elapsed_ns} {detail}"
+        );
+    }
 }

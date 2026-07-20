@@ -423,6 +423,14 @@ pub enum ForeignControlKind {
     ForeignState {
         position: SourcePosition,
     },
+    /// Ordered protocol metadata whose payload is already represented by compiled schema/catalog
+    /// authority. The canonical hash preserves the observed fact without retaining unbounded or
+    /// potentially secret-bearing protocol JSON in the control queue.
+    ProtocolMetadata {
+        protocol: String,
+        message_type: String,
+        payload_sha256: String,
+    },
     Progress {
         rows: u64,
         bytes: u64,

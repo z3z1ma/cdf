@@ -1,21 +1,11 @@
-use cdf_kernel::Result;
-use cdf_runtime::{ExecutionServices, ReadOptions};
+use cdf_kernel::{Result, SourcePosition};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::protocol::{
-    ProtocolState, ProtocolStreamRead, StreamIdentity, foreign_state, json_lines, malformed_field,
-    object_message, optional_string, records_to_stream_reads, required_integer, required_object,
-    required_string,
+    StreamIdentity, malformed_field, object_message, optional_string, required_integer,
+    required_object, required_string,
 };
-
-#[derive(Clone, Debug)]
-pub struct AirbyteRead {
-    pub messages: Vec<AirbyteMessage>,
-    pub catalogs: Vec<AirbyteCatalog>,
-    pub streams: Vec<ProtocolStreamRead>,
-    pub states: Vec<ProtocolState>,
-}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum AirbyteMessage {
@@ -48,6 +38,13 @@ pub struct AirbyteState {
     pub raw: Value,
 }
 
+impl AirbyteState {
+    /// Converts the protocol checkpoint into CDF's opaque, hash-addressed position.
+    pub fn source_position(&self) -> Result<SourcePosition> {
+        crate::protocol::foreign_state("airbyte", &self.value)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AirbyteStateKind {
@@ -56,71 +53,23 @@ pub enum AirbyteStateKind {
     Global,
 }
 
-impl AirbyteStateKind {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Legacy => "legacy",
-            Self::Stream => "stream",
-            Self::Global => "global",
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AirbyteOther {
     pub message_type: String,
     pub raw: Value,
 }
 
-pub fn parse_airbyte_ndjson(bytes: &[u8]) -> Result<Vec<AirbyteMessage>> {
-    json_lines(bytes, "Airbyte")?
-        .into_iter()
-        .map(|(line, value)| parse_airbyte_message(line, value))
-        .collect()
-}
-
-pub fn read_airbyte_ndjson_bytes(
-    bytes: &[u8],
-    options: &ReadOptions,
-    execution: &ExecutionServices,
-) -> Result<AirbyteRead> {
-    let messages = parse_airbyte_ndjson(bytes)?;
-    let records = messages.iter().filter_map(|message| match message {
-        AirbyteMessage::Record(record) => Some((
-            StreamIdentity::airbyte(record.namespace.clone(), record.stream.clone()),
-            record.data.clone(),
-        )),
-        _ => None,
-    });
-    let streams = records_to_stream_reads(records, options, execution)?;
-    let catalogs = messages
-        .iter()
-        .filter_map(|message| match message {
-            AirbyteMessage::Catalog(catalog) => Some(catalog.clone()),
-            _ => None,
-        })
-        .collect();
-    let states = messages
-        .iter()
-        .filter_map(|message| match message {
-            AirbyteMessage::State(state) => Some(state),
-            _ => None,
-        })
-        .map(|state| {
-            Ok(ProtocolState {
-                kind: state.kind.as_str().to_owned(),
-                stream: state.stream.clone(),
-                position: foreign_state("airbyte", &state.value)?,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    Ok(AirbyteRead {
-        messages,
-        catalogs,
-        streams,
-        states,
-    })
+/// Decodes exactly one Airbyte NDJSON message without collecting a foreign stream.
+pub fn decode_airbyte_message(line: usize, bytes: &[u8]) -> Result<Option<AirbyteMessage>> {
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return Ok(None);
+    }
+    let value = serde_json::from_slice(bytes).map_err(|error| {
+        cdf_kernel::CdfError::data(format!(
+            "Airbyte message line {line} is not valid JSON: {error}"
+        ))
+    })?;
+    parse_airbyte_message(line, value).map(Some)
 }
 
 fn parse_airbyte_message(line: usize, value: Value) -> Result<AirbyteMessage> {
@@ -179,21 +128,7 @@ fn parse_state(line: usize, value: Value) -> Result<AirbyteState> {
                 ));
             }
         }
-        AirbyteStateKind::Stream => {
-            if !state_object
-                .get("stream")
-                .map(Value::is_object)
-                .unwrap_or(false)
-            {
-                return Err(malformed_field(
-                    "Airbyte",
-                    "STATE",
-                    "state.stream",
-                    line,
-                    "object",
-                ));
-            }
-        }
+        AirbyteStateKind::Stream => {}
         AirbyteStateKind::Global => {
             if !state_object
                 .get("global")
@@ -212,8 +147,12 @@ fn parse_state(line: usize, value: Value) -> Result<AirbyteState> {
         AirbyteStateKind::Legacy => {}
     }
 
+    let stream = match kind {
+        AirbyteStateKind::Stream => Some(required_stream_state_identity(state_object, line)?),
+        AirbyteStateKind::Legacy | AirbyteStateKind::Global => None,
+    };
     Ok(AirbyteState {
-        stream: stream_state_identity(state_object),
+        stream,
         kind,
         value: state,
         raw: value,
@@ -245,16 +184,42 @@ fn state_kind(value: Option<&Value>, line: usize) -> Result<AirbyteStateKind> {
     }
 }
 
-fn stream_state_identity(state: &serde_json::Map<String, Value>) -> Option<StreamIdentity> {
-    let stream = state.get("stream")?.as_object()?;
+fn required_stream_state_identity(
+    state: &serde_json::Map<String, Value>,
+    line: usize,
+) -> Result<StreamIdentity> {
+    let stream = state
+        .get("stream")
+        .and_then(Value::as_object)
+        .ok_or_else(|| malformed_field("Airbyte", "STATE", "state.stream", line, "object"))?;
     let descriptor = stream
         .get("stream_descriptor")
         .and_then(Value::as_object)
         .unwrap_or(stream);
-    let name = descriptor.get("name")?.as_str()?.to_owned();
-    let namespace = descriptor
-        .get("namespace")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned);
-    Some(StreamIdentity::airbyte(namespace, name))
+    let identity = StreamIdentity::airbyte(
+        optional_string(
+            descriptor,
+            "namespace",
+            "Airbyte",
+            "STATE stream descriptor",
+            line,
+        )?,
+        required_string(
+            descriptor,
+            "name",
+            "Airbyte",
+            "STATE stream descriptor",
+            line,
+        )?,
+    );
+    identity.validate().map_err(|_| {
+        malformed_field(
+            "Airbyte",
+            "STATE",
+            "state.stream.stream_descriptor",
+            line,
+            "a non-empty stream identity",
+        )
+    })?;
+    Ok(identity)
 }

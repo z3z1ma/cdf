@@ -22,8 +22,8 @@ use cdf_memory::AccountedBytes;
 use cdf_memory::{ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest};
 use cdf_runtime::{
     AccountedByteStream, BoundedFormatRequest, ByteExtent, ByteSource, ByteSourceCapabilities,
-    ContentIdentity, DecodeSchemaPlan, GenerationStrength, MemoryByteSource, ReadOptions,
-    RunCancellation, SequentialReadRequest, decode_bounded_format, decode_format_stream,
+    ContentIdentity, DecodeSchemaPlan, GenerationStrength, ReadOptions, RunCancellation,
+    SequentialReadRequest, decode_format_stream,
 };
 use futures_util::{FutureExt, StreamExt, stream};
 use tokio::{
@@ -40,10 +40,23 @@ use rustix::{
     process::{Pid, Signal, kill_process_group, test_kill_process_group},
 };
 
+#[cfg(target_os = "macos")]
+use rustix::process::getpgid;
+
+#[cfg(target_os = "linux")]
+use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+
 use crate::{
-    BoundedCommandBytes, BoundedCommandOutput, CommandSpec, StderrTrace, StdoutFormat,
-    SubprocessOutput, SubprocessRead, SupervisionOptions,
+    BoundedCommandBytes, BoundedCommandOutput, CommandSpec, StderrTrace, SubprocessProtocol,
+    SupervisionOptions,
+    protocol_stream::{ProtocolEventRequest, protocol_foreign_events},
 };
+
+// A one-byte JSON token can expand into one `serde_json::Value`; 32 bytes of admitted scratch per
+// input byte covers that worst dense-token shape while the separately leased line and control
+// windows own framing and emitted state. The ratio is a safety floor between two user knobs, not a
+// transfer cap.
+const MINIMUM_PROTOCOL_PARSER_SCRATCH_PER_LINE_BYTE: u64 = 32;
 
 pub async fn run_bounded_command(
     command: CommandSpec,
@@ -64,7 +77,7 @@ pub async fn run_bounded_command(
         "subprocess-stderr",
         supervision.maximum_stderr_bytes,
     )?;
-    let mut process = subprocess_command(&command);
+    let mut process = subprocess_command(&command, &supervision);
 
     let mut child = process
         .spawn()
@@ -193,7 +206,7 @@ pub async fn run_bounded_command(
     })
 }
 
-fn subprocess_command(command: &CommandSpec) -> Command {
+fn subprocess_command(command: &CommandSpec, supervision: &SupervisionOptions) -> Command {
     let mut process = Command::new(&command.program);
     process
         .args(&command.args)
@@ -204,6 +217,7 @@ fn subprocess_command(command: &CommandSpec) -> Command {
     {
         process.as_std_mut().process_group(0);
     }
+    install_child_address_space_limit(&mut process, supervision.maximum_child_address_space_bytes);
     if let Some(current_dir) = &command.current_dir {
         process.current_dir(current_dir);
     }
@@ -212,6 +226,43 @@ fn subprocess_command(command: &CommandSpec) -> Command {
     }
     process
 }
+
+#[cfg(target_os = "linux")]
+fn install_child_address_space_limit(process: &mut Command, maximum_bytes: Option<u64>) {
+    let Some(maximum_bytes) = maximum_bytes else {
+        return;
+    };
+    // SAFETY: after fork and before exec, this closure captures only one copied integer and calls
+    // the async-signal-safe setrlimit syscall through rustix. It does not allocate, lock, log, or
+    // observe shared Rust state. The governing decision is
+    // `.10x/decisions/linux-subprocess-address-space-limit.md`.
+    unsafe {
+        process.as_std_mut().pre_exec(move || {
+            let existing = getrlimit(Resource::As);
+            let effective = effective_child_address_space_limit(maximum_bytes, existing);
+            setrlimit(
+                Resource::As,
+                Rlimit {
+                    current: Some(effective),
+                    maximum: Some(effective),
+                },
+            )
+            .map_err(Into::into)
+        });
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn effective_child_address_space_limit(configured: u64, inherited: Rlimit) -> u64 {
+    inherited
+        .current
+        .into_iter()
+        .chain(inherited.maximum)
+        .fold(configured, u64::min)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_child_address_space_limit(_process: &mut Command, _maximum_bytes: Option<u64>) {}
 
 fn reserve_output_capacity(
     memory: &Arc<dyn MemoryCoordinator>,
@@ -263,7 +314,7 @@ fn join_bounded_reader(
 }
 
 #[derive(Debug)]
-struct DiagnosticCapture {
+pub(crate) struct DiagnosticCapture {
     bytes: Vec<u8>,
     discarded_bytes: u64,
 }
@@ -354,84 +405,6 @@ fn join_diagnostic_reader(
         .map_err(|error| CdfError::internal(format!("subprocess stderr reader failed: {error}")))?
 }
 
-pub async fn run_bounded_stdout_adapter(
-    command: &CommandSpec,
-    stdout_format: StdoutFormat,
-    read_options: &ReadOptions,
-    supervision: &SupervisionOptions,
-    memory: Arc<dyn MemoryCoordinator>,
-) -> Result<SubprocessOutput> {
-    let output = run_bounded_command(
-        command.clone(),
-        supervision.clone(),
-        RunCancellation::default(),
-        Arc::clone(&memory),
-    )
-    .await?;
-    let stderr = output.stderr;
-    if !output.exit_status.success() {
-        return Err(CdfError::new(
-            ErrorKind::Transient,
-            format!(
-                "subprocess exited unsuccessfully: {}; stderr: {}",
-                status_message(output.exit_status),
-                stderr.summary()
-            ),
-        ));
-    }
-
-    let driver: Arc<dyn cdf_runtime::FormatDriver> = match stdout_format {
-        StdoutFormat::ArrowIpc => {
-            Arc::new(cdf_format_arrow_ipc::ArrowIpcStreamFormatDriver::new()?)
-        }
-        StdoutFormat::Ndjson => Arc::new(cdf_format_json::NdjsonFormatDriver::new()?),
-    };
-    let source = Arc::new(
-        MemoryByteSource::from_accounted_bytes(
-            "subprocess:stdout",
-            output.stdout.into_accounted()?,
-        )
-        .map_err(|error| add_stderr_context(error, &stderr, stdout_format))?,
-    );
-    let read = decode_bounded_format(
-        driver,
-        source,
-        BoundedFormatRequest::new(read_options.clone(), memory),
-    )
-    .await
-    .and_then(|read| {
-        SubprocessRead::from_bounded(
-            read,
-            cdf_kernel::ScopeKey::Stream {
-                name: "subprocess_stdout".to_owned(),
-            },
-        )
-    })
-    .map_err(|error| add_stderr_context(error, &stderr, stdout_format))?;
-
-    Ok(SubprocessOutput {
-        read,
-        stderr,
-        exit_status: output.exit_status,
-    })
-}
-
-fn add_stderr_context(
-    error: CdfError,
-    stderr: &StderrTrace,
-    stdout_format: StdoutFormat,
-) -> CdfError {
-    CdfError {
-        kind: error.kind,
-        message: format!(
-            "malformed {stdout_format:?} subprocess stdout: {}; stderr: {}",
-            error.message,
-            stderr.summary()
-        ),
-        retry_after_ms: error.retry_after_ms,
-    }
-}
-
 fn status_message(status: ExitStatus) -> String {
     if let Some(code) = status.code() {
         return format!("exit code {code}");
@@ -450,17 +423,37 @@ fn validate_supervision(supervision: &SupervisionOptions) -> Result<()> {
     if supervision.maximum_stdout_bytes == 0
         || supervision.maximum_stderr_bytes == 0
         || supervision.maximum_stream_chunk_bytes == 0
+        || supervision.maximum_protocol_line_bytes == 0
+        || supervision.protocol_parser_scratch_bytes == 0
+        || supervision.protocol_row_window_bytes == 0
         || supervision.maximum_stdout_bytes == u64::MAX
         || supervision.maximum_stderr_bytes == u64::MAX
         || supervision.maximum_stream_chunk_bytes == u64::MAX
+        || supervision.maximum_protocol_line_bytes == u64::MAX
+        || supervision.protocol_parser_scratch_bytes == u64::MAX
+        || supervision.protocol_row_window_bytes == u64::MAX
     {
         return Err(CdfError::contract(
-            "subprocess collected stdout, stream chunk, and stderr byte boundaries must be within 1..u64::MAX",
+            "subprocess collected stdout, stream chunk, protocol line/parser/row windows, and stderr byte boundaries must be within 1..u64::MAX",
         ));
     }
     if supervision.maximum_streamed_stdout_bytes == Some(0) {
         return Err(CdfError::contract(
             "subprocess total streamed stdout boundary must be greater than zero when configured",
+        ));
+    }
+    if matches!(
+        supervision.maximum_child_address_space_bytes,
+        Some(0 | u64::MAX)
+    ) {
+        return Err(CdfError::contract(
+            "subprocess child address-space boundary must be within 1..u64::MAX when configured",
+        ));
+    }
+    #[cfg(not(target_os = "linux"))]
+    if supervision.maximum_child_address_space_bytes.is_some() {
+        return Err(CdfError::contract(
+            "subprocess child address-space enforcement is unsupported on this platform",
         ));
     }
     if supervision.stderr_line_limit == 0 {
@@ -489,19 +482,21 @@ fn validate_process_tree_authority() -> Result<()> {
 }
 
 #[derive(Clone, Debug)]
-struct TerminalDiagnostic {
-    summary: String,
-    truncated: bool,
-    discarded_bytes: u64,
+pub(crate) struct TerminalDiagnostic {
+    pub(crate) summary: String,
+    pub(crate) truncated: bool,
+    pub(crate) discarded_bytes: u64,
 }
 
 #[derive(Clone, Debug)]
-enum SubprocessTerminal {
+pub(crate) enum SubprocessTerminal {
     Succeeded {
         diagnostic: Option<TerminalDiagnostic>,
     },
     Failed(CdfError),
-    Cancelled,
+    Cancelled {
+        diagnostic: Option<TerminalDiagnostic>,
+    },
 }
 
 enum SubprocessLifecyclePhase {
@@ -519,7 +514,7 @@ struct SubprocessLifecycleInner {
 }
 
 #[derive(Clone)]
-struct SubprocessLifecycle(Arc<SubprocessLifecycleInner>);
+pub(crate) struct SubprocessLifecycle(Arc<SubprocessLifecycleInner>);
 
 impl SubprocessLifecycle {
     fn new(foreign_cancellation: ForeignCancellation) -> Self {
@@ -532,7 +527,7 @@ impl SubprocessLifecycle {
         }))
     }
 
-    fn run_cancellation(&self) -> RunCancellation {
+    pub(crate) fn run_cancellation(&self) -> RunCancellation {
         self.0.run_cancellation.clone()
     }
 
@@ -572,22 +567,24 @@ impl SubprocessLifecycle {
         self.0.notify.notify_waiters();
     }
 
-    fn cancel(&self) {
+    pub(crate) fn cancel(&self) {
         self.0.run_cancellation.cancel();
         self.0.foreign_cancellation.cancel();
         let mut phase = self.0.phase.lock().unwrap();
         if matches!(*phase, SubprocessLifecyclePhase::NotStarted) {
-            *phase = SubprocessLifecyclePhase::Complete(SubprocessTerminal::Cancelled);
+            *phase = SubprocessLifecyclePhase::Complete(SubprocessTerminal::Cancelled {
+                diagnostic: None,
+            });
             drop(phase);
             self.0.notify.notify_waiters();
         }
     }
 
-    fn is_cancelled(&self) -> bool {
+    pub(crate) fn is_cancelled(&self) -> bool {
         self.0.run_cancellation.is_cancelled() || self.0.foreign_cancellation.is_cancelled()
     }
 
-    async fn terminal(&self) -> SubprocessTerminal {
+    pub(crate) async fn terminal(&self) -> SubprocessTerminal {
         loop {
             let notified = self.0.notify.notified();
             if let SubprocessLifecyclePhase::Complete(terminal) = &*self.0.phase.lock().unwrap() {
@@ -612,7 +609,7 @@ impl SubprocessLifecycle {
 #[derive(Clone)]
 pub struct SubprocessProducer {
     command: CommandSpec,
-    stdout_format: StdoutFormat,
+    protocol: SubprocessProtocol,
     read_options: ReadOptions,
     schema: DecodeSchemaPlan,
     supervision: SupervisionOptions,
@@ -623,7 +620,7 @@ pub struct SubprocessProducer {
 impl SubprocessProducer {
     pub fn new(
         command: CommandSpec,
-        stdout_format: StdoutFormat,
+        protocol: SubprocessProtocol,
         read_options: ReadOptions,
         schema: DecodeSchemaPlan,
         supervision: SupervisionOptions,
@@ -631,7 +628,13 @@ impl SubprocessProducer {
     ) -> Result<Self> {
         validate_supervision(&supervision)?;
         validate_process_tree_authority()?;
-        let transfer_mode = transfer_mode(stdout_format);
+        if let SubprocessProtocol::Singer { stream } | SubprocessProtocol::Airbyte { stream } =
+            &protocol
+        {
+            stream.validate()?;
+            validate_protocol_parser_scratch(&supervision)?;
+        }
+        let transfer_mode = transfer_mode(&protocol);
         let descriptor = ForeignProducerDescriptor {
             producer_id: ForeignProducerId::new("cdf-subprocess")?,
             protocol_version: ForeignProtocolVersion::new("1")?,
@@ -643,11 +646,11 @@ impl SubprocessProducer {
                 backpressure: ForeignBackpressure::Pipe,
             },
             memory: ForeignMemoryContract {
-                payload_window_bytes: None,
-                control_queue_bytes: None,
+                payload_window_bytes: Some(protocol_payload_window(&protocol, &supervision)),
+                control_queue_bytes: protocol_control_window(&protocol, &supervision),
                 diagnostic_queue_bytes: Some(supervision.maximum_stderr_bytes),
-                native_scratch_bytes: None,
-                child_process_bytes: None,
+                native_scratch_bytes: protocol_scratch_window(&protocol, &supervision)?,
+                child_process_bytes: supervision.maximum_child_address_space_bytes,
             },
             cancellation: ForeignCancellationContract {
                 cooperative_stop: true,
@@ -658,7 +661,10 @@ impl SubprocessProducer {
             state: ForeignStateContract {
                 emits_positions: false,
                 emits_watermarks: false,
-                emits_foreign_state: false,
+                emits_foreign_state: matches!(
+                    protocol,
+                    SubprocessProtocol::Singer { .. } | SubprocessProtocol::Airbyte { .. }
+                ),
                 terminal_state_required: true,
             },
             security: ForeignSecurityContract {
@@ -671,7 +677,7 @@ impl SubprocessProducer {
         cdf_kernel::canonical_arrow_schema_hash(schema.authority_schema.as_ref())?;
         Ok(Self {
             command,
-            stdout_format,
+            protocol,
             read_options,
             schema,
             supervision,
@@ -679,6 +685,22 @@ impl SubprocessProducer {
             descriptor,
         })
     }
+}
+
+fn validate_protocol_parser_scratch(supervision: &SupervisionOptions) -> Result<()> {
+    let minimum = supervision
+        .maximum_protocol_line_bytes
+        .checked_mul(MINIMUM_PROTOCOL_PARSER_SCRATCH_PER_LINE_BYTE)
+        .ok_or_else(|| {
+            CdfError::contract("subprocess protocol parser scratch requirement overflowed")
+        })?;
+    if supervision.protocol_parser_scratch_bytes < minimum {
+        return Err(CdfError::contract(format!(
+            "subprocess protocol parser scratch must be at least {minimum} bytes ({}x the configured {}-byte message line boundary)",
+            MINIMUM_PROTOCOL_PARSER_SCRATCH_PER_LINE_BYTE, supervision.maximum_protocol_line_bytes
+        )));
+    }
+    Ok(())
 }
 
 impl ForeignProducer for SubprocessProducer {
@@ -700,39 +722,60 @@ impl ForeignProducer for SubprocessProducer {
             }
             request.cancellation.check()?;
             let lifecycle = SubprocessLifecycle::new(request.cancellation.clone());
-            let driver: Arc<dyn cdf_runtime::FormatDriver> = match self.stdout_format {
-                StdoutFormat::ArrowIpc => {
-                    Arc::new(cdf_format_arrow_ipc::ArrowIpcStreamFormatDriver::new()?)
-                }
-                StdoutFormat::Ndjson => Arc::new(cdf_format_json::NdjsonFormatDriver::new()?),
-            };
-            let source: Arc<dyn ByteSource> = Arc::new(SubprocessStdoutByteSource::new(
+            let source = Arc::new(SubprocessStdoutByteSource::new(
                 self.command.clone(),
                 self.supervision.clone(),
                 Arc::clone(&self.memory),
                 lifecycle.clone(),
             )?);
-            let stream = decode_format_stream(
-                driver,
-                source,
-                BoundedFormatRequest::new(self.read_options.clone(), Arc::clone(&self.memory))
-                    .with_schema(self.schema.clone())
-                    .with_cancellation(lifecycle.run_cancellation()),
-            )
-            .await
-            .map_err(|error| CdfError {
-                kind: error.kind,
-                message: format!(
-                    "stream subprocess {:?} stdout: {}",
-                    self.stdout_format, error.message
-                ),
-                retry_after_ms: error.retry_after_ms,
-            })?;
-            let events = subprocess_foreign_events(
-                stream.batches,
-                transfer_mode(self.stdout_format),
-                lifecycle.clone(),
-            );
+            let events = match &self.protocol {
+                SubprocessProtocol::ArrowIpc | SubprocessProtocol::Ndjson => {
+                    let driver: Arc<dyn cdf_runtime::FormatDriver> = match &self.protocol {
+                        SubprocessProtocol::ArrowIpc => {
+                            Arc::new(cdf_format_arrow_ipc::ArrowIpcStreamFormatDriver::new()?)
+                        }
+                        SubprocessProtocol::Ndjson => {
+                            Arc::new(cdf_format_json::NdjsonFormatDriver::new()?)
+                        }
+                        _ => unreachable!("simple protocol branch was checked"),
+                    };
+                    let stream = decode_format_stream(
+                        driver,
+                        source,
+                        BoundedFormatRequest::new(
+                            self.read_options.clone(),
+                            Arc::clone(&self.memory),
+                        )
+                        .with_schema(self.schema.clone())
+                        .with_cancellation(lifecycle.run_cancellation()),
+                    )
+                    .await
+                    .map_err(|error| CdfError {
+                        kind: error.kind,
+                        message: format!(
+                            "stream subprocess {:?} stdout: {}",
+                            self.protocol, error.message
+                        ),
+                        retry_after_ms: error.retry_after_ms,
+                    })?;
+                    subprocess_foreign_events(
+                        stream.batches,
+                        transfer_mode(&self.protocol),
+                        lifecycle.clone(),
+                    )
+                }
+                SubprocessProtocol::Singer { .. } | SubprocessProtocol::Airbyte { .. } => {
+                    protocol_foreign_events(ProtocolEventRequest {
+                        source,
+                        protocol: self.protocol.clone(),
+                        read_options: self.read_options.clone(),
+                        schema: self.schema.clone(),
+                        supervision: self.supervision.clone(),
+                        memory: Arc::clone(&self.memory),
+                        lifecycle: lifecycle.clone(),
+                    })?
+                }
+            };
             let cancellation_lifecycle = lifecycle.clone();
             let joined_lifecycle = lifecycle.clone();
             let termination = cdf_kernel::InvocationTermination::new(
@@ -758,10 +801,54 @@ impl ForeignProducer for SubprocessProducer {
     }
 }
 
-fn transfer_mode(format: StdoutFormat) -> ForeignTransferMode {
-    match format {
-        StdoutFormat::ArrowIpc => ForeignTransferMode::ArrowIpcStream,
-        StdoutFormat::Ndjson => ForeignTransferMode::RowCompat,
+fn transfer_mode(protocol: &SubprocessProtocol) -> ForeignTransferMode {
+    match protocol {
+        SubprocessProtocol::ArrowIpc => ForeignTransferMode::ArrowIpcStream,
+        SubprocessProtocol::Ndjson
+        | SubprocessProtocol::Singer { .. }
+        | SubprocessProtocol::Airbyte { .. } => ForeignTransferMode::RowCompat,
+    }
+}
+
+fn protocol_payload_window(protocol: &SubprocessProtocol, supervision: &SupervisionOptions) -> u64 {
+    if matches!(
+        protocol,
+        SubprocessProtocol::Singer { .. } | SubprocessProtocol::Airbyte { .. }
+    ) {
+        supervision
+            .protocol_row_window_bytes
+            .max(supervision.maximum_stream_chunk_bytes)
+    } else {
+        supervision.maximum_stream_chunk_bytes
+    }
+}
+
+fn protocol_control_window(
+    protocol: &SubprocessProtocol,
+    supervision: &SupervisionOptions,
+) -> Option<u64> {
+    matches!(
+        protocol,
+        SubprocessProtocol::Singer { .. } | SubprocessProtocol::Airbyte { .. }
+    )
+    .then_some(supervision.maximum_protocol_line_bytes)
+}
+
+fn protocol_scratch_window(
+    protocol: &SubprocessProtocol,
+    supervision: &SupervisionOptions,
+) -> Result<Option<u64>> {
+    if matches!(
+        protocol,
+        SubprocessProtocol::Singer { .. } | SubprocessProtocol::Airbyte { .. }
+    ) {
+        supervision
+            .maximum_protocol_line_bytes
+            .checked_add(supervision.protocol_parser_scratch_bytes)
+            .map(Some)
+            .ok_or_else(|| CdfError::contract("subprocess protocol scratch boundary overflowed"))
+    } else {
+        Ok(None)
     }
 }
 
@@ -834,18 +921,14 @@ async fn subprocess_foreign_event_next(
             let subprocess_terminal = state.lifecycle.terminal().await;
             state.finished = true;
             let terminal = match subprocess_terminal {
-                SubprocessTerminal::Cancelled if externally_cancelled => {
+                SubprocessTerminal::Cancelled { .. } if externally_cancelled => {
                     ForeignTerminalStatus::Cancelled
                 }
-                SubprocessTerminal::Cancelled | SubprocessTerminal::Succeeded { .. } => {
-                    ForeignTerminalStatus::Failed {
-                        retryable: matches!(
-                            error.kind,
-                            ErrorKind::Transient | ErrorKind::RateLimited
-                        ),
-                        message: error.message,
-                    }
-                }
+                SubprocessTerminal::Cancelled { diagnostic }
+                | SubprocessTerminal::Succeeded { diagnostic } => ForeignTerminalStatus::Failed {
+                    retryable: matches!(error.kind, ErrorKind::Transient | ErrorKind::RateLimited),
+                    message: with_terminal_diagnostic(error.message, diagnostic),
+                },
                 SubprocessTerminal::Failed(process_error) => ForeignTerminalStatus::Failed {
                     retryable: matches!(
                         process_error.kind,
@@ -915,7 +998,7 @@ async fn subprocess_foreign_event_next(
                     state,
                 ))
             }
-            SubprocessTerminal::Cancelled => {
+            SubprocessTerminal::Cancelled { .. } => {
                 state.finished = true;
                 Some((
                     Ok(ForeignStreamEvent::Terminal(
@@ -959,6 +1042,8 @@ fn process_group_exists(group: ChildProcessGroup) -> Result<bool> {
     match test_kill_process_group(group.id) {
         Ok(()) => Ok(true),
         Err(Errno::SRCH) => Ok(false),
+        #[cfg(target_os = "macos")]
+        Err(Errno::PERM) if darwin_group_leader_is_reaped(group)? => Ok(false),
         Err(error) => Err(CdfError::internal(format!(
             "inspect subprocess process group {}: {error}",
             group.id.as_raw_nonzero()
@@ -977,8 +1062,22 @@ fn process_group_exists(_group: ChildProcessGroup) -> Result<bool> {
 fn signal_process_group(group: ChildProcessGroup, signal: Signal) -> Result<()> {
     match kill_process_group(group.id, signal) {
         Ok(()) | Err(Errno::SRCH) => Ok(()),
+        #[cfg(target_os = "macos")]
+        Err(Errno::PERM) if darwin_group_leader_is_reaped(group)? => Ok(()),
         Err(error) => Err(CdfError::internal(format!(
             "signal subprocess process group {} with {signal:?}: {error}",
+            group.id.as_raw_nonzero()
+        ))),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn darwin_group_leader_is_reaped(group: ChildProcessGroup) -> Result<bool> {
+    match getpgid(Some(group.id)) {
+        Ok(_) => Ok(false),
+        Err(Errno::SRCH) => Ok(true),
+        Err(error) => Err(CdfError::internal(format!(
+            "inspect macOS subprocess group leader {} after EPERM: {error}",
             group.id.as_raw_nonzero()
         ))),
     }
@@ -1018,9 +1117,58 @@ async fn terminate_child_tree(
     group: ChildProcessGroup,
     grace: std::time::Duration,
 ) -> Result<()> {
+    if child
+        .try_wait()
+        .map_err(|error| {
+            CdfError::internal(format!("inspect subprocess before termination: {error}"))
+        })?
+        .is_some()
+    {
+        return ensure_process_group_quiescent(group, grace).await;
+    }
     #[cfg(unix)]
     {
-        signal_process_group(group, Signal::TERM)?;
+        if let Err(signal) = signal_process_group(group, Signal::TERM) {
+            if child
+                .try_wait()
+                .map_err(|error| {
+                    CdfError::internal(format!(
+                        "inspect subprocess after termination race: {error}"
+                    ))
+                })?
+                .is_some()
+            {
+                return ensure_process_group_quiescent(group, grace).await;
+            }
+            return match tokio::time::timeout(grace, child.wait()).await {
+                Ok(Ok(_)) => ensure_process_group_quiescent(group, grace).await,
+                Ok(Err(error)) => Err(with_cleanup_error(
+                    signal,
+                    CdfError::internal(format!(
+                        "wait for subprocess after termination signal race: {error}"
+                    )),
+                )),
+                Err(_) => {
+                    child.start_kill().map_err(|error| {
+                        with_cleanup_error(
+                            signal.clone(),
+                            CdfError::internal(format!(
+                                "force terminate subprocess after group-signal failure: {error}"
+                            )),
+                        )
+                    })?;
+                    child.wait().await.map_err(|error| {
+                        with_cleanup_error(
+                            signal,
+                            CdfError::internal(format!(
+                                "wait for force-terminated subprocess after group-signal failure: {error}"
+                            )),
+                        )
+                    })?;
+                    ensure_process_group_quiescent(group, grace).await
+                }
+            };
+        }
     }
     #[cfg(not(unix))]
     {
@@ -1080,7 +1228,7 @@ fn with_cleanup_error(mut primary: CdfError, cleanup: CdfError) -> CdfError {
     primary
 }
 
-struct SubprocessStdoutByteSource {
+pub(crate) struct SubprocessStdoutByteSource {
     command: CommandSpec,
     supervision: SupervisionOptions,
     memory: Arc<dyn MemoryCoordinator>,
@@ -1091,7 +1239,7 @@ struct SubprocessStdoutByteSource {
 }
 
 impl SubprocessStdoutByteSource {
-    fn new(
+    pub(crate) fn new(
         command: CommandSpec,
         supervision: SupervisionOptions,
         memory: Arc<dyn MemoryCoordinator>,
@@ -1163,7 +1311,9 @@ impl ByteSource for SubprocessStdoutByteSource {
                 &self.supervision,
                 Arc::clone(&self.memory),
                 self.lifecycle.clone(),
-                request.preferred_chunk_bytes,
+                request
+                    .preferred_chunk_bytes
+                    .min(self.supervision.maximum_stream_chunk_bytes),
                 request.cancellation,
             )
             .await;
@@ -1220,7 +1370,7 @@ async fn start_streaming_subprocess(
         "subprocess-stderr",
         supervision.maximum_stderr_bytes,
     )?;
-    let mut process = subprocess_command(command);
+    let mut process = subprocess_command(command, supervision);
     let mut child = process
         .spawn()
         .map_err(|error| CdfError::internal(format!("spawn subprocess: {error}")))?;
@@ -1294,19 +1444,16 @@ async fn spawn_streaming_subprocess_stdout(
             loop {
                 match read_subprocess_stdout_chunk(&mut running).await {
                     Ok(SubprocessStdoutRead::Chunk(chunk)) => {
-                        if sender.send(Ok(chunk)).await.is_err() {
-                            running.lifecycle.cancel();
-                            let cleanup = terminate_child_tree(
-                                &mut running.child,
-                                running.process_group,
-                                running.termination_grace,
-                            )
-                            .await;
-                            abort_stderr_task(&mut running).await;
-                            return match cleanup {
-                                Ok(()) => SubprocessTerminal::Cancelled,
-                                Err(error) => SubprocessTerminal::Failed(error),
-                            };
+                        let cancellation = running.lifecycle.run_cancellation();
+                        let send = sender.send(Ok(chunk));
+                        tokio::pin!(send);
+                        let sent = tokio::select! {
+                            biased;
+                            () = cancellation.cancelled() => false,
+                            result = &mut send => result.is_ok(),
+                        };
+                        if !sent {
+                            return cancel_streaming_subprocess(&mut running).await;
                         }
                     }
                     Ok(SubprocessStdoutRead::Complete(diagnostic)) => {
@@ -1319,17 +1466,29 @@ async fn spawn_streaming_subprocess_stdout(
                             running.termination_grace,
                         )
                         .await;
-                        abort_stderr_task(&mut running).await;
-                        let error = match cleanup {
+                        let diagnostic = capture_streaming_diagnostic(&mut running).await;
+                        let cleanup_succeeded = cleanup.is_ok();
+                        let diagnostic_succeeded = diagnostic.is_ok();
+                        let mut error = match cleanup {
                             Ok(()) => error,
                             Err(cleanup) => with_cleanup_error(error, cleanup),
                         };
-                        let terminal = if running.lifecycle.is_cancelled() {
-                            SubprocessTerminal::Cancelled
+                        let diagnostic = match diagnostic {
+                            Ok(diagnostic) => diagnostic,
+                            Err(diagnostic) => {
+                                error = with_cleanup_error(error, diagnostic);
+                                None
+                            }
+                        };
+                        let terminal = if running.lifecycle.is_cancelled()
+                            && cleanup_succeeded
+                            && diagnostic_succeeded
+                        {
+                            SubprocessTerminal::Cancelled { diagnostic }
                         } else {
                             SubprocessTerminal::Failed(error.clone())
                         };
-                        let _ = sender.send(Err(error)).await;
+                        let _ = sender.try_send(Err(error));
                         return terminal;
                     }
                 }
@@ -1369,6 +1528,24 @@ async fn spawn_streaming_subprocess_stdout(
     )
 }
 
+async fn cancel_streaming_subprocess(state: &mut RunningSubprocessStdout) -> SubprocessTerminal {
+    state.lifecycle.cancel();
+    let cleanup = terminate_child_tree(
+        &mut state.child,
+        state.process_group,
+        state.termination_grace,
+    )
+    .await;
+    let diagnostic = capture_streaming_diagnostic(state).await;
+    match (cleanup, diagnostic) {
+        (Ok(()), Ok(diagnostic)) => SubprocessTerminal::Cancelled { diagnostic },
+        (Err(error), Ok(_)) | (Ok(()), Err(error)) => SubprocessTerminal::Failed(error),
+        (Err(cleanup), Err(diagnostic)) => {
+            SubprocessTerminal::Failed(with_cleanup_error(cleanup, diagnostic))
+        }
+    }
+}
+
 enum SubprocessStdoutRead {
     Chunk(AccountedBytes),
     Complete(Option<TerminalDiagnostic>),
@@ -1391,7 +1568,13 @@ async fn read_subprocess_stdout_chunk(
     let read_window = read_window.max(1);
     let read_window = usize::try_from(read_window)
         .map_err(|_| CdfError::data("subprocess stdout chunk boundary exceeds usize"))?;
-    let lease = reserve_subprocess_stdout_chunk(&state.memory, read_window as u64).await?;
+    let lease = state
+        .cancellation
+        .await_or_cancel(reserve_subprocess_stdout_chunk(
+            &state.memory,
+            read_window as u64,
+        ))
+        .await?;
     let mut buffer = vec![0_u8; read_window];
     let read = read_stdout_or_observe_child_exit(state, &mut buffer).await?;
     if read == 0 {
@@ -1443,6 +1626,78 @@ async fn abort_stderr_task(state: &mut RunningSubprocessStdout) {
     );
     stderr_task.abort();
     let _ = stderr_task.await;
+}
+
+async fn capture_streaming_diagnostic(
+    state: &mut RunningSubprocessStdout,
+) -> Result<Option<TerminalDiagnostic>> {
+    let stderr_task = std::mem::replace(
+        &mut state.stderr_task,
+        tokio::spawn(async {
+            Ok(DiagnosticCapture {
+                bytes: Vec::new(),
+                discarded_bytes: 0,
+            })
+        }),
+    );
+    let stderr_capture = redact_diagnostic_capture(
+        join_diagnostic_reader_bounded(stderr_task, state.termination_grace).await?,
+        &state.command,
+        state.stderr_lease.bytes().saturating_sub(1),
+    );
+    let stderr = StderrTrace::new(
+        BoundedCommandBytes::new(stderr_capture.bytes, state.stderr_lease.clone())?,
+        state.stderr_line_limit,
+        stderr_capture.discarded_bytes,
+    );
+    let summary = stderr.summary();
+    if summary == "<empty>" {
+        Ok(None)
+    } else {
+        Ok(Some(TerminalDiagnostic {
+            summary,
+            truncated: stderr.is_truncated(),
+            discarded_bytes: stderr.discarded_bytes(),
+        }))
+    }
+}
+
+pub(crate) async fn join_diagnostic_reader_bounded(
+    mut stderr_task: tokio::task::JoinHandle<Result<DiagnosticCapture>>,
+    maximum_wait: std::time::Duration,
+) -> Result<DiagnosticCapture> {
+    match tokio::time::timeout(maximum_wait, &mut stderr_task).await {
+        Ok(result) => join_diagnostic_reader(result),
+        Err(_) => {
+            stderr_task.abort();
+            let _ = stderr_task.await;
+            Err(CdfError::transient(format!(
+                "subprocess stderr reader did not terminate within the {} ms cleanup boundary",
+                maximum_wait.as_millis()
+            )))
+        }
+    }
+}
+
+pub(crate) fn with_terminal_diagnostic(
+    message: String,
+    diagnostic: Option<TerminalDiagnostic>,
+) -> String {
+    let Some(diagnostic) = diagnostic else {
+        return message;
+    };
+    let suffix = if diagnostic.truncated {
+        format!(
+            " ({} diagnostic bytes discarded)",
+            diagnostic.discarded_bytes
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "{message}; subprocess stderr: {}{suffix}",
+        diagnostic.summary
+    )
 }
 
 async fn read_stdout_or_observe_child_exit(
@@ -1572,43 +1827,18 @@ async fn finalize_streaming_subprocess(
         }
     };
     ensure_process_group_quiescent(state.process_group, state.termination_grace).await?;
-    let stderr_task = std::mem::replace(
-        &mut state.stderr_task,
-        tokio::spawn(async {
-            Ok(DiagnosticCapture {
-                bytes: Vec::new(),
-                discarded_bytes: 0,
-            })
-        }),
-    );
-    let stderr_capture = redact_diagnostic_capture(
-        join_diagnostic_reader(stderr_task.await)?,
-        &state.command,
-        state.stderr_lease.bytes().saturating_sub(1),
-    );
-    let stderr = StderrTrace::new(
-        BoundedCommandBytes::new(stderr_capture.bytes, state.stderr_lease.clone())?,
-        state.stderr_line_limit,
-        stderr_capture.discarded_bytes,
-    );
     if !exit_status.success() {
+        let diagnostic = capture_streaming_diagnostic(state).await?;
         return Err(CdfError::new(
             ErrorKind::Transient,
-            format!(
-                "subprocess exited unsuccessfully: {}; stderr: {}",
-                status_message(exit_status),
-                stderr.summary()
+            with_terminal_diagnostic(
+                format!(
+                    "subprocess exited unsuccessfully: {}",
+                    status_message(exit_status)
+                ),
+                diagnostic,
             ),
         ));
     }
-    let summary = stderr.summary();
-    if summary == "<empty>" {
-        Ok(None)
-    } else {
-        Ok(Some(TerminalDiagnostic {
-            summary,
-            truncated: stderr.is_truncated(),
-            discarded_bytes: stderr.discarded_bytes(),
-        }))
-    }
+    capture_streaming_diagnostic(state).await
 }
