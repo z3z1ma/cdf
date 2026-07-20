@@ -11,6 +11,7 @@ mod planning;
 mod residual_spill;
 mod segmentation;
 mod standalone_host;
+mod statistics_pruning;
 mod table_provider;
 #[cfg(test)]
 mod tests;
@@ -38,6 +39,10 @@ pub use segmentation::{
     CanonicalSegmentationPolicy, PositionJoin, join_positions,
 };
 pub use standalone_host::StandaloneExecutionHost;
+pub use statistics_pruning::{
+    StatisticsPruningContainerGrain, StatisticsPruningDecision, StatisticsPruningOutcome,
+    StatisticsPruningReport, evaluate_verified_statistics_pruning,
+};
 pub use table_provider::{QueryableResourceTableProvider, queryable_resource_table_provider};
 pub use types::*;
 pub use worker_task::*;

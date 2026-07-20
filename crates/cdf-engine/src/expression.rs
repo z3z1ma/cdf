@@ -397,6 +397,146 @@ fn to_datafusion(node: &ExpressionNode) -> Result<Expr> {
     }
 }
 
+/// Reconstructs the recorded filter with literal types resolved from its recorded Arrow schema.
+/// Unlike planning, this performs no simplification or optimization. `None` means the recorded
+/// predicate is valid but this engine version cannot use it as pruning proof, so callers retain.
+pub(crate) fn lower_recorded_filter_for_pruning(
+    node: &ExpressionNode,
+    schema: &Schema,
+) -> Result<Option<Expr>> {
+    match node {
+        ExpressionNode::Column { name } => {
+            schema.field_with_name(name).map_err(|_| {
+                CdfError::contract(format!(
+                    "recorded filter field {name:?} is absent from the recorded schema"
+                ))
+            })?;
+            Ok(Some(datafusion::logical_expr::col(name)))
+        }
+        ExpressionNode::Literal { value } => Ok(root_filter_literal(value)),
+        ExpressionNode::Call {
+            function,
+            arguments,
+        } => lower_recorded_filter_call(function, arguments, schema),
+        other => Err(CdfError::contract(format!(
+            "recorded filter expression node {other:?} is unsupported"
+        ))),
+    }
+}
+
+fn lower_recorded_filter_call(
+    function: &FunctionReference,
+    arguments: &[ExpressionNode],
+    schema: &Schema,
+) -> Result<Option<Expr>> {
+    require_cdf_v1(function)?;
+    match (function.name.as_str(), arguments) {
+        ("not", [value]) => Ok(lower_recorded_filter_for_pruning(value, schema)?
+            .map(|value| Expr::Not(Box::new(value)))),
+        ("is_null", [value]) => Ok(lower_recorded_filter_for_pruning(value, schema)?
+            .map(|value| Expr::IsNull(Box::new(value)))),
+        ("is_not_null", [value]) => Ok(lower_recorded_filter_for_pruning(value, schema)?
+            .map(|value| Expr::IsNotNull(Box::new(value)))),
+        ("and" | "or", [left, right]) => {
+            let Some(left) = lower_recorded_filter_for_pruning(left, schema)? else {
+                return Ok(None);
+            };
+            let Some(right) = lower_recorded_filter_for_pruning(right, schema)? else {
+                return Ok(None);
+            };
+            Ok(Some(Expr::BinaryExpr(BinaryExpr::new(
+                Box::new(left),
+                operator(function.name.as_str())?,
+                Box::new(right),
+            ))))
+        }
+        (
+            "eq" | "neq" | "gt" | "gte" | "lt" | "lte",
+            [
+                ExpressionNode::Column { name },
+                ExpressionNode::Literal { value },
+            ],
+        ) => {
+            let field = schema.field_with_name(name).map_err(|_| {
+                CdfError::contract(format!(
+                    "recorded filter field {name:?} is absent from the recorded schema"
+                ))
+            })?;
+            let Some(value) = typed_filter_literal(field.data_type(), value)? else {
+                return Ok(None);
+            };
+            Ok(Some(Expr::BinaryExpr(BinaryExpr::new(
+                Box::new(datafusion::logical_expr::col(name)),
+                operator(function.name.as_str())?,
+                Box::new(Expr::Literal(value, None)),
+            ))))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn root_filter_literal(value: &ExpressionLiteral) -> Option<Expr> {
+    let scalar = match value {
+        ExpressionLiteral::Null => ScalarValue::Null,
+        ExpressionLiteral::Boolean(value) => ScalarValue::Boolean(Some(*value)),
+        _ => return None,
+    };
+    Some(Expr::Literal(scalar, None))
+}
+
+fn typed_filter_literal(
+    data_type: &DataType,
+    value: &ExpressionLiteral,
+) -> Result<Option<ScalarValue>> {
+    if matches!(value, ExpressionLiteral::Null) {
+        return ScalarValue::try_new_null(data_type)
+            .map(Some)
+            .map_err(datafusion_error);
+    }
+    Ok(match (data_type, value) {
+        (DataType::Boolean, ExpressionLiteral::Boolean(value)) => {
+            Some(ScalarValue::Boolean(Some(*value)))
+        }
+        (DataType::Int8, ExpressionLiteral::Signed(value)) => i8::try_from(*value)
+            .ok()
+            .map(|value| ScalarValue::Int8(Some(value))),
+        (DataType::Int16, ExpressionLiteral::Signed(value)) => i16::try_from(*value)
+            .ok()
+            .map(|value| ScalarValue::Int16(Some(value))),
+        (DataType::Int32, ExpressionLiteral::Signed(value)) => i32::try_from(*value)
+            .ok()
+            .map(|value| ScalarValue::Int32(Some(value))),
+        (DataType::Int64, ExpressionLiteral::Signed(value)) => {
+            Some(ScalarValue::Int64(Some(*value)))
+        }
+        (DataType::UInt8, ExpressionLiteral::Unsigned(value)) => u8::try_from(*value)
+            .ok()
+            .map(|value| ScalarValue::UInt8(Some(value))),
+        (DataType::UInt16, ExpressionLiteral::Unsigned(value)) => u16::try_from(*value)
+            .ok()
+            .map(|value| ScalarValue::UInt16(Some(value))),
+        (DataType::UInt32, ExpressionLiteral::Unsigned(value)) => u32::try_from(*value)
+            .ok()
+            .map(|value| ScalarValue::UInt32(Some(value))),
+        (DataType::UInt64, ExpressionLiteral::Unsigned(value)) => {
+            Some(ScalarValue::UInt64(Some(*value)))
+        }
+        (DataType::Float64, ExpressionLiteral::Float64Bits(bits)) => {
+            let value = f64::from_bits(*bits);
+            value
+                .is_finite()
+                .then_some(ScalarValue::Float64(Some(value)))
+        }
+        (DataType::Utf8, ExpressionLiteral::String(value)) => {
+            Some(ScalarValue::Utf8(Some(value.clone())))
+        }
+        (DataType::LargeUtf8, ExpressionLiteral::String(value)) => {
+            Some(ScalarValue::LargeUtf8(Some(value.clone())))
+        }
+        _ => None,
+    })
+}
+
 fn from_datafusion(expression: &Expr) -> Result<ExpressionNode> {
     match expression {
         Expr::Column(column) => Ok(ExpressionNode::Column {

@@ -1267,6 +1267,7 @@ dependencies = [
  "datafusion",
  "futures-executor",
  "futures-util",
+ "half",
  "serde",
  "serde_json",
  "sha2 0.10.9",

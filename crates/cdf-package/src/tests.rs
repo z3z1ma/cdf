@@ -392,6 +392,34 @@ fn verified_statistics_profile_is_manifest_bound_typed_parquet() {
     );
     assert_eq!(rows[2].grain, StatisticsProfileGrain::Package);
 
+    let mut windows = Vec::new();
+    let window_count = reader
+        .for_each_verified_statistics_profile_window(&verified, 1, &mut |window| {
+            windows.push((
+                window.schema_hash().to_owned(),
+                window.schema().fields().len(),
+                window
+                    .rows()
+                    .iter()
+                    .map(|row| row.container_id.clone())
+                    .collect::<Vec<_>>(),
+            ));
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(window_count, 2);
+    assert_eq!(windows[0].0, "sha256:schema");
+    assert_eq!(windows[0].1, 2);
+    assert_eq!(windows[0].2, ["seg-000001", "seg-000001"]);
+    assert_eq!(windows[1].2, ["pkg-stats-profile", "pkg-stats-profile"]);
+    assert!(
+        reader
+            .for_each_verified_statistics_profile_window(&verified, 0, &mut |_| Ok(()))
+            .unwrap_err()
+            .message
+            .contains("at least one container")
+    );
+
     let mut visited = 0_u64;
     let error = reader
         .for_each_verified_statistics_profile(&verified, &mut |_| {

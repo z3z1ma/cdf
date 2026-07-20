@@ -63,6 +63,29 @@ pub struct StatisticsProfileRow {
     pub maximum: Option<TypedScalar>,
 }
 
+/// A bounded window from a statistics profile whose complete artifact has already passed package,
+/// manifest, schema, ordering, and row-count verification. Fields are private so provisional
+/// visitor rows can never be promoted into pruning authority by another crate.
+pub struct VerifiedStatisticsProfileWindow {
+    schema: SchemaRef,
+    schema_hash: String,
+    rows: Box<[StatisticsProfileRow]>,
+}
+
+impl VerifiedStatisticsProfileWindow {
+    pub fn schema(&self) -> &SchemaRef {
+        &self.schema
+    }
+
+    pub fn schema_hash(&self) -> &str {
+        &self.schema_hash
+    }
+
+    pub fn rows(&self) -> &[StatisticsProfileRow] {
+        &self.rows
+    }
+}
+
 pub struct StatisticsProfileWriter {
     writer: ArrowWriter<StreamingIdentityArtifact>,
     row_count: u64,
@@ -153,6 +176,111 @@ impl PackageReader {
         }
         validator.finish()
     }
+
+    /// Validates the complete profile before exposing any bounded pruning window, then rereads the
+    /// same verified identity object to emit canonical whole-container windows. `maximum_containers`
+    /// is an admission knob owned by the caller; a container is never split between windows.
+    pub fn for_each_verified_statistics_profile_window(
+        &self,
+        verified: &VerifiedPackage,
+        maximum_containers: usize,
+        visitor: &mut dyn FnMut(VerifiedStatisticsProfileWindow) -> Result<()>,
+    ) -> Result<u64> {
+        if maximum_containers == 0 {
+            return Err(CdfError::contract(
+                "statistics profile window requires at least one container",
+            ));
+        }
+
+        self.for_each_verified_statistics_profile(verified, &mut |_| Ok(()))?;
+        let schema = self.runtime_arrow_schema_verified(verified)?;
+        let object =
+            self.verified_identity_object(Arc::new(verified.clone()), STATISTICS_PROFILE_FILE)?;
+        let mut reader = ParquetRecordBatchReaderBuilder::try_new(object.open_verified_file()?)
+            .map_err(|error| {
+                CdfError::data(format!("open verified statistics profile Parquet: {error}"))
+            })?
+            .build()
+            .map_err(|error| {
+                CdfError::data(format!("build verified statistics profile reader: {error}"))
+            })?;
+
+        let mut rows = Vec::new();
+        let mut schema_hash = None::<String>;
+        let mut current_container = None;
+        let mut container_count = 0_usize;
+        let mut window_count = 0_u64;
+        for batch in &mut reader {
+            let batch = batch.map_err(|error| {
+                CdfError::data(format!(
+                    "read verified statistics profile row group: {error}"
+                ))
+            })?;
+            visit_statistics_profile_rows(&batch, &mut |row| {
+                let key = (row.grain, row.container_ordinal);
+                if current_container.is_some_and(|current| current != key)
+                    && container_count == maximum_containers
+                {
+                    emit_verified_statistics_window(
+                        Arc::clone(&schema),
+                        schema_hash.as_deref().ok_or_else(|| {
+                            CdfError::internal("verified statistics window schema hash is absent")
+                        })?,
+                        &mut rows,
+                        visitor,
+                    )?;
+                    window_count = window_count.checked_add(1).ok_or_else(|| {
+                        CdfError::data("statistics profile window count overflowed u64")
+                    })?;
+                    container_count = 0;
+                }
+                if current_container != Some(key) {
+                    current_container = Some(key);
+                    container_count = container_count.checked_add(1).ok_or_else(|| {
+                        CdfError::data("statistics profile container count overflowed usize")
+                    })?;
+                }
+                match schema_hash.as_deref() {
+                    Some(expected) if expected != row.schema_hash => {
+                        return Err(CdfError::data(
+                            "verified statistics profile schema hash changed during reread",
+                        ));
+                    }
+                    None => schema_hash = Some(row.schema_hash.clone()),
+                    Some(_) => {}
+                }
+                rows.push(row);
+                Ok(())
+            })?;
+        }
+        if !rows.is_empty() {
+            emit_verified_statistics_window(
+                schema,
+                schema_hash.as_deref().ok_or_else(|| {
+                    CdfError::internal("verified statistics window schema hash is absent")
+                })?,
+                &mut rows,
+                visitor,
+            )?;
+            window_count = window_count
+                .checked_add(1)
+                .ok_or_else(|| CdfError::data("statistics profile window count overflowed u64"))?;
+        }
+        Ok(window_count)
+    }
+}
+
+fn emit_verified_statistics_window(
+    schema: SchemaRef,
+    schema_hash: &str,
+    rows: &mut Vec<StatisticsProfileRow>,
+    visitor: &mut dyn FnMut(VerifiedStatisticsProfileWindow) -> Result<()>,
+) -> Result<()> {
+    visitor(VerifiedStatisticsProfileWindow {
+        schema,
+        schema_hash: schema_hash.to_owned(),
+        rows: std::mem::take(rows).into_boxed_slice(),
+    })
 }
 
 struct StatisticsProfileValidator<'a> {
