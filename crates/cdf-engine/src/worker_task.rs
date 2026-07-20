@@ -146,20 +146,8 @@ impl EnginePartitionEvidence {
                     _ => None,
                 })
                 .collect::<Vec<_>>();
-            let worker_observations = self
-                .processed_observations
-                .iter()
-                .map(|observation| {
-                    WorkerProcessedObservation::new(
-                        observation.observation_id.clone(),
-                        observation.outcome.clone(),
-                        cdf_runtime::WorkerPosition::inline(observation.source_position.clone())?,
-                    )
-                })
-                .collect::<Result<Vec<_>>>()?;
             if self.lineage.input_rows != result.counts.input_rows
                 || self.profile.output_rows != result.counts.output_rows
-                || worker_observations != result.processed_observations
                 || self.lineage.output_segments != prepared_segments
             {
                 return Err(CdfError::contract(
@@ -716,14 +704,29 @@ impl WorkerAdmissionVerifier for EngineWorkerAdmissionVerifier<'_> {
         task: &PortablePartitionTask,
         authority: &ReconstructedWorkerTaskAuthority,
         attestation: &WorkerSourceAttestation,
-        observations: &[WorkerProcessedObservation],
+        result: &cdf_runtime::PartitionWorkerResult,
     ) -> Result<VerifiedWorkerSourceFacts> {
+        let plan = authority
+            .execution_program::<ReconstructedEngineWorkerProgram>()?
+            .plan();
+        let evidence = self.read_partition_evidence(task, plan, result)?;
+        let observations = evidence
+            .processed_observations
+            .iter()
+            .map(|observation| {
+                WorkerProcessedObservation::new(
+                    observation.observation_id.clone(),
+                    observation.outcome.clone(),
+                    cdf_runtime::WorkerPosition::inline(observation.source_position.clone())?,
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
         self.source.verify_source(
             task,
             authority.source(),
             authority.partition(),
             attestation,
-            observations,
+            &observations,
         )
     }
 }

@@ -370,7 +370,7 @@ impl WorkerAdmissionVerifier for MockArtifactStore {
         _task: &PortablePartitionTask,
         authority: &ReconstructedWorkerTaskAuthority,
         attestation: &WorkerSourceAttestation,
-        observations: &[WorkerProcessedObservation],
+        _result: &PartitionWorkerResult,
     ) -> Result<VerifiedWorkerSourceFacts> {
         let planned = authority
             .partition()
@@ -389,12 +389,6 @@ impl WorkerAdmissionVerifier for MockArtifactStore {
         };
         if processed != planned
             || attestation.physical_schema_hash != *authority.execution().output_schema_hash()
-            || observations.iter().any(|observation| {
-                !matches!(
-                    &observation.source_position,
-                    WorkerPosition::Inline { position } if position == planned
-                )
-            })
         {
             return Err(CdfError::contract(
                 "worker source attestation exceeds reconstructed position/schema authority",
@@ -773,14 +767,6 @@ impl Fixture {
                     processed_position: WorkerPosition::inline(position(150)).unwrap(),
                     physical_schema_hash: self.task.execution.output_schema_hash.clone(),
                 }),
-                processed_observations: vec![
-                    WorkerProcessedObservation::new(
-                        "partition-00000003",
-                        ProcessedObservationOutcome::Admitted,
-                        WorkerPosition::inline(position(150)).unwrap(),
-                    )
-                    .unwrap(),
-                ],
                 artifacts: vec![WorkerArtifactReceipt {
                     role: WorkerArtifactRole::CanonicalSegment {
                         segment_id: SegmentId::new("p00000003-s00000000").unwrap(),
@@ -948,14 +934,6 @@ fn prepared_segment_receipts_are_row_verified_without_becoming_package_identity(
                 processed_position: WorkerPosition::inline(position(150)).unwrap(),
                 physical_schema_hash: task.execution.output_schema_hash.clone(),
             }),
-            processed_observations: vec![
-                WorkerProcessedObservation::new(
-                    "partition-00000003",
-                    ProcessedObservationOutcome::Admitted,
-                    WorkerPosition::inline(position(150)).unwrap(),
-                )
-                .unwrap(),
-            ],
             artifacts: vec![WorkerArtifactReceipt {
                 role: WorkerArtifactRole::PreparedSegment {
                     segment_id: SegmentId::new("p00000003-s00000000").unwrap(),
@@ -1583,4 +1561,19 @@ fn protocol_contains_no_payload_secret_or_coordinator_commit_authority() {
     assert!(!result_json.contains("package_hash"));
     assert!(!result_json.contains("destination_receipt"));
     assert!(!result_json.contains("checkpoint_id"));
+    assert!(!result_json.contains("processed_observations"));
+    assert!(result_json.len() < 2_048);
+
+    let mut legacy_inline = serde_json::to_value(result).unwrap();
+    legacy_inline["processed_observations"] = serde_json::json!([
+        {
+            "observation_id": "partition-00000003",
+            "outcome": "admitted",
+            "source_position": {
+                "kind": "inline",
+                "position": position(150),
+            },
+        }
+    ]);
+    assert!(serde_json::from_value::<PartitionWorkerResult>(legacy_inline).is_err());
 }

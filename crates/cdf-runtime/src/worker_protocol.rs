@@ -1465,7 +1465,7 @@ pub trait WorkerAdmissionVerifier {
         task: &PortablePartitionTask,
         authority: &ReconstructedWorkerTaskAuthority,
         attestation: &WorkerSourceAttestation,
-        observations: &[WorkerProcessedObservation],
+        result: &PartitionWorkerResult,
     ) -> Result<VerifiedWorkerSourceFacts>;
 }
 
@@ -2622,7 +2622,6 @@ pub struct PartitionWorkerResult {
     pub status: WorkerTerminalStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_attestation: Option<WorkerSourceAttestation>,
-    pub processed_observations: Vec<WorkerProcessedObservation>,
     pub artifacts: Vec<WorkerArtifactReceipt>,
     pub counts: WorkerResultCounts,
     pub telemetry: WorkerTelemetry,
@@ -2638,7 +2637,6 @@ struct UncheckedPartitionWorkerResult {
     write_permit_sha256: String,
     status: WorkerTerminalStatus,
     source_attestation: Option<WorkerSourceAttestation>,
-    processed_observations: Vec<WorkerProcessedObservation>,
     artifacts: Vec<WorkerArtifactReceipt>,
     counts: WorkerResultCounts,
     telemetry: WorkerTelemetry,
@@ -2656,7 +2654,6 @@ impl TryFrom<UncheckedPartitionWorkerResult> for PartitionWorkerResult {
             write_permit_sha256: value.write_permit_sha256,
             status: value.status,
             source_attestation: value.source_attestation,
-            processed_observations: value.processed_observations,
             artifacts: value.artifacts,
             counts: value.counts,
             telemetry: value.telemetry,
@@ -2671,7 +2668,6 @@ impl TryFrom<UncheckedPartitionWorkerResult> for PartitionWorkerResult {
 pub struct PartitionWorkerResultInput {
     pub status: WorkerTerminalStatus,
     pub source_attestation: Option<WorkerSourceAttestation>,
-    pub processed_observations: Vec<WorkerProcessedObservation>,
     pub artifacts: Vec<WorkerArtifactReceipt>,
     pub counts: WorkerResultCounts,
     pub telemetry: WorkerTelemetry,
@@ -2689,7 +2685,6 @@ impl PartitionWorkerResult {
             write_permit_sha256: attempt.write_permit.hash()?,
             status: input.status,
             source_attestation: input.source_attestation,
-            processed_observations: input.processed_observations,
             artifacts: input.artifacts,
             counts: input.counts,
             telemetry: input.telemetry,
@@ -2740,14 +2735,11 @@ impl PartitionWorkerResult {
                 "successful partition worker result requires source attestation",
             ));
         }
-        if !matches!(self.status, WorkerTerminalStatus::Succeeded)
-            && (!self.processed_observations.is_empty() || !self.artifacts.is_empty())
-        {
+        if !matches!(self.status, WorkerTerminalStatus::Succeeded) && !self.artifacts.is_empty() {
             return Err(CdfError::contract(
-                "non-successful partition worker result cannot advance observations or artifacts",
+                "non-successful partition worker result cannot advance artifacts",
             ));
         }
-        validate_processed_observations(&self.processed_observations)?;
         validate_worker_receipts(&self.artifacts)?;
         if self
             .counts
@@ -2894,12 +2886,7 @@ impl PartitionWorkerResult {
         let attestation = self.source_attestation.as_ref().ok_or_else(|| {
             CdfError::contract("successful partition worker result lacks source attestation")
         })?;
-        let source_facts = verifier.verify_source_authority(
-            task,
-            &authority,
-            attestation,
-            &self.processed_observations,
-        )?;
+        let source_facts = verifier.verify_source_authority(task, &authority, attestation, self)?;
         for (matches, label, claimed, observed) in [
             (
                 source_facts.processed_position == attestation.processed_position,
@@ -2965,7 +2952,6 @@ impl PartitionWorkerResult {
             &self.write_permit_sha256,
             &self.status,
             &self.source_attestation,
-            &self.processed_observations,
             &self.artifacts,
             &self.counts,
         ))
@@ -3171,21 +3157,6 @@ impl SegmentWorkerResult {
             &self.artifact,
         ))
     }
-}
-
-fn validate_processed_observations(observations: &[WorkerProcessedObservation]) -> Result<()> {
-    for observation in observations {
-        observation.validate()?;
-    }
-    if observations
-        .windows(2)
-        .any(|pair| pair[0].observation_id >= pair[1].observation_id)
-    {
-        return Err(CdfError::contract(
-            "partition worker processed observations must be sorted and unique",
-        ));
-    }
-    Ok(())
 }
 
 fn validate_worker_receipts(receipts: &[WorkerArtifactReceipt]) -> Result<()> {

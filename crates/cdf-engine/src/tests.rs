@@ -838,16 +838,6 @@ impl cdf_runtime::IsolatedPartitionExecutor for ActualEngineIsolatedExecutor<'_>
                     &plan.write_disposition,
                 )?
             };
-            let processed_observations = processed
-                .iter()
-                .map(|observation| {
-                    cdf_runtime::WorkerProcessedObservation::new(
-                        observation.observation_id.clone(),
-                        observation.outcome.clone(),
-                        cdf_runtime::WorkerPosition::inline(observation.source_position.clone())?,
-                    )
-                })
-                .collect::<Result<Vec<_>>>()?;
             let stream_admission_bytes = std::fs::read(
                 package_dir.join("schema/stream-admission-evidence.json"),
             )
@@ -988,7 +978,6 @@ impl cdf_runtime::IsolatedPartitionExecutor for ActualEngineIsolatedExecutor<'_>
                         )?,
                         physical_schema_hash,
                     }),
-                    processed_observations,
                     artifacts: receipts,
                     counts: cdf_runtime::WorkerResultCounts {
                         input_rows: output.output.lineage.input_rows,
