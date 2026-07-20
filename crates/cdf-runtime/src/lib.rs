@@ -21,7 +21,6 @@ mod source;
 mod source_add;
 mod source_frontier;
 mod source_registry;
-mod spill;
 mod staging;
 mod staging_lease;
 mod stream_policy;
@@ -34,6 +33,9 @@ pub use bounded_format::*;
 pub use bulk::*;
 pub use canonical_frontier::*;
 pub use capabilities::*;
+pub use cdf_memory::{
+    FixedSpillBudget, SpillBudgetCoordinator, SpillBudgetSnapshot, SpillReservation,
+};
 pub use content_reclamation::*;
 pub use context::*;
 pub use controlled_byte_source::*;
@@ -51,7 +53,6 @@ pub use source::*;
 pub use source_add::*;
 pub use source_frontier::*;
 pub use source_registry::*;
-pub use spill::*;
 pub use staging::*;
 pub use staging_lease::*;
 pub use stream_policy::*;

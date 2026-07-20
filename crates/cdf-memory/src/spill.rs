@@ -14,6 +14,7 @@ pub struct SpillBudgetSnapshot {
     pub reservation_failures: u64,
 }
 
+/// Process-wide disk-spill admission authority shared by every runtime-neutral buffer owner.
 pub trait SpillBudgetCoordinator: Send + Sync {
     fn try_reserve(&self, bytes: u64) -> Result<Option<SpillReservation>>;
     fn snapshot(&self) -> SpillBudgetSnapshot;

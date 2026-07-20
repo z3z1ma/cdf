@@ -1,5 +1,9 @@
 #![doc = "Runtime-neutral memory accounting, admission, and payload ownership."]
 
+mod spill;
+
+pub use spill::*;
+
 use std::{
     collections::BTreeMap,
     fs,

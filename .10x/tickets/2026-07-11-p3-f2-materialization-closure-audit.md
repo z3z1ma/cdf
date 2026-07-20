@@ -70,6 +70,7 @@ No unrelated product feature or performance tuning beyond closure blockers.
 - 2026-07-18: Removed state pre-finalization's package-sized segment-position `BTreeMap`. The package journal and engine position evidence are both canonical streams, so state construction now joins them lockstep and fails at the first missing, reordered, or mismatched segment identity.
 - 2026-07-18: Removed four package-cardinality `BTreeSet` allocations from direct engine finalization and the equivalent isolated-lineage set. Lineage, processed-observation, and terminal-quarantine vectors are now canonicalized once in place, reject adjacent duplicate identities, and compare against ordered stream-admission/quarantine authority with linear iterators. This preserves exact-set semantics and strengthens duplicate terminal-quarantine rejection without another resident identity index.
 - 2026-07-18: Began the resident-manifest removal without changing `manifest.json` bytes, package hashes, or layout. A callback-driven parser now returns only constant-cardinality manifest/identity headers while visiting file and segment arrays one entry at a time in stored order. It rejects unknown, duplicate, and missing fields and stops immediately on consumer failure. Production reader/finalizer migration remains open; this is the parser boundary they will consume, not a second artifact format.
+- 2026-07-18: Moved the process-wide spill budget/reservation authority from `cdf-runtime` into the runtime-neutral `cdf-memory` resource layer. `cdf-runtime` re-exports the exact types, so existing sources, destinations, task stores, and the concurrent connector lane remain source-compatible without an import migration. The lower-level package layer can now account metadata spill directly without depending upward on orchestration or inventing a package-specific disk-budget trait.
 
 ## Evidence
 
@@ -185,6 +186,10 @@ No unrelated product feature or performance tuning beyond closure blockers.
   - `CARGO_BUILD_JOBS=12 cargo test -p cdf-package manifest_parser_ --lib --locked -j 12` — passed, 2 tests. Canonical current-format bytes produce the same header/file/segment facts as the stored model, and a file-entry consumer failure stops after exactly one record.
   - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-package --all-targets --locked -j 12 -- -D warnings`, `cargo fmt --all`, and `git diff --check` passed.
   - Limit: no production reader uses the parser yet and the builder still reconstructs final vectors; this is migration infrastructure, not F2 closure evidence by itself.
+- 2026-07-18 runtime-neutral spill authority:
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-memory reservations_enforce_shared_budget_and_release_on_drop --locked -j 12` — passed. The moved authority still enforces aggregate capacity, growth, shrink/release, peak accounting, and failure counts.
+  - `CARGO_BUILD_JOBS=12 cargo check -p cdf-runtime -p cdf-task-store -p cdf-package --all-targets --locked -j 12` and matching strict Clippy passed. This proves the runtime re-export preserves existing consumers while `cdf-package` can depend only on the lower resource layer.
+  - `cargo fmt --all` and `git diff --check` passed.
 - This is partial F2 evidence only. The ticket remains active because its cross-codebase owner matrix, static architecture gates, remaining metadata-cardinality closure, and geometric stress proof are not complete.
 
 ## Review
