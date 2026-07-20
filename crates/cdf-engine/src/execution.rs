@@ -7412,7 +7412,7 @@ pub fn assemble_isolated_worker_package(
             segment_id,
             package_row_ord_start,
             row_count,
-            &bytes,
+            bytes.payload(),
         )?;
         segments.push(metrics.segment);
         package_row_ord_start = package_row_ord_start

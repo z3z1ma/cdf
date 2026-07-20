@@ -11,6 +11,7 @@ arrow-array = "58.3.0"
 arrow-ipc = { version = "58.3.0", features = ["lz4"] }
 arrow-schema = "58.3.0"
 arrow-select = "58.3.0"
+bytes = "1.11.1"
 datafusion = { version = "54.0.0", default-features = false }
 cdf-contract = { path = "../cdf-contract" }
 cdf-expression = { path = "../cdf-expression" }

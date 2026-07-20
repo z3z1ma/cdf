@@ -170,9 +170,21 @@ async fn execute_to_package_with_streaming_hooks<'a>(
 
 use super::*;
 
-#[derive(Default)]
 struct MemoryWorkerCompilerArtifacts {
     values: BTreeMap<cdf_runtime::WorkerArtifactKind, Vec<u8>>,
+    memory: Arc<dyn cdf_memory::MemoryCoordinator>,
+}
+
+impl Default for MemoryWorkerCompilerArtifacts {
+    fn default() -> Self {
+        Self {
+            values: BTreeMap::new(),
+            memory: Arc::new(
+                cdf_memory::DeterministicMemoryCoordinator::new(512 * 1024 * 1024, BTreeMap::new())
+                    .unwrap(),
+            ),
+        }
+    }
 }
 
 impl WorkerCompilerArtifactWriter for MemoryWorkerCompilerArtifacts {
@@ -199,18 +211,28 @@ impl WorkerCompilerArtifactWriter for MemoryWorkerCompilerArtifacts {
 }
 
 impl EngineWorkerArtifactAuthority for MemoryWorkerCompilerArtifacts {
+    fn memory(&self) -> Arc<dyn cdf_memory::MemoryCoordinator> {
+        Arc::clone(&self.memory)
+    }
+
     fn read_compiler_artifact(
         &self,
         reference: &cdf_runtime::WorkerArtifactReference,
         maximum_bytes: u64,
     ) -> Result<VerifiedWorkerCompilerArtifact> {
+        let lease = reserve_worker_artifact_memory(
+            &self.memory,
+            reference.byte_count,
+            maximum_bytes,
+            cdf_memory::MemoryClass::Control,
+        )?;
         let bytes =
             self.values.get(&reference.kind).cloned().ok_or_else(|| {
                 cdf_kernel::CdfError::contract("test compiler artifact is missing")
             })?;
         VerifiedWorkerCompilerArtifact::new(
             reference,
-            bytes,
+            cdf_memory::AccountedBytes::new(bytes::Bytes::from(bytes), lease)?,
             reference.provider_generation.as_ref(),
             maximum_bytes,
         )
@@ -219,6 +241,8 @@ impl EngineWorkerArtifactAuthority for MemoryWorkerCompilerArtifacts {
     fn verify_output_artifact(
         &self,
         _reference: &cdf_runtime::WorkerArtifactReference,
+        _maximum_encoded_bytes: u64,
+        _maximum_decoded_bytes: u64,
     ) -> Result<cdf_runtime::VerifiedWorkerArtifactFacts> {
         Err(cdf_kernel::CdfError::internal(
             "compiler fixture contains no worker output artifacts",
@@ -275,15 +299,31 @@ impl EngineWorkerSourceAuthority for NoWorkerSourceFacts {
     }
 }
 
-type SharedEngineWorkerArtifactMap = BTreeMap<(String, String), Vec<u8>>;
+type SharedEngineWorkerArtifactMap = BTreeMap<(String, String), bytes::Bytes>;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct SharedEngineWorkerArtifacts {
     values: Arc<Mutex<SharedEngineWorkerArtifactMap>>,
+    memory: Arc<dyn cdf_memory::MemoryCoordinator>,
+}
+
+impl Default for SharedEngineWorkerArtifacts {
+    fn default() -> Self {
+        Self {
+            values: Arc::new(Mutex::new(BTreeMap::new())),
+            memory: Arc::new(
+                cdf_memory::DeterministicMemoryCoordinator::new(
+                    2 * 1024 * 1024 * 1024,
+                    BTreeMap::new(),
+                )
+                .unwrap(),
+            ),
+        }
+    }
 }
 
 impl SharedEngineWorkerArtifacts {
-    fn bytes_for(&self, reference: &cdf_runtime::WorkerArtifactReference) -> Result<Vec<u8>> {
+    fn bytes_for(&self, reference: &cdf_runtime::WorkerArtifactReference) -> Result<bytes::Bytes> {
         self.values
             .lock()
             .unwrap()
@@ -295,6 +335,30 @@ impl SharedEngineWorkerArtifacts {
             .ok_or_else(|| cdf_kernel::CdfError::contract("worker artifact is missing"))
     }
 
+    fn accounted_bytes_for(
+        &self,
+        reference: &cdf_runtime::WorkerArtifactReference,
+        maximum_bytes: u64,
+        class: cdf_memory::MemoryClass,
+    ) -> Result<cdf_memory::AccountedBytes> {
+        let lease = reserve_worker_artifact_memory(
+            &self.memory,
+            reference.byte_count,
+            maximum_bytes,
+            class,
+        )?;
+        cdf_memory::AccountedBytes::new(self.bytes_for(reference)?, lease)
+    }
+
+    fn decoded_lease(&self, maximum_bytes: u64) -> Result<cdf_memory::MemoryLease> {
+        reserve_worker_artifact_memory(
+            &self.memory,
+            maximum_bytes,
+            maximum_bytes,
+            cdf_memory::MemoryClass::Decode,
+        )
+    }
+
     fn object_state(
         &self,
         reference: &cdf_runtime::WorkerArtifactReference,
@@ -303,7 +367,7 @@ impl SharedEngineWorkerArtifacts {
             Ok(bytes) => cdf_runtime::WorkerArtifactObjectState::Present {
                 content_sha256: format!(
                     "sha256:{:x}",
-                    <sha2::Sha256 as sha2::Digest>::digest(bytes)
+                    <sha2::Sha256 as sha2::Digest>::digest(bytes.as_ref())
                 ),
                 provider_generation: reference
                     .provider_generation
@@ -333,18 +397,64 @@ impl SharedEngineWorkerArtifacts {
         })
     }
 
-    fn observed_output_rows(bytes: Vec<u8>) -> Result<u64> {
+    fn observed_output_rows(
+        bytes: cdf_memory::AccountedBytes,
+        decoded_lease: cdf_memory::MemoryLease,
+        maximum_decoded_bytes: u64,
+    ) -> Result<u64> {
+        let bytes = bytes.into_retained_bytes();
         let mut reader = arrow_ipc::reader::FileReader::try_new(std::io::Cursor::new(bytes), None)
             .map_err(cdf_kernel::CdfError::from)?;
-        reader.try_fold(0_u64, |rows, batch| {
-            rows.checked_add(
-                u64::try_from(batch?.num_rows()).map_err(|_| {
+        let rows =
+            reader.try_fold(0_u64, |rows, batch| {
+                let batch = batch?;
+                if cdf_memory::record_batch_retained_bytes(&batch)? > maximum_decoded_bytes {
+                    return Err(cdf_kernel::CdfError::data(
+                        "worker segment batch exceeds its admitted decoded-memory budget",
+                    ));
+                }
+                rows.checked_add(u64::try_from(batch.num_rows()).map_err(|_| {
                     cdf_kernel::CdfError::data("worker segment row count exceeds u64")
-                })?,
-            )
-            .ok_or_else(|| cdf_kernel::CdfError::data("worker segment row count overflow"))
-        })
+                })?)
+                .ok_or_else(|| cdf_kernel::CdfError::data("worker segment row count overflow"))
+            })?;
+        drop(decoded_lease);
+        Ok(rows)
     }
+}
+
+fn reserve_worker_artifact_memory(
+    memory: &Arc<dyn cdf_memory::MemoryCoordinator>,
+    bytes: u64,
+    maximum_bytes: u64,
+    class: cdf_memory::MemoryClass,
+) -> Result<cdf_memory::MemoryLease> {
+    if bytes == 0 || bytes > maximum_bytes {
+        return Err(cdf_kernel::CdfError::data(
+            "worker artifact exceeds its admitted memory window",
+        ));
+    }
+    let request = cdf_memory::ReservationRequest::new(
+        cdf_memory::ConsumerKey::new("isolated-worker-artifact", class)?,
+        bytes,
+    )?;
+    memory.try_reserve(&request)?.ok_or_else(|| {
+        cdf_kernel::CdfError::data(
+            "isolated worker artifact memory is exhausted; reduce jobs or raise the worker memory budget",
+        )
+    })
+}
+
+fn account_worker_artifact_bytes(
+    memory: &Arc<dyn cdf_memory::MemoryCoordinator>,
+    bytes: Vec<u8>,
+    maximum_bytes: u64,
+    class: cdf_memory::MemoryClass,
+) -> Result<cdf_memory::AccountedBytes> {
+    let byte_count = u64::try_from(bytes.len())
+        .map_err(|_| cdf_kernel::CdfError::data("worker artifact exceeds u64"))?;
+    let lease = reserve_worker_artifact_memory(memory, byte_count, maximum_bytes, class)?;
+    cdf_memory::AccountedBytes::new(bytes::Bytes::from(bytes), lease)
 }
 
 fn prepared_segment_bytes(
@@ -405,13 +515,17 @@ impl WorkerCompilerArtifactWriter for SharedEngineWorkerArtifacts {
                 reference.store_namespace.as_str().to_owned(),
                 reference.object_key.as_str().to_owned(),
             ),
-            canonical_bytes.to_vec(),
+            bytes::Bytes::copy_from_slice(canonical_bytes),
         );
         Ok(reference)
     }
 }
 
 impl EngineWorkerArtifactAuthority for SharedEngineWorkerArtifacts {
+    fn memory(&self) -> Arc<dyn cdf_memory::MemoryCoordinator> {
+        Arc::clone(&self.memory)
+    }
+
     fn read_compiler_artifact(
         &self,
         reference: &cdf_runtime::WorkerArtifactReference,
@@ -419,7 +533,7 @@ impl EngineWorkerArtifactAuthority for SharedEngineWorkerArtifacts {
     ) -> Result<VerifiedWorkerCompilerArtifact> {
         VerifiedWorkerCompilerArtifact::new(
             reference,
-            self.bytes_for(reference)?,
+            self.accounted_bytes_for(reference, maximum_bytes, cdf_memory::MemoryClass::Control)?,
             reference.provider_generation.as_ref(),
             maximum_bytes,
         )
@@ -428,13 +542,19 @@ impl EngineWorkerArtifactAuthority for SharedEngineWorkerArtifacts {
     fn verify_output_artifact(
         &self,
         reference: &cdf_runtime::WorkerArtifactReference,
+        maximum_encoded_bytes: u64,
+        maximum_decoded_bytes: u64,
     ) -> Result<cdf_runtime::VerifiedWorkerArtifactFacts> {
-        let bytes = self.bytes_for(reference)?;
+        let bytes = self.accounted_bytes_for(
+            reference,
+            maximum_encoded_bytes,
+            cdf_memory::MemoryClass::Package,
+        )?;
         let observed = Self::reference(
             reference.kind,
             reference.store_namespace.as_str(),
             reference.object_key.as_str().to_owned(),
-            &bytes,
+            bytes.payload(),
         )?;
         if &observed != reference {
             return Err(cdf_kernel::CdfError::contract(
@@ -446,7 +566,13 @@ impl EngineWorkerArtifactAuthority for SharedEngineWorkerArtifacts {
             cdf_runtime::WorkerArtifactKind::PreparedSegment
                 | cdf_runtime::WorkerArtifactKind::CanonicalSegment
         )
-        .then(|| Self::observed_output_rows(bytes))
+        .then(|| {
+            Self::observed_output_rows(
+                bytes,
+                self.decoded_lease(maximum_decoded_bytes)?,
+                maximum_decoded_bytes,
+            )
+        })
         .transpose()?;
         cdf_runtime::VerifiedWorkerArtifactFacts::new(reference.clone(), row_count)
     }
@@ -459,7 +585,12 @@ impl EngineWorkerArtifactAuthority for SharedEngineWorkerArtifacts {
     ) -> Result<VerifiedPreparedSegmentArtifact> {
         VerifiedPreparedSegmentArtifact::new(
             reference,
-            self.bytes_for(reference)?,
+            self.accounted_bytes_for(
+                reference,
+                maximum_encoded_bytes,
+                cdf_memory::MemoryClass::Package,
+            )?,
+            self.decoded_lease(maximum_decoded_bytes)?,
             reference.provider_generation.as_ref(),
             maximum_encoded_bytes,
             maximum_decoded_bytes,
@@ -474,7 +605,12 @@ impl EngineWorkerArtifactAuthority for SharedEngineWorkerArtifacts {
     ) -> Result<VerifiedCanonicalSegmentArtifact> {
         VerifiedCanonicalSegmentArtifact::new(
             reference,
-            self.bytes_for(reference)?,
+            self.accounted_bytes_for(
+                reference,
+                maximum_encoded_bytes,
+                cdf_memory::MemoryClass::Package,
+            )?,
+            self.decoded_lease(maximum_decoded_bytes)?,
             reference.provider_generation.as_ref(),
             maximum_encoded_bytes,
             maximum_decoded_bytes,
@@ -488,7 +624,7 @@ impl EngineWorkerArtifactAuthority for SharedEngineWorkerArtifacts {
     ) -> Result<VerifiedEnginePartitionEvidenceArtifact> {
         VerifiedEnginePartitionEvidenceArtifact::new(
             reference,
-            self.bytes_for(reference)?,
+            self.accounted_bytes_for(reference, maximum_bytes, cdf_memory::MemoryClass::Control)?,
             reference.provider_generation.as_ref(),
             maximum_bytes,
         )
@@ -521,14 +657,14 @@ impl EngineWorkerOutputAuthority for SharedEngineWorkerArtifacts {
     fn write_authorized_bytes(
         &self,
         authorization: cdf_runtime::WorkerArtifactWriteAuthorization<'_>,
-        bytes: Vec<u8>,
+        bytes: cdf_memory::AccountedBytes,
     ) -> Result<cdf_runtime::VerifiedWorkerArtifactFacts> {
         let reference = &authorization.receipt().artifact;
         let observed = Self::reference(
             reference.kind,
             reference.store_namespace.as_str(),
             reference.object_key.as_str().to_owned(),
-            &bytes,
+            bytes.payload(),
         )?;
         if &observed != reference {
             return Err(cdf_kernel::CdfError::contract(
@@ -540,15 +676,22 @@ impl EngineWorkerOutputAuthority for SharedEngineWorkerArtifacts {
                 reference.store_namespace.as_str().to_owned(),
                 reference.object_key.as_str().to_owned(),
             ),
-            bytes,
+            bytes.into_retained_bytes(),
         );
-        self.verify_output_artifact(reference)
+        let row_count = match &authorization.receipt().role {
+            cdf_runtime::WorkerArtifactRole::PreparedSegment { row_count, .. }
+            | cdf_runtime::WorkerArtifactRole::CanonicalSegment { row_count, .. } => {
+                Some(*row_count)
+            }
+            _ => None,
+        };
+        cdf_runtime::VerifiedWorkerArtifactFacts::new(reference.clone(), row_count)
     }
 }
 
 struct PendingEngineWorkerWrite<'a> {
     store: &'a SharedEngineWorkerArtifacts,
-    bytes: Vec<u8>,
+    bytes: Option<cdf_memory::AccountedBytes>,
 }
 
 impl cdf_runtime::WorkerAuthorizedArtifactSink for PendingEngineWorkerWrite<'_> {
@@ -557,11 +700,15 @@ impl cdf_runtime::WorkerAuthorizedArtifactSink for PendingEngineWorkerWrite<'_> 
         authorization: cdf_runtime::WorkerArtifactWriteAuthorization<'_>,
     ) -> Result<cdf_runtime::VerifiedWorkerArtifactFacts> {
         let reference = &authorization.receipt().artifact;
+        let bytes = self
+            .bytes
+            .take()
+            .ok_or_else(|| cdf_kernel::CdfError::internal("worker output was already consumed"))?;
         let observed = SharedEngineWorkerArtifacts::reference(
             reference.kind,
             reference.store_namespace.as_str(),
             reference.object_key.as_str().to_owned(),
-            &self.bytes,
+            bytes.payload(),
         )?;
         if &observed != reference {
             return Err(cdf_kernel::CdfError::contract(
@@ -573,9 +720,16 @@ impl cdf_runtime::WorkerAuthorizedArtifactSink for PendingEngineWorkerWrite<'_> 
                 reference.store_namespace.as_str().to_owned(),
                 reference.object_key.as_str().to_owned(),
             ),
-            std::mem::take(&mut self.bytes),
+            bytes.into_retained_bytes(),
         );
-        self.store.verify_output_artifact(reference)
+        let row_count = match &authorization.receipt().role {
+            cdf_runtime::WorkerArtifactRole::PreparedSegment { row_count, .. }
+            | cdf_runtime::WorkerArtifactRole::CanonicalSegment { row_count, .. } => {
+                Some(*row_count)
+            }
+            _ => None,
+        };
+        cdf_runtime::VerifiedWorkerArtifactFacts::new(reference.clone(), row_count)
     }
 }
 
@@ -927,9 +1081,19 @@ impl cdf_runtime::IsolatedPartitionExecutor for ActualEngineIsolatedExecutor<'_>
                     artifact: reference,
                 };
                 let object_state = self.artifacts.object_state(&receipt.artifact);
+                let maximum_bytes = task
+                    .resources
+                    .memory_bytes
+                    .min(task.output_policy.maximum_artifact_bytes)
+                    .min(attempt.write_permit.output.maximum_bytes);
                 let mut sink = PendingEngineWorkerWrite {
                     store: &self.artifacts,
-                    bytes,
+                    bytes: Some(account_worker_artifact_bytes(
+                        &self.artifacts.memory,
+                        bytes,
+                        maximum_bytes,
+                        cdf_memory::MemoryClass::Package,
+                    )?),
                 };
                 write_session.write(&receipt, &object_state, self.now_ms, &mut sink)?;
                 receipts.push(receipt);
@@ -951,9 +1115,19 @@ impl cdf_runtime::IsolatedPartitionExecutor for ActualEngineIsolatedExecutor<'_>
                 artifact: evidence_reference,
             };
             let evidence_state = self.artifacts.object_state(&evidence_receipt.artifact);
+            let maximum_bytes = task
+                .resources
+                .memory_bytes
+                .min(task.output_policy.maximum_artifact_bytes)
+                .min(attempt.write_permit.output.maximum_bytes);
             let mut evidence_sink = PendingEngineWorkerWrite {
                 store: &self.artifacts,
-                bytes: partition_evidence_bytes,
+                bytes: Some(account_worker_artifact_bytes(
+                    &self.artifacts.memory,
+                    partition_evidence_bytes,
+                    maximum_bytes,
+                    cdf_memory::MemoryClass::Control,
+                )?),
             };
             write_session.write(
                 &evidence_receipt,
@@ -1876,6 +2050,63 @@ fn actual_engine_capsule_preserves_a_finite_drain_epoch() {
             .content_sha256,
         format!("sha256:{}", direct.output.segments[0].sha256)
     );
+}
+
+#[test]
+fn isolated_worker_artifact_reads_hold_and_release_real_memory_leases() {
+    let store = SharedEngineWorkerArtifacts::default();
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "value",
+        DataType::Int64,
+        false,
+    )]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int64Array::from_iter_values(0..1_024)) as ArrayRef],
+    )
+    .unwrap();
+    let mut encoded = Vec::new();
+    cdf_package::encode_canonical_segment_ipc(&mut encoded, schema.as_ref(), &[batch]).unwrap();
+    let reference = SharedEngineWorkerArtifacts::reference(
+        cdf_runtime::WorkerArtifactKind::PreparedSegment,
+        "worker-memory-test",
+        "prepared/segment.arrow".to_owned(),
+        &encoded,
+    )
+    .unwrap();
+    store.values.lock().unwrap().insert(
+        (
+            reference.store_namespace.as_str().to_owned(),
+            reference.object_key.as_str().to_owned(),
+        ),
+        bytes::Bytes::from(encoded),
+    );
+
+    let artifact = store
+        .read_prepared_segment(&reference, reference.byte_count, 64 * 1_024)
+        .unwrap();
+    assert_eq!(
+        artifact
+            .batches()
+            .iter()
+            .map(RecordBatch::num_rows)
+            .sum::<usize>(),
+        1_024
+    );
+    assert!(store.memory.snapshot().current_bytes > 0);
+    drop(artifact);
+    assert_eq!(store.memory.snapshot().current_bytes, 0);
+
+    let error = match store.read_prepared_segment(&reference, reference.byte_count, 1) {
+        Ok(_) => panic!("oversized decoded artifact unexpectedly acquired a lease"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("exceeds its admitted decoded-memory budget")
+    );
+    assert_eq!(store.memory.snapshot().current_bytes, 0);
 }
 
 #[test]

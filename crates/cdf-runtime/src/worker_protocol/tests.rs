@@ -278,49 +278,8 @@ impl MockArtifactStore {
             serde_json::json!({"tampered": true}),
         );
     }
-}
 
-impl WorkerAdmissionVerifier for MockArtifactStore {
-    fn reconstruct_task_authority(
-        &self,
-        task: &PortablePartitionTask,
-    ) -> Result<ReconstructedWorkerTaskAuthority> {
-        for reference in [
-            &task.source.compiled_source_plan,
-            &task.partition.partition_plan,
-        ]
-        .into_iter()
-        .chain(task.execution.artifacts.references())
-        {
-            self.verify_artifact(reference)?;
-        }
-        let source = self.load(&task.source.compiled_source_plan);
-        let partition = self.load(&task.partition.partition_plan);
-        let load_hash = |reference: &WorkerArtifactReference| {
-            self.load::<RecordedSemanticArtifact>(reference)
-                .semantic_hash
-        };
-        let execution = ReconstructedExecutionAuthority::from_verified_compiler_artifacts(
-            load_hash(&task.execution.artifacts.project_plan),
-            SchemaHash::new(load_hash(&task.execution.artifacts.output_schema))?,
-            load_hash(&task.execution.artifacts.validation_program),
-            load_hash(&task.execution.artifacts.normalization_policy),
-            load_hash(&task.execution.artifacts.compiled_expression_plan),
-            load_hash(&task.execution.artifacts.operator_graph),
-            load_hash(&task.execution.artifacts.segmentation_policy),
-            load_hash(&task.execution.artifacts.execution_extent),
-            load_hash(&task.execution.artifacts.decode_unit_plan),
-            load_hash(&task.execution.artifacts.segment_plan),
-        )?;
-        Ok(ReconstructedWorkerTaskAuthority::from_verified_artifacts(
-            source,
-            partition,
-            execution,
-            Box::new(()),
-        ))
-    }
-
-    fn verify_artifact(
+    fn verify_reference(
         &self,
         reference: &WorkerArtifactReference,
     ) -> Result<VerifiedWorkerArtifactFacts> {
@@ -363,6 +322,55 @@ impl WorkerAdmissionVerifier for MockArtifactStore {
         )
         .then_some(50);
         VerifiedWorkerArtifactFacts::new(reference.clone(), row_count)
+    }
+}
+
+impl WorkerAdmissionVerifier for MockArtifactStore {
+    fn reconstruct_task_authority(
+        &self,
+        task: &PortablePartitionTask,
+    ) -> Result<ReconstructedWorkerTaskAuthority> {
+        for reference in [
+            &task.source.compiled_source_plan,
+            &task.partition.partition_plan,
+        ]
+        .into_iter()
+        .chain(task.execution.artifacts.references())
+        {
+            self.verify_reference(reference)?;
+        }
+        let source = self.load(&task.source.compiled_source_plan);
+        let partition = self.load(&task.partition.partition_plan);
+        let load_hash = |reference: &WorkerArtifactReference| {
+            self.load::<RecordedSemanticArtifact>(reference)
+                .semantic_hash
+        };
+        let execution = ReconstructedExecutionAuthority::from_verified_compiler_artifacts(
+            load_hash(&task.execution.artifacts.project_plan),
+            SchemaHash::new(load_hash(&task.execution.artifacts.output_schema))?,
+            load_hash(&task.execution.artifacts.validation_program),
+            load_hash(&task.execution.artifacts.normalization_policy),
+            load_hash(&task.execution.artifacts.compiled_expression_plan),
+            load_hash(&task.execution.artifacts.operator_graph),
+            load_hash(&task.execution.artifacts.segmentation_policy),
+            load_hash(&task.execution.artifacts.execution_extent),
+            load_hash(&task.execution.artifacts.decode_unit_plan),
+            load_hash(&task.execution.artifacts.segment_plan),
+        )?;
+        Ok(ReconstructedWorkerTaskAuthority::from_verified_artifacts(
+            source,
+            partition,
+            execution,
+            Box::new(()),
+        ))
+    }
+
+    fn verify_artifact(
+        &self,
+        _task: &PortablePartitionTask,
+        reference: &WorkerArtifactReference,
+    ) -> Result<VerifiedWorkerArtifactFacts> {
+        self.verify_reference(reference)
     }
 
     fn verify_source_authority(
@@ -408,9 +416,7 @@ impl SegmentTaskReconstructor for MockArtifactStore {
         &self,
         task: &PortableSegmentTask,
     ) -> Result<ReconstructedSegmentTask> {
-        let verify = |reference: &WorkerArtifactReference| {
-            <Self as WorkerAdmissionVerifier>::verify_artifact(self, reference)
-        };
+        let verify = |reference: &WorkerArtifactReference| self.verify_reference(reference);
         Ok(ReconstructedSegmentTask::from_verified_artifacts(
             verify(&task.prepared_segment)?,
             verify(&task.output_schema)?,
@@ -426,7 +432,7 @@ impl WorkerOutputVerifier for MockArtifactStore {
         task: &PortableSegmentTask,
         reference: &WorkerArtifactReference,
     ) -> Result<VerifiedCanonicalSegmentFacts> {
-        <Self as WorkerAdmissionVerifier>::verify_artifact(self, reference)?;
+        self.verify_reference(reference)?;
         VerifiedCanonicalSegmentFacts::new(
             reference.clone(),
             task.row_count,
@@ -444,7 +450,7 @@ impl WorkerOutputVerifier for ShiftedCanonicalVerifier<'_> {
         task: &PortableSegmentTask,
         reference: &WorkerArtifactReference,
     ) -> Result<VerifiedCanonicalSegmentFacts> {
-        <MockArtifactStore as WorkerAdmissionVerifier>::verify_artifact(self.0, reference)?;
+        self.0.verify_reference(reference)?;
         VerifiedCanonicalSegmentFacts::new(
             reference.clone(),
             task.row_count,

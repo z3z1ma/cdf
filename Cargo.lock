@@ -1209,6 +1209,7 @@ dependencies = [
  "arrow-ipc",
  "arrow-schema",
  "arrow-select",
+ "bytes",
  "cdf-contract",
  "cdf-expression",
  "cdf-http",

@@ -1,6 +1,7 @@
 use cdf_kernel::{
     CdfError, PipelineId, Result, SecretReference, partition_source_identity_binding,
 };
+use cdf_memory::{AccountedBytes, MemoryLease};
 use cdf_runtime::{
     AdmittedPartitionWorkerResult, PortableExecutionBinding, PortablePartitionBinding,
     PortablePartitionTask, PortablePartitionTaskInput, PortableSegmentTask,
@@ -174,7 +175,7 @@ pub trait WorkerCompilerArtifactWriter {
 
 /// Exact compiler bytes observed by a worker-owned content store.
 pub struct VerifiedWorkerCompilerArtifact {
-    bytes: Vec<u8>,
+    bytes: AccountedBytes,
 }
 
 pub struct VerifiedEnginePartitionEvidenceArtifact {
@@ -184,7 +185,7 @@ pub struct VerifiedEnginePartitionEvidenceArtifact {
 impl VerifiedEnginePartitionEvidenceArtifact {
     pub fn new(
         reference: &WorkerArtifactReference,
-        bytes: Vec<u8>,
+        bytes: AccountedBytes,
         observed_generation: Option<&cdf_kernel::ContentProviderGeneration>,
         maximum_bytes: u64,
     ) -> Result<Self> {
@@ -194,11 +195,11 @@ impl VerifiedEnginePartitionEvidenceArtifact {
                 "partition evidence reader requires a PartitionEvidence reference",
             ));
         }
-        let byte_count = u64::try_from(bytes.len())
+        let byte_count = u64::try_from(bytes.payload().len())
             .map_err(|_| CdfError::contract("partition evidence exceeds u64"))?;
         let content_sha256 = format!(
             "sha256:{:x}",
-            <sha2::Sha256 as sha2::Digest>::digest(&bytes)
+            <sha2::Sha256 as sha2::Digest>::digest(bytes.payload())
         );
         if byte_count != reference.byte_count
             || byte_count > maximum_bytes
@@ -209,7 +210,7 @@ impl VerifiedEnginePartitionEvidenceArtifact {
                 "partition evidence bytes, generation, or size do not match authority",
             ));
         }
-        let evidence = serde_json::from_slice(&bytes)
+        let evidence = serde_json::from_slice(bytes.payload())
             .map_err(|error| CdfError::contract(format!("decode partition evidence: {error}")))?;
         Ok(Self { evidence })
     }
@@ -223,18 +224,20 @@ impl VerifiedEnginePartitionEvidenceArtifact {
 pub struct VerifiedPreparedSegmentArtifact {
     facts: VerifiedWorkerArtifactFacts,
     batches: Vec<arrow_array::RecordBatch>,
+    decoded_lease: MemoryLease,
 }
 
 /// Exact canonical-segment semantics observed from verified IPC bytes.
 pub struct VerifiedCanonicalSegmentArtifact {
     facts: VerifiedCanonicalSegmentFacts,
-    bytes: Vec<u8>,
+    bytes: AccountedBytes,
 }
 
 impl VerifiedCanonicalSegmentArtifact {
     pub fn new(
         reference: &WorkerArtifactReference,
-        bytes: Vec<u8>,
+        bytes: AccountedBytes,
+        decoded_lease: MemoryLease,
         observed_generation: Option<&cdf_kernel::ContentProviderGeneration>,
         maximum_encoded_bytes: u64,
         maximum_decoded_bytes: u64,
@@ -245,11 +248,11 @@ impl VerifiedCanonicalSegmentArtifact {
                 "canonical segment reader requires a CanonicalSegment reference",
             ));
         }
-        let byte_count = u64::try_from(bytes.len())
+        let byte_count = u64::try_from(bytes.payload().len())
             .map_err(|_| CdfError::contract("canonical segment exceeds u64"))?;
         let content_sha256 = format!(
             "sha256:{:x}",
-            <sha2::Sha256 as sha2::Digest>::digest(&bytes)
+            <sha2::Sha256 as sha2::Digest>::digest(bytes.payload())
         );
         if byte_count != reference.byte_count
             || byte_count > maximum_encoded_bytes
@@ -262,7 +265,7 @@ impl VerifiedCanonicalSegmentArtifact {
         }
 
         let mut reader =
-            arrow_ipc::reader::FileReader::try_new(std::io::Cursor::new(bytes.as_slice()), None)
+            arrow_ipc::reader::FileReader::try_new(std::io::Cursor::new(bytes.payload()), None)
                 .map_err(CdfError::from)?;
         let first = reader
             .next()
@@ -280,8 +283,7 @@ impl VerifiedCanonicalSegmentArtifact {
             cdf_package_contract::PackageRowOrdinalValidator::new(package_row_ord_start);
         for batch in std::iter::once(Ok(first)).chain(&mut reader) {
             let batch = batch.map_err(CdfError::from)?;
-            let decoded_bytes = u64::try_from(batch.get_array_memory_size())
-                .map_err(|_| CdfError::data("canonical segment decoded bytes exceed u64"))?;
+            let decoded_bytes = cdf_memory::record_batch_retained_bytes(&batch)?;
             if decoded_bytes > maximum_decoded_bytes {
                 return Err(CdfError::data(
                     "canonical segment batch exceeds its admitted decoded-memory budget",
@@ -291,6 +293,7 @@ impl VerifiedCanonicalSegmentArtifact {
         }
         let row_count = ordinal_validator.observed_rows()?;
         ordinal_validator.finish(row_count)?;
+        drop(decoded_lease);
         Ok(Self {
             facts: VerifiedCanonicalSegmentFacts::new(
                 reference.clone(),
@@ -306,7 +309,7 @@ impl VerifiedCanonicalSegmentArtifact {
         self.facts
     }
 
-    pub fn into_bytes(self) -> Vec<u8> {
+    pub fn into_bytes(self) -> AccountedBytes {
         self.bytes
     }
 }
@@ -314,7 +317,8 @@ impl VerifiedCanonicalSegmentArtifact {
 impl VerifiedPreparedSegmentArtifact {
     pub fn new(
         reference: &WorkerArtifactReference,
-        bytes: Vec<u8>,
+        bytes: AccountedBytes,
+        decoded_lease: MemoryLease,
         observed_generation: Option<&cdf_kernel::ContentProviderGeneration>,
         maximum_encoded_bytes: u64,
         maximum_decoded_bytes: u64,
@@ -325,11 +329,11 @@ impl VerifiedPreparedSegmentArtifact {
                 "prepared segment reader requires a PreparedSegment reference",
             ));
         }
-        let byte_count = u64::try_from(bytes.len())
+        let byte_count = u64::try_from(bytes.payload().len())
             .map_err(|_| CdfError::contract("prepared segment exceeds u64"))?;
         let content_sha256 = format!(
             "sha256:{:x}",
-            <sha2::Sha256 as sha2::Digest>::digest(&bytes)
+            <sha2::Sha256 as sha2::Digest>::digest(bytes.payload())
         );
         if byte_count != reference.byte_count
             || byte_count > maximum_encoded_bytes
@@ -340,8 +344,9 @@ impl VerifiedPreparedSegmentArtifact {
                 "prepared segment bytes, generation, or encoded size do not match authority",
             ));
         }
-        let mut reader = arrow_ipc::reader::FileReader::try_new(std::io::Cursor::new(bytes), None)
-            .map_err(CdfError::from)?;
+        let mut reader =
+            arrow_ipc::reader::FileReader::try_new(std::io::Cursor::new(bytes.payload()), None)
+                .map_err(CdfError::from)?;
         let mut decoded_bytes = 0_u64;
         let mut row_count = 0_u64;
         let mut batches = Vec::new();
@@ -354,10 +359,7 @@ impl VerifiedPreparedSegmentArtifact {
                 )
                 .ok_or_else(|| CdfError::data("prepared segment row count overflow"))?;
             decoded_bytes = decoded_bytes
-                .checked_add(
-                    u64::try_from(batch.get_array_memory_size())
-                        .map_err(|_| CdfError::data("prepared segment decoded bytes exceed u64"))?,
-                )
+                .checked_add(cdf_memory::record_batch_retained_bytes(&batch)?)
                 .ok_or_else(|| CdfError::data("prepared segment decoded bytes overflow"))?;
             if decoded_bytes > maximum_decoded_bytes {
                 return Err(CdfError::data(
@@ -369,9 +371,11 @@ impl VerifiedPreparedSegmentArtifact {
         if row_count == 0 || batches.is_empty() {
             return Err(CdfError::data("prepared segment contains no rows"));
         }
+        decoded_lease.reconcile(decoded_bytes)?;
         Ok(Self {
             facts: VerifiedWorkerArtifactFacts::new(reference.clone(), Some(row_count))?,
             batches,
+            decoded_lease,
         })
     }
 
@@ -383,15 +387,15 @@ impl VerifiedPreparedSegmentArtifact {
         &self.batches
     }
 
-    pub fn into_batches(self) -> Vec<arrow_array::RecordBatch> {
-        self.batches
+    pub fn decoded_memory_bytes(&self) -> u64 {
+        self.decoded_lease.bytes()
     }
 }
 
 impl VerifiedWorkerCompilerArtifact {
     pub fn new(
         reference: &WorkerArtifactReference,
-        bytes: Vec<u8>,
+        bytes: AccountedBytes,
         observed_generation: Option<&cdf_kernel::ContentProviderGeneration>,
         maximum_bytes: u64,
     ) -> Result<Self> {
@@ -409,7 +413,7 @@ impl VerifiedWorkerCompilerArtifact {
                 "worker compiler reader cannot materialize output data artifacts",
             ));
         }
-        let byte_count = u64::try_from(bytes.len())
+        let byte_count = u64::try_from(bytes.payload().len())
             .map_err(|_| CdfError::contract("worker compiler artifact exceeds u64"))?;
         if byte_count != reference.byte_count || byte_count > maximum_bytes {
             return Err(CdfError::contract(
@@ -418,7 +422,7 @@ impl VerifiedWorkerCompilerArtifact {
         }
         let content_sha256 = format!(
             "sha256:{:x}",
-            <sha2::Sha256 as sha2::Digest>::digest(&bytes)
+            <sha2::Sha256 as sha2::Digest>::digest(bytes.payload())
         );
         if content_sha256 != reference.content_sha256
             || reference.provider_generation.as_ref() != observed_generation
@@ -431,7 +435,7 @@ impl VerifiedWorkerCompilerArtifact {
     }
 
     pub fn bytes(&self) -> &[u8] {
-        &self.bytes
+        self.bytes.payload()
     }
 }
 
@@ -440,6 +444,8 @@ impl VerifiedWorkerCompilerArtifact {
 /// Compiler artifacts are bounded and decoded by the engine. Output artifacts stay outside this
 /// control path and are verified from hash-while-write/provider facts without forced rereads.
 pub trait EngineWorkerArtifactAuthority {
+    fn memory(&self) -> std::sync::Arc<dyn cdf_memory::MemoryCoordinator>;
+
     fn read_compiler_artifact(
         &self,
         reference: &WorkerArtifactReference,
@@ -449,6 +455,8 @@ pub trait EngineWorkerArtifactAuthority {
     fn verify_output_artifact(
         &self,
         reference: &WorkerArtifactReference,
+        maximum_encoded_bytes: u64,
+        maximum_decoded_bytes: u64,
     ) -> Result<VerifiedWorkerArtifactFacts>;
 
     fn read_prepared_segment(
@@ -490,7 +498,7 @@ pub trait EngineWorkerOutputAuthority: EngineWorkerArtifactAuthority {
     fn write_authorized_bytes(
         &self,
         authorization: WorkerArtifactWriteAuthorization<'_>,
-        bytes: Vec<u8>,
+        bytes: AccountedBytes,
     ) -> Result<VerifiedWorkerArtifactFacts>;
 }
 
@@ -667,6 +675,7 @@ impl WorkerAdmissionVerifier for EngineWorkerAdmissionVerifier<'_> {
 
     fn verify_artifact(
         &self,
+        task: &PortablePartitionTask,
         reference: &WorkerArtifactReference,
     ) -> Result<VerifiedWorkerArtifactFacts> {
         match reference.kind {
@@ -677,7 +686,20 @@ impl WorkerAdmissionVerifier for EngineWorkerAdmissionVerifier<'_> {
             | WorkerArtifactKind::Verdict
             | WorkerArtifactKind::Lineage
             | WorkerArtifactKind::PartitionEvidence => {
-                self.artifacts.verify_output_artifact(reference)
+                let maximum_decoded_bytes = task
+                    .resources
+                    .memory_bytes
+                    .checked_sub(reference.byte_count)
+                    .ok_or_else(|| {
+                        CdfError::data(
+                            "worker artifact encoded bytes exceed the partition-task memory budget",
+                        )
+                    })?;
+                self.artifacts.verify_output_artifact(
+                    reference,
+                    task.resources.memory_bytes,
+                    maximum_decoded_bytes,
+                )
             }
             _ => {
                 self.artifacts
@@ -723,7 +745,7 @@ impl WorkerAdmissionVerifier for EngineWorkerAdmissionVerifier<'_> {
 pub struct ReconstructedEngineSegmentProgram {
     logical_schema: std::sync::Arc<arrow_schema::Schema>,
     segmentation: CanonicalSegmentationPolicy,
-    prepared_batches: Vec<arrow_array::RecordBatch>,
+    prepared: VerifiedPreparedSegmentArtifact,
 }
 
 impl cdf_runtime::ReconstructedWorkerExecutionProgram for ReconstructedEngineSegmentProgram {
@@ -742,17 +764,17 @@ impl ReconstructedEngineSegmentProgram {
     }
 
     pub fn prepared_batches(&self) -> &[arrow_array::RecordBatch] {
-        &self.prepared_batches
+        self.prepared.batches()
     }
 
-    pub fn into_prepared_batches(self) -> Vec<arrow_array::RecordBatch> {
-        self.prepared_batches
+    pub fn prepared_memory_bytes(&self) -> u64 {
+        self.prepared.decoded_memory_bytes()
     }
 }
 
 struct PendingEngineWorkerOutput<'a> {
     store: &'a dyn EngineWorkerOutputAuthority,
-    bytes: Option<Vec<u8>>,
+    bytes: Option<AccountedBytes>,
 }
 
 impl WorkerAuthorizedArtifactSink for PendingEngineWorkerOutput<'_> {
@@ -823,16 +845,55 @@ impl cdf_runtime::IsolatedSegmentExecutor for EngineIsolatedSegmentExecutor<'_> 
                     "prepared segment rows changed after worker reconstruction",
                 ));
             }
+            let ordinal_bytes = task
+                .row_count
+                .checked_mul(8)
+                .ok_or_else(|| CdfError::data("canonical ordinal bytes overflowed u64"))?;
+            let available_memory = task
+                .resources
+                .memory_bytes
+                .checked_sub(program.prepared_memory_bytes())
+                .and_then(|available| available.checked_sub(ordinal_bytes))
+                .ok_or_else(|| {
+                    CdfError::data(
+                        "prepared segment and provenance ordinal exceed the segment-task memory budget",
+                    )
+                })?;
+            let output_window = available_memory
+                .min(task.output_policy.maximum_artifact_bytes)
+                .min(attempt.write_permit.output.maximum_bytes);
+            if output_window == 0 {
+                return Err(CdfError::data(
+                    "segment-task memory budget leaves no canonical output window",
+                ));
+            }
+            let working_set = output_window
+                .checked_add(ordinal_bytes)
+                .ok_or_else(|| CdfError::data("canonical output working set overflowed u64"))?;
+            let request = cdf_memory::ReservationRequest::new(
+                cdf_memory::ConsumerKey::new(
+                    "isolated-canonical-segment-output",
+                    cdf_memory::MemoryClass::Package,
+                )?,
+                working_set,
+            )?;
+            let output_lease = self.store.memory().try_reserve(&request)?.ok_or_else(|| {
+                CdfError::data(
+                    "isolated canonical segment output memory is exhausted; reduce jobs or raise the worker memory budget",
+                )
+            })?;
             let canonical = cdf_package_contract::append_package_row_ord(
                 program.prepared_batches().to_vec(),
                 task.package_row_ord_start,
             )?;
-            let mut bytes = Vec::new();
+            let mut bytes = BoundedArtifactBuffer::new(output_window)?;
             cdf_package::encode_canonical_segment_ipc(
                 &mut bytes,
                 canonical[0].schema().as_ref(),
                 &canonical,
             )?;
+            drop(canonical);
+            let bytes = bytes.into_accounted(output_lease)?;
             let object_key = cdf_kernel::ContentObjectKey::new(format!(
                 "{}data/{}.arrow",
                 attempt.write_permit.output.object_key_prefix,
@@ -842,7 +903,7 @@ impl cdf_runtime::IsolatedSegmentExecutor for EngineIsolatedSegmentExecutor<'_> 
                 WorkerArtifactKind::CanonicalSegment,
                 &attempt.write_permit.output.store_namespace,
                 object_key,
-                &bytes,
+                bytes.payload(),
             )?;
             let receipt = cdf_runtime::WorkerArtifactReceipt {
                 role: WorkerArtifactRole::CanonicalSegment {
@@ -872,6 +933,60 @@ impl cdf_runtime::IsolatedSegmentExecutor for EngineIsolatedSegmentExecutor<'_> 
     }
 }
 
+struct BoundedArtifactBuffer {
+    bytes: Vec<u8>,
+    maximum_bytes: usize,
+}
+
+impl BoundedArtifactBuffer {
+    fn new(maximum_bytes: u64) -> Result<Self> {
+        let maximum_bytes = usize::try_from(maximum_bytes)
+            .map_err(|_| CdfError::data("worker artifact memory window exceeds usize"))?;
+        Ok(Self {
+            bytes: Vec::new(),
+            maximum_bytes,
+        })
+    }
+
+    fn into_accounted(self, lease: MemoryLease) -> Result<AccountedBytes> {
+        let retained_bytes = u64::try_from(self.bytes.capacity())
+            .map_err(|_| CdfError::data("worker artifact allocation exceeds u64"))?;
+        lease.reconcile(retained_bytes)?;
+        AccountedBytes::new_conservative(bytes::Bytes::from(self.bytes), lease)
+    }
+}
+
+impl std::io::Write for BoundedArtifactBuffer {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let next =
+            self.bytes.len().checked_add(bytes.len()).ok_or_else(|| {
+                std::io::Error::other("worker artifact byte count overflowed usize")
+            })?;
+        if next > self.maximum_bytes {
+            return Err(std::io::Error::other(
+                "worker artifact exceeds its admitted memory window",
+            ));
+        }
+        if next > self.bytes.capacity() {
+            let doubled = self.bytes.capacity().saturating_mul(2);
+            let target = next.max(doubled).max(64 * 1_024).min(self.maximum_bytes);
+            self.bytes
+                .try_reserve_exact(target.saturating_sub(self.bytes.capacity()))
+                .map_err(|error| {
+                    std::io::Error::other(format!(
+                        "reserve bounded worker artifact buffer: {error}"
+                    ))
+                })?;
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 impl SegmentTaskReconstructor for EngineWorkerAdmissionVerifier<'_> {
     fn reconstruct_segment_task(
         &self,
@@ -891,10 +1006,19 @@ impl SegmentTaskReconstructor for EngineWorkerAdmissionVerifier<'_> {
         segmentation.validate()?;
         let logical_schema = output_schema.to_arrow()?;
         cdf_package_contract::validate_logical_output_schema(logical_schema.as_ref())?;
+        let maximum_decoded_bytes = task
+            .resources
+            .memory_bytes
+            .checked_sub(task.prepared_segment.byte_count)
+            .ok_or_else(|| {
+                CdfError::data(
+                    "prepared segment encoded bytes exceed the segment-task memory budget",
+                )
+            })?;
         let prepared = self.artifacts.read_prepared_segment(
             &task.prepared_segment,
-            task.resources.disk_bytes,
             task.resources.memory_bytes,
+            maximum_decoded_bytes,
         )?;
         if prepared.batches().iter().any(|batch| {
             batch.schema().as_ref() != logical_schema.as_ref()
@@ -914,7 +1038,7 @@ impl SegmentTaskReconstructor for EngineWorkerAdmissionVerifier<'_> {
             Box::new(ReconstructedEngineSegmentProgram {
                 logical_schema,
                 segmentation,
-                prepared_batches: prepared.into_batches(),
+                prepared,
             }),
         ))
     }
@@ -929,10 +1053,15 @@ impl WorkerOutputVerifier for EngineWorkerAdmissionVerifier<'_> {
         self.artifacts
             .read_canonical_segment(
                 reference,
-                task.resources
-                    .disk_bytes
-                    .min(task.output_policy.maximum_artifact_bytes),
                 task.resources.memory_bytes,
+                task.resources
+                    .memory_bytes
+                    .checked_sub(reference.byte_count)
+                    .ok_or_else(|| {
+                        CdfError::data(
+                            "canonical segment encoded bytes exceed the segment-task memory budget",
+                        )
+                    })?,
             )
             .map(VerifiedCanonicalSegmentArtifact::into_facts)
     }

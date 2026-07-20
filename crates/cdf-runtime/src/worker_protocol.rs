@@ -1457,6 +1457,7 @@ pub trait WorkerAdmissionVerifier {
 
     fn verify_artifact(
         &self,
+        task: &PortablePartitionTask,
         reference: &WorkerArtifactReference,
     ) -> Result<VerifiedWorkerArtifactFacts>;
 
@@ -1984,7 +1985,7 @@ impl PortablePartitionTask {
         }
         for reference in self.non_compiler_input_artifacts() {
             verifier
-                .verify_artifact(reference)?
+                .verify_artifact(self, reference)?
                 .validate_for(reference)?;
         }
         Ok(authority)
@@ -2845,7 +2846,7 @@ impl PartitionWorkerResult {
                     "partition worker output receipt exceeds its canonical partition authority",
                 ));
             }
-            let facts = verifier.verify_artifact(&receipt.artifact)?;
+            let facts = verifier.verify_artifact(task, &receipt.artifact)?;
             facts.validate_for(&receipt.artifact)?;
             match receipt.role {
                 WorkerArtifactRole::PreparedSegment { row_count, .. }
