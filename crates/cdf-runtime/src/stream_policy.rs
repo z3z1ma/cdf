@@ -639,7 +639,11 @@ mod tests {
             .unwrap()
             .event_time_field = "missing".into();
         let error = invalid_field_source.validate().unwrap_err();
-        assert!(error.message.contains("absent from the compiled source schema"));
+        assert!(
+            error
+                .message
+                .contains("absent from the compiled source schema")
+        );
 
         let mut invalid_domain_source =
             source(capabilities(OperatorWatermarkBehavior::Preserve), true);
