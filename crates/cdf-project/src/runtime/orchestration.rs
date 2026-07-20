@@ -559,7 +559,7 @@ enum ManifestPlanning {
     Preselected(Option<FileManifestRunSummary>),
 }
 
-fn load_late_data_carryover(
+pub(crate) fn load_late_data_carryover(
     package_root: &Path,
     head: Option<&Checkpoint>,
 ) -> Result<Vec<cdf_engine::LateDataCarryoverInput>> {

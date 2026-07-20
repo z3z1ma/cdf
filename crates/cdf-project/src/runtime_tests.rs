@@ -33,14 +33,15 @@ use cdf_kernel::{
     CompositePosition, ConcurrencyLimit, CursorOrderingClaim, CursorPosition, CursorSpec,
     CursorValue, DeliveryGuarantee, DestinationCommitRequest, DestinationId, DestinationProtocol,
     DestinationSheet, EstimateSupport, FileManifest, FilePosition, FilterCapabilities,
-    IdempotencySupport, IdempotencyToken, IdentifierRules, IncrementalShape, LogPosition,
-    MigrationRecord, PackageHash, PageToken, PartitionId, PipelineId, PlanId,
-    ProcessedObservationOutcome, ProcessedObservationPosition, PushdownFidelity, QueryableResource,
-    Receipt, ReceiptId, ReceiptVerification, ReplaySupport, ResourceCapabilities,
-    ResourceDescriptor, ResourceId, ResourceStream, Result, RewindReport, RewindRequest, RunEvent,
-    RunEventSink, RunEventSinkResult, RunId, RunPhase, RunPhaseMetric, RunPhaseStatus, ScanRequest,
-    SchemaHash, SchemaSource, ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta,
-    StateSegment, TargetName, TransactionSupport, TrustLevel, VerifyClause, WriteDisposition,
+    IdempotencySupport, IdempotencyToken, IdentifierRules, IncrementalShape,
+    LATE_DATA_CARRYOVER_VERSION, LateDataCarryoverRef, LogPosition, MigrationRecord, PackageHash,
+    PageToken, PartitionId, PipelineId, PlanId, ProcessedObservationOutcome,
+    ProcessedObservationPosition, PushdownFidelity, QueryableResource, Receipt, ReceiptId,
+    ReceiptVerification, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceId,
+    ResourceStream, Result, RewindReport, RewindRequest, RunEvent, RunEventSink,
+    RunEventSinkResult, RunId, RunPhase, RunPhaseMetric, RunPhaseStatus, ScanRequest, SchemaHash,
+    SchemaSource, ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment,
+    TargetName, TransactionSupport, TrustLevel, VerifyClause, WriteDisposition,
 };
 use cdf_object_access::FileTransportFacade;
 use cdf_package::{PackageBuilder, PackageReader, canonical_json_bytes};
@@ -1302,7 +1303,8 @@ fn backfill_planner_binds_every_slice_to_the_compiled_source_artifact() {
                 .partition_schedule
                 .as_ref()
                 .expect("source-bound backfill slice has a canonical schedule")
-                .partitions[0]
+                .inline_partitions()
+                .expect("backfill slices retain inline partition authority")[0]
                 .partition
                 .scope,
             slice.scope
@@ -1611,6 +1613,79 @@ fn package_id_name_rows(reader: &PackageReader) -> Vec<(i64, Option<String>)> {
 
 fn build_package(package_dir: &Path, package_id: &str, status: PackageStatus) -> PackageManifest {
     build_package_with_expression_tuple(package_dir, package_id, status, false)
+}
+
+fn build_package_with_carryover(
+    package_dir: &Path,
+    package_id: &str,
+) -> (PackageManifest, LateDataCarryoverRef) {
+    let builder = PackageBuilder::create(package_dir, package_id).unwrap();
+    builder.update_status(PackageStatus::Extracting).unwrap();
+    let carryover_batch = sample_batch(vec![7], vec![Some("late")]);
+    builder
+        .write_runtime_arrow_schema(carryover_batch.schema().as_ref())
+        .unwrap();
+    builder
+        .write_json_artifact(
+            "schema/output.arrow.json",
+            &BTreeMap::from([("schema_hash", SCHEMA_HASH)]),
+        )
+        .unwrap();
+    let carryover_file = builder
+        .write_ipc_identity_batches(
+            "carryover/late-data-000.arrow",
+            std::slice::from_ref(&carryover_batch),
+        )
+        .unwrap();
+    let batches = cdf_package_contract::append_package_row_ord(
+        vec![sample_batch(vec![1], vec![Some("current")])],
+        0,
+    )
+    .unwrap();
+    let segment = builder
+        .write_segment(
+            cdf_kernel::SegmentId::new("seg-000001").unwrap(),
+            0,
+            &batches,
+        )
+        .unwrap();
+    builder
+        .write_lineage_artifact(
+            "lineage.json",
+            &canonical_json_bytes(&LineageSummary {
+                input_partitions: vec![PartitionId::new("artifact-fixture").unwrap()],
+                input_rows: 1,
+                input_observations: vec![LineageInputObservation {
+                    observation_id: "artifact-fixture".to_owned(),
+                    partition_id: PartitionId::new("artifact-fixture").unwrap(),
+                    observed_rows: 1,
+                    output_position: Some(position(1)),
+                }],
+                output_segments: vec![segment.segment_id.clone()],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    write_state_commit_artifacts(
+        &builder,
+        &segment,
+        WriteDisposition::Append,
+        "checkpoint-carryover-artifact",
+    );
+    write_compiled_expression_artifacts(&builder, false, true, None, false);
+    let manifest = builder.finish().unwrap();
+    let reference = LateDataCarryoverRef {
+        version: LATE_DATA_CARRYOVER_VERSION,
+        package_id: package_id.to_owned(),
+        relative_path: carryover_file.path,
+        byte_count: carryover_file.byte_count,
+        sha256: carryover_file.sha256,
+        row_count: 1,
+        memory_bound_bytes: u64::try_from(carryover_batch.get_array_memory_size()).unwrap(),
+        output_position: position(1),
+    };
+    reference.validate().unwrap();
+    (manifest, reference)
 }
 
 fn build_package_for_checkpoint(
@@ -4329,6 +4404,46 @@ fn general_project_run_records_ledger_events_in_commit_gate_order() {
             .attributes
             .contains_key("elapsed_ms")
     );
+}
+
+#[test]
+fn committed_head_reopens_only_its_verified_late_data_carryover() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_root = temp.path().join("packages");
+    let package_id = "pkg-carryover-loader";
+    let package_dir = package_root.join(package_id);
+    let (manifest, reference) = build_package_with_carryover(&package_dir, package_id);
+    let mut state = delta(&manifest, "checkpoint-carryover-loader");
+    state.late_data_carryover = vec![reference];
+    let head = Checkpoint {
+        delta: state,
+        status: CheckpointStatus::Committed,
+        receipt: None,
+        is_head: true,
+        created_at_ms: 1_700_000_000_000,
+        committed_at_ms: Some(1_700_000_000_001),
+        rewind_target_checkpoint_id: None,
+    };
+
+    assert!(
+        crate::runtime::load_late_data_carryover(&package_root, None)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        crate::runtime::load_late_data_carryover(&package_root, Some(&head))
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let mut wrong_head = head;
+    wrong_head.delta.package_hash = PackageHash::new("different-package-hash").unwrap();
+    let error = match crate::runtime::load_late_data_carryover(&package_root, Some(&wrong_head)) {
+        Ok(_) => panic!("mismatched checkpoint authority must fail closed"),
+        Err(error) => error,
+    };
+    assert!(error.message.contains("committed checkpoint head"));
 }
 
 #[test]

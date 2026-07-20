@@ -14,6 +14,8 @@ mod validation;
 
 pub use destinations::*;
 pub use hooks::{ReceiptVerifiedHook, RuntimeStage, RuntimeStageHook};
+#[cfg(test)]
+pub(crate) use orchestration::load_late_data_carryover;
 pub use orchestration::{
     run_project, run_project_with_scheduler_and_telemetry, run_project_with_telemetry,
 };

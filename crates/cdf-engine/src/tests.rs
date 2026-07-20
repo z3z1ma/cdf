@@ -3414,7 +3414,7 @@ type FixedDrainEpochEvidence = (
 fn run_fixed_drain_epochs_with_jobs(jobs: u16) -> (Vec<FixedDrainEpochEvidence>, u64) {
     let mut batches = sample_batches();
     for (ordinal, batch) in batches.iter_mut().enumerate() {
-        batch.header.source_position = Some(SourcePosition::FileManifest(FileManifest {
+        let source_position = SourcePosition::FileManifest(FileManifest {
             version: 1,
             files: vec![FilePosition {
                 path: format!("input-{ordinal}.arrow"),
@@ -3424,7 +3424,19 @@ fn run_fixed_drain_epochs_with_jobs(jobs: u16) -> (Vec<FixedDrainEpochEvidence>,
                 object_version: None,
                 sha256: None,
             }],
-        }));
+        });
+        batch.header.source_position = Some(source_position.clone());
+        batch.header.watermarks.push(WatermarkClaim {
+            version: WATERMARK_CLAIM_VERSION,
+            policy_version: STREAM_EPOCH_POLICY_VERSION,
+            event_time_field: "id".into(),
+            domain: EventTimeDomain::SignedInteger,
+            value: WatermarkValue::Signed(i64::try_from((ordinal + 1) * 10).unwrap()),
+            partition_id: batch.header.partition_id.clone(),
+            source_position,
+            authority: WatermarkAuthority::Source,
+            observation_context: WatermarkObservationContext::SourcePoll,
+        });
     }
     let resource = MockResource::tier_b(batches)
         .without_control_keys()
@@ -3435,7 +3447,12 @@ fn run_fixed_drain_epochs_with_jobs(jobs: u16) -> (Vec<FixedDrainEpochEvidence>,
             version: STREAM_EPOCH_POLICY_VERSION,
             checkpoint_cadence: EpochClosureTrigger::Rows { count: 3 },
             package_rotation: EpochClosureTrigger::Bytes { count: 1 << 20 },
-            watermark: WatermarkPolicy::Disabled,
+            watermark: WatermarkPolicy::Enabled {
+                event_time_field: "id".into(),
+                domain: EventTimeDomain::SignedInteger,
+                authority: WatermarkAuthority::Source,
+                partition_aggregation: cdf_kernel::PartitionWatermarkAggregation::MinimumAll,
+            },
             late_data: LateDataAction::Quarantine,
             safe_frontier: SafeFrontierPolicy::CanonicalAdmittedSourcePosition,
         },
@@ -3445,6 +3462,17 @@ fn run_fixed_drain_epochs_with_jobs(jobs: u16) -> (Vec<FixedDrainEpochEvidence>,
     source.execution_capabilities.speculative_safe = true;
     source.execution_capabilities.attestation =
         cdf_runtime::SourceAttestationStrength::ImmutableContent;
+    source
+        .stream_capabilities
+        .as_mut()
+        .unwrap()
+        .watermark_behavior = cdf_kernel::OperatorWatermarkBehavior::Preserve;
+    source.stream_capabilities.as_mut().unwrap().watermark =
+        Some(cdf_runtime::SourceWatermarkCapability {
+            event_time_field: "id".into(),
+            domain: EventTimeDomain::SignedInteger,
+            authority: WatermarkAuthority::Source,
+        });
     source.validate().unwrap();
     resource.bind_compiled_source(&source);
     let mut plan = Planner::new()
