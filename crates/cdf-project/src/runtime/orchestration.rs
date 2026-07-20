@@ -20,7 +20,7 @@ use super::{
 };
 use cdf_contract::{AnomalyFact, ValidationDepth, ValidationProgram, ValidationTransitionTrigger};
 use cdf_kernel::ScopeLeaseStore;
-use std::{borrow::Cow, sync::Arc};
+use std::{borrow::Cow, sync::Arc, time::Instant};
 
 pub async fn run_project(
     request: ProjectRunRequest<'_>,
@@ -154,6 +154,7 @@ async fn run_project_with_context(
         scheduler,
         telemetry,
         manifest_planning: ManifestPlanning::ResolveAgainstCheckpoint,
+        drain_command_started: None,
     };
     match run_project_inner(execution, None).await {
         Ok(unit) => Ok(unit.report),
@@ -221,8 +222,12 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
     let mut epoch_count = 0_u64;
     let mut total_row_count = 0_u64;
     let mut total_segment_count = 0_u64;
+    let drain_command_started = Instant::now();
 
     loop {
+        controller.advance_monotonic_clock(
+            u64::try_from(drain_command_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        )?;
         controller.validate_ready_for_epoch()?;
         let epoch_ordinal = controller.epoch_ordinal();
         let package_id = drain_epoch_string_id(&base_package_id, epoch_ordinal);
@@ -280,6 +285,7 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
                 scheduler: scheduler.clone(),
                 telemetry,
                 manifest_planning: ManifestPlanning::Preselected(next_manifest_summary.take()),
+                drain_command_started: Some(drain_command_started),
             },
             Some(&mut controller),
         ))
@@ -397,6 +403,7 @@ struct ProjectRunExecution<'a> {
     scheduler: Option<cdf_runtime::RuntimeSchedulerResolution>,
     telemetry: RunTelemetryConfig,
     manifest_planning: ManifestPlanning,
+    drain_command_started: Option<Instant>,
 }
 
 struct ProjectRunUnit {
@@ -694,6 +701,12 @@ async fn run_project_inner(
                 retention
                     .commit_checkpoint_frontier(&replay_report.checkpoint.delta.output_position)?;
             }
+            let command_started = execution.drain_command_started.ok_or_else(|| {
+                CdfError::internal("drain settlement omitted its command clock authority")
+            })?;
+            controller.advance_monotonic_clock(
+                u64::try_from(command_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            )?;
             controller.acknowledge_settlement(&replay_report.checkpoint.delta.output_position)?;
         }
         (Some(_), None) => {

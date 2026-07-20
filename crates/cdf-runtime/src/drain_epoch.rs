@@ -112,11 +112,13 @@ pub struct DrainEpochController {
     epoch_ordinal: u64,
     epoch: Counts,
     total: Counts,
-    started_monotonic_milliseconds: Option<u64>,
+    command_started_monotonic_milliseconds: u64,
+    epoch_started_monotonic_milliseconds: u64,
     last_monotonic_milliseconds: Option<u64>,
     committed_frontier: Option<SourcePosition>,
     committed_watermark: Option<WatermarkClaim>,
     epoch_watermark_start: Option<WatermarkClaim>,
+    last_observed_watermark: Option<WatermarkClaim>,
 }
 
 impl DrainEpochController {
@@ -142,11 +144,13 @@ impl DrainEpochController {
             // The controller clock is elapsed time since the drain began. Starting at zero keeps
             // time-trigger accounting honest even when the first canonical safe frontier is
             // reached only after a long-running partition has drained.
-            started_monotonic_milliseconds: Some(0),
+            command_started_monotonic_milliseconds: 0,
+            epoch_started_monotonic_milliseconds: 0,
             last_monotonic_milliseconds: Some(0),
             committed_frontier: None,
             committed_watermark: None,
             epoch_watermark_start: None,
+            last_observed_watermark: None,
         })
     }
 
@@ -187,6 +191,13 @@ impl DrainEpochController {
             Some(value) => value,
             None => 0,
         }
+    }
+
+    /// Advances the command clock while source admission is paused for package settlement.
+    /// This keeps command-duration termination honest without charging destination/checkpoint
+    /// latency to the next epoch's cadence interval.
+    pub fn advance_monotonic_clock(&mut self, monotonic_milliseconds: u64) -> Result<()> {
+        self.observe_clock(monotonic_milliseconds)
     }
 
     pub fn pending_closure(&self) -> Option<&DrainEpochClosure> {
@@ -279,11 +290,13 @@ impl DrainEpochController {
         self.committed_frontier = Some(committed_frontier.clone());
         self.committed_watermark = closure.frontier.watermark.clone();
         self.epoch_watermark_start = self.committed_watermark.clone();
+        self.last_observed_watermark = self.committed_watermark.clone();
         self.epoch = Counts::default();
         self.epoch_ordinal = self
             .epoch_ordinal
             .checked_add(1)
             .ok_or_else(|| CdfError::data("drain epoch ordinal overflow"))?;
+        self.epoch_started_monotonic_milliseconds = self.monotonic_milliseconds();
         self.state = if terminate {
             ControllerState::Finished
         } else {
@@ -301,8 +314,6 @@ impl DrainEpochController {
                 "drain epoch monotonic clock moved backwards",
             ));
         }
-        self.started_monotonic_milliseconds
-            .get_or_insert(monotonic_milliseconds);
         self.last_monotonic_milliseconds = Some(monotonic_milliseconds);
         Ok(())
     }
@@ -333,10 +344,7 @@ impl DrainEpochController {
                 "drain watermark claim does not match the compiled field/domain/authority",
             ));
         }
-        if let Some(previous) = self
-            .committed_watermark
-            .as_ref()
-            .or(self.epoch_watermark_start.as_ref())
+        if let Some(previous) = self.last_observed_watermark.as_ref()
             && watermark_distance(&previous.value, &observed.value).is_none()
         {
             return Err(CdfError::data(
@@ -345,6 +353,7 @@ impl DrainEpochController {
         }
         self.epoch_watermark_start
             .get_or_insert_with(|| observed.clone());
+        self.last_observed_watermark = Some(observed.clone());
         Ok(())
     }
 
@@ -358,6 +367,13 @@ impl DrainEpochController {
                     termination: self.termination.clone(),
                 },
                 observed,
+                true,
+            )));
+        }
+        if observation.source_exhausted {
+            return Ok(Some((
+                EpochClosureCause::SourceExhausted,
+                EpochClosureObservation::Quiescent,
                 true,
             )));
         }
@@ -385,13 +401,6 @@ impl DrainEpochController {
                 },
                 observed,
                 false,
-            )));
-        }
-        if observation.source_exhausted {
-            return Ok(Some((
-                EpochClosureCause::SourceExhausted,
-                EpochClosureObservation::Quiescent,
-                true,
             )));
         }
         Ok(None)
@@ -429,7 +438,7 @@ impl DrainEpochController {
                 })
             }
             EpochClosureTrigger::Elapsed { milliseconds } => {
-                let elapsed = self.elapsed(monotonic_milliseconds)?;
+                let elapsed = self.epoch_elapsed(monotonic_milliseconds)?;
                 threshold_observation(elapsed, *milliseconds, |observed, overshoot| {
                     EpochClosureObservation::Elapsed {
                         observed_milliseconds: observed,
@@ -463,7 +472,7 @@ impl DrainEpochController {
                 .source_exhausted
                 .then_some(EpochClosureObservation::Quiescent),
             DrainTermination::Duration { milliseconds } => {
-                let elapsed = self.elapsed(observation.monotonic_milliseconds)?;
+                let elapsed = self.command_elapsed(observation.monotonic_milliseconds)?;
                 threshold_observation(elapsed, *milliseconds, |observed, overshoot| {
                     EpochClosureObservation::Elapsed {
                         observed_milliseconds: observed,
@@ -498,12 +507,15 @@ impl DrainEpochController {
         Ok(observed)
     }
 
-    fn elapsed(&self, monotonic_milliseconds: u64) -> Result<u64> {
+    fn command_elapsed(&self, monotonic_milliseconds: u64) -> Result<u64> {
         monotonic_milliseconds
-            .checked_sub(
-                self.started_monotonic_milliseconds
-                    .unwrap_or(monotonic_milliseconds),
-            )
+            .checked_sub(self.command_started_monotonic_milliseconds)
+            .ok_or_else(|| CdfError::internal("drain command monotonic clock moved backwards"))
+    }
+
+    fn epoch_elapsed(&self, monotonic_milliseconds: u64) -> Result<u64> {
+        monotonic_milliseconds
+            .checked_sub(self.epoch_started_monotonic_milliseconds)
             .ok_or_else(|| CdfError::internal("drain epoch monotonic clock moved backwards"))
     }
 }
@@ -748,6 +760,27 @@ mod tests {
     }
 
     #[test]
+    fn source_exhaustion_terminates_instead_of_opening_an_empty_followup_epoch() {
+        let mut controller = DrainEpochController::new(&extent(
+            EpochClosureTrigger::Rows { count: 1 },
+            EpochClosureTrigger::Bytes { count: 1_000 },
+            DrainTermination::Records { count: 10 },
+        ))
+        .unwrap();
+        let DrainEpochDecision::Close(closure) = controller
+            .observe_safe_frontier(observation(1, 10, 1, true))
+            .unwrap()
+        else {
+            panic!("source exhaustion must close the final nonempty epoch");
+        };
+        assert!(matches!(
+            closure.evidence.cause,
+            EpochClosureCause::SourceExhausted
+        ));
+        assert!(closure.terminate_after_settlement);
+    }
+
+    #[test]
     fn source_frontier_termination_accepts_ordered_overshoot() {
         let mut controller = DrainEpochController::new(&extent(
             EpochClosureTrigger::Rows { count: 100 },
@@ -787,6 +820,46 @@ mod tests {
             EpochClosureObservation::Elapsed {
                 observed_milliseconds: 120,
                 overshoot_milliseconds: 20,
+            }
+        );
+    }
+
+    #[test]
+    fn settlement_time_counts_toward_command_duration_but_not_next_epoch_cadence() {
+        let mut controller = DrainEpochController::new(&extent(
+            EpochClosureTrigger::Elapsed { milliseconds: 100 },
+            EpochClosureTrigger::Bytes { count: 1_000 },
+            DrainTermination::Duration { milliseconds: 200 },
+        ))
+        .unwrap();
+        let DrainEpochDecision::Close(first) = controller
+            .observe_safe_frontier(observation(1, 10, 120, false))
+            .unwrap()
+        else {
+            panic!("the first epoch must close on elapsed cadence");
+        };
+        controller.advance_monotonic_clock(205).unwrap();
+        controller
+            .acknowledge_settlement(&first.frontier.frontier)
+            .unwrap();
+
+        let DrainEpochDecision::Close(second) = controller
+            .observe_safe_frontier(observation(1, 10, 206, false))
+            .unwrap()
+        else {
+            panic!("settlement time must count toward command duration");
+        };
+        assert!(matches!(
+            second.evidence.cause,
+            EpochClosureCause::DrainTermination {
+                termination: DrainTermination::Duration { milliseconds: 200 }
+            }
+        ));
+        assert_eq!(
+            second.evidence.observation,
+            EpochClosureObservation::Elapsed {
+                observed_milliseconds: 206,
+                overshoot_milliseconds: 6,
             }
         );
     }

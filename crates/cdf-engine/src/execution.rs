@@ -3249,7 +3249,7 @@ where
                 0,
             );
             let mut fully_processed = true;
-            let mut observed_positions = Vec::new();
+            let mut observed_partition_position = None;
             let mut dynamic_quarantine = None;
             let mut partition_observation_id = None::<String>;
             let mut admitted_batch_count = 0_u64;
@@ -3358,7 +3358,13 @@ where
                             batch.header.source_position.clone(),
                             &partition_scope,
                         ) {
-                            observed_positions.push(source_position);
+                            accumulate_processed_partition_position(
+                                cdf_kernel::partition_schema_observation_id(&partition),
+                                resource.descriptor(),
+                                resource_schema.as_ref(),
+                                &mut observed_partition_position,
+                                source_position,
+                            )?;
                         }
                         partition_source_row_ordinal = partition_source_row_ordinal
                             .saturating_add(batch.header.row_count);
@@ -3415,7 +3421,13 @@ where
                                     &partition_scope,
                                 )
                             {
-                                observed_positions.push(source_position);
+                                accumulate_processed_partition_position(
+                                    cdf_kernel::partition_schema_observation_id(&partition),
+                                    resource.descriptor(),
+                                    resource_schema.as_ref(),
+                                    &mut observed_partition_position,
+                                    source_position,
+                                )?;
                             }
                         }
                         break;
@@ -3494,7 +3506,13 @@ where
                     &partition_scope,
                 );
                 if let Some(position) = &batch_source_position {
-                    observed_positions.push(position.clone());
+                    accumulate_processed_partition_position(
+                        cdf_kernel::partition_schema_observation_id(&partition),
+                        resource.descriptor(),
+                        resource_schema.as_ref(),
+                        &mut observed_partition_position,
+                        position.clone(),
+                    )?;
                 }
                 let batch_output_position = batch_source_position
                     .as_ref()
@@ -3511,13 +3529,13 @@ where
                             )
                         {
                             partition_batch_frontiers_observed = true;
-                            if let Some(closure) = observe_drain_batch_frontier(
+                            if let Some(closed) = observe_drain_batch_frontier(
                                 drain_controller.as_deref_mut(),
                                 resource.descriptor(),
                                 resource_schema.as_ref(),
                                 &processed_observations,
                                 &partition,
-                                &observed_positions,
+                                observed_partition_position.as_ref(),
                                 batch.header.row_count,
                                 batch.header.byte_count,
                                 partition_watermark.clone(),
@@ -3528,9 +3546,9 @@ where
                             )? {
                                 drain_partition_resume = Some(Box::new(crate::DrainPartitionResume {
                                     partition_id: partition.partition_id.clone(),
-                                    start_position: closure.frontier.frontier.clone(),
+                                    start_position: closed.partition_position,
                                 }));
-                                drain_epoch_closure = Some(closure);
+                                drain_epoch_closure = Some(closed.closure);
                                 fully_processed = false;
                                 partition_epoch_closed = true;
                                 break;
@@ -3746,7 +3764,7 @@ where
                 .and_then(cdf_kernel::PartitionCompletion::into_attestation);
             Ok::<_, CdfError>((
                 fully_processed,
-                observed_positions,
+                observed_partition_position,
                 dynamic_quarantine,
                 partition_observation_id,
                 partition_source_row_ordinal,
@@ -3762,7 +3780,7 @@ where
         .await;
         let (
             fully_processed,
-            observed_positions,
+            observed_partition_position,
             dynamic_quarantine,
             partition_observation_id,
             partition_observed_rows,
@@ -3816,7 +3834,7 @@ where
         }
         if let Some((mut quarantine, physical_observation)) = dynamic_quarantine {
             let observation_id = quarantine.observation_id().to_owned();
-            let fallback_attestation = if observed_positions.is_empty()
+            let fallback_attestation = if observed_partition_position.is_none()
                 && completion_attestation.is_none()
             {
                 attest_partition_with_terminal_join(resource, &partition, &run_cancellation)
@@ -3832,9 +3850,7 @@ where
                 });
             let source_position = aggregate_processed_partition_positions(
                 &observation_id,
-                resource.descriptor(),
-                resource_schema.as_ref(),
-                &observed_positions,
+                observed_partition_position.as_ref(),
                 terminal_position,
             )?;
             processed_observations.push(ProcessedObservationPosition::new(
@@ -3855,7 +3871,7 @@ where
                 .cloned()
                 .or(partition_observation_id)
         {
-            let fallback_attestation = if observed_positions.is_empty()
+            let fallback_attestation = if observed_partition_position.is_none()
                 && completion_attestation.is_none()
             {
                 match observation_attestations.get(&observation_id) {
@@ -3916,14 +3932,12 @@ where
                 .or_else(|| {
                     fallback_attestation.map(PartitionAttestation::into_processed_position)
                 });
-            let source_position = if observed_positions.is_empty() && fallback_position.is_none() {
+            let source_position = if observed_partition_position.is_none() && fallback_position.is_none() {
                 None
             } else {
                 Some(aggregate_processed_partition_positions(
                     &observation_id,
-                    resource.descriptor(),
-                    resource_schema.as_ref(),
-                    &observed_positions,
+                    observed_partition_position.as_ref(),
                     fallback_position,
                 )?)
             };
@@ -4560,24 +4574,10 @@ fn enrich_segment_positions_with_completion(
 
 fn aggregate_processed_partition_positions(
     observation_id: &str,
-    descriptor: &cdf_kernel::ResourceDescriptor,
-    schema: &Schema,
-    observed: &[SourcePosition],
+    observed: Option<&SourcePosition>,
     attested: Option<SourcePosition>,
 ) -> Result<SourcePosition> {
-    let observed = if observed.is_empty() {
-        None
-    } else {
-        Some(
-            aggregate_resource_output_position(descriptor, schema, None, observed).map_err(
-                |error| {
-                    CdfError::data(format!(
-                        "processed observation {observation_id:?} has invalid source-position evidence: {error}"
-                    ))
-                },
-            )?,
-        )
-    };
+    let observed = observed.cloned();
     match (observed, attested) {
         (Some(observed), Some(attested)) => {
             merge_terminal_position_evidence(&observed, &attested).map_err(|error| {
@@ -4592,6 +4592,34 @@ fn aggregate_processed_partition_positions(
             "processed observation {observation_id:?} completed without source-position evidence"
         ))),
     }
+}
+
+fn accumulate_processed_partition_position(
+    observation_id: &str,
+    descriptor: &cdf_kernel::ResourceDescriptor,
+    schema: &Schema,
+    accumulated: &mut Option<SourcePosition>,
+    observed: SourcePosition,
+) -> Result<()> {
+    observed.validate()?;
+    let Some(previous) = accumulated.as_ref() else {
+        *accumulated = Some(observed);
+        return Ok(());
+    };
+    *accumulated = Some(
+        aggregate_resource_output_position(
+            descriptor,
+            schema,
+            None,
+            &[previous.clone(), observed],
+        )
+        .map_err(|error| {
+            CdfError::data(format!(
+                "processed observation {observation_id:?} has invalid incremental source-position evidence: {error}"
+            ))
+        })?,
+    );
+    Ok(())
 }
 
 fn drain_resource_frontier(
@@ -4619,28 +4647,23 @@ fn observe_drain_batch_frontier(
     schema: &Schema,
     processed: &[ProcessedObservationPosition],
     partition: &PartitionPlan,
-    observed_partition_positions: &[SourcePosition],
+    observed_partition_position: Option<&SourcePosition>,
     admitted_rows: u64,
     admitted_bytes: u64,
     global_watermark: Option<WatermarkClaim>,
     monotonic_milliseconds: u64,
-) -> Result<Option<cdf_runtime::DrainEpochClosure>> {
+) -> Result<Option<DrainBatchFrontierClosure>> {
     let Some(controller) = controller else {
         return Ok(None);
     };
     let observation_id = cdf_kernel::partition_schema_observation_id(partition);
-    let partition_position = aggregate_processed_partition_positions(
-        observation_id,
-        descriptor,
-        schema,
-        observed_partition_positions,
-        None,
-    )?;
+    let partition_position =
+        aggregate_processed_partition_positions(observation_id, observed_partition_position, None)?;
     let mut positions = processed
         .iter()
         .map(|observation| observation.source_position.clone())
         .collect::<Vec<_>>();
-    positions.push(partition_position);
+    positions.push(partition_position.clone());
     let frontier = aggregate_resource_closed_output_position(
         descriptor,
         schema,
@@ -4665,11 +4688,19 @@ fn observe_drain_batch_frontier(
         observed_at_unix_milliseconds: current_observed_at_u64_ms()?,
     })? {
         cdf_runtime::DrainEpochDecision::Continue => Ok(None),
-        cdf_runtime::DrainEpochDecision::Close(closure) => Ok(Some(*closure)),
+        cdf_runtime::DrainEpochDecision::Close(closure) => Ok(Some(DrainBatchFrontierClosure {
+            closure: *closure,
+            partition_position,
+        })),
         cdf_runtime::DrainEpochDecision::FinishedNoOp => Err(CdfError::internal(
             "drain controller classified a processed batch position as an empty epoch",
         )),
     }
+}
+
+struct DrainBatchFrontierClosure {
+    closure: cdf_runtime::DrainEpochClosure,
+    partition_position: SourcePosition,
 }
 
 fn merge_verdict_summary(total: &mut VerdictSummary, batch: VerdictSummary) {

@@ -4021,7 +4021,6 @@ fn drain_project_settles_each_frontier_before_committing_the_next_epoch() {
         .unwrap()
         .bind_operator_graph(&source, &resolved_destination.runtime_capabilities())
         .unwrap();
-
     let report = futures_executor::block_on(run_project(ProjectRunRequest {
         resource: ProjectRunSource::new(&bound),
         plan,
@@ -4129,6 +4128,7 @@ fn drain_project_does_not_publish_a_later_epoch_before_checkpoint_settlement() {
         .unwrap()
         .bind_operator_graph(&source, &resolved_destination.runtime_capabilities())
         .unwrap();
+    let resume_plan = plan.clone();
     let hook = |_receipt: &Receipt| {
         Err(CdfError::internal(
             "injected drain checkpoint settlement failure",
@@ -4185,6 +4185,62 @@ fn drain_project_does_not_publish_a_later_epoch_before_checkpoint_settlement() {
         .unwrap();
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].status, CheckpointStatus::Proposed);
+
+    let recovered = recover_package_from_artifacts(PackageArtifactRecoveryRequest {
+        package_dir: first_package.clone(),
+        checkpoint_store: &store,
+        destination: ResolvedProjectDestination::duckdb(
+            &duckdb_path,
+            TargetName::new("events").unwrap(),
+        )
+        .unwrap(),
+        receipt: receipts[0].clone(),
+        after_receipt_verified: None,
+    })
+    .unwrap();
+    assert_eq!(recovered.checkpoint.status, CheckpointStatus::Committed);
+    assert_eq!(package_status(&first_package), PackageStatus::Checkpointed);
+
+    let resumed = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunSource::new(&bound),
+        plan: resume_plan
+            .rebind_package_id("pkg-drain-settlement-resumed")
+            .unwrap(),
+        package_root: package_root.clone(),
+        state_store_path: state_path.clone(),
+        pipeline_id: pipeline_id.clone(),
+        package_id: "pkg-drain-settlement-resumed".to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-drain-settlement-resumed").unwrap(),
+        destination: ResolvedProjectDestination::duckdb(
+            &duckdb_path,
+            TargetName::new("events").unwrap(),
+        )
+        .unwrap(),
+        run_id: Some(RunId::new("run-drain-settlement-resumed").unwrap()),
+        event_sink: None,
+        after_receipt_verified: None,
+    }))
+    .unwrap();
+    assert_eq!(resumed.row_count, 1);
+    assert_eq!(resumed.drain.as_ref().unwrap().epoch_count, 1);
+    assert_eq!(
+        output_manifest_paths(&resumed),
+        vec!["events-a.ndjson", "events-b.ndjson"]
+    );
+    assert_eq!(single_segment_manifest_path(&resumed), "events-b.ndjson");
+    let resumed_history = store
+        .history(&pipeline_id, &resource.descriptor().resource_id, &scope)
+        .unwrap();
+    assert_eq!(resumed_history.len(), 2);
+    assert!(
+        resumed_history
+            .iter()
+            .all(|checkpoint| checkpoint.status == CheckpointStatus::Committed)
+    );
+    assert_eq!(
+        resumed_history[1].delta.input_position,
+        Some(resumed_history[0].delta.output_position.clone())
+    );
 }
 
 #[test]
