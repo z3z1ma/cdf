@@ -290,6 +290,56 @@ async fn arrow_ipc_stdout_adapter_reads_kernel_batches() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn arrow_ipc_stdout_adapter_streams_unknown_length_without_executor_deadlock() {
+    let temp = tempfile::tempdir().unwrap();
+    let ipc_path = temp.path().join("orders-stream.arrow");
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef,
+            Arc::new(StringArray::from(vec![Some("ada"), Some("grace")])),
+        ],
+    )
+    .unwrap();
+    {
+        let mut file = File::create(&ipc_path).unwrap();
+        let mut writer = StreamWriter::try_new(&mut file, schema.as_ref()).unwrap();
+        writer.write(&batch).unwrap();
+        writer.finish().unwrap();
+        file.flush().unwrap();
+    }
+    let command = CommandSpec::new("cat").with_args([ipc_path.to_str().unwrap()]);
+
+    let output = run_stdout_adapter_streaming(
+        &command,
+        StdoutFormat::ArrowIpc,
+        &read_options(),
+        DecodeSchemaPlan::fixed_admission(Arc::clone(&schema)),
+        &SupervisionOptions {
+            maximum_stdout_bytes: 1024 * 1024,
+            ..SupervisionOptions::default()
+        },
+        memory(),
+    )
+    .await
+    .unwrap();
+    let batches = output.batches.try_collect::<Vec<_>>().await.unwrap();
+    let completion = output.completion.take().unwrap();
+
+    assert!(completion.exit_status.success());
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].header.row_count, 2);
+    assert_eq!(
+        batches[0].record_batch().unwrap().schema().as_ref(),
+        schema.as_ref()
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn ndjson_stdout_adapter_streams_with_compiled_schema_without_reserving_stdout_ceiling() {
     let constrained: Arc<dyn MemoryCoordinator> =
         Arc::new(DeterministicMemoryCoordinator::new(96 * 1024 * 1024, BTreeMap::new()).unwrap());

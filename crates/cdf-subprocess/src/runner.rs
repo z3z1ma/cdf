@@ -442,6 +442,10 @@ impl ByteSource for SubprocessStdoutByteSource {
         &self.capabilities
     }
 
+    fn maximum_sequential_bytes(&self) -> Option<u64> {
+        Some(self.supervision.maximum_stdout_bytes)
+    }
+
     fn open_sequential(
         &self,
         request: SequentialReadRequest,

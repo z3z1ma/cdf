@@ -649,6 +649,15 @@ fn coalesce_exact_ranges(
 pub trait ByteSource: Send + Sync {
     fn identity(&self) -> &ContentIdentity;
     fn capabilities(&self) -> &ByteSourceCapabilities;
+    /// Maximum bytes one finite sequential invocation may emit.
+    ///
+    /// Known objects inherit their exact content length. One-shot producers whose
+    /// length is unknown before execution may override this with their compiled
+    /// output boundary. Truly unbounded streams return `None` and cannot host
+    /// finite codecs such as Arrow IPC stream framing.
+    fn maximum_sequential_bytes(&self) -> Option<u64> {
+        self.identity().size_bytes
+    }
     fn exact_range_coalescing_policy(&self) -> ExactRangeCoalescingPolicy {
         ExactRangeCoalescingPolicy::CONSERVATIVE
     }
