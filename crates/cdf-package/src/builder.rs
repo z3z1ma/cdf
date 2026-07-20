@@ -320,15 +320,14 @@ impl PackageBuilder {
                 "imported canonical segment must contain at least one row",
             ));
         }
-        let batches = arrow_ipc::reader::FileReader::try_new(std::io::Cursor::new(bytes), None)
-            .map_err(CdfError::from)?
-            .collect::<std::result::Result<Vec<_>, _>>()
+        let mut reader = arrow_ipc::reader::FileReader::try_new(std::io::Cursor::new(bytes), None)
             .map_err(CdfError::from)?;
-        cdf_package_contract::validate_package_row_ord_batches(
-            &batches,
-            package_row_ord_start,
-            row_count,
-        )?;
+        let mut ordinal_validator =
+            cdf_package_contract::PackageRowOrdinalValidator::new(package_row_ord_start);
+        for batch in &mut reader {
+            ordinal_validator.observe(&batch.map_err(CdfError::from)?)?;
+        }
+        ordinal_validator.finish(row_count)?;
         let relative_path = segment_relative_path(&segment_id)?;
         let path = package_path(&self.package_dir, &relative_path);
         if path.exists() {

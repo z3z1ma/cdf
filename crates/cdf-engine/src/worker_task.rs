@@ -264,45 +264,33 @@ impl VerifiedCanonicalSegmentArtifact {
         let mut reader =
             arrow_ipc::reader::FileReader::try_new(std::io::Cursor::new(bytes.as_slice()), None)
                 .map_err(CdfError::from)?;
-        let mut decoded_bytes = 0_u64;
-        let mut row_count = 0_u64;
-        let mut batches = Vec::new();
-        for batch in &mut reader {
-            let batch = batch.map_err(CdfError::from)?;
-            row_count = row_count
-                .checked_add(
-                    u64::try_from(batch.num_rows())
-                        .map_err(|_| CdfError::data("canonical segment row count exceeds u64"))?,
-                )
-                .ok_or_else(|| CdfError::data("canonical segment row count overflow"))?;
-            decoded_bytes =
-                decoded_bytes
-                    .checked_add(u64::try_from(batch.get_array_memory_size()).map_err(|_| {
-                        CdfError::data("canonical segment decoded bytes exceed u64")
-                    })?)
-                    .ok_or_else(|| CdfError::data("canonical segment decoded bytes overflow"))?;
-            if decoded_bytes > maximum_decoded_bytes {
-                return Err(CdfError::data(
-                    "canonical segment exceeds its admitted decoded-memory budget",
-                ));
-            }
-            batches.push(batch);
-        }
-        let first = batches
-            .first()
+        let first = reader
+            .next()
+            .transpose()
+            .map_err(CdfError::from)?
             .ok_or_else(|| CdfError::data("canonical segment contains no rows"))?;
-        let package_row_ord_start = cdf_package_contract::package_row_ord_array(first)?
+        let package_row_ord_start = cdf_package_contract::package_row_ord_array(&first)?
             .values()
             .first()
             .copied()
             .ok_or_else(|| CdfError::data("canonical segment contains an empty first batch"))?;
-        cdf_package_contract::validate_package_row_ord_batches(
-            &batches,
-            package_row_ord_start,
-            row_count,
-        )?;
         let logical_schema = cdf_package_contract::logical_output_schema(first.schema().as_ref())?;
         let logical_schema_hash = cdf_kernel::canonical_arrow_schema_hash(&logical_schema)?;
+        let mut ordinal_validator =
+            cdf_package_contract::PackageRowOrdinalValidator::new(package_row_ord_start);
+        for batch in std::iter::once(Ok(first)).chain(&mut reader) {
+            let batch = batch.map_err(CdfError::from)?;
+            let decoded_bytes = u64::try_from(batch.get_array_memory_size())
+                .map_err(|_| CdfError::data("canonical segment decoded bytes exceed u64"))?;
+            if decoded_bytes > maximum_decoded_bytes {
+                return Err(CdfError::data(
+                    "canonical segment batch exceeds its admitted decoded-memory budget",
+                ));
+            }
+            ordinal_validator.observe(&batch)?;
+        }
+        let row_count = ordinal_validator.observed_rows()?;
+        ordinal_validator.finish(row_count)?;
         Ok(Self {
             facts: VerifiedCanonicalSegmentFacts::new(
                 reference.clone(),

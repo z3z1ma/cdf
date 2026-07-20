@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use arrow_array::{Array, ArrayRef, RecordBatch, UInt64Array};
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use cdf_kernel::{CdfError, Result, SEMANTIC_METADATA_KEY};
 
 use crate::SegmentEntry;
@@ -147,21 +147,36 @@ pub fn package_row_ord_array(batch: &RecordBatch) -> Result<&UInt64Array> {
         .ok_or_else(|| CdfError::data("canonical package row ordinal array is not UInt64"))
 }
 
-pub fn validate_package_row_ord_batches(
-    batches: &[RecordBatch],
+/// Incremental validator for the canonical dense package-row ordinal contract.
+///
+/// Segment readers use this state machine so validation retains one Arrow batch instead of
+/// materializing the complete segment. The first observed storage schema remains the exact
+/// authority for every subsequent batch.
+pub struct PackageRowOrdinalValidator {
+    storage_schema: Option<SchemaRef>,
     start: u64,
-    expected_rows: u64,
-) -> Result<()> {
-    let first = batches
-        .first()
-        .ok_or_else(|| CdfError::data("canonical segment must contain at least one batch"))?;
-    logical_output_schema(first.schema().as_ref())?;
-    let mut next = start;
-    for batch in batches {
-        if batch.schema().as_ref() != first.schema().as_ref() {
-            return Err(CdfError::data(
-                "canonical segment batches must share one storage schema",
-            ));
+    next: u64,
+}
+
+impl PackageRowOrdinalValidator {
+    pub fn new(start: u64) -> Self {
+        Self {
+            storage_schema: None,
+            start,
+            next: start,
+        }
+    }
+
+    pub fn observe(&mut self, batch: &RecordBatch) -> Result<()> {
+        if let Some(storage_schema) = &self.storage_schema {
+            if batch.schema().as_ref() != storage_schema.as_ref() {
+                return Err(CdfError::data(
+                    "canonical segment batches must share one storage schema",
+                ));
+            }
+        } else {
+            logical_output_schema(batch.schema().as_ref())?;
+            self.storage_schema = Some(batch.schema());
         }
         let ordinal = package_row_ord_array(batch)?;
         if ordinal.null_count() != 0 {
@@ -170,25 +185,52 @@ pub fn validate_package_row_ord_batches(
             ));
         }
         for value in ordinal.values() {
-            if *value != next {
+            if *value != self.next {
                 return Err(CdfError::data(format!(
-                    "canonical package row ordinal expected {next}, observed {value}"
+                    "canonical package row ordinal expected {}, observed {value}",
+                    self.next
                 )));
             }
-            next = next
+            self.next = self
+                .next
                 .checked_add(1)
                 .ok_or_else(|| CdfError::data("package row ordinal overflow"))?;
         }
+        Ok(())
     }
-    let rows = next
-        .checked_sub(start)
-        .ok_or_else(|| CdfError::internal("package row ordinal moved backwards"))?;
-    if rows != expected_rows {
-        return Err(CdfError::data(format!(
-            "canonical segment ordinal evidence contains {rows} rows but manifest expects {expected_rows}"
-        )));
+
+    pub fn observed_rows(&self) -> Result<u64> {
+        self.next
+            .checked_sub(self.start)
+            .ok_or_else(|| CdfError::internal("package row ordinal moved backwards"))
     }
-    Ok(())
+
+    pub fn finish(self, expected_rows: u64) -> Result<()> {
+        if self.storage_schema.is_none() {
+            return Err(CdfError::data(
+                "canonical segment must contain at least one batch",
+            ));
+        }
+        let rows = self.observed_rows()?;
+        if rows != expected_rows {
+            return Err(CdfError::data(format!(
+                "canonical segment ordinal evidence contains {rows} rows but manifest expects {expected_rows}"
+            )));
+        }
+        Ok(())
+    }
+}
+
+pub fn validate_package_row_ord_batches(
+    batches: &[RecordBatch],
+    start: u64,
+    expected_rows: u64,
+) -> Result<()> {
+    let mut validator = PackageRowOrdinalValidator::new(start);
+    for batch in batches {
+        validator.observe(batch)?;
+    }
+    validator.finish(expected_rows)
 }
 
 pub fn strip_package_row_ord(batch: RecordBatch) -> Result<RecordBatch> {
@@ -277,6 +319,11 @@ mod tests {
         );
         assert_eq!(package_row_ord_array(&batches[1]).unwrap().values(), &[9]);
         validate_package_row_ord_batches(&batches, 7, 3).unwrap();
+        let mut incremental = PackageRowOrdinalValidator::new(7);
+        incremental.observe(&batches[0]).unwrap();
+        assert_eq!(incremental.observed_rows().unwrap(), 2);
+        incremental.observe(&batches[1]).unwrap();
+        incremental.finish(3).unwrap();
         let logical = strip_package_row_ord(batches[0].clone()).unwrap();
         assert_eq!(logical.num_columns(), 1);
         assert_eq!(logical.schema().field(0).name(), "id");
