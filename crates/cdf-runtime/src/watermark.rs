@@ -76,7 +76,7 @@ impl PartitionWatermarkTracker {
         validate_floor(policy, effective_floor.as_ref())?;
         let mut states = BTreeMap::new();
         let mut idle_deadlines = BTreeSet::new();
-        let idle_after_milliseconds = idle_after(&policy);
+        let idle_after_milliseconds = idle_after(policy);
         for partition_id in partitions {
             if states
                 .insert(

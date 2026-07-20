@@ -9,18 +9,19 @@ use cdf_kernel::{
     CdfError, EventTimeDomain, LateDataAction, PartitionId, Result, SourcePosition, WatermarkClaim,
     WatermarkValue,
 };
-use cdf_package_contract::LateDataRecord;
+use cdf_package_contract::{LateDataPayloadLocation, LateDataRecord};
 
 pub(crate) struct LateDataClassification {
     pub(crate) admitted: RecordBatch,
     pub(crate) recaptured: Option<RecordBatch>,
+    pub(crate) quarantined: Option<RecordBatch>,
     pub(crate) records: Vec<LateDataRecord>,
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn classify_late_data(
     batch: RecordBatch,
-    source_rows: Vec<usize>,
+    source_rows: &[usize],
     field_name: &str,
     watermark: &WatermarkClaim,
     action: LateDataAction,
@@ -52,15 +53,231 @@ pub(crate) fn classify_late_data(
         )));
     }
 
-    let mut late = Vec::with_capacity(batch.num_rows());
+    let (late, records) = classify_array(
+        values.as_ref(),
+        &watermark.domain,
+        &watermark.value,
+        source_rows,
+        watermark,
+        action,
+        partition_id,
+        source_position,
+        source_row_base,
+    )?;
+
+    if records.is_empty() || action == LateDataAction::AdmitWithAnnotation {
+        return Ok(LateDataClassification {
+            admitted: batch,
+            recaptured: None,
+            quarantined: None,
+            records,
+        });
+    }
+
+    let admitted_mask = BooleanArray::from(late.iter().map(|late| !late).collect::<Vec<_>>());
+    let admitted = filter_record_batch(&batch, &admitted_mask).map_err(CdfError::from)?;
+    let late_mask = BooleanArray::from(late);
+    let withheld = filter_record_batch(&batch, &late_mask).map_err(CdfError::from)?;
+    let (recaptured, quarantined) = match action {
+        LateDataAction::RecaptureNextEpoch => (Some(withheld), None),
+        LateDataAction::Quarantine => (None, Some(withheld)),
+        LateDataAction::AdmitWithAnnotation => unreachable!("annotation returned above"),
+    };
+    Ok(LateDataClassification {
+        admitted,
+        recaptured,
+        quarantined,
+        records,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn classify_array(
+    array: &dyn Array,
+    domain: &EventTimeDomain,
+    watermark_value: &WatermarkValue,
+    source_rows: &[usize],
+    watermark: &WatermarkClaim,
+    action: LateDataAction,
+    partition_id: &PartitionId,
+    source_position: Option<&SourcePosition>,
+    source_row_base: u64,
+) -> Result<(Vec<bool>, Vec<LateDataRecord>)> {
+    macro_rules! classify {
+        ($array:ty, $threshold:expr, $map:expr, $variant:path) => {{
+            let values = downcast::<$array>(array)?;
+            classify_ordered_values(
+                values.iter().map(|value| Ok(value.map($map))),
+                $threshold,
+                source_rows,
+                watermark,
+                action,
+                partition_id,
+                source_position,
+                source_row_base,
+                $variant,
+            )
+        }};
+    }
+
+    match (domain, watermark_value) {
+        (EventTimeDomain::SignedInteger, WatermarkValue::Signed(threshold)) => {
+            if array.as_any().is::<Int8Array>() {
+                classify!(Int8Array, *threshold, i64::from, WatermarkValue::Signed)
+            } else if array.as_any().is::<Int16Array>() {
+                classify!(Int16Array, *threshold, i64::from, WatermarkValue::Signed)
+            } else if array.as_any().is::<Int32Array>() {
+                classify!(Int32Array, *threshold, i64::from, WatermarkValue::Signed)
+            } else {
+                classify!(
+                    Int64Array,
+                    *threshold,
+                    |value| value,
+                    WatermarkValue::Signed
+                )
+            }
+        }
+        (EventTimeDomain::UnsignedInteger, WatermarkValue::Unsigned(threshold)) => {
+            if array.as_any().is::<UInt8Array>() {
+                classify!(UInt8Array, *threshold, u64::from, WatermarkValue::Unsigned)
+            } else if array.as_any().is::<UInt16Array>() {
+                classify!(UInt16Array, *threshold, u64::from, WatermarkValue::Unsigned)
+            } else if array.as_any().is::<UInt32Array>() {
+                classify!(UInt32Array, *threshold, u64::from, WatermarkValue::Unsigned)
+            } else {
+                classify!(
+                    UInt64Array,
+                    *threshold,
+                    |value| value,
+                    WatermarkValue::Unsigned
+                )
+            }
+        }
+        (EventTimeDomain::Decimal { .. }, WatermarkValue::Decimal(threshold)) => {
+            if let Some(values) = array.as_any().downcast_ref::<Decimal128Array>() {
+                classify_ordered_values(
+                    values.iter().map(Ok),
+                    *threshold,
+                    source_rows,
+                    watermark,
+                    action,
+                    partition_id,
+                    source_position,
+                    source_row_base,
+                    WatermarkValue::Decimal,
+                )
+            } else {
+                let values = downcast::<Decimal256Array>(array)?;
+                classify_ordered_values(
+                    values.iter().map(|value| {
+                        value
+                            .map(|value| {
+                                let bytes = value.to_le_bytes();
+                                let sign = if bytes[31] & 0x80 == 0 { 0 } else { u8::MAX };
+                                if bytes[16..].iter().any(|byte| *byte != sign)
+                                    || (bytes[15] & 0x80 == 0) != (sign == 0)
+                                {
+                                    return Err(CdfError::data(
+                                        "decimal256 watermark value exceeds the governed decimal(38) domain",
+                                    ));
+                                }
+                                let mut narrowed = [0_u8; 16];
+                                narrowed.copy_from_slice(&bytes[..16]);
+                                Ok(i128::from_le_bytes(narrowed))
+                            })
+                            .transpose()
+                    }),
+                    *threshold,
+                    source_rows,
+                    watermark,
+                    action,
+                    partition_id,
+                    source_position,
+                    source_row_base,
+                    WatermarkValue::Decimal,
+                )
+            }
+        }
+        (EventTimeDomain::Date32, WatermarkValue::Date32(threshold)) => {
+            classify!(
+                Date32Array,
+                *threshold,
+                |value| value,
+                WatermarkValue::Date32
+            )
+        }
+        (EventTimeDomain::Date64, WatermarkValue::Date64(threshold)) => {
+            classify!(
+                Date64Array,
+                *threshold,
+                |value| value,
+                WatermarkValue::Date64
+            )
+        }
+        (EventTimeDomain::Timestamp { .. }, WatermarkValue::Timestamp(threshold)) => {
+            if array.as_any().is::<TimestampSecondArray>() {
+                classify!(
+                    TimestampSecondArray,
+                    *threshold,
+                    |value| value,
+                    WatermarkValue::Timestamp
+                )
+            } else if array.as_any().is::<TimestampMillisecondArray>() {
+                classify!(
+                    TimestampMillisecondArray,
+                    *threshold,
+                    |value| value,
+                    WatermarkValue::Timestamp
+                )
+            } else if array.as_any().is::<TimestampMicrosecondArray>() {
+                classify!(
+                    TimestampMicrosecondArray,
+                    *threshold,
+                    |value| value,
+                    WatermarkValue::Timestamp
+                )
+            } else {
+                classify!(
+                    TimestampNanosecondArray,
+                    *threshold,
+                    |value| value,
+                    WatermarkValue::Timestamp
+                )
+            }
+        }
+        _ => Err(CdfError::data(
+            "watermark value kind does not match its compiled event-time domain",
+        )),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn classify_ordered_values<I, T, F>(
+    values: I,
+    threshold: T,
+    source_rows: &[usize],
+    watermark: &WatermarkClaim,
+    action: LateDataAction,
+    partition_id: &PartitionId,
+    source_position: Option<&SourcePosition>,
+    source_row_base: u64,
+    to_watermark: F,
+) -> Result<(Vec<bool>, Vec<LateDataRecord>)>
+where
+    I: Iterator<Item = Result<Option<T>>>,
+    T: Copy + Ord,
+    F: Fn(T) -> WatermarkValue,
+{
+    let mut late = Vec::with_capacity(source_rows.len());
     let mut records = Vec::new();
-    for (row, source_row) in source_rows.iter().copied().enumerate() {
-        let event_time = event_time_at(values.as_ref(), &watermark.domain, row)?;
-        let is_late = event_time
-            .as_ref()
-            .is_some_and(|event_time| watermark_value_lt(event_time, &watermark.value));
+    for (row, value) in values.enumerate() {
+        let value = value?;
+        let is_late = value.is_some_and(|value| value < threshold);
         late.push(is_late);
-        if let Some(event_time) = event_time.filter(|_| is_late) {
+        if is_late {
+            let source_row = source_rows.get(row).copied().ok_or_else(|| {
+                CdfError::internal("late-data value count exceeds source-row tracking")
+            })?;
             records.push(LateDataRecord {
                 source_row_ordinal: source_row_base
                     .checked_add(
@@ -71,137 +288,19 @@ pub(crate) fn classify_late_data(
                     .ok_or_else(|| CdfError::data("late-data source row ordinal overflow"))?,
                 partition_id: partition_id.clone(),
                 source_position: source_position.cloned(),
-                event_time,
+                event_time: to_watermark(value.expect("late values are non-null")),
                 effective_watermark: watermark.clone(),
                 action,
+                payload: LateDataPayloadLocation::AdmittedOutput,
             });
         }
     }
-
-    if records.is_empty() || action == LateDataAction::AdmitWithAnnotation {
-        return Ok(LateDataClassification {
-            admitted: batch,
-            recaptured: None,
-            records,
-        });
+    if late.len() != source_rows.len() {
+        return Err(CdfError::internal(
+            "late-data value count differs from source-row tracking",
+        ));
     }
-
-    let admitted_mask = BooleanArray::from(late.iter().map(|late| !late).collect::<Vec<_>>());
-    let admitted = filter_record_batch(&batch, &admitted_mask).map_err(CdfError::from)?;
-    let recaptured = if action == LateDataAction::RecaptureNextEpoch {
-        let late_mask = BooleanArray::from(late);
-        Some(filter_record_batch(&batch, &late_mask).map_err(CdfError::from)?)
-    } else {
-        None
-    };
-    Ok(LateDataClassification {
-        admitted,
-        recaptured,
-        records,
-    })
-}
-
-fn event_time_at(
-    array: &dyn Array,
-    domain: &EventTimeDomain,
-    row: usize,
-) -> Result<Option<WatermarkValue>> {
-    if array.is_null(row) {
-        return Ok(None);
-    }
-    let value = match domain {
-        EventTimeDomain::SignedInteger => signed_value(array, row)?,
-        EventTimeDomain::UnsignedInteger => unsigned_value(array, row)?,
-        EventTimeDomain::Decimal { .. } => decimal_value(array, row)?,
-        EventTimeDomain::Date32 => {
-            WatermarkValue::Date32(downcast::<Date32Array>(array)?.value(row))
-        }
-        EventTimeDomain::Date64 => {
-            WatermarkValue::Date64(downcast::<Date64Array>(array)?.value(row))
-        }
-        EventTimeDomain::Timestamp { .. } => timestamp_value(array, row)?,
-    };
-    Ok(Some(value))
-}
-
-fn signed_value(array: &dyn Array, row: usize) -> Result<WatermarkValue> {
-    macro_rules! signed {
-        ($ty:ty) => {
-            if let Some(array) = array.as_any().downcast_ref::<$ty>() {
-                return Ok(WatermarkValue::Signed(i64::from(array.value(row))));
-            }
-        };
-    }
-    signed!(Int8Array);
-    signed!(Int16Array);
-    signed!(Int32Array);
-    if let Some(array) = array.as_any().downcast_ref::<Int64Array>() {
-        return Ok(WatermarkValue::Signed(array.value(row)));
-    }
-    Err(type_mismatch(array, "signed integer"))
-}
-
-fn unsigned_value(array: &dyn Array, row: usize) -> Result<WatermarkValue> {
-    macro_rules! unsigned {
-        ($ty:ty) => {
-            if let Some(array) = array.as_any().downcast_ref::<$ty>() {
-                return Ok(WatermarkValue::Unsigned(u64::from(array.value(row))));
-            }
-        };
-    }
-    unsigned!(UInt8Array);
-    unsigned!(UInt16Array);
-    unsigned!(UInt32Array);
-    if let Some(array) = array.as_any().downcast_ref::<UInt64Array>() {
-        return Ok(WatermarkValue::Unsigned(array.value(row)));
-    }
-    Err(type_mismatch(array, "unsigned integer"))
-}
-
-fn decimal_value(array: &dyn Array, row: usize) -> Result<WatermarkValue> {
-    if let Some(array) = array.as_any().downcast_ref::<Decimal128Array>() {
-        return Ok(WatermarkValue::Decimal(array.value(row)));
-    }
-    if let Some(array) = array.as_any().downcast_ref::<Decimal256Array>() {
-        let bytes = array.value(row).to_le_bytes();
-        let sign = if bytes[31] & 0x80 == 0 { 0 } else { u8::MAX };
-        if bytes[16..].iter().any(|byte| *byte != sign) || (bytes[15] & 0x80 == 0) != (sign == 0) {
-            return Err(CdfError::data(
-                "decimal256 watermark value exceeds the governed decimal(38) domain",
-            ));
-        }
-        let mut narrowed = [0_u8; 16];
-        narrowed.copy_from_slice(&bytes[..16]);
-        return Ok(WatermarkValue::Decimal(i128::from_le_bytes(narrowed)));
-    }
-    Err(type_mismatch(array, "decimal"))
-}
-
-fn timestamp_value(array: &dyn Array, row: usize) -> Result<WatermarkValue> {
-    macro_rules! timestamp {
-        ($ty:ty) => {
-            if let Some(array) = array.as_any().downcast_ref::<$ty>() {
-                return Ok(WatermarkValue::Timestamp(array.value(row)));
-            }
-        };
-    }
-    timestamp!(TimestampSecondArray);
-    timestamp!(TimestampMillisecondArray);
-    timestamp!(TimestampMicrosecondArray);
-    timestamp!(TimestampNanosecondArray);
-    Err(type_mismatch(array, "timestamp"))
-}
-
-fn watermark_value_lt(left: &WatermarkValue, right: &WatermarkValue) -> bool {
-    match (left, right) {
-        (WatermarkValue::Signed(left), WatermarkValue::Signed(right)) => left < right,
-        (WatermarkValue::Unsigned(left), WatermarkValue::Unsigned(right)) => left < right,
-        (WatermarkValue::Decimal(left), WatermarkValue::Decimal(right)) => left < right,
-        (WatermarkValue::Date32(left), WatermarkValue::Date32(right)) => left < right,
-        (WatermarkValue::Date64(left), WatermarkValue::Date64(right))
-        | (WatermarkValue::Timestamp(left), WatermarkValue::Timestamp(right)) => left < right,
-        _ => false,
-    }
+    Ok((late, records))
 }
 
 fn downcast<T: Array + 'static>(array: &dyn Array) -> Result<&T> {
@@ -241,7 +340,7 @@ mod tests {
         ] {
             let result = classify_late_data(
                 batch(),
-                vec![0, 1, 2, 3],
+                &[0, 1, 2, 3],
                 "occurred_at",
                 &watermark(20),
                 action,
@@ -264,12 +363,15 @@ mod tests {
             match action {
                 LateDataAction::Quarantine => {
                     assert!(result.recaptured.is_none());
+                    assert_eq!(result.quarantined.unwrap().num_rows(), 1);
                 }
                 LateDataAction::RecaptureNextEpoch => {
                     assert_eq!(result.recaptured.unwrap().num_rows(), 1);
+                    assert!(result.quarantined.is_none());
                 }
                 LateDataAction::AdmitWithAnnotation => {
                     assert!(result.recaptured.is_none());
+                    assert!(result.quarantined.is_none());
                 }
             }
         }

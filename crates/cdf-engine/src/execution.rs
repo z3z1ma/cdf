@@ -44,8 +44,9 @@ use cdf_memory::{
 };
 use cdf_package::PackageBuilder;
 use cdf_package_contract::{
-    LATE_DATA_EVIDENCE_FILE, LateDataEvidence, LateDataRecord, PackageStatus,
-    QuarantineObservedValue, QuarantineRecord, SegmentEntry,
+    LATE_DATA_EVIDENCE_FILE, LATE_DATA_EVIDENCE_VERSION, LATE_DATA_PAYLOAD_CATALOG_FILE,
+    LateDataPayloadArtifact, LateDataPayloadCatalog, LateDataPayloadLocation, LateDataRecord,
+    PackageStatus, QuarantineObservedValue, QuarantineRecord, SegmentEntry,
 };
 use futures_util::{StreamExt, future::Either};
 use serde::{Deserialize, Serialize};
@@ -1390,6 +1391,45 @@ struct ContractExecOutput {
     summary: VerdictSummary,
     residual_decisions: Vec<ResidualDecisionArtifact>,
     memory_lease: Option<MemoryLease>,
+}
+
+#[derive(Default)]
+struct LateDataEvidenceAccumulator {
+    artifact: Option<cdf_package::StreamingIdentityArtifact>,
+    record_count: u64,
+}
+
+impl LateDataEvidenceAccumulator {
+    fn push(&mut self, builder: &PackageBuilder, record: &LateDataRecord) -> Result<()> {
+        if self.artifact.is_none() {
+            let mut artifact =
+                builder.begin_streaming_identity_artifact(LATE_DATA_EVIDENCE_FILE)?;
+            artifact.write_all(b"{\"records\":[")?;
+            self.artifact = Some(artifact);
+        }
+        let artifact = self
+            .artifact
+            .as_mut()
+            .ok_or_else(|| CdfError::internal("late-data evidence artifact is unavailable"))?;
+        if self.record_count != 0 {
+            artifact.write_all(b",")?;
+        }
+        artifact.write_all(&cdf_package::canonical_json_bytes(record)?)?;
+        self.record_count = self
+            .record_count
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("late-data evidence record count overflow"))?;
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<()> {
+        let Some(mut artifact) = self.artifact.take() else {
+            return Ok(());
+        };
+        artifact.write_all(format!("],\"version\":{LATE_DATA_EVIDENCE_VERSION}}}").as_bytes())?;
+        artifact.finish()?;
+        Ok(())
+    }
 }
 
 struct QuarantinePartAccumulator<'a> {
@@ -3179,7 +3219,8 @@ where
     let mut segments = Vec::new();
     let mut segment_positions = Vec::new();
     let mut quarantine_part_count = 0_usize;
-    let mut late_data_records = Vec::<LateDataRecord>::new();
+    let mut late_data_evidence = LateDataEvidenceAccumulator::default();
+    let mut late_data_payloads = Vec::<LateDataPayloadArtifact>::new();
     let mut late_data_carryover = Vec::<cdf_kernel::LateDataCarryoverRef>::new();
     let mut remaining_limit = plan.scan.request.limit;
     let mut output_schema = Some(schema_artifact(runtime_output_schema.as_ref()));
@@ -4243,9 +4284,9 @@ where
                         .and_then(cdf_runtime::DrainEpochController::late_data_watermark)
                         .cloned(),
                 ) {
-                    let classification = crate::late_data::classify_late_data(
+                    let mut classification = crate::late_data::classify_late_data(
                         output,
-                        accepted_source_rows.ok_or_else(|| {
+                        accepted_source_rows.as_deref().ok_or_else(|| {
                             CdfError::internal(
                                 "watermark-enabled contract execution omitted accepted source-row tracking",
                             )
@@ -4257,6 +4298,23 @@ where
                         batch_source_position.as_ref(),
                         batch_source_row_base,
                     )?;
+                    if let Some(lease) = &memory_lease {
+                        let classification_bytes = [
+                            Some(&classification.admitted),
+                            classification.recaptured.as_ref(),
+                            classification.quarantined.as_ref(),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .try_fold(0_u64, |total, batch| {
+                            total
+                                .checked_add(cdf_memory::record_batch_retained_bytes(batch)?)
+                                .ok_or_else(|| {
+                                    CdfError::data("late-data classification memory overflow")
+                                })
+                        })?;
+                        lease.reconcile(classification_bytes.max(1))?;
+                    }
                     if let Some(recaptured) = classification.recaptured {
                         let row_count = u64::try_from(recaptured.num_rows()).map_err(|_| {
                             CdfError::data("late-data carryover row count exceeds u64")
@@ -4269,6 +4327,25 @@ where
                         );
                         let file = builder
                             .write_ipc_identity_batches(&relative_path, &[recaptured])?;
+                        let artifact_ordinal = u64::try_from(late_data_payloads.len()).map_err(
+                            |_| CdfError::data("late-data payload artifact count exceeds u64"),
+                        )?;
+                        late_data_payloads.push(LateDataPayloadArtifact {
+                            artifact_ordinal,
+                            action: *action,
+                            path: file.path.clone(),
+                            byte_count: file.byte_count,
+                            sha256: file.sha256.clone(),
+                            row_count,
+                        });
+                        for (row_ordinal, record) in classification.records.iter_mut().enumerate() {
+                            record.payload = LateDataPayloadLocation::ArtifactRow {
+                                artifact_ordinal,
+                                row_ordinal: u64::try_from(row_ordinal).map_err(|_| {
+                                    CdfError::data("late-data payload row ordinal exceeds u64")
+                                })?,
+                            };
+                        }
                         let output_position = batch_output_position.clone().ok_or_else(|| {
                             CdfError::data(
                                 "recapture_next_epoch requires exact source position authority for every withheld batch",
@@ -4290,6 +4367,39 @@ where
                     if *action == cdf_kernel::LateDataAction::Quarantine
                         && !classification.records.is_empty()
                     {
+                        let quarantined = classification.quarantined.take().ok_or_else(|| {
+                            CdfError::internal(
+                                "late-data quarantine omitted its exact normalized row payload",
+                            )
+                        })?;
+                        let row_count = u64::try_from(quarantined.num_rows()).map_err(|_| {
+                            CdfError::data("late-data quarantine row count exceeds u64")
+                        })?;
+                        let relative_path = format!(
+                            "quarantine/late-data-{:020}.arrow",
+                            late_data_payloads.len()
+                        );
+                        let file = builder
+                            .write_ipc_identity_batches(&relative_path, &[quarantined])?;
+                        let artifact_ordinal = u64::try_from(late_data_payloads.len()).map_err(
+                            |_| CdfError::data("late-data payload artifact count exceeds u64"),
+                        )?;
+                        late_data_payloads.push(LateDataPayloadArtifact {
+                            artifact_ordinal,
+                            action: *action,
+                            path: file.path,
+                            byte_count: file.byte_count,
+                            sha256: file.sha256,
+                            row_count,
+                        });
+                        for (row_ordinal, record) in classification.records.iter_mut().enumerate() {
+                            record.payload = LateDataPayloadLocation::ArtifactRow {
+                                artifact_ordinal,
+                                row_ordinal: u64::try_from(row_ordinal).map_err(|_| {
+                                    CdfError::data("late-data payload row ordinal exceeds u64")
+                                })?,
+                            };
+                        }
                         let quarantine_lease = reserve_quarantine_evidence(memory.as_ref())?;
                         let mut quarantine_sink = QuarantinePartAccumulator::new(
                             &builder,
@@ -4300,16 +4410,17 @@ where
                             quarantine_sink.push(quarantine_record_from_late_data(record)?)?;
                         }
                         quarantine_sink.finish()?;
-                        merge_verdict_summary(
+                        apply_late_data_quarantine_summary(
                             &mut verdict_summary,
-                            late_data_quarantine_summary(&classification.records),
-                        );
+                            &classification.records,
+                        )?;
                     }
-                    late_data_records.extend(classification.records);
+                    for record in &classification.records {
+                        late_data_evidence.push(&builder, record)?;
+                    }
                     if let Some(lease) = &memory_lease {
                         lease.reconcile(
-                            u64::try_from(classification.admitted.get_array_memory_size())
-                                .map_err(|_| CdfError::data("late-data output bytes exceed u64"))?
+                            cdf_memory::record_batch_retained_bytes(&classification.admitted)?
                                 .max(1),
                         )?;
                     }
@@ -5036,10 +5147,11 @@ where
     if verdict_summary.quarantine_candidate_count > 0 {
         write_quarantine_summary(&builder, &verdict_summary, quarantine_part_count)?;
     }
-    if !late_data_records.is_empty() {
+    late_data_evidence.finish()?;
+    if !late_data_payloads.is_empty() {
         builder.write_json_artifact(
-            LATE_DATA_EVIDENCE_FILE,
-            &LateDataEvidence::new(late_data_records),
+            LATE_DATA_PAYLOAD_CATALOG_FILE,
+            &LateDataPayloadCatalog::new(late_data_payloads)?,
         )?;
     }
     builder.write_lineage_artifact(
@@ -5612,21 +5724,55 @@ fn quarantine_record_from_late_data(record: &LateDataRecord) -> Result<Quarantin
     })
 }
 
-fn late_data_quarantine_summary(records: &[LateDataRecord]) -> VerdictSummary {
-    let row_count = u64::try_from(records.len()).unwrap_or(u64::MAX);
-    VerdictSummary {
-        input_rows: row_count,
-        accepted_rows: 0,
-        quarantined_rows: row_count,
-        violation_count: row_count,
-        quarantine_candidate_count: row_count,
-        rule_summaries: vec![cdf_contract::RuleVerdictSummary {
-            rule_id: "cdf.late_data".to_owned(),
-            error_code: "cdf.event_time_behind_watermark".to_owned(),
-            checked_rows: row_count,
-            violation_count: row_count,
-        }],
+fn apply_late_data_quarantine_summary(
+    summary: &mut VerdictSummary,
+    records: &[LateDataRecord],
+) -> Result<()> {
+    let row_count = u64::try_from(records.len())
+        .map_err(|_| CdfError::data("late-data quarantine count exceeds u64"))?;
+    summary.accepted_rows = summary
+        .accepted_rows
+        .checked_sub(row_count)
+        .ok_or_else(|| {
+            CdfError::internal("late-data quarantine exceeds contract-accepted row count")
+        })?;
+    summary.quarantined_rows = summary
+        .quarantined_rows
+        .checked_add(row_count)
+        .ok_or_else(|| CdfError::data("quarantined row count overflow"))?;
+    summary.violation_count = summary
+        .violation_count
+        .checked_add(row_count)
+        .ok_or_else(|| CdfError::data("contract violation count overflow"))?;
+    summary.quarantine_candidate_count = summary
+        .quarantine_candidate_count
+        .checked_add(row_count)
+        .ok_or_else(|| CdfError::data("quarantine candidate count overflow"))?;
+    match summary
+        .rule_summaries
+        .iter_mut()
+        .find(|rule| rule.rule_id == "cdf.late_data")
+    {
+        Some(rule) => {
+            rule.checked_rows = rule
+                .checked_rows
+                .checked_add(row_count)
+                .ok_or_else(|| CdfError::data("late-data checked row count overflow"))?;
+            rule.violation_count = rule
+                .violation_count
+                .checked_add(row_count)
+                .ok_or_else(|| CdfError::data("late-data violation count overflow"))?;
+        }
+        None => summary
+            .rule_summaries
+            .push(cdf_contract::RuleVerdictSummary {
+                rule_id: "cdf.late_data".to_owned(),
+                error_code: "cdf.event_time_behind_watermark".to_owned(),
+                checked_rows: row_count,
+                violation_count: row_count,
+            }),
     }
+    Ok(())
 }
 
 fn pre_contract_observed_value(value: &PreContractObservedValue) -> QuarantineObservedValue {

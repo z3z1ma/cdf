@@ -44,7 +44,8 @@ use cdf_kernel::{
     with_semantic,
 };
 use cdf_package_contract::{
-    DEDUP_SUMMARY_FILE, PackageStatus, QuarantineObservedValue, SegmentEntry,
+    DEDUP_SUMMARY_FILE, LATE_DATA_PAYLOAD_CATALOG_FILE, LateDataPayloadCatalog,
+    LateDataPayloadLocation, PackageStatus, QuarantineObservedValue, SegmentEntry,
 };
 use datafusion::{
     catalog::TableProvider, physical_plan::common::collect as collect_stream, prelude::*,
@@ -3198,14 +3199,71 @@ fn late_rows_are_quarantined_or_admitted_with_identity_evidence() {
                 assert_eq!(second.output.profile.output_rows, 0);
                 assert_eq!(quarantine.len(), 1);
                 assert_eq!(quarantine[0].rule_id, "cdf.late_data");
+                let catalog: LateDataPayloadCatalog = serde_json::from_slice(
+                    &std::fs::read(second_dir.join(LATE_DATA_PAYLOAD_CATALOG_FILE)).unwrap(),
+                )
+                .unwrap();
+                catalog.validate().unwrap();
+                assert_eq!(catalog.artifacts.len(), 1);
+                assert_eq!(catalog.artifacts[0].action, action);
+                assert_eq!(catalog.artifacts[0].row_count, 1);
+                assert!(matches!(
+                    evidence.records[0].payload,
+                    LateDataPayloadLocation::ArtifactRow {
+                        artifact_ordinal: 0,
+                        row_ordinal: 0,
+                    }
+                ));
+                let file =
+                    std::fs::File::open(second_dir.join(&catalog.artifacts[0].path)).unwrap();
+                let mut payload = arrow_ipc::reader::FileReader::try_new(file, None).unwrap();
+                let batch = payload.next().unwrap().unwrap();
+                assert_eq!(batch.num_rows(), 1);
+                assert_eq!(
+                    batch
+                        .column_by_name("id")
+                        .unwrap()
+                        .as_any()
+                        .downcast_ref::<Int32Array>()
+                        .unwrap()
+                        .value(0),
+                    10
+                );
+                assert!(payload.next().is_none());
+                let summary: cdf_contract::VerdictSummary = serde_json::from_slice(
+                    &std::fs::read(second_dir.join("stats/verdict-summary.json")).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(summary.input_rows, 1);
+                assert_eq!(summary.accepted_rows, 0);
+                assert_eq!(summary.quarantined_rows, 1);
             }
             LateDataAction::AdmitWithAnnotation => {
                 assert_eq!(second.output.profile.output_rows, 1);
                 assert!(quarantine.is_empty());
+                assert!(matches!(
+                    evidence.records[0].payload,
+                    LateDataPayloadLocation::AdmittedOutput
+                ));
+                assert!(!second_dir.join(LATE_DATA_PAYLOAD_CATALOG_FILE).exists());
             }
             LateDataAction::RecaptureNextEpoch => {
                 assert_eq!(second.output.profile.output_rows, 0);
                 assert!(quarantine.is_empty());
+                let catalog: LateDataPayloadCatalog = serde_json::from_slice(
+                    &std::fs::read(second_dir.join(LATE_DATA_PAYLOAD_CATALOG_FILE)).unwrap(),
+                )
+                .unwrap();
+                catalog.validate().unwrap();
+                assert_eq!(catalog.artifacts.len(), 1);
+                assert_eq!(catalog.artifacts[0].action, action);
+                assert!(matches!(
+                    evidence.records[0].payload,
+                    LateDataPayloadLocation::ArtifactRow {
+                        artifact_ordinal: 0,
+                        row_ordinal: 0,
+                    }
+                ));
                 let second_drain = second.drain_epoch.as_ref().unwrap();
                 assert_eq!(second_drain.late_data_carryover.len(), 1);
                 controller
