@@ -170,6 +170,191 @@ async fn execute_to_package_with_streaming_hooks<'a>(
 
 use super::*;
 
+#[derive(Default)]
+struct MemoryWorkerCompilerArtifacts {
+    values: BTreeMap<cdf_runtime::WorkerArtifactKind, Vec<u8>>,
+}
+
+impl WorkerCompilerArtifactWriter for MemoryWorkerCompilerArtifacts {
+    fn write(
+        &mut self,
+        kind: cdf_runtime::WorkerArtifactKind,
+        canonical_bytes: &[u8],
+    ) -> Result<cdf_runtime::WorkerArtifactReference> {
+        let content_sha256 = format!(
+            "sha256:{:x}",
+            <sha2::Sha256 as sha2::Digest>::digest(canonical_bytes)
+        );
+        self.values.insert(kind, canonical_bytes.to_vec());
+        Ok(cdf_runtime::WorkerArtifactReference {
+            kind,
+            store_namespace: cdf_kernel::ContentStoreNamespace::new("engine-worker-test")?,
+            object_key: cdf_kernel::ContentObjectKey::new(format!("compiler/{kind:?}.json"))?,
+            byte_count: u64::try_from(canonical_bytes.len())
+                .map_err(|_| cdf_kernel::CdfError::contract("test artifact exceeds u64"))?,
+            content_sha256,
+            provider_generation: Some(cdf_kernel::ContentProviderGeneration::new("generation-1")?),
+        })
+    }
+}
+
+impl EngineWorkerArtifactAuthority for MemoryWorkerCompilerArtifacts {
+    fn read_compiler_artifact(
+        &self,
+        reference: &cdf_runtime::WorkerArtifactReference,
+        maximum_bytes: u64,
+    ) -> Result<VerifiedWorkerCompilerArtifact> {
+        let bytes =
+            self.values.get(&reference.kind).cloned().ok_or_else(|| {
+                cdf_kernel::CdfError::contract("test compiler artifact is missing")
+            })?;
+        VerifiedWorkerCompilerArtifact::new(
+            reference,
+            bytes,
+            reference.provider_generation.as_ref(),
+            maximum_bytes,
+        )
+    }
+
+    fn verify_output_artifact(
+        &self,
+        _reference: &cdf_runtime::WorkerArtifactReference,
+    ) -> Result<cdf_runtime::VerifiedWorkerArtifactFacts> {
+        Err(cdf_kernel::CdfError::internal(
+            "compiler fixture contains no worker output artifacts",
+        ))
+    }
+}
+
+struct NoWorkerSourceFacts;
+
+impl EngineWorkerSourceAuthority for NoWorkerSourceFacts {
+    fn verify_source(
+        &self,
+        _task: &cdf_runtime::PortablePartitionTask,
+        _source: &cdf_runtime::CompiledSourcePlan,
+        _partition: &PartitionPlan,
+        _attestation: &cdf_runtime::WorkerSourceAttestation,
+        _observations: &[cdf_runtime::WorkerProcessedObservation],
+    ) -> Result<cdf_runtime::VerifiedWorkerSourceFacts> {
+        Err(cdf_kernel::CdfError::internal(
+            "compiler fixture does not verify execution results",
+        ))
+    }
+}
+
+#[test]
+fn engine_partition_task_compiles_every_authority_as_typed_artifacts() {
+    let resource = MockResource::tier_a(sample_batches());
+    let source = mock_compiled_source_plan(&resource, None);
+    resource.bind_compiled_source(&source);
+    let plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
+        )
+        .unwrap()
+        .bind_compiled_source(&source)
+        .unwrap()
+        .bind_operator_graph(
+            &source,
+            &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        )
+        .unwrap();
+    let partition = plan.scan.partitions.first().unwrap();
+    let mut artifacts = MemoryWorkerCompilerArtifacts::default();
+    let task = compile_engine_partition_task(
+        EnginePartitionTaskInput {
+            compatibility: cdf_runtime::WorkerCompatibility {
+                cdf_version: "0.1.0".to_owned(),
+                artifact_version: "package-v1".to_owned(),
+                arrow_version: "58.3.0".to_owned(),
+                relational_engine: cdf_runtime::WorkerComponentVersion {
+                    component: "datafusion".to_owned(),
+                    version: "54.0.0".to_owned(),
+                },
+                normalizer_version: plan.validation_program.normalizer_version.clone(),
+            },
+            pipeline_id: cdf_kernel::PipelineId::new("engine-worker-test").unwrap(),
+            source: &source,
+            plan: &plan,
+            partition,
+            canonical_partition_ordinal: 0,
+            epoch_ordinal: None,
+            input_checkpoint: None,
+            secret_references: Vec::new(),
+            input_artifacts: Vec::new(),
+            resources: cdf_runtime::WorkerResourceBudget {
+                memory_bytes: 64 * 1024 * 1024,
+                disk_bytes: 64 * 1024 * 1024,
+                cpu_slots: 1,
+                io_slots: 1,
+                control: cdf_runtime::WorkerControlBudget {
+                    maximum_task_bytes: 64 * 1024,
+                    maximum_attempt_bytes: 16 * 1024,
+                    maximum_result_bytes: 64 * 1024,
+                    maximum_input_artifacts: 32,
+                    maximum_output_artifacts: 32,
+                    maximum_secret_references: 8,
+                },
+            },
+            attempt_policy: cdf_runtime::WorkerAttemptPolicy {
+                maximum_attempts: 3,
+                maximum_attempt_duration_ms: 30_000,
+            },
+            capabilities: cdf_runtime::WorkerCapabilityRequirements {
+                required_blocking_lanes: Vec::new(),
+                services: Vec::new(),
+            },
+            output_policy: cdf_runtime::WorkerOutputPolicy {
+                allowed_kinds: vec![
+                    cdf_runtime::WorkerArtifactKind::CanonicalSegment,
+                    cdf_runtime::WorkerArtifactKind::Quarantine,
+                    cdf_runtime::WorkerArtifactKind::Residual,
+                    cdf_runtime::WorkerArtifactKind::Verdict,
+                    cdf_runtime::WorkerArtifactKind::Lineage,
+                ],
+                maximum_artifact_bytes: 64 * 1024 * 1024,
+            },
+        },
+        &mut artifacts,
+    )
+    .unwrap();
+
+    assert_eq!(artifacts.values.len(), 12);
+    assert_eq!(task.partition.partition_id, partition.partition_id);
+    assert_eq!(
+        task.execution.project_identity_hash,
+        cdf_runtime::artifact_hash(&plan).unwrap()
+    );
+    assert_eq!(
+        task.partition.unit_authority_hash,
+        task.execution.artifacts.decode_unit_plan.content_sha256
+    );
+    assert_eq!(
+        task.partition.segment_authority_hash,
+        task.execution.artifacts.segment_plan.content_sha256
+    );
+    let serialized = serde_json::to_string(&task).unwrap();
+    assert!(!serialized.contains("operator_chain"));
+    assert!(!serialized.contains("compiled_source_execution"));
+
+    let verifier = EngineWorkerAdmissionVerifier::new(&artifacts, &NoWorkerSourceFacts);
+    let reconstructed =
+        cdf_runtime::WorkerAdmissionVerifier::reconstruct_task_authority(&verifier, &task).unwrap();
+    assert_eq!(reconstructed.source(), &source);
+    assert_eq!(reconstructed.partition(), partition);
+
+    artifacts
+        .values
+        .get_mut(&cdf_runtime::WorkerArtifactKind::ProjectPlan)
+        .unwrap()[0] ^= 1;
+    let verifier = EngineWorkerAdmissionVerifier::new(&artifacts, &NoWorkerSourceFacts);
+    let error = cdf_runtime::WorkerAdmissionVerifier::reconstruct_task_authority(&verifier, &task)
+        .unwrap_err();
+    assert!(error.message.contains("bytes or generation"));
+}
+
 #[test]
 fn tier_a_resource_runs_engine_projection_filter_limit_into_package() {
     let mut batches = sample_batches();

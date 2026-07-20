@@ -16,6 +16,7 @@ mod table_provider;
 mod tests;
 mod types;
 mod variant_capture;
+mod worker_task;
 
 pub use execution::{
     DrainEpochExecution, DurableSegmentHook, DurableSegmentPayload, LateDataCarryoverInput,
@@ -38,3 +39,4 @@ pub use segmentation::{
 pub use standalone_host::StandaloneExecutionHost;
 pub use table_provider::{QueryableResourceTableProvider, queryable_resource_table_provider};
 pub use types::*;
+pub use worker_task::*;
