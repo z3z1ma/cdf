@@ -1266,9 +1266,17 @@ mod tests {
                     ]
                 }
             ],
-            "default-spec-id": 0,
-            "partition-specs": [{"spec-id": 0, "fields": []}],
-            "last-partition-id": 999,
+            "default-spec-id": 1,
+            "partition-specs": [
+                {"spec-id": 0, "fields": []},
+                {"spec-id": 1, "fields": [{
+                    "source-id": 1,
+                    "field-id": 1000,
+                    "name": "id_bucket",
+                    "transform": "bucket[1]"
+                }]}
+            ],
+            "last-partition-id": 1000,
             "default-sort-order-id": 0,
             "sort-orders": [{"order-id": 0, "fields": []}],
             "properties": {},
@@ -1403,13 +1411,39 @@ mod tests {
                 equality_delete.write(&equality_delete_batch).unwrap();
                 equality_delete.close().unwrap();
 
+                let partition_equality_delete_path =
+                    data_dir.join("partition-equality-delete.parquet");
+                let partition_equality_delete_schema = Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Int64, false).with_metadata(field_id(1)),
+                ]));
+                let partition_equality_delete_batch = RecordBatch::try_new(
+                    Arc::clone(&partition_equality_delete_schema),
+                    vec![Arc::new(Int64Array::from(vec![7_i64]))],
+                )
+                .unwrap();
+                let mut partition_equality_delete = ArrowWriter::try_new(
+                    fs::File::create(&partition_equality_delete_path).unwrap(),
+                    partition_equality_delete_schema,
+                    None,
+                )
+                .unwrap();
+                partition_equality_delete
+                    .write(&partition_equality_delete_batch)
+                    .unwrap();
+                partition_equality_delete.close().unwrap();
+
                 let manifest_list_path = metadata_dir.join("snap-101.avro");
                 let metadata_bytes = nonempty_table_metadata(&table, &manifest_list_path);
                 let table_metadata: TableMetadata =
                     serde_json::from_slice(&metadata_bytes).unwrap();
                 let file_io = FileIO::new_with_fs();
-                let partition_spec = table_metadata
+                let unpartitioned_spec = table_metadata
                     .partition_spec_by_id(0)
+                    .unwrap()
+                    .as_ref()
+                    .clone();
+                let partitioned_spec = table_metadata
+                    .partition_spec_by_id(1)
                     .unwrap()
                     .as_ref()
                     .clone();
@@ -1421,7 +1455,7 @@ mod tests {
                         .unwrap(),
                     Some(101),
                     table_metadata.schema_by_id(0).unwrap().clone(),
-                    partition_spec.clone(),
+                    unpartitioned_spec.clone(),
                 )
                 .build_v2_data();
                 old_writer
@@ -1448,19 +1482,19 @@ mod tests {
                         .unwrap(),
                     Some(101),
                     table_metadata.schema_by_id(1).unwrap().clone(),
-                    partition_spec,
+                    partitioned_spec.clone(),
                 )
                 .build_v2_data();
                 current_writer
                     .add_file(
                         DataFileBuilder::default()
-                            .partition_spec_id(0)
+                            .partition_spec_id(1)
                             .content(DataContentType::Data)
                             .file_path(current_data_path.display().to_string())
                             .file_format(DataFileFormat::Parquet)
                             .file_size_in_bytes(fs::metadata(&current_data_path).unwrap().len())
                             .record_count(5)
-                            .partition(Struct::empty())
+                            .partition(Struct::from_iter([Some(iceberg::spec::Literal::int(0))]))
                             .build()
                             .unwrap(),
                         1,
@@ -1475,11 +1509,7 @@ mod tests {
                         .unwrap(),
                     Some(101),
                     table_metadata.schema_by_id(1).unwrap().clone(),
-                    table_metadata
-                        .partition_spec_by_id(0)
-                        .unwrap()
-                        .as_ref()
-                        .clone(),
+                    unpartitioned_spec,
                 )
                 .build_v2_deletes();
                 delete_writer
@@ -1516,6 +1546,38 @@ mod tests {
                     .unwrap();
                 let delete_manifest = delete_writer.write_manifest_file().await.unwrap();
 
+                let partition_delete_manifest_path =
+                    metadata_dir.join("manifest-partition-deletes.avro");
+                let mut partition_delete_writer = ManifestWriterBuilder::new(
+                    file_io
+                        .new_output(partition_delete_manifest_path.to_string_lossy())
+                        .unwrap(),
+                    Some(101),
+                    table_metadata.schema_by_id(1).unwrap().clone(),
+                    partitioned_spec,
+                )
+                .build_v2_deletes();
+                partition_delete_writer
+                    .add_file(
+                        DataFileBuilder::default()
+                            .partition_spec_id(1)
+                            .content(DataContentType::EqualityDeletes)
+                            .file_path(partition_equality_delete_path.display().to_string())
+                            .file_format(DataFileFormat::Parquet)
+                            .file_size_in_bytes(
+                                fs::metadata(&partition_equality_delete_path).unwrap().len(),
+                            )
+                            .record_count(1)
+                            .partition(Struct::from_iter([Some(iceberg::spec::Literal::int(0))]))
+                            .equality_ids(Some(vec![1]))
+                            .build()
+                            .unwrap(),
+                        2,
+                    )
+                    .unwrap();
+                let partition_delete_manifest =
+                    partition_delete_writer.write_manifest_file().await.unwrap();
+
                 let list_output = file_io
                     .new_output(manifest_list_path.to_string_lossy())
                     .unwrap()
@@ -1525,7 +1587,15 @@ mod tests {
                 let mut list_writer = ManifestListWriter::v2(list_output, 101, None, 1);
                 // Deliberately reverse canonical path order; CDF planning must normalize it.
                 list_writer
-                    .add_manifests([current_manifest, delete_manifest, old_manifest].into_iter())
+                    .add_manifests(
+                        [
+                            current_manifest,
+                            delete_manifest,
+                            old_manifest,
+                            partition_delete_manifest,
+                        ]
+                        .into_iter(),
+                    )
                     .unwrap();
                 list_writer.close().await.unwrap();
 
@@ -1992,6 +2062,14 @@ mod tests {
             serde_json::from_slice(reader.authority().payload()).unwrap();
         assert_eq!(authority.output_schema_id, 1);
         assert_eq!(authority.projected_field_ids, vec![1, 2]);
+        assert_eq!(
+            authority
+                .partition_specs
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            [0, 1]
+        );
         assert_eq!(authority.default_sort_order_id, 0);
         assert!(
             authority
@@ -2027,11 +2105,15 @@ mod tests {
         }));
         assert_eq!(tasks[1].canonical_ordinal, 1);
         assert_eq!(tasks[1].file_schema_id, 1);
+        assert_eq!(tasks[1].partition_spec_id, 1);
+        assert_eq!(tasks[1].partition_values, [Some(serde_json::json!(0))]);
         assert!(tasks[1].data_file.path.ends_with("data/current.parquet"));
-        assert_eq!(tasks[1].deletes.len(), 1);
-        assert_eq!(
-            tasks[1].deletes[0].content,
-            crate::IcebergDeleteContent::Equality
+        assert_eq!(tasks[1].deletes.len(), 2);
+        assert!(
+            tasks[1]
+                .deletes
+                .iter()
+                .all(|delete| delete.content == crate::IcebergDeleteContent::Equality)
         );
         assert_eq!(
             one_job_scan.estimated_bytes,
@@ -2100,7 +2182,7 @@ mod tests {
                 Ok((rows, null_labels))
             })
             .unwrap();
-        assert_eq!(rows, 6);
+        assert_eq!(rows, 5);
         assert_eq!(null_labels, 3);
 
         let mut many_jobs_request = compile_request(root.path());
