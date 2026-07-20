@@ -2,7 +2,7 @@ Status: active
 Created: 2026-07-11
 Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md
-Depends-On: .10x/tickets/done/2026-07-11-p3-a5-streaming-operator-graph.md, .10x/tickets/done/2026-07-11-p3-a6-spillable-package-dedup.md, .10x/tickets/2026-07-11-p3-b13-native-format-matrix.md, .10x/tickets/done/2026-07-11-p3-d5-bulk-path-matrix.md, .10x/tickets/done/2026-07-11-p3-e4-package-io-envelope.md, .10x/tickets/done/2026-07-11-p3-g3-codec-download-decode-overlap.md
+Depends-On: .10x/tickets/done/2026-07-11-p3-a5-streaming-operator-graph.md, .10x/tickets/done/2026-07-11-p3-a6-spillable-package-dedup.md, .10x/tickets/done/2026-07-11-p3-d5-bulk-path-matrix.md, .10x/tickets/done/2026-07-11-p3-e4-package-io-envelope.md, .10x/tickets/done/2026-07-11-p3-g3-codec-download-decode-overlap.md
 
 # P3 F2: production materialization and allocation-owner closure
 
@@ -27,7 +27,8 @@ No unrelated product feature or performance tuning beyond closure blockers.
 
 ## Blockers
 
-Depends on the runtime/codec/destination/package/remote materialization owners.
+- The current production registry still exposes Avro while B6 records an uncontained dependency-owned decompression allocation. F2 cannot close until that codec is either generically contained or removed from product registration.
+- The cross-codebase allocation-owner matrix and remaining metadata-cardinality audit are incomplete.
 
 ## References
 
@@ -47,6 +48,9 @@ Depends on the runtime/codec/destination/package/remote materialization owners.
 - 2026-07-17: Closed a metadata-cardinality slice for object-store remote inventory. `resolve_remote_matches_bounded` now streams provider listing entries through relative-path/glob filtering and retains only matching metadata, instead of first collecting every remote identity into a `Vec` and filtering afterward. The test fixture admits only one `FILE_IDENTITY_MEMORY_ENVELOPE_BYTES` lease while listing 129 identities; the old collect-all path would exhaust the discovery budget before reaching the single matching file, while the retained path releases each nonmatching identity as it is skipped.
 - 2026-07-18: Closed the direct-destination-construction native-resource slice without adding a destination branch to project orchestration. `DestinationRuntime` now has a generic `bind_execution_services` hook. `ResolvedProjectDestination` invokes it at URI resolution, direct `run_project`, and replay entry; DuckDB uses the hook to calculate native memory/temp resources and reserve scratch through the shared spill authority, while the filesystem Parquet runtime refreshes its lazy execution services. `cdf-benchmarks` now binds execution services for direct DuckDB/Parquet/Postgres destinations so performance evidence measures the same resource envelope as project runs.
 - 2026-07-18: Repaired the D5/F2 generated-envelope drift with fresh descriptor-bound observations instead of string laundering. DuckDB's matrix cell now joins `p3-f2-2026-07-14-v2` to the rerun Arrow appender envelope (9,835,744 rows/s), Parquet's matrix cell now joins `p3-d8-2026-07-15-v5` to a rerun staged-ingress write-roofline sample (1,445.30 MiB/s), and `docs/performance-envelope.md` is once again generated from the machine report. The negative guard still rejects invented or drifted destination evidence.
+- 2026-07-18: Deleted `PackageReader::read_all_segments` and `PackageReader::read_commit_segments`; both eager APIs were already forbidden in production and retained only a superseded test escape hatch. CLI, conformance, project, Parquet, and PostgreSQL test consumers now exercise the same verified, ledger-accounted segment streams as production. Commit-request duplicate, missing, and row-count validation remains on that single path; the request map uses an in-place `Option` state instead of a second cardinality-sized set.
+- 2026-07-18: Corrected the F2 graph edge to B13. F2 audits the formats currently admitted to the product registry and installs forward conformance; it does not wait for every future catalog-v1 codec. Each later codec remains responsible for its own bounded-allocation proof before registration. This exposes, rather than hides, the current Avro registration contradiction as a direct F2 blocker.
+- 2026-07-18: While exercising the migrated conformance path, found a deterministic fixture defect: drift/quarantine asserted the optional statistics profile after invoking `run_project` with telemetry disabled. The fixture now requests statistics through `RunTelemetryConfig::with_statistics_profile(true)`; product telemetry defaults are unchanged.
 
 ## Evidence
 
@@ -77,6 +81,12 @@ Depends on the runtime/codec/destination/package/remote materialization owners.
 - 2026-07-18 destination-envelope evidence refresh:
   - `CARGO_BUILD_JOBS=12 cargo test -p cdf-dest-parquet local_streaming_parquet_reaches_sixty_percent_of_write_roofline --release --locked -j 12 -- --ignored --nocapture` — passed and reported `physical_bytes=134244673 wall_time_ns=88580750 raw_wall_time_ns=90487542 parquet_mib_s=1445.3 raw_mib_s=1414.8 ratio=1.022`. Proves the current D8 Parquet staged-ingress descriptor still exceeds the destination write-roofline floor before joining it into the envelope.
   - `CARGO_BUILD_JOBS=12 cargo test -p cdf-benchmarks --test lab_policy --locked -j 12 -- --nocapture` — passed, 6 passed. Proves the committed performance envelope exactly matches generated machine evidence, the first-party destination catalog matches runtime inspection, and invented/drifted destination evidence still fails closed.
+- 2026-07-18 eager package API deletion:
+  - `CARGO_BUILD_JOBS=12 cargo check -p cdf-package -p cdf-cli -p cdf-conformance -p cdf-project -p cdf-dest-parquet -p cdf-dest-postgres --all-targets --locked -j 12` — passed.
+  - `CARGO_BUILD_JOBS=12 cargo test -p cdf-package --lib --locked -j 12` — passed, 64 passed and 4 ignored.
+  - Focused migrated consumers passed: project file-manifest incrementality and merge-dedup replay; CLI Arrow IPC discovery, declared widening, and hints; P2 REST S5; DuckDB drift/quarantine; Parquet staged physical-plan recording; and live PostgreSQL rollback.
+  - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-package -p cdf-cli -p cdf-conformance -p cdf-project -p cdf-dest-parquet -p cdf-dest-postgres --all-targets --locked -j 12 -- -D warnings` — passed before the test-only telemetry fixture repair; conformance strict Clippy is rerun before commit.
+  - The sampled-pin promotion test reached and passed the migrated package reader, then failed later on an independent locked-policy-authority mismatch. This is not evidence for or against this slice and is not reported as passing.
 - This is partial F2 evidence only. The ticket remains active because its cross-codebase owner matrix, static architecture gates, remaining metadata-cardinality closure, and geometric stress proof are not complete.
 
 ## Review

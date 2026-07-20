@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs::{self, File},
     path::{Path, PathBuf},
     sync::Arc,
@@ -705,23 +705,6 @@ impl PackageReader {
         Ok(batches)
     }
 
-    pub fn read_all_segments(&self) -> Result<Vec<(SegmentEntry, Vec<RecordBatch>)>> {
-        self.manifest
-            .identity
-            .segments
-            .iter()
-            .map(|segment| {
-                let batches = read_segment_file_from_root(&self.package_root, &segment.path)?;
-                cdf_package_contract::validate_package_row_ord_batches(
-                    &batches,
-                    segment.package_row_ord_start,
-                    segment.row_count,
-                )?;
-                Ok((segment.clone(), batches))
-            })
-            .collect()
-    }
-
     pub fn verified_segment_stream(
         &self,
         memory: Arc<dyn MemoryCoordinator>,
@@ -831,7 +814,7 @@ impl PackageReader {
             .identity
             .segments
             .iter()
-            .map(|entry| (entry.segment_id.clone(), entry.clone()))
+            .map(|entry| (entry.segment_id.clone(), Some(entry.clone())))
             .collect::<BTreeMap<_, _>>();
         if manifest_by_id.len() != self.manifest.identity.segments.len() {
             return Err(CdfError::data(
@@ -840,12 +823,21 @@ impl PackageReader {
         }
         let mut ordered = Vec::with_capacity(state_segments.len());
         for state in state_segments {
-            let entry = manifest_by_id.remove(&state.segment_id).ok_or_else(|| {
-                CdfError::data(format!(
-                    "destination commit request segment {} is not present in the package manifest",
-                    state.segment_id
-                ))
-            })?;
+            let entry = manifest_by_id
+                .get_mut(&state.segment_id)
+                .ok_or_else(|| {
+                    CdfError::data(format!(
+                        "destination commit request segment {} is not present in the package manifest",
+                        state.segment_id
+                    ))
+                })?
+                .take()
+                .ok_or_else(|| {
+                    CdfError::data(format!(
+                        "destination commit request contains duplicate segment {}",
+                        state.segment_id
+                    ))
+                })?;
             if state.row_count != entry.row_count {
                 return Err(CdfError::data(format!(
                     "destination commit request segment {} has {} rows but package manifest has {} rows",
@@ -854,7 +846,10 @@ impl PackageReader {
             }
             ordered.push((entry, state.clone()));
         }
-        if let Some(segment_id) = manifest_by_id.keys().next() {
+        if let Some(segment_id) = manifest_by_id
+            .iter()
+            .find_map(|(segment_id, entry)| entry.is_some().then_some(segment_id))
+        {
             return Err(CdfError::data(format!(
                 "package manifest segment {segment_id} is missing from destination commit request"
             )));
@@ -958,74 +953,6 @@ impl PackageReader {
             ));
         }
         Ok(output)
-    }
-
-    pub fn read_commit_segments(
-        &self,
-        state_segments: &[StateSegment],
-    ) -> Result<Vec<CommitSegment>> {
-        let mut manifest_by_id = BTreeMap::new();
-        for segment in &self.manifest.identity.segments {
-            if manifest_by_id
-                .insert(segment.segment_id.clone(), segment)
-                .is_some()
-            {
-                return Err(CdfError::data(format!(
-                    "package manifest contains duplicate segment {}",
-                    segment.segment_id
-                )));
-            }
-        }
-
-        let mut requested_ids = BTreeSet::new();
-        let mut commit_segments = Vec::with_capacity(state_segments.len());
-        for state in state_segments {
-            if !requested_ids.insert(state.segment_id.clone()) {
-                return Err(CdfError::data(format!(
-                    "destination commit request contains duplicate segment {}",
-                    state.segment_id
-                )));
-            }
-            let manifest_segment = manifest_by_id.get(&state.segment_id).ok_or_else(|| {
-                CdfError::data(format!(
-                    "destination commit request segment {} is not present in the package manifest",
-                    state.segment_id
-                ))
-            })?;
-            let batches = read_segment_file_from_root(&self.package_root, &manifest_segment.path)?;
-            let batch_rows = batches
-                .iter()
-                .map(|batch| batch.num_rows() as u64)
-                .sum::<u64>();
-            if batch_rows != manifest_segment.row_count {
-                return Err(CdfError::data(format!(
-                    "segment {} manifest row count {} differs from package data {}",
-                    state.segment_id, manifest_segment.row_count, batch_rows
-                )));
-            }
-            if state.row_count != manifest_segment.row_count {
-                return Err(CdfError::data(format!(
-                    "destination commit request segment {} has {} rows but package manifest has {} rows",
-                    state.segment_id, state.row_count, manifest_segment.row_count
-                )));
-            }
-            commit_segments.push(CommitSegment::new(
-                state.clone(),
-                manifest_segment.byte_count,
-                batches,
-            ));
-        }
-
-        for segment_id in manifest_by_id.keys() {
-            if !requested_ids.contains(segment_id) {
-                return Err(CdfError::data(format!(
-                    "package manifest segment {} is missing from destination commit request",
-                    segment_id
-                )));
-            }
-        }
-
-        Ok(commit_segments)
     }
 
     pub fn tombstone(&mut self) -> Result<TombstoneReport> {

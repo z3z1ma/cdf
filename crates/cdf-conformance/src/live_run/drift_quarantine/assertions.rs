@@ -1,4 +1,4 @@
-use std::fs;
+use std::{collections::BTreeMap, fs, sync::Arc};
 
 use arrow_array::{Int64Array, StringArray};
 use cdf_dest_parquet::ParquetDestination;
@@ -135,10 +135,15 @@ pub(super) fn assert_drift_quarantine_package_evidence(report: &ProjectRunReport
         vec![(0, 1)]
     );
 
-    let batches = reader.read_all_segments().unwrap();
-    assert_eq!(batches.len(), 1);
-    assert_eq!(batches[0].0.row_count, 1);
-    let batch = &batches[0].1[0];
+    let memory: Arc<dyn cdf_memory::MemoryCoordinator> = Arc::new(
+        cdf_memory::DeterministicMemoryCoordinator::new(64 * 1024 * 1024, BTreeMap::new()).unwrap(),
+    );
+    let mut segments = reader
+        .verified_segment_stream_with(&verified, memory, 64 * 1024 * 1024)
+        .unwrap();
+    let segment = segments.next().unwrap().unwrap();
+    assert_eq!(segment.entry.row_count, 1);
+    let batch = &segment.batches[0];
     let ids = batch
         .column_by_name("id")
         .unwrap()
@@ -157,6 +162,7 @@ pub(super) fn assert_drift_quarantine_package_evidence(report: &ProjectRunReport
         .as_any()
         .downcast_ref::<StringArray>()
         .unwrap();
+    assert!(segments.next().is_none());
     assert_eq!(ids.values(), &[1]);
     assert_eq!(event_types.value(0), ALLOWED_EVENT_TYPE);
     assert_eq!(names.value(0), "second-accepted-last");

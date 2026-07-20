@@ -16,8 +16,8 @@ use cdf_kernel::{
 };
 use cdf_project::{
     InMemoryResourceSourceResolver, ProjectRunReport, ProjectRunRequest, ProjectRunSource,
-    ResolvedProjectDestination, compile_project_declarative_resources_with_root, parse_cdf_toml,
-    run_project,
+    ResolvedProjectDestination, RunTelemetryConfig,
+    compile_project_declarative_resources_with_root, parse_cdf_toml, run_project_with_telemetry,
 };
 use cdf_state_sqlite::SqliteCheckpointStore;
 
@@ -145,7 +145,7 @@ pub(super) fn run_scenario(
     };
 
     let services = crate::test_execution_services();
-    let report = futures_executor::block_on(run_project(
+    let report = futures_executor::block_on(run_project_with_telemetry(
         ProjectRunRequest {
             resource: ProjectRunSource::new(resource.queryable()),
             plan,
@@ -160,6 +160,7 @@ pub(super) fn run_scenario(
             after_receipt_verified: Some(&gate),
         },
         &services,
+        RunTelemetryConfig::disabled().with_statistics_profile(true),
     ))?
     .into_committed()?;
     assert!(

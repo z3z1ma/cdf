@@ -549,8 +549,14 @@ fn p2_s5_rest_discover_pin_preview_run_package_checkpoint_conformance() {
     let destination = DuckDbDestination::new(temp.path().join(".cdf/s5.duckdb")).unwrap();
     assert!(destination.verify_receipt(receipt).unwrap().verified);
 
-    let segments = reader.read_all_segments().unwrap();
-    let output_schema = segments[0].1[0].schema();
+    let memory: Arc<dyn cdf_memory::MemoryCoordinator> = Arc::new(
+        cdf_memory::DeterministicMemoryCoordinator::new(64 * 1024 * 1024, BTreeMap::new()).unwrap(),
+    );
+    let mut segments = reader
+        .verified_segment_stream(memory, 64 * 1024 * 1024)
+        .unwrap();
+    let segment = segments.next().unwrap().unwrap();
+    let output_schema = segment.batches[0].schema();
     let vendor = output_schema.field_with_name("vendor_id").unwrap();
     assert_eq!(source_name(vendor), Some("VendorID"));
 

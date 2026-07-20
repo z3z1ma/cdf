@@ -1765,8 +1765,14 @@ fn sample_batch(ids: Vec<i64>, names: Vec<Option<&str>>) -> RecordBatch {
 
 fn package_id_name_rows(reader: &PackageReader) -> Vec<(i64, Option<String>)> {
     let mut rows = Vec::new();
-    for (_segment, batches) in reader.read_all_segments().unwrap() {
-        for batch in batches {
+    let memory: Arc<dyn cdf_memory::MemoryCoordinator> = Arc::new(
+        cdf_memory::DeterministicMemoryCoordinator::new(64 * 1024 * 1024, BTreeMap::new()).unwrap(),
+    );
+    let segments = reader
+        .verified_segment_stream(memory, 64 * 1024 * 1024)
+        .unwrap();
+    for segment in segments {
+        for batch in segment.unwrap().batches {
             let ids = batch
                 .column(batch.schema().index_of("id").unwrap())
                 .as_any()

@@ -739,7 +739,13 @@ fn stage_through_ingress_with_lease(
     managed_lease: Option<cdf_runtime::ManagedStagingLease>,
 ) -> Result<StagedTestCommit> {
     let reader = PackageReader::open(package_dir)?;
-    let commit_segments = reader.read_commit_segments(&commit.commit.segments)?;
+    let memory: Arc<dyn cdf_memory::MemoryCoordinator> = Arc::new(
+        cdf_memory::DeterministicMemoryCoordinator::new(128 * 1024 * 1024, BTreeMap::new())?,
+    );
+    let commit_segments = reader
+        .verified_commit_segment_stream(&commit.commit.segments, memory, 64 * 1024 * 1024)?
+        .map(|segment| segment.and_then(|segment| segment.into_commit_segment()))
+        .collect::<Result<Vec<_>>>()?;
     let output_schema = commit_segments
         .iter()
         .flat_map(|segment| segment.batches.first())

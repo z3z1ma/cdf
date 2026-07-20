@@ -830,7 +830,7 @@ fn try_low_level_session_commit(
     let destination = env.destination();
     let reader = PackageReader::open(package_dir)?;
     let verified = reader.verify_for_consumption()?;
-    let package = Arc::new(reader.clone().with_verification(verified)?);
+    let package = Arc::new(reader.clone().with_verification(verified.clone())?);
     let segments =
         crate::package::expected_segments_for_session(package.as_ref(), &plan, &request)?;
     let mut session = destination.begin_commit_session(PostgresCommitRequest {
@@ -839,10 +839,17 @@ fn try_low_level_session_commit(
         segments,
     })?;
     session.apply_migrations()?;
+    let memory: Arc<dyn cdf_memory::MemoryCoordinator> = Arc::new(
+        cdf_memory::DeterministicMemoryCoordinator::new(64 * 1024 * 1024, BTreeMap::new())?,
+    );
     let segments = reader
-        .read_commit_segments(&request.segments)?
-        .into_iter()
-        .map(Ok);
+        .verified_commit_segment_stream_with(
+            &verified,
+            &request.segments,
+            memory,
+            64 * 1024 * 1024,
+        )?
+        .map(|segment| segment.and_then(|segment| segment.into_commit_segment()));
     session.write_segments(Box::new(segments))?;
     Box::new(session).finalize()
 }

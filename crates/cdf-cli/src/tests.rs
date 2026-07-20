@@ -2866,7 +2866,7 @@ fn local_arrow_ipc_discover_pin_show_diff_preview_and_run_share_pinned_schema() 
     assert_eq!(receipt.counts.rows_written, 2);
     let destination = DuckDbDestination::new(project.root.join(".cdf/dev.duckdb")).unwrap();
     assert!(destination.verify_receipt(receipt).unwrap().verified);
-    let segments = reader.read_all_segments().unwrap();
+    let segments = collect_package_segments_for_test(&reader);
     assert_eq!(segments.len(), 1);
     let packaged_schema = segments[0].1[0].schema();
     assert_eq!(packaged_schema.metadata()["owner"], "source-system");
@@ -3305,7 +3305,7 @@ schema = { fields = [
     let package_dir = run_package_dir(&project, &run_result);
     let reader = PackageReader::open(&package_dir).unwrap();
     reader.verify().unwrap();
-    let batches = reader.read_all_segments().unwrap();
+    let batches = collect_package_segments_for_test(&reader);
     let schema = batches[0].1[0].schema();
     assert_eq!(schema.field(0).data_type(), &DataType::Int64);
     assert_eq!(schema.field(0).metadata()["cdf:source_name"], "VendorID");
@@ -3428,7 +3428,7 @@ schema = { fields = [
     let run_result = run_valid_run_args(&project);
     assert_eq!(run_result.exit_code, 0, "{}", run_result.stderr);
     let reader = PackageReader::open(run_package_dir(&project, &run_result)).unwrap();
-    let batches = reader.read_all_segments().unwrap();
+    let batches = collect_package_segments_for_test(&reader);
     assert_eq!(
         batches[0].1[0].schema().field(0).data_type(),
         &DataType::Int64
@@ -4113,10 +4113,8 @@ fn sampled_pin_captures_unseen_field_then_fresh_discovery_promotes_without_sourc
     let loaded = run_valid_run_args(&project);
     assert_eq!(loaded.exit_code, 0, "{}", loaded.stderr);
     let loaded_package_dir = run_package_dir(&project, &loaded);
-    let package_variant_rows = PackageReader::open(&loaded_package_dir)
-        .unwrap()
-        .read_all_segments()
-        .unwrap()
+    let package_reader = PackageReader::open(&loaded_package_dir).unwrap();
+    let package_variant_rows = collect_package_segments_for_test(&package_reader)
         .into_iter()
         .flat_map(|(_, batches)| batches)
         .map(|batch| {
@@ -14181,6 +14179,23 @@ fn run_package_dir(
         .root
         .join(".cdf/packages")
         .join(run_package_id(result))
+}
+
+fn collect_package_segments_for_test(
+    reader: &PackageReader,
+) -> Vec<(SegmentEntry, Vec<RecordBatch>)> {
+    let memory: Arc<dyn cdf_memory::MemoryCoordinator> = Arc::new(
+        cdf_memory::DeterministicMemoryCoordinator::new(128 * 1024 * 1024, BTreeMap::new())
+            .unwrap(),
+    );
+    reader
+        .verified_segment_stream(memory, 64 * 1024 * 1024)
+        .unwrap()
+        .map(|segment| {
+            let segment = segment.unwrap();
+            (segment.entry, segment.batches)
+        })
+        .collect()
 }
 
 fn single_package_dir(project: &TestProject) -> PathBuf {

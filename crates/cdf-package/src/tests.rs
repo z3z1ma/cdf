@@ -12,10 +12,10 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray, Time32SecondAr
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, Checkpoint, CheckpointId, CheckpointStatus, CommitCounts,
-    CursorPosition, CursorValue, DestinationId, FileManifest, FilePosition, IdempotencyToken,
-    PackageHash, PartitionId, PipelineId, ProcessedObservationOutcome,
-    ProcessedObservationPosition, Receipt, ReceiptId, ResourceId, SchemaHash, ScopeKey, SegmentAck,
-    SegmentId, SourcePosition, StateDelta, StateSegment, TableSnapshotPosition,
+    CommitSegment, CursorPosition, CursorValue, DestinationId, FileManifest, FilePosition,
+    IdempotencyToken, PackageHash, PartitionId, PipelineId, ProcessedObservationOutcome,
+    ProcessedObservationPosition, Receipt, ReceiptId, ResourceId, Result, SchemaHash, ScopeKey,
+    SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment, TableSnapshotPosition,
     TableSnapshotSelector, TargetName, VerifyClause, WriteDisposition,
     aggregate_processed_observation_positions,
 };
@@ -533,6 +533,18 @@ fn state_segments_for_manifest(manifest: &PackageManifest) -> Vec<StateSegment> 
         .collect()
 }
 
+fn collect_commit_segments_for_test(
+    reader: &PackageReader,
+    state_segments: &[StateSegment],
+) -> Result<Vec<CommitSegment>> {
+    let memory: Arc<dyn MemoryCoordinator> =
+        Arc::new(DeterministicMemoryCoordinator::new(128 * 1024 * 1024, BTreeMap::new()).unwrap());
+    reader
+        .verified_commit_segment_stream(state_segments, memory, 64 * 1024 * 1024)?
+        .map(|segment| segment.and_then(|segment| segment.into_commit_segment()))
+        .collect()
+}
+
 fn build_archive_fixture(package_dir: &Path) -> PackageManifest {
     let builder = PackageBuilder::create(package_dir, "pkg-archive-0001").unwrap();
     builder.update_status(PackageStatus::Extracting).unwrap();
@@ -953,14 +965,14 @@ fn replay_inputs_reconstruct_state_delta_and_commit_request_from_verified_preima
 }
 
 #[test]
-fn read_commit_segments_preserves_requested_and_package_byte_counts() {
+fn verified_commit_stream_preserves_requested_and_package_byte_counts() {
     let temp = tempfile::tempdir().unwrap();
     let manifest = build_archive_fixture(temp.path());
     let reader = PackageReader::open(temp.path()).unwrap();
     let mut state_segments = state_segments_for_manifest(&manifest);
     state_segments[0].byte_count = manifest.identity.segments[0].byte_count + 100;
 
-    let commit_segments = reader.read_commit_segments(&state_segments).unwrap();
+    let commit_segments = collect_commit_segments_for_test(&reader, &state_segments).unwrap();
 
     assert_eq!(commit_segments.len(), state_segments.len());
     assert_eq!(commit_segments[0].state, state_segments[0]);
@@ -1153,15 +1165,14 @@ fn verified_segment_stream_allows_multiple_windows_within_memory_budget() {
 }
 
 #[test]
-fn read_commit_segments_rejects_bad_segment_requests_and_row_counts() {
+fn verified_commit_stream_rejects_bad_segment_requests_and_row_counts() {
     let duplicate = tempfile::tempdir().unwrap();
     let duplicate_manifest = build_archive_fixture(duplicate.path());
     let duplicate_reader = PackageReader::open(duplicate.path()).unwrap();
     let mut duplicate_segments = state_segments_for_manifest(&duplicate_manifest);
     duplicate_segments.push(duplicate_segments[0].clone());
-    let error = duplicate_reader
-        .read_commit_segments(&duplicate_segments)
-        .unwrap_err();
+    let error =
+        collect_commit_segments_for_test(&duplicate_reader, &duplicate_segments).unwrap_err();
     assert!(
         error.to_string().contains("contains duplicate segment"),
         "{error}"
@@ -1172,9 +1183,7 @@ fn read_commit_segments_rejects_bad_segment_requests_and_row_counts() {
     let unknown_reader = PackageReader::open(unknown.path()).unwrap();
     let mut unknown_segments = state_segments_for_manifest(&unknown_manifest);
     unknown_segments[0].segment_id = SegmentId::new("seg-unknown").unwrap();
-    let error = unknown_reader
-        .read_commit_segments(&unknown_segments)
-        .unwrap_err();
+    let error = collect_commit_segments_for_test(&unknown_reader, &unknown_segments).unwrap_err();
     assert!(
         error
             .to_string()
@@ -1187,9 +1196,7 @@ fn read_commit_segments_rejects_bad_segment_requests_and_row_counts() {
     let missing_reader = PackageReader::open(missing.path()).unwrap();
     let mut missing_segments = state_segments_for_manifest(&missing_manifest);
     missing_segments.pop();
-    let error = missing_reader
-        .read_commit_segments(&missing_segments)
-        .unwrap_err();
+    let error = collect_commit_segments_for_test(&missing_reader, &missing_segments).unwrap_err();
     assert!(
         error
             .to_string()
@@ -1203,9 +1210,11 @@ fn read_commit_segments_rejects_bad_segment_requests_and_row_counts() {
     let mut requested_row_mismatch_segments =
         state_segments_for_manifest(&requested_row_mismatch_manifest);
     requested_row_mismatch_segments[0].row_count += 1;
-    let error = requested_row_mismatch_reader
-        .read_commit_segments(&requested_row_mismatch_segments)
-        .unwrap_err();
+    let error = collect_commit_segments_for_test(
+        &requested_row_mismatch_reader,
+        &requested_row_mismatch_segments,
+    )
+    .unwrap_err();
     assert!(
         error.to_string().contains("but package manifest has"),
         "{error}"
@@ -1221,9 +1230,11 @@ fn read_commit_segments_rejects_bad_segment_requests_and_row_counts() {
     .unwrap();
     let package_row_mismatch_reader = PackageReader::open(package_row_mismatch.path()).unwrap();
     let package_row_mismatch_segments = state_segments_for_manifest(&package_row_mismatch_manifest);
-    let error = package_row_mismatch_reader
-        .read_commit_segments(&package_row_mismatch_segments)
-        .unwrap_err();
+    let error = collect_commit_segments_for_test(
+        &package_row_mismatch_reader,
+        &package_row_mismatch_segments,
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("manifest row count"), "{error}");
 }
 
@@ -2654,11 +2665,7 @@ fn production_commit_paths_cannot_collect_package_segments() {
     }
     for path in files {
         let source = fs::read_to_string(&path).unwrap();
-        let mut forbidden = vec![
-            "read_all_segments(",
-            "read_commit_segments(",
-            "Vec<CommitSegment>",
-        ];
+        let mut forbidden = vec!["Vec<CommitSegment>"];
         if path != archive_path {
             forbidden.push("read_segment(");
         }
