@@ -697,7 +697,7 @@ fn validate_partition_isolation(plan: &EnginePlan) -> Result<()> {
         )
     {
         return Err(CdfError::contract(
-            "multi-partition isolation requires partition-separable bounded semantics; package-global limit, deduplication, and drain policies require one whole-package worker",
+            "multi-partition isolation requires partition-separable bounded semantics; package-global limit, deduplication, and drain policies require an explicit canonical global-operator or epoch task",
         ));
     }
     Ok(())
@@ -730,6 +730,7 @@ pub fn compile_engine_partition_task(
 ) -> Result<PortablePartitionTask> {
     input.source.validate()?;
     input.plan.validate_execution_extent_for_execution()?;
+    validate_partition_isolation(input.plan)?;
     input.plan.validate_compiled_expression_plan()?;
     input.plan.validate_partition_schedule()?;
     input.partition.scan_intent.validate()?;

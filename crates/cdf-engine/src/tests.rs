@@ -1001,6 +1001,88 @@ fn engine_partition_task_compiles_every_authority_as_typed_artifacts() {
     assert!(error.message.contains("bytes or generation"));
 }
 
+#[test]
+fn engine_partition_task_rejects_package_global_work_before_writing_control_artifacts() {
+    let resource = MockResource::tier_a(sample_batches())
+        .without_control_keys()
+        .with_partition_count(2);
+    let source = mock_compiled_source_plan(&resource, None);
+    resource.bind_compiled_source(&source);
+    let plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(Vec::new(), None, Some(1), ExecutionExtent::bounded()),
+        )
+        .unwrap()
+        .bind_compiled_source(&source)
+        .unwrap()
+        .bind_operator_graph(
+            &source,
+            &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        )
+        .unwrap();
+    let mut artifacts = MemoryWorkerCompilerArtifacts::default();
+    let error = compile_engine_partition_task(
+        EnginePartitionTaskInput {
+            compatibility: cdf_runtime::WorkerCompatibility {
+                cdf_version: "0.1.0".to_owned(),
+                artifact_version: "package-v2".to_owned(),
+                arrow_version: "58.3.0".to_owned(),
+                relational_engine: cdf_runtime::WorkerComponentVersion {
+                    component: "datafusion".to_owned(),
+                    version: "54.0.0".to_owned(),
+                },
+                normalizer_version: plan.validation_program.normalizer_version.clone(),
+            },
+            pipeline_id: cdf_kernel::PipelineId::new("global-operator-guard").unwrap(),
+            source: &source,
+            plan: &plan,
+            partition: &plan.scan.partitions[0],
+            canonical_partition_ordinal: 0,
+            epoch_ordinal: None,
+            input_checkpoint: None,
+            secret_references: Vec::new(),
+            input_artifacts: Vec::new(),
+            resources: cdf_runtime::WorkerResourceBudget {
+                memory_bytes: 64 * 1024 * 1024,
+                disk_bytes: 64 * 1024 * 1024,
+                cpu_slots: 1,
+                io_slots: 1,
+                control: cdf_runtime::WorkerControlBudget {
+                    maximum_task_bytes: 64 * 1024,
+                    maximum_attempt_bytes: 16 * 1024,
+                    maximum_result_bytes: 64 * 1024,
+                    maximum_input_artifacts: 32,
+                    maximum_output_artifacts: 32,
+                    maximum_secret_references: 8,
+                },
+            },
+            attempt_policy: cdf_runtime::WorkerAttemptPolicy {
+                maximum_attempts: 2,
+                maximum_attempt_duration_ms: 30_000,
+            },
+            capabilities: cdf_runtime::WorkerCapabilityRequirements {
+                required_blocking_lanes: Vec::new(),
+                services: Vec::new(),
+            },
+            output_policy: cdf_runtime::WorkerOutputPolicy {
+                allowed_kinds: vec![cdf_runtime::WorkerArtifactKind::PreparedSegment],
+                maximum_artifact_bytes: 64 * 1024 * 1024,
+            },
+        },
+        &mut artifacts,
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .message
+            .contains("canonical global-operator or epoch task")
+    );
+    assert!(artifacts.values.is_empty());
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
+}
+
 fn isolated_engine_services(cpu_slots: u16) -> cdf_runtime::ExecutionServices {
     let memory: Arc<dyn cdf_memory::MemoryCoordinator> = Arc::new(
         cdf_memory::DeterministicMemoryCoordinator::new(512 * 1024 * 1024, BTreeMap::new())
