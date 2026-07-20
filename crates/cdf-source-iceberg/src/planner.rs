@@ -808,23 +808,25 @@ fn projected_field_ids(
     schema: &iceberg::spec::Schema,
     projection: Option<&[String]>,
 ) -> Result<Vec<i32>> {
-    let mut ids =
-        match projection {
-            Some(projection) => projection
-                .iter()
-                .map(|name| {
-                    schema.field_by_name(name).map(|field| field.id).ok_or_else(|| {
-                    CdfError::contract(format!(
-                        "Iceberg projection field `{name}` is absent from selected schema {}",
-                        schema.schema_id()
-                    ))
-                })
-                })
-                .collect::<Result<Vec<_>>>()?,
-            None => (1..=schema.highest_field_id())
-                .filter(|field_id| schema.field_by_id(*field_id).is_some())
-                .collect(),
-        };
+    let top_level = schema.as_struct().fields();
+    let mut ids = match projection {
+        Some(projection) => projection
+            .iter()
+            .map(|name| {
+                top_level
+                    .iter()
+                    .find(|field| field.name == *name)
+                    .map(|field| field.id)
+                    .ok_or_else(|| {
+                        CdfError::contract(format!(
+                            "Iceberg projection field `{name}` is absent from the top-level selected schema {}",
+                            schema.schema_id()
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?,
+        None => top_level.iter().map(|field| field.id).collect(),
+    };
     ids.sort_unstable();
     ids.dedup();
     Ok(ids)
@@ -1150,6 +1152,41 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn projection_passes_only_top_level_field_ids_to_the_arrow_reader() {
+        let schema: iceberg::spec::Schema = serde_json::from_value(serde_json::json!({
+            "type": "struct",
+            "schema-id": 7,
+            "fields": [
+                {"id": 1, "name": "id", "required": true, "type": "long"},
+                {
+                    "id": 2,
+                    "name": "tags",
+                    "required": false,
+                    "type": {
+                        "type": "list",
+                        "element-id": 3,
+                        "element": "string",
+                        "element-required": false
+                    }
+                }
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(projected_field_ids(&schema, None).unwrap(), vec![1, 2]);
+        assert_eq!(
+            projected_field_ids(&schema, Some(&["tags".to_owned()])).unwrap(),
+            vec![2]
+        );
+        assert!(
+            projected_field_ids(&schema, Some(&["element".to_owned()]))
+                .unwrap_err()
+                .to_string()
+                .contains("top-level")
+        );
+    }
 
     #[test]
     fn omitted_manifest_ids_use_embedded_and_manifest_list_authorities() {

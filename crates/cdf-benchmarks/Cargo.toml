@@ -37,6 +37,7 @@ cdf-source-files = { path = "../cdf-source-files" }
 cdf-source-iceberg = { path = "../cdf-source-iceberg" }
 cdf-source-rest = { path = "../cdf-source-rest" }
 cdf-state-sqlite = { path = "../cdf-state-sqlite" }
+cdf-transport-http = { path = "../cdf-transport-http" }
 datafusion = { version = "54.0.0", default-features = false }
 duckdb = { workspace = true, features = ["appender-arrow"] }
 futures-executor = "0.3.32"

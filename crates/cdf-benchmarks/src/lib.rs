@@ -33,7 +33,8 @@ pub use references::{
 };
 pub use runners::{
     PreparedDestinationKind, PreparedFileDestinationRun, PreparedFileDestinationWorkload,
-    PreparedFileFormat, PreparedFilePackageWorkload, PreparedIcebergPackageWorkload,
-    PreparedSourcePackageRun, StartupControlWorkload, run_case, run_prepared_file_to_destination,
+    PreparedFileFormat, PreparedFilePackageWorkload, PreparedIcebergCatalog,
+    PreparedIcebergPackageWorkload, PreparedSourceIoStage, PreparedSourcePackageRun,
+    StartupControlWorkload, run_case, run_prepared_file_to_destination,
     run_prepared_file_to_package, run_prepared_iceberg_to_package, run_startup_control_workload,
 };

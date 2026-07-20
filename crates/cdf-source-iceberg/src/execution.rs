@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use arrow_array::{Array, ArrayRef, make_array};
 use arrow_schema::SchemaRef;
 use cdf_kernel::{
     Batch, BatchId, CdfError, PartitionAttestation, PartitionCompletion, PartitionPlan,
@@ -65,6 +66,10 @@ pub(crate) async fn execute_task_scan(
         cancellation,
     } = execution;
     cancellation.check()?;
+    let output_schema = project_output_schema(
+        output_schema.as_ref(),
+        &prepared.executable.authority().projected_field_ids,
+    )?;
     let task = upstream_task(&prepared.executable)?;
     let snapshot = prepared
         .executable
@@ -154,6 +159,35 @@ pub(crate) async fn execute_task_scan(
     ))
 }
 
+pub(crate) fn project_output_schema(
+    schema: &arrow_schema::Schema,
+    projected_field_ids: &[i32],
+) -> Result<SchemaRef> {
+    let mut fields_by_id = std::collections::BTreeMap::new();
+    for field in schema.fields() {
+        let field_id = arrow_iceberg_field_id(field)?;
+        if fields_by_id.insert(field_id, Arc::clone(field)).is_some() {
+            return Err(CdfError::data(format!(
+                "Iceberg compiled schema repeats field id {field_id}"
+            )));
+        }
+    }
+    let fields = projected_field_ids
+        .iter()
+        .map(|field_id| {
+            fields_by_id.get(field_id).cloned().ok_or_else(|| {
+                CdfError::contract(format!(
+                    "Iceberg compiled projection references field id {field_id} outside the effective Arrow schema"
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Arc::new(arrow_schema::Schema::new_with_metadata(
+        fields,
+        schema.metadata().clone(),
+    )))
+}
+
 fn align_reader_batch(
     record_batch: arrow_array::RecordBatch,
     output_schema: SchemaRef,
@@ -172,13 +206,17 @@ fn align_reader_batch(
         .iter()
         .map(|field| {
             let field_id = arrow_iceberg_field_id(field)?;
-            let index = input_by_field_id.get(&field_id).copied().ok_or_else(|| {
-                CdfError::data(format!(
-                    "Iceberg reader output omitted compiled field `{}` (id {field_id})",
-                    field.name()
-                ))
-            })?;
-            Ok(Arc::clone(record_batch.column(index)))
+            if let Some(index) = input_by_field_id.get(&field_id).copied() {
+                return align_array_data_type(
+                    Arc::clone(record_batch.column(index)),
+                    field.data_type(),
+                    field.name(),
+                );
+            }
+            Err(CdfError::data(format!(
+                "Iceberg reader output omitted compiled field `{}` (id {field_id})",
+                field.name()
+            )))
         })
         .collect::<Result<Vec<_>>>()?;
     if input_by_field_id.len() != columns.len() {
@@ -193,6 +231,33 @@ fn align_reader_batch(
             "align Iceberg reader output to the compiled snapshot schema: {error}"
         ))
     })
+}
+
+fn align_array_data_type(
+    array: ArrayRef,
+    expected: &arrow_schema::DataType,
+    field_name: &str,
+) -> Result<ArrayRef> {
+    if array.data_type() == expected {
+        return Ok(array);
+    }
+    if !array.data_type().equals_datatype(expected) {
+        return Err(CdfError::data(format!(
+            "Iceberg reader field `{field_name}` has physical Arrow type {} but the compiled snapshot requires {expected}",
+            array.data_type()
+        )));
+    }
+    let data = array
+        .to_data()
+        .into_builder()
+        .data_type(expected.clone())
+        .build()
+        .map_err(|error| {
+            CdfError::data(format!(
+                "align nested Iceberg field metadata for `{field_name}` without copying buffers: {error}"
+            ))
+        })?;
+    Ok(make_array(data))
 }
 
 fn arrow_iceberg_field_id(field: &arrow_schema::Field) -> Result<i32> {
@@ -304,7 +369,7 @@ fn from_iceberg_error(error: IcebergError) -> CdfError {
 mod tests {
     use std::{collections::HashMap, sync::Arc};
 
-    use arrow_array::{ArrayRef, BooleanArray, Int32Array, RecordBatch};
+    use arrow_array::{ArrayRef, BooleanArray, Int32Array, RecordBatch, new_null_array};
     use arrow_schema::{DataType, Field, Schema};
 
     use super::*;
@@ -338,5 +403,63 @@ mod tests {
         assert_eq!(aligned.schema(), output_schema);
         assert!(Arc::ptr_eq(aligned.column(0), &integer));
         assert!(Arc::ptr_eq(aligned.column(1), &boolean));
+    }
+
+    #[test]
+    fn execution_schema_is_the_compiled_reader_projection_in_field_id_order() {
+        let schema = Schema::new_with_metadata(
+            vec![
+                field("name", DataType::Utf8, 20),
+                field("id", DataType::Int32, 10),
+                field("ignored", DataType::Boolean, 30),
+            ],
+            HashMap::from([("cdf:snapshot".to_owned(), "pinned".to_owned())]),
+        );
+
+        let projected = project_output_schema(&schema, &[10, 20]).unwrap();
+
+        assert_eq!(
+            projected
+                .fields()
+                .iter()
+                .map(|field| field.name().as_str())
+                .collect::<Vec<_>>(),
+            ["id", "name"]
+        );
+        assert_eq!(projected.metadata(), schema.metadata());
+    }
+
+    #[test]
+    fn nested_field_metadata_is_rebound_without_changing_logical_type() {
+        let physical_element = Arc::new(Field::new("element", DataType::Utf8, true).with_metadata(
+            HashMap::from([("PARQUET:field_id".to_owned(), "3".to_owned())]),
+        ));
+        let physical_type = DataType::List(physical_element);
+        let physical: ArrayRef = new_null_array(&physical_type, 2);
+        let reader = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("tags", physical_type, true).with_metadata(HashMap::from([(
+                    "PARQUET:field_id".to_owned(),
+                    "2".to_owned(),
+                )])),
+            ])),
+            vec![physical],
+        )
+        .unwrap();
+        let expected_element = Arc::new(Field::new("element", DataType::Utf8, true).with_metadata(
+            HashMap::from([
+                ("PARQUET:field_id".to_owned(), "3".to_owned()),
+                ("cdf:iceberg_field_id".to_owned(), "3".to_owned()),
+            ]),
+        ));
+        let output_schema = Arc::new(Schema::new(vec![
+            Field::new("tags", DataType::List(expected_element), true).with_metadata(
+                HashMap::from([("PARQUET:field_id".to_owned(), "2".to_owned())]),
+            ),
+        ]));
+
+        let aligned = align_reader_batch(reader, Arc::clone(&output_schema)).unwrap();
+        assert_eq!(aligned.schema(), output_schema);
+        assert_eq!(aligned.column(0).null_count(), 2);
     }
 }

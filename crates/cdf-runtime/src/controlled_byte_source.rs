@@ -58,6 +58,7 @@ impl ControlledByteSource {
         &self,
         extent: ByteExtent,
         cancellation: RunCancellation,
+        observe_success: bool,
     ) -> Result<cdf_memory::AccountedBytes> {
         let started = self.execution.monotonic_now();
         let mut attempt = 1_u16;
@@ -70,13 +71,28 @@ impl ControlledByteSource {
                     .await?;
             }
             let permit = self.controller.acquire(cancellation.clone()).await?;
+            let request_started = self.execution.monotonic_now();
             let result = self
                 .inner
                 .read_exact_range(extent, cancellation.clone())
                 .await;
             drop(permit);
             let error = match result {
-                Ok(bytes) => return Ok(bytes),
+                Ok(bytes) => {
+                    if observe_success {
+                        let physical_bytes =
+                            u64::try_from(bytes.payload().len()).map_err(|_| {
+                                CdfError::data("controlled exact range length exceeds u64")
+                            })?;
+                        self.controller.observe_batch(
+                            physical_bytes,
+                            self.execution
+                                .monotonic_now()
+                                .saturating_sub(request_started),
+                        )?;
+                    }
+                    return Ok(bytes);
+                }
                 Err(error) => error,
             };
             let retryable = matches!(error.kind, ErrorKind::Transient | ErrorKind::RateLimited);
@@ -144,7 +160,7 @@ impl ByteSource for ControlledByteSource {
         extent: ByteExtent,
         cancellation: RunCancellation,
     ) -> BoxFuture<'_, Result<cdf_memory::AccountedBytes>> {
-        Box::pin(self.read_range_with_retry(extent, cancellation))
+        Box::pin(self.read_range_with_retry(extent, cancellation, true))
     }
 
     fn read_exact_ranges(
@@ -154,7 +170,8 @@ impl ByteSource for ControlledByteSource {
     ) -> BoxFuture<'_, Result<ExactRangeReadBatch>> {
         Box::pin(async move {
             let started = self.execution.monotonic_now();
-            let batch = execute_exact_range_batch(self, extents, cancellation).await?;
+            let unobserved = UnobservedControlledRanges { source: self };
+            let batch = execute_exact_range_batch(&unobserved, extents, cancellation).await?;
             self.controller.observe_batch(
                 batch.physical_bytes(),
                 self.execution.monotonic_now().saturating_sub(started),
@@ -165,6 +182,48 @@ impl ByteSource for ControlledByteSource {
 
     fn release_before(&self, frontier: u64) -> Result<()> {
         self.inner.release_before(frontier)
+    }
+}
+
+/// Batch execution must pass through the same admission/retry controller while publishing one
+/// coalesced throughput observation rather than double-counting each physical member request.
+struct UnobservedControlledRanges<'a> {
+    source: &'a ControlledByteSource,
+}
+
+impl ByteSource for UnobservedControlledRanges<'_> {
+    fn identity(&self) -> &ContentIdentity {
+        self.source.identity()
+    }
+
+    fn capabilities(&self) -> &ByteSourceCapabilities {
+        self.source.capabilities()
+    }
+
+    fn exact_range_coalescing_policy(&self) -> ExactRangeCoalescingPolicy {
+        self.source.exact_range_coalescing_policy()
+    }
+
+    fn open_sequential(
+        &self,
+        request: SequentialReadRequest,
+    ) -> BoxFuture<'_, Result<AccountedByteStream>> {
+        self.source.open_sequential(request)
+    }
+
+    fn read_exact_range(
+        &self,
+        extent: ByteExtent,
+        cancellation: RunCancellation,
+    ) -> BoxFuture<'_, Result<cdf_memory::AccountedBytes>> {
+        Box::pin(
+            self.source
+                .read_range_with_retry(extent, cancellation, false),
+        )
+    }
+
+    fn release_before(&self, frontier: u64) -> Result<()> {
+        self.source.release_before(frontier)
     }
 }
 
@@ -381,5 +440,14 @@ mod tests {
         assert_eq!(report.upward_adjustments, 1);
         assert_eq!(report.current_concurrency, 3);
         assert_eq!(report.acquired_requests, 2);
+
+        let single = futures_executor::block_on(
+            controlled.read_exact_range(ByteExtent::new(8, 4).unwrap(), RunCancellation::default()),
+        )
+        .unwrap();
+        assert_eq!(single.payload(), b"89ab".as_slice());
+        let report = execution.scheduler_report().unwrap().source_io_controller;
+        assert_eq!(report.physical_bytes, 12);
+        assert_eq!(report.acquired_requests, 3);
     }
 }

@@ -27,7 +27,9 @@ use serde::{Deserialize, Serialize};
 use crate::{
     GlueCatalogClient, IcebergCatalogContext, IcebergCatalogLoadRequest, IcebergCatalogRegistry,
     IcebergResourceOptions, IcebergSourceOptions, LoadedIcebergTable,
-    execution::{IcebergTaskExecution, execute_task_scan, prepare_task_scan},
+    execution::{
+        IcebergTaskExecution, execute_task_scan, prepare_task_scan, project_output_schema,
+    },
     iceberg_option_schema, iceberg_source_descriptor,
     planner::{IcebergPlanningContext, plan_snapshot_scan},
     task_reader::{IcebergExecutableTask, IcebergPlannedPartitionReader},
@@ -812,6 +814,10 @@ impl ResourceStream for IcebergResource {
             let snapshot = executable.authority().snapshot.clone().ok_or_else(|| {
                 CdfError::contract("Iceberg executable task omitted immutable snapshot authority")
             })?;
+            let output_schema = project_output_schema(
+                output_schema.as_ref(),
+                &executable.authority().projected_field_ids,
+            )?;
             Ok(Some(PartitionAttestation::new(
                 SourcePosition::TableSnapshot(Box::new(snapshot)),
                 Some(cdf_kernel::canonical_arrow_schema_hash(

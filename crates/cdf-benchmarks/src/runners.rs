@@ -6,7 +6,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
@@ -25,7 +25,7 @@ use cdf_kernel::{
     ScopeKey, SegmentId, SourcePosition, StateSegment, TargetName, WriteDisposition,
     canonical_arrow_schema_hash,
 };
-use cdf_object_access::FileTransportFacade;
+use cdf_object_access::{FileTransportFacade, ObjectStoreClientPool};
 use cdf_package::{PackageBuilder, PackageReader, persist_package_parquet_archive};
 use cdf_package_contract::{DestinationCommitPlanPreimage, PackageStatus, StateDeltaPreimage};
 use cdf_project::{
@@ -33,12 +33,17 @@ use cdf_project::{
     ResolvedProjectDestination, RunTelemetryConfig, replay_package_from_artifacts, run_project,
     run_project_with_scheduler_and_telemetry,
 };
-use cdf_runtime::{ByteTransformRegistry, FormatRegistry, SourceRegistry, SourceResolutionContext};
+use cdf_runtime::{
+    ByteTransformRegistry, FormatRegistry, SourceIoControllerReport, SourceRegistry,
+    SourceResolutionContext,
+};
 use cdf_source_files::{FileRuntimeDependencies, FileSourceDriver, file_source_blocking_lane};
 use cdf_source_iceberg::{
-    IcebergRuntimeDependencies, IcebergSourceDriver, UnsupportedGlueCatalogClient,
+    AwsGlueCatalogClient, IcebergRuntimeDependencies, IcebergSourceDriver,
+    UnsupportedGlueCatalogClient,
 };
 use cdf_state_sqlite::InMemoryCheckpointStore;
+use cdf_transport_http::ReqwestHttpProvider;
 use datafusion::prelude::{SessionContext, col, lit};
 use duckdb::{Connection, appender_params_from_iter, types::Value};
 use futures_executor::block_on;
@@ -108,18 +113,58 @@ pub struct PreparedSourcePackageRun {
     pub segments: Vec<cdf_package_contract::SegmentEntry>,
     pub runtime_scheduler: cdf_runtime::RuntimeSchedulerReport,
     pub source_frontier: cdf_runtime::SourceFrontierReport,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_io_stages: Vec<PreparedSourceIoStage>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PreparedIcebergCatalog {
+    Filesystem {
+        warehouse: PathBuf,
+    },
+    Glue {
+        region: String,
+        #[serde(default)]
+        catalog_id: Option<String>,
+        #[serde(default)]
+        catalog_credentials: Option<String>,
+        #[serde(default)]
+        object_credentials: Option<String>,
+        egress_allowlist: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreparedIcebergPackageWorkload {
     pub project_root: PathBuf,
-    pub warehouse: PathBuf,
+    pub catalog: PreparedIcebergCatalog,
     pub namespace: Vec<String>,
     pub table: String,
+    #[serde(default)]
+    pub projection: Option<Vec<String>>,
     pub package_dir: PathBuf,
     pub maximum_metadata_bytes: u64,
+    #[serde(default)]
+    pub maximum_concurrency: Option<u16>,
+    #[serde(default)]
+    pub parquet_batch_rows: Option<usize>,
+    #[serde(default)]
+    pub maximum_batch_bytes: Option<u64>,
     pub jobs: Option<u16>,
     pub execution_host_jobs: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedSourceIoStage {
+    pub stage: String,
+    pub wall_duration_ns: u64,
+    pub request_duration_ns: u64,
+    pub physical_bytes: u64,
+    pub requests: u64,
+    pub queue_wait_ns: u64,
+    /// Maximum controller concurrency observed through the end of this stage.
+    pub peak_active_through_stage: u16,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -435,6 +480,31 @@ fn available_host_jobs() -> u16 {
         .unwrap_or(1)
 }
 
+fn elapsed_ns(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
+
+fn source_io_stage(
+    stage: &str,
+    wall_duration_ns: u64,
+    before: &SourceIoControllerReport,
+    after: &SourceIoControllerReport,
+) -> PreparedSourceIoStage {
+    PreparedSourceIoStage {
+        stage: stage.to_owned(),
+        wall_duration_ns,
+        request_duration_ns: after
+            .request_duration_ns
+            .saturating_sub(before.request_duration_ns),
+        physical_bytes: after.physical_bytes.saturating_sub(before.physical_bytes),
+        requests: after
+            .acquired_requests
+            .saturating_sub(before.acquired_requests),
+        queue_wait_ns: after.queue_wait_ns.saturating_sub(before.queue_wait_ns),
+        peak_active_through_stage: after.peak_active,
+    }
+}
+
 pub fn run_startup_control_workload(
     request: &StartupControlWorkload,
 ) -> BenchResult<WorkerMeasurement> {
@@ -553,6 +623,7 @@ pub fn run_prepared_file_to_package(
         segments: output.output.segments,
         runtime_scheduler: execution.scheduler_report()?,
         source_frontier: output.source_frontier,
+        source_io_stages: Vec::new(),
     })
 }
 
@@ -579,60 +650,38 @@ pub fn run_prepared_iceberg_to_package(
             "prepared Iceberg workload jobs must be nonzero",
         ));
     }
+    if request.maximum_concurrency == Some(0) {
+        return Err(bench_error(
+            "prepared Iceberg workload maximum_concurrency must be nonzero",
+        ));
+    }
+    if request.parquet_batch_rows == Some(0) || request.maximum_batch_bytes == Some(0) {
+        return Err(bench_error(
+            "prepared Iceberg workload batch rows and bytes must be nonzero",
+        ));
+    }
     fs::create_dir_all(&request.project_root)?;
     let execution = benchmark_execution_services(request.execution_host_jobs)?;
     let host_jobs = execution.capabilities().logical_cpu_slots;
     let execution = execution
         .with_run_job_ceiling(request.jobs.unwrap_or(host_jobs))?
         .with_scheduler_measurement(true)?;
-    let mut registry = SourceRegistry::new();
-    registry.register(IcebergSourceDriver::new(
-        move |secrets, execution, _egress, local_listing_lane| {
-            Ok(IcebergRuntimeDependencies::new(
-                Arc::new(
-                    FileTransportFacade::new()
-                        .with_shared_secret_provider(secrets)
-                        .with_execution_services(execution)
-                        .with_local_listing_lane(local_listing_lane)?,
-                ),
-                Arc::new(FixtureTransport::new(Vec::new())),
-                Arc::new(UnsupportedGlueCatalogClient),
-            ))
-        },
-    )?)?;
-    let document = parse_toml(&format!(
-        r#"
-[source.lake]
-kind = "iceberg"
-catalog = {{ kind = "filesystem", warehouse = {} }}
-maximum_metadata_bytes = {}
-egress_allowlist = []
-
-[resource.table]
-namespace = {}
-table = {}
-write_disposition = "append"
-trust = "governed"
-"#,
-        serde_json::to_string(&request.warehouse)?,
-        request.maximum_metadata_bytes,
-        serde_json::to_string(&request.namespace)?,
-        serde_json::to_string(&request.table)?,
-    ))?;
+    let registry = prepared_iceberg_registry(&request.catalog)?;
+    let document = parse_toml(&prepared_iceberg_declaration(request)?)?;
     let compiled = compile_document_with_project_root(&registry, &document, &request.project_root)?
         .into_iter()
         .next()
         .ok_or_else(|| bench_error("prepared Iceberg declaration compiled no resource"))?;
     let mut source_plan = compiled.source_plan().clone();
-    let secrets = Arc::new(EnvSecretProvider::from_map(
-        std::iter::empty::<(&str, &str)>(),
-    ));
+    let secrets = Arc::new(EnvSecretProvider::process());
     let resolution = SourceResolutionContext::new(
         &request.project_root,
         secrets,
         &execution,
         Arc::new(cdf_http::EgressAllowlist::allow_any()),
     );
+    let initial_io = execution.scheduler_report()?.source_io_controller;
+    let discovery_started = Instant::now();
     let discovery = registry.discovery_session(&source_plan, &resolution)?;
     let mut candidates = discovery.candidates()?;
     if candidates.len() != 1 {
@@ -645,15 +694,23 @@ trust = "governed"
         &candidates.remove(0),
         &cdf_runtime::SourceDiscoveryRequest::new(request.maximum_metadata_bytes, 1)?,
     )?;
+    let discovery_duration_ns = elapsed_ns(discovery_started);
+    let discovery_bytes = observation.bytes_read;
+    let discovery_io = execution.scheduler_report()?.source_io_controller;
     source_plan.schema = observation.schema.as_ref().clone();
+
+    let resolve_started = Instant::now();
     let resource = registry.resolve(&source_plan, &resolution)?;
+    let resolve_duration_ns = elapsed_ns(resolve_started);
+
+    let planning_started = Instant::now();
     let plan = Planner::new()
         .plan_tier_b(
             resource.as_ref(),
             EnginePlanInput {
                 request: ScanRequest {
                     resource_id: resource.descriptor().resource_id.clone(),
-                    projection: None,
+                    projection: request.projection.clone(),
                     filters: Vec::new(),
                     limit: None,
                     order_by: Vec::new(),
@@ -672,6 +729,8 @@ trust = "governed"
             &source_plan,
             &cdf_runtime::DestinationRuntimeCapabilities::default(),
         )?;
+    let planning_duration_ns = elapsed_ns(planning_started);
+    let planning_io = execution.scheduler_report()?.source_io_controller;
     let source_execution = plan.compiled_source_execution.as_ref().ok_or_else(|| {
         bench_error("prepared Iceberg plan omitted compiled source execution authority")
     })?;
@@ -686,6 +745,7 @@ trust = "governed"
     )?;
     execution.tighten_run_job_ceiling(scheduler.effective_jobs.jobs)?;
     let physical_bytes = plan.scan.estimated_bytes.unwrap_or(0);
+    let execution_started = Instant::now();
     let output = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
         &plan,
         resource.as_ref(),
@@ -696,6 +756,52 @@ trust = "governed"
             .with_execution_services(execution.clone())
             .with_scheduler_resolution(scheduler.clone()),
     ))?;
+    let execution_duration_ns = elapsed_ns(execution_started);
+    let runtime_scheduler = execution.scheduler_report()?;
+    let mut phases = vec![
+        PhaseMetric {
+            phase: "iceberg.discovery".to_owned(),
+            duration_ns: discovery_duration_ns,
+            bytes: discovery_bytes,
+        },
+        PhaseMetric {
+            phase: "iceberg.resolve".to_owned(),
+            duration_ns: resolve_duration_ns,
+            bytes: 0,
+        },
+        PhaseMetric {
+            phase: "iceberg.plan".to_owned(),
+            duration_ns: planning_duration_ns,
+            bytes: planning_io
+                .physical_bytes
+                .saturating_sub(discovery_io.physical_bytes),
+        },
+    ];
+    phases.extend(output.phase_metrics.into_iter().map(|metric| PhaseMetric {
+        phase: metric.phase.as_str().to_owned(),
+        duration_ns: metric.duration_ns,
+        bytes: metric.output_bytes.max(metric.input_bytes),
+    }));
+    let source_io_stages = vec![
+        source_io_stage(
+            "iceberg.discovery",
+            discovery_duration_ns,
+            &initial_io,
+            &discovery_io,
+        ),
+        source_io_stage(
+            "iceberg.plan",
+            planning_duration_ns,
+            &discovery_io,
+            &planning_io,
+        ),
+        source_io_stage(
+            "iceberg.execute",
+            execution_duration_ns,
+            &planning_io,
+            &runtime_scheduler.source_io_controller,
+        ),
+    ];
     Ok(PreparedSourcePackageRun {
         measurement: WorkerMeasurement {
             timed_wall_time_ns: None,
@@ -703,15 +809,7 @@ trust = "governed"
             logical_bytes: output.output.profile.output_bytes,
             physical_bytes,
             spill_bytes: 0,
-            phases: output
-                .phase_metrics
-                .into_iter()
-                .map(|metric| PhaseMetric {
-                    phase: metric.phase.as_str().to_owned(),
-                    duration_ns: metric.duration_ns,
-                    bytes: metric.output_bytes.max(metric.input_bytes),
-                })
-                .collect(),
+            phases,
         },
         configured_jobs: request.jobs,
         effective_jobs: scheduler.effective_jobs.jobs,
@@ -719,9 +817,139 @@ trust = "governed"
         partition_count,
         package_hash: output.output.manifest.package_hash,
         segments: output.output.segments,
-        runtime_scheduler: execution.scheduler_report()?,
+        runtime_scheduler,
         source_frontier: output.source_frontier,
+        source_io_stages,
     })
+}
+
+fn prepared_iceberg_registry(catalog: &PreparedIcebergCatalog) -> BenchResult<SourceRegistry> {
+    let mut registry = SourceRegistry::new();
+    match catalog {
+        PreparedIcebergCatalog::Filesystem { .. } => {
+            registry.register(IcebergSourceDriver::new(
+                move |secrets, execution, _egress, local_listing_lane| {
+                    Ok(IcebergRuntimeDependencies::new(
+                        Arc::new(
+                            FileTransportFacade::new()
+                                .with_shared_secret_provider(secrets)
+                                .with_execution_services(execution)
+                                .with_local_listing_lane(local_listing_lane)?,
+                        ),
+                        Arc::new(FixtureTransport::new(Vec::new())),
+                        Arc::new(UnsupportedGlueCatalogClient),
+                    ))
+                },
+            )?)?;
+        }
+        PreparedIcebergCatalog::Glue { .. } => {
+            let http = ReqwestHttpProvider::new()?;
+            let object_store_clients = ObjectStoreClientPool::default();
+            registry.register(IcebergSourceDriver::new(
+                move |secrets, execution, egress, local_listing_lane| {
+                    let rest_http: Arc<dyn cdf_http::HttpTransport> = Arc::new(http.clone());
+                    Ok(IcebergRuntimeDependencies::new(
+                        Arc::new(
+                            FileTransportFacade::new()
+                                .with_http_transport(http.clone())
+                                .with_shared_secret_provider(Arc::clone(&secrets))
+                                .with_shared_object_store_clients(object_store_clients.clone())
+                                .with_execution_services(execution.clone())
+                                .with_local_listing_lane(local_listing_lane)?,
+                        ),
+                        Arc::clone(&rest_http),
+                        Arc::new(AwsGlueCatalogClient::new(
+                            rest_http, secrets, execution, egress,
+                        )),
+                    ))
+                },
+            )?)?;
+        }
+    }
+    Ok(registry)
+}
+
+fn prepared_iceberg_declaration(request: &PreparedIcebergPackageWorkload) -> BenchResult<String> {
+    let (catalog, object_credentials, egress_allowlist) = match &request.catalog {
+        PreparedIcebergCatalog::Filesystem { warehouse } => (
+            format!(
+                "{{ kind = \"filesystem\", warehouse = {} }}",
+                serde_json::to_string(warehouse)?
+            ),
+            None,
+            Vec::new(),
+        ),
+        PreparedIcebergCatalog::Glue {
+            region,
+            catalog_id,
+            catalog_credentials,
+            object_credentials,
+            egress_allowlist,
+        } => {
+            let mut fields = vec![
+                "kind = \"glue\"".to_owned(),
+                format!("region = {}", serde_json::to_string(region)?),
+            ];
+            if let Some(catalog_id) = catalog_id {
+                fields.push(format!(
+                    "catalog_id = {}",
+                    serde_json::to_string(catalog_id)?
+                ));
+            }
+            if let Some(credentials) = catalog_credentials {
+                fields.push(format!(
+                    "credentials = {}",
+                    serde_json::to_string(credentials)?
+                ));
+            }
+            (
+                format!("{{ {} }}", fields.join(", ")),
+                object_credentials.as_ref(),
+                egress_allowlist.clone(),
+            )
+        }
+    };
+    let object_credentials = object_credentials
+        .map(|credentials| {
+            serde_json::to_string(credentials)
+                .map(|credentials| format!("object_credentials = {credentials}\n"))
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let maximum_concurrency = request
+        .maximum_concurrency
+        .map_or_else(String::new, |value| {
+            format!("maximum_concurrency = {value}\n")
+        });
+    let parquet_batch_rows = request
+        .parquet_batch_rows
+        .map_or_else(String::new, |value| {
+            format!("parquet_batch_rows = {value}\n")
+        });
+    let maximum_batch_bytes = request
+        .maximum_batch_bytes
+        .map_or_else(String::new, |value| {
+            format!("maximum_batch_bytes = {value}\n")
+        });
+    Ok(format!(
+        r#"
+[source.lake]
+kind = "iceberg"
+catalog = {catalog}
+{object_credentials}maximum_metadata_bytes = {maximum_metadata_bytes}
+{maximum_concurrency}{parquet_batch_rows}{maximum_batch_bytes}egress_allowlist = {egress_allowlist}
+
+[resource.table]
+namespace = {namespace}
+table = {table}
+write_disposition = "append"
+trust = "governed"
+"#,
+        maximum_metadata_bytes = request.maximum_metadata_bytes,
+        egress_allowlist = serde_json::to_string(&egress_allowlist)?,
+        namespace = serde_json::to_string(&request.namespace)?,
+        table = serde_json::to_string(&request.table)?,
+    ))
 }
 
 pub fn run_prepared_file_to_destination(
@@ -1391,4 +1619,86 @@ fn build_package_fixture(
     builder.finish()?;
     PackageReader::open(&package_dir)?.verify()?;
     Ok(PackageFixture { package_dir })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn iceberg_workload(catalog: PreparedIcebergCatalog) -> PreparedIcebergPackageWorkload {
+        PreparedIcebergPackageWorkload {
+            project_root: PathBuf::from("/tmp/cdf-bench-project"),
+            catalog,
+            namespace: vec!["analytics".to_owned()],
+            table: "events".to_owned(),
+            projection: Some(vec!["event_id".to_owned()]),
+            package_dir: PathBuf::from("/tmp/cdf-bench-package"),
+            maximum_metadata_bytes: 128 * 1024 * 1024,
+            maximum_concurrency: Some(24),
+            parquet_batch_rows: Some(32 * 1024),
+            maximum_batch_bytes: Some(64 * 1024 * 1024),
+            jobs: Some(16),
+            execution_host_jobs: 16,
+        }
+    }
+
+    #[test]
+    fn prepared_iceberg_catalogs_compile_through_the_real_driver() {
+        let filesystem = iceberg_workload(PreparedIcebergCatalog::Filesystem {
+            warehouse: PathBuf::from("/tmp/warehouse"),
+        });
+        let glue = iceberg_workload(PreparedIcebergCatalog::Glue {
+            region: "us-west-2".to_owned(),
+            catalog_id: Some("123456789012".to_owned()),
+            catalog_credentials: None,
+            object_credentials: Some("secret://env/CDF_BENCH_S3".to_owned()),
+            egress_allowlist: vec![
+                "glue.us-west-2.amazonaws.com".to_owned(),
+                "bench-bucket.s3.us-west-2.amazonaws.com".to_owned(),
+            ],
+        });
+
+        for workload in [filesystem, glue] {
+            let registry = prepared_iceberg_registry(&workload.catalog).unwrap();
+            let document = parse_toml(&prepared_iceberg_declaration(&workload).unwrap()).unwrap();
+            let compiled =
+                compile_document_with_project_root(&registry, &document, &workload.project_root)
+                    .unwrap();
+            assert_eq!(compiled.len(), 1);
+            assert_eq!(compiled[0].descriptor().resource_id.as_str(), "lake.table");
+        }
+    }
+
+    #[test]
+    fn source_io_stage_reports_counter_deltas_without_inventing_a_wall_sum() {
+        let before = SourceIoControllerReport {
+            acquired_requests: 2,
+            queue_wait_ns: 3,
+            physical_bytes: 5,
+            request_duration_ns: 7,
+            peak_active: 1,
+            ..SourceIoControllerReport::default()
+        };
+        let after = SourceIoControllerReport {
+            acquired_requests: 13,
+            queue_wait_ns: 20,
+            physical_bytes: 105,
+            request_duration_ns: 207,
+            peak_active: 8,
+            ..SourceIoControllerReport::default()
+        };
+
+        assert_eq!(
+            source_io_stage("iceberg.plan", 50, &before, &after),
+            PreparedSourceIoStage {
+                stage: "iceberg.plan".to_owned(),
+                wall_duration_ns: 50,
+                request_duration_ns: 200,
+                physical_bytes: 100,
+                requests: 11,
+                queue_wait_ns: 17,
+                peak_active_through_stage: 8,
+            }
+        );
+    }
 }
