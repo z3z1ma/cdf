@@ -204,7 +204,20 @@ impl EnginePlan {
             (None, Some(_)) => Err(CdfError::data(
                 "resolved source has a compiler binding but the engine plan omitted it",
             )),
+        }?;
+        let execution = source.execution_capabilities();
+        if !execution.bounded && !execution.pausable {
+            resource
+                .replay_retention()
+                .ok_or_else(|| {
+                    CdfError::data(
+                        "unbounded non-pausable source execution requires a byte/time/unit-bounded replay-retention authority; configure replay-retention byte, age, and unit-count knobs or use a pausable source",
+                    )
+                })?
+                .status()?
+                .validate()?;
         }
+        Ok(())
     }
 
     /// Binds every engine-owned source authority from one validated compiler output.

@@ -1775,6 +1775,48 @@ pub trait ResourceStream: Send + Sync {
     fn type_policy_allowances(&self) -> TypePolicyAllowances {
         TypePolicyAllowances::default()
     }
+    /// Runtime retention authority required by non-pausable unbounded sources.
+    ///
+    /// The source owns replay-unit encoding. Generic orchestration owns the checkpoint ordering:
+    /// this authority is advanced only after the exact package receipt and checkpoint frontier
+    /// have committed.
+    fn replay_retention(&self) -> Option<&dyn SourceReplayRetention> {
+        None
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceReplayRetentionStatus {
+    pub maximum_bytes: u64,
+    pub maximum_age_milliseconds: u64,
+    pub maximum_units: u64,
+    pub retained_bytes: u64,
+    pub retained_units: u64,
+    pub committed_low_watermark: Option<SourcePosition>,
+}
+
+impl SourceReplayRetentionStatus {
+    pub fn validate(&self) -> Result<()> {
+        if self.maximum_bytes == 0
+            || self.maximum_age_milliseconds == 0
+            || self.maximum_units == 0
+            || self.retained_bytes > self.maximum_bytes
+            || self.retained_units > self.maximum_units
+        {
+            return Err(CdfError::data(
+                "source replay retention requires nonzero configured byte/time/unit bounds and retained bytes/units within those bounds",
+            ));
+        }
+        if let Some(frontier) = &self.committed_low_watermark {
+            frontier.validate()?;
+        }
+        Ok(())
+    }
+}
+
+pub trait SourceReplayRetention: Send + Sync {
+    fn status(&self) -> Result<SourceReplayRetentionStatus>;
+    fn commit_checkpoint_frontier(&self, frontier: &SourcePosition) -> Result<()>;
 }
 
 /// One lifecycle-bound partition attestation.

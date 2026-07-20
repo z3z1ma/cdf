@@ -256,6 +256,7 @@ async fn run_project_fixture<'a>(
     let bound = BoundTestResource {
         inner: resource,
         compiled_source_plan_hash,
+        replay_retention: None,
     };
     request.resource = ProjectRunSource::new(&bound);
     run_project_with_execution_services_and_telemetry(request, services, telemetry).await
@@ -264,6 +265,7 @@ async fn run_project_fixture<'a>(
 struct BoundTestResource<'a> {
     inner: &'a dyn QueryableResource,
     compiled_source_plan_hash: String,
+    replay_retention: Option<&'a dyn cdf_kernel::SourceReplayRetention>,
 }
 
 impl ResourceStream for BoundTestResource<'_> {
@@ -304,6 +306,49 @@ impl ResourceStream for BoundTestResource<'_> {
 
     fn type_policy_allowances(&self) -> cdf_kernel::TypePolicyAllowances {
         self.inner.type_policy_allowances()
+    }
+
+    fn replay_retention(&self) -> Option<&dyn cdf_kernel::SourceReplayRetention> {
+        self.replay_retention
+    }
+}
+
+struct CheckpointBoundReplayRetention {
+    state_path: PathBuf,
+    pipeline_id: PipelineId,
+    resource_id: ResourceId,
+    scope: ScopeKey,
+    committed: Mutex<Vec<SourcePosition>>,
+}
+
+impl cdf_kernel::SourceReplayRetention for CheckpointBoundReplayRetention {
+    fn status(&self) -> Result<cdf_kernel::SourceReplayRetentionStatus> {
+        Ok(cdf_kernel::SourceReplayRetentionStatus {
+            maximum_bytes: 1024,
+            maximum_age_milliseconds: 1_000,
+            maximum_units: 16,
+            retained_bytes: 0,
+            retained_units: 0,
+            committed_low_watermark: self.committed.lock().unwrap().last().cloned(),
+        })
+    }
+
+    fn commit_checkpoint_frontier(&self, frontier: &SourcePosition) -> Result<()> {
+        let store = SqliteCheckpointStore::open(&self.state_path)?;
+        let head = store
+            .head(&self.pipeline_id, &self.resource_id, &self.scope)?
+            .ok_or_else(|| {
+                CdfError::internal(
+                    "replay retention advanced before the checkpoint head was committed",
+                )
+            })?;
+        if &head.delta.output_position != frontier {
+            return Err(CdfError::internal(
+                "replay retention frontier differs from the committed checkpoint head",
+            ));
+        }
+        self.committed.lock().unwrap().push(frontier.clone());
+        Ok(())
     }
 }
 
@@ -3759,6 +3804,7 @@ fn live_file_run_post_receipt_failure_keeps_checkpoint_uncommitted_and_receipt_r
     let bound = BoundTestResource {
         inner: &resource,
         compiled_source_plan_hash: cdf_runtime::artifact_hash(&source).unwrap(),
+        replay_retention: None,
     };
 
     let error = futures_executor::block_on(run_project(ProjectRunRequest {
@@ -3940,9 +3986,17 @@ fn drain_project_settles_each_frontier_before_committing_the_next_epoch() {
     let state_path = temp.path().join(".cdf/state.db");
     let package_id = "pkg-drain-epochs";
     let source = compiled_drain_test_source_plan(&resource);
+    let replay_retention = CheckpointBoundReplayRetention {
+        state_path: state_path.clone(),
+        pipeline_id: PipelineId::new("pipeline-drain").unwrap(),
+        resource_id: resource.descriptor().resource_id.clone(),
+        scope: resource.descriptor().state_scope.clone(),
+        committed: Mutex::new(Vec::new()),
+    };
     let bound = BoundTestResource {
         inner: &resource,
         compiled_source_plan_hash: cdf_runtime::artifact_hash(&source).unwrap(),
+        replay_retention: Some(&replay_retention),
     };
     let extent = ExecutionExtent::Drain {
         version: cdf_kernel::EXECUTION_EXTENT_VERSION,
@@ -4025,6 +4079,13 @@ fn drain_project_settles_each_frontier_before_committing_the_next_epoch() {
     );
     assert_eq!(report.checkpoint, history[1]);
     assert_eq!(
+        *replay_retention.committed.lock().unwrap(),
+        history
+            .iter()
+            .map(|checkpoint| checkpoint.delta.output_position.clone())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
         output_manifest_paths(&report),
         vec!["events-a.ndjson", "events-b.ndjson"]
     );
@@ -4043,6 +4104,7 @@ fn drain_project_does_not_publish_a_later_epoch_before_checkpoint_settlement() {
     let bound = BoundTestResource {
         inner: &resource,
         compiled_source_plan_hash: cdf_runtime::artifact_hash(&source).unwrap(),
+        replay_retention: None,
     };
     let extent = ExecutionExtent::Drain {
         version: cdf_kernel::EXECUTION_EXTENT_VERSION,
@@ -5357,6 +5419,7 @@ fn project_run_records_non_mirror_outcome_for_unsupported_quarantine_sheet() {
     let bound = BoundTestResource {
         inner: &resource,
         compiled_source_plan_hash: cdf_runtime::artifact_hash(&source).unwrap(),
+        replay_retention: None,
     };
 
     let report = futures_executor::block_on(run_project(ProjectRunRequest {

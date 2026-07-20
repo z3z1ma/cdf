@@ -535,6 +535,10 @@ impl ResourceStream for RegistryBoundResource {
     fn type_policy_allowances(&self) -> TypePolicyAllowances {
         self.inner.type_policy_allowances()
     }
+
+    fn replay_retention(&self) -> Option<&dyn cdf_kernel::SourceReplayRetention> {
+        self.inner.replay_retention()
+    }
 }
 
 fn verify_resolved_resource(

@@ -122,6 +122,10 @@ impl ResourceStream for WindowScopedResource<'_> {
     fn type_policy_allowances(&self) -> cdf_kernel::TypePolicyAllowances {
         self.inner.type_policy_allowances()
     }
+
+    fn replay_retention(&self) -> Option<&dyn cdf_kernel::SourceReplayRetention> {
+        self.inner.replay_retention()
+    }
 }
 
 impl QueryableResource for WindowScopedResource<'_> {

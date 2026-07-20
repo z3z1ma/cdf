@@ -689,6 +689,10 @@ async fn run_project_inner(
                     "drain checkpoint output position does not match the package's canonical epoch frontier",
                 ));
             }
+            if let Some(retention) = resource.replay_retention() {
+                retention
+                    .commit_checkpoint_frontier(&replay_report.checkpoint.delta.output_position)?;
+            }
             controller.acknowledge_settlement(&replay_report.checkpoint.delta.output_position)?;
         }
         (Some(_), None) => {

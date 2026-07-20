@@ -3028,6 +3028,39 @@ fn operator_graph_binds_the_plan_source_and_drain_policy_exactly() {
 }
 
 #[test]
+fn non_pausable_unbounded_execution_requires_runtime_replay_retention() {
+    let resource = MockResource::tier_a(sample_batches()).without_control_keys();
+    let mut source = mock_unbounded_cursor_source_plan(&resource);
+    source.resource_capabilities.backpressure = BackpressureSupport::SpillRequired;
+    source.execution_capabilities.pausable = false;
+    source.execution_capabilities.spillable = true;
+    source.validate().unwrap();
+    resource.bind_compiled_source(&source);
+    let extent = ExecutionExtent::Drain {
+        version: EXECUTION_EXTENT_VERSION,
+        policy: sample_stream_epoch_policy(),
+        termination: DrainTermination::Records { count: 3 },
+    };
+    let plan = Planner::new()
+        .plan_tier_a(&resource, plan_input(Vec::new(), None, None, extent))
+        .unwrap()
+        .bind_compiled_source(&source)
+        .unwrap()
+        .bind_operator_graph(
+            &source,
+            &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        )
+        .unwrap();
+
+    let error = plan
+        .validate_compiled_source_resource(&resource)
+        .unwrap_err();
+    assert!(error.message.contains("replay-retention authority"));
+    assert!(error.message.contains("byte, age, and unit-count knobs"));
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn engine_parallel_frontier_polls_later_partition_while_head_is_stalled() {
     let (head_sender, head_receiver) = tokio::sync::oneshot::channel::<()>();
     let later_polls = Arc::new(AtomicUsize::new(0));
