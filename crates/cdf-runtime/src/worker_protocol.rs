@@ -2218,16 +2218,55 @@ impl PartitionWorkerResult {
             attestation,
             &self.processed_observations,
         )?;
-        if source_facts.processed_position != attestation.processed_position
-            || source_facts.physical_schema_hash != attestation.physical_schema_hash
-            || source_facts.input_rows != self.counts.input_rows
-            || source_facts.source_bytes != self.counts.source_bytes
-            || verified_output_rows != self.counts.output_rows
-            || verified_quarantined_rows != self.counts.quarantined_rows
-        {
-            return Err(CdfError::contract(
-                "worker result counts or source attestation do not match independently verified facts",
-            ));
+        for (matches, label, claimed, observed) in [
+            (
+                source_facts.processed_position == attestation.processed_position,
+                "processed source position",
+                None,
+                None,
+            ),
+            (
+                source_facts.physical_schema_hash == attestation.physical_schema_hash,
+                "physical schema hash",
+                None,
+                None,
+            ),
+            (
+                source_facts.input_rows == self.counts.input_rows,
+                "input rows",
+                Some(self.counts.input_rows),
+                Some(source_facts.input_rows),
+            ),
+            (
+                source_facts.source_bytes == self.counts.source_bytes,
+                "source bytes",
+                Some(self.counts.source_bytes),
+                Some(source_facts.source_bytes),
+            ),
+            (
+                verified_output_rows == self.counts.output_rows,
+                "output rows",
+                Some(self.counts.output_rows),
+                Some(verified_output_rows),
+            ),
+            (
+                verified_quarantined_rows == self.counts.quarantined_rows,
+                "quarantined rows",
+                Some(self.counts.quarantined_rows),
+                Some(verified_quarantined_rows),
+            ),
+        ] {
+            if !matches {
+                let detail = match (claimed, observed) {
+                    (Some(claimed), Some(observed)) => {
+                        format!("; worker claimed {claimed}, authority observed {observed}")
+                    }
+                    _ => String::new(),
+                };
+                return Err(CdfError::contract(format!(
+                    "worker result {label} does not match independently verified facts{detail}"
+                )));
+            }
         }
         validate_encoded_size(
             "partition worker result",

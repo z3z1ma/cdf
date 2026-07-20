@@ -28,4 +28,5 @@ tracing = "0.1.44"
 tokio = { version = "=1.52.3", features = ["rt-multi-thread", "sync", "time"] }
 
 [dev-dependencies]
+cdf-http = { path = "../cdf-http" }
 tempfile = "3.27.0"

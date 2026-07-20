@@ -243,6 +243,490 @@ impl EngineWorkerSourceAuthority for NoWorkerSourceFacts {
     }
 }
 
+type SharedEngineWorkerArtifactMap = BTreeMap<(String, String), Vec<u8>>;
+
+#[derive(Clone, Default)]
+struct SharedEngineWorkerArtifacts {
+    values: Arc<Mutex<SharedEngineWorkerArtifactMap>>,
+}
+
+impl SharedEngineWorkerArtifacts {
+    fn bytes_for(&self, reference: &cdf_runtime::WorkerArtifactReference) -> Result<Vec<u8>> {
+        self.values
+            .lock()
+            .unwrap()
+            .get(&(
+                reference.store_namespace.as_str().to_owned(),
+                reference.object_key.as_str().to_owned(),
+            ))
+            .cloned()
+            .ok_or_else(|| cdf_kernel::CdfError::contract("worker artifact is missing"))
+    }
+
+    fn object_state(
+        &self,
+        reference: &cdf_runtime::WorkerArtifactReference,
+    ) -> cdf_runtime::WorkerArtifactObjectState {
+        match self.bytes_for(reference) {
+            Ok(bytes) => cdf_runtime::WorkerArtifactObjectState::Present {
+                content_sha256: format!(
+                    "sha256:{:x}",
+                    <sha2::Sha256 as sha2::Digest>::digest(bytes)
+                ),
+                provider_generation: reference
+                    .provider_generation
+                    .clone()
+                    .expect("memory worker artifacts always bind a generation"),
+            },
+            Err(_) => cdf_runtime::WorkerArtifactObjectState::Absent,
+        }
+    }
+
+    fn reference(
+        kind: cdf_runtime::WorkerArtifactKind,
+        namespace: &str,
+        key: String,
+        bytes: &[u8],
+    ) -> Result<cdf_runtime::WorkerArtifactReference> {
+        Ok(cdf_runtime::WorkerArtifactReference {
+            kind,
+            store_namespace: cdf_kernel::ContentStoreNamespace::new(namespace)?,
+            object_key: cdf_kernel::ContentObjectKey::new(key)?,
+            byte_count: u64::try_from(bytes.len())
+                .map_err(|_| cdf_kernel::CdfError::contract("worker artifact exceeds u64"))?,
+            content_sha256: format!("sha256:{:x}", <sha2::Sha256 as sha2::Digest>::digest(bytes)),
+            provider_generation: Some(cdf_kernel::ContentProviderGeneration::new(
+                "memory-generation-1",
+            )?),
+        })
+    }
+
+    fn observed_output_rows(bytes: Vec<u8>) -> Result<u64> {
+        let mut reader = arrow_ipc::reader::FileReader::try_new(std::io::Cursor::new(bytes), None)
+            .map_err(cdf_kernel::CdfError::from)?;
+        reader.try_fold(0_u64, |rows, batch| {
+            rows.checked_add(
+                u64::try_from(batch?.num_rows()).map_err(|_| {
+                    cdf_kernel::CdfError::data("worker segment row count exceeds u64")
+                })?,
+            )
+            .ok_or_else(|| cdf_kernel::CdfError::data("worker segment row count overflow"))
+        })
+    }
+}
+
+impl WorkerCompilerArtifactWriter for SharedEngineWorkerArtifacts {
+    fn write(
+        &mut self,
+        kind: cdf_runtime::WorkerArtifactKind,
+        canonical_bytes: &[u8],
+    ) -> Result<cdf_runtime::WorkerArtifactReference> {
+        let digest = format!(
+            "{:x}",
+            <sha2::Sha256 as sha2::Digest>::digest(canonical_bytes)
+        );
+        let reference = Self::reference(
+            kind,
+            "engine-worker-compiler",
+            format!("compiler/{kind:?}/{digest}.json"),
+            canonical_bytes,
+        )?;
+        self.values.lock().unwrap().insert(
+            (
+                reference.store_namespace.as_str().to_owned(),
+                reference.object_key.as_str().to_owned(),
+            ),
+            canonical_bytes.to_vec(),
+        );
+        Ok(reference)
+    }
+}
+
+impl EngineWorkerArtifactAuthority for SharedEngineWorkerArtifacts {
+    fn read_compiler_artifact(
+        &self,
+        reference: &cdf_runtime::WorkerArtifactReference,
+        maximum_bytes: u64,
+    ) -> Result<VerifiedWorkerCompilerArtifact> {
+        VerifiedWorkerCompilerArtifact::new(
+            reference,
+            self.bytes_for(reference)?,
+            reference.provider_generation.as_ref(),
+            maximum_bytes,
+        )
+    }
+
+    fn verify_output_artifact(
+        &self,
+        reference: &cdf_runtime::WorkerArtifactReference,
+    ) -> Result<cdf_runtime::VerifiedWorkerArtifactFacts> {
+        let bytes = self.bytes_for(reference)?;
+        let observed = Self::reference(
+            reference.kind,
+            reference.store_namespace.as_str(),
+            reference.object_key.as_str().to_owned(),
+            &bytes,
+        )?;
+        if &observed != reference {
+            return Err(cdf_kernel::CdfError::contract(
+                "stored worker output bytes do not match their result reference",
+            ));
+        }
+        let row_count = (reference.kind == cdf_runtime::WorkerArtifactKind::CanonicalSegment)
+            .then(|| Self::observed_output_rows(bytes))
+            .transpose()?;
+        cdf_runtime::VerifiedWorkerArtifactFacts::new(reference.clone(), row_count)
+    }
+}
+
+struct PendingEngineWorkerWrite<'a> {
+    store: &'a SharedEngineWorkerArtifacts,
+    bytes: Vec<u8>,
+}
+
+impl cdf_runtime::WorkerAuthorizedArtifactSink for PendingEngineWorkerWrite<'_> {
+    fn write_authorized(
+        &mut self,
+        authorization: cdf_runtime::WorkerArtifactWriteAuthorization<'_>,
+    ) -> Result<cdf_runtime::VerifiedWorkerArtifactFacts> {
+        let reference = &authorization.receipt().artifact;
+        let observed = SharedEngineWorkerArtifacts::reference(
+            reference.kind,
+            reference.store_namespace.as_str(),
+            reference.object_key.as_str().to_owned(),
+            &self.bytes,
+        )?;
+        if &observed != reference {
+            return Err(cdf_kernel::CdfError::contract(
+                "authorized worker output bytes do not match their receipt",
+            ));
+        }
+        self.store.values.lock().unwrap().insert(
+            (
+                reference.store_namespace.as_str().to_owned(),
+                reference.object_key.as_str().to_owned(),
+            ),
+            std::mem::take(&mut self.bytes),
+        );
+        self.store.verify_output_artifact(reference)
+    }
+}
+
+fn isolated_mock_option_schema() -> serde_json::Value {
+    serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "source": {"type": "object", "additionalProperties": false, "properties": {}},
+        "resource": {"type": "object", "additionalProperties": false, "properties": {}}
+    })
+}
+
+#[derive(Clone)]
+struct IsolatedEngineMockDriver {
+    descriptor: cdf_runtime::SourceDriverDescriptor,
+    option_schema: serde_json::Value,
+    dataset_id: String,
+    batches: Vec<Batch>,
+}
+
+impl cdf_runtime::SourceDriver for IsolatedEngineMockDriver {
+    fn descriptor(&self) -> &cdf_runtime::SourceDriverDescriptor {
+        &self.descriptor
+    }
+
+    fn option_schema(&self) -> &serde_json::Value {
+        &self.option_schema
+    }
+
+    fn compile(
+        &self,
+        _request: cdf_runtime::SourceCompileRequest,
+    ) -> Result<cdf_runtime::CompiledSourcePlan> {
+        Err(cdf_kernel::CdfError::internal(
+            "isolated engine fixture compiles its source explicitly",
+        ))
+    }
+
+    fn validate_portable_plan(&self, plan: &cdf_runtime::CompiledSourcePlan) -> Result<()> {
+        plan.validate()?;
+        let expected_source_bytes = self.batches.iter().try_fold(0_u64, |total, batch| {
+            total.checked_add(batch.header.byte_count).ok_or_else(|| {
+                cdf_kernel::CdfError::data("isolated mock source byte count overflow")
+            })
+        })?;
+        if plan.physical_plan["dataset_id"].as_str() != Some(self.dataset_id.as_str())
+            || plan.physical_plan["source_bytes"].as_u64() != Some(expected_source_bytes)
+        {
+            return Err(cdf_kernel::CdfError::contract(
+                "isolated mock source authority does not match the worker-owned dataset",
+            ));
+        }
+        Ok(())
+    }
+
+    fn health(
+        &self,
+        _request: cdf_runtime::SourceHealthRequest,
+        _context: &cdf_runtime::SourceResolutionContext<'_>,
+        _output: &mut dyn cdf_runtime::SourceHealthSink,
+    ) -> Result<()> {
+        Err(cdf_kernel::CdfError::internal(
+            "isolated engine fixture does not probe source health",
+        ))
+    }
+
+    fn discovery_session(
+        &self,
+        _plan: &cdf_runtime::CompiledSourcePlan,
+        _context: &cdf_runtime::SourceResolutionContext<'_>,
+    ) -> Result<Box<dyn cdf_runtime::SourceDiscoverySession>> {
+        Err(cdf_kernel::CdfError::internal(
+            "isolated engine fixture does not discover sources",
+        ))
+    }
+
+    fn resolve(
+        &self,
+        plan: &cdf_runtime::CompiledSourcePlan,
+        _context: &cdf_runtime::SourceResolutionContext<'_>,
+    ) -> Result<Arc<dyn QueryableResource>> {
+        self.validate_portable_plan(plan)?;
+        let resource = MockResource::tier_a(self.batches.clone()).without_control_keys();
+        resource.bind_compiled_source(plan);
+        Ok(Arc::new(resource))
+    }
+}
+
+struct IsolatedEngineSourceAuthority {
+    dataset_id: String,
+    partition_id: PartitionId,
+    processed_position: SourcePosition,
+    physical_schema_hash: SchemaHash,
+    expected_observations: Vec<cdf_runtime::WorkerProcessedObservation>,
+    input_rows: u64,
+    source_bytes: u64,
+}
+
+impl EngineWorkerSourceAuthority for IsolatedEngineSourceAuthority {
+    fn verify_source(
+        &self,
+        _task: &cdf_runtime::PortablePartitionTask,
+        source: &cdf_runtime::CompiledSourcePlan,
+        partition: &PartitionPlan,
+        attestation: &cdf_runtime::WorkerSourceAttestation,
+        observations: &[cdf_runtime::WorkerProcessedObservation],
+    ) -> Result<cdf_runtime::VerifiedWorkerSourceFacts> {
+        if source.physical_plan["dataset_id"].as_str() != Some(self.dataset_id.as_str())
+            || partition.partition_id != self.partition_id
+            || attestation.processed_position
+                != cdf_runtime::WorkerPosition::inline(self.processed_position.clone())?
+            || attestation.physical_schema_hash != self.physical_schema_hash
+            || observations != self.expected_observations
+        {
+            return Err(cdf_kernel::CdfError::contract(
+                "isolated worker source result exceeds independently observed fixture authority",
+            ));
+        }
+        cdf_runtime::VerifiedWorkerSourceFacts::new(
+            cdf_runtime::WorkerPosition::inline(self.processed_position.clone())?,
+            self.physical_schema_hash.clone(),
+            self.input_rows,
+            self.source_bytes,
+        )
+    }
+}
+
+struct RejectingEngineWorkerSecrets;
+
+impl cdf_http::SecretProvider for RejectingEngineWorkerSecrets {
+    fn resolve(&self, _uri: &cdf_http::SecretUri) -> Result<cdf_http::SecretValue> {
+        Err(cdf_kernel::CdfError::contract(
+            "isolated mock source does not accept secrets",
+        ))
+    }
+}
+
+struct ActualEngineIsolatedExecutor<'a> {
+    registry: &'a cdf_runtime::SourceRegistry,
+    source_context: &'a cdf_runtime::SourceResolutionContext<'a>,
+    services: cdf_runtime::ExecutionServices,
+    artifacts: SharedEngineWorkerArtifacts,
+    lease: cdf_runtime::WorkerLeaseState,
+    package_root: &'a std::path::Path,
+    now_ms: i64,
+    output: Arc<Mutex<Option<EngineRunOutputWithSegmentPositions>>>,
+}
+
+impl cdf_runtime::IsolatedPartitionExecutor for ActualEngineIsolatedExecutor<'_> {
+    fn execute(
+        &self,
+        invocation: cdf_runtime::IsolatedPartitionInvocation,
+    ) -> cdf_kernel::BoxFuture<'_, Result<cdf_runtime::PartitionWorkerResult>> {
+        let result = (|| {
+            let (task, attempt, authority) = invocation.into_parts();
+            let program = authority.execution_program::<ReconstructedEngineWorkerProgram>()?;
+            if program.plan().scan.partitions.len() != 1
+                || program.plan().scan.partitions.first() != Some(authority.partition())
+                || task.partition.canonical_partition_ordinal != 0
+            {
+                return Err(cdf_kernel::CdfError::contract(
+                    "local isolated package conformance requires one canonical partition",
+                ));
+            }
+            let resource = self
+                .registry
+                .resolve(authority.source(), self.source_context)?;
+            let source_bytes = authority.source().physical_plan["source_bytes"]
+                .as_u64()
+                .ok_or_else(|| {
+                    cdf_kernel::CdfError::contract(
+                        "isolated mock source plan omits its verified source byte count",
+                    )
+                })?;
+            let physical_schema_hash =
+                cdf_kernel::canonical_arrow_schema_hash(resource.schema().as_ref())?;
+            let scheduler = cdf_runtime::resolve_runtime_scheduler(
+                1,
+                &authority.source().execution_capabilities,
+                &cdf_runtime::DestinationRuntimeCapabilities::default(),
+                &self.services,
+                Some(task.resources.cpu_slots),
+            )?;
+            let plan = program.plan().clone();
+            let package_dir = self.package_root.join(&attempt.attempt_id);
+            let execution_plan = plan.clone();
+            let execution_package_dir = package_dir.clone();
+            let execution_services = self.services.clone();
+            let output = std::thread::scope(|scope| {
+                scope
+                    .spawn(move || {
+                        let pre_finalize =
+                            |_builder: &cdf_package::PackageBuilder,
+                             _draft: EnginePackageDraft<'_>| Ok(());
+                        block_on(
+                            super::execute_to_package_with_segment_positions_and_pre_finalize(
+                                &execution_plan,
+                                resource.as_ref(),
+                                execution_package_dir,
+                                &pre_finalize,
+                                EngineExecutionOptions::default()
+                                    .with_execution_services(execution_services)
+                                    .with_scheduler_resolution(scheduler),
+                            ),
+                        )
+                    })
+                    .join()
+                    .map_err(|_| {
+                        cdf_kernel::CdfError::internal("isolated engine execution thread panicked")
+                    })?
+            })?;
+            let processed = output.execution_evidence().processed_observations();
+            let processed_position = if processed.is_empty() {
+                output
+                    .segment_positions
+                    .iter()
+                    .rev()
+                    .find_map(|position| position.output_position.clone())
+                    .ok_or_else(|| {
+                        cdf_kernel::CdfError::data(
+                            "isolated worker produced no exact processed source position",
+                        )
+                    })?
+            } else {
+                cdf_kernel::aggregate_processed_observation_positions(
+                    None,
+                    processed,
+                    &plan.write_disposition,
+                )?
+            };
+            let processed_observations = processed
+                .iter()
+                .map(|observation| {
+                    cdf_runtime::WorkerProcessedObservation::new(
+                        observation.observation_id.clone(),
+                        observation.outcome.clone(),
+                        cdf_runtime::WorkerPosition::inline(observation.source_position.clone())?,
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let mut write_session = cdf_runtime::WorkerArtifactWriteSession::new(
+                &task,
+                &attempt,
+                &self.lease,
+                self.now_ms,
+            )?;
+            let mut receipts = Vec::with_capacity(output.output.segments.len());
+            for (segment_ordinal, segment) in output.output.segments.iter().enumerate() {
+                let bytes = std::fs::read(package_dir.join(&segment.path)).map_err(|error| {
+                    cdf_kernel::CdfError::internal(format!(
+                        "read isolated worker segment {}: {error}",
+                        segment.path
+                    ))
+                })?;
+                let reference = SharedEngineWorkerArtifacts::reference(
+                    cdf_runtime::WorkerArtifactKind::CanonicalSegment,
+                    attempt.write_permit.output.store_namespace.as_str(),
+                    format!(
+                        "{}{}",
+                        attempt.write_permit.output.object_key_prefix, segment.path
+                    ),
+                    &bytes,
+                )?;
+                let receipt = cdf_runtime::WorkerArtifactReceipt {
+                    role: cdf_runtime::WorkerArtifactRole::CanonicalSegment {
+                        segment_id: segment.segment_id.clone(),
+                        partition_ordinal: task.partition.canonical_partition_ordinal,
+                        segment_ordinal: u32::try_from(segment_ordinal).map_err(|_| {
+                            cdf_kernel::CdfError::data(
+                                "isolated worker segment ordinal exceeds u32",
+                            )
+                        })?,
+                        row_count: segment.row_count,
+                    },
+                    artifact: reference,
+                };
+                let object_state = self.artifacts.object_state(&receipt.artifact);
+                let mut sink = PendingEngineWorkerWrite {
+                    store: &self.artifacts,
+                    bytes,
+                };
+                write_session.write(&receipt, &object_state, self.now_ms, &mut sink)?;
+                receipts.push(receipt);
+            }
+            receipts.sort_by(|left, right| left.artifact.cmp(&right.artifact));
+            let artifact_bytes = receipts.iter().try_fold(0_u64, |total, receipt| {
+                total
+                    .checked_add(receipt.artifact.byte_count)
+                    .ok_or_else(|| cdf_kernel::CdfError::data("worker artifact bytes overflow"))
+            })?;
+            let result = cdf_runtime::PartitionWorkerResult::new(
+                &attempt,
+                cdf_runtime::PartitionWorkerResultInput {
+                    status: cdf_runtime::WorkerTerminalStatus::Succeeded,
+                    source_attestation: Some(cdf_runtime::WorkerSourceAttestation {
+                        processed_position: cdf_runtime::WorkerPosition::inline(
+                            processed_position,
+                        )?,
+                        physical_schema_hash,
+                    }),
+                    processed_observations,
+                    artifacts: receipts,
+                    counts: cdf_runtime::WorkerResultCounts {
+                        input_rows: output.output.lineage.input_rows,
+                        output_rows: output.output.profile.output_rows,
+                        quarantined_rows: 0,
+                        source_bytes,
+                        artifact_bytes,
+                    },
+                    telemetry: cdf_runtime::WorkerTelemetry::default(),
+                },
+            )?;
+            *self.output.lock().unwrap() = Some(output);
+            Ok(result)
+        })();
+        Box::pin(async move { result })
+    }
+}
+
 #[test]
 fn engine_partition_task_compiles_every_authority_as_typed_artifacts() {
     let resource = MockResource::tier_a(sample_batches());
@@ -353,6 +837,335 @@ fn engine_partition_task_compiles_every_authority_as_typed_artifacts() {
     let error = cdf_runtime::WorkerAdmissionVerifier::reconstruct_task_authority(&verifier, &task)
         .unwrap_err();
     assert!(error.message.contains("bytes or generation"));
+}
+
+fn isolated_engine_services(cpu_slots: u16) -> cdf_runtime::ExecutionServices {
+    let memory: Arc<dyn cdf_memory::MemoryCoordinator> = Arc::new(
+        cdf_memory::DeterministicMemoryCoordinator::new(512 * 1024 * 1024, BTreeMap::new())
+            .unwrap(),
+    );
+    cdf_runtime::ExecutionServices::new(Arc::new(
+        StandaloneExecutionHost::new(
+            cdf_runtime::ExecutionHostCapabilities {
+                logical_cpu_slots: cpu_slots,
+                io_workers: cpu_slots.max(1),
+                blocking_lanes: Vec::new(),
+            },
+            memory,
+        )
+        .unwrap(),
+    ))
+    .unwrap()
+}
+
+fn isolated_engine_source_plan(
+    resource: &MockResource,
+    descriptor: cdf_runtime::SourceDriverDescriptor,
+    dataset_id: &str,
+    source_bytes: u64,
+) -> cdf_runtime::CompiledSourcePlan {
+    let mut source = mock_compiled_source_plan(resource, None);
+    source.driver = descriptor;
+    source.redacted_options = serde_json::json!({});
+    source.redacted_options_hash = cdf_runtime::artifact_hash(&source.redacted_options).unwrap();
+    source.physical_plan = serde_json::json!({
+        "dataset_id": dataset_id,
+        "source_bytes": source_bytes,
+    });
+    source.physical_plan_hash = cdf_runtime::artifact_hash(&source.physical_plan).unwrap();
+    source.validate().unwrap();
+    source
+}
+
+fn isolated_engine_attempt(
+    task: &cdf_runtime::PortablePartitionTask,
+    attempt_id: &str,
+) -> (
+    cdf_runtime::PartitionAttemptEnvelope,
+    cdf_runtime::WorkerLeaseState,
+) {
+    let domain = cdf_kernel::LeaseAuthorityDomainId::new("isolated-engine-test").unwrap();
+    let fence = cdf_kernel::FencingToken::new(7).unwrap();
+    let attempt = cdf_runtime::PartitionAttemptEnvelope {
+        version: cdf_runtime::PARTITION_ATTEMPT_VERSION,
+        attempt_id: attempt_id.to_owned(),
+        retry_ordinal: 0,
+        trace_id: format!("trace-{attempt_id}"),
+        write_permit: cdf_runtime::WorkerArtifactWritePermit {
+            task_sha256: task.task_sha256.clone(),
+            lease_authority_domain_id: domain.clone(),
+            lease_scope: task.partition.scope.clone(),
+            fencing_token: fence,
+            issued_at_ms: 1_000,
+            expires_at_ms: 30_000,
+            output: cdf_runtime::WorkerArtifactWriteScope {
+                store_namespace: cdf_kernel::ContentStoreNamespace::new("engine-worker-output")
+                    .unwrap(),
+                object_key_prefix: format!("attempts/{attempt_id}/"),
+                maximum_bytes: 128 * 1024 * 1024,
+            },
+            generation_precondition: cdf_runtime::WorkerObjectGenerationPrecondition::CreateOnly,
+        },
+    };
+    let lease = cdf_runtime::WorkerLeaseState {
+        lease_authority_domain_id: domain,
+        lease_scope: task.partition.scope.clone(),
+        fencing_token: fence,
+        expires_at_ms: 30_000,
+    };
+    (attempt, lease)
+}
+
+fn run_actual_isolated_engine_equivalence(
+    cpu_slots: u16,
+) -> (
+    EngineRunOutputWithSegmentPositions,
+    EngineRunOutputWithSegmentPositions,
+    cdf_runtime::PartitionWorkerResult,
+) {
+    let mut batches = sample_batches();
+    for batch in &mut batches {
+        batch.header.source_position = Some(isolated_terminal_file_position());
+    }
+    let source_bytes = batches
+        .iter()
+        .filter(|batch| batch.header.partition_id.as_str() == "part-0")
+        .map(|batch| batch.header.byte_count)
+        .sum();
+    let input_rows = batches
+        .iter()
+        .filter(|batch| batch.header.partition_id.as_str() == "part-0")
+        .map(|batch| batch.header.row_count)
+        .sum();
+    let physical_schema_hash =
+        cdf_kernel::canonical_arrow_schema_hash(sample_schema().as_ref()).unwrap();
+    let dataset_id = "isolated-orders-v1";
+    let option_schema = isolated_mock_option_schema();
+    let descriptor = cdf_runtime::SourceDriverDescriptor {
+        driver_id: cdf_runtime::SourceDriverId::new("isolated_engine_mock").unwrap(),
+        driver_version: "1.0.0".to_owned(),
+        option_schema_hash: cdf_runtime::artifact_hash(&option_schema).unwrap(),
+        kinds: vec!["isolated_engine_mock".to_owned()],
+        schemes: vec!["isolated-engine-mock".to_owned()],
+    };
+    let direct_resource = MockResource::tier_a(batches.clone()).without_control_keys();
+    let source = isolated_engine_source_plan(
+        &direct_resource,
+        descriptor.clone(),
+        dataset_id,
+        source_bytes,
+    );
+    direct_resource.bind_compiled_source(&source);
+    let plan = Planner::new()
+        .plan_tier_a(
+            &direct_resource,
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
+        )
+        .unwrap()
+        .bind_compiled_source(&source)
+        .unwrap()
+        .bind_operator_graph(
+            &source,
+            &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        )
+        .unwrap();
+    assert_eq!(plan.scan.partitions.len(), 1);
+
+    let direct_services = isolated_engine_services(cpu_slots);
+    let direct_scheduler = cdf_runtime::resolve_runtime_scheduler(
+        1,
+        &source.execution_capabilities,
+        &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        &direct_services,
+        Some(cpu_slots),
+    )
+    .unwrap();
+    let direct_root = TempDir::new().unwrap();
+    let pre_finalize =
+        |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
+    let direct = block_on(
+        super::execute_to_package_with_segment_positions_and_pre_finalize(
+            &plan,
+            &direct_resource,
+            direct_root.path(),
+            &pre_finalize,
+            EngineExecutionOptions::default()
+                .with_execution_services(direct_services)
+                .with_scheduler_resolution(direct_scheduler),
+        ),
+    )
+    .unwrap();
+
+    let compatibility = cdf_runtime::WorkerCompatibility {
+        cdf_version: "0.1.0".to_owned(),
+        artifact_version: "package-v2".to_owned(),
+        arrow_version: "58.3.0".to_owned(),
+        relational_engine: cdf_runtime::WorkerComponentVersion {
+            component: "datafusion".to_owned(),
+            version: "54.0.0".to_owned(),
+        },
+        normalizer_version: plan.validation_program.normalizer_version.clone(),
+    };
+    let control = cdf_runtime::WorkerControlBudget {
+        maximum_task_bytes: 128 * 1024,
+        maximum_attempt_bytes: 32 * 1024,
+        maximum_result_bytes: 128 * 1024,
+        maximum_input_artifacts: 32,
+        maximum_output_artifacts: 64,
+        maximum_secret_references: 8,
+    };
+    let mut artifacts = SharedEngineWorkerArtifacts::default();
+    let task = compile_engine_partition_task(
+        EnginePartitionTaskInput {
+            compatibility: compatibility.clone(),
+            pipeline_id: cdf_kernel::PipelineId::new("isolated-engine-test").unwrap(),
+            source: &source,
+            plan: &plan,
+            partition: &plan.scan.partitions[0],
+            canonical_partition_ordinal: 0,
+            epoch_ordinal: None,
+            input_checkpoint: None,
+            secret_references: Vec::new(),
+            input_artifacts: Vec::new(),
+            resources: cdf_runtime::WorkerResourceBudget {
+                memory_bytes: 512 * 1024 * 1024,
+                disk_bytes: 512 * 1024 * 1024,
+                cpu_slots,
+                io_slots: cpu_slots,
+                control: control.clone(),
+            },
+            attempt_policy: cdf_runtime::WorkerAttemptPolicy {
+                maximum_attempts: 2,
+                maximum_attempt_duration_ms: 29_000,
+            },
+            capabilities: cdf_runtime::WorkerCapabilityRequirements {
+                required_blocking_lanes: Vec::new(),
+                services: Vec::new(),
+            },
+            output_policy: cdf_runtime::WorkerOutputPolicy {
+                allowed_kinds: vec![cdf_runtime::WorkerArtifactKind::CanonicalSegment],
+                maximum_artifact_bytes: 128 * 1024 * 1024,
+            },
+        },
+        &mut artifacts,
+    )
+    .unwrap();
+    let (attempt, lease) = isolated_engine_attempt(&task, &format!("jobs-{cpu_slots}"));
+    let worker_services = isolated_engine_services(cpu_slots);
+    let worker_capabilities = cdf_runtime::WorkerRuntimeCapabilities {
+        host: worker_services.capabilities().clone(),
+        memory_bytes: 512 * 1024 * 1024,
+        disk_bytes: 512 * 1024 * 1024,
+        control,
+        services: Vec::new(),
+    };
+    let mut registry = cdf_runtime::SourceRegistry::new();
+    registry
+        .register(IsolatedEngineMockDriver {
+            descriptor,
+            option_schema,
+            dataset_id: dataset_id.to_owned(),
+            batches: batches
+                .into_iter()
+                .filter(|batch| batch.header.partition_id == plan.scan.partitions[0].partition_id)
+                .collect(),
+        })
+        .unwrap();
+    let worker_root = TempDir::new().unwrap();
+    let secrets: Arc<dyn cdf_http::SecretProvider + Send + Sync> =
+        Arc::new(RejectingEngineWorkerSecrets);
+    let source_context = cdf_runtime::SourceResolutionContext::new(
+        worker_root.path(),
+        secrets,
+        &worker_services,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
+    );
+    let source_authority = IsolatedEngineSourceAuthority {
+        dataset_id: dataset_id.to_owned(),
+        partition_id: plan.scan.partitions[0].partition_id.clone(),
+        processed_position: isolated_terminal_file_position(),
+        physical_schema_hash,
+        expected_observations: direct
+            .execution_evidence()
+            .processed_observations()
+            .iter()
+            .map(|observation| {
+                cdf_runtime::WorkerProcessedObservation::new(
+                    observation.observation_id.clone(),
+                    observation.outcome.clone(),
+                    cdf_runtime::WorkerPosition::inline(observation.source_position.clone())?,
+                )
+            })
+            .collect::<Result<Vec<_>>>()
+            .unwrap(),
+        input_rows,
+        source_bytes,
+    };
+    let worker_verifier = EngineWorkerAdmissionVerifier::new(&artifacts, &source_authority);
+    let coordinator_verifier = EngineWorkerAdmissionVerifier::new(&artifacts, &source_authority);
+    let captured = Arc::new(Mutex::new(None));
+    let executor = ActualEngineIsolatedExecutor {
+        registry: &registry,
+        source_context: &source_context,
+        services: worker_services.clone(),
+        artifacts: artifacts.clone(),
+        lease: lease.clone(),
+        package_root: worker_root.path(),
+        now_ms: 2_000,
+        output: Arc::clone(&captured),
+    };
+    let host = cdf_runtime::LocalIsolatedWorkerHost::new(
+        &compatibility,
+        &worker_capabilities,
+        &registry,
+        &worker_verifier,
+        &executor,
+    )
+    .unwrap();
+    let admitted = block_on(cdf_runtime::execute_local_isolated_partition(
+        &task,
+        &attempt,
+        &host,
+        &registry,
+        &coordinator_verifier,
+        &lease,
+        2_000,
+    ))
+    .unwrap()
+    .into_result();
+    let isolated = captured.lock().unwrap().take().unwrap();
+    (direct, isolated, admitted)
+}
+
+#[test]
+fn actual_engine_capsule_publishes_direct_segments_across_cpu_budgets() {
+    for cpu_slots in [1, 4] {
+        let (direct, isolated, admitted) = run_actual_isolated_engine_equivalence(cpu_slots);
+        assert_eq!(isolated.output.segments, direct.output.segments);
+        assert_eq!(isolated.output.profile, direct.output.profile);
+        assert_eq!(isolated.output.lineage, direct.output.lineage);
+        assert_eq!(isolated.segment_positions, direct.segment_positions);
+        assert_eq!(isolated.execution_evidence(), direct.execution_evidence());
+        assert_eq!(admitted.counts.input_rows, direct.output.lineage.input_rows);
+        assert_eq!(
+            admitted.counts.output_rows,
+            direct.output.profile.output_rows
+        );
+        assert_eq!(admitted.artifacts.len(), direct.output.segments.len());
+        assert_eq!(
+            admitted
+                .artifacts
+                .iter()
+                .map(|receipt| receipt.artifact.content_sha256.as_str())
+                .collect::<Vec<_>>(),
+            direct
+                .output
+                .segments
+                .iter()
+                .map(|segment| format!("sha256:{}", segment.sha256))
+                .collect::<Vec<_>>()
+        );
+    }
 }
 
 #[test]
@@ -2146,6 +2959,20 @@ fn terminal_file_position() -> SourcePosition {
             etag: Some("etag-0".to_owned()),
             object_version: None,
             sha256: Some("sha-0".to_owned()),
+        }],
+    })
+}
+
+fn isolated_terminal_file_position() -> SourcePosition {
+    SourcePosition::FileManifest(FileManifest {
+        version: 1,
+        files: vec![FilePosition {
+            path: "input-0".to_owned(),
+            size_bytes: 10,
+            source_generation: None,
+            etag: Some("etag-0".to_owned()),
+            object_version: None,
+            sha256: Some(format!("sha256:{}", "ab".repeat(32))),
         }],
     })
 }

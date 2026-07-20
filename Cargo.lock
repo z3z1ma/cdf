@@ -1210,6 +1210,7 @@ dependencies = [
  "arrow-select",
  "cdf-contract",
  "cdf-expression",
+ "cdf-http",
  "cdf-kernel",
  "cdf-memory",
  "cdf-package",
