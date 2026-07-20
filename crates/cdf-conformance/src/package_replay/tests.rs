@@ -406,12 +406,14 @@ fn negative_self_tests_prove_package_replay_harness_checks_required_edges() {
     wrong_receipt.target = TargetName::new("other_orders").unwrap();
     assert_harness_panics(|| assert_receipt_matches_case(&case, &wrong_receipt));
 
-    let package_segments = PackageReader::open(&case.package_dir)
-        .unwrap()
-        .manifest()
-        .identity
-        .segments
-        .clone();
+    let reader = PackageReader::open(&case.package_dir).unwrap();
+    let mut package_segments = Vec::new();
+    reader
+        .for_each_identity_segment(&mut |segment| {
+            package_segments.push(segment);
+            Ok(())
+        })
+        .unwrap();
     let mut wrong_segments = case.delta.segments.clone();
     wrong_segments[0].byte_count += 1;
     assert_harness_panics(|| assert_segments_match(&package_segments, &wrong_segments));

@@ -666,12 +666,14 @@ fn assert_receipt_matches_case(case: &PreparedPackageReplayCase, receipt: &Recei
         case.delta.package_hash.as_str()
     );
 
-    let package_segments = PackageReader::open(&case.package_dir)
-        .unwrap()
-        .manifest()
-        .identity
-        .segments
-        .clone();
+    let reader = PackageReader::open(&case.package_dir).unwrap();
+    let mut package_segments = Vec::new();
+    reader
+        .for_each_identity_segment(&mut |segment| {
+            package_segments.push(segment);
+            Ok(())
+        })
+        .unwrap();
     assert_segments_match(&package_segments, &case.delta.segments);
 
     let ack_by_segment = receipt

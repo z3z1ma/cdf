@@ -762,7 +762,11 @@ fn try_session_commit(
     let package = Arc::new(reader.clone().with_verification(verified.clone())?);
     let inputs = reader.replay_inputs_verified(&verified)?;
     let request = &inputs.destination_commit;
-    let manifest = reader.manifest();
+    let mut manifest_segments = Vec::new();
+    reader.for_each_identity_segment(&mut |entry| {
+        manifest_segments.push(entry);
+        Ok(())
+    })?;
     let output_schema = reader.runtime_arrow_schema_verified(&verified)?;
     let bulk_path = runtime.prepare_selected_bulk_path(
         &cdf_runtime::BulkPathPreparationInput::new(output_schema.as_ref()).with_commit(request),
@@ -804,7 +808,7 @@ fn try_session_commit(
     let segments =
         segments.map(|segment| segment.and_then(|segment| segment.into_commit_segment()));
     for ack in session.write_segments(Box::new(segments))? {
-        assert!(manifest.identity.segments.iter().any(|entry| {
+        assert!(manifest_segments.iter().any(|entry| {
             ack.segment_id == entry.segment_id && ack.row_count == entry.row_count
         }));
     }

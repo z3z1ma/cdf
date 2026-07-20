@@ -3249,14 +3249,14 @@ fn pinned_arrow_ipc_type_drift_is_observed_and_quarantined_in_the_preview_run_st
     let package_dir = run_package_dir(&project, &run_result);
     let reader = PackageReader::open(package_dir).unwrap();
     reader.verify().unwrap();
-    assert!(
-        reader
-            .manifest()
-            .identity
-            .files
-            .iter()
-            .any(|file| file.path == "quarantine/schema-observations.json")
-    );
+    let mut has_quarantine = false;
+    reader
+        .for_each_identity_file(&mut |file| {
+            has_quarantine |= file.path == "quarantine/schema-observations.json";
+            Ok(())
+        })
+        .unwrap();
+    assert!(has_quarantine);
 }
 
 #[test]
@@ -10464,14 +10464,15 @@ fn governed_evolve_quarantines_incompatible_file_with_exact_arrow_field_evidence
     assert_eq!(field["observed_field"]["data_type"]["kind"], "utf8");
     assert_eq!(field["effective_field"]["name"], "vendor_id");
     assert_eq!(field["effective_field"]["data_type"]["kind"], "int");
-    assert!(
-        cdf_package::PackageReader::open(&package)
-            .unwrap()
-            .manifest()
-            .identity
-            .segments
-            .is_empty()
-    );
+    let package_reader = cdf_package::PackageReader::open(&package).unwrap();
+    let mut segment_count = 0_u64;
+    package_reader
+        .for_each_identity_segment(&mut |_| {
+            segment_count += 1;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(segment_count, 0);
 
     write_string_vendor_parquet(&project.root.join("data/b.parquet"));
     let human = run([

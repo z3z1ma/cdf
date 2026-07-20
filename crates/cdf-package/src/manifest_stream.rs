@@ -43,12 +43,17 @@ pub fn visit_package_manifest(
     segment_visitor: &mut dyn FnMut(SegmentEntry) -> Result<()>,
 ) -> Result<PackageManifestHeader> {
     let mut deserializer = serde_json::Deserializer::from_reader(reader);
-    let header = PackageManifestSeed {
+    let mut callback_error = None;
+    let parsed = PackageManifestSeed {
         file_visitor,
         segment_visitor,
+        callback_error: &mut callback_error,
     }
-    .deserialize(&mut deserializer)
-    .map_err(json_error)?;
+    .deserialize(&mut deserializer);
+    if let Some(error) = callback_error {
+        return Err(error);
+    }
+    let header = parsed.map_err(json_error)?;
     deserializer.end().map_err(json_error)?;
     if header.manifest_version != MANIFEST_VERSION
         || header.identity.manifest_version != MANIFEST_VERSION
@@ -64,6 +69,7 @@ pub fn visit_package_manifest(
 struct PackageManifestSeed<'a> {
     file_visitor: &'a mut dyn FnMut(FileEntry) -> Result<()>,
     segment_visitor: &'a mut dyn FnMut(SegmentEntry) -> Result<()>,
+    callback_error: &'a mut Option<CdfError>,
 }
 
 impl<'de> DeserializeSeed<'de> for PackageManifestSeed<'_> {
@@ -76,6 +82,7 @@ impl<'de> DeserializeSeed<'de> for PackageManifestSeed<'_> {
         deserializer.deserialize_map(PackageManifestVisitor {
             file_visitor: self.file_visitor,
             segment_visitor: self.segment_visitor,
+            callback_error: self.callback_error,
         })
     }
 }
@@ -83,6 +90,7 @@ impl<'de> DeserializeSeed<'de> for PackageManifestSeed<'_> {
 struct PackageManifestVisitor<'a> {
     file_visitor: &'a mut dyn FnMut(FileEntry) -> Result<()>,
     segment_visitor: &'a mut dyn FnMut(SegmentEntry) -> Result<()>,
+    callback_error: &'a mut Option<CdfError>,
 }
 
 impl<'de> Visitor<'de> for PackageManifestVisitor<'_> {
@@ -115,6 +123,7 @@ impl<'de> Visitor<'de> for PackageManifestVisitor<'_> {
                     identity = Some(map.next_value_seed(ManifestIdentitySeed {
                         file_visitor: self.file_visitor,
                         segment_visitor: self.segment_visitor,
+                        callback_error: self.callback_error,
                     })?);
                 }
                 "lifecycle" => {
@@ -151,6 +160,7 @@ impl<'de> Visitor<'de> for PackageManifestVisitor<'_> {
 struct ManifestIdentitySeed<'a> {
     file_visitor: &'a mut dyn FnMut(FileEntry) -> Result<()>,
     segment_visitor: &'a mut dyn FnMut(SegmentEntry) -> Result<()>,
+    callback_error: &'a mut Option<CdfError>,
 }
 
 impl<'de> DeserializeSeed<'de> for ManifestIdentitySeed<'_> {
@@ -163,6 +173,7 @@ impl<'de> DeserializeSeed<'de> for ManifestIdentitySeed<'_> {
         deserializer.deserialize_map(ManifestIdentityVisitor {
             file_visitor: self.file_visitor,
             segment_visitor: self.segment_visitor,
+            callback_error: self.callback_error,
         })
     }
 }
@@ -170,6 +181,7 @@ impl<'de> DeserializeSeed<'de> for ManifestIdentitySeed<'_> {
 struct ManifestIdentityVisitor<'a> {
     file_visitor: &'a mut dyn FnMut(FileEntry) -> Result<()>,
     segment_visitor: &'a mut dyn FnMut(SegmentEntry) -> Result<()>,
+    callback_error: &'a mut Option<CdfError>,
 }
 
 impl<'de> Visitor<'de> for ManifestIdentityVisitor<'_> {
@@ -195,6 +207,7 @@ impl<'de> Visitor<'de> for ManifestIdentityVisitor<'_> {
                     require_absent(&files, "files")?;
                     map.next_value_seed(EntrySequenceSeed::<FileEntry> {
                         visitor: self.file_visitor,
+                        callback_error: self.callback_error,
                         marker: PhantomData,
                     })?;
                     files = Some(());
@@ -215,6 +228,7 @@ impl<'de> Visitor<'de> for ManifestIdentityVisitor<'_> {
                     require_absent(&segments, "segments")?;
                     map.next_value_seed(EntrySequenceSeed::<SegmentEntry> {
                         visitor: self.segment_visitor,
+                        callback_error: self.callback_error,
                         marker: PhantomData,
                     })?;
                     segments = Some(());
@@ -235,6 +249,7 @@ impl<'de> Visitor<'de> for ManifestIdentityVisitor<'_> {
 
 struct EntrySequenceSeed<'a, T> {
     visitor: &'a mut dyn FnMut(T) -> Result<()>,
+    callback_error: &'a mut Option<CdfError>,
     marker: PhantomData<T>,
 }
 
@@ -250,12 +265,14 @@ where
     {
         deserializer.deserialize_seq(EntrySequenceVisitor {
             visitor: self.visitor,
+            callback_error: self.callback_error,
         })
     }
 }
 
 struct EntrySequenceVisitor<'a, T> {
     visitor: &'a mut dyn FnMut(T) -> Result<()>,
+    callback_error: &'a mut Option<CdfError>,
 }
 
 impl<'de, T> Visitor<'de> for EntrySequenceVisitor<'_, T>
@@ -273,7 +290,10 @@ where
         A: SeqAccess<'de>,
     {
         while let Some(entry) = sequence.next_element()? {
-            (self.visitor)(entry).map_err(de::Error::custom)?;
+            if let Err(error) = (self.visitor)(entry) {
+                *self.callback_error = Some(error);
+                return Err(de::Error::custom("package manifest visitor stopped"));
+            }
         }
         Ok(())
     }
@@ -312,68 +332,73 @@ const IDENTITY_FIELDS: &[&str] = &[
     "segments",
 ];
 
+const FILES_ARRAY_PREFIX: &[u8] = b"\"identity\":{\"files\":[";
+const IDENTITY_ARRAY_ANCHOR: &[u8] = FILES_ARRAY_PREFIX;
 const SEGMENTS_ARRAY_PREFIX: &[u8] = b"\"segments\":[";
+const MAX_CANONICAL_FILE_ENTRY_BYTES: usize = 1024 * 1024;
 const MAX_CANONICAL_SEGMENT_ENTRY_BYTES: usize = 4096;
 
-/// Pull-based reader over the canonical manifest segment array.
-///
-/// CDF-generated segment identifiers are package path components, so one canonical record has a
-/// fixed structural ceiling. This is an artifact safety bound, not a throughput/concurrency cap.
-pub struct ManifestSegmentStream<R> {
+struct CanonicalManifestArrayStream<R, T> {
     reader: BufReader<R>,
     entry: Vec<u8>,
+    anchor: Option<&'static [u8]>,
+    prefix: &'static [u8],
+    entry_name: &'static str,
+    maximum_entry_bytes: usize,
     started: bool,
     finished: bool,
     expect_comma: bool,
+    marker: PhantomData<T>,
 }
 
-impl<R: Read> ManifestSegmentStream<R> {
-    pub fn new(reader: R) -> Self {
+impl<R: Read, T> CanonicalManifestArrayStream<R, T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    fn new(
+        reader: R,
+        anchor: Option<&'static [u8]>,
+        prefix: &'static [u8],
+        entry_name: &'static str,
+        maximum_entry_bytes: usize,
+    ) -> Self {
         Self {
             reader: BufReader::new(reader),
             entry: Vec::with_capacity(512),
+            anchor,
+            prefix,
+            entry_name,
+            maximum_entry_bytes,
             started: false,
             finished: false,
             expect_comma: false,
+            marker: PhantomData,
         }
     }
 
-    fn locate_segments(&mut self) -> Result<()> {
-        let mut matched = 0;
-        let mut preceding_backslashes = 0_usize;
-        loop {
-            let byte = read_byte(&mut self.reader)?.ok_or_else(|| {
-                CdfError::data("package manifest omitted its canonical segments array")
-            })?;
-            let unescaped = preceding_backslashes.is_multiple_of(2);
-            if byte == SEGMENTS_ARRAY_PREFIX[matched] && (matched > 0 || unescaped) {
-                matched += 1;
-                if matched == SEGMENTS_ARRAY_PREFIX.len() {
-                    self.started = true;
-                    return Ok(());
-                }
-            } else {
-                matched = usize::from(byte == SEGMENTS_ARRAY_PREFIX[0] && unescaped);
-            }
-            if byte == b'\\' {
-                preceding_backslashes += 1;
-            } else {
-                preceding_backslashes = 0;
-            }
+    fn locate_array(&mut self) -> Result<()> {
+        if let Some(anchor) = self.anchor {
+            locate_token(&mut self.reader, anchor, "identity")?;
         }
+        locate_token(&mut self.reader, self.prefix, self.entry_name)?;
+        self.started = true;
+        Ok(())
     }
 
-    fn next_entry(&mut self) -> Result<Option<SegmentEntry>> {
+    fn next_entry(&mut self) -> Result<Option<T>> {
         if self.finished {
             return Ok(None);
         }
         if !self.started {
-            self.locate_segments()?;
+            self.locate_array()?;
         }
 
         let first = loop {
             let byte = read_byte(&mut self.reader)?.ok_or_else(|| {
-                CdfError::data("package manifest segments array ended before `]`")
+                CdfError::data(format!(
+                    "package manifest {} array ended before `]`",
+                    self.entry_name
+                ))
             })?;
             if byte.is_ascii_whitespace() {
                 continue;
@@ -384,9 +409,10 @@ impl<R: Read> ManifestSegmentStream<R> {
                     return Ok(None);
                 }
                 if byte != b',' {
-                    return Err(CdfError::data(
-                        "package manifest segment entries require canonical comma separation",
-                    ));
+                    return Err(CdfError::data(format!(
+                        "package manifest {} entries require canonical comma separation",
+                        self.entry_name
+                    )));
                 }
                 self.expect_comma = false;
                 continue;
@@ -398,9 +424,10 @@ impl<R: Read> ManifestSegmentStream<R> {
             return Ok(None);
         }
         if first != b'{' {
-            return Err(CdfError::data(
-                "package manifest segment entry must be a JSON object",
-            ));
+            return Err(CdfError::data(format!(
+                "package manifest {} entry must be a JSON object",
+                self.entry_name
+            )));
         }
 
         self.entry.clear();
@@ -410,11 +437,15 @@ impl<R: Read> ManifestSegmentStream<R> {
         let mut escaped = false;
         while depth > 0 {
             let byte = read_byte(&mut self.reader)?.ok_or_else(|| {
-                CdfError::data("package manifest segment entry ended before its closing object")
+                CdfError::data(format!(
+                    "package manifest {} entry ended before its closing object",
+                    self.entry_name
+                ))
             })?;
-            if self.entry.len() == MAX_CANONICAL_SEGMENT_ENTRY_BYTES {
+            if self.entry.len() == self.maximum_entry_bytes {
                 return Err(CdfError::data(format!(
-                    "package manifest segment entry exceeds the current-format structural ceiling of {MAX_CANONICAL_SEGMENT_ENTRY_BYTES} bytes"
+                    "package manifest {} entry exceeds the current-format structural ceiling of {} bytes",
+                    self.entry_name, self.maximum_entry_bytes
                 )));
             }
             self.entry.push(byte);
@@ -446,11 +477,81 @@ impl<R: Read> ManifestSegmentStream<R> {
     }
 }
 
+fn locate_token(reader: &mut impl Read, token: &[u8], label: &str) -> Result<()> {
+    let mut matched = 0;
+    let mut preceding_backslashes = 0_usize;
+    loop {
+        let byte = read_byte(reader)?.ok_or_else(|| {
+            CdfError::data(format!(
+                "package manifest omitted its canonical {label} array"
+            ))
+        })?;
+        let unescaped = preceding_backslashes.is_multiple_of(2);
+        if byte == token[matched] && (matched > 0 || unescaped) {
+            matched += 1;
+            if matched == token.len() {
+                return Ok(());
+            }
+        } else {
+            matched = usize::from(byte == token[0] && unescaped);
+        }
+        if byte == b'\\' {
+            preceding_backslashes += 1;
+        } else {
+            preceding_backslashes = 0;
+        }
+    }
+}
+
+/// Pull-based reader over the canonical manifest file array.
+///
+/// One file record is retained at a time. The ceiling is an artifact safety bound for one path
+/// record, not a file-count, throughput, or concurrency limit.
+pub struct ManifestFileStream<R>(CanonicalManifestArrayStream<R, FileEntry>);
+
+impl<R: Read> ManifestFileStream<R> {
+    pub fn new(reader: R) -> Self {
+        Self(CanonicalManifestArrayStream::new(
+            reader,
+            None,
+            FILES_ARRAY_PREFIX,
+            "files",
+            MAX_CANONICAL_FILE_ENTRY_BYTES,
+        ))
+    }
+}
+
+impl<R: Read> Iterator for ManifestFileStream<R> {
+    type Item = Result<FileEntry>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next_entry().transpose()
+    }
+}
+
+/// Pull-based reader over the canonical manifest segment array.
+///
+/// CDF-generated segment identifiers are package path components, so one canonical record has a
+/// fixed structural ceiling. This is an artifact safety bound, not a throughput/concurrency cap.
+pub struct ManifestSegmentStream<R>(CanonicalManifestArrayStream<R, SegmentEntry>);
+
+impl<R: Read> ManifestSegmentStream<R> {
+    pub fn new(reader: R) -> Self {
+        Self(CanonicalManifestArrayStream::new(
+            reader,
+            Some(IDENTITY_ARRAY_ANCHOR),
+            SEGMENTS_ARRAY_PREFIX,
+            "segments",
+            MAX_CANONICAL_SEGMENT_ENTRY_BYTES,
+        ))
+    }
+}
+
 impl<R: Read> Iterator for ManifestSegmentStream<R> {
     type Item = Result<SegmentEntry>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.next_entry().transpose()
+        self.0.next_entry().transpose()
     }
 }
 
@@ -580,6 +681,18 @@ mod tests {
             .collect::<Result<Vec<_>>>()
             .unwrap();
         assert_eq!(segments, manifest.identity.segments);
+    }
+
+    #[test]
+    fn manifest_file_stream_stops_after_the_canonical_file_array() {
+        let manifest = fixture();
+        let mut bytes = Vec::new();
+        write_package_manifest_canonical(&manifest, &mut bytes).unwrap();
+
+        let files = ManifestFileStream::new(Cursor::new(bytes))
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(files, manifest.identity.files);
     }
 
     #[test]

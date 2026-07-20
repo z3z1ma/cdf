@@ -175,8 +175,8 @@ pub(crate) fn write_streamed_archive_temp_tree_with_memory(
     let data_dir = temp_dir.join("data");
     fs::create_dir_all(&data_dir)
         .map_err(|error| io_error(format!("create {}", data_dir.display()), error))?;
-    let mut segments = Vec::with_capacity(reader.manifest().identity.segments.len());
-    for entry in &reader.manifest().identity.segments {
+    let mut segments = Vec::new();
+    reader.for_each_identity_segment(&mut |entry| {
         let request = ReservationRequest::new(
             ConsumerKey::new(ARCHIVE_SEGMENT_MEMORY_CONSUMER, MemoryClass::Package)?,
             maximum_window_bytes,
@@ -244,7 +244,8 @@ pub(crate) fn write_streamed_archive_temp_tree_with_memory(
             archive_sha256: sha256_hex(&parquet_bytes),
             archive_row_count: row_count,
         });
-    }
+        Ok(())
+    })?;
     sync_directory(&data_dir)?;
     Ok(ParquetArchiveMetadata {
         format_version: PARQUET_ARCHIVE_FORMAT_VERSION,

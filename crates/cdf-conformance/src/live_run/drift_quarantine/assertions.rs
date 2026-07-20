@@ -39,19 +39,19 @@ pub(super) fn assert_drift_quarantine_package_evidence(report: &ProjectRunReport
 
     let reader = PackageReader::open(&report.package_dir).unwrap();
     let verified = reader.verify_for_consumption().unwrap();
-    let files = reader
-        .manifest()
-        .identity
-        .files
-        .iter()
-        .map(|file| file.path.as_str())
-        .collect::<Vec<_>>();
-    assert!(files.contains(&"plan/validation-program.json"));
-    assert!(files.contains(&STATISTICS_PROFILE_FILE));
-    assert!(files.contains(&"stats/verdict-summary.json"));
-    assert!(files.contains(&"stats/quarantine-summary.json"));
-    assert!(files.contains(&"quarantine/part-000001.parquet"));
-    assert!(files.contains(&DEDUP_SUMMARY_FILE));
+    let mut files = std::collections::BTreeSet::new();
+    reader
+        .for_each_identity_file(&mut |file| {
+            files.insert(file.path);
+            Ok(())
+        })
+        .unwrap();
+    assert!(files.contains("plan/validation-program.json"));
+    assert!(files.contains(STATISTICS_PROFILE_FILE));
+    assert!(files.contains("stats/verdict-summary.json"));
+    assert!(files.contains("stats/quarantine-summary.json"));
+    assert!(files.contains("quarantine/part-000001.parquet"));
+    assert!(files.contains(DEDUP_SUMMARY_FILE));
 
     let validation_program: Value = serde_json::from_slice(
         &fs::read(report.package_dir.join("plan/validation-program.json")).unwrap(),

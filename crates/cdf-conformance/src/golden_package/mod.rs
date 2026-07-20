@@ -128,9 +128,12 @@ pub fn prepared_orders_v1_expected_evidence() -> Result<GoldenPackageEvidence> {
 pub fn read_verified_golden_package_evidence(
     package_dir: impl AsRef<Path>,
 ) -> Result<GoldenPackageEvidence> {
+    let package_dir = package_dir.as_ref();
     let reader = PackageReader::open(package_dir)?;
     reader.verify()?;
-    Ok(evidence_from_manifest(reader.manifest()))
+    Ok(evidence_from_manifest(&cdf_package::read_manifest(
+        package_dir,
+    )?))
 }
 
 pub fn assert_verified_package_matches_golden(

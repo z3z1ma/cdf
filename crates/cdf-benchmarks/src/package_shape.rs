@@ -1,6 +1,7 @@
 use std::{fs::File, path::Path, time::Instant};
 
 use arrow_ipc::reader::FileReader;
+use cdf_kernel::CdfError;
 use serde::Serialize;
 
 use crate::BenchResult;
@@ -49,15 +50,18 @@ pub fn summarize_package_shape(package_dir: impl AsRef<Path>) -> BenchResult<Pac
     let mut single_batch_segments = 0_u64;
     let mut multi_batch_segments = 0_u64;
 
-    for segment in &manifest.identity.segments {
+    reader.for_each_identity_segment(&mut |segment| {
         segment_count = segment_count.saturating_add(1);
         package_data_bytes = package_data_bytes.saturating_add(segment.byte_count);
         min_segment_rows = min_segment_rows.min(segment.row_count);
         max_segment_rows = max_segment_rows.max(segment.row_count);
         row_count = row_count.saturating_add(segment.row_count);
         let path = package_dir.join(&segment.path);
-        let file = File::open(&path)?;
-        let segment_batch_count = u64::try_from(FileReader::try_new(file, None)?.num_batches())?;
+        let file = File::open(&path).map_err(|error| {
+            CdfError::internal(format!("open package segment {}: {error}", path.display()))
+        })?;
+        let segment_batch_count = u64::try_from(FileReader::try_new(file, None)?.num_batches())
+            .map_err(|_| CdfError::data("package segment batch count exceeds u64"))?;
         batch_count = batch_count.saturating_add(segment_batch_count);
         if segment_batch_count == 1 {
             single_batch_segments = single_batch_segments.saturating_add(1);
@@ -69,7 +73,8 @@ pub fn summarize_package_shape(package_dir: impl AsRef<Path>) -> BenchResult<Pac
             min_estimated_batch_rows = min_estimated_batch_rows.min(average);
             max_estimated_batch_rows = max_estimated_batch_rows.max(ceiling);
         }
-    }
+        Ok(())
+    })?;
 
     if segment_count == 0 {
         min_segment_rows = 0;
@@ -106,30 +111,33 @@ pub fn read_package_batches(package_dir: impl AsRef<Path>) -> BenchResult<Packag
     let mut row_count = 0_u64;
     let mut package_data_bytes = 0_u64;
 
-    for segment in &manifest.identity.segments {
+    reader.for_each_identity_segment(&mut |segment| {
         segment_count = segment_count.saturating_add(1);
         package_data_bytes = package_data_bytes.saturating_add(segment.byte_count);
         let path = package_dir.join(&segment.path);
-        let file = File::open(&path)?;
+        let file = File::open(&path).map_err(|error| {
+            CdfError::internal(format!("open package segment {}: {error}", path.display()))
+        })?;
         let file_reader = FileReader::try_new(file, None)?;
         let mut segment_rows = 0_u64;
         for batch in file_reader {
             let batch = batch?;
-            let rows = u64::try_from(batch.num_rows())?;
+            let rows = u64::try_from(batch.num_rows())
+                .map_err(|_| CdfError::data("package batch row count exceeds u64"))?;
             batch_count = batch_count.saturating_add(1);
             row_count = row_count.saturating_add(rows);
             segment_rows = segment_rows.saturating_add(rows);
             std::hint::black_box(batch);
         }
         if segment_rows != segment.row_count {
-            return Err(format!(
+            return Err(CdfError::data(format!(
                 "package segment {} decoded {segment_rows} rows but manifest records {}",
                 segment.segment_id.as_str(),
                 segment.row_count
-            )
-            .into());
+            )));
         }
-    }
+        Ok(())
+    })?;
 
     Ok(PackageReadSummary {
         package_id: manifest.identity.package_id.clone(),

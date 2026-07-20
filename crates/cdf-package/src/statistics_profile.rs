@@ -148,8 +148,13 @@ impl PackageReader {
     }
 
     fn validate_statistics_profile_rows(&self, rows: &[StatisticsProfileRow]) -> Result<()> {
+        let mut manifest_segments = Vec::new();
+        self.for_each_identity_segment(&mut |segment| {
+            manifest_segments.push(segment);
+            Ok(())
+        })?;
         if rows.is_empty() {
-            if self.manifest().identity.segments.is_empty() {
+            if manifest_segments.is_empty() {
                 return Ok(());
             }
             return Err(CdfError::data(
@@ -191,10 +196,7 @@ impl PackageReader {
                         expected_segment = row.container_ordinal;
                         expected_field = 0;
                     }
-                    let segment = self
-                        .manifest()
-                        .identity
-                        .segments
+                    let segment = manifest_segments
                         .get(usize::try_from(row.container_ordinal).map_err(|_| {
                             CdfError::data("statistics profile segment ordinal exceeds usize")
                         })?)

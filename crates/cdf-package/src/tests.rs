@@ -1152,9 +1152,16 @@ fn package_reader_clones_share_manifest_cardinality_authority() {
     let memory: Arc<dyn MemoryCoordinator> =
         Arc::new(DeterministicMemoryCoordinator::new(64 * 1024, BTreeMap::new()).unwrap());
     let mut stream = cloned.verified_segment_stream(memory, 64 * 1024).unwrap();
+    let mut expected = None;
+    reader
+        .for_each_identity_segment(&mut |segment| {
+            expected.get_or_insert(segment.segment_id);
+            Ok(())
+        })
+        .unwrap();
     assert_eq!(
         stream.next().unwrap().unwrap().entry.segment_id,
-        reader.manifest().identity.segments[0].segment_id
+        expected.unwrap()
     );
 }
 
@@ -2397,9 +2404,14 @@ fn persisted_archive_enforces_one_accounted_input_output_window() {
     assert_eq!(snapshot.consumers[&consumer].current_bytes, 0);
     assert_eq!(snapshot.consumers[&consumer].peak_bytes, 64 * 1024);
 
-    let batches = reader
-        .read_segment(&reader.manifest().identity.segments[0].segment_id)
+    let mut first_segment_id = None;
+    reader
+        .for_each_identity_segment(&mut |segment| {
+            first_segment_id.get_or_insert(segment.segment_id);
+            Ok(())
+        })
         .unwrap();
+    let batches = reader.read_segment(&first_segment_id.unwrap()).unwrap();
     let retained_arrow_bytes = batches
         .into_iter()
         .map(|batch| {

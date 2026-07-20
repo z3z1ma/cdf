@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 
-use cdf_package::PackageReader;
 use cdf_package_contract::PackageManifest;
 use serde::Serialize;
 use serde_json::json;
@@ -97,11 +96,11 @@ fn inspect_command_name(noun: &InspectNoun) -> &'static str {
 }
 
 fn inspect_package(path: PathBuf) -> Result<CommandOutput, CliError> {
-    let reader = PackageReader::open(&path)?;
+    let manifest = cdf_package::read_manifest(&path)?;
     CommandOutput::rendered(
         "inspect package",
-        inspect_package_document(&path, reader.manifest()),
-        reader.manifest(),
+        inspect_package_document(&path, &manifest),
+        manifest,
     )
 }
 

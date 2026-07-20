@@ -34,6 +34,15 @@ use cdf_runtime::{DestinationRuntime, DurableSegmentReader, StagedSegmentIngress
 
 use crate::sheet::duckdb_correction_capabilities;
 
+fn identity_segments(reader: &PackageReader) -> Result<Vec<SegmentEntry>> {
+    let mut segments = Vec::new();
+    reader.for_each_identity_segment(&mut |entry| {
+        segments.push(entry);
+        Ok(())
+    })?;
+    Ok(segments)
+}
+
 fn sample_batch(ids: Vec<i64>, names: Vec<Option<&str>>) -> RecordBatch {
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
@@ -567,10 +576,7 @@ fn try_commit_current(
         )?,
         output_schema.as_ref().clone(),
     )?)?;
-    let requests = reader
-        .manifest()
-        .identity
-        .segments
+    let requests = identity_segments(reader)?
         .iter()
         .enumerate()
         .map(|(ordinal, entry)| {
@@ -607,28 +613,27 @@ fn plan_current_package_commit(
     request: &CurrentCommitRequest,
 ) -> Result<DuckDbCommitPlan> {
     let reader = PackageReader::open(&request.package_dir)?;
-    let schema =
-        if request
-            .package_dir
-            .join(cdf_package::RUNTIME_ARROW_SCHEMA_FILE)
-            .exists()
-        {
-            reader.runtime_arrow_schema()?
-        } else {
-            let first =
-                reader.manifest().identity.segments.first().ok_or_else(|| {
-                    CdfError::data("DuckDB package has no segment schema authority")
-                })?;
-            let segment_schema = reader
-                .read_segment(&first.segment_id)?
-                .into_iter()
-                .next()
-                .map(|batch| batch.schema())
-                .ok_or_else(|| CdfError::data("DuckDB package first segment has no Arrow batch"))?;
-            Arc::new(cdf_package_contract::logical_output_schema(
-                segment_schema.as_ref(),
-            )?)
-        };
+    let schema = if request
+        .package_dir
+        .join(cdf_package::RUNTIME_ARROW_SCHEMA_FILE)
+        .exists()
+    {
+        reader.runtime_arrow_schema()?
+    } else {
+        let segments = identity_segments(&reader)?;
+        let first = segments
+            .first()
+            .ok_or_else(|| CdfError::data("DuckDB package has no segment schema authority"))?;
+        let segment_schema = reader
+            .read_segment(&first.segment_id)?
+            .into_iter()
+            .next()
+            .map(|batch| batch.schema())
+            .ok_or_else(|| CdfError::data("DuckDB package first segment has no Arrow batch"))?;
+        Arc::new(cdf_package_contract::logical_output_schema(
+            segment_schema.as_ref(),
+        )?)
+    };
     destination.plan_schema_commit(&request.commit, schema.as_ref())
 }
 

@@ -34,6 +34,15 @@ use cdf_package_contract::{
 use cdf_runtime::DestinationRuntime;
 use object_store::{memory::InMemory, path::Path as ObjectPath};
 
+fn identity_segments(reader: &cdf_package::PackageReader) -> Result<Vec<SegmentEntry>> {
+    let mut segments = Vec::new();
+    reader.for_each_identity_segment(&mut |entry| {
+        segments.push(entry);
+        Ok(())
+    })?;
+    Ok(segments)
+}
+
 fn test_writer_settings() -> crate::package::ParquetWriterSettings {
     crate::package::ParquetWriterSettings {
         rows_per_batch: 64 * 1024,
@@ -766,7 +775,8 @@ fn stage_through_ingress_with_lease(
                 .as_ref()
                 .clone()
         });
-    let plan = dest.plan_package_commit(&commit, &reader.manifest().identity.segments)?;
+    let identity_segments = identity_segments(&reader)?;
+    let plan = dest.plan_package_commit(&commit, &identity_segments)?;
     let inputs = replay_inputs(&commit);
     let capabilities = dest.runtime_capabilities();
     let preparation = cdf_runtime::BulkPathPreparationInput::new(&output_schema)
@@ -803,10 +813,7 @@ fn stage_through_ingress_with_lease(
             ));
         }
     };
-    let requests = reader
-        .manifest()
-        .identity
-        .segments
+    let requests = identity_segments
         .iter()
         .zip(commit_segments)
         .enumerate()
@@ -838,7 +845,7 @@ fn stage_through_ingress_with_lease(
     assert_eq!(session.snapshot()?.accepted_segments, staged);
     let package = TestVerifiedPackage {
         package_hash: commit.commit.package_hash.as_str().to_owned(),
-        segments: reader.manifest().identity.segments.clone(),
+        segments: identity_segments,
         scan: ScanPlan {
             plan_id: execution_plan_id.clone(),
             request: ScanRequest {
@@ -878,7 +885,7 @@ fn plan_package_for_test(
     commit: &ParquetCommitRequest,
 ) -> Result<ParquetCommitPlan> {
     let reader = PackageReader::open(package_dir)?;
-    dest.plan_package_commit(commit, &reader.manifest().identity.segments)
+    dest.plan_package_commit(commit, &identity_segments(&reader)?)
 }
 
 fn assert_staged_abort_cleans_destination(

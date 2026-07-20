@@ -612,6 +612,7 @@ pub fn run_prepared_file_to_package(
             .with_scheduler_resolution(scheduler.clone()),
     ))?;
     let identity_artifacts = non_segment_identity_artifacts(&output.output.manifest);
+    let segments = output.output.identity_segments().to_vec();
     Ok(PreparedSourcePackageRun {
         measurement: WorkerMeasurement {
             timed_wall_time_ns: None,
@@ -634,7 +635,7 @@ pub fn run_prepared_file_to_package(
         limiting_factors: scheduler.effective_jobs.limiting_factors,
         partition_count,
         package_hash: output.output.manifest.package_hash,
-        segments: output.output.segments,
+        segments,
         identity_artifacts,
         runtime_scheduler: execution.scheduler_report()?,
         source_frontier: output.source_frontier,
@@ -818,6 +819,7 @@ pub fn run_prepared_iceberg_to_package(
         ),
     ];
     let identity_artifacts = non_segment_identity_artifacts(&output.output.manifest);
+    let segments = output.output.identity_segments().to_vec();
     Ok(PreparedSourcePackageRun {
         measurement: WorkerMeasurement {
             timed_wall_time_ns: None,
@@ -832,7 +834,7 @@ pub fn run_prepared_iceberg_to_package(
         limiting_factors: scheduler.effective_jobs.limiting_factors,
         partition_count,
         package_hash: output.output.manifest.package_hash,
-        segments: output.output.segments,
+        segments,
         identity_artifacts,
         runtime_scheduler,
         source_frontier: output.source_frontier,

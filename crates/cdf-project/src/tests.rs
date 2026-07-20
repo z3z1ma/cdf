@@ -102,6 +102,17 @@ fn test_execution_services() -> cdf_runtime::ExecutionServices {
         .1
 }
 
+fn package_identity_file_paths(reader: &cdf_package::PackageReader) -> BTreeSet<String> {
+    let mut paths = BTreeSet::new();
+    reader
+        .for_each_identity_file(&mut |entry| {
+            paths.insert(entry.path);
+            Ok(())
+        })
+        .unwrap();
+    paths
+}
+
 fn test_execution_services_with_slots(
     logical_cpu_slots: u16,
     memory_budget_bytes: u64,
@@ -3159,21 +3170,10 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
     .unwrap();
     assert_eq!(pinned_report.row_count, 2);
     let pinned_package = cdf_package::PackageReader::open(&pinned_report.package_dir).unwrap();
+    assert!(package_identity_file_paths(&pinned_package).contains("plan/schema-admission.json"));
     assert!(
-        pinned_package
-            .manifest()
-            .identity
-            .files
-            .iter()
-            .any(|entry| entry.path == "plan/schema-admission.json")
-    );
-    assert!(
-        pinned_package
-            .manifest()
-            .identity
-            .files
-            .iter()
-            .any(|entry| entry.path == "schema/stream-admission-evidence.json")
+        package_identity_file_paths(&pinned_package)
+            .contains("schema/stream-admission-evidence.json")
     );
     let pinned_execution_requests = transport
         .requests()

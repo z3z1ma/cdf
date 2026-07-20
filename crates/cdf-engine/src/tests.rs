@@ -83,6 +83,28 @@ fn collect_dedup_dropped_provenance(reader: &cdf_package::PackageReader) -> Vec<
     rows
 }
 
+fn package_identity_file_paths(reader: &cdf_package::PackageReader) -> BTreeSet<String> {
+    let mut paths = BTreeSet::new();
+    reader
+        .for_each_identity_file(&mut |entry| {
+            paths.insert(entry.path);
+            Ok(())
+        })
+        .unwrap();
+    paths
+}
+
+fn package_identity_segments(reader: &cdf_package::PackageReader) -> Vec<SegmentEntry> {
+    let mut segments = Vec::new();
+    reader
+        .for_each_identity_segment(&mut |entry| {
+            segments.push(entry);
+            Ok(())
+        })
+        .unwrap();
+    segments
+}
+
 fn executable_mock_plan(plan: &EnginePlan, resource: &MockResource) -> Result<EnginePlan> {
     if plan.compiled_source_execution.is_some() {
         return Ok(plan.clone());
@@ -7587,15 +7609,9 @@ fn contract_exec_writes_redacted_quarantine_artifact_and_keeps_accepted_rows() {
         "sha256:0a08d503e0f6794940fd8e6a1f547999622742616551894946ba6dc0489cf184"
     );
 
-    let files = reader
-        .manifest()
-        .identity
-        .files
-        .iter()
-        .map(|file| file.path.as_str())
-        .collect::<Vec<_>>();
-    assert!(files.contains(&"stats/verdict-summary.json"));
-    assert!(files.contains(&"stats/quarantine-summary.json"));
+    let files = package_identity_file_paths(&reader);
+    assert!(files.contains("stats/verdict-summary.json"));
+    assert!(files.contains("stats/quarantine-summary.json"));
 
     let verdict_summary: serde_json::Value = serde_json::from_slice(
         &std::fs::read(temp.path().join("stats/verdict-summary.json")).unwrap(),
@@ -7635,14 +7651,7 @@ fn contract_exec_writes_redacted_quarantine_artifact_and_keeps_accepted_rows() {
     let quarantine_path = temp.path().join("quarantine/part-000001.parquet");
     let artifact = std::fs::read(quarantine_path).unwrap();
     assert!(!String::from_utf8_lossy(&artifact).contains(raw_pii));
-    assert!(
-        reader
-            .manifest()
-            .identity
-            .files
-            .iter()
-            .any(|file| file.path == "quarantine/part-000001.parquet")
-    );
+    assert!(package_identity_file_paths(&reader).contains("quarantine/part-000001.parquet"));
 }
 
 #[test]
@@ -7975,14 +7984,7 @@ fn variant_capture_materializes_nested_values_and_contract_evolution_evidence() 
         evolution_bytes,
         cdf_package::canonical_json_bytes(&evolution).unwrap()
     );
-    assert!(
-        reader
-            .manifest()
-            .identity
-            .files
-            .iter()
-            .any(|file| file.path == "schema/contract-evolution.json")
-    );
+    assert!(package_identity_file_paths(&reader).contains("schema/contract-evolution.json"));
     assert_eq!(reader.replay_view().unwrap().segments.len(), 1);
 
     let quarantine = collect_quarantine_records(&reader);
@@ -8536,14 +8538,7 @@ fn merge_dedup_keep_last_runs_after_contract_filtering_and_before_normalize() {
     assert_eq!(summary["duplicate_key_count"], 1);
     assert_eq!(summary["dropped_row_count"], 1);
     assert_eq!(collect_dedup_dropped_provenance(&reader), vec![(0, 2)]);
-    assert!(
-        reader
-            .manifest()
-            .identity
-            .files
-            .iter()
-            .any(|file| file.path == DEDUP_SUMMARY_FILE)
-    );
+    assert!(package_identity_file_paths(&reader).contains(DEDUP_SUMMARY_FILE));
 }
 
 #[test]
@@ -8953,7 +8948,7 @@ fn merge_dedup_fail_aborts_before_package_finalization() {
     assert!(error.to_string().contains("keep=fail aborts"));
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
     assert_ne!(reader.manifest().lifecycle.status, PackageStatus::Packaged);
-    assert!(reader.manifest().identity.segments.is_empty());
+    assert!(package_identity_segments(&reader).is_empty());
     assert!(reader.read_dedup_summary_json().unwrap().is_none());
 }
 
@@ -9000,14 +8995,7 @@ fn freshness_contract_writes_observed_at_context_when_rule_requires_it() {
     assert_eq!(output.profile.output_rows, 0);
     assert!(output.identity_segments().is_empty());
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    assert!(
-        reader
-            .manifest()
-            .identity
-            .files
-            .iter()
-            .any(|file| { file.path == "plan/contract-evaluation-context.json" })
-    );
+    assert!(package_identity_file_paths(&reader).contains("plan/contract-evaluation-context.json"));
 }
 
 #[test]

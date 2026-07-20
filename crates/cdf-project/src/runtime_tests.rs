@@ -96,6 +96,28 @@ fn test_execution_services() -> cdf_runtime::ExecutionServices {
         ))
 }
 
+fn package_identity_file_paths(reader: &PackageReader) -> std::collections::BTreeSet<String> {
+    let mut paths = std::collections::BTreeSet::new();
+    reader
+        .for_each_identity_file(&mut |entry| {
+            paths.insert(entry.path);
+            Ok(())
+        })
+        .unwrap();
+    paths
+}
+
+fn package_identity_segments(reader: &PackageReader) -> Vec<SegmentEntry> {
+    let mut segments = Vec::new();
+    reader
+        .for_each_identity_segment(&mut |entry| {
+            segments.push(entry);
+            Ok(())
+        })
+        .unwrap();
+    segments
+}
+
 struct RejectMockStagingSubmissionHost {
     inner: Arc<dyn cdf_runtime::ExecutionHost>,
 }
@@ -6565,8 +6587,9 @@ fn merge_dedup_live_run_records_deduped_package_replay_identity_and_duplicate_re
 
     let reader = PackageReader::open(&package_dir).unwrap();
     reader.verify().unwrap();
-    assert_eq!(reader.manifest().identity.segments.len(), 1);
-    assert_eq!(reader.manifest().identity.segments[0].row_count, 2);
+    let identity_segments = package_identity_segments(&reader);
+    assert_eq!(identity_segments.len(), 1);
+    assert_eq!(identity_segments[0].row_count, 2);
     assert_eq!(
         package_id_name_rows(&reader),
         vec![
@@ -6574,14 +6597,7 @@ fn merge_dedup_live_run_records_deduped_package_replay_identity_and_duplicate_re
             (1, Some("one-last".to_owned()))
         ]
     );
-    assert!(
-        reader
-            .manifest()
-            .identity
-            .files
-            .iter()
-            .any(|file| file.path == DEDUP_SUMMARY_FILE)
-    );
+    assert!(package_identity_file_paths(&reader).contains(DEDUP_SUMMARY_FILE));
     let summary = reader.read_dedup_summary_json().unwrap().unwrap();
     assert_eq!(summary["rule_id"], "row-rule-0000-dedup");
     assert_eq!(summary["keys"], serde_json::json!(["id"]));
@@ -6739,14 +6755,7 @@ fn project_run_records_non_mirror_outcome_for_unsupported_quarantine_sheet() {
         })
         .unwrap();
     assert_eq!(quarantine_record_count, 1);
-    assert!(
-        reader
-            .manifest()
-            .identity
-            .files
-            .iter()
-            .any(|file| file.path == "destination/quarantine-mirror.json")
-    );
+    assert!(package_identity_file_paths(&reader).contains("destination/quarantine-mirror.json"));
     let mirror_outcome: serde_json::Value = serde_json::from_slice(
         &fs::read(package_dir.join("destination/quarantine-mirror.json")).unwrap(),
     )
@@ -9232,10 +9241,7 @@ fn artifact_replay_rejects_manifest_package_hash_mismatch_before_mutation() {
         "pkg-artifact-hash-mismatch",
         PackageStatus::Packaged,
     );
-    let mut manifest = PackageReader::open(&package_dir)
-        .unwrap()
-        .manifest()
-        .clone();
+    let mut manifest = cdf_package::read_manifest(&package_dir).unwrap();
     manifest.package_hash = "sha256:wrong-package".to_owned();
     manifest.signature.signing_input = manifest.package_hash.clone();
     fs::write(

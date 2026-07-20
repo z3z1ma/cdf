@@ -399,6 +399,25 @@ impl PackageAvailabilityReport {
             }
         };
         let manifest = reader.manifest();
+        let mut segment_count = 0_usize;
+        if let Err(error) = reader.for_each_identity_segment(&mut |_| {
+            segment_count = segment_count.saturating_add(1);
+            Ok(())
+        }) {
+            return Self {
+                path: pointer.path,
+                status: "unavailable".to_owned(),
+                ledger_package_id: pointer.package_id,
+                ledger_package_hash: pointer.package_hash,
+                manifest_package_id: Some(manifest.identity.package_id.clone()),
+                manifest_package_hash: Some(manifest.package_hash.clone()),
+                lifecycle_status: Some(manifest.lifecycle.status.as_str().to_owned()),
+                segment_count: None,
+                receipt_artifact_status: "unavailable".to_owned(),
+                receipt_ids: Vec::new(),
+                reason: Some(error.to_string()),
+            };
+        }
         match reader.receipts() {
             Ok(receipts) => {
                 let receipt_ids = receipts
@@ -413,7 +432,7 @@ impl PackageAvailabilityReport {
                     manifest_package_id: Some(manifest.identity.package_id.clone()),
                     manifest_package_hash: Some(manifest.package_hash.clone()),
                     lifecycle_status: Some(manifest.lifecycle.status.as_str().to_owned()),
-                    segment_count: Some(manifest.identity.segments.len()),
+                    segment_count: Some(segment_count),
                     receipt_artifact_status: if receipt_ids.is_empty() {
                         "missing".to_owned()
                     } else {
@@ -431,7 +450,7 @@ impl PackageAvailabilityReport {
                 manifest_package_id: Some(manifest.identity.package_id.clone()),
                 manifest_package_hash: Some(manifest.package_hash.clone()),
                 lifecycle_status: Some(manifest.lifecycle.status.as_str().to_owned()),
-                segment_count: Some(manifest.identity.segments.len()),
+                segment_count: Some(segment_count),
                 receipt_artifact_status: "unavailable".to_owned(),
                 receipt_ids: Vec::new(),
                 reason: Some(error.to_string()),

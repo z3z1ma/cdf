@@ -29,9 +29,11 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     artifacts::{read_json_artifact, read_optional_json_artifact},
+    manifest_stream::{ManifestFileStream, ManifestSegmentStream, PackageManifestHeader},
     ops::{
-        append_receipt, read_manifest_from_root, read_receipts, read_segment_file_from_root,
-        tombstone_package, update_package_status, verify_package_from_root,
+        append_receipt, read_manifest_from_root, read_manifest_header_from_root, read_receipts,
+        read_segment_file_from_root, tombstone_package, update_package_status,
+        verify_package_from_root,
     },
     package_fs::PackageRoot,
     quarantine::{
@@ -44,7 +46,7 @@ use crate::{
 pub struct PackageReader {
     package_dir: PathBuf,
     package_root: Arc<PackageRoot>,
-    manifest: Arc<PackageManifest>,
+    manifest: Arc<PackageManifestHeader>,
 }
 
 /// Authority that one package identity was fully verified for a bounded
@@ -80,10 +82,7 @@ impl VerifiedPackageAccess for VerifiedPackageReader {
         &self,
         visitor: &mut dyn FnMut(SegmentEntry) -> Result<()>,
     ) -> Result<()> {
-        for segment in &self.reader.manifest.identity.segments {
-            visitor(segment.clone())?;
-        }
-        Ok(())
+        self.reader.for_each_identity_segment(visitor)
     }
 
     fn recorded_scan_plan(&self) -> Result<ScanPlan> {
@@ -258,88 +257,80 @@ pub struct VerifiedSegmentObjectStream<T> {
 
 enum VerifiedSegmentItems<T> {
     Manifest {
-        manifest: Arc<PackageManifest>,
-        next_index: usize,
+        segments: ManifestSegmentStream<std::fs::File>,
         authority: fn() -> T,
     },
     ManifestAuthorities {
-        manifest: Arc<PackageManifest>,
-        next_index: usize,
+        segments: ManifestSegmentStream<std::fs::File>,
         authorities: std::vec::IntoIter<T>,
     },
 }
 
 impl<T> VerifiedSegmentItems<T> {
-    fn manifest(manifest: Arc<PackageManifest>, authority: fn() -> T) -> Self {
+    fn manifest(manifest_file: std::fs::File, authority: fn() -> T) -> Self {
         Self::Manifest {
-            manifest,
-            next_index: 0,
+            segments: ManifestSegmentStream::new(manifest_file),
             authority,
         }
     }
 
-    fn manifest_authorities(manifest: Arc<PackageManifest>, authorities: Vec<T>) -> Self {
+    fn manifest_authorities(manifest_file: std::fs::File, authorities: Vec<T>) -> Self {
         Self::ManifestAuthorities {
-            manifest,
-            next_index: 0,
+            segments: ManifestSegmentStream::new(manifest_file),
             authorities: authorities.into_iter(),
         }
     }
 }
 
 impl<T> Iterator for VerifiedSegmentItems<T> {
-    type Item = (SegmentEntry, T);
+    type Item = Result<(SegmentEntry, T)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             Self::Manifest {
-                manifest,
-                next_index,
+                segments,
                 authority,
-            } => {
-                let entry = manifest.identity.segments.get(*next_index)?.clone();
-                *next_index = next_index.checked_add(1)?;
-                Some((entry, authority()))
-            }
+            } => segments
+                .next()
+                .map(|entry| entry.map(|entry| (entry, authority()))),
             Self::ManifestAuthorities {
-                manifest,
-                next_index,
+                segments,
                 authorities,
             } => {
                 let authority = authorities.next()?;
-                let entry = manifest.identity.segments.get(*next_index)?.clone();
-                *next_index = next_index.checked_add(1)?;
-                Some((entry, authority))
+                segments
+                    .next()
+                    .map(|entry| entry.map(|entry| (entry, authority)))
             }
         }
     }
 }
 
 impl<T> Iterator for VerifiedSegmentObjectStream<T> {
-    type Item = VerifiedSegmentObject<T>;
+    type Item = Result<VerifiedSegmentObject<T>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let (entry, authority) = self.segments.next()?;
-        Some(VerifiedSegmentObject {
+        let result = self.segments.next()?;
+        Some(result.map(|(entry, authority)| VerifiedSegmentObject {
             display_path: package_path(&self.package_dir, &entry.path),
             package_root: Arc::clone(&self.package_root),
             entry,
             authority,
             _verification: self.verified.clone(),
-        })
+        }))
     }
 }
 
 fn verified_manifest_segment_stream(
     package_root: Arc<PackageRoot>,
-    manifest: Arc<PackageManifest>,
     memory: Arc<dyn MemoryCoordinator>,
     maximum_segment_bytes: u64,
 ) -> Result<VerifiedSegmentStream<()>> {
     validate_verified_segment_window(memory.as_ref(), maximum_segment_bytes)?;
+    let manifest_file = package_root.open_std_file(cdf_package_contract::MANIFEST_FILE)?;
     Ok(VerifiedSegmentStream {
         package_root,
-        segments: VerifiedSegmentItems::manifest(manifest, || ()),
+        segments: VerifiedSegmentItems::manifest(manifest_file, || ()),
         memory,
         maximum_segment_bytes,
         failed: false,
@@ -348,15 +339,15 @@ fn verified_manifest_segment_stream(
 
 fn verified_manifest_authority_segment_stream<T>(
     package_root: Arc<PackageRoot>,
-    manifest: Arc<PackageManifest>,
     authorities: Vec<T>,
     memory: Arc<dyn MemoryCoordinator>,
     maximum_segment_bytes: u64,
 ) -> Result<VerifiedSegmentStream<T>> {
     validate_verified_segment_window(memory.as_ref(), maximum_segment_bytes)?;
+    let manifest_file = package_root.open_std_file(cdf_package_contract::MANIFEST_FILE)?;
     Ok(VerifiedSegmentStream {
         package_root,
-        segments: VerifiedSegmentItems::manifest_authorities(manifest, authorities),
+        segments: VerifiedSegmentItems::manifest_authorities(manifest_file, authorities),
         memory,
         maximum_segment_bytes,
         failed: false,
@@ -382,23 +373,15 @@ fn validate_verified_segment_window(
 }
 
 fn validate_commit_segment_authority(
-    manifest: &[SegmentEntry],
+    reader: &PackageReader,
     requested: &[StateSegment],
 ) -> Result<()> {
-    for (index, state) in requested.iter().enumerate() {
-        let Some(entry) = manifest.get(index) else {
-            if requested[..index]
-                .iter()
-                .any(|prior| prior.segment_id == state.segment_id)
-            {
-                return Err(CdfError::data(format!(
-                    "destination commit request contains duplicate segment {}",
-                    state.segment_id
-                )));
-            }
+    let mut index = 0_usize;
+    reader.for_each_identity_segment(&mut |entry| {
+        let Some(state) = requested.get(index) else {
             return Err(CdfError::data(format!(
-                "destination commit request segment {} is not present in the package manifest",
-                state.segment_id
+                "package manifest segment {} is missing from destination commit request",
+                entry.segment_id
             )));
         };
         if entry.segment_id != state.segment_id {
@@ -411,9 +394,9 @@ fn validate_commit_segment_authority(
                     state.segment_id
                 )));
             }
-            if manifest
+            if requested[index + 1..]
                 .iter()
-                .any(|candidate| candidate.segment_id == state.segment_id)
+                .any(|candidate| candidate.segment_id == entry.segment_id)
             {
                 return Err(CdfError::data(format!(
                     "destination commit request segment {} is not in canonical package order at ordinal {index}",
@@ -431,11 +414,24 @@ fn validate_commit_segment_authority(
                 state.segment_id, state.row_count, entry.row_count
             )));
         }
-    }
-    if let Some(entry) = manifest.get(requested.len()) {
+        index = index
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("package segment ordinal overflowed usize"))?;
+        Ok(())
+    })?;
+    if let Some(state) = requested.get(index) {
+        if requested[..index]
+            .iter()
+            .any(|prior| prior.segment_id == state.segment_id)
+        {
+            return Err(CdfError::data(format!(
+                "destination commit request contains duplicate segment {}",
+                state.segment_id
+            )));
+        }
         return Err(CdfError::data(format!(
-            "package manifest segment {} is missing from destination commit request",
-            entry.segment_id
+            "destination commit request segment {} is not present in the package manifest",
+            state.segment_id
         )));
     }
     Ok(())
@@ -448,7 +444,13 @@ impl<T> Iterator for VerifiedSegmentStream<T> {
         if self.failed {
             return None;
         }
-        let (entry, authority) = self.segments.next()?;
+        let (entry, authority) = match self.segments.next()? {
+            Ok(item) => item,
+            Err(error) => {
+                self.failed = true;
+                return Some(Err(error));
+            }
+        };
         let result = load_verified_segment(
             Arc::clone(&self.package_root),
             entry,
@@ -529,7 +531,7 @@ impl PackageReader {
     pub fn open(package_dir: impl AsRef<Path>) -> Result<Self> {
         let package_root = Arc::new(PackageRoot::open(package_dir.as_ref())?);
         let package_dir = package_root.path().to_path_buf();
-        let manifest = read_manifest_from_root(&package_root)?;
+        let manifest = read_manifest_header_from_root(&package_root)?;
         Ok(Self {
             package_dir,
             package_root,
@@ -537,8 +539,50 @@ impl PackageReader {
         })
     }
 
-    pub fn manifest(&self) -> &PackageManifest {
+    pub fn manifest(&self) -> &PackageManifestHeader {
         self.manifest.as_ref()
+    }
+
+    pub fn for_each_identity_segment(
+        &self,
+        visitor: &mut dyn FnMut(SegmentEntry) -> Result<()>,
+    ) -> Result<()> {
+        let manifest = self
+            .package_root
+            .open_std_file(cdf_package_contract::MANIFEST_FILE)?;
+        for entry in ManifestSegmentStream::new(manifest) {
+            visitor(entry?)?;
+        }
+        Ok(())
+    }
+
+    pub fn for_each_identity_file(
+        &self,
+        visitor: &mut dyn FnMut(cdf_package_contract::FileEntry) -> Result<()>,
+    ) -> Result<()> {
+        let manifest = self
+            .package_root
+            .open_std_file(cdf_package_contract::MANIFEST_FILE)?;
+        for entry in ManifestFileStream::new(manifest) {
+            visitor(entry?)?;
+        }
+        Ok(())
+    }
+
+    fn identity_file_entry(
+        &self,
+        relative_path: &str,
+    ) -> Result<Option<cdf_package_contract::FileEntry>> {
+        let manifest = self
+            .package_root
+            .open_std_file(cdf_package_contract::MANIFEST_FILE)?;
+        for entry in ManifestFileStream::new(manifest) {
+            let entry = entry?;
+            if entry.path == relative_path {
+                return Ok(Some(entry));
+            }
+        }
+        Ok(None)
     }
 
     /// Removes an incomplete owner-private construction so its deterministic identity can be
@@ -581,16 +625,9 @@ impl PackageReader {
         self.verified_json_artifact(verified, SCAN_PLAN_FILE)
     }
 
-    pub fn identity_segments_verified(
-        &self,
-        verified: &VerifiedPackage,
-    ) -> Result<&[SegmentEntry]> {
-        self.require_verification(verified)?;
-        Ok(&self.manifest.identity.segments)
-    }
-
     pub fn verify(&self) -> Result<VerificationReport> {
-        verify_package_from_root(&self.package_root, &self.manifest)
+        let manifest = read_manifest_from_root(&self.package_root)?;
+        verify_package_from_root(&self.package_root, &manifest)
     }
 
     pub fn verify_for_consumption(&self) -> Result<VerifiedPackage> {
@@ -637,17 +674,11 @@ impl PackageReader {
     ) -> Result<Vec<u8>> {
         self.require_verification(verified)?;
         let relative_path = normalize_artifact_path(relative_path.as_ref())?;
-        let entry = self
-            .manifest
-            .identity
-            .files
-            .iter()
-            .find(|entry| entry.path == relative_path)
-            .ok_or_else(|| {
-                CdfError::data(format!(
-                    "verified package identity does not contain artifact {relative_path}"
-                ))
-            })?;
+        let entry = self.identity_file_entry(&relative_path)?.ok_or_else(|| {
+            CdfError::data(format!(
+                "verified package identity does not contain artifact {relative_path}"
+            ))
+        })?;
         let bytes = self.package_root.read(&relative_path)?;
         let byte_count = u64::try_from(bytes.len())
             .map_err(|_| CdfError::data("identity artifact byte count exceeds u64"))?;
@@ -670,21 +701,15 @@ impl PackageReader {
     ) -> Result<VerifiedIdentityObject> {
         self.require_verification(&verified)?;
         let relative_path = normalize_artifact_path(relative_path.as_ref())?;
-        let entry = self
-            .manifest
-            .identity
-            .files
-            .iter()
-            .find(|entry| entry.path == relative_path)
-            .ok_or_else(|| {
-                CdfError::data(format!(
-                    "verified package identity does not contain artifact {relative_path}"
-                ))
-            })?;
+        let entry = self.identity_file_entry(&relative_path)?.ok_or_else(|| {
+            CdfError::data(format!(
+                "verified package identity does not contain artifact {relative_path}"
+            ))
+        })?;
         Ok(VerifiedIdentityObject {
             relative_path,
             byte_count: entry.byte_count,
-            sha256: entry.sha256.clone(),
+            sha256: entry.sha256,
             package_root: Arc::clone(&self.package_root),
             _verification: verified,
         })
@@ -713,13 +738,7 @@ impl PackageReader {
     ) -> Result<Option<T>> {
         self.require_verification(verified)?;
         let relative_path = normalize_artifact_path(relative_path.as_ref())?;
-        if !self
-            .manifest
-            .identity
-            .files
-            .iter()
-            .any(|entry| entry.path == relative_path)
-        {
+        if self.identity_file_entry(&relative_path)?.is_none() {
             return Ok(None);
         }
         self.verified_json_artifact(verified, relative_path)
@@ -745,22 +764,20 @@ impl PackageReader {
             verified,
             LATE_DATA_PAYLOAD_CATALOG_FILE,
         )?;
-        let output_rows =
-            self.manifest
-                .identity
-                .segments
-                .iter()
-                .try_fold(0_u64, |total, segment| {
-                    total
-                        .checked_add(segment.row_count)
-                        .ok_or_else(|| CdfError::data("package segment row count overflow"))
-                })?;
+        let mut output_rows = 0_u64;
+        self.for_each_identity_segment(&mut |segment| {
+            output_rows = output_rows
+                .checked_add(segment.row_count)
+                .ok_or_else(|| CdfError::data("package segment row count overflow"))?;
+            Ok(())
+        })?;
         evidence.validate_payloads(catalog.as_ref(), output_rows)?;
         Ok(Some((evidence, catalog)))
     }
 
-    pub fn update_status(&mut self, status: PackageStatus) -> Result<&PackageManifest> {
-        self.manifest = Arc::new(update_package_status(&self.package_dir, status)?);
+    pub fn update_status(&mut self, status: PackageStatus) -> Result<&PackageManifestHeader> {
+        update_package_status(&self.package_dir, status)?;
+        self.manifest = Arc::new(read_manifest_header_from_root(&self.package_root)?);
         Ok(&self.manifest)
     }
 
@@ -780,10 +797,15 @@ impl PackageReader {
                 self.manifest.lifecycle.status.as_str()
             )));
         }
+        let mut segments = Vec::new();
+        self.for_each_identity_segment(&mut |segment| {
+            segments.push(segment);
+            Ok(())
+        })?;
         Ok(ReplayView {
             package_hash: PackageHash::new(self.manifest.package_hash.clone())?,
             status: self.manifest.lifecycle.status.clone(),
-            segments: self.manifest.identity.segments.clone(),
+            segments,
             receipts: self.receipts()?,
         })
     }
@@ -840,18 +862,19 @@ impl PackageReader {
     }
 
     pub fn read_segment(&self, segment_id: &SegmentId) -> Result<Vec<RecordBatch>> {
-        let segment = self
-            .manifest
-            .identity
-            .segments
-            .iter()
-            .find(|segment| &segment.segment_id == segment_id)
-            .ok_or_else(|| {
-                CdfError::data(format!(
-                    "segment {} is not in manifest",
-                    segment_id.as_str()
-                ))
-            })?;
+        let mut segment = None;
+        self.for_each_identity_segment(&mut |candidate| {
+            if &candidate.segment_id == segment_id {
+                segment = Some(candidate);
+            }
+            Ok(())
+        })?;
+        let segment = segment.ok_or_else(|| {
+            CdfError::data(format!(
+                "segment {} is not in manifest",
+                segment_id.as_str()
+            ))
+        })?;
         let batches = read_segment_file_from_root(&self.package_root, &segment.path)?;
         cdf_package_contract::validate_package_row_ord_batches(
             &batches,
@@ -879,7 +902,6 @@ impl PackageReader {
         self.require_verification(verified)?;
         verified_manifest_segment_stream(
             Arc::clone(&self.package_root),
-            Arc::clone(&self.manifest),
             memory,
             maximum_segment_bytes,
         )
@@ -903,7 +925,6 @@ impl PackageReader {
         self.require_verification(verified)?;
         verified_manifest_segment_stream(
             Arc::clone(&self.package_root),
-            Arc::clone(&self.manifest),
             memory,
             maximum_segment_bytes,
         )
@@ -918,7 +939,11 @@ impl PackageReader {
             package_dir: self.package_dir.clone(),
             package_root: Arc::clone(&self.package_root),
             verified: Arc::new(verified.clone()),
-            segments: VerifiedSegmentItems::manifest(Arc::clone(&self.manifest), || ()),
+            segments: VerifiedSegmentItems::manifest(
+                self.package_root
+                    .open_std_file(cdf_package_contract::MANIFEST_FILE)?,
+                || (),
+            ),
         })
     }
 
@@ -945,10 +970,9 @@ impl PackageReader {
         maximum_segment_bytes: u64,
     ) -> Result<VerifiedSegmentStream<StateSegment>> {
         self.require_verification(verified)?;
-        validate_commit_segment_authority(&self.manifest.identity.segments, state_segments)?;
+        validate_commit_segment_authority(self, state_segments)?;
         verified_manifest_authority_segment_stream(
             Arc::clone(&self.package_root),
-            Arc::clone(&self.manifest),
             state_segments.to_vec(),
             memory,
             maximum_segment_bytes,
@@ -959,7 +983,7 @@ impl PackageReader {
         &self,
         visitor: &mut dyn FnMut(QuarantineRecord) -> Result<()>,
     ) -> Result<()> {
-        for entry in &self.manifest.identity.files {
+        self.for_each_identity_file(&mut |entry| {
             if entry.path.starts_with("quarantine/") && entry.path.ends_with(".parquet") {
                 for_each_quarantine_record_in_package_file(
                     &self.package_dir,
@@ -967,26 +991,23 @@ impl PackageReader {
                     visitor,
                 )?;
             }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     pub fn quarantine_record_count(&self) -> Result<u64> {
-        self.manifest
-            .identity
-            .files
-            .iter()
-            .try_fold(0_u64, |count, entry| {
-                if entry.path.starts_with("quarantine/") && entry.path.ends_with(".parquet") {
-                    let file_count =
-                        quarantine_record_count_in_package_file(&self.package_dir, &entry.path)?;
-                    count
-                        .checked_add(file_count)
-                        .ok_or_else(|| CdfError::data("quarantine record count overflow"))
-                } else {
-                    Ok(count)
-                }
-            })
+        let mut count = 0_u64;
+        self.for_each_identity_file(&mut |entry| {
+            if entry.path.starts_with("quarantine/") && entry.path.ends_with(".parquet") {
+                let file_count =
+                    quarantine_record_count_in_package_file(&self.package_dir, &entry.path)?;
+                count = count
+                    .checked_add(file_count)
+                    .ok_or_else(|| CdfError::data("quarantine record count overflow"))?;
+            }
+            Ok(())
+        })?;
+        Ok(count)
     }
 
     pub fn read_dedup_summary_json(&self) -> Result<Option<serde_json::Value>> {
@@ -1019,9 +1040,9 @@ impl PackageReader {
         let mut shard_count = 0_u64;
         let mut row_count = 0_u64;
         let mut previous_dropped = None;
-        for entry in &self.manifest.identity.files {
+        self.for_each_identity_file(&mut |entry| {
             if !entry.path.starts_with(DEDUP_PROVENANCE_DIRECTORY) {
-                continue;
+                return Ok(());
             }
             if !entry.path.ends_with(".parquet") {
                 return Err(CdfError::data(format!(
@@ -1068,7 +1089,8 @@ impl PackageReader {
                     visitor(dropped, kept.value(row))?;
                 }
             }
-        }
+            Ok(())
+        })?;
         if shard_count != expected_shard_count || row_count != expected_row_count {
             return Err(CdfError::data(format!(
                 "dedup provenance summary declares {expected_shard_count} shards and {expected_row_count} rows but package identity contains {shard_count} shards and {row_count} rows"
@@ -1079,7 +1101,7 @@ impl PackageReader {
 
     pub fn tombstone(&mut self) -> Result<TombstoneReport> {
         let report = tombstone_package(&self.package_dir)?;
-        self.manifest = Arc::new(read_manifest_from_root(&self.package_root)?);
+        self.manifest = Arc::new(read_manifest_header_from_root(&self.package_root)?);
         Ok(report)
     }
 }
