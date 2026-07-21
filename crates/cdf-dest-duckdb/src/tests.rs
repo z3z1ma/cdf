@@ -714,6 +714,14 @@ fn duckdb_reserves_native_parallelism_only_for_final_binding() {
     assert_eq!(staged.claimed_cpu_slots(), 1);
     assert_eq!(final_binding.claimed_cpu_slots(), 16);
     assert_eq!(
+        capabilities.max_in_flight_bytes,
+        Some(DUCKDB_DEFAULT_MAX_IN_FLIGHT_BYTES)
+    );
+    assert!(
+        capabilities.max_in_flight_bytes.unwrap()
+            >= cdf_engine::CanonicalSegmentationPolicy::performance_default().maximum_bytes
+    );
+    assert_eq!(
         capabilities
             .bulk_paths
             .iter()

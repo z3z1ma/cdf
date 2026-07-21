@@ -199,7 +199,7 @@ impl DestinationRuntime for DuckDbDestination {
             writer_model: DestinationWriterModel::SingleWriter,
             commit_payload_mode: cdf_runtime::DestinationCommitPayloadMode::SegmentStreaming,
             max_in_flight_segments: Some(2),
-            max_in_flight_bytes: Some(128 * 1024 * 1024),
+            max_in_flight_bytes: Some(self.native_resources.max_in_flight_bytes),
             bulk_paths,
             bulk_path: Some(DUCKDB_BULK_PATH_SEGMENT_SCAN.to_owned()),
             bulk_evidence_version: Some("p3-d14-stock-scan-2026-07-19-v1".to_owned()),

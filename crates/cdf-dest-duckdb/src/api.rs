@@ -17,6 +17,7 @@ pub(crate) struct DuckDbNativeResources {
     pub(crate) memory_limit_bytes: u64,
     pub(crate) maximum_temp_directory_bytes: u64,
     pub(crate) internal_threads: i64,
+    pub(crate) max_in_flight_bytes: u64,
     scratch_reservation: Option<Arc<cdf_runtime::SpillReservation>>,
 }
 
@@ -25,6 +26,7 @@ struct DuckDbNativeResourceOverrides {
     memory_limit_bytes: Option<u64>,
     maximum_temp_directory_bytes: Option<u64>,
     internal_threads: Option<i64>,
+    max_in_flight_bytes: Option<u64>,
 }
 
 impl std::fmt::Debug for DuckDbNativeResources {
@@ -37,6 +39,7 @@ impl std::fmt::Debug for DuckDbNativeResources {
                 &self.maximum_temp_directory_bytes,
             )
             .field("internal_threads", &self.internal_threads)
+            .field("max_in_flight_bytes", &self.max_in_flight_bytes)
             .field(
                 "scratch_reserved_bytes",
                 &self
@@ -452,6 +455,7 @@ impl DuckDbNativeResources {
             memory_limit_bytes: DUCKDB_CONSERVATIVE_MEMORY_BYTES,
             maximum_temp_directory_bytes: DUCKDB_DEFAULT_TEMP_DIRECTORY_BUDGET_CEILING_BYTES,
             internal_threads: DUCKDB_DEFAULT_INTERNAL_THREADS,
+            max_in_flight_bytes: DUCKDB_DEFAULT_MAX_IN_FLIGHT_BYTES,
             scratch_reservation: None,
         }
     }
@@ -498,6 +502,14 @@ impl DuckDbNativeResources {
         let internal_threads = overrides
             .internal_threads
             .unwrap_or(DUCKDB_DEFAULT_INTERNAL_THREADS);
+        let max_in_flight_bytes = overrides
+            .max_in_flight_bytes
+            .unwrap_or(DUCKDB_DEFAULT_MAX_IN_FLIGHT_BYTES);
+        if max_in_flight_bytes == 0 {
+            return Err(CdfError::contract(format!(
+                "{DUCKDB_MAX_IN_FLIGHT_BYTES_ENV} must be greater than zero"
+            )));
+        }
         let scratch_reservation = spill
             .try_reserve(maximum_temp_directory_bytes)?
             .ok_or_else(|| {
@@ -509,6 +521,7 @@ impl DuckDbNativeResources {
             memory_limit_bytes,
             maximum_temp_directory_bytes,
             internal_threads,
+            max_in_flight_bytes,
             scratch_reservation: Some(Arc::new(scratch_reservation)),
         })
     }
@@ -520,6 +533,7 @@ impl DuckDbNativeResourceOverrides {
             memory_limit_bytes: optional_env_byte_size(DUCKDB_MEMORY_LIMIT_ENV)?,
             maximum_temp_directory_bytes: optional_env_byte_size(DUCKDB_TEMP_BUDGET_ENV)?,
             internal_threads: optional_env_threads(DUCKDB_THREADS_ENV)?,
+            max_in_flight_bytes: optional_env_byte_size(DUCKDB_MAX_IN_FLIGHT_BYTES_ENV)?,
         })
     }
 }
@@ -971,6 +985,10 @@ mod native_resource_tests {
         .unwrap();
         assert_eq!(resources.memory_limit_bytes, 1024 * 1024 * 1024);
         assert_eq!(resources.maximum_temp_directory_bytes, 1024 * 1024 * 1024);
+        assert_eq!(
+            resources.max_in_flight_bytes,
+            DUCKDB_DEFAULT_MAX_IN_FLIGHT_BYTES
+        );
         assert_eq!(spill.snapshot().current_bytes, 1024 * 1024 * 1024);
 
         let clone = resources.clone();
@@ -991,6 +1009,7 @@ mod native_resource_tests {
                 memory_limit_bytes: Some(3 * 1024 * 1024 * 1024),
                 maximum_temp_directory_bytes: Some(6 * 1024 * 1024 * 1024),
                 internal_threads: Some(4),
+                max_in_flight_bytes: Some(512 * 1024 * 1024),
             },
         )
         .unwrap();
@@ -1001,6 +1020,7 @@ mod native_resource_tests {
             6 * 1024 * 1024 * 1024
         );
         assert_eq!(resources.internal_threads, 4);
+        assert_eq!(resources.max_in_flight_bytes, 512 * 1024 * 1024);
         assert_eq!(spill.snapshot().current_bytes, 6 * 1024 * 1024 * 1024);
     }
 
@@ -1015,6 +1035,14 @@ mod native_resource_tests {
         let memory_error =
             cdf_kernel::parse_human_byte_size(DUCKDB_MEMORY_LIMIT_ENV, "0").unwrap_err();
         assert!(memory_error.message.contains("must be greater than zero"));
+
+        let in_flight_error =
+            cdf_kernel::parse_human_byte_size(DUCKDB_MAX_IN_FLIGHT_BYTES_ENV, "0").unwrap_err();
+        assert!(
+            in_flight_error
+                .message
+                .contains("must be greater than zero")
+        );
 
         let thread_error = parse_threads(DUCKDB_THREADS_ENV, "0").unwrap_err();
         assert!(thread_error.message.contains("positive integer"));

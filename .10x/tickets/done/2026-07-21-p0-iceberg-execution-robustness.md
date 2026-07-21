@@ -24,7 +24,7 @@ owns ordering and the final real-project smoke only; executable work lives in it
   guess a row count or weaken the shared memory authority.
 - The real `flolake.transactions` project succeeds to Parquet under defaults, and the fixes
   introduce no source identity branch in generic orchestration. DuckDB wide-ingest memory remains
-  solely owned by `.10x/tickets/2026-07-18-p3-d17-duckdb-wide-string-overlap.md`.
+  solely owned by `.10x/tickets/cancelled/2026-07-18-p3-d17-duckdb-wide-string-overlap.md`.
 
 ## References
 

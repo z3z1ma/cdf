@@ -62,7 +62,7 @@ column-count cutoff, or global reduction of the measured TLC/default bulk path.
 
 ## Blockers
 
-Cancelled into `.10x/tickets/2026-07-18-p3-d17-duckdb-wide-string-overlap.md`.
+Cancelled into `.10x/tickets/cancelled/2026-07-18-p3-d17-duckdb-wide-string-overlap.md`.
 
 ## Evidence
 

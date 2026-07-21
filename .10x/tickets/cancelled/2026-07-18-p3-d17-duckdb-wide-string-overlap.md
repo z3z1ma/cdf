@@ -1,6 +1,6 @@
-Status: open
+Status: cancelled
 Created: 2026-07-18
-Updated: 2026-07-18
+Updated: 2026-07-21
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
 Depends-On: .10x/tickets/done/2026-07-18-p3-d14-duckdb-nanoarrow-080-lz4-revalidation.md
 
@@ -46,6 +46,18 @@ Restore the lost package/destination overlap for wide, long-string Arrow payload
 ## Journal
 
 - 2026-07-18: Opened from the final current-tree audit. The public-network path is healthy relative to its paired raw transfer and controlled TLC remains within 2.16% of its retained median, so this is deliberately scoped to wide-string destination overlap rather than reopened as a generic remote-I/O or runtime regression.
+- 2026-07-21: Traced live construction and verified-package replay through `ActiveStagedIngress`, the rendezvous staging stream, DuckDB's destination-owned session, final binding, and the stock C table function. Generic orchestration already delivers each durable segment while package production continues; DuckDB currently acknowledges and retains every path, then starts its transaction and scanner only after final package verification. Per-segment scanning is rejected because the scanner parallelizes by file and would collapse to one worker. The executable candidate is a single transaction with destination-owned waves derived from admitted DuckDB native parallelism, using the same resettable finite scanner. Verified-package replay must remain deferred so duplicate receipts retain the current no-payload fast path; the staged request therefore needs a typed pre-finalization-versus-verified input phase rather than a DuckDB or path-id branch in generic orchestration.
+- 2026-07-21: Falsified and deleted that candidate. It added 619 lines across the destination,
+  generic staging request, project replay, and cross-destination tests, including a new generic input
+  phase, a second DuckDB blocking lane, resettable scanner state, width heuristics, and a transaction
+  retained across waves. The controlled EC2 TLC cell regressed from the retained 10.477-second
+  median to 29.445 seconds. The candidate therefore failed its own 3% non-regression gate by a wide
+  margin before the FineWeb acceptance cell could justify any of its complexity.
+- 2026-07-21: The first clean-scanner EC2 run then failed before destination work because a valid
+  240,920,160-byte v3 segment exceeded DuckDB's stale 128 MiB staged-byte capability. This was not
+  a reason to tune generic segmentation around DuckDB. DuckDB now advertises the generic 256 MiB
+  default segment envelope, with `CDF_DUCKDB_MAX_IN_FLIGHT_BYTES` as an explicit override; the
+  shared memory ledger remains the actual admission authority.
 
 ## Blockers
 
@@ -53,12 +65,28 @@ None.
 
 ## Evidence
 
-Pending.
+- `.10x/evidence/.storage/2026-07-21-p3-d17-ec2-tlc-overlap.json`: three controlled
+  `c7i.4xlarge` samples at the candidate revision completed all 41,169,720 rows with a 29.445-second
+  median, 1,398,206 rows/s, 2,985,099,264-byte peak RSS, zero spill, and approximately 25.116
+  seconds of destination ingress. This is a rejection result, not promotion evidence.
+- After cancellation, `rg` finds no `StagedInputPhase`, DuckDB overlap knob/lane, resettable scanner,
+  or wave-ingress residue in production or tests.
+- All 35 DuckDB tests and strict crate-wide clippy pass after the capability correction. The
+  capability test requires the default DuckDB byte envelope to admit the generic default maximum
+  segment, preventing this exact cross-policy mismatch from returning.
 
 ## Review
 
-Pending.
+Pass for cancellation. The candidate is entirely absent from the surviving code. The sole DuckDB
+product ingress remains the finite canonical package scanner, verified-package replay keeps its
+duplicate-receipt no-payload fast path, and generic staging has no destination-motivated phase bit.
+The existing FineWeb residual is accepted as a measured no-action: revisit only if a simpler
+scanner primitive can prove a gain without adding a second ingress path or generic lifecycle state.
 
 ## Retrospective
 
-Pending.
+Overlap is not automatically parallelism. Dividing a finite scanner into sequential waves reduced
+the number of files available to each DuckDB scan and repeated fixed query work, turning an
+architecturally elaborate candidate into a 2.8x regression. A destination optimization must first
+beat the retained whole-path cell; correctness tests cannot justify keeping machinery that fails
+the performance premise for which it exists.
