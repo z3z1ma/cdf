@@ -13,7 +13,7 @@ owns ordering and the final real-project smoke only; executable work lives in it
 
 1. `.10x/tickets/done/2026-07-21-p0-iceberg-task-observation-authority.md`
 2. `.10x/tickets/done/2026-07-21-p0-iceberg-byte-adaptive-parquet-batches.md`
-3. `.10x/tickets/cancelled/2026-07-21-p0-duckdb-wide-ingest-memory.md` (cancelled into D17)
+3. `.10x/tickets/done/2026-07-21-p0-duckdb-wide-ingest-memory.md`
 4. `.10x/tickets/done/2026-07-21-p0-segmentation-v3.md`
 
 ## Acceptance Criteria
@@ -24,7 +24,7 @@ owns ordering and the final real-project smoke only; executable work lives in it
   guess a row count or weaken the shared memory authority.
 - The real `flolake.transactions` project succeeds to Parquet under defaults, and the fixes
   introduce no source identity branch in generic orchestration. DuckDB wide-ingest memory remains
-  solely owned by `.10x/tickets/cancelled/2026-07-18-p3-d17-duckdb-wide-string-overlap.md`.
+  destination-owned.
 
 ## References
 

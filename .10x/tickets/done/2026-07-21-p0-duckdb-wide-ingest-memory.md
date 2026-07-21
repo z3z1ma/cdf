@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-21
 Updated: 2026-07-21
 Parent: .10x/tickets/done/2026-07-21-p0-iceberg-execution-robustness.md
@@ -85,6 +85,15 @@ column-count cutoff, or global reduction of the measured TLC/default bulk path.
   `exception_type` as destination-local `DuckDbExceptionType`; no diagnostic substring controls
   retry. An automatic OOM explicitly rolls back the transaction before the same durable canonical
   segment set is replayed at half the prior concurrency. The writer lock spans every attempt.
+- 2026-07-21: Fresh optimized product evidence used no memory or DuckDB thread environment
+  overrides. The same finalized 3,513,266-row/2,052-column package completed through DuckDB receipt
+  verification and checkpoint commit in 98.66 seconds. The derived two-worker envelope held; the
+  process peaked at 5,121,736,704 RSS bytes while DuckDB explicitly spilled to its reserved disk
+  budget. The logical DuckDB memory limit governs its buffer manager and is not an RSS limit.
+- 2026-07-21: The ordinary-schema control loaded public January TLC from the Hugging Face mirror
+  through source, package, DuckDB receipt, and checkpoint in 5.93 seconds: 2,964,624 rows, two
+  segments, and 622,804,992 bytes maximum RSS. Direct read-only queries confirmed contiguous,
+  non-null row provenance and exact segment-range coverage in both product smokes.
 
 ## Blockers
 
@@ -99,14 +108,33 @@ None. The user explicitly rejected the previously accepted wide-table residual.
   transaction's DDL and row are absent before returning the lower concurrency.
 - `CARGO_BUILD_JOBS=12 cargo clippy -p cdf-dest-duckdb --all-targets --all-features --locked -j 12
   -- -D warnings`: passed.
-- Product-level wide-package replay and narrow performance comparison remain pending before closure.
+- Fresh optimized default wide replay: `real 98.66`, `user 173.80`, `sys 9.45`; 3,513,266 target
+  rows and provenance rows; 231 `_cdf_segments` ranges represent exactly 3,513,266 rows; verified
+  DuckDB receipt and committed checkpoint. This is faster than the prior recorded 108.06-second
+  default survivor while solving the earlier default OOM.
+- Fresh optimized ordinary public-TLC run: `real 5.93`, `user 1.86`, `sys 1.38`; 2,964,624 target
+  rows and provenance rows; two segment ranges represent exactly 2,964,624 rows; verified receipt
+  and committed checkpoint. No destination slow-path or reduced scan override was active.
+- `CARGO_BUILD_JOBS=12 tools/product-smoke-matrix.sh`: 11/11 passed across CLI add/run/replay/package
+  verification, project manifest incrementality and Parquet commit, preview/run parity, and Iceberg
+  projection/task authority.
 
 ## Review
 
-Historical field-count heuristic review: fail; that prototype remains deleted. Current
-schema-layout admission and typed retry implementation: focused author review passed; independent
-product-smoke review remains pending.
+Historical field-count heuristic review: fail; that prototype remains deleted. Fresh-hat review of
+the retained implementation found no critical, significant, minor, or nit findings. Verdict: pass.
+The destination owns schema-layout admission and structured DuckDB exception classification; the
+generic runtime sees only the existing prepared bulk path. The sole scanner remains unchanged for
+ordinary schemas, explicit global/memory/scan knobs compose as ceilings, the writer lock spans the
+attempt series, and rollback precedes every retry decision. Residual risk: the real wide fixture's
+initial two-worker admission succeeded, so the live engine OOM classifier and rollback-before-retry
+law are exercised in focused tests rather than by intentionally degrading the product smoke.
 
 ## Retrospective
 
-Pending product-level evidence and closure review.
+The prior fixed column-count coefficient failed because it treated schema cardinality as memory.
+The durable shape is to estimate concrete Arrow/DuckDB layouts only for first admission, preserve
+full ordinary concurrency, and let DuckDB's structured OOM verdict correct uncertainty in variable
+width values. Keeping the finalized canonical package replayable makes recovery cheap in
+architecture even when a wide attempt is expensive in wall time; holding the destination writer
+lock across attempts is what turns rollback/redrive into one atomic logical commit.
