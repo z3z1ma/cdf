@@ -33,6 +33,7 @@ The pass did expose one workload-specific performance residual. The 2,147,509,48
 4. Reused the tuned CDF EC2 benchmark host (`c7i.4xlarge`, 16 logical CPUs, 30 GiB RAM, 250 GiB gp3 at 16,000 IOPS/1,000 MiB/s), synchronized current committed product source, built release `cdf` and the lean measurement runner with downloaded prebuilt DuckDB, and passed strict measurement preflight.
 5. Created a fresh current-format workspace over the retained twelve local 2024 TLC Parquet files, repinned all footer metadata with the current compiler, and ran the standard three-sample measured-command cell. Fetched `.10x/evidence/.storage/2026-07-18-final-pass-current-tlc.json`.
 6. Repeated one sample inside a transient systemd user service with `MemoryMax=6G`. Fetched `.10x/evidence/.storage/2026-07-18-final-pass-current-tlc-6g.json`.
+7. Reproduced the exact fast-CI tracked-source secret scan by exporting `HEAD` with `git archive` and running `gitleaks detect --no-git --redact` against that isolated tree. Gitleaks `8.21.2` completed in `4.39s` with zero findings. A prior exploratory `gitleaks dir` over the entire live checkout reported 54 findings because that surface included ignored/build and concurrent untracked material; it is not the repository's tracked-source CI authority.
 
 The EC2 revision is labeled `54962548...+dirty` because the synchronized checkout contained concurrent edits to destination-envelope evidence, `.gitignore`, one benchmark test-policy file, and generated documentation. No uncommitted product source participated in the release `cdf` binary; its product source is exactly commit `54962548`.
 
@@ -41,6 +42,7 @@ The EC2 revision is labeled `54962548...+dirty` because the synchronized checkou
 - Supports current compiler/runtime/package/destination authority composition and the receipt-before-checkpoint gate through both code-path inspection and product executions.
 - Supports closure of the previously observed HTTP HEAD, missing remote identity, schema-hash mismatch, discovery-to-pinned inventory reuse, and unchanged-manifest regressions on real public resources.
 - Supports the claim that current full-year TLC throughput remains within ordinary controlled-host variance and that the same workload completes under an enforced 6 GiB cgroup ceiling without spill or pressure events.
+- Supports the committed tracked-source tree passing the same gitleaks boundary used by fast CI without weakening the scan or adding an allowlist.
 - Challenges treating numeric/narrow TLC as sufficient coverage for the DuckDB destination hot path. Wide, long-string payloads need a permanent promotion cell because the final canonical scan loses the former package/destination overlap even though the TLC path improved dramatically.
 
 ## Limits
