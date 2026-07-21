@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-08
+Updated: 2026-07-21
 
 # Implement the cdf system
 
@@ -175,6 +175,7 @@ A UI is excluded unless a later active decision supersedes the book. SCD2 and sn
 - 2026-07-08: Opened P1 product experience, instrumentation, and enterprise surface program `.10x/tickets/2026-07-08-p1-product-experience-program.md` with eight workstream owners. It follows the completed P0 structural-debt program and owns live runtime events, CLI grammar/rendering/errors/progress, docs/onboarding, Python front door, and release engineering.
 - 2026-07-08: Opened P2 data onramp program `.10x/tickets/done/2026-07-08-p2-data-onramp-program.md` with WS-A through WS-I owners. It owns discovery as a compiler stage, schema reconciliation/full Arrow declarative vocabulary, automatic source identity normalization, file/glob/manifest behavior, remote transports, key/disposition ergonomics, source diagnostics, `cdf add`, and conformance for S1-S8.
 - 2026-07-09: P2 advanced through closed children `.10x/tickets/done/2026-07-09-p2-ws-a7-schema-pin-show-diff-cli.md`, `.10x/tickets/done/2026-07-09-p2-ws-d3-file-manifest-incremental-noop.md`, and `.10x/tickets/done/2026-07-09-p2-ws-i2-preview-run-parity-and-golden-path-matrix.md`. Schema pin/show/diff, local append manifest no-op incrementality, and the P2 conformance matrix foundation are now in place; the P2 parent remains active for the remaining exit criteria.
+- 2026-07-21: Closed `.10x/tickets/done/2026-07-21-p0-temporal-destination-fidelity.md`. Destination sheets now govern recursive schema-time validation identically in `plan` and `run`; DuckDB and Parquet execute their native Arrow vocabularies truthfully; Postgres uses native scalar mappings plus allowance-gated deterministic JSONB for complex values; the product smoke matrix and retained release TLC floor passed.
 
 ## Blockers
 
