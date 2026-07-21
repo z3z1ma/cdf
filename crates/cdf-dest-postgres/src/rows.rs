@@ -1,7 +1,10 @@
 use arrow_array::{
-    Array, BinaryArray, BooleanArray, Date32Array, Decimal128Array, Decimal256Array, Float32Array,
-    Float64Array, Int8Array, Int16Array, Int32Array, Int64Array, LargeBinaryArray,
-    LargeStringArray, StringArray, Time64MicrosecondArray, TimestampMicrosecondArray, UInt8Array,
+    Array, BinaryArray, BinaryViewArray, BooleanArray, Date32Array, Date64Array, Decimal32Array,
+    Decimal64Array, Decimal128Array, Decimal256Array, FixedSizeBinaryArray, Float16Array,
+    Float32Array, Float64Array, Int8Array, Int16Array, Int32Array, Int64Array, LargeBinaryArray,
+    LargeStringArray, StringArray, StringViewArray, Time32MillisecondArray, Time32SecondArray,
+    Time64MicrosecondArray, Time64NanosecondArray, TimestampMicrosecondArray,
+    TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray, UInt8Array,
     UInt16Array, UInt32Array, UInt64Array,
 };
 use arrow_schema::{DataType, Schema, TimeUnit};
@@ -97,11 +100,20 @@ pub(crate) fn correction_cell_text(
         DataType::UInt64 => typed::<UInt64Array>(array, data_type)?
             .value(row)
             .to_string(),
+        DataType::Decimal32(_, _) => {
+            typed::<Decimal32Array>(array, data_type)?.value_as_string(row)
+        }
+        DataType::Decimal64(_, _) => {
+            typed::<Decimal64Array>(array, data_type)?.value_as_string(row)
+        }
         DataType::Decimal128(_, _) => {
             typed::<Decimal128Array>(array, data_type)?.value_as_string(row)
         }
         DataType::Decimal256(_, _) => {
             typed::<Decimal256Array>(array, data_type)?.value_as_string(row)
+        }
+        DataType::Float16 => {
+            f32::from(typed::<Float16Array>(array, data_type)?.value(row)).to_string()
         }
         DataType::Float32 => typed::<Float32Array>(array, data_type)?
             .value(row)
@@ -115,18 +127,87 @@ pub(crate) fn correction_cell_text(
         DataType::LargeUtf8 => typed::<LargeStringArray>(array, data_type)?
             .value(row)
             .to_owned(),
+        DataType::Utf8View => typed::<StringViewArray>(array, data_type)?
+            .value(row)
+            .to_owned(),
         DataType::Binary => bytea_hex(typed::<BinaryArray>(array, data_type)?.value(row)),
         DataType::LargeBinary => bytea_hex(typed::<LargeBinaryArray>(array, data_type)?.value(row)),
+        DataType::BinaryView => bytea_hex(typed::<BinaryViewArray>(array, data_type)?.value(row)),
+        DataType::FixedSizeBinary(_) => {
+            bytea_hex(typed::<FixedSizeBinaryArray>(array, data_type)?.value(row))
+        }
         DataType::Date32 => date_string(i64::from(
             typed::<Date32Array>(array, data_type)?.value(row),
         )),
+        DataType::Date64 => timestamp_string(
+            scaled_micros(
+                typed::<Date64Array>(array, data_type)?.value(row),
+                1_000,
+                "Date64",
+            )?,
+            false,
+        ),
+        DataType::Time32(TimeUnit::Second) => time_string(scaled_micros(
+            i64::from(typed::<Time32SecondArray>(array, data_type)?.value(row)),
+            1_000_000,
+            "Time32 second",
+        )?),
+        DataType::Time32(TimeUnit::Millisecond) => time_string(scaled_micros(
+            i64::from(typed::<Time32MillisecondArray>(array, data_type)?.value(row)),
+            1_000,
+            "Time32 millisecond",
+        )?),
         DataType::Time64(TimeUnit::Microsecond) => {
             time_string(typed::<Time64MicrosecondArray>(array, data_type)?.value(row))
         }
+        DataType::Time64(TimeUnit::Nanosecond) => time_string(
+            typed::<Time64NanosecondArray>(array, data_type)?
+                .value(row)
+                .div_euclid(1_000),
+        ),
+        DataType::Timestamp(TimeUnit::Second, timezone) => timestamp_string(
+            scaled_micros(
+                typed::<TimestampSecondArray>(array, data_type)?.value(row),
+                1_000_000,
+                "timestamp second",
+            )?,
+            timezone.is_some(),
+        ),
+        DataType::Timestamp(TimeUnit::Millisecond, timezone) => timestamp_string(
+            scaled_micros(
+                typed::<TimestampMillisecondArray>(array, data_type)?.value(row),
+                1_000,
+                "timestamp millisecond",
+            )?,
+            timezone.is_some(),
+        ),
         DataType::Timestamp(TimeUnit::Microsecond, timezone) => timestamp_string(
             typed::<TimestampMicrosecondArray>(array, data_type)?.value(row),
             timezone.is_some(),
         ),
+        DataType::Timestamp(TimeUnit::Nanosecond, timezone) => timestamp_string(
+            typed::<TimestampNanosecondArray>(array, data_type)?
+                .value(row)
+                .div_euclid(1_000),
+            timezone.is_some(),
+        ),
+        DataType::Struct(_)
+        | DataType::List(_)
+        | DataType::LargeList(_)
+        | DataType::ListView(_)
+        | DataType::LargeListView(_)
+        | DataType::FixedSizeList(_, _)
+        | DataType::Map(_, _)
+        | DataType::Union(_, _)
+        | DataType::Dictionary(_, _)
+        | DataType::RunEndEncoded(_, _)
+        | DataType::Duration(_)
+        | DataType::Interval(_) => serde_json::to_string(
+            &cdf_contract::arrow_value_to_canonical_json(array, row).map_err(|error| {
+                CdfError::data(format!("encode Postgres JSONB correction value: {error}"))
+            })?,
+        )
+        .map_err(|error| CdfError::data(format!("serialize Postgres JSONB: {error}")))?,
         other => {
             return Err(CdfError::contract(format!(
                 "live Postgres execution does not support Arrow type {other:?}"
@@ -152,17 +233,38 @@ pub fn postgres_type_for_arrow(data_type: &DataType) -> Result<String> {
         DataType::Int32 | DataType::UInt16 => "INTEGER".to_owned(),
         DataType::Int64 | DataType::UInt32 => "BIGINT".to_owned(),
         DataType::UInt64 => "NUMERIC(20,0)".to_owned(),
-        DataType::Decimal128(precision, scale) | DataType::Decimal256(precision, scale) => {
+        DataType::Decimal32(precision, scale)
+        | DataType::Decimal64(precision, scale)
+        | DataType::Decimal128(precision, scale)
+        | DataType::Decimal256(precision, scale) => {
             format!("NUMERIC({precision},{scale})")
         }
-        DataType::Float32 => "REAL".to_owned(),
+        DataType::Float16 | DataType::Float32 => "REAL".to_owned(),
         DataType::Float64 => "DOUBLE PRECISION".to_owned(),
-        DataType::Utf8 | DataType::LargeUtf8 => "TEXT".to_owned(),
-        DataType::Binary | DataType::LargeBinary => "BYTEA".to_owned(),
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => "TEXT".to_owned(),
+        DataType::Binary
+        | DataType::LargeBinary
+        | DataType::BinaryView
+        | DataType::FixedSizeBinary(_) => "BYTEA".to_owned(),
         DataType::Date32 => "DATE".to_owned(),
-        DataType::Time64(TimeUnit::Microsecond) => "TIME".to_owned(),
-        DataType::Timestamp(TimeUnit::Microsecond, None) => "TIMESTAMP".to_owned(),
-        DataType::Timestamp(TimeUnit::Microsecond, Some(_)) => "TIMESTAMPTZ".to_owned(),
+        DataType::Date64 => "TIMESTAMP".to_owned(),
+        DataType::Time32(TimeUnit::Second | TimeUnit::Millisecond)
+        | DataType::Time64(TimeUnit::Microsecond | TimeUnit::Nanosecond) => "TIME".to_owned(),
+        DataType::Timestamp(_, None) => "TIMESTAMP".to_owned(),
+        DataType::Timestamp(_, Some(_)) => "TIMESTAMPTZ".to_owned(),
+        DataType::Null
+        | DataType::Struct(_)
+        | DataType::List(_)
+        | DataType::LargeList(_)
+        | DataType::ListView(_)
+        | DataType::LargeListView(_)
+        | DataType::FixedSizeList(_, _)
+        | DataType::Map(_, _)
+        | DataType::Union(_, _)
+        | DataType::Dictionary(_, _)
+        | DataType::RunEndEncoded(_, _)
+        | DataType::Duration(_)
+        | DataType::Interval(_) => "JSONB".to_owned(),
         other => {
             return Err(CdfError::contract(format!(
                 "Postgres destination does not support Arrow type {other:?}"
@@ -170,6 +272,12 @@ pub fn postgres_type_for_arrow(data_type: &DataType) -> Result<String> {
         }
     };
     Ok(value)
+}
+
+fn scaled_micros(value: i64, factor: i64, label: &str) -> Result<i64> {
+    value
+        .checked_mul(factor)
+        .ok_or_else(|| CdfError::data(format!("Postgres {label} conversion overflowed")))
 }
 
 fn bytea_hex(bytes: &[u8]) -> String {

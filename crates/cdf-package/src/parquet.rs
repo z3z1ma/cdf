@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, io::Write, sync::Arc};
 
 use ::parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use arrow_array::RecordBatch;
-use arrow_schema::{DataType, Field, TimeUnit};
+use arrow_schema::{DataType, Field, IntervalUnit, TimeUnit};
 use cdf_kernel::{CdfError, Result};
 
 pub fn transcode_record_batches_to_parquet_bytes(batches: &[RecordBatch]) -> Result<Vec<u8>> {
@@ -128,11 +128,99 @@ impl Write for BoundedParquetOutput {
 }
 
 pub fn validate_parquet_schema(schema: &arrow_schema::Schema) -> Result<()> {
+    if schema.fields().is_empty() {
+        return Err(CdfError::contract(
+            "Parquet requires at least one Arrow field",
+        ));
+    }
     validate_field_names(schema.fields())?;
     for field in schema.fields() {
-        validate_parquet_type(field.data_type())?;
+        validate_parquet_field(field.name(), field.data_type())?;
     }
+    let writer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        ArrowWriter::try_new(std::io::sink(), Arc::new(schema.clone()), None)
+    }))
+    .map_err(|_| {
+        CdfError::contract(
+            "pinned arrow-rs Parquet writer panicked while validating the planned Arrow schema; report this as a codec defect and cast the field or choose another destination",
+        )
+    })?;
+    let _writer = writer.map_err(|error| {
+            CdfError::contract(format!(
+                "pinned arrow-rs Parquet writer cannot encode the planned Arrow schema: {error}; cast the named field to a supported Arrow type or choose a destination that preserves it"
+            ))
+        })?;
     Ok(())
+}
+
+fn validate_parquet_field(path: &str, data_type: &DataType) -> Result<()> {
+    match data_type {
+        DataType::Time32(TimeUnit::Microsecond | TimeUnit::Nanosecond)
+        | DataType::Time64(TimeUnit::Second | TimeUnit::Millisecond) => {
+            Err(CdfError::contract(format!(
+                "Parquet cannot encode field `{path}` with invalid Arrow time unit {data_type}; Time32 requires second/millisecond and Time64 requires microsecond/nanosecond"
+            )))
+        }
+        DataType::Interval(IntervalUnit::MonthDayNano) => Err(CdfError::contract(format!(
+            "Parquet cannot losslessly encode field `{path}` with Arrow interval month-day-nanosecond; cast it to a supported interval representation or choose a destination that preserves nanosecond intervals"
+        ))),
+        DataType::Union(_, _) => Err(CdfError::contract(format!(
+            "Parquet cannot encode field `{path}` with Arrow union type; project the union into supported typed fields or a governed variant column"
+        ))),
+        DataType::RunEndEncoded(_, _) => Err(CdfError::contract(format!(
+            "Parquet cannot encode field `{path}` with Arrow run-end encoding; materialize the logical values before destination planning"
+        ))),
+        DataType::Struct(fields) => {
+            if fields.is_empty() {
+                return Err(CdfError::contract(format!(
+                    "Parquet cannot encode empty Arrow struct field `{path}`"
+                )));
+            }
+            validate_field_names(fields)?;
+            for child in fields {
+                validate_parquet_field(&format!("{path}.{}", child.name()), child.data_type())?;
+            }
+            Ok(())
+        }
+        DataType::List(child)
+        | DataType::LargeList(child)
+        | DataType::ListView(child)
+        | DataType::LargeListView(child) => {
+            validate_parquet_field(&format!("{path}[]"), child.data_type())
+        }
+        DataType::FixedSizeList(child, size) => {
+            if *size <= 0 {
+                return Err(CdfError::contract(format!(
+                    "Parquet cannot encode fixed-size list field `{path}` with nonpositive size {size}"
+                )));
+            }
+            validate_parquet_field(&format!("{path}[]"), child.data_type())
+        }
+        DataType::FixedSizeBinary(size) if *size <= 0 => Err(CdfError::contract(format!(
+            "Parquet cannot encode fixed-size binary field `{path}` with nonpositive width {size}"
+        ))),
+        DataType::Map(entries, _) => {
+            let DataType::Struct(fields) = entries.data_type() else {
+                return Err(CdfError::contract(format!(
+                    "Parquet map field `{path}` must contain an Arrow struct<key,value>"
+                )));
+            };
+            if fields.len() != 2 || fields[0].is_nullable() {
+                return Err(CdfError::contract(format!(
+                    "Parquet map field `{path}` requires exactly one non-nullable key and one value field"
+                )));
+            }
+            validate_field_names(fields)?;
+            for child in fields {
+                validate_parquet_field(&format!("{path}.{}", child.name()), child.data_type())?;
+            }
+            Ok(())
+        }
+        DataType::Dictionary(_, value) => {
+            validate_parquet_field(&format!("{path}.dictionary_value"), value)
+        }
+        _ => Ok(()),
+    }
 }
 
 fn validate_field_names(fields: &[Arc<Field>]) -> Result<()> {
@@ -146,31 +234,6 @@ fn validate_field_names(fields: &[Arc<Field>]) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn validate_parquet_type(data_type: &DataType) -> Result<()> {
-    match data_type {
-        DataType::Boolean
-        | DataType::Int8
-        | DataType::Int16
-        | DataType::Int32
-        | DataType::Int64
-        | DataType::UInt8
-        | DataType::UInt16
-        | DataType::UInt32
-        | DataType::UInt64
-        | DataType::Float32
-        | DataType::Float64
-        | DataType::Utf8
-        | DataType::LargeUtf8
-        | DataType::Binary
-        | DataType::LargeBinary
-        | DataType::Date32
-        | DataType::Timestamp(TimeUnit::Microsecond, None) => Ok(()),
-        other => Err(CdfError::contract(format!(
-            "Parquet destination does not support Arrow type {other:?}"
-        ))),
-    }
 }
 
 fn parquet_error(context: impl Into<String>, error: impl std::fmt::Display) -> CdfError {

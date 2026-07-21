@@ -1,19 +1,25 @@
 use std::{collections::BTreeMap, fmt, str::FromStr, sync::Arc};
 
+use arrow_array::types::{
+    ArrowDictionaryKeyType, Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type,
+    UInt32Type, UInt64Type,
+};
 use arrow_array::{
     Array, ArrayRef, BinaryArray, BinaryViewArray, BooleanArray, Date32Array, Date64Array,
-    Decimal32Array, Decimal64Array, Decimal128Array, Decimal256Array, DurationMicrosecondArray,
-    DurationMillisecondArray, DurationNanosecondArray, DurationSecondArray, FixedSizeBinaryArray,
-    FixedSizeListArray, Float16Array, Float32Array, Float64Array, Int8Array, Int16Array,
-    Int32Array, Int64Array, IntervalDayTimeArray, IntervalMonthDayNanoArray,
-    IntervalYearMonthArray, LargeBinaryArray, LargeListArray, LargeListViewArray, LargeStringArray,
-    ListArray, ListViewArray, MapArray, StringArray, StringViewArray, StructArray,
-    Time32MillisecondArray, Time32SecondArray, Time64MicrosecondArray, Time64NanosecondArray,
-    TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
-    TimestampSecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array, new_empty_array,
-    new_null_array,
+    Decimal32Array, Decimal64Array, Decimal128Array, Decimal256Array, DictionaryArray,
+    DurationMicrosecondArray, DurationMillisecondArray, DurationNanosecondArray,
+    DurationSecondArray, FixedSizeBinaryArray, FixedSizeListArray, Float16Array, Float32Array,
+    Float64Array, Int8Array, Int16Array, Int32Array, Int64Array, IntervalDayTimeArray,
+    IntervalMonthDayNanoArray, IntervalYearMonthArray, LargeBinaryArray, LargeListArray,
+    LargeListViewArray, LargeStringArray, ListArray, ListViewArray, MapArray, RunArray,
+    StringArray, StringViewArray, StructArray, Time32MillisecondArray, Time32SecondArray,
+    Time64MicrosecondArray, Time64NanosecondArray, TimestampMicrosecondArray,
+    TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray, UInt8Array,
+    UInt16Array, UInt32Array, UInt64Array, UnionArray, new_empty_array, new_null_array,
 };
-use arrow_buffer::{IntervalDayTime, IntervalMonthDayNano, OffsetBuffer, ScalarBuffer, i256};
+use arrow_buffer::{
+    ArrowNativeType, IntervalDayTime, IntervalMonthDayNano, OffsetBuffer, ScalarBuffer, i256,
+};
 use arrow_schema::{DataType, FieldRef, Fields, IntervalUnit, TimeUnit};
 use arrow_select::concat::concat;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -587,11 +593,68 @@ fn encode_arrow_value(array: &dyn Array, row: usize) -> Result<Value, ResidualCo
         }
         DataType::Struct(_) => encode_struct(downcast::<StructArray>(array)?, row),
         DataType::Map(_, _) => encode_map(downcast::<MapArray>(array)?, row),
+        DataType::Union(_, _) => encode_union(downcast::<UnionArray>(array)?, row),
+        DataType::Dictionary(key, _) => match key.as_ref() {
+            DataType::Int8 => encode_dictionary(downcast::<DictionaryArray<Int8Type>>(array)?, row),
+            DataType::Int16 => {
+                encode_dictionary(downcast::<DictionaryArray<Int16Type>>(array)?, row)
+            }
+            DataType::Int32 => {
+                encode_dictionary(downcast::<DictionaryArray<Int32Type>>(array)?, row)
+            }
+            DataType::Int64 => {
+                encode_dictionary(downcast::<DictionaryArray<Int64Type>>(array)?, row)
+            }
+            DataType::UInt8 => {
+                encode_dictionary(downcast::<DictionaryArray<UInt8Type>>(array)?, row)
+            }
+            DataType::UInt16 => {
+                encode_dictionary(downcast::<DictionaryArray<UInt16Type>>(array)?, row)
+            }
+            DataType::UInt32 => {
+                encode_dictionary(downcast::<DictionaryArray<UInt32Type>>(array)?, row)
+            }
+            DataType::UInt64 => {
+                encode_dictionary(downcast::<DictionaryArray<UInt64Type>>(array)?, row)
+            }
+            other => Err(unsupported_type(
+                array.data_type(),
+                &format!("unsupported dictionary key type {other}"),
+            )),
+        },
+        DataType::RunEndEncoded(run_ends, _) => match run_ends.data_type() {
+            DataType::Int16 => encode_run(downcast::<RunArray<Int16Type>>(array)?, row),
+            DataType::Int32 => encode_run(downcast::<RunArray<Int32Type>>(array)?, row),
+            DataType::Int64 => encode_run(downcast::<RunArray<Int64Type>>(array)?, row),
+            other => Err(unsupported_type(
+                array.data_type(),
+                &format!("unsupported run-end index type {other}"),
+            )),
+        },
         other => Err(unsupported_type(
             other,
             "no exact residual-json-v1 value encoder",
         )),
     }
+}
+
+/// Converts one Arrow value to CDF's deterministic, exact JSON representation.
+///
+/// Integer-width, decimal, temporal, and binary values use string encodings where JSON numbers
+/// cannot preserve their complete Arrow domain. Nested object keys are canonicalized.
+pub fn arrow_value_to_canonical_json(
+    array: &dyn Array,
+    row: usize,
+) -> Result<Value, ResidualCodecError> {
+    if row >= array.len() {
+        return Err(ResidualCodecError::InvalidEnvelope {
+            reason: format!(
+                "Arrow JSON row {row} is outside array length {}",
+                array.len()
+            ),
+        });
+    }
+    encode_arrow_value(array, row)
 }
 
 fn downcast<T: 'static>(array: &dyn Array) -> Result<&T, ResidualCodecError> {
@@ -735,6 +798,41 @@ fn encode_map(array: &MapArray, row: usize) -> Result<Value, ResidualCodecError>
         encoded.push(Value::Object(entry));
     }
     Ok(Value::Array(encoded))
+}
+
+fn encode_union(array: &UnionArray, row: usize) -> Result<Value, ResidualCodecError> {
+    let type_id = array.type_id(row);
+    let field = array
+        .fields()
+        .iter()
+        .find_map(|(candidate, field)| (candidate == type_id).then_some(field))
+        .ok_or_else(|| ResidualCodecError::InvalidEnvelope {
+            reason: format!("Arrow union row {row} references absent type id {type_id}"),
+        })?;
+    let mut encoded = BTreeMap::new();
+    encoded.insert("type".to_owned(), Value::String(field.name().clone()));
+    encoded.insert("type_id".to_owned(), Value::from(type_id));
+    encoded.insert(
+        "value".to_owned(),
+        encode_arrow_value(array.child(type_id).as_ref(), array.value_offset(row))?,
+    );
+    serde_json::to_value(encoded).map_err(|error| ResidualCodecError::InvalidEnvelope {
+        reason: error.to_string(),
+    })
+}
+
+fn encode_dictionary<K: ArrowDictionaryKeyType>(
+    array: &DictionaryArray<K>,
+    row: usize,
+) -> Result<Value, ResidualCodecError> {
+    encode_arrow_value(array.values().as_ref(), array.keys().value(row).as_usize())
+}
+
+fn encode_run<R: arrow_array::types::RunEndIndexType>(
+    array: &RunArray<R>,
+    row: usize,
+) -> Result<Value, ResidualCodecError> {
+    encode_arrow_value(array.values().as_ref(), array.get_physical_index(row))
 }
 
 fn decode_arrow_value(

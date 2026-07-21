@@ -40,10 +40,17 @@ impl ResolvedProjectDestination {
         let target = self.target().clone();
         let output = self.output_schema(plan)?;
         let schema_hash = output.schema_hash;
+        let sheet = self.validate_output_schema_mappings(resource, output.schema.as_ref())?;
         let inputs = destination_planning_inputs(resource, &target, &schema_hash)?;
         let outcome =
             self.runtime_mut()
                 .plan_resource_commit(resource, output.schema.as_ref(), &inputs)?;
+        if outcome.sheet != sheet {
+            return Err(CdfError::contract(format!(
+                "destination {} changed its capability sheet between schema mapping and commit planning",
+                description.destination_id
+            )));
+        }
         let synthetic = ProjectDestinationSyntheticInput {
             package_hash: inputs.destination_commit.package_hash.clone(),
             idempotency_token: inputs.destination_commit.idempotency_token.clone(),
@@ -60,7 +67,7 @@ impl ResolvedProjectDestination {
             schema_hash,
             synthetic,
             request: inputs.destination_commit,
-            sheet: outcome.sheet,
+            sheet,
             commit_plan: outcome.plan,
         })
     }

@@ -352,7 +352,7 @@ pub(crate) fn parquet_runtime_capabilities() -> DestinationRuntimeCapabilities {
             native_internal_parallelism: 1,
             external_staging: true,
             fallback: cdf_runtime::BulkFallbackMode::Forbidden,
-            schema_preflight_version: "parquet-arrow-mapping@1".to_owned(),
+            schema_preflight_version: "parquet-arrow-mapping@2".to_owned(),
             measured_evidence_version: Some("p3-d8-2026-07-15-v5".to_owned()),
         }],
         bulk_path: Some("arrow_ipc_to_parquet".to_owned()),

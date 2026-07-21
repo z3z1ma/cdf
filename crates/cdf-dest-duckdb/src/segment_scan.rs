@@ -345,6 +345,7 @@ impl LogicalType {
         duckdb_type(data_type)?;
         use duckdb::ffi::*;
         let primitive = match data_type {
+            DataType::Null => Some(DUCKDB_TYPE_DUCKDB_TYPE_SQLNULL),
             DataType::Boolean => Some(DUCKDB_TYPE_DUCKDB_TYPE_BOOLEAN),
             DataType::Int8 => Some(DUCKDB_TYPE_DUCKDB_TYPE_TINYINT),
             DataType::Int16 => Some(DUCKDB_TYPE_DUCKDB_TYPE_SMALLINT),
@@ -356,14 +357,18 @@ impl LogicalType {
             DataType::UInt64 => Some(DUCKDB_TYPE_DUCKDB_TYPE_UBIGINT),
             DataType::Float32 => Some(DUCKDB_TYPE_DUCKDB_TYPE_FLOAT),
             DataType::Float64 => Some(DUCKDB_TYPE_DUCKDB_TYPE_DOUBLE),
-            DataType::Utf8 | DataType::LargeUtf8 => Some(DUCKDB_TYPE_DUCKDB_TYPE_VARCHAR),
-            DataType::Binary | DataType::LargeBinary | DataType::FixedSizeBinary(_) => {
-                Some(DUCKDB_TYPE_DUCKDB_TYPE_BLOB)
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
+                Some(DUCKDB_TYPE_DUCKDB_TYPE_VARCHAR)
             }
-            DataType::Date32 => Some(DUCKDB_TYPE_DUCKDB_TYPE_DATE),
+            DataType::Binary
+            | DataType::LargeBinary
+            | DataType::BinaryView
+            | DataType::FixedSizeBinary(_) => Some(DUCKDB_TYPE_DUCKDB_TYPE_BLOB),
+            DataType::Date32 | DataType::Date64 => Some(DUCKDB_TYPE_DUCKDB_TYPE_DATE),
             DataType::Time32(_) | DataType::Time64(TimeUnit::Microsecond) => {
                 Some(DUCKDB_TYPE_DUCKDB_TYPE_TIME)
             }
+            DataType::Time64(TimeUnit::Nanosecond) => Some(DUCKDB_TYPE_DUCKDB_TYPE_TIME_NS),
             DataType::Timestamp(TimeUnit::Second, None) => {
                 Some(DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_S)
             }
@@ -373,7 +378,16 @@ impl LogicalType {
             DataType::Timestamp(TimeUnit::Microsecond, None) => {
                 Some(DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP)
             }
-            DataType::Decimal128(precision, scale) => {
+            DataType::Timestamp(TimeUnit::Nanosecond, None) => {
+                Some(DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_NS)
+            }
+            DataType::Timestamp(
+                TimeUnit::Second | TimeUnit::Millisecond | TimeUnit::Microsecond,
+                Some(_),
+            ) => Some(DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_TZ),
+            DataType::Decimal32(precision, scale)
+            | DataType::Decimal64(precision, scale)
+            | DataType::Decimal128(precision, scale) => {
                 // SAFETY: `duckdb_type` already validated width and scale.
                 let handle = unsafe {
                     duckdb_create_decimal_type(
@@ -385,7 +399,11 @@ impl LogicalType {
                 };
                 return Self::owned(handle, data_type);
             }
-            DataType::List(field) | DataType::LargeList(field) => {
+            DataType::Duration(_) | DataType::Interval(_) => Some(DUCKDB_TYPE_DUCKDB_TYPE_INTERVAL),
+            DataType::List(field)
+            | DataType::LargeList(field)
+            | DataType::ListView(field)
+            | DataType::LargeListView(field) => {
                 let child = Self::from_arrow(field.data_type())?;
                 // SAFETY: DuckDB copies the live child logical type.
                 return Self::owned(unsafe { duckdb_create_list_type(child.handle) }, data_type);
@@ -445,6 +463,36 @@ impl LogicalType {
                     data_type,
                 );
             }
+            DataType::Union(fields, arrow_schema::UnionMode::Sparse) => {
+                let mut children = fields
+                    .iter()
+                    .map(|(_, field)| Self::from_arrow(field.data_type()))
+                    .collect::<Result<Vec<_>>>()?;
+                let names = fields
+                    .iter()
+                    .map(|(_, field)| cstring(field.name()))
+                    .collect::<Result<Vec<_>>>()?;
+                let mut handles = children
+                    .iter_mut()
+                    .map(|child| child.handle)
+                    .collect::<Vec<_>>();
+                let mut pointers = names.iter().map(|name| name.as_ptr()).collect::<Vec<_>>();
+                // SAFETY: all child handles and name pointers remain live for this call;
+                // DuckDB copies them into the returned logical type.
+                return Self::owned(
+                    unsafe {
+                        duckdb_create_union_type(
+                            handles.as_mut_ptr(),
+                            pointers.as_mut_ptr(),
+                            u64::try_from(handles.len()).map_err(|_| {
+                                CdfError::contract("DuckDB union field count exceeds u64")
+                            })?,
+                        )
+                    },
+                    data_type,
+                );
+            }
+            DataType::Dictionary(_, value) => return Self::from_arrow(value),
             _ => None,
         };
         let primitive = primitive.ok_or_else(|| {

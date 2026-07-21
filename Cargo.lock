@@ -1184,6 +1184,7 @@ name = "cdf-dest-duckdb"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
+ "arrow-buffer",
  "arrow-ipc",
  "arrow-schema",
  "cdf-conformance",

@@ -373,7 +373,7 @@ fn postgres_runtime_capabilities() -> DestinationRuntimeCapabilities {
             native_internal_parallelism: 1,
             external_staging: true,
             fallback: cdf_runtime::BulkFallbackMode::Forbidden,
-            schema_preflight_version: "postgres-binary-copy-mapping@1".to_owned(),
+            schema_preflight_version: "postgres-binary-copy-mapping@2".to_owned(),
             measured_evidence_version: Some("p3-d3-2026-07-11-v1".to_owned()),
         }],
         bulk_path: Some("copy_binary".to_owned()),

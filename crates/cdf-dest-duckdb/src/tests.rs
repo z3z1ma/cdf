@@ -6,15 +6,19 @@ use crate::{
 use std::sync::Arc;
 
 use arrow_array::{
-    Array, ArrayRef, Decimal128Array, Int32Array, Int64Array, ListArray, StringArray, StructArray,
-    types::Int32Type,
+    Array, ArrayRef, BinaryViewArray, Date64Array, Decimal32Array, Decimal64Array, Decimal128Array,
+    DurationMicrosecondArray, Int32Array, Int64Array, IntervalYearMonthArray, ListArray, NullArray,
+    StringArray, StringViewArray, StructArray, TimestampMicrosecondArray, TimestampNanosecondArray,
+    UnionArray, builder::StringDictionaryBuilder, types::Int32Type,
 };
-use arrow_schema::{DataType, Field, Schema};
+use arrow_buffer::ScalarBuffer;
+use arrow_schema::{DataType, Field, IntervalUnit, Schema, TimeUnit, UnionFields, UnionMode};
 use cdf_conformance::destination::{
     DestinationConformanceCase, DestinationCorrectionConformanceEvidence,
     assert_destination_conformance, assert_destination_correction_conformance,
     representative_commit_request,
 };
+use cdf_contract::{TypePolicy, validate_destination_schema_mappings};
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CanonicalArrowField, CheckpointId, CorrectionStrategy,
     CursorPosition, CursorValue, DeliveryGuarantee, DestinationCorrectionCommitRequest,
@@ -910,6 +914,396 @@ fn canonical_segment_scan_preserves_decimal_and_nested_values() {
         )
         .unwrap();
     assert_eq!(values, (2, "55.56".to_owned(), 3, 15, 1));
+}
+
+#[test]
+fn duckdb_sheet_lossless_representatives_match_executable_type_plans() {
+    let item = || Arc::new(Field::new("item", DataType::Int64, true));
+    let map_entries = Arc::new(Field::new(
+        "entries",
+        DataType::Struct(
+            vec![
+                Field::new("key", DataType::Utf8, false),
+                Field::new("value", DataType::Int64, true),
+            ]
+            .into(),
+        ),
+        false,
+    ));
+    let data_types = vec![
+        DataType::Null,
+        DataType::Boolean,
+        DataType::Int8,
+        DataType::Int16,
+        DataType::Int32,
+        DataType::Int64,
+        DataType::UInt8,
+        DataType::UInt16,
+        DataType::UInt32,
+        DataType::UInt64,
+        DataType::Float32,
+        DataType::Float64,
+        DataType::Utf8,
+        DataType::LargeUtf8,
+        DataType::Utf8View,
+        DataType::Binary,
+        DataType::LargeBinary,
+        DataType::BinaryView,
+        DataType::FixedSizeBinary(16),
+        DataType::Date32,
+        DataType::Date64,
+        DataType::Time32(TimeUnit::Second),
+        DataType::Time32(TimeUnit::Millisecond),
+        DataType::Time64(TimeUnit::Microsecond),
+        DataType::Time64(TimeUnit::Nanosecond),
+        DataType::Timestamp(TimeUnit::Second, None),
+        DataType::Timestamp(TimeUnit::Millisecond, None),
+        DataType::Timestamp(TimeUnit::Microsecond, None),
+        DataType::Timestamp(TimeUnit::Nanosecond, None),
+        DataType::Timestamp(TimeUnit::Microsecond, Some("America/Phoenix".into())),
+        DataType::Decimal32(9, 2),
+        DataType::Decimal64(18, 4),
+        DataType::Decimal128(38, 9),
+        DataType::Duration(TimeUnit::Second),
+        DataType::Duration(TimeUnit::Millisecond),
+        DataType::Duration(TimeUnit::Microsecond),
+        DataType::Interval(IntervalUnit::YearMonth),
+        DataType::Interval(IntervalUnit::DayTime),
+        DataType::Struct(vec![Field::new("value", DataType::Int64, true)].into()),
+        DataType::List(item()),
+        DataType::LargeList(item()),
+        DataType::ListView(item()),
+        DataType::LargeListView(item()),
+        DataType::FixedSizeList(item(), 3),
+        DataType::Map(map_entries, false),
+        DataType::Union(
+            UnionFields::try_new([0], [Field::new("integer_value", DataType::Int64, true)])
+                .unwrap(),
+            UnionMode::Sparse,
+        ),
+        DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+    ];
+    let schema = Schema::new(
+        data_types
+            .iter()
+            .enumerate()
+            .map(|(index, data_type)| Field::new(format!("field_{index}"), data_type.clone(), true))
+            .collect::<Vec<_>>(),
+    );
+    validate_destination_schema_mappings(
+        &TypePolicy::strict_fidelity(),
+        &crate::sheet::duckdb_sheet().unwrap(),
+        &schema,
+    )
+    .unwrap();
+    for data_type in data_types {
+        crate::package::duckdb_type(&data_type).unwrap_or_else(|error| {
+            panic!(
+                "DuckDB sheet declared {data_type} lossless but executable planning failed: {error}"
+            )
+        });
+    }
+}
+
+#[test]
+fn duckdb_submicrosecond_interval_mappings_require_explicit_lossy_allowance() {
+    let data_types = vec![
+        DataType::Duration(TimeUnit::Nanosecond),
+        DataType::Interval(IntervalUnit::MonthDayNano),
+    ];
+    let schema = Schema::new(
+        data_types
+            .iter()
+            .enumerate()
+            .map(|(index, data_type)| Field::new(format!("field_{index}"), data_type.clone(), true))
+            .collect::<Vec<_>>(),
+    );
+    let error = validate_destination_schema_mappings(
+        &TypePolicy::strict_fidelity(),
+        &crate::sheet::duckdb_sheet().unwrap(),
+        &schema,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("allow_lossy_mapping"), "{error}");
+
+    let mut allowance = TypePolicy::strict_fidelity();
+    allowance.allow_lossy_mapping = true;
+    validate_destination_schema_mappings(
+        &allowance,
+        &crate::sheet::duckdb_sheet().unwrap(),
+        &schema,
+    )
+    .unwrap();
+    for data_type in data_types {
+        assert_eq!(crate::package::duckdb_type(&data_type).unwrap(), "INTERVAL");
+    }
+}
+
+#[test]
+fn canonical_segment_scan_preserves_extended_native_arrow_types() {
+    let temp = tempfile::tempdir().unwrap();
+    let package = temp.path().join("pkg-extended-native-types");
+    let amount32 = Decimal32Array::from(vec![123_i32, -456_i32])
+        .with_precision_and_scale(9, 2)
+        .unwrap();
+    let amount64 = Decimal64Array::from(vec![12_345_i64, -6_789_i64])
+        .with_precision_and_scale(18, 3)
+        .unwrap();
+    let mut dictionary = StringDictionaryBuilder::<Int32Type>::new();
+    dictionary.append("alpha").unwrap();
+    dictionary.append("beta").unwrap();
+    let dictionary = dictionary.finish();
+    let labels = StringViewArray::from(vec![Some("first"), None]);
+    let payloads = BinaryViewArray::from(vec![Some(b"abc".as_slice()), Some(b"xyz".as_slice())]);
+    let days = Date64Array::from(vec![0_i64, 86_400_000_i64]);
+    let durations = DurationMicrosecondArray::from(vec![1_500_000_i64, -2_000_000_i64]);
+    let months = IntervalYearMonthArray::from(vec![12_i32, -2_i32]);
+    let union_fields = UnionFields::try_new(
+        [0, 1],
+        [
+            Field::new("integer_value", DataType::Int64, true),
+            Field::new("string_value", DataType::Utf8, true),
+        ],
+    )
+    .unwrap();
+    let union = UnionArray::try_new(
+        union_fields,
+        ScalarBuffer::from(vec![0_i8, 1_i8]),
+        None,
+        vec![
+            Arc::new(Int64Array::from(vec![Some(7_i64), None])) as ArrayRef,
+            Arc::new(StringArray::from(vec![None, Some("union")])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("only_null", DataType::Null, true),
+            Field::new("label", labels.data_type().clone(), true),
+            Field::new("payload", payloads.data_type().clone(), false),
+            Field::new("day", DataType::Date64, false),
+            Field::new("amount32", amount32.data_type().clone(), false),
+            Field::new("amount64", amount64.data_type().clone(), false),
+            Field::new("duration", durations.data_type().clone(), false),
+            Field::new("months", months.data_type().clone(), false),
+            Field::new("dictionary_label", dictionary.data_type().clone(), false),
+            Field::new("choice", union.data_type().clone(), false),
+        ])),
+        vec![
+            Arc::new(NullArray::new(2)),
+            Arc::new(labels),
+            Arc::new(payloads),
+            Arc::new(days),
+            Arc::new(amount32),
+            Arc::new(amount64),
+            Arc::new(durations),
+            Arc::new(months),
+            Arc::new(dictionary),
+            Arc::new(union),
+        ],
+    )
+    .unwrap();
+    let package_hash = build_package(&package, "pkg-extended-native-types", &[batch]);
+    let destination = destination(&temp.path().join("extended-native-types.duckdb"));
+    commit_current(
+        &destination,
+        request(
+            &package,
+            package_hash,
+            WriteDisposition::Append,
+            Vec::new(),
+            2,
+        ),
+    );
+
+    let connection = Connection::open(destination.database_path()).unwrap();
+    let values: (u64, u64, String, String, String, f64, String) = connection
+        .query_row(
+            "SELECT count(*), count(only_null), string_agg(label, ',' ORDER BY _cdf_row_key), sum(amount32)::VARCHAR, sum(amount64)::VARCHAR, sum(epoch(duration)), string_agg(dictionary_label, ',' ORDER BY _cdf_row_key) FROM orders",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        values,
+        (
+            2,
+            0,
+            "first".to_owned(),
+            "-3.33".to_owned(),
+            "5.556".to_owned(),
+            -0.5,
+            "alpha,beta".to_owned(),
+        )
+    );
+    let exact: (String, String, String, String) = connection
+        .query_row(
+            "SELECT min(day)::VARCHAR, string_agg(hex(payload), ',' ORDER BY _cdf_row_key), string_agg(months::VARCHAR, ',' ORDER BY _cdf_row_key), string_agg(choice::VARCHAR, ',' ORDER BY _cdf_row_key) FROM orders",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        exact,
+        (
+            "1970-01-01".to_owned(),
+            "616263,78797A".to_owned(),
+            "1 year,-2 months".to_owned(),
+            "7,union".to_owned(),
+        )
+    );
+}
+
+#[test]
+fn canonical_segment_scan_preserves_zoned_timestamp_instants_without_icu() {
+    let temp = tempfile::tempdir().unwrap();
+    let package = temp.path().join("pkg-zoned-timestamps");
+    let seconds = TimestampSecondArray::from(vec![Some(-1_i64), None, Some(1_717_171_717_i64)])
+        .with_timezone("UTC");
+    let milliseconds =
+        TimestampMillisecondArray::from(vec![Some(-1_234_i64), None, Some(1_717_171_717_171_i64)])
+            .with_timezone("UTC");
+    let values = vec![Some(-1_234_567_i64), None, Some(1_717_171_717_171_717_i64)];
+    let utc = TimestampMicrosecondArray::from(values.clone()).with_timezone("UTC");
+    let offset = TimestampMicrosecondArray::from(values.clone()).with_timezone("+00:00");
+    let phoenix = TimestampMicrosecondArray::from(values).with_timezone("America/Phoenix");
+    let batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("at_second", seconds.data_type().clone(), true),
+            Field::new("at_millisecond", milliseconds.data_type().clone(), true),
+            Field::new("at_utc", utc.data_type().clone(), true),
+            Field::new("at_offset", offset.data_type().clone(), true),
+            Field::new("at_phoenix", phoenix.data_type().clone(), true),
+        ])),
+        vec![
+            Arc::new(seconds),
+            Arc::new(milliseconds),
+            Arc::new(utc),
+            Arc::new(offset),
+            Arc::new(phoenix),
+        ],
+    )
+    .unwrap();
+    let package_hash = build_package(&package, "pkg-zoned-timestamps", &[batch]);
+    let destination = destination(&temp.path().join("zoned.duckdb"));
+    commit_current(
+        &destination,
+        request(
+            &package,
+            package_hash,
+            WriteDisposition::Append,
+            Vec::new(),
+            3,
+        ),
+    );
+
+    let connection = Connection::open(destination.database_path()).unwrap();
+    let types: (String, String, String, String, String) = connection
+        .query_row(
+            "SELECT typeof(at_second), typeof(at_millisecond), typeof(at_utc), typeof(at_offset), typeof(at_phoenix) FROM orders LIMIT 1",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        types,
+        (
+            "TIMESTAMP WITH TIME ZONE".to_owned(),
+            "TIMESTAMP WITH TIME ZONE".to_owned(),
+            "TIMESTAMP WITH TIME ZONE".to_owned(),
+            "TIMESTAMP WITH TIME ZONE".to_owned(),
+            "TIMESTAMP WITH TIME ZONE".to_owned(),
+        )
+    );
+    let instants = connection
+        .prepare(
+            "SELECT epoch_us(at_second), epoch_us(at_millisecond), epoch_us(at_utc), epoch_us(at_offset), epoch_us(at_phoenix) FROM orders ORDER BY _cdf_row_key",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, Option<i64>>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, Option<i64>>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+            ))
+        })
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        instants,
+        vec![
+            (
+                Some(-1_000_000),
+                Some(-1_234_000),
+                Some(-1_234_567),
+                Some(-1_234_567),
+                Some(-1_234_567),
+            ),
+            (None, None, None, None, None),
+            (
+                Some(1_717_171_717_000_000),
+                Some(1_717_171_717_171_000),
+                Some(1_717_171_717_171_717),
+                Some(1_717_171_717_171_717),
+                Some(1_717_171_717_171_717),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn zoned_nanosecond_timestamp_is_rejected_before_duckdb_mutation() {
+    let data_type = DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into()));
+    let error = crate::package::duckdb_type(&data_type).unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("cannot losslessly persist"), "{message}");
+    assert!(message.contains("microsecond"), "{message}");
+
+    let array = TimestampNanosecondArray::from(vec![1_i64]).with_timezone("UTC");
+    let error = crate::rows::cell_value(&array, array.data_type(), 0).unwrap_err();
+    assert!(
+        error.to_string().contains("compiled microsecond coercion"),
+        "{error}"
+    );
+}
+
+#[test]
+fn scalar_correction_values_preserve_native_nanosecond_units() {
+    let time = Time64NanosecondArray::from(vec![1_i64]);
+    assert_eq!(
+        crate::rows::cell_value(&time, time.data_type(), 0)
+            .unwrap()
+            .value,
+        Value::Time64(DuckTimeUnit::Nanosecond, 1)
+    );
+    let timestamp = TimestampNanosecondArray::from(vec![-1_i64]);
+    assert_eq!(
+        crate::rows::cell_value(&timestamp, timestamp.data_type(), 0)
+            .unwrap()
+            .value,
+        Value::Timestamp(DuckTimeUnit::Nanosecond, -1)
+    );
 }
 
 #[test]

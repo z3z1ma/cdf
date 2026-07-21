@@ -41,7 +41,8 @@ use cdf_kernel::{
     ResourceStream, Result, RewindReport, RewindRequest, RunEvent, RunEventSink,
     RunEventSinkResult, RunId, RunPhase, RunPhaseMetric, RunPhaseStatus, ScanRequest, SchemaHash,
     SchemaSource, ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment,
-    TargetName, TransactionSupport, TrustLevel, VerifyClause, WriteDisposition,
+    TargetName, TransactionSupport, TrustLevel, TypeMapping, TypeMappingFidelity, VerifyClause,
+    WriteDisposition,
 };
 use cdf_object_access::FileTransportFacade;
 use cdf_package::{PackageBuilder, PackageReader, canonical_json_bytes};
@@ -66,15 +67,16 @@ use tracing::{
 };
 
 use crate::{
-    BackfillPlanRequest, DependencyTuple, DestinationReceiptReportingPolicy,
-    FileManifestRunSummary, PackageArtifactRecoveryRequest, PackageArtifactReplayRequest,
-    PackageReplayHooks, PackageReplayStage, PreparedDestinationCommit,
-    ProjectDestinationDescription, ProjectDestinationDriver, ProjectDestinationRegistry,
-    ProjectDestinationRuntime, ProjectReceiptSource, ProjectResolutionContext,
-    ProjectRunNoOpReason, ProjectRunOutcome, ProjectRunReport, ProjectRunRequest, ProjectRunSource,
-    ResolvedProjectDestination, RunTelemetryConfig, RuntimeStage, TracingRunEventSink,
-    backfill_pipeline_id, generate_lockfile_with_destination_artifacts, parse_cdf_toml,
-    plan_backfill, recover_package_from_artifacts, replay_package_from_artifacts,
+    BackfillPlanRequest, DependencyTuple, DestinationCommitPlanningInputs,
+    DestinationCommitPlanningOutcome, DestinationReceiptReportingPolicy, FileManifestRunSummary,
+    PackageArtifactRecoveryRequest, PackageArtifactReplayRequest, PackageReplayHooks,
+    PackageReplayStage, PreparedDestinationCommit, ProjectDestinationDescription,
+    ProjectDestinationDriver, ProjectDestinationRegistry, ProjectDestinationRuntime,
+    ProjectReceiptSource, ProjectResolutionContext, ProjectRunNoOpReason, ProjectRunOutcome,
+    ProjectRunReport, ProjectRunRequest, ProjectRunSource, ResolvedProjectDestination,
+    RunTelemetryConfig, RuntimeStage, TracingRunEventSink, backfill_pipeline_id,
+    generate_lockfile_with_destination_artifacts, parse_cdf_toml, plan_backfill,
+    recover_package_from_artifacts, replay_package_from_artifacts,
     replay_package_from_artifacts_with_stage_hook, replay_package_with_runtime,
     resolve_project_run_destination, run_project_with_scheduler_and_telemetry,
     run_project_with_telemetry as run_project_with_execution_services_and_telemetry,
@@ -1469,7 +1471,7 @@ impl BackfillMockResource {
         Self::new(IncrementalShape::File, Some(CursorOrderingClaim::Exact))
     }
 
-    fn postgres_unsupported_schema() -> Self {
+    fn postgres_unallowed_lossy_schema() -> Self {
         let mut resource = Self::new(IncrementalShape::Cursor, Some(CursorOrderingClaim::Exact));
         resource.descriptor.resource_id = ResourceId::new("mock.unsupported_postgres").unwrap();
         resource
@@ -1482,7 +1484,7 @@ impl BackfillMockResource {
             Field::new("id", DataType::Int64, false),
             Field::new(
                 "seen_at",
-                DataType::Timestamp(arrow_schema::TimeUnit::Millisecond, Some("UTC".into())),
+                DataType::Duration(arrow_schema::TimeUnit::Nanosecond),
                 false,
             ),
         ]));
@@ -2608,7 +2610,18 @@ impl MockDestination {
                 supported_dispositions: vec![WriteDisposition::Append],
                 transactions: TransactionSupport::AtomicPackage,
                 idempotency: IdempotencySupport::PackageToken,
-                type_mappings: Vec::new(),
+                type_mappings: vec![
+                    TypeMapping {
+                        arrow_type: "Int64".to_owned(),
+                        destination_type: "BIGINT".to_owned(),
+                        fidelity: TypeMappingFidelity::Lossless,
+                    },
+                    TypeMapping {
+                        arrow_type: "Utf8".to_owned(),
+                        destination_type: "TEXT".to_owned(),
+                        fidelity: TypeMappingFidelity::Lossless,
+                    },
+                ],
                 identifier_rules: IdentifierRules {
                     normalizer: "namecase-v1".to_owned(),
                     max_length: Some(63),
@@ -2923,6 +2936,7 @@ impl ProjectDestinationDriver for MockProjectDestinationDriver {
 struct MockProjectDestinationRuntime {
     destination: MockDestination,
     counters: MockDestinationCounters,
+    sheet_drift_on_plan: bool,
 }
 
 fn mock_bulk_path(
@@ -2962,6 +2976,15 @@ impl MockProjectDestinationRuntime {
         Self {
             destination,
             counters,
+            sheet_drift_on_plan: false,
+        }
+    }
+
+    fn with_sheet_drift(destination: MockDestination) -> Self {
+        Self {
+            destination,
+            counters: MockDestinationCounters::new(),
+            sheet_drift_on_plan: true,
         }
     }
 }
@@ -3008,6 +3031,20 @@ impl ProjectDestinationRuntime for MockProjectDestinationRuntime {
         _schema_hash: &SchemaHash,
     ) -> Result<()> {
         Ok(())
+    }
+
+    fn plan_resource_commit(
+        &mut self,
+        _resource: &dyn ResourceStream,
+        _output_schema: &Schema,
+        inputs: &DestinationCommitPlanningInputs,
+    ) -> Result<DestinationCommitPlanningOutcome> {
+        let plan = self.destination.plan_commit(&inputs.destination_commit)?;
+        let mut sheet = self.destination.sheet.clone();
+        if self.sheet_drift_on_plan {
+            sheet.concurrency.max_writers = Some(2);
+        }
+        Ok(DestinationCommitPlanningOutcome::new(sheet, plan))
     }
 
     fn secret_redaction(&self) -> Option<&str> {
@@ -3840,6 +3877,111 @@ fn destination_planning_facade_previews_duckdb_schema_commit_without_writes() {
         !database_path.exists(),
         "DuckDB plan preview must not create destination data"
     );
+}
+
+#[test]
+fn destination_planning_preflights_zoned_timestamps_before_any_write() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = simple_file_resource(
+        temp.path(),
+        r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+glob = "events.ndjson"
+format = "ndjson"
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "observed_at", type = "timestamp(us, America/Phoenix)", nullable = true },
+] }
+"#,
+    );
+    let engine_plan = live_plan(&resource, "pkg-plan-preview-zoned");
+
+    let duckdb_path = temp.path().join("zoned.duckdb");
+    let mut duckdb =
+        crate::test_destinations::duckdb(&duckdb_path, TargetName::new("events").unwrap()).unwrap();
+    duckdb
+        .plan_resource_commit(&resource, &engine_plan)
+        .unwrap();
+    assert!(!duckdb_path.exists());
+
+    let parquet_root = temp.path().join("parquet-zoned");
+    let mut parquet = crate::test_destinations::parquet_filesystem(
+        &parquet_root,
+        TargetName::new("events").unwrap(),
+    )
+    .unwrap();
+    parquet
+        .plan_resource_commit(&resource, &engine_plan)
+        .unwrap();
+    assert!(!parquet_root.exists());
+}
+
+#[test]
+fn shared_destination_mapping_rejects_zoned_nanoseconds_before_duckdb_write() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = simple_file_resource(
+        temp.path(),
+        r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+glob = "events.ndjson"
+format = "ndjson"
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "observed_at", type = "timestamp(ns, UTC)", nullable = true },
+] }
+"#,
+    );
+    let engine_plan = live_plan(&resource, "pkg-plan-preview-zoned-nanos");
+    let duckdb_path = temp.path().join("zoned-nanos.duckdb");
+    let mut destination =
+        crate::test_destinations::duckdb(&duckdb_path, TargetName::new("events").unwrap()).unwrap();
+
+    let error = destination
+        .plan_resource_commit(&resource, &engine_plan)
+        .unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("observed_at"), "{message}");
+    assert!(message.contains("Timestamp(ns, \"UTC\")"), "{message}");
+    assert!(message.contains("TIMESTAMPTZ"), "{message}");
+    assert!(message.contains("unsupported"), "{message}");
+    assert!(!duckdb_path.exists());
+}
+
+#[test]
+fn destination_planning_rejects_capability_sheet_drift() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
+    let mock = MockDestination::new();
+    let mut destination = ResolvedProjectDestination::new(
+        Box::new(MockProjectDestinationRuntime::with_sheet_drift(
+            mock.clone(),
+        )),
+        TargetName::new("events").unwrap(),
+    );
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    policy.normalization.identifier = destination.column_identifier_policy().unwrap().unwrap();
+    let engine_plan = live_plan_with_exact_policy(&resource, "pkg-plan-sheet-drift", &policy);
+
+    let error = destination
+        .plan_resource_commit(&resource, &engine_plan)
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("changed its capability sheet between schema mapping and commit planning"),
+        "{error}"
+    );
+    assert_eq!(mock.write_count(), 0);
 }
 
 #[test]
@@ -7239,12 +7381,12 @@ fn general_project_run_rejects_unsupported_parquet_disposition_before_writes() {
 }
 
 #[test]
-fn general_project_run_rejects_unsupported_postgres_schema_before_writes() {
+fn general_project_run_rejects_unallowed_lossy_postgres_schema_before_writes() {
     let Some(postgres) = LivePostgres::start() else {
         return;
     };
     let temp = tempfile::tempdir().unwrap();
-    let resource = BackfillMockResource::postgres_unsupported_schema();
+    let resource = BackfillMockResource::postgres_unallowed_lossy_schema();
     let package_id = "pkg-general-postgres-unsupported-schema";
     let package_root = temp.path().join(".cdf/packages");
     let state_path = temp.path().join(".cdf/state.db");
@@ -7261,12 +7403,11 @@ fn general_project_run_rejects_unsupported_postgres_schema_before_writes() {
     )))
     .unwrap_err();
 
-    assert!(
-        error
-            .to_string()
-            .contains("Postgres destination does not support Arrow type Timestamp(Millisecond"),
-        "{error}"
-    );
+    let message = error.to_string();
+    assert!(message.contains("seen_at"), "{error}");
+    assert!(message.contains("Duration(ns)"), "{error}");
+    assert!(message.contains("allow_lossy_mapping"), "{error}");
+    assert!(message.contains("postgres"), "{error}");
     assert!(!package_root.join(package_id).exists());
     assert!(!state_path.exists());
     let mut client = postgres.client();

@@ -1,17 +1,19 @@
 use super::*;
 use crate::ddl::target_migrations;
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use cdf_conformance::destination::{
     DestinationConformanceCase, DestinationCorrectionConformanceEvidence,
     assert_destination_conformance, assert_destination_correction_conformance,
     representative_commit_request,
 };
+use cdf_contract::{TypePolicy, validate_destination_schema_mappings};
 use cdf_kernel::{
     CanonicalArrowField, CheckpointId, CursorPosition, CursorValue, DestinationCorrectionOperation,
     DestinationCorrectionPlan, DestinationCorrectionRequest, PartitionId, PipelineId, PromotionId,
     ResidualCorrectionOperation, ResourceId, RowProvenanceAddress, ScopeKey, SegmentId,
     SourcePosition,
 };
+use std::sync::Arc;
 
 fn columns() -> Vec<PostgresColumn> {
     vec![
@@ -179,7 +181,160 @@ fn sheet_declares_postgres_capabilities_and_full_mapping_fidelity() {
         .iter()
         .find(|mapping| mapping.arrow_type == "Dictionary")
         .unwrap();
-    assert_eq!(dictionary.fidelity, PostgresTypeFidelity::Unsupported);
+    assert_eq!(
+        dictionary.fidelity,
+        PostgresTypeFidelity::LossyRequiresContractAllowance
+    );
+}
+
+#[test]
+fn shared_mapping_preflight_accepts_all_microsecond_timezone_annotations() {
+    let schema = Schema::new(vec![
+        Field::new(
+            "at_utc",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            true,
+        ),
+        Field::new(
+            "at_offset",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into())),
+            true,
+        ),
+        Field::new(
+            "at_phoenix",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("America/Phoenix".into())),
+            true,
+        ),
+    ]);
+    validate_destination_schema_mappings(
+        &TypePolicy::strict_fidelity(),
+        &postgres_destination_sheet().kernel,
+        &schema,
+    )
+    .unwrap();
+
+    let nanoseconds = Schema::new(vec![Field::new(
+        "at_utc",
+        DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+        false,
+    )]);
+    let error = validate_destination_schema_mappings(
+        &TypePolicy::strict_fidelity(),
+        &postgres_destination_sheet().kernel,
+        &nanoseconds,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("allow_lossy_mapping"), "{error}");
+
+    let mut allowance = TypePolicy::strict_fidelity();
+    allowance.allow_lossy_mapping = true;
+    validate_destination_schema_mappings(
+        &allowance,
+        &postgres_destination_sheet().kernel,
+        &nanoseconds,
+    )
+    .unwrap();
+}
+
+#[test]
+fn postgres_sheet_lossless_representatives_match_binary_copy_type_plans() {
+    let data_types = vec![
+        DataType::Null,
+        DataType::Boolean,
+        DataType::Int8,
+        DataType::Int16,
+        DataType::Int32,
+        DataType::Int64,
+        DataType::UInt8,
+        DataType::UInt16,
+        DataType::UInt32,
+        DataType::UInt64,
+        DataType::Float16,
+        DataType::Float32,
+        DataType::Float64,
+        DataType::Decimal32(9, 2),
+        DataType::Decimal64(18, 4),
+        DataType::Decimal128(38, 9),
+        DataType::Decimal256(76, 18),
+        DataType::Utf8,
+        DataType::LargeUtf8,
+        DataType::Utf8View,
+        DataType::Binary,
+        DataType::LargeBinary,
+        DataType::BinaryView,
+        DataType::FixedSizeBinary(16),
+        DataType::Date32,
+        DataType::Date64,
+        DataType::Time32(TimeUnit::Second),
+        DataType::Time32(TimeUnit::Millisecond),
+        DataType::Time64(TimeUnit::Microsecond),
+        DataType::Timestamp(TimeUnit::Second, None),
+        DataType::Timestamp(TimeUnit::Millisecond, None),
+        DataType::Timestamp(TimeUnit::Microsecond, None),
+        DataType::Timestamp(TimeUnit::Second, Some("UTC".into())),
+        DataType::Timestamp(TimeUnit::Millisecond, Some("+00:00".into())),
+        DataType::Timestamp(TimeUnit::Microsecond, Some("America/Phoenix".into())),
+    ];
+    let schema = Schema::new(
+        data_types
+            .iter()
+            .enumerate()
+            .map(|(index, data_type)| Field::new(format!("field_{index}"), data_type.clone(), true))
+            .collect::<Vec<_>>(),
+    );
+    validate_destination_schema_mappings(
+        &TypePolicy::strict_fidelity(),
+        &postgres_destination_sheet().kernel,
+        &schema,
+    )
+    .unwrap();
+    for data_type in data_types {
+        crate::rows::postgres_type_for_arrow(&data_type).unwrap_or_else(|error| {
+            panic!(
+                "Postgres sheet declared {data_type} lossless but executable planning failed: {error}"
+            )
+        });
+    }
+}
+
+#[test]
+fn postgres_sheet_jsonb_fallbacks_are_allowance_gated_and_executable() {
+    let data_types = vec![
+        DataType::Struct(vec![Field::new("value", DataType::Int64, true)].into()),
+        DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+        DataType::Duration(TimeUnit::Nanosecond),
+        DataType::Interval(arrow_schema::IntervalUnit::MonthDayNano),
+        DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+        DataType::RunEndEncoded(
+            Arc::new(Field::new("run_ends", DataType::Int32, false)),
+            Arc::new(Field::new("values", DataType::Utf8, true)),
+        ),
+    ];
+    let schema = Schema::new(
+        data_types
+            .iter()
+            .enumerate()
+            .map(|(index, data_type)| Field::new(format!("field_{index}"), data_type.clone(), true))
+            .collect::<Vec<_>>(),
+    );
+    let error = validate_destination_schema_mappings(
+        &TypePolicy::strict_fidelity(),
+        &postgres_destination_sheet().kernel,
+        &schema,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("allow_lossy_mapping"), "{error}");
+
+    let mut allowance = TypePolicy::strict_fidelity();
+    allowance.allow_lossy_mapping = true;
+    validate_destination_schema_mappings(&allowance, &postgres_destination_sheet().kernel, &schema)
+        .unwrap();
+    for data_type in data_types {
+        assert_eq!(
+            crate::rows::postgres_type_for_arrow(&data_type).unwrap(),
+            "JSONB"
+        );
+    }
 }
 
 #[test]

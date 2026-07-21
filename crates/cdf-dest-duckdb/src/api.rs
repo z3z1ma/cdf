@@ -168,22 +168,6 @@ impl TargetRef {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CellValue {
     pub(crate) value: Value,
-    pub(crate) key: CellKey,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum CellKey {
-    Null,
-    Bool(bool),
-    I64(i64),
-    U64(u64),
-    F32(u32),
-    F64(u64),
-    Text(String),
-    Blob(Vec<u8>),
-    Date32(i32),
-    TimeMicros(i64),
-    TimestampMicros(i64),
 }
 
 impl DuckDbDestination {

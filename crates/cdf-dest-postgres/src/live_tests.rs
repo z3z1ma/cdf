@@ -14,6 +14,7 @@ use std::{
 
 use arrow_array::{
     Array, ArrayRef, Decimal128Array, Float64Array, Int64Array, RecordBatch, StringArray,
+    StructArray,
 };
 use arrow_schema::{DataType, Field, Schema};
 use cdf_kernel::{
@@ -189,6 +190,64 @@ fn live_binary_copy_is_at_least_twice_csv() {
         ROWS as f64 / csv_elapsed.as_secs_f64(),
     );
     assert!(speedup >= 2.0, "local COPY speedup was {speedup:.2}x");
+}
+
+#[test]
+fn live_binary_copy_persists_complex_arrow_values_as_jsonb() {
+    let Some(postgres) = LivePostgres::start() else {
+        return;
+    };
+    let mut client = postgres.client();
+    client
+        .batch_execute(
+            "CREATE TABLE jsonb_copy_test (
+                payload JSONB,
+                _cdf_row_key BIGINT NOT NULL,
+                _cdf_loaded_at_ms BIGINT NOT NULL
+            )",
+        )
+        .unwrap();
+    let structure = StructArray::from(vec![
+        (
+            Arc::new(Field::new("code", DataType::Int64, false)),
+            Arc::new(Int64Array::from(vec![7_i64])) as ArrayRef,
+        ),
+        (
+            Arc::new(Field::new("label", DataType::Utf8, true)),
+            Arc::new(StringArray::from(vec![Some("seven")])) as ArrayRef,
+        ),
+    ]);
+    let batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new(
+            "payload",
+            structure.data_type().clone(),
+            false,
+        )])),
+        vec![Arc::new(structure)],
+    )
+    .unwrap();
+    let canonical = cdf_package_contract::append_package_row_ord(vec![batch], 0)
+        .unwrap()
+        .pop()
+        .unwrap();
+    let writer = client
+        .copy_in("COPY jsonb_copy_test FROM STDIN WITH (FORMAT binary)")
+        .unwrap();
+    let mut encoder = crate::binary_copy::BinaryCopyEncoder::new(writer, 1).unwrap();
+    encoder.write_batch(&canonical, 1, 1).unwrap();
+    let (writer, rows) = encoder.finish().unwrap();
+    assert_eq!(rows, 1);
+    assert_eq!(writer.finish().unwrap(), 1);
+
+    let row = client
+        .query_one(
+            "SELECT payload->>'code', payload->>'label', pg_typeof(payload)::text FROM jsonb_copy_test",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(row.get::<_, String>(0), "7");
+    assert_eq!(row.get::<_, String>(1), "seven");
+    assert_eq!(row.get::<_, String>(2), "jsonb");
 }
 
 static SCHEMA_COUNTER: AtomicU64 = AtomicU64::new(0);

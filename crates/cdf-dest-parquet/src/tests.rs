@@ -12,13 +12,17 @@ use crate::{
     store::{ObjectKeyEncoder, data_object_key, package_manifest_key, staged_data_object_key},
 };
 use ::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use arrow_array::{ArrayRef, Float64Array, Int64Array, StringArray};
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use arrow_array::{
+    Array, ArrayRef, DurationSecondArray, Float64Array, Int64Array, StringArray,
+    TimestampMicrosecondArray,
+};
+use arrow_schema::{DataType, Field, IntervalUnit, Schema, SchemaRef, TimeUnit};
 use cdf_conformance::destination::{
     DestinationConformanceCase, DestinationCorrectionConformanceEvidence,
     assert_destination_conformance, assert_destination_correction_conformance,
     representative_commit_request,
 };
+use cdf_contract::{TypePolicy, validate_destination_schema_mappings};
 use cdf_kernel::{
     CanonicalArrowField, CorrectionStrategy, CursorPosition, CursorValue, DeliveryGuarantee,
     DestinationCorrectionCommitRequest, DestinationCorrectionOperation, DestinationCorrectionPlan,
@@ -962,17 +966,73 @@ fn assert_staged_abort_cleans_destination(
 }
 
 #[test]
-fn unsupported_arrow_types_fail_before_writing_objects() {
+fn zoned_timestamps_commit_with_exact_schema_and_instants() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-zoned");
+    let values = vec![Some(-1_234_567_i64), None, Some(1_717_171_717_171_717_i64)];
+    let utc = TimestampMicrosecondArray::from(values.clone()).with_timezone("UTC");
+    let offset = TimestampMicrosecondArray::from(values.clone()).with_timezone("+00:00");
+    let phoenix = TimestampMicrosecondArray::from(values).with_timezone("America/Phoenix");
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("at_utc", utc.data_type().clone(), true),
+        Field::new("at_offset", offset.data_type().clone(), true),
+        Field::new("at_phoenix", phoenix.data_type().clone(), true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(utc), Arc::new(offset), Arc::new(phoenix)],
+    )
+    .unwrap();
+    let built = build_package(&package_dir, "pkg-zoned", vec![("seg-000001", vec![batch])]);
+    let root = temp.path().join("lake");
+    let mut dest = test_filesystem(&root).unwrap();
+
+    let committed = commit_through_ingress(
+        &mut dest,
+        &package_dir,
+        request(&package_dir, &built, WriteDisposition::Append),
+    )
+    .unwrap();
+    let object = &committed.object_manifest.objects[0];
+    let bytes = dest
+        .store()
+        .get_required(dest.execution(), &object.key)
+        .unwrap();
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(&bytes).unwrap();
+    file.flush().unwrap();
+    let batches = ParquetRecordBatchReaderBuilder::try_new(fs::File::open(file.path()).unwrap())
+        .unwrap()
+        .build()
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].schema().as_ref(), schema.as_ref());
+    for column in 0..schema.fields().len() {
+        let actual = batches[0]
+            .column(column)
+            .as_any()
+            .downcast_ref::<TimestampMicrosecondArray>()
+            .unwrap();
+        assert_eq!(
+            actual.iter().collect::<Vec<_>>(),
+            vec![Some(-1_234_567), None, Some(1_717_171_717_171_717)]
+        );
+    }
+}
+
+#[test]
+fn native_arrow_writer_accepts_duration_without_a_cdf_whitelist() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-unsupported");
-    let schema = Arc::new(Schema::new(vec![Field::new(
-        "unsupported_time",
-        DataType::Time32(arrow_schema::TimeUnit::Second),
-        false,
-    )]));
     let batch = RecordBatch::try_new(
-        schema,
-        vec![Arc::new(arrow_array::Time32SecondArray::from(vec![1]))],
+        Arc::new(Schema::new(vec![Field::new(
+            "elapsed",
+            DataType::Duration(TimeUnit::Second),
+            false,
+        )])),
+        vec![Arc::new(DurationSecondArray::from(vec![1]))],
     )
     .unwrap();
     let built = build_package(
@@ -982,19 +1042,40 @@ fn unsupported_arrow_types_fail_before_writing_objects() {
     );
     let root = temp.path().join("lake");
     let mut dest = test_filesystem(&root).unwrap();
-
-    let error = commit_through_ingress(
+    let committed = commit_through_ingress(
         &mut dest,
         &package_dir,
         request(&package_dir, &built, WriteDisposition::Append),
     )
-    .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("does not support Arrow type Time32")
+    .unwrap();
+    let object = &committed.object_manifest.objects[0];
+    let bytes = dest
+        .store()
+        .get_required(dest.execution(), &object.key)
+        .unwrap();
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(&bytes).unwrap();
+    file.flush().unwrap();
+    let batch = ParquetRecordBatchReaderBuilder::try_new(fs::File::open(file.path()).unwrap())
+        .unwrap()
+        .build()
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        batch.schema().field(0).data_type(),
+        &DataType::Duration(TimeUnit::Second)
     );
-    assert!(!root.join("targets").exists());
+    assert_eq!(
+        batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<DurationSecondArray>()
+            .unwrap()
+            .value(0),
+        1
+    );
 }
 
 #[test]
@@ -1048,6 +1129,62 @@ fn sheet_declares_append_replace_and_unsupported_semantics_honestly() {
         })
         .is_err()
     );
+}
+
+#[test]
+fn parquet_sheet_lossless_representatives_match_native_writer_preflight() {
+    let item = || Arc::new(Field::new("item", DataType::Int64, true));
+    let map_entries = Arc::new(Field::new(
+        "entries",
+        DataType::Struct(
+            vec![
+                Field::new("key", DataType::Utf8, false),
+                Field::new("value", DataType::Int64, true),
+            ]
+            .into(),
+        ),
+        false,
+    ));
+    let data_types = vec![
+        DataType::Null,
+        DataType::Float16,
+        DataType::Utf8View,
+        DataType::BinaryView,
+        DataType::Date64,
+        DataType::Duration(TimeUnit::Nanosecond),
+        DataType::Interval(IntervalUnit::YearMonth),
+        DataType::Interval(IntervalUnit::DayTime),
+        DataType::Decimal32(9, 2),
+        DataType::Decimal64(18, 4),
+        DataType::Decimal128(38, 9),
+        DataType::Decimal256(76, 18),
+        DataType::Timestamp(TimeUnit::Second, Some("UTC".into())),
+        DataType::Timestamp(TimeUnit::Millisecond, Some("+00:00".into())),
+        DataType::Timestamp(TimeUnit::Microsecond, Some("America/Phoenix".into())),
+        DataType::Timestamp(TimeUnit::Nanosecond, None),
+        DataType::Struct(vec![Field::new("value", DataType::Int64, true)].into()),
+        DataType::List(item()),
+        DataType::LargeList(item()),
+        DataType::FixedSizeList(item(), 3),
+        DataType::ListView(item()),
+        DataType::LargeListView(item()),
+        DataType::Map(map_entries, false),
+        DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+    ];
+    let schema = Schema::new(
+        data_types
+            .into_iter()
+            .enumerate()
+            .map(|(index, data_type)| Field::new(format!("field_{index}"), data_type, true))
+            .collect::<Vec<_>>(),
+    );
+    validate_destination_schema_mappings(
+        &TypePolicy::strict_fidelity(),
+        &crate::sheet::parquet_sheet().unwrap(),
+        &schema,
+    )
+    .unwrap();
+    cdf_package::validate_parquet_schema(&schema).unwrap();
 }
 
 #[test]

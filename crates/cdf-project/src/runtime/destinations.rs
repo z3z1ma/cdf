@@ -1,5 +1,9 @@
 use super::{prelude::*, types::ProjectReceiptSource};
-use cdf_contract::{IdentifierPolicy, identifier_policy_from_destination_rules};
+use cdf_contract::{
+    ContractPolicy, IdentifierPolicy, identifier_policy_from_destination_rules,
+    validate_destination_schema_mappings,
+};
+use cdf_kernel::DestinationSheet;
 
 pub use cdf_runtime::{
     DestinationCommitPlanningInputs, DestinationCommitPlanningOutcome,
@@ -106,6 +110,20 @@ impl ResolvedProjectDestination {
             schema,
             schema_hash,
         })
+    }
+
+    pub(super) fn validate_output_schema_mappings(
+        &mut self,
+        resource: &dyn ResourceStream,
+        schema: &Schema,
+    ) -> Result<DestinationSheet> {
+        let sheet = self.runtime_mut().destination_sheet()?;
+        let allowances = resource.type_policy_allowances();
+        let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+        policy.types.coerce_types = allowances.coerce_types;
+        policy.types.allow_lossy_mapping = allowances.allow_lossy_mapping;
+        validate_destination_schema_mappings(&policy.types, &sheet, schema)?;
+        Ok(sheet)
     }
 
     pub fn describe(&self) -> ProjectDestinationDescription {

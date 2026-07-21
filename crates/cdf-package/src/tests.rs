@@ -8,8 +8,11 @@ use std::{
 };
 
 use ::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray, Time32SecondArray};
-use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use arrow_array::{
+    Array, ArrayRef, Int64Array, RecordBatch, StringArray, StructArray, Time32SecondArray,
+    TimestampMicrosecondArray,
+};
+use arrow_schema::{DataType, Field, IntervalUnit, Schema, TimeUnit};
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId, CheckpointStatus, CommitCounts,
     CommitSegment, CursorPosition, CursorValue, DestinationId, FileManifest, FilePosition,
@@ -2503,11 +2506,11 @@ fn tombstone_removes_identity_files_but_preserves_manifest_hashes() {
 }
 
 #[test]
-fn archive_transcode_reports_unsupported_arrow_types() {
+fn archive_transcode_accepts_arrow_time_types_supported_by_arrow_rs() {
     let temp = tempfile::tempdir().unwrap();
-    let builder = package_builder!(temp.path(), "pkg-archive-unsupported").unwrap();
+    let builder = package_builder!(temp.path(), "pkg-archive-time").unwrap();
     let schema = Arc::new(Schema::new(vec![Field::new(
-        "unsupported_time",
+        "event_time",
         DataType::Time32(TimeUnit::Second),
         false,
     )]));
@@ -2522,13 +2525,83 @@ fn archive_transcode_reports_unsupported_arrow_types() {
         .unwrap();
     builder.finish().unwrap();
 
-    let error = persist_package_parquet_archive(temp.path(), false).unwrap_err();
+    let report = persist_package_parquet_archive(temp.path(), false).unwrap();
+    assert_eq!(report.status, PackageArchiveWriteStatus::Written);
+}
 
-    assert!(
-        error
-            .to_string()
-            .contains("does not support Arrow type Time32")
-    );
+#[test]
+fn parquet_preflight_rejects_native_write_time_only_failures_with_field_path() {
+    let schema = Schema::new(vec![Field::new(
+        "window",
+        DataType::Interval(IntervalUnit::MonthDayNano),
+        false,
+    )]);
+    let error = validate_parquet_schema(&schema).unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("window"), "{message}");
+    assert!(message.contains("month-day-nanosecond"), "{message}");
+    assert!(message.contains("losslessly"), "{message}");
+}
+
+#[test]
+fn parquet_transcode_round_trips_zoned_timestamps_and_nested_metadata() {
+    let values = vec![Some(-1_234_567_i64), None, Some(9_876_543)];
+    let utc = Arc::new(TimestampMicrosecondArray::from(values.clone()).with_timezone("UTC"));
+    let offset = Arc::new(TimestampMicrosecondArray::from(values.clone()).with_timezone("+00:00"));
+    let phoenix_values =
+        Arc::new(TimestampMicrosecondArray::from(values.clone()).with_timezone("America/Phoenix"));
+    let nested_timestamp = Arc::new(Field::new(
+        "observed_at",
+        DataType::Timestamp(TimeUnit::Microsecond, Some("America/Phoenix".into())),
+        true,
+    ));
+    let nested = Arc::new(StructArray::from(vec![(
+        nested_timestamp.clone(),
+        phoenix_values.clone() as ArrayRef,
+    )]));
+    let schema = Arc::new(Schema::new(vec![
+        Field::new(
+            "utc",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            true,
+        ),
+        Field::new(
+            "offset",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into())),
+            true,
+        ),
+        Field::new(
+            "phoenix",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("America/Phoenix".into())),
+            true,
+        ),
+        Field::new(
+            "nested",
+            DataType::Struct(vec![nested_timestamp].into()),
+            false,
+        ),
+    ]));
+    let batch =
+        RecordBatch::try_new(schema.clone(), vec![utc, offset, phoenix_values, nested]).unwrap();
+    let bytes = transcode_record_batches_to_parquet_bytes(std::slice::from_ref(&batch)).unwrap();
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(&bytes).unwrap();
+    file.flush().unwrap();
+    let mut reader = ParquetRecordBatchReaderBuilder::try_new(fs::File::open(file.path()).unwrap())
+        .unwrap()
+        .build()
+        .unwrap();
+    let round_trip = reader.next().unwrap().unwrap();
+    assert!(reader.next().is_none());
+    assert_eq!(round_trip.schema().as_ref(), schema.as_ref());
+    assert_eq!(round_trip.num_rows(), batch.num_rows());
+    for column in 0..batch.num_columns() {
+        assert_eq!(
+            round_trip.column(column).to_data(),
+            batch.column(column).to_data(),
+            "column {column} did not round-trip exactly"
+        );
+    }
 }
 
 #[test]

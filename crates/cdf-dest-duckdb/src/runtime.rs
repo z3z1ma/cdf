@@ -267,7 +267,7 @@ fn duckdb_segment_scan_bulk_path_descriptor(
         native_internal_parallelism,
         external_staging: true,
         fallback: cdf_runtime::BulkFallbackMode::Forbidden,
-        schema_preflight_version: "duckdb-canonical-segment-scan@1".to_owned(),
+        schema_preflight_version: "duckdb-canonical-segment-scan@2".to_owned(),
         measured_evidence_version: Some("p3-d14-stock-scan-2026-07-19-v1".to_owned()),
     }
 }

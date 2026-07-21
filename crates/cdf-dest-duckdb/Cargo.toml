@@ -18,6 +18,7 @@ cdf-runtime = { path = "../cdf-runtime" }
 serde_json = "1.0.150"
 
 [dev-dependencies]
+arrow-buffer = "58.3.0"
 cdf-conformance = { path = "../cdf-conformance" }
 cdf-engine = { path = "../cdf-engine" }
 cdf-package = { path = "../cdf-package" }

@@ -23,6 +23,9 @@ pub(super) fn validate_project_run_request(request: &mut ProjectRunRequest<'_>) 
         )));
     }
     let output = request.destination.output_schema(&request.plan)?;
+    request
+        .destination
+        .validate_output_schema_mappings(request.resource.stream(), output.schema.as_ref())?;
     request.destination.runtime_mut().validate_run_preflight(
         request.resource.stream(),
         output.schema.as_ref(),

@@ -1,10 +1,13 @@
 use std::io::{BufWriter, Write};
 
 use arrow_array::{
-    Array, BinaryArray, BooleanArray, Date32Array, Decimal128Array, Decimal256Array, Float32Array,
-    Float64Array, Int8Array, Int16Array, Int32Array, Int64Array, LargeBinaryArray,
-    LargeStringArray, RecordBatch, StringArray, Time64MicrosecondArray, TimestampMicrosecondArray,
-    UInt8Array, UInt16Array, UInt32Array, UInt64Array,
+    Array, BinaryArray, BinaryViewArray, BooleanArray, Date32Array, Date64Array, Decimal32Array,
+    Decimal64Array, Decimal128Array, Decimal256Array, FixedSizeBinaryArray, Float16Array,
+    Float32Array, Float64Array, Int8Array, Int16Array, Int32Array, Int64Array, LargeBinaryArray,
+    LargeStringArray, RecordBatch, StringArray, StringViewArray, Time32MillisecondArray,
+    Time32SecondArray, Time64MicrosecondArray, Time64NanosecondArray, TimestampMicrosecondArray,
+    TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray, UInt8Array,
+    UInt16Array, UInt32Array, UInt64Array,
 };
 use arrow_schema::{DataType, TimeUnit};
 
@@ -25,17 +28,31 @@ enum BinaryColumn<'a> {
     UInt16(&'a UInt16Array),
     UInt32(&'a UInt32Array),
     UInt64(&'a UInt64Array),
+    Decimal32(&'a Decimal32Array),
+    Decimal64(&'a Decimal64Array),
     Decimal128(&'a Decimal128Array),
     Decimal256(&'a Decimal256Array),
+    Float16(&'a Float16Array),
     Float32(&'a Float32Array),
     Float64(&'a Float64Array),
     Utf8(&'a StringArray),
     LargeUtf8(&'a LargeStringArray),
+    Utf8View(&'a StringViewArray),
     Binary(&'a BinaryArray),
     LargeBinary(&'a LargeBinaryArray),
+    BinaryView(&'a BinaryViewArray),
+    FixedSizeBinary(&'a FixedSizeBinaryArray),
     Date32(&'a Date32Array),
+    Date64(&'a Date64Array),
+    Time32Second(&'a Time32SecondArray),
+    Time32Millisecond(&'a Time32MillisecondArray),
     Time64Microsecond(&'a Time64MicrosecondArray),
+    Time64Nanosecond(&'a Time64NanosecondArray),
+    TimestampSecond(&'a TimestampSecondArray),
+    TimestampMillisecond(&'a TimestampMillisecondArray),
     TimestampMicrosecond(&'a TimestampMicrosecondArray),
+    TimestampNanosecond(&'a TimestampNanosecondArray),
+    Jsonb(&'a dyn Array),
 }
 
 impl<'a> BinaryColumn<'a> {
@@ -50,21 +67,57 @@ impl<'a> BinaryColumn<'a> {
             DataType::UInt16 => Self::UInt16(typed(array, data_type)?),
             DataType::UInt32 => Self::UInt32(typed(array, data_type)?),
             DataType::UInt64 => Self::UInt64(typed(array, data_type)?),
+            DataType::Decimal32(_, _) => Self::Decimal32(typed(array, data_type)?),
+            DataType::Decimal64(_, _) => Self::Decimal64(typed(array, data_type)?),
             DataType::Decimal128(_, _) => Self::Decimal128(typed(array, data_type)?),
             DataType::Decimal256(_, _) => Self::Decimal256(typed(array, data_type)?),
+            DataType::Float16 => Self::Float16(typed(array, data_type)?),
             DataType::Float32 => Self::Float32(typed(array, data_type)?),
             DataType::Float64 => Self::Float64(typed(array, data_type)?),
             DataType::Utf8 => Self::Utf8(typed(array, data_type)?),
             DataType::LargeUtf8 => Self::LargeUtf8(typed(array, data_type)?),
+            DataType::Utf8View => Self::Utf8View(typed(array, data_type)?),
             DataType::Binary => Self::Binary(typed(array, data_type)?),
             DataType::LargeBinary => Self::LargeBinary(typed(array, data_type)?),
+            DataType::BinaryView => Self::BinaryView(typed(array, data_type)?),
+            DataType::FixedSizeBinary(_) => Self::FixedSizeBinary(typed(array, data_type)?),
             DataType::Date32 => Self::Date32(typed(array, data_type)?),
+            DataType::Date64 => Self::Date64(typed(array, data_type)?),
+            DataType::Time32(TimeUnit::Second) => Self::Time32Second(typed(array, data_type)?),
+            DataType::Time32(TimeUnit::Millisecond) => {
+                Self::Time32Millisecond(typed(array, data_type)?)
+            }
             DataType::Time64(TimeUnit::Microsecond) => {
                 Self::Time64Microsecond(typed(array, data_type)?)
+            }
+            DataType::Time64(TimeUnit::Nanosecond) => {
+                Self::Time64Nanosecond(typed(array, data_type)?)
+            }
+            DataType::Timestamp(TimeUnit::Second, _) => {
+                Self::TimestampSecond(typed(array, data_type)?)
+            }
+            DataType::Timestamp(TimeUnit::Millisecond, _) => {
+                Self::TimestampMillisecond(typed(array, data_type)?)
             }
             DataType::Timestamp(TimeUnit::Microsecond, _) => {
                 Self::TimestampMicrosecond(typed(array, data_type)?)
             }
+            DataType::Timestamp(TimeUnit::Nanosecond, _) => {
+                Self::TimestampNanosecond(typed(array, data_type)?)
+            }
+            DataType::Null
+            | DataType::Struct(_)
+            | DataType::List(_)
+            | DataType::LargeList(_)
+            | DataType::ListView(_)
+            | DataType::LargeListView(_)
+            | DataType::FixedSizeList(_, _)
+            | DataType::Map(_, _)
+            | DataType::Union(_, _)
+            | DataType::Dictionary(_, _)
+            | DataType::RunEndEncoded(_, _)
+            | DataType::Duration(_)
+            | DataType::Interval(_) => Self::Jsonb(array),
             other => {
                 return Err(CdfError::contract(format!(
                     "Postgres binary COPY does not support Arrow type {other:?}"
@@ -84,17 +137,31 @@ impl<'a> BinaryColumn<'a> {
             Self::UInt16(array) => array.is_null(row),
             Self::UInt32(array) => array.is_null(row),
             Self::UInt64(array) => array.is_null(row),
+            Self::Decimal32(array) => array.is_null(row),
+            Self::Decimal64(array) => array.is_null(row),
             Self::Decimal128(array) => array.is_null(row),
             Self::Decimal256(array) => array.is_null(row),
+            Self::Float16(array) => array.is_null(row),
             Self::Float32(array) => array.is_null(row),
             Self::Float64(array) => array.is_null(row),
             Self::Utf8(array) => array.is_null(row),
             Self::LargeUtf8(array) => array.is_null(row),
+            Self::Utf8View(array) => array.is_null(row),
             Self::Binary(array) => array.is_null(row),
             Self::LargeBinary(array) => array.is_null(row),
+            Self::BinaryView(array) => array.is_null(row),
+            Self::FixedSizeBinary(array) => array.is_null(row),
             Self::Date32(array) => array.is_null(row),
+            Self::Date64(array) => array.is_null(row),
+            Self::Time32Second(array) => array.is_null(row),
+            Self::Time32Millisecond(array) => array.is_null(row),
             Self::Time64Microsecond(array) => array.is_null(row),
+            Self::Time64Nanosecond(array) => array.is_null(row),
+            Self::TimestampSecond(array) => array.is_null(row),
+            Self::TimestampMillisecond(array) => array.is_null(row),
             Self::TimestampMicrosecond(array) => array.is_null(row),
+            Self::TimestampNanosecond(array) => array.is_null(row),
+            Self::Jsonb(array) => array.is_null(row),
         }
     }
 }
@@ -205,12 +272,21 @@ impl<W: Write> BinaryCopyEncoder<W> {
             BinaryColumn::UInt64(array) => {
                 encode_numeric_text(&array.value(row).to_string(), &mut self.scratch)?;
             }
+            BinaryColumn::Decimal32(array) => {
+                encode_numeric_text(&array.value_as_string(row), &mut self.scratch)?;
+            }
+            BinaryColumn::Decimal64(array) => {
+                encode_numeric_text(&array.value_as_string(row), &mut self.scratch)?;
+            }
             BinaryColumn::Decimal128(array) => {
                 encode_numeric_text(&array.value_as_string(row), &mut self.scratch)?;
             }
             BinaryColumn::Decimal256(array) => {
                 encode_numeric_text(&array.value_as_string(row), &mut self.scratch)?;
             }
+            BinaryColumn::Float16(array) => self
+                .scratch
+                .extend_from_slice(&f32::from(array.value(row)).to_bits().to_be_bytes()),
             BinaryColumn::Float32(array) => self
                 .scratch
                 .extend_from_slice(&array.value(row).to_bits().to_be_bytes()),
@@ -223,8 +299,17 @@ impl<W: Write> BinaryCopyEncoder<W> {
             BinaryColumn::LargeUtf8(array) => {
                 self.scratch.extend_from_slice(array.value(row).as_bytes());
             }
+            BinaryColumn::Utf8View(array) => {
+                self.scratch.extend_from_slice(array.value(row).as_bytes());
+            }
             BinaryColumn::Binary(array) => self.scratch.extend_from_slice(array.value(row)),
             BinaryColumn::LargeBinary(array) => self.scratch.extend_from_slice(array.value(row)),
+            BinaryColumn::BinaryView(array) => {
+                self.scratch.extend_from_slice(array.value(row));
+            }
+            BinaryColumn::FixedSizeBinary(array) => {
+                self.scratch.extend_from_slice(array.value(row));
+            }
             BinaryColumn::Date32(array) => {
                 let days = array
                     .value(row)
@@ -232,17 +317,59 @@ impl<W: Write> BinaryCopyEncoder<W> {
                     .ok_or_else(|| CdfError::data("Postgres DATE epoch conversion overflowed"))?;
                 self.scratch.extend_from_slice(&days.to_be_bytes());
             }
+            BinaryColumn::Date64(array) => {
+                let micros = postgres_timestamp_micros(array.value(row), 1_000)?;
+                self.scratch.extend_from_slice(&micros.to_be_bytes());
+            }
+            BinaryColumn::Time32Second(array) => self.scratch.extend_from_slice(
+                &i64::from(array.value(row))
+                    .checked_mul(1_000_000)
+                    .ok_or_else(|| CdfError::data("Postgres TIME second conversion overflowed"))?
+                    .to_be_bytes(),
+            ),
+            BinaryColumn::Time32Millisecond(array) => self.scratch.extend_from_slice(
+                &i64::from(array.value(row))
+                    .checked_mul(1_000)
+                    .ok_or_else(|| {
+                        CdfError::data("Postgres TIME millisecond conversion overflowed")
+                    })?
+                    .to_be_bytes(),
+            ),
             BinaryColumn::Time64Microsecond(array) => self
                 .scratch
                 .extend_from_slice(&array.value(row).to_be_bytes()),
+            BinaryColumn::Time64Nanosecond(array) => self
+                .scratch
+                .extend_from_slice(&array.value(row).div_euclid(1_000).to_be_bytes()),
+            BinaryColumn::TimestampSecond(array) => {
+                let micros = postgres_timestamp_micros(array.value(row), 1_000_000)?;
+                self.scratch.extend_from_slice(&micros.to_be_bytes());
+            }
+            BinaryColumn::TimestampMillisecond(array) => {
+                let micros = postgres_timestamp_micros(array.value(row), 1_000)?;
+                self.scratch.extend_from_slice(&micros.to_be_bytes());
+            }
             BinaryColumn::TimestampMicrosecond(array) => {
+                let micros = postgres_timestamp_micros(array.value(row), 1)?;
+                self.scratch.extend_from_slice(&micros.to_be_bytes());
+            }
+            BinaryColumn::TimestampNanosecond(array) => {
                 let micros = array
                     .value(row)
+                    .div_euclid(1_000)
                     .checked_sub(POSTGRES_EPOCH_MICROS)
                     .ok_or_else(|| {
                         CdfError::data("Postgres timestamp epoch conversion overflowed")
                     })?;
                 self.scratch.extend_from_slice(&micros.to_be_bytes());
+            }
+            BinaryColumn::Jsonb(array) => {
+                self.scratch.push(1);
+                let value = cdf_contract::arrow_value_to_canonical_json(*array, row)
+                    .map_err(|error| CdfError::data(format!("encode Postgres JSONB: {error}")))?;
+                serde_json::to_writer(&mut self.scratch, &value).map_err(|error| {
+                    CdfError::data(format!("serialize Postgres JSONB value: {error}"))
+                })?;
             }
         }
         let bytes = std::mem::take(&mut self.scratch);
@@ -267,6 +394,13 @@ impl<W: Write> BinaryCopyEncoder<W> {
             }
         }
     }
+}
+
+fn postgres_timestamp_micros(value: i64, factor: i64) -> Result<i64> {
+    value
+        .checked_mul(factor)
+        .and_then(|micros| micros.checked_sub(POSTGRES_EPOCH_MICROS))
+        .ok_or_else(|| CdfError::data("Postgres timestamp epoch conversion overflowed"))
 }
 
 fn typed<'a, T: 'static>(array: &'a dyn Array, data_type: &DataType) -> Result<&'a T> {
@@ -347,7 +481,9 @@ fn encode_numeric_text(value: &str, output: &mut Vec<u8>) -> Result<()> {
 mod tests {
     use std::{sync::Arc, time::Instant};
 
-    use arrow_array::{Int64Array, StringArray};
+    use arrow_array::{
+        Array, ArrayRef, Int64Array, StringArray, StructArray, TimestampMicrosecondArray,
+    };
     use arrow_schema::{Field, Schema};
 
     use super::*;
@@ -406,6 +542,101 @@ mod tests {
             );
             offset += 8;
         }
+    }
+
+    #[test]
+    fn binary_copy_preserves_zoned_timestamp_instants_independent_of_annotation() {
+        let instant = 1_717_171_717_171_717_i64;
+        let utc = TimestampMicrosecondArray::from(vec![instant]).with_timezone("UTC");
+        let offset = TimestampMicrosecondArray::from(vec![instant]).with_timezone("+00:00");
+        let phoenix =
+            TimestampMicrosecondArray::from(vec![instant]).with_timezone("America/Phoenix");
+        let logical = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("at_utc", utc.data_type().clone(), false),
+                Field::new("at_offset", offset.data_type().clone(), false),
+                Field::new("at_phoenix", phoenix.data_type().clone(), false),
+            ])),
+            vec![Arc::new(utc), Arc::new(offset), Arc::new(phoenix)],
+        )
+        .unwrap();
+        let canonical = cdf_package_contract::append_package_row_ord(vec![logical], 0)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let mut encoder = BinaryCopyEncoder::new(Vec::new(), 3).unwrap();
+        encoder.write_batch(&canonical, 1, 1).unwrap();
+        let (bytes, rows) = encoder.finish().unwrap();
+        assert_eq!(rows, 1);
+
+        let mut offset = HEADER.len() + 8;
+        assert_eq!(
+            i16::from_be_bytes(bytes[offset..offset + 2].try_into().unwrap()),
+            5
+        );
+        offset += 2;
+        let expected = instant - POSTGRES_EPOCH_MICROS;
+        for _ in 0..3 {
+            assert_eq!(
+                i32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap()),
+                8
+            );
+            offset += 4;
+            assert_eq!(
+                i64::from_be_bytes(bytes[offset..offset + 8].try_into().unwrap()),
+                expected
+            );
+            offset += 8;
+        }
+    }
+
+    #[test]
+    fn binary_copy_encodes_nested_values_as_deterministic_jsonb() {
+        let nested = StructArray::from(vec![
+            (
+                Arc::new(Field::new("code", DataType::Int64, false)),
+                Arc::new(Int64Array::from(vec![7_i64])) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("label", DataType::Utf8, true)),
+                Arc::new(StringArray::from(vec![Some("seven")])) as ArrayRef,
+            ),
+        ]);
+        let logical = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "payload",
+                nested.data_type().clone(),
+                false,
+            )])),
+            vec![Arc::new(nested)],
+        )
+        .unwrap();
+        let canonical = cdf_package_contract::append_package_row_ord(vec![logical], 0)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let mut encoder = BinaryCopyEncoder::new(Vec::new(), 1).unwrap();
+        encoder.write_batch(&canonical, 1, 1).unwrap();
+        let (bytes, rows) = encoder.finish().unwrap();
+        assert_eq!(rows, 1);
+
+        let mut offset = HEADER.len() + 8;
+        assert_eq!(
+            i16::from_be_bytes(bytes[offset..offset + 2].try_into().unwrap()),
+            3
+        );
+        offset += 2;
+        let jsonb_len = usize::try_from(i32::from_be_bytes(
+            bytes[offset..offset + 4].try_into().unwrap(),
+        ))
+        .unwrap();
+        offset += 4;
+        let jsonb = &bytes[offset..offset + jsonb_len];
+        assert_eq!(jsonb[0], 1, "Postgres JSONB binary format version");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&jsonb[1..]).unwrap(),
+            serde_json::json!({"code": "7", "label": "seven"})
+        );
     }
 
     #[test]

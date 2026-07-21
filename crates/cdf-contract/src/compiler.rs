@@ -1,10 +1,10 @@
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
 
-use arrow_schema::{DataType, Field, TimeUnit};
+use arrow_schema::{DataType, Field, IntervalUnit, Schema, TimeUnit, UnionMode};
 use cdf_kernel::{
-    CdfError, DeduplicationSpec, ResourceDescriptor, Result, TypeMapping, TypeMappingFidelity,
-    semantic,
+    CdfError, DeduplicationSpec, DestinationSheet, ResourceDescriptor, Result, TypeMapping,
+    TypeMappingFidelity, semantic,
 };
 use serde::{Deserialize, Serialize};
 
@@ -354,6 +354,168 @@ pub fn resolve_destination_type_mapping<'a>(
     Ok(Some(best))
 }
 
+/// Validates the complete canonical output schema against one destination's declared mapping
+/// authority before adapter planning or payload mutation.
+///
+/// Container mappings authorize the container representation; child fields are resolved
+/// independently so a broad `Struct`/`List`/`Map` claim cannot hide an unsupported leaf.
+pub fn validate_destination_schema_mappings(
+    policy: &TypePolicy,
+    sheet: &DestinationSheet,
+    schema: &Schema,
+) -> Result<()> {
+    if sheet.type_mappings.is_empty() {
+        return Err(CdfError::contract(format!(
+            "destination {} declares no Arrow type mappings",
+            sheet.destination
+        )));
+    }
+    for field in schema.fields() {
+        validate_destination_field_mapping(policy, sheet, field.name(), field.data_type())?;
+    }
+    Ok(())
+}
+
+fn validate_destination_field_mapping(
+    policy: &TypePolicy,
+    sheet: &DestinationSheet,
+    path: &str,
+    data_type: &DataType,
+) -> Result<()> {
+    let mapping = resolve_destination_type_mapping(&sheet.type_mappings, data_type)?.ok_or_else(|| {
+        CdfError::contract(format!(
+            "destination {} has no declared mapping for field `{path}` with Arrow type {data_type}; add a truthful mapping to the destination sheet or cast the field to a supported type before planning",
+            sheet.destination
+        ))
+    })?;
+    match mapping.fidelity {
+        TypeMappingFidelity::Lossless => {}
+        TypeMappingFidelity::LossyRequiresContractAllowance if policy.allow_lossy_mapping => {}
+        TypeMappingFidelity::LossyRequiresContractAllowance => {
+            return Err(CdfError::contract(format!(
+                "destination {} maps field `{path}` from Arrow type {data_type} to {} lossily; enable `allow_lossy_mapping` only if that loss is intended, or cast the field to a lossless supported type",
+                sheet.destination, mapping.destination_type
+            )));
+        }
+        TypeMappingFidelity::Unsupported => {
+            return Err(CdfError::contract(format!(
+                "destination {} does not support field `{path}` with Arrow type {data_type}; its sheet maps that type to {} as unsupported; cast the field to a supported type or choose a destination that preserves it",
+                sheet.destination, mapping.destination_type
+            )));
+        }
+    }
+
+    match data_type {
+        DataType::Struct(fields) => {
+            if fields.is_empty() {
+                return Err(CdfError::contract(format!(
+                    "destination {} cannot map field `{path}` because an Arrow struct must contain at least one child",
+                    sheet.destination
+                )));
+            }
+            for child in fields {
+                validate_destination_field_mapping(
+                    policy,
+                    sheet,
+                    &format!("{path}.{}", child.name()),
+                    child.data_type(),
+                )?;
+            }
+        }
+        DataType::FixedSizeList(_, size) if *size <= 0 => {
+            return Err(CdfError::contract(format!(
+                "destination {} cannot map field `{path}` because an Arrow fixed-size list must have a positive element count, found {size}",
+                sheet.destination
+            )));
+        }
+        DataType::List(child)
+        | DataType::LargeList(child)
+        | DataType::ListView(child)
+        | DataType::LargeListView(child)
+        | DataType::FixedSizeList(child, _) => validate_destination_field_mapping(
+            policy,
+            sheet,
+            &format!("{path}[]"),
+            child.data_type(),
+        )?,
+        DataType::Map(entries, _) => {
+            let DataType::Struct(fields) = entries.data_type() else {
+                return Err(CdfError::contract(format!(
+                    "destination {} cannot map field `{path}` because its Arrow map entries are not a struct<key,value>",
+                    sheet.destination
+                )));
+            };
+            if fields.len() != 2 {
+                return Err(CdfError::contract(format!(
+                    "destination {} cannot map field `{path}` because its Arrow map entries must contain exactly key and value fields, found {}",
+                    sheet.destination,
+                    fields.len()
+                )));
+            }
+            if fields[0].is_nullable() {
+                return Err(CdfError::contract(format!(
+                    "destination {} cannot map field `{path}` because Arrow map keys must be non-nullable",
+                    sheet.destination
+                )));
+            }
+            for child in fields {
+                validate_destination_field_mapping(
+                    policy,
+                    sheet,
+                    &format!("{path}.{}", child.name()),
+                    child.data_type(),
+                )?;
+            }
+        }
+        DataType::Dictionary(key, value) => {
+            validate_destination_field_mapping(
+                policy,
+                sheet,
+                &format!("{path}.dictionary_key"),
+                key,
+            )?;
+            validate_destination_field_mapping(
+                policy,
+                sheet,
+                &format!("{path}.dictionary_value"),
+                value,
+            )?;
+        }
+        DataType::Union(fields, _) => {
+            if fields.is_empty() {
+                return Err(CdfError::contract(format!(
+                    "destination {} cannot map field `{path}` because an Arrow union must contain at least one child",
+                    sheet.destination
+                )));
+            }
+            for (_, child) in fields.iter() {
+                validate_destination_field_mapping(
+                    policy,
+                    sheet,
+                    &format!("{path}.{}", child.name()),
+                    child.data_type(),
+                )?;
+            }
+        }
+        DataType::RunEndEncoded(run_ends, values) => {
+            validate_destination_field_mapping(
+                policy,
+                sheet,
+                &format!("{path}.run_ends"),
+                run_ends.data_type(),
+            )?;
+            validate_destination_field_mapping(
+                policy,
+                sheet,
+                &format!("{path}.values"),
+                values.data_type(),
+            )?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn destination_type_pattern_specificity(pattern: &str, data_type: &DataType) -> Option<u8> {
     let pattern = compact_ascii_lower(pattern);
     let display = compact_ascii_lower(&data_type.to_string());
@@ -361,18 +523,47 @@ fn destination_type_pattern_specificity(pattern: &str, data_type: &DataType) -> 
         return Some(100);
     }
     match data_type {
+        DataType::Decimal128(precision, scale)
+            if pattern == "decimal128(precision<=38,scale>=0)"
+                && *precision <= 38
+                && *scale >= 0 =>
+        {
+            Some(95)
+        }
+        DataType::Decimal32(precision, scale)
+            if pattern == "decimal32(precision<=9,scale>=0)" && *precision <= 9 && *scale >= 0 =>
+        {
+            Some(95)
+        }
+        DataType::Decimal64(precision, scale)
+            if pattern == "decimal64(precision<=18,scale>=0)"
+                && *precision <= 18
+                && *scale >= 0 =>
+        {
+            Some(95)
+        }
+        DataType::Decimal32(_, _) if pattern == "decimal32(p,s)" => Some(90),
+        DataType::Decimal64(_, _) if pattern == "decimal64(p,s)" => Some(90),
         DataType::Decimal128(_, _) if pattern == "decimal128(p,s)" => Some(90),
         DataType::Decimal256(_, _) if pattern == "decimal256(p,s)" => Some(90),
-        DataType::Decimal128(_, _) | DataType::Decimal256(_, _) if pattern == "decimal*" => {
+        DataType::Decimal32(_, _)
+        | DataType::Decimal64(_, _)
+        | DataType::Decimal128(_, _)
+        | DataType::Decimal256(_, _)
+            if pattern == "decimal*" =>
+        {
             Some(50)
         }
+        DataType::FixedSizeBinary(_) if pattern == "fixedsizebinary(*)" => Some(90),
         DataType::Time32(TimeUnit::Second | TimeUnit::Millisecond)
             if pattern == "time32(second|millisecond)" =>
         {
             Some(70)
         }
+        DataType::Time32(_) if pattern == "time32" => Some(50),
         DataType::Time64(TimeUnit::Microsecond) if pattern == "time64(microsecond)" => Some(90),
         DataType::Time64(TimeUnit::Nanosecond) if pattern == "time64(nanosecond)" => Some(90),
+        DataType::Time64(_) if pattern == "time64" => Some(50),
         DataType::Timestamp(unit, timezone) => {
             let unit = compact_ascii_lower(&format!("{unit:?}"));
             match timezone {
@@ -385,35 +576,47 @@ fn destination_type_pattern_specificity(pattern: &str, data_type: &DataType) -> 
                     Some(70)
                 }
                 Some(_) if pattern == "timestamp(*,timezone)" => Some(60),
+                _ if pattern == "timestamp(*,*)" => Some(40),
                 _ => None,
             }
         }
         DataType::Struct(_) if pattern == "struct" => Some(85),
-        DataType::Struct(_) if pattern == "struct/list/map" => Some(60),
+        DataType::List(_) if pattern == "list" => Some(85),
+        DataType::LargeList(_) if pattern == "largelist" => Some(85),
+        DataType::FixedSizeList(_, _) if pattern == "fixedsizelist" => Some(85),
+        DataType::ListView(_) if pattern == "listview" => Some(85),
+        DataType::LargeListView(_) if pattern == "largelistview" => Some(85),
         DataType::List(_)
         | DataType::LargeList(_)
         | DataType::ListView(_)
         | DataType::LargeListView(_)
         | DataType::FixedSizeList(_, _)
-            if pattern == "list" =>
-        {
-            Some(85)
-        }
-        DataType::List(_)
-        | DataType::LargeList(_)
-        | DataType::ListView(_)
-        | DataType::LargeListView(_)
-        | DataType::FixedSizeList(_, _)
-            if pattern == "struct/list/map" =>
+            if pattern == "list*" =>
         {
             Some(60)
         }
         DataType::Map(_, _) if pattern == "map" => Some(85),
-        DataType::Map(_, _) if pattern == "struct/list/map" => Some(60),
+        DataType::Union(_, UnionMode::Sparse) if pattern == "union(sparse)" => Some(90),
+        DataType::Union(_, UnionMode::Dense) if pattern == "union(dense)" => Some(90),
         DataType::Union(_, _) if pattern == "union" => Some(85),
         DataType::Dictionary(_, _) if pattern == "dictionary" => Some(85),
+        DataType::Duration(TimeUnit::Second | TimeUnit::Millisecond | TimeUnit::Microsecond)
+            if pattern == "duration(second|millisecond|microsecond)" =>
+        {
+            Some(90)
+        }
+        DataType::Duration(TimeUnit::Nanosecond) if pattern == "duration(nanosecond)" => Some(90),
         DataType::Duration(_) if pattern == "duration" => Some(85),
+        DataType::Interval(IntervalUnit::YearMonth | IntervalUnit::DayTime)
+            if pattern == "interval(yearmonth|daytime)" =>
+        {
+            Some(90)
+        }
+        DataType::Interval(IntervalUnit::MonthDayNano) if pattern == "interval(monthdaynano)" => {
+            Some(90)
+        }
         DataType::Interval(_) if pattern == "interval" => Some(85),
+        DataType::RunEndEncoded(_, _) if pattern == "runendencoded" => Some(85),
         _ => None,
     }
 }
@@ -741,11 +944,36 @@ mod destination_mapping_tests {
     use super::*;
     use std::sync::Arc;
 
+    use cdf_kernel::{
+        CapabilitySupport, ConcurrencyLimit, DestinationId, IdempotencySupport, IdentifierRules,
+        TransactionSupport, WriteDisposition,
+    };
+
     fn mapping(pattern: &str) -> TypeMapping {
         TypeMapping {
             arrow_type: pattern.to_owned(),
             destination_type: pattern.to_owned(),
             fidelity: TypeMappingFidelity::Lossless,
+        }
+    }
+
+    fn sheet(mappings: Vec<TypeMapping>) -> DestinationSheet {
+        DestinationSheet {
+            destination: DestinationId::new("plausible").unwrap(),
+            supported_dispositions: vec![WriteDisposition::Append],
+            transactions: TransactionSupport::AtomicPackage,
+            idempotency: IdempotencySupport::PackageToken,
+            type_mappings: mappings,
+            identifier_rules: IdentifierRules {
+                normalizer: "namecase-v1".to_owned(),
+                max_length: None,
+                allowed_pattern: None,
+            },
+            migration_support: CapabilitySupport::Supported,
+            quarantine_tables: CapabilitySupport::Unsupported,
+            concurrency: ConcurrencyLimit {
+                max_writers: Some(1),
+            },
         }
     }
 
@@ -769,7 +997,9 @@ mod destination_mapping_tests {
             mapping("Timestamp(second|millisecond|microsecond, none)"),
             mapping("Timestamp(*, timezone)"),
             mapping("Timestamp(Nanosecond,*)"),
-            mapping("Struct/List/Map"),
+            mapping("Struct"),
+            mapping("List"),
+            mapping("Map"),
         ];
         for data_type in [
             DataType::Time32(TimeUnit::Second),
@@ -821,5 +1051,105 @@ mod destination_mapping_tests {
             .unwrap()
             .unwrap();
         assert_eq!(selected.fidelity, TypeMappingFidelity::Unsupported);
+    }
+
+    #[test]
+    fn recursive_schema_mapping_names_the_unsupported_nested_leaf() {
+        let mappings = vec![
+            mapping("Struct"),
+            mapping("List"),
+            mapping("Int64"),
+            TypeMapping {
+                arrow_type: "Timestamp(*, timezone)".to_owned(),
+                destination_type: "TIMESTAMPTZ".to_owned(),
+                fidelity: TypeMappingFidelity::Unsupported,
+            },
+        ];
+        let schema = Schema::new(vec![Field::new(
+            "event",
+            DataType::Struct(
+                vec![Field::new(
+                    "history",
+                    DataType::List(Arc::new(Field::new(
+                        "item",
+                        DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into())),
+                        true,
+                    ))),
+                    true,
+                )]
+                .into(),
+            ),
+            true,
+        )]);
+        let error = validate_destination_schema_mappings(
+            &TypePolicy::strict_fidelity(),
+            &sheet(mappings),
+            &schema,
+        )
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("event.history[]"), "{message}");
+        assert!(message.contains("Timestamp(µs, \"+00:00\")"), "{message}");
+        assert!(message.contains("TIMESTAMPTZ"), "{message}");
+        assert!(message.contains("unsupported"), "{message}");
+    }
+
+    #[test]
+    fn lossy_mapping_requires_the_recorded_allowance() {
+        let sheet = sheet(vec![TypeMapping {
+            arrow_type: "Timestamp(Nanosecond,*)".to_owned(),
+            destination_type: "TIMESTAMPTZ".to_owned(),
+            fidelity: TypeMappingFidelity::LossyRequiresContractAllowance,
+        }]);
+        let schema = Schema::new(vec![Field::new(
+            "observed_at",
+            DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+            false,
+        )]);
+        let error =
+            validate_destination_schema_mappings(&TypePolicy::strict_fidelity(), &sheet, &schema)
+                .unwrap_err();
+        assert!(error.to_string().contains("allow_lossy_mapping"));
+
+        let mut allowed = TypePolicy::strict_fidelity();
+        allowed.allow_lossy_mapping = true;
+        validate_destination_schema_mappings(&allowed, &sheet, &schema).unwrap();
+    }
+
+    #[test]
+    fn constrained_decimal_mapping_outranks_generic_rejection() {
+        let sheet = sheet(vec![
+            TypeMapping {
+                arrow_type: "Decimal128(precision<=38, scale>=0)".to_owned(),
+                destination_type: "DECIMAL".to_owned(),
+                fidelity: TypeMappingFidelity::Lossless,
+            },
+            TypeMapping {
+                arrow_type: "Decimal128(p,s)".to_owned(),
+                destination_type: "DECIMAL".to_owned(),
+                fidelity: TypeMappingFidelity::Unsupported,
+            },
+        ]);
+        validate_destination_schema_mappings(
+            &TypePolicy::strict_fidelity(),
+            &sheet,
+            &Schema::new(vec![Field::new(
+                "amount",
+                DataType::Decimal128(38, 9),
+                false,
+            )]),
+        )
+        .unwrap();
+        let error = validate_destination_schema_mappings(
+            &TypePolicy::strict_fidelity(),
+            &sheet,
+            &Schema::new(vec![Field::new(
+                "amount",
+                DataType::Decimal128(39, 9),
+                false,
+            )]),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("unsupported"));
     }
 }
