@@ -38,6 +38,62 @@ const MAX_ARCHIVE_INDEX_RECORD_BYTES: u64 = 2 * 1024 * 1024;
 pub(crate) const ARCHIVE_SEGMENT_WINDOW_BYTES: u64 = 64 * 1024 * 1024;
 static ARCHIVE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+struct ExactBytesReader<'a, R> {
+    inner: R,
+    expected: &'a [u8],
+    offset: usize,
+    exact: bool,
+    exceeded_expected_length: bool,
+}
+
+impl<'a, R> ExactBytesReader<'a, R> {
+    const fn new(inner: R, expected: &'a [u8]) -> Self {
+        Self {
+            inner,
+            expected,
+            offset: 0,
+            exact: true,
+            exceeded_expected_length: false,
+        }
+    }
+
+    const fn is_exact(&self) -> bool {
+        self.exact && self.offset == self.expected.len()
+    }
+}
+
+impl<R: Read> Read for ExactBytesReader<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if buffer.is_empty() || self.exceeded_expected_length {
+            return Ok(0);
+        }
+        if self.offset == self.expected.len() {
+            let mut extra = [0_u8; 1];
+            if self.inner.read(&mut extra)? == 0 {
+                return Ok(0);
+            }
+            self.offset = self
+                .offset
+                .checked_add(1)
+                .ok_or_else(|| std::io::Error::other("exact-byte comparison offset overflow"))?;
+            self.exact = false;
+            self.exceeded_expected_length = true;
+            return Ok(0);
+        }
+        let maximum = (self.expected.len() - self.offset).min(buffer.len());
+        let read = self.inner.read(&mut buffer[..maximum])?;
+        let end = self
+            .offset
+            .checked_add(read)
+            .ok_or_else(|| std::io::Error::other("exact-byte comparison offset overflow"))?;
+        if self.expected.get(self.offset..end) != Some(&buffer[..read]) {
+            self.exact = false;
+        }
+        self.offset = end;
+        Ok(read)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistedPackageArchiveReport {
     pub package_hash: String,
@@ -694,8 +750,10 @@ fn verify_fidelity_report(
     manifest: &PackageManifestHeader,
     metadata: &ParquetArchiveMetadata,
 ) -> Result<()> {
-    let bytes = match package_root.read_optional(FIDELITY_REPORT_PATH) {
-        Ok(Some(bytes)) => bytes,
+    let expected = fidelity_report(&manifest.package_hash, metadata);
+    let canonical = canonical_json_bytes(&expected)?;
+    let file = match package_root.open_optional_std_file(FIDELITY_REPORT_PATH) {
+        Ok(Some(file)) => file,
         Ok(None) => {
             return Err(archive_verification_failure(format!(
                 "missing archive fidelity report {FIDELITY_REPORT_PATH}"
@@ -708,7 +766,8 @@ fn verify_fidelity_report(
             )));
         }
     };
-    let actual: PackageArchiveFidelityReport = match serde_json::from_slice(&bytes) {
+    let mut reader = ExactBytesReader::new(BufReader::new(file), &canonical);
+    let actual: PackageArchiveFidelityReport = match serde_json::from_reader(&mut reader) {
         Ok(actual) => actual,
         Err(error) => {
             return Err(archive_verification_failure(format!(
@@ -716,14 +775,12 @@ fn verify_fidelity_report(
             )));
         }
     };
-    let expected = fidelity_report(&manifest.package_hash, metadata);
     if actual != expected {
         return Err(archive_verification_failure(
             "archive fidelity report mismatch",
         ));
     }
-    let canonical = canonical_json_bytes(&expected)?;
-    if bytes != canonical {
+    if !reader.is_exact() {
         return Err(archive_verification_failure(
             "archive fidelity report is not canonical JSON",
         ));
@@ -826,5 +883,23 @@ fn cleanup_stale_archive_temps(package_dir: &Path) -> Result<()> {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(io_error(format!("remove {}", tmp_root.display()), error)),
+    }
+}
+
+#[cfg(test)]
+mod exact_bytes_reader_tests {
+    use std::io::Cursor;
+
+    use super::ExactBytesReader;
+
+    #[test]
+    fn semantic_json_equality_cannot_replace_exact_canonical_bytes() {
+        let canonical = br#"{"a":1,"b":2}"#;
+        let reordered = br#"{"b":2,"a":1}"#;
+        assert_eq!(canonical.len(), reordered.len());
+        let mut reader = ExactBytesReader::new(Cursor::new(reordered), canonical);
+        let observed: serde_json::Value = serde_json::from_reader(&mut reader).unwrap();
+        assert_eq!(observed, serde_json::json!({"a": 1, "b": 2}));
+        assert!(!reader.is_exact());
     }
 }

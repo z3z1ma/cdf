@@ -1,5 +1,5 @@
 use std::{
-    io::{self, Read},
+    io,
     path::{Path, PathBuf},
 };
 
@@ -99,25 +99,6 @@ impl PackageRoot {
 
     pub(crate) fn same_object(&self, other: &Self) -> bool {
         self.identity == other.identity
-    }
-
-    pub(crate) fn read(&self, relative_path: &str) -> Result<Vec<u8>> {
-        self.read_optional(relative_path)?.ok_or_else(|| {
-            CdfError::data(format!(
-                "package path is missing or not a regular file: {relative_path}"
-            ))
-        })
-    }
-
-    pub(crate) fn read_optional(&self, relative_path: &str) -> Result<Option<Vec<u8>>> {
-        let Some(mut file) = self.try_open_regular_file(relative_path)? else {
-            return Ok(None);
-        };
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).map_err(|error| {
-            package_io_error(format!("read package file {relative_path}"), error)
-        })?;
-        Ok(Some(bytes))
     }
 
     pub(crate) fn file_entry(&self, relative_path: &str) -> Result<Option<FileEntry>> {
@@ -330,7 +311,7 @@ fn missing_or_nonregular(error: &io::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, io};
 
     use super::*;
 
@@ -341,15 +322,18 @@ mod tests {
         fs::create_dir_all(package.join("data")).unwrap();
         fs::write(package.join("data/segment.arrow"), b"segment").unwrap();
         let root = PackageRoot::open(&package).unwrap();
-        assert_eq!(
-            root.read("data/segment.arrow").unwrap(),
-            b"segment".to_vec()
-        );
+        let mut bytes = Vec::new();
+        io::copy(
+            &mut root.open_std_file("data/segment.arrow").unwrap(),
+            &mut bytes,
+        )
+        .unwrap();
+        assert_eq!(bytes, b"segment".to_vec());
 
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink("segment.arrow", package.join("data/link.arrow")).unwrap();
-            assert!(root.read("data/link.arrow").is_err());
+            assert!(root.open_std_file("data/link.arrow").is_err());
             std::os::unix::fs::symlink(&package, temp.path().join("package-link")).unwrap();
             assert!(PackageRoot::open(&temp.path().join("package-link")).is_err());
         }
@@ -368,10 +352,13 @@ mod tests {
         fs::create_dir_all(package.join("data")).unwrap();
         fs::write(package.join("data/segment.arrow"), b"replacement").unwrap();
 
-        assert_eq!(
-            root.read("data/segment.arrow").unwrap(),
-            b"original".to_vec()
-        );
+        let mut bytes = Vec::new();
+        io::copy(
+            &mut root.open_std_file("data/segment.arrow").unwrap(),
+            &mut bytes,
+        )
+        .unwrap();
+        assert_eq!(bytes, b"original".to_vec());
         assert!(!root.same_object(&PackageRoot::open(&package).unwrap()));
     }
 }

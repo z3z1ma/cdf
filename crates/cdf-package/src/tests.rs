@@ -1321,6 +1321,17 @@ fn verified_identity_artifact_read_rejects_post_verification_change() {
             .contains("identity artifact plan/scan.json changed after package verification"),
         "{error}"
     );
+
+    fs::write(temp.path().join("plan/scan.json"), b"{").unwrap();
+    let error = reader
+        .verified_json_artifact::<BTreeMap<String, String>>(&verified, "plan/scan.json")
+        .unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("identity artifact plan/scan.json changed after package verification"),
+        "tampered identity must fail before surfacing its JSON shape: {error}"
+    );
 }
 
 #[test]
@@ -3103,7 +3114,25 @@ fn production_commit_paths_cannot_collect_package_segments() {
     let ops_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("src")
         .join("ops.rs");
-    let mut files = vec![archive_path.clone(), reader_path.clone(), ops_path];
+    assert!(
+        !fs::read_to_string(&ops_path)
+            .unwrap()
+            .contains("serde_json::Value"),
+        "contract-evolution verification must not restore a whole-artifact JSON DOM"
+    );
+    let package_fs_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("package_fs.rs");
+    let artifacts_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("artifacts.rs");
+    let mut files = vec![
+        archive_path.clone(),
+        reader_path.clone(),
+        ops_path,
+        package_fs_path,
+        artifacts_path,
+    ];
     files.push(crates_dir.join("cdf-project/src/promotion.rs"));
     for relative in [
         "cdf-project/src/runtime",
@@ -3125,6 +3154,8 @@ fn production_commit_paths_cannot_collect_package_segments() {
             "read_receipts(",
             ".receipts()",
             "read_segment(",
+            "verified_identity_bytes",
+            "read_to_end",
         ];
         for forbidden in forbidden {
             assert!(

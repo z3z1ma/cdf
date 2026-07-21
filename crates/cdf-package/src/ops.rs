@@ -11,7 +11,7 @@ use cdf_package_contract::{
     FileEntry, MANIFEST_FILE, MANIFEST_VERSION, PackageManifest, PackageStatus, RECEIPTS_FILE,
     TombstoneReport, VerificationReport,
 };
-use serde::de::{Error as _, SeqAccess, Visitor};
+use serde::de::{Error as _, IgnoredAny, MapAccess, SeqAccess, Visitor};
 
 use crate::{
     archive::{verify_parquet_archive_absence, verify_parquet_archive_metadata},
@@ -242,34 +242,123 @@ fn verify_contract_evolution_versions(
     if !manifest_contains_file(root, PATH)? {
         return Ok(());
     }
-    let bytes = root.read(PATH)?;
-    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(json_error)?;
-    if value.get("version").and_then(serde_json::Value::as_u64) != Some(1) {
-        return Err(CdfError::data(
-            "schema/contract-evolution.json has an unsupported or missing version",
-        ));
-    }
-    if value.get("residual_capture").is_some_and(|capture| {
-        !capture.is_null() && capture.get("version").and_then(serde_json::Value::as_u64) != Some(1)
-    }) {
-        return Err(CdfError::data(
-            "schema/contract-evolution.json has an unsupported residual-capture version",
-        ));
-    }
-    if value
-        .get("residual_decisions")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|decisions| {
-            decisions.iter().any(|decision| {
-                decision.get("version").and_then(serde_json::Value::as_u64) != Some(1)
-            })
-        })
+    let file = root.open_std_file(PATH)?;
+    let mut deserializer = serde_json::Deserializer::from_reader(BufReader::new(file));
+    serde::de::Deserializer::deserialize_map(&mut deserializer, ContractEvolutionVersionVisitor)
+        .map_err(json_error)
+}
+
+struct VersionOnly(Option<u64>);
+
+impl<'de> serde::Deserialize<'de> for VersionOnly {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
     {
-        return Err(CdfError::data(
-            "schema/contract-evolution.json has an unsupported residual-decision version",
-        ));
+        deserializer.deserialize_map(VersionOnlyVisitor)
     }
-    Ok(())
+}
+
+struct VersionOnlyVisitor;
+
+impl<'de> Visitor<'de> for VersionOnlyVisitor {
+    type Value = VersionOnly;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("an object with a version field")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut version = None;
+        while let Some(key) = map.next_key::<String>()? {
+            if key == "version" {
+                version = Some(map.next_value()?);
+            } else {
+                map.next_value::<IgnoredAny>()?;
+            }
+        }
+        Ok(VersionOnly(version))
+    }
+}
+
+struct ResidualDecisionVersions;
+
+impl<'de> serde::Deserialize<'de> for ResidualDecisionVersions {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(ResidualDecisionVersionsVisitor)
+    }
+}
+
+struct ResidualDecisionVersionsVisitor;
+
+impl<'de> Visitor<'de> for ResidualDecisionVersionsVisitor {
+    type Value = ResidualDecisionVersions;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("an array of versioned residual decisions")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        while let Some(version) = sequence.next_element::<VersionOnly>()? {
+            if version.0 != Some(1) {
+                return Err(A::Error::custom(
+                    "schema/contract-evolution.json has an unsupported residual-decision version",
+                ));
+            }
+        }
+        Ok(ResidualDecisionVersions)
+    }
+}
+
+struct ContractEvolutionVersionVisitor;
+
+impl<'de> Visitor<'de> for ContractEvolutionVersionVisitor {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a versioned contract-evolution object")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut version = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "version" => version = Some(map.next_value::<u64>()?),
+                "residual_capture" => {
+                    let capture = map.next_value::<Option<VersionOnly>>()?;
+                    if capture.is_some_and(|capture| capture.0 != Some(1)) {
+                        return Err(A::Error::custom(
+                            "schema/contract-evolution.json has an unsupported residual-capture version",
+                        ));
+                    }
+                }
+                "residual_decisions" => {
+                    map.next_value::<ResidualDecisionVersions>()?;
+                }
+                _ => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+        if version != Some(1) {
+            return Err(A::Error::custom(
+                "schema/contract-evolution.json has an unsupported or missing version",
+            ));
+        }
+        Ok(())
+    }
 }
 
 pub fn verify_package_identity(package_dir: impl AsRef<Path>) -> Result<VerificationReport> {

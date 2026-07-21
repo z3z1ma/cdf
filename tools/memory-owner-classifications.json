@@ -137,10 +137,10 @@
       "status": "open"
     },
     {
-      "owner": "package control-artifact buffers",
+      "owner": "package control-artifact semantic models",
       "class": "metadata",
       "boundary": "cdf-package verified identity, contract-evolution, and archive-fidelity readers",
-      "bound_authority": "identity manifest records exact bytes, but current readers allocate the complete artifact without a ledger lease",
+      "bound_authority": "raw bytes stream under exact identity length; state, observation, and late-data semantic vectors remain resident without external authority",
       "evidence": ".10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md",
       "status": "open"
     }

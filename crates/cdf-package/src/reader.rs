@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::{self, Seek, SeekFrom},
+    io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -201,6 +201,82 @@ pub struct VerifiedIdentityObject {
     _verification: Arc<VerifiedPackage>,
 }
 
+struct VerifiedIdentityDigestReader<R> {
+    inner: R,
+    expected_byte_count: u64,
+    hasher: Sha256,
+    byte_count: u64,
+    exceeded_expected_length: bool,
+}
+
+impl<R: Read> Read for VerifiedIdentityDigestReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if buffer.is_empty() || self.exceeded_expected_length {
+            return Ok(0);
+        }
+        if self.byte_count == self.expected_byte_count {
+            let mut extra = [0_u8; 1];
+            let read = self.inner.read(&mut extra)?;
+            if read == 0 {
+                return Ok(0);
+            }
+            self.hasher.update(extra);
+            self.byte_count = self
+                .byte_count
+                .checked_add(1)
+                .ok_or_else(|| io::Error::other("identity artifact byte count overflow"))?;
+            self.exceeded_expected_length = true;
+            return Ok(0);
+        }
+        let remaining = self.expected_byte_count - self.byte_count;
+        let maximum = usize::try_from(remaining)
+            .unwrap_or(usize::MAX)
+            .min(buffer.len());
+        let read = self.inner.read(&mut buffer[..maximum])?;
+        self.hasher.update(&buffer[..read]);
+        self.byte_count = self
+            .byte_count
+            .checked_add(u64::try_from(read).map_err(io::Error::other)?)
+            .ok_or_else(|| io::Error::other("identity artifact byte count overflow"))?;
+        Ok(read)
+    }
+}
+
+impl<R: Read> VerifiedIdentityDigestReader<R> {
+    fn new(inner: R, expected_byte_count: u64) -> Self {
+        Self {
+            inner,
+            expected_byte_count,
+            hasher: Sha256::new(),
+            byte_count: 0,
+            exceeded_expected_length: false,
+        }
+    }
+
+    fn finish(mut self, artifact: &VerifiedIdentityObject) -> Result<()> {
+        io::copy(&mut self, &mut io::sink()).map_err(|error| {
+            io_error(
+                format!("read verified identity artifact {}", artifact.relative_path),
+                error,
+            )
+        })?;
+        if self.exceeded_expected_length {
+            return Err(CdfError::data(format!(
+                "identity artifact {} changed after package verification: expected {} bytes with sha256 {}, observed more than the declared identity length (at least {} bytes)",
+                artifact.relative_path, artifact.byte_count, artifact.sha256, self.byte_count
+            )));
+        }
+        let sha256 = hex::encode(self.hasher.finalize());
+        if self.byte_count != artifact.byte_count || sha256 != artifact.sha256 {
+            return Err(CdfError::data(format!(
+                "identity artifact {} changed after package verification: expected {} bytes with sha256 {}, observed {} bytes with sha256 {sha256}",
+                artifact.relative_path, artifact.byte_count, artifact.sha256, self.byte_count
+            )));
+        }
+        Ok(())
+    }
+}
+
 impl VerifiedIdentityObject {
     pub fn relative_path(&self) -> &str {
         &self.relative_path
@@ -214,9 +290,18 @@ impl VerifiedIdentityObject {
         &self.sha256
     }
 
-    /// Opens the retained capability after revalidating the exact identity bytes on the same
-    /// handle. Streaming consumers avoid whole-artifact buffering without weakening the
-    /// post-verification tamper check.
+    fn open_digest_reader(&self) -> Result<VerifiedIdentityDigestReader<fs::File>> {
+        Ok(VerifiedIdentityDigestReader::new(
+            self.package_root.open_std_file(&self.relative_path)?,
+            self.byte_count,
+        ))
+    }
+
+    /// Opens the retained capability after revalidating the identity bytes and rewinding the same
+    /// handle. Seekable consumers avoid whole-artifact buffering and rename substitution. They
+    /// still rely on the package store's immutable-after-finalization contract against an actor
+    /// that can mutate the already-open inode in place; forward-only control artifacts instead
+    /// hash the exact bytes while consuming them.
     pub fn open_verified_file(&self) -> Result<std::fs::File> {
         let mut file = self.package_root.open_std_file(&self.relative_path)?;
         let mut hasher = Sha256::new();
@@ -764,33 +849,6 @@ impl PackageReader {
         Ok(())
     }
 
-    /// Reads an identity-bearing artifact under package verification authority
-    /// and revalidates its exact bytes at the point of consumption.
-    pub fn verified_identity_bytes(
-        &self,
-        verified: &VerifiedPackage,
-        relative_path: impl AsRef<Path>,
-    ) -> Result<Vec<u8>> {
-        self.require_verification(verified)?;
-        let relative_path = normalize_artifact_path(relative_path.as_ref())?;
-        let entry = self.identity_file_entry(&relative_path)?.ok_or_else(|| {
-            CdfError::data(format!(
-                "verified package identity does not contain artifact {relative_path}"
-            ))
-        })?;
-        let bytes = self.package_root.read(&relative_path)?;
-        let byte_count = u64::try_from(bytes.len())
-            .map_err(|_| CdfError::data("identity artifact byte count exceeds u64"))?;
-        let sha256 = hex::encode(Sha256::digest(&bytes));
-        if byte_count != entry.byte_count || sha256 != entry.sha256 {
-            return Err(CdfError::data(format!(
-                "identity artifact {relative_path} changed after package verification: expected {} bytes with sha256 {}, observed {byte_count} bytes with sha256 {sha256}",
-                entry.byte_count, entry.sha256
-            )));
-        }
-        Ok(bytes)
-    }
-
     /// Retains a verified file capability for streaming consumers that must not buffer the whole
     /// identity artifact merely to cross the package boundary.
     pub fn verified_identity_object(
@@ -820,14 +878,16 @@ impl PackageReader {
         relative_path: impl AsRef<Path>,
     ) -> Result<T> {
         let relative_path = relative_path.as_ref();
-        serde_json::from_slice(&self.verified_identity_bytes(verified, relative_path)?).map_err(
-            |error| {
-                CdfError::data(format!(
-                    "decode package artifact {}: {error}",
-                    relative_path.display()
-                ))
-            },
-        )
+        let artifact = self.verified_identity_object(Arc::new(verified.clone()), relative_path)?;
+        let mut reader = artifact.open_digest_reader()?;
+        let decoded = serde_json::from_reader(io::BufReader::new(&mut reader));
+        reader.finish(&artifact)?;
+        decoded.map_err(|error| {
+            CdfError::data(format!(
+                "decode package artifact {}: {error}",
+                relative_path.display()
+            ))
+        })
     }
 
     pub fn verified_optional_json_artifact<T: DeserializeOwned>(
@@ -921,8 +981,14 @@ impl PackageReader {
         &self,
         verified: &VerifiedPackage,
     ) -> Result<arrow_schema::SchemaRef> {
-        let bytes = self.verified_identity_bytes(verified, crate::RUNTIME_ARROW_SCHEMA_FILE)?;
-        crate::runtime_schema_from_bytes(bytes)
+        let object = self.verified_identity_object(
+            Arc::new(verified.clone()),
+            crate::RUNTIME_ARROW_SCHEMA_FILE,
+        )?;
+        let mut reader = object.open_digest_reader()?;
+        let schema = crate::runtime_schema_from_reader(&mut reader);
+        reader.finish(&object)?;
+        schema
     }
 
     pub fn replay_inputs(&self) -> Result<PackageReplayInputs> {
@@ -1209,4 +1275,59 @@ fn dedup_u64_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a UInt64
         .column_by_name(name)
         .and_then(|array| array.as_any().downcast_ref::<UInt64Array>())
         .ok_or_else(|| CdfError::data(format!("dedup provenance omits uint64 column {name}")))
+}
+
+#[cfg(test)]
+mod digest_reader_tests {
+    use std::{
+        cell::Cell,
+        io::{self, Cursor},
+        rc::Rc,
+    };
+
+    use super::VerifiedIdentityDigestReader;
+
+    struct CountingReader<R> {
+        inner: R,
+        calls: Rc<Cell<u64>>,
+    }
+
+    impl<R: std::io::Read> std::io::Read for CountingReader<R> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.calls.set(self.calls.get() + 1);
+            self.inner.read(buffer)
+        }
+    }
+
+    #[test]
+    fn verified_json_digest_is_chunked_and_enforces_declared_length() {
+        let encoded = serde_json::to_vec(&"x".repeat(1024 * 1024)).unwrap();
+        let calls = Rc::new(Cell::new(0));
+        let source = CountingReader {
+            inner: Cursor::new(encoded.clone()),
+            calls: Rc::clone(&calls),
+        };
+        let mut digest = VerifiedIdentityDigestReader::new(source, encoded.len() as u64);
+        let decoded: String =
+            serde_json::from_reader(std::io::BufReader::new(&mut digest)).unwrap();
+        assert_eq!(decoded.len(), 1024 * 1024);
+        assert!(
+            calls.get() < 512,
+            "buffered decode used {} reads",
+            calls.get()
+        );
+
+        let oversized_calls = Rc::new(Cell::new(0));
+        let source = CountingReader {
+            inner: Cursor::new(vec![b'x'; 1024 * 1024]),
+            calls: Rc::clone(&oversized_calls),
+        };
+        let mut bounded = VerifiedIdentityDigestReader::new(source, 3);
+        let mut observed = Vec::new();
+        io::copy(&mut bounded, &mut observed).unwrap();
+        assert_eq!(observed, b"xxx");
+        assert!(bounded.exceeded_expected_length);
+        assert_eq!(bounded.byte_count, 4);
+        assert!(oversized_calls.get() <= 2);
+    }
 }
