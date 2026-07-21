@@ -123,6 +123,9 @@ jobs:
       - name: Generated command and error reference freshness
         run: cargo run -p cdf-cli-core --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --docs-dir docs --docs-only --check
 
+      - name: Generated memory owner matrix freshness
+        run: python tools/generate-memory-owner-matrix.py --check
+
       - name: Coverage summary
         run: cargo llvm-cov --workspace --all-features --locked --summary-only
 
