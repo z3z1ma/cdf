@@ -111,6 +111,8 @@ pub struct DestinationPathMeasurementIdentity {
     pub destination_id: String,
     pub path_id: String,
     pub evidence_version: String,
+    pub execution_descriptor_sha256: String,
+    pub schema_preflight_version: String,
     pub eligibility: DestinationPathEligibility,
     pub schema_fixture: String,
     pub evidence_record: String,

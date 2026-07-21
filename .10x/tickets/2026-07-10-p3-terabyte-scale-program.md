@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-10
-Updated: 2026-07-19
+Updated: 2026-07-21
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-08-p2-data-onramp-program.md
 
@@ -110,6 +110,7 @@ P3 does not implement a distributed scheduler, remote worker leases, resident st
 - 2026-07-19: Closed WS-A after all executable children reached terminal evidence. The runtime now has injected execution ownership, one memory ledger, bounded/fused stage flow, byte-first deterministic segments, spillable package state, capability-driven staged destination ingress, and finite unbounded drain epochs with monotone receipt-gated watermarks and exact late-data recovery. C5 owns external isolated-worker equivalence; Z1 owns host-class whole-product overhead reconciliation.
 - 2026-07-20: Closed WS-C after all five children reached terminal evidence. Jobs invariance now spans the permanent source/destination matrix, shared CPU admission covers native/DataFusion/Python execution, and the canonical serialized isolated-worker seam reproduces direct package and verdict semantics without source/destination branches or a remote scheduler.
 - 2026-07-18 final pass: opened D17 as a direct program residual after current controlled TLC remained within 2.16% of its retained median but the exact local FineWeb wide-string workload exposed lost package/DuckDB overlap and excess macOS RSS. The historical WS-D closure remains accurate for the stock-scanner promotion and deleted legacy paths; D17 owns only restoring wide-string overlap through that same sole scanner without reopening the superseded appender/nanoarrow/callback designs.
+- 2026-07-21: Closed the P0 performance-gate authority repair at `.10x/tickets/done/2026-07-18-p0-performance-gate-authority-repair.md`. Current WX1 engine/package/replay smoke executes end to end; destination evidence now joins on content-addressed execution mechanics plus exact schema-preflight identity, so descriptor drift cannot inherit old measurements or resurrect the superseded DuckDB appender. Final release smoke completed all six cells with no regression.
 
 ## Blockers
 

@@ -3,8 +3,8 @@ use std::{fs, path::Path};
 use cdf_benchmarks::{
     BenchmarkReport, ComparisonVerdict, DestinationBulkCatalogEntry, DestinationPathEligibility,
     DestinationPathMeasurementIdentity, EnvelopeSpec, IoMode, ReferenceIdentity, canonical_sha256,
-    compare_reports, comparison_fails, generate_envelope, host_class, install_baseline,
-    report_fixture, summarize_samples,
+    compare_reports, comparison_fails, destination_execution_descriptor_sha256, generate_envelope,
+    host_class, install_baseline, report_fixture, summarize_samples,
 };
 use cdf_dest_duckdb::DuckDbRuntimeDriver;
 use cdf_dest_parquet::ParquetRuntimeDriver;
@@ -286,6 +286,9 @@ fn destination_envelope_rejects_invented_or_drifted_registry_evidence() {
         destination_id: "duckdb".to_owned(),
         path_id: "invented_path".to_owned(),
         evidence_version: "invented-version".to_owned(),
+        execution_descriptor_sha256:
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
+        schema_preflight_version: "invented-preflight@1".to_owned(),
         eligibility: DestinationPathEligibility::Eligible,
         schema_fixture: "tlc-v1".to_owned(),
         evidence_record: ".10x/evidence/2026-07-11-p3-d2-duckdb-closeout.md".to_owned(),
@@ -315,7 +318,43 @@ fn destination_envelope_rejects_invented_or_drifted_registry_evidence() {
         .as_mut()
         .unwrap();
     identity.path_id = "canonical_segment_scan".to_owned();
-    identity.evidence_version = "p3-d2-2026-07-11-v1".to_owned();
+    identity.evidence_version = "p3-d14-stock-scan-2026-07-19-v1".to_owned();
+    identity.schema_preflight_version = "duckdb-canonical-segment-scan@2".to_owned();
+    let error = generate_envelope(
+        &report,
+        &spec,
+        &catalog,
+        &destination_report,
+        workspace_root(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("does not exactly match a registry descriptor"),
+        "{error}"
+    );
+
+    let identity = destination_report
+        .observations
+        .iter_mut()
+        .find(|observation| observation.comparability.workload_id == "d5_duckdb_eligible")
+        .unwrap()
+        .destination_path
+        .as_mut()
+        .unwrap();
+    let duckdb_path = catalog
+        .iter()
+        .find(|entry| entry.destination_id == "duckdb")
+        .and_then(|entry| {
+            entry
+                .runtime
+                .bulk_paths
+                .iter()
+                .find(|path| path.path_id == "canonical_segment_scan")
+        })
+        .unwrap();
+    identity.execution_descriptor_sha256 =
+        destination_execution_descriptor_sha256(duckdb_path).unwrap();
     identity.evidence_record = ".10x/evidence/../secret.md".to_owned();
     let error = generate_envelope(
         &report,

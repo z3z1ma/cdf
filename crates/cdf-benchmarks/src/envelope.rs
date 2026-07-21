@@ -42,6 +42,18 @@ pub struct DestinationBulkCatalogEntry {
     pub runtime: cdf_runtime::DestinationRuntimeCapabilities,
 }
 
+pub fn destination_execution_descriptor_sha256(
+    descriptor: &cdf_runtime::BulkPathDescriptor,
+) -> BenchResult<String> {
+    let mut execution = serde_json::to_value(descriptor)?;
+    let object = execution
+        .as_object_mut()
+        .ok_or_else(|| bench_error("bulk path descriptor must serialize as an object"))?;
+    object.remove("schema_preflight_version");
+    object.remove("measured_evidence_version");
+    canonical_sha256(&execution)
+}
+
 impl From<&cdf_runtime::DestinationInspection> for DestinationBulkCatalogEntry {
     fn from(inspection: &cdf_runtime::DestinationInspection) -> Self {
         Self {
@@ -163,7 +175,7 @@ pub fn generate_envelope(
                         path,
                         eligibility,
                         target,
-                    );
+                    )?;
                 }
             }
         }
@@ -326,14 +338,24 @@ fn validate_destination_observation_joins(
                 identity.path_id, observation.comparability.host_class, report_host_class
             )));
         }
-        let exact = catalog.iter().any(|entry| {
-            entry.destination_id == identity.destination_id
-                && entry.runtime.bulk_paths.iter().any(|path| {
-                    path.path_id == identity.path_id
-                        && path.measured_evidence_version.as_deref()
-                            == Some(identity.evidence_version.as_str())
-                })
-        });
+        let matching_path = catalog
+            .iter()
+            .find(|entry| entry.destination_id == identity.destination_id)
+            .and_then(|entry| {
+                entry
+                    .runtime
+                    .bulk_paths
+                    .iter()
+                    .find(|path| path.path_id == identity.path_id)
+            });
+        let exact = if let Some(path) = matching_path {
+            path.measured_evidence_version.as_deref() == Some(identity.evidence_version.as_str())
+                && path.schema_preflight_version == identity.schema_preflight_version
+                && destination_execution_descriptor_sha256(path)?
+                    == identity.execution_descriptor_sha256
+        } else {
+            false
+        };
         if !exact {
             return Err(bench_error(format!(
                 "destination observation {}/{} evidence {} does not exactly match a registry descriptor",
@@ -386,6 +408,8 @@ fn validate_destination_observation_joins(
             identity.destination_id.as_str(),
             identity.path_id.as_str(),
             identity.evidence_version.as_str(),
+            identity.execution_descriptor_sha256.as_str(),
+            identity.schema_preflight_version.as_str(),
             eligibility,
             identity.schema_fixture.as_str(),
         )) {
@@ -413,6 +437,7 @@ fn validate_destination_observation_joins(
                     entry.destination_id, path.path_id
                 ))
             })?;
+            let execution_descriptor_sha256 = destination_execution_descriptor_sha256(path)?;
             for (eligibility, fixture) in [
                 ("eligible", target.eligible_schema_fixture.as_str()),
                 ("ineligible", target.ineligible_schema_fixture.as_str()),
@@ -421,6 +446,8 @@ fn validate_destination_observation_joins(
                     entry.destination_id.as_str(),
                     path.path_id.as_str(),
                     evidence,
+                    execution_descriptor_sha256.as_str(),
+                    path.schema_preflight_version.as_str(),
                     eligibility,
                     fixture,
                 )) {
@@ -442,7 +469,8 @@ fn destination_path_row(
     path: &cdf_runtime::BulkPathDescriptor,
     eligibility: DestinationPathEligibility,
     target: &DestinationEnvelopeTarget,
-) {
+) -> BenchResult<()> {
+    let execution_descriptor_sha256 = destination_execution_descriptor_sha256(path)?;
     let observation = report.observations.iter().find(|observation| {
         observation
             .destination_path
@@ -452,6 +480,8 @@ fn destination_path_row(
                     && identity.path_id == path.path_id
                     && path.measured_evidence_version.as_deref()
                         == Some(identity.evidence_version.as_str())
+                    && execution_descriptor_sha256 == identity.execution_descriptor_sha256
+                    && path.schema_preflight_version == identity.schema_preflight_version
                     && identity.eligibility == eligibility
                     && identity.schema_fixture
                         == match eligibility {
@@ -510,6 +540,7 @@ fn destination_path_row(
         escape(&status),
         evidence,
     ));
+    Ok(())
 }
 
 fn format_rate(summary: &crate::MeasurementSummary) -> String {

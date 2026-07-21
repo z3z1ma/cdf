@@ -24,12 +24,12 @@
       "summary":{"median_absolute_deviation_ns":0,"median_logical_bytes_per_second":0,"median_physical_bytes_per_second":0,"median_rows_per_second":9835744,"median_wall_time_ns":106608709,"peak_rss_bytes":null,"sample_count":1,"spill_bytes":0},
       "reference":null,"bias":[],
       "measurement_provider":{"method":"release-test-stdout","observes_cpu_time":false,"observes_peak_rss":false,"version":"p3-d5-v1"},
-      "destination_path":{"destination_id":"duckdb","path_id":"arrow_record_batch_appender","evidence_version":"p3-f2-2026-07-14-v2","eligibility":"eligible","schema_fixture":"tlc-v1","evidence_record":".10x/evidence/2026-07-12-p3-d5-destination-matrix.md"}
+      "destination_path":{"destination_id":"duckdb","path_id":"arrow_record_batch_appender","evidence_version":"p3-f2-2026-07-14-v2","execution_descriptor_sha256":"sha256:f28ed9c24a6146030c19116c44a8c3c39f7a7d0cff6c493c2e0242d3e0dda0c1","schema_preflight_version":"duckdb-arrow-mapping@1","eligibility":"eligible","schema_fixture":"tlc-v1","evidence_record":".10x/evidence/2026-07-12-p3-d5-destination-matrix.md"}
     },
     {
       "comparability":{"cdf_revision":"2c16a6f4-d5","dataset_id":"decimal256-v1","dependency_tuple":"arrow59-duckdb1.10504-postgres-local-parquet59","host_class":"host-class-f4bf4d1c46a93156","io_mode":"uncontrolled","os_toolchain":"macos-rust1.96.1","timed_region_version":1,"workload_id":"d5_duckdb_ineligible"},
       "status":{"kind":"ineligible","reason":"schema fixture is rejected during bulk-path preflight"},"samples":[],"summary":null,"reference":null,"bias":[],
-      "destination_path":{"destination_id":"duckdb","path_id":"arrow_record_batch_appender","evidence_version":"p3-f2-2026-07-14-v2","eligibility":"ineligible","schema_fixture":"decimal256-v1","evidence_record":".10x/evidence/2026-07-12-p3-d5-destination-matrix.md"}
+      "destination_path":{"destination_id":"duckdb","path_id":"arrow_record_batch_appender","evidence_version":"p3-f2-2026-07-14-v2","execution_descriptor_sha256":"sha256:f28ed9c24a6146030c19116c44a8c3c39f7a7d0cff6c493c2e0242d3e0dda0c1","schema_preflight_version":"duckdb-arrow-mapping@1","eligibility":"ineligible","schema_fixture":"decimal256-v1","evidence_record":".10x/evidence/2026-07-12-p3-d5-destination-matrix.md"}
     },
     {
       "comparability":{"cdf_revision":"2c16a6f4-d5","dataset_id":"tpch-orders-v1","dependency_tuple":"arrow59-duckdb1.10504-postgres-local-parquet59","host_class":"host-class-f4bf4d1c46a93156","io_mode":"warm","os_toolchain":"macos-rust1.96.1","timed_region_version":1,"workload_id":"d5_postgres_eligible"},
@@ -38,12 +38,12 @@
       "summary":{"median_absolute_deviation_ns":0,"median_logical_bytes_per_second":0,"median_physical_bytes_per_second":0,"median_rows_per_second":1804599,"median_wall_time_ns":290528709,"peak_rss_bytes":null,"sample_count":1,"spill_bytes":0},
       "reference":null,"bias":[],
       "measurement_provider":{"method":"release-test-stdout","observes_cpu_time":false,"observes_peak_rss":false,"version":"p3-d5-v1"},
-      "destination_path":{"destination_id":"postgres","path_id":"copy_binary","evidence_version":"p3-d3-2026-07-11-v1","eligibility":"eligible","schema_fixture":"tpch-orders-v1","evidence_record":".10x/evidence/2026-07-12-p3-d5-destination-matrix.md"}
+      "destination_path":{"destination_id":"postgres","path_id":"copy_binary","evidence_version":"p3-d3-2026-07-11-v1","execution_descriptor_sha256":"sha256:44d202c02cc1092fc790fb84de71fc50306058a2956b21962d792a3ac1e7c51e","schema_preflight_version":"postgres-binary-copy-mapping@1","eligibility":"eligible","schema_fixture":"tpch-orders-v1","evidence_record":".10x/evidence/2026-07-12-p3-d5-destination-matrix.md"}
     },
     {
       "comparability":{"cdf_revision":"2c16a6f4-d5","dataset_id":"unsupported-arrow-v1","dependency_tuple":"arrow59-duckdb1.10504-postgres-local-parquet59","host_class":"host-class-f4bf4d1c46a93156","io_mode":"uncontrolled","os_toolchain":"macos-rust1.96.1","timed_region_version":1,"workload_id":"d5_postgres_ineligible"},
       "status":{"kind":"ineligible","reason":"schema fixture is rejected during bulk-path preflight"},"samples":[],"summary":null,"reference":null,"bias":[],
-      "destination_path":{"destination_id":"postgres","path_id":"copy_binary","evidence_version":"p3-d3-2026-07-11-v1","eligibility":"ineligible","schema_fixture":"unsupported-arrow-v1","evidence_record":".10x/evidence/2026-07-12-p3-d5-destination-matrix.md"}
+      "destination_path":{"destination_id":"postgres","path_id":"copy_binary","evidence_version":"p3-d3-2026-07-11-v1","execution_descriptor_sha256":"sha256:44d202c02cc1092fc790fb84de71fc50306058a2956b21962d792a3ac1e7c51e","schema_preflight_version":"postgres-binary-copy-mapping@1","eligibility":"ineligible","schema_fixture":"unsupported-arrow-v1","evidence_record":".10x/evidence/2026-07-12-p3-d5-destination-matrix.md"}
     },
     {
       "comparability":{"cdf_revision":"020ad16b-d8-rerun","dataset_id":"wide-entropy-v1","dependency_tuple":"arrow59-duckdb1.10504-postgres-local-parquet59","host_class":"host-class-f4bf4d1c46a93156","io_mode":"warm","os_toolchain":"macos-rust1.96.1","timed_region_version":1,"workload_id":"d5_parquet_eligible"},
@@ -52,12 +52,12 @@
       "summary":{"median_absolute_deviation_ns":0,"median_logical_bytes_per_second":1515201982,"median_physical_bytes_per_second":1515506168,"median_rows_per_second":94700123,"median_wall_time_ns":88580750,"peak_rss_bytes":null,"sample_count":1,"spill_bytes":0},
       "reference":null,"bias":[],
       "measurement_provider":{"method":"release-test-stdout","observes_cpu_time":false,"observes_peak_rss":false,"version":"p3-d5-v1"},
-      "destination_path":{"destination_id":"parquet_object_store","path_id":"arrow_ipc_to_parquet","evidence_version":"p3-d8-2026-07-15-v5","eligibility":"eligible","schema_fixture":"wide-entropy-v1","evidence_record":".10x/evidence/2026-07-15-p3-d8-parquet-staged-ingress.md"}
+      "destination_path":{"destination_id":"parquet_object_store","path_id":"arrow_ipc_to_parquet","evidence_version":"p3-d8-2026-07-15-v5","execution_descriptor_sha256":"sha256:2da1575a89a9e45c9532efed11018dbceea4bc86d5e36a5027a35e48873f53a4","schema_preflight_version":"parquet-arrow-mapping@1","eligibility":"eligible","schema_fixture":"wide-entropy-v1","evidence_record":".10x/evidence/2026-07-15-p3-d8-parquet-staged-ingress.md"}
     },
     {
       "comparability":{"cdf_revision":"2c16a6f4-d5","dataset_id":"unsupported-arrow-v1-parquet","dependency_tuple":"arrow59-duckdb1.10504-postgres-local-parquet59","host_class":"host-class-f4bf4d1c46a93156","io_mode":"uncontrolled","os_toolchain":"macos-rust1.96.1","timed_region_version":1,"workload_id":"d5_parquet_ineligible"},
       "status":{"kind":"ineligible","reason":"schema fixture is rejected during bulk-path preflight"},"samples":[],"summary":null,"reference":null,"bias":[],
-      "destination_path":{"destination_id":"parquet_object_store","path_id":"arrow_ipc_to_parquet","evidence_version":"p3-d8-2026-07-15-v5","eligibility":"ineligible","schema_fixture":"unsupported-arrow-v1","evidence_record":".10x/evidence/2026-07-15-p3-d8-parquet-staged-ingress.md"}
+      "destination_path":{"destination_id":"parquet_object_store","path_id":"arrow_ipc_to_parquet","evidence_version":"p3-d8-2026-07-15-v5","execution_descriptor_sha256":"sha256:2da1575a89a9e45c9532efed11018dbceea4bc86d5e36a5027a35e48873f53a4","schema_preflight_version":"parquet-arrow-mapping@1","eligibility":"ineligible","schema_fixture":"unsupported-arrow-v1","evidence_record":".10x/evidence/2026-07-15-p3-d8-parquet-staged-ingress.md"}
     }
   ]
 }

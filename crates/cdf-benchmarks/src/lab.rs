@@ -351,6 +351,32 @@ pub fn validate_report(report: &BenchmarkReport) -> BenchResult<()> {
                 require_text(value, label)?;
                 reject_sensitive_identity(value, label)?;
             }
+            require_text(
+                &path.execution_descriptor_sha256,
+                "destination execution descriptor sha256",
+            )?;
+            if path.execution_descriptor_sha256.len() != 71
+                || !path.execution_descriptor_sha256.starts_with("sha256:")
+                || !path.execution_descriptor_sha256[7..]
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err(bench_error(
+                    "destination execution descriptor sha256 must be a canonical sha256 digest",
+                ));
+            }
+            if path.schema_preflight_version.is_empty()
+                || path.schema_preflight_version.len() > 128
+                || path.schema_preflight_version.chars().any(|ch| {
+                    !(ch.is_ascii_lowercase()
+                        || ch.is_ascii_digit()
+                        || matches!(ch, '-' | '_' | '.' | '@'))
+                })
+            {
+                return Err(bench_error(
+                    "destination schema-preflight version must use the runtime version grammar",
+                ));
+            }
             require_text(&path.evidence_record, "destination evidence record")?;
             let evidence_name = path.evidence_record.strip_prefix(".10x/evidence/");
             if !evidence_name.is_some_and(|name| {

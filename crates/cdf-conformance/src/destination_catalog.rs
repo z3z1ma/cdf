@@ -266,12 +266,12 @@ fn first_party_bulk_preflight_accepts_eligible_and_rejects_ineligible_schema_fix
     )]);
     let postgres_ineligible = Schema::new(vec![Field::new(
         "clock",
-        DataType::Time32(TimeUnit::Second),
+        DataType::Time32(TimeUnit::Microsecond),
         false,
     )]);
     let parquet_ineligible = Schema::new(vec![Field::new(
-        "amount",
-        DataType::Decimal128(38, 9),
+        "interval",
+        DataType::Interval(arrow_schema::IntervalUnit::MonthDayNano),
         false,
     )]);
     for (runtime, schema, expected) in [
@@ -281,7 +281,7 @@ fn first_party_bulk_preflight_accepts_eligible_and_rejects_ineligible_schema_fix
             "Decimal256",
         ),
         (&mut postgres, &postgres_ineligible, "Time32"),
-        (&mut parquet, &parquet_ineligible, "Decimal128"),
+        (&mut parquet, &parquet_ineligible, "month-day-nanosecond"),
     ] {
         let error = runtime
             .prepare_selected_bulk_path(&cdf_runtime::BulkPathPreparationInput::new(schema))
