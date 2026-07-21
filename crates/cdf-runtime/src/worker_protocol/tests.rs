@@ -947,6 +947,37 @@ fn canonical_task_attempt_and_result_fixtures_round_trip() {
 }
 
 #[test]
+fn portable_partition_task_round_trips_partition_ordinal_above_u32() {
+    let fixture = Fixture::new();
+    let high_ordinal = u64::from(u32::MAX) + 29;
+    let mut partition = fixture.task.partition.clone();
+    partition.canonical_partition_ordinal = high_ordinal;
+    let task = PortablePartitionTask::new(PortablePartitionTaskInput {
+        compatibility: fixture.task.compatibility.clone(),
+        pipeline_id: fixture.task.pipeline_id.clone(),
+        resource_id: fixture.task.resource_id.clone(),
+        plan_id: fixture.task.plan_id.clone(),
+        source: fixture.task.source.clone(),
+        partition,
+        execution: fixture.task.execution.clone(),
+        input_checkpoint: fixture.task.input_checkpoint.clone(),
+        secret_references: fixture.task.secret_references.clone(),
+        input_artifacts: fixture.task.input_artifacts.clone(),
+        resources: fixture.task.resources.clone(),
+        attempt_policy: fixture.task.attempt_policy.clone(),
+        capabilities: fixture.task.capabilities.clone(),
+        output_policy: fixture.task.output_policy.clone(),
+    })
+    .unwrap();
+
+    let encoded = serde_json::to_vec(&task).unwrap();
+    let decoded: PortablePartitionTask = serde_json::from_slice(&encoded).unwrap();
+
+    assert_eq!(decoded.partition.canonical_partition_ordinal, high_ordinal);
+    assert_eq!(decoded, task);
+}
+
+#[test]
 fn prepared_segment_receipts_are_row_verified_without_becoming_package_identity() {
     let fixture = Fixture::new();
     let mut task = fixture.task.clone();

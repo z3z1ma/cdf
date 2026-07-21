@@ -205,8 +205,8 @@ impl FormatDriver for ParquetFormatDriver {
                     .iter()
                     .enumerate()
                     .map(|(ordinal, row_group)| {
-                        let ordinal = u32::try_from(ordinal)
-                            .map_err(|_| CdfError::data("Parquet row-group ordinal exceeds u32"))?;
+                        let ordinal = u64::try_from(ordinal)
+                            .map_err(|_| CdfError::data("Parquet row-group ordinal exceeds u64"))?;
                         let compressed = u64::try_from(row_group.compressed_size())
                             .map_err(|_| CdfError::data("Parquet row-group size is negative"))?;
                         let estimated_working_set_bytes = compressed

@@ -16,7 +16,7 @@ Restore product-level trust after the Iceberg/Glue tranche by closing the author
 4. `.10x/tickets/2026-07-18-p0-product-smoke-matrix-gate.md`
 5. `.10x/tickets/done/2026-07-18-p0-engine-invocation-state-isolation.md`
 6. `.10x/tickets/done/2026-07-18-p0-destination-settlement-crash-evidence.md`
-7. `.10x/tickets/2026-07-18-p0-portable-partition-ordinals-u64.md`
+7. `.10x/tickets/done/2026-07-18-p0-portable-partition-ordinals-u64.md`
 8. `.10x/tickets/2026-07-18-p0-source-planning-authority-closure.md`
 
 ## Acceptance Criteria
@@ -49,6 +49,7 @@ Restore product-level trust after the Iceberg/Glue tranche by closing the author
 - 2026-07-18: The complete `cdf-project` suite now reaches 207/208 green after restoring weak-HTTP terminal SHA authority without repeating its same-command discovery transfer. The remaining failure was not product behavior: one cache test incorrectly reused invocation-local prepared payload state across three independent discovery invocations. Giving each invocation a fresh transient store made both that cache test and the same-command unversioned HTTP reuse test pass together.
 - 2026-07-18: Reconciled the independent audit's remaining findings into explicit children rather than leaving them in chat. Portable partition/task ordinals and cardinalities have their own `u64` migration child. Public post-construction partition-authority mutation, untyped observation binding, external drain-epoch manifest evidence, and the high-cardinality source-SDK planning trap are owned by the source-planning authority child and the existing typed-identity child.
 - 2026-07-18: Ran the exact barrier after repairing the six remaining failures rather than classifying them around. The Postgres cold-discovery path now binds observations to the source target rather than the compiled resource id; file-manifest recovery asserts the ratified resource-scoped `file:*` key; three live-run goldens were regenerated only after auditing their already-committed schema/statistics/lineage representation changes; and the benchmark isolation test no longer mistakes whole-workspace contention for the timeout behavior it does not own. `cargo nextest run --workspace --locked -j 12 --no-fail-fast` passed 1,771/1,771 with 40 explicit skips. Strict workspace all-target Clippy passed with warnings denied.
+- 2026-07-18: Closed the portable cardinality ceiling. Canonical partition and decode-unit ordinals now remain `u64` from external task authority through scheduler admission, retry and worker artifacts, engine segmentation, and drain/replay; scheduler resolution no longer narrows total external cardinality to process address space. The complete workspace gate passed 1,774/1,774 tests with 40 explicit skips, including jobs-invariance and external-task suites, and strict all-target Clippy passed.
 
 ## Blockers
 

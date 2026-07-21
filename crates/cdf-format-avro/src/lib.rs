@@ -1181,9 +1181,9 @@ async fn ocf_units(
     let mut block_header_offset = header_len;
     while block_header_offset < size {
         cancellation.check()?;
-        let ordinal = u32::try_from(units.len())
-            .map_err(|_| CdfError::data("Avro OCF block count exceeds u32"))?;
-        if ordinal >= options.maximum_blocks {
+        let ordinal = u64::try_from(units.len())
+            .map_err(|_| CdfError::data("Avro OCF block count exceeds u64"))?;
+        if ordinal >= u64::from(options.maximum_blocks) {
             return Err(CdfError::data(format!(
                 "Avro OCF contains more than the configured {} block maximum; increase format_options.maximum_blocks only when the resulting planning metadata is acceptable",
                 options.maximum_blocks

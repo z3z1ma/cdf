@@ -175,7 +175,7 @@ impl<'a> ProjectRunRecorder<'a> {
             );
             details.insert(
                 "partition_ordinal".to_owned(),
-                RunEventValue::U64(u64::from(retry.partition_ordinal())),
+                RunEventValue::U64(retry.partition_ordinal()),
             );
             details.insert(
                 "partition_id".to_owned(),

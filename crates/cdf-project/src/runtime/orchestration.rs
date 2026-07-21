@@ -763,10 +763,7 @@ async fn run_project_inner(
         .with_execution_services(execution.services.clone());
     let config = match execution.scheduler.as_ref() {
         Some(scheduler) => {
-            let partition_count = usize::try_from(manifest_plan.plan.scan.partition_count()?)
-                .map_err(|_| {
-                    CdfError::data("scan partition count exceeds this process address space")
-                })?;
+            let partition_count = manifest_plan.plan.scan.partition_count()?;
             config.with_scheduler_resolution(scheduler.narrow_to_partition_count(partition_count))
         }
         None => config,

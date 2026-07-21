@@ -923,7 +923,7 @@ fn million_row_python_resource_uses_the_global_memory_coordinator() {
         })
         .unwrap();
     let scheduler = cdf_runtime::resolve_runtime_scheduler(
-        usize::try_from(scan.partition_count().unwrap()).unwrap(),
+        scan.partition_count().unwrap(),
         &plan.execution_capabilities,
         &cdf_runtime::DestinationRuntimeCapabilities::default(),
         &execution,

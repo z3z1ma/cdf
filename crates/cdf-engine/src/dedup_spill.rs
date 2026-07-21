@@ -19,12 +19,12 @@ const FAST_PATH_MAX_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct PayloadMetadata {
-    partition_ordinal: u32,
+    partition_ordinal: u64,
     output_position: Option<SourcePosition>,
 }
 
 pub(crate) struct DedupPayload {
-    pub partition_ordinal: u32,
+    pub partition_ordinal: u64,
     pub output_position: Option<SourcePosition>,
     pub batch: arrow_array::RecordBatch,
 }
@@ -75,7 +75,7 @@ impl DedupPayloadSpool {
 
     pub fn push(
         &mut self,
-        partition_ordinal: u32,
+        partition_ordinal: u64,
         output_position: Option<SourcePosition>,
         batch: &arrow_array::RecordBatch,
     ) -> Result<()> {

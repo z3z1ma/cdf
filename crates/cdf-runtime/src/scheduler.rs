@@ -14,28 +14,28 @@ use crate::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct CanonicalPartitionOrdinal(u32);
+pub struct CanonicalPartitionOrdinal(u64);
 
 impl CanonicalPartitionOrdinal {
-    pub fn new(value: u32) -> Self {
+    pub fn new(value: u64) -> Self {
         Self(value)
     }
 
-    pub fn get(self) -> u32 {
+    pub fn get(self) -> u64 {
         self.0
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct CanonicalUnitOrdinal(u32);
+pub struct CanonicalUnitOrdinal(u64);
 
 impl CanonicalUnitOrdinal {
-    pub fn new(value: u32) -> Self {
+    pub fn new(value: u64) -> Self {
         Self(value)
     }
 
-    pub fn get(self) -> u32 {
+    pub fn get(self) -> u64 {
         self.0
     }
 }
@@ -138,11 +138,6 @@ impl CanonicalPartitionSchedule {
         let admission = PartitionAdmissionTemplate::compile(&source.execution_capabilities)?;
         let authority = match scan.partition_authority() {
             PartitionAuthority::External(planned_task_set) => {
-                if planned_task_set.task_count > u64::from(u32::MAX) {
-                    return Err(CdfError::contract(
-                        "external task-set partition count exceeds canonical u32 ordinals",
-                    ));
-                }
                 PartitionScheduleAuthority::External {
                     planned_task_set: planned_task_set.clone(),
                 }
@@ -162,7 +157,9 @@ impl CanonicalPartitionSchedule {
                         compile_partition_binding(
                             source,
                             &schedule_identity_hash,
-                            ordinal,
+                            u64::try_from(ordinal).map_err(|_| {
+                                CdfError::contract("inline partition ordinal exceeds u64")
+                            })?,
                             partition,
                         )
                     })
@@ -214,7 +211,7 @@ impl CanonicalPartitionSchedule {
     pub fn scheduled_partition(
         &self,
         source: &CompiledSourceExecutionPlan,
-        ordinal: usize,
+        ordinal: u64,
         partition: &PartitionPlan,
     ) -> Result<ScheduledPartition> {
         source.validate()?;
@@ -227,7 +224,10 @@ impl CanonicalPartitionSchedule {
         }
         let binding = match &self.authority {
             PartitionScheduleAuthority::Inline { partitions } => {
-                let binding = partitions.get(ordinal).ok_or_else(|| {
+                let ordinal_index = usize::try_from(ordinal).map_err(|_| {
+                    CdfError::contract("inline partition ordinal exceeds host address space")
+                })?;
+                let binding = partitions.get(ordinal_index).ok_or_else(|| {
                     CdfError::contract("partition schedule does not cover the requested ordinal")
                 })?;
                 if &binding.partition != partition {
@@ -238,9 +238,7 @@ impl CanonicalPartitionSchedule {
                 binding.clone()
             }
             PartitionScheduleAuthority::External { planned_task_set } => {
-                if u64::try_from(ordinal)
-                    .map_or(true, |ordinal| ordinal >= planned_task_set.task_count)
-                {
+                if ordinal >= planned_task_set.task_count {
                     return Err(CdfError::contract(
                         "external partition ordinal exceeds its planned task-set authority",
                     ));
@@ -248,7 +246,7 @@ impl CanonicalPartitionSchedule {
                 compile_partition_binding(source, &self.schedule_identity_hash, ordinal, partition)?
             }
         };
-        if binding.ordinal.get() as usize != ordinal {
+        if binding.ordinal.get() != ordinal {
             return Err(CdfError::data(
                 "partition schedule contains a stale canonical ordinal",
             ));
@@ -274,9 +272,8 @@ impl CanonicalPartitionSchedule {
         })
     }
 
-    pub fn contains_runtime_binding(&self, ordinal: u32, schedule_identity_hash: &str) -> bool {
-        schedule_identity_hash == self.schedule_identity_hash
-            && u64::from(ordinal) < self.partition_count()
+    pub fn contains_runtime_binding(&self, ordinal: u64, schedule_identity_hash: &str) -> bool {
+        schedule_identity_hash == self.schedule_identity_hash && ordinal < self.partition_count()
     }
 
     pub fn validate_against_scan(
@@ -306,11 +303,9 @@ fn schedule_identity_hash(source: &CompiledSourceExecutionPlan, scan: &ScanPlan)
 fn compile_partition_binding(
     source: &CompiledSourceExecutionPlan,
     schedule_identity_hash: &str,
-    ordinal: usize,
+    ordinal: u64,
     partition: &PartitionPlan,
 ) -> Result<CanonicalPartitionBinding> {
-    let ordinal = u32::try_from(ordinal)
-        .map_err(|_| CdfError::contract("scan plan partition count exceeds u32 ordinals"))?;
     let immutable_identity_hash = artifact_hash(&serde_json::json!({
         "driver": source.driver,
         "physical_plan_hash": source.physical_plan_hash,
@@ -410,7 +405,7 @@ pub struct RuntimeSchedulerResolution {
 impl RuntimeSchedulerResolution {
     /// Narrows a previously resolved run ceiling to the partitions remaining in one execution
     /// unit. This never re-runs host or connector heuristics and can only reduce concurrency.
-    pub fn narrow_to_partition_count(&self, partition_count: usize) -> Self {
+    pub fn narrow_to_partition_count(&self, partition_count: u64) -> Self {
         let mut narrowed = self.clone();
         let partition_ceiling = u16::try_from(partition_count).unwrap_or(u16::MAX);
         if narrowed.effective_jobs.jobs > partition_ceiling {
@@ -430,7 +425,7 @@ impl RuntimeSchedulerResolution {
     /// concurrency, lane, quota, rate, or boundedness authority after planning.
     pub fn validate_for_source(
         &self,
-        partition_count: usize,
+        partition_count: u64,
         source: &SourceExecutionCapabilities,
     ) -> Result<()> {
         source.validate()?;
@@ -582,7 +577,7 @@ pub fn resolve_decode_unit_concurrency(
 }
 
 pub fn resolve_runtime_scheduler(
-    partition_count: usize,
+    partition_count: u64,
     source: &SourceExecutionCapabilities,
     destination: &DestinationRuntimeCapabilities,
     execution: &ExecutionServices,
@@ -710,7 +705,7 @@ pub fn effective_container_cpu_slots(
 }
 
 pub fn resolve_effective_jobs(
-    partition_count: usize,
+    partition_count: u64,
     source: &SourceExecutionCapabilities,
     ceilings: &AdmissionCeilings,
 ) -> Result<EffectiveJobsResolution> {
@@ -1056,7 +1051,7 @@ impl FairAdmissionController {
 mod tests {
     use super::*;
 
-    fn request(resource: &str, ordinal: u32, scope: Option<&str>) -> AdmissionRequest {
+    fn request(resource: &str, ordinal: u64, scope: Option<&str>) -> AdmissionRequest {
         AdmissionRequest {
             resource: resource.to_owned(),
             ordinal: CanonicalPartitionOrdinal::new(ordinal),

@@ -397,9 +397,7 @@ where
         let mut payload_count = 0_u64;
         let mut partitions = executable_partition_plans(plan, resource)?;
         for ordinal in 0..planned_partition_count {
-            let executable = partitions.next(usize::try_from(ordinal).map_err(|_| {
-                CdfError::data("preview external partition ordinal exceeds usize")
-            })?)?;
+            let executable = partitions.next(ordinal)?;
             let disposition = effective_schema_evidence
                 .map(|evidence| partition_schema_disposition(executable.plan(), evidence, true))
                 .transpose()?;
@@ -429,9 +427,7 @@ where
             let mut retained = BTreeMap::<String, PreviewPayloadCandidate>::new();
             let mut partitions = executable_partition_plans(plan, resource)?;
             for ordinal in 0..planned_partition_count {
-                let executable = partitions.next(usize::try_from(ordinal).map_err(|_| {
-                    CdfError::data("preview external partition ordinal exceeds usize")
-                })?)?;
+                let executable = partitions.next(ordinal)?;
                 let disposition = effective_schema_evidence
                     .map(|evidence| partition_schema_disposition(executable.plan(), evidence, true))
                     .transpose()?;
@@ -1800,7 +1796,7 @@ struct ExecutedBatch {
 }
 
 struct PendingDedupBatch {
-    partition_ordinal: u32,
+    partition_ordinal: u64,
     output: RecordBatch,
     output_position: Option<SourcePosition>,
     _memory_lease: Option<MemoryLease>,
@@ -1843,7 +1839,7 @@ struct SegmentEncodeWork {
     ordinal: u64,
     segment_id: cdf_kernel::SegmentId,
     package_row_ord_start: u64,
-    partition_ordinal: u32,
+    partition_ordinal: u64,
     output_position: Option<SourcePosition>,
     batches: Vec<RecordBatch>,
     normalization_output_bytes: u64,
@@ -2698,7 +2694,7 @@ struct PartitionOpenEvidence {
 
 #[derive(Clone)]
 struct PartitionOpenMetadata {
-    ordinal: usize,
+    ordinal: u64,
     partition: ExecutablePartition,
     evidence: PartitionOpenEvidence,
 }
@@ -2717,7 +2713,7 @@ struct PartitionOpenRuntime {
 
 fn open_partition<'a, R>(
     resource: &'a R,
-    ordinal: usize,
+    ordinal: u64,
     partition: ExecutablePartition,
     terminal_quarantine: bool,
     plan_id: String,
@@ -3095,7 +3091,7 @@ fn retry_exhausted_error(
 fn scheduled_partition(
     schedule: Option<&cdf_runtime::CanonicalPartitionSchedule>,
     source: Option<&cdf_runtime::CompiledSourceExecutionPlan>,
-    ordinal: usize,
+    ordinal: u64,
     partition: &PartitionPlan,
 ) -> Result<Option<cdf_runtime::ScheduledPartition>> {
     let Some(schedule) = schedule else {
@@ -3115,25 +3111,22 @@ enum ExecutablePartitionPlans {
 }
 
 impl ExecutablePartitionPlans {
-    fn next(&mut self, ordinal: usize) -> Result<ExecutablePartition> {
+    fn next(&mut self, ordinal: u64) -> Result<ExecutablePartition> {
         match self {
             Self::Inline(partitions) => partitions
-                .get(ordinal)
+                .get(usize::try_from(ordinal).map_err(|_| {
+                    CdfError::data("inline partition ordinal exceeds host address space")
+                })?)
                 .cloned()
                 .map(ExecutablePartition::inline)
                 .ok_or_else(|| {
                     CdfError::internal("source frontier requested an absent partition ordinal")
                 }),
-            Self::External(reader) => reader
-                .next_partition(
-                    u64::try_from(ordinal)
-                        .map_err(|_| CdfError::data("external partition ordinal exceeds u64"))?,
-                )?
-                .ok_or_else(|| {
-                    CdfError::data(
-                        "external planned task set ended before its recorded partition count",
-                    )
-                }),
+            Self::External(reader) => reader.next_partition(ordinal)?.ok_or_else(|| {
+                CdfError::data(
+                    "external planned task set ended before its recorded partition count",
+                )
+            }),
         }
     }
 }
@@ -3200,13 +3193,11 @@ where
     })
 }
 
-fn source_frontier_batch_bound(plan: &EnginePlan, partition_count: usize) -> Result<u64> {
+fn source_frontier_batch_bound(plan: &EnginePlan, partition_count: u64) -> Result<u64> {
     let schedule = plan.partition_schedule.as_ref().ok_or_else(|| {
         CdfError::contract("package execution requires a compiled partition schedule")
     })?;
-    if partition_count != 0
-        && usize::try_from(schedule.partition_count()).ok() != Some(partition_count)
-    {
+    if partition_count != 0 && schedule.partition_count() != partition_count {
         return Err(CdfError::contract(
             "source frontier schedule does not cover every executable partition",
         ));
@@ -3233,17 +3224,11 @@ fn source_frontier_batch_bound(plan: &EnginePlan, partition_count: usize) -> Res
 
 pub(crate) fn partition_open_jobs(plan: &EnginePlan, options: &EngineExecutionInvocation) -> usize {
     let partition_count = plan.partition_schedule.as_ref().map_or_else(
-        || {
-            plan.scan
-                .partition_count()
-                .ok()
-                .and_then(|count| usize::try_from(count).ok())
-                .unwrap_or(usize::MAX)
-        },
-        |schedule| usize::try_from(schedule.partition_count()).unwrap_or(usize::MAX),
+        || plan.scan.partition_count().unwrap_or(u64::MAX),
+        cdf_runtime::CanonicalPartitionSchedule::partition_count,
     );
     if partition_count <= 1 {
-        return partition_count.max(1);
+        return usize::try_from(partition_count.max(1)).unwrap_or(1);
     }
     let (Some(_graph), Some(_schedule), Some(scheduler)) = (
         plan.operator_graph.as_ref(),
@@ -3266,7 +3251,8 @@ pub(crate) fn partition_open_jobs(plan: &EnginePlan, options: &EngineExecutionIn
     if !speculative_safe {
         return 1;
     }
-    usize::from(scheduler.effective_jobs.jobs.max(1)).min(partition_count)
+    let admitted_jobs = usize::from(scheduler.effective_jobs.jobs.max(1));
+    usize::try_from(partition_count).map_or(admitted_jobs, |count| admitted_jobs.min(count))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3310,8 +3296,7 @@ where
     plan.validate_compiled_expression_plan()?;
     plan.validate_partition_schedule()?;
     plan.validate_compiled_source_resource(resource)?;
-    let planned_partition_count = usize::try_from(plan.scan.partition_count()?)
-        .map_err(|_| CdfError::data("scan partition count exceeds this process address space"))?;
+    let planned_partition_count = plan.scan.partition_count()?;
     if let Some(scheduler) = &options.scheduler {
         let source = plan.compiled_source_execution.as_ref().ok_or_else(|| {
             CdfError::contract("package execution requires a compiled source execution plan")
@@ -3432,7 +3417,7 @@ where
     let mut processed_observations = Vec::new();
     let mut checkpoint_eligible = true;
     let mut drain_partition_resume = None;
-    let mut completion_positions = Vec::<(u32, PartitionPlan, SourcePosition)>::new();
+    let mut completion_positions = Vec::<(u64, PartitionPlan, SourcePosition)>::new();
     let mut terminal_quarantines = Vec::new();
     let mut quarantine_physical_observations =
         BTreeMap::<String, PhysicalObservationEvidence>::new();
@@ -3572,7 +3557,7 @@ where
             .execution_capabilities()
             .bounded;
     let mut drain_epoch_closure = None;
-    let mut consumed_partition_count = 0_usize;
+    let mut consumed_partition_count = 0_u64;
     let mut drain_finished_noop = false;
     let mut source_progress_observed = false;
     let mut last_drain_partition_resume = None::<Box<crate::DrainPartitionResume>>;
@@ -3605,8 +3590,7 @@ where
                 "late-data carryover requires the receipt-gated frontier that produced it",
             )
         })?;
-        let carryover_partition_ordinal = u32::try_from(planned_partition_count)
-            .map_err(|_| CdfError::data("late-data carryover partition ordinal exceeds u32"))?;
+        let carryover_partition_ordinal = planned_partition_count;
         let mut carryover_assembler = crate::CanonicalSegmentAssembler::new(
             segmentation_policy.clone(),
             carryover_partition_ordinal,
@@ -3854,7 +3838,7 @@ where
             break;
         };
         let open_metadata = opened_partition.metadata().clone();
-        let partition_ordinal_usize = open_metadata.ordinal;
+        let partition_ordinal = open_metadata.ordinal;
         let executable_partition = open_metadata.partition;
         let partition = executable_partition.plan().clone();
         if plan.scan.external_task_set().is_some()
@@ -3863,8 +3847,6 @@ where
             watermarks.register_partition(&partition.partition_id)?;
         }
         let open_evidence = open_metadata.evidence;
-        let partition_ordinal = u32::try_from(partition_ordinal_usize)
-            .map_err(|_| CdfError::data("partition ordinal exceeds u32"))?;
         let partition_scope = partition.scope.clone();
         let partition_drain_batch_frontiers_enabled =
             drain_batch_frontiers_enabled && partition.planned_file()?.is_none();
@@ -5533,7 +5515,7 @@ fn apply_dedup_and_write_pending_batches(
             });
         }
         let mut payload = payload.finish()?;
-        let mut assembler = None::<(u32, crate::CanonicalSegmentAssembler)>;
+        let mut assembler = None::<(u64, crate::CanonicalSegmentAssembler)>;
         let mut provenance = DedupProvenanceSink::new();
         let mut expected_ordinal = 0_u64;
         while let Some(payload_batch) = match payload.as_mut() {
@@ -5642,7 +5624,7 @@ fn apply_dedup_and_write_pending_batches(
         validation_input_bytes,
     );
 
-    let mut assembler = None::<(u32, crate::CanonicalSegmentAssembler)>;
+    let mut assembler = None::<(u64, crate::CanonicalSegmentAssembler)>;
     for (pending, retained_rows) in pending.into_iter().zip(dedup.retained_rows) {
         let output =
             filter_record_batch(&pending.output, &retained_rows).map_err(CdfError::from)?;
@@ -5718,7 +5700,7 @@ fn normalize_source_position_for_partition(
 
 fn enrich_segment_positions_with_completion(
     positions: &mut [EngineSegmentPosition],
-    partition_ordinal: u32,
+    partition_ordinal: u64,
     partition: &PartitionPlan,
     completion: &SourcePosition,
 ) -> Result<()> {
@@ -7306,7 +7288,7 @@ pub fn assemble_isolated_worker_package(
         .iter()
         .enumerate()
         .any(|(ordinal, evidence)| {
-            evidence.canonical_partition_ordinal != u32::try_from(ordinal).unwrap_or(u32::MAX)
+            evidence.canonical_partition_ordinal != u64::try_from(ordinal).unwrap_or(u64::MAX)
                 || plan
                     .scan
                     .inline_partitions()

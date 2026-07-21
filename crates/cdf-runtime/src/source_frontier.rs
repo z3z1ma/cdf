@@ -17,7 +17,7 @@ pub type SourcePartitionOpenFuture<'a, M> =
 /// observed it must not return until that lifecycle has terminated; the frontier deliberately
 /// continues polling admitted open futures during cleanup to uphold that barrier.
 pub type SourcePartitionOpener<'a, M> =
-    Box<dyn FnMut(usize, RunCancellation) -> Result<SourcePartitionOpenFuture<'a, M>> + Send + 'a>;
+    Box<dyn FnMut(u64, RunCancellation) -> Result<SourcePartitionOpenFuture<'a, M>> + Send + 'a>;
 
 type PendingSourceStep<'a, M> = BoxFuture<'a, SourceStepResult<M>>;
 
@@ -44,7 +44,7 @@ enum SourceStep {
 }
 
 struct SourceStepResult<M> {
-    ordinal: usize,
+    ordinal: u64,
     state: Option<SourceState<M>>,
     batch: Option<Batch>,
     outcome: Result<SourceStep>,
@@ -63,22 +63,22 @@ struct CurrentSource<M> {
 /// they cannot run away behind a stalled head. Opening and polling futures retain the source
 /// invocation until terminal cleanup, and [`Self::terminate_and_join`] drains all admitted work.
 pub struct CanonicalSourceFrontier<'a, M> {
-    partition_count: usize,
+    partition_count: u64,
     maximum_active: usize,
     opener: SourcePartitionOpener<'a, M>,
     maximum_batch_bytes: u64,
     memory: Option<Arc<dyn MemoryCoordinator>>,
     batch_memory: crate::SourceBatchMemoryContract,
     cancellation: RunCancellation,
-    next_to_open: usize,
-    canonical_ordinal: usize,
+    next_to_open: u64,
+    canonical_ordinal: u64,
     pending: FuturesUnordered<PendingSourceStep<'a, M>>,
-    ready: BTreeMap<usize, SourceStepResult<M>>,
+    ready: BTreeMap<u64, SourceStepResult<M>>,
     current: Option<CurrentSource<M>>,
     head_poll_started: bool,
     admission_stopped: bool,
-    primary_failure_ordinal: Option<usize>,
-    terminal_failures: BTreeMap<usize, CdfError>,
+    primary_failure_ordinal: Option<u64>,
+    terminal_failures: BTreeMap<u64, CdfError>,
     measurement_enabled: bool,
     wait_ns: u64,
     prefetched_batches: u64,
@@ -91,7 +91,7 @@ impl<M> Unpin for CanonicalSourceFrontier<'_, M> {}
 
 impl<'a, M: Send + 'a> CanonicalSourceFrontier<'a, M> {
     pub fn new(
-        partition_count: usize,
+        partition_count: u64,
         maximum_active: usize,
         opener: SourcePartitionOpener<'a, M>,
         maximum_batch_bytes: u64,
@@ -157,7 +157,7 @@ impl<'a, M: Send + 'a> CanonicalSourceFrontier<'a, M> {
 
     pub fn report(&self) -> SourceFrontierReport {
         SourceFrontierReport {
-            partition_count: u64::try_from(self.partition_count).unwrap_or(u64::MAX),
+            partition_count: self.partition_count,
             maximum_active: u64::try_from(self.maximum_active).unwrap_or(u64::MAX),
             wait_ns: self.wait_ns,
             prefetched_batches: self.prefetched_batches,
@@ -262,7 +262,7 @@ impl<'a, M: Send + 'a> CanonicalSourceFrontier<'a, M> {
     async fn drain_and_join(&mut self) -> Result<()> {
         self.admission_stopped = true;
         self.cancellation.cancel();
-        let mut cleanup_errors = BTreeMap::<usize, Vec<CdfError>>::new();
+        let mut cleanup_errors = BTreeMap::<u64, Vec<CdfError>>::new();
 
         if let Some(current) = self.current.take() {
             record_cleanup(
@@ -339,7 +339,7 @@ impl<'a, M: Send + 'a> CanonicalSourceFrontier<'a, M> {
         Some(primary)
     }
 
-    fn record_terminal_failure(&mut self, ordinal: usize, error: CdfError) {
+    fn record_terminal_failure(&mut self, ordinal: u64, error: CdfError) {
         if is_run_cancellation_error(&error) {
             return;
         }
@@ -420,7 +420,7 @@ impl<'a, M: Send + 'a> CanonicalSourceFrontier<'a, M> {
 
     fn push_poll(
         &mut self,
-        ordinal: usize,
+        ordinal: u64,
         state: SourceState<M>,
         reservation: Option<cdf_memory::MemoryLease>,
     ) {
@@ -761,7 +761,7 @@ async fn reserve_frontier_poll(
 }
 
 async fn poll_source_step<M>(
-    ordinal: usize,
+    ordinal: u64,
     mut state: SourceState<M>,
     maximum_batch_bytes: u64,
     memory: Option<Arc<dyn MemoryCoordinator>>,
@@ -929,18 +929,14 @@ async fn terminate_state<M>(mut state: SourceState<M>) -> Result<()> {
     }
 }
 
-fn record_cleanup(
-    failures: &mut BTreeMap<usize, Vec<CdfError>>,
-    ordinal: usize,
-    cleanup: Result<()>,
-) {
+fn record_cleanup(failures: &mut BTreeMap<u64, Vec<CdfError>>, ordinal: u64, cleanup: Result<()>) {
     let Err(cleanup) = cleanup else {
         return;
     };
     failures.entry(ordinal).or_default().push(cleanup);
 }
 
-fn canonical_cleanup_error(failures: BTreeMap<usize, Vec<CdfError>>) -> Option<CdfError> {
+fn canonical_cleanup_error(failures: BTreeMap<u64, Vec<CdfError>>) -> Option<CdfError> {
     if failures.is_empty() {
         return None;
     }
@@ -995,7 +991,7 @@ mod tests {
 
     use super::*;
 
-    fn batch(partition: usize, value: i64) -> Batch {
+    fn batch(partition: u64, value: i64) -> Batch {
         let record_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new(
                 "value",
@@ -1047,7 +1043,7 @@ mod tests {
         let memory: Arc<dyn MemoryCoordinator> =
             Arc::new(DeterministicMemoryCoordinator::new(2048, Default::default()).unwrap());
         let head_memory = Arc::clone(&memory);
-        let opener: SourcePartitionOpener<'_, usize> = Box::new(move |ordinal, _cancellation| {
+        let opener: SourcePartitionOpener<'_, u64> = Box::new(move |ordinal, _cancellation| {
             opened_for_source.fetch_add(1, Ordering::SeqCst);
             match ordinal {
                 0 => {
@@ -1110,9 +1106,9 @@ mod tests {
     }
 
     fn opened<'a>(
-        ordinal: usize,
+        ordinal: u64,
         batches: impl futures_util::Stream<Item = Result<Batch>> + Send + 'static,
-    ) -> SourcePartitionOpenFuture<'a, usize> {
+    ) -> SourcePartitionOpenFuture<'a, u64> {
         async move {
             let attempt = PartitionOpenAttempt::materialized(Box::pin(async move {
                 Ok(PartitionStreamPayload::batches(Box::pin(batches)))
@@ -1123,11 +1119,11 @@ mod tests {
     }
 
     fn opened_with_lifecycle<'a>(
-        ordinal: usize,
+        ordinal: u64,
         batches: impl futures_util::Stream<Item = Result<Batch>> + Send + 'static,
         cancelled: Arc<AtomicUsize>,
         joined: Arc<AtomicUsize>,
-    ) -> SourcePartitionOpenFuture<'a, usize> {
+    ) -> SourcePartitionOpenFuture<'a, u64> {
         async move {
             let cancel_count = Arc::clone(&cancelled);
             let join_count = Arc::clone(&joined);
@@ -1150,11 +1146,11 @@ mod tests {
     }
 
     fn pending_open_with_lifecycle<'a>(
-        ordinal: usize,
+        ordinal: u64,
         cancellation: RunCancellation,
         cancelled: Arc<AtomicUsize>,
         joined: Arc<AtomicUsize>,
-    ) -> SourcePartitionOpenFuture<'a, usize> {
+    ) -> SourcePartitionOpenFuture<'a, u64> {
         async move {
             let cancel_count = Arc::clone(&cancelled);
             let join_count = Arc::clone(&joined);
@@ -1188,7 +1184,7 @@ mod tests {
         let mut gate_receiver = Some(gate_receiver);
         let later_polls = Arc::new(AtomicUsize::new(0));
         let later_polls_for_open = Arc::clone(&later_polls);
-        let opener: SourcePartitionOpener<'_, usize> =
+        let opener: SourcePartitionOpener<'_, u64> =
             Box::new(move |ordinal, _cancellation| match ordinal {
                 0 => {
                     let receiver = gate_receiver.take().unwrap();
@@ -1302,7 +1298,7 @@ mod tests {
         let mut gate_receiver = Some(gate_receiver);
         let opened_count = Arc::new(AtomicUsize::new(0));
         let opened_for_opener = Arc::clone(&opened_count);
-        let opener: SourcePartitionOpener<'_, usize> = Box::new(move |ordinal, _cancellation| {
+        let opener: SourcePartitionOpener<'_, u64> = Box::new(move |ordinal, _cancellation| {
             opened_for_opener.fetch_add(1, Ordering::SeqCst);
             match ordinal {
                 0 => {
@@ -1367,7 +1363,7 @@ mod tests {
     fn later_error_cancels_a_stalled_head_and_stops_admission() {
         let opened_count = Arc::new(AtomicUsize::new(0));
         let opened_for_opener = Arc::clone(&opened_count);
-        let opener: SourcePartitionOpener<'_, usize> = Box::new(move |ordinal, _cancellation| {
+        let opener: SourcePartitionOpener<'_, u64> = Box::new(move |ordinal, _cancellation| {
             opened_for_opener.fetch_add(1, Ordering::SeqCst);
             match ordinal {
                 0 => Ok(opened(ordinal, stream::pending())),
@@ -1408,7 +1404,7 @@ mod tests {
     fn later_failure_preserves_and_joins_an_in_flight_opening_lifecycle() {
         let opening_cancelled = Arc::new(AtomicUsize::new(0));
         let opening_joined = Arc::new(AtomicUsize::new(0));
-        let opener: SourcePartitionOpener<'_, usize> = Box::new({
+        let opener: SourcePartitionOpener<'_, u64> = Box::new({
             let opening_cancelled = Arc::clone(&opening_cancelled);
             let opening_joined = Arc::clone(&opening_joined);
             move |ordinal, cancellation| match ordinal {
@@ -1453,7 +1449,7 @@ mod tests {
 
     #[test]
     fn terminal_failures_observed_during_cancellation_render_in_canonical_order() {
-        let opener: SourcePartitionOpener<'_, usize> =
+        let opener: SourcePartitionOpener<'_, u64> =
             Box::new(move |ordinal, cancellation| match ordinal {
                 0 => Ok(opened(ordinal, stream::pending())),
                 1 => Ok(async move {
@@ -1498,7 +1494,7 @@ mod tests {
         let later_polls = Arc::new(AtomicUsize::new(0));
         let cancelled = Arc::new(AtomicUsize::new(0));
         let joined = Arc::new(AtomicUsize::new(0));
-        let opener: SourcePartitionOpener<'_, usize> = Box::new({
+        let opener: SourcePartitionOpener<'_, u64> = Box::new({
             let later_polls = Arc::clone(&later_polls);
             let cancelled = Arc::clone(&cancelled);
             let joined = Arc::clone(&joined);

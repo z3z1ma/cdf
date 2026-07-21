@@ -2864,7 +2864,7 @@ schema = { fields = [
         assert_eq!(plan.scan.partition_count().unwrap(), 4);
         let source_execution = plan.compiled_source_execution.as_ref().unwrap();
         let scheduler = cdf_runtime::resolve_runtime_scheduler(
-            usize::try_from(plan.scan.partition_count().unwrap()).unwrap(),
+            plan.scan.partition_count().unwrap(),
             source_execution.execution_capabilities(),
             &cdf_runtime::DestinationRuntimeCapabilities::default(),
             &execution,

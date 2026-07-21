@@ -190,7 +190,7 @@ impl PortableSourceBinding {
 pub struct PortablePartitionBinding {
     pub partition_id: PartitionId,
     pub scope: ScopeKey,
-    pub canonical_partition_ordinal: u32,
+    pub canonical_partition_ordinal: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub epoch_ordinal: Option<u64>,
     pub partition_plan: WorkerArtifactReference,
@@ -887,7 +887,7 @@ pub struct PortableSegmentTask {
     pub plan_id: PlanId,
     pub partition_id: PartitionId,
     pub scope: ScopeKey,
-    pub canonical_partition_ordinal: u32,
+    pub canonical_partition_ordinal: u64,
     pub segment_id: SegmentId,
     pub segment_ordinal: u32,
     pub row_count: u64,
@@ -915,7 +915,7 @@ struct UncheckedPortableSegmentTask {
     plan_id: PlanId,
     partition_id: PartitionId,
     scope: ScopeKey,
-    canonical_partition_ordinal: u32,
+    canonical_partition_ordinal: u64,
     segment_id: SegmentId,
     segment_ordinal: u32,
     row_count: u64,
@@ -942,7 +942,7 @@ struct PortableSegmentTaskSemantic<'a> {
     plan_id: &'a PlanId,
     partition_id: &'a PartitionId,
     scope: &'a ScopeKey,
-    canonical_partition_ordinal: u32,
+    canonical_partition_ordinal: u64,
     segment_id: &'a SegmentId,
     segment_ordinal: u32,
     row_count: u64,
@@ -1001,7 +1001,7 @@ pub struct PortableSegmentTaskInput {
     pub plan_id: PlanId,
     pub partition_id: PartitionId,
     pub scope: ScopeKey,
-    pub canonical_partition_ordinal: u32,
+    pub canonical_partition_ordinal: u64,
     pub segment_id: SegmentId,
     pub segment_ordinal: u32,
     pub row_count: u64,
@@ -1836,7 +1836,7 @@ pub struct AdmittedSegmentWorkerResult {
     resource_id: ResourceId,
     plan_id: PlanId,
     partition_id: PartitionId,
-    canonical_partition_ordinal: u32,
+    canonical_partition_ordinal: u64,
     preparation_result_sha256: String,
     output_schema_hash: SchemaHash,
     segmentation_policy_hash: String,
@@ -1873,7 +1873,7 @@ impl AdmittedSegmentWorkerResult {
         Ok(())
     }
 
-    pub const fn canonical_partition_ordinal(&self) -> u32 {
+    pub const fn canonical_partition_ordinal(&self) -> u64 {
         self.canonical_partition_ordinal
     }
 
@@ -2569,13 +2569,13 @@ impl PartitionAttemptEnvelope {
 pub enum WorkerArtifactRole {
     PreparedSegment {
         segment_id: SegmentId,
-        partition_ordinal: u32,
+        partition_ordinal: u64,
         segment_ordinal: u32,
         row_count: u64,
     },
     CanonicalSegment {
         segment_id: SegmentId,
-        partition_ordinal: u32,
+        partition_ordinal: u64,
         segment_ordinal: u32,
         row_count: u64,
     },
@@ -2584,7 +2584,7 @@ pub enum WorkerArtifactRole {
     Verdict,
     Lineage,
     PartitionEvidence {
-        partition_ordinal: u32,
+        partition_ordinal: u64,
     },
 }
 

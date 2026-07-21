@@ -811,9 +811,7 @@ impl WorkerAdmissionVerifier for EngineWorkerAdmissionVerifier<'_> {
             .ok_or_else(|| CdfError::contract("worker project plan omitted partition schedule"))?
             .scheduled_partition(
                 planned_source,
-                usize::try_from(task.partition.canonical_partition_ordinal).map_err(|_| {
-                    CdfError::contract("worker canonical partition ordinal exceeds usize")
-                })?,
+                task.partition.canonical_partition_ordinal,
                 &partition,
             )?;
 
@@ -1253,7 +1251,7 @@ pub struct WorkerDecodeUnitAuthorityArtifact {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerSegmentAuthorityArtifact {
-    pub canonical_partition_ordinal: u32,
+    pub canonical_partition_ordinal: u64,
     pub segmentation: CanonicalSegmentationPolicy,
 }
 
@@ -1265,7 +1263,7 @@ pub struct WorkerSegmentAuthorityArtifact {
 pub struct ReconstructedEngineWorkerProgram {
     plan: EnginePlan,
     partition: cdf_kernel::PartitionPlan,
-    canonical_partition_ordinal: u32,
+    canonical_partition_ordinal: u64,
 }
 
 impl cdf_runtime::ReconstructedWorkerExecutionProgram for ReconstructedEngineWorkerProgram {
@@ -1299,12 +1297,7 @@ impl ReconstructedEngineWorkerProgram {
             .partition_schedule
             .as_ref()
             .ok_or_else(|| CdfError::contract("isolated engine plan lacks partition schedule"))?
-            .scheduled_partition(
-                source,
-                usize::try_from(self.canonical_partition_ordinal)
-                    .map_err(|_| CdfError::contract("isolated partition ordinal exceeds usize"))?,
-                &self.partition,
-            )?;
+            .scheduled_partition(source, self.canonical_partition_ordinal, &self.partition)?;
         let mut slice = self.plan.clone();
         slice
             .scan
@@ -1345,7 +1338,7 @@ pub struct EnginePartitionTaskInput<'a> {
     pub source: &'a cdf_runtime::CompiledSourcePlan,
     pub plan: &'a EnginePlan,
     pub partition: &'a cdf_kernel::PartitionPlan,
-    pub canonical_partition_ordinal: u32,
+    pub canonical_partition_ordinal: u64,
     pub epoch_ordinal: Option<u64>,
     pub input_checkpoint: Option<WorkerInputCheckpointBinding>,
     pub secret_references: Vec<SecretReference>,
@@ -1387,8 +1380,7 @@ pub fn compile_engine_partition_task(
     })?;
     schedule.scheduled_partition(
         compiled_source_execution,
-        usize::try_from(input.canonical_partition_ordinal)
-            .map_err(|_| CdfError::contract("canonical partition ordinal exceeds usize"))?,
+        input.canonical_partition_ordinal,
         input.partition,
     )?;
     let operator_graph =

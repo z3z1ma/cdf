@@ -87,7 +87,7 @@ pub struct SourceRetryHistoryEntry {
 pub struct SourceRetryEvidence {
     plan_id: String,
     schedule_identity_hash: String,
-    partition_ordinal: u32,
+    partition_ordinal: u64,
     partition_id: String,
     immutable_identity_hash: String,
     partition_binding_hash: String,
@@ -198,7 +198,7 @@ impl SourceRetryEvidence {
         &self.plan_id
     }
 
-    pub fn partition_ordinal(&self) -> u32 {
+    pub fn partition_ordinal(&self) -> u64 {
         self.partition_ordinal
     }
 
@@ -225,7 +225,7 @@ impl SourceRetryEvidence {
 
 /// Shared runtime-only evidence sink that survives both successful and failed engine returns.
 #[derive(Clone, Debug, Default)]
-pub struct SourceRetryJournal(Arc<Mutex<BTreeMap<u32, SourceRetryEvidence>>>);
+pub struct SourceRetryJournal(Arc<Mutex<BTreeMap<u64, SourceRetryEvidence>>>);
 
 /// Read-only evidence handle retained by an embedding caller while the engine owns mutation.
 #[derive(Clone, Debug, Default)]
@@ -481,7 +481,9 @@ mod tests {
     };
 
     use cdf_kernel::{
-        CompiledScanIntent, PartitionId, PartitionPlan, PartitionRetrySafety, ScopeKey,
+        CompiledScanIntent, ContentObjectKey, ContentProviderGeneration, ContentStoreNamespace,
+        PLANNED_TASK_SET_REFERENCE_VERSION, PartitionId, PartitionPlan, PartitionRetrySafety,
+        PlannedTaskSetReference, ScopeKey,
     };
     use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
 
@@ -720,6 +722,62 @@ mod tests {
                 .record(&schedule.plan_id, &scheduled, &excessive)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn retry_evidence_round_trips_external_partition_ordinal_above_u32() {
+        let high_ordinal = u64::from(u32::MAX) + 23;
+        let mut scheduled = scheduled_partition();
+        scheduled.ordinal = crate::CanonicalPartitionOrdinal::new(high_ordinal);
+        let schedule = crate::CanonicalPartitionSchedule {
+            plan_id: "plan-0".to_owned(),
+            schedule_identity_hash: scheduled.schedule_identity_hash.clone(),
+            admission: crate::PartitionAdmissionTemplate {
+                minimum_working_set_bytes: scheduled.minimum_working_set_bytes,
+                maximum_working_set_bytes: scheduled.maximum_working_set_bytes,
+                executor_class: scheduled.executor_class,
+                retry: scheduled.retry.clone(),
+                rate_limit: scheduled.rate_limit,
+                quota_authority: scheduled.quota_authority.clone(),
+                speculative_safe: scheduled.speculative_safe,
+                canonical_order: scheduled.canonical_order,
+                bounded_source: scheduled.bounded_source,
+            },
+            authority: crate::PartitionScheduleAuthority::External {
+                planned_task_set: PlannedTaskSetReference {
+                    version: PLANNED_TASK_SET_REFERENCE_VERSION,
+                    task_type: "portable-partition-v1".to_owned(),
+                    task_count: high_ordinal + 1,
+                    store_namespace: ContentStoreNamespace::new("retry-test").unwrap(),
+                    object_key: ContentObjectKey::new("tasks/retry.jsonl").unwrap(),
+                    byte_count: 1,
+                    content_sha256:
+                        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                            .to_owned(),
+                    provider_generation: ContentProviderGeneration::new("generation-1").unwrap(),
+                },
+            },
+        };
+        let journal = SourceRetryJournal::default();
+        journal
+            .record(
+                &schedule.plan_id,
+                &scheduled,
+                &[SourceRetryHistoryEntry {
+                    failed_attempt: 1,
+                    cause: ErrorKind::Transient,
+                    selected_delay_ms: Some(25),
+                    exhaustion: None,
+                }],
+            )
+            .unwrap();
+
+        let evidence = journal.snapshot().unwrap().pop().unwrap();
+        let encoded = serde_json::to_vec(&evidence).unwrap();
+        let decoded: SourceRetryEvidence = serde_json::from_slice(&encoded).unwrap();
+
+        assert_eq!(decoded.partition_ordinal(), high_ordinal);
+        decoded.validate_against_schedule(&schedule).unwrap();
     }
 
     #[test]

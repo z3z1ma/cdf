@@ -346,10 +346,11 @@ impl EnginePlan {
     /// canonical closure occurred inside that partition.
     pub fn advance_committed_drain_frontier(
         &mut self,
-        consumed: usize,
+        consumed: u64,
         resume: Option<&DrainPartitionResume>,
     ) -> Result<()> {
-        let remaining = self
+        let remaining = u64::try_from(
+            self
             .scan
             .inline_partitions()
             .ok_or_else(|| {
@@ -357,14 +358,18 @@ impl EnginePlan {
                     "external task authorities must advance through their source-owned frontier",
                 )
             })?
-            .len();
+            .len(),
+        )
+        .map_err(|_| CdfError::data("inline partition count exceeds u64"))?;
         if consumed > remaining {
             return Err(CdfError::contract(
                 "committed drain prefix exceeds the remaining planned partitions",
             ));
         }
         if consumed > 0 {
-            self.advance_committed_partition_prefix(consumed)?;
+            self.advance_committed_partition_prefix(usize::try_from(consumed).map_err(|_| {
+                CdfError::data("inline drain partition count exceeds this process address space")
+            })?)?;
         }
         if let Some(resume) = resume {
             let partition = self
@@ -1925,7 +1930,7 @@ pub const ENGINE_PARTITION_EVIDENCE_VERSION: u16 = 1;
 pub struct EnginePartitionEvidence {
     pub version: u16,
     pub partition_id: PartitionId,
-    pub canonical_partition_ordinal: u32,
+    pub canonical_partition_ordinal: u64,
     pub profile: ExecutionProfile,
     pub lineage: LineageSummary,
     pub segment_positions: Vec<EngineSegmentPosition>,
@@ -1950,7 +1955,7 @@ pub struct EnginePartitionDrainEvidence {
     pub closure: cdf_kernel::EpochClosureEvidence,
     pub observed_at_unix_milliseconds: u64,
     pub terminate_after_settlement: bool,
-    pub consumed_partition_count: usize,
+    pub consumed_partition_count: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_partition: Option<DrainPartitionResume>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2044,7 +2049,7 @@ pub struct EngineRunOutputWithSegmentPositions {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EngineDrainEpoch {
     pub closure: cdf_runtime::DrainEpochClosure,
-    pub consumed_partition_count: usize,
+    pub consumed_partition_count: u64,
     pub resume_partition: Option<Box<DrainPartitionResume>>,
     pub consumed_late_data_carryover: Vec<cdf_kernel::LateDataCarryoverRef>,
     pub late_data_carryover: Vec<cdf_kernel::LateDataCarryoverRef>,
@@ -2199,7 +2204,7 @@ impl<'a> EnginePackageDraft<'a> {
 #[serde(deny_unknown_fields)]
 pub struct EngineSegmentPosition {
     pub segment_id: SegmentId,
-    pub partition_ordinal: u32,
+    pub partition_ordinal: u64,
     pub output_position: Option<SourcePosition>,
 }
 

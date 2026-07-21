@@ -23,7 +23,8 @@ use cdf_contract::{
     reconcile_schema,
 };
 use cdf_kernel::{
-    BackpressureSupport, Batch, BatchHeader, BatchId, BatchStream, CapabilitySupport, ContractRef,
+    BackpressureSupport, Batch, BatchHeader, BatchId, BatchStream, CapabilitySupport,
+    ContentObjectKey, ContentProviderGeneration, ContentStoreNamespace, ContractRef,
     CursorPosition, CursorValue, DeduplicationSpec, DeliveryGuarantee,
     DiscoveryExecutorBudgetEvidence, DiscoveryManifestHash, DiscoveryManifestReference,
     DrainTermination, EXECUTION_EXTENT_VERSION, EffectiveSchemaCatalogEntry,
@@ -31,8 +32,9 @@ use cdf_kernel::{
     EpochClosureTrigger, EstimateSupport, EventTimeDomain, ExecutionExtent, FileManifest,
     FilePosition, FilterCapabilities, FreshnessSpec, IncrementalShape, LateDataAction,
     PLAN_PHYSICAL_SCHEMA_HASH_KEY, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
-    PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation, PartitionAuthority, PartitionId,
-    PartitionPlan, PartitioningCapabilities, PreContractObservedValue, PreContractQuarantineFact,
+    PLAN_SCHEMA_OBSERVATION_ID_KEY, PLANNED_TASK_SET_REFERENCE_VERSION, PartitionAttestation,
+    PartitionAuthority, PartitionId, PartitionPlan, PartitioningCapabilities,
+    PlannedTaskSetReference, PreContractObservedValue, PreContractQuarantineFact,
     PreContractResidualCandidate, PredicateId, PushdownFidelity, QueryableResource,
     ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result, RunId, RunPhase,
     RunPhaseStatus, STRATIFIED_HASH_SELECTOR_V1, STREAM_EPOCH_POLICY_VERSION, SafeFrontierPolicy,
@@ -1813,7 +1815,7 @@ fn run_actual_isolated_engine_equivalence_for_resource(
 
     let direct_services = isolated_engine_services(cpu_slots);
     let direct_scheduler = cdf_runtime::resolve_runtime_scheduler(
-        partition_count,
+        u64::try_from(partition_count).unwrap(),
         &source.execution_capabilities,
         &cdf_runtime::DestinationRuntimeCapabilities::default(),
         &direct_services,
@@ -1900,7 +1902,7 @@ fn run_actual_isolated_engine_equivalence_for_resource(
                     source: &source,
                     plan: &plan,
                     partition,
-                    canonical_partition_ordinal: u32::try_from(ordinal).unwrap(),
+                    canonical_partition_ordinal: u64::try_from(ordinal).unwrap(),
                     epoch_ordinal: None,
                     input_checkpoint: None,
                     secret_references: Vec::new(),
@@ -4636,6 +4638,40 @@ fn mock_unbounded_source_plan(resource: &MockResource) -> cdf_runtime::CompiledS
     source
 }
 
+#[test]
+fn external_partition_schedule_preserves_ordinals_above_u32_without_enumeration() {
+    let resource = MockResource::tier_b(sample_batches());
+    let input = plan_input(Vec::new(), None, None, ExecutionExtent::bounded());
+    let mut scan = resource.negotiate(&input.request).unwrap();
+    let representative_partition = scan.inline_partitions().unwrap()[0].clone();
+    let high_ordinal = u64::from(u32::MAX) + 17;
+    let task_count = high_ordinal + 1;
+    scan.replace_partition_authority(PartitionAuthority::External(PlannedTaskSetReference {
+        version: PLANNED_TASK_SET_REFERENCE_VERSION,
+        task_type: "portable-partition-v1".to_owned(),
+        task_count,
+        store_namespace: ContentStoreNamespace::new("portable-partition-test").unwrap(),
+        object_key: ContentObjectKey::new("tasks/partitions.jsonl").unwrap(),
+        byte_count: 1,
+        content_sha256: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .to_owned(),
+        provider_generation: ContentProviderGeneration::new("generation-1").unwrap(),
+    }));
+    let compiled_source = mock_compiled_source_plan(&resource, None);
+    let execution_source =
+        cdf_runtime::CompiledSourceExecutionPlan::compile(&compiled_source).unwrap();
+
+    let schedule =
+        cdf_runtime::CanonicalPartitionSchedule::compile(&execution_source, &scan).unwrap();
+    let scheduled = schedule
+        .scheduled_partition(&execution_source, high_ordinal, &representative_partition)
+        .unwrap();
+
+    assert_eq!(schedule.partition_count(), task_count);
+    assert!(schedule.inline_partitions().is_none());
+    assert_eq!(scheduled.ordinal.get(), high_ordinal);
+}
+
 fn mock_unbounded_cursor_source_plan(resource: &MockResource) -> cdf_runtime::CompiledSourcePlan {
     let mut source = mock_unbounded_source_plan(resource);
     source.stream_capabilities = Some(cdf_runtime::SourceStreamCapabilities {
@@ -5800,7 +5836,7 @@ fn run_fixed_drain_epochs_with_jobs(jobs: u16) -> (Vec<FixedDrainEpochEvidence>,
     let (_, services) = StandaloneExecutionHost::default_services(512 * 1024 * 1024).unwrap();
     let services = services.with_run_job_ceiling(jobs).unwrap();
     let scheduler = cdf_runtime::resolve_runtime_scheduler(
-        usize::try_from(plan.scan.partition_count().unwrap()).unwrap(),
+        plan.scan.partition_count().unwrap(),
         &source.execution_capabilities,
         &cdf_runtime::DestinationRuntimeCapabilities::default(),
         &services,
@@ -5828,9 +5864,9 @@ fn run_fixed_drain_epochs_with_jobs(jobs: u16) -> (Vec<FixedDrainEpochEvidence>,
             super::DrainEpochExecution::new(&mut controller),
             EngineExecutionConfig::default()
                 .with_execution_services(services.clone())
-                .with_scheduler_resolution(scheduler.narrow_to_partition_count(
-                    usize::try_from(plan.scan.partition_count().unwrap()).unwrap(),
-                ))
+                .with_scheduler_resolution(
+                    scheduler.narrow_to_partition_count(plan.scan.partition_count().unwrap()),
+                )
                 .new_invocation(),
         ))
         .unwrap()
@@ -5973,7 +6009,7 @@ fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
     );
     let services = cdf_runtime::ExecutionServices::new(host).unwrap();
     let scheduler = cdf_runtime::resolve_runtime_scheduler(
-        usize::try_from(plan.scan.partition_count().unwrap()).unwrap(),
+        plan.scan.partition_count().unwrap(),
         &source.execution_capabilities,
         &cdf_runtime::DestinationRuntimeCapabilities::default(),
         &services,
@@ -6006,7 +6042,7 @@ fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
     assert_eq!(services.memory().snapshot().current_bytes, 0);
 
     let mut stale_scheduler = cdf_runtime::resolve_runtime_scheduler(
-        usize::try_from(plan.scan.partition_count().unwrap()).unwrap(),
+        plan.scan.partition_count().unwrap(),
         &source.execution_capabilities,
         &cdf_runtime::DestinationRuntimeCapabilities::default(),
         &services,
@@ -6392,7 +6428,7 @@ fn engine_parallel_frontier_polls_later_partition_while_head_is_stalled() {
     );
     let services = cdf_runtime::ExecutionServices::new(host).unwrap();
     let scheduler = cdf_runtime::resolve_runtime_scheduler(
-        usize::try_from(plan.scan.partition_count().unwrap()).unwrap(),
+        plan.scan.partition_count().unwrap(),
         &source.execution_capabilities,
         &cdf_runtime::DestinationRuntimeCapabilities::default(),
         &services,
@@ -6478,7 +6514,7 @@ fn engine_keeps_non_speculative_source_frontier_serial() {
 
     let (_, services) = StandaloneExecutionHost::default_services(512 * 1024 * 1024).unwrap();
     let scheduler = cdf_runtime::resolve_runtime_scheduler(
-        usize::try_from(plan.scan.partition_count().unwrap()).unwrap(),
+        plan.scan.partition_count().unwrap(),
         &source.execution_capabilities,
         &cdf_runtime::DestinationRuntimeCapabilities::default(),
         &services,
@@ -6597,7 +6633,7 @@ fn run_skewed_jobs(
     let (_, services) = StandaloneExecutionHost::default_services(4 * 1024 * 1024 * 1024)?;
     let services = services.with_run_job_ceiling(jobs)?;
     let scheduler = cdf_runtime::resolve_runtime_scheduler(
-        usize::try_from(plan.scan.partition_count().unwrap()).unwrap(),
+        plan.scan.partition_count().unwrap(),
         &source.execution_capabilities,
         &cdf_runtime::DestinationRuntimeCapabilities::default(),
         &services,

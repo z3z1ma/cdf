@@ -108,7 +108,7 @@ pub struct PreparedSourcePackageRun {
     pub configured_jobs: Option<u16>,
     pub effective_jobs: u16,
     pub limiting_factors: Vec<String>,
-    pub partition_count: usize,
+    pub partition_count: u64,
     pub planned_source_bytes: Option<u64>,
     pub package_hash: String,
     pub segments: Vec<cdf_package_contract::SegmentEntry>,
@@ -221,7 +221,7 @@ pub struct PreparedFileDestinationRun {
     pub configured_jobs: Option<u16>,
     pub effective_jobs: u16,
     pub limiting_factors: Vec<String>,
-    pub partition_count: usize,
+    pub partition_count: u64,
     pub package_hash: String,
     pub receipt_package_hash: String,
     pub receipt_segment_ids: Vec<String>,
@@ -588,8 +588,7 @@ pub fn run_prepared_file_to_package(
     let source_execution = plan.compiled_source_execution.as_ref().ok_or_else(|| {
         bench_error("prepared file plan omitted its compiled source execution authority")
     })?;
-    let partition_count = usize::try_from(plan.scan.partition_count()?)
-        .map_err(|_| bench_error("prepared source task count exceeds addressable usize"))?;
+    let partition_count = plan.scan.partition_count()?;
     let scheduler = cdf_runtime::resolve_runtime_scheduler(
         partition_count,
         source_execution.execution_capabilities(),
@@ -751,8 +750,7 @@ pub fn run_prepared_iceberg_to_package(
     let source_execution = plan.compiled_source_execution.as_ref().ok_or_else(|| {
         bench_error("prepared Iceberg plan omitted compiled source execution authority")
     })?;
-    let partition_count = usize::try_from(plan.scan.partition_count()?)
-        .map_err(|_| bench_error("prepared source task count exceeds addressable usize"))?;
+    let partition_count = plan.scan.partition_count()?;
     let scheduler = cdf_runtime::resolve_runtime_scheduler(
         partition_count,
         source_execution.execution_capabilities(),
@@ -1088,8 +1086,7 @@ pub fn run_prepared_file_to_destination(
     let source_execution = plan.compiled_source_execution.as_ref().ok_or_else(|| {
         bench_error("prepared destination plan omitted its compiled source execution authority")
     })?;
-    let partition_count = usize::try_from(plan.scan.partition_count()?)
-        .map_err(|_| bench_error("prepared source task count exceeds addressable usize"))?;
+    let partition_count = plan.scan.partition_count()?;
     let scheduler = cdf_runtime::resolve_runtime_scheduler(
         partition_count,
         source_execution.execution_capabilities(),

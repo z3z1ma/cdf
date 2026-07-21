@@ -23,7 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for request in 0..REQUESTS_PER_ROUND {
             controller.enqueue(AdmissionRequest {
                 resource: format!("resource-{:02}", request % RESOURCES),
-                ordinal: CanonicalPartitionOrdinal::new(u32::try_from(
+                ordinal: CanonicalPartitionOrdinal::new(u64::try_from(
                     round * REQUESTS_PER_ROUND + request,
                 )?),
                 memory_bytes: 1024 * 1024,

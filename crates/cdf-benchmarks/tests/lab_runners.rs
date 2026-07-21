@@ -9,7 +9,7 @@ fn assert_scheduler_report_is_bounded(
     report: &cdf_runtime::RuntimeSchedulerReport,
     frontier: &cdf_runtime::SourceFrontierReport,
     effective_jobs: u16,
-    partition_count: usize,
+    partition_count: u64,
 ) {
     let run_work = report
         .run_work
@@ -26,7 +26,7 @@ fn assert_scheduler_report_is_bounded(
     );
     assert!(report.successful_task_scopes.completed > 0);
     assert!(report.successful_task_scopes.peak_cpu_slots <= 4);
-    assert_eq!(frontier.partition_count, partition_count as u64);
+    assert_eq!(frontier.partition_count, partition_count);
     assert_eq!(frontier.maximum_active, u64::from(effective_jobs));
     assert!(frontier.wait_ns > 0);
     assert_eq!(frontier.discarded_prefetched_batches, 0);

@@ -4428,7 +4428,7 @@ fn run_rest_project_with_jobs(
         .bind_operator_graph(&source, &destination.runtime_capabilities())
         .unwrap();
     let scheduler = cdf_runtime::resolve_runtime_scheduler(
-        usize::try_from(plan.scan.partition_count().unwrap()).unwrap(),
+        plan.scan.partition_count().unwrap(),
         &source.execution_capabilities,
         &destination.runtime_capabilities(),
         &services,
@@ -4488,7 +4488,7 @@ fn run_sql_project_with_jobs(
         .bind_operator_graph(&source, &destination.runtime_capabilities())
         .unwrap();
     let scheduler = cdf_runtime::resolve_runtime_scheduler(
-        usize::try_from(plan.scan.partition_count().unwrap()).unwrap(),
+        plan.scan.partition_count().unwrap(),
         &source.execution_capabilities,
         &destination.runtime_capabilities(),
         &services,

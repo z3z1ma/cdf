@@ -2905,11 +2905,7 @@ mod tests {
             assert_eq!(task.task.canonical_ordinal, ordinal);
             task.task.validate_against(task.authority()).unwrap();
             let scheduled = schedule
-                .scheduled_partition(
-                    &compiled_execution,
-                    usize::try_from(ordinal).unwrap(),
-                    executable.plan(),
-                )
+                .scheduled_partition(&compiled_execution, ordinal, executable.plan())
                 .unwrap();
             assert_eq!(
                 scheduled.retry.unwrap().granularity,

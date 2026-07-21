@@ -77,7 +77,7 @@ impl CanonicalSegmentationPolicy {
         Ok(())
     }
 
-    pub fn segment_id(&self, partition_ordinal: u32, segment_ordinal: u32) -> Result<SegmentId> {
+    pub fn segment_id(&self, partition_ordinal: u64, segment_ordinal: u32) -> Result<SegmentId> {
         self.validate()?;
         SegmentId::new(format!("p{partition_ordinal:08}-s{segment_ordinal:08}"))
     }
@@ -91,7 +91,7 @@ pub struct AdaptiveMicrobatchController {
 #[derive(Clone, Debug)]
 pub struct CanonicalSegment {
     pub segment_id: SegmentId,
-    pub partition_ordinal: u32,
+    pub partition_ordinal: u64,
     pub segment_ordinal: u32,
     pub batches: Vec<RecordBatch>,
     pub output_position: Option<SourcePosition>,
@@ -115,7 +115,7 @@ impl CanonicalSegment {
 
 pub struct CanonicalSegmentAssembler {
     policy: CanonicalSegmentationPolicy,
-    partition_ordinal: u32,
+    partition_ordinal: u64,
     next_segment_ordinal: u32,
     batches: Vec<RecordBatch>,
     memory_leases: Vec<MemoryLease>,
@@ -126,7 +126,7 @@ pub struct CanonicalSegmentAssembler {
 }
 
 impl CanonicalSegmentAssembler {
-    pub fn new(policy: CanonicalSegmentationPolicy, partition_ordinal: u32) -> Result<Self> {
+    pub fn new(policy: CanonicalSegmentationPolicy, partition_ordinal: u64) -> Result<Self> {
         policy.validate()?;
         Ok(Self {
             policy,

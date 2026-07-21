@@ -1052,7 +1052,7 @@ pub struct PhysicalSchemaObservation {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecodeUnitPlan {
     pub unit_id: String,
-    pub ordinal: u32,
+    pub ordinal: u64,
     /// Complete source-byte envelope for this unit. When present, decoding the
     /// unit MUST NOT request bytes outside this extent. `None` makes no release
     /// or locality claim.
@@ -1093,7 +1093,7 @@ pub fn decode_unit_no_lookback_frontiers(units: &[DecodeUnitPlan]) -> Result<Opt
     let mut maximum_end = 0_u64;
     for (index, unit) in units.iter().enumerate() {
         unit.validate()?;
-        if usize::try_from(unit.ordinal).ok() != Some(index) {
+        if u64::try_from(index).ok() != Some(unit.ordinal) {
             return Err(CdfError::contract(
                 "no-lookback proof requires contiguous canonical unit ordinals",
             ));

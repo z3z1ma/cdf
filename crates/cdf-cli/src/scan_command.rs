@@ -454,8 +454,7 @@ fn scan_report(
     schema_snapshot: Option<SchemaSnapshotActionReport>,
 ) -> Result<ScanPlanReport, CliError> {
     let source = resource.source_plan();
-    let partition_count = usize::try_from(plan.scan.partition_count()?)
-        .map_err(|_| CdfError::data("scan partition count exceeds this process address space"))?;
+    let partition_count = plan.scan.partition_count()?;
     let scheduler = Some(cdf_runtime::resolve_runtime_scheduler(
         partition_count,
         &source.execution_capabilities,
