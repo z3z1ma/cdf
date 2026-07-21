@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-ws-b-format-decode-engines.md
-Depends-On: .10x/tickets/done/2026-07-11-p3-b1-streaming-byte-transforms.md, .10x/tickets/done/2026-07-11-p3-b2-parquet-codec.md, .10x/tickets/done/2026-07-11-p3-b3-arrow-ipc-codecs.md, .10x/tickets/cancelled/2026-07-11-p3-b4-delimited-fixed-width-codecs.md, .10x/tickets/done/2026-07-11-p3-b5-json-codecs.md, .10x/tickets/2026-07-11-p3-b6-avro-codecs.md, .10x/tickets/2026-07-11-p3-b7-orc-codec.md, .10x/tickets/2026-07-11-p3-b8-xml-codec.md, .10x/tickets/2026-07-11-p3-b9-spreadsheet-codecs.md, .10x/tickets/2026-07-11-p3-b10-protobuf-codec.md, .10x/tickets/2026-07-11-p3-b11-messagepack-cbor-codecs.md, .10x/tickets/2026-07-11-p3-b12-archive-containers.md
+Depends-On: .10x/tickets/done/2026-07-11-p3-b1-streaming-byte-transforms.md, .10x/tickets/done/2026-07-11-p3-b2-parquet-codec.md, .10x/tickets/done/2026-07-11-p3-b3-arrow-ipc-codecs.md, .10x/tickets/cancelled/2026-07-11-p3-b4-delimited-fixed-width-codecs.md, .10x/tickets/done/2026-07-11-p3-b5-json-codecs.md, .10x/tickets/2026-07-11-p3-b6-avro-codecs.md, .10x/tickets/2026-07-11-p3-b7-orc-codec.md, .10x/tickets/2026-07-11-p3-b8-xml-codec.md, .10x/tickets/2026-07-11-p3-b9-spreadsheet-codecs.md, .10x/tickets/done/2026-07-11-p3-b10-protobuf-codec.md, .10x/tickets/2026-07-11-p3-b11-messagepack-cbor-codecs.md, .10x/tickets/2026-07-11-p3-b12-archive-containers.md
 
 # P3 B13: native format catalog conformance and docs matrix
 

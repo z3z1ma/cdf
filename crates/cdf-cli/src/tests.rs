@@ -3225,6 +3225,31 @@ trust = "governed"
 }
 
 #[test]
+fn protobuf_descriptor_discovery_run_and_duckdb_commit_share_one_native_driver() {
+    let project = TestProject::new();
+    write_protobuf_resource(&project);
+
+    let result = run_valid_run_resource(&project, "local.rows");
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let report = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(report["result"]["resource_id"], "local.rows");
+    assert_eq!(report["result"]["row_count"], 2);
+    assert_eq!(report["result"]["checkpoint"]["status"], "committed");
+    let connection = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
+    let rows = connection
+        .prepare("SELECT id, name FROM rows ORDER BY id")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(rows, vec![(7, "bob".to_owned()), (42, "alice".to_owned())]);
+}
+
+#[test]
 fn pinned_arrow_ipc_type_drift_is_observed_and_quarantined_in_the_preview_run_stream() {
     let project = TestProject::new();
     write_arrow_ipc_discover_resource(&project, "events.arrow");
@@ -14986,6 +15011,36 @@ write_disposition = "append"
 trust = "governed"
 "#
         ),
+    )
+    .unwrap();
+}
+
+fn write_protobuf_resource(project: &TestProject) {
+    for entry in fs::read_dir(project.root.join("data")).unwrap() {
+        fs::remove_file(entry.unwrap().path()).unwrap();
+    }
+    fs::write(
+        project.root.join("resources/files.toml"),
+        r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.rows]
+glob = "rows.pb"
+format = "protobuf"
+write_disposition = "append"
+trust = "governed"
+format_options = { descriptor_set_base64 = "CkQKCWRldi9zdGRpbhIEdGVzdCIpCgNSb3cSDgoCaWQYASABKANSAmlkEhIKBG5hbWUYAiABKAlSBG5hbWViBnByb3RvMw==", message = "test.Row", framing = "length_delimited" }
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project.root.join("data/rows.pb"),
+        [
+            0x09, 0x08, 0x2a, 0x12, 0x05, b'a', b'l', b'i', b'c', b'e', 0x07, 0x08, 0x07, 0x12,
+            0x03, b'b', b'o', b'b',
+        ],
     )
     .unwrap();
 }

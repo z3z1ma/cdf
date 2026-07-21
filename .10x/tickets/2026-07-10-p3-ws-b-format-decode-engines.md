@@ -25,7 +25,7 @@ The native closeout catalog is `.10x/specs/native-enterprise-format-catalog.md`;
 - `.10x/tickets/2026-07-11-p3-b7-orc-codec.md`
 - `.10x/tickets/2026-07-11-p3-b8-xml-codec.md`
 - `.10x/tickets/2026-07-11-p3-b9-spreadsheet-codecs.md`
-- `.10x/tickets/2026-07-11-p3-b10-protobuf-codec.md`
+- `.10x/tickets/done/2026-07-11-p3-b10-protobuf-codec.md`
 - `.10x/tickets/2026-07-11-p3-b11-messagepack-cbor-codecs.md`
 - `.10x/tickets/2026-07-11-p3-b12-archive-containers.md`
 - `.10x/tickets/2026-07-11-p3-b13-native-format-matrix.md`
@@ -46,3 +46,4 @@ None. WS-L and FX1 are complete. This parent remains open only for its remaining
 - 2026-07-16: Closed B2 after the native Parquet path reached the recorded decode/HTTPS envelope, deterministic row-group/jobs laws, exact projection and physically proven predicate pushdown, explicit weak-source spool fallback, bounded late-materialized decoding, and malformed footer/late-page fail-closed coverage. The complete ticket and closure review are at `.10x/tickets/done/2026-07-11-p3-b2-parquet-codec.md`.
 - 2026-07-16: Closed B5 after JSON/NDJSON full-content discovery became an explicit compiled capability with constant-memory inference and retained-source reuse; REST page I/O overlaps Arrow tape decode; malformed/rechunk/depth/record/residual/jobs laws pass; selector+tape decode reaches 450.4 MiB/s aggregate and 3.10x the deleted DOM shape; full-content inference reaches 1.02x the raw Arrow roofline. The complete evidence and closure review are at `.10x/tickets/done/2026-07-11-p3-b5-json-codecs.md`.
 - 2026-07-19: B4 is terminal as a cancelled over-combined ticket. Its useful CSV/TSV/PSV/custom dialect and explicit fixed-width product slices remain; CSV reaches `0.680x` the bounded Arrow reference. The attempted two-pass quote-aware local unit planner regressed one file by 75.3%, regressed four files by 2.5%, and changed canonical package identity, so it and its knobs were deleted. The P3 aggregate ambition remains a future single-pass/identity-preserving optimization constraint, not active legacy machinery. Evidence and rationale: `.10x/tickets/cancelled/2026-07-11-p3-b4-delimited-fixed-width-codecs.md`.
+- 2026-07-18: Closed B10 after descriptor-bound Protobuf became a standard registered `FormatDriver` with lossless scalar/nested/map/oneof/well-known semantics, exact unknown-wire residual evidence, bounded streaming decode, product run-to-DuckDB coverage, and a direct Arrow/provenance median at `0.652x` the deliberately stricter decode-only `prost-reflect` oracle. Closure: `.10x/tickets/done/2026-07-11-p3-b10-protobuf-codec.md`.

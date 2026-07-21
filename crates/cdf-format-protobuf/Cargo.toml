@@ -1,0 +1,25 @@
+[package]
+name = "cdf-format-protobuf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Descriptor-bound, length-delimited Protobuf format driver for cdf."
+
+[dependencies]
+arrow-array = "58.3.0"
+arrow-schema = "58.3.0"
+base64 = "0.22.1"
+cdf-kernel = { path = "../cdf-kernel" }
+cdf-memory = { path = "../cdf-memory" }
+cdf-runtime = { path = "../cdf-runtime" }
+futures-util = "0.3.32"
+prost-reflect = "=0.16.5"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+
+[dev-dependencies]
+cdf-memory = { path = "../cdf-memory" }
+futures-executor = "0.3.32"
+prost = "=0.14.4"
+prost-types = "=0.14.4"

@@ -180,6 +180,9 @@ pub(crate) fn builtin_format_registry() -> Result<Arc<FormatRegistry>> {
         cdf_format_parquet::ParquetFormatDriver::new()?,
     ))?;
     registry.register(std::sync::Arc::new(
+        cdf_format_protobuf::ProtobufFormatDriver::new()?,
+    ))?;
+    registry.register(std::sync::Arc::new(
         cdf_format_json::NdjsonFormatDriver::new()?,
     ))?;
     registry.register(std::sync::Arc::new(
@@ -225,6 +228,26 @@ mod tests {
         assert_eq!(
             descriptor.source_access,
             cdf_runtime::FormatSourceAccess::Sequential
+        );
+    }
+
+    #[test]
+    fn builtin_format_catalog_contains_descriptor_bound_protobuf() {
+        let formats = builtin_format_registry().unwrap();
+        let descriptor = formats
+            .descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.format_id.as_str() == "protobuf")
+            .expect("Protobuf driver in standard product catalog");
+
+        assert_eq!(descriptor.decode_unit_policy, "length_delimited_stream_v1");
+        assert_eq!(
+            descriptor.source_access,
+            cdf_runtime::FormatSourceAccess::Sequential
+        );
+        assert_eq!(
+            descriptor.error_isolation,
+            cdf_runtime::FormatErrorIsolation::DecodeUnit
         );
     }
 
