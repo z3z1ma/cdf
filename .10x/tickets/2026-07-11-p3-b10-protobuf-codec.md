@@ -1,6 +1,6 @@
-Status: open
+Status: active
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-10-p3-ws-b-format-decode-engines.md
 Depends-On: .10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md, .10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md
 
@@ -27,9 +27,14 @@ No gRPC transport or ambient schema registry.
 
 ## Blockers
 
-Depends on FX1 and L5.
+None. FX1 and L5 are done.
 
 ## References
 
 - `.10x/specs/native-enterprise-format-catalog.md`
 - `.10x/specs/native-format-codec-runtime.md`
+- `.10x/research/2026-07-18-protobuf-arrow-decoder-admission.md`
+
+## Journal
+
+- 2026-07-18: Revalidated the executable dependencies and active Arrow tuple. Rejected `ptars-core 0.0.21` because its direct path skips unknown wire fields, does not enforce oneof last-wins, and pins Arrow 59. Admitted `prost-reflect 0.16.5` for descriptor authority and conformance only. The production path will be one CDF-owned bounded wire-to-Arrow decoder; exact unknown occurrences enter the existing compiled residual-verdict program. See `.10x/research/2026-07-18-protobuf-arrow-decoder-admission.md`.
