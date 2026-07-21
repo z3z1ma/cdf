@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "host": {
+    "advertised_logical_cores": 16,
+    "advertised_memory_bytes": {"method":"os-memory-authority","provider_version":"system-host-v1","status":"supported","value":33091223552},
+    "advertised_physical_cores": {"method":"os-cpu-topology","provider_version":"system-host-v1","status":"supported","value":8},
+    "architecture": "x86_64",
+    "benchmark_profile": "release",
+    "cdf_version": "0.1.0",
+    "cpu_label": "Intel(R) Xeon(R) Platinum 8488C",
+    "dependency_versions": {"arrow":"59.1.0","duckdb":"1.10504.0"},
+    "effective_cpu": {"method":"linux-cgroup-overlay","provider_version":"system-host-v1","status":"supported","value":{"affinity_cores":16,"logical_cores":16,"quota_millicores":null}},
+    "effective_memory_bytes": {"method":"linux-current-cgroup-v2-memory","provider_version":"system-host-v1","reason":"cgroup memory limit unavailable","status":"unavailable"},
+    "os": {"family":"linux","kernel":"6.1.176-221.360.amzn2023.x86_64","version":"2023"},
+    "rust_version": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "schema_version": 1,
+    "storage": {"method":"filesystem-target-probe","provider_version":"system-host-v1","status":"supported","value":{"filesystem":"xfs","free_bytes":null,"label":"xfs-storage-class","medium":"unknown"}}
+  },
+  "observations": [
+    {
+      "comparability":{"cdf_revision":"8408bac1be95190e8cc37e3e7944f2e19ff6d281","dataset_id":"nyc_tlc_yellow_2024","dependency_tuple":"Cargo.lock","host_class":"host-class-649c6f28be3544c8","io_mode":"warm","os_toolchain":"rustc 1.97.1 (8bab26f4f 2026-07-14)","timed_region_version":1,"workload_id":"d5_duckdb_eligible"},
+      "status":{"kind":"observed"},
+      "samples":[{"cgroup_memory":{"current_bytes":7426048,"events":{"high":0,"low":0,"max":0,"oom":0,"oom_group_kill":0,"oom_kill":0},"max_bytes":null,"peak_bytes":6358822912,"read_errors":{},"root":"/sys/fs/cgroup/user.slice/user-1000.slice/session-1455.scope"},"cpu_time_ns":75330000000,"logical_bytes":11868646460,"peak_rss_bytes":3985780736,"phases":[{"bytes":693001713,"duration_ns":2205634369,"phase":"source_read"},{"bytes":5849047168,"duration_ns":3057026480,"phase":"decode"},{"bytes":11868646460,"duration_ns":256976740,"phase":"validation_normalization"},{"bytes":1678253294,"duration_ns":11656330109,"phase":"segment_encode"},{"bytes":1678253294,"duration_ns":1717749031,"phase":"persist_hash"},{"bytes":1678592087,"duration_ns":7350448,"phase":"package_finalize"},{"bytes":1678253294,"duration_ns":56716654,"phase":"destination_ingress"},{"bytes":1678253294,"duration_ns":3556047643,"phase":"package_execution"},{"bytes":1678253294,"duration_ns":6543769282,"phase":"destination_write_receipt"},{"bytes":0,"duration_ns":1109436,"phase":"checkpoint_gate"}],"physical_bytes":11868646460,"rows":41169720,"spill_bytes":0,"wall_time_ns":10255642670}],
+      "summary":{"median_absolute_deviation_ns":0,"median_logical_bytes_per_second":1157279640,"median_physical_bytes_per_second":1157279640,"median_rows_per_second":4014348,"median_wall_time_ns":10255642670,"peak_rss_bytes":3985780736,"sample_count":1,"spill_bytes":0},
+      "reference":null,"bias":[{"code":"includes_cdf_evidence","description":"runs the release cdf command; fresh workspace copy setup is outside the worker timed region by default"}],
+      "measurement_provider":{"method":"gnu-time-v-child-process","observes_cpu_time":true,"observes_peak_rss":true,"version":"system-host-v1"},
+      "destination_path":{"destination_id":"duckdb","path_id":"canonical_segment_scan","evidence_version":"p3-d14-stock-scan-2026-07-19-v1","eligibility":"eligible","schema_fixture":"tlc-v1","evidence_record":".10x/evidence/2026-07-12-p3-d5-destination-matrix.md"}
+    },
+    {
+      "comparability":{"cdf_revision":"8408bac1be95190e8cc37e3e7944f2e19ff6d281","dataset_id":"decimal256-v1","dependency_tuple":"Cargo.lock","host_class":"host-class-649c6f28be3544c8","io_mode":"uncontrolled","os_toolchain":"rustc 1.97.1 (8bab26f4f 2026-07-14)","timed_region_version":1,"workload_id":"d5_duckdb_ineligible"},
+      "status":{"kind":"ineligible","reason":"schema fixture is rejected during bulk-path preflight"},"samples":[],"summary":null,"reference":null,"bias":[],
+      "destination_path":{"destination_id":"duckdb","path_id":"canonical_segment_scan","evidence_version":"p3-d14-stock-scan-2026-07-19-v1","eligibility":"ineligible","schema_fixture":"decimal256-v1","evidence_record":".10x/evidence/2026-07-12-p3-d5-destination-matrix.md"}
+    },
+    {
+      "comparability":{"cdf_revision":"2060c0a6c5d9145f5793d554022efba83785a66d","dataset_id":"tlc_full_year","dependency_tuple":"Cargo.lock","host_class":"host-class-649c6f28be3544c8","io_mode":"uncontrolled","os_toolchain":"rustc 1.97.1 (8bab26f4f 2026-07-14)","timed_region_version":1,"workload_id":"d5_postgres_eligible"},
+      "status":{"kind":"observed"},
+      "samples":[{"cgroup_memory":{"current_bytes":113668096,"events":{"high":0,"low":0,"max":0,"oom":0,"oom_group_kill":0,"oom_kill":0},"max_bytes":null,"peak_bytes":5584596992,"read_errors":{},"root":"/sys/fs/cgroup/user.slice/user-1000.slice/session-1621.scope"},"cpu_time_ns":34980000000,"logical_bytes":11868646460,"peak_rss_bytes":3994558464,"phases":[{"bytes":693001713,"duration_ns":12125532041,"phase":"source_read"},{"bytes":5849047168,"duration_ns":2624234691,"phase":"decode"},{"bytes":11868646460,"duration_ns":249762247,"phase":"validation_normalization"},{"bytes":1678253294,"duration_ns":11841181464,"phase":"segment_encode"},{"bytes":1678253294,"duration_ns":1792984856,"phase":"persist_hash"},{"bytes":1678591495,"duration_ns":7401594,"phase":"package_finalize"},{"bytes":1678253294,"duration_ns":3142351075,"phase":"package_execution"},{"bytes":1678253294,"duration_ns":57693843304,"phase":"destination_write_receipt"},{"bytes":0,"duration_ns":1228806,"phase":"checkpoint_gate"}],"physical_bytes":11868646460,"rows":41169720,"spill_bytes":0,"wall_time_ns":61216020108}],
+      "summary":{"median_absolute_deviation_ns":0,"median_logical_bytes_per_second":193881380,"median_physical_bytes_per_second":193881380,"median_rows_per_second":672531,"median_wall_time_ns":61216020108,"peak_rss_bytes":3994558464,"sample_count":1,"spill_bytes":0},
+      "reference":null,"bias":[{"code":"includes_cdf_evidence","description":"runs the release cdf command; fresh workspace copy setup is outside the worker timed region by default"}],
+      "measurement_provider":{"method":"gnu-time-v-child-process","observes_cpu_time":true,"observes_peak_rss":true,"version":"system-host-v1"},
+      "destination_path":{"destination_id":"postgres","path_id":"copy_binary","evidence_version":"p3-d3-2026-07-11-v1","eligibility":"eligible","schema_fixture":"tpch-orders-v1","evidence_record":".10x/evidence/2026-07-12-p3-d5-destination-matrix.md"}
+    },
+    {
+      "comparability":{"cdf_revision":"2060c0a6c5d9145f5793d554022efba83785a66d","dataset_id":"unsupported-arrow-v1","dependency_tuple":"Cargo.lock","host_class":"host-class-649c6f28be3544c8","io_mode":"uncontrolled","os_toolchain":"rustc 1.97.1 (8bab26f4f 2026-07-14)","timed_region_version":1,"workload_id":"d5_postgres_ineligible"},
+      "status":{"kind":"ineligible","reason":"schema fixture is rejected during bulk-path preflight"},"samples":[],"summary":null,"reference":null,"bias":[],
+      "destination_path":{"destination_id":"postgres","path_id":"copy_binary","evidence_version":"p3-d3-2026-07-11-v1","eligibility":"ineligible","schema_fixture":"unsupported-arrow-v1","evidence_record":".10x/evidence/2026-07-12-p3-d5-destination-matrix.md"}
+    },
+    {
+      "comparability":{"cdf_revision":"db5f6d676faa57ede1743690616be4a84560fff0","dataset_id":"nyc_tlc_yellow_2024","dependency_tuple":"Cargo.lock","host_class":"host-class-649c6f28be3544c8","io_mode":"uncontrolled","os_toolchain":"rustc 1.97.1 (8bab26f4f 2026-07-14)","timed_region_version":1,"workload_id":"d5_parquet_eligible"},
+      "status":{"kind":"observed"},
+      "samples":[{"cgroup_memory":{"current_bytes":6066176,"events":{"high":0,"low":0,"max":0,"oom":0,"oom_group_kill":0,"oom_kill":0},"max_bytes":null,"peak_bytes":8747819008,"read_errors":{},"root":"/sys/fs/cgroup/user.slice/user-1000.slice/session-1327.scope"},"cpu_time_ns":26280000000,"logical_bytes":11868646460,"peak_rss_bytes":1703108608,"phases":[{"bytes":693001713,"duration_ns":2034837260,"phase":"source_read"},{"bytes":5849047168,"duration_ns":149070196,"phase":"decode"},{"bytes":11868646460,"duration_ns":241998485,"phase":"validation_normalization"},{"bytes":1678253294,"duration_ns":11116717873,"phase":"segment_encode"},{"bytes":1678253294,"duration_ns":1926201293,"phase":"persist_hash"},{"bytes":1678592052,"duration_ns":8106308,"phase":"package_finalize"},{"bytes":1678253294,"duration_ns":7837645743,"phase":"destination_ingress"},{"bytes":1678253294,"duration_ns":8071815573,"phase":"package_execution"},{"bytes":1678253294,"duration_ns":51382595,"phase":"destination_write_receipt"},{"bytes":0,"duration_ns":1078862,"phase":"checkpoint_gate"}],"physical_bytes":11868646460,"rows":41169720,"spill_bytes":0,"wall_time_ns":8310422833}],
+      "summary":{"median_absolute_deviation_ns":0,"median_logical_bytes_per_second":1428163969,"median_physical_bytes_per_second":1428163969,"median_rows_per_second":4953986,"median_wall_time_ns":8310422833,"peak_rss_bytes":1703108608,"sample_count":1,"spill_bytes":0},
+      "reference":null,"bias":[{"code":"includes_cdf_evidence","description":"runs the release cdf command; fresh workspace copy setup is outside the worker timed region by default"}],
+      "measurement_provider":{"method":"gnu-time-v-child-process","observes_cpu_time":true,"observes_peak_rss":true,"version":"system-host-v1"},
+      "destination_path":{"destination_id":"parquet_object_store","path_id":"arrow_ipc_to_parquet","evidence_version":"p3-d8-2026-07-15-v5","eligibility":"eligible","schema_fixture":"wide-entropy-v1","evidence_record":".10x/evidence/2026-07-15-p3-d8-parquet-staged-ingress.md"}
+    },
+    {
+      "comparability":{"cdf_revision":"db5f6d676faa57ede1743690616be4a84560fff0","dataset_id":"unsupported-arrow-v1-parquet","dependency_tuple":"Cargo.lock","host_class":"host-class-649c6f28be3544c8","io_mode":"uncontrolled","os_toolchain":"rustc 1.97.1 (8bab26f4f 2026-07-14)","timed_region_version":1,"workload_id":"d5_parquet_ineligible"},
+      "status":{"kind":"ineligible","reason":"schema fixture is rejected during bulk-path preflight"},"samples":[],"summary":null,"reference":null,"bias":[],
+      "destination_path":{"destination_id":"parquet_object_store","path_id":"arrow_ipc_to_parquet","evidence_version":"p3-d8-2026-07-15-v5","eligibility":"ineligible","schema_fixture":"unsupported-arrow-v1","evidence_record":".10x/evidence/2026-07-15-p3-d8-parquet-staged-ingress.md"}
+    }
+  ]
+}

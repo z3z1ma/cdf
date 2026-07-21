@@ -246,7 +246,7 @@ fn generated_envelope_matches_committed_golden() {
     let spec: EnvelopeSpec =
         serde_json::from_str(include_str!("../fixtures/p3-envelope-spec.json")).unwrap();
     let destination_report: BenchmarkReport = serde_json::from_str(include_str!(
-        "../../../.10x/evidence/.storage/p3-d5-destination-matrix-macos.json"
+        "../../../.10x/evidence/.storage/p3-destination-matrix-ec2-current.json"
     ))
     .unwrap();
     let generated = generate_envelope(
@@ -270,7 +270,7 @@ fn destination_envelope_rejects_invented_or_drifted_registry_evidence() {
     ))
     .unwrap();
     let mut destination_report: BenchmarkReport = serde_json::from_str(include_str!(
-        "../../../.10x/evidence/.storage/p3-d5-destination-matrix-macos.json"
+        "../../../.10x/evidence/.storage/p3-destination-matrix-ec2-current.json"
     ))
     .unwrap();
     let spec: EnvelopeSpec =
@@ -314,7 +314,7 @@ fn destination_envelope_rejects_invented_or_drifted_registry_evidence() {
         .destination_path
         .as_mut()
         .unwrap();
-    identity.path_id = "arrow_record_batch_appender".to_owned();
+    identity.path_id = "canonical_segment_scan".to_owned();
     identity.evidence_version = "p3-d2-2026-07-11-v1".to_owned();
     identity.evidence_record = ".10x/evidence/../secret.md".to_owned();
     let error = generate_envelope(

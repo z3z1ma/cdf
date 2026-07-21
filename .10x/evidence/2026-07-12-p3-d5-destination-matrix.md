@@ -19,6 +19,8 @@ The registered schema-ineligible fixtures were rejected during preflight: DuckDB
 
 2026-07-18 addendum: after D8 moved Parquet to staged durable segment ingress (`p3-d8-2026-07-15-v5`), the local Parquet write-roofline benchmark was rerun for the generated envelope join. It wrote 134,244,673 physical bytes in 88,580,750 ns: 1,445.3 MiB/s, versus 1,414.8 MiB/s raw durable write in the same benchmark (1.022x). The stored machine report now joins Parquet cells on the current descriptor evidence version and this rerun rate. PostgreSQL remains the original D5 observation.
 
+2026-07-18 current-path refresh: the generated destination matrix now joins the exact selected descriptors to controlled EC2 full-product observations instead of preserving the superseded DuckDB appender cell. DuckDB `canonical_segment_scan@p3-d14-stock-scan-2026-07-19-v1` uses the median sample from `.10x/evidence/.storage/2026-07-19-p3-d14-stock-default-full-year-three-sample.json`: 41,169,720 rows in 10.255642670 seconds, or 4,014,348 rows/s. PostgreSQL `copy_binary@p3-d3-2026-07-11-v1` uses the fresh direct-target sample in `.10x/evidence/.storage/2026-07-19-p3-d16-postgres-direct-copy-fresh.json`: exact full-year rows in 61.216020108 seconds, or 672,531 rows/s. Parquet `arrow_ipc_to_parquet@p3-d8-2026-07-15-v5` uses `.10x/evidence/.storage/2026-07-18-p3-d15-ec2-parquet-full-year-current.json`: exact full-year rows in 8.310422833 seconds, or 4,953,986 rows/s. The derived report `.10x/evidence/.storage/p3-destination-matrix-ec2-current.json` retains one exact sample per selected path, its measurement provider, phases, memory, and the same named EC2 host authority. Ineligible cells remain schema-preflight facts and carry no timing sample.
+
 ## Procedure
 
 ```text

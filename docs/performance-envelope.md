@@ -33,12 +33,12 @@ This document is generated from the machine report; edit its inputs, not this fi
 
 | Destination | Path | Cell | Evidence version | Host class | Target | Observation | Status | Evidence |
 |---|---|---|---|---|---:|---:|---|---|
-| duckdb | `arrow_record_batch_appender` | eligible (tlc-v1) | `p3-f2-2026-07-14-v2` | `host-class-f4bf4d1c46a93156` | ≥1M rows/s; ≥5× scalar appender | 9835744 rows/s | observed | [record](../.10x/evidence/2026-07-12-p3-d5-destination-matrix.md) |
-| duckdb | `arrow_record_batch_appender` | schema-ineligible (decimal256-v1) | `p3-f2-2026-07-14-v2` | `host-class-f4bf4d1c46a93156` | ≥1M rows/s; ≥5× scalar appender | — | ineligible: schema fixture is rejected during bulk-path preflight | [record](../.10x/evidence/2026-07-12-p3-d5-destination-matrix.md) |
-| parquet_object_store | `arrow_ipc_to_parquet` | eligible (wide-entropy-v1) | `p3-d8-2026-07-15-v5` | `host-class-f4bf4d1c46a93156` | ≥60% device-write roofline | 1445.30 MiB/s | observed | [record](../.10x/evidence/2026-07-15-p3-d8-parquet-staged-ingress.md) |
-| parquet_object_store | `arrow_ipc_to_parquet` | schema-ineligible (unsupported-arrow-v1) | `p3-d8-2026-07-15-v5` | `host-class-f4bf4d1c46a93156` | ≥60% device-write roofline | — | ineligible: schema fixture is rejected during bulk-path preflight | [record](../.10x/evidence/2026-07-15-p3-d8-parquet-staged-ingress.md) |
-| postgres | `copy_binary` | eligible (tpch-orders-v1) | `p3-d3-2026-07-11-v1` | `host-class-f4bf4d1c46a93156` | binary COPY; ≥2× CSV COPY | 1804599 rows/s | observed | [record](../.10x/evidence/2026-07-12-p3-d5-destination-matrix.md) |
-| postgres | `copy_binary` | schema-ineligible (unsupported-arrow-v1) | `p3-d3-2026-07-11-v1` | `host-class-f4bf4d1c46a93156` | binary COPY; ≥2× CSV COPY | — | ineligible: schema fixture is rejected during bulk-path preflight | [record](../.10x/evidence/2026-07-12-p3-d5-destination-matrix.md) |
+| duckdb | `canonical_segment_scan` | eligible (tlc-v1) | `p3-d14-stock-scan-2026-07-19-v1` | `host-class-649c6f28be3544c8` | ≥1M rows/s; ≥5× scalar appender | 1103.67 MiB/s | observed | [record](../.10x/evidence/2026-07-12-p3-d5-destination-matrix.md) |
+| duckdb | `canonical_segment_scan` | schema-ineligible (decimal256-v1) | `p3-d14-stock-scan-2026-07-19-v1` | `host-class-649c6f28be3544c8` | ≥1M rows/s; ≥5× scalar appender | — | ineligible: schema fixture is rejected during bulk-path preflight | [record](../.10x/evidence/2026-07-12-p3-d5-destination-matrix.md) |
+| parquet_object_store | `arrow_ipc_to_parquet` | eligible (wide-entropy-v1) | `p3-d8-2026-07-15-v5` | `host-class-649c6f28be3544c8` | ≥60% device-write roofline | 1362.00 MiB/s | observed | [record](../.10x/evidence/2026-07-15-p3-d8-parquet-staged-ingress.md) |
+| parquet_object_store | `arrow_ipc_to_parquet` | schema-ineligible (unsupported-arrow-v1) | `p3-d8-2026-07-15-v5` | `host-class-649c6f28be3544c8` | ≥60% device-write roofline | — | ineligible: schema fixture is rejected during bulk-path preflight | [record](../.10x/evidence/2026-07-15-p3-d8-parquet-staged-ingress.md) |
+| postgres | `copy_binary` | eligible (tpch-orders-v1) | `p3-d3-2026-07-11-v1` | `host-class-649c6f28be3544c8` | binary COPY; ≥2× CSV COPY | 184.90 MiB/s | observed | [record](../.10x/evidence/2026-07-12-p3-d5-destination-matrix.md) |
+| postgres | `copy_binary` | schema-ineligible (unsupported-arrow-v1) | `p3-d3-2026-07-11-v1` | `host-class-649c6f28be3544c8` | binary COPY; ≥2× CSV COPY | — | ineligible: schema fixture is rejected during bulk-path preflight | [record](../.10x/evidence/2026-07-12-p3-d5-destination-matrix.md) |
 
 ## Bias and unavailable evidence
 
