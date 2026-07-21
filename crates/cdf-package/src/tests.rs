@@ -58,6 +58,19 @@ fn collect_dedup_dropped_provenance(reader: &PackageReader) -> Vec<(u64, u64)> {
     rows
 }
 
+fn read_segment_batches(reader: &PackageReader, segment_id: &SegmentId) -> Vec<RecordBatch> {
+    let memory: Arc<dyn MemoryCoordinator> =
+        Arc::new(DeterministicMemoryCoordinator::new(128 * 1024 * 1024, BTreeMap::new()).unwrap());
+    reader
+        .verified_canonical_segment_stream(memory, 128 * 1024 * 1024)
+        .unwrap()
+        .find_map(|segment| {
+            let segment = segment.unwrap();
+            (segment.entry.segment_id == *segment_id).then_some(segment.batches)
+        })
+        .unwrap_or_else(|| panic!("segment {segment_id} is not in the verified package"))
+}
+
 fn replay_segment_stream(
     segments: &[SegmentEntry],
 ) -> impl Iterator<Item = Result<SegmentEntry>> + '_ {
@@ -1186,7 +1199,7 @@ fn arrow_ipc_segments_round_trip_for_replay() {
     let reader = PackageReader::open(temp.path()).unwrap();
 
     let segment_id = &manifest.identity.segments[0].segment_id;
-    let batches = reader.read_segment(segment_id).unwrap();
+    let batches = read_segment_batches(&reader, segment_id);
     assert_eq!(batches.len(), 1);
     assert_eq!(batches[0].num_rows(), 3);
 
@@ -2620,10 +2633,7 @@ fn persisted_archive_writes_sidecars_manifest_metadata_and_fidelity_json() {
         .unwrap();
     assert_eq!(first_segment_path.as_deref(), Some("data/seg-000001.arrow"));
     assert_eq!(
-        reader
-            .read_segment(&SegmentId::new("seg-000001").unwrap())
-            .unwrap()[0]
-            .num_rows(),
+        read_segment_batches(&reader, &SegmentId::new("seg-000001").unwrap())[0].num_rows(),
         2
     );
 }
@@ -2711,11 +2721,45 @@ fn persisted_archive_enforces_one_accounted_input_output_window() {
     )
     .unwrap();
     let snapshot = memory.snapshot();
-    let consumer = ConsumerKey::new(ARCHIVE_SEGMENT_MEMORY_CONSUMER, MemoryClass::Package).unwrap();
+    let consumer = ConsumerKey::new(SEGMENT_STREAM_MEMORY_CONSUMER, MemoryClass::Package).unwrap();
     assert_eq!(snapshot.current_bytes, 0);
     assert_eq!(snapshot.peak_bytes, 64 * 1024);
     assert_eq!(snapshot.consumers[&consumer].current_bytes, 0);
     assert_eq!(snapshot.consumers[&consumer].peak_bytes, 64 * 1024);
+
+    let injected_memory: Arc<dyn MemoryCoordinator> =
+        Arc::new(DeterministicMemoryCoordinator::new(64 * 1024, BTreeMap::new()).unwrap());
+    let segment = reader
+        .accounted_canonical_segment_stream(Arc::clone(&injected_memory), 64 * 1024)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+    let injected = segment
+        .consume_with_window(|_, (), batches| {
+            let batches = batches
+                .into_iter()
+                .map(cdf_package_contract::strip_package_row_ord)
+                .collect::<Result<Vec<_>>>()?;
+            let parquet = crate::parquet::transcode_record_batches_to_bounded_parquet_bytes(
+                &batches,
+                64 * 1024
+                    - batches
+                        .iter()
+                        .map(|batch| record_batch_retained_bytes(batch).unwrap())
+                        .sum::<u64>(),
+            )?;
+            assert!(!parquet.is_empty());
+            assert_eq!(injected_memory.snapshot().current_bytes, 64 * 1024);
+            Err::<(), _>(CdfError::internal("injected archive transform failure"))
+        })
+        .unwrap_err();
+    assert!(
+        injected
+            .message
+            .contains("injected archive transform failure")
+    );
+    assert_eq!(injected_memory.snapshot().current_bytes, 0);
 
     let mut first_segment_id = None;
     reader
@@ -2724,7 +2768,11 @@ fn persisted_archive_enforces_one_accounted_input_output_window() {
             Ok(())
         })
         .unwrap();
-    let batches = reader.read_segment(&first_segment_id.unwrap()).unwrap();
+    let batches = read_segment_batches(&reader, &first_segment_id.unwrap());
+    let retained_input_bytes = batches
+        .iter()
+        .map(|batch| record_batch_retained_bytes(batch).unwrap())
+        .sum::<u64>();
     let retained_arrow_bytes = batches
         .into_iter()
         .map(|batch| {
@@ -2734,7 +2782,8 @@ fn persisted_archive_enforces_one_accounted_input_output_window() {
             .unwrap()
         })
         .sum::<u64>();
-    let combined_window = retained_arrow_bytes + 1;
+    assert!(retained_input_bytes > retained_arrow_bytes);
+    let combined_window = retained_input_bytes;
     let combined_memory: Arc<dyn MemoryCoordinator> =
         Arc::new(DeterministicMemoryCoordinator::new(combined_window, BTreeMap::new()).unwrap());
     let combined_archive = tempfile::tempdir().unwrap();
@@ -2746,9 +2795,7 @@ fn persisted_archive_enforces_one_accounted_input_output_window() {
     )
     .unwrap_err();
     assert!(
-        error
-            .message
-            .contains("Parquet output exceeds its 1-byte package archive window"),
+        error.message.contains("Parquet output exceeds its"),
         "{error}"
     );
     assert_eq!(combined_memory.snapshot().current_bytes, 0);
@@ -2759,7 +2806,7 @@ fn persisted_archive_enforces_one_accounted_input_output_window() {
             .is_none()
     );
 
-    let oversized_window = retained_arrow_bytes - 1;
+    let oversized_window = retained_input_bytes - 1;
     let oversized_memory: Arc<dyn MemoryCoordinator> =
         Arc::new(DeterministicMemoryCoordinator::new(oversized_window, BTreeMap::new()).unwrap());
     let oversized_archive = tempfile::tempdir().unwrap();
@@ -3068,7 +3115,7 @@ fn production_commit_paths_cannot_collect_package_segments() {
     }
     for path in files {
         let source = fs::read_to_string(&path).unwrap();
-        let mut forbidden = vec![
+        let forbidden = [
             "Vec<CommitSegment>",
             "Vec<ArchiveSegmentMetadata>",
             "Result<Vec<StatisticsProfileRow>>",
@@ -3077,10 +3124,8 @@ fn production_commit_paths_cannot_collect_package_segments() {
             "read_dedup_dropped_provenance(",
             "read_receipts(",
             ".receipts()",
+            "read_segment(",
         ];
-        if path != archive_path && path != reader_path {
-            forbidden.push("read_segment(");
-        }
         for forbidden in forbidden {
             assert!(
                 !source.contains(forbidden),

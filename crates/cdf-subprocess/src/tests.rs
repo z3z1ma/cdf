@@ -1302,8 +1302,12 @@ async fn airbyte_protocol_streams_selected_rows_and_packages_for_replay() {
     let reader = cdf_package::PackageReader::open(&package_dir).unwrap();
     reader.verify().unwrap();
     let replayed = reader
-        .read_segment(&SegmentId::new("seg-protocol-0").unwrap())
-        .unwrap();
+        .verified_canonical_segment_stream(memory(), 256 * 1024 * 1024)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .batches;
     assert_eq!(replayed.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
 }
 

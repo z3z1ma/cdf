@@ -5112,7 +5112,14 @@ fn schema_promote_execute_updates_postgres_through_generic_command_dispatch() {
         .unwrap()
         .into_state_delta(package_hash.clone());
     let segment = &delta.segments[0];
-    let batches = reader.read_segment(&segment.segment_id).unwrap();
+    let batches = reader
+        .verified_canonical_segment_stream(test_execution_services().memory(), 128 * 1024 * 1024)
+        .unwrap()
+        .find_map(|candidate| {
+            let candidate = candidate.unwrap();
+            (candidate.entry.segment_id == segment.segment_id).then_some(candidate.batches)
+        })
+        .unwrap();
     let residuals = batches[0]
         .column(1)
         .as_any()

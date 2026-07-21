@@ -1676,7 +1676,7 @@ struct PackageStagedSegmentReader {
     identity: cdf_runtime::StagedSegmentIdentity,
     durable_local_file: Option<cdf_runtime::DurableLocalFile>,
     segment: Option<cdf_package::VerifiedSegmentObject<()>>,
-    decoded: Option<cdf_package::VerifiedSegment<()>>,
+    decoded: Option<cdf_package::AccountedSegment<()>>,
     memory: Arc<dyn cdf_memory::MemoryCoordinator>,
     maximum_segment_bytes: u64,
     next_batch: usize,

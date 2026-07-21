@@ -629,9 +629,20 @@ fn plan_current_package_commit(
         let first = segments
             .first()
             .ok_or_else(|| CdfError::data("DuckDB package has no segment schema authority"))?;
+        let (_, services) =
+            cdf_engine::StandaloneExecutionHost::default_services(128 * 1024 * 1024)?;
         let segment_schema = reader
-            .read_segment(&first.segment_id)?
+            .verified_canonical_segment_stream(services.memory(), 128 * 1024 * 1024)?
+            .find_map(|candidate| match candidate {
+                Ok(candidate) if candidate.entry.segment_id == first.segment_id => {
+                    Some(Ok(candidate.batches))
+                }
+                Ok(_) => None,
+                Err(error) => Some(Err(error)),
+            })
+            .transpose()?
             .into_iter()
+            .flatten()
             .next()
             .map(|batch| batch.schema())
             .ok_or_else(|| CdfError::data("DuckDB package first segment has no Arrow batch"))?;

@@ -6,10 +6,7 @@ use std::{
 };
 
 use cdf_kernel::{CdfError, Result};
-use cdf_memory::{
-    ConsumerKey, DeterministicMemoryCoordinator, MemoryClass, MemoryCoordinator,
-    ReservationRequest, record_batch_retained_bytes, reserve_blocking,
-};
+use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator, record_batch_retained_bytes};
 use cdf_package_contract::{MANIFEST_FILE, ManifestArchives, ParquetArchiveMetadata};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -39,8 +36,6 @@ const SOURCE_FORMAT: &str = "arrow_ipc_lz4";
 const ARCHIVE_FORMAT: &str = "parquet";
 const MAX_ARCHIVE_INDEX_RECORD_BYTES: u64 = 2 * 1024 * 1024;
 pub(crate) const ARCHIVE_SEGMENT_WINDOW_BYTES: u64 = 64 * 1024 * 1024;
-pub(crate) const ARCHIVE_SEGMENT_MEMORY_CONSUMER: &str = "package-parquet-archive-segment";
-
 static ARCHIVE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,101 +206,100 @@ pub(crate) fn write_streamed_archive_temp_tree_with_memory(
     let mut segment_count = 0_u64;
     let mut total_row_count = 0_u64;
     let mut archive_byte_count = 0_u64;
-    reader.for_each_identity_segment(&mut |entry| {
-        let request = ReservationRequest::new(
-            ConsumerKey::new(ARCHIVE_SEGMENT_MEMORY_CONSUMER, MemoryClass::Package)?,
-            maximum_window_bytes,
-        )?
-        .as_minimum_working_set();
-        let _window = reserve_blocking(std::sync::Arc::clone(&memory), &request)?;
-        let batches = reader
-            .read_segment(&entry.segment_id)?
-            .into_iter()
-            .map(cdf_package_contract::strip_package_row_ord)
-            .collect::<Result<Vec<_>>>()?;
-        let retained_arrow_bytes = batches.iter().try_fold(0_u64, |total, batch| {
-            total
-                .checked_add(record_batch_retained_bytes(batch)?)
-                .ok_or_else(|| CdfError::data("archive segment retained Arrow memory overflow"))
+    for segment in reader.accounted_canonical_segment_stream(memory, maximum_window_bytes)? {
+        let segment = segment?;
+        segment.consume_with_window(|entry, (), batches| {
+            let batches = batches
+                .into_iter()
+                .map(cdf_package_contract::strip_package_row_ord)
+                .collect::<Result<Vec<_>>>()?;
+            let retained_arrow_bytes = batches.iter().try_fold(0_u64, |total, batch| {
+                total.checked_add(record_batch_retained_bytes(batch)?).ok_or_else(|| {
+                    CdfError::data("archive segment retained Arrow memory overflow")
+                })
+            })?;
+            if retained_arrow_bytes > maximum_window_bytes {
+                return Err(CdfError::data(format!(
+                    "segment {} retains {retained_arrow_bytes} Arrow bytes above its {maximum_window_bytes}-byte package Parquet archive window",
+                    entry.segment_id
+                )));
+            }
+            let row_count = batches.iter().try_fold(0_u64, |total, batch| {
+                total
+                    .checked_add(
+                        u64::try_from(batch.num_rows()).map_err(|_| {
+                            CdfError::data("archive segment row count exceeds u64")
+                        })?,
+                    )
+                    .ok_or_else(|| CdfError::data("archive segment row count overflow"))
+            })?;
+            if row_count != entry.row_count {
+                return Err(CdfError::data(format!(
+                    "segment {} manifest row count {} differs from package data {row_count}",
+                    entry.segment_id, entry.row_count
+                )));
+            }
+            let maximum_parquet_bytes = maximum_window_bytes - retained_arrow_bytes;
+            let parquet_bytes = transcode_record_batches_to_bounded_parquet_bytes(
+                &batches,
+                maximum_parquet_bytes,
+            )?;
+            let retained_parquet_bytes = u64::try_from(parquet_bytes.capacity())
+                .map_err(|_| CdfError::data("archive Parquet output allocation exceeds u64"))?;
+            let retained_window_bytes = retained_arrow_bytes
+                .checked_add(retained_parquet_bytes)
+                .ok_or_else(|| CdfError::data("archive segment retained memory overflow"))?;
+            if retained_window_bytes > maximum_window_bytes {
+                return Err(CdfError::data(format!(
+                    "segment {} retains {retained_arrow_bytes} Arrow bytes plus {retained_parquet_bytes} Parquet output bytes, above its {maximum_window_bytes}-byte package Parquet archive window",
+                    entry.segment_id
+                )));
+            }
+            let archive_path = archive_segment_path(entry.segment_id.as_str())?;
+            let file_name = Path::new(&archive_path).file_name().ok_or_else(|| {
+                CdfError::internal(format!("archive path {archive_path} has no file name"))
+            })?;
+            let path = data_dir.join(file_name);
+            write_new_file(&path, &parquet_bytes)?;
+            let parquet_byte_count = u64::try_from(parquet_bytes.len())
+                .map_err(|_| CdfError::data("archive Parquet byte count exceeds u64"))?;
+            let record = ArchiveSegmentMetadata {
+                segment_id: entry.segment_id.as_str().to_owned(),
+                source_path: entry.path.clone(),
+                source_byte_count: entry.byte_count,
+                source_sha256: entry.sha256.clone(),
+                source_row_count: entry.row_count,
+                archive_path,
+                archive_byte_count: parquet_byte_count,
+                archive_sha256: sha256_hex(&parquet_bytes),
+                archive_row_count: row_count,
+            };
+            let record_bytes = canonical_json_bytes(&record)?;
+            index_file
+                .write_all(&record_bytes)
+                .and_then(|()| index_file.write_all(b"\n"))
+                .map_err(|error| io_error(format!("write {}", index_path.display()), error))?;
+            index_hasher.update(&record_bytes);
+            index_hasher.update(b"\n");
+            let record_byte_count = u64::try_from(record_bytes.len())
+                .map_err(|_| CdfError::data("archive index record byte count exceeds u64"))?
+                .checked_add(1)
+                .ok_or_else(|| CdfError::data("archive index record byte count overflow"))?;
+            index_byte_count = index_byte_count
+                .checked_add(record_byte_count)
+                .ok_or_else(|| CdfError::data("archive index byte count overflow"))?;
+            segment_count = segment_count
+                .checked_add(1)
+                .ok_or_else(|| CdfError::data("archive segment count overflow"))?;
+            total_row_count = total_row_count
+                .checked_add(row_count)
+                .ok_or_else(|| CdfError::data("archive row count overflow"))?;
+            archive_byte_count = archive_byte_count
+                .checked_add(parquet_byte_count)
+                .ok_or_else(|| CdfError::data("archive byte count overflow"))?;
+            Ok(())
         })?;
-        if retained_arrow_bytes > maximum_window_bytes {
-            return Err(CdfError::data(format!(
-                "segment {} retains {retained_arrow_bytes} Arrow bytes above its {maximum_window_bytes}-byte package Parquet archive window",
-                entry.segment_id
-            )));
-        }
-        let row_count = batches.iter().try_fold(0_u64, |total, batch| {
-            total
-                .checked_add(
-                    u64::try_from(batch.num_rows())
-                        .map_err(|_| CdfError::data("archive segment row count exceeds u64"))?,
-                )
-                .ok_or_else(|| CdfError::data("archive segment row count overflow"))
-        })?;
-        if row_count != entry.row_count {
-            return Err(CdfError::data(format!(
-                "segment {} manifest row count {} differs from package data {row_count}",
-                entry.segment_id, entry.row_count
-            )));
-        }
-        let maximum_parquet_bytes = maximum_window_bytes - retained_arrow_bytes;
-        let parquet_bytes =
-            transcode_record_batches_to_bounded_parquet_bytes(&batches, maximum_parquet_bytes)?;
-        let retained_parquet_bytes = u64::try_from(parquet_bytes.capacity())
-            .map_err(|_| CdfError::data("archive Parquet output allocation exceeds u64"))?;
-        let retained_window_bytes = retained_arrow_bytes
-            .checked_add(retained_parquet_bytes)
-            .ok_or_else(|| CdfError::data("archive segment retained memory overflow"))?;
-        if retained_window_bytes > maximum_window_bytes {
-            return Err(CdfError::data(format!(
-                "segment {} retains {retained_arrow_bytes} Arrow bytes plus {retained_parquet_bytes} Parquet output bytes, above its {maximum_window_bytes}-byte package Parquet archive window",
-                entry.segment_id
-            )));
-        }
-        let archive_path = archive_segment_path(entry.segment_id.as_str())?;
-        let file_name = Path::new(&archive_path).file_name().ok_or_else(|| {
-            CdfError::internal(format!("archive path {archive_path} has no file name"))
-        })?;
-        let path = data_dir.join(file_name);
-        write_new_file(&path, &parquet_bytes)?;
-        let parquet_byte_count = u64::try_from(parquet_bytes.len())
-            .map_err(|_| CdfError::data("archive Parquet byte count exceeds u64"))?;
-        let record = ArchiveSegmentMetadata {
-            segment_id: entry.segment_id.as_str().to_owned(),
-            source_path: entry.path.clone(),
-            source_byte_count: entry.byte_count,
-            source_sha256: entry.sha256.clone(),
-            source_row_count: entry.row_count,
-            archive_path,
-            archive_byte_count: parquet_byte_count,
-            archive_sha256: sha256_hex(&parquet_bytes),
-            archive_row_count: row_count,
-        };
-        let record_bytes = canonical_json_bytes(&record)?;
-        index_file
-            .write_all(&record_bytes)
-            .and_then(|()| index_file.write_all(b"\n"))
-            .map_err(|error| io_error(format!("write {}", index_path.display()), error))?;
-        index_hasher.update(&record_bytes);
-        index_hasher.update(b"\n");
-        let record_byte_count = u64::try_from(record_bytes.len())
-            .map_err(|_| CdfError::data("archive index record byte count exceeds u64"))?
-            .checked_add(1)
-            .ok_or_else(|| CdfError::data("archive index record byte count overflow"))?;
-        index_byte_count = index_byte_count
-            .checked_add(record_byte_count)
-            .ok_or_else(|| CdfError::data("archive index byte count overflow"))?;
-        segment_count = segment_count
-            .checked_add(1)
-            .ok_or_else(|| CdfError::data("archive segment count overflow"))?;
-        total_row_count = total_row_count
-            .checked_add(row_count)
-            .ok_or_else(|| CdfError::data("archive row count overflow"))?;
-        archive_byte_count = archive_byte_count
-            .checked_add(parquet_byte_count)
-            .ok_or_else(|| CdfError::data("archive byte count overflow"))?;
-        Ok(())
-    })?;
+    }
     index_file
         .sync_all()
         .map_err(|error| io_error(format!("sync {}", index_path.display()), error))?;

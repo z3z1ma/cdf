@@ -3101,8 +3101,17 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        for segment in filtered_segments {
-            for batch in filtered_reader.read_segment(&segment.segment_id).unwrap() {
+        let filtered_segment_ids = filtered_segments
+            .into_iter()
+            .map(|segment| segment.segment_id)
+            .collect::<BTreeSet<_>>();
+        for segment in filtered_reader
+            .verified_canonical_segment_stream(execution.memory(), 64 * 1024 * 1024)
+            .unwrap()
+        {
+            let segment = segment.unwrap();
+            assert!(filtered_segment_ids.contains(&segment.entry.segment_id));
+            for batch in segment.batches {
                 assert_eq!(
                     batch
                         .schema()

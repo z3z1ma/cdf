@@ -105,6 +105,24 @@ fn package_identity_segments(reader: &cdf_package::PackageReader) -> Vec<Segment
     segments
 }
 
+fn read_package_segment(
+    reader: &cdf_package::PackageReader,
+    segment_id: &cdf_kernel::SegmentId,
+) -> Vec<RecordBatch> {
+    let memory: Arc<dyn cdf_memory::MemoryCoordinator> = Arc::new(
+        cdf_memory::DeterministicMemoryCoordinator::new(128 * 1024 * 1024, BTreeMap::new())
+            .unwrap(),
+    );
+    reader
+        .verified_canonical_segment_stream(memory, 128 * 1024 * 1024)
+        .unwrap()
+        .find_map(|segment| {
+            let segment = segment.unwrap();
+            (segment.entry.segment_id == *segment_id).then_some(segment.batches)
+        })
+        .unwrap_or_else(|| panic!("segment {segment_id} is not in the verified package"))
+}
+
 fn executable_mock_plan(plan: &EnginePlan, resource: &MockResource) -> Result<EnginePlan> {
     if plan.compiled_source_execution.is_some() {
         return Ok(plan.clone());
@@ -2447,9 +2465,7 @@ fn tier_a_resource_runs_engine_projection_filter_limit_into_package() {
     }));
 
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let batches = reader
-        .read_segment(&output.identity_segments()[0].segment_id)
-        .unwrap();
+    let batches = read_package_segment(&reader, &output.identity_segments()[0].segment_id);
     let batch = &batches[0];
     assert_eq!(batch.num_rows(), 1);
     assert_eq!(batch.schema().field(0).name(), "name");
@@ -4163,8 +4179,15 @@ fn inexact_and_unsupported_predicates_are_reapplied_during_execution() {
 
     assert_eq!(output.profile.output_rows, 2);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    for segment in output.identity_segments() {
-        let batches = reader.read_segment(&segment.segment_id).unwrap();
+    let memory: Arc<dyn cdf_memory::MemoryCoordinator> = Arc::new(
+        cdf_memory::DeterministicMemoryCoordinator::new(128 * 1024 * 1024, BTreeMap::new())
+            .unwrap(),
+    );
+    for segment in reader
+        .verified_canonical_segment_stream(memory, 128 * 1024 * 1024)
+        .unwrap()
+    {
+        let batches = segment.unwrap().batches;
         let names = batches[0]
             .column(0)
             .as_any()
@@ -7009,9 +7032,7 @@ fn validation_program_source_name_can_cover_and_rename_batch_field() {
 
     assert_eq!(output.profile.output_rows, 3);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let batches = reader
-        .read_segment(&output.identity_segments()[0].segment_id)
-        .unwrap();
+    let batches = read_package_segment(&reader, &output.identity_segments()[0].segment_id);
     let schema = batches[0].schema();
     let field = schema.field(0);
     assert_eq!(field.name(), "customer_name");
@@ -7035,9 +7056,7 @@ fn validation_program_output_name_can_cover_already_normalized_batch_field() {
 
     assert_eq!(output.profile.output_rows, 3);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let batches = reader
-        .read_segment(&output.identity_segments()[0].segment_id)
-        .unwrap();
+    let batches = read_package_segment(&reader, &output.identity_segments()[0].segment_id);
     let schema = batches[0].schema();
     let field = schema.field(0);
     assert_eq!(field.name(), "customer_name");
@@ -7090,9 +7109,7 @@ fn package_artifacts_record_schema_coercion_evidence_and_physical_type_metadata(
     );
 
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let batches = reader
-        .read_segment(&output.identity_segments()[0].segment_id)
-        .unwrap();
+    let batches = read_package_segment(&reader, &output.identity_segments()[0].segment_id);
     assert_eq!(
         batches[0]
             .column_by_name("id")
@@ -7403,9 +7420,7 @@ fn contract_exec_filters_quarantined_rows_before_normalize() {
     assert_eq!(output.profile.output_rows, 2);
     assert_eq!(output.identity_segments().len(), 1);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let batches = reader
-        .read_segment(&output.identity_segments()[0].segment_id)
-        .unwrap();
+    let batches = read_package_segment(&reader, &output.identity_segments()[0].segment_id);
     let names = batches[0]
         .column_by_name("name")
         .unwrap()
@@ -7562,9 +7577,7 @@ fn contract_exec_writes_redacted_quarantine_artifact_and_keeps_accepted_rows() {
     assert_eq!(output.profile.output_rows, 1);
     assert_eq!(output.identity_segments().len(), 1);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let batches = reader
-        .read_segment(&output.identity_segments()[0].segment_id)
-        .unwrap();
+    let batches = read_package_segment(&reader, &output.identity_segments()[0].segment_id);
     let accepted = batches[0]
         .column_by_name("name")
         .unwrap()
@@ -7778,9 +7791,7 @@ fn source_decode_quarantine_facts_fold_into_package_artifacts() {
     assert_eq!(output.profile.output_rows, 1);
     assert_eq!(output.identity_segments().len(), 1);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let accepted = reader
-        .read_segment(&output.identity_segments()[0].segment_id)
-        .unwrap();
+    let accepted = read_package_segment(&reader, &output.identity_segments()[0].segment_id);
     assert_eq!(batch_i32s(&accepted[0], "id"), vec![3]);
     assert_eq!(batch_strings(&accepted, "name"), vec!["three"]);
     let quarantine = collect_quarantine_records(&reader);
@@ -7865,9 +7876,7 @@ fn variant_capture_materializes_nested_values_and_contract_evolution_evidence() 
 
     assert_eq!(output.profile.output_rows, 1);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let batches = reader
-        .read_segment(&output.identity_segments()[0].segment_id)
-        .unwrap();
+    let batches = read_package_segment(&reader, &output.identity_segments()[0].segment_id);
     let batch = &batches[0];
     assert_eq!(batch.schema().fields().len(), 4);
     assert!(batch.schema().field_with_name("payload").is_err());
@@ -8072,9 +8081,7 @@ fn residual_contract_exec_captures_safe_values_redacts_pii_and_quarantines_contr
     let temp = TempDir::new().unwrap();
     let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let batches = reader
-        .read_segment(&output.identity_segments()[0].segment_id)
-        .unwrap();
+    let batches = read_package_segment(&reader, &output.identity_segments()[0].segment_id);
     let output = &batches[0];
     assert_eq!(output.num_rows(), 2);
     let variants = output
@@ -8494,9 +8501,7 @@ fn merge_dedup_keep_last_runs_after_contract_filtering_and_before_normalize() {
     assert_eq!(output.profile.output_rows, 3);
     assert_eq!(output.identity_segments().len(), 1);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let segment = reader
-        .read_segment(&output.identity_segments()[0].segment_id)
-        .unwrap();
+    let segment = read_package_segment(&reader, &output.identity_segments()[0].segment_id);
     assert_eq!(batch_i32s(&segment[0], "id"), vec![2, 1, 3]);
     assert_eq!(
         batch_strings(&segment, "customer_name"),
@@ -8679,9 +8684,7 @@ fn merge_dedup_keep_first_uses_package_order() {
     assert_eq!(output.profile.output_rows, 3);
     assert_eq!(output.identity_segments().len(), 1);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let segment = reader
-        .read_segment(&output.identity_segments()[0].segment_id)
-        .unwrap();
+    let segment = read_package_segment(&reader, &output.identity_segments()[0].segment_id);
     assert_eq!(batch_i32s(&segment[0], "id"), vec![1, 2, 3]);
     assert_eq!(
         batch_strings(&segment, "name"),
@@ -8769,9 +8772,7 @@ fn append_plan_with_compiled_dedup_rule_does_not_change_rows_or_write_summary() 
     assert_eq!(output.profile.output_rows, 2);
     assert_eq!(output.identity_segments().len(), 1);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let batches = reader
-        .read_segment(&output.identity_segments()[0].segment_id)
-        .unwrap();
+    let batches = read_package_segment(&reader, &output.identity_segments()[0].segment_id);
     assert_eq!(batch_i32s(&batches[0], "id"), vec![1, 1]);
     assert_eq!(
         batch_strings(&batches, "name"),
@@ -8804,9 +8805,7 @@ fn append_exact_row_dedup_compiles_and_drops_only_complete_duplicates() {
 
     assert_eq!(output.profile.output_rows, 2);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let batches = reader
-        .read_segment(&output.identity_segments()[0].segment_id)
-        .unwrap();
+    let batches = read_package_segment(&reader, &output.identity_segments()[0].segment_id);
     assert_eq!(batch_i32s(&batches[0], "id"), vec![1, 1]);
     assert_eq!(batch_strings(&batches, "name"), vec!["same", "different"]);
     let summary = reader.read_dedup_summary_json().unwrap().unwrap();
@@ -8882,9 +8881,7 @@ fn replace_plan_with_compiled_dedup_rule_does_not_change_rows_or_write_summary()
     assert_eq!(output.profile.output_rows, 2);
     assert_eq!(output.identity_segments().len(), 1);
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
-    let batches = reader
-        .read_segment(&output.identity_segments()[0].segment_id)
-        .unwrap();
+    let batches = read_package_segment(&reader, &output.identity_segments()[0].segment_id);
     assert_eq!(batch_i32s(&batches[0], "id"), vec![1, 1]);
     assert_eq!(
         batch_strings(&batches, "name"),
@@ -9132,19 +9129,16 @@ fn parallel_segment_encoding_is_identical_to_inline_canonical_registration() {
         vec![0, 2]
     );
     let parallel_reader = cdf_package::PackageReader::open(parallel_dir.path()).unwrap();
-    let persisted_ordinals = parallel_segments
-        .iter()
+    let persisted_ordinals = parallel_reader
+        .verified_canonical_segment_stream(services.memory(), 64 * 1024 * 1024)
+        .unwrap()
         .flat_map(|segment| {
-            parallel_reader
-                .read_segment(&segment.segment_id)
-                .unwrap()
-                .into_iter()
-                .flat_map(|batch| {
-                    cdf_package_contract::package_row_ord_array(&batch)
-                        .unwrap()
-                        .values()
-                        .to_vec()
-                })
+            segment.unwrap().batches.into_iter().flat_map(|batch| {
+                cdf_package_contract::package_row_ord_array(&batch)
+                    .unwrap()
+                    .values()
+                    .to_vec()
+            })
         })
         .collect::<Vec<_>>();
     assert_eq!(persisted_ordinals, vec![0, 1, 2]);

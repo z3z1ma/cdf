@@ -8,7 +8,7 @@ use std::{
 use arrow_array::{Array, RecordBatch, UInt64Array};
 use cdf_kernel::{
     CdfError, Checkpoint, CommitSegment, PackageHash, PayloadRetention, Receipt, Result, ScanPlan,
-    SegmentId, StateSegment,
+    StateSegment,
 };
 use cdf_memory::{
     ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest,
@@ -41,6 +41,8 @@ use crate::{
     },
     storage::{io_error, normalize_artifact_path, package_path, sync_directory},
 };
+
+pub(crate) const SEGMENT_STREAM_MEMORY_CONSUMER: &str = "package-segment-stream";
 
 #[derive(Clone, Debug)]
 pub struct PackageReader {
@@ -168,7 +170,7 @@ impl VerifiedPackage {
 }
 
 #[derive(Debug)]
-pub struct VerifiedSegment<T> {
+pub struct AccountedSegment<T> {
     pub entry: SegmentEntry,
     pub authority: T,
     pub batches: Vec<RecordBatch>,
@@ -256,13 +258,14 @@ impl<T> VerifiedSegmentObject<T> {
         self,
         memory: Arc<dyn MemoryCoordinator>,
         maximum_segment_bytes: u64,
-    ) -> Result<VerifiedSegment<T>> {
+    ) -> Result<AccountedSegment<T>> {
         load_verified_segment(
             self.package_root,
             self.entry,
             self.authority,
             memory,
             maximum_segment_bytes,
+            false,
         )
     }
 }
@@ -272,7 +275,7 @@ struct VerifiedSegmentWindow {
     memory_lease: MemoryLease,
 }
 
-impl<T> VerifiedSegment<T> {
+impl<T> AccountedSegment<T> {
     pub fn accounted_bytes(&self) -> u64 {
         self.window.memory_lease.bytes()
     }
@@ -288,13 +291,33 @@ impl<T> VerifiedSegment<T> {
                 .with_retention(retention),
         )
     }
+
+    /// Consumes this segment while retaining its complete memory lease through the callback.
+    ///
+    /// Package-internal transforms use this boundary when their output allocation shares the
+    /// same admitted window as the decoded Arrow input. The guard cannot be dropped between
+    /// decode and transform merely because the data fields are moved into the callback.
+    pub(crate) fn consume_with_window<R>(
+        self,
+        consume: impl FnOnce(SegmentEntry, T, Vec<RecordBatch>) -> Result<R>,
+    ) -> Result<R> {
+        let Self {
+            entry,
+            authority,
+            batches,
+            window,
+        } = self;
+        let _window = window;
+        consume(entry, authority, batches)
+    }
 }
 
-pub struct VerifiedSegmentStream<T> {
+pub struct AccountedSegmentStream<T> {
     package_root: Arc<PackageRoot>,
     segments: VerifiedSegmentItems<T>,
     memory: Arc<dyn MemoryCoordinator>,
     maximum_segment_bytes: u64,
+    retain_full_window: bool,
     failed: bool,
 }
 
@@ -375,16 +398,31 @@ fn verified_manifest_segment_stream(
     package_root: Arc<PackageRoot>,
     memory: Arc<dyn MemoryCoordinator>,
     maximum_segment_bytes: u64,
-) -> Result<VerifiedSegmentStream<()>> {
+) -> Result<AccountedSegmentStream<()>> {
     validate_verified_segment_window(memory.as_ref(), maximum_segment_bytes)?;
     let manifest_file = package_root.open_std_file(cdf_package_contract::MANIFEST_FILE)?;
-    Ok(VerifiedSegmentStream {
+    Ok(AccountedSegmentStream {
         package_root,
         segments: VerifiedSegmentItems::manifest(manifest_file, || ()),
         memory,
         maximum_segment_bytes,
+        retain_full_window: false,
         failed: false,
     })
+}
+
+/// Opens the canonical segment stream under an existing package-lifecycle operation.
+///
+/// Unlike the public verified stream constructors, this does not perform an independent full
+/// package verification pass. It is intentionally crate-private: an enclosing package lifecycle
+/// operation first verifies canonical source identity, retains the ledger lease through each
+/// transform, then verifies the expanded package before reporting successful publication.
+fn accounted_manifest_segment_stream(
+    package_root: Arc<PackageRoot>,
+    memory: Arc<dyn MemoryCoordinator>,
+    maximum_segment_bytes: u64,
+) -> Result<AccountedSegmentStream<()>> {
+    verified_manifest_segment_stream(package_root, memory, maximum_segment_bytes)
 }
 
 fn verified_manifest_authority_segment_stream<T>(
@@ -392,14 +430,15 @@ fn verified_manifest_authority_segment_stream<T>(
     authorities: Vec<T>,
     memory: Arc<dyn MemoryCoordinator>,
     maximum_segment_bytes: u64,
-) -> Result<VerifiedSegmentStream<T>> {
+) -> Result<AccountedSegmentStream<T>> {
     validate_verified_segment_window(memory.as_ref(), maximum_segment_bytes)?;
     let manifest_file = package_root.open_std_file(cdf_package_contract::MANIFEST_FILE)?;
-    Ok(VerifiedSegmentStream {
+    Ok(AccountedSegmentStream {
         package_root,
         segments: VerifiedSegmentItems::manifest_authorities(manifest_file, authorities),
         memory,
         maximum_segment_bytes,
+        retain_full_window: false,
         failed: false,
     })
 }
@@ -487,8 +526,8 @@ fn validate_commit_segment_authority(
     Ok(())
 }
 
-impl<T> Iterator for VerifiedSegmentStream<T> {
-    type Item = Result<VerifiedSegment<T>>;
+impl<T> Iterator for AccountedSegmentStream<T> {
+    type Item = Result<AccountedSegment<T>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.failed {
@@ -507,6 +546,7 @@ impl<T> Iterator for VerifiedSegmentStream<T> {
             authority,
             Arc::clone(&self.memory),
             self.maximum_segment_bytes,
+            self.retain_full_window,
         );
         if result.is_err() {
             self.failed = true;
@@ -521,7 +561,8 @@ fn load_verified_segment<T>(
     authority: T,
     memory: Arc<dyn MemoryCoordinator>,
     maximum_segment_bytes: u64,
-) -> Result<VerifiedSegment<T>> {
+    retain_full_window: bool,
+) -> Result<AccountedSegment<T>> {
     if maximum_segment_bytes == 0 || maximum_segment_bytes > memory.snapshot().budget_bytes {
         return Err(CdfError::data(format!(
             "verified segment stream window {maximum_segment_bytes} must be nonzero and no larger than managed budget {}",
@@ -529,7 +570,7 @@ fn load_verified_segment<T>(
         )));
     }
     let request = ReservationRequest::new(
-        ConsumerKey::new("verified-segment-stream", MemoryClass::Package)?,
+        ConsumerKey::new(SEGMENT_STREAM_MEMORY_CONSUMER, MemoryClass::Package)?,
         maximum_segment_bytes,
     )?
     .as_minimum_working_set();
@@ -565,11 +606,13 @@ fn load_verified_segment<T>(
         entry.package_row_ord_start,
         entry.row_count,
     )?;
-    lease.reconcile(retained_bytes.max(1))?;
+    if !retain_full_window {
+        lease.reconcile(retained_bytes.max(1))?;
+    }
     let window = Arc::new(VerifiedSegmentWindow {
         memory_lease: lease,
     });
-    Ok(VerifiedSegment {
+    Ok(AccountedSegment {
         entry,
         authority,
         batches,
@@ -911,34 +954,11 @@ impl PackageReader {
         )
     }
 
-    pub fn read_segment(&self, segment_id: &SegmentId) -> Result<Vec<RecordBatch>> {
-        let mut segment = None;
-        self.for_each_identity_segment(&mut |candidate| {
-            if &candidate.segment_id == segment_id {
-                segment = Some(candidate);
-            }
-            Ok(())
-        })?;
-        let segment = segment.ok_or_else(|| {
-            CdfError::data(format!(
-                "segment {} is not in manifest",
-                segment_id.as_str()
-            ))
-        })?;
-        let batches = read_segment_file_from_root(&self.package_root, &segment.path)?;
-        cdf_package_contract::validate_package_row_ord_batches(
-            &batches,
-            segment.package_row_ord_start,
-            segment.row_count,
-        )?;
-        Ok(batches)
-    }
-
     pub fn verified_segment_stream(
         &self,
         memory: Arc<dyn MemoryCoordinator>,
         maximum_segment_bytes: u64,
-    ) -> Result<VerifiedSegmentStream<()>> {
+    ) -> Result<AccountedSegmentStream<()>> {
         let verified = self.verify_for_consumption()?;
         self.verified_segment_stream_with(&verified, memory, maximum_segment_bytes)
     }
@@ -948,7 +968,7 @@ impl PackageReader {
         verified: &VerifiedPackage,
         memory: Arc<dyn MemoryCoordinator>,
         maximum_segment_bytes: u64,
-    ) -> Result<VerifiedSegmentStream<()>> {
+    ) -> Result<AccountedSegmentStream<()>> {
         self.require_verification(verified)?;
         verified_manifest_segment_stream(
             Arc::clone(&self.package_root),
@@ -961,9 +981,23 @@ impl PackageReader {
         &self,
         memory: Arc<dyn MemoryCoordinator>,
         maximum_segment_bytes: u64,
-    ) -> Result<VerifiedSegmentStream<()>> {
+    ) -> Result<AccountedSegmentStream<()>> {
         let verified = self.verify_for_consumption()?;
         self.verified_canonical_segment_stream_with(&verified, memory, maximum_segment_bytes)
+    }
+
+    pub(crate) fn accounted_canonical_segment_stream(
+        &self,
+        memory: Arc<dyn MemoryCoordinator>,
+        maximum_segment_bytes: u64,
+    ) -> Result<AccountedSegmentStream<()>> {
+        let mut stream = accounted_manifest_segment_stream(
+            Arc::clone(&self.package_root),
+            memory,
+            maximum_segment_bytes,
+        )?;
+        stream.retain_full_window = true;
+        Ok(stream)
     }
 
     pub fn verified_canonical_segment_stream_with(
@@ -971,7 +1005,7 @@ impl PackageReader {
         verified: &VerifiedPackage,
         memory: Arc<dyn MemoryCoordinator>,
         maximum_segment_bytes: u64,
-    ) -> Result<VerifiedSegmentStream<()>> {
+    ) -> Result<AccountedSegmentStream<()>> {
         self.require_verification(verified)?;
         verified_manifest_segment_stream(
             Arc::clone(&self.package_root),
@@ -1002,7 +1036,7 @@ impl PackageReader {
         state_segments: &[StateSegment],
         memory: Arc<dyn MemoryCoordinator>,
         maximum_segment_bytes: u64,
-    ) -> Result<VerifiedSegmentStream<StateSegment>> {
+    ) -> Result<AccountedSegmentStream<StateSegment>> {
         let verified = self.verify_for_consumption()?;
         self.verified_commit_segment_stream_with(
             &verified,
@@ -1018,7 +1052,7 @@ impl PackageReader {
         state_segments: &[StateSegment],
         memory: Arc<dyn MemoryCoordinator>,
         maximum_segment_bytes: u64,
-    ) -> Result<VerifiedSegmentStream<StateSegment>> {
+    ) -> Result<AccountedSegmentStream<StateSegment>> {
         self.require_verification(verified)?;
         validate_commit_segment_authority(self, state_segments)?;
         verified_manifest_authority_segment_stream(
