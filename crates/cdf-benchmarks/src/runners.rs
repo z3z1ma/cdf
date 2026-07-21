@@ -22,8 +22,8 @@ use cdf_kernel::ExecutionExtent;
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CdfError, CheckpointId, CursorPosition, CursorValue, PipelineId,
     PredicateId, QueryableResource, ResourceId, ResourceStream, RunId, ScanPredicate, ScanRequest,
-    ScopeKey, SegmentId, SourcePosition, StateSegment, TargetName, WriteDisposition,
-    canonical_arrow_schema_hash,
+    ScopeKey, ScopeLeaseStore, SegmentId, SourcePosition, StateSegment, TargetName,
+    WriteDisposition, canonical_arrow_schema_hash,
 };
 use cdf_object_access::{FileTransportFacade, ObjectStoreClientPool};
 use cdf_package::{PackageBuilder, PackageReader, persist_package_parquet_archive};
@@ -497,6 +497,19 @@ fn benchmark_execution_services(host_jobs: u16) -> BenchResult<cdf_runtime::Exec
         memory,
     )?);
     cdf_runtime::ExecutionServices::new(host).map_err(Into::into)
+}
+
+fn benchmark_replay_execution_services(
+    host_jobs: u16,
+) -> BenchResult<cdf_runtime::ExecutionServices> {
+    let services = benchmark_execution_services(host_jobs)?;
+    let scopes: Arc<dyn ScopeLeaseStore> =
+        Arc::new(cdf_state_sqlite::InMemoryScopeLeaseStore::new());
+    services
+        .with_staging_lease_authority(Arc::new(cdf_runtime::ScopeStagingLeaseAuthority::new(
+            scopes,
+        )))
+        .map_err(Into::into)
 }
 
 fn available_host_jobs() -> u16 {
@@ -1347,7 +1360,7 @@ schema = { fields = [
 }
 
 fn run_archive_ipc_to_parquet(spec: &FixtureSpec, root: &Path) -> BenchResult<WorkMetric> {
-    let fixture = build_package_fixture(spec, root, "pkg-archive-benchmark")?;
+    let fixture = build_archive_input_fixture(spec, root, "pkg-archive-benchmark")?;
     let report = persist_package_parquet_archive(&fixture.package_dir, false)?;
     Ok(WorkMetric {
         rows: report.row_count,
@@ -1364,9 +1377,9 @@ fn run_package_replay(
         ReplayDestination::DuckDb | ReplayDestination::Parquet => "pkg-replay-benchmark".to_owned(),
         ReplayDestination::Postgres => postgres_package_id()?,
     };
-    let fixture = build_package_fixture(spec, root, &package_id)?;
+    let fixture = build_replay_package_fixture(spec, root, &package_id)?;
     let target = TargetName::new("orders")?;
-    let execution = benchmark_execution_services(available_host_jobs())?;
+    let execution = benchmark_replay_execution_services(available_host_jobs())?;
     let destination = match destination {
         ReplayDestination::DuckDb => ResolvedProjectDestination::new(
             Box::new(cdf_dest_duckdb::DuckDbDestination::new(
@@ -1522,6 +1535,35 @@ fn engine_plan<R: ResourceStream + ?Sized>(
     )
 }
 
+fn identity_engine_plan<R: ResourceStream + ?Sized>(
+    resource: &R,
+    package_id: &str,
+) -> BenchResult<cdf_engine::EnginePlan> {
+    let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
+    let validation_program = compile_validation_program(
+        &ContractPolicy::for_trust(resource.descriptor().trust_level.clone()),
+        &observed_schema,
+    )?;
+    Planner::new()
+        .plan_tier_a(
+            resource,
+            EnginePlanInput {
+                request: ScanRequest {
+                    resource_id: resource.descriptor().resource_id.clone(),
+                    projection: None,
+                    filters: Vec::new(),
+                    limit: None,
+                    order_by: Vec::new(),
+                    scope: resource.descriptor().state_scope.clone(),
+                },
+                validation_program,
+                execution_extent: ExecutionExtent::bounded(),
+                package_id: package_id.to_owned(),
+            },
+        )
+        .map_err(Into::into)
+}
+
 fn engine_plan_with_policy<R: ResourceStream + ?Sized>(
     resource: &R,
     package_id: &str,
@@ -1651,7 +1693,7 @@ fn identity_queryable_engine_plan_with_policy<R: QueryableResource + ?Sized>(
         .map_err(Into::into)
 }
 
-fn build_package_fixture(
+fn build_archive_input_fixture(
     spec: &FixtureSpec,
     root: &Path,
     package_id: &str,
@@ -1727,6 +1769,109 @@ fn build_package_fixture(
     Ok(PackageFixture { package_dir })
 }
 
+fn build_replay_package_fixture(
+    spec: &FixtureSpec,
+    root: &Path,
+    package_id: &str,
+) -> BenchResult<PackageFixture> {
+    let package_dir = root.join(package_id);
+    let resource = MemoryResource::from_record_batches(
+        "bench.orders",
+        "memory",
+        record_batches_for_spec(spec)?,
+    )?;
+    let schema_hash = canonical_arrow_schema_hash(resource.schema().as_ref())?;
+    let source_plan = resource.compiled_source_plan();
+    let plan = identity_engine_plan(&resource, package_id)?
+        .bind_compiled_source(source_plan)?
+        .bind_operator_graph(
+            source_plan,
+            &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        )?;
+    let output_position = SourcePosition::Cursor(CursorPosition {
+        version: CHECKPOINT_STATE_VERSION,
+        field: "id".to_owned(),
+        value: CursorValue::I64((spec.rows - 1) as i64),
+    });
+    let pre_finalize = |builder: &PackageBuilder, draft: EnginePackageDraft<'_>| {
+        if draft.profile.output_rows != spec.rows as u64 {
+            return Err(CdfError::internal(format!(
+                "replay fixture expected {} output rows but engine produced {}",
+                spec.rows, draft.profile.output_rows
+            )));
+        }
+        let mut positions = draft.segment_positions.iter();
+        let mut state_segments = Vec::with_capacity(draft.segment_positions.len());
+        builder.visit_segment_entries(&mut |segment| {
+            let position = positions.next().ok_or_else(|| {
+                CdfError::internal(format!(
+                    "replay fixture omitted engine position evidence for segment {}",
+                    segment.segment_id
+                ))
+            })?;
+            if position.segment_id != segment.segment_id {
+                return Err(CdfError::internal(format!(
+                    "replay fixture engine segment {} does not match package segment {}",
+                    position.segment_id, segment.segment_id
+                )));
+            }
+            state_segments.push(StateSegment {
+                segment_id: segment.segment_id,
+                scope: ScopeKey::Resource,
+                output_position: output_position.clone(),
+                row_count: segment.row_count,
+                byte_count: segment.byte_count,
+            });
+            Ok(())
+        })?;
+        if positions.next().is_some() || state_segments.len() != draft.segment_positions.len() {
+            return Err(CdfError::internal(format!(
+                "replay fixture has {} engine segment positions but {} package segments",
+                draft.segment_positions.len(),
+                state_segments.len()
+            )));
+        }
+        let state_delta = StateDeltaPreimage {
+            checkpoint_id: CheckpointId::new(format!("checkpoint-{package_id}"))?,
+            pipeline_id: PipelineId::new("pipeline-benchmark")?,
+            resource_id: resource.descriptor().resource_id.clone(),
+            scope: ScopeKey::Resource,
+            state_version: CHECKPOINT_STATE_VERSION,
+            parent_checkpoint_id: None,
+            input_position: None,
+            output_position: output_position.clone(),
+            output_watermark: None,
+            partition_watermarks: Vec::new(),
+            late_data_carryover: Vec::new(),
+            source_continuation: None,
+            schema_hash: schema_hash.clone(),
+            segments: state_segments,
+        };
+        let commit_plan = DestinationCommitPlanPreimage::package_hash_token(
+            TargetName::new("orders")?,
+            WriteDisposition::Append,
+            Vec::new(),
+            schema_hash.clone(),
+        );
+        builder.write_input_checkpoint_artifact(&None)?;
+        builder.write_state_delta_preimage_artifact(&state_delta)?;
+        builder.write_commit_plan_preimage_artifact(&commit_plan)?;
+        Ok(())
+    };
+    let execution = benchmark_execution_services(available_host_jobs())?;
+    block_on(execute_to_package_with_segment_positions_and_pre_finalize(
+        &plan,
+        &resource,
+        &package_dir,
+        &pre_finalize,
+        EngineExecutionConfig::default()
+            .with_execution_services(execution)
+            .new_invocation(),
+    ))?;
+    PackageReader::open(&package_dir)?.verify()?;
+    Ok(PackageFixture { package_dir })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1743,6 +1888,23 @@ mod tests {
 
         assert_eq!(outcome.label, case.label);
         assert!(outcome.rows > 0);
+        assert!(outcome.bytes > 0);
+    }
+
+    #[test]
+    fn duckdb_replay_case_uses_current_package_authority() {
+        let root = tempfile::tempdir().unwrap();
+        let case = crate::matrix::cases_for(crate::matrix::BenchmarkSuite::Smoke)
+            .into_iter()
+            .find(|case| {
+                case.label == "trend.cdf_package_replay.duckdb_package_receipt_checkpoint.medium"
+            })
+            .unwrap();
+
+        let outcome = run_case(case, root.path()).unwrap();
+
+        assert_eq!(outcome.label, case.label);
+        assert_eq!(outcome.rows, fixture_spec("medium").unwrap().rows as u64);
         assert!(outcome.bytes > 0);
     }
 
