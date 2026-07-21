@@ -69,7 +69,7 @@ pub(crate) struct DuckDbCommitWriter {
 struct DuckDbStagedIngressSession {
     destination: DuckDbDestination,
     request: cdf_runtime::StagedIngressRequest,
-    files: Vec<cdf_runtime::DurableLocalFile>,
+    files: Vec<cdf_runtime::DurableLocalFileAccess>,
     accepted: Vec<cdf_runtime::StagedSegmentIdentity>,
 }
 
@@ -239,7 +239,7 @@ impl DuckDbDestination {
     fn start_staged_writer(
         &self,
         request: &cdf_runtime::StagedIngressRequest,
-        files: Vec<cdf_runtime::DurableLocalFile>,
+        files: Vec<cdf_runtime::DurableLocalFileAccess>,
     ) -> Result<(DuckDbCommitWriter, Vec<MigrationRecord>)> {
         validate_user_schema_fields(request.output_schema())?;
         let user_fields = request
@@ -719,7 +719,7 @@ impl DuckDbStagedIngressSession {
             self.request.mutation_guard().assert_current()?;
             let identity = segment.identity.clone();
             Self::validate_next_segment(&self.request, &self.accepted, &identity)?;
-            let local_file = segment.take_durable_local_file().ok_or_else(|| {
+            let local_file = segment.take_durable_local_file_access().ok_or_else(|| {
                 CdfError::data(format!(
                     "DuckDB canonical segment scan requires durable file access for segment {}",
                     identity.segment_id

@@ -478,7 +478,7 @@ impl ActiveStagedIngress {
             self.schema_hash.clone(),
             ordinal,
         )?;
-        let (durable_local_file, batches, memory_leases) = payload.into_parts();
+        let (durable_file, batches, memory_leases) = payload.into_parts();
         let retained_bytes = batches
             .iter()
             .try_fold(0_u64, |total, batch| {
@@ -491,7 +491,7 @@ impl ActiveStagedIngress {
             identity.clone(),
             Box::new(LiveStagedSegmentReader {
                 identity: identity.clone(),
-                durable_local_path: Some(durable_local_file),
+                durable_file: Some(durable_file),
                 batches: batches.into_iter(),
                 _memory_leases: memory_leases,
             }),
@@ -721,9 +721,20 @@ fn release_staging_lease_after_error(
 
 struct LiveStagedSegmentReader {
     identity: cdf_runtime::StagedSegmentIdentity,
-    durable_local_path: Option<PathBuf>,
+    durable_file: Option<cdf_package::DurableSegmentFile>,
     batches: std::vec::IntoIter<arrow_array::RecordBatch>,
     _memory_leases: Vec<cdf_memory::MemoryLease>,
+}
+
+fn durable_local_file_access(
+    durable_file: cdf_package::DurableSegmentFile,
+) -> cdf_runtime::DurableLocalFileAccess {
+    let path = durable_file.display_path().to_path_buf();
+    let byte_count = durable_file.byte_count();
+    let sha256 = durable_file.sha256().to_owned();
+    cdf_runtime::DurableLocalFileAccess::new(path, byte_count, sha256, move || {
+        durable_file.open_file()
+    })
 }
 
 impl cdf_runtime::DurableSegmentReader for LiveStagedSegmentReader {
@@ -731,18 +742,10 @@ impl cdf_runtime::DurableSegmentReader for LiveStagedSegmentReader {
         &self.identity
     }
 
-    fn take_durable_local_file(&mut self) -> Result<Option<cdf_runtime::DurableLocalFile>> {
-        let Some(path) = self.durable_local_path.take() else {
-            return Ok(None);
-        };
-        let file = std::fs::File::open(&path).map_err(|error| {
-            CdfError::data(format!(
-                "open durable staged segment {} at {}: {error}",
-                self.identity.segment_id,
-                path.display()
-            ))
-        })?;
-        Ok(Some(cdf_runtime::DurableLocalFile::new(path, file)))
+    fn take_durable_local_file_access(
+        &mut self,
+    ) -> Result<Option<cdf_runtime::DurableLocalFileAccess>> {
+        Ok(self.durable_file.take().map(durable_local_file_access))
     }
 
     fn next_batch(&mut self) -> Result<Option<arrow_array::RecordBatch>> {
@@ -1756,7 +1759,7 @@ fn logically_equivalent_receipts(left: &Receipt, right: &Receipt) -> bool {
 
 struct PackageStagedSegmentReader {
     identity: cdf_runtime::StagedSegmentIdentity,
-    durable_local_file: Option<cdf_runtime::DurableLocalFile>,
+    durable_file: Option<cdf_package::DurableSegmentFile>,
     segment: Option<cdf_package::VerifiedSegmentObject<()>>,
     decoded: Option<cdf_package::AccountedSegment<()>>,
     memory: Arc<dyn cdf_memory::MemoryCoordinator>,
@@ -1812,16 +1815,12 @@ impl cdf_runtime::StagedSegmentStream for PackageStagingStream<'_> {
                 "staged package stream produced a duplicate in-flight segment",
             ));
         }
-        let display_path = segment.display_path().to_path_buf();
-        let local_file = segment.open_file()?;
+        let durable_file = segment.durable_file();
         cdf_runtime::StagedSegmentRequest::new(
             identity.clone(),
             Box::new(PackageStagedSegmentReader {
                 identity,
-                durable_local_file: Some(cdf_runtime::DurableLocalFile::new(
-                    display_path,
-                    local_file,
-                )),
+                durable_file: Some(durable_file),
                 segment: Some(segment),
                 decoded: None,
                 memory: Arc::clone(&self.memory),
@@ -1861,8 +1860,10 @@ impl cdf_runtime::DurableSegmentReader for PackageStagedSegmentReader {
         &self.identity
     }
 
-    fn take_durable_local_file(&mut self) -> Result<Option<cdf_runtime::DurableLocalFile>> {
-        Ok(self.durable_local_file.take())
+    fn take_durable_local_file_access(
+        &mut self,
+    ) -> Result<Option<cdf_runtime::DurableLocalFileAccess>> {
+        Ok(self.durable_file.take().map(durable_local_file_access))
     }
 
     fn next_batch(&mut self) -> Result<Option<arrow_array::RecordBatch>> {

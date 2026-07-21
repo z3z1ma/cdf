@@ -212,8 +212,16 @@ fn segment_encoding_completion_cannot_override_canonical_registration_order() {
         )
         .unwrap();
 
-    let first = builder.register_encoded_segment(first).unwrap().segment;
-    let second = builder.register_encoded_segment(second).unwrap().segment;
+    let first = builder
+        .register_encoded_segment(first)
+        .unwrap()
+        .metrics
+        .segment;
+    let second = builder
+        .register_encoded_segment(second)
+        .unwrap()
+        .metrics
+        .segment;
     let mut journal = Vec::new();
     builder
         .visit_segment_entries(&mut |entry| {
@@ -234,7 +242,11 @@ fn segment_encoding_completion_cannot_override_canonical_registration_order() {
             true,
         )
         .unwrap();
-    let third = builder.register_encoded_segment(third).unwrap().segment;
+    let third = builder
+        .register_encoded_segment(third)
+        .unwrap()
+        .metrics
+        .segment;
     journal.clear();
     builder
         .visit_segment_entries(&mut |entry| {

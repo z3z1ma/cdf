@@ -484,7 +484,7 @@ struct CurrentCommitRequest {
 
 struct TestDurableSegmentReader {
     identity: cdf_runtime::StagedSegmentIdentity,
-    path: Option<PathBuf>,
+    access: Option<cdf_runtime::DurableLocalFileAccess>,
 }
 
 struct TestStagedSegmentStream {
@@ -508,17 +508,120 @@ impl DurableSegmentReader for TestDurableSegmentReader {
         &self.identity
     }
 
-    fn take_durable_local_file(&mut self) -> Result<Option<cdf_runtime::DurableLocalFile>> {
-        let Some(path) = self.path.take() else {
-            return Ok(None);
-        };
-        let file = std::fs::File::open(&path).unwrap();
-        Ok(Some(cdf_runtime::DurableLocalFile::new(path, file)))
+    fn take_durable_local_file_access(
+        &mut self,
+    ) -> Result<Option<cdf_runtime::DurableLocalFileAccess>> {
+        Ok(self.access.take())
     }
 
     fn next_batch(&mut self) -> Result<Option<RecordBatch>> {
         panic!("DuckDB canonical segment scan must not decode through DurableSegmentReader")
     }
+}
+
+#[test]
+fn staged_ingress_retains_no_segment_count_file_handles() {
+    const SEGMENTS: u32 = 512;
+
+    let temp = tempfile::tempdir().unwrap();
+    let segment_path = temp.path().join("segment.arrow");
+    std::fs::write(&segment_path, b"12345678").unwrap();
+    let mut runtime = destination(&temp.path().join("bounded-fds.duckdb"));
+    let capabilities = runtime.runtime_capabilities();
+    let commit = representative_commit_request(WriteDisposition::Append);
+    let output_schema = sample_batch(vec![1], vec![Some("one")]).schema();
+    let bulk_path = runtime
+        .prepare_selected_bulk_path(
+            &cdf_runtime::BulkPathPreparationInput::new(output_schema.as_ref())
+                .with_commit(&commit),
+        )
+        .unwrap();
+    let attempt_id = cdf_runtime::LoadAttemptId::new("duckdb-fd-bound").unwrap();
+    let schema_hash = SchemaHash::new("schema-fd-bound").unwrap();
+    let services = cdf_conformance::test_execution_services();
+    let managed_lease = services
+        .acquire_staging_lease(cdf_runtime::StagingLeaseIdentity::new(
+            runtime.sheet().destination.clone(),
+            commit.target.clone(),
+            attempt_id.clone(),
+        ))
+        .unwrap();
+    let request = cdf_runtime::StagedIngressRequest::new(
+        attempt_id.clone(),
+        cdf_runtime::StagingAttemptBinding {
+            destination_id: runtime.sheet().destination.clone(),
+            target: commit.target,
+            disposition: commit.disposition,
+            schema_hash: schema_hash.clone(),
+            output_arrow_schema_hash: cdf_kernel::canonical_arrow_schema_hash(
+                output_schema.as_ref(),
+            )
+            .unwrap(),
+            merge_keys: Vec::new(),
+            execution_plan_id: PlanId::new("plan-fd-bound").unwrap(),
+        },
+        managed_lease.snapshot().unwrap(),
+        managed_lease.mutation_guard().unwrap(),
+        bulk_path,
+        cdf_runtime::StagingSchedulingContext::new(
+            capabilities.max_in_flight_segments.unwrap(),
+            capabilities.max_in_flight_bytes.unwrap(),
+        )
+        .unwrap(),
+        output_schema.as_ref().clone(),
+    )
+    .unwrap();
+    let mut session = runtime.begin_staged_ingress(request).unwrap();
+    let opens = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let requests = (0..SEGMENTS)
+        .map(|ordinal| {
+            let entry = SegmentEntry {
+                segment_id: SegmentId::new(format!("segment-{ordinal:08}")).unwrap(),
+                path: format!("data/segment-{ordinal:08}.arrow"),
+                package_row_ord_start: u64::from(ordinal),
+                row_count: 1,
+                byte_count: 8,
+                sha256: "0".repeat(64),
+            };
+            let identity = cdf_runtime::StagedSegmentIdentity::from_manifest_entry(
+                &entry,
+                schema_hash.clone(),
+                ordinal,
+            )
+            .unwrap();
+            let open_path = segment_path.clone();
+            let open_counter = Arc::clone(&opens);
+            cdf_runtime::StagedSegmentRequest::new(
+                identity.clone(),
+                Box::new(TestDurableSegmentReader {
+                    access: Some(cdf_runtime::DurableLocalFileAccess::new(
+                        segment_path.clone(),
+                        8,
+                        identity.sha256.clone(),
+                        move || {
+                            open_counter.fetch_add(1, Ordering::Relaxed);
+                            std::fs::File::open(&open_path).map_err(|error| {
+                                CdfError::data(format!("open test durable segment: {error}"))
+                            })
+                        },
+                    )),
+                    identity,
+                }),
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let mut stream = TestStagedSegmentStream {
+        requests: requests.into_iter(),
+        acknowledgements: Vec::new(),
+    };
+
+    session.stage_stream(&mut stream).unwrap();
+
+    assert_eq!(opens.load(Ordering::Relaxed), 0);
+    assert_eq!(stream.acknowledgements.len(), SEGMENTS as usize);
+    session.abort().unwrap();
+    managed_lease.finish().unwrap();
 }
 
 fn commit_current(
@@ -595,11 +698,21 @@ fn try_commit_current(
                     .map_err(|_| CdfError::data("test package has too many segments"))?,
             )?;
             let path = request.package_dir.join(&entry.path);
+            let open_path = path.clone();
             cdf_runtime::StagedSegmentRequest::new(
                 identity.clone(),
                 Box::new(TestDurableSegmentReader {
+                    access: Some(cdf_runtime::DurableLocalFileAccess::new(
+                        path,
+                        identity.byte_count,
+                        identity.sha256.clone(),
+                        move || {
+                            std::fs::File::open(&open_path).map_err(|error| {
+                                CdfError::data(format!("open test durable segment: {error}"))
+                            })
+                        },
+                    )),
                     identity,
-                    path: Some(path),
                 }),
             )
         })

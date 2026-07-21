@@ -62,7 +62,9 @@ column-count cutoff, or global reduction of the measured TLC/default bulk path.
 
 ## Blockers
 
-Cancelled into `.10x/tickets/cancelled/2026-07-18-p3-d17-duckdb-wide-string-overlap.md`.
+The competing adaptive heuristic and D17 overlap candidate were both cancelled. The accepted
+wide-table residual is recorded in
+`.10x/tickets/cancelled/2026-07-18-p3-d17-duckdb-wide-string-overlap.md`.
 
 ## Evidence
 

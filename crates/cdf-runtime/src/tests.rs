@@ -9,6 +9,7 @@ use cdf_kernel::{
     SchemaSource, ScopeKey, SegmentAck, SegmentId, TargetName, TransactionMetadata,
     TransactionSupport, TrustLevel, TypeMapping, TypePolicyAllowances, VerifyClause,
 };
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     sync::{
@@ -513,12 +514,20 @@ impl DurableSegmentReader for LocalFileSegmentReader {
         &self.identity
     }
 
-    fn take_durable_local_file(&mut self) -> Result<Option<DurableLocalFile>> {
+    fn take_durable_local_file_access(&mut self) -> Result<Option<DurableLocalFileAccess>> {
         let Some(path) = self.path.take() else {
             return Ok(None);
         };
-        let file = std::fs::File::open(&path).unwrap();
-        Ok(Some(DurableLocalFile::new(path, file)))
+        let open_path = path.clone();
+        Ok(Some(DurableLocalFileAccess::new(
+            path,
+            self.identity.byte_count,
+            self.identity.sha256.clone(),
+            move || {
+                std::fs::File::open(&open_path)
+                    .map_err(|error| CdfError::data(format!("open test durable segment: {error}")))
+            },
+        )))
     }
 
     fn next_batch(&mut self) -> Result<Option<arrow_array::RecordBatch>> {
@@ -1951,11 +1960,12 @@ fn staged_ingress_types_cannot_claim_package_commit_authority() {
 }
 
 #[test]
-fn staged_segment_request_exposes_only_length_bound_durable_local_files() {
+fn staged_segment_request_defers_exact_durable_local_file_verification() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("segment.arrow");
     std::fs::write(&path, b"12345678").unwrap();
-    let identity = staged_identity("seg-local", 0, SchemaHash::new("schema-v1").unwrap());
+    let mut identity = staged_identity("seg-local", 0, SchemaHash::new("schema-v1").unwrap());
+    identity.sha256 = hex::encode(Sha256::digest(b"12345678"));
     let mut request = StagedSegmentRequest::new(
         identity.clone(),
         Box::new(LocalFileSegmentReader {
@@ -1964,28 +1974,28 @@ fn staged_segment_request_exposes_only_length_bound_durable_local_files() {
         }),
     )
     .unwrap();
-    let durable = request.take_durable_local_file().unwrap();
-    assert_eq!(durable.path(), path.as_path());
-
-    let moved = temp.path().join("original.arrow");
-    std::fs::rename(&path, &moved).unwrap();
-    std::fs::write(&path, b"replaced").unwrap();
-    let (_, mut file) = durable.into_parts();
+    let access = request.take_durable_local_file_access().unwrap();
+    assert_eq!(access.path(), path.as_path());
+    let (_, mut file) = access.open().unwrap().into_parts();
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(&mut file, &mut bytes).unwrap();
     assert_eq!(bytes, b"12345678");
 
-    std::fs::write(&path, b"short").unwrap();
-    let error = StagedSegmentRequest::new(
+    std::fs::write(&path, b"replaced").unwrap();
+    let mut request = StagedSegmentRequest::new(
         identity.clone(),
         Box::new(LocalFileSegmentReader {
             identity,
             path: Some(path),
         }),
     )
-    .err()
-    .expect("length drift must fail staged request construction");
-    assert!(error.message.contains("exactly 8 bytes"));
+    .unwrap();
+    let error = request
+        .take_durable_local_file_access()
+        .unwrap()
+        .open()
+        .unwrap_err();
+    assert!(error.message.contains("changed after publication"));
 }
 
 #[test]

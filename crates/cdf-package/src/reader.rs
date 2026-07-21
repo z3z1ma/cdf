@@ -191,6 +191,63 @@ pub struct VerifiedSegmentObject<T> {
     _verification: Arc<VerifiedPackage>,
 }
 
+/// Reopen capability for one durable canonical segment beneath a retained package root.
+///
+/// The diagnostic pathname is never used as access authority. Each open is resolved relative to
+/// the already-opened package directory without following links. The generic staged-file boundary
+/// verifies the exact manifest digest on that handle before exposing it to a destination.
+#[derive(Clone, Debug)]
+pub struct DurableSegmentFile {
+    entry: SegmentEntry,
+    package_root: Arc<PackageRoot>,
+    display_path: PathBuf,
+}
+
+impl DurableSegmentFile {
+    pub(crate) fn new(
+        entry: SegmentEntry,
+        package_root: Arc<PackageRoot>,
+        display_path: PathBuf,
+    ) -> Self {
+        Self {
+            entry,
+            package_root,
+            display_path,
+        }
+    }
+
+    pub fn display_path(&self) -> &Path {
+        &self.display_path
+    }
+
+    pub const fn byte_count(&self) -> u64 {
+        self.entry.byte_count
+    }
+
+    pub fn sha256(&self) -> &str {
+        &self.entry.sha256
+    }
+
+    pub fn open_file(&self) -> Result<std::fs::File> {
+        let file = self.package_root.open_std_file(&self.entry.path)?;
+        let metadata = file.metadata().map_err(|error| {
+            io_error(
+                format!("inspect durable segment {}", self.entry.path),
+                error,
+            )
+        })?;
+        if !metadata.is_file() || metadata.len() != self.entry.byte_count {
+            return Err(CdfError::data(format!(
+                "durable segment {} must be a file of exactly {} bytes, observed {} bytes",
+                self.entry.path,
+                self.entry.byte_count,
+                metadata.len()
+            )));
+        }
+        Ok(file)
+    }
+}
+
 /// A verified identity-bearing package artifact retained beneath the package root capability.
 #[derive(Debug)]
 pub struct VerifiedIdentityObject {
@@ -329,14 +386,12 @@ impl VerifiedIdentityObject {
 }
 
 impl<T> VerifiedSegmentObject<T> {
-    /// Returns a pathname spelling for diagnostics only.
-    pub fn display_path(&self) -> &Path {
-        &self.display_path
-    }
-
-    /// Opens the exact segment beneath the retained package capability.
-    pub fn open_file(&self) -> Result<std::fs::File> {
-        self.package_root.open_std_file(&self.entry.path)
+    pub fn durable_file(&self) -> DurableSegmentFile {
+        DurableSegmentFile::new(
+            self.entry.clone(),
+            Arc::clone(&self.package_root),
+            self.display_path.clone(),
+        )
     }
 
     pub fn read(

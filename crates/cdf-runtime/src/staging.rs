@@ -1,7 +1,9 @@
 use std::{
     collections::BTreeSet,
     fs::File,
+    io::{Seek, SeekFrom},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use arrow_array::RecordBatch;
@@ -12,6 +14,7 @@ use cdf_kernel::{
 };
 use cdf_package_contract::{SegmentEntry, VerifiedPackageAccess};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{StagingLease, StagingMutationGuard};
 
@@ -259,15 +262,115 @@ impl StagedSegmentIdentity {
 
 pub trait DurableSegmentReader: Send {
     fn identity(&self) -> &StagedSegmentIdentity;
-    /// Transfers the exact already-opened durable local file when one exists.
+    /// Transfers a retained, package-scoped capability for opening the durable local file.
     ///
-    /// The opened object is the same hash/length-bound object represented by `identity()`.
-    /// Destinations that consume canonical bytes directly take this capability instead of
-    /// reopening a pathname; all other destinations continue through `next_batch()`.
-    fn take_durable_local_file(&mut self) -> Result<Option<DurableLocalFile>> {
+    /// Destinations that consume canonical bytes directly open it only while a worker is actively
+    /// scanning the segment. This keeps descriptor ownership bounded by admitted concurrency.
+    /// `DurableLocalFileAccess` verifies the exact manifest digest on the newly opened handle
+    /// before exposing it, so neither the pathname spelling nor file length becomes authority.
+    fn take_durable_local_file_access(&mut self) -> Result<Option<DurableLocalFileAccess>> {
         Ok(None)
     }
     fn next_batch(&mut self) -> Result<Option<RecordBatch>>;
+}
+
+#[derive(Clone)]
+pub struct DurableLocalFileAccess {
+    path: PathBuf,
+    expected_byte_count: u64,
+    expected_sha256: String,
+    opener: Arc<dyn Fn() -> Result<File> + Send + Sync>,
+}
+
+impl std::fmt::Debug for DurableLocalFileAccess {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DurableLocalFileAccess")
+            .field("path", &self.path)
+            .field("expected_byte_count", &self.expected_byte_count)
+            .field("expected_sha256", &self.expected_sha256)
+            .finish_non_exhaustive()
+    }
+}
+
+impl DurableLocalFileAccess {
+    pub fn new<F>(
+        path: impl Into<PathBuf>,
+        expected_byte_count: u64,
+        expected_sha256: impl Into<String>,
+        opener: F,
+    ) -> Self
+    where
+        F: Fn() -> Result<File> + Send + Sync + 'static,
+    {
+        Self {
+            path: path.into(),
+            expected_byte_count,
+            expected_sha256: expected_sha256.into(),
+            opener: Arc::new(opener),
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub const fn expected_byte_count(&self) -> u64 {
+        self.expected_byte_count
+    }
+
+    pub fn expected_sha256(&self) -> &str {
+        &self.expected_sha256
+    }
+
+    pub fn open(&self) -> Result<DurableLocalFile> {
+        let mut file = (self.opener)()?;
+        let metadata = file.metadata().map_err(|error| {
+            CdfError::data(format!(
+                "inspect durable staged segment at {}: {error}",
+                self.path.display()
+            ))
+        })?;
+        if !metadata.is_file() || metadata.len() != self.expected_byte_count {
+            return Err(CdfError::data(format!(
+                "durable staged segment at {} must be a file of exactly {} bytes, observed {} bytes",
+                self.path.display(),
+                self.expected_byte_count,
+                metadata.len()
+            )));
+        }
+        let mut hasher = Sha256::new();
+        let observed_byte_count = std::io::copy(&mut file, &mut hasher).map_err(|error| {
+            CdfError::data(format!(
+                "hash durable staged segment at {}: {error}",
+                self.path.display()
+            ))
+        })?;
+        let observed_sha256 = hex::encode(hasher.finalize());
+        let expected_sha256 = self
+            .expected_sha256
+            .strip_prefix("sha256:")
+            .unwrap_or(&self.expected_sha256);
+        if observed_byte_count != self.expected_byte_count
+            || !observed_sha256.eq_ignore_ascii_case(expected_sha256)
+        {
+            return Err(CdfError::data(format!(
+                "durable staged segment at {} changed after publication: expected {} bytes with sha256 {}, observed {} bytes with sha256 {}",
+                self.path.display(),
+                self.expected_byte_count,
+                self.expected_sha256,
+                observed_byte_count,
+                observed_sha256
+            )));
+        }
+        file.seek(SeekFrom::Start(0)).map_err(|error| {
+            CdfError::data(format!(
+                "rewind durable staged segment at {}: {error}",
+                self.path.display()
+            ))
+        })?;
+        Ok(DurableLocalFile::new(self.path.clone(), file))
+    }
 }
 
 /// An already-opened local segment object plus its diagnostic pathname spelling.
@@ -281,7 +384,7 @@ pub struct DurableLocalFile {
 }
 
 impl DurableLocalFile {
-    pub fn new(path: impl Into<PathBuf>, file: File) -> Self {
+    fn new(path: impl Into<PathBuf>, file: File) -> Self {
         Self {
             path: path.into(),
             file,
@@ -300,7 +403,7 @@ impl DurableLocalFile {
 pub struct StagedSegmentRequest {
     pub identity: StagedSegmentIdentity,
     reader: Box<dyn DurableSegmentReader>,
-    durable_local_file: Option<DurableLocalFile>,
+    durable_local_file_access: Option<DurableLocalFileAccess>,
 }
 
 /// A bounded, acknowledgement-bearing stream of durable segments.
@@ -325,34 +428,30 @@ impl StagedSegmentRequest {
                 "staged segment request identity does not match its durable reader",
             ));
         }
-        let durable_local_file = reader.take_durable_local_file()?;
-        if let Some(local_file) = durable_local_file.as_ref() {
-            let metadata = local_file.file.metadata().map_err(|error| {
-                CdfError::data(format!(
-                    "inspect durable staged segment {} at {}: {error}",
-                    identity.segment_id,
-                    local_file.path.display()
-                ))
-            })?;
-            if !metadata.is_file() || metadata.len() != identity.byte_count {
-                return Err(CdfError::data(format!(
-                    "durable staged segment {} at {} must be a file of exactly {} bytes, observed {} bytes",
-                    identity.segment_id,
-                    local_file.path.display(),
-                    identity.byte_count,
-                    metadata.len()
-                )));
-            }
+        let durable_local_file_access = reader.take_durable_local_file_access()?;
+        if let Some(access) = durable_local_file_access.as_ref()
+            && (access.expected_byte_count() != identity.byte_count
+                || access.expected_sha256() != identity.sha256)
+        {
+            return Err(CdfError::data(format!(
+                "durable staged segment {} at {} declares {} bytes with sha256 {} but its identity requires {} bytes with sha256 {}",
+                identity.segment_id,
+                access.path().display(),
+                access.expected_byte_count(),
+                access.expected_sha256(),
+                identity.byte_count,
+                identity.sha256
+            )));
         }
         Ok(Self {
             identity,
             reader,
-            durable_local_file,
+            durable_local_file_access,
         })
     }
 
-    pub fn take_durable_local_file(&mut self) -> Option<DurableLocalFile> {
-        self.durable_local_file.take()
+    pub fn take_durable_local_file_access(&mut self) -> Option<DurableLocalFileAccess> {
+        self.durable_local_file_access.take()
     }
 
     pub fn reader_mut(&mut self) -> &mut dyn DurableSegmentReader {

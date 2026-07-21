@@ -99,7 +99,7 @@ impl DuckDbSegmentScanRuntime {
     pub(crate) fn open(
         path: &Path,
         resources: &DuckDbNativeResources,
-        files: Vec<cdf_runtime::DurableLocalFile>,
+        files: Vec<cdf_runtime::DurableLocalFileAccess>,
         schema: SchemaRef,
     ) -> Result<Self> {
         if files.is_empty() {
@@ -211,7 +211,7 @@ struct SegmentScanTelemetry {
 }
 
 struct SegmentScanContext {
-    files: Vec<std::sync::Mutex<Option<cdf_runtime::DurableLocalFile>>>,
+    files: Vec<std::sync::Mutex<Option<cdf_runtime::DurableLocalFileAccess>>>,
     schema: SchemaRef,
     connection: duckdb::ffi::duckdb_connection,
     converted_schema: ConvertedSchema,
@@ -277,6 +277,7 @@ impl SegmentScanLocalState {
                 .map_err(|_| CdfError::internal("DuckDB segment file claim was poisoned"))?
                 .take()
                 .ok_or_else(|| CdfError::internal("DuckDB segment file was claimed twice"))?;
+            let local_file = local_file.open()?;
             let (path, file) = local_file.into_parts();
             let reader = IpcFileReader::try_new_buffered(file, None).map_err(|error| {
                 CdfError::data(format!(
@@ -528,7 +529,7 @@ impl Drop for LogicalType {
 
 fn register_segment_scan(
     connection: duckdb::ffi::duckdb_connection,
-    files: Vec<cdf_runtime::DurableLocalFile>,
+    files: Vec<cdf_runtime::DurableLocalFileAccess>,
     schema: SchemaRef,
     max_threads: usize,
     telemetry: Arc<SegmentScanTelemetry>,

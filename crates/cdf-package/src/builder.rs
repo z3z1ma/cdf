@@ -18,12 +18,14 @@ use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use serde::Serialize;
 
 use crate::{
+    DurableSegmentFile,
     draft_index::{PackageBuilderResources, PackageDraftIndex},
     json::{
         canonical_json_bytes, manifest_identity_hash_streaming,
         write_package_manifest_canonical_streaming,
     },
     ops::update_package_status,
+    package_fs::PackageRoot,
     quarantine::{quarantine_record_batch, quarantine_schema},
     storage::{
         ArtifactDurability, HashingWriter, atomic_write, build_manifest,
@@ -36,6 +38,7 @@ use crate::{
 
 pub struct PackageBuilder {
     package_dir: PathBuf,
+    package_root: Arc<PackageRoot>,
     package_id: String,
     draft_index: Arc<Mutex<PackageDraftIndex>>,
     trace: Mutex<HashingWriter<std::fs::File>>,
@@ -46,6 +49,12 @@ pub struct SegmentWriteMetrics {
     pub segment: SegmentEntry,
     pub encode_duration_ns: u64,
     pub persist_hash_duration_ns: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct RegisteredPackageSegment {
+    pub metrics: SegmentWriteMetrics,
+    pub durable_file: DurableSegmentFile,
 }
 
 #[derive(Clone, Debug)]
@@ -264,9 +273,11 @@ impl PackageBuilder {
             resources.memory,
             resources.spill,
         )?;
+        let package_root = Arc::new(PackageRoot::open(&package_dir)?);
 
         Ok(Self {
             package_dir,
+            package_root,
             package_id,
             draft_index: Arc::new(Mutex::new(draft_index)),
             trace: Mutex::new(HashingWriter::new(trace)),
@@ -333,15 +344,17 @@ impl PackageBuilder {
             )));
         }
         let receipt = write_canonical_segment_ipc_bytes(&path, bytes)?;
-        self.register_encoded_segment(EncodedPackageSegment {
-            segment_id,
-            relative_path,
-            package_row_ord_start,
-            row_count,
-            receipt,
-            measure: false,
-            unpublished_path: Some(path),
-        })
+        Ok(self
+            .register_encoded_segment(EncodedPackageSegment {
+                segment_id,
+                relative_path,
+                package_row_ord_start,
+                row_count,
+                receipt,
+                measure: false,
+                unpublished_path: Some(path),
+            })?
+            .metrics)
     }
 
     pub fn update_status(&self, status: PackageStatus) -> Result<crate::PackageManifestHeader> {
@@ -639,13 +652,13 @@ impl PackageBuilder {
         let encoded =
             self.segment_encoder()
                 .encode(segment_id, package_row_ord_start, batches, measure)?;
-        self.register_encoded_segment(encoded)
+        Ok(self.register_encoded_segment(encoded)?.metrics)
     }
 
     pub fn register_encoded_segment(
         &self,
         mut encoded: EncodedPackageSegment,
-    ) -> Result<SegmentWriteMetrics> {
+    ) -> Result<RegisteredPackageSegment> {
         let file_entry = FileEntry {
             path: encoded.relative_path.clone(),
             byte_count: encoded.receipt.artifact.byte_count,
@@ -680,17 +693,25 @@ impl PackageBuilder {
             .lock()
             .map_err(|_| CdfError::internal("package draft index lock is poisoned"))?
             .insert_segment(&segment)?;
-        Ok(SegmentWriteMetrics {
-            segment,
-            encode_duration_ns: if encoded.measure {
-                encoded.receipt.encode_hash_duration_ns
-            } else {
-                0
-            },
-            persist_hash_duration_ns: if encoded.measure {
-                encoded.receipt.publish_duration_ns
-            } else {
-                0
+        let durable_file = DurableSegmentFile::new(
+            segment.clone(),
+            Arc::clone(&self.package_root),
+            self.package_dir.join(&segment.path),
+        );
+        Ok(RegisteredPackageSegment {
+            durable_file,
+            metrics: SegmentWriteMetrics {
+                segment,
+                encode_duration_ns: if encoded.measure {
+                    encoded.receipt.encode_hash_duration_ns
+                } else {
+                    0
+                },
+                persist_hash_duration_ns: if encoded.measure {
+                    encoded.receipt.publish_duration_ns
+                } else {
+                    0
+                },
             },
         })
     }

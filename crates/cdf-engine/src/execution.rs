@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     future::Future,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{Arc, mpsc},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -165,7 +165,7 @@ fn package_builder_resources(
 /// The record batches and their existing memory leases move together so a destination queue does
 /// not reserve the same Arrow allocations a second time. Dropping the payload releases ownership.
 pub struct DurableSegmentPayload {
-    durable_local_file: PathBuf,
+    durable_file: cdf_package::DurableSegmentFile,
     batches: Vec<RecordBatch>,
     memory_leases: Vec<MemoryLease>,
 }
@@ -175,8 +175,14 @@ impl DurableSegmentPayload {
         &self.batches
     }
 
-    pub fn into_parts(self) -> (PathBuf, Vec<RecordBatch>, Vec<MemoryLease>) {
-        (self.durable_local_file, self.batches, self.memory_leases)
+    pub fn into_parts(
+        self,
+    ) -> (
+        cdf_package::DurableSegmentFile,
+        Vec<RecordBatch>,
+        Vec<MemoryLease>,
+    ) {
+        (self.durable_file, self.batches, self.memory_leases)
     }
 }
 
@@ -2148,25 +2154,25 @@ impl SegmentEncodeQueue {
             } = completion.work;
             state.phase_measurements.add(
                 RunPhase::SegmentEncode,
-                write.encode_duration_ns,
+                write.metrics.encode_duration_ns,
                 normalization_output_bytes,
-                write.segment.byte_count,
+                write.metrics.segment.byte_count,
             );
             state.phase_measurements.add(
                 RunPhase::PersistHash,
-                write.persist_hash_duration_ns,
-                write.segment.byte_count,
-                write.segment.byte_count,
+                write.metrics.persist_hash_duration_ns,
+                write.metrics.segment.byte_count,
+                write.metrics.segment.byte_count,
             );
-            let segment = write.segment;
-            let durable_local_file = builder.package_dir().join(&segment.path);
+            let segment = write.metrics.segment;
+            let durable_file = write.durable_file;
             if let Some(lease) = _scratch_memory_lease {
                 _transform_memory_leases.push(lease);
             }
             durable_segment.observe(
                 &segment,
                 DurableSegmentPayload {
-                    durable_local_file,
+                    durable_file,
                     batches,
                     memory_leases: _transform_memory_leases,
                 },
