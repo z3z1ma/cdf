@@ -406,7 +406,7 @@ mod tests {
     }
 
     #[test]
-    fn execution_schema_is_the_compiled_reader_projection_in_field_id_order() {
+    fn execution_schema_is_the_compiled_reader_projection_in_declared_order() {
         let schema = Schema::new_with_metadata(
             vec![
                 field("name", DataType::Utf8, 20),

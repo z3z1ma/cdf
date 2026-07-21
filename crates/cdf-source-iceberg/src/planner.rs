@@ -808,7 +808,7 @@ fn projected_field_ids(
     projection: Option<&[String]>,
 ) -> Result<Vec<i32>> {
     let top_level = schema.as_struct().fields();
-    let mut ids = match projection {
+    let ids = match projection {
         Some(projection) => projection
             .iter()
             .map(|name| {
@@ -826,8 +826,12 @@ fn projected_field_ids(
             .collect::<Result<Vec<_>>>()?,
         None => top_level.iter().map(|field| field.id).collect(),
     };
-    ids.sort_unstable();
-    ids.dedup();
+    let mut seen = BTreeSet::new();
+    if let Some(duplicate) = ids.iter().find(|field_id| !seen.insert(**field_id)) {
+        return Err(CdfError::contract(format!(
+            "Iceberg projection repeats top-level field id {duplicate}"
+        )));
+    }
     Ok(ids)
 }
 
@@ -1161,24 +1165,29 @@ mod tests {
             "fields": [
                 {"id": 1, "name": "id", "required": true, "type": "long"},
                 {
-                    "id": 2,
+                    "id": 13,
                     "name": "tags",
                     "required": false,
                     "type": {
                         "type": "list",
-                        "element-id": 3,
+                        "element-id": 14,
                         "element": "string",
                         "element-required": false
                     }
-                }
+                },
+                {"id": 12, "name": "active", "required": false, "type": "boolean"}
             ]
         }))
         .unwrap();
 
-        assert_eq!(projected_field_ids(&schema, None).unwrap(), vec![1, 2]);
+        assert_eq!(projected_field_ids(&schema, None).unwrap(), vec![1, 13, 12]);
         assert_eq!(
             projected_field_ids(&schema, Some(&["tags".to_owned()])).unwrap(),
-            vec![2]
+            vec![13]
+        );
+        assert_eq!(
+            projected_field_ids(&schema, Some(&["active".to_owned(), "tags".to_owned()])).unwrap(),
+            vec![12, 13]
         );
         assert!(
             projected_field_ids(&schema, Some(&["element".to_owned()]))

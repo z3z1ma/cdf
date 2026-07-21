@@ -10134,6 +10134,45 @@ fn run_local_parquet_discover_autopins_and_commits_pinned_schema() {
 }
 
 #[test]
+fn pinned_multi_file_parquet_preview_attests_unopened_observed_partitions() {
+    let project = TestProject::new();
+    write_parquet_discover_resource(&project, "*.parquet");
+    write_vendor_parquet(&project.root.join("data/a.parquet"));
+    write_vendor_parquet(&project.root.join("data/b.parquet"));
+
+    let plan = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(plan.exit_code, 0, "{}", plan.stderr);
+    let before_preview = project_tree_snapshot(&project.root);
+
+    let preview = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "local.events",
+        "--limit",
+        "1",
+    ]);
+
+    assert_eq!(preview.exit_code, 0, "{}", preview.stderr);
+    let report = stderr_or_stdout_json(&preview.stdout);
+    assert_eq!(report["result"]["planned_partition_count"], 2);
+    assert_eq!(report["result"]["payload_opened_partition_count"], 1);
+    assert_eq!(report["result"]["payload_uninspected_partition_count"], 1);
+    assert_eq!(report["result"]["attested_partition_count"], 1);
+    assert_eq!(report["result"]["row_count"], 1);
+    assert_project_tree_unchanged(&project.root, &before_preview);
+}
+
+#[test]
 fn pinned_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_in_stream() {
     let project = TestProject::new();
     write_parquet_discover_resource(&project, "*.parquet");

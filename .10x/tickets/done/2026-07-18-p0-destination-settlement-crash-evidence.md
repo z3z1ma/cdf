@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-18
 Updated: 2026-07-18
-Parent: .10x/tickets/2026-07-18-p0-post-iceberg-integration-stabilization.md
+Parent: .10x/tickets/done/2026-07-18-p0-post-iceberg-integration-stabilization.md
 
 # P0: close destination settlement crash evidence
 

@@ -356,6 +356,28 @@ Use profilers after benchmark or production evidence identifies a hotspot.
 
 Use for release candidates, large integrations, broad refactors, scheduled validation, or change sets that touch multiple high-risk vectors.
 
+### Core-tranche product smoke barrier
+
+Every tranche that changes source planning, execution, package/receipt/checkpoint settlement,
+destination ingress, or replay MUST pass the deterministic product matrix before its owning ticket
+closes:
+
+```bash
+tools/product-smoke-matrix.sh
+```
+
+The matrix exercises local and recorded HTTP Parquet through DuckDB, multi-file discovery
+attestation, manifest no-op incrementality, package verification and artifact-only replay,
+preview/run parity, filesystem Parquet destination ingress, and Iceberg projection-order
+authority. These are product paths; package-local unit tests do not substitute for them.
+
+When a tranche changes public-network transport or a live catalog adapter, its closure evidence
+MUST additionally record a fresh-state live run using the release binary. Use a disposable project
+copy with no checkpoint or destination state, identify the endpoint/catalog and revision, redact
+credentials, and distinguish provider flakiness from product failure. The current live cells are
+HTTPS TLC Parquet to DuckDB and FQ12 Glue/Iceberg `gold.dim_date` to DuckDB. Live cells remain a
+scheduled/manual integration tier and MUST NOT be added to pull-request fast checks.
+
 ```bash
 cargo fmt --all -- --check
 cargo check --workspace --all-targets --locked

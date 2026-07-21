@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-18
 Updated: 2026-07-18
-Parent: .10x/tickets/2026-07-18-p0-post-iceberg-integration-stabilization.md
+Parent: .10x/tickets/done/2026-07-18-p0-post-iceberg-integration-stabilization.md
 Depends-On: .10x/tickets/done/2026-07-18-p0-external-partition-authority.md
 
 # P0: make portable partition cardinality and ordinals u64

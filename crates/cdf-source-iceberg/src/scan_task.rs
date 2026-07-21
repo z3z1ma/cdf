@@ -11,8 +11,8 @@ use cdf_task_store::ExternalTaskSetWriter;
 use serde::{Deserialize, Serialize};
 
 pub const ICEBERG_SCAN_TASK_VERSION: u16 = 3;
-pub const ICEBERG_TASK_SET_AUTHORITY_VERSION: u16 = 3;
-pub const ICEBERG_TASK_SET_TYPE: &str = "iceberg-scan-v3";
+pub const ICEBERG_TASK_SET_AUTHORITY_VERSION: u16 = 4;
+pub const ICEBERG_TASK_SET_TYPE: &str = "iceberg-scan-v4";
 
 /// Shared, immutable authority for every task in one Iceberg task-set artifact.
 ///
@@ -95,9 +95,9 @@ impl IcebergTaskSetAuthority {
             ))
         })?;
         let output_schema = decode_schema(output_schema)?;
-        if !strictly_increasing_positive(&self.projected_field_ids) {
+        if !unique_positive(&self.projected_field_ids) {
             return Err(CdfError::contract(
-                "Iceberg projected field ids must be positive and strictly increasing",
+                "Iceberg projected field ids must be positive and unique",
             ));
         }
         for field_id in &self.projected_field_ids {
@@ -493,6 +493,11 @@ fn strictly_increasing_positive(values: &[i32]) -> bool {
     values.iter().all(|value| *value > 0) && values.windows(2).all(|pair| pair[0] < pair[1])
 }
 
+fn unique_positive(values: &[i32]) -> bool {
+    let mut seen = BTreeSet::new();
+    values.iter().all(|value| *value > 0 && seen.insert(*value))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IcebergDataFile {
@@ -876,6 +881,36 @@ mod tests {
 
     fn validated_authority() -> ValidatedIcebergTaskSetAuthority {
         authority().into_validated().unwrap()
+    }
+
+    #[test]
+    fn task_authority_preserves_declared_projection_order() {
+        let mut model = authority();
+        model.schemas.insert(
+            2,
+            IcebergJsonAuthority::new(serde_json::json!({
+                "type": "struct",
+                "schema-id": 2,
+                "fields": [
+                    {"id": 13, "name": "year", "required": false, "type": "int"},
+                    {"id": 12, "name": "is_weekday", "required": false, "type": "boolean"}
+                ]
+            }))
+            .unwrap(),
+        );
+        model.projected_field_ids = vec![13, 12];
+        model.scan_intent.projection = Some(vec!["year".to_owned(), "is_weekday".to_owned()]);
+        model.into_validated().unwrap();
+
+        let mut duplicate = authority();
+        duplicate.projected_field_ids = vec![1, 1];
+        assert!(
+            duplicate
+                .into_validated()
+                .unwrap_err()
+                .message
+                .contains("positive and unique")
+        );
     }
 
     #[test]

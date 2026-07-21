@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-18
 Updated: 2026-07-18
-Parent: .10x/tickets/2026-07-18-p0-post-iceberg-integration-stabilization.md
+Parent: .10x/tickets/done/2026-07-18-p0-post-iceberg-integration-stabilization.md
 Depends-On: .10x/tickets/done/2026-07-18-p0-external-partition-authority.md, .10x/tickets/done/2026-07-18-p0-typed-compiled-source-identities.md
 
 # P0: close source planning authority seams

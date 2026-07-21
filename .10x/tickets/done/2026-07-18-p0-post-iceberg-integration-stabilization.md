@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-18
 Updated: 2026-07-18
 
@@ -13,7 +13,7 @@ Restore product-level trust after the Iceberg/Glue tranche by closing the author
 1. `.10x/tickets/done/2026-07-18-p0-external-partition-authority.md`
 2. `.10x/tickets/done/2026-07-18-p0-typed-compiled-source-identities.md`
 3. `.10x/tickets/done/2026-07-18-p0-source-io-accounting-separation.md`
-4. `.10x/tickets/2026-07-18-p0-product-smoke-matrix-gate.md`
+4. `.10x/tickets/done/2026-07-18-p0-product-smoke-matrix-gate.md`
 5. `.10x/tickets/done/2026-07-18-p0-engine-invocation-state-isolation.md`
 6. `.10x/tickets/done/2026-07-18-p0-destination-settlement-crash-evidence.md`
 7. `.10x/tickets/done/2026-07-18-p0-portable-partition-ordinals-u64.md`
@@ -51,6 +51,11 @@ Restore product-level trust after the Iceberg/Glue tranche by closing the author
 - 2026-07-18: Ran the exact barrier after repairing the six remaining failures rather than classifying them around. The Postgres cold-discovery path now binds observations to the source target rather than the compiled resource id; file-manifest recovery asserts the ratified resource-scoped `file:*` key; three live-run goldens were regenerated only after auditing their already-committed schema/statistics/lineage representation changes; and the benchmark isolation test no longer mistakes whole-workspace contention for the timeout behavior it does not own. `cargo nextest run --workspace --locked -j 12 --no-fail-fast` passed 1,771/1,771 with 40 explicit skips. Strict workspace all-target Clippy passed with warnings denied.
 - 2026-07-18: Closed the portable cardinality ceiling. Canonical partition and decode-unit ordinals now remain `u64` from external task authority through scheduler admission, retry and worker artifacts, engine segmentation, and drain/replay; scheduler resolution no longer narrows total external cardinality to process address space. The complete workspace gate passed 1,774/1,774 tests with 40 explicit skips, including jobs-invariance and external-task suites, and strict all-target Clippy passed.
 - 2026-07-18: Closed source-planning authority seams. Source adapters now choose one closed inline/external authority through the explicit constructor and can only rebind by consuming and returning a complete plan; zero-task external sources retain their representation; external file drain summaries use typed cardinality without enumeration. Strict Clippy and the final 1,777/1,777 workspace gate passed. The only remaining child is the product smoke matrix.
+- 2026-07-18: Closed the final product barrier after deterministic local/recorded coverage and fresh
+  release runs across public HTTP Parquet, FQ12 Glue/Iceberg, DuckDB, Parquet destination, package
+  verification, and artifact-only replay. The barrier found and repaired two adapter-local defects
+  that package suites had missed: discarded file physical-schema attestations and sorted Iceberg
+  field ids. The final workspace gate passed 1,777/1,777 tests and strict all-feature Clippy.
 
 ## Blockers
 
@@ -58,12 +63,28 @@ None.
 
 ## Evidence
 
-Pending child closure.
+- Every child is terminal under `.10x/tickets/done/` with criterion-mapped evidence.
+- Closed partition authority, typed source identities, source-I/O accounting, invocation-local
+  state, settlement crash evidence, portable `u64` ordinals, and source-planning authority together
+  eliminate the invalid or interchangeable authority states named at program opening.
+- `.10x/tickets/done/2026-07-18-p0-product-smoke-matrix-gate.md` records the complete deterministic
+  and live product matrix, including exact row/segment counts, package hashes, and provider limits.
+- Final integration gates: 1,777/1,777 workspace tests passed with 40 explicit skips; formatting and
+  strict workspace all-target/all-feature Clippy passed.
 
 ## Review
 
-Pending child closure.
+Fresh closure review checked the parent against every child and the original audit. Compiled source
+partition authority is a closed representation; semantically distinct identities are typed;
+planned estimates and observed physical I/O are separate; adapters own their planning and schema
+semantics; and the required product matrix now crosses the exact lifecycle that isolated tests had
+missed. No critical or significant finding remains. Verdict: pass. Temporal provider availability
+is retained as explicit residual risk and cannot replace the deterministic gate.
 
 ## Retrospective
 
-Pending.
+The tranche became untrusted because individually plausible migrations changed several adjacent
+authorities without one cross-lifecycle release smoke. The repair succeeded by closing invalid
+representations first, then running real products rather than classifying integration failures as
+pre-existing. Future core tranches must pass the small product matrix before closure; live provider
+cells are added only when their adapter or transport changed, keeping fast checks lean.

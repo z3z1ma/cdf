@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-18
 Updated: 2026-07-18
-Parent: .10x/tickets/2026-07-18-p0-post-iceberg-integration-stabilization.md
+Parent: .10x/tickets/done/2026-07-18-p0-post-iceberg-integration-stabilization.md
 
 # P0: isolate engine invocation state
 
@@ -23,7 +23,7 @@ Separate reusable engine execution configuration from cancellation and retry evi
 
 ## References
 
-- `.10x/tickets/2026-07-18-p0-post-iceberg-integration-stabilization.md`
+- `.10x/tickets/done/2026-07-18-p0-post-iceberg-integration-stabilization.md`
 - `.10x/specs/deterministic-parallel-scheduler.md`
 
 ## Assumptions

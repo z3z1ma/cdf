@@ -1498,6 +1498,7 @@ impl FileResource {
         let descriptor = self.descriptor.clone();
         let plan = self.plan.clone();
         let dependencies = self.dependencies.clone();
+        let effective_schema_runtime = self.effective_schema_runtime.clone();
         let execution = dependencies.execution().clone();
         if let Err(error) = execution.ensure_blocking_lanes(&[file_source_blocking_lane()]) {
             return cdf_kernel::PartitionAttestationAttempt::materialized(Box::pin(async move {
@@ -1534,6 +1535,16 @@ impl FileResource {
                     )
                 })?;
                 cancellation.check()?;
+                let physical_schema_hash = if resolved.identity_strength == GenerationStrength::Weak
+                {
+                    None
+                } else {
+                    planned_physical_schema_authority(
+                        effective_schema_runtime.as_deref(),
+                        &partition,
+                    )?
+                    .hash
+                };
                 let processed_position = SourcePosition::FileManifest(cdf_kernel::FileManifest {
                     version: 1,
                     files: vec![cdf_kernel::FilePosition {
@@ -1547,7 +1558,7 @@ impl FileResource {
                 });
                 Ok(Some(cdf_kernel::PartitionAttestation::new(
                     processed_position,
-                    None,
+                    physical_schema_hash,
                 )))
             },
         );
@@ -2610,6 +2621,33 @@ struct FilePartitionPreparation<'a> {
     control: &'a FileTransportControl,
 }
 
+fn planned_physical_schema_authority(
+    runtime: Option<&EffectiveSchemaRuntime>,
+    partition: &PartitionPlan,
+) -> Result<PhysicalSchemaAuthority> {
+    let Some(runtime) = runtime else {
+        return Ok(PhysicalSchemaAuthority::default());
+    };
+    let Some(observation_id) = partition.metadata.get(PLAN_SCHEMA_OBSERVATION_ID_KEY) else {
+        return Ok(PhysicalSchemaAuthority::default());
+    };
+    let Some(observation) = runtime.evidence.observation(observation_id) else {
+        return Ok(PhysicalSchemaAuthority::default());
+    };
+    let binding = cdf_kernel::partition_schema_observation_binding(partition)?;
+    if binding != observation.schema_observation_binding {
+        return Err(CdfError::contract(format!(
+            "file partition `{}` schema-observation binding does not match observation {observation_id:?}",
+            partition.partition_id
+        )));
+    }
+    let hash = observation.physical_schema_hash.clone();
+    Ok(PhysicalSchemaAuthority {
+        schema: runtime.physical_schema(&hash).cloned(),
+        hash: Some(hash),
+    })
+}
+
 #[cfg(test)]
 fn file_partitions_for_plan_with_transport(
     descriptor: &ResourceDescriptor,
@@ -2726,6 +2764,8 @@ fn open_file_resource_with_dependencies(
                 object_version: prepared.resolved.version.clone(),
                 sha256: prepared.resolved.sha256.clone(),
             };
+            let planned_physical_schema_hash = prepared.physical_schema_authority.hash.clone();
+            let strong_generation = prepared.resolved.identity_strength != GenerationStrength::Weak;
             let decode = async {
                 let prepared_stream = stream_prepared_file_match(
                     prepared,
@@ -2739,23 +2779,28 @@ fn open_file_resource_with_dependencies(
                     post_decode_completion,
                 } = prepared_stream;
                 let forward = async {
+                    let mut observed_schema_hash = None;
                     while let Some(batch) = batches.try_next().await? {
+                        if observed_schema_hash.is_none() {
+                            observed_schema_hash = Some(batch.header.observed_schema_hash.clone());
+                        }
                         sender.send(batch).await?;
                     }
-                    Ok::<_, CdfError>(())
+                    Ok::<_, CdfError>(observed_schema_hash)
                 };
-                if let Some(source_completion) = source_completion {
-                    tokio::try_join!(forward, source_completion)?;
+                let observed_schema_hash = if let Some(source_completion) = source_completion {
+                    let (observed_schema_hash, ()) = tokio::try_join!(forward, source_completion)?;
+                    observed_schema_hash
                 } else {
-                    forward.await?;
-                }
+                    forward.await?
+                };
                 if let Some(post_decode_completion) = post_decode_completion {
                     post_decode_completion.await?;
                 }
-                Ok::<_, CdfError>(())
+                Ok::<_, CdfError>(observed_schema_hash)
             };
             let hash_sweep = complete_hash_sweep(hash_sweep_source, cancellation.clone());
-            tokio::try_join!(decode, hash_sweep)?;
+            let (observed_schema_hash, ()) = tokio::try_join!(decode, hash_sweep)?;
             let mut completed_position = completed_position;
             if let Some(extraction_content_hash) = extraction_content_hash {
                 completed_position.sha256 = Some(extraction_content_hash.completed()?);
@@ -2765,7 +2810,11 @@ fn open_file_resource_with_dependencies(
                     version: 1,
                     files: vec![completed_position],
                 }),
-                None,
+                observed_schema_hash.or_else(|| {
+                    strong_generation
+                        .then_some(planned_physical_schema_hash)
+                        .flatten()
+                }),
             ));
             let completion = PartitionCompletion::new(attestation, Some(source_io.snapshot()));
             let _ = completion_sender.send(completion);
@@ -2849,23 +2898,8 @@ fn prepare_file_partition(
                 },
             )
         })?;
-    let planned_physical_schema_hash = preparation
-        .effective_schema_runtime
-        .and_then(|runtime| {
-            partition
-                .metadata
-                .get(PLAN_SCHEMA_OBSERVATION_ID_KEY)
-                .and_then(|observation_id| runtime.evidence.observation(observation_id))
-        })
-        .map(|observation| observation.physical_schema_hash.clone());
-    let planned_physical_schema = planned_physical_schema_hash
-        .as_ref()
-        .and_then(|hash| {
-            preparation
-                .effective_schema_runtime
-                .and_then(|runtime| runtime.physical_schema(hash))
-        })
-        .cloned();
+    let physical_schema_authority =
+        planned_physical_schema_authority(preparation.effective_schema_runtime, partition)?;
     let options = ReadOptions::new(
         descriptor.resource_id.clone(),
         partition.partition_id.clone(),
@@ -2892,10 +2926,7 @@ fn prepare_file_partition(
         scan_intent: partition.scan_intent.clone(),
         options,
         admission_schema: preparation.admission_schema,
-        physical_schema_authority: PhysicalSchemaAuthority {
-            hash: planned_physical_schema_hash,
-            schema: planned_physical_schema,
-        },
+        physical_schema_authority,
         canonical_format_options: preparation.compiled_format.canonical_options.clone(),
         driver,
         source_io: prepared_input.source_io,
@@ -5915,6 +5946,7 @@ mod tests {
         effective_schema: SchemaRef,
         physical_schema: SchemaRef,
         observation_id: impl Into<String>,
+        observation_binding: cdf_kernel::SchemaObservationBinding,
     ) -> EffectiveSchemaRuntime {
         let effective_hash =
             cdf_kernel::canonical_arrow_schema_hash(effective_schema.as_ref()).unwrap();
@@ -5933,11 +5965,7 @@ mod tests {
             vec![cdf_kernel::EffectiveSchemaObservationEvidence::new(
                 observation_id,
                 physical_hash.clone(),
-                cdf_kernel::SchemaObservationBinding::new(
-                    cdf_runtime::artifact_hash(&serde_json::json!({"test": "physical-runtime"}))
-                        .unwrap(),
-                )
-                .unwrap(),
+                observation_binding,
             )],
         )
         .unwrap();
@@ -6731,11 +6759,25 @@ mod tests {
             PushdownFidelity::Exact
         );
         let task_store_root = TempDir::new().unwrap();
+        let transforms = crate::test_transform_registry();
+        let observed_file = resolved_file_match(
+            &descriptor.resource_id,
+            temp.path(),
+            path.clone(),
+            &plan,
+            formats.as_ref(),
+            transforms.as_ref(),
+        )
+        .unwrap();
+        let observation_binding = cdf_kernel::SchemaObservationBinding::new(
+            file_schema_observation_binding(&FileInventoryRecord::from(&observed_file)),
+        )
+        .unwrap();
         let dependencies = FileRuntimeDependencies::new(
             FileTransportFacade::new(),
             crate::test_execution_services(),
             formats,
-            crate::test_transform_registry(),
+            transforms,
             crate::test_egress_scope(),
         )
         .with_task_store(
@@ -6766,6 +6808,7 @@ mod tests {
                     Arc::clone(&schema),
                     Arc::clone(&physical_schema),
                     "events.parquet",
+                    observation_binding.clone(),
                 )),
                 baseline_observation_schema_catalog: Vec::new(),
                 compiled_format,
@@ -6835,6 +6878,7 @@ mod tests {
             Arc::clone(&schema),
             widened_physical,
             "events.parquet",
+            observation_binding,
         );
         assert!(
             !exact_predicate_is_partition_equivalent(
