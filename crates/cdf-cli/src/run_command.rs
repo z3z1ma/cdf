@@ -107,6 +107,7 @@ pub(crate) fn run(
             limit: None,
             order_by: Vec::new(),
             no_pin: false,
+            segmentation: explicit.segmentation.clone(),
         },
         Some(&explicit.package_id),
         identifier_policy.as_ref(),
@@ -550,6 +551,7 @@ fn resolved_run_args(args: RunArgs) -> Result<ResolvedRunArgs, CliError> {
         checkpoint_id: CheckpointId::new(checkpoint_id)?,
         jobs: args.jobs,
         stats_profile: args.stats_profile,
+        segmentation: args.segmentation,
     })
 }
 
@@ -571,6 +573,7 @@ struct ResolvedRunArgs {
     checkpoint_id: CheckpointId,
     jobs: Option<u16>,
     stats_profile: bool,
+    segmentation: cdf_cli_core::args::SegmentationArgs,
 }
 
 pub(crate) fn ensure_parent_directory(path: &std::path::Path) -> Result<(), CliError> {

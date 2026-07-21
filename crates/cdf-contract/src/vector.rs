@@ -57,6 +57,23 @@ impl<'a> VectorValidationEvaluator<'a> {
         self.program
     }
 
+    /// Restores the schema nullability compiled into this evaluator without resolving field
+    /// names again. Execution binds the evaluator once, so wide batches stay O(columns) instead
+    /// of repeatedly searching the complete column program for every field.
+    pub fn restore_compiled_nullability(&self, batch: RecordBatch) -> Result<RecordBatch> {
+        // Preserve the existing no-residual contract path exactly: nullability restoration is
+        // part of residual typed projection, not a general schema rewrite.
+        if self.program.residual.is_none() {
+            return Ok(batch);
+        }
+        let plan = self.plan.as_ref().ok_or_else(|| {
+            CdfError::internal(
+                "contract nullability restoration requires a schema-bound validation evaluator",
+            )
+        })?;
+        plan.restore_compiled_nullability(batch)
+    }
+
     pub fn evaluate(
         &mut self,
         context: &ContractEvaluationContext,
@@ -283,6 +300,45 @@ fn validate_global_alias_ownership(program: &ValidationProgram) -> Result<()> {
 }
 
 impl VectorValidationPlan {
+    fn restore_compiled_nullability(&self, batch: RecordBatch) -> Result<RecordBatch> {
+        if batch.num_columns() != self.schema.fields().len() {
+            return Err(CdfError::data(format!(
+                "contract batch has {} columns but the compiled validation schema requires {}",
+                batch.num_columns(),
+                self.schema.fields().len()
+            )));
+        }
+        if batch
+            .schema()
+            .fields()
+            .iter()
+            .zip(self.schema.fields())
+            .all(|(actual, compiled)| actual.is_nullable() == compiled.is_nullable())
+        {
+            return Ok(batch);
+        }
+        let fields = batch
+            .schema()
+            .fields()
+            .iter()
+            .zip(self.schema.fields())
+            .map(|(actual, compiled)| {
+                actual
+                    .as_ref()
+                    .clone()
+                    .with_nullable(compiled.is_nullable())
+            })
+            .collect::<Vec<_>>();
+        RecordBatch::try_new(
+            std::sync::Arc::new(Schema::new_with_metadata(
+                fields,
+                batch.schema().metadata().clone(),
+            )),
+            batch.columns().to_vec(),
+        )
+        .map_err(CdfError::from)
+    }
+
     fn matches_schema(&self, actual: &Schema) -> bool {
         self.schema.fields().len() == actual.fields().len()
             && self

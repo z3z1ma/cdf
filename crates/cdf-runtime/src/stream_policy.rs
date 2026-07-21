@@ -319,6 +319,7 @@ mod tests {
                 maximum_poll_bytes: 1024,
                 minimum_decode_bytes: 1,
                 maximum_decode_bytes: 4096,
+                maximum_emitted_batch_bytes: 4096,
                 maximum_concurrency: 4,
                 useful_concurrency: 4,
                 executor_class: SourceExecutorClass::Io,

@@ -18,6 +18,7 @@ pub struct BackfillPlanRequest {
     pub from: String,
     pub to: String,
     pub slice_size: Option<u64>,
+    pub segmentation: cdf_engine::CanonicalSegmentationPolicy,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -104,6 +105,7 @@ pub fn plan_backfill(
                 request: scan_request,
                 validation_program: validation_program.clone(),
                 execution_extent: ExecutionExtent::bounded(),
+                segmentation: request.segmentation.clone(),
                 package_id: package_id.clone(),
             },
         )?;

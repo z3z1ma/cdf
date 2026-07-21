@@ -142,6 +142,7 @@ impl MemoryResource {
                 maximum_poll_bytes: maximum_batch_bytes,
                 minimum_decode_bytes: 1,
                 maximum_decode_bytes: maximum_batch_bytes,
+                maximum_emitted_batch_bytes: maximum_batch_bytes,
                 maximum_concurrency: 1,
                 useful_concurrency: 1,
                 executor_class: SourceExecutorClass::Cpu,

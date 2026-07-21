@@ -5,7 +5,8 @@ use cdf_contract::{
 };
 use cdf_declarative::CompiledResource;
 use cdf_engine::{
-    EnginePlan, EnginePlanInput, EnginePreviewLimits, EnginePreviewSelectionEvidence, Planner,
+    CanonicalSegmentationPolicy, EnginePlan, EnginePlanInput, EnginePreviewLimits,
+    EnginePreviewSelectionEvidence, Planner,
 };
 use cdf_kernel::{
     CapabilitySupport, CdfError, DeliveryGuarantee, DestinationSheet, IdempotencySupport, OrderBy,
@@ -384,6 +385,7 @@ pub(crate) fn build_engine_plan_for_resource(
         request,
         validation_program,
         execution_extent: source.execution_extent().clone(),
+        segmentation: segmentation_policy_from_tuning(&args.segmentation)?,
         package_id: run_package_id
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| format!("cli-{}", resource.descriptor().resource_id)),
@@ -395,6 +397,30 @@ pub(crate) fn build_engine_plan_for_resource(
     plan.bind_compiled_source(source_plan)
         .and_then(|plan| plan.bind_operator_graph(source_plan, destination_capabilities))
         .map_err(CliError::from)
+}
+
+pub(crate) fn segmentation_policy_from_tuning(
+    tuning: &cdf_cli_core::args::SegmentationArgs,
+) -> Result<CanonicalSegmentationPolicy, CliError> {
+    let mut policy = CanonicalSegmentationPolicy::performance_default();
+    policy.target_rows = tuning.target_rows.unwrap_or(policy.target_rows);
+    policy.target_bytes = tuning.target_bytes.unwrap_or(policy.target_bytes);
+    policy.maximum_rows = tuning.maximum_rows.unwrap_or(policy.maximum_rows);
+    policy.maximum_bytes = tuning.maximum_bytes.unwrap_or(policy.maximum_bytes);
+    policy.microbatch_minimum_rows = tuning
+        .microbatch_minimum_rows
+        .unwrap_or(policy.microbatch_minimum_rows);
+    policy.microbatch_maximum_rows = tuning
+        .microbatch_maximum_rows
+        .unwrap_or(policy.microbatch_maximum_rows);
+    policy.microbatch_minimum_bytes = tuning
+        .microbatch_minimum_bytes
+        .unwrap_or(policy.microbatch_minimum_bytes);
+    policy.microbatch_maximum_bytes = tuning
+        .microbatch_maximum_bytes
+        .unwrap_or(policy.microbatch_maximum_bytes);
+    policy.validate().map_err(CliError::from)?;
+    Ok(policy)
 }
 
 fn scan_request(

@@ -1099,6 +1099,7 @@ fn execution_capabilities(source: &IcebergSourceOptions) -> Result<SourceExecuti
         maximum_poll_bytes: 32 * 1024 * 1024,
         minimum_decode_bytes: 8 * 1024,
         maximum_decode_bytes: source.execution_working_set_bytes()?,
+        maximum_emitted_batch_bytes: source.maximum_emitted_batch_bytes,
         maximum_concurrency: source.maximum_concurrency,
         useful_concurrency: source.maximum_concurrency,
         executor_class: SourceExecutorClass::BlockingLane,
@@ -1148,8 +1149,9 @@ mod tests {
         SecretValue,
     };
     use cdf_kernel::{
-        BoxFuture, ContentStoreNamespace, ExecutionExtent, PredicateId, ResourceDescriptor,
-        ResourceId, SchemaSource, ScopeKey, TrustLevel, WriteDisposition,
+        BoxFuture, ContentStoreNamespace, DiscoveryManifestHash, DiscoveryManifestReference,
+        EffectiveSchemaEvidence, ExecutionExtent, PredicateId, ResourceDescriptor, ResourceId,
+        SchemaSnapshotReference, SchemaSource, ScopeKey, TrustLevel, WriteDisposition,
     };
     use cdf_object_access::{
         FileIdentityMetadata, FileIdentityStream, FileMetadataObservation, FileTransport,
@@ -2770,7 +2772,54 @@ mod tests {
             )
             .unwrap();
         assert_eq!(observation.schema.fields().len(), 2);
-        one_job_plan.schema = observation.schema.as_ref().clone();
+        let effective_schema_hash =
+            cdf_kernel::canonical_arrow_schema_hash(observation.schema.as_ref()).unwrap();
+        let discovery_manifest = DiscoveryManifestReference {
+            manifest_hash: DiscoveryManifestHash::new(
+                "sha256:iceberg-external-task-lifecycle-manifest",
+            )
+            .unwrap(),
+            path: ".cdf/discovery/iceberg-external-task-lifecycle.json".to_owned(),
+        };
+        let mut snapshot_metadata = BTreeMap::new();
+        snapshot_metadata.insert(
+            cdf_kernel::DISCOVERY_MANIFEST_HASH_METADATA_KEY.to_owned(),
+            discovery_manifest.manifest_hash.to_string(),
+        );
+        snapshot_metadata.insert(
+            cdf_kernel::DISCOVERY_MANIFEST_PATH_METADATA_KEY.to_owned(),
+            discovery_manifest.path.clone(),
+        );
+        let mut pinned_descriptor = one_job_plan.descriptor.clone();
+        pinned_descriptor.schema_source = SchemaSource::Discovered {
+            snapshot: SchemaSnapshotReference {
+                schema_hash: effective_schema_hash.clone(),
+                path: ".cdf/schemas/lake.events@test.json".to_owned(),
+                metadata: snapshot_metadata,
+            },
+        };
+        let effective_schema_runtime = EffectiveSchemaRuntime::new(
+            EffectiveSchemaEvidence::new(
+                pinned_descriptor
+                    .schema_source
+                    .baseline_reference()
+                    .unwrap(),
+                effective_schema_hash,
+                discovery_manifest,
+                Vec::new(),
+            )
+            .unwrap(),
+            Vec::new(),
+        )
+        .unwrap();
+        one_job_plan = one_job_plan
+            .bind_schema_authority(
+                &pinned_descriptor,
+                observation.schema.as_ref(),
+                Some(effective_schema_runtime),
+                Vec::new(),
+            )
+            .unwrap();
         let resource = registry.resolve(&one_job_plan, &context).unwrap();
         let request = ScanRequest {
             resource_id: one_job_plan.descriptor.resource_id.clone(),
@@ -2885,6 +2934,7 @@ mod tests {
         let compiled_execution = CompiledSourceExecutionPlan::compile(&one_job_plan).unwrap();
         let schedule =
             CanonicalPartitionSchedule::compile(&compiled_execution, &one_job_scan).unwrap();
+        let mut observation_ids = std::collections::BTreeSet::new();
         for ordinal in 0..2 {
             let executable = planned.next_partition(ordinal).unwrap().unwrap();
             assert_eq!(
@@ -2895,6 +2945,31 @@ mod tests {
                 executable.plan().planned_position,
                 Some(cdf_kernel::SourcePosition::TableSnapshot(_))
             ));
+            let observation_id = executable
+                .plan()
+                .metadata
+                .get(cdf_kernel::PLAN_SCHEMA_OBSERVATION_ID_KEY)
+                .unwrap();
+            assert_eq!(observation_id, executable.plan().partition_id.as_str());
+            assert!(observation_ids.insert(observation_id.clone()));
+            let observation_binding = executable
+                .plan()
+                .metadata
+                .get(cdf_kernel::PLAN_SCHEMA_OBSERVATION_BINDING_KEY)
+                .unwrap();
+            assert_eq!(
+                cdf_kernel::SchemaObservationBinding::new(observation_binding.clone()).unwrap(),
+                crate::task_reader::derived_partition_observation_binding(executable.plan())
+                    .unwrap()
+            );
+            let mut tampered = executable.plan().clone();
+            tampered.metadata.insert(
+                cdf_kernel::PLAN_SCHEMA_OBSERVATION_BINDING_KEY.to_owned(),
+                format!("sha256:{}", "0".repeat(64)),
+            );
+            assert!(
+                crate::task_reader::validate_partition_observation_authority(&tampered).is_err()
+            );
             let task = executable
                 .retention()
                 .unwrap()
@@ -2902,6 +2977,29 @@ mod tests {
                 .unwrap();
             assert_eq!(task.task.canonical_ordinal, ordinal);
             task.task.validate_against(task.authority()).unwrap();
+            assert_eq!(
+                executable
+                    .plan()
+                    .metadata
+                    .get("cdf:external_task_set_authority_sha256")
+                    .map(String::as_str),
+                Some(task.authority().content_sha256())
+            );
+            let mut changed_authority = executable.plan().clone();
+            changed_authority.metadata.insert(
+                "cdf:external_task_set_authority_sha256".to_owned(),
+                format!("sha256:{}", "1".repeat(64)),
+            );
+            assert_ne!(
+                crate::task_reader::derived_partition_observation_binding(&changed_authority)
+                    .unwrap()
+                    .as_str(),
+                observation_binding
+            );
+            assert!(
+                crate::task_reader::validate_partition_observation_authority(&changed_authority)
+                    .is_err()
+            );
             let scheduled = schedule
                 .scheduled_partition(&compiled_execution, ordinal, executable.plan())
                 .unwrap();
@@ -2976,6 +3074,7 @@ mod tests {
                     request: request.clone(),
                     validation_program,
                     execution_extent: ExecutionExtent::bounded(),
+                    segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
                     package_id: "pkg-iceberg-external-preview-run".to_owned(),
                 },
             )
@@ -3063,6 +3162,7 @@ mod tests {
                     request: filtered_request,
                     validation_program: filtered_validation,
                     execution_extent: ExecutionExtent::bounded(),
+                    segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
                     package_id: "pkg-iceberg-residual-projection".to_owned(),
                 },
             )

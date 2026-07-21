@@ -384,6 +384,7 @@ fn execution_capabilities() -> SourceExecutionCapabilities {
         maximum_poll_bytes: POSTGRES_MAXIMUM_BATCH_BYTES,
         minimum_decode_bytes: 8 * 1024,
         maximum_decode_bytes: POSTGRES_MAXIMUM_BATCH_BYTES,
+        maximum_emitted_batch_bytes: POSTGRES_MAXIMUM_BATCH_BYTES,
         maximum_concurrency: 4,
         useful_concurrency: 4,
         executor_class: SourceExecutorClass::BlockingLane,

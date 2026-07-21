@@ -21,7 +21,7 @@ use crate::{
         redaction::redact_uri_userinfo,
     },
     reports::{RunDestinationReport, WriteEffects},
-    scan_command::default_target_for_resource,
+    scan_command::{default_target_for_resource, segmentation_policy_from_tuning},
 };
 
 pub(crate) fn backfill(
@@ -58,6 +58,7 @@ pub(crate) fn backfill(
             from: args.from.clone(),
             to: args.to.clone(),
             slice_size: args.slice_size,
+            segmentation: segmentation_policy_from_tuning(&args.segmentation)?,
         },
     )?;
 

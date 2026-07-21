@@ -841,6 +841,7 @@ fn execution_capabilities(plan: &RestResourcePlan) -> Result<SourceExecutionCapa
         maximum_poll_bytes: crate::REST_MAXIMUM_POLL_BYTES,
         minimum_decode_bytes: 8 * 1024,
         maximum_decode_bytes: crate::REST_MAXIMUM_DECODE_BYTES,
+        maximum_emitted_batch_bytes: crate::REST_MAXIMUM_DECODE_BYTES,
         maximum_concurrency: 8,
         useful_concurrency: 8,
         executor_class: SourceExecutorClass::Cpu,

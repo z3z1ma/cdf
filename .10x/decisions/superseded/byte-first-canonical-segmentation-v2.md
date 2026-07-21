@@ -1,6 +1,6 @@
-Status: active
+Status: superseded
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-21
 
 # Byte-first canonical segmentation v2
 

@@ -100,6 +100,7 @@ pub struct ScanArgs {
     pub limit: Option<u64>,
     pub order_by: Vec<String>,
     pub no_pin: bool,
+    pub segmentation: SegmentationArgs,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -110,6 +111,19 @@ pub struct RunArgs {
     pub stats_profile: bool,
     pub explain_memory: bool,
     pub loop_mode: bool,
+    pub segmentation: SegmentationArgs,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SegmentationArgs {
+    pub target_rows: Option<u32>,
+    pub target_bytes: Option<u64>,
+    pub maximum_rows: Option<u32>,
+    pub maximum_bytes: Option<u64>,
+    pub microbatch_minimum_rows: Option<u32>,
+    pub microbatch_maximum_rows: Option<u32>,
+    pub microbatch_minimum_bytes: Option<u64>,
+    pub microbatch_maximum_bytes: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -219,6 +233,7 @@ pub struct BackfillArgs {
     pub target: Option<String>,
     pub execute: bool,
     pub slice_size: Option<u64>,
+    pub segmentation: SegmentationArgs,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -534,6 +549,7 @@ fn parse_scan(
         limit,
         order_by: values(matches, "order_by"),
         no_pin: accepts_target && matches.get_flag("no_pin"),
+        segmentation: parse_segmentation(matches)?,
     })
 }
 
@@ -551,7 +567,45 @@ fn parse_run(matches: &ArgMatches) -> Result<RunArgs, CliError> {
         stats_profile: matches.get_flag("stats_profile"),
         explain_memory: matches.get_flag("explain_memory"),
         loop_mode: matches.get_flag("loop"),
+        segmentation: parse_segmentation(matches)?,
     })
+}
+
+fn parse_segmentation(matches: &ArgMatches) -> Result<SegmentationArgs, CliError> {
+    let rows = |id: &str, flag: &str| {
+        string_value(matches, id)
+            .map(|value| parse_nonzero_u32(flag, &value))
+            .transpose()
+    };
+    let bytes = |id: &str, flag: &str| {
+        string_value(matches, id)
+            .map(|value| {
+                let bytes = parse_byte_size(flag, &value)?;
+                if bytes == 0 {
+                    return Err(CliError::usage(format!("{flag} must be greater than zero")));
+                }
+                Ok(bytes)
+            })
+            .transpose()
+    };
+    Ok(SegmentationArgs {
+        target_rows: rows("segment_target_rows", "--segment-target-rows")?,
+        target_bytes: bytes("segment_target_bytes", "--segment-target-bytes")?,
+        maximum_rows: rows("segment_max_rows", "--segment-max-rows")?,
+        maximum_bytes: bytes("segment_max_bytes", "--segment-max-bytes")?,
+        microbatch_minimum_rows: rows("microbatch_min_rows", "--microbatch-min-rows")?,
+        microbatch_maximum_rows: rows("microbatch_max_rows", "--microbatch-max-rows")?,
+        microbatch_minimum_bytes: bytes("microbatch_min_bytes", "--microbatch-min-bytes")?,
+        microbatch_maximum_bytes: bytes("microbatch_max_bytes", "--microbatch-max-bytes")?,
+    })
+}
+
+fn parse_nonzero_u32(label: &str, value: &str) -> Result<u32, CliError> {
+    let parsed = parse_u64(label, value)?;
+    u32::try_from(parsed)
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| CliError::usage(format!("{label} must be between 1 and {}", u32::MAX)))
 }
 
 fn parse_sql(matches: &ArgMatches) -> Result<SqlArgs, CliError> {
@@ -814,6 +868,7 @@ fn parse_backfill(matches: &ArgMatches) -> Result<BackfillArgs, CliError> {
         target: string_value(matches, "target"),
         execute: matches.get_flag("execute"),
         slice_size,
+        segmentation: parse_segmentation(matches)?,
     })
 }
 
@@ -940,17 +995,43 @@ fn scan_command(name: &'static str, accepts_target: bool) -> ClapCommand {
             .arg(option("to", "to", "DEST"))
             .arg(flag("no_pin", "no-pin"));
     }
-    command
+    segmentation_options(command)
 }
 
 fn run_command() -> ClapCommand {
-    cmd("run")
-        .arg(values_arg("resource_arg").value_name("RESOURCE"))
-        .arg(option("to", "to", "DEST"))
-        .arg(option("jobs", "jobs", "N"))
-        .arg(flag("stats_profile", "stats-profile"))
-        .arg(flag("explain_memory", "explain-memory"))
-        .arg(flag("loop", "loop"))
+    segmentation_options(
+        cmd("run")
+            .arg(values_arg("resource_arg").value_name("RESOURCE"))
+            .arg(option("to", "to", "DEST"))
+            .arg(option("jobs", "jobs", "N"))
+            .arg(flag("stats_profile", "stats-profile"))
+            .arg(flag("explain_memory", "explain-memory"))
+            .arg(flag("loop", "loop")),
+    )
+}
+
+fn segmentation_options(command: ClapCommand) -> ClapCommand {
+    command
+        .arg(option("segment_target_rows", "segment-target-rows", "ROWS"))
+        .arg(option(
+            "segment_target_bytes",
+            "segment-target-bytes",
+            "BYTES",
+        ))
+        .arg(option("segment_max_rows", "segment-max-rows", "ROWS"))
+        .arg(option("segment_max_bytes", "segment-max-bytes", "BYTES"))
+        .arg(option("microbatch_min_rows", "microbatch-min-rows", "ROWS"))
+        .arg(option("microbatch_max_rows", "microbatch-max-rows", "ROWS"))
+        .arg(option(
+            "microbatch_min_bytes",
+            "microbatch-min-bytes",
+            "BYTES",
+        ))
+        .arg(option(
+            "microbatch_max_bytes",
+            "microbatch-max-bytes",
+            "BYTES",
+        ))
 }
 
 fn schema_command() -> ClapCommand {
@@ -1026,13 +1107,15 @@ fn resume_command() -> ClapCommand {
 }
 
 fn backfill_command() -> ClapCommand {
-    cmd("backfill")
-        .arg(values_arg("resource_arg").value_name("RESOURCE"))
-        .arg(option("from", "from", "CURSOR"))
-        .arg(option("to", "to", "CURSOR"))
-        .arg(option("target", "target", "TARGET"))
-        .arg(flag("execute", "execute"))
-        .arg(option("slice_size", "slice-size", "N"))
+    segmentation_options(
+        cmd("backfill")
+            .arg(values_arg("resource_arg").value_name("RESOURCE"))
+            .arg(option("from", "from", "CURSOR"))
+            .arg(option("to", "to", "CURSOR"))
+            .arg(option("target", "target", "TARGET"))
+            .arg(flag("execute", "execute"))
+            .arg(option("slice_size", "slice-size", "N")),
+    )
 }
 
 fn package_command() -> ClapCommand {
@@ -1558,6 +1641,90 @@ mod run_jobs_tests {
         .unwrap();
         assert_eq!(cli.memory_budget, Some(2 * 1024 * 1024 * 1024));
         assert_eq!(cli.spill_budget, Some(64 * 1024 * 1024 * 1024));
+    }
+
+    #[test]
+    fn segmentation_tuning_is_available_to_every_planning_and_execution_command() {
+        let run = Cli::parse(
+            [
+                "cdf",
+                "run",
+                "local.events",
+                "--segment-target-bytes",
+                "512MiB",
+                "--segment-max-bytes",
+                "1GiB",
+                "--segment-target-rows",
+                "2000000",
+                "--segment-max-rows",
+                "4000000",
+                "--microbatch-min-rows",
+                "8192",
+                "--microbatch-max-rows",
+                "32768",
+                "--microbatch-min-bytes",
+                "1MiB",
+                "--microbatch-max-bytes",
+                "16MiB",
+            ]
+            .map(OsString::from),
+        )
+        .unwrap();
+        let Command::Run(run) = run.command else {
+            panic!("expected run command");
+        };
+        assert_eq!(run.segmentation.target_bytes, Some(512 * 1024 * 1024));
+        assert_eq!(run.segmentation.maximum_bytes, Some(1024 * 1024 * 1024));
+        assert_eq!(run.segmentation.target_rows, Some(2_000_000));
+        assert_eq!(run.segmentation.maximum_rows, Some(4_000_000));
+        assert_eq!(run.segmentation.microbatch_minimum_rows, Some(8_192));
+        assert_eq!(run.segmentation.microbatch_maximum_rows, Some(32_768));
+        assert_eq!(run.segmentation.microbatch_minimum_bytes, Some(1024 * 1024));
+        assert_eq!(
+            run.segmentation.microbatch_maximum_bytes,
+            Some(16 * 1024 * 1024)
+        );
+
+        let plan = Cli::parse(
+            ["cdf", "plan", "local.events", "--microbatch-min-bytes=2MiB"].map(OsString::from),
+        )
+        .unwrap();
+        let Command::Plan(plan) = plan.command else {
+            panic!("expected plan command");
+        };
+        assert_eq!(
+            plan.segmentation.microbatch_minimum_bytes,
+            Some(2 * 1024 * 1024)
+        );
+
+        for command in ["explain", "preview"] {
+            let cli = Cli::parse(
+                ["cdf", command, "local.events", "--segment-max-rows=3000000"].map(OsString::from),
+            )
+            .unwrap();
+            let scan = match cli.command {
+                Command::Explain(scan) | Command::Preview(scan) => scan,
+                other => panic!("expected {command} command, got {other:?}"),
+            };
+            assert_eq!(scan.segmentation.maximum_rows, Some(3_000_000));
+        }
+
+        let backfill = Cli::parse(
+            [
+                "cdf",
+                "backfill",
+                "local.events",
+                "--from=1",
+                "--to=2",
+                "--segment-target-bytes=384MiB",
+            ]
+            .map(OsString::from),
+        )
+        .unwrap();
+        let Command::Backfill(backfill) = backfill.command else {
+            panic!("expected backfill command");
+        };
+        assert_eq!(backfill.segmentation.target_bytes, Some(384 * 1024 * 1024));
     }
 
     #[test]

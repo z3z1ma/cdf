@@ -631,6 +631,10 @@ pub struct SourceExecutionCapabilities {
     pub maximum_poll_bytes: u64,
     pub minimum_decode_bytes: u64,
     pub maximum_decode_bytes: u64,
+    /// Largest retained batch permitted to cross the source frontier. This is deliberately
+    /// distinct from `maximum_decode_bytes`, which owns the source operation's complete working
+    /// set (decoder scratch, source-private buffering, and accounted representation handoffs).
+    pub maximum_emitted_batch_bytes: u64,
     pub maximum_concurrency: u16,
     pub useful_concurrency: u16,
     pub executor_class: SourceExecutorClass,
@@ -888,6 +892,8 @@ impl SourceExecutionCapabilities {
             || self.maximum_poll_bytes < self.minimum_poll_bytes
             || self.minimum_decode_bytes == 0
             || self.maximum_decode_bytes < self.minimum_decode_bytes
+            || self.maximum_emitted_batch_bytes == 0
+            || self.maximum_emitted_batch_bytes > self.maximum_decode_bytes
             || self.maximum_concurrency == 0
             || self.useful_concurrency == 0
             || self.useful_concurrency > self.maximum_concurrency

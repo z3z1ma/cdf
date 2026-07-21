@@ -62,7 +62,7 @@ Managed reservation declarations: **72** grouped rows across **82** production c
 | cdf-source-glue | glue-materialized-partition-values | Source | retained.max(1) | crates/cdf-source-glue/src/execution.rs | 1 |
 | cdf-source-iceberg | iceberg-planning-index | Control | memory_bytes | crates/cdf-source-iceberg/src/planning_index.rs | 1 |
 | cdf-source-iceberg | `consumer` | Discovery | bytes | crates/cdf-source-iceberg/src/catalog.rs | 1 |
-| cdf-source-iceberg | iceberg-parquet-output | Source | source.maximum_batch_bytes | crates/cdf-source-iceberg/src/execution.rs | 1 |
+| cdf-source-iceberg | iceberg-parquet-decode / iceberg-parquet-null-canonicalization | Source | decode_reservation_bytes is the complete decode envelope; opportunistic all-null canonicalization transfers the batch to its own exact retained-byte lease; maximum_emitted_batch_bytes bounds the source frontier | crates/cdf-source-iceberg/src/execution.rs | 2 |
 | cdf-source-postgres | postgres-source-batch | Source | POSTGRES_MAXIMUM_BATCH_BYTES | crates/cdf-source-postgres/src/source.rs | 1 |
 | cdf-subprocess | `consumer` | Source | accounted_bytes; bytes.max(1) | crates/cdf-subprocess/src/protocol_stream.rs<br>crates/cdf-subprocess/src/runner.rs | 2 |
 | cdf-subprocess | subprocess-stdout-chunk | Source | bytes.max(1) | crates/cdf-subprocess/src/runner.rs | 1 |

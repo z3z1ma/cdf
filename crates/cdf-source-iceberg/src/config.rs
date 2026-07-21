@@ -10,12 +10,16 @@ pub const DEFAULT_MAXIMUM_TASK_AUTHORITY_BYTES: u64 = 64 * 1024 * 1024;
 pub const DEFAULT_TASK_WRITER_BUFFER_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_MAXIMUM_CONCURRENCY: u16 = u16::MAX;
 pub const DEFAULT_PARQUET_BATCH_ROWS: usize = 64 * 1024;
-pub const DEFAULT_MAXIMUM_BATCH_BYTES: u64 = 32 * 1024 * 1024;
+pub const DEFAULT_TARGET_BATCH_BYTES: u64 = 64 * 1024 * 1024;
+pub const DEFAULT_DECODE_RESERVATION_BYTES: u64 = 128 * 1024 * 1024;
+pub const DEFAULT_MAXIMUM_EMITTED_BATCH_BYTES: u64 = 128 * 1024 * 1024;
+pub const DEFAULT_PARQUET_DECODE_AMPLIFICATION_BPS: u32 = 40_000;
+pub const DEFAULT_PARQUET_BATCH_HEADROOM_BPS: u32 = 12_500;
 pub const DEFAULT_PARQUET_METADATA_PREFETCH_BYTES: usize = 512 * 1024;
 pub const DEFAULT_PARQUET_RANGE_COALESCE_BYTES: u64 = 1024 * 1024;
 pub const DEFAULT_PARQUET_RANGE_FETCH_CONCURRENCY: u16 = 10;
 pub const DEFAULT_PARQUET_WHOLE_OBJECT_PREFETCH_BYTES: u64 = 2 * 1024 * 1024;
-pub const DEFAULT_STREAM_BUFFER_BATCHES: u16 = 2;
+pub const DEFAULT_STREAM_BUFFER_BATCHES: u16 = 1;
 pub const DEFAULT_PLANNING_INDEX_CACHE_BYTES: u64 = 8 * 1024 * 1024;
 pub const DEFAULT_PLANNING_INDEX_SPILL_GROWTH_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -43,8 +47,19 @@ pub struct IcebergSourceOptions {
     pub maximum_concurrency: u16,
     #[serde(default = "default_parquet_batch_rows")]
     pub parquet_batch_rows: usize,
-    #[serde(default = "default_maximum_batch_bytes")]
-    pub maximum_batch_bytes: u64,
+    #[serde(default = "default_target_batch_bytes")]
+    pub target_batch_bytes: u64,
+    /// Complete ledger reservation for one Parquet decode operation. The reader's row and byte
+    /// knobs should be tuned together when an individual decoded batch can exceed this envelope.
+    #[serde(default = "default_decode_reservation_bytes")]
+    pub decode_reservation_bytes: u64,
+    /// Maximum retained bytes for one batch crossing the source frontier.
+    #[serde(default = "default_maximum_emitted_batch_bytes")]
+    pub maximum_emitted_batch_bytes: u64,
+    #[serde(default = "default_parquet_decode_amplification_bps")]
+    pub parquet_decode_amplification_bps: u32,
+    #[serde(default = "default_parquet_batch_headroom_bps")]
+    pub parquet_batch_headroom_bps: u32,
     #[serde(default = "default_parquet_metadata_prefetch_bytes")]
     pub parquet_metadata_prefetch_bytes: usize,
     #[serde(default = "default_parquet_range_coalesce_bytes")]
@@ -85,9 +100,26 @@ impl IcebergSourceOptions {
                 "Iceberg maximum_metadata_files must be greater than zero",
             ));
         }
-        if self.maximum_batch_bytes < 8 * 1024 {
+        if self.target_batch_bytes < 8 * 1024 {
             return Err(CdfError::contract(
-                "Iceberg maximum_batch_bytes must be at least the 8192-byte source working set",
+                "Iceberg target_batch_bytes must be at least the 8192-byte source working set",
+            ));
+        }
+        if self.decode_reservation_bytes < self.target_batch_bytes {
+            return Err(CdfError::contract(
+                "Iceberg decode_reservation_bytes must be at least target_batch_bytes",
+            ));
+        }
+        if self.maximum_emitted_batch_bytes < self.target_batch_bytes {
+            return Err(CdfError::contract(
+                "Iceberg maximum_emitted_batch_bytes must be at least target_batch_bytes",
+            ));
+        }
+        if self.parquet_decode_amplification_bps < 10_000
+            || self.parquet_batch_headroom_bps < 10_000
+        {
+            return Err(CdfError::contract(
+                "Iceberg Parquet decode amplification and batch headroom must each be at least 10000 (1x)",
             ));
         }
         if self.maximum_task_bytes == 0
@@ -95,7 +127,9 @@ impl IcebergSourceOptions {
             || self.task_writer_buffer_bytes == 0
             || self.maximum_concurrency == 0
             || self.parquet_batch_rows == 0
-            || self.maximum_batch_bytes == 0
+            || self.target_batch_bytes == 0
+            || self.decode_reservation_bytes == 0
+            || self.maximum_emitted_batch_bytes == 0
             || self.parquet_metadata_prefetch_bytes == 0
             || self.parquet_range_coalesce_bytes == 0
             || self.parquet_range_fetch_concurrency == 0
@@ -112,12 +146,13 @@ impl IcebergSourceOptions {
     }
 
     pub(crate) fn execution_working_set_bytes(&self) -> Result<u64> {
-        self.maximum_batch_bytes
-            .checked_mul(u64::from(self.stream_buffer_batches) + 1)
+        self.maximum_emitted_batch_bytes
+            .checked_mul(u64::from(self.stream_buffer_batches))
+            .and_then(|buffered| self.decode_reservation_bytes.checked_add(buffered))
             .and_then(|bytes| bytes.checked_add(self.parquet_whole_object_prefetch_bytes))
             .ok_or_else(|| {
                 CdfError::contract(
-                    "Iceberg batch, stream-buffer, and whole-object prefetch knobs overflow the execution working set",
+                    "Iceberg decode reservation, emitted batches, stream buffers, and whole-object prefetch knobs overflow the execution working set",
                 )
             })
     }
@@ -338,8 +373,24 @@ const fn default_parquet_batch_rows() -> usize {
     DEFAULT_PARQUET_BATCH_ROWS
 }
 
-const fn default_maximum_batch_bytes() -> u64 {
-    DEFAULT_MAXIMUM_BATCH_BYTES
+const fn default_target_batch_bytes() -> u64 {
+    DEFAULT_TARGET_BATCH_BYTES
+}
+
+const fn default_decode_reservation_bytes() -> u64 {
+    DEFAULT_DECODE_RESERVATION_BYTES
+}
+
+const fn default_maximum_emitted_batch_bytes() -> u64 {
+    DEFAULT_MAXIMUM_EMITTED_BATCH_BYTES
+}
+
+const fn default_parquet_decode_amplification_bps() -> u32 {
+    DEFAULT_PARQUET_DECODE_AMPLIFICATION_BPS
+}
+
+const fn default_parquet_batch_headroom_bps() -> u32 {
+    DEFAULT_PARQUET_BATCH_HEADROOM_BPS
 }
 
 const fn default_parquet_metadata_prefetch_bytes() -> usize {
@@ -490,12 +541,16 @@ mod tests {
         assert_eq!(source.task_writer_buffer_bytes, 1024 * 1024);
         assert_eq!(source.maximum_concurrency, u16::MAX);
         assert_eq!(source.parquet_batch_rows, 64 * 1024);
-        assert_eq!(source.maximum_batch_bytes, 32 * 1024 * 1024);
+        assert_eq!(source.target_batch_bytes, 64 * 1024 * 1024);
+        assert_eq!(source.decode_reservation_bytes, 128 * 1024 * 1024);
+        assert_eq!(source.maximum_emitted_batch_bytes, 128 * 1024 * 1024);
+        assert_eq!(source.parquet_decode_amplification_bps, 40_000);
+        assert_eq!(source.parquet_batch_headroom_bps, 12_500);
         assert_eq!(source.parquet_metadata_prefetch_bytes, 512 * 1024);
         assert_eq!(source.parquet_range_coalesce_bytes, 1024 * 1024);
         assert_eq!(source.parquet_range_fetch_concurrency, 10);
         assert_eq!(source.parquet_whole_object_prefetch_bytes, 2 * 1024 * 1024);
-        assert_eq!(source.stream_buffer_batches, 2);
+        assert_eq!(source.stream_buffer_batches, 1);
         assert_eq!(source.planning_index_cache_bytes, 8 * 1024 * 1024);
         assert_eq!(source.planning_index_spill_growth_bytes, 64 * 1024 * 1024);
     }

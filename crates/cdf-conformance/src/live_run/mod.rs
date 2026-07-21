@@ -333,6 +333,7 @@ pub async fn run_live_local_file_fixture_with_destination(
             },
             validation_program,
             execution_extent: ExecutionExtent::bounded(),
+            segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
             package_id: spec.package_id.clone(),
         },
     )?;

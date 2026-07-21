@@ -4,9 +4,10 @@ use std::{
 };
 
 use cdf_kernel::{
-    CdfError, CompiledScanIntent, ExecutablePartition, PartitionId, PartitionPlan,
-    PartitionRetrySafety, PayloadRetention, PlannedPartitionReader, PlannedTaskSetReference,
-    Result, ScopeKey, SourcePosition,
+    CdfError, CompiledScanIntent, ExecutablePartition, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
+    PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionId, PartitionPlan, PartitionRetrySafety,
+    PayloadRetention, PlannedPartitionReader, PlannedTaskSetReference, Result, ScopeKey,
+    SourcePosition, derive_partition_schema_observation_binding,
 };
 use cdf_memory::{AccountedBytes, MemoryCoordinator, MemoryLease};
 use cdf_task_store::{ExternalTaskSetReader, ExternalTaskStore};
@@ -17,7 +18,35 @@ use crate::{
 };
 
 const TASK_CONTENT_HASH_KEY: &str = "cdf:external_task_sha256";
+const TASK_SET_AUTHORITY_HASH_KEY: &str = "cdf:external_task_set_authority_sha256";
 const GENERATION_ATTESTATION_MEMORY_BYTES: u64 = 256;
+
+pub(crate) fn derived_partition_observation_binding(
+    plan: &PartitionPlan,
+) -> Result<cdf_kernel::SchemaObservationBinding> {
+    derive_partition_schema_observation_binding(plan)
+}
+
+pub(crate) fn validate_partition_observation_authority(plan: &PartitionPlan) -> Result<()> {
+    let recorded = plan
+        .metadata
+        .get(PLAN_SCHEMA_OBSERVATION_BINDING_KEY)
+        .ok_or_else(|| {
+            CdfError::contract(format!(
+                "Iceberg partition `{}` omitted its schema-observation binding",
+                plan.partition_id
+            ))
+        })?;
+    let recorded = cdf_kernel::SchemaObservationBinding::new(recorded.clone())?;
+    let derived = derived_partition_observation_binding(plan)?;
+    if recorded != derived {
+        return Err(CdfError::contract(format!(
+            "Iceberg partition `{}` schema-observation binding does not match its immutable task authority",
+            plan.partition_id
+        )));
+    }
+    Ok(())
+}
 
 struct RetainedTaskAuthority {
     model: ValidatedIcebergTaskSetAuthority,
@@ -152,7 +181,15 @@ impl IcebergPlannedPartitionReader {
             .map(|snapshot| SourcePosition::TableSnapshot(Box::new(snapshot)));
         let mut metadata = BTreeMap::new();
         metadata.insert(TASK_CONTENT_HASH_KEY.to_owned(), record.content_sha256);
-        let plan = PartitionPlan {
+        metadata.insert(
+            TASK_SET_AUTHORITY_HASH_KEY.to_owned(),
+            self.authority.model.content_sha256().to_owned(),
+        );
+        metadata.insert(
+            PLAN_SCHEMA_OBSERVATION_ID_KEY.to_owned(),
+            partition_id.to_string(),
+        );
+        let mut plan = PartitionPlan {
             partition_id: partition_id.clone(),
             scope: ScopeKey::Partition { partition_id },
             planned_position,
@@ -167,6 +204,12 @@ impl IcebergPlannedPartitionReader {
             retry_safety: PartitionRetrySafety::Snapshot,
             metadata,
         };
+        let observation_binding = derived_partition_observation_binding(&plan)?;
+        plan.metadata.insert(
+            PLAN_SCHEMA_OBSERVATION_BINDING_KEY.to_owned(),
+            observation_binding.to_string(),
+        );
+        validate_partition_observation_authority(&plan)?;
         let retained_bytes = encoded_bytes
             .checked_add(parse.bytes())
             .and_then(|bytes| bytes.checked_add(generation_memory.bytes()))

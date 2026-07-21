@@ -21,14 +21,17 @@ pub use catalog::{
     SelectedIcebergSnapshot, UnsupportedGlueCatalogClient, annotated_arrow_schema,
 };
 pub use config::{
-    DEFAULT_MAXIMUM_BATCH_BYTES, DEFAULT_MAXIMUM_CONCURRENCY, DEFAULT_MAXIMUM_METADATA_BYTES,
+    DEFAULT_DECODE_RESERVATION_BYTES, DEFAULT_MAXIMUM_CONCURRENCY,
+    DEFAULT_MAXIMUM_EMITTED_BATCH_BYTES, DEFAULT_MAXIMUM_METADATA_BYTES,
     DEFAULT_MAXIMUM_METADATA_FILES, DEFAULT_MAXIMUM_TASK_AUTHORITY_BYTES,
     DEFAULT_MAXIMUM_TASK_BYTES, DEFAULT_METADATA_PARSE_AMPLIFICATION_BPS,
-    DEFAULT_PARQUET_BATCH_ROWS, DEFAULT_PARQUET_METADATA_PREFETCH_BYTES,
+    DEFAULT_PARQUET_BATCH_HEADROOM_BPS, DEFAULT_PARQUET_BATCH_ROWS,
+    DEFAULT_PARQUET_DECODE_AMPLIFICATION_BPS, DEFAULT_PARQUET_METADATA_PREFETCH_BYTES,
     DEFAULT_PARQUET_RANGE_COALESCE_BYTES, DEFAULT_PARQUET_RANGE_FETCH_CONCURRENCY,
     DEFAULT_PLANNING_INDEX_CACHE_BYTES, DEFAULT_PLANNING_INDEX_SPILL_GROWTH_BYTES,
-    DEFAULT_STREAM_BUFFER_BATCHES, DEFAULT_TASK_WRITER_BUFFER_BYTES, IcebergCatalogOptions,
-    IcebergResourceOptions, IcebergScanMode, IcebergSnapshotSelector, IcebergSourceOptions,
+    DEFAULT_STREAM_BUFFER_BATCHES, DEFAULT_TARGET_BATCH_BYTES, DEFAULT_TASK_WRITER_BUFFER_BYTES,
+    IcebergCatalogOptions, IcebergResourceOptions, IcebergScanMode, IcebergSnapshotSelector,
+    IcebergSourceOptions,
 };
 pub use driver::{
     ICEBERG_SOURCE_BLOCKING_LANE_ID, IcebergRuntimeDependencies, IcebergSourceDriver,
@@ -42,7 +45,7 @@ pub use scan_task::{
     IcebergTaskSetAuthority, ValidatedIcebergTaskSetAuthority,
 };
 
-pub const ICEBERG_SOURCE_DRIVER_VERSION: &str = "1.1.0";
+pub const ICEBERG_SOURCE_DRIVER_VERSION: &str = "1.2.0";
 
 /// Returns the versioned, deterministic configuration schema owned by the Iceberg source.
 ///
@@ -113,12 +116,16 @@ pub fn iceberg_option_schema() -> serde_json::Value {
                 "task_writer_buffer_bytes": {"type": "integer", "minimum": 1, "default": 1048576},
                 "maximum_concurrency": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 65535},
                 "parquet_batch_rows": {"type": "integer", "minimum": 1, "default": 65536},
-                "maximum_batch_bytes": {"type": "integer", "minimum": 1, "default": 33554432},
+                "target_batch_bytes": {"type": "integer", "minimum": 8192, "default": 67108864},
+                "decode_reservation_bytes": {"type": "integer", "minimum": 8192, "default": 134217728},
+                "maximum_emitted_batch_bytes": {"type": "integer", "minimum": 8192, "default": 134217728},
+                "parquet_decode_amplification_bps": {"type": "integer", "minimum": 10000, "default": 40000},
+                "parquet_batch_headroom_bps": {"type": "integer", "minimum": 10000, "default": 12500},
                 "parquet_metadata_prefetch_bytes": {"type": "integer", "minimum": 1, "default": 524288},
                 "parquet_range_coalesce_bytes": {"type": "integer", "minimum": 1, "default": 1048576},
                 "parquet_range_fetch_concurrency": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 10},
                 "parquet_whole_object_prefetch_bytes": {"type": "integer", "minimum": 0, "default": 2097152}
-                ,"stream_buffer_batches": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 2}
+                ,"stream_buffer_batches": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 1}
                 ,"planning_index_cache_bytes": {"type": "integer", "minimum": 1, "default": 8388608}
                 ,"planning_index_spill_growth_bytes": {"type": "integer", "minimum": 8192, "default": 67108864}
             }
@@ -224,12 +231,12 @@ mod tests {
         let descriptor = iceberg_source_descriptor().unwrap();
         descriptor.validate().unwrap();
         assert_eq!(descriptor.driver_id.as_str(), "iceberg");
-        assert_eq!(descriptor.driver_version, "1.1.0");
+        assert_eq!(descriptor.driver_version, "1.2.0");
         assert_eq!(descriptor.kinds, ["iceberg"]);
         assert!(descriptor.schemes.is_empty());
         assert_eq!(
             descriptor.option_schema_hash,
-            "sha256:3c0de1232e4fa449f3188926a4ef19a6eb4c421db2f85e9cd199060e530c39d3"
+            "sha256:506672e747c196f4d2c2f55db8b861a94ad35459a403e455a7b326a5e2b143f5"
         );
         assert_eq!(
             descriptor.option_schema_hash,

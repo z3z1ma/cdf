@@ -3214,7 +3214,7 @@ fn source_frontier_batch_bound(plan: &EnginePlan, partition_count: u64) -> Resul
             CdfError::contract("package execution requires a compiled source execution plan")
         })?
         .execution_capabilities()
-        .maximum_decode_bytes;
+        .maximum_emitted_batch_bytes;
     // The partition schedule owns admission for the source's complete concurrent working set
     // (transport poll plus decode). The frontier retains only the decoded batch crossing the
     // source edge, so reserving the schedule total here double-counts transport memory and can
@@ -6738,7 +6738,7 @@ fn apply_contract_exec_without_residual_candidates(
     context: &ResidualBatchContext<'_>,
     memory_lease: Option<MemoryLease>,
 ) -> Result<ContractExecOutput> {
-    let batch = restore_contract_nullability(batch, evaluator.program())?;
+    let batch = evaluator.restore_compiled_nullability(batch)?;
     let evaluation =
         evaluator.evaluate_with_quarantine_sink(context.evaluation, &batch, |candidate| {
             quarantine_sink(quarantine_record_from_candidate(
@@ -6989,19 +6989,28 @@ fn restore_contract_nullability(
     let Some(residual) = &program.residual else {
         return Ok(batch);
     };
+    let nullability = residual
+        .fields
+        .iter()
+        .flat_map(|field| {
+            [
+                (field.source_name.as_str(), !field.required),
+                (field.output_name.as_str(), !field.required),
+            ]
+        })
+        .collect::<std::collections::HashMap<_, _>>();
     let fields = batch
         .schema()
         .fields()
         .iter()
         .map(|field| {
             let source = source_name(field.as_ref()).unwrap_or_else(|| field.name());
-            residual
-                .fields
-                .iter()
-                .find(|item| item.source_name == source || item.output_name == *field.name())
+            nullability
+                .get(source)
+                .or_else(|| nullability.get(field.name().as_str()))
                 .map_or_else(
                     || field.as_ref().clone(),
-                    |program| field.as_ref().clone().with_nullable(!program.required),
+                    |nullable| field.as_ref().clone().with_nullable(*nullable),
                 )
         })
         .collect::<Vec<_>>();
@@ -8206,7 +8215,8 @@ mod transform_kernel_tests {
         };
 
         let measure = |mode| {
-            let mut evaluator = VectorValidationEvaluator::new(&program);
+            let mut evaluator =
+                VectorValidationEvaluator::new_bound(&program, batch.schema()).unwrap();
             let mut discard_quarantine = |_record: QuarantineRecord| Ok(());
             let started = Instant::now();
             for _ in 0..iterations {

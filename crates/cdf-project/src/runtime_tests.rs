@@ -1271,6 +1271,7 @@ fn compiled_backfill_source(resource: &BackfillMockResource) -> cdf_runtime::Com
             maximum_poll_bytes: 1024,
             minimum_decode_bytes: 1,
             maximum_decode_bytes: 4096,
+            maximum_emitted_batch_bytes: 4096,
             maximum_concurrency: 2,
             useful_concurrency: 2,
             executor_class: cdf_runtime::SourceExecutorClass::Io,
@@ -1324,6 +1325,7 @@ fn backfill_planner_splits_numeric_windows_with_window_scopes_and_ids() {
             from: "0".to_owned(),
             to: "25".to_owned(),
             slice_size: Some(10),
+            segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
         },
     )
     .unwrap();
@@ -1385,6 +1387,7 @@ fn backfill_planner_binds_every_slice_to_the_compiled_source_artifact() {
             from: "0".to_owned(),
             to: "20".to_owned(),
             slice_size: Some(10),
+            segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
         },
     )
     .unwrap();
@@ -1426,6 +1429,7 @@ fn backfill_planner_rejects_file_incremental_resource_without_opening_source() {
             from: "0".to_owned(),
             to: "10".to_owned(),
             slice_size: None,
+            segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
         },
     )
     .unwrap_err();
@@ -1447,6 +1451,7 @@ fn backfill_planner_rejects_inverted_numeric_bounds_without_opening_source() {
             from: "10".to_owned(),
             to: "10".to_owned(),
             slice_size: None,
+            segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
         },
     )
     .unwrap_err();
@@ -2361,6 +2366,7 @@ fn artifact_expression_plan() -> EnginePlan {
                 },
                 validation_program: program,
                 execution_extent: ExecutionExtent::bounded(),
+                segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
                 package_id: "artifact-test-package".to_owned(),
             },
         )
@@ -3407,6 +3413,7 @@ fn compiled_test_source_plan(resource: &dyn QueryableResource) -> cdf_runtime::C
             maximum_poll_bytes: 1024,
             minimum_decode_bytes: 1,
             maximum_decode_bytes: 4096,
+            maximum_emitted_batch_bytes: 4096,
             maximum_concurrency: 2,
             useful_concurrency: 2,
             executor_class: cdf_runtime::SourceExecutorClass::Io,
@@ -3654,6 +3661,7 @@ fn live_plan_for_queryable(resource: &dyn QueryableResource, package_id: &str) -
                 },
                 validation_program,
                 execution_extent: ExecutionExtent::bounded(),
+                segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
                 package_id: package_id.to_owned(),
             },
         )
@@ -3684,6 +3692,7 @@ fn live_plan_for_queryable_with_exact_policy(
                 },
                 validation_program,
                 execution_extent: ExecutionExtent::bounded(),
+                segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
                 package_id: package_id.to_owned(),
             },
         )

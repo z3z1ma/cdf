@@ -599,6 +599,8 @@ fn destination_check(
                         request: deep_scan_request(compiled_resource.descriptor())?,
                         validation_program,
                         execution_extent: compiled_resource.execution_extent().clone(),
+                        segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(
+                        ),
                         package_id: format!("deep-validate-{}", resource.descriptor().resource_id),
                     },
                 )

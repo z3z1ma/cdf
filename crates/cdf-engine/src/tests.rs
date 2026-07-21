@@ -4537,7 +4537,7 @@ fn explain_and_operator_chain_carry_contract_package_details() {
             operator,
             OperatorNode::PackageSink { package_id, segmentation }
                 if package_id == "pkg-engine-test"
-                    && segmentation == &CanonicalSegmentationPolicy::p3_v2()
+                    && segmentation == &CanonicalSegmentationPolicy::performance_default()
         )
     }));
 }
@@ -4571,6 +4571,7 @@ fn mock_compiled_source_plan_with_speculation(
             maximum_poll_bytes: 1024 * 1024,
             minimum_decode_bytes: 1024,
             maximum_decode_bytes: 8 * 1024 * 1024,
+            maximum_emitted_batch_bytes: 8 * 1024 * 1024,
             maximum_concurrency: 8,
             useful_concurrency: 4,
             executor_class: cdf_runtime::SourceExecutorClass::Io,
@@ -8873,7 +8874,7 @@ fn package_identity_is_invariant_to_source_batch_rechunking() {
     );
     assert_eq!(
         one_output.manifest.package_hash,
-        "sha256:423853b61a607518d8cd966d9f36599935b6768efab1e989211c8da11fcbfd78"
+        "sha256:5009d76044100a0fb58d6d1423abde5a924bb9c899958dafef770189ff41f419"
     );
 }
 
@@ -10553,6 +10554,7 @@ fn plan_input_for_schema(
         },
         validation_program,
         execution_extent,
+        segmentation: CanonicalSegmentationPolicy::performance_default(),
         package_id: "pkg-engine-test".to_owned(),
     }
 }

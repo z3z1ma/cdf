@@ -1368,6 +1368,7 @@ fn execution_capabilities() -> SourceExecutionCapabilities {
         maximum_poll_bytes: 32 * 1024 * 1024,
         minimum_decode_bytes: 8 * 1024,
         maximum_decode_bytes: 32 * 1024 * 1024,
+        maximum_emitted_batch_bytes: 32 * 1024 * 1024,
         maximum_concurrency: FILE_SOURCE_ADVERTISED_PARALLELISM,
         useful_concurrency: FILE_SOURCE_ADVERTISED_PARALLELISM,
         executor_class: SourceExecutorClass::BlockingLane,

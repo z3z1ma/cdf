@@ -1,6 +1,6 @@
 {
   "package_id": "live-local-file-parquet-v1",
-  "package_hash": "sha256:a7c106de2b4d91107dfd253b9c2ac881b23048bbaacf8e4db36775c876ee1a81",
+  "package_hash": "sha256:b7efbc1c762c8be7f1bb924bed65519bd9b93897bd5d814d70e633391d8b8e98",
   "checkpoint_id": "checkpoint-live-local-file-parquet-v1",
   "pipeline_id": "pipeline-live-local-file-parquet-v1",
   "resource_id": "local.events",
@@ -20,9 +20,9 @@
   "mirror_state_rows": 1,
   "package": {
     "manifest_version": 2,
-    "package_hash": "sha256:a7c106de2b4d91107dfd253b9c2ac881b23048bbaacf8e4db36775c876ee1a81",
+    "package_hash": "sha256:b7efbc1c762c8be7f1bb924bed65519bd9b93897bd5d814d70e633391d8b8e98",
     "package_status": "checkpointed",
-    "signature_signing_input": "sha256:a7c106de2b4d91107dfd253b9c2ac881b23048bbaacf8e4db36775c876ee1a81",
+    "signature_signing_input": "sha256:b7efbc1c762c8be7f1bb924bed65519bd9b93897bd5d814d70e633391d8b8e98",
     "signature_value": null,
     "identity_manifest_version": 2,
     "identity_layout": [
@@ -55,18 +55,18 @@
       },
       {
         "path": "plan/explain.json",
-        "byte_count": 2269,
-        "sha256": "4abd7ec0020fa7ef9fa1050c3872dd7fad6acf710e0d69d4d07392fd75c89a9d"
+        "byte_count": 2271,
+        "sha256": "1774759839912b48ca4e899f87f0b63e6dc8fb66e0e24bbd527ad3ba26416d57"
       },
       {
         "path": "plan/scan.json",
         "byte_count": 769,
-        "sha256": "96be418e670f122d6a60872b244aaf8a3a06cf5d0eb6a51dc47964e7c1d931f0"
+        "sha256": "a0b8aaa39ca018f70649609a1f0e27966b3085be34fdc102e4e67f5bd2b401ed"
       },
       {
         "path": "plan/schema-admission.json",
         "byte_count": 2853,
-        "sha256": "005ab44ced5d0b3a530471ddc980693b6637d57993e970c81fb1340c6b2e3531"
+        "sha256": "0a34eeaf93c0f364f7f398a5c2f697ae9fec6cd58a1253c153b9bae6e877e90f"
       },
       {
         "path": "plan/validation-program.json",
@@ -91,7 +91,7 @@
       {
         "path": "schema/stream-admission-evidence.json",
         "byte_count": 1821,
-        "sha256": "312bc31cdf6bcffd0db19a5305b9ecb4dac519edacfbce576426ff196277e932"
+        "sha256": "f9b79d6657a8529dd13edaedeb3b935a35d936b06213ab06c979f05fb2f9da10"
       },
       {
         "path": "state/input_checkpoint.json",

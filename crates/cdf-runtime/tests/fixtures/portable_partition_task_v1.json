@@ -21,14 +21,14 @@
       "kind": "compiled_source_plan",
       "store_namespace": "worker-fixtures",
       "object_key": "plans/source.json",
-      "byte_count": 2086,
-      "content_sha256": "sha256:00dd3cd9d927755101039fea58d336b3d2714e78f8b1fd3fa35b0d8be37b615e",
+      "byte_count": 2121,
+      "content_sha256": "sha256:915eab06171598cb7b08510ea8e3f54106797417d71640907f8d0b3c99eaf98f",
       "provider_generation": "generation-7"
     },
     "redacted_options_hash": "sha256:84295c5b9a79d7fda307888ac872fe5bf90e6ed2db49da7228a33e278b59f476",
     "physical_plan_hash": "sha256:775e74e7e4722c88f289f9aa62d3fc6944813a49315faa5938f7eee5d5ee76da",
-    "source_semantics_hash": "sha256:eb8e120dce87c615f2e5253f607d62a0b746d83b868c77ad3bf3274323e91c77",
-    "execution_capabilities_hash": "sha256:e6050c2371957c7a87b8722d7de9b179217b3dbcfe0be780095b9c16bda60ca4"
+    "source_semantics_hash": "sha256:d901a970b1001e2ca2509a90d3814c40cc699f02f90c24711b317cf58d487d73",
+    "execution_capabilities_hash": "sha256:7d1a5d076dde3611a6d5ef1debd95bfa5a6fe963e47e7391d968dfc120db808e"
   },
   "partition": {
     "partition_id": "partition-00000003",
@@ -210,5 +210,5 @@
     ],
     "maximum_artifact_bytes": 1073741824
   },
-  "task_sha256": "sha256:5c59f7712642ee710129741e7fc466775f65362dcf7e770c20d08ceca778907e"
+  "task_sha256": "sha256:946e6343c69023e3a402c1448bb0d816940cf03b62c3e5742fb8922a8027dfda"
 }

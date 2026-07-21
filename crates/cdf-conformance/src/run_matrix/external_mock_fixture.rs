@@ -495,6 +495,7 @@ fn execution_capabilities() -> SourceExecutionCapabilities {
         maximum_poll_bytes: 1024,
         minimum_decode_bytes: 1,
         maximum_decode_bytes: 4096,
+        maximum_emitted_batch_bytes: 4096,
         maximum_concurrency: 1,
         useful_concurrency: 1,
         executor_class: SourceExecutorClass::Io,
@@ -609,6 +610,11 @@ fn external_source_inherits_registry_schema_add_discovery_and_doctor_laws() {
 
 #[test]
 fn external_source_inherits_generic_plan_run_receipt_checkpoint_and_replay_laws() {
+    let admitted_before = crate::test_execution_services()
+        .scheduler_report()
+        .unwrap()
+        .source_rate_admission
+        .admitted_operations;
     let environment = crate::destination_catalog::ConformanceEnvironment::local_only();
     let executed = super::core::execute_cell(
         super::RunMatrixCell::new(
@@ -625,15 +631,16 @@ fn external_source_inherits_generic_plan_run_receipt_checkpoint_and_replay_laws(
     assert!(executed.destination_receipt_verified);
     assert!(executed.checkpoint_gated_after_receipt_verification);
     assert!(executed.artifact_replay_identity_asserted);
-    assert_eq!(
-        executed.runtime_scheduler.source_rate_admission.authorities,
-        1
+    assert!(
+        executed.runtime_scheduler.source_rate_admission.authorities >= 1,
+        "the process-shared conformance host must retain the external source authority"
     );
-    assert_eq!(
+    assert!(
         executed
             .runtime_scheduler
             .source_rate_admission
-            .admitted_operations,
-        1
+            .admitted_operations
+            > admitted_before,
+        "the external source run must add an admitted operation to the process-shared report"
     );
 }

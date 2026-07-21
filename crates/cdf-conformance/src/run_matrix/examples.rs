@@ -149,6 +149,10 @@ fn respond(stream: &mut TcpStream, body: &str) {
         body.len(),
         body
     );
-    stream.write_all(response.as_bytes()).unwrap();
-    stream.flush().unwrap();
+    // Deep validation and planning may deliberately close after receiving the bounded bytes they
+    // need. A peer-close is not a fixture-server failure and must not kill the listener before the
+    // subsequent run request.
+    if stream.write_all(response.as_bytes()).is_ok() {
+        let _ = stream.flush();
+    }
 }

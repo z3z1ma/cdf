@@ -27,6 +27,7 @@ pub struct EnginePlanInput {
     pub request: ScanRequest,
     pub validation_program: ValidationProgram,
     pub execution_extent: ExecutionExtent,
+    pub segmentation: crate::CanonicalSegmentationPolicy,
     pub package_id: String,
 }
 

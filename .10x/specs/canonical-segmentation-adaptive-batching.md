@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-21
 
 # Canonical segmentation and adaptive batching
 
@@ -12,13 +12,13 @@ This specification governs execution microbatch adaptation, canonical output ord
 
 Every executable plan MUST record a segmentation policy version, canonical partition ordinals, segment-id namespace rule, row/byte targets, oversize behavior, and position algebra version. Exact defaults are calibrated by WS-L and remain deterministic for the plan.
 
-Source capabilities MUST declare maximum poll working set and whether a batch can be split with exact row-range source positions. Estimates MAY influence a future explicitly versioned policy but MUST NOT silently alter canonical boundaries during execution. The active v2 policy is governed by `.10x/decisions/byte-first-canonical-segmentation-v2.md`.
+Source capabilities MUST declare maximum poll working set and whether a batch can be split with exact row-range source positions. Estimates MAY influence a future explicitly versioned policy but MUST NOT silently alter canonical boundaries during execution. The active v3 policy is governed by `.10x/decisions/byte-first-canonical-segmentation-v3.md`.
 
 ## Execution microbatches
 
 Microbatch adaptation MUST remain within plan min/max bounds and the memory ledger. It MAY respond to observed row width, pressure, spill, and downstream throughput. Internal boundaries and timing MUST remain outside package identity and MUST be rate-limited telemetry. Rebatching MUST preserve canonical rows, verdicts, and lineage.
 
-The v2 execution range is 8,192–65,536 rows and 1–32 MiB. Canonical durable segments use an independent 32 MiB logical byte target, a 64 MiB hard byte maximum, and high row-count safety backstops. The assembler MUST NOT reuse a source/decode microbatch row ceiling as its segment ceiling.
+The v3 execution range is 8,192–65,536 rows and 1–32 MiB. Canonical durable segments use an independent 256 MiB logical byte target and maximum with a 4,194,304-row safety backstop. All eight row/byte segment and microbatch bounds MUST be explicit operator knobs and MUST be serialized into the plan. The assembler MUST NOT reuse a source/decode microbatch row ceiling as its segment ceiling.
 
 ## Canonical assembler
 
@@ -34,7 +34,7 @@ Package-scoped dedup MUST follow `.10x/specs/spillable-package-dedup.md`, resolv
 
 Canonical policy and emitted segments participate in package identity. Adaptive microbatch telemetry and wall pressure do not. Package replay consumes canonical segments without recomputing the policy.
 
-Plans missing a canonical policy or carrying an unsupported version MUST fail closed. CDF has no compatibility requirement for pre-v2 plans or artifacts.
+Plans missing a canonical policy or carrying an unsupported version MUST fail closed. CDF has no compatibility requirement for pre-v3 plans or artifacts.
 
 Permanent conformance MUST vary source batch/page sizes, jobs, channel pressure, destination speed, memory budget above the legal minimum, and spill timing while asserting identical package hashes/segments/positions. Narrow/wide/nested schemas, tiny files/pages, one oversized source chunk, quarantine, variant capture, limit, and exact-row dedup are required cases.
 

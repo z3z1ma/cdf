@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_array::{Array, ArrayRef, RecordBatch, StringArray};
@@ -89,6 +90,7 @@ pub(crate) fn normalize_batch(
     batch: RecordBatch,
     program: &ValidationProgram,
 ) -> Result<RecordBatch> {
+    let column_programs = ColumnProgramIndex::new(program)?;
     let mut fields = Vec::with_capacity(batch.num_columns() + 1);
     let mut columns = Vec::with_capacity(batch.num_columns() + 1);
     let mut variant_fields = Vec::new();
@@ -110,7 +112,7 @@ pub(crate) fn normalize_batch(
             existing_variant = Some(values);
             continue;
         }
-        let column = column_program_for_field(field.as_ref(), program)?;
+        let column = column_programs.for_field(field.as_ref())?;
         match &column.nested_action {
             NestedAction::CaptureVariant {
                 column_name,
@@ -131,7 +133,7 @@ pub(crate) fn normalize_batch(
                 });
             }
             _ => {
-                fields.push(normalize_field(field.as_ref(), program)?);
+                fields.push(normalize_field(field.as_ref(), column));
                 columns.push(batch.column(index).clone());
             }
         }
@@ -176,28 +178,50 @@ pub(crate) fn normalize_batch(
     RecordBatch::try_new(schema, columns).map_err(CdfError::from)
 }
 
-fn normalize_field(field: &Field, program: &ValidationProgram) -> Result<Field> {
-    let column = column_program_for_field(field, program)?;
-    Ok(with_source_name(field.clone(), column.source_name.clone()).with_name(&column.output_name))
+fn normalize_field(field: &Field, column: &ColumnProgram) -> Field {
+    with_source_name(field.clone(), column.source_name.clone()).with_name(&column.output_name)
 }
 
-fn column_program_for_field<'a>(
-    field: &Field,
-    program: &'a ValidationProgram,
-) -> Result<&'a ColumnProgram> {
-    let field_source_name = source_name(field).unwrap_or_else(|| field.name());
-    program
-        .column_programs
-        .iter()
-        .find(|column| {
-            column.source_name == field_source_name || column.output_name == *field.name()
-        })
-        .ok_or_else(|| {
+struct ColumnProgramIndex<'a> {
+    by_alias: HashMap<&'a str, &'a ColumnProgram>,
+}
+
+impl<'a> ColumnProgramIndex<'a> {
+    fn new(program: &'a ValidationProgram) -> Result<Self> {
+        let mut by_alias = HashMap::with_capacity(program.column_programs.len().saturating_mul(2));
+        for column in &program.column_programs {
+            for alias in [column.source_name.as_str(), column.output_name.as_str()] {
+                if let Some(existing) = by_alias.insert(alias, column)
+                    && !std::ptr::eq(existing, column)
+                {
+                    return Err(CdfError::contract(format!(
+                        "validation program alias {alias:?} resolves to multiple columns"
+                    )));
+                }
+            }
+        }
+        Ok(Self { by_alias })
+    }
+
+    fn for_field(&self, field: &Field) -> Result<&'a ColumnProgram> {
+        let source = source_name(field).unwrap_or_else(|| field.name());
+        let source_column = self.by_alias.get(source).copied();
+        let name_column = self.by_alias.get(field.name().as_str()).copied();
+        if let (Some(source_column), Some(name_column)) = (source_column, name_column)
+            && !std::ptr::eq(source_column, name_column)
+        {
+            return Err(CdfError::contract(format!(
+                "field {:?} carries source name {source:?}, but those aliases resolve to different validation columns",
+                field.name()
+            )));
+        }
+        source_column.or(name_column).ok_or_else(|| {
             CdfError::contract(format!(
                 "validation program does not cover field {:?}",
                 field.name()
             ))
         })
+    }
 }
 
 fn materialize_variant_column(

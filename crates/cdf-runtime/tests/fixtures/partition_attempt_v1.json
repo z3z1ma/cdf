@@ -4,7 +4,7 @@
   "retry_ordinal": 0,
   "trace_id": "trace-4",
   "write_permit": {
-    "task_sha256": "sha256:5c59f7712642ee710129741e7fc466775f65362dcf7e770c20d08ceca778907e",
+    "task_sha256": "sha256:946e6343c69023e3a402c1448bb0d816940cf03b62c3e5742fb8922a8027dfda",
     "lease_authority_domain_id": "local-test-domain",
     "lease_scope": {
       "kind": "partition",

@@ -689,6 +689,7 @@ fn execution_capabilities(
         maximum_poll_bytes: poll_bytes,
         minimum_decode_bytes,
         maximum_decode_bytes: decode_bytes,
+        maximum_emitted_batch_bytes: decode_bytes,
         maximum_concurrency: 1,
         useful_concurrency: 1,
         executor_class: SourceExecutorClass::BlockingLane,

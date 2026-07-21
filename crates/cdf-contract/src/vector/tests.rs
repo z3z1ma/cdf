@@ -143,6 +143,46 @@ fn prebound_vector_evaluator_accepts_the_compiled_source_to_output_name_transiti
 }
 
 #[test]
+fn prebound_evaluator_restores_wide_schema_nullability_by_ordinal_without_copying_arrays() {
+    const COLUMNS: usize = 2_048;
+    let compiled_schema = Arc::new(Schema::new(
+        (0..COLUMNS)
+            .map(|ordinal| Field::new(format!("field_{ordinal}"), DataType::Int64, true))
+            .collect::<Vec<_>>(),
+    ));
+    let policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    let program = compile_validation_program(
+        &policy,
+        &ObservedSchema::from_arrow(compiled_schema.as_ref()),
+    )
+    .unwrap();
+    let observed_schema = Arc::new(Schema::new(
+        compiled_schema
+            .fields()
+            .iter()
+            .map(|field| field.as_ref().clone().with_nullable(false))
+            .collect::<Vec<_>>(),
+    ));
+    let columns = (0..COLUMNS)
+        .map(|ordinal| Arc::new(Int64Array::from(vec![ordinal as i64])) as ArrayRef)
+        .collect::<Vec<_>>();
+    let batch = RecordBatch::try_new(observed_schema, columns).unwrap();
+    let originals = batch.columns().to_vec();
+    let evaluator =
+        VectorValidationEvaluator::new_bound(&program, Arc::clone(&compiled_schema)).unwrap();
+
+    let restored = evaluator.restore_compiled_nullability(batch).unwrap();
+
+    assert_eq!(restored.schema(), compiled_schema);
+    assert!(
+        originals
+            .iter()
+            .zip(restored.columns())
+            .all(|(original, restored)| Arc::ptr_eq(original, restored))
+    );
+}
+
+#[test]
 fn prebound_vector_evaluator_rejects_conflicting_source_provenance() {
     let (mut program, batch) = program_and_batch(vec![Some(1)]);
     program

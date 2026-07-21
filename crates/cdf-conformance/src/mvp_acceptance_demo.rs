@@ -554,6 +554,7 @@ fn engine_plan(
             },
             validation_program,
             execution_extent: ExecutionExtent::bounded(),
+            segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
             package_id: package_id.to_owned(),
         },
     )

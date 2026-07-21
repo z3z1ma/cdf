@@ -1098,6 +1098,7 @@ fn glue_execution_capabilities(source: &GlueSourceOptions) -> Result<SourceExecu
         maximum_poll_bytes: 32 * 1024 * 1024,
         minimum_decode_bytes: 8 * 1024,
         maximum_decode_bytes: source.execution_working_set_bytes()?,
+        maximum_emitted_batch_bytes: source.maximum_batch_bytes,
         maximum_concurrency: source.maximum_concurrency,
         useful_concurrency: source.maximum_concurrency,
         executor_class: SourceExecutorClass::Cpu,

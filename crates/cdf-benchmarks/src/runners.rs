@@ -155,6 +155,7 @@ pub enum PreparedIcebergCatalog {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PreparedIcebergPackageWorkload {
     pub project_root: PathBuf,
     pub catalog: PreparedIcebergCatalog,
@@ -173,7 +174,11 @@ pub struct PreparedIcebergPackageWorkload {
     #[serde(default)]
     pub parquet_batch_rows: Option<usize>,
     #[serde(default)]
-    pub maximum_batch_bytes: Option<u64>,
+    pub target_batch_bytes: Option<u64>,
+    #[serde(default)]
+    pub decode_reservation_bytes: Option<u64>,
+    #[serde(default)]
+    pub maximum_emitted_batch_bytes: Option<u64>,
     #[serde(default)]
     pub parquet_whole_object_prefetch_bytes: Option<u64>,
     pub jobs: Option<u16>,
@@ -684,7 +689,11 @@ pub fn run_prepared_iceberg_to_package(
             "prepared Iceberg workload maximum_concurrency must be nonzero",
         ));
     }
-    if request.parquet_batch_rows == Some(0) || request.maximum_batch_bytes == Some(0) {
+    if request.parquet_batch_rows == Some(0)
+        || request.target_batch_bytes == Some(0)
+        || request.decode_reservation_bytes == Some(0)
+        || request.maximum_emitted_batch_bytes == Some(0)
+    {
         return Err(bench_error(
             "prepared Iceberg workload batch rows and bytes must be nonzero",
         ));
@@ -750,6 +759,7 @@ pub fn run_prepared_iceberg_to_package(
                     &ObservedSchema::from_arrow(resource.schema().as_ref()),
                 )?,
                 execution_extent: ExecutionExtent::bounded(),
+                segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
                 package_id: "pkg-p3-iceberg-prepared".to_owned(),
             },
         )?
@@ -985,10 +995,20 @@ fn prepared_iceberg_declaration(request: &PreparedIcebergPackageWorkload) -> Ben
         .map_or_else(String::new, |value| {
             format!("parquet_batch_rows = {value}\n")
         });
-    let maximum_batch_bytes = request
-        .maximum_batch_bytes
+    let target_batch_bytes = request
+        .target_batch_bytes
         .map_or_else(String::new, |value| {
-            format!("maximum_batch_bytes = {value}\n")
+            format!("target_batch_bytes = {value}\n")
+        });
+    let decode_reservation_bytes = request
+        .decode_reservation_bytes
+        .map_or_else(String::new, |value| {
+            format!("decode_reservation_bytes = {value}\n")
+        });
+    let maximum_emitted_batch_bytes = request
+        .maximum_emitted_batch_bytes
+        .map_or_else(String::new, |value| {
+            format!("maximum_emitted_batch_bytes = {value}\n")
         });
     let parquet_whole_object_prefetch_bytes = request
         .parquet_whole_object_prefetch_bytes
@@ -1001,7 +1021,7 @@ fn prepared_iceberg_declaration(request: &PreparedIcebergPackageWorkload) -> Ben
 kind = "iceberg"
 catalog = {catalog}
 {object_credentials}maximum_metadata_bytes = {maximum_metadata_bytes}
-{maximum_concurrency}{parquet_batch_rows}{maximum_batch_bytes}{parquet_whole_object_prefetch_bytes}egress_allowlist = {egress_allowlist}
+{maximum_concurrency}{parquet_batch_rows}{target_batch_bytes}{decode_reservation_bytes}{maximum_emitted_batch_bytes}{parquet_whole_object_prefetch_bytes}egress_allowlist = {egress_allowlist}
 
 [resource.table]
 namespace = {namespace}
@@ -1558,6 +1578,7 @@ fn identity_engine_plan<R: ResourceStream + ?Sized>(
                 },
                 validation_program,
                 execution_extent: ExecutionExtent::bounded(),
+                segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
                 package_id: package_id.to_owned(),
             },
         )
@@ -1598,6 +1619,7 @@ fn engine_plan_with_policy<R: ResourceStream + ?Sized>(
                 },
                 validation_program,
                 execution_extent: ExecutionExtent::bounded(),
+                segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
                 package_id: package_id.to_owned(),
             },
         )
@@ -1649,6 +1671,7 @@ fn queryable_engine_plan_with_policy<R: QueryableResource + ?Sized>(
                 },
                 validation_program,
                 execution_extent: ExecutionExtent::bounded(),
+                segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
                 package_id: package_id.to_owned(),
             },
         )
@@ -1687,6 +1710,7 @@ fn identity_queryable_engine_plan_with_policy<R: QueryableResource + ?Sized>(
                 },
                 validation_program,
                 execution_extent: ExecutionExtent::bounded(),
+                segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
                 package_id: package_id.to_owned(),
             },
         )
@@ -1920,7 +1944,9 @@ mod tests {
             maximum_metadata_bytes: 128 * 1024 * 1024,
             maximum_concurrency: Some(24),
             parquet_batch_rows: Some(32 * 1024),
-            maximum_batch_bytes: Some(64 * 1024 * 1024),
+            target_batch_bytes: Some(32 * 1024 * 1024),
+            decode_reservation_bytes: Some(64 * 1024 * 1024),
+            maximum_emitted_batch_bytes: Some(64 * 1024 * 1024),
             parquet_whole_object_prefetch_bytes: Some(8 * 1024 * 1024),
             jobs: Some(16),
             execution_host_jobs: 16,

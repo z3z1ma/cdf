@@ -286,6 +286,7 @@ impl Planner {
             &residual_predicates,
             scan.request.limit,
             &validation_program,
+            &input.segmentation,
             &input.package_id,
         );
         let explain = explain_data(
@@ -656,12 +657,14 @@ pub(crate) fn rebind_validation_program(
     candidate.compiled_schema_admission = compiled_schema_admission;
     candidate.validation_program = program;
     candidate.output_schema = output_schema;
+    let segmentation = candidate.segmentation_policy()?.clone();
     candidate.operator_chain = operator_chain(
         &candidate.scan.request.resource_id,
         &candidate.final_projection,
         &candidate.residual_predicates,
         candidate.scan.request.limit,
         &candidate.validation_program,
+        &segmentation,
         &candidate.package_id,
     );
     candidate
@@ -1121,6 +1124,7 @@ fn operator_chain(
     residual_predicates: &[ScanPredicate],
     limit: Option<u64>,
     program: &ValidationProgram,
+    segmentation: &crate::CanonicalSegmentationPolicy,
     package_id: &str,
 ) -> Vec<OperatorNode> {
     vec![
@@ -1148,7 +1152,7 @@ fn operator_chain(
         OperatorNode::LineageExec,
         OperatorNode::PackageSink {
             package_id: package_id.to_owned(),
-            segmentation: crate::CanonicalSegmentationPolicy::p3_v2(),
+            segmentation: segmentation.clone(),
         },
     ]
 }

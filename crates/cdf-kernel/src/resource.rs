@@ -1235,13 +1235,27 @@ pub fn partition_schema_observation_binding(
             ))
         });
     }
+    derive_partition_schema_observation_binding(partition)
+}
+
+/// Derives the immutable schema-observation binding while ignoring any previously recorded
+/// binding. This is the construction/verification path for external partition authorities.
+pub fn derive_partition_schema_observation_binding(
+    partition: &PartitionPlan,
+) -> Result<SchemaObservationBinding> {
     use sha2::{Digest, Sha256};
+    let metadata = partition
+        .metadata
+        .iter()
+        .filter(|(key, _)| key.as_str() != PLAN_SCHEMA_OBSERVATION_BINDING_KEY)
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect::<BTreeMap<_, _>>();
     let bytes = serde_json::to_vec(&(
         &partition.partition_id,
         &partition.scope,
         &partition.planned_position,
         &partition.start_position,
-        &partition.metadata,
+        metadata,
     ))
     .map_err(|error| CdfError::internal(error.to_string()))?;
     SchemaObservationBinding::new(format!("sha256:{:x}", Sha256::digest(bytes)))
