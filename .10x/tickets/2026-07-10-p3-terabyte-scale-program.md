@@ -54,6 +54,7 @@ This parent is an aggregate plan. Workstream records own sequencing and integrat
 - `.10x/tickets/done/2026-07-18-p3-l6-ec2-benchmark-host.md`
 - `.10x/tickets/2026-07-18-p3-l7-ec2-benchmark-tranche-lifecycle.md`
 - `.10x/tickets/done/2026-07-18-p3-l9-ec2-measure-runner-build-graph.md`
+- `.10x/tickets/2026-07-18-p3-d17-duckdb-wide-string-overlap.md`
 
 ## Sequencing
 
@@ -108,6 +109,7 @@ P3 does not implement a distributed scheduler, remote worker leases, resident st
 - 2026-07-19: Closed WS-E after sustained package persistence reached 1,033.8 MiB/s, 0.903x the dedicated host's direct-I/O write roofline, with 0.06% hash-on versus hash-off wall across three alternating 32 GiB samples. E1-E4 leave one hash-while-write receipt path, bounded streaming manifests and verification, retained opened-object consumption, zero production content rereads, and no speculative hash backend or mmap path.
 - 2026-07-19: Closed WS-A after all executable children reached terminal evidence. The runtime now has injected execution ownership, one memory ledger, bounded/fused stage flow, byte-first deterministic segments, spillable package state, capability-driven staged destination ingress, and finite unbounded drain epochs with monotone receipt-gated watermarks and exact late-data recovery. C5 owns external isolated-worker equivalence; Z1 owns host-class whole-product overhead reconciliation.
 - 2026-07-20: Closed WS-C after all five children reached terminal evidence. Jobs invariance now spans the permanent source/destination matrix, shared CPU admission covers native/DataFusion/Python execution, and the canonical serialized isolated-worker seam reproduces direct package and verdict semantics without source/destination branches or a remote scheduler.
+- 2026-07-18 final pass: opened D17 as a direct program residual after current controlled TLC remained within 2.16% of its retained median but the exact local FineWeb wide-string workload exposed lost package/DuckDB overlap and excess macOS RSS. The historical WS-D closure remains accurate for the stock-scanner promotion and deleted legacy paths; D17 owns only restoring wide-string overlap through that same sole scanner without reopening the superseded appender/nanoarrow/callback designs.
 
 ## Blockers
 
