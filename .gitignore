@@ -11,3 +11,8 @@ node_modules/
 .venv
 
 /reports/ai-quality
+/graphify-out/cost.json
+/graphify-out/cache
+/graphify-out/.graphify_root
+/graphify-out/.graphify_python
+/crates/graphify-out/cache
