@@ -846,6 +846,35 @@ fn duckdb_reserves_native_parallelism_only_for_final_binding() {
 }
 
 #[test]
+fn explicit_scan_parallelism_reduces_only_the_final_binding_claim() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut destination = destination(&temp.path().join("scan-parallel.duckdb"));
+    destination.native_resources.internal_threads = 16;
+    destination.native_resources.scan_threads_override = Some(3);
+
+    let capabilities = destination.runtime_capabilities();
+    let final_binding = capabilities
+        .blocking_lanes
+        .iter()
+        .find(|lane| lane.lane_id == DUCKDB_FINAL_BINDING_LANE)
+        .unwrap();
+    assert_eq!(final_binding.claimed_cpu_slots(), 3);
+    assert_eq!(
+        capabilities
+            .bulk_paths
+            .iter()
+            .find(|path| path.path_id == DUCKDB_BULK_PATH_SEGMENT_SCAN)
+            .unwrap()
+            .native_internal_parallelism,
+        3
+    );
+    let config = duckdb_config_options(&destination.native_resources)
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(config.get("threads").map(String::as_str), Some("16"));
+}
+
+#[test]
 fn reusable_destination_conformance_suite_accepts_duckdb_sheet_and_plans() {
     let temp = tempfile::tempdir().unwrap();
     let dest = destination(&temp.path().join("local.duckdb"));

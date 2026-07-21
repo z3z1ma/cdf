@@ -1,7 +1,7 @@
 use crate::*;
 use crate::{
-    commit::*, corrections::*, mirrors::*, package::*, planning::*, receipts::*, segment_scan::*,
-    sheet::*, sql::*, table::*,
+    commit::*, corrections::*, ingest_envelope::DuckDbIngestEnvelope, mirrors::*, package::*,
+    planning::*, receipts::*, segment_scan::*, sheet::*, sql::*, table::*,
 };
 
 #[derive(Clone, Debug)]
@@ -17,16 +17,18 @@ pub(crate) struct DuckDbNativeResources {
     pub(crate) memory_limit_bytes: u64,
     pub(crate) maximum_temp_directory_bytes: u64,
     pub(crate) internal_threads: i64,
+    pub(crate) scan_threads_override: Option<usize>,
     pub(crate) max_in_flight_bytes: u64,
     scratch_reservation: Option<Arc<cdf_runtime::SpillReservation>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct DuckDbNativeResourceOverrides {
-    memory_limit_bytes: Option<u64>,
-    maximum_temp_directory_bytes: Option<u64>,
-    internal_threads: Option<i64>,
-    max_in_flight_bytes: Option<u64>,
+pub(crate) struct DuckDbNativeResourceOverrides {
+    pub(crate) memory_limit_bytes: Option<u64>,
+    pub(crate) maximum_temp_directory_bytes: Option<u64>,
+    pub(crate) internal_threads: Option<i64>,
+    pub(crate) scan_threads: Option<usize>,
+    pub(crate) max_in_flight_bytes: Option<u64>,
 }
 
 impl std::fmt::Debug for DuckDbNativeResources {
@@ -39,6 +41,7 @@ impl std::fmt::Debug for DuckDbNativeResources {
                 &self.maximum_temp_directory_bytes,
             )
             .field("internal_threads", &self.internal_threads)
+            .field("scan_threads_override", &self.scan_threads_override)
             .field("max_in_flight_bytes", &self.max_in_flight_bytes)
             .field(
                 "scratch_reserved_bytes",
@@ -55,7 +58,6 @@ impl std::fmt::Debug for DuckDbNativeResources {
 pub(crate) struct DuckDbCommitWriter {
     pub(crate) conn: Connection,
     pub(crate) segment_scan: DuckDbSegmentScanRuntime,
-    _lock: WriterLock,
     target: TargetRef,
     pub(crate) write_target: TargetRef,
     pub(crate) first_row_key: Option<u64>,
@@ -240,6 +242,7 @@ impl DuckDbDestination {
         &self,
         request: &cdf_runtime::StagedIngressRequest,
         files: Vec<cdf_runtime::DurableLocalFileAccess>,
+        scan_threads: usize,
     ) -> Result<(DuckDbCommitWriter, Vec<MigrationRecord>)> {
         validate_user_schema_fields(request.output_schema())?;
         let user_fields = request
@@ -251,12 +254,12 @@ impl DuckDbDestination {
         validate_field_names(&user_fields)?;
         let persisted_fields = persistence_fields(&user_fields);
         let target = parse_target(&request.binding().target)?;
-        let lock = self.acquire_writer_lock()?;
         let segment_scan = DuckDbSegmentScanRuntime::open(
             &self.database_path,
             &self.native_resources,
             files,
             Arc::new(request.segment_schema().clone()),
+            scan_threads,
         )?;
         let conn = segment_scan.connection()?;
         ensure_mirror_tables(&conn)?;
@@ -305,7 +308,6 @@ impl DuckDbDestination {
             DuckDbCommitWriter {
                 conn,
                 segment_scan,
-                _lock: lock,
                 target: table_plan.target,
                 write_target,
                 first_row_key: Some(first_row_key),
@@ -455,6 +457,7 @@ impl DuckDbNativeResources {
             memory_limit_bytes: DUCKDB_CONSERVATIVE_MEMORY_BYTES,
             maximum_temp_directory_bytes: DUCKDB_DEFAULT_TEMP_DIRECTORY_BUDGET_CEILING_BYTES,
             internal_threads: DUCKDB_DEFAULT_INTERNAL_THREADS,
+            scan_threads_override: None,
             max_in_flight_bytes: DUCKDB_DEFAULT_MAX_IN_FLIGHT_BYTES,
             scratch_reservation: None,
         }
@@ -473,7 +476,7 @@ impl DuckDbNativeResources {
         Self::for_budgets_with_overrides(managed_budget, execution.spill(), overrides)
     }
 
-    fn for_budgets_with_overrides(
+    pub(crate) fn for_budgets_with_overrides(
         managed_budget: u64,
         spill: Arc<dyn cdf_runtime::SpillBudgetCoordinator>,
         overrides: DuckDbNativeResourceOverrides,
@@ -502,6 +505,7 @@ impl DuckDbNativeResources {
         let internal_threads = overrides
             .internal_threads
             .unwrap_or(DUCKDB_DEFAULT_INTERNAL_THREADS);
+        let scan_threads_override = overrides.scan_threads;
         let max_in_flight_bytes = overrides
             .max_in_flight_bytes
             .unwrap_or(DUCKDB_DEFAULT_MAX_IN_FLIGHT_BYTES);
@@ -521,6 +525,7 @@ impl DuckDbNativeResources {
             memory_limit_bytes,
             maximum_temp_directory_bytes,
             internal_threads,
+            scan_threads_override,
             max_in_flight_bytes,
             scratch_reservation: Some(Arc::new(scratch_reservation)),
         })
@@ -533,6 +538,15 @@ impl DuckDbNativeResourceOverrides {
             memory_limit_bytes: optional_env_byte_size(DUCKDB_MEMORY_LIMIT_ENV)?,
             maximum_temp_directory_bytes: optional_env_byte_size(DUCKDB_TEMP_BUDGET_ENV)?,
             internal_threads: optional_env_threads(DUCKDB_THREADS_ENV)?,
+            scan_threads: optional_env_threads(DUCKDB_SCAN_THREADS_ENV)?
+                .map(|threads| {
+                    usize::try_from(threads).map_err(|_| {
+                        CdfError::contract(format!(
+                            "{DUCKDB_SCAN_THREADS_ENV} exceeds the platform thread limit"
+                        ))
+                    })
+                })
+                .transpose()?,
             max_in_flight_bytes: optional_env_byte_size(DUCKDB_MAX_IN_FLIGHT_BYTES_ENV)?,
         })
     }
@@ -598,6 +612,7 @@ pub(crate) fn duckdb_config_options(resources: &DuckDbNativeResources) -> Vec<(S
             format!("{}B", resources.maximum_temp_directory_bytes),
         ),
         ("preserve_insertion_order".to_owned(), "false".to_owned()),
+        ("errors_as_json".to_owned(), "true".to_owned()),
         ("duckdb_api".to_owned(), "rust".to_owned()),
     ]
 }
@@ -772,27 +787,53 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
             return (*self).bind_empty(binding);
         }
         let files = std::mem::take(&mut self.files);
-        let (mut writer, migrations) =
-            self.destination.start_staged_writer(&self.request, files)?;
-        if let Some(receipt) = find_duplicate_receipt(&writer.conn, binding.commit())? {
-            rollback_staged_writer(&mut writer, "rollback duplicate staged transaction")?;
-            return Ok(cdf_runtime::DestinationCommitOutcome::new(
-                receipt,
-                cdf_runtime::DestinationReceiptReportingPolicy::DestinationCommit {
-                    duplicate: true,
-                },
-            ));
-        }
         let expected_rows = self.accepted.iter().try_fold(0_u64, |total, identity| {
             total
                 .checked_add(identity.row_count)
                 .ok_or_else(|| CdfError::data("DuckDB canonical segment row count overflowed"))
         })?;
-        ingest_canonical_segments(
-            &mut writer,
-            expected_rows,
-            self.request.binding().disposition == WriteDisposition::Merge,
+        let envelope = DuckDbIngestEnvelope::resolve(
+            &self.destination.native_resources,
+            self.request.segment_schema(),
+            self.request.bulk_path().rows_per_batch,
+            self.request.bulk_path().bytes_per_batch,
         )?;
+        let _lock = self.destination.acquire_writer_lock()?;
+        let mut scan_threads = envelope.initial_scan_threads();
+        let (writer, migrations) = loop {
+            let (mut writer, migrations) =
+                self.destination
+                    .start_staged_writer(&self.request, files.clone(), scan_threads)?;
+            if let Some(receipt) = find_duplicate_receipt(&writer.conn, binding.commit())? {
+                rollback_staged_writer(&mut writer, "rollback duplicate staged transaction")?;
+                return Ok(cdf_runtime::DestinationCommitOutcome::new(
+                    receipt,
+                    cdf_runtime::DestinationReceiptReportingPolicy::DestinationCommit {
+                        duplicate: true,
+                    },
+                ));
+            }
+            match ingest_canonical_segments(
+                &mut writer,
+                expected_rows,
+                self.request.binding().disposition == WriteDisposition::Merge,
+            ) {
+                Ok(()) => break (writer, migrations),
+                Err(failure) => match resolve_failed_ingest_attempt(
+                    &writer.conn,
+                    failure,
+                    envelope,
+                    scan_threads,
+                    &self.destination.native_resources,
+                )? {
+                    FailedIngestDisposition::Retry(next) => {
+                        scan_threads = next;
+                        continue;
+                    }
+                    FailedIngestDisposition::Fail(error) => return Err(error),
+                },
+            }
+        };
         let counts = match binding.commit().disposition.clone() {
             WriteDisposition::Append | WriteDisposition::Replace => CommitCounts {
                 rows_written: writer.rows_received,
@@ -873,10 +914,50 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
 }
 
 fn rollback_staged_writer(writer: &mut DuckDbCommitWriter, context: &str) -> Result<()> {
-    writer
-        .conn
-        .execute_batch("ROLLBACK")
+    rollback_connection(&writer.conn, context)
+}
+
+fn rollback_connection(conn: &Connection, context: &str) -> Result<()> {
+    conn.execute_batch("ROLLBACK")
         .map_err(|error| duckdb_error(context, error))
+}
+
+enum FailedIngestDisposition {
+    Retry(usize),
+    Fail(CdfError),
+}
+
+fn resolve_failed_ingest_attempt(
+    conn: &Connection,
+    failure: DuckDbFailure,
+    envelope: DuckDbIngestEnvelope,
+    scan_threads: usize,
+    resources: &DuckDbNativeResources,
+) -> Result<FailedIngestDisposition> {
+    if let Err(rollback) =
+        rollback_connection(conn, "rollback failed DuckDB finalized-package attempt")
+    {
+        return Err(CdfError::destination(format!(
+            "{}; the failed finalized-package attempt could not be rolled back: {}",
+            failure.error.message, rollback.message
+        )));
+    }
+    if failure.exception_type == DuckDbExceptionType::OutOfMemory
+        && let Some(next) = envelope.next_retry_threads(scan_threads)
+    {
+        return Ok(FailedIngestDisposition::Retry(next));
+    }
+    if failure.exception_type == DuckDbExceptionType::OutOfMemory && envelope.is_automatic() {
+        return Ok(FailedIngestDisposition::Fail(CdfError::destination(
+            format!(
+                "{}; DuckDB remained out of memory after CDF reduced finalized-package scan concurrency to one worker (estimated worker footprint {} bytes within the admitted {}-byte DuckDB memory budget)",
+                failure.error.message,
+                envelope.estimated_worker_bytes(),
+                resources.memory_limit_bytes,
+            ),
+        )));
+    }
+    Ok(FailedIngestDisposition::Fail(failure.error))
 }
 
 impl DestinationProtocol for DuckDbDestination {
@@ -1009,6 +1090,7 @@ mod native_resource_tests {
                 memory_limit_bytes: Some(3 * 1024 * 1024 * 1024),
                 maximum_temp_directory_bytes: Some(6 * 1024 * 1024 * 1024),
                 internal_threads: Some(4),
+                scan_threads: Some(3),
                 max_in_flight_bytes: Some(512 * 1024 * 1024),
             },
         )
@@ -1020,8 +1102,19 @@ mod native_resource_tests {
             6 * 1024 * 1024 * 1024
         );
         assert_eq!(resources.internal_threads, 4);
+        assert_eq!(resources.scan_threads_override, Some(3));
         assert_eq!(resources.max_in_flight_bytes, 512 * 1024 * 1024);
         assert_eq!(spill.snapshot().current_bytes, 6 * 1024 * 1024 * 1024);
+
+        let config = duckdb_config_options(&resources)
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(config.get("threads").map(String::as_str), Some("4"));
+        assert_eq!(
+            config.get("errors_as_json").map(String::as_str),
+            Some("true")
+        );
+        assert!(!config.contains_key("scan_threads"));
     }
 
     #[test]
@@ -1031,6 +1124,7 @@ mod native_resource_tests {
             6 * 1024 * 1024 * 1024
         );
         assert_eq!(parse_threads(DUCKDB_THREADS_ENV, "12").unwrap(), 12);
+        assert_eq!(parse_threads(DUCKDB_SCAN_THREADS_ENV, "7").unwrap(), 7);
 
         let memory_error =
             cdf_kernel::parse_human_byte_size(DUCKDB_MEMORY_LIMIT_ENV, "0").unwrap_err();
@@ -1066,5 +1160,68 @@ mod native_resource_tests {
         );
         drop(held);
         assert_eq!(spill.snapshot().current_bytes, 0);
+    }
+
+    #[test]
+    fn typed_oom_rolls_back_before_retrying_with_lower_scan_concurrency() {
+        let spill = Arc::new(cdf_runtime::FixedSpillBudget::new(2 * 1024 * 1024).unwrap());
+        let resources = DuckDbNativeResources::for_budgets_with_overrides(
+            4 * 1024 * 1024 * 1024,
+            spill,
+            DuckDbNativeResourceOverrides {
+                memory_limit_bytes: Some(4 * 1024 * 1024 * 1024),
+                maximum_temp_directory_bytes: Some(1024 * 1024),
+                internal_threads: Some(16),
+                scan_threads: None,
+                max_in_flight_bytes: None,
+            },
+        )
+        .unwrap();
+        let schema = Schema::new(
+            (0..2_052)
+                .map(|index| Field::new(format!("field_{index}"), DataType::Utf8, true))
+                .collect::<Vec<_>>(),
+        );
+        let envelope =
+            DuckDbIngestEnvelope::resolve(&resources, &schema, 64 * 1024, 16 * 1024 * 1024)
+                .unwrap();
+        assert_eq!(envelope.initial_scan_threads(), 2);
+
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "BEGIN TRANSACTION; CREATE TABLE attempt_rows(value BIGINT); INSERT INTO attempt_rows VALUES (1)",
+        )
+        .unwrap();
+        let disposition = resolve_failed_ingest_attempt(
+            &conn,
+            DuckDbFailure {
+                exception_type: DuckDbExceptionType::OutOfMemory,
+                error: CdfError::destination("synthetic typed DuckDB OOM"),
+            },
+            envelope,
+            2,
+            &resources,
+        )
+        .unwrap();
+        assert!(matches!(disposition, FailedIngestDisposition::Retry(1)));
+        let table_count = conn
+            .query_row(
+                "SELECT count(*) FROM information_schema.tables WHERE table_name = 'attempt_rows'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(table_count, 0);
+
+        conn.execute_batch(
+            "BEGIN TRANSACTION; CREATE TABLE attempt_rows(value BIGINT); INSERT INTO attempt_rows VALUES (2); COMMIT",
+        )
+        .unwrap();
+        let value = conn
+            .query_row("SELECT value FROM attempt_rows", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap();
+        assert_eq!(value, 2);
     }
 }

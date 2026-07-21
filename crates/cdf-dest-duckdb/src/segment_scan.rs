@@ -20,7 +20,8 @@ use cdf_kernel::{CdfError, Result};
 
 use crate::{
     CDF_ROW_KEY_COLUMN, CDF_STAGE_ORDER_COLUMN, DuckDbCommitWriter, DuckDbNativeResources,
-    package::duckdb_type, sql::quote_ident,
+    package::duckdb_type,
+    sql::{DuckDbFailure, quote_ident},
 };
 
 pub(crate) const SEGMENT_SCAN_FUNCTION: &str = "__cdf_canonical_segments";
@@ -29,15 +30,16 @@ pub(crate) fn ingest_canonical_segments(
     writer: &mut DuckDbCommitWriter,
     expected_rows: u64,
     merge: bool,
-) -> Result<()> {
+) -> std::result::Result<(), DuckDbFailure> {
     if expected_rows == 0 {
-        return Err(CdfError::internal(
+        return Err(DuckDbFailure::other(CdfError::internal(
             "DuckDB canonical segment scan requires nonempty input",
-        ));
+        )));
     }
     let first_row_key = writer
         .first_row_key
-        .ok_or_else(|| CdfError::internal("DuckDB row-key allocator is not initialized"))?;
+        .ok_or_else(|| CdfError::internal("DuckDB row-key allocator is not initialized"))
+        .map_err(DuckDbFailure::other)?;
     let mut insert_columns = writer
         .persisted_fields
         .iter()
@@ -64,17 +66,16 @@ pub(crate) fn ingest_canonical_segments(
         SEGMENT_SCAN_FUNCTION,
     );
     let rows = writer.conn.execute(&sql, []).map_err(|error| {
-        CdfError::destination(format!(
-            "ingest canonical Arrow IPC segments into DuckDB: {error}"
-        ))
+        crate::sql::duckdb_failure("ingest canonical Arrow IPC segments into DuckDB", error)
     })?;
     let rows = u64::try_from(rows)
-        .map_err(|_| CdfError::data("DuckDB canonical segment row count exceeds u64"))?;
+        .map_err(|_| CdfError::data("DuckDB canonical segment row count exceeds u64"))
+        .map_err(DuckDbFailure::other)?;
     let scanned = writer.segment_scan.rows_scanned();
     if rows != expected_rows || scanned != expected_rows {
-        return Err(CdfError::data(format!(
+        return Err(DuckDbFailure::other(CdfError::data(format!(
             "DuckDB canonical scan inserted {rows} and decoded {scanned} rows but segment identities require {expected_rows}"
-        )));
+        ))));
     }
     writer.rows_received = rows;
     Ok(())
@@ -83,6 +84,7 @@ pub(crate) fn ingest_canonical_segments(
 pub(crate) struct DuckDbSegmentScanRuntime {
     database: duckdb::ffi::duckdb_database,
     registration_connection: duckdb::ffi::duckdb_connection,
+    scan_threads: usize,
     telemetry: Arc<SegmentScanTelemetry>,
 }
 
@@ -90,6 +92,7 @@ impl std::fmt::Debug for DuckDbSegmentScanRuntime {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("DuckDbSegmentScanRuntime")
+            .field("scan_threads", &self.scan_threads)
             .field("rows", &self.telemetry.rows.load(Ordering::Relaxed))
             .finish_non_exhaustive()
     }
@@ -101,10 +104,16 @@ impl DuckDbSegmentScanRuntime {
         resources: &DuckDbNativeResources,
         files: Vec<cdf_runtime::DurableLocalFileAccess>,
         schema: SchemaRef,
+        scan_threads: usize,
     ) -> Result<Self> {
         if files.is_empty() {
             return Err(CdfError::internal(
                 "DuckDB canonical segment scan requires at least one file",
+            ));
+        }
+        if scan_threads == 0 {
+            return Err(CdfError::contract(
+                "DuckDB canonical segment scan concurrency must be positive",
             ));
         }
         let path = path_to_cstring(path)?;
@@ -160,7 +169,7 @@ impl DuckDbSegmentScanRuntime {
             registration_connection,
             files,
             schema,
-            usize::try_from(resources.internal_threads.max(1)).unwrap_or(usize::MAX),
+            scan_threads,
             telemetry.clone(),
         );
         if let Err(error) = registration {
@@ -174,6 +183,7 @@ impl DuckDbSegmentScanRuntime {
         Ok(Self {
             database,
             registration_connection,
+            scan_threads,
             telemetry,
         })
     }

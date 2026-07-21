@@ -160,8 +160,16 @@ impl DestinationRuntime for DuckDbDestination {
     }
 
     fn runtime_capabilities(&self) -> DestinationRuntimeCapabilities {
-        let native_internal_parallelism =
+        let global_parallelism =
             native_internal_parallelism_u16(self.native_resources.internal_threads);
+        let native_internal_parallelism = self.native_resources.scan_threads_override.map_or(
+            global_parallelism,
+            |scan_threads| {
+                u16::try_from(scan_threads)
+                    .unwrap_or(u16::MAX)
+                    .min(global_parallelism)
+            },
+        );
         let bulk_paths = vec![duckdb_segment_scan_bulk_path_descriptor(
             native_internal_parallelism,
         )];
