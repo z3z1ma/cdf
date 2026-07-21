@@ -265,7 +265,7 @@ pub fn compile_operator_graph(
         plan.execution_extent.clone(),
         compiled_stream_policy_hash
             .as_ref()
-            .map(|_| cdf_runtime::artifact_hash(source))
+            .map(|_| source.compiled_source_plan_hash())
             .transpose()?,
         compiled_stream_policy_hash,
         nodes,

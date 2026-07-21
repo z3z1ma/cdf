@@ -28,8 +28,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     FILE_SOURCE_ADVERTISED_PARALLELISM, FileCompressionDeclaration, FileFormatDeclaration,
     FileResource, FileResourceDefinition, FileResourcePlan, FileRuntimeDependencies,
-    SchemaDiscoveryRequest, discover_local_binary_schema, discover_transport_binary_schema,
-    file_source_blocking_lane,
+    PlannedFileInventory, SchemaDiscoveryRequest, discover_local_binary_schema,
+    discover_transport_binary_schema, file_source_blocking_lane,
 };
 
 type RuntimeFactory = dyn Fn(
@@ -290,6 +290,7 @@ impl SourceDriver for FileSourceDriver {
             context,
         )?;
         let prepared_inventory_key = prepared_file_inventory_key(plan)?;
+        let identities = plan.identities()?;
         physical.compiled_format.verify(dependencies.formats())?;
         Ok(Arc::new(
             FileResource::new(
@@ -299,13 +300,16 @@ impl SourceDriver for FileSourceDriver {
                     plan: physical.to_runtime_plan(context.project_root())?,
                     type_policy_allowances: plan.type_policy_allowances,
                     effective_schema_runtime: plan.effective_schema_runtime.clone(),
+                    baseline_observation_schema_catalog: plan
+                        .baseline_observation_schema_catalog
+                        .clone(),
                     compiled_format: physical.compiled_format,
                 },
                 dependencies,
+                &identities,
             )?
             .with_transport_control(FileTransportControl::new(context.cancellation(), None))
-            .with_prepared_inventory_key(prepared_inventory_key)
-            .with_compiled_source_plan_hash(cdf_runtime::artifact_hash(plan)?),
+            .with_prepared_inventory_key(prepared_inventory_key),
         ))
     }
 }
@@ -685,6 +689,7 @@ fn file_discovery_entries(
     retain_inventory: bool,
     control: &FileTransportControl,
 ) -> Result<Vec<FileDriverDiscoveryEntry>> {
+    let identities = source_plan.identities()?;
     let runtime = FileResource::new(
         FileResourceDefinition {
             descriptor: source_plan.descriptor.clone(),
@@ -692,11 +697,14 @@ fn file_discovery_entries(
             plan: plan.clone(),
             type_policy_allowances: source_plan.type_policy_allowances,
             effective_schema_runtime: source_plan.effective_schema_runtime.clone(),
+            baseline_observation_schema_catalog: source_plan
+                .baseline_observation_schema_catalog
+                .clone(),
             compiled_format: compiled_format.clone(),
         },
         dependencies.clone(),
-    )?
-    .with_compiled_source_plan_hash(artifact_hash(source_plan)?);
+        &identities,
+    )?;
     let (inventory, partitions) =
         runtime.discovery_partitions_with_inventory(maximum_entries, control)?;
     if retain_inventory {
@@ -768,13 +776,16 @@ fn file_discovery_entries(
                     identity.insert("sha256".to_owned(), sha256.clone());
                 }
             }
+            let schema_observation_binding =
+                cdf_kernel::partition_schema_observation_binding(partition)?;
             Ok(FileDriverDiscoveryEntry {
                 candidate: SourceDiscoveryCandidate::new(
                     file.path.clone(),
                     Some(file.size_bytes),
                     modified_at_ms,
                     identity,
-                )?,
+                )?
+                .with_schema_observation_binding(schema_observation_binding)?,
                 compression,
                 source,
             })
@@ -796,7 +807,7 @@ fn prepared_file_inventory_key(plan: &CompiledSourcePlan) -> Result<PreparedSour
 fn install_prepared_file_inventory(
     plan: &CompiledSourcePlan,
     dependencies: &FileRuntimeDependencies,
-    inventory: cdf_kernel::PlannedTaskSetReference,
+    inventory: PlannedFileInventory,
 ) -> Result<()> {
     let encoded_bytes = u64::try_from(
         serde_json::to_vec(&inventory)
@@ -951,7 +962,7 @@ fn configure_runtime_dependencies(
         .unwrap_or_else(|| serde_json::json!({}));
     let options = decode_file_project_options(&options)?;
     let task_store = ExternalTaskStore::new(
-        context.project_root().join(".cdf"),
+        context.artifact_root().join(".cdf"),
         cdf_kernel::ContentStoreNamespace::new("file-plans")?,
     )?;
     let dependencies = dependencies.with_task_store(
@@ -970,7 +981,7 @@ fn configure_runtime_dependencies(
         return Ok(dependencies);
     };
     let configured = PathBuf::from(cache.location);
-    let root = resolve_project_cache_root(context.project_root(), &configured)?;
+    let root = resolve_project_cache_root(context.artifact_root(), &configured)?;
     Ok(dependencies.with_payload_cache(FilePayloadCache::new(
         root.join("v1"),
         cache.max_entries,

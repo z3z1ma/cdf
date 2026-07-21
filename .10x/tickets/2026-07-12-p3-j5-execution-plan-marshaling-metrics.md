@@ -27,6 +27,10 @@ Jobs/capsule goldens, optimizer adversaries, metric-accounting tests, serializat
 
 No distributed scheduler, remote worker daemon, or generic DataFusion package writer.
 
+## Journal
+
+- 2026-07-18: The P0 closed-partition-authority migration made external task sets impossible to mistake for an empty inline scan. The existing generic DataFusion `TableProvider` now fails explicitly when handed external task authority; this ticket owns the proper source-owned provider/ExecutionPlan shell over canonical WX1 task references without task materialization or identity-bearing DataFusion output.
+
 ## Blockers
 
-WX1, A5, and C2.
+None. WX1, A5, and C2 are closed.

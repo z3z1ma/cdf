@@ -13,12 +13,12 @@ use cdf_kernel::{
     CompiledScanIntent, DeliveryGuarantee, EffectiveSchemaRuntime, EstimateSupport,
     ExecutablePartition, ExpressionNode, FilterCapabilities, IncrementalShape,
     PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation,
-    PartitionCompletion, PartitionId, PartitionPlan, PartitioningCapabilities, PayloadRetention,
-    PlanId, PlannedPartitionReader, PlannedTaskSetReference, PushdownFidelity, PushedPredicate,
-    QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceId,
-    ResourceStream, Result, ScanPlan, ScanRequest, SchemaHash, ScopeKey, ScopeKind, SourcePosition,
-    SourceReadMode, TypePolicyAllowances, WriteDisposition, partition_schema_observation_id,
-    source_name,
+    PartitionAuthority, PartitionCompletion, PartitionId, PartitionPlan, PartitioningCapabilities,
+    PayloadRetention, PlanId, PlannedPartitionReader, PlannedTaskSetReference, PushdownFidelity,
+    PushedPredicate, QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor,
+    ResourceId, ResourceStream, Result, ScanPlan, ScanRequest, SchemaHash, ScopeKey, ScopeKind,
+    SourcePosition, SourceReadMode, TypePolicyAllowances, WriteDisposition,
+    partition_schema_observation_id, source_name,
 };
 use cdf_memory::{
     AccountedBytes, ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest,
@@ -876,10 +876,12 @@ pub struct FileResource {
     plan: FileResourcePlan,
     type_policy_allowances: TypePolicyAllowances,
     effective_schema_runtime: Option<Arc<EffectiveSchemaRuntime>>,
+    baseline_observation_schema_catalog: Vec<cdf_kernel::EffectiveSchemaCatalogEntry>,
     compiled_format: CompiledFormatBinding,
     dependencies: FileRuntimeDependencies,
     prepared_inventory_key: Option<PreparedSourcePayloadKey>,
-    compiled_source_plan_hash: Option<String>,
+    source_discovery_binding_hash: cdf_kernel::SourceDiscoveryBinding,
+    compiled_source_plan_hash: cdf_kernel::CompiledSourcePlanHash,
     transport_control: FileTransportControl,
 }
 
@@ -890,6 +892,7 @@ pub struct FileResourceDefinition {
     pub plan: FileResourcePlan,
     pub type_policy_allowances: TypePolicyAllowances,
     pub effective_schema_runtime: Option<EffectiveSchemaRuntime>,
+    pub baseline_observation_schema_catalog: Vec<cdf_kernel::EffectiveSchemaCatalogEntry>,
     pub compiled_format: CompiledFormatBinding,
 }
 
@@ -898,7 +901,7 @@ pub struct FileResourceDefinition {
 struct FilePartitionTaskAuthority {
     version: u16,
     resource_id: ResourceId,
-    compiled_source_plan_hash: String,
+    compiled_source_plan_hash: cdf_kernel::CompiledSourcePlanHash,
     request_hash: String,
 }
 
@@ -907,23 +910,22 @@ struct FilePartitionTaskAuthority {
 struct FileInventoryTaskAuthority {
     version: u16,
     resource_id: ResourceId,
-    compiled_source_plan_hash: String,
+    source_discovery_binding_hash: cdf_kernel::SourceDiscoveryBinding,
 }
 
 impl FileInventoryTaskAuthority {
     fn validate_against(&self, resource: &FileResource) -> Result<()> {
         if self.version != 1
             || self.resource_id != resource.descriptor.resource_id
-            || Some(self.compiled_source_plan_hash.as_str())
-                != resource.compiled_source_plan_hash.as_deref()
+            || self.source_discovery_binding_hash != resource.source_discovery_binding_hash
         {
             return Err(CdfError::data(
                 "file inventory task authority does not match the compiled resource",
             ));
         }
         cdf_runtime::validate_artifact_hash(
-            "file inventory compiled source plan",
-            &self.compiled_source_plan_hash,
+            "file inventory source discovery binding",
+            self.source_discovery_binding_hash.as_str(),
         )
     }
 }
@@ -931,10 +933,31 @@ impl FileInventoryTaskAuthority {
 struct FileInventoryTaskBuilder {
     inner: CanonicalTaskSetBuilder,
     authority: FileInventoryTaskAuthority,
+    planned_source_bytes: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct PlannedFileInventory {
+    task_set: PlannedTaskSetReference,
+    planned_source_bytes: cdf_kernel::PlannedSourceBytes,
+}
+
+impl PlannedFileInventory {
+    pub(crate) fn task_set(&self) -> &PlannedTaskSetReference {
+        &self.task_set
+    }
+
+    pub(crate) fn planned_source_bytes(&self) -> cdf_kernel::PlannedSourceBytes {
+        self.planned_source_bytes
+    }
 }
 
 impl FileInventoryTaskBuilder {
     fn push(&mut self, file: &ResolvedFileMatch) -> Result<()> {
+        self.planned_source_bytes = self
+            .planned_source_bytes
+            .checked_add(file.size_bytes)
+            .ok_or_else(|| CdfError::data("planned file source bytes exceed u64"))?;
         let record = FileInventoryRecord::from(file);
         self.inner
             .push_idempotent_with(file.path_text.as_bytes(), |output| {
@@ -948,14 +971,18 @@ impl FileInventoryTaskBuilder {
         self.inner.task_count()
     }
 
-    fn finalize(self) -> Result<PlannedTaskSetReference> {
+    fn finalize(self) -> Result<PlannedFileInventory> {
+        let planned_source_bytes = self.planned_source_bytes;
         self.inner
             .finalize(|output| {
                 serde_json::to_writer(output, &self.authority).map_err(|error| {
                     CdfError::data(format!("encode file inventory task authority: {error}"))
                 })
             })
-            .map(|artifact| artifact.reference)
+            .map(|artifact| PlannedFileInventory {
+                task_set: artifact.reference,
+                planned_source_bytes: cdf_kernel::PlannedSourceBytes::new(planned_source_bytes),
+            })
     }
 }
 
@@ -990,8 +1017,7 @@ impl FilePartitionTaskAuthority {
     fn validate_against(&self, resource: &FileResource) -> Result<()> {
         if self.version != 1
             || self.resource_id != resource.descriptor.resource_id
-            || Some(self.compiled_source_plan_hash.as_str())
-                != resource.compiled_source_plan_hash.as_deref()
+            || self.compiled_source_plan_hash != resource.compiled_source_plan_hash
         {
             return Err(CdfError::data(
                 "file partition task authority does not match the compiled resource",
@@ -1173,9 +1199,24 @@ fn reserve_file_task_parse_memory(
 }
 
 impl FileResource {
-    pub fn new(
+    pub(crate) fn new(
         definition: FileResourceDefinition,
         dependencies: FileRuntimeDependencies,
+        identities: &cdf_runtime::CompiledSourceIdentities,
+    ) -> Result<Self> {
+        Self::new_with_source_identities(
+            definition,
+            dependencies,
+            identities.discovery_binding().clone(),
+            identities.compiled_plan().clone(),
+        )
+    }
+
+    fn new_with_source_identities(
+        definition: FileResourceDefinition,
+        dependencies: FileRuntimeDependencies,
+        source_discovery_binding_hash: cdf_kernel::SourceDiscoveryBinding,
+        compiled_source_plan_hash: cdf_kernel::CompiledSourcePlanHash,
     ) -> Result<Self> {
         let FileResourceDefinition {
             descriptor,
@@ -1183,6 +1224,7 @@ impl FileResource {
             mut plan,
             type_policy_allowances,
             effective_schema_runtime,
+            baseline_observation_schema_catalog,
             compiled_format,
         } = definition;
         let planned_driver = dependencies
@@ -1207,12 +1249,29 @@ impl FileResource {
             plan,
             type_policy_allowances,
             effective_schema_runtime: effective_schema_runtime.map(Arc::new),
+            baseline_observation_schema_catalog,
             compiled_format,
             dependencies,
             prepared_inventory_key: None,
-            compiled_source_plan_hash: None,
+            source_discovery_binding_hash,
+            compiled_source_plan_hash,
             transport_control: FileTransportControl::default(),
         })
+    }
+
+    #[cfg(test)]
+    fn new_for_test(
+        definition: FileResourceDefinition,
+        dependencies: FileRuntimeDependencies,
+        source_discovery_binding_hash: cdf_kernel::SourceDiscoveryBinding,
+        compiled_source_plan_hash: cdf_kernel::CompiledSourcePlanHash,
+    ) -> Result<Self> {
+        Self::new_with_source_identities(
+            definition,
+            dependencies,
+            source_discovery_binding_hash,
+            compiled_source_plan_hash,
+        )
     }
 
     pub(crate) fn with_prepared_inventory_key(mut self, key: PreparedSourcePayloadKey) -> Self {
@@ -1225,17 +1284,8 @@ impl FileResource {
         self
     }
 
-    pub fn with_compiled_source_plan_hash(mut self, hash: String) -> Self {
-        self.compiled_source_plan_hash = Some(hash);
-        self
-    }
-
     fn inventory_builder(&self) -> Result<FileInventoryTaskBuilder> {
         let (store, options) = self.dependencies.task_store()?;
-        let compiled_source_plan_hash =
-            self.compiled_source_plan_hash.clone().ok_or_else(|| {
-                CdfError::contract("file inventory planning requires compiled source-plan identity")
-            })?;
         Ok(FileInventoryTaskBuilder {
             inner: store.canonical_builder(
                 FILE_INVENTORY_TASK_TYPE,
@@ -1246,8 +1296,9 @@ impl FileResource {
             authority: FileInventoryTaskAuthority {
                 version: 1,
                 resource_id: self.descriptor.resource_id.clone(),
-                compiled_source_plan_hash,
+                source_discovery_binding_hash: self.source_discovery_binding_hash.clone(),
             },
+            planned_source_bytes: 0,
         })
     }
 
@@ -1262,19 +1313,19 @@ impl FileResource {
         &self,
         maximum_matches: usize,
         control: &FileTransportControl,
-    ) -> Result<PlannedTaskSetReference> {
+    ) -> Result<PlannedFileInventory> {
         if let Some(key) = &self.prepared_inventory_key
             && let Some(payload) = self.dependencies.prepared_payloads().take(key)?
         {
-            let (reference, _retention) =
-                payload.into_typed::<PlannedTaskSetReference>("file inventory task reference")?;
-            if reference.task_count > u64::try_from(maximum_matches).unwrap_or(u64::MAX) {
+            let (inventory, _retention) =
+                payload.into_typed::<PlannedFileInventory>("file inventory task reference")?;
+            if inventory.task_set.task_count > u64::try_from(maximum_matches).unwrap_or(u64::MAX) {
                 return Err(CdfError::data(format!(
                     "file inventory exceeds the {maximum_matches}-entry boundary"
                 )));
             }
-            let _verified = self.inventory_reader(reference.clone())?;
-            return Ok(reference);
+            let _verified = self.inventory_reader(inventory.task_set.clone())?;
+            return Ok(inventory);
         }
         let execution = self.dependencies.execution().clone();
         execution.ensure_blocking_lanes(&[file_source_blocking_lane()])?;
@@ -1309,11 +1360,11 @@ impl FileResource {
         &self,
         maximum_matches: usize,
         control: &FileTransportControl,
-    ) -> Result<(PlannedTaskSetReference, Vec<PartitionPlan>)> {
+    ) -> Result<(PlannedFileInventory, Vec<PartitionPlan>)> {
         let inventory = self.inventory_reference_with_limit(maximum_matches, control)?;
-        let mut reader = self.inventory_reader(inventory.clone())?;
+        let mut reader = self.inventory_reader(inventory.task_set.clone())?;
         let mut partitions = Vec::with_capacity(
-            usize::try_from(inventory.task_count)
+            usize::try_from(inventory.task_set.task_count)
                 .unwrap_or(maximum_matches)
                 .min(maximum_matches),
         );
@@ -1323,7 +1374,7 @@ impl FileResource {
                 &self.plan,
                 &CompiledScanIntent::full_scan(),
                 &decoded.record,
-                inventory.task_count,
+                inventory.task_set.task_count,
             )?);
         }
         Ok((inventory, partitions))
@@ -1336,10 +1387,7 @@ impl FileResource {
         inventory: &PlannedTaskSetReference,
     ) -> Result<PlannedTaskSetReference> {
         let (store, options) = self.dependencies.task_store()?;
-        let compiled_source_plan_hash =
-            self.compiled_source_plan_hash.clone().ok_or_else(|| {
-                CdfError::contract("file task planning requires compiled source-plan identity")
-            })?;
+        let compiled_source_plan_hash = self.compiled_source_plan_hash.clone();
         let authority = FilePartitionTaskAuthority {
             version: 1,
             resource_id: self.descriptor.resource_id.clone(),
@@ -1525,8 +1573,8 @@ impl ResourceStream for FileResource {
         Arc::clone(&self.schema)
     }
 
-    fn compiled_source_plan_hash(&self) -> Option<&str> {
-        self.compiled_source_plan_hash.as_deref()
+    fn compiled_source_plan_hash(&self) -> Option<&cdf_kernel::CompiledSourcePlanHash> {
+        Some(&self.compiled_source_plan_hash)
     }
 
     fn validate_runtime_dependencies(&self) -> Result<()> {
@@ -1571,7 +1619,7 @@ impl ResourceStream for FileResource {
                 self.descriptor.resource_id
             )));
         };
-        let reference = scan.planned_task_set.clone().ok_or_else(|| {
+        let reference = scan.external_task_set().cloned().ok_or_else(|| {
             CdfError::contract(
                 "file incremental partition selection requires external task authority",
             )
@@ -1617,17 +1665,14 @@ impl ResourceStream for FileResource {
                 .checked_add(1)
                 .ok_or_else(|| CdfError::data("file partition count exceeds u64"))?;
         }
-        let compiled_source_plan_hash =
-            self.compiled_source_plan_hash.clone().ok_or_else(|| {
-                CdfError::contract("file task selection requires compiled source-plan identity")
-            })?;
+        let compiled_source_plan_hash = self.compiled_source_plan_hash.clone();
         let authority = FilePartitionTaskAuthority {
             version: 1,
             resource_id: self.descriptor.resource_id.clone(),
             compiled_source_plan_hash,
             request_hash: cdf_runtime::artifact_hash(&scan.request)?,
         };
-        scan.planned_task_set = Some(
+        scan.replace_partition_authority(PartitionAuthority::External(
             output
                 .finalize(|writer| {
                     serde_json::to_writer(writer, &authority).map_err(|error| {
@@ -1635,7 +1680,7 @@ impl ResourceStream for FileResource {
                     })
                 })?
                 .reference,
-        );
+        ));
         Ok(())
     }
 
@@ -1691,6 +1736,10 @@ impl ResourceStream for FileResource {
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
         self.effective_schema_runtime.as_deref()
     }
+
+    fn baseline_observation_schema_catalog(&self) -> &[cdf_kernel::EffectiveSchemaCatalogEntry] {
+        &self.baseline_observation_schema_catalog
+    }
 }
 
 impl QueryableResource for FileResource {
@@ -1712,20 +1761,22 @@ impl QueryableResource for FileResource {
         )?;
         let inventory = self.inventory_reference_with_limit(usize::MAX, &self.transport_control)?;
         let negotiation =
-            self.reconcile_exact_predicates_from_inventory(negotiation, &inventory)?;
-        let planned_task_set =
-            self.partition_tasks_from_inventory(request, &negotiation.intent, &inventory)?;
-        Ok(ScanPlan {
-            plan_id: PlanId::new(format!("plan-{}", self.descriptor.resource_id))?,
-            request: request.clone(),
-            planned_task_set: Some(planned_task_set),
-            partitions: Vec::new(),
-            pushed_predicates: negotiation.pushed_predicates,
-            unsupported_predicates: negotiation.unsupported_predicates,
-            estimated_rows: None,
-            estimated_bytes: None,
-            delivery_guarantee: delivery_guarantee(&self.descriptor),
-        })
+            self.reconcile_exact_predicates_from_inventory(negotiation, inventory.task_set())?;
+        let planned_task_set = self.partition_tasks_from_inventory(
+            request,
+            &negotiation.intent,
+            inventory.task_set(),
+        )?;
+        Ok(ScanPlan::new(
+            PlanId::new(format!("plan-{}", self.descriptor.resource_id))?,
+            request.clone(),
+            PartitionAuthority::External(planned_task_set),
+            negotiation.pushed_predicates,
+            negotiation.unsupported_predicates,
+            None,
+            Some(inventory.planned_source_bytes().get()),
+            delivery_guarantee(&self.descriptor),
+        ))
     }
 }
 
@@ -2583,7 +2634,7 @@ fn build_file_inventory_with_transport(
     plan: &FileResourcePlan,
     context: FilePlanningContext<'_>,
     mut builder: FileInventoryTaskBuilder,
-) -> Result<PlannedTaskSetReference> {
+) -> Result<PlannedFileInventory> {
     builder = resolve_file_matches_bounded(resource_id, plan, context, builder)?;
     if builder.task_count() == 0 {
         return Err(no_file_matches_error(resource_id, plan));
@@ -2603,9 +2654,11 @@ fn open_file_resource_with_dependencies(
         plan,
         type_policy_allowances: _,
         effective_schema_runtime,
+        baseline_observation_schema_catalog: _,
         compiled_format,
         dependencies,
         prepared_inventory_key: _,
+        source_discovery_binding_hash: _,
         compiled_source_plan_hash: _,
         transport_control: _,
     } = resource;
@@ -2617,6 +2670,8 @@ fn open_file_resource_with_dependencies(
         return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move { Err(error) }));
     }
     let (completion_sender, completion_receiver) = tokio::sync::oneshot::channel();
+    let source_io_observer = Arc::new(Mutex::new(None::<SourceIoObserver>));
+    let prepared_source_io_observer = Arc::clone(&source_io_observer);
     let mut scope_hasher = Sha256::new();
     scope_hasher.update(descriptor.resource_id.as_str().as_bytes());
     scope_hasher.update([0]);
@@ -2643,6 +2698,9 @@ fn open_file_resource_with_dependencies(
                     control: &control,
                 },
             )?;
+            *prepared_source_io_observer.lock().map_err(|_| {
+                CdfError::internal("file source I/O observation state was poisoned")
+            })? = Some(prepared.source_io.clone());
             cancellation.check()?;
             Ok((prepared, task_retention))
         },
@@ -2723,7 +2781,15 @@ fn open_file_resource_with_dependencies(
                 )
             })
         });
-        Ok(cdf_kernel::PartitionStreamPayload::new(stream, completion))
+        let snapshot = Arc::new(move || {
+            source_io_observer
+                .lock()
+                .ok()
+                .and_then(|observer| observer.as_ref().map(SourceIoObserver::snapshot))
+                .unwrap_or_default()
+        });
+        Ok(cdf_kernel::PartitionStreamPayload::new(stream, completion)
+            .with_source_io_snapshot(snapshot))
     });
     cdf_kernel::PartitionOpenAttempt::with_termination(opening, termination)
 }
@@ -3106,17 +3172,26 @@ async fn stream_prepared_file_match(
         payload_cache_key,
         spool_mode,
     } = prepared;
-    let position = Some(SourcePosition::FileManifest(cdf_kernel::FileManifest {
-        version: 1,
-        files: vec![cdf_kernel::FilePosition {
-            path: resolved.path_text.clone(),
-            size_bytes: resolved.size_bytes,
-            source_generation: resolved.source_generation.clone(),
-            etag: resolved.etag.clone(),
-            object_version: resolved.version.clone(),
-            sha256: resolved.sha256.clone(),
-        }],
-    }));
+    // Weak metadata identifies planned work, not a checkpoint-safe source frontier. Keep batch
+    // positions absent until EOF supplies the content digest; the completion attestation then
+    // enriches every durable segment through the generic terminal-position path.
+    let position = (resolved.source_generation.is_some()
+        || resolved.etag.is_some()
+        || resolved.version.is_some()
+        || resolved.sha256.is_some())
+    .then(|| {
+        SourcePosition::FileManifest(cdf_kernel::FileManifest {
+            version: 1,
+            files: vec![cdf_kernel::FilePosition {
+                path: resolved.path_text.clone(),
+                size_bytes: resolved.size_bytes,
+                source_generation: resolved.source_generation.clone(),
+                etag: resolved.etag.clone(),
+                object_version: resolved.version.clone(),
+                sha256: resolved.sha256.clone(),
+            }],
+        })
+    });
     let ReadyFileInput {
         source,
         payload_retention,
@@ -4620,12 +4695,23 @@ where
         context.control.clone(),
         context.execution.clone(),
     );
-    let canonical_root = fs::canonicalize(&root).map_err(|error| {
-        CdfError::data(format!(
-            "canonicalize file source root {}: {error}",
-            root.display()
-        ))
-    })?;
+    let canonical_root = match fs::canonicalize(&root) {
+        Ok(root) => root,
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(sink);
+        }
+        Err(error) => {
+            return Err(CdfError::data(format!(
+                "canonicalize file source root {}: {error}",
+                root.display()
+            )));
+        }
+    };
     let local = LocalMatchContext {
         canonical_root: &canonical_root,
         resource_id,
@@ -5838,6 +5924,11 @@ mod tests {
             vec![cdf_kernel::EffectiveSchemaObservationEvidence::new(
                 observation_id,
                 physical_hash.clone(),
+                cdf_kernel::SchemaObservationBinding::new(
+                    cdf_runtime::artifact_hash(&serde_json::json!({"test": "physical-runtime"}))
+                        .unwrap(),
+                )
+                .unwrap(),
             )],
         )
         .unwrap();
@@ -6655,7 +6746,7 @@ mod tests {
             },
         )
         .unwrap();
-        let resource = FileResource::new(
+        let resource = FileResource::new_for_test(
             FileResourceDefinition {
                 descriptor: descriptor.clone(),
                 schema: Arc::clone(&schema),
@@ -6667,14 +6758,20 @@ mod tests {
                     Arc::clone(&physical_schema),
                     "events.parquet",
                 )),
+                baseline_observation_schema_catalog: Vec::new(),
                 compiled_format,
             },
             dependencies,
+            cdf_kernel::SourceDiscoveryBinding::new(
+                cdf_runtime::artifact_hash(&serde_json::json!({"discovery": "events"})).unwrap(),
+            )
+            .unwrap(),
+            cdf_kernel::CompiledSourcePlanHash::new(
+                cdf_runtime::artifact_hash(&serde_json::json!({"resource": "events"})).unwrap(),
+            )
+            .unwrap(),
         )
-        .unwrap()
-        .with_compiled_source_plan_hash(
-            cdf_runtime::artifact_hash(&serde_json::json!({"resource": "events"})).unwrap(),
-        );
+        .unwrap();
         let request = ScanRequest {
             resource_id: descriptor.resource_id.clone(),
             projection: Some(vec!["vendor_id".to_owned()]),
@@ -6701,8 +6798,11 @@ mod tests {
                 .contains("canonical partition authority")
         );
         let scan = resource.negotiate(&request).unwrap();
-        assert!(scan.partitions.is_empty());
-        let task_reference = scan.planned_task_set.as_ref().unwrap();
+        assert_eq!(
+            scan.planned_source_bytes.unwrap().get(),
+            std::fs::metadata(&path).unwrap().len()
+        );
+        let task_reference = scan.external_task_set().unwrap();
         let mut task_reader = resource.planned_partition_reader(task_reference).unwrap();
         let executable = task_reader.next_partition(0).unwrap().unwrap();
         let planned_partitions = vec![executable.plan().clone()];
@@ -6756,6 +6856,24 @@ mod tests {
                 .value(0),
             2
         );
+
+        let partial_scan = resource.negotiate(&request).unwrap();
+        let mut partial_reader = resource
+            .planned_partition_reader(partial_scan.external_task_set().unwrap())
+            .unwrap();
+        let partial_executable = partial_reader.next_partition(0).unwrap().unwrap();
+        let mut partial =
+            futures_executor::block_on(resource.open_executable(partial_executable)).unwrap();
+        assert!(
+            futures_executor::block_on(partial.try_next())
+                .unwrap()
+                .is_some()
+        );
+        let partial_io = futures_executor::block_on(partial.terminate_and_join_with_source_io())
+            .unwrap()
+            .unwrap();
+        assert!(partial_io.physical_bytes > 0);
+        assert!(partial_io.requests > 0);
     }
 
     #[test]

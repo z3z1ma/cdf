@@ -695,6 +695,20 @@ fn attach_cleanup_failure(mut primary: CdfError, context: &str, cleanup: CdfErro
     primary
 }
 
+fn abandon_checkpoint_after_failure<Store>(
+    checkpoint_store: &Store,
+    checkpoint_id: &CheckpointId,
+    error: CdfError,
+) -> CdfError
+where
+    Store: CheckpointStore + ?Sized,
+{
+    match checkpoint_store.abandon(checkpoint_id) {
+        Ok(_) => error,
+        Err(cleanup) => attach_cleanup_failure(error, "checkpoint abandonment", cleanup),
+    }
+}
+
 fn release_staging_lease_after_error(
     mut error: CdfError,
     lease: cdf_runtime::ManagedStagingLease,
@@ -768,8 +782,10 @@ fn cardinality_u64(value: usize, label: &str) -> Result<u64> {
 
 #[derive(Default)]
 pub(crate) struct PackageReplayHooks<'a> {
+    pub(crate) before_package_receipt_recorded: Option<ReceiptVerifiedHook<'a>>,
     pub(crate) after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
     pub(crate) stage: Option<PackageReplayStageHook<'a>>,
+    pub(crate) interrupted_by_stage_hook: std::cell::Cell<bool>,
 }
 
 pub fn replay_package_from_artifacts<Store>(
@@ -798,8 +814,10 @@ where
         request.destination,
         request.checkpoint_store,
         PackageReplayHooks {
+            before_package_receipt_recorded: None,
             after_receipt_verified: request.after_receipt_verified,
             stage: Some(&runtime_stage_hook),
+            ..Default::default()
         },
     )
 }
@@ -819,8 +837,10 @@ where
         request.checkpoint_store,
         request.receipt,
         PackageReplayHooks {
+            before_package_receipt_recorded: None,
             after_receipt_verified: request.after_receipt_verified,
             stage: None,
+            ..Default::default()
         },
     )
 }
@@ -917,6 +937,12 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
     let mut unpositioned_admissions = std::collections::BTreeMap::new();
     for observation in evidence.observations {
         match observation.completion {
+            cdf_engine::StreamAdmissionCompletion::Pending => {
+                return Err(CdfError::data(format!(
+                    "stream-admission observation {:?} has no execution outcome",
+                    observation.observation_id
+                )));
+            }
             cdf_engine::StreamAdmissionCompletion::Partial {
                 attempted_position: Some(attempted_position),
                 observed_rows,
@@ -931,8 +957,14 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
                 attempted_position: None,
                 ..
             } => unreachable!("validated stream evidence requires a partial position"),
-            cdf_engine::StreamAdmissionCompletion::Complete { source_position } => {
-                admitted.insert(observation.observation_id, source_position);
+            cdf_engine::StreamAdmissionCompletion::Complete {
+                source_position,
+                partition_binding,
+            } => {
+                admitted.insert(
+                    observation.observation_id,
+                    (source_position, partition_binding),
+                );
             }
             cdf_engine::StreamAdmissionCompletion::CompleteUnpositioned { partition_binding } => {
                 unpositioned_admissions.insert(observation.observation_id, partition_binding);
@@ -948,12 +980,30 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
         unpositioned_admissions.keys().map(String::as_str),
         &lineage,
     )?;
-    for (observation_id, source_position) in &admitted {
+    let external_partition_authority = scan.external_task_set().is_some();
+    for (observation_id, (source_position, partition_binding)) in &admitted {
+        if external_partition_authority {
+            if !external_lineage_matches_exactly(
+                &lineage,
+                observation_id,
+                partition_binding,
+                None,
+                Some(source_position),
+            ) {
+                return Err(CdfError::data(format!(
+                    "complete stream-admission observation {observation_id:?} does not match its authenticated external partition and execution lineage"
+                )));
+            }
+            continue;
+        }
         let matching_partitions = scan
-            .partitions
+            .inline_partitions()
+            .ok_or_else(|| CdfError::data("replay lost inline partition authority"))?
             .iter()
             .filter(|partition| {
                 cdf_kernel::partition_schema_observation_id(partition) == observation_id
+                    && cdf_kernel::partition_schema_observation_binding(partition)
+                        .is_ok_and(|expected| &expected == partition_binding)
             })
             .collect::<Vec<_>>();
         if matching_partitions.len() != 1 {
@@ -982,12 +1032,27 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
         for (observation_id, (attempted_position, observed_rows, partition_binding)) in
             &partial_admissions
         {
+            if external_partition_authority {
+                if !external_lineage_matches_exactly(
+                    &lineage,
+                    observation_id,
+                    partition_binding,
+                    Some(*observed_rows),
+                    Some(attempted_position),
+                ) {
+                    return Err(CdfError::data(format!(
+                        "partial stream-admission observation {observation_id:?} does not match its authenticated external partition and execution lineage"
+                    )));
+                }
+                continue;
+            }
             let matching_partitions = scan
-                .partitions
+                .inline_partitions()
+                .ok_or_else(|| CdfError::data("replay lost inline partition authority"))?
                 .iter()
                 .filter(|partition| {
                     cdf_kernel::partition_schema_observation_id(partition) == observation_id
-                        && cdf_kernel::partition_source_identity_binding(partition)
+                        && cdf_kernel::partition_schema_observation_binding(partition)
                             .is_ok_and(|expected| &expected == partition_binding)
                         && partial_position_matches_partition_scope(attempted_position, partition)
                 })
@@ -1013,12 +1078,27 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
     }
     if !unpositioned_admissions.is_empty() {
         for (observation_id, partition_binding) in &unpositioned_admissions {
+            if external_partition_authority {
+                if !external_lineage_matches_exactly(
+                    &lineage,
+                    observation_id,
+                    partition_binding,
+                    None,
+                    None,
+                ) {
+                    return Err(CdfError::data(format!(
+                        "unpositioned stream-admission observation {observation_id:?} does not match its authenticated external partition and execution lineage"
+                    )));
+                }
+                continue;
+            }
             let matching_partitions = scan
-                .partitions
+                .inline_partitions()
+                .ok_or_else(|| CdfError::data("replay lost inline partition authority"))?
                 .iter()
                 .filter(|partition| {
                     cdf_kernel::partition_schema_observation_id(partition) == observation_id
-                        && cdf_kernel::partition_source_identity_binding(partition)
+                        && cdf_kernel::partition_schema_observation_binding(partition)
                             .is_ok_and(|expected| &expected == partition_binding)
                 })
                 .collect::<Vec<_>>();
@@ -1191,7 +1271,11 @@ fn validate_package_compiled_schema_admission(package: &VerifiedPackageReader) -
     for observation in processed.observations.iter().filter(|observation| {
         observation.outcome == cdf_kernel::ProcessedObservationOutcome::Admitted
     }) {
-        if admitted.get(&observation.observation_id) != Some(&observation.source_position) {
+        if admitted
+            .get(&observation.observation_id)
+            .map(|(position, _)| position)
+            != Some(&observation.source_position)
+        {
             return Err(CdfError::data(format!(
                 "processed observation {:?} does not match its stream-admission source position",
                 observation.observation_id
@@ -1259,8 +1343,30 @@ fn partial_lineage_matches_exactly(
         .filter(|observation| {
             observation.observation_id == observation_id
                 && observation.partition_id == partition.partition_id
+                && cdf_kernel::partition_schema_observation_binding(partition)
+                    .is_ok_and(|binding| observation.partition_binding == binding)
                 && observation.observed_rows == observed_rows
                 && observation.output_position.as_ref() == Some(attempted_position)
+        })
+        .count()
+        == 1
+}
+
+fn external_lineage_matches_exactly(
+    lineage: &cdf_engine::LineageSummary,
+    observation_id: &str,
+    partition_binding: &cdf_kernel::SchemaObservationBinding,
+    observed_rows: Option<u64>,
+    output_position: Option<&cdf_kernel::SourcePosition>,
+) -> bool {
+    lineage
+        .input_observations
+        .iter()
+        .filter(|observation| {
+            observation.observation_id == observation_id
+                && &observation.partition_binding == partition_binding
+                && observed_rows.is_none_or(|rows| observation.observed_rows == rows)
+                && observation.output_position.as_ref() == output_position
         })
         .count()
         == 1
@@ -1478,140 +1584,116 @@ where
 
     let checkpoint_id = inputs.state_delta.checkpoint_id.clone();
     propose_or_reuse_exact_checkpoint(checkpoint_store, &inputs.state_delta)?;
-    if let Err(error) = notify_destination_replay_stage(
-        &hooks,
-        PackageReplayStage::CheckpointProposed {
-            delta: &inputs.state_delta,
-        },
-    ) {
-        let _ = checkpoint_store.abandon(&checkpoint_id);
-        return Err(error);
-    }
-    if let Err(error) = package.reader_mut().update_status(PackageStatus::Loading) {
-        let _ = checkpoint_store.abandon(&checkpoint_id);
-        return Err(error);
-    }
-    notify_destination_replay_stage(&hooks, PackageReplayStage::DestinationWriteReady)?;
+    let settlement = (|| {
+        notify_destination_replay_stage(
+            &hooks,
+            PackageReplayStage::CheckpointProposed {
+                delta: &inputs.state_delta,
+            },
+        )?;
+        package.reader_mut().update_status(PackageStatus::Loading)?;
+        notify_destination_replay_stage(&hooks, PackageReplayStage::DestinationWriteReady)?;
 
-    let (receipt, receipt_policy, commit_verification) = match capabilities.ingress_mode {
-        cdf_runtime::DestinationIngressMode::StagedDurableSegments => {
-            let outcome = match match active_staged {
-                Some(active) => finalize_active_staged_ingress(
+        let (receipt, receipt_policy, commit_verification) = match capabilities.ingress_mode {
+            cdf_runtime::DestinationIngressMode::StagedDurableSegments => {
+                let outcome = match active_staged {
+                    Some(active) => finalize_active_staged_ingress(
+                        runtime,
+                        package.reader(),
+                        package.verification(),
+                        &inputs,
+                        active,
+                        &hooks,
+                    ),
+                    None => commit_package_through_staged_ingress(
+                        runtime,
+                        &package,
+                        &inputs,
+                        &capabilities,
+                        &selected_bulk_path,
+                        &hooks,
+                        execution.ok_or_else(|| {
+                            CdfError::contract(
+                                "artifact replay through externally durable staging requires execution services",
+                            )
+                        })?,
+                    ),
+                }?;
+                (
+                    outcome.receipt,
+                    outcome.reporting_policy,
+                    outcome.verification,
+                )
+            }
+            cdf_runtime::DestinationIngressMode::FinalizedPackageOnly => {
+                let mut prepared = match runtime.ingress() {
+                    cdf_runtime::DestinationIngress::FinalizedPackage(finalized) => finalized
+                        .prepare_package_commit(
+                            &inputs,
+                            &DestinationPlanningContext::new(
+                                Arc::new(package.clone()),
+                                &selected_bulk_path,
+                            ),
+                        ),
+                    cdf_runtime::DestinationIngress::StagedSegments(_) => Err(CdfError::contract(
+                        "finalized package reached a staged destination runtime",
+                    )),
+                }?;
+                prepared.validate_verified_inputs(&inputs)?;
+                if prepared.bulk_path() != &selected_bulk_path {
+                    return Err(CdfError::contract(
+                        "destination prepared a commit for a different bulk path than schema preflight selected",
+                    ));
+                }
+                capabilities.validate_prepared_bulk_path(prepared.bulk_path())?;
+                let receipt_policy = prepared.reporting_policy().clone();
+                notify_destination_replay_stage(
+                    &hooks,
+                    PackageReplayStage::DestinationCommitStarted {
+                        plan_id: &prepared.plan().plan_id,
+                        segment_count: cardinality_u64(
+                            prepared.commit().segments.len(),
+                            "prepared destination segment count",
+                        )?,
+                        bulk_path: prepared.bulk_path(),
+                    },
+                )?;
+                let receipt = commit_prepared_package_through_session(
                     runtime,
                     package.reader(),
+                    &mut prepared,
+                    memory,
+                    &hooks,
                     package.verification(),
-                    &inputs,
-                    active,
-                    &hooks,
-                ),
-                None => commit_package_through_staged_ingress(
-                    runtime,
-                    &package,
-                    &inputs,
-                    &capabilities,
-                    &selected_bulk_path,
-                    &hooks,
-                    execution.ok_or_else(|| {
-                        CdfError::contract(
-                            "artifact replay through externally durable staging requires execution services",
-                        )
-                    })?,
-                ),
-            } {
-                Ok(outcome) => outcome,
-                Err(error) => {
-                    let _ = checkpoint_store.abandon(&checkpoint_id);
-                    return Err(error);
-                }
-            };
-            (
-                outcome.receipt,
-                outcome.reporting_policy,
-                outcome.verification,
-            )
-        }
-        cdf_runtime::DestinationIngressMode::FinalizedPackageOnly => {
-            let prepared_result = match runtime.ingress() {
-                cdf_runtime::DestinationIngress::FinalizedPackage(finalized) => finalized
-                    .prepare_package_commit(
-                        &inputs,
-                        &DestinationPlanningContext::new(
-                            Arc::new(package.clone()),
-                            &selected_bulk_path,
-                        ),
-                    ),
-                cdf_runtime::DestinationIngress::StagedSegments(_) => Err(CdfError::contract(
-                    "finalized package reached a staged destination runtime",
-                )),
-            };
-            let mut prepared = match prepared_result {
-                Ok(prepared) => prepared,
-                Err(error) => {
-                    let _ = checkpoint_store.abandon(&checkpoint_id);
-                    return Err(error);
-                }
-            };
-            if let Err(error) = prepared.validate_verified_inputs(&inputs) {
-                let _ = checkpoint_store.abandon(&checkpoint_id);
-                return Err(error);
+                )?;
+                (
+                    receipt,
+                    receipt_policy,
+                    cdf_runtime::DestinationCommitVerification::Independent,
+                )
             }
-            if prepared.bulk_path() != &selected_bulk_path {
-                let _ = checkpoint_store.abandon(&checkpoint_id);
-                return Err(CdfError::contract(
-                    "destination prepared a commit for a different bulk path than schema preflight selected",
-                ));
-            }
-            if let Err(error) = capabilities.validate_prepared_bulk_path(prepared.bulk_path()) {
-                let _ = checkpoint_store.abandon(&checkpoint_id);
-                return Err(error);
-            }
-            let receipt_policy = prepared.reporting_policy().clone();
-            if let Err(error) = notify_destination_replay_stage(
-                &hooks,
-                PackageReplayStage::DestinationCommitStarted {
-                    plan_id: &prepared.plan().plan_id,
-                    segment_count: cardinality_u64(
-                        prepared.commit().segments.len(),
-                        "prepared destination segment count",
-                    )?,
-                    bulk_path: prepared.bulk_path(),
-                },
-            ) {
-                let _ = checkpoint_store.abandon(&checkpoint_id);
-                return Err(error);
-            }
-            let receipt = match commit_prepared_package_through_session(
-                runtime,
-                package.reader(),
-                &mut prepared,
-                memory,
-                &hooks,
-                package.verification(),
-            ) {
-                Ok(receipt) => receipt,
-                Err(error) => {
-                    let _ = checkpoint_store.abandon(&checkpoint_id);
-                    return Err(error);
-                }
-            };
-            (
-                receipt,
-                receipt_policy,
-                cdf_runtime::DestinationCommitVerification::Independent,
-            )
-        }
-    };
+        };
 
-    if let Err(error) = verify_destination_receipt_before_checkpoint_with_runtime(
-        runtime,
-        &inputs.state_delta,
-        &inputs.destination_commit.target,
-        &inputs.destination_commit.disposition,
-        &receipt,
-        &commit_verification,
-    ) {
-        let _ = checkpoint_store.abandon(&checkpoint_id);
-        return Err(error);
+        verify_destination_receipt_before_checkpoint_with_runtime(
+            runtime,
+            &inputs.state_delta,
+            &inputs.destination_commit.target,
+            &inputs.destination_commit.disposition,
+            &receipt,
+            &commit_verification,
+        )?;
+        Ok((receipt, receipt_policy))
+    })();
+    let (receipt, receipt_policy) = settlement.map_err(|error| {
+        if hooks.interrupted_by_stage_hook.replace(false) {
+            error
+        } else {
+            abandon_checkpoint_after_failure(checkpoint_store, &checkpoint_id, error)
+        }
+    })?;
+
+    if let Some(hook) = hooks.before_package_receipt_recorded {
+        hook(&receipt)?;
     }
 
     let package_receipt_recorded = record_package_receipt_once(package.reader(), &receipt)?;
@@ -2369,8 +2451,11 @@ fn notify_destination_replay_stage(
     hooks: &PackageReplayHooks<'_>,
     stage: PackageReplayStage<'_>,
 ) -> Result<()> {
-    if let Some(hook) = hooks.stage {
-        hook(stage)?;
+    if let Some(hook) = hooks.stage
+        && let Err(error) = hook(stage)
+    {
+        hooks.interrupted_by_stage_hook.set(true);
+        return Err(error);
     }
     Ok(())
 }
@@ -2658,11 +2743,14 @@ mod stream_admission_replay_tests {
         ));
 
         let attempted = cursor_position("updated_at");
+        let partition_binding =
+            cdf_kernel::partition_schema_observation_binding(&cursor_partition).unwrap();
         let lineage = LineageSummary {
             input_rows: 7,
             input_observations: vec![LineageInputObservation {
                 observation_id: "rest".to_owned(),
                 partition_id: PartitionId::new("rest").unwrap(),
+                partition_binding: partition_binding.clone(),
                 observed_rows: 7,
                 output_position: Some(attempted.clone()),
             }],
@@ -2715,6 +2803,7 @@ mod stream_admission_replay_tests {
             .push(LineageInputObservation {
                 observation_id: "rest".to_owned(),
                 partition_id: PartitionId::new("rest-page-2").unwrap(),
+                partition_binding,
                 observed_rows: 1,
                 output_position: Some(attempted),
             });

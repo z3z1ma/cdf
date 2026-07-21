@@ -2041,7 +2041,12 @@ mod tests {
                 if path.is_dir() {
                     if !matches!(
                         path.file_name().and_then(|name| name.to_str()),
-                        Some("cdf-benchmarks" | "cdf-conformance")
+                        Some(
+                            "cdf-bench-core"
+                                | "cdf-bench-measure"
+                                | "cdf-benchmarks"
+                                | "cdf-conformance"
+                        )
                     ) {
                         visit(&path, violations);
                     }

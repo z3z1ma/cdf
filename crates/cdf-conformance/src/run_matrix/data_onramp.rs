@@ -57,6 +57,34 @@ struct PreviewFingerprint {
     partition_count: usize,
 }
 
+fn planned_partitions(
+    resource: &dyn cdf_kernel::QueryableResource,
+    scan: &cdf_kernel::ScanPlan,
+) -> Result<Vec<cdf_kernel::PartitionPlan>> {
+    if let Some(partitions) = scan.inline_partitions() {
+        return Ok(partitions.to_vec());
+    }
+    let reference = scan.external_task_set().ok_or_else(|| {
+        cdf_kernel::CdfError::internal("scan omitted canonical partition authority")
+    })?;
+    let mut reader = resource.planned_partition_reader(reference)?;
+    let mut partitions = Vec::with_capacity(usize::try_from(reference.task_count).unwrap_or(0));
+    for ordinal in 0..reference.task_count {
+        partitions.push(
+            reader
+                .next_partition(ordinal)?
+                .ok_or_else(|| {
+                    cdf_kernel::CdfError::data(format!(
+                        "external partition authority ended before ordinal {ordinal}"
+                    ))
+                })?
+                .plan()
+                .clone(),
+        );
+    }
+    Ok(partitions)
+}
+
 const P2_SCENARIOS: &[P2Scenario] = &[
     P2Scenario {
         id: "S1",
@@ -440,9 +468,18 @@ fn p2_friction_registry_maps_closed_slices_to_tests_and_open_rows_to_tickets() {
     assert!(friction(14).closed_tests.iter().any(|test| {
         test.contains("validate_deep_reports_source_front_end_checks_without_writes")
     }));
-    assert!(friction(16).closed_tests.iter().any(|test| {
-        test.contains("file_runtime_auto_compression_decodes_gzip_and_zstd_ndjson")
-    }));
+    assert!(
+        friction(16)
+            .closed_tests
+            .iter()
+            .any(|test| test.contains("cdf-transform-gzip"))
+    );
+    assert!(
+        friction(16)
+            .closed_tests
+            .iter()
+            .any(|test| test.contains("cdf-transform-zstd"))
+    );
 }
 
 #[test]
@@ -749,18 +786,11 @@ fn p2_s8_multifile_preview_traverses_the_same_planned_partitions_as_run() {
     )
     .unwrap();
     let plan = resource.bind_plan(plan).unwrap();
-    assert_eq!(plan.scan.partitions.len(), 2);
+    let partitions = planned_partitions(resource.queryable(), &plan.scan).unwrap();
+    assert_eq!(partitions.len(), 2);
     assert!(
-        plan.scan.partitions[0]
-            .planned_file()
-            .unwrap()
-            .unwrap()
-            .path
-            < plan.scan.partitions[1]
-                .planned_file()
-                .unwrap()
-                .unwrap()
-                .path
+        partitions[0].planned_file().unwrap().unwrap().path
+            < partitions[1].planned_file().unwrap().unwrap().path
     );
     let before_preview = project_tree_snapshot(temp.path());
 
@@ -893,8 +923,7 @@ fn preview_fingerprint(
 
     let source = source_catalog::prepare(&cell, temp.path(), environment)?;
     let plan = source.engine_plan(&package_id, cell.disposition, None)?;
-    let partitions = source.queryable().plan_partitions(&plan.scan.request)?;
-    assert_eq!(partitions, plan.scan.partitions);
+    let partitions = planned_partitions(source.queryable(), &plan.scan)?;
     let preview = futures_executor::block_on(cdf_engine::preview_resource(
         &plan,
         source.queryable(),

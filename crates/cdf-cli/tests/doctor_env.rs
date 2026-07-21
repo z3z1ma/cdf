@@ -25,7 +25,11 @@ fn doctor_resolves_child_process_env_secrets_without_leaking_values() {
 
     let stdout = String::from_utf8(output.stdout).unwrap();
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(output.status.success(), "stderr: {stderr}");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
     for secret in [
         "resolved-env-destination-value",
         "resolved-env-auth-token-value",

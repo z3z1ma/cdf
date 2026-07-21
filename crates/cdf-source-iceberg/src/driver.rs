@@ -8,11 +8,11 @@ use cdf_http::{HttpTransport, SecretProvider};
 use cdf_kernel::{
     BackpressureSupport, BatchStream, CapabilitySupport, CdfError, EffectiveSchemaCatalogEntry,
     EffectiveSchemaRuntime, EstimateSupport, ExecutablePartition, FilterCapabilities,
-    IncrementalShape, PartitionAttestation, PartitionAttestationAttempt, PartitionOpenAttempt,
-    PartitionPlan, PartitionStreamPayload, PartitioningCapabilities, PayloadRetention,
-    PlannedPartitionReader, PlannedTaskSetReference, QueryableResource, ReplaySupport,
-    ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, ScanPlan, ScanRequest,
-    ScopeKind, SourcePosition, TypePolicyAllowances,
+    IncrementalShape, PartitionAttestation, PartitionAttestationAttempt, PartitionAuthority,
+    PartitionOpenAttempt, PartitionPlan, PartitionStreamPayload, PartitioningCapabilities,
+    PayloadRetention, PlannedPartitionReader, PlannedTaskSetReference, QueryableResource,
+    ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, ScanPlan,
+    ScanRequest, ScopeKind, SourcePosition, TypePolicyAllowances,
 };
 use cdf_object_access::FileTransport;
 use cdf_runtime::{
@@ -310,17 +310,17 @@ impl SourceDriver for IcebergSourceDriver {
             ),
         };
         let task_store = ExternalTaskStore::new(
-            context.project_root().join(".cdf"),
+            context.artifact_root().join(".cdf"),
             cdf_kernel::ContentStoreNamespace::new(PLANNING_ARTIFACT_NAMESPACE)?,
         )?;
         Ok(Arc::new(IcebergResource {
             descriptor: plan.descriptor.clone(),
             schema: Arc::new(plan.schema.clone()),
+            compiled_source_plan_hash: plan.compiled_source_plan_hash()?,
             capabilities: plan.resource_capabilities.clone(),
             type_policy_allowances: plan.type_policy_allowances,
             effective_schema_runtime: plan.effective_schema_runtime.clone(),
             baseline_observation_schema_catalog: plan.baseline_observation_schema_catalog.clone(),
-            compiled_source_plan_hash: artifact_hash(plan)?,
             source: physical.source,
             table,
             catalog,
@@ -655,11 +655,11 @@ impl SourceDiscoverySession for IcebergDiscoverySession {
 struct IcebergResource {
     descriptor: ResourceDescriptor,
     schema: arrow_schema::SchemaRef,
+    compiled_source_plan_hash: cdf_kernel::CompiledSourcePlanHash,
     capabilities: ResourceCapabilities,
     type_policy_allowances: TypePolicyAllowances,
     effective_schema_runtime: Option<EffectiveSchemaRuntime>,
     baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
-    compiled_source_plan_hash: String,
     source: IcebergSourceOptions,
     table: LoadedIcebergTable,
     catalog: IcebergCatalogContext,
@@ -677,7 +677,7 @@ impl ResourceStream for IcebergResource {
         Arc::clone(&self.schema)
     }
 
-    fn compiled_source_plan_hash(&self) -> Option<&str> {
+    fn compiled_source_plan_hash(&self) -> Option<&cdf_kernel::CompiledSourcePlanHash> {
         Some(&self.compiled_source_plan_hash)
     }
 
@@ -724,8 +724,7 @@ impl ResourceStream for IcebergResource {
             ))
         })?;
         if committed.as_ref() == &selected.position {
-            scan.partitions.clear();
-            scan.planned_task_set = None;
+            scan.replace_partition_authority(PartitionAuthority::Inline(Vec::new()));
             return Ok(());
         }
         if self.table.resource.mode == IcebergScanMode::AppendSnapshots {
@@ -871,7 +870,7 @@ impl IcebergResource {
         scan: &mut ScanPlan,
         admitted_snapshots: &BTreeSet<i64>,
     ) -> Result<()> {
-        let reference = scan.planned_task_set.take().ok_or_else(|| {
+        let reference = scan.external_task_set().cloned().ok_or_else(|| {
             CdfError::data(format!(
                 "Iceberg append_snapshots resource `{}` has no planned task-set authority",
                 self.descriptor.resource_id
@@ -923,10 +922,9 @@ impl IcebergResource {
                 .ok_or_else(|| CdfError::data("Iceberg append task ordinal exceeds u64"))?;
         }
         if next_ordinal == 0 {
-            scan.partitions.clear();
-            scan.planned_task_set = None;
+            scan.replace_partition_authority(PartitionAuthority::Inline(Vec::new()));
             scan.estimated_rows = Some(0);
-            scan.estimated_bytes = Some(0);
+            scan.planned_source_bytes = Some(cdf_kernel::PlannedSourceBytes::new(0));
             return Ok(());
         }
         let artifact = writer.finalize(|output| authority.encode_to(output))?;
@@ -935,9 +933,9 @@ impl IcebergResource {
                 "filtered Iceberg task-set authority hash changed during append binding",
             ));
         }
-        scan.planned_task_set = Some(artifact.reference);
+        scan.replace_partition_authority(PartitionAuthority::External(artifact.reference));
         scan.estimated_rows = Some(estimated_rows);
-        scan.estimated_bytes = Some(estimated_bytes);
+        scan.planned_source_bytes = Some(cdf_kernel::PlannedSourceBytes::new(estimated_bytes));
         Ok(())
     }
 }
@@ -1146,7 +1144,7 @@ mod tests {
     use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
-    use cdf_engine::{EngineExecutionOptions, EnginePlanInput, EnginePreviewLimits, Planner};
+    use cdf_engine::{EngineExecutionConfig, EnginePlanInput, EnginePreviewLimits, Planner};
     use cdf_http::{
         HttpRequest, HttpResponse, HttpResponseBudget, HttpTransport, SecretProvider, SecretUri,
         SecretValue,
@@ -2306,7 +2304,7 @@ mod tests {
         .unwrap();
         let mut reader = store
             .reader(
-                scan.planned_task_set.clone().unwrap(),
+                scan.external_task_set().cloned().unwrap(),
                 crate::ICEBERG_TASK_SET_TYPE,
                 crate::DEFAULT_MAXIMUM_TASK_BYTES,
                 crate::DEFAULT_MAXIMUM_TASK_AUTHORITY_BYTES,
@@ -2575,10 +2573,10 @@ mod tests {
                 scope: ScopeKey::Resource,
             })
             .unwrap();
-        assert!(scan.partitions.is_empty());
+        assert_eq!(scan.partition_count().unwrap(), 0);
         assert_eq!(scan.estimated_rows, Some(0));
-        assert_eq!(scan.estimated_bytes, Some(0));
-        assert_eq!(scan.planned_task_set.as_ref().unwrap().task_count, 0);
+        assert_eq!(scan.planned_source_bytes.unwrap().get(), 0);
+        assert_eq!(scan.external_task_set().unwrap().task_count, 0);
 
         let mut sink = VecHealthSink::default();
         driver
@@ -2786,8 +2784,8 @@ mod tests {
         };
         let one_job_scan = resource.negotiate(&request).unwrap();
         assert_eq!(one_job_scan.estimated_rows, Some(8));
-        assert!(one_job_scan.estimated_bytes.unwrap() > 0);
-        let reference = one_job_scan.planned_task_set.clone().unwrap();
+        assert!(one_job_scan.planned_source_bytes.unwrap().get() > 0);
+        let reference = one_job_scan.external_task_set().cloned().unwrap();
         assert_eq!(reference.task_count, 2);
 
         let store = ExternalTaskStore::new(
@@ -2816,7 +2814,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(unchanged_scan.partition_count().unwrap(), 0);
-        assert!(unchanged_scan.planned_task_set.is_none());
+        assert!(unchanged_scan.inline_partitions().is_some());
         assert_eq!(authority.output_schema_id, 1);
         assert_eq!(authority.projected_field_ids, vec![1, 2]);
         assert_eq!(
@@ -2878,13 +2876,11 @@ mod tests {
                 .all(|delete| delete.content == crate::IcebergDeleteContent::Equality)
         );
         assert_eq!(
-            one_job_scan.estimated_bytes,
-            Some(
-                tasks
-                    .iter()
-                    .map(|task| task.data_file.file_size_bytes)
-                    .sum()
-            )
+            one_job_scan.planned_source_bytes.unwrap().get(),
+            tasks
+                .iter()
+                .map(|task| task.data_file.file_size_bytes)
+                .sum::<u64>()
         );
 
         let mut planned = resource.planned_partition_reader(&reference).unwrap();
@@ -3004,7 +3000,9 @@ mod tests {
         assert_eq!(preview.row_count, 5);
 
         metadata_failures.store(1, Ordering::SeqCst);
-        let options = EngineExecutionOptions::default().with_execution_services(execution.clone());
+        let options = EngineExecutionConfig::default()
+            .with_execution_services(execution.clone())
+            .new_invocation();
         let retry_evidence = options.source_retry_evidence();
         let package = tempfile::tempdir().unwrap();
         let run = futures_executor::block_on(
@@ -3086,7 +3084,9 @@ mod tests {
                 resource.as_ref(),
                 filtered_package.path(),
                 &|_, _| Ok(()),
-                EngineExecutionOptions::default().with_execution_services(execution.clone()),
+                EngineExecutionConfig::default()
+                    .with_execution_services(execution.clone())
+                    .new_invocation(),
             ),
         )
         .unwrap();
@@ -3137,8 +3137,9 @@ mod tests {
         let cancellation = RunCancellation::default();
         *metadata_cancellation.lock().unwrap() = Some(cancellation.clone());
         let cancelled_package = tempfile::tempdir().unwrap();
-        let cancelled_options = EngineExecutionOptions::default()
+        let cancelled_options = EngineExecutionConfig::default()
             .with_execution_services(execution.clone())
+            .new_invocation()
             .with_cancellation(cancellation.clone());
         let cancellation_error = futures_executor::block_on(
             cdf_engine::execute_to_package_with_segment_positions_and_pre_finalize(
@@ -3171,11 +3172,7 @@ mod tests {
         let many_jobs_resource = driver.resolve(&many_jobs_plan, &context).unwrap();
         let many_jobs_scan = many_jobs_resource.negotiate(&request).unwrap();
         assert_eq!(
-            many_jobs_scan
-                .planned_task_set
-                .as_ref()
-                .unwrap()
-                .content_sha256,
+            many_jobs_scan.external_task_set().unwrap().content_sha256,
             reference.content_sha256
         );
         assert_eq!(
@@ -3233,7 +3230,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let (execution, resource, mut scan, committed) =
             planned_append_resource(root.path(), "append");
-        assert_eq!(scan.planned_task_set.as_ref().unwrap().task_count, 2);
+        assert_eq!(scan.external_task_set().unwrap().task_count, 2);
         let full_scan = scan.clone();
         resource
             .rebind_scan_for_resume(
@@ -3242,8 +3239,8 @@ mod tests {
             )
             .unwrap();
         assert_eq!(scan.estimated_rows, Some(5));
-        assert_eq!(scan.estimated_bytes, Some(1));
-        let reference = scan.planned_task_set.clone().unwrap();
+        assert_eq!(scan.planned_source_bytes.unwrap().get(), 1);
+        let reference = scan.external_task_set().cloned().unwrap();
         assert_eq!(reference.task_count, 1);
         let store = ExternalTaskStore::new(
             root.path().join(".cdf"),
@@ -3306,14 +3303,7 @@ mod tests {
                 scope: ScopeKey::Resource,
             })
             .unwrap();
-        assert_eq!(
-            historical_scan
-                .planned_task_set
-                .as_ref()
-                .unwrap()
-                .task_count,
-            1
-        );
+        assert_eq!(historical_scan.external_task_set().unwrap().task_count, 1);
         let historical_store = ExternalTaskStore::new(
             root.path().join(".cdf"),
             ContentStoreNamespace::new(PLANNING_ARTIFACT_NAMESPACE).unwrap(),
@@ -3321,7 +3311,7 @@ mod tests {
         .unwrap();
         let historical_reader = historical_store
             .reader(
-                historical_scan.planned_task_set.unwrap(),
+                historical_scan.external_task_set().cloned().unwrap(),
                 crate::ICEBERG_TASK_SET_TYPE,
                 crate::DEFAULT_MAXIMUM_TASK_BYTES,
                 crate::DEFAULT_MAXIMUM_TASK_AUTHORITY_BYTES,
@@ -3403,7 +3393,7 @@ mod tests {
                 scope: ScopeKey::Resource,
             })
             .unwrap();
-        let reference = scan.planned_task_set.as_ref().unwrap();
+        let reference = scan.external_task_set().unwrap();
         assert_eq!(reference.task_count, 1);
         let store = ExternalTaskStore::new(
             root.path().join(".cdf"),
@@ -3492,7 +3482,7 @@ mod tests {
                 scope: ScopeKey::Resource,
             })
             .unwrap();
-        assert_eq!(scan.planned_task_set.as_ref().unwrap().task_count, 0);
+        assert_eq!(scan.external_task_set().unwrap().task_count, 0);
         assert_eq!(observed_requests.lock().unwrap().len(), 2);
         assert!(observed_requests.lock().unwrap()[0].contains("warehouse=primary"));
         assert!(
@@ -3552,7 +3542,7 @@ mod tests {
                 scope: ScopeKey::Resource,
             })
             .unwrap();
-        let reference = scan.planned_task_set.as_ref().unwrap();
+        let reference = scan.external_task_set().unwrap();
         assert_eq!(reference.task_count, 2);
         let mut planned = resource.planned_partition_reader(reference).unwrap();
         let rows = futures_executor::block_on(async {

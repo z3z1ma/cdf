@@ -1,6 +1,6 @@
 {
   "package_id": "live-local-file-v1",
-  "package_hash": "sha256:2bdd60798d1d3604ceb6866e22f68a3e5bbd585653e66a01806beb8e13b7652b",
+  "package_hash": "sha256:0abe4c20a2358b533cc413f61ba6389b42733560e1a0598f654d12b8b5cf5cab",
   "checkpoint_id": "checkpoint-live-local-file-v1",
   "pipeline_id": "pipeline-live-local-file-v1",
   "resource_id": "local.events",
@@ -21,9 +21,9 @@
   "mirror_state_rows": 1,
   "package": {
     "manifest_version": 2,
-    "package_hash": "sha256:2bdd60798d1d3604ceb6866e22f68a3e5bbd585653e66a01806beb8e13b7652b",
+    "package_hash": "sha256:0abe4c20a2358b533cc413f61ba6389b42733560e1a0598f654d12b8b5cf5cab",
     "package_status": "checkpointed",
-    "signature_signing_input": "sha256:2bdd60798d1d3604ceb6866e22f68a3e5bbd585653e66a01806beb8e13b7652b",
+    "signature_signing_input": "sha256:0abe4c20a2358b533cc413f61ba6389b42733560e1a0598f654d12b8b5cf5cab",
     "signature_value": null,
     "identity_manifest_version": 2,
     "identity_layout": [
@@ -51,18 +51,18 @@
       },
       {
         "path": "lineage/lineage.json",
-        "byte_count": 401,
-        "sha256": "14ad5e8997beabf4b4f5932a4ed17fb6023acdd16d8d472a8c9b1b45d4b7922f"
+        "byte_count": 495,
+        "sha256": "7f76c24c693217f6f51c879d4b4df22be5271eab71fabba62e00bc22a9d6f18c"
       },
       {
         "path": "plan/explain.json",
-        "byte_count": 2263,
-        "sha256": "22dcb2deecb68cc69d2847a71f0ba4c0980eb6da2e5bd1a42d30d66448452bed"
+        "byte_count": 2261,
+        "sha256": "e43e943b5eac94aa7f55cd189326baefa7b8a309555f27ce20a68e8aff6d8d7e"
       },
       {
         "path": "plan/scan.json",
-        "byte_count": 751,
-        "sha256": "d3c472e22cb1da2d102411a06daf1fb4734cad63b610617f40af15fe9018f205"
+        "byte_count": 769,
+        "sha256": "96be418e670f122d6a60872b244aaf8a3a06cf5d0eb6a51dc47964e7c1d931f0"
       },
       {
         "path": "plan/schema-admission.json",
@@ -86,13 +86,13 @@
       },
       {
         "path": "schema/runtime-arrow-schema.arrow",
-        "byte_count": 1098,
-        "sha256": "16d1adeead5b3ff5af60613d463182eade9bf32a366f1a91ff9b72dcf3ec7e76"
+        "byte_count": 520,
+        "sha256": "5232267ca0d29cabc491a3e7ce8961950477bd771d366d99a854ca8f10a5b71f"
       },
       {
         "path": "schema/stream-admission-evidence.json",
-        "byte_count": 1727,
-        "sha256": "f449b480d076564808f33218804f17ebf498d57926b8673303b6d2262699fb82"
+        "byte_count": 1821,
+        "sha256": "312bc31cdf6bcffd0db19a5305b9ecb4dac519edacfbce576426ff196277e932"
       },
       {
         "path": "state/input_checkpoint.json",
@@ -112,7 +112,7 @@
       {
         "path": "stats/profile.parquet",
         "byte_count": 8171,
-        "sha256": "416eecacd52a6e12422c90c9d96fe3ca8812ac00259f64d4f07116cfbd6b563c"
+        "sha256": "cf33f079b7520fd774d7f5ec4b5074bf0eae6abddf0bf4cc5cdc981457c3a701"
       },
       {
         "path": "trace.jsonl",

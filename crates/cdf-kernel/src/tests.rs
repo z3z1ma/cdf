@@ -33,10 +33,35 @@ fn planned_task_set_reference() -> PlannedTaskSetReference {
 }
 
 #[test]
-fn external_task_authority_replaces_inline_partitions_without_a_fallback() {
-    let mut scan = ScanPlan {
-        plan_id: PlanId::new("external-task-plan").unwrap(),
-        request: ScanRequest {
+fn compiled_source_identity_categories_validate_during_construction_and_deserialization() {
+    let valid = format!("sha256:{}", "a".repeat(64));
+    assert_eq!(SourceDiscoveryBinding::new(&valid).unwrap().as_str(), valid);
+    assert_eq!(CompiledSourcePlanHash::new(&valid).unwrap().as_str(), valid);
+    assert_eq!(PhysicalSourcePlanHash::new(&valid).unwrap().as_str(), valid);
+    assert_eq!(SourceSemanticsHash::new(&valid).unwrap().as_str(), valid);
+    assert_eq!(
+        SchemaObservationBinding::new(&valid).unwrap().as_str(),
+        valid
+    );
+
+    for malformed in [
+        serde_json::json!("not-a-hash"),
+        serde_json::json!(format!("sha256:{}", "A".repeat(64))),
+        serde_json::json!(format!("sha256:{}", "a".repeat(63))),
+    ] {
+        assert!(serde_json::from_value::<SourceDiscoveryBinding>(malformed.clone()).is_err());
+        assert!(serde_json::from_value::<CompiledSourcePlanHash>(malformed.clone()).is_err());
+        assert!(serde_json::from_value::<PhysicalSourcePlanHash>(malformed.clone()).is_err());
+        assert!(serde_json::from_value::<SourceSemanticsHash>(malformed.clone()).is_err());
+        assert!(serde_json::from_value::<SchemaObservationBinding>(malformed).is_err());
+    }
+}
+
+#[test]
+fn external_task_authority_is_a_closed_alternative_to_inline_partitions() {
+    let scan = ScanPlan::new(
+        PlanId::new("external-task-plan").unwrap(),
+        ScanRequest {
             resource_id: ResourceId::new("lake.events").unwrap(),
             projection: None,
             filters: Vec::new(),
@@ -44,30 +69,51 @@ fn external_task_authority_replaces_inline_partitions_without_a_fallback() {
             order_by: Vec::new(),
             scope: ScopeKey::Resource,
         },
-        partitions: Vec::new(),
-        planned_task_set: Some(planned_task_set_reference()),
-        pushed_predicates: Vec::new(),
-        unsupported_predicates: Vec::new(),
-        estimated_rows: None,
-        estimated_bytes: None,
-        delivery_guarantee: DeliveryGuarantee::AtLeastOnceDuplicateRisk,
-    };
-    assert_eq!(scan.partition_count().unwrap(), 1_000_000);
-    scan.partitions.push(PartitionPlan {
-        partition_id: PartitionId::new("forbidden-inline").unwrap(),
-        scope: ScopeKey::Resource,
-        planned_position: None,
-        start_position: None,
-        scan_intent: CompiledScanIntent::full_scan(),
-        retry_safety: PartitionRetrySafety::Forbidden,
-        metadata: BTreeMap::new(),
-    });
-    assert!(
-        scan.validate_partition_authority()
-            .unwrap_err()
-            .message
-            .contains("both external task authority and inline partitions")
+        PartitionAuthority::External(planned_task_set_reference()),
+        Vec::new(),
+        Vec::new(),
+        None,
+        None,
+        DeliveryGuarantee::AtLeastOnceDuplicateRisk,
     );
+    assert_eq!(scan.partition_count().unwrap(), 1_000_000);
+    assert!(scan.inline_partitions().is_none());
+    assert_eq!(
+        scan.external_task_set(),
+        Some(&planned_task_set_reference())
+    );
+}
+
+#[test]
+fn scan_plan_serialization_has_one_partition_authority_and_rejects_the_retired_shape() {
+    let scan = ScanPlan::new(
+        PlanId::new("external-task-plan").unwrap(),
+        ScanRequest {
+            resource_id: ResourceId::new("lake.events").unwrap(),
+            projection: None,
+            filters: Vec::new(),
+            limit: None,
+            order_by: Vec::new(),
+            scope: ScopeKey::Resource,
+        },
+        PartitionAuthority::External(planned_task_set_reference()),
+        Vec::new(),
+        Vec::new(),
+        None,
+        None,
+        DeliveryGuarantee::AtLeastOnceDuplicateRisk,
+    );
+    let encoded = serde_json::to_value(&scan).unwrap();
+    assert!(encoded.get("partition_authority").is_some());
+    assert!(encoded.get("partitions").is_none());
+    assert!(encoded.get("planned_task_set").is_none());
+
+    let mut retired = encoded;
+    let object = retired.as_object_mut().unwrap();
+    object.remove("partition_authority");
+    object.insert("partitions".to_owned(), serde_json::json!([]));
+    object.insert("planned_task_set".to_owned(), serde_json::Value::Null);
+    assert!(serde_json::from_value::<ScanPlan>(retired).is_err());
 }
 
 #[test]

@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use cdf_kernel::{
-    CdfError, PartitionPlan, PartitionRetrySafety, PlannedTaskSetReference, Result, ScanPlan,
+    CdfError, PartitionAuthority, PartitionPlan, PartitionRetrySafety, PlannedTaskSetReference,
+    Result, ScanPlan,
 };
 use serde::{Deserialize, Serialize};
 
@@ -135,32 +136,39 @@ impl CanonicalPartitionSchedule {
         }
         let schedule_identity_hash = schedule_identity_hash(source, scan)?;
         let admission = PartitionAdmissionTemplate::compile(&source.execution_capabilities)?;
-        let authority = if let Some(planned_task_set) = &scan.planned_task_set {
-            if planned_task_set.task_count > u64::from(u32::MAX) {
-                return Err(CdfError::contract(
-                    "external task-set partition count exceeds canonical u32 ordinals",
-                ));
+        let authority = match scan.partition_authority() {
+            PartitionAuthority::External(planned_task_set) => {
+                if planned_task_set.task_count > u64::from(u32::MAX) {
+                    return Err(CdfError::contract(
+                        "external task-set partition count exceeds canonical u32 ordinals",
+                    ));
+                }
+                PartitionScheduleAuthority::External {
+                    planned_task_set: planned_task_set.clone(),
+                }
             }
-            PartitionScheduleAuthority::External {
-                planned_task_set: planned_task_set.clone(),
+            PartitionAuthority::Inline(inline) => {
+                let mut partition_ids = BTreeSet::new();
+                let partitions = inline
+                    .iter()
+                    .enumerate()
+                    .map(|(ordinal, partition)| {
+                        if !partition_ids.insert(partition.partition_id.as_str()) {
+                            return Err(CdfError::contract(format!(
+                                "scan plan contains duplicate partition id `{}`",
+                                partition.partition_id
+                            )));
+                        }
+                        compile_partition_binding(
+                            source,
+                            &schedule_identity_hash,
+                            ordinal,
+                            partition,
+                        )
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                PartitionScheduleAuthority::Inline { partitions }
             }
-        } else {
-            let mut partition_ids = BTreeSet::new();
-            let partitions = scan
-                .partitions
-                .iter()
-                .enumerate()
-                .map(|(ordinal, partition)| {
-                    if !partition_ids.insert(partition.partition_id.as_str()) {
-                        return Err(CdfError::contract(format!(
-                            "scan plan contains duplicate partition id `{}`",
-                            partition.partition_id
-                        )));
-                    }
-                    compile_partition_binding(source, &schedule_identity_hash, ordinal, partition)
-                })
-                .collect::<Result<Vec<_>>>()?;
-            PartitionScheduleAuthority::Inline { partitions }
         };
         Ok(Self {
             plan_id: scan.plan_id.to_string(),
@@ -291,8 +299,7 @@ fn schedule_identity_hash(source: &CompiledSourceExecutionPlan, scan: &ScanPlan)
         "driver": source.driver,
         "physical_plan_hash": source.physical_plan_hash,
         "plan_id": scan.plan_id,
-        "partitions": scan.partitions,
-        "planned_task_set": scan.planned_task_set,
+        "partition_authority": scan.partition_authority(),
     }))
 }
 

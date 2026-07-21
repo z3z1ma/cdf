@@ -171,7 +171,10 @@ async fn run_project_with_context(
         manifest_planning: ManifestPlanning::ResolveAgainstCheckpoint,
         drain_command_started: None,
     };
-    match run_project_inner(execution, None).await {
+    // Keep the orchestration future below the platform test-thread stack ceiling. The inner
+    // pipeline carries destination, package, and source state across many await points; pinning
+    // that state on the heap also prevents embedding it into every caller's future frame.
+    match Box::pin(run_project_inner(execution, None)).await {
         Ok(ProjectRunUnitOutcome::Committed(unit)) => {
             Ok(ProjectRunOutcome::Committed(Box::new(unit.report)))
         }
@@ -384,10 +387,22 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
                 "committed drain execution completed without canonical epoch closure evidence",
             )
         })?;
-        remaining_plan.advance_committed_drain_frontier(
-            drain_epoch.consumed_partition_count,
-            drain_epoch.resume_partition.as_deref(),
-        )?;
+        if remaining_plan.scan.external_task_set().is_some() {
+            if drain_epoch.resume_partition.is_some() {
+                return Err(CdfError::contract(
+                    "partial external drain continuation requires source-owned task slicing",
+                ));
+            }
+            remaining_plan.rebind_initial_committed_frontier(
+                resource.stream(),
+                unit.report.checkpoint.delta.source_resume_position(),
+            )?;
+        } else {
+            remaining_plan.advance_committed_drain_frontier(
+                drain_epoch.consumed_partition_count,
+                drain_epoch.resume_partition.as_deref(),
+            )?;
+        }
         epoch_count = epoch_count
             .checked_add(1)
             .ok_or_else(|| CdfError::data("drain epoch count overflow"))?;
@@ -422,7 +437,7 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
             });
             return Ok(ProjectRunOutcome::Committed(Box::new(report)));
         }
-        if remaining_plan.scan.partitions.is_empty() {
+        if remaining_plan.scan.partition_count()? == 0 {
             return Err(CdfError::internal(
                 "drain source exhausted without a terminal epoch closure",
             ));
@@ -742,20 +757,21 @@ async fn run_project_inner(
         },
         &execution.services,
     )?;
-    let options = EngineExecutionOptions::default()
+    let config = EngineExecutionConfig::default()
         .with_phase_metrics(execution.recorder.phase_telemetry_enabled())
         .with_statistics_profile(execution.telemetry.statistics_profile)
         .with_execution_services(execution.services.clone());
-    let options = match execution.scheduler.as_ref() {
+    let config = match execution.scheduler.as_ref() {
         Some(scheduler) => {
             let partition_count = usize::try_from(manifest_plan.plan.scan.partition_count()?)
                 .map_err(|_| {
                     CdfError::data("scan partition count exceeds this process address space")
                 })?;
-            options.with_scheduler_resolution(scheduler.narrow_to_partition_count(partition_count))
+            config.with_scheduler_resolution(scheduler.narrow_to_partition_count(partition_count))
         }
-        None => options,
+        None => config,
     };
+    let options = config.new_invocation();
     let retry_evidence = options.source_retry_evidence();
     let output_result = match (active_staged.as_mut(), drain_controller.as_deref_mut()) {
         (Some(staged), Some(controller)) => {
@@ -953,8 +969,10 @@ async fn run_project_inner(
         execution.checkpoint_store,
         replay_memory,
         PackageReplayHooks {
+            before_package_receipt_recorded: None,
             after_receipt_verified: execution.after_receipt_verified,
             stage: Some(&stage_hook),
+            ..Default::default()
         },
         active_staged,
         Some(&execution.services),
@@ -1043,7 +1061,7 @@ fn plan_file_manifest_incrementality<'a>(
             summary: None,
         });
     }
-    if plan.scan.planned_task_set.is_some() {
+    if plan.scan.external_task_set().is_some() {
         let total_file_count = plan.scan.partition_count()?;
         if descriptor.write_disposition != WriteDisposition::Append {
             return Ok(FileManifestPlanning {
@@ -1077,7 +1095,10 @@ fn plan_file_manifest_incrementality<'a>(
             }),
         });
     }
-    let Some(current_files) = file_positions_from_partitions(&plan.scan.partitions)? else {
+    let inline_partitions = plan.scan.inline_partitions().ok_or_else(|| {
+        CdfError::internal("inline file manifest planning lost inline partition authority")
+    })?;
+    let Some(current_files) = file_positions_from_partitions(inline_partitions)? else {
         return Ok(FileManifestPlanning {
             plan: Cow::Borrowed(plan),
             summary: None,
@@ -1115,7 +1136,8 @@ fn plan_file_manifest_incrementality<'a>(
         .map_err(|_| CdfError::data("changed file manifest count exceeds u64"))?;
     let selected = plan
         .scan
-        .partitions
+        .inline_partitions()
+        .expect("inline file manifest planning retains inline authority")
         .iter()
         .zip(&current_files)
         .filter(|(_, file)| changed_paths.contains(&file.path))
@@ -1134,7 +1156,9 @@ fn plan_file_manifest_incrementality<'a>(
 }
 
 fn preselected_manifest_summary(plan: &EnginePlan) -> Result<Option<FileManifestRunSummary>> {
-    let Some(files) = file_positions_from_partitions(&plan.scan.partitions)? else {
+    let Some(files) =
+        file_positions_from_partitions(plan.scan.inline_partitions().unwrap_or_default())?
+    else {
         return Ok(None);
     };
     let file_count = u64::try_from(files.len())

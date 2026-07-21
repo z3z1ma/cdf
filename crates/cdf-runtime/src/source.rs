@@ -9,10 +9,11 @@ use std::{
 use arrow_schema::Schema;
 use cdf_http::{EgressAllowlist, HttpMethod, HttpRequest, SecretProvider};
 use cdf_kernel::{
-    CanonicalArrowSchema, CdfError, EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, ErrorKind,
-    EventTimeDomain, FreshnessSpec, OperatorWatermarkBehavior, PayloadRetention, PushdownFidelity,
-    QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceId, Result,
-    SafeFrontierPolicy, SchemaSource, SourcePosition, SourcePositionKind, TrustLevel,
+    CanonicalArrowSchema, CdfError, CompiledSourcePlanHash, EffectiveSchemaCatalogEntry,
+    EffectiveSchemaRuntime, ErrorKind, EventTimeDomain, FreshnessSpec, OperatorWatermarkBehavior,
+    PayloadRetention, PhysicalSourcePlanHash, PushdownFidelity, QueryableResource,
+    ResourceCapabilities, ResourceDescriptor, ResourceId, Result, SafeFrontierPolicy, SchemaSource,
+    SourceDiscoveryBinding, SourcePosition, SourcePositionKind, SourceSemanticsHash, TrustLevel,
     TypePolicyAllowances, WatermarkAuthority,
 };
 use serde::{Deserialize, Serialize};
@@ -1495,7 +1496,63 @@ pub struct CompiledSourcePlan {
     pub redacted_options: serde_json::Value,
     pub redacted_options_hash: String,
     pub physical_plan: serde_json::Value,
-    pub physical_plan_hash: String,
+    pub physical_plan_hash: PhysicalSourcePlanHash,
+}
+
+/// The compiler-owned identities for one source plan.
+///
+/// Keeping the categories in one typed value prevents adapters from independently recomputing,
+/// relabelling, or accidentally substituting discovery, execution, physical, and semantic
+/// authority. The registry constructs this value; source adapters consume only the categories
+/// needed by their own durable artifacts.
+///
+/// ```compile_fail
+/// use cdf_kernel::{CompiledSourcePlanHash, SourceDiscoveryBinding};
+///
+/// fn bind_inventory(_: SourceDiscoveryBinding) {}
+/// let execution = CompiledSourcePlanHash::new(format!("sha256:{}", "a".repeat(64))).unwrap();
+/// bind_inventory(execution);
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompiledSourceIdentities {
+    discovery_binding: SourceDiscoveryBinding,
+    compiled_plan: CompiledSourcePlanHash,
+    physical_plan: PhysicalSourcePlanHash,
+    source_semantics: SourceSemanticsHash,
+}
+
+impl CompiledSourceIdentities {
+    pub fn compile(source: &CompiledSourcePlan) -> Result<Self> {
+        source.validate()?;
+        Ok(Self {
+            discovery_binding: source.discovery_binding_hash()?,
+            compiled_plan: source.compiled_source_plan_hash()?,
+            physical_plan: source.physical_plan_hash.clone(),
+            source_semantics: source.schema_binding_stable_hash()?,
+        })
+    }
+
+    pub fn discovery_binding(&self) -> &SourceDiscoveryBinding {
+        &self.discovery_binding
+    }
+
+    pub fn compiled_plan(&self) -> &CompiledSourcePlanHash {
+        &self.compiled_plan
+    }
+
+    pub fn physical_plan(&self) -> &PhysicalSourcePlanHash {
+        &self.physical_plan
+    }
+
+    pub fn source_semantics(&self) -> &SourceSemanticsHash {
+        &self.source_semantics
+    }
+}
+
+impl CompiledSourcePlan {
+    pub fn identities(&self) -> Result<CompiledSourceIdentities> {
+        CompiledSourceIdentities::compile(self)
+    }
 }
 
 /// Source-neutral execution ceiling recorded in the engine plan.
@@ -1507,9 +1564,9 @@ pub struct CompiledSourceCompilerBinding {
     pub driver_id: String,
     pub driver_version: String,
     pub option_schema_hash: String,
-    pub physical_plan_hash: String,
-    pub compiled_source_plan_hash: String,
-    pub source_semantics_hash: String,
+    pub physical_plan_hash: PhysicalSourcePlanHash,
+    pub compiled_source_plan_hash: CompiledSourcePlanHash,
+    pub source_semantics_hash: SourceSemanticsHash,
     pub execution_capabilities_hash: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_capabilities_hash: Option<String>,
@@ -1518,13 +1575,14 @@ pub struct CompiledSourceCompilerBinding {
 impl CompiledSourceCompilerBinding {
     pub fn compile(source: &CompiledSourcePlan) -> Result<Self> {
         source.validate()?;
+        let identities = source.identities()?;
         let binding = Self {
             driver_id: source.driver.driver_id.as_str().to_owned(),
             driver_version: source.driver.driver_version.clone(),
             option_schema_hash: source.driver.option_schema_hash.clone(),
-            physical_plan_hash: source.physical_plan_hash.clone(),
-            compiled_source_plan_hash: artifact_hash(source)?,
-            source_semantics_hash: source.schema_binding_stable_hash()?,
+            physical_plan_hash: identities.physical_plan().clone(),
+            compiled_source_plan_hash: identities.compiled_plan().clone(),
+            source_semantics_hash: identities.source_semantics().clone(),
             execution_capabilities_hash: artifact_hash(&source.execution_capabilities)?,
             stream_capabilities_hash: source
                 .stream_capabilities
@@ -1540,12 +1598,6 @@ impl CompiledSourceCompilerBinding {
         SourceDriverId::new(self.driver_id.clone())?;
         validate_version(&self.driver_version)?;
         validate_hash("source option schema", &self.option_schema_hash)?;
-        validate_hash("compiled source physical plan", &self.physical_plan_hash)?;
-        validate_hash(
-            "complete compiled source plan",
-            &self.compiled_source_plan_hash,
-        )?;
-        validate_hash("compiled source semantics", &self.source_semantics_hash)?;
         validate_hash(
             "compiled source execution capabilities",
             &self.execution_capabilities_hash,
@@ -1561,28 +1613,27 @@ impl CompiledSourceCompilerBinding {
 pub struct CompiledSourceExecutionPlan {
     pub(crate) resource_id: ResourceId,
     pub(crate) driver: SourceDriverDescriptor,
-    pub(crate) physical_plan_hash: String,
+    pub(crate) physical_plan_hash: PhysicalSourcePlanHash,
     pub(crate) execution_capabilities: SourceExecutionCapabilities,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) stream_capabilities: Option<SourceStreamCapabilities>,
-    compiled_source_plan_hash: String,
-    source_semantics_hash: String,
+    compiled_source_plan_hash: CompiledSourcePlanHash,
+    source_semantics_hash: SourceSemanticsHash,
     execution_binding_hash: String,
 }
 
 impl CompiledSourceExecutionPlan {
     pub fn compile(source: &CompiledSourcePlan) -> Result<Self> {
         source.validate()?;
-        let compiled_source_plan_hash = artifact_hash(source)?;
-        let source_semantics_hash = source.schema_binding_stable_hash()?;
+        let identities = source.identities()?;
         let mut plan = Self {
             resource_id: source.descriptor.resource_id.clone(),
             driver: source.driver.clone(),
-            physical_plan_hash: source.physical_plan_hash.clone(),
+            physical_plan_hash: identities.physical_plan().clone(),
             execution_capabilities: source.execution_capabilities.clone(),
             stream_capabilities: source.stream_capabilities.clone(),
-            compiled_source_plan_hash,
-            source_semantics_hash,
+            compiled_source_plan_hash: identities.compiled_plan().clone(),
+            source_semantics_hash: identities.source_semantics().clone(),
             execution_binding_hash: String::new(),
         };
         plan.execution_binding_hash = plan.canonical_binding_hash()?;
@@ -1598,12 +1649,6 @@ impl CompiledSourceExecutionPlan {
             &self.execution_capabilities,
             self.stream_capabilities.as_ref(),
         )?;
-        validate_hash("compiled source physical plan", &self.physical_plan_hash)?;
-        validate_hash(
-            "complete compiled source plan",
-            &self.compiled_source_plan_hash,
-        )?;
-        validate_hash("compiled source semantics", &self.source_semantics_hash)?;
         validate_hash(
             "compiled source execution binding",
             &self.execution_binding_hash,
@@ -1663,7 +1708,7 @@ impl CompiledSourceExecutionPlan {
         artifact_hash(&identity)
     }
 
-    pub fn compiled_source_plan_hash(&self) -> &str {
+    pub fn compiled_source_plan_hash(&self) -> &CompiledSourcePlanHash {
         &self.compiled_source_plan_hash
     }
 
@@ -1741,7 +1786,7 @@ impl CompiledSourcePlan {
         input: CompiledSourcePlanInput,
     ) -> Result<Self> {
         let redacted_options_hash = artifact_hash(&input.redacted_options)?;
-        let physical_plan_hash = artifact_hash(&input.physical_plan)?;
+        let physical_plan_hash = PhysicalSourcePlanHash::new(artifact_hash(&input.physical_plan)?)?;
         let plan = Self {
             driver,
             descriptor: input.descriptor,
@@ -1779,12 +1824,14 @@ impl CompiledSourcePlan {
         validate_compiled_source_artifact(&self.redacted_options, "compiled source options", 0)?;
         validate_compiled_source_artifact(&self.physical_plan, "compiled source physical plan", 0)?;
         validate_hash("compiled source options", &self.redacted_options_hash)?;
-        validate_hash("compiled source physical plan", &self.physical_plan_hash)?;
-        if artifact_hash(&self.redacted_options)? != self.redacted_options_hash
-            || artifact_hash(&self.physical_plan)? != self.physical_plan_hash
-        {
+        if artifact_hash(&self.redacted_options)? != self.redacted_options_hash {
             return Err(CdfError::contract(
-                "compiled source plan hash does not match its canonical payload",
+                "compiled source options hash does not match its canonical payload",
+            ));
+        }
+        if artifact_hash(&self.physical_plan)? != self.physical_plan_hash.as_str() {
+            return Err(CdfError::contract(
+                "compiled source physical plan hash does not match its canonical payload",
             ));
         }
         validate_baseline_observation_schema_catalog(&self.baseline_observation_schema_catalog)?;
@@ -1874,7 +1921,7 @@ impl CompiledSourcePlan {
 
     /// Hashes the complete compiled source semantics while excluding only the
     /// schema fields that the compiler is allowed to bind after discovery.
-    pub fn schema_binding_stable_hash(&self) -> Result<String> {
+    pub fn schema_binding_stable_hash(&self) -> Result<SourceSemanticsHash> {
         self.validate()?;
         let mut descriptor = self.descriptor.clone();
         descriptor.schema_source = SchemaSource::Discover;
@@ -1899,7 +1946,7 @@ impl CompiledSourcePlan {
                         .map_err(|error| CdfError::internal(error.to_string()))?,
                 );
         }
-        artifact_hash(&identity)
+        SourceSemanticsHash::new(artifact_hash(&identity)?)
     }
 
     /// Hashes only the source interpretation that can change discovery observations.
@@ -1907,9 +1954,9 @@ impl CompiledSourcePlan {
     /// Cursor, disposition, keys, and other post-discovery resource semantics belong to the
     /// execution compiler binding, not the schema snapshot. Keeping the two identities separate
     /// allows discovery to propose those semantics without invalidating the snapshot it produced.
-    pub fn discovery_binding_hash(&self) -> Result<String> {
+    pub fn discovery_binding_hash(&self) -> Result<SourceDiscoveryBinding> {
         self.validate()?;
-        artifact_hash(&serde_json::json!({
+        SourceDiscoveryBinding::new(artifact_hash(&serde_json::json!({
             "driver": self.driver,
             "resource_id": self.descriptor.resource_id,
             "type_policy_allowances": self.type_policy_allowances,
@@ -1917,7 +1964,11 @@ impl CompiledSourcePlan {
             "redacted_options_hash": self.redacted_options_hash,
             "physical_plan": self.physical_plan,
             "physical_plan_hash": self.physical_plan_hash,
-        }))
+        }))?)
+    }
+
+    pub fn compiled_source_plan_hash(&self) -> Result<CompiledSourcePlanHash> {
+        CompiledSourcePlanHash::new(artifact_hash(self)?)
     }
 }
 
@@ -2099,6 +2150,7 @@ pub struct SourceDiscoveryCandidate {
     pub size_bytes: Option<u64>,
     pub modified_at_ms: Option<i64>,
     pub identity: BTreeMap<String, String>,
+    schema_observation_binding: Option<cdf_kernel::SchemaObservationBinding>,
 }
 
 impl SourceDiscoveryCandidate {
@@ -2116,6 +2168,7 @@ impl SourceDiscoveryCandidate {
             size_bytes,
             modified_at_ms,
             identity,
+            schema_observation_binding: None,
         };
         candidate.validate()?;
         Ok(candidate)
@@ -2140,20 +2193,39 @@ impl SourceDiscoveryCandidate {
         Ok(())
     }
 
+    /// Binds discovery evidence to the source-owned partition identity that execution will
+    /// present. Drivers with an inventory/task authority should set this from the canonical
+    /// partition record; other drivers use the candidate's own discovery binding.
+    pub fn with_schema_observation_binding(
+        mut self,
+        binding: cdf_kernel::SchemaObservationBinding,
+    ) -> Result<Self> {
+        self.schema_observation_binding = Some(binding);
+        self.validate()?;
+        Ok(self)
+    }
+
+    pub fn schema_observation_binding(&self) -> Result<cdf_kernel::SchemaObservationBinding> {
+        self.validate()?;
+        self.schema_observation_binding
+            .clone()
+            .map_or_else(|| self.discovery_binding(), Ok)
+    }
+
     /// Framework-owned binding between inventory evidence and a later schema observation.
     /// The raw operational location is never retained: its hash plus the canonical redacted
     /// location, generation, size, and time reject cross-candidate observations without
     /// persisting credentials.
-    pub fn discovery_binding(&self) -> Result<String> {
+    pub fn discovery_binding(&self) -> Result<cdf_kernel::SchemaObservationBinding> {
         self.validate()?;
-        artifact_hash(&serde_json::json!({
+        cdf_kernel::SchemaObservationBinding::new(artifact_hash(&serde_json::json!({
             "version": 1,
             "operational_location_hash": artifact_hash(&self.canonical_location)?,
             "location": self.evidence_location.as_str(),
             "size_bytes": self.size_bytes,
             "modified_at_ms": self.modified_at_ms,
             "identity": self.identity,
-        }))
+        }))?)
     }
 }
 
@@ -2165,7 +2237,7 @@ pub struct SourceSchemaObservation {
     pub source_identity: BTreeMap<String, String>,
     pub bytes_read: u64,
     pub records_read: u64,
-    pub(crate) candidate_binding: String,
+    pub(crate) candidate_binding: cdf_kernel::SchemaObservationBinding,
 }
 
 impl SourceSchemaObservation {
@@ -2194,11 +2266,6 @@ impl SourceSchemaObservation {
     pub fn validate(&self) -> Result<()> {
         if self.evidence_location.as_str().is_empty()
             || validate_source_evidence_identity(&self.source_identity).is_err()
-            || validate_hash(
-                "source discovery candidate binding",
-                &self.candidate_binding,
-            )
-            .is_err()
             || cdf_kernel::canonical_arrow_schema_hash(&self.schema)? != self.physical_schema_hash
         {
             return Err(CdfError::contract(
@@ -2208,7 +2275,7 @@ impl SourceSchemaObservation {
         Ok(())
     }
 
-    pub fn candidate_binding(&self) -> &str {
+    pub fn candidate_binding(&self) -> &cdf_kernel::SchemaObservationBinding {
         &self.candidate_binding
     }
 }
@@ -2248,9 +2315,9 @@ pub trait SourceDiscoverySession: Send + Sync {
     ) -> Result<SourceSchemaObservation>;
 }
 
-#[derive(Clone)]
 pub struct SourceResolutionContext<'a> {
     project_root: &'a Path,
+    artifact_root: &'a Path,
     secret_provider: Arc<dyn SecretProvider + Send + Sync>,
     execution: &'a ExecutionServices,
     egress_authorizer: Arc<dyn SourceEgressAuthorizer>,
@@ -2268,6 +2335,7 @@ impl<'a> SourceResolutionContext<'a> {
     ) -> Self {
         Self {
             project_root,
+            artifact_root: project_root,
             secret_provider,
             execution,
             egress_authorizer,
@@ -2280,6 +2348,22 @@ impl<'a> SourceResolutionContext<'a> {
     pub fn with_prepared_payloads(mut self, prepared_payloads: PreparedSourcePayloads) -> Self {
         self.prepared_payloads = prepared_payloads;
         self
+    }
+
+    /// Starts a distinct source invocation over the same reusable project,
+    /// credential, execution-host, egress, and driver configuration.
+    /// Invocation-local payload retention and cancellation are always fresh.
+    pub fn new_invocation(&self) -> Self {
+        Self {
+            project_root: self.project_root,
+            artifact_root: self.artifact_root,
+            secret_provider: Arc::clone(&self.secret_provider),
+            execution: self.execution,
+            egress_authorizer: Arc::clone(&self.egress_authorizer),
+            prepared_payloads: PreparedSourcePayloads::default(),
+            driver_options: self.driver_options.clone(),
+            cancellation: crate::RunCancellation::default(),
+        }
     }
 
     pub fn with_driver_options(
@@ -2295,8 +2379,19 @@ impl<'a> SourceResolutionContext<'a> {
         self
     }
 
+    /// Redirects invocation-owned artifacts without changing how project-relative source paths,
+    /// interpreters, or credentials resolve. Inspection commands use this to remain write-free.
+    pub fn with_artifact_root(mut self, artifact_root: &'a Path) -> Self {
+        self.artifact_root = artifact_root;
+        self
+    }
+
     pub fn project_root(&self) -> &'a Path {
         self.project_root
+    }
+
+    pub fn artifact_root(&self) -> &'a Path {
+        self.artifact_root
     }
 
     pub fn secret_provider(&self) -> &Arc<dyn SecretProvider + Send + Sync> {

@@ -42,12 +42,27 @@ pub(crate) fn add(
         fallback: context.secret_provider(),
         private_files: request.plan.proposal.private_files.clone(),
     };
+    let inspection_root = args
+        .dry_run
+        .then(|| {
+            tempfile::Builder::new()
+                .prefix("cdf-add-dry-run-")
+                .tempdir()
+        })
+        .transpose()
+        .map_err(|error| {
+            CdfError::internal(format!("create add dry-run artifact root: {error}"))
+        })?;
+    let artifact_root = inspection_root
+        .as_ref()
+        .map_or(context.root.as_path(), tempfile::TempDir::path);
     let artifacts = discover_for_add(
         &context,
         registry,
         &proposed.resource,
         add_secrets,
         execution,
+        artifact_root,
     )?;
     let discovery = &artifacts.discovery;
     let pinned_resource = proposed.resource.with_schema_source_and_schema(
@@ -172,6 +187,7 @@ fn discover_for_add(
     resource: &CompiledResource,
     secret_provider: AddSecretProvider,
     execution: &cdf_runtime::ExecutionServices,
+    artifact_root: &std::path::Path,
 ) -> Result<ResourceSchemaDiscoveryArtifacts, CliError> {
     let options = cdf_project::SchemaDiscoveryExecutionOptions::new();
     let source_plan = resource.source_plan().clone();
@@ -181,6 +197,7 @@ fn discover_for_add(
         execution,
         Arc::new(cdf_http::EgressAllowlist::allow_any()),
     )
+    .with_artifact_root(artifact_root)
     .with_driver_options(context.config.driver_options.clone());
     Ok(cdf_project::discover_resource_schema_with_source_registry(
         resource,

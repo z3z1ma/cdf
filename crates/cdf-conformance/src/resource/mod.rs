@@ -507,28 +507,45 @@ where
         plan.request, case.request,
         "negotiated scan plan must preserve request identity"
     );
-    let stream_partitions = resource
-        .plan_partitions(&case.request)
-        .unwrap_or_else(|error| panic!("resource partition planning failed: {error}"));
-    assert!(
-        stream_partitions.iter().all(|partition| {
-            partition.scan_intent == cdf_kernel::CompiledScanIntent::full_scan()
-        }),
-        "ResourceStream partition planning is Tier-A and must not compile source pushdown"
-    );
-    let mut negotiated_topology = plan.partitions.clone();
-    for partition in &mut negotiated_topology {
-        partition.scan_intent = cdf_kernel::CompiledScanIntent::full_scan();
-    }
-    assert_eq!(
-        negotiated_topology, stream_partitions,
-        "negotiated partitions must preserve Tier-A partition topology and metadata"
-    );
+    let negotiated_partitions = if let Some(reference) = plan.external_task_set() {
+        let mut reader = resource
+            .planned_partition_reader(reference)
+            .unwrap_or_else(|error| panic!("external partition reader failed: {error}"));
+        (0..reference.task_count)
+            .map(|ordinal| {
+                reader
+                    .next_partition(ordinal)
+                    .unwrap_or_else(|error| panic!("external partition {ordinal} failed: {error}"))
+                    .unwrap_or_else(|| panic!("external partition authority ended at {ordinal}"))
+                    .plan()
+                    .clone()
+            })
+            .collect::<Vec<_>>()
+    } else {
+        let stream_partitions = resource
+            .plan_partitions(&case.request)
+            .unwrap_or_else(|error| panic!("resource partition planning failed: {error}"));
+        assert!(
+            stream_partitions.iter().all(|partition| {
+                partition.scan_intent == cdf_kernel::CompiledScanIntent::full_scan()
+            }),
+            "ResourceStream partition planning is Tier-A and must not compile source pushdown"
+        );
+        let mut negotiated_topology = plan.inline_partitions().unwrap().to_vec();
+        for partition in &mut negotiated_topology {
+            partition.scan_intent = cdf_kernel::CompiledScanIntent::full_scan();
+        }
+        assert_eq!(
+            negotiated_topology, stream_partitions,
+            "negotiated partitions must preserve Tier-A partition topology and metadata"
+        );
+        plan.inline_partitions().unwrap().to_vec()
+    };
     assert_partition_plans(
         resource.descriptor(),
         Some(resource.capabilities()),
         &case.request,
-        &plan.partitions,
+        &negotiated_partitions,
     );
     assert_predicate_classification(resource.capabilities(), case, plan);
 }
@@ -979,17 +996,16 @@ mod tests {
                 }
             }
 
-            Ok(ScanPlan {
-                plan_id: PlanId::new("plan-orders").unwrap(),
-                request: plan_request,
-                partitions: self.plan_partitions(request)?,
-                planned_task_set: None,
+            Ok(ScanPlan::new(
+                PlanId::new("plan-orders").unwrap(),
+                plan_request,
+                cdf_kernel::PartitionAuthority::Inline(self.plan_partitions(request)?),
                 pushed_predicates,
                 unsupported_predicates,
-                estimated_rows: None,
-                estimated_bytes: None,
-                delivery_guarantee: DeliveryGuarantee::EffectivelyOncePerKey,
-            })
+                None,
+                None,
+                DeliveryGuarantee::EffectivelyOncePerKey,
+            ))
         }
     }
 

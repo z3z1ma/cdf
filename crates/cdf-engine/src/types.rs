@@ -14,7 +14,7 @@ use cdf_kernel::{
     CdfError, DeliveryGuarantee, DiscoveryExecutorBudgetEvidence, EffectiveSchemaCatalogEntry,
     EffectiveSchemaEvidence, EstimateSupport, ExecutionExtent, PartitionId,
     ProcessedObservationPosition, PushdownFidelity, ResourceId, ResourceStream, Result,
-    RunPhaseMetric, ScanPlan, ScanPredicate, ScanRequest, SchemaHash,
+    RunPhaseMetric, ScanPlan, ScanPredicate, ScanRequest, SchemaHash, SchemaObservationBinding,
     SchemaObservationFieldQuarantine, SchemaObservationPolicy, SegmentId, SourcePosition,
     TerminalSchemaObservationQuarantine, WriteDisposition, source_name,
 };
@@ -159,7 +159,7 @@ impl EnginePlan {
         match (&self.execution_extent, self.compiled_stream_policy.as_ref()) {
             (ExecutionExtent::Bounded { .. }, None) => {}
             (ExecutionExtent::Drain { .. }, Some(policy))
-                if policy.compiled_source_plan_hash == source.compiled_source_plan_hash()
+                if &policy.compiled_source_plan_hash == source.compiled_source_plan_hash()
                     && policy.execution_extent == self.execution_extent =>
             {
                 policy.validate_against_execution_plan(source)?;
@@ -251,7 +251,7 @@ impl EnginePlan {
         let bound_source = self.compiled_source_execution.as_ref().ok_or_else(|| {
             CdfError::contract("bind the compiled source before compiling the operator graph")
         })?;
-        if bound_source.compiled_source_plan_hash() != cdf_runtime::artifact_hash(source)? {
+        if bound_source.compiled_source_plan_hash() != &source.compiled_source_plan_hash()? {
             return Err(CdfError::contract(
                 "operator graph source differs from the source already bound to the engine plan",
             ));
@@ -270,9 +270,12 @@ impl EnginePlan {
     /// Incremental orchestration may choose which immutable planned partitions remain, but it may
     /// not edit schedules directly or leave explain evidence stale.
     pub fn select_partitions(mut self, selected: &BTreeSet<PartitionId>) -> Result<Self> {
-        let planned = self
-            .scan
-            .partitions
+        let partitions = self.scan.inline_partitions().ok_or_else(|| {
+            CdfError::contract(
+                "external task authorities must be filtered by their source-owned task store",
+            )
+        })?;
+        let planned = partitions
             .iter()
             .map(|partition| partition.partition_id.clone())
             .collect::<BTreeSet<_>>();
@@ -282,11 +285,15 @@ impl EnginePlan {
             ));
         }
         self.scan
-            .partitions
+            .inline_partitions_mut()
+            .expect("inline authority was validated")
             .retain(|partition| selected.contains(&partition.partition_id));
+        let selected_partitions = self
+            .scan
+            .inline_partitions()
+            .expect("inline authority was validated");
         self.explain.partitions.retain(|partition| {
-            self.scan
-                .partitions
+            selected_partitions
                 .iter()
                 .any(|planned| planned.partition_id.as_str() == partition.partition_id)
         });
@@ -305,15 +312,18 @@ impl EnginePlan {
     /// plan and draining that prefix avoids cloning and re-filtering the entire remaining scan for
     /// every epoch.
     pub fn advance_committed_partition_prefix(&mut self, consumed: usize) -> Result<()> {
-        if consumed == 0 || consumed > self.scan.partitions.len() {
+        let partitions = self.scan.inline_partitions_mut().ok_or_else(|| {
+            CdfError::contract(
+                "external task authorities must advance through their source-owned frontier",
+            )
+        })?;
+        if consumed == 0 || consumed > partitions.len() {
             return Err(CdfError::contract(
                 "committed drain prefix must consume at least one and no more than the remaining planned partitions",
             ));
         }
-        if self.explain.partitions.len() != self.scan.partitions.len()
-            || !self
-                .scan
-                .partitions
+        if self.explain.partitions.len() != partitions.len()
+            || !partitions
                 .iter()
                 .zip(&self.explain.partitions)
                 .all(|(planned, explained)| planned.partition_id.as_str() == explained.partition_id)
@@ -322,7 +332,7 @@ impl EnginePlan {
                 "engine scan and explain partition authorities diverged before drain advancement",
             ));
         }
-        self.scan.partitions.drain(..consumed);
+        partitions.drain(..consumed);
         self.explain.partitions.drain(..consumed);
         if let Some(source) = &self.compiled_source_execution {
             let schedule = cdf_runtime::CanonicalPartitionSchedule::compile(source, &self.scan)?;
@@ -339,7 +349,16 @@ impl EnginePlan {
         consumed: usize,
         resume: Option<&DrainPartitionResume>,
     ) -> Result<()> {
-        if consumed > self.scan.partitions.len() {
+        let remaining = self
+            .scan
+            .inline_partitions()
+            .ok_or_else(|| {
+                CdfError::contract(
+                    "external task authorities must advance through their source-owned frontier",
+                )
+            })?
+            .len();
+        if consumed > remaining {
             return Err(CdfError::contract(
                 "committed drain prefix exceeds the remaining planned partitions",
             ));
@@ -348,9 +367,13 @@ impl EnginePlan {
             self.advance_committed_partition_prefix(consumed)?;
         }
         if let Some(resume) = resume {
-            let partition = self.scan.partitions.first_mut().ok_or_else(|| {
-                CdfError::data("drain continuation references an absent remaining partition")
-            })?;
+            let partition = self
+                .scan
+                .inline_partitions_mut()
+                .and_then(|partitions| partitions.first_mut())
+                .ok_or_else(|| {
+                    CdfError::data("drain continuation references an absent remaining partition")
+                })?;
             if partition.partition_id != resume.partition_id {
                 return Err(CdfError::data(
                     "drain continuation does not match the canonical remaining partition",
@@ -383,20 +406,17 @@ impl EnginePlan {
         resource.rebind_scan_for_resume(&mut self.scan, frontier)?;
         if self.scan.partition_count()? == 0 {
             self.explain.partitions.clear();
-        } else if self.explain.partitions.len() == self.scan.partitions.len() {
-            for (explained, planned) in self
-                .explain
-                .partitions
-                .iter_mut()
-                .zip(&self.scan.partitions)
-            {
+        } else if let Some(partitions) = self.scan.inline_partitions()
+            && self.explain.partitions.len() == partitions.len()
+        {
+            for (explained, planned) in self.explain.partitions.iter_mut().zip(partitions) {
                 if explained.partition_id != planned.partition_id.as_str() {
                     return Err(CdfError::data(
                         "engine scan and explain partition authorities diverged during resume binding",
                     ));
                 }
             }
-        } else if self.scan.planned_task_set.is_none() {
+        } else if self.scan.external_task_set().is_none() {
             return Err(CdfError::data(
                 "engine scan and explain partition counts diverged during resume binding",
             ));
@@ -1275,16 +1295,18 @@ pub struct StreamAdmissionObservationEvidence {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StreamAdmissionCompletion {
+    Pending,
     Partial {
         attempted_position: Option<SourcePosition>,
         observed_rows: u64,
-        partition_binding: String,
+        partition_binding: SchemaObservationBinding,
     },
     Complete {
         source_position: SourcePosition,
+        partition_binding: SchemaObservationBinding,
     },
     CompleteUnpositioned {
-        partition_binding: String,
+        partition_binding: SchemaObservationBinding,
     },
 }
 
@@ -1309,19 +1331,27 @@ impl StreamAdmissionObservationEvidence {
         })
     }
 
-    pub fn bind_source_position(&mut self, source_position: SourcePosition) -> Result<()> {
+    pub fn bind_source_position(
+        &mut self,
+        source_position: SourcePosition,
+        partition_binding: SchemaObservationBinding,
+    ) -> Result<()> {
         if matches!(
             &self.completion,
             StreamAdmissionCompletion::Complete {
-                source_position: existing
-            } if existing != &source_position
+                source_position: existing,
+                partition_binding: existing_binding,
+            } if existing != &source_position || existing_binding != &partition_binding
         ) {
             return Err(CdfError::data(format!(
                 "stream-admission observation {:?} carries conflicting source positions",
                 self.observation_id
             )));
         }
-        self.completion = StreamAdmissionCompletion::Complete { source_position };
+        self.completion = StreamAdmissionCompletion::Complete {
+            source_position,
+            partition_binding,
+        };
         Ok(())
     }
 
@@ -1329,20 +1359,16 @@ impl StreamAdmissionObservationEvidence {
         &mut self,
         attempted_position: SourcePosition,
         observed_rows: u64,
-        partition_binding: String,
+        partition_binding: SchemaObservationBinding,
     ) -> Result<()> {
-        if observed_rows == 0 || partition_binding.is_empty() {
+        if observed_rows == 0 {
             return Err(CdfError::data(format!(
                 "partial stream-admission observation {:?} must cover at least one observed row",
                 self.observation_id
             )));
         }
         match &self.completion {
-            StreamAdmissionCompletion::Partial {
-                attempted_position: None,
-                observed_rows: 0,
-                partition_binding: existing_binding,
-            } if existing_binding.is_empty() => {
+            StreamAdmissionCompletion::Pending => {
                 self.completion = StreamAdmissionCompletion::Partial {
                     attempted_position: Some(attempted_position),
                     observed_rows,
@@ -1367,13 +1393,10 @@ impl StreamAdmissionObservationEvidence {
         }
     }
 
-    pub fn bind_unpositioned_completion(&mut self, partition_binding: String) -> Result<()> {
-        if partition_binding.is_empty() {
-            return Err(CdfError::data(format!(
-                "unpositioned stream-admission observation {:?} requires a planned partition binding",
-                self.observation_id
-            )));
-        }
+    pub fn bind_unpositioned_completion(
+        &mut self,
+        partition_binding: SchemaObservationBinding,
+    ) -> Result<()> {
         self.completion = StreamAdmissionCompletion::CompleteUnpositioned { partition_binding };
         Ok(())
     }
@@ -1501,27 +1524,21 @@ impl CompiledStreamAdmissionEvidence {
                     "stream-admission evidence contains an empty or duplicate observation id",
                 ));
             }
-            if let StreamAdmissionCompletion::Partial {
-                attempted_position,
-                observed_rows,
-                partition_binding,
-            } = &observation.completion
-                && (attempted_position.is_none()
-                    || *observed_rows == 0
-                    || partition_binding.is_empty())
-            {
+            if matches!(observation.completion, StreamAdmissionCompletion::Pending) {
                 return Err(CdfError::data(format!(
-                    "partial stream-admission observation {:?} omits its exact attempted position, observed row count, or planned partition binding",
+                    "stream-admission observation {:?} was not bound to a terminal or partial execution outcome",
                     observation.observation_id
                 )));
             }
-            if matches!(
-                &observation.completion,
-                StreamAdmissionCompletion::CompleteUnpositioned { partition_binding }
-                    if partition_binding.is_empty()
-            ) {
+            if let StreamAdmissionCompletion::Partial {
+                attempted_position,
+                observed_rows,
+                ..
+            } = &observation.completion
+                && (attempted_position.is_none() || *observed_rows == 0)
+            {
                 return Err(CdfError::data(format!(
-                    "unpositioned stream-admission observation {:?} omits its planned partition binding",
+                    "partial stream-admission observation {:?} omits its exact attempted position, observed row count, or planned partition binding",
                     observation.observation_id
                 )));
             }
@@ -1755,7 +1772,7 @@ pub struct EffectiveSchemaPlanEvidence {
     pub terminal_quarantines: Vec<TerminalSchemaObservationQuarantine>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discovery_executor_budget: Option<DiscoveryExecutorBudgetEvidence>,
-    pub observation_bindings: BTreeMap<String, String>,
+    pub observation_bindings: BTreeMap<String, cdf_kernel::SchemaObservationBinding>,
 }
 
 #[non_exhaustive]
@@ -2081,18 +2098,28 @@ impl EngineRunOutputWithSegmentPositions {
     }
 }
 
+/// Reusable, cloneable execution policy. It deliberately contains no run-local
+/// cancellation or retry evidence.
 #[derive(Clone, Default)]
-pub struct EngineExecutionOptions {
+pub struct EngineExecutionConfig {
     pub(crate) phase_metrics: bool,
     pub(crate) services: Option<cdf_runtime::ExecutionServices>,
     pub(crate) unfused_transform: bool,
     pub(crate) statistics_profile: bool,
     pub(crate) scheduler: Option<cdf_runtime::RuntimeSchedulerResolution>,
+}
+
+/// State owned by exactly one engine invocation.
+///
+/// This type is intentionally not `Clone`: cancellation and retry evidence may
+/// never leak into a later run through reusable configuration.
+pub struct EngineExecutionInvocation {
+    config: EngineExecutionConfig,
     pub(crate) cancellation: cdf_runtime::RunCancellation,
     pub(crate) retry_journal: cdf_runtime::SourceRetryJournal,
 }
 
-impl EngineExecutionOptions {
+impl EngineExecutionConfig {
     pub const fn with_phase_metrics(mut self, enabled: bool) -> Self {
         self.phase_metrics = enabled;
         self
@@ -2121,6 +2148,16 @@ impl EngineExecutionOptions {
         self
     }
 
+    pub fn new_invocation(&self) -> EngineExecutionInvocation {
+        EngineExecutionInvocation {
+            config: self.clone(),
+            cancellation: cdf_runtime::RunCancellation::default(),
+            retry_journal: cdf_runtime::SourceRetryJournal::default(),
+        }
+    }
+}
+
+impl EngineExecutionInvocation {
     pub fn with_cancellation(mut self, cancellation: cdf_runtime::RunCancellation) -> Self {
         self.cancellation = cancellation;
         self
@@ -2128,6 +2165,14 @@ impl EngineExecutionOptions {
 
     pub fn source_retry_evidence(&self) -> cdf_runtime::SourceRetryEvidenceView {
         self.retry_journal.evidence_view()
+    }
+}
+
+impl std::ops::Deref for EngineExecutionInvocation {
+    type Target = EngineExecutionConfig;
+
+    fn deref(&self) -> &Self::Target {
+        &self.config
     }
 }
 
@@ -2184,6 +2229,7 @@ pub struct LineageSummary {
 pub struct LineageInputObservation {
     pub observation_id: String,
     pub partition_id: cdf_kernel::PartitionId,
+    pub partition_binding: SchemaObservationBinding,
     pub observed_rows: u64,
     pub output_position: Option<SourcePosition>,
 }

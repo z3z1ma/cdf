@@ -120,7 +120,7 @@ impl ResolvedProjectDestination {
         self.runtime.runtime_capabilities()
     }
 
-    pub(super) fn runtime_mut(&mut self) -> &mut dyn ProjectDestinationRuntime {
+    pub(crate) fn runtime_mut(&mut self) -> &mut dyn ProjectDestinationRuntime {
         self.runtime.as_mut()
     }
 

@@ -4,12 +4,18 @@ use std::{
 };
 
 use arrow_array::RecordBatch;
-use arrow_schema::SchemaRef;
+use arrow_schema::{Schema, SchemaRef};
 use cdf_http::{HttpRequest, HttpResponse, HttpTransport};
 use cdf_kernel::{
-    Batch, BatchId, BatchStream, CdfError, PartitionId, PartitionPlan, ResourceDescriptor,
-    ResourceId, ResourceStream, Result as CdfResult, ScanRequest, SchemaSnapshotReference,
-    SchemaSource, ScopeKey, TrustLevel, WriteDisposition, canonical_arrow_schema_hash,
+    BackpressureSupport, Batch, BatchId, BatchStream, CdfError, PartitionId, PartitionPlan,
+    ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result as CdfResult,
+    ScanRequest, SchemaSnapshotReference, SchemaSource, ScopeKey, TrustLevel, WriteDisposition,
+    canonical_arrow_schema_hash,
+};
+use cdf_runtime::{
+    CompiledSourcePlan, CompiledSourcePlanInput, SourceAttestationStrength,
+    SourceBatchMemoryContract, SourceDriverDescriptor, SourceDriverId, SourceExecutionCapabilities,
+    SourceExecutorClass, SourceRetryGranularity, artifact_hash,
 };
 use futures_util::stream;
 
@@ -21,6 +27,8 @@ pub(crate) struct MemoryResource {
     schema: SchemaRef,
     partition: PartitionPlan,
     batches: Vec<Batch>,
+    compiled_source_plan: CompiledSourcePlan,
+    compiled_source_plan_hash: cdf_kernel::CompiledSourcePlanHash,
 }
 
 impl MemoryResource {
@@ -74,12 +82,103 @@ impl MemoryResource {
             retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
             metadata: BTreeMap::from([("kind".to_owned(), "memory".to_owned())]),
         };
+        let compiled_source_plan =
+            Self::compile_source_plan(&descriptor, schema.as_ref(), &partition, &cdf_batches)?;
+        let compiled_source_plan_hash = compiled_source_plan.compiled_source_plan_hash()?;
         Ok(Self {
             descriptor,
             schema,
             partition,
             batches: cdf_batches,
+            compiled_source_plan,
+            compiled_source_plan_hash,
         })
+    }
+
+    pub(crate) fn compiled_source_plan(&self) -> &CompiledSourcePlan {
+        &self.compiled_source_plan
+    }
+
+    fn compile_source_plan(
+        descriptor: &ResourceDescriptor,
+        schema: &Schema,
+        partition: &PartitionPlan,
+        batches: &[Batch],
+    ) -> BenchResult<CompiledSourcePlan> {
+        let maximum_batch_bytes = batches
+            .iter()
+            .map(|batch| {
+                let record_batch = batch.record_batch().ok_or_else(|| {
+                    bench_error("benchmark memory source requires materialized Arrow batches")
+                })?;
+                cdf_memory::record_batch_retained_bytes(record_batch)?
+                    .checked_add(batch.header.pre_contract_evidence_retained_bytes()?)
+                    .ok_or_else(|| bench_error("benchmark memory batch retained bytes overflow"))
+            })
+            .collect::<BenchResult<Vec<_>>>()?
+            .into_iter()
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        let resource_capabilities = ResourceCapabilities {
+            idempotent_reads: true,
+            backpressure: BackpressureSupport::Pausable,
+            ..ResourceCapabilities::default()
+        };
+        CompiledSourcePlan::new(
+            SourceDriverDescriptor {
+                driver_id: SourceDriverId::new("benchmark_memory")?,
+                driver_version: "benchmark-memory-v1".to_owned(),
+                option_schema_hash: artifact_hash(&serde_json::json!({
+                    "driver": "benchmark_memory",
+                    "version": 1,
+                }))?,
+                kinds: vec!["benchmark_memory".to_owned()],
+                schemes: vec!["memory".to_owned()],
+            },
+            resource_capabilities,
+            SourceExecutionCapabilities {
+                minimum_poll_bytes: 1,
+                maximum_poll_bytes: maximum_batch_bytes,
+                minimum_decode_bytes: 1,
+                maximum_decode_bytes: maximum_batch_bytes,
+                maximum_concurrency: 1,
+                useful_concurrency: 1,
+                executor_class: SourceExecutorClass::Cpu,
+                blocking_lane: None,
+                pausable: true,
+                spillable: false,
+                idempotent_reads: true,
+                reopenable: true,
+                resumable: false,
+                speculative_safe: false,
+                retry_granularity: SourceRetryGranularity::None,
+                retryable_errors: Vec::new(),
+                retry_policy: None,
+                attestation: SourceAttestationStrength::None,
+                rate_limit: None,
+                quota_authority: None,
+                canonical_order: true,
+                bounded: true,
+                batch_memory: SourceBatchMemoryContract::FrontierReserved,
+                telemetry_version: "benchmark-memory-v1".to_owned(),
+            },
+            CompiledSourcePlanInput {
+                descriptor: descriptor.clone(),
+                schema: schema.clone(),
+                type_policy_allowances: Default::default(),
+                effective_schema_runtime: None,
+                baseline_observation_schema_catalog: Vec::new(),
+                redacted_options: serde_json::json!({"kind": "benchmark_memory"}),
+                physical_plan: serde_json::json!({
+                    "kind": "benchmark_memory",
+                    "partition_id": partition.partition_id.as_str(),
+                    "batch_count": batches.len(),
+                    "maximum_batch_bytes": maximum_batch_bytes,
+                }),
+            },
+        )
+        .map_err(Into::into)
     }
 }
 
@@ -90,6 +189,10 @@ impl ResourceStream for MemoryResource {
 
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
+    }
+
+    fn compiled_source_plan_hash(&self) -> Option<&cdf_kernel::CompiledSourcePlanHash> {
+        Some(&self.compiled_source_plan_hash)
     }
 
     fn plan_partitions(&self, request: &ScanRequest) -> CdfResult<Vec<PartitionPlan>> {

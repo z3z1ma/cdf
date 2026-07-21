@@ -48,7 +48,7 @@ mod prelude {
     #[cfg(test)]
     pub(super) use cdf_engine::EngineRunOutputWithSegmentPositions;
     pub(super) use cdf_engine::{
-        EngineExecutionOptions, EnginePackageDraft, EnginePlan,
+        EngineExecutionConfig, EnginePackageDraft, EnginePlan,
         execute_to_package_with_segment_positions_and_pre_finalize,
         execute_to_package_with_streaming_hooks,
     };

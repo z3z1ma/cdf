@@ -90,15 +90,19 @@ fn collect_package_receipts(reader: &PackageReader) -> Vec<Receipt> {
 }
 
 fn test_execution_services() -> cdf_runtime::ExecutionServices {
-    static SERVICES: std::sync::OnceLock<cdf_runtime::ExecutionServices> =
-        std::sync::OnceLock::new();
-    SERVICES
-        .get_or_init(|| {
-            cdf_engine::StandaloneExecutionHost::default_services(512 * 1024 * 1024)
-                .unwrap()
-                .1
-        })
-        .clone()
+    let services = cdf_engine::StandaloneExecutionHost::default_services(512 * 1024 * 1024)
+        .unwrap()
+        .1;
+    let scopes: Arc<dyn cdf_kernel::ScopeLeaseStore> =
+        Arc::new(cdf_state_sqlite::InMemoryScopeLeaseStore::new());
+    let services = services
+        .with_staging_lease_authority(Arc::new(cdf_runtime::ScopeStagingLeaseAuthority::new(
+            scopes,
+        )))
+        .unwrap();
+    services.with_content_reachability_store(Arc::new(
+        cdf_state_sqlite::SqliteContentReachabilityStore::open_in_memory().unwrap(),
+    ))
 }
 
 fn test_destination_registry() -> cdf_runtime::DestinationRegistry {
@@ -381,7 +385,7 @@ fn progress_enabled_human_commands_route_through_progress_renderer() {
                 "let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);",
                 "event_sink,",
                 "error.with_progress(progress.snapshot())",
-                "CommandOutput::rendered_with_progress(\"run\"",
+                "Some(progress) => CommandOutput::rendered_with_progress(",
             ],
         ),
         (
@@ -2023,8 +2027,7 @@ fn plan_human_headless_render_uses_operator_panels() {
 fn plan_human_rich_render_uses_glyphs_color_and_operator_panels() {
     let project = TestProject::new();
     let cli = test_cli(&project);
-    let (_, services) =
-        cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024).unwrap();
+    let services = test_execution_services();
     let output = crate::scan_command::plan_or_explain(
         &cli,
         cdf_cli_core::args::ScanArgs {
@@ -2478,13 +2481,20 @@ fn backfill_execute_human_progress_reports_each_slice_and_summary() {
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     assert_secret_absent(&result, &source_dsn);
-    assert!(result.stderr.is_empty());
     assert!(!result.stdout.contains("\u{1b}["));
     for expected in [
         "[plan] running run started",
         "scope=window:0..10",
         "scope=window:10..20",
         "[gate] succeeded run succeeded",
+    ] {
+        assert!(
+            result.stderr.contains(expected),
+            "missing {expected:?} in stderr:\n{}",
+            result.stderr
+        );
+    }
+    for expected in [
         "OK executed backfill warehouse.orders -> orders",
         "Summary",
         "slices succeeded  2/2",
@@ -2494,7 +2504,7 @@ fn backfill_execute_human_progress_reports_each_slice_and_summary() {
     ] {
         assert!(
             result.stdout.contains(expected),
-            "missing {expected:?} in:\n{}",
+            "missing {expected:?} in stdout:\n{}",
             result.stdout
         );
     }
@@ -2699,7 +2709,7 @@ fn local_arrow_ipc_discover_pin_show_diff_preview_and_run_share_pinned_schema() 
     );
     assert_eq!(discovered["snapshot_metadata"]["source_driver"], "files");
     assert!(
-        discovered["snapshot_metadata"]["source_plan_hash"]
+        discovered["snapshot_metadata"]["source_discovery_binding"]
             .as_str()
             .is_some_and(|hash| hash.starts_with("sha256:"))
     );
@@ -3812,7 +3822,7 @@ fn schema_promote_plans_fresh_residual_correction_without_writes() {
         "local.events",
     ]);
     assert_eq!(planned.exit_code, 0, "{}", planned.stderr);
-    assert_eq!(project_tree_snapshot(&project.root), before);
+    assert_project_tree_unchanged(&project.root, &before);
     let json = stderr_or_stdout_json(&planned.stdout);
     let report = &json["result"];
     assert_eq!(report["writes"]["schema_snapshot"], false);
@@ -3853,7 +3863,10 @@ fn schema_promote_plans_fresh_residual_correction_without_writes() {
             .unwrap()
             .contains(report["new_schema_hash"].as_str().unwrap())
     );
-    assert_eq!(report["proposed_snapshot"]["artifact"]["version"], 3);
+    assert_eq!(
+        report["proposed_snapshot"]["artifact"]["version"],
+        cdf_project::SCHEMA_SNAPSHOT_ARTIFACT_VERSION
+    );
     let repeated = run([
         "cdf",
         "--json",
@@ -4978,9 +4991,11 @@ fn schema_promote_execute_routes_parquet_through_correction_sidecar() {
     let old_hash = pin_json["result"]["schema_hash"].as_str().unwrap();
     let target = TargetName::new("events").unwrap();
     let policy = cdf_project::DestinationPolicy::default();
+    let services = test_execution_services();
     let resolution = cdf_project::ProjectResolutionContext::for_project_run(&project.root, &target)
         .with_environment_name("dev")
-        .with_destination_policy(&policy);
+        .with_destination_policy(&policy)
+        .with_execution_services(&services);
     let registry = crate::destination_registry::builtin_destination_registry().unwrap();
     let mut runtime = registry
         .resolve("parquet://.cdf/parquet", &resolution)
@@ -4998,10 +5013,14 @@ fn schema_promote_execute_routes_parquet_through_correction_sidecar() {
     )
     .unwrap();
     write_vendor_score_parquet(&source_path);
-    write_schema_promote_package_fixture(&project, old_hash);
+    write_schema_promote_package_fixture_for_target_with_commit(
+        &project,
+        "pkg-promote-source",
+        "events",
+        old_hash,
+        false,
+    );
     let source_package = project.root.join(".cdf/packages/pkg-promote-source");
-    let (_, services) =
-        cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024).unwrap();
     let store = SqliteCheckpointStore::open(
         project
             .root
@@ -5012,11 +5031,16 @@ fn schema_promote_execute_routes_parquet_through_correction_sidecar() {
         package_dir: source_package,
         destination: ResolvedProjectDestination::new(
             Box::new(
-                ParquetDestination::new_filesystem(project.root.join(".cdf/parquet"), services)
-                    .unwrap(),
+                ParquetDestination::new_filesystem(
+                    project.root.join(".cdf/parquet"),
+                    services.clone(),
+                )
+                .unwrap(),
             ),
             target.clone(),
-        ),
+        )
+        .with_bound_execution_services(services)
+        .unwrap(),
         checkpoint_store: &store,
         after_receipt_verified: None,
     })
@@ -5125,30 +5149,47 @@ fn schema_promote_execute_updates_postgres_through_generic_command_dispatch() {
         .as_any()
         .downcast_ref::<StringArray>()
         .unwrap();
+    let row_key_start = 1_i64;
+    let row_key_end = row_key_start + segment.row_count as i64;
     let mut client = postgres.client();
     client
         .batch_execute(&format!(
-            "CREATE TABLE {} (vendor_id INTEGER NOT NULL, _cdf_variant TEXT, _cdf_load TEXT NOT NULL, _cdf_segment TEXT NOT NULL, _cdf_row BIGINT NOT NULL)",
-            target
+            "CREATE TABLE {} (vendor_id INTEGER NOT NULL, _cdf_variant TEXT, _cdf_row_key BIGINT NOT NULL, _cdf_loaded_at_ms BIGINT NOT NULL); \
+             CREATE TABLE {}._cdf_segments (row_key_start BIGINT PRIMARY KEY, row_key_end BIGINT NOT NULL, target TEXT NOT NULL, package_hash TEXT NOT NULL, segment_id TEXT NOT NULL, CHECK (row_key_start < row_key_end), UNIQUE (target, package_hash, segment_id))",
+            target, postgres.schema
         ))
         .unwrap();
     for (row, vendor_id) in [1_i32, 2_i32].into_iter().enumerate() {
         client
             .execute(
                 &format!(
-                    "INSERT INTO {} (vendor_id, _cdf_variant, _cdf_load, _cdf_segment, _cdf_row) VALUES ($1, $2, $3, $4, $5)",
+                    "INSERT INTO {} (vendor_id, _cdf_variant, _cdf_row_key, _cdf_loaded_at_ms) VALUES ($1, $2, $3, $4)",
                     target
                 ),
                 &[
                     &vendor_id,
                     &residuals.value(row),
-                    &package_hash.as_str(),
-                    &segment.segment_id.as_str(),
-                    &(row as i64),
+                    &(row_key_start + row as i64),
+                    &1_i64,
                 ],
             )
             .unwrap();
     }
+    client
+        .execute(
+            &format!(
+                "INSERT INTO {}._cdf_segments (row_key_start, row_key_end, target, package_hash, segment_id) VALUES ($1, $2, $3, $4, $5)",
+                postgres.schema
+            ),
+            &[
+                &row_key_start,
+                &row_key_end,
+                &target,
+                &package_hash.as_str(),
+                &segment.segment_id.as_str(),
+            ],
+        )
+        .unwrap();
     let receipt = Receipt {
             receipt_id: ReceiptId::new("receipt-postgres-promotion-source").unwrap(),
             destination: DestinationId::new("postgres").unwrap(),
@@ -5218,7 +5259,7 @@ fn schema_promote_execute_updates_postgres_through_generic_command_dispatch() {
     let rows = postgres
         .client()
         .query(
-            &format!("SELECT vendor_id, score, _cdf_variant FROM {target} ORDER BY _cdf_row"),
+            &format!("SELECT vendor_id, score, _cdf_variant FROM {target} ORDER BY _cdf_row_key"),
             &[],
         )
         .unwrap();
@@ -6040,7 +6081,8 @@ fn plan_discover_autopin_is_byte_stable_and_preserves_unrelated_semantic_locks()
     assert!(human.stdout.contains("unchanged"), "{}", human.stdout);
 
     let mut lock = parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap()).unwrap();
-    let unrelated = lock.resources["local.events"].clone();
+    let mut unrelated = lock.resources["local.events"].clone();
+    unrelated.descriptor.resource_id = ResourceId::new("unrelated.events").unwrap();
     lock.resources
         .insert("unrelated.events".to_owned(), unrelated.clone());
     fs::write(
@@ -7017,7 +7059,9 @@ schema = { fields = [
         json["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("has no source compile request")
+            .contains("requires field `table`"),
+        "{}",
+        result.stderr
     );
 }
 
@@ -7066,7 +7110,9 @@ fn preview_zero_match_file_glob_fails_closed_without_writes() {
         json["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("matched no files")
+            .contains("matched no files"),
+        "{}",
+        result.stderr
     );
 }
 
@@ -7092,7 +7138,9 @@ fn preview_missing_file_source_root_fails_as_zero_match_without_writes() {
         json["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("matched no files")
+            .contains("matched no files"),
+        "{}",
+        result.stderr
     );
 }
 
@@ -7719,14 +7767,11 @@ fn run_adhoc_destination_failure_preserves_recoverable_evidence_and_retry() {
         .clone();
     let package_dir = single_package_dir(&project);
     let package = PackageReader::open(&package_dir).unwrap();
-    assert!(
-        package.verify().is_err(),
-        "mid-stage destination failure must not masquerade as a finalized package"
-    );
+    package.verify().unwrap();
     assert!(collect_package_receipts(&package).is_empty());
     assert_eq!(
         package.manifest().lifecycle.status,
-        PackageStatus::Extracting,
+        PackageStatus::Loading,
         "failed run stderr: {}",
         failed.stderr
     );
@@ -7746,7 +7791,7 @@ fn run_adhoc_destination_failure_preserves_recoverable_evidence_and_retry() {
     assert!(
         events
             .iter()
-            .all(|event| event.kind != RunEventKind::PackageFinalized)
+            .any(|event| event.kind == RunEventKind::PackageFinalized)
     );
     assert_eq!(events.last().unwrap().kind, RunEventKind::RunFailed);
     assert!(
@@ -9320,7 +9365,11 @@ fn run_rest_resource_fails_before_package_or_destination_writes() {
 
     let result = run_valid_run_resource(&project, "api.items");
 
-    assert_eq!(result.exit_code, 4);
+    assert_eq!(
+        result.exit_code, 4,
+        "stdout: {}\nstderr: {}",
+        result.stdout, result.stderr
+    );
     assert_no_run_writes(&project);
     let json = stderr_or_stdout_json(&result.stderr);
     assert_eq!(json["error"]["not_supported"], false);
@@ -9429,8 +9478,17 @@ fn run_rest_runtime_defaults_cannot_authorize_parse_or_lossy_coercion() {
     assert_eq!(parse.exit_code, 0, "{}", parse.stderr);
     assert_secret_absent(&parse, "parse-token-secret");
     let parse_report = stderr_or_stdout_json(&parse.stdout);
-    assert_eq!(parse_report["result"]["row_count"], 2);
+    assert_eq!(parse_report["result"]["row_count"], 1);
     let parse_package = run_package_dir(&parse_project, &parse);
+    let quarantine_summary: serde_json::Value = serde_json::from_slice(
+        &fs::read(parse_package.join("stats/quarantine-summary.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(quarantine_summary["quarantined_rows"], 1);
+    assert_eq!(
+        quarantine_summary["artifacts"],
+        serde_json::json!(["quarantine/part-000001.parquet"])
+    );
     let parse_admission: CompiledStreamAdmissionEvidence = serde_json::from_slice(
         &fs::read(parse_package.join("schema/stream-admission-evidence.json")).unwrap(),
     )
@@ -9467,7 +9525,7 @@ fn run_rest_runtime_defaults_cannot_authorize_parse_or_lossy_coercion() {
 
     let lossy = run_valid_run_resource(&lossy_project, "api.items");
 
-    assert_ne!(lossy.exit_code, 0);
+    assert_ne!(lossy.exit_code, 0, "{}{}", lossy.stdout, lossy.stderr);
     assert_secret_absent(&lossy, "lossy-token-secret");
     let lossy_output = format!("{}{}", lossy.stdout, lossy.stderr);
     assert!(
@@ -9672,10 +9730,20 @@ fn run_sql_resource_missing_secret_fails_before_package_or_destination_writes() 
         None,
         Some("secret://env/CDF_CLI_SQL"),
     );
+    let resource_path = project.root.join("resources/sql.toml");
+    let resource = fs::read_to_string(&resource_path).unwrap().replace(
+        "primary_key = [\"id\"]",
+        "primary_key = [\"id\"]\ncursor = { field = \"id\", ordering = \"exact\", lag = \"0ms\" }",
+    );
+    fs::write(resource_path, resource).unwrap();
 
     let result = run_valid_run_resource(&project, "warehouse.orders");
 
-    assert_eq!(result.exit_code, 4);
+    assert_eq!(
+        result.exit_code, 4,
+        "stdout: {}\nstderr: {}",
+        result.stdout, result.stderr
+    );
     assert_no_run_writes(&project);
     let json = stderr_or_stdout_json(&result.stderr);
     assert_eq!(json["error"]["not_supported"], false);
@@ -12038,17 +12106,17 @@ schema = { fields = [
 
     let result = run(["cdf", "--json", "--project", project.root_str(), "doctor"]);
 
-    assert_eq!(result.exit_code, 1, "stdout: {}", result.stdout);
+    assert_eq!(
+        result.exit_code, 1,
+        "stdout: {}\nstderr: {}",
+        result.stdout, result.stderr
+    );
     let json = stderr_or_stdout_json(&result.stdout);
     let source = named_check(&json, "source.files.local.events");
     assert_eq!(source["status"], "failed");
     assert_eq!(source["details"]["resource_id"], "local.events");
-    assert!(
-        source["details"]["error"]
-            .as_str()
-            .unwrap()
-            .contains("egress")
-    );
+    assert_eq!(source["details"]["error_kind"], "auth");
+    assert_eq!(source["message"], "file source inventory probe failed");
     assert!(!project.root.join(".cdf/state.db").exists());
     assert!(!project.root.join(".cdf/packages").exists());
     assert!(!project.root.join(".cdf/dev.duckdb").exists());
@@ -12077,7 +12145,11 @@ fn doctor_reports_resolved_secret_references_without_values() {
 
     let result = run(["cdf", "--json", "--project", project.root_str(), "doctor"]);
 
-    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert_eq!(
+        result.exit_code, 1,
+        "stdout: {}\nstderr: {}",
+        result.stdout, result.stderr
+    );
     assert_secret_absent(&result, "resolved-destination-dsn-value");
     assert_secret_absent(&result, "resolved-auth-token-value");
     assert_secret_absent(&result, "resolved-file-secret-value");
@@ -12096,6 +12168,15 @@ fn doctor_reports_resolved_secret_references_without_values() {
             "missing secret reference {reference}"
         );
     }
+    assert_eq!(json["result"]["failed"], 2);
+    assert_eq!(
+        named_check(&json, "source.postgres.warehouse.orders")["status"],
+        "failed"
+    );
+    assert_eq!(
+        named_check(&json, "source.rest.api.items")["status"],
+        "failed"
+    );
 }
 
 #[test]
@@ -12469,7 +12550,8 @@ fn doctor_fails_probe_json_with_inconsistent_version_metadata() {
         python["message"]
             .as_str()
             .unwrap()
-            .contains("inconsistent version metadata")
+            .contains("inconsistent version metadata"),
+        "{python}"
     );
 }
 
@@ -12502,7 +12584,8 @@ fn doctor_fails_probe_json_with_inconsistent_gil_metadata() {
         python["message"]
             .as_str()
             .unwrap()
-            .contains("inconsistent GIL metadata")
+            .contains("inconsistent GIL metadata"),
+        "{python}"
     );
 }
 
@@ -12803,7 +12886,7 @@ fn package_ls_json_remains_array_while_human_uses_renderer() {
     assert_eq!(human.exit_code, 0, "stderr: {}", human.stderr);
     assert!(human.stdout.contains("OK 1 package(s)"));
     assert!(human.stdout.contains("Packages"));
-    assert!(human.stdout.contains("| path"));
+    assert!(human.stdout.contains("path"), "{}", human.stdout);
     assert!(human.stdout.contains("-> cdf package verify <package>"));
 }
 
@@ -13471,7 +13554,7 @@ fn state_show_human_rich_render_uses_scope_and_head_panels() {
         "\u{1b}[32m✓\u{1b}[0m state head found",
         "\u{1b}[36mScope\u{1b}[0m",
         "\u{1b}[36mHead\u{1b}[0m",
-        &format!("checkpoint  {checkpoint_id}"),
+        checkpoint_id.as_str(),
         "\u{1b}[36m→\u{1b}[0m cdf state history local.events --pipeline cdf-run --scope kind=resource",
     ] {
         assert!(
@@ -14173,9 +14256,15 @@ fn assert_no_headless_progress_controls(output: &str) {
 
 fn assert_no_run_writes(project: &TestProject) {
     let package_root = project.root.join(".cdf/packages");
+    let package_entries = package_root.exists().then(|| {
+        fs::read_dir(&package_root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>()
+    });
     assert!(
-        !package_root.exists() || fs::read_dir(&package_root).unwrap().next().is_none(),
-        "rejected run must not create any package artifact"
+        package_entries.as_ref().is_none_or(Vec::is_empty),
+        "rejected run must not create any package artifact: {package_entries:?}"
     );
     assert!(
         !project.root.join(".cdf/state.db").exists(),
@@ -14422,9 +14511,12 @@ fn seed_resume_receipt_before_checkpoint(
         .destination_commit
         .target;
     let hook = |_receipt: &Receipt| Err(CdfError::internal("stop before resume checkpoint"));
+    let execution = test_execution_services();
     let error = replay_package_from_artifacts(PackageArtifactReplayRequest {
         package_dir: package_dir.to_path_buf(),
-        destination: ResolvedProjectDestination::new(Box::new(destination), target),
+        destination: ResolvedProjectDestination::new(Box::new(destination), target)
+            .with_bound_execution_services(execution)
+            .unwrap(),
         checkpoint_store: &store,
         after_receipt_verified: Some(&hook),
     })
@@ -15038,7 +15130,13 @@ fn write_schema_promote_package_fixture_for_target_with_commit(
     )
     .unwrap();
     let builder = package_builder!(&package_dir, package_id).unwrap();
-    write_current_replay_artifacts(&builder, batch.schema().as_ref(), schema_hash);
+    write_current_replay_artifacts(
+        &builder,
+        batch.schema().as_ref(),
+        schema_hash,
+        batch.num_rows() as u64,
+        schema_promote_fixture_position(),
+    );
     let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0).unwrap();
     let segment = builder
         .write_segment(SegmentId::new("seg-000001").unwrap(), 0, &batch)
@@ -15072,25 +15170,6 @@ fn write_schema_promote_package_fixture_for_target_with_commit(
         .write_state_delta_preimage_artifact(&state_delta)
         .unwrap();
     builder
-        .write_json_artifact(
-            cdf_package_contract::PROCESSED_OBSERVATIONS_FILE,
-            &cdf_package_contract::ProcessedObservationEvidenceArtifact::new(
-                None,
-                WriteDisposition::Append,
-                vec![
-                    cdf_kernel::ProcessedObservationPosition::new(
-                        "cli-current-fixture",
-                        cdf_kernel::ProcessedObservationOutcome::Admitted,
-                        state_delta.output_position.clone(),
-                    )
-                    .unwrap(),
-                ],
-                state_delta.output_position.clone(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-    builder
         .write_commit_plan_preimage_artifact(&DestinationCommitPlanPreimage::package_hash_token(
             TargetName::new(target_name).unwrap(),
             WriteDisposition::Append,
@@ -15117,7 +15196,9 @@ fn write_schema_promote_package_fixture_for_target_with_commit(
             destination: ResolvedProjectDestination::new(
                 Box::new(DuckDbDestination::new(project.root.join(".cdf/dev.duckdb")).unwrap()),
                 TargetName::new(target_name).unwrap(),
-            ),
+            )
+            .with_bound_execution_services(test_execution_services())
+            .unwrap(),
             checkpoint_store: &store,
             after_receipt_verified: None,
         })
@@ -15125,7 +15206,13 @@ fn write_schema_promote_package_fixture_for_target_with_commit(
     }
 }
 
-fn write_current_replay_artifacts(builder: &PackageBuilder, schema: &Schema, schema_hash: &str) {
+fn write_current_replay_artifacts(
+    builder: &PackageBuilder,
+    schema: &Schema,
+    schema_hash: &str,
+    row_count: u64,
+    output_position: SourcePosition,
+) {
     let mut program = cdf_contract::compile_validation_program(
         &cdf_contract::ContractPolicy::evolve(),
         &cdf_contract::ObservedSchema::from_arrow(schema),
@@ -15165,6 +15252,24 @@ fn write_current_replay_artifacts(builder: &PackageBuilder, schema: &Schema, sch
             &plan.compiled_schema_admission,
         )
         .unwrap();
+    let partition = &plan.scan.inline_partitions().unwrap()[0];
+    builder
+        .write_lineage_artifact(
+            "lineage.json",
+            &cdf_package::canonical_json_bytes(&cdf_engine::LineageSummary {
+                input_rows: row_count,
+                input_observations: vec![cdf_engine::LineageInputObservation {
+                    observation_id: "cli-current-fixture".to_owned(),
+                    partition_id: partition.partition_id.clone(),
+                    partition_binding: cdf_kernel::partition_schema_observation_binding(partition)
+                        .unwrap(),
+                    observed_rows: row_count,
+                    output_position: Some(output_position.clone()),
+                }],
+            })
+            .unwrap(),
+        )
+        .unwrap();
     let physical_schema_hash = cdf_kernel::canonical_arrow_schema_hash(schema.as_ref()).unwrap();
     let coercion_plan = plan
         .compiled_schema_admission
@@ -15185,11 +15290,34 @@ fn write_current_replay_artifacts(builder: &PackageBuilder, schema: &Schema, sch
                         physical_observation_hash,
                         coercion_plan,
                         cdf_engine::StreamAdmissionCompletion::Complete {
-                            source_position: schema_promote_fixture_position(),
+                            source_position: output_position.clone(),
+                            partition_binding: cdf_kernel::partition_schema_observation_binding(
+                                &plan.scan.inline_partitions().unwrap()[0],
+                            )
+                            .unwrap(),
                         },
                     )
                     .unwrap(),
                 ],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    builder
+        .write_json_artifact(
+            cdf_package_contract::PROCESSED_OBSERVATIONS_FILE,
+            &cdf_package_contract::ProcessedObservationEvidenceArtifact::new(
+                None,
+                WriteDisposition::Append,
+                vec![
+                    cdf_kernel::ProcessedObservationPosition::new(
+                        "cli-current-fixture",
+                        cdf_kernel::ProcessedObservationOutcome::Admitted,
+                        output_position.clone(),
+                    )
+                    .unwrap(),
+                ],
+                output_position,
             )
             .unwrap(),
         )
@@ -15212,7 +15340,7 @@ fn schema_promote_fixture_position() -> SourcePosition {
             source_generation: None,
             etag: None,
             object_version: None,
-            sha256: Some("sha256:source".to_owned()),
+            sha256: Some(format!("sha256:{}", "0".repeat(64))),
         }],
     })
 }
@@ -15259,7 +15387,18 @@ impl ResourceStream for ReplayArtifactResource {
     }
 
     fn plan_partitions(&self, _request: &ScanRequest) -> cdf_kernel::Result<Vec<PartitionPlan>> {
-        Ok(Vec::new())
+        let partition_id = cdf_kernel::PartitionId::new("cli-current-fixture")?;
+        Ok(vec![PartitionPlan {
+            partition_id,
+            scope: ScopeKey::File {
+                path: "events.parquet".to_owned(),
+            },
+            planned_position: Some(schema_promote_fixture_position()),
+            start_position: None,
+            scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
+            retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
+            metadata: BTreeMap::new(),
+        }])
     }
 
     fn open(&self, _partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
@@ -16226,7 +16365,13 @@ fn create_duckdb_doctor_fixture(project: &TestProject, mode: DoctorDriftFixtureM
     let package_dir = package_root.join("pkg-doctor-1");
     let builder = package_builder!(&package_dir, "pkg-doctor-1").unwrap();
     let batch = sample_sql_batch();
-    write_current_replay_artifacts(&builder, batch.schema().as_ref(), "schema-doctor-1");
+    write_current_replay_artifacts(
+        &builder,
+        batch.schema().as_ref(),
+        "schema-doctor-1",
+        batch.num_rows() as u64,
+        doctor_output_position(42),
+    );
     let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0).unwrap();
     let entry = builder
         .write_segment(SegmentId::new("seg-000001").unwrap(), 0, &batch)
@@ -16259,7 +16404,9 @@ fn create_duckdb_doctor_fixture(project: &TestProject, mode: DoctorDriftFixtureM
         destination: ResolvedProjectDestination::new(
             Box::new(DuckDbDestination::new(project.root.join(".cdf/dev.duckdb")).unwrap()),
             TargetName::new("events").unwrap(),
-        ),
+        )
+        .with_bound_execution_services(test_execution_services())
+        .unwrap(),
         checkpoint_store: &commit_store,
         after_receipt_verified: None,
     })

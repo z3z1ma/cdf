@@ -101,7 +101,11 @@ fn isolated_macro_runner_retains_samples_and_derives_distribution() {
             expected_host_class: Some(comparability.host_class.clone()),
             comparability,
             sample_count: 3,
-            timeout: Duration::from_secs(5),
+            // This assertion exercises sample retention and distribution derivation, not the
+            // timeout boundary. Whole-workspace contention can delay three isolated subprocesses
+            // without changing either behavior, so leave enough diagnostic margin here; timeout
+            // semantics have their own focused test below.
+            timeout: Duration::from_secs(30),
             allow_privileged_cache_control: false,
             command: command(&["reference-worker", request_path.to_str().unwrap()]),
             reference: Some(ReferenceIdentity {
@@ -386,6 +390,15 @@ fn prepared_multi_file_jobs_matrix_preserves_canonical_package_identity() {
             assert_eq!(run.configured_jobs, jobs);
             assert_eq!(run.partition_count, 4);
             assert_eq!(run.measurement.rows, (spec.rows * 4) as u64);
+            assert_eq!(
+                run.planned_source_bytes,
+                Some(u64::try_from(source.len()).unwrap() * 4),
+                "{format_label} planned bytes must come from the file inventory without reopening its task set"
+            );
+            assert!(
+                run.measurement.physical_bytes > 0,
+                "{format_label} benchmark throughput must use observed source I/O"
+            );
             assert_scheduler_report_is_bounded(
                 &run.runtime_scheduler,
                 &run.source_frontier,

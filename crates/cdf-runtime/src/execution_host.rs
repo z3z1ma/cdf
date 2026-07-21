@@ -1676,11 +1676,7 @@ impl ExecutionServices {
             producer(stream_sender, task_cancellation).await
         }))?;
         let scope_join = scope.join();
-        let cancel = cancellation.clone();
-        let termination = InvocationTermination::new(
-            move || cancel.cancel(),
-            Box::pin(async move { scope_join.await.map(|_| ()) }),
-        );
+        let termination = stream_invocation_termination(cancellation.clone(), scope_join);
         Ok(ScopedTaskStream {
             receiver,
             termination,
@@ -1725,11 +1721,7 @@ impl ExecutionServices {
             Box::new(move || producer(stream_sender, task_cancellation)),
         )?;
         let scope_join = scope.join();
-        let cancel = cancellation.clone();
-        let termination = InvocationTermination::new(
-            move || cancel.cancel(),
-            Box::pin(async move { scope_join.await.map(|_| ()) }),
-        );
+        let termination = stream_invocation_termination(cancellation.clone(), scope_join);
         Ok(ScopedTaskStream {
             receiver,
             termination,
@@ -1790,11 +1782,7 @@ impl ExecutionServices {
             produce(prepared, stream_sender, producer_cancellation).await
         }))?;
         let scope_join = scope.join();
-        let cancel = cancellation.clone();
-        let termination = InvocationTermination::new(
-            move || cancel.cancel(),
-            Box::pin(async move { scope_join.await.map(|_| ()) }),
-        );
+        let termination = stream_invocation_termination(cancellation.clone(), scope_join);
         Ok(ScopedTaskStream {
             receiver,
             termination,
@@ -1862,11 +1850,7 @@ impl ExecutionServices {
             }),
         )?;
         let scope_join = scope.join();
-        let cancel = cancellation.clone();
-        let termination = InvocationTermination::new(
-            move || cancel.cancel(),
-            Box::pin(async move { scope_join.await.map(|_| ()) }),
-        );
+        let termination = stream_invocation_termination(cancellation.clone(), scope_join);
         Ok(ScopedTaskStream {
             receiver,
             termination,
@@ -1910,11 +1894,7 @@ impl ExecutionServices {
             Box::pin(async move { producer(stream_sender, task_cancellation).await }),
         )?;
         let scope_join = scope.join();
-        let cancel = cancellation.clone();
-        let termination = InvocationTermination::new(
-            move || cancel.cancel(),
-            Box::pin(async move { scope_join.await.map(|_| ()) }),
-        );
+        let termination = stream_invocation_termination(cancellation.clone(), scope_join);
         Ok(ScopedTaskStream {
             receiver,
             termination,
@@ -1993,6 +1973,29 @@ impl ExecutionServices {
     }
 }
 
+fn stream_invocation_termination<T: Send + 'static>(
+    cancellation: RunCancellation,
+    joined: BoxFuture<'static, Result<T>>,
+) -> InvocationTermination {
+    let cancel = cancellation.clone();
+    InvocationTermination::new(
+        move || cancel.cancel(),
+        Box::pin(async move {
+            match joined.await {
+                Ok(_) => Ok(()),
+                Err(error)
+                    if cancellation.is_cancelled()
+                        && error.kind == ErrorKind::Internal
+                        && error.message == "run execution scope is cancelled" =>
+                {
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            }
+        }),
+    )
+}
+
 fn duration_millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
@@ -2014,6 +2017,37 @@ mod tests {
     use std::task::{Context, Poll};
 
     use super::*;
+
+    #[test]
+    fn explicit_stream_termination_treats_cooperative_cancellation_as_clean_join() {
+        futures_executor::block_on(async {
+            let cancellation = RunCancellation::default();
+            let producer_cancellation = cancellation.clone();
+            let termination = stream_invocation_termination(
+                cancellation,
+                Box::pin(async move {
+                    producer_cancellation.cancelled().await;
+                    producer_cancellation.check()
+                }),
+            );
+
+            termination.terminate_and_join().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn explicit_stream_termination_preserves_non_cancellation_producer_failure() {
+        futures_executor::block_on(async {
+            let termination = stream_invocation_termination(
+                RunCancellation::default(),
+                Box::pin(async { Err::<(), _>(CdfError::transient("producer failed")) }),
+            );
+
+            let error = termination.terminate_and_join().await.unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Transient);
+            assert_eq!(error.message, "producer failed");
+        });
+    }
 
     #[test]
     fn cancellation_future_unregisters_its_unique_waiter_on_drop() {

@@ -100,8 +100,8 @@ impl SourceDriver for RestSourceDriver {
         )?
         .with_cancellation(request.budget.cancellation());
         let health_context = context
-            .clone()
-            .with_prepared_payloads(cdf_runtime::PreparedSourcePayloads::default());
+            .new_invocation()
+            .with_cancellation(request.budget.cancellation());
         for plan in &request.compiled_plans {
             request.budget.consume_work(1)?;
             request
@@ -213,18 +213,11 @@ impl SourceDriver for RestSourceDriver {
         )
         .with_shared_secret_provider(Arc::clone(context.secret_provider()))
         .with_prepared_payloads(context.prepared_payloads().clone());
-        Ok(Arc::new(
-            RestResource::new(
-                plan.descriptor.clone(),
-                Arc::new(plan.schema.clone()),
-                plan.resource_capabilities.clone(),
-                runtime_plan,
-                plan.type_policy_allowances,
-                dependencies,
-            )?
-            .with_effective_schema_runtime(plan.effective_schema_runtime.clone())
-            .with_compiled_source_plan_hash(cdf_runtime::artifact_hash(plan)?),
-        ))
+        Ok(Arc::new(RestResource::from_compiled_plan(
+            plan,
+            runtime_plan,
+            dependencies,
+        )?))
     }
 }
 
@@ -356,15 +349,22 @@ impl SourceDiscoverySession for RestDriverDiscoverySession {
     }
 
     fn candidates(&self) -> Result<Vec<SourceDiscoveryCandidate>> {
-        Ok(vec![SourceDiscoveryCandidate::new(
-            self.descriptor.resource_id.as_str(),
-            None,
-            None,
-            BTreeMap::from([
-                ("source_kind".to_owned(), "rest".to_owned()),
-                ("path".to_owned(), self.plan.path.clone()),
-            ]),
-        )?])
+        Ok(vec![
+            SourceDiscoveryCandidate::new(
+                self.descriptor.resource_id.as_str(),
+                None,
+                None,
+                BTreeMap::from([
+                    ("source_kind".to_owned(), "rest".to_owned()),
+                    ("path".to_owned(), self.plan.path.clone()),
+                ]),
+            )?
+            .with_schema_observation_binding(
+                cdf_kernel::SchemaObservationBinding::new(
+                    crate::runtime::rest_schema_observation_binding(&self.descriptor, &self.plan)?,
+                )?,
+            )?,
+        ])
     }
 
     fn observe(

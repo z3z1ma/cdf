@@ -109,7 +109,7 @@ impl ResourceStream for WindowScopedResource<'_> {
         self.inner.schema()
     }
 
-    fn compiled_source_plan_hash(&self) -> Option<&str> {
+    fn compiled_source_plan_hash(&self) -> Option<&cdf_kernel::CompiledSourcePlanHash> {
         self.inner.compiled_source_plan_hash()
     }
 
@@ -145,19 +145,11 @@ impl ResourceStream for WindowScopedResource<'_> {
     ) -> Result<()> {
         let mut inner = scan.clone();
         inner.request = self.inner_request(&scan.request);
-        inner.partitions = inner
-            .partitions
-            .into_iter()
-            .map(|partition| self.inner_partition(partition))
-            .collect();
+        inner.map_inline_partitions(|partition| self.inner_partition(partition));
         self.inner
             .rebind_scan_for_resume(&mut inner, committed_frontier)?;
-        scan.partitions = inner
-            .partitions
-            .into_iter()
-            .map(|partition| self.outer_partition(partition))
-            .collect();
-        scan.planned_task_set = inner.planned_task_set;
+        inner.map_inline_partitions(|partition| self.outer_partition(partition));
+        scan.replace_partition_authority(inner.partition_authority().clone());
         Ok(())
     }
 
@@ -215,11 +207,7 @@ impl QueryableResource for WindowScopedResource<'_> {
     fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
         let mut plan = self.inner.negotiate(&self.inner_request(request))?;
         plan.request = request.clone();
-        plan.partitions = plan
-            .partitions
-            .into_iter()
-            .map(|partition| self.outer_partition(partition))
-            .collect();
+        plan.map_inline_partitions(|partition| self.outer_partition(partition));
         Ok(plan)
     }
 }

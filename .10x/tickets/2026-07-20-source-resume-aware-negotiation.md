@@ -49,6 +49,10 @@ source adapter, no weakening of plan/package identity, and no source-owned state
   scan, and the filtered append path necessarily materializes the full current task set first.
   This ticket owns that source-neutral lifecycle/performance debt; it is not an Iceberg correctness
   blocker and must not be solved by injecting state access or Iceberg branches into generic code.
+- 2026-07-18: The closed `PartitionAuthority` migration removed generic access to resident task
+  vectors. Complete external drain epochs rebind through `ResourceStream`; partial external epochs
+  now fail explicitly because their continuation requires source-owned task slicing. This ticket's
+  preplanning resume seam owns that slicing contract as well as the unchanged-run optimization.
 
 ## Blockers
 

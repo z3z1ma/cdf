@@ -251,7 +251,8 @@ impl SourceDriver for ExternalMockSourceDriver {
             capabilities: plan.resource_capabilities.clone(),
             type_policy_allowances: plan.type_policy_allowances,
             effective_schema_runtime: plan.effective_schema_runtime.clone(),
-            compiled_source_plan_hash: artifact_hash(plan)?,
+            baseline_observation_schema_catalog: plan.baseline_observation_schema_catalog.clone(),
+            compiled_source_plan_hash: plan.compiled_source_plan_hash()?,
             execution: context.execution().clone(),
             execution_capabilities: plan.execution_capabilities.clone(),
             physical_plan,
@@ -317,7 +318,8 @@ struct ExternalMockResource {
     capabilities: ResourceCapabilities,
     type_policy_allowances: TypePolicyAllowances,
     effective_schema_runtime: Option<cdf_kernel::EffectiveSchemaRuntime>,
-    compiled_source_plan_hash: String,
+    baseline_observation_schema_catalog: Vec<cdf_kernel::EffectiveSchemaCatalogEntry>,
+    compiled_source_plan_hash: cdf_kernel::CompiledSourcePlanHash,
     execution: cdf_runtime::ExecutionServices,
     execution_capabilities: SourceExecutionCapabilities,
     physical_plan: ExternalPhysicalPlan,
@@ -332,12 +334,16 @@ impl ResourceStream for ExternalMockResource {
         Arc::clone(&self.schema)
     }
 
-    fn compiled_source_plan_hash(&self) -> Option<&str> {
+    fn compiled_source_plan_hash(&self) -> Option<&cdf_kernel::CompiledSourcePlanHash> {
         Some(&self.compiled_source_plan_hash)
     }
 
     fn effective_schema_runtime(&self) -> Option<&cdf_kernel::EffectiveSchemaRuntime> {
         self.effective_schema_runtime.as_ref()
+    }
+
+    fn baseline_observation_schema_catalog(&self) -> &[cdf_kernel::EffectiveSchemaCatalogEntry] {
+        &self.baseline_observation_schema_catalog
     }
 
     fn type_policy_allowances(&self) -> TypePolicyAllowances {
@@ -350,7 +356,7 @@ impl ResourceStream for ExternalMockResource {
             field: "updated_at".to_owned(),
             value: CursorValue::I64(UPDATED_AT),
         });
-        Ok(vec![PartitionPlan {
+        let mut partition = PartitionPlan {
             partition_id: PartitionId::new("external-mock-000000")?,
             scope: request.scope.clone(),
             planned_position: Some(position),
@@ -358,7 +364,15 @@ impl ResourceStream for ExternalMockResource {
             scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
             retry_safety: PartitionRetrySafety::ImmutableContent,
             metadata: BTreeMap::new(),
-        }])
+        };
+        if let Some(runtime) = &self.effective_schema_runtime {
+            cdf_kernel::bind_partition_schema_observation(
+                &mut partition,
+                runtime,
+                self.descriptor.resource_id.as_str(),
+            )?;
+        }
+        Ok(vec![partition])
     }
 
     fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
@@ -447,17 +461,16 @@ impl QueryableResource for ExternalMockResource {
     }
 
     fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
-        Ok(ScanPlan {
-            plan_id: PlanId::new("external-mock-plan")?,
-            request: request.clone(),
-            partitions: self.plan_partitions(request)?,
-            planned_task_set: None,
-            pushed_predicates: Vec::new(),
-            unsupported_predicates: request.filters.clone(),
-            estimated_rows: Some(2),
-            estimated_bytes: None,
-            delivery_guarantee: DeliveryGuarantee::AtLeastOnceDuplicateRisk,
-        })
+        Ok(ScanPlan::new(
+            PlanId::new("external-mock-plan")?,
+            request.clone(),
+            cdf_kernel::PartitionAuthority::Inline(self.plan_partitions(request)?),
+            Vec::new(),
+            request.filters.clone(),
+            Some(2),
+            None,
+            DeliveryGuarantee::AtLeastOnceDuplicateRisk,
+        ))
     }
 }
 

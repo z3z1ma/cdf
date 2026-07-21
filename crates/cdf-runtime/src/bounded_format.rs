@@ -11,9 +11,9 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     AccountedByteStream, ByteExtent, ByteSource, ByteSourceCapabilities, ContentIdentity,
-    DecodePlanningRequest, DecodeSchemaPlan, FormatDiscoveryRequest, FormatDriver,
-    GenerationStrength, PhysicalDecodeRequest, ReadOptions, RunCancellation, SequentialReadRequest,
-    decode_unit_no_lookback_frontiers,
+    DecodePlanningRequest, DecodeSchemaAuthority, DecodeSchemaPlan, FormatDiscoveryRequest,
+    FormatDriver, GenerationStrength, PhysicalDecodeRequest, ReadOptions, RunCancellation,
+    SequentialReadRequest, decode_unit_no_lookback_frontiers,
 };
 
 const BOUNDED_TARGET_BATCH_BYTES: u64 = 16 * 1024 * 1024;
@@ -375,7 +375,16 @@ async fn decode_format_stream_next(
         state.cancellation.check()?;
         if let Some(current) = &mut state.current {
             if let Some(batch) = current.try_next().await? {
-                return Ok(Some((batch.into_batch()?, state)));
+                let mut batch = batch.into_batch()?;
+                if let Some(observed) = &state.decode_schema.observed_physical_schema {
+                    if state.decode_schema.authority == DecodeSchemaAuthority::FixedAdmission {
+                        batch.header.mark_materialized_output(observed.as_ref())?;
+                    } else {
+                        batch.header.observed_schema_hash =
+                            cdf_kernel::canonical_arrow_schema_hash(observed.as_ref())?;
+                    }
+                }
+                return Ok(Some((batch, state)));
             }
             state.current = None;
             let completed_ordinal = state

@@ -7,9 +7,9 @@ use cdf_contract::{
 use cdf_kernel::{
     CapabilitySupport, CdfError, CompiledScanIntent, DeliveryGuarantee, EstimateSupport,
     ExecutionExtent, PLAN_PHYSICAL_SCHEMA_HASH_KEY, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
-    PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionPlan, PlanId, PushdownFidelity, QueryableResource,
-    ResourceCapabilities, ResourceId, ResourceStream, Result, ScanPlan, ScanPredicate, ScanRequest,
-    WriteDisposition,
+    PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAuthority, PartitionPlan, PlanId, PushdownFidelity,
+    QueryableResource, ResourceCapabilities, ResourceId, ResourceStream, Result, ScanPlan,
+    ScanPredicate, ScanRequest, WriteDisposition,
 };
 
 use crate::{
@@ -59,17 +59,16 @@ impl Planner {
 
         let partitions = resource.plan_partitions(&input.request)?;
         validate_tier_a_partition_intents(&partitions)?;
-        let mut scan = ScanPlan {
-            plan_id: PlanId::new(format!("plan-{}", input.request.resource_id.as_str()))?,
-            request: input.request.clone(),
-            partitions,
-            planned_task_set: None,
-            pushed_predicates: Vec::new(),
-            unsupported_predicates: input.request.filters.clone(),
-            estimated_rows: None,
-            estimated_bytes: None,
-            delivery_guarantee: delivery_guarantee(write_disposition.clone()),
-        };
+        let mut scan = ScanPlan::new(
+            PlanId::new(format!("plan-{}", input.request.resource_id.as_str()))?,
+            input.request.clone(),
+            PartitionAuthority::Inline(partitions),
+            Vec::new(),
+            input.request.filters.clone(),
+            None,
+            None,
+            delivery_guarantee(write_disposition.clone()),
+        );
         cdf_kernel::validate_scan_partition_observation_identities(&scan)?;
         let effective_schema_evidence = bind_effective_schema_evidence(&mut scan, resource)?;
         let output_schema = CompiledArrowSchema::from_arrow(
@@ -489,7 +488,7 @@ fn validate_negotiated_scan(
         }
     }
     cdf_kernel::validate_compiled_scan_intents(scan)?;
-    for partition in &scan.partitions {
+    for partition in scan.inline_partitions().unwrap_or(&[]) {
         let expected_projection = (capabilities.projection == CapabilitySupport::Supported)
             .then(|| request.projection.clone())
             .flatten();
@@ -690,8 +689,8 @@ where
     runtime.validate_for_resource(resource.descriptor())?;
     let evidence = &runtime.evidence;
     let projection = scan
-        .partitions
-        .first()
+        .inline_partitions()
+        .and_then(|partitions| partitions.first())
         .and_then(|partition| partition.scan_intent.projection.as_deref());
     let admission_constraint = scan_expression_schema(resource.schema().as_ref(), projection)?;
     let projected_observations = evidence
@@ -720,8 +719,18 @@ where
             Ok((observation.observation_id.clone(), (hash, projected)))
         })
         .collect::<Result<BTreeMap<_, _>>>()?;
-    let mut observation_bindings = BTreeMap::new();
-    for partition in &mut scan.partitions {
+    let mut observation_bindings = evidence
+        .observations
+        .iter()
+        .map(|observation| {
+            (
+                observation.observation_id.clone(),
+                observation.schema_observation_binding.clone(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut assigned_observations = BTreeSet::new();
+    for partition in scan.inline_partitions_mut().into_iter().flatten() {
         let observation_id = partition
             .metadata
             .get(PLAN_SCHEMA_OBSERVATION_ID_KEY)
@@ -730,25 +739,29 @@ where
                 "effective schema evidence requires every planned partition to identify its schema observation",
             )
         })?;
-        let binding = partition
-            .metadata
-            .get(PLAN_SCHEMA_OBSERVATION_BINDING_KEY)
-            .ok_or_else(|| {
+        let binding = cdf_kernel::SchemaObservationBinding::new(
+                partition
+                .metadata
+                .get(PLAN_SCHEMA_OBSERVATION_BINDING_KEY)
+                .ok_or_else(|| {
                 CdfError::data(format!(
                     "effective schema observation {observation_id:?} omitted its source identity binding"
                 ))
             })?
-            .clone();
-        if observation_bindings
-            .insert(observation_id.clone(), binding)
-            .is_some()
-        {
+            .clone(),
+            )?;
+        if !assigned_observations.insert(observation_id.clone()) {
             return Err(CdfError::data(format!(
                 "effective schema observation {observation_id:?} is assigned to more than one planned partition; observation identities must be partition-scoped"
             )));
         }
         match evidence.observation(observation_id) {
             Some(observation) => {
+                if observation.schema_observation_binding != binding {
+                    return Err(CdfError::data(format!(
+                        "effective schema observation {observation_id:?} does not match its planned partition source identity"
+                    )));
+                }
                 let execution_hash = projected_observations
                     .get(observation_id)
                     .map(|(hash, _)| hash)
@@ -759,6 +772,7 @@ where
                 );
             }
             None => {
+                observation_bindings.insert(observation_id.clone(), binding);
                 partition.metadata.remove(PLAN_PHYSICAL_SCHEMA_HASH_KEY);
             }
         }
@@ -1041,17 +1055,16 @@ pub fn negotiate_scan_plan(
         partition.scan_intent = intent.clone();
     }
 
-    Ok(ScanPlan {
-        plan_id: PlanId::new(format!("plan-{}", resource_id.as_str()))?,
+    Ok(ScanPlan::new(
+        PlanId::new(format!("plan-{}", resource_id.as_str()))?,
         request,
-        partitions,
-        planned_task_set: None,
+        PartitionAuthority::Inline(partitions),
         pushed_predicates,
         unsupported_predicates,
         estimated_rows,
         estimated_bytes,
         delivery_guarantee,
-    })
+    ))
 }
 
 pub fn datafusion_filter_pushdown(
@@ -1165,7 +1178,8 @@ fn explain_data(
         inexact_predicates,
         unsupported_predicates,
         partitions: scan
-            .partitions
+            .inline_partitions()
+            .unwrap_or(&[])
             .iter()
             .map(|partition| PartitionExplain {
                 partition_id: partition.partition_id.as_str().to_owned(),
@@ -1178,7 +1192,7 @@ fn explain_data(
         estimates: EstimateExplain {
             support: estimate_support,
             rows: scan.estimated_rows,
-            bytes: scan.estimated_bytes,
+            bytes: scan.planned_source_bytes.map(|bytes| bytes.get()),
         },
         delivery_guarantee: scan.delivery_guarantee.clone(),
         execution_extent: execution_extent.clone(),

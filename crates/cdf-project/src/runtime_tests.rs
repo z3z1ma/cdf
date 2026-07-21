@@ -288,7 +288,7 @@ async fn run_project_outcome_fixture<'a>(
     }
     let resource = request.resource.queryable();
     let source = compiled_test_source_plan(resource);
-    let compiled_source_plan_hash = cdf_runtime::artifact_hash(&source)?;
+    let compiled_source_plan_hash = source.compiled_source_plan_hash()?;
     request.plan = request.plan.bind_compiled_source(&source)?;
     let bound = BoundTestResource {
         inner: resource,
@@ -301,7 +301,7 @@ async fn run_project_outcome_fixture<'a>(
 
 struct BoundTestResource<'a> {
     inner: &'a dyn QueryableResource,
-    compiled_source_plan_hash: String,
+    compiled_source_plan_hash: cdf_kernel::CompiledSourcePlanHash,
     replay_retention: Option<&'a dyn cdf_kernel::SourceReplayRetention>,
 }
 
@@ -314,7 +314,7 @@ impl ResourceStream for BoundTestResource<'_> {
         self.inner.schema()
     }
 
-    fn compiled_source_plan_hash(&self) -> Option<&str> {
+    fn compiled_source_plan_hash(&self) -> Option<&cdf_kernel::CompiledSourcePlanHash> {
         Some(&self.compiled_source_plan_hash)
     }
 
@@ -853,7 +853,7 @@ impl ResourceStream for OwnedTestResource {
         self.inner.schema()
     }
 
-    fn compiled_source_plan_hash(&self) -> Option<&str> {
+    fn compiled_source_plan_hash(&self) -> Option<&cdf_kernel::CompiledSourcePlanHash> {
         self.inner.compiled_source_plan_hash()
     }
 
@@ -1373,7 +1373,7 @@ fn backfill_planner_splits_numeric_windows_with_window_scopes_and_ids() {
 fn backfill_planner_binds_every_slice_to_the_compiled_source_artifact() {
     let resource = BackfillMockResource::cursor();
     let source = compiled_backfill_source(&resource);
-    let expected_hash = cdf_runtime::artifact_hash(&source).unwrap();
+    let expected_hash = source.compiled_source_plan_hash().unwrap();
 
     let plan = plan_backfill(
         &resource,
@@ -1394,7 +1394,7 @@ fn backfill_planner_binds_every_slice_to_the_compiled_source_artifact() {
             .compiled_source_execution
             .as_ref()
             .expect("every executable backfill slice retains compiler source authority");
-        assert_eq!(execution.compiled_source_plan_hash(), expected_hash);
+        assert_eq!(execution.compiled_source_plan_hash(), &expected_hash);
         assert_eq!(
             slice
                 .engine_plan
@@ -1679,8 +1679,7 @@ impl ResourceStream for TableSnapshotMockResource {
         committed_frontier: &SourcePosition,
     ) -> Result<()> {
         if committed_frontier == &self.position() {
-            scan.partitions.clear();
-            scan.planned_task_set = None;
+            scan.replace_partition_authority(cdf_kernel::PartitionAuthority::Inline(Vec::new()));
             return Ok(());
         }
         Err(CdfError::data(
@@ -1919,6 +1918,7 @@ fn build_package_with_carryover(
                 input_observations: vec![LineageInputObservation {
                     observation_id: "artifact-fixture".to_owned(),
                     partition_id: PartitionId::new("artifact-fixture").unwrap(),
+                    partition_binding: artifact_fixture_partition_binding(),
                     observed_rows: 3,
                     output_position: Some(position(3)),
                 }],
@@ -2051,6 +2051,7 @@ fn build_package_with_options_and_scan_tamper(
                 input_observations: vec![LineageInputObservation {
                     observation_id: "artifact-fixture".to_owned(),
                     partition_id: PartitionId::new("artifact-fixture").unwrap(),
+                    partition_binding: artifact_fixture_partition_binding(),
                     observed_rows: 3,
                     output_position: Some(position(3)),
                 }],
@@ -2090,7 +2091,7 @@ fn build_zero_segment_processed_package(package_dir: &Path, package_id: &str) ->
             source_generation: None,
             etag: Some("etag-07".to_owned()),
             object_version: None,
-            sha256: Some("sha256-07".to_owned()),
+            sha256: Some(format!("sha256:{}", "07".repeat(32))),
         }],
     });
     let processed = ProcessedObservationPosition::new(
@@ -2243,7 +2244,7 @@ fn write_compiled_expression_artifacts(
             .native_filter_lowering_version = "stale-test-version".to_owned();
     }
     if duplicate_scan_observation {
-        let mut duplicate = plan.scan.partitions[0].clone();
+        let mut duplicate = plan.scan.inline_partitions().unwrap()[0].clone();
         duplicate.partition_id = PartitionId::new("artifact-fixture-duplicate").unwrap();
         duplicate.scope = ScopeKey::Partition {
             partition_id: duplicate.partition_id.clone(),
@@ -2252,7 +2253,7 @@ fn write_compiled_expression_artifacts(
             cdf_kernel::PLAN_SCHEMA_OBSERVATION_ID_KEY.to_owned(),
             "artifact-fixture".to_owned(),
         );
-        plan.scan.partitions.push(duplicate);
+        plan.scan.inline_partitions_mut().unwrap().push(duplicate);
     }
     builder
         .write_json_artifact("plan/validation-program.json", &plan.validation_program)
@@ -2287,6 +2288,7 @@ fn write_compiled_expression_artifacts(
                         coercion_plan,
                         cdf_engine::StreamAdmissionCompletion::Complete {
                             source_position: position(3),
+                            partition_binding: artifact_fixture_partition_binding(),
                         },
                     )
                     .unwrap(),
@@ -2354,6 +2356,12 @@ fn artifact_expression_plan() -> EnginePlan {
                 package_id: "artifact-test-package".to_owned(),
             },
         )
+        .unwrap()
+}
+
+fn artifact_fixture_partition_binding() -> cdf_kernel::SchemaObservationBinding {
+    let plan = artifact_expression_plan();
+    cdf_kernel::partition_schema_observation_binding(&plan.scan.inline_partitions().unwrap()[0])
         .unwrap()
 }
 
@@ -2583,6 +2591,7 @@ struct MockDestination {
     writes: Arc<Mutex<Vec<SegmentId>>>,
     aborts: Arc<AtomicU64>,
     stage_threads: Arc<Mutex<Vec<std::thread::ThreadId>>>,
+    fail_begin: Arc<AtomicBool>,
 }
 
 impl MockDestination {
@@ -2609,7 +2618,13 @@ impl MockDestination {
             writes: Arc::new(Mutex::new(Vec::new())),
             aborts: Arc::new(AtomicU64::new(0)),
             stage_threads: Arc::new(Mutex::new(Vec::new())),
+            fail_begin: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    fn with_begin_failure(self) -> Self {
+        self.fail_begin.store(true, Ordering::SeqCst);
+        self
     }
 
     fn write_count(&self) -> usize {
@@ -2669,6 +2684,9 @@ impl MockDestination {
         request: DestinationCommitRequest,
         plan: CommitPlan,
     ) -> Result<Box<dyn CommitSession + '_>> {
+        if self.fail_begin.load(Ordering::SeqCst) {
+            return Err(CdfError::destination("injected primary replay failure"));
+        }
         Ok(Box::new(MockCommitSession {
             destination: self,
             request,
@@ -4410,7 +4428,7 @@ fn run_rest_project_with_jobs(
         .bind_operator_graph(&source, &destination.runtime_capabilities())
         .unwrap();
     let scheduler = cdf_runtime::resolve_runtime_scheduler(
-        plan.scan.partitions.len(),
+        usize::try_from(plan.scan.partition_count().unwrap()).unwrap(),
         &source.execution_capabilities,
         &destination.runtime_capabilities(),
         &services,
@@ -4470,7 +4488,7 @@ fn run_sql_project_with_jobs(
         .bind_operator_graph(&source, &destination.runtime_capabilities())
         .unwrap();
     let scheduler = cdf_runtime::resolve_runtime_scheduler(
-        plan.scan.partitions.len(),
+        usize::try_from(plan.scan.partition_count().unwrap()).unwrap(),
         &source.execution_capabilities,
         &destination.runtime_capabilities(),
         &services,
@@ -4522,7 +4540,7 @@ fn live_file_run_post_receipt_failure_keeps_checkpoint_uncommitted_and_receipt_r
         .unwrap();
     let bound = BoundTestResource {
         inner: &resource,
-        compiled_source_plan_hash: cdf_runtime::artifact_hash(&source).unwrap(),
+        compiled_source_plan_hash: source.compiled_source_plan_hash().unwrap(),
         replay_retention: None,
     };
 
@@ -4796,7 +4814,7 @@ fn drain_project_settles_each_frontier_before_committing_the_next_epoch() {
     };
     let bound = BoundTestResource {
         inner: &resource,
-        compiled_source_plan_hash: cdf_runtime::artifact_hash(&source).unwrap(),
+        compiled_source_plan_hash: source.compiled_source_plan_hash().unwrap(),
         replay_retention: Some(&replay_retention),
     };
     let extent = ExecutionExtent::Drain {
@@ -4902,7 +4920,7 @@ fn cold_empty_drain_returns_no_op_without_package_destination_or_checkpoint() {
     let source = compiled_drain_test_source_plan(&resource);
     let bound = BoundTestResource {
         inner: &resource,
-        compiled_source_plan_hash: cdf_runtime::artifact_hash(&source).unwrap(),
+        compiled_source_plan_hash: source.compiled_source_plan_hash().unwrap(),
         replay_retention: None,
     };
     let extent = ExecutionExtent::Drain {
@@ -4986,7 +5004,7 @@ fn drain_preserves_committed_summary_when_the_following_epoch_is_empty() {
     source.validate().unwrap();
     let bound = BoundTestResource {
         inner: &resource,
-        compiled_source_plan_hash: cdf_runtime::artifact_hash(&source).unwrap(),
+        compiled_source_plan_hash: source.compiled_source_plan_hash().unwrap(),
         replay_retention: None,
     };
     let extent = ExecutionExtent::Drain {
@@ -5065,7 +5083,7 @@ fn drain_retry_discards_only_incomplete_construction_after_staging_abort() {
     let source = compiled_drain_test_source_plan(&resource);
     let bound = BoundTestResource {
         inner: &resource,
-        compiled_source_plan_hash: cdf_runtime::artifact_hash(&source).unwrap(),
+        compiled_source_plan_hash: source.compiled_source_plan_hash().unwrap(),
         replay_retention: None,
     };
     let extent = ExecutionExtent::Drain {
@@ -5170,7 +5188,7 @@ fn multi_partition_drain_restart_uses_persisted_partition_continuation() {
     source.validate().unwrap();
     let bound = BoundTestResource {
         inner: &resource,
-        compiled_source_plan_hash: cdf_runtime::artifact_hash(&source).unwrap(),
+        compiled_source_plan_hash: source.compiled_source_plan_hash().unwrap(),
         replay_retention: None,
     };
     let extent = ExecutionExtent::Drain {
@@ -5350,7 +5368,7 @@ fn drain_project_does_not_publish_a_later_epoch_before_checkpoint_settlement() {
     let source = compiled_drain_test_source_plan(&resource);
     let bound = BoundTestResource {
         inner: &resource,
-        compiled_source_plan_hash: cdf_runtime::artifact_hash(&source).unwrap(),
+        compiled_source_plan_hash: source.compiled_source_plan_hash().unwrap(),
         replay_retention: None,
     };
     let extent = ExecutionExtent::Drain {
@@ -6546,6 +6564,16 @@ fn trust_ring_anomaly_demotion_requires_explicit_fact() {
     );
     futures_executor::block_on(run_project(clean)).unwrap();
 
+    // The second run must contain new work. An unchanged FileManifest is a
+    // verified no-op and therefore cannot exercise the promotion decision.
+    fs::write(
+        temp.path().join("data/events.ndjson"),
+        "{\"id\":1,\"name\":\"ada\"}\n\
+         {\"id\":2,\"name\":\"grace\"}\n\
+         {\"id\":3,\"name\":\"linus\"}\n",
+    )
+    .unwrap();
+
     let no_anomaly = project_run_request_with_policy(
         &resource,
         "pkg-trust-no-anomaly-current",
@@ -6754,7 +6782,7 @@ fn project_run_records_non_mirror_outcome_for_unsupported_quarantine_sheet() {
     plan = plan.bind_compiled_source(&source).unwrap();
     let bound = BoundTestResource {
         inner: &resource,
-        compiled_source_plan_hash: cdf_runtime::artifact_hash(&source).unwrap(),
+        compiled_source_plan_hash: source.compiled_source_plan_hash().unwrap(),
         replay_retention: None,
     };
 
@@ -7774,14 +7802,14 @@ fn general_project_run_rejects_sql_empty_secret_inside_source_lifecycle_before_d
 
     assert!(error.to_string().contains("empty value"), "{error}");
     assert!(
-        package_root
-            .join(package_id)
-            .join("plan/schema-admission.json")
-            .is_file(),
-        "the failed source invocation retains its deterministic run evidence"
+        !package_root.join(package_id).exists(),
+        "invalid source runtime dependencies fail before package mutation"
     );
     assert!(!duckdb_path.exists());
-    assert!(state_path.exists(), "the failed run remains in the ledger");
+    assert!(
+        !state_path.exists(),
+        "invalid source runtime dependencies fail before state mutation"
+    );
 }
 
 #[test]
@@ -8476,6 +8504,56 @@ fn state_delta_rejects_incompatible_cursor_fields_and_values_but_never_reapplies
 struct CommitFailingStore {
     inner: SqliteCheckpointStore,
     fail_commit: AtomicBool,
+}
+
+struct AbandonFailingStore {
+    inner: SqliteCheckpointStore,
+}
+
+impl AbandonFailingStore {
+    fn new() -> Self {
+        Self {
+            inner: SqliteCheckpointStore::open_in_memory().unwrap(),
+        }
+    }
+}
+
+impl CheckpointStore for AbandonFailingStore {
+    fn propose(&self, delta: StateDelta) -> Result<Checkpoint> {
+        self.inner.propose(delta)
+    }
+
+    fn commit(&self, checkpoint_id: &CheckpointId, receipt: Receipt) -> Result<Checkpoint> {
+        self.inner.commit(checkpoint_id, receipt)
+    }
+
+    fn abandon(&self, _checkpoint_id: &CheckpointId) -> Result<Checkpoint> {
+        Err(CdfError::internal(
+            "injected checkpoint abandonment failure",
+        ))
+    }
+
+    fn head(
+        &self,
+        pipeline_id: &PipelineId,
+        resource_id: &ResourceId,
+        scope: &ScopeKey,
+    ) -> Result<Option<Checkpoint>> {
+        self.inner.head(pipeline_id, resource_id, scope)
+    }
+
+    fn history(
+        &self,
+        pipeline_id: &PipelineId,
+        resource_id: &ResourceId,
+        scope: &ScopeKey,
+    ) -> Result<Vec<Checkpoint>> {
+        self.inner.history(pipeline_id, resource_id, scope)
+    }
+
+    fn rewind(&self, request: RewindRequest) -> Result<RewindReport> {
+        self.inner.rewind(request)
+    }
 }
 
 impl CommitFailingStore {
@@ -9423,6 +9501,130 @@ fn logical_receipt_replay_to_second_physical_destination_keeps_one_package_recei
         }
     );
     assert_eq!(package_receipts(&package_dir), vec![first.receipt]);
+}
+
+#[test]
+fn verified_destination_receipt_before_package_record_replays_idempotently() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-unsettled-receipt");
+    let manifest = build_package_for_checkpoint(
+        &package_dir,
+        "pkg-unsettled-receipt",
+        PackageStatus::Packaged,
+        "checkpoint-unsettled-receipt",
+    );
+    let delta = delta(&manifest, "checkpoint-unsettled-receipt");
+    let db_path = temp.path().join("local.duckdb");
+    let destination = destination(&db_path);
+    let store = SqliteCheckpointStore::open_in_memory().unwrap();
+    let stop_before_record = |_receipt: &Receipt| {
+        Err(CdfError::internal(
+            "injected failure before package receipt persistence",
+        ))
+    };
+    let package = PackageReader::open(&package_dir)
+        .unwrap()
+        .into_verified()
+        .unwrap();
+    let execution = test_execution_services();
+    let mut resolved =
+        resolved_duckdb_destination(&destination, TargetName::new("orders").unwrap());
+
+    let error = replay_package_with_runtime(
+        package,
+        resolved.runtime_mut(),
+        &store,
+        execution.memory(),
+        PackageReplayHooks {
+            before_package_receipt_recorded: Some(&stop_before_record),
+            ..Default::default()
+        },
+        Some(&execution),
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("injected failure before package receipt persistence"),
+        "{error}"
+    );
+    assert!(package_receipts(&package_dir).is_empty());
+    assert_no_head(&store, &delta);
+    let history = store
+        .history(&delta.pipeline_id, &delta.resource_id, &delta.scope)
+        .unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].status, CheckpointStatus::Proposed);
+    let loads_after_interruption = destination
+        .read_mirror_snapshot_read_only()
+        .unwrap()
+        .loads
+        .len();
+    assert_eq!(loads_after_interruption, 1);
+
+    let report =
+        replay_package_from_artifacts(artifact_replay_request(&package_dir, &destination, &store))
+            .unwrap();
+    assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);
+    assert_eq!(package_status(&package_dir), PackageStatus::Checkpointed);
+    assert_eq!(package_receipts(&package_dir), vec![report.receipt.clone()]);
+    assert_eq!(
+        destination
+            .read_mirror_snapshot_read_only()
+            .unwrap()
+            .loads
+            .len(),
+        loads_after_interruption,
+        "idempotent redrive must not create a second destination load"
+    );
+}
+
+#[test]
+fn checkpoint_abandonment_failure_is_attached_to_primary_replay_failure() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-abandonment-failure");
+    build_package_for_checkpoint(
+        &package_dir,
+        "pkg-abandonment-failure",
+        PackageStatus::Packaged,
+        "checkpoint-abandonment-failure",
+    );
+    let package = PackageReader::open(&package_dir)
+        .unwrap()
+        .into_verified()
+        .unwrap();
+    let destination = MockDestination::new().with_begin_failure();
+    let counters = MockDestinationCounters::new();
+    let store = AbandonFailingStore::new();
+    let execution = test_execution_services();
+    let mut runtime =
+        MockProjectDestinationRuntime::with_destination(destination.clone(), counters);
+
+    let error = replay_package_with_runtime(
+        package,
+        &mut runtime,
+        &store,
+        execution.memory(),
+        PackageReplayHooks::default(),
+        Some(&execution),
+    )
+    .unwrap_err();
+    let message = error.to_string();
+    assert!(
+        message.contains("injected primary replay failure"),
+        "{message}"
+    );
+    assert!(
+        message.contains("checkpoint abandonment also failed"),
+        "{message}"
+    );
+    assert!(
+        message.contains("injected checkpoint abandonment failure"),
+        "{message}"
+    );
+    assert_eq!(package_status(&package_dir), PackageStatus::Loading);
+    assert!(package_receipts(&package_dir).is_empty());
+    assert_eq!(destination.write_count(), 0);
 }
 
 #[test]

@@ -179,7 +179,7 @@ pub fn build_prepared_package_fixture(
     builder.update_status(PackageStatus::Extracting)?;
     let batch = deterministic_orders_batch()?;
     let schema = batch.schema();
-    let admission =
+    let (admission, partition_binding) =
         write_compiled_plan_artifacts(&builder, Arc::clone(&schema), &spec.schema_hash)?;
     builder.write_runtime_arrow_schema(batch.schema().as_ref())?;
     builder.write_json_artifact(
@@ -188,7 +188,13 @@ pub fn build_prepared_package_fixture(
     )?;
     let batch = cdf_package_contract::append_package_row_ord(vec![batch], 0)?;
     let segment = builder.write_segment(spec.segment_id.clone(), 0, &batch)?;
-    write_stream_admission_artifacts(&builder, &admission, segment.row_count, schema.as_ref())?;
+    write_stream_admission_artifacts(
+        &builder,
+        &admission,
+        &partition_binding,
+        segment.row_count,
+        schema.as_ref(),
+    )?;
     write_prepared_state_commit_artifacts(&builder, &spec, segment)?;
     builder.finish_with_status(spec.status)?;
     let manifest = cdf_package::read_manifest(&spec.package_dir)?;
@@ -206,7 +212,10 @@ fn write_compiled_plan_artifacts(
     builder: &PackageBuilder,
     schema: Arc<Schema>,
     schema_hash: &SchemaHash,
-) -> Result<cdf_engine::CompiledSchemaAdmissionPlan> {
+) -> Result<(
+    cdf_engine::CompiledSchemaAdmissionPlan,
+    cdf_kernel::SchemaObservationBinding,
+)> {
     let mut program = compile_validation_program(
         &ContractPolicy::evolve(),
         &ObservedSchema::from_arrow(schema.as_ref()),
@@ -237,12 +246,20 @@ fn write_compiled_plan_artifacts(
         "plan/schema-admission.json",
         &plan.compiled_schema_admission,
     )?;
-    Ok(plan.compiled_schema_admission)
+    let partition_binding = cdf_kernel::partition_schema_observation_binding(
+        plan.scan
+            .inline_partitions()
+            .ok_or_else(|| CdfError::internal("prepared replay plan is not inline"))?
+            .first()
+            .ok_or_else(|| CdfError::internal("prepared replay plan omitted its partition"))?,
+    )?;
+    Ok((plan.compiled_schema_admission, partition_binding))
 }
 
 fn write_stream_admission_artifacts(
     builder: &PackageBuilder,
     admission: &cdf_engine::CompiledSchemaAdmissionPlan,
+    partition_binding: &cdf_kernel::SchemaObservationBinding,
     row_count: u64,
     schema: &Schema,
 ) -> Result<()> {
@@ -256,6 +273,7 @@ fn write_stream_admission_artifacts(
         coercion,
         StreamAdmissionCompletion::Complete {
             source_position: output_position.clone(),
+            partition_binding: partition_binding.clone(),
         },
     )?;
     let stream_evidence = CompiledStreamAdmissionEvidence::new(
@@ -270,6 +288,7 @@ fn write_stream_admission_artifacts(
         input_observations: vec![LineageInputObservation {
             observation_id: PREPARED_OBSERVATION_ID.to_owned(),
             partition_id,
+            partition_binding: partition_binding.clone(),
             observed_rows: row_count,
             output_position: Some(output_position),
         }],

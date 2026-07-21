@@ -269,20 +269,52 @@ fn partition_check(
         };
     };
     let resource = resource.as_queryable();
-    let partitions = deep_scan_request(resource.descriptor())
-        .and_then(|request| resource.plan_partitions(&request));
+    let partitions = deep_scan_request(resource.descriptor()).and_then(|request| {
+        let scan = resource.negotiate(&request)?;
+        scan.validate_partition_authority()?;
+        let count = scan.partition_count()?;
+        let mut files = Vec::new();
+        if let Some(reference) = scan.external_task_set() {
+            let mut reader = resource.planned_partition_reader(reference)?;
+            for ordinal in 0..count {
+                let partition = reader.next_partition(ordinal)?.ok_or_else(|| {
+                    cdf_kernel::CdfError::data(
+                        "external task authority ended before its recorded partition count",
+                    )
+                })?;
+                if files.is_empty()
+                    && let cdf_kernel::ScopeKey::File { path } = &partition.plan().scope
+                {
+                    files.push(path.clone());
+                }
+            }
+            if reader.next_partition(count)?.is_some() {
+                return Err(cdf_kernel::CdfError::data(
+                    "external task authority exceeds its recorded partition count",
+                ));
+            }
+        } else {
+            files.extend(
+                scan.inline_partitions()
+                    .unwrap_or_default()
+                    .iter()
+                    .find_map(|partition| {
+                        if let cdf_kernel::ScopeKey::File { path } = &partition.scope {
+                            Some(path.clone())
+                        } else {
+                            None
+                        }
+                    }),
+            );
+        }
+        Ok((count, files))
+    });
     match partitions {
-        Ok(partitions) => DeepValidatePartitionReport {
+        Ok((count, files)) => DeepValidatePartitionReport {
             status: "ok".to_owned(),
-            count: partitions.len(),
-            files: partitions
-                .iter()
-                .filter_map(|partition| match &partition.scope {
-                    cdf_kernel::ScopeKey::File { path } => Some(path.clone()),
-                    _ => None,
-                })
-                .collect(),
-            detail: "resolved without extraction".to_owned(),
+            count,
+            files,
+            detail: "validated canonical partition authority without extraction".to_owned(),
         },
         Err(error) => {
             diagnostics.push(diagnostic(
@@ -681,7 +713,7 @@ struct DeepValidateSummary {
     passed: usize,
     failed: usize,
     warnings: usize,
-    partitions: usize,
+    partitions: u64,
     discovery_probes: usize,
 }
 
@@ -739,7 +771,7 @@ struct DeepValidateResourceReport {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct DeepValidatePartitionReport {
     status: String,
-    count: usize,
+    count: u64,
     files: Vec<String>,
     detail: String,
 }

@@ -601,10 +601,11 @@ pub fn plan_schema_promotion(
             "schema promote resource {resource_id:?} has no locked policy hash"
         ))
     })?;
-    let derived_policy_hash = semantic_hash(&policy)?;
+    let derived_policy_hash = crate::internal::semantic_hash(&policy)?;
     if locked_policy_hash != &derived_policy_hash {
         return Err(CdfError::contract(format!(
-            "schema promote cannot replace locked policy authority {locked_policy_hash} with derived trust-policy {derived_policy_hash}; refresh the exact contract compiler input or provide a typed policy planner adapter"
+            "schema promote cannot replace locked policy authority {locked_policy_hash} with derived {:?} trust-policy {derived_policy_hash}; refresh the exact contract compiler input or provide a typed policy planner adapter",
+            resource.descriptor().trust_level
         )));
     }
     let mut paths = build_path_reports(

@@ -23,10 +23,10 @@ use cdf_kernel::{
 use cdf_memory::{ConsumerKey, MemoryClass, MemoryLease, ReservationRequest, reserve};
 use cdf_runtime::{
     AccountedByteStream, AccountedChunksReader, AccountedPhysicalBatch, ByteExtent, ByteSource,
-    DecodePlanningRequest, DecodeUnitPlan, FormatDecodeSession, FormatDetection,
-    FormatDetectionConfidence, FormatDetectionProbe, FormatDiscoveryKind, FormatDiscoveryRequest,
-    FormatDriver, FormatDriverDescriptor, FormatId, FormatProbe, PhysicalDecodeRequest,
-    PhysicalDecodeStream, PhysicalSchemaObservation, SequentialReadRequest,
+    DecodePlanningRequest, DecodeSchemaAuthority, DecodeUnitPlan, FormatDecodeSession,
+    FormatDetection, FormatDetectionConfidence, FormatDetectionProbe, FormatDiscoveryKind,
+    FormatDiscoveryRequest, FormatDriver, FormatDriverDescriptor, FormatId, FormatProbe,
+    PhysicalDecodeRequest, PhysicalDecodeStream, PhysicalSchemaObservation, SequentialReadRequest,
 };
 use futures_util::{TryStreamExt, stream};
 use memchr::{memchr, memchr_iter, memrchr};
@@ -1031,8 +1031,8 @@ fn emit_frame_output(
 fn process_frame_byte(state: &mut JsonFrameState, byte: u8) -> Result<()> {
     if state.depth != 0 {
         observe_json_document_record_byte(state)?;
-        state.output.push(byte);
         if state.in_string {
+            state.output.push(byte);
             if state.escaped {
                 state.escaped = false;
             } else if byte == b'\\' {
@@ -1042,6 +1042,15 @@ fn process_frame_byte(state: &mut JsonFrameState, byte: u8) -> Result<()> {
             }
             return Ok(());
         }
+        // The framing output is NDJSON, so source formatting whitespace cannot
+        // survive as physical newlines inside one logical record. JSON permits
+        // all ASCII whitespace between tokens; remove it while retaining exact
+        // source-byte and maximum-record accounting above. String contents are
+        // emitted unchanged by the branch above.
+        if byte.is_ascii_whitespace() {
+            return Ok(());
+        }
+        state.output.push(byte);
         match byte {
             b'"' => state.in_string = true,
             b'{' => push_close(state, b'}')?,
@@ -1322,8 +1331,23 @@ async fn decode_next(
                 }
             }
         }
+        let requires_admission_recovery = requires_record_admission_recovery(&state.request);
         let flushed = state.decoder.flush();
         let (record_batch, candidates, materialized_residuals_complete) = match flushed {
+            Ok(Some(_)) if requires_admission_recovery => {
+                let recovered = recover_decode_window(
+                    &state.retained,
+                    state.retained_bytes,
+                    &state.request,
+                    state.source_row_ordinal,
+                )
+                .await?;
+                state.decoder = strict_decoder(
+                    Arc::clone(&state.request.schema.decoder_schema),
+                    state.request.target_batch_rows,
+                )?;
+                (recovered.0, recovered.1, true)
+            }
             Ok(Some(batch)) => (batch, Vec::new(), false),
             Ok(None) => {
                 if state.finished {
@@ -1366,6 +1390,7 @@ async fn decode_next(
                 (recovered.0, recovered.1, true)
             }
         };
+        let record_batch = materialize_json_authority_schema(record_batch, &state.request)?;
         if record_batch.num_rows() == 0 {
             if state.finished && state.sequence != 0 {
                 return Ok(None);
@@ -1512,6 +1537,68 @@ fn strict_decoder(schema: SchemaRef, batch_rows: usize) -> Result<arrow_json::re
         .with_strict_mode(true)
         .build_decoder()
         .map_err(|error| CdfError::data(format!("create JSON tape decoder: {error}")))
+}
+
+fn requires_record_admission_recovery(request: &PhysicalDecodeRequest) -> bool {
+    if request.schema.authority != DecodeSchemaAuthority::FixedAdmission {
+        return false;
+    }
+    let Some(observed) = request.schema.observed_physical_schema.as_ref() else {
+        return false;
+    };
+    let decoder = &request.schema.decoder_schema;
+    observed.fields().len() != decoder.fields().len()
+        || observed.fields().iter().any(|observed_field| {
+            decoder
+                .fields()
+                .iter()
+                .find(|declared| {
+                    source_name(declared.as_ref()).unwrap_or_else(|| declared.name())
+                        == observed_field.name()
+                })
+                .is_none_or(|declared| declared.data_type() != observed_field.data_type())
+        })
+}
+
+fn materialize_json_authority_schema(
+    record_batch: RecordBatch,
+    request: &PhysicalDecodeRequest,
+) -> Result<RecordBatch> {
+    if request.schema.authority != DecodeSchemaAuthority::FixedAdmission {
+        return Ok(record_batch);
+    }
+    if record_batch.num_columns() != request.schema.authority_schema.fields().len() {
+        return Err(CdfError::data(
+            "fixed-admission JSON output does not match its compiled authority field count",
+        ));
+    }
+    let fields = record_batch
+        .schema()
+        .fields()
+        .iter()
+        .zip(request.schema.authority_schema.fields())
+        .map(|(decoded, authority)| {
+            if decoded.data_type() != authority.data_type() {
+                return Err(CdfError::data(format!(
+                    "fixed-admission JSON field {:?} decoded as {} instead of compiled type {}",
+                    authority.name(),
+                    decoded.data_type(),
+                    authority.data_type()
+                )));
+            }
+            Ok(Arc::new(
+                authority
+                    .as_ref()
+                    .clone()
+                    .with_nullable(decoded.is_nullable()),
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let schema = Arc::new(Schema::new_with_metadata(
+        fields,
+        request.schema.authority_schema.metadata().clone(),
+    ));
+    RecordBatch::try_new(schema, record_batch.columns().to_vec()).map_err(CdfError::from)
 }
 
 async fn recover_decode_window(
@@ -1850,6 +1937,44 @@ fn trim_ascii_whitespace_range(bytes: &[u8]) -> Range<usize> {
 }
 
 fn raw_value_compatible(field: &Field, value: &RawValue) -> Result<bool> {
+    let raw = value.get();
+    if raw == "null" {
+        return Ok(field.is_nullable());
+    }
+    let bytes = raw.as_bytes();
+    let lexical_match = match field.data_type() {
+        DataType::Boolean => matches!(raw, "true" | "false"),
+        DataType::Int8 => raw.parse::<i8>().is_ok(),
+        DataType::Int16 => raw.parse::<i16>().is_ok(),
+        DataType::Int32 => raw.parse::<i32>().is_ok(),
+        DataType::Int64 => raw.parse::<i64>().is_ok(),
+        DataType::UInt8 => raw.parse::<u8>().is_ok(),
+        DataType::UInt16 => raw.parse::<u16>().is_ok(),
+        DataType::UInt32 => raw.parse::<u32>().is_ok(),
+        DataType::UInt64 => raw.parse::<u64>().is_ok(),
+        DataType::Float16
+        | DataType::Float32
+        | DataType::Float64
+        | DataType::Decimal32(_, _)
+        | DataType::Decimal64(_, _)
+        | DataType::Decimal128(_, _)
+        | DataType::Decimal256(_, _) => raw.parse::<f64>().is_ok_and(|number| number.is_finite()),
+        DataType::Utf8
+        | DataType::LargeUtf8
+        | DataType::Date32
+        | DataType::Date64
+        | DataType::Timestamp(_, _)
+        | DataType::Time32(_)
+        | DataType::Time64(_)
+        | DataType::Duration(_) => bytes.first() == Some(&b'"'),
+        _ => {
+            return raw_value_compatible_via_decoder(field, value);
+        }
+    };
+    Ok(lexical_match)
+}
+
+fn raw_value_compatible_via_decoder(field: &Field, value: &RawValue) -> Result<bool> {
     let field = field.clone().with_nullable(true);
     let schema = Arc::new(Schema::new([Arc::new(field.clone())]));
     let mut encoded = Vec::with_capacity(field.name().len() + value.get().len() + 8);
@@ -2214,6 +2339,56 @@ mod tests {
         assert_eq!(observation.sampled_records, 2);
         assert_eq!(observation.arrow_schema.field(1).name(), "late");
         assert_eq!(observation.evidence["content_coverage"], "full_content");
+        drop(observation);
+        drop(source);
+        assert_eq!(coordinator.snapshot().current_bytes, 0);
+    }
+
+    #[test]
+    fn full_content_json_discovery_normalizes_pretty_printed_records_to_ndjson() {
+        let coordinator = Arc::new(
+            DeterministicMemoryCoordinator::new(256 * 1024 * 1024, BTreeMap::new()).unwrap(),
+        );
+        let memory: Arc<dyn MemoryCoordinator> = coordinator.clone();
+        let document = br#"[
+  {
+    "id": 1,
+    "label": "space preserved"
+  },
+  {
+    "id": 2,
+    "late": true
+  }
+]"#
+        .to_vec();
+        let source: Arc<dyn ByteSource> = Arc::new(
+            futures_executor::block_on(MemoryByteSource::from_bytes(
+                "pretty-full-content-json",
+                document.clone(),
+                Arc::clone(&memory),
+            ))
+            .unwrap(),
+        );
+
+        let observation =
+            futures_executor::block_on(JsonDocumentFormatDriver::new().unwrap().discover(
+                Arc::clone(&source),
+                FormatDiscoveryRequest {
+                    options: serde_json::json!({}),
+                    discovery_kind: FormatDiscoveryKind::FullContent,
+                    maximum_bytes: document.len() as u64,
+                    maximum_records: u64::MAX,
+                    memory: Arc::clone(&memory),
+                    cancellation: cdf_runtime::RunCancellation::default(),
+                },
+            ))
+            .unwrap();
+
+        assert_eq!(observation.sampled_bytes, document.len() as u64);
+        assert_eq!(observation.sampled_records, 2);
+        assert_eq!(observation.arrow_schema.field(0).name(), "id");
+        assert_eq!(observation.arrow_schema.field(1).name(), "label");
+        assert_eq!(observation.arrow_schema.field(2).name(), "late");
         drop(observation);
         drop(source);
         assert_eq!(coordinator.snapshot().current_bytes, 0);

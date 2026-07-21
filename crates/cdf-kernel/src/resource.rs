@@ -792,14 +792,24 @@ impl CompiledScanIntent {
 pub struct ScanPlan {
     pub plan_id: PlanId,
     pub request: ScanRequest,
-    pub partitions: Vec<PartitionPlan>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub planned_task_set: Option<PlannedTaskSetReference>,
+    partition_authority: PartitionAuthority,
     pub pushed_predicates: Vec<PushedPredicate>,
     pub unsupported_predicates: Vec<ScanPredicate>,
     pub estimated_rows: Option<u64>,
-    pub estimated_bytes: Option<u64>,
+    pub planned_source_bytes: Option<PlannedSourceBytes>,
     pub delivery_guarantee: DeliveryGuarantee,
+}
+
+/// The one canonical partition authority for a scan.
+///
+/// Inline and external task plans are deliberately mutually exclusive in the
+/// type system. Callers must handle the selected authority rather than infer it
+/// from an empty vector plus an optional side field.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum PartitionAuthority {
+    Inline(Vec<PartitionPlan>),
+    External(PlannedTaskSetReference),
 }
 
 /// Invocation-local, bounded reader for one external canonical partition authority.
@@ -872,9 +882,9 @@ pub const PLANNED_TASK_SET_REFERENCE_VERSION: u16 = 1;
 
 /// Source-neutral reference to an external canonical partition/task authority.
 ///
-/// High-cardinality sources leave `ScanPlan::partitions` empty and name this artifact instead;
-/// they may not retain an unbounded inline fallback. The execution host streams the artifact
-/// through its registered content-store authority.
+/// High-cardinality sources select the external [`PartitionAuthority`] variant and name this
+/// artifact; they may not retain an unbounded inline fallback. The execution host streams the
+/// artifact through its registered content-store authority.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlannedTaskSetReference {
@@ -932,27 +942,81 @@ impl PlannedTaskSetReference {
 }
 
 impl ScanPlan {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        plan_id: PlanId,
+        request: ScanRequest,
+        partition_authority: PartitionAuthority,
+        pushed_predicates: Vec<PushedPredicate>,
+        unsupported_predicates: Vec<ScanPredicate>,
+        estimated_rows: Option<u64>,
+        planned_source_bytes: Option<u64>,
+        delivery_guarantee: DeliveryGuarantee,
+    ) -> Self {
+        Self {
+            plan_id,
+            request,
+            partition_authority,
+            pushed_predicates,
+            unsupported_predicates,
+            estimated_rows,
+            planned_source_bytes: planned_source_bytes.map(PlannedSourceBytes::new),
+            delivery_guarantee,
+        }
+    }
+
+    pub fn partition_authority(&self) -> &PartitionAuthority {
+        &self.partition_authority
+    }
+
     pub fn validate_partition_authority(&self) -> Result<()> {
-        if let Some(task_set) = &self.planned_task_set {
+        if let PartitionAuthority::External(task_set) = &self.partition_authority {
             task_set.validate()?;
-            if !self.partitions.is_empty() {
-                return Err(CdfError::contract(
-                    "scan plan cannot carry both external task authority and inline partitions",
-                ));
-            }
         }
         Ok(())
     }
 
     pub fn partition_count(&self) -> Result<u64> {
         self.validate_partition_authority()?;
-        self.planned_task_set.as_ref().map_or_else(
-            || {
-                u64::try_from(self.partitions.len())
-                    .map_err(|_| CdfError::data("scan partition count exceeds u64"))
-            },
-            |task_set| Ok(task_set.task_count),
-        )
+        match &self.partition_authority {
+            PartitionAuthority::Inline(partitions) => u64::try_from(partitions.len())
+                .map_err(|_| CdfError::data("scan partition count exceeds u64")),
+            PartitionAuthority::External(task_set) => Ok(task_set.task_count),
+        }
+    }
+
+    pub fn inline_partitions(&self) -> Option<&[PartitionPlan]> {
+        match &self.partition_authority {
+            PartitionAuthority::Inline(partitions) => Some(partitions),
+            PartitionAuthority::External(_) => None,
+        }
+    }
+
+    pub fn inline_partitions_mut(&mut self) -> Option<&mut Vec<PartitionPlan>> {
+        match &mut self.partition_authority {
+            PartitionAuthority::Inline(partitions) => Some(partitions),
+            PartitionAuthority::External(_) => None,
+        }
+    }
+
+    pub fn external_task_set(&self) -> Option<&PlannedTaskSetReference> {
+        match &self.partition_authority {
+            PartitionAuthority::Inline(_) => None,
+            PartitionAuthority::External(task_set) => Some(task_set),
+        }
+    }
+
+    pub fn replace_partition_authority(&mut self, authority: PartitionAuthority) {
+        self.partition_authority = authority;
+    }
+
+    pub fn map_inline_partitions(&mut self, mut map: impl FnMut(PartitionPlan) -> PartitionPlan) {
+        if let PartitionAuthority::Inline(partitions) = &mut self.partition_authority {
+            *partitions = std::mem::take(partitions)
+                .into_iter()
+                .map(&mut map)
+                .collect();
+        }
     }
 }
 
@@ -974,13 +1038,69 @@ fn validate_sha256_identity(label: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+macro_rules! typed_sha256_identity {
+    ($name:ident, $label:literal) => {
+        #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+        #[serde(transparent)]
+        pub struct $name(String);
+
+        impl $name {
+            pub fn new(value: impl Into<String>) -> Result<Self> {
+                let value = value.into();
+                validate_sha256_identity($label, &value)?;
+                Ok(Self(value))
+            }
+
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str(&self.0)
+            }
+        }
+
+        impl AsRef<str> for $name {
+            fn as_ref(&self) -> &str {
+                self.as_str()
+            }
+        }
+
+        impl std::str::FromStr for $name {
+            type Err = CdfError;
+
+            fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+                Self::new(value)
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                let value = String::deserialize(deserializer)?;
+                Self::new(value).map_err(serde::de::Error::custom)
+            }
+        }
+    };
+}
+
+typed_sha256_identity!(SourceDiscoveryBinding, "source discovery binding");
+typed_sha256_identity!(CompiledSourcePlanHash, "compiled source plan");
+typed_sha256_identity!(PhysicalSourcePlanHash, "physical source plan");
+typed_sha256_identity!(SourceSemanticsHash, "source semantics");
+typed_sha256_identity!(SchemaObservationBinding, "schema observation binding");
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PushedPredicate {
     pub predicate: ScanPredicate,
     pub fidelity: PushdownFidelity,
 }
 
-pub const EFFECTIVE_SCHEMA_EVIDENCE_VERSION: u16 = 1;
+pub const EFFECTIVE_SCHEMA_EVIDENCE_VERSION: u16 = 2;
 pub const PLAN_SCHEMA_OBSERVATION_ID_KEY: &str = "cdf:schema_observation_id";
 pub const PLAN_SCHEMA_OBSERVATION_BINDING_KEY: &str = "cdf:schema_observation_binding";
 pub const PLAN_PHYSICAL_SCHEMA_HASH_KEY: &str = "cdf:physical_schema_hash";
@@ -992,10 +1112,43 @@ pub fn partition_schema_observation_id(partition: &PartitionPlan) -> &str {
         .map_or_else(|| partition.partition_id.as_str(), String::as_str)
 }
 
+/// Binds one source-authored partition to the exact pinned schema observation it represents.
+///
+/// The source chooses the observation identity; generic registry/runtime layers only validate
+/// this evidence and must never infer or repair a missing binding.
+pub fn bind_partition_schema_observation(
+    partition: &mut PartitionPlan,
+    runtime: &EffectiveSchemaRuntime,
+    observation_id: &str,
+) -> Result<()> {
+    if observation_id.is_empty() {
+        return Err(CdfError::contract(
+            "partition schema observation identity cannot be empty",
+        ));
+    }
+    let observation = runtime
+        .evidence
+        .observation(observation_id)
+        .ok_or_else(|| {
+            CdfError::data(format!(
+                "source partition references absent effective-schema observation {observation_id:?}"
+            ))
+        })?;
+    partition.metadata.insert(
+        PLAN_SCHEMA_OBSERVATION_ID_KEY.to_owned(),
+        observation_id.to_owned(),
+    );
+    partition.metadata.insert(
+        PLAN_SCHEMA_OBSERVATION_BINDING_KEY.to_owned(),
+        observation.schema_observation_binding.to_string(),
+    );
+    Ok(())
+}
+
 pub fn validate_scan_partition_observation_identities(scan: &ScanPlan) -> Result<()> {
     scan.validate_partition_authority()?;
     let mut partitions_by_observation = BTreeMap::new();
-    for partition in &scan.partitions {
+    for partition in scan.inline_partitions().unwrap_or(&[]) {
         let observation_id = partition_schema_observation_id(partition);
         if observation_id.is_empty() {
             return Err(CdfError::contract(format!(
@@ -1022,7 +1175,7 @@ pub fn validate_scan_partition_observation_identities(scan: &ScanPlan) -> Result
 pub fn validate_compiled_scan_intents(scan: &ScanPlan) -> Result<()> {
     scan.validate_partition_authority()?;
     let mut expected: Option<&CompiledScanIntent> = None;
-    for partition in &scan.partitions {
+    for partition in scan.inline_partitions().unwrap_or(&[]) {
         let intent = &partition.scan_intent;
         intent.validate()?;
         if let Some(projection) = &intent.projection
@@ -1063,15 +1216,16 @@ pub fn validate_compiled_scan_intents(scan: &ScanPlan) -> Result<()> {
     Ok(())
 }
 
-pub fn partition_source_identity_binding(partition: &PartitionPlan) -> Result<String> {
+pub fn partition_schema_observation_binding(
+    partition: &PartitionPlan,
+) -> Result<SchemaObservationBinding> {
     if let Some(binding) = partition.metadata.get(PLAN_SCHEMA_OBSERVATION_BINDING_KEY) {
-        if binding.is_empty() {
-            return Err(CdfError::data(format!(
-                "partition {:?} carries an empty source-identity binding",
+        return SchemaObservationBinding::new(binding.clone()).map_err(|error| {
+            CdfError::data(format!(
+                "partition {:?} carries an invalid schema-observation binding: {error}",
                 partition.partition_id
-            )));
-        }
-        return Ok(binding.clone());
+            ))
+        });
     }
     use sha2::{Digest, Sha256};
     let bytes = serde_json::to_vec(&(
@@ -1082,7 +1236,7 @@ pub fn partition_source_identity_binding(partition: &PartitionPlan) -> Result<St
         &partition.metadata,
     ))
     .map_err(|error| CdfError::internal(error.to_string()))?;
-    Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
+    SchemaObservationBinding::new(format!("sha256:{:x}", Sha256::digest(bytes)))
 }
 
 #[non_exhaustive]
@@ -1125,6 +1279,24 @@ impl SourceReadMode {
             Self::PayloadCache => "payload_cache",
             Self::MixedAccess => "mixed_access",
         }
+    }
+}
+
+/// Compiler-owned estimate of source payload bytes represented by one scan.
+///
+/// This value describes planned work and must never be reported as bytes physically transferred;
+/// [`SourceIoMetrics::physical_bytes`] is the runtime authority for that observation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PlannedSourceBytes(u64);
+
+impl PlannedSourceBytes {
+    pub const fn new(bytes: u64) -> Self {
+        Self(bytes)
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
     }
 }
 
@@ -1511,13 +1683,19 @@ impl TerminalSchemaObservationQuarantine {
 pub struct EffectiveSchemaObservationEvidence {
     pub observation_id: String,
     pub physical_schema_hash: SchemaHash,
+    pub schema_observation_binding: SchemaObservationBinding,
 }
 
 impl EffectiveSchemaObservationEvidence {
-    pub fn new(observation_id: impl Into<String>, physical_schema_hash: SchemaHash) -> Self {
+    pub fn new(
+        observation_id: impl Into<String>,
+        physical_schema_hash: SchemaHash,
+        schema_observation_binding: SchemaObservationBinding,
+    ) -> Self {
         Self {
             observation_id: observation_id.into(),
             physical_schema_hash,
+            schema_observation_binding,
         }
     }
 }
@@ -1921,7 +2099,7 @@ pub trait ResourceStream: Send + Sync {
     /// Engine plans compiled from a source driver require this external binding before crossing
     /// the source boundary. Keeping it on the resolved resource prevents a serialized engine plan
     /// from coherently rewriting every copy of its own source ceiling.
-    fn compiled_source_plan_hash(&self) -> Option<&str> {
+    fn compiled_source_plan_hash(&self) -> Option<&CompiledSourcePlanHash> {
         None
     }
     /// Validates adapter-owned runtime dependencies before orchestration starts.
@@ -1932,7 +2110,7 @@ pub trait ResourceStream: Send + Sync {
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>>;
     /// Opens the source-owned decoder for an external canonical partition authority.
     ///
-    /// Generic orchestration calls this only when `ScanPlan::planned_task_set` is present. The
+    /// Generic orchestration calls this only when `ScanPlan::external_task_set` is present. The
     /// returned reader is invocation-local because task artifacts are sequential, integrity-
     /// checked streams; sharing one across runs would make ordering and cancellation ambiguous.
     fn planned_partition_reader(
@@ -1955,13 +2133,15 @@ pub trait ResourceStream: Send + Sync {
         committed_frontier: &SourcePosition,
     ) -> Result<()> {
         committed_frontier.validate()?;
-        if scan.planned_task_set.is_some() {
+        if scan.external_task_set().is_some() {
             return Err(CdfError::contract(format!(
                 "resource `{}` uses an external planned task set; its source adapter must implement resume binding",
                 self.descriptor().resource_id
             )));
         }
-        let partitions = &mut scan.partitions;
+        let partitions = scan.inline_partitions_mut().ok_or_else(|| {
+            CdfError::internal("external scan authority bypassed its resume-binding guard")
+        })?;
         if partitions.len() == 1 {
             partitions[0].start_position = Some(committed_frontier.clone());
             return Ok(());
@@ -2281,6 +2461,7 @@ impl Future for PartitionOpenAttempt<'_> {
 pub struct PartitionStreamPayload {
     stream: BatchStream,
     completion: BoxFuture<'static, Result<PartitionCompletion>>,
+    source_io_snapshot: Option<Arc<dyn Fn() -> SourceIoMetrics + Send + Sync>>,
 }
 
 impl PartitionStreamPayload {
@@ -2288,7 +2469,23 @@ impl PartitionStreamPayload {
         stream: BatchStream,
         completion: BoxFuture<'static, Result<PartitionCompletion>>,
     ) -> Self {
-        Self { stream, completion }
+        Self {
+            stream,
+            completion,
+            source_io_snapshot: None,
+        }
+    }
+
+    /// Attaches an invocation-local observation view for clean partial termination.
+    ///
+    /// The callback is operational telemetry only. It is sampled after producer termination and
+    /// never participates in source, plan, package, or receipt identity.
+    pub fn with_source_io_snapshot(
+        mut self,
+        snapshot: Arc<dyn Fn() -> SourceIoMetrics + Send + Sync>,
+    ) -> Self {
+        self.source_io_snapshot = Some(snapshot);
+        self
     }
 
     pub fn batches(stream: BatchStream) -> Self {
@@ -2318,6 +2515,7 @@ pub struct OpenedPartitionStream {
     termination_consumed: bool,
     reached_eof: bool,
     terminal_error: Option<CdfError>,
+    source_io_snapshot: Option<Arc<dyn Fn() -> SourceIoMetrics + Send + Sync>>,
 }
 
 impl OpenedPartitionStream {
@@ -2329,6 +2527,7 @@ impl OpenedPartitionStream {
             termination_consumed: false,
             reached_eof: false,
             terminal_error: None,
+            source_io_snapshot: payload.source_io_snapshot,
         }
     }
 
@@ -2368,13 +2567,18 @@ impl OpenedPartitionStream {
     }
 
     pub async fn terminate_and_join(&mut self) -> Result<()> {
+        self.terminate_and_join_with_source_io().await.map(drop)
+    }
+
+    pub async fn terminate_and_join_with_source_io(&mut self) -> Result<Option<SourceIoMetrics>> {
         drop(self.stream.take());
         if self.termination_consumed {
-            return Ok(());
+            return Ok(self.source_io_snapshot.as_ref().map(|snapshot| snapshot()));
         }
         let result = self.termination.terminate_and_join().await;
         self.termination_consumed = true;
-        result
+        result?;
+        Ok(self.source_io_snapshot.as_ref().map(|snapshot| snapshot()))
     }
 
     pub async fn completion(&mut self) -> Result<PartitionCompletion> {

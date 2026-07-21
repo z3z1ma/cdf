@@ -217,13 +217,12 @@ impl SourceDriver for PythonSourceDriver {
             .ok_or_else(|| {
                 CdfError::contract("compiled Python source omitted its blocking lane")
             })?;
-        let resource = PythonResource::from_compiled(
-            context.project_root(),
-            plan,
-            physical_plan(plan)?,
-            artifact_hash(plan)?,
-        )?
-        .with_execution_services_and_lane(context.execution().clone(), lane.lane_id.clone())?;
+        let resource =
+            PythonResource::from_compiled(context.project_root(), plan, physical_plan(plan)?)?
+                .with_execution_services_and_lane(
+                    context.execution().clone(),
+                    lane.lane_id.clone(),
+                )?;
         Ok(Arc::new(resource))
     }
 }
@@ -590,11 +589,14 @@ fn probe_interpreter(
                 "configured interpreter did not emit valid inspection JSON: {error}"
             ))
         })?;
-    if report.version != format!("{}.{}.{}", report.major, report.minor, report.micro)
-        || report.can_parallelize_python != (report.free_threaded_build && !report.gil_enabled)
-    {
+    if report.version != format!("{}.{}.{}", report.major, report.minor, report.micro) {
         return Err(InterpreterProbeError::Diagnostic(
-            "configured interpreter emitted inconsistent version or GIL metadata".to_owned(),
+            "configured interpreter emitted inconsistent version metadata".to_owned(),
+        ));
+    }
+    if report.can_parallelize_python != (report.free_threaded_build && !report.gil_enabled) {
+        return Err(InterpreterProbeError::Diagnostic(
+            "configured interpreter emitted inconsistent GIL metadata".to_owned(),
         ));
     }
     Ok((executable, report))

@@ -1,6 +1,6 @@
 use cdf_kernel::{
     CdfError, EpochClosureCause, ExecutionExtent, PipelineId, Result, SecretReference,
-    partition_source_identity_binding,
+    partition_schema_observation_binding,
 };
 use cdf_memory::{AccountedBytes, MemoryLease};
 use cdf_runtime::{
@@ -800,7 +800,7 @@ impl WorkerAdmissionVerifier for EngineWorkerAdmissionVerifier<'_> {
             || segment_plan.canonical_partition_ordinal
                 != task.partition.canonical_partition_ordinal
             || segment_plan.segmentation != segmentation
-            || planned_source.compiled_source_plan_hash() != artifact_hash(&source)?
+            || planned_source.compiled_source_plan_hash() != &source.compiled_source_plan_hash()?
         {
             return Err(CdfError::contract(
                 "worker compiler artifacts do not form one coherent engine execution authority",
@@ -1285,7 +1285,7 @@ impl ReconstructedEngineWorkerProgram {
     /// it is never serialized, hashed as a project/package plan, or accepted for package commit.
     pub fn partition_execution_plan(&self) -> Result<EnginePlan> {
         validate_partition_isolation(&self.plan)?;
-        if self.plan.scan.planned_task_set.is_some() {
+        if self.plan.scan.external_task_set().is_some() {
             return Err(CdfError::contract(
                 "isolated external task-set execution requires source-owned retained task reconstruction",
             ));
@@ -1306,7 +1306,11 @@ impl ReconstructedEngineWorkerProgram {
                 &self.partition,
             )?;
         let mut slice = self.plan.clone();
-        slice.scan.partitions = vec![self.partition.clone()];
+        slice
+            .scan
+            .replace_partition_authority(cdf_kernel::PartitionAuthority::Inline(vec![
+                self.partition.clone(),
+            ]));
         let schedule = cdf_runtime::CanonicalPartitionSchedule::compile(source, &slice.scan)?;
         slice.partition_schedule = Some(schedule.clone());
         slice.explain.partition_schedule = Some(schedule);
@@ -1371,7 +1375,9 @@ pub fn compile_engine_partition_task(
         .compiled_source_execution
         .as_ref()
         .ok_or_else(|| CdfError::contract("portable task requires compiled source execution"))?;
-    if compiled_source_execution.compiled_source_plan_hash() != artifact_hash(input.source)? {
+    if compiled_source_execution.compiled_source_plan_hash()
+        != &input.source.compiled_source_plan_hash()?
+    {
         return Err(CdfError::contract(
             "portable task source does not match the engine plan's compiler binding",
         ));
@@ -1482,7 +1488,7 @@ pub fn compile_engine_partition_task(
             canonical_partition_ordinal: input.canonical_partition_ordinal,
             epoch_ordinal: input.epoch_ordinal,
             partition_plan: partition_reference,
-            source_identity_hash: partition_source_identity_binding(input.partition)?,
+            schema_observation_binding: partition_schema_observation_binding(input.partition)?,
             unit_authority_hash,
             segment_authority_hash,
         },

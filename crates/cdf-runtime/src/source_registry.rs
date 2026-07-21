@@ -156,10 +156,12 @@ impl SourceRegistry {
         }
         let inner = driver.resolve(plan, context)?;
         verify_resolved_resource(plan, inner.as_ref())?;
-        Ok(Arc::new(RegistryBoundResource {
-            inner,
-            baseline_observation_schema_catalog: plan.baseline_observation_schema_catalog.clone(),
-        }))
+        let identities = plan.identities()?;
+        debug_assert_eq!(
+            inner.compiled_source_plan_hash(),
+            Some(identities.compiled_plan())
+        );
+        Ok(Arc::new(RegistryValidatedResource { inner }))
     }
 
     pub fn discovery_session(
@@ -516,12 +518,11 @@ impl crate::SourceHealthSink for RegistrySourceHealthSink<'_> {
     }
 }
 
-struct RegistryBoundResource {
+struct RegistryValidatedResource {
     inner: Arc<dyn QueryableResource>,
-    baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
 }
 
-impl ResourceStream for RegistryBoundResource {
+impl ResourceStream for RegistryValidatedResource {
     fn descriptor(&self) -> &ResourceDescriptor {
         self.inner.descriptor()
     }
@@ -530,7 +531,7 @@ impl ResourceStream for RegistryBoundResource {
         self.inner.schema()
     }
 
-    fn compiled_source_plan_hash(&self) -> Option<&str> {
+    fn compiled_source_plan_hash(&self) -> Option<&cdf_kernel::CompiledSourcePlanHash> {
         self.inner.compiled_source_plan_hash()
     }
 
@@ -546,7 +547,11 @@ impl ResourceStream for RegistryBoundResource {
         &self,
         reference: &PlannedTaskSetReference,
     ) -> Result<Box<dyn PlannedPartitionReader>> {
-        self.inner.planned_partition_reader(reference)
+        Ok(Box::new(RegistryValidatedPartitionReader {
+            inner: self.inner.planned_partition_reader(reference)?,
+            effective_schema_runtime: self.inner.effective_schema_runtime().cloned(),
+            seen_observations: BTreeSet::new(),
+        }))
     }
 
     fn rebind_scan_for_resume(
@@ -578,7 +583,7 @@ impl ResourceStream for RegistryBoundResource {
     }
 
     fn baseline_observation_schema_catalog(&self) -> &[EffectiveSchemaCatalogEntry] {
-        &self.baseline_observation_schema_catalog
+        self.inner.baseline_observation_schema_catalog()
     }
 
     fn type_policy_allowances(&self) -> TypePolicyAllowances {
@@ -594,7 +599,6 @@ fn verify_resolved_resource(
     plan: &CompiledSourcePlan,
     resource: &dyn QueryableResource,
 ) -> Result<()> {
-    let expected_plan_hash = artifact_hash(plan)?;
     let mut mismatches = Vec::new();
     if resource.descriptor() != &plan.descriptor {
         mismatches.push("descriptor");
@@ -608,11 +612,17 @@ fn verify_resolved_resource(
     if resource.type_policy_allowances() != plan.type_policy_allowances {
         mismatches.push("type-policy allowances");
     }
-    if resource.effective_schema_runtime() != plan.effective_schema_runtime.as_ref() {
-        mismatches.push("effective-schema runtime");
+    let identities = plan.identities()?;
+    if resource.compiled_source_plan_hash() != Some(identities.compiled_plan()) {
+        mismatches.push("compiled source plan identity");
     }
-    if resource.compiled_source_plan_hash() != Some(expected_plan_hash.as_str()) {
-        mismatches.push("compiled plan hash");
+    if resource.effective_schema_runtime() != plan.effective_schema_runtime.as_ref() {
+        mismatches.push("effective schema runtime");
+    }
+    if resource.baseline_observation_schema_catalog()
+        != plan.baseline_observation_schema_catalog.as_slice()
+    {
+        mismatches.push("baseline observation schema catalog");
     }
     if !mismatches.is_empty() {
         return Err(CdfError::contract(format!(
@@ -624,14 +634,98 @@ fn verify_resolved_resource(
     Ok(())
 }
 
-impl QueryableResource for RegistryBoundResource {
+impl QueryableResource for RegistryValidatedResource {
     fn capabilities(&self) -> &ResourceCapabilities {
         self.inner.capabilities()
     }
 
     fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
-        self.inner.negotiate(request)
+        let scan = self.inner.negotiate(request)?;
+        validate_scan_observation_bindings(self.inner.effective_schema_runtime(), &scan)?;
+        Ok(scan)
     }
+}
+
+struct RegistryValidatedPartitionReader {
+    inner: Box<dyn PlannedPartitionReader>,
+    effective_schema_runtime: Option<EffectiveSchemaRuntime>,
+    seen_observations: BTreeSet<String>,
+}
+
+impl PlannedPartitionReader for RegistryValidatedPartitionReader {
+    fn next_partition(&mut self, expected_ordinal: u64) -> Result<Option<ExecutablePartition>> {
+        let partition = self.inner.next_partition(expected_ordinal)?;
+        if let Some(partition) = &partition
+            && let Some(runtime) = &self.effective_schema_runtime
+        {
+            let observation_id = validate_partition_observation_binding(runtime, partition.plan())?;
+            if !self.seen_observations.insert(observation_id.to_owned()) {
+                return Err(CdfError::contract(format!(
+                    "schema observation {observation_id:?} is assigned to more than one external partition"
+                )));
+            }
+        }
+        Ok(partition)
+    }
+}
+
+fn validate_scan_observation_bindings(
+    runtime: Option<&EffectiveSchemaRuntime>,
+    scan: &ScanPlan,
+) -> Result<()> {
+    cdf_kernel::validate_scan_partition_observation_identities(scan)?;
+    let Some(runtime) = runtime else {
+        return Ok(());
+    };
+    let Some(partitions) = scan.inline_partitions() else {
+        return Ok(());
+    };
+    let mut seen = BTreeSet::new();
+    for partition in partitions {
+        let observation_id = validate_partition_observation_binding(runtime, partition)?;
+        if !seen.insert(observation_id) {
+            return Err(CdfError::contract(format!(
+                "schema observation {observation_id:?} is assigned to more than one planned partition"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_partition_observation_binding<'a>(
+    runtime: &EffectiveSchemaRuntime,
+    partition: &'a PartitionPlan,
+) -> Result<&'a str> {
+    let observation_id = partition
+        .metadata
+        .get(cdf_kernel::PLAN_SCHEMA_OBSERVATION_ID_KEY)
+        .ok_or_else(|| {
+            CdfError::contract(format!(
+                "source partition `{}` omitted its effective-schema observation identity",
+                partition.partition_id
+            ))
+        })?;
+    let binding = cdf_kernel::SchemaObservationBinding::new(
+        partition
+            .metadata
+            .get(cdf_kernel::PLAN_SCHEMA_OBSERVATION_BINDING_KEY)
+            .ok_or_else(|| {
+                CdfError::contract(format!(
+                    "source partition `{}` omitted its effective-schema source identity binding",
+                    partition.partition_id
+                ))
+            })?
+            .clone(),
+    )?;
+    if let Some(observation) = runtime.evidence.observation(observation_id)
+        && observation.schema_observation_binding != binding
+    {
+        return Err(CdfError::contract(format!(
+            "source partition `{}` effective-schema binding does not match observation {observation_id:?}",
+            partition.partition_id
+        )));
+    }
+    Ok(observation_id)
 }
 
 struct VerifiedSourceDiscoverySession {
@@ -681,7 +775,7 @@ impl SourceDiscoverySession for VerifiedSourceDiscoverySession {
                 candidate.evidence_location.as_str()
             )));
         }
-        if observation.candidate_binding() != candidate.discovery_binding()? {
+        if observation.candidate_binding() != &candidate.discovery_binding()? {
             return Err(CdfError::contract(format!(
                 "source discovery observation generation for `{}` does not match the inventoried candidate",
                 candidate.evidence_location.as_str()
@@ -1052,11 +1146,27 @@ fn validate_option_instance(
         .as_object()
         .expect("registered option schema nodes are objects");
     if let Some(branches) = schema.get("oneOf").and_then(serde_json::Value::as_array) {
-        let matching = branches
+        let evaluations = branches
             .iter()
-            .filter(|branch| validate_option_instance(branch, instance, path).is_ok())
-            .count();
+            .map(|branch| validate_option_instance(branch, instance, path))
+            .collect::<Vec<_>>();
+        let matching = evaluations.iter().filter(|result| result.is_ok()).count();
         if matching != 1 {
+            if matching == 0 {
+                let reasons = evaluations
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(index, result)| {
+                        result
+                            .err()
+                            .map(|error| format!("alternative {}: {}", index + 1, error.message))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                return Err(CdfError::contract(format!(
+                    "source option `{path}` matched no declared alternative; {reasons}"
+                )));
+            }
             return Err(CdfError::contract(format!(
                 "source option `{path}` must match exactly one declared alternative (matched {matching})"
             )));
@@ -1080,8 +1190,12 @@ fn validate_option_instance(
     if let Some(expected) = schema.get("const")
         && instance != expected
     {
+        let expected = expected
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| expected.to_string());
         return Err(CdfError::contract(format!(
-            "source option `{path}` does not match its required constant"
+            "source option `{path}` must equal declared constant `{expected}`"
         )));
     }
     if let Some(values) = schema.get("enum").and_then(serde_json::Value::as_array)
@@ -1302,7 +1416,7 @@ mod tests {
         bytes_read: u64,
         records_read: u64,
         replace_location: Option<String>,
-        replace_binding: Option<String>,
+        replace_binding: Option<cdf_kernel::SchemaObservationBinding>,
     }
 
     impl SourceDiscoverySession for BoundaryProbeSession {
@@ -1515,7 +1629,10 @@ mod tests {
                 records_read: 1,
                 replace_location: None,
                 replace_binding: Some(
-                    artifact_hash(&serde_json::json!({"wrong_generation": true})).unwrap(),
+                    cdf_kernel::SchemaObservationBinding::new(
+                        artifact_hash(&serde_json::json!({"wrong_generation": true})).unwrap(),
+                    )
+                    .unwrap(),
                 ),
             }),
         };
@@ -1636,7 +1753,9 @@ mod tests {
             "$.source",
         )
         .unwrap_err();
-        assert!(error.message.contains("exactly one declared alternative"));
+        assert!(error.message.contains("matched no declared alternative"));
+        assert!(error.message.contains("secret://"));
+        assert!(!error.message.contains("plain-text"));
 
         let mut unsupported = schema;
         unsupported["resource"]["properties"]["path"]["if"] = serde_json::json!({});

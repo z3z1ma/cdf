@@ -1,6 +1,7 @@
 use cdf_kernel::{
-    CdfError, DrainTermination, ExecutionExtent, LateDataAction, OperatorWatermarkBehavior,
-    PartitionWatermarkAggregation, ResourceId, Result, WatermarkAuthority, WatermarkPolicy,
+    CdfError, CompiledSourcePlanHash, DrainTermination, ExecutionExtent, LateDataAction,
+    OperatorWatermarkBehavior, PartitionWatermarkAggregation, ResourceId, Result,
+    WatermarkAuthority, WatermarkPolicy,
 };
 use serde::{Deserialize, Serialize};
 
@@ -18,7 +19,7 @@ pub struct CompiledStreamPolicy {
     pub version: u16,
     pub resource_id: ResourceId,
     pub execution_extent: ExecutionExtent,
-    pub compiled_source_plan_hash: String,
+    pub compiled_source_plan_hash: CompiledSourcePlanHash,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_stream_capabilities: Option<SourceStreamCapabilities>,
     pub semantic_hash: String,
@@ -33,7 +34,7 @@ impl CompiledStreamPolicy {
             version: COMPILED_STREAM_POLICY_VERSION,
             resource_id: source.descriptor.resource_id.clone(),
             execution_extent: extent.clone(),
-            compiled_source_plan_hash: artifact_hash(source)?,
+            compiled_source_plan_hash: source.compiled_source_plan_hash()?,
             source_stream_capabilities: source.stream_capabilities.clone(),
             semantic_hash: String::new(),
         };
@@ -55,10 +56,6 @@ impl CompiledStreamPolicy {
         if let Some(capabilities) = &self.source_stream_capabilities {
             capabilities.validate()?;
         }
-        crate::validate_artifact_hash(
-            "compiled stream policy source-plan",
-            &self.compiled_source_plan_hash,
-        )?;
         if self.semantic_hash != self.canonical_hash()? {
             return Err(CdfError::contract(
                 "compiled stream policy semantic hash does not match its canonical evidence",
@@ -71,7 +68,7 @@ impl CompiledStreamPolicy {
         source.validate()?;
         self.validate_intrinsic()?;
         if self.resource_id != source.descriptor.resource_id
-            || self.compiled_source_plan_hash != artifact_hash(source)?
+            || self.compiled_source_plan_hash != source.compiled_source_plan_hash()?
             || self.source_stream_capabilities != source.stream_capabilities
         {
             return Err(CdfError::contract(
@@ -89,7 +86,7 @@ impl CompiledStreamPolicy {
         source.validate()?;
         self.validate_intrinsic()?;
         if self.resource_id != source.resource_id
-            || self.compiled_source_plan_hash != source.compiled_source_plan_hash()
+            || &self.compiled_source_plan_hash != source.compiled_source_plan_hash()
             || self.source_stream_capabilities.as_ref() != source.stream_capabilities()
         {
             return Err(CdfError::contract(
@@ -662,7 +659,7 @@ mod tests {
     #[test]
     fn intrinsic_policy_rejects_coherently_rehashed_malformed_source_hash() {
         let source = source(capabilities(OperatorWatermarkBehavior::Preserve), true);
-        let mut policy = CompiledStreamPolicy::compile(
+        let policy = CompiledStreamPolicy::compile(
             &drain(
                 WatermarkPolicy::Disabled,
                 DrainTermination::Records { count: 10 },
@@ -670,9 +667,9 @@ mod tests {
             &source,
         )
         .unwrap();
-        policy.compiled_source_plan_hash = "not-a-hash".to_owned();
-        policy.semantic_hash = policy.canonical_hash().unwrap();
-        let error = policy.validate_intrinsic().unwrap_err();
-        assert!(error.message.contains("sha256:<64 lowercase hex>"));
+        let mut encoded = serde_json::to_value(&policy).unwrap();
+        encoded["compiled_source_plan_hash"] = serde_json::json!("not-a-hash");
+        let error = serde_json::from_value::<CompiledStreamPolicy>(encoded).unwrap_err();
+        assert!(error.to_string().contains("sha256:<64 lowercase hex>"));
     }
 }

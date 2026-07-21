@@ -142,7 +142,7 @@ impl TableProvider for QueryableResourceTableProvider {
                 projection.cloned(),
                 effective_limit,
                 self.execution.clone(),
-            ));
+            )?);
             Ok(plan)
         })
     }
@@ -196,23 +196,28 @@ impl QueryableResourceExec {
         projection: Option<Vec<usize>>,
         fetch: Option<usize>,
         execution: ExecutionServices,
-    ) -> Self {
+    ) -> DataFusionResult<Self> {
+        let partition_count = scan.inline_partitions().ok_or_else(|| {
+            DataFusionError::Plan(
+                "DataFusion query execution requires inline partition authority; external task sets must be adapted by a source-owned table provider".to_owned(),
+            )
+        })?.len();
         let output_schema = projected_schema(&input_schema, projection.as_ref())
             .expect("projection indexes are built from the provider schema");
         let properties = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(output_schema),
-            Partitioning::UnknownPartitioning(scan.partitions.len().max(1)),
+            Partitioning::UnknownPartitioning(partition_count.max(1)),
             EmissionType::Incremental,
             Boundedness::Bounded,
         ));
-        Self {
+        Ok(Self {
             resource,
             scan,
             projection,
             fetch,
             execution,
             properties,
-        }
+        })
     }
 }
 
@@ -220,7 +225,10 @@ impl fmt::Debug for QueryableResourceExec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("QueryableResourceExec")
             .field("resource_id", &self.scan.request.resource_id)
-            .field("partition_count", &self.scan.partitions.len())
+            .field(
+                "partition_count",
+                &self.scan.partition_count().unwrap_or_default(),
+            )
             .field("projection", &self.projection)
             .field("fetch", &self.fetch)
             .finish_non_exhaustive()
@@ -234,7 +242,7 @@ impl DisplayAs for QueryableResourceExec {
                 f,
                 "QueryableResourceExec: resource_id={}, partitions={}, fetch={:?}",
                 self.scan.request.resource_id.as_str(),
-                self.scan.partitions.len(),
+                self.scan.partition_count().unwrap_or_default(),
                 self.fetch
             ),
             DisplayFormatType::TreeRender => Ok(()),
@@ -271,10 +279,15 @@ impl ExecutionPlan for QueryableResourceExec {
         partition: usize,
         context: Arc<datafusion::execution::TaskContext>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
-        let Some(partition_plan) = self.scan.partitions.get(partition).cloned() else {
+        let inline_partitions = self.scan.inline_partitions().ok_or_else(|| {
+            DataFusionError::Execution(
+                "DataFusion query execution lost inline partition authority".to_owned(),
+            )
+        })?;
+        let Some(partition_plan) = inline_partitions.get(partition).cloned() else {
             return internal_err!(
                 "partition {partition} is out of range for {} CDF partitions",
-                self.scan.partitions.len()
+                inline_partitions.len()
             );
         };
         let schema = self.schema();
@@ -435,14 +448,16 @@ impl ExecutionPlan for QueryableResourceExec {
     }
 
     fn with_fetch(&self, limit: Option<usize>) -> Option<Arc<dyn ExecutionPlan>> {
-        Some(Arc::new(Self::new(
+        let plan = Self::new(
             Arc::clone(&self.resource),
             self.scan.clone(),
             self.resource.schema(),
             self.projection.clone(),
             limit,
             self.execution.clone(),
-        )))
+        )
+        .expect("an existing queryable resource plan retains inline partition authority");
+        Some(Arc::new(plan))
     }
 
     fn fetch(&self) -> Option<usize> {

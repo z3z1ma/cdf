@@ -9,13 +9,13 @@ use std::{
 use arrow_array::{Array, Int64Array, TimestampMicrosecondArray, UInt64Array};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_kernel::{
-    BackpressureSupport, CapabilitySupport, CursorOrderingClaim, CursorPosition, CursorSpec,
-    CursorValue, DeliveryGuarantee, EffectiveSchemaRuntime, ErrorKind, EstimateSupport,
-    FilterCapabilities, ForeignState, IncrementalShape, PartitionId, PartitionPlan,
-    PartitioningCapabilities, PlanId, QueryableResource, ReplaySupport, ResourceCapabilities,
-    ResourceDescriptor, ResourceId, ResourceStream, Result, ScanPlan, ScanRequest, SchemaSource,
-    ScopeKey, SourcePosition, TrustLevel, TypePolicyAllowances, WriteDisposition,
-    parse_arrow_field_type,
+    BackpressureSupport, CapabilitySupport, CompiledSourcePlanHash, CursorOrderingClaim,
+    CursorPosition, CursorSpec, CursorValue, DeliveryGuarantee, EffectiveSchemaCatalogEntry,
+    EffectiveSchemaRuntime, ErrorKind, EstimateSupport, FilterCapabilities, ForeignState,
+    IncrementalShape, PartitionAuthority, PartitionId, PartitionPlan, PartitioningCapabilities,
+    PlanId, QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceId,
+    ResourceStream, Result, ScanPlan, ScanRequest, SchemaSource, ScopeKey, SourcePosition,
+    TrustLevel, TypePolicyAllowances, WriteDisposition, parse_arrow_field_type,
 };
 use cdf_runtime::CompiledSourcePlan;
 use pyo3::{
@@ -50,8 +50,9 @@ pub struct PythonResource {
     max_boundary_bytes: u64,
     execution: Option<cdf_runtime::ExecutionServices>,
     blocking_lane: Option<String>,
-    compiled_source_plan_hash: Option<String>,
+    compiled_source_plan_hash: Option<CompiledSourcePlanHash>,
     effective_schema_runtime: Option<EffectiveSchemaRuntime>,
+    baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
     type_policy_allowances: TypePolicyAllowances,
     foreign_descriptor: ForeignProducerDescriptor,
 }
@@ -175,6 +176,7 @@ impl PythonResource {
             blocking_lane: None,
             compiled_source_plan_hash: None,
             effective_schema_runtime: None,
+            baseline_observation_schema_catalog: Vec::new(),
             type_policy_allowances: TypePolicyAllowances::default(),
             foreign_descriptor,
         })
@@ -195,7 +197,6 @@ impl PythonResource {
         project_root: &Path,
         plan: &CompiledSourcePlan,
         physical: PythonPhysicalPlan,
-        compiled_source_plan_hash: String,
     ) -> Result<Self> {
         if physical.dict_batch_rows == 0 || physical.max_boundary_bytes < 2 {
             return Err(cdf_kernel::CdfError::contract(
@@ -217,8 +218,9 @@ impl PythonResource {
             max_boundary_bytes: physical.max_boundary_bytes,
             execution: None,
             blocking_lane: None,
-            compiled_source_plan_hash: Some(compiled_source_plan_hash),
+            compiled_source_plan_hash: Some(plan.compiled_source_plan_hash()?),
             effective_schema_runtime: plan.effective_schema_runtime.clone(),
+            baseline_observation_schema_catalog: plan.baseline_observation_schema_catalog.clone(),
             type_policy_allowances: plan.type_policy_allowances,
             foreign_descriptor,
         })
@@ -240,7 +242,7 @@ impl PythonResource {
     }
 
     fn partition(&self) -> Result<PartitionPlan> {
-        Ok(PartitionPlan {
+        let mut partition = PartitionPlan {
             partition_id: PartitionId::new(PARTITION_ID)?,
             scope: self.descriptor.state_scope.clone(),
             planned_position: None,
@@ -253,7 +255,15 @@ impl PythonResource {
                 ("callable".to_owned(), self.callable.clone()),
                 ("content_identity".to_owned(), self.content_hash.clone()),
             ]),
-        })
+        };
+        if let Some(runtime) = &self.effective_schema_runtime {
+            cdf_kernel::bind_partition_schema_observation(
+                &mut partition,
+                runtime,
+                self.descriptor.resource_id.as_str(),
+            )?;
+        }
+        Ok(partition)
     }
 
     fn produce_foreign_stream(
@@ -621,12 +631,16 @@ impl ResourceStream for PythonResource {
         Arc::clone(&self.schema)
     }
 
-    fn compiled_source_plan_hash(&self) -> Option<&str> {
-        self.compiled_source_plan_hash.as_deref()
+    fn compiled_source_plan_hash(&self) -> Option<&CompiledSourcePlanHash> {
+        self.compiled_source_plan_hash.as_ref()
     }
 
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
         self.effective_schema_runtime.as_ref()
+    }
+
+    fn baseline_observation_schema_catalog(&self) -> &[EffectiveSchemaCatalogEntry] {
+        &self.baseline_observation_schema_catalog
     }
 
     fn type_policy_allowances(&self) -> TypePolicyAllowances {
@@ -692,17 +706,16 @@ impl QueryableResource for PythonResource {
 
     fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
         let partitions = self.plan_partitions(request)?;
-        Ok(ScanPlan {
-            plan_id: PlanId::new(format!("python-plan-{}", self.descriptor.resource_id))?,
-            request: request.clone(),
-            partitions,
-            planned_task_set: None,
-            pushed_predicates: Vec::new(),
-            unsupported_predicates: request.filters.clone(),
-            estimated_rows: None,
-            estimated_bytes: None,
-            delivery_guarantee: DeliveryGuarantee::AtLeastOnceDuplicateRisk,
-        })
+        Ok(ScanPlan::new(
+            PlanId::new(format!("python-plan-{}", self.descriptor.resource_id))?,
+            request.clone(),
+            PartitionAuthority::Inline(partitions),
+            Vec::new(),
+            request.filters.clone(),
+            None,
+            None,
+            DeliveryGuarantee::AtLeastOnceDuplicateRisk,
+        ))
     }
 }
 

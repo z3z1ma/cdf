@@ -1,8 +1,8 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use cdf_kernel::{
-    CdfError, ExecutionExtent, OperatorWatermarkBehavior, PartitionId, Result, SchemaHash,
-    SourcePosition, WatermarkAuthority, WatermarkPolicy,
+    CdfError, CompiledSourcePlanHash, ExecutionExtent, OperatorWatermarkBehavior, PartitionId,
+    Result, SchemaHash, SourcePosition, WatermarkAuthority, WatermarkPolicy,
 };
 use cdf_memory::{
     AccountedBatch, AccountedBytes, ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease,
@@ -166,7 +166,7 @@ pub struct CompiledOperatorGraph {
     )]
     pub execution_extent: ExecutionExtent,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compiled_source_plan_hash: Option<String>,
+    pub compiled_source_plan_hash: Option<CompiledSourcePlanHash>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compiled_stream_policy_hash: Option<String>,
     pub nodes: Vec<GraphNodeDescriptor>,
@@ -180,7 +180,7 @@ struct GraphIdentity<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     execution_extent: Option<&'a ExecutionExtent>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    compiled_source_plan_hash: Option<&'a String>,
+    compiled_source_plan_hash: Option<&'a CompiledSourcePlanHash>,
     #[serde(skip_serializing_if = "Option::is_none")]
     compiled_stream_policy_hash: Option<&'a String>,
     nodes: &'a [GraphNodeDescriptor],
@@ -191,7 +191,7 @@ impl CompiledOperatorGraph {
     pub fn new(
         graph_version: impl Into<String>,
         execution_extent: ExecutionExtent,
-        compiled_source_plan_hash: Option<String>,
+        compiled_source_plan_hash: Option<CompiledSourcePlanHash>,
         compiled_stream_policy_hash: Option<String>,
         mut nodes: Vec<GraphNodeDescriptor>,
         mut edges: Vec<GraphEdgeDescriptor>,
@@ -201,7 +201,7 @@ impl CompiledOperatorGraph {
         execution_extent.validate_for_plan()?;
         validate_authority_hashes_for_extent(
             &execution_extent,
-            compiled_source_plan_hash.as_deref(),
+            compiled_source_plan_hash.as_ref(),
             compiled_stream_policy_hash.as_deref(),
         )?;
         let execution_extent_hash = (!execution_extent.is_bounded())
@@ -237,7 +237,7 @@ impl CompiledOperatorGraph {
         self.execution_extent.validate_for_plan()?;
         validate_authority_hashes_for_extent(
             &self.execution_extent,
-            self.compiled_source_plan_hash.as_deref(),
+            self.compiled_source_plan_hash.as_ref(),
             self.compiled_stream_policy_hash.as_deref(),
         )?;
         validate_graph(&self.nodes, &self.edges)?;
@@ -406,13 +406,13 @@ impl CompiledOperatorGraph {
         match (
             extent,
             policy,
-            self.compiled_source_plan_hash.as_deref(),
+            self.compiled_source_plan_hash.as_ref(),
             self.compiled_stream_policy_hash.as_deref(),
         ) {
             (ExecutionExtent::Bounded { .. }, None, None, None) => Ok(()),
             (ExecutionExtent::Drain { .. }, Some(policy), Some(source_hash), Some(policy_hash))
                 if policy_hash == policy.semantic_hash
-                    && source_hash == policy.compiled_source_plan_hash
+                    && source_hash == &policy.compiled_source_plan_hash
                     && policy.execution_extent == *extent =>
             {
                 policy.validate_intrinsic()
@@ -446,13 +446,12 @@ impl CompiledOperatorGraph {
 
 fn validate_authority_hashes_for_extent(
     extent: &ExecutionExtent,
-    source_hash: Option<&str>,
+    source_hash: Option<&CompiledSourcePlanHash>,
     policy_hash: Option<&str>,
 ) -> Result<()> {
     match (extent, source_hash, policy_hash) {
         (ExecutionExtent::Bounded { .. }, None, None) => Ok(()),
-        (ExecutionExtent::Drain { .. }, Some(source_hash), Some(policy_hash)) => {
-            crate::validate_artifact_hash("compiled source plan", source_hash)?;
+        (ExecutionExtent::Drain { .. }, Some(_), Some(policy_hash)) => {
             crate::validate_artifact_hash("compiled stream policy", policy_hash)
         }
         (ExecutionExtent::Drain { .. }, _, _) => Err(CdfError::contract(
@@ -1122,7 +1121,7 @@ mod tests {
         let graph = CompiledOperatorGraph::new(
             "graph-v1",
             extent.clone(),
-            Some(format!("sha256:{}", "cd".repeat(32))),
+            Some(CompiledSourcePlanHash::new(format!("sha256:{}", "cd".repeat(32))).unwrap()),
             Some(format!("sha256:{}", "ab".repeat(32))),
             vec![source, transform, sink],
             vec![

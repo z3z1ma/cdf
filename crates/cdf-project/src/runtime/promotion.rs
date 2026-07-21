@@ -1414,6 +1414,7 @@ fn read_correction_package_operations(
     for segment in stream {
         let segment = segment?;
         for batch in &segment.batches {
+            let batch = cdf_package_contract::strip_package_row_ord(batch.clone())?;
             if batch.num_columns() != 1 {
                 return Err(cdf_kernel::CdfError::data(
                     "correction package segment must contain one typed operation column",

@@ -102,6 +102,41 @@ fn test_execution_services() -> cdf_runtime::ExecutionServices {
         .1
 }
 
+fn executable_partition_for_test(
+    resource: &dyn QueryableResource,
+    scan: &cdf_kernel::ScanPlan,
+    ordinal: u64,
+) -> cdf_kernel::ExecutablePartition {
+    if let Some(partition) = scan
+        .inline_partitions()
+        .and_then(|partitions| partitions.get(usize::try_from(ordinal).unwrap()))
+    {
+        return cdf_kernel::ExecutablePartition::inline(partition.clone());
+    }
+    let mut reader = resource
+        .planned_partition_reader(scan.external_task_set().unwrap())
+        .unwrap();
+    let mut selected = None;
+    for current in 0..=ordinal {
+        selected = reader.next_partition(current).unwrap();
+    }
+    selected.unwrap()
+}
+
+fn planned_partitions_for_test(
+    resource: &dyn QueryableResource,
+    request: &ScanRequest,
+) -> Vec<cdf_kernel::PartitionPlan> {
+    let scan = resource.negotiate(request).unwrap();
+    (0..scan.partition_count().unwrap())
+        .map(|ordinal| {
+            executable_partition_for_test(resource, &scan, ordinal)
+                .plan()
+                .clone()
+        })
+        .collect()
+}
+
 fn package_identity_file_paths(reader: &cdf_package::PackageReader) -> BTreeSet<String> {
     let mut paths = BTreeSet::new();
     reader
@@ -988,7 +1023,7 @@ fn plaintext_secret_values_are_rejected_where_references_are_required() {
     )
     .unwrap_err();
 
-    assert!(error.to_string().contains("secret://"));
+    assert!(error.to_string().contains("secret://"), "{error}");
     assert!(!error.to_string().contains("plain-token-value"));
 }
 
@@ -2219,13 +2254,13 @@ fn project_external_codec_discovers_pins_previews_and_runs_over_remote_provider(
         &source_plan,
         "pkg-project-external-remote",
     );
-    assert_eq!(plan.scan.partitions.len(), 1);
+    assert_eq!(plan.scan.partition_count().unwrap(), 1);
+    let executable = executable_partition_for_test(runtime.as_ref(), &plan.scan, 0);
     assert_eq!(
-        plan.scan.partitions[0].metadata["format"],
+        executable.plan().metadata["format"],
         "project_external_mock"
     );
-    let preview =
-        futures_executor::block_on(runtime.open(plan.scan.partitions[0].clone())).unwrap();
+    let preview = futures_executor::block_on(runtime.open_executable(executable)).unwrap();
     let preview_rows = futures_executor::block_on_stream(preview)
         .map(|batch| batch.unwrap().header.row_count)
         .sum::<u64>();
@@ -2333,7 +2368,9 @@ fn remote_observation_cache_exact_hit_avoids_schema_io_and_generation_change_mis
     let first = discover_file_schema_artifacts_for_test(
         &resource,
         &secret_provider,
-        dependencies.clone(),
+        dependencies
+            .clone()
+            .with_prepared_payloads(cdf_runtime::PreparedSourcePayloads::default()),
         SchemaDiscoveryExecutionOptions::new().with_observation_cache(cache.clone()),
     )
     .unwrap();
@@ -2350,7 +2387,9 @@ fn remote_observation_cache_exact_hit_avoids_schema_io_and_generation_change_mis
     let second = discover_file_schema_artifacts_for_test(
         &resource,
         &secret_provider,
-        dependencies.clone(),
+        dependencies
+            .clone()
+            .with_prepared_payloads(cdf_runtime::PreparedSourcePayloads::default()),
         SchemaDiscoveryExecutionOptions::new().with_observation_cache(cache.clone()),
     )
     .unwrap();
@@ -2386,7 +2425,7 @@ fn remote_observation_cache_exact_hit_avoids_schema_io_and_generation_change_mis
     let changed = discover_file_schema_artifacts_for_test(
         &resource,
         &secret_provider,
-        dependencies,
+        dependencies.with_prepared_payloads(cdf_runtime::PreparedSourcePayloads::default()),
         SchemaDiscoveryExecutionOptions::new().with_observation_cache(cache),
     )
     .unwrap();
@@ -2518,9 +2557,10 @@ schema = { fields = [
         resource.source_plan(),
         "pkg-declared-multi-file",
     );
-    assert_eq!(plan.scan.partitions.len(), 2);
+    assert_eq!(plan.scan.partition_count().unwrap(), 2);
     assert!(plan.effective_schema_evidence().is_none());
-    assert!(!temp.path().join(".cdf").exists());
+    assert!(!temp.path().join(".cdf/schemas").exists());
+    assert!(!temp.path().join(".cdf/packages").exists());
 }
 
 #[test]
@@ -2575,7 +2615,7 @@ fn object_store_gzip_ndjson_discovers_pins_and_executes_through_one_transport() 
     let prepared = apply_discovered_schema(&resource, artifacts.discovery.clone());
     let runtime = resolve_file_resource_for_test(&prepared, dependencies);
     let plan = live_plan_for_stream(runtime.as_ref(), prepared.source_plan(), "pkg-cloud-ndjson");
-    assert_eq!(plan.scan.partitions.len(), 1);
+    assert_eq!(plan.scan.partition_count().unwrap(), 1);
     let preview = futures_executor::block_on(cdf_engine::preview_resource(
         &plan,
         runtime.as_ref(),
@@ -2586,7 +2626,8 @@ fn object_store_gzip_ndjson_discovers_pins_and_executes_through_one_transport() 
     assert_eq!(preview.fields, vec!["id", "kind", "_cdf_variant"]);
     assert_eq!(preview.planned_partition_count, 1);
     assert_eq!(preview.payload_opened_partition_count, 1);
-    let stream = futures_executor::block_on(runtime.open(plan.scan.partitions[0].clone())).unwrap();
+    let executable = executable_partition_for_test(runtime.as_ref(), &plan.scan, 0);
+    let stream = futures_executor::block_on(runtime.open_executable(executable)).unwrap();
     let batches = futures_executor::block_on_stream(stream)
         .collect::<Result<Vec<_>>>()
         .unwrap();
@@ -2660,7 +2701,8 @@ schema = { fields = [
     let resource = compile_single_project_resource(temp.path());
     let runtime = resolve_file_resource_for_test(&resource, dependencies.clone());
     let plan = live_plan_for_stream(runtime.as_ref(), resource.source_plan(), "pkg-http-gzip");
-    let mut opened = futures_executor::block_on(runtime.open(plan.scan.partitions[0].clone()))
+    let executable = executable_partition_for_test(runtime.as_ref(), &plan.scan, 0);
+    let mut opened = futures_executor::block_on(runtime.open_executable(executable))
         .expect("open recorded HTTP gzip partition");
     let first = futures_executor::block_on(futures_util::StreamExt::next(&mut opened))
         .expect("first bounded batch")
@@ -2819,10 +2861,10 @@ schema = { fields = [
                 &cdf_runtime::DestinationRuntimeCapabilities::default(),
             )
             .unwrap();
-        assert_eq!(plan.scan.partitions.len(), 4);
+        assert_eq!(plan.scan.partition_count().unwrap(), 4);
         let source_execution = plan.compiled_source_execution.as_ref().unwrap();
         let scheduler = cdf_runtime::resolve_runtime_scheduler(
-            plan.scan.partitions.len(),
+            usize::try_from(plan.scan.partition_count().unwrap()).unwrap(),
             source_execution.execution_capabilities(),
             &cdf_runtime::DestinationRuntimeCapabilities::default(),
             &execution,
@@ -2839,9 +2881,10 @@ schema = { fields = [
                 runtime.as_ref(),
                 run_root.join("package"),
                 &pre_finalize,
-                cdf_engine::EngineExecutionOptions::default()
+                cdf_engine::EngineExecutionConfig::default()
                     .with_execution_services(execution)
-                    .with_scheduler_resolution(scheduler),
+                    .with_scheduler_resolution(scheduler)
+                    .new_invocation(),
             ),
         )
         .unwrap();
@@ -2902,16 +2945,17 @@ fn http_numeric_template_discovers_and_plans_every_file() {
     assert_eq!(artifacts.discovery_manifest.unwrap().candidates.len(), 3);
 
     let runtime = resolve_file_resource_for_test(&resource, dependencies);
-    let partitions = runtime
-        .plan_partitions(&ScanRequest {
+    let partitions = planned_partitions_for_test(
+        runtime.as_ref(),
+        &ScanRequest {
             resource_id: resource.descriptor().resource_id.clone(),
             projection: None,
             filters: Vec::new(),
             limit: None,
             order_by: Vec::new(),
             scope: resource.descriptor().state_scope.clone(),
-        })
-        .unwrap();
+        },
+    );
     assert_eq!(partitions.len(), 3);
     assert_eq!(
         partitions
@@ -2930,7 +2974,8 @@ fn http_numeric_template_discovers_and_plans_every_file() {
             .iter()
             .filter(|request| request.method == HttpMethod::Head)
             .count(),
-        9
+        6,
+        "cold discovery and runtime planning each inventory once; negotiation must not add a third traversal"
     );
 }
 
@@ -2959,16 +3004,17 @@ fn http_year_month_glob_skips_absent_candidates_without_hiding_other_failures() 
     .unwrap();
     assert_eq!(artifacts.discovery_manifest.unwrap().candidates.len(), 2);
     let runtime = resolve_file_resource_for_test(&resource, dependencies);
-    let partitions = runtime
-        .plan_partitions(&ScanRequest {
+    let partitions = planned_partitions_for_test(
+        runtime.as_ref(),
+        &ScanRequest {
             resource_id: resource.descriptor().resource_id.clone(),
             projection: None,
             filters: Vec::new(),
             limit: None,
             order_by: Vec::new(),
             scope: resource.descriptor().state_scope.clone(),
-        })
-        .unwrap();
+        },
+    );
     assert_eq!(partitions.len(), 2);
     assert!(
         partitions[0]
@@ -2994,6 +3040,8 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
     let parquet = vendor_parquet_bytes();
     write_http_discover_project(temp.path(), "");
     let resource = compile_single_project_resource(temp.path());
+    let cold_discovery_binding = resource.source_plan().discovery_binding_hash().unwrap();
+    let cold_compiled_source = cdf_runtime::artifact_hash(resource.source_plan()).unwrap();
     let reference_transport = RecordingHttpFileTransport::new(parquet.clone());
     let reference_dependencies = http_file_dependencies(reference_transport.clone());
     discover_file_schema_for_test(
@@ -3015,6 +3063,20 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
     )
     .unwrap();
     let discovery = prepared.discovery.as_ref().unwrap();
+    assert_eq!(
+        prepared
+            .resource
+            .source_plan()
+            .discovery_binding_hash()
+            .unwrap(),
+        cold_discovery_binding,
+        "pinning must preserve the inventory reuse identity"
+    );
+    assert_ne!(
+        cdf_runtime::artifact_hash(prepared.resource.source_plan()).unwrap(),
+        cold_compiled_source,
+        "the pinned execution plan must retain its distinct complete identity"
+    );
     assert_eq!(
         transport.requests(),
         expected_discovery_requests,
@@ -3046,8 +3108,14 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
         "planning must consume the cold-discovery inventory without a second transport inventory"
     );
     assert_eq!(dependencies.prepared_payloads().pending_count().unwrap(), 0);
-    assert_eq!(plan.scan.partitions.len(), 1);
-    let partition = plan.scan.partitions[0].clone();
+    assert_eq!(plan.scan.partition_count().unwrap(), 1);
+    let task_reference = plan.scan.external_task_set().unwrap();
+    let mut task_reader = file_resource
+        .planned_partition_reader(task_reference)
+        .unwrap();
+    let executable = task_reader.next_partition(0).unwrap().unwrap();
+    let partition = executable.plan().clone();
+    assert!(task_reader.next_partition(1).unwrap().is_none());
     let planned_file = partition.planned_file().unwrap().unwrap();
     assert_eq!(
         planned_file.path,
@@ -3068,7 +3136,7 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
     assert!(!partition.metadata.contains_key("bytes_loaded"));
 
     let preview_stream =
-        futures_executor::block_on(file_resource.as_ref().open(partition)).unwrap();
+        futures_executor::block_on(file_resource.as_ref().open_executable(executable)).unwrap();
     let preview_rows = futures_executor::block_on_stream(preview_stream)
         .map(|batch| batch.unwrap().header.row_count)
         .sum::<u64>();
@@ -3240,7 +3308,8 @@ fn unversioned_http_parquet_runs_and_commits_terminal_content_identity() {
         prepared.resource.source_plan(),
         "pkg-http-unversioned",
     );
-    let partition = &plan.scan.partitions[0];
+    let executable = executable_partition_for_test(file_resource.as_ref(), &plan.scan, 0);
+    let partition = executable.plan();
     assert_eq!(partition.metadata["identity_strength"], "weak");
     let planned_file = partition.planned_file().unwrap().unwrap();
     assert_eq!(planned_file.etag, None);
@@ -3332,11 +3401,16 @@ fn unversioned_http_parquet_runs_and_commits_terminal_content_identity() {
 }
 
 #[test]
-fn http_file_discovery_egress_and_auth_fail_before_transport_use() {
+fn http_file_discovery_enforces_egress_and_applies_secret_auth_before_transport_use() {
     let temp = tempfile::tempdir().unwrap();
     let parquet = vendor_parquet_bytes();
     write_http_discover_project(temp.path(), r#"egress_allowlist = ["other.example.test"]"#);
     let resource = compile_single_project_resource(temp.path());
+    assert_eq!(
+        resource.source_plan().physical_plan["source"]["egress_allowlist"],
+        serde_json::json!(["other.example.test"]),
+        "the compiled source plan must retain the declarative egress authority"
+    );
     let transport = RecordingHttpFileTransport::new(parquet.clone());
     let dependencies = http_file_dependencies(transport.clone());
 
@@ -3369,16 +3443,19 @@ egress_allowlist = ["data.example.test"]
             )])),
     );
 
-    let auth_error = discover_file_schema_for_test(
+    let discovery = discover_file_schema_for_test(
         &auth_resource,
         &StaticSecretProvider::new([("secret://env/HTTP_TOKEN", "super-secret-http-token")]),
         auth_dependencies,
     )
-    .unwrap_err();
-    let message = auth_error.to_string();
-    assert!(message.contains("credential resolution is not implemented"));
-    assert!(!message.contains("super-secret-http-token"));
-    assert!(auth_transport.requests().is_empty());
+    .unwrap();
+    assert_eq!(discovery.normalized_schema.field(0).name(), "vendor_id");
+    let requests = auth_transport.requests();
+    assert!(!requests.is_empty());
+    assert_eq!(
+        requests[0].headers.get("authorization").map(String::as_str),
+        Some("Bearer super-secret-http-token")
+    );
 }
 
 #[test]
@@ -4435,7 +4512,8 @@ trust = "governed"
     .with_prepared_payloads(prepared_payloads.clone());
     let runtime = registry.resolve(&source_plan, &resolution).unwrap();
     let plan = live_plan_for_stream(runtime.as_ref(), &source_plan, "pkg-rest-discovery-handoff");
-    let stream = futures_executor::block_on(runtime.open(plan.scan.partitions[0].clone())).unwrap();
+    let executable = executable_partition_for_test(runtime.as_ref(), &plan.scan, 0);
+    let stream = futures_executor::block_on(runtime.open_executable(executable)).unwrap();
     let batches = futures_executor::block_on_stream(stream)
         .collect::<Result<Vec<_>>>()
         .unwrap();
@@ -4514,7 +4592,11 @@ trust = "governed"
     let error = compile_project_declarative_resources(&test_source_registry(), &config, &resolver)
         .unwrap_err();
     let message = error.to_string();
-    assert!(message.contains("dialect must be `postgres`"), "{message}");
+    assert!(message.contains("$.source.dialect"), "{message}");
+    assert!(
+        message.contains("declared constant `postgres`"),
+        "{message}"
+    );
 }
 
 struct RecordingResponse {

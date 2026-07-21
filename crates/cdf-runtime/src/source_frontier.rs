@@ -654,7 +654,7 @@ impl<'a, M: Send + 'a> CanonicalSourceFrontier<'a, M> {
         Ok((metadata, completion))
     }
 
-    async fn terminate_current(&mut self) -> Result<M> {
+    async fn terminate_current(&mut self) -> Result<(M, Option<PartitionCompletion>)> {
         if self.maximum_active != 1 || !self.pending.is_empty() || !self.ready.is_empty() {
             return Err(CdfError::contract(
                 "partial source completion requires a serial frontier with no speculative work",
@@ -668,12 +668,16 @@ impl<'a, M: Send + 'a> CanonicalSourceFrontier<'a, M> {
             mut stream,
             ..
         } = current.state;
-        if let Some(stream) = stream.as_mut() {
-            stream.terminate_and_join().await?;
-        }
+        let source_io = match stream.as_mut() {
+            Some(stream) => stream.terminate_and_join_with_source_io().await?,
+            None => None,
+        };
         self.admission_stopped = true;
         self.terminal = true;
-        Ok(metadata)
+        Ok((
+            metadata,
+            source_io.map(|metrics| PartitionCompletion::new(None, Some(metrics))),
+        ))
     }
 }
 
@@ -721,10 +725,10 @@ impl<'frontier, 'a, M: Send + 'a> CanonicalSourcePartition<'frontier, 'a, M> {
         Ok(metadata)
     }
 
-    pub async fn terminate_partial(&mut self) -> Result<M> {
-        let metadata = self.frontier.terminate_current().await?;
+    pub async fn terminate_partial(&mut self) -> Result<(M, Option<PartitionCompletion>)> {
+        let outcome = self.frontier.terminate_current().await?;
         self.finished = true;
-        Ok(metadata)
+        Ok(outcome)
     }
 }
 

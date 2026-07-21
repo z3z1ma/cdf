@@ -210,6 +210,17 @@ impl<'a> ReplayProgressRecorder<'a> {
 }
 
 impl ReplayDestination {
+    fn bind_execution_services(
+        &mut self,
+        execution: cdf_runtime::ExecutionServices,
+    ) -> Result<(), CliError> {
+        self.destination
+            .as_mut()
+            .ok_or_else(|| CdfError::internal("replay destination was already consumed"))?
+            .bind_execution_services(execution)?;
+        Ok(())
+    }
+
     fn replay(
         &mut self,
         package_dir: PathBuf,
@@ -557,10 +568,7 @@ fn replay_destination_resolution_error(
     uri: &str,
 ) -> CliError {
     let error = redact_error_value(error, None);
-    if error
-        .message
-        .contains("no project destination driver registered")
-    {
+    if error.message.contains("no destination driver registered") {
         CliError::not_supported_with(
             "replay package",
             format!(
@@ -599,9 +607,6 @@ pub(crate) fn replay_package(
     destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
     let package = load_package_replay_context(cli, &args.package_dir)?;
-    let execution = package
-        .project
-        .execution_with_state_authorities(execution)?;
     let mut replay_destination = build_replay_destination(
         destinations,
         &package.project,
@@ -611,8 +616,12 @@ pub(crate) fn replay_package(
             merge_dedup: args.merge_dedup.as_deref(),
         },
         &package.inputs,
-        &execution,
+        execution,
     )?;
+    let execution = package
+        .project
+        .execution_with_state_authorities(execution)?;
+    replay_destination.bind_execution_services(execution)?;
     let package_hash = package.inputs.state_delta.package_hash.clone();
     let state_store_path = package.project.state_store_path()?;
     ensure_parent_directory(&state_store_path)?;

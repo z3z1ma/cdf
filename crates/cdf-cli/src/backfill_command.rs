@@ -336,14 +336,12 @@ impl BackfillCliReport {
             );
 
         let table = self.slices.iter().fold(
-            Table::new(["slice", "window", "status", "package", "checkpoint", "rows"]),
+            Table::new(["slice", "window", "status", "rows"]),
             |table, slice| {
                 table.row([
                     slice.ordinal.to_string(),
                     format!("{}..{}", slice.start, slice.end),
                     slice.status.to_owned(),
-                    safe_display_value(&slice.package_id),
-                    safe_display_value(&slice.checkpoint_id),
                     slice
                         .executed
                         .as_ref()

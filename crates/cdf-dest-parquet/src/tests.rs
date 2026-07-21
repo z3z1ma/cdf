@@ -871,9 +871,9 @@ fn stage_through_ingress_with_lease(
     let package = TestVerifiedPackage {
         package_hash: commit.commit.package_hash.as_str().to_owned(),
         segments: identity_segments,
-        scan: ScanPlan {
-            plan_id: execution_plan_id.clone(),
-            request: ScanRequest {
+        scan: ScanPlan::new(
+            execution_plan_id.clone(),
+            ScanRequest {
                 resource_id: ResourceId::new("orders")?,
                 projection: None,
                 filters: Vec::new(),
@@ -881,14 +881,13 @@ fn stage_through_ingress_with_lease(
                 order_by: Vec::new(),
                 scope: ScopeKey::Resource,
             },
-            partitions: Vec::new(),
-            planned_task_set: None,
-            pushed_predicates: Vec::new(),
-            unsupported_predicates: Vec::new(),
-            estimated_rows: None,
-            estimated_bytes: None,
-            delivery_guarantee: DeliveryGuarantee::AtLeastOnceDuplicateRisk,
-        },
+            cdf_kernel::PartitionAuthority::Inline(Vec::new()),
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+            DeliveryGuarantee::AtLeastOnceDuplicateRisk,
+        ),
         inputs,
         schema: Arc::new(output_schema),
     };

@@ -1176,6 +1176,11 @@ pub struct DecodeSchemaPlan {
     pub authority_schema: SchemaRef,
     pub decoder_schema: SchemaRef,
     pub authority: DecodeSchemaAuthority,
+    /// Exact physical schema observed by a compiler-stage probe, when one is
+    /// available. Fixed-schema decoders materialize through `decoder_schema`;
+    /// this separate value preserves the source fact their batch evidence must
+    /// attest instead of hashing the decoder's representation.
+    pub observed_physical_schema: Option<SchemaRef>,
 }
 
 impl DecodeSchemaPlan {
@@ -1184,6 +1189,7 @@ impl DecodeSchemaPlan {
             authority_schema: Arc::clone(&schema),
             decoder_schema: schema,
             authority: DecodeSchemaAuthority::VerifiedPhysicalObservation,
+            observed_physical_schema: None,
         }
     }
 
@@ -1204,7 +1210,13 @@ impl DecodeSchemaPlan {
             authority_schema: schema,
             decoder_schema,
             authority: DecodeSchemaAuthority::FixedAdmission,
+            observed_physical_schema: None,
         }
+    }
+
+    pub fn with_observed_physical_schema(mut self, schema: SchemaRef) -> Self {
+        self.observed_physical_schema = Some(schema);
+        self
     }
 }
 

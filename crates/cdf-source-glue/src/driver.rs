@@ -11,11 +11,11 @@ use cdf_http::{SecretProvider, SecretUri};
 use cdf_kernel::{
     BackpressureSupport, BatchStream, CapabilitySupport, CdfError, EffectiveSchemaCatalogEntry,
     EffectiveSchemaRuntime, EstimateSupport, ExecutablePartition, FilterCapabilities,
-    IncrementalShape, PartitionAttestation, PartitionAttestationAttempt, PartitionOpenAttempt,
-    PartitionPlan, PartitionStreamPayload, PartitioningCapabilities, PlannedPartitionReader,
-    PlannedTaskSetReference, PushdownFidelity, QueryableResource, ReplaySupport,
-    ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, ScanPlan, ScanRequest,
-    ScopeKind, SourcePosition, TypePolicyAllowances,
+    IncrementalShape, PartitionAttestation, PartitionAttestationAttempt, PartitionAuthority,
+    PartitionOpenAttempt, PartitionPlan, PartitionStreamPayload, PartitioningCapabilities,
+    PlannedPartitionReader, PlannedTaskSetReference, PushdownFidelity, QueryableResource,
+    ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, ScanPlan,
+    ScanRequest, ScopeKind, SourcePosition, TypePolicyAllowances,
 };
 use cdf_object_access::{FileTransport, FileTransportControl, FileTransportResource};
 use cdf_runtime::{
@@ -329,12 +329,13 @@ impl SourceDriver for GlueSourceDriver {
             ),
         };
         let task_store = ExternalTaskStore::new(
-            context.project_root().join(".cdf"),
+            context.artifact_root().join(".cdf"),
             cdf_kernel::ContentStoreNamespace::new(PLANNING_ARTIFACT_NAMESPACE)?,
         )?;
         Ok(Arc::new(GlueResource {
             descriptor: plan.descriptor.clone(),
             schema: Arc::new(plan.schema.clone()),
+            compiled_source_plan_hash: plan.compiled_source_plan_hash()?,
             physical_schema: Arc::new(table.schema.clone()),
             data_schema: Arc::new(table.data_schema.clone()),
             partition_schema: Arc::new(table.partition_schema.clone()),
@@ -342,7 +343,6 @@ impl SourceDriver for GlueSourceDriver {
             type_policy_allowances: plan.type_policy_allowances,
             effective_schema_runtime: plan.effective_schema_runtime.clone(),
             baseline_observation_schema_catalog: plan.baseline_observation_schema_catalog.clone(),
-            compiled_source_plan_hash: artifact_hash(plan)?,
             source: physical.source,
             resource: physical.resource,
             table,
@@ -657,6 +657,7 @@ impl SourceDiscoverySession for GlueDiscoverySession {
 struct GlueResource {
     descriptor: ResourceDescriptor,
     schema: SchemaRef,
+    compiled_source_plan_hash: cdf_kernel::CompiledSourcePlanHash,
     physical_schema: SchemaRef,
     data_schema: SchemaRef,
     partition_schema: SchemaRef,
@@ -664,7 +665,6 @@ struct GlueResource {
     type_policy_allowances: TypePolicyAllowances,
     effective_schema_runtime: Option<EffectiveSchemaRuntime>,
     baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
-    compiled_source_plan_hash: String,
     source: GlueSourceOptions,
     resource: GlueResourceOptions,
     table: LoadedGlueTable,
@@ -683,10 +683,9 @@ impl ResourceStream for GlueResource {
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
     }
-    fn compiled_source_plan_hash(&self) -> Option<&str> {
+    fn compiled_source_plan_hash(&self) -> Option<&cdf_kernel::CompiledSourcePlanHash> {
         Some(&self.compiled_source_plan_hash)
     }
-
     fn validate_runtime_dependencies(&self) -> Result<()> {
         self.source.validate()?;
         self.resource.validate()?;
@@ -729,7 +728,7 @@ impl ResourceStream for GlueResource {
                 committed_frontier.kind().as_str()
             )));
         };
-        let Some(reference) = scan.planned_task_set.clone() else {
+        let Some(reference) = scan.external_task_set().cloned() else {
             return Ok(());
         };
         let committed = committed
@@ -779,14 +778,13 @@ impl ResourceStream for GlueResource {
                 .ok_or_else(|| CdfError::data("Glue resume task ordinal overflowed"))?;
         }
         if ordinal == 0 {
-            scan.planned_task_set = None;
-            scan.partitions.clear();
-            scan.estimated_bytes = Some(0);
+            scan.replace_partition_authority(PartitionAuthority::Inline(Vec::new()));
+            scan.planned_source_bytes = Some(cdf_kernel::PlannedSourceBytes::new(0));
             return Ok(());
         }
         let artifact = writer.finalize(|output| authority.encode_to(output))?;
-        scan.planned_task_set = Some(artifact.reference);
-        scan.estimated_bytes = Some(estimated_bytes);
+        scan.replace_partition_authority(PartitionAuthority::External(artifact.reference));
+        scan.planned_source_bytes = Some(cdf_kernel::PlannedSourceBytes::new(estimated_bytes));
         Ok(())
     }
 
@@ -1550,7 +1548,7 @@ mod tests {
             scope: ScopeKey::Resource,
         };
         let scan = resource.negotiate(&request).unwrap();
-        let reference = scan.planned_task_set.as_ref().unwrap();
+        let reference = scan.external_task_set().unwrap();
         assert_eq!(reference.task_count, 1);
         assert_eq!(*table_reads.lock().unwrap(), 2);
 
@@ -1589,8 +1587,8 @@ mod tests {
                 }),
             )
             .unwrap();
-        assert!(resumed.planned_task_set.is_none());
-        assert_eq!(resumed.estimated_bytes, Some(0));
+        assert_eq!(resumed.partition_count().unwrap(), 0);
+        assert_eq!(resumed.planned_source_bytes.unwrap().get(), 0);
     }
 
     #[test]
@@ -1690,7 +1688,7 @@ mod tests {
                 scope: ScopeKey::Resource,
             })
             .unwrap();
-        assert_eq!(scan.planned_task_set.unwrap().task_count, 1);
+        assert_eq!(scan.external_task_set().unwrap().task_count, 1);
         assert!(runtime_authority_seen.load(Ordering::Relaxed));
     }
 
@@ -1791,7 +1789,7 @@ mod tests {
             })
             .unwrap();
         let mut reader = resource
-            .planned_partition_reader(scan.planned_task_set.as_ref().unwrap())
+            .planned_partition_reader(scan.external_task_set().unwrap())
             .unwrap();
         let executable = reader.next_partition(0).unwrap().unwrap();
         let rows = futures_executor::block_on(async {

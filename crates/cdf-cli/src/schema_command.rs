@@ -21,7 +21,6 @@ use crate::{
     context::ProjectContext,
     destination_uri::{redact_error_value, resolve_selected_destination_with_services},
     output::{CliError, CommandOutput},
-    project_run_resource::discover_source_schema_for_cli,
     render::{
         RenderDocument,
         primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
@@ -64,7 +63,13 @@ fn promote(
     let authority = context.lock_authority.as_ref().ok_or_else(|| {
         CdfError::contract("schema promote requires an exact cdf.lock precondition")
     })?;
-    let fresh_discovery = match discover_artifacts_for_cli(&context, resource, execution) {
+    let inspection_root = inspection_artifact_root("schema-promote")?;
+    let fresh_discovery = match discover_artifacts_for_cli_at(
+        &context,
+        resource,
+        execution,
+        inspection_root.path(),
+    ) {
         Ok(artifacts) => cdf_project::SchemaPromotionFreshDiscovery::Available {
             content_identity: artifacts.discovery.snapshot.source_identity,
             snapshot: Box::new(artifacts.discovery.snapshot.artifact),
@@ -135,7 +140,13 @@ fn execute_promotion(
         let lock = context.lock.as_ref().ok_or_else(|| {
             CdfError::contract("schema promote requires cdf.lock; run `cdf schema pin` first")
         })?;
-        let fresh_discovery = match discover_artifacts_for_cli(context, resource, execution) {
+        let inspection_root = inspection_artifact_root("schema-promote-execute")?;
+        let fresh_discovery = match discover_artifacts_for_cli_at(
+            context,
+            resource,
+            execution,
+            inspection_root.path(),
+        ) {
             Ok(artifacts) => cdf_project::SchemaPromotionFreshDiscovery::Available {
                 content_identity: artifacts.discovery.snapshot.source_identity,
                 snapshot: Box::new(artifacts.discovery.snapshot.artifact),
@@ -229,7 +240,9 @@ fn discover(
 ) -> Result<CommandOutput, CliError> {
     let context = load_context(cli, "schema discover")?;
     let resource = context.resource(&args.resource_id)?;
-    let artifacts = discover_artifacts_for_cli(&context, resource, execution)?;
+    let inspection_root = inspection_artifact_root("schema-discover")?;
+    let artifacts =
+        discover_artifacts_for_cli_at(&context, resource, execution, inspection_root.path())?;
     let discovery = &artifacts.discovery;
     let report = SchemaDiscoverReport::from_discovery(
         &context,
@@ -334,7 +347,9 @@ fn diff(
     let reference = pinned_snapshot_reference(&context, resource)
         .ok_or_else(|| no_pinned_snapshot_error(&args.resource_id))?;
     let pinned = SchemaSnapshotStore::new(&context.root).read(reference)?;
-    let artifacts = discover_artifacts_for_cli(&context, resource, execution)?;
+    let inspection_root = inspection_artifact_root("schema-diff")?;
+    let artifacts =
+        discover_artifacts_for_cli_at(&context, resource, execution, inspection_root.path())?;
     let unchanged = artifacts
         .discovery_manifest
         .as_ref()
@@ -379,6 +394,16 @@ fn discover_artifacts_for_cli(
     resource: &CompiledResource,
     execution: &cdf_runtime::ExecutionServices,
 ) -> Result<ResourceSchemaDiscoveryArtifacts, CliError> {
+    let artifact_root = context.root.as_path();
+    discover_artifacts_for_cli_at(context, resource, execution, artifact_root)
+}
+
+fn discover_artifacts_for_cli_at(
+    context: &ProjectContext,
+    resource: &CompiledResource,
+    execution: &cdf_runtime::ExecutionServices,
+    artifact_root: &std::path::Path,
+) -> Result<ResourceSchemaDiscoveryArtifacts, CliError> {
     let pinned = pinned_snapshot_reference(context, resource).cloned();
     if let Some(snapshot) = pinned {
         let (baseline, verified_baseline) =
@@ -392,6 +417,7 @@ fn discover_artifacts_for_cli(
             &probe_resource,
             SchemaDiscoveryExecutionOptions::new().with_verified_baseline(verified_baseline),
             execution,
+            artifact_root,
         );
     }
     if matches!(resource.descriptor().schema_source, SchemaSource::Discover) {
@@ -400,9 +426,16 @@ fn discover_artifacts_for_cli(
             resource,
             Default::default(),
             execution,
+            artifact_root,
         );
     }
-    discover_artifacts_for_cli_resource(context, resource, Default::default(), execution)
+    discover_artifacts_for_cli_resource(
+        context,
+        resource,
+        Default::default(),
+        execution,
+        artifact_root,
+    )
 }
 
 fn discover_artifacts_for_cli_resource(
@@ -410,16 +443,34 @@ fn discover_artifacts_for_cli_resource(
     resource: &CompiledResource,
     options: SchemaDiscoveryExecutionOptions,
     execution: &cdf_runtime::ExecutionServices,
+    artifact_root: &std::path::Path,
 ) -> Result<ResourceSchemaDiscoveryArtifacts, CliError> {
     let options =
-        options.with_observation_cache(cdf_project::ObservationCacheStore::new(&context.root));
-    Ok(discover_source_schema_for_cli(
-        context,
-        resource,
-        execution,
-        cdf_runtime::PreparedSourcePayloads::default(),
-        options,
-    )?)
+        options.with_observation_cache(cdf_project::ObservationCacheStore::new(artifact_root));
+    let source_plan = crate::project_run_resource::compile_source_plan_for_cli(resource)?;
+    Ok(
+        crate::project_run_resource::discover_source_schema_with_plan_for_cli_at(
+            context,
+            resource,
+            &source_plan,
+            execution,
+            cdf_runtime::PreparedSourcePayloads::default(),
+            options,
+            artifact_root,
+        )?,
+    )
+}
+
+fn inspection_artifact_root(command: &str) -> Result<tempfile::TempDir, CliError> {
+    tempfile::Builder::new()
+        .prefix(&format!("cdf-{command}-"))
+        .tempdir()
+        .map_err(|error| {
+            CdfError::internal(format!(
+                "create {command} inspection artifact root: {error}"
+            ))
+            .into()
+        })
 }
 
 fn update_lockfile(

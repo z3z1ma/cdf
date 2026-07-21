@@ -504,6 +504,7 @@ pub fn prepare_pinned_resource_schema_artifacts(
 #[derive(Clone, Debug)]
 struct SchemaProbe {
     location: String,
+    schema_observation_binding: cdf_kernel::SchemaObservationBinding,
     size_bytes: u64,
     size_known: bool,
     modified_at_ms: Option<i64>,
@@ -620,8 +621,8 @@ fn registered_snapshot_metadata(plan: &CompiledSourcePlan) -> Result<BTreeMap<St
             plan.driver.driver_version.clone(),
         ),
         (
-            "source_plan_hash".to_owned(),
-            plan.discovery_binding_hash()?,
+            "source_discovery_binding".to_owned(),
+            plan.discovery_binding_hash()?.to_string(),
         ),
         (
             "cdf:normalizer".to_owned(),
@@ -1000,6 +1001,7 @@ fn discover_registered_resource_schema(
                 EffectiveSchemaObservationEvidence::new(
                     probe.location.clone(),
                     probe.physical_schema_hash.clone(),
+                    probe.schema_observation_binding.clone(),
                 )
             })
             .collect::<Vec<_>>();
@@ -1256,6 +1258,7 @@ fn schema_probe_from_parts(
         .unwrap_or_else(|| physical_schema_hash.to_string());
     Ok(SchemaProbe {
         location: candidate.location.clone(),
+        schema_observation_binding: candidate.source.schema_observation_binding()?,
         size_bytes: candidate.size_bytes,
         size_known: candidate.size_known,
         modified_at_ms,

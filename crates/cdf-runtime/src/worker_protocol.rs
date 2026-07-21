@@ -4,7 +4,8 @@ use cdf_kernel::{
     BoxFuture, CdfError, CheckpointId, ContentObjectKey, ContentProviderGeneration,
     ContentStoreNamespace, CursorPosition, CursorValue, FencingToken, LeaseAuthorityDomainId,
     PartitionId, PipelineId, PlanId, ProcessedObservationOutcome, ResourceId, Result, SchemaHash,
-    ScopeKey, SecretReference, SegmentId, SourcePosition, partition_source_identity_binding,
+    SchemaObservationBinding, ScopeKey, SecretReference, SegmentId, SourcePosition,
+    partition_schema_observation_binding,
 };
 use serde::{Deserialize, Serialize};
 
@@ -142,8 +143,8 @@ pub struct PortableSourceBinding {
     pub option_schema_hash: String,
     pub compiled_source_plan: WorkerArtifactReference,
     pub redacted_options_hash: String,
-    pub physical_plan_hash: String,
-    pub source_semantics_hash: String,
+    pub physical_plan_hash: cdf_kernel::PhysicalSourcePlanHash,
+    pub source_semantics_hash: cdf_kernel::SourceSemanticsHash,
     pub execution_capabilities_hash: String,
 }
 
@@ -158,8 +159,6 @@ impl PortableSourceBinding {
             "portable source binding",
         )?;
         validate_sha256("compiled source options", &self.redacted_options_hash)?;
-        validate_sha256("compiled source physical plan", &self.physical_plan_hash)?;
-        validate_sha256("compiled source semantics", &self.source_semantics_hash)?;
         validate_sha256(
             "compiled source execution capabilities",
             &self.execution_capabilities_hash,
@@ -195,7 +194,7 @@ pub struct PortablePartitionBinding {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub epoch_ordinal: Option<u64>,
     pub partition_plan: WorkerArtifactReference,
-    pub source_identity_hash: String,
+    pub schema_observation_binding: SchemaObservationBinding,
     pub unit_authority_hash: String,
     pub segment_authority_hash: String,
 }
@@ -209,7 +208,6 @@ impl PortablePartitionBinding {
             WorkerArtifactKind::PartitionPlan,
             "portable partition binding",
         )?;
-        validate_sha256("partition source identity", &self.source_identity_hash)?;
         validate_sha256("partition unit authority", &self.unit_authority_hash)?;
         validate_sha256("partition segment authority", &self.segment_authority_hash)
     }
@@ -221,7 +219,7 @@ impl PortablePartitionBinding {
         if plan.partition_id != self.partition_id
             || plan.scope != self.scope
             || artifact_hash(plan)? != self.partition_plan.content_sha256
-            || partition_source_identity_binding(plan)? != self.source_identity_hash
+            || partition_schema_observation_binding(plan)? != self.schema_observation_binding
         {
             return Err(CdfError::contract(
                 "reconstructed partition plan does not match portable task authority",

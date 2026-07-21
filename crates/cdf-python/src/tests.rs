@@ -923,7 +923,7 @@ fn million_row_python_resource_uses_the_global_memory_coordinator() {
         })
         .unwrap();
     let scheduler = cdf_runtime::resolve_runtime_scheduler(
-        scan.partitions.len(),
+        usize::try_from(scan.partition_count().unwrap()).unwrap(),
         &plan.execution_capabilities,
         &cdf_runtime::DestinationRuntimeCapabilities::default(),
         &execution,
@@ -938,7 +938,9 @@ fn million_row_python_resource_uses_the_global_memory_coordinator() {
     );
     let row_count = host
         .block_on_root(async {
-            let mut stream = resource.open(scan.partitions[0].clone()).await?;
+            let mut stream = resource
+                .open(scan.inline_partitions().unwrap()[0].clone())
+                .await?;
             let mut rows = 0_u64;
             while let Some(batch) = stream.next().await {
                 let batch = batch?;
@@ -1007,8 +1009,9 @@ fn cancellation_interrupts_python_memory_admission_and_joins_the_producer() {
             scope: ScopeKey::Resource,
         })
         .unwrap()
-        .partitions
-        .remove(0);
+        .inline_partitions()
+        .unwrap()[0]
+        .clone();
     let mut stream = host.block_on_root(resource.open(partition)).unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     while execution
@@ -1238,7 +1241,12 @@ fn admitted_python_work_is_mode_correct_and_fixture_hash_stable() {
         order_by: Vec::new(),
         scope: ScopeKey::Resource,
     };
-    let partition = resource.negotiate(&request).unwrap().partitions.remove(0);
+    let partition = resource
+        .negotiate(&request)
+        .unwrap()
+        .inline_partitions()
+        .unwrap()[0]
+        .clone();
     let production_rows = host
         .block_on_root(async {
             async fn rows(mut stream: cdf_kernel::OpenedPartitionStream) -> Result<Vec<i64>> {

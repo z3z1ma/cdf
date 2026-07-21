@@ -10,7 +10,8 @@ use cdf_engine::{
 use cdf_kernel::{
     CapabilitySupport, CdfError, DeliveryGuarantee, DestinationSheet, IdempotencySupport, OrderBy,
     PartitionPlan, PredicateId, QueryableResource, ResourceStream, ScanPredicate, ScanRequest,
-    SchemaSource, SortDirection, TargetName, TransactionSupport, WriteDisposition,
+    SchemaSource, SortDirection, SourceDiscoveryBinding, TargetName, TransactionSupport,
+    WriteDisposition,
 };
 use serde::Serialize;
 
@@ -22,8 +23,9 @@ use crate::{
     error_catalog,
     output::{CliError, CommandOutput},
     project_run_resource::{
-        CliProjectRunSource, compile_source_plan_for_cli, discover_source_schema_with_plan_for_cli,
-        prepare_runtime_resource_for_cli,
+        CliProjectRunSource, compile_source_plan_for_cli,
+        discover_source_schema_with_plan_for_cli_at,
+        prepare_runtime_resource_for_cli_with_artifact_root,
     },
     render::{
         RenderDocument,
@@ -85,7 +87,7 @@ fn validate_recorded_source_authority(
     metadata: &BTreeMap<String, String>,
     driver_id: &str,
     driver_version: &str,
-    plan_hash: &str,
+    discovery_binding: &SourceDiscoveryBinding,
 ) -> cdf_kernel::Result<()> {
     let recorded_driver = metadata
         .get("source_driver")
@@ -93,15 +95,18 @@ fn validate_recorded_source_authority(
     let recorded_version = metadata.get("source_driver_version").ok_or_else(|| {
         CdfError::data("registered-source schema snapshot omitted its source driver version")
     })?;
-    let recorded_plan_hash = metadata.get("source_plan_hash").ok_or_else(|| {
-        CdfError::data("registered-source schema snapshot omitted its compiled source plan hash")
-    })?;
+    let recorded_discovery_binding = metadata
+        .get("source_discovery_binding")
+        .ok_or_else(|| {
+            CdfError::data("registered-source schema snapshot omitted its source discovery binding")
+        })?
+        .parse::<SourceDiscoveryBinding>()?;
     if recorded_driver != driver_id
         || recorded_version != driver_version
-        || recorded_plan_hash != plan_hash
+        || &recorded_discovery_binding != discovery_binding
     {
         return Err(CdfError::data(format!(
-            "registered-source schema snapshot authority `{recorded_driver}`/{recorded_version}/{recorded_plan_hash} does not match compiled source authority `{driver_id}`/{driver_version}/{plan_hash}; repin the schema against the current source configuration",
+            "registered-source schema snapshot authority `{recorded_driver}`/{recorded_version}/{recorded_discovery_binding} does not match compiled source authority `{driver_id}`/{driver_version}/{discovery_binding}; repin the schema against the current source configuration",
         )));
     }
     Ok(())
@@ -120,13 +125,22 @@ pub(crate) fn plan_or_explain(
         cli.env.as_deref(),
         !args.no_pin,
     )?;
+    let inspection_root = args
+        .no_pin
+        .then(|| tempfile::Builder::new().prefix("cdf-inspection-").tempdir())
+        .transpose()
+        .map_err(|error| CdfError::internal(format!("create inspection artifact root: {error}")))?;
+    let artifact_root = inspection_root
+        .as_ref()
+        .map_or(context.root.as_path(), tempfile::TempDir::path);
     let target = scan_target(&args)?;
-    let prepared = prepare_runtime_resource_for_cli(
+    let prepared = prepare_runtime_resource_for_cli_with_artifact_root(
         destinations,
         &context,
         &args.resource_id,
         args.no_pin,
         Some(execution),
+        artifact_root,
     )?;
     let resolved = resolve_scan_destination(
         destinations,
@@ -168,12 +182,17 @@ pub(crate) fn preview(
 ) -> Result<CommandOutput, CliError> {
     let context =
         ProjectContext::load_for_command("preview", cli.project.as_ref(), cli.env.as_deref())?;
-    let prepared = prepare_runtime_resource_for_cli(
+    let inspection_root = tempfile::Builder::new()
+        .prefix("cdf-preview-")
+        .tempdir()
+        .map_err(|error| CdfError::internal(format!("create preview artifact root: {error}")))?;
+    let prepared = prepare_runtime_resource_for_cli_with_artifact_root(
         destinations,
         &context,
         &args.resource_id,
         false,
         Some(execution),
+        inspection_root.path(),
     )?;
     let target = scan_target(&args)?;
     let resolved = resolve_scan_destination(
@@ -209,6 +228,7 @@ pub(crate) fn prepare_resource_schema_for_cli(
     resource: &CompiledResource,
     no_pin: bool,
     execution: Option<&cdf_runtime::ExecutionServices>,
+    artifact_root: &std::path::Path,
 ) -> Result<PreparedSchemaForCli, CliError> {
     let prepared_payloads = cdf_runtime::PreparedSourcePayloads::default();
     let source_plan = compile_source_plan_for_cli(resource)?;
@@ -268,7 +288,7 @@ pub(crate) fn prepare_resource_schema_for_cli(
         }
         None => cdf_project::SchemaDiscoveryExecutionOptions::new(),
     }
-    .with_observation_cache(cdf_project::ObservationCacheStore::new(&context.root));
+    .with_observation_cache(cdf_project::ObservationCacheStore::new(artifact_root));
     let execution = execution
         .ok_or_else(|| CdfError::internal("source discovery requires execution services"))?;
     let discovery_plan = source_plan.clone().bind_schema_authority(
@@ -279,13 +299,14 @@ pub(crate) fn prepare_resource_schema_for_cli(
             .baseline_observation_schema_catalog()
             .to_vec(),
     )?;
-    let mut artifacts = discover_source_schema_with_plan_for_cli(
+    let mut artifacts = discover_source_schema_with_plan_for_cli_at(
         context,
         &probe_resource,
         &discovery_plan,
         execution,
         prepared_payloads.clone(),
         options,
+        artifact_root,
     )?;
     let prepared_resource =
         cdf_project::compile_discovered_schema_artifacts(&probe_resource, &mut artifacts)?;
@@ -456,7 +477,14 @@ fn scan_report(
         ),
         normalization: plan.validation_program.identifier_policy.clone(),
         will_fetch: FetchReport {
-            partitions: plan.scan.partitions.iter().map(partition_report).collect(),
+            partition_count: plan.scan.partition_count()?,
+            partitions: plan
+                .scan
+                .inline_partitions()
+                .unwrap_or_default()
+                .iter()
+                .map(partition_report)
+                .collect(),
             projection: plan.scan.request.projection.clone().unwrap_or_default(),
             filters: plan
                 .scan
@@ -603,7 +631,8 @@ fn preview_resource_report(
         .clone()
         .or_else(|| {
             plan.scan
-                .partitions
+                .inline_partitions()
+                .unwrap_or_default()
                 .first()
                 .map(|partition| partition.partition_id.to_string())
         })
@@ -692,7 +721,7 @@ fn scan_report_document(
                     "execution",
                     execution_extent_name(&report.explain.execution_extent),
                 )
-                .row("partitions", report.will_fetch.partitions.len().to_string())
+                .row("partitions", report.will_fetch.partition_count.to_string())
                 .row("effective jobs", scheduler_jobs)
                 .row("job ceiling", scheduler_limits)
                 .row("managed memory available", scheduler_memory)
@@ -1050,6 +1079,7 @@ struct ResourceSchemaFieldReport {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct FetchReport {
+    partition_count: u64,
     partitions: Vec<PartitionReport>,
     projection: Vec<String>,
     filters: Vec<String>,
@@ -1394,17 +1424,22 @@ mod source_authority_tests {
     use std::collections::BTreeMap;
 
     use super::validate_recorded_source_authority;
+    use cdf_kernel::SourceDiscoveryBinding;
 
     #[test]
     fn pinned_snapshot_rejects_a_different_compiled_source_plan() {
         let metadata = BTreeMap::from([
             ("source_driver".to_owned(), "files".to_owned()),
             ("source_driver_version".to_owned(), "1.0.0".to_owned()),
-            ("source_plan_hash".to_owned(), "sha256:pinned".to_owned()),
+            (
+                "source_discovery_binding".to_owned(),
+                format!("sha256:{}", "a".repeat(64)),
+            ),
         ]);
-        let error =
-            validate_recorded_source_authority(&metadata, "files", "1.0.0", "sha256:recompiled")
-                .unwrap_err();
+        let recompiled = SourceDiscoveryBinding::new(format!("sha256:{}", "b".repeat(64)))
+            .expect("valid discovery binding");
+        let error = validate_recorded_source_authority(&metadata, "files", "1.0.0", &recompiled)
+            .unwrap_err();
         assert!(
             error
                 .message

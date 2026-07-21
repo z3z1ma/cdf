@@ -5,8 +5,8 @@ use std::{
 
 use apache_avro::{Reader as AvroReader, from_value as from_avro_value};
 use cdf_kernel::{
-    CdfError, CompiledScanIntent, DeliveryGuarantee, PlanId, Result, ScanPlan, ScanRequest,
-    WriteDisposition,
+    CdfError, CompiledScanIntent, DeliveryGuarantee, PartitionAuthority, PlanId, Result, ScanPlan,
+    ScanRequest, WriteDisposition,
 };
 use cdf_memory::{AccountedBytes, MemoryLease};
 use cdf_runtime::artifact_hash;
@@ -176,17 +176,16 @@ pub(crate) fn plan_snapshot_scan(
     }
     let reference = artifact.reference;
     reference.validate()?;
-    Ok(ScanPlan {
-        plan_id: PlanId::new(format!("plan-{}", descriptor.resource_id))?,
-        request: request.clone(),
-        partitions: Vec::new(),
-        planned_task_set: Some(reference),
-        pushed_predicates: Vec::new(),
-        unsupported_predicates: request.filters.clone(),
-        estimated_rows: Some(estimated_rows),
-        estimated_bytes: Some(estimated_bytes),
-        delivery_guarantee: delivery_guarantee(descriptor.write_disposition.clone()),
-    })
+    Ok(ScanPlan::new(
+        PlanId::new(format!("plan-{}", descriptor.resource_id))?,
+        request.clone(),
+        PartitionAuthority::External(reference),
+        Vec::new(),
+        request.filters.clone(),
+        Some(estimated_rows),
+        Some(estimated_bytes),
+        delivery_guarantee(descriptor.write_disposition.clone()),
+    ))
 }
 
 #[derive(Deserialize)]

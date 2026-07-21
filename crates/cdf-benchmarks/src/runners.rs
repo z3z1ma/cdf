@@ -15,7 +15,7 @@ use cdf_declarative::{
 };
 use cdf_dest_postgres::{MergeDedupPolicy, PostgresTarget};
 use cdf_engine::{
-    EngineExecutionOptions, EnginePackageDraft, EnginePlanInput, Planner, execute_to_package,
+    EngineExecutionConfig, EnginePackageDraft, EnginePlanInput, Planner, execute_to_package,
     execute_to_package_with_segment_positions_and_pre_finalize,
 };
 use cdf_kernel::ExecutionExtent;
@@ -109,6 +109,7 @@ pub struct PreparedSourcePackageRun {
     pub effective_jobs: u16,
     pub limiting_factors: Vec<String>,
     pub partition_count: usize,
+    pub planned_source_bytes: Option<u64>,
     pub package_hash: String,
     pub segments: Vec<cdf_package_contract::SegmentEntry>,
     /// Identity-bearing package artifacts other than canonical data segments.
@@ -122,6 +123,17 @@ pub struct PreparedSourcePackageRun {
     pub source_frontier: cdf_runtime::SourceFrontierReport,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_io_stages: Vec<PreparedSourceIoStage>,
+}
+
+fn engine_source_physical_bytes(metrics: &[cdf_kernel::RunPhaseMetric]) -> BenchResult<u64> {
+    metrics
+        .iter()
+        .filter(|metric| metric.phase == cdf_kernel::RunPhase::SourceRead)
+        .try_fold(0_u64, |total, metric| {
+            total
+                .checked_add(metric.input_bytes)
+                .ok_or_else(|| bench_error("observed source physical bytes exceed u64"))
+        })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -567,7 +579,7 @@ pub fn run_prepared_file_to_package(
         &spec,
         &execution,
     )?;
-    let plan = identity_engine_plan(source.resource.as_ref(), "pkg-p3-prepared")?
+    let plan = identity_queryable_engine_plan(source.resource.as_ref(), "pkg-p3-prepared")?
         .bind_compiled_source(&source.source_plan)?
         .bind_operator_graph(
             &source.source_plan,
@@ -576,41 +588,30 @@ pub fn run_prepared_file_to_package(
     let source_execution = plan.compiled_source_execution.as_ref().ok_or_else(|| {
         bench_error("prepared file plan omitted its compiled source execution authority")
     })?;
+    let partition_count = usize::try_from(plan.scan.partition_count()?)
+        .map_err(|_| bench_error("prepared source task count exceeds addressable usize"))?;
     let scheduler = cdf_runtime::resolve_runtime_scheduler(
-        plan.scan.partitions.len(),
+        partition_count,
         source_execution.execution_capabilities(),
         &cdf_runtime::DestinationRuntimeCapabilities::default(),
         &execution,
         request.jobs,
     )?;
     execution.tighten_run_job_ceiling(scheduler.effective_jobs.jobs)?;
-    let physical_bytes = plan
-        .scan
-        .partitions
-        .iter()
-        .try_fold(0_u64, |total, partition| {
-            let bytes = partition
-                .planned_file()?
-                .ok_or_else(|| {
-                    bench_error("prepared file partition omitted its physical byte count")
-                })?
-                .size_bytes;
-            total
-                .checked_add(bytes)
-                .ok_or_else(|| bench_error("prepared file physical byte count overflowed"))
-        })?;
-    let partition_count = plan.scan.partitions.len();
+    let planned_source_bytes = plan.scan.planned_source_bytes.map(|bytes| bytes.get());
     let pre_finalize = |_builder: &PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
     let output = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
         &plan,
         source.resource.as_ref(),
         &request.package_dir,
         &pre_finalize,
-        EngineExecutionOptions::default()
+        EngineExecutionConfig::default()
             .with_phase_metrics(true)
             .with_execution_services(execution.clone())
-            .with_scheduler_resolution(scheduler.clone()),
+            .with_scheduler_resolution(scheduler.clone())
+            .new_invocation(),
     ))?;
+    let physical_bytes = engine_source_physical_bytes(&output.phase_metrics)?;
     let (segments, identity_artifacts) = package_identity_parts(&output.output)?;
     Ok(PreparedSourcePackageRun {
         measurement: WorkerMeasurement {
@@ -633,6 +634,7 @@ pub fn run_prepared_file_to_package(
         effective_jobs: scheduler.effective_jobs.jobs,
         limiting_factors: scheduler.effective_jobs.limiting_factors,
         partition_count,
+        planned_source_bytes,
         package_hash: output.output.manifest.package_hash,
         segments,
         identity_artifacts,
@@ -759,20 +761,25 @@ pub fn run_prepared_iceberg_to_package(
         request.jobs,
     )?;
     execution.tighten_run_job_ceiling(scheduler.effective_jobs.jobs)?;
-    let physical_bytes = plan.scan.estimated_bytes.unwrap_or(0);
+    let planned_source_bytes = plan.scan.planned_source_bytes.map(|bytes| bytes.get());
     let execution_started = Instant::now();
     let output = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
         &plan,
         resource.as_ref(),
         &request.package_dir,
         &|_builder: &PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(()),
-        EngineExecutionOptions::default()
+        EngineExecutionConfig::default()
             .with_phase_metrics(true)
             .with_execution_services(execution.clone())
-            .with_scheduler_resolution(scheduler.clone()),
+            .with_scheduler_resolution(scheduler.clone())
+            .new_invocation(),
     ))?;
     let execution_duration_ns = elapsed_ns(execution_started);
     let runtime_scheduler = execution.scheduler_report()?;
+    let physical_bytes = runtime_scheduler
+        .source_io_controller
+        .physical_bytes
+        .saturating_sub(initial_io.physical_bytes);
     let mut phases = vec![
         PhaseMetric {
             phase: "iceberg.discovery".to_owned(),
@@ -831,6 +838,7 @@ pub fn run_prepared_iceberg_to_package(
         effective_jobs: scheduler.effective_jobs.jobs,
         limiting_factors: scheduler.effective_jobs.limiting_factors,
         partition_count,
+        planned_source_bytes,
         package_hash: output.output.manifest.package_hash,
         segments,
         identity_artifacts,
@@ -1070,7 +1078,7 @@ pub fn run_prepared_file_to_destination(
     if let Some(identifier) = destination.column_identifier_policy()? {
         policy.normalization.identifier = identifier;
     }
-    let plan = identity_engine_plan_with_policy(
+    let plan = identity_queryable_engine_plan_with_policy(
         source.resource.as_ref(),
         "pkg-p3-destination-jobs",
         &policy,
@@ -1080,15 +1088,16 @@ pub fn run_prepared_file_to_destination(
     let source_execution = plan.compiled_source_execution.as_ref().ok_or_else(|| {
         bench_error("prepared destination plan omitted its compiled source execution authority")
     })?;
+    let partition_count = usize::try_from(plan.scan.partition_count()?)
+        .map_err(|_| bench_error("prepared source task count exceeds addressable usize"))?;
     let scheduler = cdf_runtime::resolve_runtime_scheduler(
-        plan.scan.partitions.len(),
+        partition_count,
         source_execution.execution_capabilities(),
         &destination_capabilities,
         &execution,
         request.jobs,
     )?;
     execution.tighten_run_job_ceiling(scheduler.effective_jobs.jobs)?;
-    let partition_count = plan.scan.partitions.len();
     let report = block_on(run_project_with_scheduler_and_telemetry(
         ProjectRunRequest {
             resource: ProjectRunSource::new(source.resource.as_ref()),
@@ -1222,8 +1231,15 @@ fn run_cdf_engine_package(spec: &FixtureSpec, root: &Path) -> BenchResult<WorkMe
         "memory",
         record_batches_for_spec(spec)?,
     )?;
+    let source_plan = resource.compiled_source_plan();
+    let plan = engine_plan(&resource, "pkg-engine-benchmark")?
+        .bind_compiled_source(source_plan)?
+        .bind_operator_graph(
+            source_plan,
+            &cdf_runtime::DestinationRuntimeCapabilities::default(),
+        )?;
     let output = block_on(execute_to_package(
-        &engine_plan(&resource, "pkg-engine-benchmark")?,
+        &plan,
         &resource,
         root.join("pkg-engine-benchmark"),
     ))?;
@@ -1250,7 +1266,7 @@ fn run_file_to_package(
         .ok_or_else(|| bench_error("benchmark source file name must be valid UTF-8"))?;
     let source = benchmark_file_resource(source_root, glob, format.format_id(), spec, &execution)?;
     let pre_finalize = |_builder: &PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
-    let plan = engine_plan(source.resource.as_ref(), "pkg-file-benchmark")?
+    let plan = queryable_engine_plan(source.resource.as_ref(), "pkg-file-benchmark")?
         .bind_compiled_source(&source.source_plan)?
         .bind_operator_graph(
             &source.source_plan,
@@ -1261,7 +1277,9 @@ fn run_file_to_package(
         source.resource.as_ref(),
         root.join(format!("pkg-file-{}", format.label())),
         &pre_finalize,
-        EngineExecutionOptions::default().with_execution_services(execution),
+        EngineExecutionConfig::default()
+            .with_execution_services(execution)
+            .new_invocation(),
     ))?;
     Ok(WorkMetric {
         rows: output.output.profile.output_rows,
@@ -1464,7 +1482,7 @@ schema = { fields = [
     if let Some(identifier) = destination.column_identifier_policy()? {
         policy.normalization.identifier = identifier;
     }
-    let plan = engine_plan_with_policy(source.resource.as_ref(), package_id, &policy)?
+    let plan = queryable_engine_plan_with_policy(source.resource.as_ref(), package_id, &policy)?
         .bind_compiled_source(&source.source_plan)?
         .bind_operator_graph(&source.source_plan, &destination.runtime_capabilities())?;
     let report = block_on(run_project(
@@ -1547,18 +1565,69 @@ fn engine_plan_with_policy<R: ResourceStream + ?Sized>(
         .map_err(Into::into)
 }
 
-fn identity_engine_plan<R: ResourceStream + ?Sized>(
+fn queryable_engine_plan<R: QueryableResource + ?Sized>(
     resource: &R,
     package_id: &str,
 ) -> BenchResult<cdf_engine::EnginePlan> {
-    identity_engine_plan_with_policy(
+    queryable_engine_plan_with_policy(
         resource,
         package_id,
         &ContractPolicy::for_trust(resource.descriptor().trust_level.clone()),
     )
 }
 
-fn identity_engine_plan_with_policy<R: ResourceStream + ?Sized>(
+fn queryable_engine_plan_with_policy<R: QueryableResource + ?Sized>(
+    resource: &R,
+    package_id: &str,
+    policy: &ContractPolicy,
+) -> BenchResult<cdf_engine::EnginePlan> {
+    let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
+    let validation_program = compile_validation_program(policy, &observed_schema)?;
+    let projection = if resource.schema().field_with_name("category").is_ok() {
+        Some(vec!["id".to_owned(), "category".to_owned()])
+    } else {
+        None
+    };
+    let filters = if resource.schema().field_with_name("active").is_ok() {
+        vec![ScanPredicate::new(
+            PredicateId::new("active-filter")?,
+            "active = true",
+        )?]
+    } else {
+        Vec::new()
+    };
+    Planner::new()
+        .plan_tier_b(
+            resource,
+            EnginePlanInput {
+                request: ScanRequest {
+                    resource_id: resource.descriptor().resource_id.clone(),
+                    projection,
+                    filters,
+                    limit: None,
+                    order_by: Vec::new(),
+                    scope: resource.descriptor().state_scope.clone(),
+                },
+                validation_program,
+                execution_extent: ExecutionExtent::bounded(),
+                package_id: package_id.to_owned(),
+            },
+        )
+        .map_err(Into::into)
+}
+
+fn identity_queryable_engine_plan<R: QueryableResource + ?Sized>(
+    resource: &R,
+    package_id: &str,
+) -> BenchResult<cdf_engine::EnginePlan> {
+    identity_queryable_engine_plan_with_policy(
+        resource,
+        package_id,
+        &ContractPolicy::for_trust(resource.descriptor().trust_level.clone()),
+    )
+}
+
+fn identity_queryable_engine_plan_with_policy<R: QueryableResource + ?Sized>(
     resource: &R,
     package_id: &str,
     policy: &ContractPolicy,
@@ -1566,7 +1635,7 @@ fn identity_engine_plan_with_policy<R: ResourceStream + ?Sized>(
     let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
     let validation_program = compile_validation_program(policy, &observed_schema)?;
     Planner::new()
-        .plan_tier_a(
+        .plan_tier_b(
             resource,
             EnginePlanInput {
                 request: ScanRequest {
@@ -1664,6 +1733,21 @@ fn build_package_fixture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cdf_engine_package_case_uses_current_compiled_source_authority() {
+        let root = tempfile::tempdir().unwrap();
+        let case = crate::matrix::cases_for(crate::matrix::BenchmarkSuite::Smoke)
+            .into_iter()
+            .find(|case| case.label == "trend.cdf_engine.package_filter_project.medium")
+            .unwrap();
+
+        let outcome = run_case(case, root.path()).unwrap();
+
+        assert_eq!(outcome.label, case.label);
+        assert!(outcome.rows > 0);
+        assert!(outcome.bytes > 0);
+    }
 
     fn iceberg_workload(catalog: PreparedIcebergCatalog) -> PreparedIcebergPackageWorkload {
         PreparedIcebergPackageWorkload {

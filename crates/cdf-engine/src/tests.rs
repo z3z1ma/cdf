@@ -31,8 +31,8 @@ use cdf_kernel::{
     EpochClosureTrigger, EstimateSupport, EventTimeDomain, ExecutionExtent, FileManifest,
     FilePosition, FilterCapabilities, FreshnessSpec, IncrementalShape, LateDataAction,
     PLAN_PHYSICAL_SCHEMA_HASH_KEY, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
-    PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation, PartitionId, PartitionPlan,
-    PartitioningCapabilities, PreContractObservedValue, PreContractQuarantineFact,
+    PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation, PartitionAuthority, PartitionId,
+    PartitionPlan, PartitioningCapabilities, PreContractObservedValue, PreContractQuarantineFact,
     PreContractResidualCandidate, PredicateId, PushdownFidelity, QueryableResource,
     ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result, RunId, RunPhase,
     RunPhaseStatus, STRATIFIED_HASH_SELECTOR_V1, STREAM_EPOCH_POLICY_VERSION, SafeFrontierPolicy,
@@ -138,19 +138,41 @@ fn executable_mock_plan(plan: &EnginePlan, resource: &MockResource) -> Result<En
     plan.clone().bind_compiled_source(&source)
 }
 
-fn executable_mock_options(options: EngineExecutionOptions) -> Result<EngineExecutionOptions> {
-    if options.services.is_some() {
-        return Ok(options);
-    }
-    let (_, services) =
-        StandaloneExecutionHost::default_services(cdf_memory::DEFAULT_PROCESS_BUDGET_BYTES)?;
-    Ok(options.with_execution_services(services))
+fn executable_mock_options(config: EngineExecutionConfig) -> Result<EngineExecutionInvocation> {
+    let config = if config.services.is_some() {
+        config
+    } else {
+        let (_, services) =
+            StandaloneExecutionHost::default_services(cdf_memory::DEFAULT_PROCESS_BUDGET_BYTES)?;
+        config.with_execution_services(services)
+    };
+    Ok(config.new_invocation())
 }
 
 fn datafusion_test_services() -> cdf_runtime::ExecutionServices {
     StandaloneExecutionHost::default_services(64 * 1024 * 1024)
         .unwrap()
         .1
+}
+
+#[test]
+fn reusable_engine_execution_config_creates_isolated_invocation_state() {
+    let config = EngineExecutionConfig::default();
+    let first = config.new_invocation();
+    let second = config.new_invocation();
+
+    first.cancellation.cancel();
+
+    assert!(first.cancellation.is_cancelled());
+    assert!(!second.cancellation.is_cancelled());
+    assert!(first.source_retry_evidence().snapshot().unwrap().is_empty());
+    assert!(
+        second
+            .source_retry_evidence()
+            .snapshot()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 async fn execute_to_package(
@@ -195,7 +217,7 @@ async fn execute_to_package_with_segment_positions_and_pre_finalize(
     resource: &MockResource,
     package_dir: impl AsRef<std::path::Path>,
     pre_finalize: &PackagePreFinalizeHook<'_>,
-    options: EngineExecutionOptions,
+    options: EngineExecutionConfig,
 ) -> Result<EngineRunOutputWithSegmentPositions> {
     let plan = executable_mock_plan(plan, resource)?;
     let options = executable_mock_options(options)?;
@@ -216,7 +238,7 @@ async fn execute_to_package_with_streaming_hooks<'a>(
     pre_finalize: &PackagePreFinalizeHook<'_>,
     durable_segment: &'a mut DurableSegmentHook<'a>,
     stream_finalize: &'a mut StreamingFinalizeHook<'a>,
-    options: EngineExecutionOptions,
+    options: EngineExecutionConfig,
 ) -> Result<EngineRunOutputWithSegmentPositions> {
     let plan = executable_mock_plan(plan, resource)?;
     let options = executable_mock_options(options)?;
@@ -1031,7 +1053,8 @@ impl cdf_runtime::IsolatedPartitionExecutor for ActualEngineIsolatedExecutor<'_>
             if program
                 .plan()
                 .scan
-                .partitions
+                .inline_partitions()
+                .expect("isolated execution uses inline partition authority")
                 .get(task.partition.canonical_partition_ordinal as usize)
                 != Some(authority.partition())
             {
@@ -1068,9 +1091,10 @@ impl cdf_runtime::IsolatedPartitionExecutor for ActualEngineIsolatedExecutor<'_>
                         let pre_finalize =
                             |_builder: &cdf_package::PackageBuilder,
                              _draft: EnginePackageDraft<'_>| Ok(());
-                        let options = EngineExecutionOptions::default()
+                        let options = EngineExecutionConfig::default()
                             .with_execution_services(execution_services)
-                            .with_scheduler_resolution(scheduler);
+                            .with_scheduler_resolution(scheduler)
+                            .new_invocation();
                         match &execution_plan.execution_extent {
                             ExecutionExtent::Bounded { .. } => block_on(
                                 super::execute_to_package_with_segment_positions_and_pre_finalize(
@@ -1377,7 +1401,7 @@ fn engine_partition_task_compiles_every_authority_as_typed_artifacts() {
             &cdf_runtime::DestinationRuntimeCapabilities::default(),
         )
         .unwrap();
-    let partition = plan.scan.partitions.first().unwrap();
+    let partition = plan.scan.inline_partitions().unwrap().first().unwrap();
     let mut artifacts = MemoryWorkerCompilerArtifacts::default();
     let task = compile_engine_partition_task(
         EnginePartitionTaskInput {
@@ -1507,7 +1531,7 @@ fn engine_partition_task_rejects_package_global_work_before_writing_control_arti
             pipeline_id: cdf_kernel::PipelineId::new("global-operator-guard").unwrap(),
             source: &source,
             plan: &plan,
-            partition: &plan.scan.partitions[0],
+            partition: &plan.scan.inline_partitions().unwrap()[0],
             canonical_partition_ordinal: 0,
             epoch_ordinal: None,
             input_checkpoint: None,
@@ -1605,7 +1629,10 @@ fn isolated_engine_source_plan(
         "source_bytes": source_bytes,
         "partition_source_bytes": partition_source_bytes,
     });
-    source.physical_plan_hash = cdf_runtime::artifact_hash(&source.physical_plan).unwrap();
+    source.physical_plan_hash = cdf_kernel::PhysicalSourcePlanHash::new(
+        cdf_runtime::artifact_hash(&source.physical_plan).unwrap(),
+    )
+    .unwrap();
     source.validate().unwrap();
     source
 }
@@ -1782,7 +1809,7 @@ fn run_actual_isolated_engine_equivalence_for_resource(
             &cdf_runtime::DestinationRuntimeCapabilities::default(),
         )
         .unwrap();
-    assert_eq!(plan.scan.partitions.len(), partition_count);
+    assert_eq!(plan.scan.partition_count().unwrap(), partition_count as u64);
 
     let direct_services = isolated_engine_services(cpu_slots);
     let direct_scheduler = cdf_runtime::resolve_runtime_scheduler(
@@ -1796,9 +1823,10 @@ fn run_actual_isolated_engine_equivalence_for_resource(
     let direct_root = TempDir::new().unwrap();
     let pre_finalize =
         |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
-    let direct_options = EngineExecutionOptions::default()
+    let direct_options = EngineExecutionConfig::default()
         .with_execution_services(direct_services)
-        .with_scheduler_resolution(direct_scheduler);
+        .with_scheduler_resolution(direct_scheduler)
+        .new_invocation();
     let direct = match &plan.execution_extent {
         ExecutionExtent::Bounded { .. } => block_on(
             super::execute_to_package_with_segment_positions_and_pre_finalize(
@@ -1860,7 +1888,8 @@ fn run_actual_isolated_engine_equivalence_for_resource(
     };
     let partition_tasks = plan
         .scan
-        .partitions
+        .inline_partitions()
+        .unwrap()
         .iter()
         .enumerate()
         .map(|(ordinal, partition)| {
@@ -2425,7 +2454,7 @@ fn tier_a_resource_runs_engine_projection_filter_limit_into_package() {
         &resource,
         temp.path(),
         &pre_finalize,
-        EngineExecutionOptions::default().with_statistics_profile(true),
+        EngineExecutionConfig::default().with_statistics_profile(true),
     ))
     .unwrap()
     .output;
@@ -2672,6 +2701,11 @@ fn compiled_stream_admission_is_replay_verifiable_and_rejects_mismatched_evidenc
                 coercion_plan,
                 crate::StreamAdmissionCompletion::Complete {
                     source_position: terminal_file_position(),
+                    partition_binding: cdf_kernel::SchemaObservationBinding::new(format!(
+                        "sha256:{:064x}",
+                        1
+                    ))
+                    .unwrap(),
                 },
             )
             .unwrap(),
@@ -2879,7 +2913,11 @@ fn materialized_stream_admission_rejects_noncanonical_provenance_and_nullable_cl
                 physical_hash,
                 coercion,
                 crate::StreamAdmissionCompletion::CompleteUnpositioned {
-                    partition_binding: "binding-v1".to_owned(),
+                    partition_binding: cdf_kernel::SchemaObservationBinding::new(format!(
+                        "sha256:{:064x}",
+                        2
+                    ))
+                    .unwrap(),
                 },
             )
             .unwrap(),
@@ -2942,7 +2980,7 @@ fn materialized_stream_admission_rejects_noncanonical_provenance_and_nullable_cl
 }
 
 #[test]
-fn preobserved_widening_is_rejected_by_the_compiled_verdict_program() {
+fn preobserved_baseline_widening_survives_the_drift_reject_verdict() {
     let physical_schema = sample_schema();
     let effective_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
@@ -2957,6 +2995,7 @@ fn preobserved_widening_is_rejected_by_the_compiled_verdict_program() {
         vec![EffectiveSchemaObservationEvidence::new(
             "input-0",
             physical_hash.clone(),
+            schema_observation_binding("input-0"),
         )],
     );
     let runtime = EffectiveSchemaRuntime::new(
@@ -2984,9 +3023,18 @@ fn preobserved_widening_is_rejected_by_the_compiled_verdict_program() {
         .unwrap()
         .verdict = VerdictAction::RejectBatch;
 
-    let error = Planner::new().plan_tier_b(&resource, input).unwrap_err();
-
-    assert!(error.to_string().contains("width coercion"), "{error}");
+    let plan = Planner::new().plan_tier_b(&resource, input).unwrap();
+    let widening = plan
+        .effective_schema_evidence
+        .as_ref()
+        .unwrap()
+        .observations[0]
+        .coercion_plan
+        .fields
+        .iter()
+        .find(|field| field.source_name == "id")
+        .unwrap();
+    assert_eq!(widening.decision, FieldCoercionDecision::Widened);
 }
 
 #[test]
@@ -3000,6 +3048,7 @@ fn planning_rejects_one_schema_observation_identity_across_partitions() {
         vec![EffectiveSchemaObservationEvidence::new(
             "input-0",
             physical_hash.clone(),
+            schema_observation_binding("input-0"),
         )],
     );
     let runtime = EffectiveSchemaRuntime::new(
@@ -3054,7 +3103,7 @@ fn execution_rejects_duplicate_planned_observations_before_staged_ingress() {
             plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
         )
         .unwrap();
-    for partition in &mut plan.scan.partitions {
+    for partition in plan.scan.inline_partitions_mut().unwrap() {
         partition.metadata.insert(
             PLAN_SCHEMA_OBSERVATION_ID_KEY.to_owned(),
             "forged-shared-observation".to_owned(),
@@ -3078,7 +3127,7 @@ fn execution_rejects_duplicate_planned_observations_before_staged_ingress() {
         &pre_finalize,
         &mut durable_segment,
         &mut stream_finalize,
-        EngineExecutionOptions::default(),
+        EngineExecutionConfig::default(),
     ))
     .unwrap_err();
 
@@ -3707,6 +3756,7 @@ fn effective_schema_binds_only_the_attempted_partition_observation_under_limit()
         vec![EffectiveSchemaObservationEvidence::new(
             "input-0",
             physical_hash.clone(),
+            schema_observation_binding("input-0"),
         )],
     );
     let runtime = EffectiveSchemaRuntime::new(
@@ -3799,6 +3849,7 @@ fn pushed_projection_rebinds_preobserved_physical_evidence_before_execution() {
         vec![EffectiveSchemaObservationEvidence::new(
             "input-0",
             physical_hash.clone(),
+            schema_observation_binding("input-0"),
         )],
     );
     let runtime = EffectiveSchemaRuntime::new(
@@ -3822,12 +3873,15 @@ fn pushed_projection_rebinds_preobserved_physical_evidence_before_execution() {
     let plan = Planner::new().plan_tier_b(&resource, input).unwrap();
     let planned = &plan.effective_schema_evidence().unwrap().observations[0];
     assert_eq!(
-        planned.physical_schema_hash, projected_hash,
+        planned.physical_schema_hash,
+        projected_hash,
         "compiled projection: {:?}",
-        plan.scan.partitions[0].scan_intent.projection
+        plan.scan.inline_partitions().unwrap()[0]
+            .scan_intent
+            .projection
     );
     assert_eq!(
-        plan.scan.partitions[0]
+        plan.scan.inline_partitions().unwrap()[0]
             .metadata
             .get(PLAN_PHYSICAL_SCHEMA_HASH_KEY),
         Some(&projected_hash.to_string())
@@ -3881,7 +3935,7 @@ fn limited_multi_batch_partition_records_exact_non_checkpointing_partial_attempt
         } => {
             assert_eq!(position, &terminal_file_position());
             assert_eq!(*observed_rows, 3);
-            assert!(!partition_binding.is_empty());
+            assert!(partition_binding.as_str().starts_with("sha256:"));
         }
         other => panic!("expected exact partial attempt, got {other:?}"),
     }
@@ -4007,10 +4061,12 @@ fn terminal_schema_observation_quarantine_processes_distinct_partitions_without_
     assert!(!terminal_json.contains("super-secret-row-value"));
 
     let mut conflicting = plan.clone();
-    conflicting.scan.partitions[1].metadata.insert(
-        PLAN_SCHEMA_OBSERVATION_BINDING_KEY.to_owned(),
-        "conflicting-binding".to_owned(),
-    );
+    conflicting.scan.inline_partitions_mut().unwrap()[1]
+        .metadata
+        .insert(
+            PLAN_SCHEMA_OBSERVATION_BINDING_KEY.to_owned(),
+            "conflicting-binding".to_owned(),
+        );
     let conflicting_package = TempDir::new().unwrap();
     let error = block_on(execute_to_package(
         &conflicting,
@@ -4130,8 +4186,16 @@ fn terminal_effective_schema_runtime(
         "manifest-v1",
         ".cdf/schemas/orders@manifest-v1.discovery.json",
         vec![
-            EffectiveSchemaObservationEvidence::new("input-0", physical_hash.clone()),
-            EffectiveSchemaObservationEvidence::new("input-1", physical_hash.clone()),
+            EffectiveSchemaObservationEvidence::new(
+                "input-0",
+                physical_hash.clone(),
+                schema_observation_binding("input-0"),
+            ),
+            EffectiveSchemaObservationEvidence::new(
+                "input-1",
+                physical_hash.clone(),
+                schema_observation_binding("input-1"),
+            ),
         ],
     );
     EffectiveSchemaRuntime::new(
@@ -4243,7 +4307,7 @@ fn durable_segment_hook_runs_after_publish_with_exact_entry_and_batch() {
         &pre_finalize,
         &mut durable_segment,
         &mut stream_finalize,
-        EngineExecutionOptions::default().with_execution_services(services.clone()),
+        EngineExecutionConfig::default().with_execution_services(services.clone()),
     ))
     .unwrap();
 
@@ -4304,7 +4368,7 @@ fn canonical_segment_releases_construction_peak_before_durable_ingress() {
         &pre_finalize,
         &mut durable_segment,
         &mut stream_finalize,
-        EngineExecutionOptions::default().with_execution_services(services.clone()),
+        EngineExecutionConfig::default().with_execution_services(services.clone()),
     ))
     .unwrap();
 
@@ -4643,7 +4707,7 @@ fn drain_epochs_stop_at_canonical_partition_frontiers_and_require_settlement() {
         &first_dir,
         &pre_finalize,
         super::DrainEpochExecution::new(&mut controller),
-        executable_mock_options(EngineExecutionOptions::default()).unwrap(),
+        executable_mock_options(EngineExecutionConfig::default()).unwrap(),
     ))
     .unwrap()
     .into_package()
@@ -4672,7 +4736,7 @@ fn drain_epochs_stop_at_canonical_partition_frontiers_and_require_settlement() {
         &blocked_dir,
         &pre_finalize,
         super::DrainEpochExecution::new(&mut controller),
-        executable_mock_options(EngineExecutionOptions::default()).unwrap(),
+        executable_mock_options(EngineExecutionConfig::default()).unwrap(),
     ))
     .unwrap_err();
     assert!(blocked.message.contains("before frontier settlement"));
@@ -4691,7 +4755,7 @@ fn drain_epochs_stop_at_canonical_partition_frontiers_and_require_settlement() {
         &second_dir,
         &pre_finalize,
         super::DrainEpochExecution::new(&mut controller),
-        executable_mock_options(EngineExecutionOptions::default()).unwrap(),
+        executable_mock_options(EngineExecutionConfig::default()).unwrap(),
     ))
     .unwrap()
     .into_package()
@@ -4776,7 +4840,7 @@ fn drain_epochs_resume_one_unbounded_partition_from_each_settled_batch_frontier(
         )
         .unwrap();
     assert_eq!(
-        fresh_process_plan.scan.partitions[0].start_position,
+        fresh_process_plan.scan.inline_partitions().unwrap()[0].start_position,
         Some(SourcePosition::Cursor(CursorPosition {
             version: cdf_kernel::SOURCE_POSITION_VERSION,
             field: "id".to_owned(),
@@ -4793,7 +4857,7 @@ fn drain_epochs_resume_one_unbounded_partition_from_each_settled_batch_frontier(
             root.path().join(format!("epoch-{epoch}")),
             &pre_finalize,
             super::DrainEpochExecution::new(&mut controller),
-            executable_mock_options(EngineExecutionOptions::default()).unwrap(),
+            executable_mock_options(EngineExecutionConfig::default()).unwrap(),
         ))
         .unwrap()
         .into_package()
@@ -4882,7 +4946,7 @@ fn duration_drain_closes_while_the_next_batch_poll_is_silent() {
         &package_dir,
         &|_, _| Ok(()),
         super::DrainEpochExecution::new(&mut controller),
-        executable_mock_options(EngineExecutionOptions::default()).unwrap(),
+        executable_mock_options(EngineExecutionConfig::default()).unwrap(),
     ))
     .unwrap()
     .into_package()
@@ -4953,7 +5017,7 @@ fn duration_drain_discards_an_empty_package_while_source_open_is_silent() {
         &package_dir,
         &|_, _| Ok(()),
         super::DrainEpochExecution::new(&mut controller),
-        executable_mock_options(EngineExecutionOptions::default()).unwrap(),
+        executable_mock_options(EngineExecutionConfig::default()).unwrap(),
     ))
     .unwrap();
 
@@ -5007,7 +5071,7 @@ fn immediately_exhausted_drain_is_a_no_op_without_a_package() {
         &package_dir,
         &|_, _| Ok(()),
         super::DrainEpochExecution::new(&mut controller),
-        executable_mock_options(EngineExecutionOptions::default()).unwrap(),
+        executable_mock_options(EngineExecutionConfig::default()).unwrap(),
     ))
     .unwrap();
 
@@ -5075,7 +5139,7 @@ fn drain_partition_resume_stays_local_when_resource_frontier_is_a_larger_cursor(
         root.path().join("epoch-0"),
         &|_, _| Ok(()),
         super::DrainEpochExecution::new(&mut controller),
-        executable_mock_options(EngineExecutionOptions::default()).unwrap(),
+        executable_mock_options(EngineExecutionConfig::default()).unwrap(),
     ))
     .unwrap()
     .into_package()
@@ -5135,7 +5199,7 @@ fn drain_partition_resume_stays_local_when_resource_frontier_is_a_larger_cursor(
         )
         .unwrap();
     assert_eq!(
-        restarted.scan.partitions[1].start_position,
+        restarted.scan.inline_partitions().unwrap()[1].start_position,
         continuation.positions.get("part-1").cloned()
     );
 }
@@ -5232,7 +5296,7 @@ fn drain_epoch_records_the_minimum_partition_watermark_not_the_latest_claim() {
         root.path().join("epoch-0"),
         &|_, _| Ok(()),
         super::DrainEpochExecution::new(&mut controller),
-        executable_mock_options(EngineExecutionOptions::default()).unwrap(),
+        executable_mock_options(EngineExecutionConfig::default()).unwrap(),
     ))
     .unwrap()
     .into_package()
@@ -5348,7 +5412,7 @@ fn late_rows_are_quarantined_or_admitted_with_identity_evidence() {
             root.path().join(format!("{action:?}-epoch-0")),
             &|_, _| Ok(()),
             super::DrainEpochExecution::new(&mut controller),
-            executable_mock_options(EngineExecutionOptions::default()).unwrap(),
+            executable_mock_options(EngineExecutionConfig::default()).unwrap(),
         ))
         .unwrap()
         .into_package()
@@ -5383,7 +5447,7 @@ fn late_rows_are_quarantined_or_admitted_with_identity_evidence() {
             &second_dir,
             &|_, _| Ok(()),
             super::DrainEpochExecution::new(&mut controller),
-            executable_mock_options(EngineExecutionOptions::default()).unwrap(),
+            executable_mock_options(EngineExecutionConfig::default()).unwrap(),
         ))
         .unwrap()
         .into_package()
@@ -5519,7 +5583,7 @@ fn late_rows_are_quarantined_or_admitted_with_identity_evidence() {
                     &|_, _| Ok(()),
                     super::DrainEpochExecution::new(&mut controller)
                         .with_late_data_carryover(carryover),
-                    executable_mock_options(EngineExecutionOptions::default()).unwrap(),
+                    executable_mock_options(EngineExecutionConfig::default()).unwrap(),
                 ))
                 .unwrap()
                 .into_package()
@@ -5617,7 +5681,7 @@ fn drain_rejects_an_earlier_regressing_claim_even_when_the_batch_tail_recovers()
         root.path().join("regressing-watermark"),
         &|_, _| Ok(()),
         super::DrainEpochExecution::new(&mut controller),
-        executable_mock_options(EngineExecutionOptions::default()).unwrap(),
+        executable_mock_options(EngineExecutionConfig::default()).unwrap(),
     ))
     .unwrap_err();
     assert!(error.message.contains("watermark regressed"));
@@ -5736,7 +5800,7 @@ fn run_fixed_drain_epochs_with_jobs(jobs: u16) -> (Vec<FixedDrainEpochEvidence>,
     let (_, services) = StandaloneExecutionHost::default_services(512 * 1024 * 1024).unwrap();
     let services = services.with_run_job_ceiling(jobs).unwrap();
     let scheduler = cdf_runtime::resolve_runtime_scheduler(
-        plan.scan.partitions.len(),
+        usize::try_from(plan.scan.partition_count().unwrap()).unwrap(),
         &source.execution_capabilities,
         &cdf_runtime::DestinationRuntimeCapabilities::default(),
         &services,
@@ -5762,11 +5826,12 @@ fn run_fixed_drain_epochs_with_jobs(jobs: u16) -> (Vec<FixedDrainEpochEvidence>,
             root.path().join(format!("epoch-{epoch}")),
             &pre_finalize,
             super::DrainEpochExecution::new(&mut controller),
-            EngineExecutionOptions::default()
+            EngineExecutionConfig::default()
                 .with_execution_services(services.clone())
-                .with_scheduler_resolution(
-                    scheduler.narrow_to_partition_count(plan.scan.partitions.len()),
-                ),
+                .with_scheduler_resolution(scheduler.narrow_to_partition_count(
+                    usize::try_from(plan.scan.partition_count().unwrap()).unwrap(),
+                ))
+                .new_invocation(),
         ))
         .unwrap()
         .into_package()
@@ -5908,7 +5973,7 @@ fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
     );
     let services = cdf_runtime::ExecutionServices::new(host).unwrap();
     let scheduler = cdf_runtime::resolve_runtime_scheduler(
-        plan.scan.partitions.len(),
+        usize::try_from(plan.scan.partition_count().unwrap()).unwrap(),
         &source.execution_capabilities,
         &cdf_runtime::DestinationRuntimeCapabilities::default(),
         &services,
@@ -5922,7 +5987,7 @@ fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
         &resource,
         parallel_temp.path(),
         &pre_finalize,
-        EngineExecutionOptions::default()
+        EngineExecutionConfig::default()
             .with_execution_services(services.clone())
             .with_scheduler_resolution(scheduler),
     ))
@@ -5941,7 +6006,7 @@ fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
     assert_eq!(services.memory().snapshot().current_bytes, 0);
 
     let mut stale_scheduler = cdf_runtime::resolve_runtime_scheduler(
-        plan.scan.partitions.len(),
+        usize::try_from(plan.scan.partition_count().unwrap()).unwrap(),
         &source.execution_capabilities,
         &cdf_runtime::DestinationRuntimeCapabilities::default(),
         &services,
@@ -5950,15 +6015,18 @@ fn operator_graph_compiles_from_capabilities_without_driver_name_dispatch() {
     .unwrap();
     stale_scheduler.source_bounded = !source.execution_capabilities.bounded;
     let stale_temp = TempDir::new().unwrap();
-    let error = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
-        &plan,
-        &resource,
-        stale_temp.path(),
-        &pre_finalize,
-        EngineExecutionOptions::default()
-            .with_execution_services(services.clone())
-            .with_scheduler_resolution(stale_scheduler),
-    ))
+    let error = block_on(
+        super::execute_to_package_with_segment_positions_and_pre_finalize(
+            &plan,
+            &resource,
+            stale_temp.path(),
+            &pre_finalize,
+            EngineExecutionConfig::default()
+                .with_execution_services(services.clone())
+                .with_scheduler_resolution(stale_scheduler)
+                .new_invocation(),
+        ),
+    )
     .unwrap_err();
     assert!(error.message.contains("scheduler source authority"));
 
@@ -6193,8 +6261,10 @@ fn operator_graph_binds_the_plan_source_and_drain_policy_exactly() {
         .unwrap();
     let mut other_source = source.clone();
     other_source.physical_plan = serde_json::json!({"partitioning": "other"});
-    other_source.physical_plan_hash =
-        cdf_runtime::artifact_hash(&other_source.physical_plan).unwrap();
+    other_source.physical_plan_hash = cdf_kernel::PhysicalSourcePlanHash::new(
+        cdf_runtime::artifact_hash(&other_source.physical_plan).unwrap(),
+    )
+    .unwrap();
     other_source.validate().unwrap();
     let error = plan
         .bind_operator_graph(
@@ -6322,7 +6392,7 @@ fn engine_parallel_frontier_polls_later_partition_while_head_is_stalled() {
     );
     let services = cdf_runtime::ExecutionServices::new(host).unwrap();
     let scheduler = cdf_runtime::resolve_runtime_scheduler(
-        plan.scan.partitions.len(),
+        usize::try_from(plan.scan.partition_count().unwrap()).unwrap(),
         &source.execution_capabilities,
         &cdf_runtime::DestinationRuntimeCapabilities::default(),
         &services,
@@ -6344,9 +6414,10 @@ fn engine_parallel_frontier_polls_later_partition_while_head_is_stalled() {
                 &parallel_resource,
                 package.path(),
                 &pre_finalize,
-                EngineExecutionOptions::default()
+                EngineExecutionConfig::default()
                     .with_execution_services(parallel_services)
-                    .with_scheduler_resolution(scheduler),
+                    .with_scheduler_resolution(scheduler)
+                    .new_invocation(),
             ),
         )
     });
@@ -6407,7 +6478,7 @@ fn engine_keeps_non_speculative_source_frontier_serial() {
 
     let (_, services) = StandaloneExecutionHost::default_services(512 * 1024 * 1024).unwrap();
     let scheduler = cdf_runtime::resolve_runtime_scheduler(
-        plan.scan.partitions.len(),
+        usize::try_from(plan.scan.partition_count().unwrap()).unwrap(),
         &source.execution_capabilities,
         &cdf_runtime::DestinationRuntimeCapabilities::default(),
         &services,
@@ -6415,9 +6486,10 @@ fn engine_keeps_non_speculative_source_frontier_serial() {
     )
     .unwrap();
     assert!(scheduler.effective_jobs.jobs > 1);
-    let options = EngineExecutionOptions::default()
+    let options = EngineExecutionConfig::default()
         .with_execution_services(services)
-        .with_scheduler_resolution(scheduler);
+        .with_scheduler_resolution(scheduler)
+        .new_invocation();
 
     assert_eq!(crate::execution::partition_open_jobs(&plan, &options), 1);
 }
@@ -6525,7 +6597,7 @@ fn run_skewed_jobs(
     let (_, services) = StandaloneExecutionHost::default_services(4 * 1024 * 1024 * 1024)?;
     let services = services.with_run_job_ceiling(jobs)?;
     let scheduler = cdf_runtime::resolve_runtime_scheduler(
-        plan.scan.partitions.len(),
+        usize::try_from(plan.scan.partition_count().unwrap()).unwrap(),
         &source.execution_capabilities,
         &cdf_runtime::DestinationRuntimeCapabilities::default(),
         &services,
@@ -6541,9 +6613,10 @@ fn run_skewed_jobs(
             resource,
             package.path(),
             &pre_finalize,
-            EngineExecutionOptions::default()
+            EngineExecutionConfig::default()
                 .with_execution_services(services)
-                .with_scheduler_resolution(scheduler),
+                .with_scheduler_resolution(scheduler)
+                .new_invocation(),
         ),
     )?;
     Ok(RetainedEngineRun {
@@ -6710,7 +6783,7 @@ fn scheduler_retries_atomic_open_and_records_one_canonical_success() {
         &resource,
         package.path(),
         &pre_finalize,
-        EngineExecutionOptions::default().with_execution_services(services),
+        EngineExecutionConfig::default().with_execution_services(services),
     ))
     .unwrap();
 
@@ -6756,7 +6829,7 @@ fn scheduler_retries_lazy_stream_failure_before_first_batch() {
         &resource,
         package.path(),
         &pre_finalize,
-        EngineExecutionOptions::default().with_execution_services(services),
+        EngineExecutionConfig::default().with_execution_services(services),
     ))
     .unwrap();
 
@@ -6796,7 +6869,7 @@ fn scheduler_reattests_a_retried_partial_limit_without_requiring_eof() {
         &resource,
         package.path(),
         &pre_finalize,
-        EngineExecutionOptions::default().with_execution_services(services),
+        EngineExecutionConfig::default().with_execution_services(services),
     ))
     .unwrap();
 
@@ -6828,16 +6901,20 @@ fn exhausted_retry_history_survives_a_failed_engine_return() {
     let package = TempDir::new().unwrap();
     let pre_finalize =
         |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
-    let options = EngineExecutionOptions::default().with_execution_services(services);
+    let options = EngineExecutionConfig::default()
+        .with_execution_services(services)
+        .new_invocation();
     let retry_evidence = options.source_retry_evidence();
 
-    let error = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
-        &plan,
-        &resource,
-        package.path(),
-        &pre_finalize,
-        options,
-    ))
+    let error = block_on(
+        super::execute_to_package_with_segment_positions_and_pre_finalize(
+            &plan,
+            &resource,
+            package.path(),
+            &pre_finalize,
+            options,
+        ),
+    )
     .unwrap_err();
 
     assert!(error.message.contains("attempt limit exhausted"), "{error}");
@@ -6870,16 +6947,20 @@ fn nonretryable_reattest_failure_preserves_primary_error_and_history() {
     let package = TempDir::new().unwrap();
     let pre_finalize =
         |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
-    let options = EngineExecutionOptions::default().with_execution_services(services);
+    let options = EngineExecutionConfig::default()
+        .with_execution_services(services)
+        .new_invocation();
     let retry_evidence = options.source_retry_evidence();
 
-    let error = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
-        &plan,
-        &resource,
-        package.path(),
-        &pre_finalize,
-        options,
-    ))
+    let error = block_on(
+        super::execute_to_package_with_segment_positions_and_pre_finalize(
+            &plan,
+            &resource,
+            package.path(),
+            &pre_finalize,
+            options,
+        ),
+    )
     .unwrap_err();
 
     assert_eq!(error.kind, cdf_kernel::ErrorKind::Data, "{error}");
@@ -6905,9 +6986,10 @@ fn execution_rejects_tampered_retry_schedule_before_source_contact() {
     let source = mock_compiled_source_plan(&resource, Some(fast_test_retry_policy()));
     resource.bind_compiled_source(&source);
     plan = plan.bind_compiled_source(&source).unwrap();
-    let forged_retry =
+    let mut forged_retry =
         cdf_runtime::CompiledSourceRetry::from_capabilities(&source.execution_capabilities)
             .unwrap();
+    forged_retry.as_mut().unwrap().policy.max_total_attempts += 1;
     plan.partition_schedule.as_mut().unwrap().admission.retry = forged_retry;
     plan.explain.partition_schedule = plan.partition_schedule.clone();
     let package = TempDir::new().unwrap();
@@ -6917,7 +6999,7 @@ fn execution_rejects_tampered_retry_schedule_before_source_contact() {
     assert!(
         error
             .message
-            .contains("differs from its compiled source execution plan"),
+            .contains("partition schedule differs from its scan or compiled source execution plan"),
         "{error}"
     );
     assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
@@ -7002,7 +7084,7 @@ fn scheduler_rejects_generation_change_after_retried_open() {
         &resource,
         package.path(),
         &pre_finalize,
-        EngineExecutionOptions::default().with_execution_services(services),
+        EngineExecutionConfig::default().with_execution_services(services),
     ))
     .unwrap_err();
 
@@ -7457,7 +7539,7 @@ fn fused_and_unfused_transform_modes_produce_identical_packages() {
         &resource,
         fused_dir.path(),
         &pre_finalize,
-        EngineExecutionOptions::default(),
+        EngineExecutionConfig::default(),
     ))
     .unwrap();
     let unfused = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
@@ -7465,7 +7547,7 @@ fn fused_and_unfused_transform_modes_produce_identical_packages() {
         &resource,
         unfused_dir.path(),
         &pre_finalize,
-        EngineExecutionOptions::default().with_unfused_transform_for_conformance(true),
+        EngineExecutionConfig::default().with_unfused_transform_for_conformance(true),
     ))
     .unwrap();
 
@@ -7506,7 +7588,7 @@ fn fused_transform_reserves_before_allocation_and_releases_after_persist() {
         &resource,
         output_dir.path(),
         &pre_finalize,
-        EngineExecutionOptions::default().with_execution_services(services.clone()),
+        EngineExecutionConfig::default().with_execution_services(services.clone()),
     ))
     .unwrap();
     let memory = services.memory().snapshot();
@@ -7523,7 +7605,7 @@ fn fused_transform_reserves_before_allocation_and_releases_after_persist() {
         &resource,
         failed_dir.path(),
         &pre_finalize,
-        EngineExecutionOptions::default().with_execution_services(tiny_services.clone()),
+        EngineExecutionConfig::default().with_execution_services(tiny_services.clone()),
     ))
     .unwrap_err();
     assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
@@ -7555,7 +7637,10 @@ fn contract_exec_writes_redacted_quarantine_artifact_and_keeps_accepted_rows() {
             source_generation: None,
             etag: None,
             object_version: None,
-            sha256: Some("sha256-pii-fixture".to_owned()),
+            sha256: Some(
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .to_owned(),
+            ),
         }],
     }));
     let resource = MockResource::tier_a(vec![batch]);
@@ -7770,7 +7855,10 @@ fn source_decode_quarantine_facts_fold_into_package_artifacts() {
             source_generation: None,
             etag: None,
             object_version: None,
-            sha256: Some("sha256-source-drift-fixture".to_owned()),
+            sha256: Some(
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    .to_owned(),
+            ),
         }],
     }));
     batch.header.pre_contract_quarantine = vec![PreContractQuarantineFact {
@@ -8223,6 +8311,7 @@ fn residual_multi_partition_decisions_share_verified_effective_schema_and_keep_i
         vec![EffectiveSchemaObservationEvidence::new(
             "input-0",
             physical_hash.clone(),
+            schema_observation_binding("input-0"),
         )],
     );
     let runtime = EffectiveSchemaRuntime::new(
@@ -8274,7 +8363,7 @@ fn residual_multi_partition_decisions_share_verified_effective_schema_and_keep_i
         &resource,
         managed_temp.path(),
         &pre_finalize,
-        EngineExecutionOptions::default().with_execution_services(services.clone()),
+        EngineExecutionConfig::default().with_execution_services(services.clone()),
     ))
     .unwrap();
     assert_eq!(managed.output.manifest.identity, plain.manifest.identity);
@@ -8740,7 +8829,7 @@ fn package_identity_is_invariant_to_source_batch_rechunking() {
     );
     assert_eq!(
         one_output.manifest.package_hash,
-        "sha256:ba199d2e1056183b72e74037e7cad6833b43a3a565d29358b1d3fc3f818f020d"
+        "sha256:423853b61a607518d8cd966d9f36599935b6768efab1e989211c8da11fcbfd78"
     );
 }
 
@@ -8836,7 +8925,7 @@ fn append_exact_row_dedup_compiles_and_drops_only_complete_duplicates() {
         &resource,
         spill_temp.path(),
         &pre_finalize,
-        EngineExecutionOptions::default().with_execution_services(services.clone()),
+        EngineExecutionConfig::default().with_execution_services(services.clone()),
     ))
     .unwrap();
 
@@ -9055,7 +9144,7 @@ fn phase_telemetry_is_additive_and_preserves_manifest_identity() {
         &resource,
         measured_temp.path(),
         &pre_finalize,
-        EngineExecutionOptions::default().with_phase_metrics(true),
+        EngineExecutionConfig::default().with_phase_metrics(true),
     ))
     .unwrap();
 
@@ -9115,7 +9204,7 @@ fn parallel_segment_encoding_is_identical_to_inline_canonical_registration() {
         &resource,
         parallel_dir.path(),
         &pre_finalize,
-        EngineExecutionOptions::default().with_execution_services(services.clone()),
+        EngineExecutionConfig::default().with_execution_services(services.clone()),
     ))
     .unwrap();
 
@@ -9201,7 +9290,7 @@ fn parallel_segment_frontier_failure_joins_workers_and_prevents_finalization() {
         &pre_finalize,
         &mut durable_segment,
         &mut stream_finalize,
-        EngineExecutionOptions::default().with_execution_services(services.clone()),
+        EngineExecutionConfig::default().with_execution_services(services.clone()),
     ))
     .unwrap_err();
 
@@ -9396,7 +9485,7 @@ struct MockResource {
     stall_after_batches: bool,
     tier_a_intent: cdf_kernel::CompiledScanIntent,
     compiled_source_plan: Arc<OnceLock<cdf_runtime::CompiledSourcePlan>>,
-    compiled_source_plan_hash: Arc<OnceLock<String>>,
+    compiled_source_plan_hash: Arc<OnceLock<cdf_kernel::CompiledSourcePlanHash>>,
 }
 
 #[derive(Clone)]
@@ -9552,21 +9641,20 @@ impl QueryableResource for DataFusionMockResource {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        Ok(ScanPlan {
-            plan_id: cdf_kernel::PlanId::new(format!(
+        Ok(ScanPlan::new(
+            cdf_kernel::PlanId::new(format!(
                 "df-plan-{}-{}",
                 request.resource_id.as_str(),
                 self.negotiate_count.load(Ordering::SeqCst)
             ))?,
-            request: request.clone(),
-            partitions,
-            planned_task_set: None,
+            request.clone(),
+            PartitionAuthority::Inline(partitions),
             pushed_predicates,
             unsupported_predicates,
-            estimated_rows: Some(6),
-            estimated_bytes: None,
-            delivery_guarantee: DeliveryGuarantee::EffectivelyOncePerKey,
-        })
+            Some(6),
+            None,
+            DeliveryGuarantee::EffectivelyOncePerKey,
+        ))
     }
 }
 
@@ -9722,7 +9810,7 @@ impl MockResource {
     }
 
     fn bind_compiled_source(&self, source: &cdf_runtime::CompiledSourcePlan) {
-        let hash = cdf_runtime::artifact_hash(source).unwrap();
+        let hash = source.compiled_source_plan_hash().unwrap();
         match self.compiled_source_plan.set(source.clone()) {
             Ok(()) => {}
             Err(source) => assert_eq!(
@@ -9751,7 +9839,7 @@ impl ResourceStream for StalledHeadResource {
         self.inner.schema()
     }
 
-    fn compiled_source_plan_hash(&self) -> Option<&str> {
+    fn compiled_source_plan_hash(&self) -> Option<&cdf_kernel::CompiledSourcePlanHash> {
         self.inner.compiled_source_plan_hash()
     }
 
@@ -9823,7 +9911,7 @@ impl ResourceStream for SkewedMockResource {
         self.inner.schema()
     }
 
-    fn compiled_source_plan_hash(&self) -> Option<&str> {
+    fn compiled_source_plan_hash(&self) -> Option<&cdf_kernel::CompiledSourcePlanHash> {
         self.inner.compiled_source_plan_hash()
     }
 
@@ -9914,8 +10002,8 @@ impl ResourceStream for MockResource {
         self.schema.clone()
     }
 
-    fn compiled_source_plan_hash(&self) -> Option<&str> {
-        self.compiled_source_plan_hash.get().map(String::as_str)
+    fn compiled_source_plan_hash(&self) -> Option<&cdf_kernel::CompiledSourcePlanHash> {
+        self.compiled_source_plan_hash.get()
     }
 
     fn plan_partitions(&self, _request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
@@ -9939,7 +10027,7 @@ impl ResourceStream for MockResource {
                 if self.effective_schema_runtime.is_some() {
                     metadata.insert(
                         PLAN_SCHEMA_OBSERVATION_BINDING_KEY.to_owned(),
-                        format!("binding-input-{index}"),
+                        schema_observation_binding(&format!("input-{index}")).to_string(),
                     );
                 }
                 Ok(PartitionPlan {
@@ -10121,8 +10209,9 @@ impl QueryableResource for MockResource {
                 pushed.fidelity = PushdownFidelity::Exact;
             }
         }
-        for partition in &mut plan.partitions {
-            partition.scan_intent.predicates = plan.pushed_predicates.clone();
+        let pushed_predicates = plan.pushed_predicates.clone();
+        for partition in plan.inline_partitions_mut().unwrap() {
+            partition.scan_intent.predicates = pushed_predicates.clone();
         }
         Ok(plan)
     }
@@ -10523,6 +10612,13 @@ fn bound_effective_schema_evidence(
     .unwrap()
 }
 
+fn schema_observation_binding(observation_id: &str) -> cdf_kernel::SchemaObservationBinding {
+    cdf_kernel::SchemaObservationBinding::new(
+        cdf_runtime::artifact_hash(&("engine-test-schema-observation", observation_id)).unwrap(),
+    )
+    .unwrap()
+}
+
 fn sample_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
@@ -10648,7 +10744,10 @@ fn batch_with_file_position() -> Batch {
             source_generation: None,
             etag: None,
             object_version: None,
-            sha256: Some("sha256-file".to_owned()),
+            sha256: Some(
+                "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    .to_owned(),
+            ),
         }],
     }));
     batch

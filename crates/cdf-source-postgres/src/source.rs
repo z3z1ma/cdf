@@ -11,8 +11,9 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_kernel::{
     BackpressureSupport, Batch, BatchId, BatchStream, CapabilitySupport, CdfError,
-    CompiledScanIntent, CursorPosition, CursorValue, DeliveryGuarantee, EstimateSupport,
-    Expression, ExpressionLiteral, FilterCapabilities, IncrementalShape, PartitionId,
+    CompiledScanIntent, CompiledSourcePlanHash, CursorPosition, CursorValue, DeliveryGuarantee,
+    EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, EstimateSupport, Expression,
+    ExpressionLiteral, FilterCapabilities, IncrementalShape, PartitionAuthority, PartitionId,
     PartitionPlan, PartitioningCapabilities, PayloadRetention, PlanId, PushdownFidelity,
     PushedPredicate, QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor,
     ResourceStream, Result, ScanPlan, ScanPredicate, ScanRequest, SchemaHash, SchemaSource,
@@ -58,7 +59,9 @@ pub struct PostgresTableResource {
     execution: Option<ExecutionServices>,
     egress: SourceEgressScope,
     type_policy_allowances: cdf_kernel::TypePolicyAllowances,
-    compiled_source_plan_hash: Option<String>,
+    compiled_source_plan_hash: Option<CompiledSourcePlanHash>,
+    effective_schema_runtime: Option<EffectiveSchemaRuntime>,
+    baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
 }
 
 #[derive(Clone)]
@@ -93,6 +96,8 @@ impl PostgresTableResource {
             egress,
             type_policy_allowances: Default::default(),
             compiled_source_plan_hash: None,
+            effective_schema_runtime: None,
+            baseline_observation_schema_catalog: Vec::new(),
         })
     }
 
@@ -118,7 +123,32 @@ impl PostgresTableResource {
             egress,
             type_policy_allowances: Default::default(),
             compiled_source_plan_hash: None,
+            effective_schema_runtime: None,
+            baseline_observation_schema_catalog: Vec::new(),
         })
+    }
+
+    pub(crate) fn from_compiled_plan_with_connection_resolver<F>(
+        compiled: &cdf_runtime::CompiledSourcePlan,
+        target: PostgresTarget,
+        egress: SourceEgressScope,
+        resolver: F,
+    ) -> Result<Self>
+    where
+        F: Fn(cdf_runtime::RunCancellation) -> Result<String> + Send + Sync + 'static,
+    {
+        let mut resource = Self::new_with_connection_resolver(
+            compiled.descriptor.clone(),
+            Arc::new(compiled.schema.clone()),
+            target,
+            egress,
+            resolver,
+        )?;
+        resource.compiled_source_plan_hash = Some(compiled.compiled_source_plan_hash()?);
+        resource.effective_schema_runtime = compiled.effective_schema_runtime.clone();
+        resource.baseline_observation_schema_catalog =
+            compiled.baseline_observation_schema_catalog.clone();
+        Ok(resource)
     }
 
     pub fn with_execution(mut self, execution: ExecutionServices) -> Result<Self> {
@@ -129,11 +159,6 @@ impl PostgresTableResource {
 
     pub fn with_type_policy(mut self, allowances: cdf_kernel::TypePolicyAllowances) -> Self {
         self.type_policy_allowances = allowances;
-        self
-    }
-
-    pub fn with_compiled_source_plan_hash(mut self, hash: String) -> Self {
-        self.compiled_source_plan_hash = Some(hash);
         self
     }
 
@@ -264,14 +289,48 @@ impl ResourceStream for PostgresTableResource {
         Arc::clone(&self.schema)
     }
 
-    fn compiled_source_plan_hash(&self) -> Option<&str> {
-        self.compiled_source_plan_hash.as_deref()
+    fn compiled_source_plan_hash(&self) -> Option<&CompiledSourcePlanHash> {
+        self.compiled_source_plan_hash.as_ref()
+    }
+
+    fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
+        self.effective_schema_runtime.as_ref()
+    }
+
+    fn baseline_observation_schema_catalog(&self) -> &[EffectiveSchemaCatalogEntry] {
+        &self.baseline_observation_schema_catalog
+    }
+
+    fn validate_runtime_dependencies(&self) -> Result<()> {
+        if self.execution.is_none() {
+            return Err(CdfError::contract(
+                "Postgres source execution requires injected execution services",
+            ));
+        }
+        let database_url = match &self.connection {
+            PostgresConnection::Resolved(database_url) => database_url.clone(),
+            PostgresConnection::Deferred(resolve) => resolve(RunCancellation::default())?,
+        };
+        if database_url.trim().is_empty() {
+            return Err(CdfError::auth(
+                "Postgres source connection string resolved to an empty value",
+            ));
+        }
+        self.egress.authorize(&database_url)
     }
 
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
         let mut partition =
             plan_postgres_table_partition(&self.descriptor, &self.schema, &self.target, request)?;
         partition.scan_intent = cdf_kernel::CompiledScanIntent::full_scan();
+        if let Some(runtime) = &self.effective_schema_runtime {
+            let observation_id = self.target.display_name();
+            cdf_kernel::bind_partition_schema_observation(
+                &mut partition,
+                runtime,
+                &observation_id,
+            )?;
+        }
         Ok(vec![partition])
     }
 
@@ -290,7 +349,21 @@ impl QueryableResource for PostgresTableResource {
     }
 
     fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
-        negotiate_postgres_table_scan(&self.descriptor, &self.schema, &self.target, request)
+        let mut scan =
+            negotiate_postgres_table_scan(&self.descriptor, &self.schema, &self.target, request)?;
+        if let Some(runtime) = &self.effective_schema_runtime {
+            let observation_id = self.target.display_name();
+            let partition = scan
+                .inline_partitions_mut()
+                .and_then(|partitions| partitions.first_mut())
+                .ok_or_else(|| {
+                    CdfError::internal(
+                        "Postgres negotiation omitted its single inline partition authority",
+                    )
+                })?;
+            cdf_kernel::bind_partition_schema_observation(partition, runtime, &observation_id)?;
+        }
+        Ok(scan)
     }
 }
 
@@ -394,19 +467,18 @@ pub fn negotiate_postgres_table_scan(
     let (pushed_predicates, unsupported_predicates) =
         classify_postgres_table_predicates(schema, &request.filters);
 
-    Ok(ScanPlan {
-        plan_id: PlanId::new(format!("postgres-scan-{}", descriptor.resource_id))?,
-        request: request.clone(),
-        partitions: vec![plan_postgres_table_partition(
+    Ok(ScanPlan::new(
+        PlanId::new(format!("postgres-scan-{}", descriptor.resource_id))?,
+        request.clone(),
+        PartitionAuthority::Inline(vec![plan_postgres_table_partition(
             descriptor, schema, target, request,
-        )?],
-        planned_task_set: None,
+        )?]),
         pushed_predicates,
         unsupported_predicates,
-        estimated_rows: None,
-        estimated_bytes: None,
-        delivery_guarantee: delivery_guarantee(descriptor),
-    })
+        None,
+        None,
+        delivery_guarantee(descriptor),
+    ))
 }
 
 pub fn classify_postgres_table_predicates(

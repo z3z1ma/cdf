@@ -46,7 +46,7 @@
       "content_sha256": "sha256:6e067c17cbedd52514cab6ea02c7b12bb079baff15bb86c85bf249a30f65717e",
       "provider_generation": "generation-7"
     },
-    "source_identity_hash": "sha256:9d2fee80ff41c076b75c9339ef5c2daa1c0991b13b095be2e9ed60c14c754b71",
+    "schema_observation_binding": "sha256:9d2fee80ff41c076b75c9339ef5c2daa1c0991b13b095be2e9ed60c14c754b71",
     "unit_authority_hash": "sha256:2626262626262626262626262626262626262626262626262626262626262626",
     "segment_authority_hash": "sha256:2727272727272727272727272727272727272727272727272727272727272727"
   },
@@ -210,5 +210,5 @@
     ],
     "maximum_artifact_bytes": 1073741824
   },
-  "task_sha256": "sha256:04c759030d33ed628c6fa2630faa377bedb116f11fa735f058f8345d631f02b3"
+  "task_sha256": "sha256:5c59f7712642ee710129741e7fc466775f65362dcf7e770c20d08ceca778907e"
 }

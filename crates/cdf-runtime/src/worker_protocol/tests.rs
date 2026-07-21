@@ -688,7 +688,8 @@ impl Fixture {
                 canonical_partition_ordinal: 3,
                 epoch_ordinal: Some(9),
                 partition_plan: partition_reference,
-                source_identity_hash: partition_source_identity_binding(&partition).unwrap(),
+                schema_observation_binding: partition_schema_observation_binding(&partition)
+                    .unwrap(),
                 unit_authority_hash,
                 segment_authority_hash,
             },

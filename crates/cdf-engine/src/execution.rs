@@ -58,10 +58,11 @@ use crate::{
     AdmittedEnginePartitionEvidence, CompiledSchemaAdmissionOutcome, CompiledSchemaAdmissionPlan,
     CompiledSchemaQuarantineEvidence, CompiledStreamAdmissionEvidence,
     EffectiveSchemaObservationCoercion, EffectiveSchemaPlanEvidence, EngineDrainEpoch,
-    EngineDrainEpochOutcome, EngineExecutionEvidence, EngineExecutionOptions, EnginePackageDraft,
-    EnginePlan, EnginePreviewLimits, EnginePreviewOutput, EngineRunOutput,
-    EngineRunOutputWithSegmentPositions, EngineSegmentPosition, EngineWorkerArtifactAuthority,
-    ExecutionProfile, LineageInputObservation, LineageSummary, PhysicalObservationEvidence,
+    EngineDrainEpochOutcome, EngineExecutionConfig, EngineExecutionEvidence,
+    EngineExecutionInvocation, EnginePackageDraft, EnginePlan, EnginePreviewLimits,
+    EnginePreviewOutput, EngineRunOutput, EngineRunOutputWithSegmentPositions,
+    EngineSegmentPosition, EngineWorkerArtifactAuthority, ExecutionProfile,
+    LineageInputObservation, LineageSummary, PhysicalObservationEvidence,
     SchemaQuarantineObservationEvidence, StandaloneExecutionHost,
     StreamAdmissionObservationEvidence,
     output_schema::canonicalize_effective_output_schema,
@@ -141,9 +142,11 @@ impl<'a> DrainEpochExecution<'a> {
     }
 }
 
-fn standalone_execution_options() -> Result<EngineExecutionOptions> {
+fn standalone_execution_options() -> Result<EngineExecutionInvocation> {
     let (_, services) = StandaloneExecutionHost::default_services(DEFAULT_PROCESS_BUDGET_BYTES)?;
-    Ok(EngineExecutionOptions::default().with_execution_services(services))
+    Ok(EngineExecutionConfig::default()
+        .with_execution_services(services)
+        .new_invocation())
 }
 
 fn package_builder_resources(
@@ -389,7 +392,7 @@ where
         .as_ref()
         .ok_or_else(|| CdfError::contract("preview requires a compiled partition schedule"))?
         .partition_count();
-    let external_tasks = plan.scan.planned_task_set.is_some();
+    let external_tasks = plan.scan.external_task_set().is_some();
     let payload_eligible_partition_count = if external_tasks {
         let mut payload_count = 0_u64;
         let mut partitions = executable_partition_plans(plan, resource)?;
@@ -398,7 +401,7 @@ where
                 CdfError::data("preview external partition ordinal exceeds usize")
             })?)?;
             let disposition = effective_schema_evidence
-                .map(|evidence| partition_schema_disposition(executable.plan(), evidence))
+                .map(|evidence| partition_schema_disposition(executable.plan(), evidence, true))
                 .transpose()?;
             if let Some(PartitionSchemaDisposition::Quarantined(quarantine)) = disposition {
                 required_preview_attestation(
@@ -430,7 +433,7 @@ where
                     CdfError::data("preview external partition ordinal exceeds usize")
                 })?)?;
                 let disposition = effective_schema_evidence
-                    .map(|evidence| partition_schema_disposition(executable.plan(), evidence))
+                    .map(|evidence| partition_schema_disposition(executable.plan(), evidence, true))
                     .transpose()?;
                 if matches!(
                     disposition,
@@ -477,9 +480,13 @@ where
         Some((payload_count, selection))
     } else {
         let mut location_counts = BTreeMap::<String, usize>::new();
-        for partition in &plan.scan.partitions {
+        for partition in plan
+            .scan
+            .inline_partitions()
+            .ok_or_else(|| CdfError::contract("inline preview authority is unavailable"))?
+        {
             let disposition = effective_schema_evidence
-                .map(|evidence| partition_schema_disposition(partition, evidence))
+                .map(|evidence| partition_schema_disposition(partition, evidence, false))
                 .transpose()?;
             match disposition {
                 Some(PartitionSchemaDisposition::Quarantined(quarantine)) => {
@@ -956,7 +963,7 @@ fn preview_partition_identity(
             (Some(etag.clone()), strength)
         } else if file.object_version.is_some() || file.source_generation.is_some() {
             (
-                Some(cdf_kernel::partition_source_identity_binding(partition)?),
+                Some(cdf_kernel::partition_schema_observation_binding(partition)?.to_string()),
                 StratifiedHashIdentityStrength::BoundedObservation,
             )
         } else {
@@ -964,7 +971,7 @@ fn preview_partition_identity(
         }
     } else {
         (
-            Some(cdf_kernel::partition_source_identity_binding(partition)?),
+            Some(cdf_kernel::partition_schema_observation_binding(partition)?.to_string()),
             StratifiedHashIdentityStrength::BoundedObservation,
         )
     };
@@ -2343,11 +2350,7 @@ fn record_observation_schema_coercion(
         observation_id,
         physical_observation_hash,
         coercion_plan,
-        crate::StreamAdmissionCompletion::Partial {
-            attempted_position: None,
-            observed_rows: 0,
-            partition_binding: String::new(),
-        },
+        crate::StreamAdmissionCompletion::Pending,
     )?;
     if let Some(existing) = evidence.get(observation_id) {
         if existing.observation_id != artifact.observation_id
@@ -2495,7 +2498,7 @@ pub async fn execute_to_package_with_segment_positions_and_pre_finalize<R>(
     resource: &R,
     package_dir: impl AsRef<Path>,
     pre_finalize: &PackagePreFinalizeHook<'_>,
-    options: EngineExecutionOptions,
+    options: EngineExecutionInvocation,
 ) -> Result<EngineRunOutputWithSegmentPositions>
 where
     R: ResourceStream + ?Sized,
@@ -2523,7 +2526,7 @@ pub async fn execute_to_package_with_streaming_hooks<'a, R>(
     pre_finalize: &PackagePreFinalizeHook<'_>,
     durable_segment: &'a mut DurableSegmentHook<'a>,
     stream_finalize: &'a mut StreamingFinalizeHook<'a>,
-    options: EngineExecutionOptions,
+    options: EngineExecutionInvocation,
 ) -> Result<EngineRunOutputWithSegmentPositions>
 where
     R: ResourceStream + ?Sized,
@@ -2550,7 +2553,7 @@ pub async fn execute_drain_epoch_with_hooks<'a, R>(
     package_dir: impl AsRef<Path>,
     pre_finalize: &PackagePreFinalizeHook<'_>,
     epoch: DrainEpochExecution<'a>,
-    options: EngineExecutionOptions,
+    options: EngineExecutionInvocation,
 ) -> Result<EngineDrainEpochOutcome>
 where
     R: ResourceStream + ?Sized,
@@ -3142,12 +3145,15 @@ fn executable_partition_plans<R>(
 where
     R: ResourceStream + ?Sized,
 {
-    match &plan.scan.planned_task_set {
+    match plan.scan.external_task_set() {
         Some(reference) => Ok(ExecutablePartitionPlans::External(
             resource.planned_partition_reader(reference)?,
         )),
         None => Ok(ExecutablePartitionPlans::Inline(
-            plan.scan.partitions.clone(),
+            plan.scan
+                .inline_partitions()
+                .ok_or_else(|| CdfError::contract("inline partition authority is unavailable"))?
+                .to_vec(),
         )),
     }
 }
@@ -3163,10 +3169,18 @@ fn source_partition_opener<'a, R>(
 where
     R: ResourceStream + ?Sized,
 {
+    let external_task_identity_authority =
+        matches!(partitions, ExecutablePartitionPlans::External(_));
     Box::new(move |ordinal, cancellation| {
         let partition = partitions.next(ordinal)?;
         let terminal = effective_schema_evidence
-            .map(|evidence| partition_schema_disposition(partition.plan(), evidence))
+            .map(|evidence| {
+                partition_schema_disposition(
+                    partition.plan(),
+                    evidence,
+                    external_task_identity_authority,
+                )
+            })
             .transpose()?
             .is_some_and(|disposition| {
                 matches!(disposition, PartitionSchemaDisposition::Quarantined(_))
@@ -3217,9 +3231,15 @@ fn source_frontier_batch_bound(plan: &EnginePlan, partition_count: usize) -> Res
     Ok(maximum_batch_bytes)
 }
 
-pub(crate) fn partition_open_jobs(plan: &EnginePlan, options: &EngineExecutionOptions) -> usize {
+pub(crate) fn partition_open_jobs(plan: &EnginePlan, options: &EngineExecutionInvocation) -> usize {
     let partition_count = plan.partition_schedule.as_ref().map_or_else(
-        || plan.scan.partitions.len(),
+        || {
+            plan.scan
+                .partition_count()
+                .ok()
+                .and_then(|count| usize::try_from(count).ok())
+                .unwrap_or(usize::MAX)
+        },
         |schedule| usize::try_from(schedule.partition_count()).unwrap_or(usize::MAX),
     );
     if partition_count <= 1 {
@@ -3260,7 +3280,7 @@ async fn execute_to_package_inner<'a, R>(
     stream_finalize: Option<&'a mut StreamingFinalizeHook<'a>>,
     late_data_carryover_input: Vec<LateDataCarryoverInput>,
     mut drain_controller: Option<&mut cdf_runtime::DrainEpochController>,
-    options: EngineExecutionOptions,
+    options: EngineExecutionInvocation,
 ) -> Result<PackageExecutionOutcome>
 where
     R: ResourceStream + ?Sized,
@@ -3531,7 +3551,8 @@ where
             Some(cdf_runtime::PartitionWatermarkTracker::new_with_state(
                 &policy.watermark,
                 plan.scan
-                    .partitions
+                    .inline_partitions()
+                    .unwrap_or_default()
                     .iter()
                     .map(|partition| &partition.partition_id),
                 drain_clock.monotonic_milliseconds(options.services.as_ref()),
@@ -3559,7 +3580,7 @@ where
         drain_controller
             .as_deref()
             .and_then(cdf_runtime::DrainEpochController::committed_source_continuation),
-        &plan.scan.partitions,
+        plan.scan.inline_partitions().unwrap_or_default(),
     )?;
     let mut carryover_progress_observed = false;
 
@@ -3584,7 +3605,7 @@ where
                 "late-data carryover requires the receipt-gated frontier that produced it",
             )
         })?;
-        let carryover_partition_ordinal = u32::try_from(plan.scan.partitions.len())
+        let carryover_partition_ordinal = u32::try_from(planned_partition_count)
             .map_err(|_| CdfError::data("late-data carryover partition ordinal exceeds u32"))?;
         let mut carryover_assembler = crate::CanonicalSegmentAssembler::new(
             segmentation_policy.clone(),
@@ -3836,6 +3857,11 @@ where
         let partition_ordinal_usize = open_metadata.ordinal;
         let executable_partition = open_metadata.partition;
         let partition = executable_partition.plan().clone();
+        if plan.scan.external_task_set().is_some()
+            && let Some(watermarks) = partition_watermarks.as_mut()
+        {
+            watermarks.register_partition(&partition.partition_id)?;
+        }
         let open_evidence = open_metadata.evidence;
         let partition_ordinal = u32::try_from(partition_ordinal_usize)
             .map_err(|_| CdfError::data("partition ordinal exceeds u32"))?;
@@ -3843,7 +3869,13 @@ where
         let partition_drain_batch_frontiers_enabled =
             drain_batch_frontiers_enabled && partition.planned_file()?.is_none();
         let current_schema_disposition = effective_schema_evidence
-            .map(|evidence| partition_schema_disposition(&partition, evidence))
+            .map(|evidence| {
+                partition_schema_disposition(
+                    &partition,
+                    evidence,
+                    plan.scan.external_task_set().is_some(),
+                )
+            })
             .transpose()?;
         if let Some(PartitionSchemaDisposition::Quarantined(quarantine)) =
             &current_schema_disposition
@@ -4749,8 +4781,8 @@ where
             } else if source_poll_interrupted {
                 None
             } else {
-                opened_partition.terminate_partial().await?;
-                None
+                let (_, completion) = opened_partition.terminate_partial().await?;
+                completion
             };
             if let Some(source_io) = completion
                 .as_ref()
@@ -4866,6 +4898,8 @@ where
                 });
             let source_position = aggregate_processed_partition_positions(
                 &observation_id,
+                resource.descriptor(),
+                resource_schema.as_ref(),
                 observed_partition_position.as_ref(),
                 terminal_position,
             )?;
@@ -4953,13 +4987,18 @@ where
             } else {
                 Some(aggregate_processed_partition_positions(
                     &observation_id,
+                    resource.descriptor(),
+                    resource_schema.as_ref(),
                     observed_partition_position.as_ref(),
                     fallback_position,
                 )?)
             };
+            let partition_binding =
+                cdf_kernel::partition_schema_observation_binding(&partition)?;
             lineage.input_observations.push(LineageInputObservation {
                 observation_id: observation_id.clone(),
                 partition_id: partition.partition_id.clone(),
+                partition_binding: partition_binding.clone(),
                 observed_rows: partition_observed_rows,
                 output_position: source_position.clone(),
             });
@@ -4979,7 +5018,10 @@ where
                         ))
                     })?;
                 if fully_processed || partition_epoch_closed {
-                    evidence.bind_source_position(source_position.clone())?;
+                    evidence.bind_source_position(
+                        source_position.clone(),
+                        partition_binding.clone(),
+                    )?;
                     processed_observations.push(ProcessedObservationPosition::new(
                         observation_id,
                         ProcessedObservationOutcome::Admitted,
@@ -4989,7 +5031,7 @@ where
                     evidence.bind_partial_attempt(
                         source_position,
                         partition_observed_rows,
-                        cdf_kernel::partition_source_identity_binding(&partition)?,
+                        partition_binding.clone(),
                     )?;
                 }
             } else {
@@ -5001,9 +5043,7 @@ where
                         ))
                     })?;
                 if fully_processed {
-                    evidence.bind_unpositioned_completion(
-                        cdf_kernel::partition_source_identity_binding(&partition)?,
-                    )?;
+                    evidence.bind_unpositioned_completion(partition_binding)?;
                 } else {
                     return Err(CdfError::data(format!(
                         "partial schema observation {observation_id:?} requires exact generation and slice-position authority"
@@ -5686,14 +5726,24 @@ fn enrich_segment_positions_with_completion(
         .iter_mut()
         .filter(|position| position.partition_ordinal == partition_ordinal)
     {
-        let Some(existing) = &mut position.output_position else {
-            return Err(CdfError::data(format!(
-                "segment {} for partition `{}` omitted source-position evidence required by terminal attestation",
-                position.segment_id.as_str(),
-                partition.partition_id.as_str()
-            )));
-        };
-        *existing = merge_terminal_position_evidence(existing, completion)?;
+        match &mut position.output_position {
+            Some(existing) => {
+                *existing = merge_terminal_position_evidence(existing, completion)?;
+            }
+            None if completion.is_batch_slice_invariant() => {
+                // Some indivisible units cannot prove checkpoint-safe identity until EOF (for
+                // example weakly versioned HTTP files gaining a content hash). Their terminal
+                // position applies exactly to every segment produced by that unit.
+                position.output_position = Some(completion.clone());
+            }
+            None => {
+                return Err(CdfError::data(format!(
+                    "segment {} for partition `{}` omitted slice-position evidence required by its non-invariant terminal attestation",
+                    position.segment_id.as_str(),
+                    partition.partition_id.as_str()
+                )));
+            }
+        }
     }
     // A fully consumed partition may legitimately produce no output segment after filtering,
     // quarantine, or package-wide dedup. Its processed/checkpoint evidence still retains the
@@ -5703,11 +5753,13 @@ fn enrich_segment_positions_with_completion(
 
 fn aggregate_processed_partition_positions(
     observation_id: &str,
+    descriptor: &cdf_kernel::ResourceDescriptor,
+    schema: &Schema,
     observed: Option<&SourcePosition>,
     attested: Option<SourcePosition>,
 ) -> Result<SourcePosition> {
     let observed = observed.cloned();
-    match (observed, attested) {
+    let raw = match (observed, attested) {
         (Some(observed), Some(attested)) => {
             merge_terminal_position_evidence(&observed, &attested).map_err(|error| {
                 CdfError::data(format!(
@@ -5720,7 +5772,12 @@ fn aggregate_processed_partition_positions(
         (None, None) => Err(CdfError::data(format!(
             "processed observation {observation_id:?} completed without source-position evidence"
         ))),
-    }
+    }?;
+    aggregate_resource_output_position(descriptor, schema, None, &[raw]).map_err(|error| {
+        CdfError::data(format!(
+            "processed observation {observation_id:?} cannot close its source-position evidence: {error}"
+        ))
+    })
 }
 
 fn accumulate_processed_partition_position(
@@ -5736,7 +5793,7 @@ fn accumulate_processed_partition_position(
         return Ok(());
     };
     *accumulated = Some(
-        aggregate_resource_output_position(
+        aggregate_resource_closed_output_position(
             descriptor,
             schema,
             None,
@@ -5844,8 +5901,13 @@ fn observe_drain_batch_frontier(
         return Ok(None);
     };
     let observation_id = cdf_kernel::partition_schema_observation_id(partition);
-    let partition_position =
-        aggregate_processed_partition_positions(observation_id, observed_partition_position, None)?;
+    let partition_position = aggregate_processed_partition_positions(
+        observation_id,
+        descriptor,
+        schema,
+        observed_partition_position,
+        None,
+    )?;
     record_drain_partition_position(partition_positions, partition, partition_position.clone())?;
     let mut positions = processed
         .iter()
@@ -7247,8 +7309,8 @@ pub fn assemble_isolated_worker_package(
             evidence.canonical_partition_ordinal != u32::try_from(ordinal).unwrap_or(u32::MAX)
                 || plan
                     .scan
-                    .partitions
-                    .get(ordinal)
+                    .inline_partitions()
+                    .and_then(|partitions| partitions.get(ordinal))
                     .is_none_or(|partition| partition.partition_id != evidence.partition_id)
         })
     {
@@ -7706,8 +7768,8 @@ where
             "serialized discovery executor budget does not match the execution resource",
         ));
     }
-    for partition in &plan.scan.partitions {
-        partition_schema_disposition(partition, evidence)?;
+    for partition in plan.scan.inline_partitions().unwrap_or_default() {
+        partition_schema_disposition(partition, evidence, false)?;
     }
     Ok(Some(evidence))
 }
@@ -7729,6 +7791,7 @@ fn validate_plan_metadata(
 fn partition_schema_disposition(
     partition: &cdf_kernel::PartitionPlan,
     evidence: &EffectiveSchemaPlanEvidence,
+    external_task_identity_authority: bool,
 ) -> Result<PartitionSchemaDisposition> {
     let observation_id = cdf_kernel::partition_schema_observation_id(partition);
     let expected_binding = evidence.observation_bindings.get(observation_id);
@@ -7736,7 +7799,7 @@ fn partition_schema_disposition(
         validate_plan_metadata(
             partition,
             PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
-            expected_binding,
+            expected_binding.as_str(),
         )?;
     } else if evidence.authority.observation(observation_id).is_some()
         || evidence
@@ -7748,15 +7811,20 @@ fn partition_schema_disposition(
             "effective-schema evidence omitted source identity binding for known observation {observation_id:?}"
         )));
     } else {
-        if partition.metadata.keys().any(|key| {
-            matches!(
-                key.as_str(),
-                PLAN_SCHEMA_OBSERVATION_BINDING_KEY | PLAN_PHYSICAL_SCHEMA_HASH_KEY
-            )
-        }) {
+        if partition
+            .metadata
+            .contains_key(PLAN_PHYSICAL_SCHEMA_HASH_KEY)
+            || (!external_task_identity_authority
+                && partition
+                    .metadata
+                    .contains_key(PLAN_SCHEMA_OBSERVATION_BINDING_KEY))
+        {
             return Err(CdfError::data(format!(
                 "unobserved schema candidate {observation_id:?} carries spoofed pre-observation evidence"
             )));
+        }
+        if external_task_identity_authority {
+            cdf_kernel::partition_schema_observation_binding(partition)?;
         }
         return Ok(PartitionSchemaDisposition::Unobserved);
     }
@@ -7766,11 +7834,17 @@ fn partition_schema_disposition(
         .ok()
         .map(|index| &evidence.terminal_quarantines[index])
     {
-        validate_plan_metadata(
-            partition,
-            PLAN_PHYSICAL_SCHEMA_HASH_KEY,
-            quarantine.physical_schema_hash().as_str(),
-        )?;
+        if !external_task_identity_authority
+            || partition
+                .metadata
+                .contains_key(PLAN_PHYSICAL_SCHEMA_HASH_KEY)
+        {
+            validate_plan_metadata(
+                partition,
+                PLAN_PHYSICAL_SCHEMA_HASH_KEY,
+                quarantine.physical_schema_hash().as_str(),
+            )?;
+        }
         return Ok(PartitionSchemaDisposition::Quarantined(quarantine.clone()));
     }
     let observation = evidence
@@ -7789,11 +7863,17 @@ fn partition_schema_disposition(
         }
         return Ok(PartitionSchemaDisposition::Unobserved);
     };
-    validate_plan_metadata(
-        partition,
-        PLAN_PHYSICAL_SCHEMA_HASH_KEY,
-        observation.physical_schema_hash.as_str(),
-    )?;
+    if !external_task_identity_authority
+        || partition
+            .metadata
+            .contains_key(PLAN_PHYSICAL_SCHEMA_HASH_KEY)
+    {
+        validate_plan_metadata(
+            partition,
+            PLAN_PHYSICAL_SCHEMA_HASH_KEY,
+            observation.physical_schema_hash.as_str(),
+        )?;
+    }
     Ok(PartitionSchemaDisposition::Admitted(observation.clone()))
 }
 

@@ -179,13 +179,13 @@ fn committed_before_checkpoint_recovers_without_source_file() {
     assert!(destination.verify_receipt(&receipt).unwrap().verified);
     let snapshot_before = destination.read_mirror_snapshot_read_only().unwrap();
     let store = SqliteCheckpointStore::open(&spec.state_store_path).unwrap();
-    assert_single_file_scope_mirror(&snapshot_before);
+    assert_file_manifest_resource_scope_mirror(&snapshot_before);
     let history = store
         .history(
             &spec.pipeline_id,
             &ResourceId::new(LIVE_LOCAL_FILE_V1_RESOURCE_ID).unwrap(),
             &ScopeKey::File {
-                path: "events.ndjson".to_owned(),
+                path: "*".to_owned(),
             },
         )
         .unwrap();
@@ -336,7 +336,9 @@ fn negative_self_tests_catch_live_run_harness_gaps() {
     });
 }
 
-fn assert_single_file_scope_mirror(snapshot: &crate::package_replay::DuckDbMirrorSnapshot) {
+fn assert_file_manifest_resource_scope_mirror(
+    snapshot: &crate::package_replay::DuckDbMirrorSnapshot,
+) {
     assert_eq!(snapshot.state.len(), 1);
     let scope: ScopeKey = serde_json::from_str(
         snapshot.state[0]
@@ -348,7 +350,7 @@ fn assert_single_file_scope_mirror(snapshot: &crate::package_replay::DuckDbMirro
     assert_eq!(
         scope,
         ScopeKey::File {
-            path: "events.ndjson".to_owned()
+            path: "*".to_owned()
         }
     );
 }

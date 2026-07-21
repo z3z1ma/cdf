@@ -209,9 +209,8 @@ impl SourceDriver for PostgresSourceDriver {
         let connection = SecretUri::new(physical.connection)?;
         let target = PostgresTarget::parse(&physical.target)?;
         let secret_provider = Arc::clone(context.secret_provider());
-        let resource = PostgresTableResource::new_with_connection_resolver(
-            plan.descriptor.clone(),
-            Arc::new(plan.schema.clone()),
+        let resource = PostgresTableResource::from_compiled_plan_with_connection_resolver(
+            plan,
             target,
             context.egress_scope(&plan.driver.driver_id),
             move |cancellation| {
@@ -223,7 +222,6 @@ impl SourceDriver for PostgresSourceDriver {
             },
         )?
         .with_type_policy(plan.type_policy_allowances)
-        .with_compiled_source_plan_hash(cdf_runtime::artifact_hash(plan)?)
         .with_execution(context.execution().clone())?;
         Ok(Arc::new(resource))
     }

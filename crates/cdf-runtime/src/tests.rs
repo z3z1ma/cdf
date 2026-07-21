@@ -3,11 +3,11 @@ use arrow_schema::{DataType, Field};
 use cdf_kernel::{
     BatchStream, CommitCounts, ConcurrencyLimit, DeliveryGuarantee, DestinationId,
     EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, ErrorKind, IdempotencySupport,
-    IdempotencyToken, IdentifierRules, MigrationRecord, PackageHash, PartitionId, PartitionPlan,
-    PlanId, QueryableResource, ReceiptId, ResourceCapabilities, ResourceDescriptor, ResourceId,
-    ResourceStream, ScanPlan, ScanRequest, SchemaHash, SchemaSource, ScopeKey, SegmentAck,
-    SegmentId, TargetName, TransactionMetadata, TransactionSupport, TrustLevel, TypeMapping,
-    TypePolicyAllowances, VerifyClause,
+    IdempotencyToken, IdentifierRules, MigrationRecord, PackageHash, PartitionAuthority,
+    PartitionId, PartitionPlan, PlanId, QueryableResource, ReceiptId, ResourceCapabilities,
+    ResourceDescriptor, ResourceId, ResourceStream, ScanPlan, ScanRequest, SchemaHash,
+    SchemaSource, ScopeKey, SegmentAck, SegmentId, TargetName, TransactionMetadata,
+    TransactionSupport, TrustLevel, TypeMapping, TypePolicyAllowances, VerifyClause,
 };
 use std::{
     collections::BTreeMap,
@@ -981,6 +981,8 @@ struct MockSourceDriver {
     option_schema: serde_json::Value,
     tamper_baseline: bool,
     tamper_resolve: bool,
+    tamper_resolved_runtime: bool,
+    omit_partition_binding: bool,
 }
 
 impl SourceDriver for MockSourceDriver {
@@ -1099,8 +1101,14 @@ impl SourceDriver for MockSourceDriver {
             schema,
             capabilities: plan.resource_capabilities.clone(),
             type_policy_allowances: plan.type_policy_allowances,
-            effective_schema_runtime: plan.effective_schema_runtime.clone(),
-            compiled_source_plan_hash: artifact_hash(plan)?,
+            effective_schema_runtime: if self.tamper_resolved_runtime {
+                None
+            } else {
+                plan.effective_schema_runtime.clone()
+            },
+            baseline_observation_schema_catalog: plan.baseline_observation_schema_catalog.clone(),
+            compiled_source_plan_hash: plan.compiled_source_plan_hash()?,
+            omit_partition_binding: self.omit_partition_binding,
         }))
     }
 }
@@ -1160,7 +1168,9 @@ struct MockSourceResource {
     capabilities: ResourceCapabilities,
     type_policy_allowances: TypePolicyAllowances,
     effective_schema_runtime: Option<EffectiveSchemaRuntime>,
-    compiled_source_plan_hash: String,
+    baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
+    compiled_source_plan_hash: cdf_kernel::CompiledSourcePlanHash,
+    omit_partition_binding: bool,
 }
 
 impl ResourceStream for MockSourceResource {
@@ -1172,7 +1182,7 @@ impl ResourceStream for MockSourceResource {
         Arc::clone(&self.schema)
     }
 
-    fn compiled_source_plan_hash(&self) -> Option<&str> {
+    fn compiled_source_plan_hash(&self) -> Option<&cdf_kernel::CompiledSourcePlanHash> {
         Some(&self.compiled_source_plan_hash)
     }
 
@@ -1180,12 +1190,16 @@ impl ResourceStream for MockSourceResource {
         self.effective_schema_runtime.as_ref()
     }
 
+    fn baseline_observation_schema_catalog(&self) -> &[EffectiveSchemaCatalogEntry] {
+        &self.baseline_observation_schema_catalog
+    }
+
     fn type_policy_allowances(&self) -> TypePolicyAllowances {
         self.type_policy_allowances
     }
 
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
-        Ok(vec![PartitionPlan {
+        let mut partition = PartitionPlan {
             partition_id: PartitionId::new("mock-000001")?,
             scope: request.scope.clone(),
             planned_position: None,
@@ -1193,7 +1207,17 @@ impl ResourceStream for MockSourceResource {
             scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
             retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
             metadata: BTreeMap::new(),
-        }])
+        };
+        if !self.omit_partition_binding
+            && let Some(runtime) = &self.effective_schema_runtime
+        {
+            cdf_kernel::bind_partition_schema_observation(
+                &mut partition,
+                runtime,
+                self.descriptor.resource_id.as_str(),
+            )?;
+        }
+        Ok(vec![partition])
     }
 
     fn open(&self, _partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
@@ -1210,17 +1234,16 @@ impl QueryableResource for MockSourceResource {
     }
 
     fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
-        Ok(ScanPlan {
-            plan_id: PlanId::new("mock-source-plan")?,
-            request: request.clone(),
-            partitions: self.plan_partitions(request)?,
-            planned_task_set: None,
-            pushed_predicates: Vec::new(),
-            unsupported_predicates: request.filters.clone(),
-            estimated_rows: Some(0),
-            estimated_bytes: Some(0),
-            delivery_guarantee: DeliveryGuarantee::AtLeastOnceDuplicateRisk,
-        })
+        Ok(ScanPlan::new(
+            PlanId::new("mock-source-plan")?,
+            request.clone(),
+            PartitionAuthority::Inline(self.plan_partitions(request)?),
+            Vec::new(),
+            request.filters.clone(),
+            Some(0),
+            Some(0),
+            DeliveryGuarantee::AtLeastOnceDuplicateRisk,
+        ))
     }
 }
 
@@ -1313,6 +1336,8 @@ fn source_registry_add_hook_selects_one_driver_and_rejects_ambiguity() {
         option_schema: option_schema.clone(),
         tamper_baseline: false,
         tamper_resolve: false,
+        tamper_resolved_runtime: false,
+        omit_partition_binding: false,
     };
     let request = SourceAddRequest {
         source_name: "mock".to_owned(),
@@ -1358,6 +1383,8 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
             option_schema: option_schema.clone(),
             tamper_baseline: false,
             tamper_resolve: false,
+            tamper_resolved_runtime: false,
+            omit_partition_binding: false,
         })
         .unwrap();
     let resource_descriptor = ResourceDescriptor {
@@ -1456,6 +1483,8 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
             option_schema: option_schema.clone(),
             tamper_baseline: true,
             tamper_resolve: false,
+            tamper_resolved_runtime: false,
+            omit_partition_binding: false,
         })
         .unwrap();
     assert!(
@@ -1521,6 +1550,21 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
         serde_json::from_slice::<CompiledSourcePlan>(&encoded).unwrap(),
         plan
     );
+    let mut malformed_physical_identity = serde_json::to_value(&plan).unwrap();
+    malformed_physical_identity["physical_plan_hash"] = serde_json::json!("not-a-hash");
+    assert!(serde_json::from_value::<CompiledSourcePlan>(malformed_physical_identity).is_err());
+    let mut forged_physical_identity = serde_json::to_value(&plan).unwrap();
+    forged_physical_identity["physical_plan_hash"] =
+        serde_json::json!(format!("sha256:{}", "f".repeat(64)));
+    let forged_physical_identity: CompiledSourcePlan =
+        serde_json::from_value(forged_physical_identity).unwrap();
+    assert!(
+        forged_physical_identity
+            .validate()
+            .unwrap_err()
+            .message
+            .contains("physical plan hash does not match")
+    );
     let mut invalid_descriptor = serde_json::to_value(&plan).unwrap();
     invalid_descriptor["descriptor"]["resource_id"] = serde_json::json!("");
     let invalid_descriptor: CompiledSourcePlan =
@@ -1566,7 +1610,10 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
     ] {
         let mut credential_uri = plan.clone();
         credential_uri.physical_plan = serde_json::json!({"endpoint": unsafe_uri});
-        credential_uri.physical_plan_hash = artifact_hash(&credential_uri.physical_plan).unwrap();
+        credential_uri.physical_plan_hash = cdf_kernel::PhysicalSourcePlanHash::new(
+            artifact_hash(&credential_uri.physical_plan).unwrap(),
+        )
+        .unwrap();
         let error = credential_uri.validate().unwrap_err();
         assert!(
             error
@@ -1578,7 +1625,10 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
 
     let mut malformed_uri = plan.clone();
     malformed_uri.physical_plan = serde_json::json!({"endpoint": "https:///items"});
-    malformed_uri.physical_plan_hash = artifact_hash(&malformed_uri.physical_plan).unwrap();
+    malformed_uri.physical_plan_hash = cdf_kernel::PhysicalSourcePlanHash::new(
+        artifact_hash(&malformed_uri.physical_plan).unwrap(),
+    )
+    .unwrap();
     assert!(
         malformed_uri
             .validate()
@@ -1589,12 +1639,17 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
 
     let mut local_file_uri = plan.clone();
     local_file_uri.physical_plan = serde_json::json!({"endpoint": "file:///tmp/events.parquet"});
-    local_file_uri.physical_plan_hash = artifact_hash(&local_file_uri.physical_plan).unwrap();
+    local_file_uri.physical_plan_hash = cdf_kernel::PhysicalSourcePlanHash::new(
+        artifact_hash(&local_file_uri.physical_plan).unwrap(),
+    )
+    .unwrap();
     local_file_uri.validate().unwrap();
 
     let mut raw_secret = plan.clone();
     raw_secret.physical_plan = serde_json::json!({"api_key": "plain-text-secret"});
-    raw_secret.physical_plan_hash = artifact_hash(&raw_secret.physical_plan).unwrap();
+    raw_secret.physical_plan_hash =
+        cdf_kernel::PhysicalSourcePlanHash::new(artifact_hash(&raw_secret.physical_plan).unwrap())
+            .unwrap();
     let error = raw_secret.validate().unwrap_err();
     assert!(error.message.contains("must contain a secret:// reference"));
 
@@ -1692,6 +1747,8 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
             option_schema: option_schema.clone(),
             tamper_baseline: false,
             tamper_resolve: true,
+            tamper_resolved_runtime: false,
+            omit_partition_binding: false,
         })
         .unwrap();
     let error = match hostile_registry.resolve(&plan, &context) {
@@ -1702,6 +1759,88 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
         error
             .message
             .contains("resolved executable authority that differs from its compiled plan")
+    );
+
+    let physical_schema_hash = cdf_kernel::canonical_arrow_schema_hash(&plan.schema).unwrap();
+    let observation_binding = cdf_kernel::SchemaObservationBinding::new(
+        artifact_hash(&serde_json::json!({"mock_partition": "mock.events"})).unwrap(),
+    )
+    .unwrap();
+    let runtime_evidence = cdf_kernel::EffectiveSchemaEvidence::new(
+        plan.descriptor.schema_source.baseline_reference().unwrap(),
+        physical_schema_hash.clone(),
+        cdf_kernel::DiscoveryManifestReference {
+            manifest_hash: cdf_kernel::DiscoveryManifestHash::new("mock-runtime-manifest").unwrap(),
+            path: ".cdf/discovery/mock-runtime.json".to_owned(),
+        },
+        vec![cdf_kernel::EffectiveSchemaObservationEvidence::new(
+            plan.descriptor.resource_id.as_str(),
+            physical_schema_hash,
+            observation_binding,
+        )],
+    )
+    .unwrap();
+    let effective_runtime =
+        EffectiveSchemaRuntime::new(runtime_evidence, vec![baseline_observation.clone()]).unwrap();
+    let runtime_bound_plan = plan
+        .clone()
+        .bind_schema_authority(
+            &plan.descriptor,
+            &plan.schema,
+            Some(effective_runtime),
+            vec![baseline_observation.clone()],
+        )
+        .unwrap();
+
+    let mut runtime_tampering_registry = SourceRegistry::new();
+    runtime_tampering_registry
+        .register(MockSourceDriver {
+            descriptor: descriptor.clone(),
+            option_schema: option_schema.clone(),
+            tamper_baseline: false,
+            tamper_resolve: false,
+            tamper_resolved_runtime: true,
+            omit_partition_binding: false,
+        })
+        .unwrap();
+    let error = match runtime_tampering_registry.resolve(&runtime_bound_plan, &context) {
+        Ok(_) => panic!("registry must reject adapter-local effective schema authority"),
+        Err(error) => error,
+    };
+    assert!(
+        error.message.contains("effective schema runtime"),
+        "{error}"
+    );
+
+    let mut missing_binding_registry = SourceRegistry::new();
+    missing_binding_registry
+        .register(MockSourceDriver {
+            descriptor: descriptor.clone(),
+            option_schema: option_schema.clone(),
+            tamper_baseline: false,
+            tamper_resolve: false,
+            tamper_resolved_runtime: false,
+            omit_partition_binding: true,
+        })
+        .unwrap();
+    let missing_binding_resource = missing_binding_registry
+        .resolve(&runtime_bound_plan, &context)
+        .unwrap();
+    let error = missing_binding_resource
+        .negotiate(&ScanRequest {
+            resource_id: runtime_bound_plan.descriptor.resource_id.clone(),
+            projection: None,
+            filters: Vec::new(),
+            limit: None,
+            order_by: Vec::new(),
+            scope: ScopeKey::Resource,
+        })
+        .unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("omitted its effective-schema observation identity"),
+        "{error}"
     );
 
     assert_eq!(
@@ -1718,6 +1857,8 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
             option_schema: option_schema.clone(),
             tamper_baseline: false,
             tamper_resolve: false,
+            tamper_resolved_runtime: false,
+            omit_partition_binding: false,
         })
         .unwrap_err();
     assert!(error.message.contains("does not match its declared hash"));
@@ -1736,6 +1877,8 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
             option_schema: invalid_schema,
             tamper_baseline: false,
             tamper_resolve: false,
+            tamper_resolved_runtime: false,
+            omit_partition_binding: false,
         })
         .unwrap_err();
     assert!(error.message.contains("must be a closed object"));
@@ -1747,6 +1890,8 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
             option_schema: option_schema.clone(),
             tamper_baseline: false,
             tamper_resolve: false,
+            tamper_resolved_runtime: false,
+            omit_partition_binding: false,
         })
         .unwrap();
     assert_eq!(reordered.descriptors(), registry.descriptors());
@@ -1757,6 +1902,8 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
                 option_schema,
                 tamper_baseline: false,
                 tamper_resolve: false,
+                tamper_resolved_runtime: false,
+                omit_partition_binding: false,
             })
             .is_err()
     );

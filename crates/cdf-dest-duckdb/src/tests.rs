@@ -278,9 +278,9 @@ fn write_current_plan_artifacts(builder: &PackageBuilder, schema: &Schema) {
     builder
         .write_json_artifact(
             "plan/scan.json",
-            &ScanPlan {
-                plan_id: PlanId::new("duckdb-current-test-plan").unwrap(),
-                request: ScanRequest {
+            &ScanPlan::new(
+                PlanId::new("duckdb-current-test-plan").unwrap(),
+                ScanRequest {
                     resource_id: ResourceId::new("orders").unwrap(),
                     projection: None,
                     filters: Vec::new(),
@@ -288,14 +288,13 @@ fn write_current_plan_artifacts(builder: &PackageBuilder, schema: &Schema) {
                     order_by: Vec::new(),
                     scope: ScopeKey::Resource,
                 },
-                partitions: Vec::new(),
-                planned_task_set: None,
-                pushed_predicates: Vec::new(),
-                unsupported_predicates: Vec::new(),
-                estimated_rows: None,
-                estimated_bytes: None,
-                delivery_guarantee: DeliveryGuarantee::AtLeastOnceDuplicateRisk,
-            },
+                cdf_kernel::PartitionAuthority::Inline(Vec::new()),
+                Vec::new(),
+                Vec::new(),
+                None,
+                None,
+                DeliveryGuarantee::AtLeastOnceDuplicateRisk,
+            ),
         )
         .unwrap();
 }

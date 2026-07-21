@@ -563,8 +563,8 @@ fn assert_plan_matches_github_issues(plan: &EnginePlan) {
     assert_eq!(plan.package_id, PACKAGE_ID);
     assert_eq!(plan.scan.request.resource_id.as_str(), RESOURCE_ID);
     assert_eq!(plan.scan.request.scope, ScopeKey::Resource);
-    assert_eq!(plan.scan.partitions.len(), 1);
-    let metadata = &plan.scan.partitions[0].metadata;
+    assert_eq!(plan.scan.partition_count().unwrap(), 1);
+    let metadata = &plan.scan.inline_partitions().unwrap()[0].metadata;
     assert_eq!(metadata.get("kind").map(String::as_str), Some("rest"));
     assert_eq!(
         metadata.get("path").map(String::as_str),

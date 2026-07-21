@@ -56,6 +56,46 @@ pub struct PartitionWatermarkTracker {
 }
 
 impl PartitionWatermarkTracker {
+    /// Registers one partition from a streamed external task authority.
+    ///
+    /// Inline plans register their complete bounded topology at construction. External plans call
+    /// this as each canonical task is opened so watermark tracking remains proportional to active
+    /// and observed partitions rather than requiring task-set materialization before execution.
+    pub fn register_partition(&mut self, partition_id: &PartitionId) -> Result<()> {
+        if self.partitions.contains_key(partition_id) {
+            return Err(CdfError::contract(format!(
+                "watermark tracker received duplicate partition `{partition_id}`"
+            )));
+        }
+        let restored = self.historical.remove(partition_id);
+        let state = match restored {
+            Some(restored) => PartitionWatermarkState {
+                claim: restored.claim,
+                idleness: restored.idleness.clone(),
+                eligible: restored.idleness.is_none()
+                    && matches!(self.policy, WatermarkPolicy::Enabled { .. }),
+            },
+            None => PartitionWatermarkState {
+                claim: None,
+                idleness: None,
+                eligible: matches!(self.policy, WatermarkPolicy::Enabled { .. }),
+            },
+        };
+        if state.eligible {
+            if let Some(claim) = &state.claim {
+                self.eligible_claims
+                    .insert((WatermarkOrderKey::from(&claim.value), partition_id.clone()));
+            } else {
+                self.eligible_missing_claims = self
+                    .eligible_missing_claims
+                    .checked_add(1)
+                    .ok_or_else(|| CdfError::internal("eligible watermark count overflow"))?;
+            }
+        }
+        self.partitions.insert(partition_id.clone(), state);
+        Ok(())
+    }
+
     pub fn new<'a>(
         policy: &WatermarkPolicy,
         partitions: impl IntoIterator<Item = &'a PartitionId>,

@@ -2,8 +2,8 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use cdf_http::{EgressAllowlist, SecretUri};
 use cdf_kernel::{
-    CdfError, CompiledScanIntent, DeliveryGuarantee, PlanId, PushdownFidelity, PushedPredicate,
-    Result, ScanPlan, ScanPredicate, ScanRequest, WriteDisposition,
+    CdfError, CompiledScanIntent, DeliveryGuarantee, PartitionAuthority, PlanId, PushdownFidelity,
+    PushedPredicate, Result, ScanPlan, ScanPredicate, ScanRequest, WriteDisposition,
 };
 use cdf_object_access::{FileTransport, FileTransportControl, FileTransportResource};
 use cdf_runtime::{ExecutionServices, SourceEgressScope};
@@ -132,17 +132,16 @@ pub fn plan_glue_scan(
             "Glue task authority hash does not match its task-store identity",
         ));
     }
-    Ok(ScanPlan {
-        plan_id: PlanId::new(format!("plan-{}", descriptor.resource_id))?,
-        request: request.clone(),
-        partitions: Vec::new(),
-        planned_task_set: Some(artifact.reference),
+    Ok(ScanPlan::new(
+        PlanId::new(format!("plan-{}", descriptor.resource_id))?,
+        request.clone(),
+        PartitionAuthority::External(artifact.reference),
         pushed_predicates,
         unsupported_predicates,
-        estimated_rows: None,
-        estimated_bytes: Some(estimated_bytes),
-        delivery_guarantee: delivery_guarantee(descriptor.write_disposition.clone()),
-    })
+        None,
+        Some(estimated_bytes),
+        delivery_guarantee(descriptor.write_disposition.clone()),
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]

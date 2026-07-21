@@ -10,7 +10,7 @@ use arrow_array::{
     Array, ArrayRef, Date32Array, Float64Array, Int64Array, LargeStringArray, StringArray,
     TimestampMicrosecondArray, TimestampMillisecondArray, UInt64Array, new_null_array,
 };
-use arrow_schema::{DataType, Field, SchemaRef, TimeUnit};
+use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_http::{
     AuthRefreshHook, AuthScheme, AuthSession, HttpMethod, HttpRequest, HttpResponse,
     HttpResponseBudget, HttpTransport, PaginationKind, Paginator, RateLimiter, SecretProvider,
@@ -18,21 +18,22 @@ use cdf_http::{
 };
 use cdf_kernel::{
     BackpressureSupport, Batch, BatchStream, BoxFuture, CapabilitySupport, CdfError,
-    CompiledScanIntent, CursorPosition, CursorValue, DeliveryGuarantee, EffectiveSchemaRuntime,
-    EstimateSupport, Expression, ExpressionLiteral, FilterCapabilities, IncrementalShape,
-    PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionId,
-    PartitionPlan, PartitioningCapabilities, PayloadRetention, PlanId,
-    PreContractResidualCandidate, PushdownFidelity, PushedPredicate, QueryableResource,
-    ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, ScanPlan,
-    ScanRequest, SchemaHash, SchemaSource, ScopeKind, SourcePosition, TypePolicyAllowances,
-    WriteDisposition, source_name,
+    CompiledScanIntent, CompiledSourcePlanHash, CursorPosition, CursorValue, DeliveryGuarantee,
+    EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, EstimateSupport, Expression,
+    ExpressionLiteral, FilterCapabilities, IncrementalShape, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
+    PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAuthority, PartitionId, PartitionPlan,
+    PartitioningCapabilities, PayloadRetention, PlanId, PreContractResidualCandidate,
+    PushdownFidelity, PushedPredicate, QueryableResource, ReplaySupport, ResourceCapabilities,
+    ResourceDescriptor, ResourceStream, Result, ScanPlan, ScanRequest, SchemaHash, SchemaSource,
+    ScopeKind, SourcePosition, TypePolicyAllowances, WriteDisposition, source_name,
 };
 use cdf_memory::MemoryCoordinator;
 use cdf_runtime::{
-    BoundedFormatRequest, CpuTaskSpec, DecodeSchemaPlan, ExecutionServices, FormatDiscoveryRequest,
-    FormatDriver, MemoryByteSource, PreparedSourcePayload, PreparedSourcePayloadKey,
-    PreparedSourcePayloads, ReadOptions, RunCancellation, SourceDiscoveryRequest, SourceDriverId,
-    SourceEgressScope, artifact_hash, decode_bounded_format,
+    BoundedFormatRequest, CpuTaskSpec, DecodeSchemaPlan, ExecutionServices, FormatDiscoveryKind,
+    FormatDiscoveryRequest, FormatDriver, MemoryByteSource, PreparedSourcePayload,
+    PreparedSourcePayloadKey, PreparedSourcePayloads, ReadOptions, RunCancellation,
+    SourceDiscoveryRequest, SourceDriverId, SourceEgressScope, artifact_hash,
+    decode_bounded_format,
 };
 
 #[derive(Clone)]
@@ -170,8 +171,9 @@ pub struct RestResource {
     plan: RestResourcePlan,
     type_policy_allowances: TypePolicyAllowances,
     dependencies: RestRuntimeDependencies,
+    compiled_source_plan_hash: CompiledSourcePlanHash,
     effective_schema_runtime: Option<EffectiveSchemaRuntime>,
-    compiled_source_plan_hash: Option<String>,
+    baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
 }
 
 #[derive(Clone, Debug)]
@@ -191,37 +193,24 @@ struct PreparedRestPageState {
 }
 
 impl RestResource {
-    pub fn new(
-        descriptor: ResourceDescriptor,
-        schema: SchemaRef,
-        capabilities: ResourceCapabilities,
+    pub(crate) fn from_compiled_plan(
+        compiled: &cdf_runtime::CompiledSourcePlan,
         plan: RestResourcePlan,
-        type_policy_allowances: TypePolicyAllowances,
         dependencies: RestRuntimeDependencies,
     ) -> Result<Self> {
         Ok(Self {
-            descriptor,
-            schema,
-            capabilities,
+            descriptor: compiled.descriptor.clone(),
+            schema: Arc::new(compiled.schema.clone()),
+            capabilities: compiled.resource_capabilities.clone(),
             plan,
-            type_policy_allowances,
+            type_policy_allowances: compiled.type_policy_allowances,
             dependencies,
-            effective_schema_runtime: None,
-            compiled_source_plan_hash: None,
+            compiled_source_plan_hash: compiled.compiled_source_plan_hash()?,
+            effective_schema_runtime: compiled.effective_schema_runtime.clone(),
+            baseline_observation_schema_catalog: compiled
+                .baseline_observation_schema_catalog
+                .clone(),
         })
-    }
-
-    pub fn with_compiled_source_plan_hash(mut self, hash: String) -> Self {
-        self.compiled_source_plan_hash = Some(hash);
-        self
-    }
-
-    pub fn with_effective_schema_runtime(
-        mut self,
-        runtime: Option<EffectiveSchemaRuntime>,
-    ) -> Self {
-        self.effective_schema_runtime = runtime;
-        self
     }
 
     pub fn validate_runtime_dependencies(&self) -> Result<()> {
@@ -255,6 +244,16 @@ impl RestResource {
         }
         Ok(())
     }
+
+    fn observed_physical_schema(&self) -> Option<SchemaRef> {
+        let runtime = self.effective_schema_runtime.as_ref()?;
+        let observation = runtime
+            .evidence
+            .observation(self.descriptor.resource_id.as_str())?;
+        runtime
+            .physical_schema(&observation.physical_schema_hash)
+            .map(Arc::clone)
+    }
 }
 
 fn auth_secret_uri(auth: &AuthScheme) -> &SecretUri {
@@ -269,16 +268,20 @@ impl ResourceStream for RestResource {
         &self.descriptor
     }
 
-    fn compiled_source_plan_hash(&self) -> Option<&str> {
-        self.compiled_source_plan_hash.as_deref()
-    }
-
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
     }
 
+    fn compiled_source_plan_hash(&self) -> Option<&CompiledSourcePlanHash> {
+        Some(&self.compiled_source_plan_hash)
+    }
+
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
         self.effective_schema_runtime.as_ref()
+    }
+
+    fn baseline_observation_schema_catalog(&self) -> &[EffectiveSchemaCatalogEntry] {
+        &self.baseline_observation_schema_catalog
     }
 
     fn validate_runtime_dependencies(&self) -> Result<()> {
@@ -292,8 +295,15 @@ impl ResourceStream for RestResource {
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
         rest_partition(&self.descriptor, &self.plan, request).map(|mut partition| {
             partition.scan_intent = CompiledScanIntent::full_scan();
-            vec![partition]
-        })
+            if let Some(runtime) = &self.effective_schema_runtime {
+                cdf_kernel::bind_partition_schema_observation(
+                    &mut partition,
+                    runtime,
+                    self.descriptor.resource_id.as_str(),
+                )?;
+            }
+            Ok(vec![partition])
+        })?
     }
 
     fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
@@ -301,6 +311,7 @@ impl ResourceStream for RestResource {
         let schema = Arc::clone(&self.schema);
         let plan = self.plan.clone();
         let dependencies = self.dependencies.clone();
+        let observed_physical_schema = self.observed_physical_schema();
         let execution = dependencies.execution.clone();
         let task = execution.spawn_cpu_stream(
             "rest-source-open",
@@ -319,6 +330,7 @@ impl ResourceStream for RestResource {
                         plan,
                         partition,
                         dependencies,
+                        observed_physical_schema,
                         cancellation: cancellation.clone(),
                     },
                     sender,
@@ -369,17 +381,16 @@ impl QueryableResource for RestResource {
                 unsupported_predicates.push(predicate.clone());
             }
         }
-        Ok(ScanPlan {
-            plan_id: PlanId::new(format!("plan-{}", self.descriptor.resource_id))?,
-            request: request.clone(),
-            partitions: vec![partition],
-            planned_task_set: None,
+        Ok(ScanPlan::new(
+            PlanId::new(format!("plan-{}", self.descriptor.resource_id))?,
+            request.clone(),
+            PartitionAuthority::Inline(vec![partition]),
             pushed_predicates,
             unsupported_predicates,
-            estimated_rows: None,
-            estimated_bytes: None,
-            delivery_guarantee: delivery_guarantee(&self.descriptor),
-        })
+            None,
+            None,
+            delivery_guarantee(&self.descriptor),
+        ))
     }
 }
 
@@ -429,10 +440,7 @@ pub fn rest_partition(
         ),
         (
             PLAN_SCHEMA_OBSERVATION_BINDING_KEY.to_owned(),
-            artifact_hash(&serde_json::json!({
-                "resource_id": descriptor.resource_id,
-                "path": plan.path,
-            }))?,
+            rest_schema_observation_binding(descriptor, plan)?,
         ),
     ]);
     if let Some(pagination) = &plan.pagination {
@@ -466,6 +474,20 @@ pub fn rest_partition(
         retry_safety: cdf_kernel::PartitionRetrySafety::Forbidden,
         metadata,
     })
+}
+
+/// Returns the source-generation binding shared by bounded discovery and the
+/// executable REST partition. Keeping this identity construction in one place
+/// prevents discovery and execution from independently describing the same
+/// source interaction.
+pub fn rest_schema_observation_binding(
+    descriptor: &ResourceDescriptor,
+    plan: &RestResourcePlan,
+) -> Result<String> {
+    artifact_hash(&serde_json::json!({
+        "resource_id": descriptor.resource_id,
+        "path": plan.path,
+    }))
 }
 
 fn selected_cursor_pushdown(
@@ -547,6 +569,7 @@ struct RestExecutionInvocation {
     plan: RestResourcePlan,
     partition: PartitionPlan,
     dependencies: RestRuntimeDependencies,
+    observed_physical_schema: Option<SchemaRef>,
     cancellation: RunCancellation,
 }
 
@@ -565,6 +588,7 @@ async fn execute_rest(
         plan,
         partition,
         dependencies,
+        observed_physical_schema,
         cancellation,
     } = invocation;
     let descriptor = &descriptor;
@@ -659,13 +683,16 @@ async fn execute_rest(
             selection.records_present,
         );
         let decode = decode_selected_rest_page(
-            Arc::clone(&schema),
-            descriptor,
-            partition,
+            RestPageDecodeRequest {
+                schema: Arc::clone(&schema),
+                observed_physical_schema: observed_physical_schema.as_ref().map(Arc::clone),
+                descriptor,
+                partition,
+                page_index,
+                execution: &dependencies.execution,
+                cancellation: cancellation.clone(),
+            },
             selected,
-            page_index,
-            &dependencies.execution,
-            cancellation.clone(),
         );
         let prefetch = match prefetch_url {
             Some(next_url) => {
@@ -1091,41 +1118,123 @@ async fn send_page_once(
     send_with_policy(context.transport, &plan.allowlist, request, budget).await
 }
 
-async fn decode_selected_rest_page(
+struct RestPageDecodeRequest<'a> {
     schema: SchemaRef,
-    descriptor: &ResourceDescriptor,
-    partition: &PartitionPlan,
-    selected: cdf_memory::AccountedBytes,
+    observed_physical_schema: Option<SchemaRef>,
+    descriptor: &'a ResourceDescriptor,
+    partition: &'a PartitionPlan,
     page_index: usize,
-    execution: &ExecutionServices,
+    execution: &'a ExecutionServices,
     cancellation: RunCancellation,
+}
+
+async fn decode_selected_rest_page(
+    request: RestPageDecodeRequest<'_>,
+    selected: cdf_memory::AccountedBytes,
 ) -> Result<Vec<Batch>> {
+    let driver = Arc::new(cdf_format_json::JsonDocumentFormatDriver::new()?);
     let source = Arc::new(MemoryByteSource::from_ephemeral_accounted_bytes(
         format!(
             "rest-page:{}:{}:{}",
-            descriptor.resource_id, partition.partition_id, page_index
+            request.descriptor.resource_id, request.partition.partition_id, request.page_index
         ),
-        selected,
+        selected.clone(),
     )?);
+    let discovered_physical_schema = if request.observed_physical_schema.is_none() {
+        let size_bytes = u64::try_from(selected.payload().len())
+            .map_err(|_| CdfError::data("REST selected page length exceeds u64"))?;
+        Some(
+            driver
+                .discover(
+                    source.clone(),
+                    FormatDiscoveryRequest {
+                        options: serde_json::json!({}),
+                        discovery_kind: FormatDiscoveryKind::FullContent,
+                        maximum_bytes: size_bytes,
+                        maximum_records: u64::MAX,
+                        memory: request.execution.memory(),
+                        cancellation: request.cancellation.clone(),
+                    },
+                )
+                .await?
+                .arrow_schema,
+        )
+    } else {
+        None
+    };
     let read_options = ReadOptions::new(
-        descriptor.resource_id.clone(),
-        partition.partition_id.clone(),
+        request.descriptor.resource_id.clone(),
+        request.partition.partition_id.clone(),
     )
     .with_batch_id_prefix(format!(
         "{}-{}-p{:06}",
-        sanitize_id_part(descriptor.resource_id.as_str()),
-        sanitize_id_part(partition.partition_id.as_str()),
-        page_index + 1
+        sanitize_id_part(request.descriptor.resource_id.as_str()),
+        sanitize_id_part(request.partition.partition_id.as_str()),
+        request.page_index + 1
     ))?;
-    let decoded = decode_bounded_format(
-        Arc::new(cdf_format_json::JsonDocumentFormatDriver::new()?),
+    let mut decode_schema = DecodeSchemaPlan::fixed_admission(Arc::clone(&request.schema));
+    if let Some(observed) = request
+        .observed_physical_schema
+        .as_ref()
+        .or(discovered_physical_schema.as_ref())
+    {
+        decode_schema = decode_schema.with_observed_physical_schema(Arc::clone(observed));
+    }
+    let mut decoded = decode_bounded_format(
+        driver,
         source,
-        BoundedFormatRequest::new(read_options, execution.memory())
-            .with_schema(DecodeSchemaPlan::fixed_admission(schema))
-            .with_cancellation(cancellation),
+        BoundedFormatRequest::new(read_options, request.execution.memory())
+            .with_schema(decode_schema)
+            .with_cancellation(request.cancellation),
     )
     .await?;
+    if let Some(discovered) = discovered_physical_schema {
+        let admitted = admitted_rest_physical_schema(
+            request.schema.as_ref(),
+            discovered.as_ref(),
+            &decoded.batches,
+        );
+        for batch in &mut decoded.batches {
+            batch.header.mark_materialized_output(&admitted)?;
+        }
+    }
     Ok(decoded.batches)
+}
+
+/// Preserves the physical types of values accepted by the fixed-schema JSON
+/// decoder while keeping record-local type failures in residual evidence. This
+/// is the streaming equivalent of inferring over admitted values: a field with
+/// isolated residuals retains the declared type for schema reconciliation, but
+/// successful JSON integer values still attest their signed physical type.
+fn admitted_rest_physical_schema(
+    declared: &Schema,
+    observed: &Schema,
+    batches: &[Batch],
+) -> Schema {
+    let residual_sources = batches
+        .iter()
+        .flat_map(|batch| batch.header.residual_candidates())
+        .filter(|candidate| candidate.expected_field().is_some())
+        .filter_map(|candidate| candidate.source_path().first().map(String::as_str))
+        .collect::<BTreeSet<_>>();
+    let fields = declared
+        .fields()
+        .iter()
+        .filter_map(|declared_field| {
+            let source =
+                source_name(declared_field.as_ref()).unwrap_or_else(|| declared_field.name());
+            let observed_field = observed.field_with_name(source).ok()?;
+            if residual_sources.contains(source) || observed_field.data_type() == &DataType::Null {
+                Some(Arc::new(
+                    Field::new(source, declared_field.data_type().clone(), true)
+                        .with_metadata(observed_field.metadata().clone()),
+                ))
+            } else {
+                Some(Arc::new(observed_field.clone()))
+            }
+        })
+        .collect::<Vec<_>>();
+    Schema::new_with_metadata(fields, observed.metadata().clone())
 }
 
 fn cursor_field<'a>(

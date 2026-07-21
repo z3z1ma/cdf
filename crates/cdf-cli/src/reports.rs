@@ -279,16 +279,7 @@ impl RunCliReport {
                 })
         };
         let document = if let Some(adhoc) = &self.adhoc {
-            let panel = KeyValuePanel::new("Ad-hoc Resource")
-                .row("resource", adhoc.resource_id.clone())
-                .row("config", adhoc.config_path.clone())
-                .row("reused", yes_no(adhoc.reused))
-                .row("make permanent", adhoc.make_permanent_command.clone());
-            let panel = match &adhoc.source_artifact_path {
-                Some(path) => panel.row("staged source", path.clone()),
-                None => panel,
-            };
-            document.blank_line().push(panel)
+            document.blank_line().push(adhoc_resource_panel(adhoc))
         } else {
             document
         };
@@ -346,9 +337,13 @@ pub(crate) struct RunNoOpCliReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     current_checkpoint_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    schema_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     schema_snapshot: Option<SchemaSnapshotActionReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     file_manifest: Option<RunFileManifestReport>,
+    row_count: u64,
+    segment_count: u64,
     memory: RunMemoryReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     adhoc: Option<AdhocRunReport>,
@@ -376,11 +371,17 @@ impl RunNoOpCliReport {
                 .current_checkpoint
                 .as_ref()
                 .map(|checkpoint| checkpoint.delta.checkpoint_id.to_string()),
+            schema_hash: report
+                .current_checkpoint
+                .as_ref()
+                .map(|checkpoint| checkpoint.delta.schema_hash.to_string()),
             schema_snapshot,
             file_manifest: report
                 .file_manifest
                 .as_ref()
                 .map(RunFileManifestReport::from_project),
+            row_count: 0,
+            segment_count: 0,
             memory,
             adhoc: None,
             ledger_events: RunLedgerSummary::from_snapshot(&report.ledger_snapshot),
@@ -411,9 +412,16 @@ impl RunNoOpCliReport {
                     .row("reason", self.reason),
             );
         let document = match &self.current_checkpoint_id {
-            Some(checkpoint) => document
-                .blank_line()
-                .push(KeyValuePanel::new("State").row("current checkpoint", checkpoint.clone())),
+            Some(checkpoint) => {
+                let panel =
+                    KeyValuePanel::new("State").row("current checkpoint", checkpoint.clone());
+                let panel = if let Some(schema_hash) = &self.schema_hash {
+                    panel.row("schema", schema_hash.clone())
+                } else {
+                    panel
+                };
+                document.blank_line().push(panel)
+            }
             None => document,
         };
         let document = if let Some(panel) = file_manifest_panel(self.file_manifest.as_ref()) {
@@ -423,6 +431,11 @@ impl RunNoOpCliReport {
         };
         let document = if explain_memory {
             document.blank_line().push(self.memory.panel())
+        } else {
+            document
+        };
+        let document = if let Some(adhoc) = &self.adhoc {
+            document.blank_line().push(adhoc_resource_panel(adhoc))
         } else {
             document
         };
@@ -437,6 +450,18 @@ impl RunNoOpCliReport {
             )
             .blank_line()
             .push(NextCommand::new(format!("cdf inspect run {}", self.run_id)))
+    }
+}
+
+fn adhoc_resource_panel(adhoc: &AdhocRunReport) -> KeyValuePanel {
+    let panel = KeyValuePanel::new("Ad-hoc Resource")
+        .row("resource", adhoc.resource_id.clone())
+        .row("config", adhoc.config_path.clone())
+        .row("reused", yes_no(adhoc.reused))
+        .row("make permanent", adhoc.make_permanent_command.clone());
+    match &adhoc.source_artifact_path {
+        Some(path) => panel.row("staged source", path.clone()),
+        None => panel,
     }
 }
 
