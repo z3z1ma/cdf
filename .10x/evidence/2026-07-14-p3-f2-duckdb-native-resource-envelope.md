@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-14
 Updated: 2026-07-14
-Relates-To: .10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md, .10x/specs/constant-memory-proof.md, .10x/specs/destination-bulk-path-runtime.md
+Relates-To: .10x/tickets/done/2026-07-11-p3-f2-materialization-closure-audit.md, .10x/specs/constant-memory-proof.md, .10x/specs/destination-bulk-path-runtime.md
 
 # DuckDB native resource envelope on wide FineWeb Parquet
 

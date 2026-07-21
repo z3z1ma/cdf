@@ -13,7 +13,7 @@ Make the memory law executable: generated 100 GB input under 2 GiB, peak-RSS ass
 ## Activated children
 
 - `.10x/tickets/done/2026-07-11-p3-f1-budget-enforcement-headroom.md`
-- `.10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md`
+- `.10x/tickets/done/2026-07-11-p3-f2-materialization-closure-audit.md`
 - `.10x/tickets/2026-07-11-p3-f3-stress-generators-laws.md`
 - `.10x/tickets/2026-07-11-p3-f4-one-tb-memory-closeout.md`
 

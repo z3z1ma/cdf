@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-11
 Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md
@@ -27,11 +27,11 @@ No unrelated product feature or performance tuning beyond closure blockers.
 
 ## Blockers
 
-- The generated cross-codebase allocation-owner matrix and its freshness gate now enumerate every production `ReservationRequest::new` site plus an explicit non-ledger/native owner inventory. Rows marked `open`, hidden-allocation static gates, and source/format/destination extension conformance remain incomplete; the generated matrix is an audit instrument, not closure by declaration.
-- Native Arrow/Parquet encoder page and compression scratch still needs a measured admitted envelope; the package archive now proves one ledger-owned decoded-input/output window but does not mislabel dependency-internal scratch as measured.
-- File discovery still exposes candidate partitions through `SourceDiscoverySession` and `DiscoveryManifestArtifact` cardinality-sized vectors; the final execution plan is external, but discovery evidence is not yet.
-- Committed `FileManifest` state and append reconciliation still retain cardinality-sized file vectors/maps. They need external manifest authority before F2 can claim unbounded file-count closure.
-- Package finalization, ordinary engine output, replay manifest validation, archive verification, statistics-profile consumption, the destination commit-plan preimage, and receipt-history traversal now retain only constant-cardinality headers plus one verified pull record. The state-delta preimage and each receipt's ordered `segment_acks` remain cardinality-sized. F2 cannot close until those authorities are removed, externalized, or lockstep-streamed; changing the accepted per-receipt acknowledgement contract requires superseding `.10x/specs/destination-receipts-guarantees.md` and `.10x/decisions/finalized-commit-session-bounded-segment-iterator.md`, not silently weakening it here.
+None for this completed audit tranche. The remaining proof work is deliberately split rather than keeping F2 as an unbounded catch-all:
+
+- `.10x/tickets/2026-07-11-p3-f3-stress-generators-laws.md` owns geometric metadata/cardinality, spill, compression, dedup, quarantine, slow-destination, and too-small-budget falsification.
+- `.10x/tickets/2026-07-11-p3-f4-one-tb-memory-closeout.md` owns the final owner-matrix open rows, native dependency scratch calibration, `FileManifest`/state/receipt cardinality closure, and the no-unclassified-allocation exit gate.
+- Format and interop children own their own native allocation envelope before product registration; in particular B6 retains Avro decompression containment and H5 retains Python native/pre-admission RSS calibration.
 
 ## References
 
@@ -294,11 +294,11 @@ No unrelated product feature or performance tuning beyond closure blockers.
   - `CARGO_BUILD_JOBS=12 cargo check --workspace --all-targets --locked -j 12` passed before the final review repairs; the final package all-target check passed afterward. Strict all-target package Clippy, format, diff, and staged secret scans are rerun before commit.
   - The prepared-orders golden package rebuilt against its committed evidence across the 100-run law after the customer-zero runtime-schema framing replacement. No compatibility reader remains for the superseded seekable schema artifact.
   - Limits: deserialized state, observation, late-data, scan-plan, and dedup-summary models can still be cardinality-bearing; the raw-byte duplicate is gone, not the semantic owner. Seekable large identity consumers still rely on immutable-after-finalization storage against concurrent in-place inode mutation. Both remain explicit matrix/ticket residuals.
-- This is partial F2 evidence only. The ticket remains active because its cross-codebase owner matrix, static architecture gates, remaining metadata-cardinality closure, and geometric stress proof are not complete.
+- Closure judgment: F2 completed the production materialization audit, installed its generated owner matrix and static regression gates, and removed the identified eager package/runtime surfaces. It does not claim the later geometric/1 TB proof; those independent outcomes are now owned by F3/F4 instead of extending this ticket indefinitely.
 
 ## Review
 
-Verdict: concerns for F2 closure; pass for the bounded DuckDB slice.
+Verdict: pass for the completed audit tranche, with residual proof obligations transferred to F3/F4.
 
 - The retained implementation keeps all DuckDB policy inside `cdf-dest-duckdb`; runtime selection remains capability-driven and no destination id/path appears in orchestration.
 - Native memory and scratch disk now have hard bounds; scratch capacity joins the shared spill authority before a production registry run and fails before source/destination mutation when unavailable.
@@ -320,3 +320,5 @@ The four-worker segment cap was another symptom disguised as policy. A cloned `R
 The archive residual repeated the same authority twice in the manifest and again in the fidelity/CLI reports. Moving record identity to one streamed, hash-addressed sidecar made the manifest genuinely header-sized and turned verification into a natural lockstep join. On corruption paths, exact orphan-name recovery is not worth an O(N²) rescan; verified expected entries plus an exact tree count are sufficient, faster, and still fail closed.
 
 Streaming JSON is not automatically performant: serde's raw `Read` adapter consumes one byte at a time. Buffering must sit below the hashing reader so both system calls and digest updates remain chunked, while the reader itself—not a post-parse check—enforces the identity-declared length. Forward-only artifact formats are preferable when exact consumed-byte verification matters; a seekable decoder otherwise creates an avoidable snapshot or TOCTOU problem.
+
+The larger process failure was ticket shape. F2 mixed an inventory, many independent repairs, native-library calibration, metadata redesign, and final stress proof, so each valid finding extended the same critical-path ticket. Future audits must terminate once the inventory and bounded repair tranche are complete; independent falsification and closeout belong to small downstream tickets with explicit acceptance criteria.
