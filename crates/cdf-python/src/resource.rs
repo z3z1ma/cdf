@@ -706,7 +706,7 @@ impl QueryableResource for PythonResource {
 
     fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
         let partitions = self.plan_partitions(request)?;
-        Ok(ScanPlan::new(
+        Ok(ScanPlan::from_partition_authority(
             PlanId::new(format!("python-plan-{}", self.descriptor.resource_id))?,
             request.clone(),
             PartitionAuthority::Inline(partitions),

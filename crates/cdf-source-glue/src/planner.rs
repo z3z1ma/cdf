@@ -132,7 +132,7 @@ pub fn plan_glue_scan(
             "Glue task authority hash does not match its task-store identity",
         ));
     }
-    Ok(ScanPlan::new(
+    Ok(ScanPlan::from_partition_authority(
         PlanId::new(format!("plan-{}", descriptor.resource_id))?,
         request.clone(),
         PartitionAuthority::External(artifact.reference),

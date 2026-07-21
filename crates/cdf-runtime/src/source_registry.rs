@@ -556,9 +556,9 @@ impl ResourceStream for RegistryValidatedResource {
 
     fn rebind_scan_for_resume(
         &self,
-        scan: &mut cdf_kernel::ScanPlan,
+        scan: cdf_kernel::ScanPlan,
         committed_frontier: &cdf_kernel::SourcePosition,
-    ) -> Result<()> {
+    ) -> Result<cdf_kernel::ScanPlan> {
         self.inner.rebind_scan_for_resume(scan, committed_frontier)
     }
 

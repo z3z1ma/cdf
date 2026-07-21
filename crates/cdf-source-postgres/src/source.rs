@@ -467,7 +467,7 @@ pub fn negotiate_postgres_table_scan(
     let (pushed_predicates, unsupported_predicates) =
         classify_postgres_table_predicates(schema, &request.filters);
 
-    Ok(ScanPlan::new(
+    Ok(ScanPlan::from_partition_authority(
         PlanId::new(format!("postgres-scan-{}", descriptor.resource_id))?,
         request.clone(),
         PartitionAuthority::Inline(vec![plan_postgres_table_partition(

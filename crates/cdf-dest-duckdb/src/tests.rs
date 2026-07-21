@@ -278,7 +278,7 @@ fn write_current_plan_artifacts(builder: &PackageBuilder, schema: &Schema) {
     builder
         .write_json_artifact(
             "plan/scan.json",
-            &ScanPlan::new(
+            &ScanPlan::from_partition_authority(
                 PlanId::new("duckdb-current-test-plan").unwrap(),
                 ScanRequest {
                     resource_id: ResourceId::new("orders").unwrap(),

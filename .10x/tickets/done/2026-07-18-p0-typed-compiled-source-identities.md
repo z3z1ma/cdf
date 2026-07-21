@@ -47,7 +47,7 @@ None. The partition-authority dependency is closed.
 
 Verdict: pass. A fresh-hat sequential review followed identity construction from compiler output through registry resolution, each first-party source, external task authority, partition observation, execution, and worker serialization. Distinct newtypes prevent category substitution, registry code validates and delegates source-owned facts, and no ambiguous optional hash setter remains.
 
-Residual risk: post-construction partition-authority mutation is deliberately not hidden here; it remains the bounded owner of `.10x/tickets/2026-07-18-p0-source-planning-authority-closure.md`. The collaboration thread limit prevented commissioning a new independent agent without reusing an old reviewer.
+Residual risk: post-construction partition-authority mutation was closed by `.10x/tickets/done/2026-07-18-p0-source-planning-authority-closure.md`. The collaboration thread limit prevented commissioning a new independent agent without reusing an old reviewer.
 
 ## Retrospective
 

@@ -461,7 +461,7 @@ impl QueryableResource for ExternalMockResource {
     }
 
     fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
-        Ok(ScanPlan::new(
+        Ok(ScanPlan::from_partition_authority(
             PlanId::new("external-mock-plan")?,
             request.clone(),
             cdf_kernel::PartitionAuthority::Inline(self.plan_partitions(request)?),

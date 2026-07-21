@@ -59,7 +59,7 @@ fn compiled_source_identity_categories_validate_during_construction_and_deserial
 
 #[test]
 fn external_task_authority_is_a_closed_alternative_to_inline_partitions() {
-    let scan = ScanPlan::new(
+    let scan = ScanPlan::from_partition_authority(
         PlanId::new("external-task-plan").unwrap(),
         ScanRequest {
             resource_id: ResourceId::new("lake.events").unwrap(),
@@ -86,7 +86,7 @@ fn external_task_authority_is_a_closed_alternative_to_inline_partitions() {
 
 #[test]
 fn scan_plan_serialization_has_one_partition_authority_and_rejects_the_retired_shape() {
-    let scan = ScanPlan::new(
+    let scan = ScanPlan::from_partition_authority(
         PlanId::new("external-task-plan").unwrap(),
         ScanRequest {
             resource_id: ResourceId::new("lake.events").unwrap(),

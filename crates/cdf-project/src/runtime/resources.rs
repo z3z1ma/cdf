@@ -98,6 +98,31 @@ impl<'a> WindowScopedResource<'a> {
         partition.scope = self.inner_scope.clone();
         partition
     }
+
+    fn map_scan_scope(
+        &self,
+        mut scan: ScanPlan,
+        request: ScanRequest,
+        scope: ScopeKey,
+    ) -> Result<ScanPlan> {
+        scan.request = request;
+        scan.try_map_partition_authority(|authority| match authority {
+            cdf_kernel::PartitionAuthority::Inline(partitions) => {
+                Ok(cdf_kernel::PartitionAuthority::Inline(
+                    partitions
+                        .into_iter()
+                        .map(|mut partition| {
+                            partition.scope = scope.clone();
+                            partition
+                        })
+                        .collect(),
+                ))
+            }
+            cdf_kernel::PartitionAuthority::External(reference) => {
+                Ok(cdf_kernel::PartitionAuthority::External(reference))
+            }
+        })
+    }
 }
 
 impl ResourceStream for WindowScopedResource<'_> {
@@ -140,17 +165,19 @@ impl ResourceStream for WindowScopedResource<'_> {
 
     fn rebind_scan_for_resume(
         &self,
-        scan: &mut cdf_kernel::ScanPlan,
+        scan: cdf_kernel::ScanPlan,
         committed_frontier: &SourcePosition,
-    ) -> Result<()> {
-        let mut inner = scan.clone();
-        inner.request = self.inner_request(&scan.request);
-        inner.map_inline_partitions(|partition| self.inner_partition(partition));
-        self.inner
-            .rebind_scan_for_resume(&mut inner, committed_frontier)?;
-        inner.map_inline_partitions(|partition| self.outer_partition(partition));
-        scan.replace_partition_authority(inner.partition_authority().clone());
-        Ok(())
+    ) -> Result<cdf_kernel::ScanPlan> {
+        let outer_request = scan.request.clone();
+        let inner = self.map_scan_scope(
+            scan,
+            self.inner_request(&outer_request),
+            self.inner_scope.clone(),
+        )?;
+        let rebound = self
+            .inner
+            .rebind_scan_for_resume(inner, committed_frontier)?;
+        self.map_scan_scope(rebound, outer_request, self.descriptor.state_scope.clone())
     }
 
     fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
@@ -205,9 +232,7 @@ impl QueryableResource for WindowScopedResource<'_> {
     }
 
     fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
-        let mut plan = self.inner.negotiate(&self.inner_request(request))?;
-        plan.request = request.clone();
-        plan.map_inline_partitions(|partition| self.outer_partition(partition));
-        Ok(plan)
+        let plan = self.inner.negotiate(&self.inner_request(request))?;
+        self.map_scan_scope(plan, request.clone(), self.descriptor.state_scope.clone())
     }
 }

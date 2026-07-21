@@ -1299,11 +1299,18 @@ impl ReconstructedEngineWorkerProgram {
             .ok_or_else(|| CdfError::contract("isolated engine plan lacks partition schedule"))?
             .scheduled_partition(source, self.canonical_partition_ordinal, &self.partition)?;
         let mut slice = self.plan.clone();
-        slice
+        slice.scan = slice
             .scan
-            .replace_partition_authority(cdf_kernel::PartitionAuthority::Inline(vec![
-                self.partition.clone(),
-            ]));
+            .try_map_partition_authority(|authority| match authority {
+                cdf_kernel::PartitionAuthority::Inline(_) => {
+                    Ok(cdf_kernel::PartitionAuthority::Inline(vec![
+                        self.partition.clone(),
+                    ]))
+                }
+                cdf_kernel::PartitionAuthority::External(_) => Err(CdfError::contract(
+                    "isolated external task-set execution requires source-owned retained task reconstruction",
+                )),
+            })?;
         let schedule = cdf_runtime::CanonicalPartitionSchedule::compile(source, &slice.scan)?;
         slice.partition_schedule = Some(schedule.clone());
         slice.explain.partition_schedule = Some(schedule);

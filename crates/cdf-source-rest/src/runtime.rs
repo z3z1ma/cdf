@@ -381,7 +381,7 @@ impl QueryableResource for RestResource {
                 unsupported_predicates.push(predicate.clone());
             }
         }
-        Ok(ScanPlan::new(
+        Ok(ScanPlan::from_partition_authority(
             PlanId::new(format!("plan-{}", self.descriptor.resource_id))?,
             request.clone(),
             PartitionAuthority::Inline(vec![partition]),

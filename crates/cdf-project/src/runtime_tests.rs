@@ -335,9 +335,9 @@ impl ResourceStream for BoundTestResource<'_> {
 
     fn rebind_scan_for_resume(
         &self,
-        scan: &mut cdf_kernel::ScanPlan,
+        scan: cdf_kernel::ScanPlan,
         committed_frontier: &SourcePosition,
-    ) -> Result<()> {
+    ) -> Result<cdf_kernel::ScanPlan> {
         self.inner.rebind_scan_for_resume(scan, committed_frontier)
     }
 
@@ -466,9 +466,9 @@ impl ResourceStream for EmptyDrainResource {
 
     fn rebind_scan_for_resume(
         &self,
-        scan: &mut cdf_kernel::ScanPlan,
+        scan: cdf_kernel::ScanPlan,
         committed_frontier: &SourcePosition,
-    ) -> Result<()> {
+    ) -> Result<cdf_kernel::ScanPlan> {
         self.inner.rebind_scan_for_resume(scan, committed_frontier)
     }
 
@@ -874,9 +874,9 @@ impl ResourceStream for OwnedTestResource {
 
     fn rebind_scan_for_resume(
         &self,
-        scan: &mut cdf_kernel::ScanPlan,
+        scan: cdf_kernel::ScanPlan,
         committed_frontier: &SourcePosition,
-    ) -> Result<()> {
+    ) -> Result<cdf_kernel::ScanPlan> {
         self.inner.rebind_scan_for_resume(scan, committed_frontier)
     }
 
@@ -1675,12 +1675,18 @@ impl ResourceStream for TableSnapshotMockResource {
 
     fn rebind_scan_for_resume(
         &self,
-        scan: &mut cdf_kernel::ScanPlan,
+        scan: cdf_kernel::ScanPlan,
         committed_frontier: &SourcePosition,
-    ) -> Result<()> {
+    ) -> Result<cdf_kernel::ScanPlan> {
         if committed_frontier == &self.position() {
-            scan.replace_partition_authority(cdf_kernel::PartitionAuthority::Inline(Vec::new()));
-            return Ok(());
+            return scan.try_map_partition_authority(|authority| match authority {
+                cdf_kernel::PartitionAuthority::Inline(_) => {
+                    Ok(cdf_kernel::PartitionAuthority::Inline(Vec::new()))
+                }
+                cdf_kernel::PartitionAuthority::External(_) => Err(CdfError::contract(
+                    "mock table-snapshot resource requires inline partition authority",
+                )),
+            });
         }
         Err(CdfError::data(
             "mock table-snapshot resource received an unexpected committed frontier",

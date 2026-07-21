@@ -871,7 +871,7 @@ fn stage_through_ingress_with_lease(
     let package = TestVerifiedPackage {
         package_hash: commit.commit.package_hash.as_str().to_owned(),
         segments: identity_segments,
-        scan: ScanPlan::new(
+        scan: ScanPlan::from_partition_authority(
             execution_plan_id.clone(),
             ScanRequest {
                 resource_id: ResourceId::new("orders")?,

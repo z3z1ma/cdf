@@ -4646,17 +4646,25 @@ fn external_partition_schedule_preserves_ordinals_above_u32_without_enumeration(
     let representative_partition = scan.inline_partitions().unwrap()[0].clone();
     let high_ordinal = u64::from(u32::MAX) + 17;
     let task_count = high_ordinal + 1;
-    scan.replace_partition_authority(PartitionAuthority::External(PlannedTaskSetReference {
-        version: PLANNED_TASK_SET_REFERENCE_VERSION,
-        task_type: "portable-partition-v1".to_owned(),
-        task_count,
-        store_namespace: ContentStoreNamespace::new("portable-partition-test").unwrap(),
-        object_key: ContentObjectKey::new("tasks/partitions.jsonl").unwrap(),
-        byte_count: 1,
-        content_sha256: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            .to_owned(),
-        provider_generation: ContentProviderGeneration::new("generation-1").unwrap(),
-    }));
+    scan = scan
+        .try_map_partition_authority(|authority| match authority {
+            PartitionAuthority::Inline(_) => {
+                Ok(PartitionAuthority::External(PlannedTaskSetReference {
+                    version: PLANNED_TASK_SET_REFERENCE_VERSION,
+                    task_type: "portable-partition-v1".to_owned(),
+                    task_count,
+                    store_namespace: ContentStoreNamespace::new("portable-partition-test").unwrap(),
+                    object_key: ContentObjectKey::new("tasks/partitions.jsonl").unwrap(),
+                    byte_count: 1,
+                    content_sha256:
+                        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                            .to_owned(),
+                    provider_generation: ContentProviderGeneration::new("generation-1").unwrap(),
+                }))
+            }
+            PartitionAuthority::External(_) => unreachable!(),
+        })
+        .unwrap();
     let compiled_source = mock_compiled_source_plan(&resource, None);
     let execution_source =
         cdf_runtime::CompiledSourceExecutionPlan::compile(&compiled_source).unwrap();
@@ -4864,8 +4872,8 @@ fn drain_epochs_resume_one_unbounded_partition_from_each_settled_batch_frontier(
         |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
     let root = TempDir::new().unwrap();
 
-    let mut fresh_process_plan = plan.clone();
-    fresh_process_plan
+    let fresh_process_plan = plan
+        .clone()
         .rebind_initial_committed_frontier(
             &resource,
             &SourcePosition::Cursor(CursorPosition {
@@ -5227,8 +5235,8 @@ fn drain_partition_resume_stays_local_when_resource_frontier_is_a_larger_cursor(
         }))
     );
 
-    let mut restarted = plan.clone();
-    restarted
+    let restarted = plan
+        .clone()
         .rebind_initial_committed_frontier(
             &resource,
             &SourcePosition::Composite(continuation.clone()),
@@ -9677,7 +9685,7 @@ impl QueryableResource for DataFusionMockResource {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        Ok(ScanPlan::new(
+        Ok(ScanPlan::from_partition_authority(
             cdf_kernel::PlanId::new(format!(
                 "df-plan-{}-{}",
                 request.resource_id.as_str(),

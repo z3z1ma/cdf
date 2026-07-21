@@ -706,9 +706,9 @@ impl ResourceStream for IcebergResource {
 
     fn rebind_scan_for_resume(
         &self,
-        scan: &mut ScanPlan,
+        scan: ScanPlan,
         committed_frontier: &SourcePosition,
-    ) -> Result<()> {
+    ) -> Result<ScanPlan> {
         committed_frontier.validate()?;
         let SourcePosition::TableSnapshot(committed) = committed_frontier else {
             return Err(CdfError::data(format!(
@@ -724,14 +724,13 @@ impl ResourceStream for IcebergResource {
             ))
         })?;
         if committed.as_ref() == &selected.position {
-            scan.replace_partition_authority(PartitionAuthority::Inline(Vec::new()));
-            return Ok(());
+            return self.retain_append_snapshot_tasks(scan, &BTreeSet::new());
         }
         if self.table.resource.mode == IcebergScanMode::AppendSnapshots {
             let admitted_snapshots = append_snapshot_ancestry(&self.table, committed, selected)?;
-            self.retain_append_snapshot_tasks(scan, &admitted_snapshots)?;
+            return self.retain_append_snapshot_tasks(scan, &admitted_snapshots);
         }
-        Ok(())
+        Ok(scan)
     }
 
     fn open(&self, _partition: PartitionPlan) -> PartitionOpenAttempt<'_> {
@@ -867,9 +866,9 @@ impl ResourceStream for IcebergResource {
 impl IcebergResource {
     fn retain_append_snapshot_tasks(
         &self,
-        scan: &mut ScanPlan,
+        scan: ScanPlan,
         admitted_snapshots: &BTreeSet<i64>,
-    ) -> Result<()> {
+    ) -> Result<ScanPlan> {
         let reference = scan.external_task_set().cloned().ok_or_else(|| {
             CdfError::data(format!(
                 "Iceberg append_snapshots resource `{}` has no planned task-set authority",
@@ -921,22 +920,21 @@ impl IcebergResource {
                 .checked_add(1)
                 .ok_or_else(|| CdfError::data("Iceberg append task ordinal exceeds u64"))?;
         }
-        if next_ordinal == 0 {
-            scan.replace_partition_authority(PartitionAuthority::Inline(Vec::new()));
-            scan.estimated_rows = Some(0);
-            scan.planned_source_bytes = Some(cdf_kernel::PlannedSourceBytes::new(0));
-            return Ok(());
-        }
         let artifact = writer.finalize(|output| authority.encode_to(output))?;
         if artifact.authority_sha256 != authority.content_sha256() {
             return Err(CdfError::internal(
                 "filtered Iceberg task-set authority hash changed during append binding",
             ));
         }
-        scan.replace_partition_authority(PartitionAuthority::External(artifact.reference));
-        scan.estimated_rows = Some(estimated_rows);
-        scan.planned_source_bytes = Some(cdf_kernel::PlannedSourceBytes::new(estimated_bytes));
-        Ok(())
+        let mut rebound = scan.try_map_partition_authority(|planned| match planned {
+            PartitionAuthority::External(_) => Ok(PartitionAuthority::External(artifact.reference)),
+            PartitionAuthority::Inline(_) => Err(CdfError::contract(
+                "Iceberg append resume binding requires external task authority",
+            )),
+        })?;
+        rebound.estimated_rows = Some(estimated_rows);
+        rebound.planned_source_bytes = Some(cdf_kernel::PlannedSourceBytes::new(estimated_bytes));
+        Ok(rebound)
     }
 }
 
@@ -2784,7 +2782,8 @@ mod tests {
         };
         let one_job_scan = resource.negotiate(&request).unwrap();
         assert_eq!(one_job_scan.estimated_rows, Some(8));
-        assert!(one_job_scan.planned_source_bytes.unwrap().get() > 0);
+        let one_job_source_bytes = one_job_scan.planned_source_bytes.unwrap().get();
+        assert!(one_job_source_bytes > 0);
         let reference = one_job_scan.external_task_set().cloned().unwrap();
         assert_eq!(reference.task_count, 2);
 
@@ -2804,17 +2803,16 @@ mod tests {
             .unwrap();
         let authority: crate::IcebergTaskSetAuthority =
             serde_json::from_slice(reader.authority().payload()).unwrap();
-        let mut unchanged_scan = one_job_scan.clone();
-        resource
+        let unchanged_scan = resource
             .rebind_scan_for_resume(
-                &mut unchanged_scan,
+                one_job_scan.clone(),
                 &SourcePosition::TableSnapshot(Box::new(
                     authority.snapshot.clone().expect("selected snapshot"),
                 )),
             )
             .unwrap();
         assert_eq!(unchanged_scan.partition_count().unwrap(), 0);
-        assert!(unchanged_scan.inline_partitions().is_some());
+        assert_eq!(unchanged_scan.external_task_set().unwrap().task_count, 0);
         assert_eq!(authority.output_schema_id, 1);
         assert_eq!(authority.projected_field_ids, vec![1, 2]);
         assert_eq!(
@@ -2876,7 +2874,7 @@ mod tests {
                 .all(|delete| delete.content == crate::IcebergDeleteContent::Equality)
         );
         assert_eq!(
-            one_job_scan.planned_source_bytes.unwrap().get(),
+            one_job_source_bytes,
             tasks
                 .iter()
                 .map(|task| task.data_file.file_size_bytes)
@@ -3224,13 +3222,12 @@ mod tests {
     #[test]
     fn append_snapshot_resume_selects_only_new_files_and_rejects_nonappend_history() {
         let root = tempfile::tempdir().unwrap();
-        let (execution, resource, mut scan, committed) =
-            planned_append_resource(root.path(), "append");
+        let (execution, resource, scan, committed) = planned_append_resource(root.path(), "append");
         assert_eq!(scan.external_task_set().unwrap().task_count, 2);
         let full_scan = scan.clone();
-        resource
+        let scan = resource
             .rebind_scan_for_resume(
-                &mut scan,
+                scan,
                 &SourcePosition::TableSnapshot(Box::new(committed.clone())),
             )
             .unwrap();
@@ -3320,33 +3317,28 @@ mod tests {
 
         let mut divergent_position = committed.clone();
         divergent_position.snapshot_id = 99;
-        let mut divergent_scan = full_scan.clone();
         let divergent = resource
             .rebind_scan_for_resume(
-                &mut divergent_scan,
+                full_scan.clone(),
                 &SourcePosition::TableSnapshot(Box::new(divergent_position)),
             )
             .unwrap_err();
         assert!(divergent.message.contains("is not an ancestor"));
         let mut missing_position = committed;
         missing_position.snapshot_id = 98;
-        let mut missing_scan = full_scan;
         let missing = resource
             .rebind_scan_for_resume(
-                &mut missing_scan,
+                full_scan,
                 &SourcePosition::TableSnapshot(Box::new(missing_position)),
             )
             .unwrap_err();
         assert!(missing.message.contains("history no longer contains"));
 
         let rejected = tempfile::tempdir().unwrap();
-        let (_execution, resource, mut scan, committed) =
+        let (_execution, resource, scan, committed) =
             planned_append_resource(rejected.path(), "overwrite");
         let error = resource
-            .rebind_scan_for_resume(
-                &mut scan,
-                &SourcePosition::TableSnapshot(Box::new(committed)),
-            )
+            .rebind_scan_for_resume(scan, &SourcePosition::TableSnapshot(Box::new(committed)))
             .unwrap_err();
         assert!(error.message.contains("snapshot 101 operation `overwrite`"));
         assert!(error.message.contains("mode = `snapshot`"));

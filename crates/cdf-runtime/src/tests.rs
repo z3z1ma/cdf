@@ -1234,7 +1234,7 @@ impl QueryableResource for MockSourceResource {
     }
 
     fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
-        Ok(ScanPlan::new(
+        Ok(ScanPlan::from_partition_authority(
             PlanId::new("mock-source-plan")?,
             request.clone(),
             PartitionAuthority::Inline(self.plan_partitions(request)?),

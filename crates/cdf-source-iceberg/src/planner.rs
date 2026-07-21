@@ -176,7 +176,7 @@ pub(crate) fn plan_snapshot_scan(
     }
     let reference = artifact.reference;
     reference.validate()?;
-    Ok(ScanPlan::new(
+    Ok(ScanPlan::from_partition_authority(
         PlanId::new(format!("plan-{}", descriptor.resource_id))?,
         request.clone(),
         PartitionAuthority::External(reference),

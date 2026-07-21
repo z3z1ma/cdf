@@ -719,18 +719,19 @@ impl ResourceStream for GlueResource {
 
     fn rebind_scan_for_resume(
         &self,
-        scan: &mut ScanPlan,
+        scan: ScanPlan,
         committed_frontier: &SourcePosition,
-    ) -> Result<()> {
+    ) -> Result<ScanPlan> {
+        committed_frontier.validate()?;
         let SourcePosition::FileManifest(committed) = committed_frontier else {
             return Err(CdfError::data(format!(
                 "Glue external table cannot resume from a {} position",
                 committed_frontier.kind().as_str()
             )));
         };
-        let Some(reference) = scan.external_task_set().cloned() else {
-            return Ok(());
-        };
+        let reference = scan.external_task_set().cloned().ok_or_else(|| {
+            CdfError::contract("Glue resume binding requires external task authority")
+        })?;
         let committed = committed
             .files
             .iter()
@@ -777,15 +778,15 @@ impl ResourceStream for GlueResource {
                 .checked_add(1)
                 .ok_or_else(|| CdfError::data("Glue resume task ordinal overflowed"))?;
         }
-        if ordinal == 0 {
-            scan.replace_partition_authority(PartitionAuthority::Inline(Vec::new()));
-            scan.planned_source_bytes = Some(cdf_kernel::PlannedSourceBytes::new(0));
-            return Ok(());
-        }
         let artifact = writer.finalize(|output| authority.encode_to(output))?;
-        scan.replace_partition_authority(PartitionAuthority::External(artifact.reference));
-        scan.planned_source_bytes = Some(cdf_kernel::PlannedSourceBytes::new(estimated_bytes));
-        Ok(())
+        let mut rebound = scan.try_map_partition_authority(|planned| match planned {
+            PartitionAuthority::External(_) => Ok(PartitionAuthority::External(artifact.reference)),
+            PartitionAuthority::Inline(_) => Err(CdfError::contract(
+                "Glue resume binding requires external task authority",
+            )),
+        })?;
+        rebound.planned_source_bytes = Some(cdf_kernel::PlannedSourceBytes::new(estimated_bytes));
+        Ok(rebound)
     }
 
     fn open(&self, _partition: PartitionPlan) -> PartitionOpenAttempt<'_> {
@@ -1577,10 +1578,9 @@ mod tests {
         assert_eq!(rows, 2);
         assert!(reader.next_partition(1).unwrap().is_none());
 
-        let mut resumed = scan;
-        resource
+        let resumed = resource
             .rebind_scan_for_resume(
-                &mut resumed,
+                scan,
                 &SourcePosition::FileManifest(FileManifest {
                     version: cdf_kernel::SOURCE_POSITION_VERSION,
                     files: vec![identity.file_position_evidence().unwrap()],

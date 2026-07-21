@@ -401,14 +401,14 @@ impl EnginePlan {
     }
 
     /// Rebinds this invocation to the checkpoint committed before source contact. Source-local
-    /// partition/task semantics remain behind `ResourceStream`; the engine owns recompiling the
-    /// canonical schedule and explain join after that mutation.
+    /// partition/task semantics remain behind `ResourceStream`; the source returns a complete
+    /// rebound scan and the engine owns recompiling the canonical schedule and explain join.
     pub fn rebind_initial_committed_frontier(
-        &mut self,
+        mut self,
         resource: &dyn ResourceStream,
         frontier: &SourcePosition,
-    ) -> Result<()> {
-        resource.rebind_scan_for_resume(&mut self.scan, frontier)?;
+    ) -> Result<Self> {
+        self.scan = resource.rebind_scan_for_resume(self.scan, frontier)?;
         if self.scan.partition_count()? == 0 {
             self.explain.partitions.clear();
         } else if let Some(partitions) = self.scan.inline_partitions()
@@ -431,7 +431,7 @@ impl EnginePlan {
             self.explain.partition_schedule = Some(schedule.clone());
             self.partition_schedule = Some(schedule);
         }
-        Ok(())
+        Ok(self)
     }
 
     /// Rebinds the physical package sink for one finite drain epoch while

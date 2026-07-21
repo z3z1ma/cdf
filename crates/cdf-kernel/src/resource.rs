@@ -942,8 +942,13 @@ impl PlannedTaskSetReference {
 }
 
 impl ScanPlan {
+    /// Constructs one scan from its complete, mutually exclusive partition authority.
+    ///
+    /// Source adapters must choose bounded inline partitions or an external canonical task set
+    /// here. There is no post-construction mutable authority setter: resume binding and resource
+    /// decoration consume and return a complete plan through [`Self::try_map_partition_authority`].
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub fn from_partition_authority(
         plan_id: PlanId,
         request: ScanRequest,
         partition_authority: PartitionAuthority,
@@ -1006,17 +1011,20 @@ impl ScanPlan {
         }
     }
 
-    pub fn replace_partition_authority(&mut self, authority: PartitionAuthority) {
-        self.partition_authority = authority;
-    }
-
-    pub fn map_inline_partitions(&mut self, mut map: impl FnMut(PartitionPlan) -> PartitionPlan) {
-        if let PartitionAuthority::Inline(partitions) = &mut self.partition_authority {
-            *partitions = std::mem::take(partitions)
-                .into_iter()
-                .map(&mut map)
-                .collect();
+    /// Applies one explicit, consuming transformation to the complete partition authority.
+    ///
+    /// The closure must match both authority variants. This prevents resource decorators and
+    /// resume binders from silently applying inline-only behavior to an external task set.
+    pub fn try_map_partition_authority(
+        mut self,
+        map: impl FnOnce(PartitionAuthority) -> Result<PartitionAuthority>,
+    ) -> Result<Self> {
+        let authority = map(self.partition_authority)?;
+        if let PartitionAuthority::External(task_set) = &authority {
+            task_set.validate()?;
         }
+        self.partition_authority = authority;
+        Ok(self)
     }
 }
 
@@ -2129,50 +2137,49 @@ pub trait ResourceStream: Send + Sync {
     /// engine or project orchestrator.
     fn rebind_scan_for_resume(
         &self,
-        scan: &mut ScanPlan,
+        scan: ScanPlan,
         committed_frontier: &SourcePosition,
-    ) -> Result<()> {
+    ) -> Result<ScanPlan> {
         committed_frontier.validate()?;
-        if scan.external_task_set().is_some() {
-            return Err(CdfError::contract(format!(
+        scan.try_map_partition_authority(|authority| match authority {
+            PartitionAuthority::External(_) => Err(CdfError::contract(format!(
                 "resource `{}` uses an external planned task set; its source adapter must implement resume binding",
                 self.descriptor().resource_id
-            )));
-        }
-        let partitions = scan.inline_partitions_mut().ok_or_else(|| {
-            CdfError::internal("external scan authority bypassed its resume-binding guard")
-        })?;
-        if partitions.len() == 1 {
-            partitions[0].start_position = Some(committed_frontier.clone());
-            return Ok(());
-        }
-        let SourcePosition::Composite(composite) = committed_frontier else {
-            return Err(CdfError::contract(format!(
-                "resource `{}` has {} partitions but its committed frontier is not partition-keyed; the source adapter must implement resume binding",
-                self.descriptor().resource_id,
-                partitions.len()
-            )));
-        };
-        let planned_ids = partitions
-            .iter()
-            .map(|partition| partition.partition_id.as_str())
-            .collect::<std::collections::BTreeSet<_>>();
-        if let Some(unknown) = composite
-            .positions
-            .keys()
-            .find(|partition_id| !planned_ids.contains(partition_id.as_str()))
-        {
-            return Err(CdfError::data(format!(
-                "resource `{}` committed composite frontier references absent partition `{unknown}`",
-                self.descriptor().resource_id
-            )));
-        }
-        for partition in partitions {
-            if let Some(position) = composite.positions.get(partition.partition_id.as_str()) {
-                partition.start_position = Some(position.clone());
+            ))),
+            PartitionAuthority::Inline(mut partitions) => {
+                if partitions.len() == 1 {
+                    partitions[0].start_position = Some(committed_frontier.clone());
+                    return Ok(PartitionAuthority::Inline(partitions));
+                }
+                let SourcePosition::Composite(composite) = committed_frontier else {
+                    return Err(CdfError::contract(format!(
+                        "resource `{}` has {} partitions but its committed frontier is not partition-keyed; the source adapter must implement resume binding",
+                        self.descriptor().resource_id,
+                        partitions.len()
+                    )));
+                };
+                let planned_ids = partitions
+                    .iter()
+                    .map(|partition| partition.partition_id.as_str())
+                    .collect::<std::collections::BTreeSet<_>>();
+                if let Some(unknown) = composite
+                    .positions
+                    .keys()
+                    .find(|partition_id| !planned_ids.contains(partition_id.as_str()))
+                {
+                    return Err(CdfError::data(format!(
+                        "resource `{}` committed composite frontier references absent partition `{unknown}`",
+                        self.descriptor().resource_id
+                    )));
+                }
+                for partition in &mut partitions {
+                    if let Some(position) = composite.positions.get(partition.partition_id.as_str()) {
+                        partition.start_position = Some(position.clone());
+                    }
+                }
+                Ok(PartitionAuthority::Inline(partitions))
             }
-        }
-        Ok(())
+        })
     }
     /// Opens one invocation-bound partition stream.
     ///

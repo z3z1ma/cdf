@@ -996,7 +996,7 @@ mod tests {
                 }
             }
 
-            Ok(ScanPlan::new(
+            Ok(ScanPlan::from_partition_authority(
                 PlanId::new("plan-orders").unwrap(),
                 plan_request,
                 cdf_kernel::PartitionAuthority::Inline(self.plan_partitions(request)?),

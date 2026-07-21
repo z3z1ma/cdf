@@ -59,7 +59,7 @@ impl Planner {
 
         let partitions = resource.plan_partitions(&input.request)?;
         validate_tier_a_partition_intents(&partitions)?;
-        let mut scan = ScanPlan::new(
+        let mut scan = ScanPlan::from_partition_authority(
             PlanId::new(format!("plan-{}", input.request.resource_id.as_str()))?,
             input.request.clone(),
             PartitionAuthority::Inline(partitions),
@@ -688,11 +688,14 @@ where
     };
     runtime.validate_for_resource(resource.descriptor())?;
     let evidence = &runtime.evidence;
-    let projection = scan
-        .inline_partitions()
-        .and_then(|partitions| partitions.first())
-        .and_then(|partition| partition.scan_intent.projection.as_deref());
-    let admission_constraint = scan_expression_schema(resource.schema().as_ref(), projection)?;
+    let projection = match scan.partition_authority() {
+        cdf_kernel::PartitionAuthority::Inline(partitions) => partitions
+            .first()
+            .and_then(|partition| partition.scan_intent.projection.clone()),
+        cdf_kernel::PartitionAuthority::External(_) => scan.request.projection.clone(),
+    };
+    let admission_constraint =
+        scan_expression_schema(resource.schema().as_ref(), projection.as_deref())?;
     let projected_observations = evidence
         .observations
         .iter()
@@ -713,7 +716,7 @@ where
             let projected = project_physical_observation(
                 physical.as_ref(),
                 resource.schema().as_ref(),
-                projection,
+                projection.as_deref(),
             )?;
             let hash = cdf_kernel::canonical_arrow_schema_hash(&projected)?;
             Ok((observation.observation_id.clone(), (hash, projected)))
@@ -730,8 +733,21 @@ where
         })
         .collect::<BTreeMap<_, _>>();
     let mut assigned_observations = BTreeSet::new();
-    for partition in scan.inline_partitions_mut().into_iter().flatten() {
-        let observation_id = partition
+    let inline_partitions = match scan.partition_authority() {
+        cdf_kernel::PartitionAuthority::Inline(_) => Some(
+            scan.inline_partitions_mut()
+                .expect("inline partition authority was matched"),
+        ),
+        cdf_kernel::PartitionAuthority::External(_) => {
+            // External task records retain the source-authored observation binding. The
+            // registry-validated planned-partition reader checks each record as it streams; the
+            // engine must not enumerate or rewrite the external authority during planning.
+            None
+        }
+    };
+    if let Some(inline_partitions) = inline_partitions {
+        for partition in inline_partitions {
+            let observation_id = partition
             .metadata
             .get(PLAN_SCHEMA_OBSERVATION_ID_KEY)
             .ok_or_else(|| {
@@ -739,7 +755,7 @@ where
                 "effective schema evidence requires every planned partition to identify its schema observation",
             )
         })?;
-        let binding = cdf_kernel::SchemaObservationBinding::new(
+            let binding = cdf_kernel::SchemaObservationBinding::new(
                 partition
                 .metadata
                 .get(PLAN_SCHEMA_OBSERVATION_BINDING_KEY)
@@ -750,30 +766,31 @@ where
             })?
             .clone(),
             )?;
-        if !assigned_observations.insert(observation_id.clone()) {
-            return Err(CdfError::data(format!(
-                "effective schema observation {observation_id:?} is assigned to more than one planned partition; observation identities must be partition-scoped"
-            )));
-        }
-        match evidence.observation(observation_id) {
-            Some(observation) => {
-                if observation.schema_observation_binding != binding {
-                    return Err(CdfError::data(format!(
-                        "effective schema observation {observation_id:?} does not match its planned partition source identity"
-                    )));
-                }
-                let execution_hash = projected_observations
-                    .get(observation_id)
-                    .map(|(hash, _)| hash)
-                    .unwrap_or(&observation.physical_schema_hash);
-                partition.metadata.insert(
-                    PLAN_PHYSICAL_SCHEMA_HASH_KEY.to_owned(),
-                    execution_hash.to_string(),
-                );
+            if !assigned_observations.insert(observation_id.clone()) {
+                return Err(CdfError::data(format!(
+                    "effective schema observation {observation_id:?} is assigned to more than one planned partition; observation identities must be partition-scoped"
+                )));
             }
-            None => {
-                observation_bindings.insert(observation_id.clone(), binding);
-                partition.metadata.remove(PLAN_PHYSICAL_SCHEMA_HASH_KEY);
+            match evidence.observation(observation_id) {
+                Some(observation) => {
+                    if observation.schema_observation_binding != binding {
+                        return Err(CdfError::data(format!(
+                            "effective schema observation {observation_id:?} does not match its planned partition source identity"
+                        )));
+                    }
+                    let execution_hash = projected_observations
+                        .get(observation_id)
+                        .map(|(hash, _)| hash)
+                        .unwrap_or(&observation.physical_schema_hash);
+                    partition.metadata.insert(
+                        PLAN_PHYSICAL_SCHEMA_HASH_KEY.to_owned(),
+                        execution_hash.to_string(),
+                    );
+                }
+                None => {
+                    observation_bindings.insert(observation_id.clone(), binding);
+                    partition.metadata.remove(PLAN_PHYSICAL_SCHEMA_HASH_KEY);
+                }
             }
         }
     }
@@ -1055,7 +1072,7 @@ pub fn negotiate_scan_plan(
         partition.scan_intent = intent.clone();
     }
 
-    Ok(ScanPlan::new(
+    Ok(ScanPlan::from_partition_authority(
         PlanId::new(format!("plan-{}", resource_id.as_str()))?,
         request,
         PartitionAuthority::Inline(partitions),

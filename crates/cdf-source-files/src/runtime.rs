@@ -1609,9 +1609,9 @@ impl ResourceStream for FileResource {
 
     fn rebind_scan_for_resume(
         &self,
-        scan: &mut ScanPlan,
+        scan: ScanPlan,
         committed_frontier: &SourcePosition,
-    ) -> Result<()> {
+    ) -> Result<ScanPlan> {
         committed_frontier.validate()?;
         let SourcePosition::FileManifest(committed) = committed_frontier else {
             return Err(CdfError::contract(format!(
@@ -1643,6 +1643,7 @@ impl ResourceStream for FileResource {
         )?;
         let mut input_ordinal = 0_u64;
         let mut output_ordinal = 0_u64;
+        let mut selected_bytes = 0_u64;
         while let Some(executable) = input.next_partition(input_ordinal)? {
             let partition = executable.plan();
             let file = partition.planned_file()?.ok_or_else(|| {
@@ -1660,6 +1661,9 @@ impl ResourceStream for FileResource {
                 output_ordinal = output_ordinal
                     .checked_add(1)
                     .ok_or_else(|| CdfError::data("selected file partition count exceeds u64"))?;
+                selected_bytes = selected_bytes
+                    .checked_add(file.size_bytes)
+                    .ok_or_else(|| CdfError::data("selected file bytes exceed u64"))?;
             }
             input_ordinal = input_ordinal
                 .checked_add(1)
@@ -1672,16 +1676,21 @@ impl ResourceStream for FileResource {
             compiled_source_plan_hash,
             request_hash: cdf_runtime::artifact_hash(&scan.request)?,
         };
-        scan.replace_partition_authority(PartitionAuthority::External(
-            output
-                .finalize(|writer| {
-                    serde_json::to_writer(writer, &authority).map_err(|error| {
-                        CdfError::data(format!("encode selected file partition authority: {error}"))
-                    })
-                })?
-                .reference,
-        ));
-        Ok(())
+        let reference = output
+            .finalize(|writer| {
+                serde_json::to_writer(writer, &authority).map_err(|error| {
+                    CdfError::data(format!("encode selected file partition authority: {error}"))
+                })
+            })?
+            .reference;
+        let mut rebound = scan.try_map_partition_authority(|planned| match planned {
+            PartitionAuthority::External(_) => Ok(PartitionAuthority::External(reference)),
+            PartitionAuthority::Inline(_) => Err(CdfError::contract(
+                "file incremental partition selection requires external task authority",
+            )),
+        })?;
+        rebound.planned_source_bytes = Some(cdf_kernel::PlannedSourceBytes::new(selected_bytes));
+        Ok(rebound)
     }
 
     fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
@@ -1767,7 +1776,7 @@ impl QueryableResource for FileResource {
             &negotiation.intent,
             inventory.task_set(),
         )?;
-        Ok(ScanPlan::new(
+        Ok(ScanPlan::from_partition_authority(
             PlanId::new(format!("plan-{}", self.descriptor.resource_id))?,
             request.clone(),
             PartitionAuthority::External(planned_task_set),

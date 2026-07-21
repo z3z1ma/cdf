@@ -88,7 +88,7 @@ less cardinality conversion, while small existing JSON artifacts retain identica
 
 Residual risk: the public post-construction partition-authority setter and representation-sensitive
 source SDK remain dangerous, but are explicitly owned by
-`.10x/tickets/2026-07-18-p0-source-planning-authority-closure.md` and are not needed to preserve the
+`.10x/tickets/done/2026-07-18-p0-source-planning-authority-closure.md` and are not needed to preserve the
 portable `u64` protocol.
 
 ## Retrospective

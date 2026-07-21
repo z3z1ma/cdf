@@ -131,7 +131,7 @@ async fn run_project_with_context(
         .map(|checkpoint| checkpoint.delta.source_resume_position())
         .filter(|position| !matches!(position, SourcePosition::FileManifest(_)))
     {
-        plan.rebind_initial_committed_frontier(resource.stream(), frontier)?;
+        plan = plan.rebind_initial_committed_frontier(resource.stream(), frontier)?;
     }
 
     let package_dir = package_root.join(&package_id);
@@ -283,7 +283,8 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
         .map(|checkpoint| checkpoint.delta.source_resume_position())
         .filter(|position| !matches!(position, SourcePosition::FileManifest(_)))
     {
-        remaining_plan.rebind_initial_committed_frontier(resource.stream(), frontier)?;
+        remaining_plan =
+            remaining_plan.rebind_initial_committed_frontier(resource.stream(), frontier)?;
     }
     let mut first_run_id = None;
     let mut epoch_count = 0_u64;
@@ -393,7 +394,7 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
                     "partial external drain continuation requires source-owned task slicing",
                 ));
             }
-            remaining_plan.rebind_initial_committed_frontier(
+            remaining_plan = remaining_plan.rebind_initial_committed_frontier(
                 resource.stream(),
                 unit.report.checkpoint.delta.source_resume_position(),
             )?;
@@ -443,7 +444,10 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
             ));
         }
         last_committed = Some((unit.report, last_epoch));
-        next_manifest_summary = preselected_manifest_summary(&remaining_plan)?;
+        next_manifest_summary = preselected_manifest_summary(
+            &remaining_plan.scan,
+            resource.capabilities().incremental.clone(),
+        )?;
     }
 }
 
@@ -1080,8 +1084,9 @@ fn plan_file_manifest_incrementality<'a>(
                 }),
             });
         };
-        let mut selected = plan.clone();
-        selected.rebind_initial_committed_frontier(resource.stream(), committed)?;
+        let selected = plan
+            .clone()
+            .rebind_initial_committed_frontier(resource.stream(), committed)?;
         let changed_file_count = selected.scan.partition_count()?;
         return Ok(FileManifestPlanning {
             plan: Cow::Owned(selected),
@@ -1152,14 +1157,17 @@ fn plan_file_manifest_incrementality<'a>(
     })
 }
 
-fn preselected_manifest_summary(plan: &EnginePlan) -> Result<Option<FileManifestRunSummary>> {
-    let Some(files) =
-        file_positions_from_partitions(plan.scan.inline_partitions().unwrap_or_default())?
-    else {
+fn preselected_manifest_summary(
+    scan: &cdf_kernel::ScanPlan,
+    incremental: IncrementalShape,
+) -> Result<Option<FileManifestRunSummary>> {
+    if incremental != IncrementalShape::File {
         return Ok(None);
-    };
-    let file_count = u64::try_from(files.len())
-        .map_err(|_| CdfError::data("file manifest count exceeds u64"))?;
+    }
+    // The first drain epoch already applied file-manifest incrementality. Every remaining
+    // canonical partition therefore represents one changed file. `partition_count` is the typed
+    // authority for both resident partitions and external task sets and never enumerates tasks.
+    let file_count = scan.partition_count()?;
     Ok(Some(FileManifestRunSummary {
         total_file_count: file_count,
         changed_file_count: file_count,
@@ -1365,4 +1373,56 @@ fn validation_depth_transitions_recorded<'a>(
 
 fn explicit_anomaly_for_run(program: &ValidationProgram) -> Option<&AnomalyFact> {
     program.explicit_anomalies.first()
+}
+
+#[cfg(test)]
+mod source_planning_authority_tests {
+    use super::*;
+
+    #[test]
+    fn external_file_drain_summary_uses_typed_cardinality_without_enumeration() {
+        let task_count = u64::from(u32::MAX) + 9;
+        let scan = cdf_kernel::ScanPlan::from_partition_authority(
+            PlanId::new("external-file-drain-summary").unwrap(),
+            ScanRequest {
+                resource_id: ResourceId::new("events.files").unwrap(),
+                projection: None,
+                filters: Vec::new(),
+                limit: None,
+                order_by: Vec::new(),
+                scope: ScopeKey::Resource,
+            },
+            cdf_kernel::PartitionAuthority::External(cdf_kernel::PlannedTaskSetReference {
+                version: cdf_kernel::PLANNED_TASK_SET_REFERENCE_VERSION,
+                task_type: "cdf.files.partition-v1".to_owned(),
+                task_count,
+                store_namespace: cdf_kernel::ContentStoreNamespace::new("test-tasks").unwrap(),
+                object_key: cdf_kernel::ContentObjectKey::new("file-drain.tasks").unwrap(),
+                byte_count: 1,
+                content_sha256:
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .to_owned(),
+                provider_generation: cdf_kernel::ContentProviderGeneration::new("generation-1")
+                    .unwrap(),
+            }),
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+            cdf_kernel::DeliveryGuarantee::AtLeastOnceDuplicateRisk,
+        );
+
+        assert_eq!(
+            preselected_manifest_summary(&scan, IncrementalShape::File).unwrap(),
+            Some(FileManifestRunSummary {
+                total_file_count: task_count,
+                changed_file_count: task_count,
+                unchanged_file_count: 0,
+            })
+        );
+        assert_eq!(
+            preselected_manifest_summary(&scan, IncrementalShape::Cursor).unwrap(),
+            None
+        );
+    }
 }
