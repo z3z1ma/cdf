@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-10
-Updated: 2026-07-21
+Updated: 2026-07-22
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-08-p2-data-onramp-program.md
 
@@ -55,7 +55,7 @@ This parent is an aggregate plan. Workstream records own sequencing and integrat
 - `.10x/tickets/2026-07-18-p3-l7-ec2-benchmark-tranche-lifecycle.md`
 - `.10x/tickets/done/2026-07-18-p3-l9-ec2-measure-runner-build-graph.md`
 - `.10x/tickets/cancelled/2026-07-18-p3-d17-duckdb-wide-string-overlap.md`
-- `.10x/tickets/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md`
+- `.10x/tickets/done/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md`
 
 ## Sequencing
 
@@ -117,6 +117,11 @@ P3 does not implement a distributed scheduler, remote worker leases, resident st
   wide profiling, statistics-proven all-null projection, DuckDB-native write policy, physical
   admission/telemetry, scanner overhead, and avoidable lossless type mappings before one final
   reference-adapter closure review.
+- 2026-07-22: Closed D18 by explicit user direction. D18A proved DuckDB's native physical sink is
+  the 2,052-column floor while ordinary TLC exceeds four million rows per second; D18B retained
+  exact, reconciled statistics-driven null-column pruning for an 11.364% wide wall improvement with
+  a 0.061% TLC delta. D18C-F and D18Z were cancelled rather than adding speculative knobs,
+  alternate scanners, or completeness work without a current product need.
 
 ## Blockers
 

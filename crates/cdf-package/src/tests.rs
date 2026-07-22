@@ -498,6 +498,50 @@ fn verified_package_statistics_are_conservatively_absent_without_profile() {
 }
 
 #[test]
+fn verified_package_statistics_reject_aggregate_drift_from_segments() {
+    let temp = tempfile::tempdir().unwrap();
+    let builder = package_builder!(temp.path(), "pkg-stats-aggregate-drift").unwrap();
+    let batch = sample_batch();
+    builder
+        .write_runtime_arrow_schema(batch.schema().as_ref())
+        .unwrap();
+    let segment_stats = cdf_kernel::BatchStats::compute(&batch).unwrap();
+    let mut forged_package_stats = segment_stats.clone();
+    forged_package_stats.columns[1].null_count = forged_package_stats.columns[1].row_count;
+    forged_package_stats.columns[1].minimum = None;
+    forged_package_stats.columns[1].maximum = None;
+    let segment_id = SegmentId::new("seg-000001").unwrap();
+    let mut profile = builder.begin_statistics_profile().unwrap();
+    profile
+        .write_stats(
+            StatisticsProfileGrain::Segment,
+            0,
+            segment_id.as_str(),
+            "sha256:schema",
+            &segment_stats,
+        )
+        .unwrap();
+    profile
+        .write_stats(
+            StatisticsProfileGrain::Package,
+            0,
+            "pkg-stats-aggregate-drift",
+            "sha256:schema",
+            &forged_package_stats,
+        )
+        .unwrap();
+    profile.finish().unwrap();
+    builder
+        .write_segment(segment_id, 0, &[canonical_batch(batch, 0)])
+        .unwrap();
+    let (_, verified) = builder.finish_verified().unwrap();
+    let reader = PackageReader::open(temp.path()).unwrap();
+
+    let error = reader.verified_package_statistics(&verified).unwrap_err();
+    assert!(error.message.contains("does not reconcile"), "{error}");
+}
+
+#[test]
 fn statistics_profile_stream_rejects_schema_drift_and_omitted_manifest_segments() {
     let schema_drift = tempfile::tempdir().unwrap();
     let builder = package_builder!(schema_drift.path(), "pkg-stats-schema-drift").unwrap();

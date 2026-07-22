@@ -148,6 +148,7 @@ pub(crate) struct TablePlan {
 pub(crate) struct ExistingColumn {
     pub(crate) data_type: String,
     pub(crate) nullable: bool,
+    pub(crate) default_expression: Option<String>,
 }
 
 #[derive(Clone, Debug)]

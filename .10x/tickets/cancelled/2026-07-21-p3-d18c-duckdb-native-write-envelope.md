@@ -1,7 +1,7 @@
-Status: open
+Status: cancelled
 Created: 2026-07-21
-Updated: 2026-07-21
-Parent: .10x/tickets/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md
+Updated: 2026-07-22
+Parent: .10x/tickets/done/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md
 Depends-On: .10x/tickets/done/2026-07-21-p3-d18a-duckdb-wide-roofline-profile.md
 
 # P3 D18C: DuckDB native write envelope
@@ -45,20 +45,26 @@ specific change to canonical package segmentation.
 
 ## Journal
 
-None.
+- 2026-07-22: Cancelled by explicit user direction after D18A established that DuckDB's physical
+  storage sink, not CDF's scanner, dominates the pathological 2,052-column workload and D18B
+  retained the only measured, architecture-preserving optimization. No native write default or
+  tuning knob had earned promotion; adding speculative controls would enlarge the adapter without
+  evidence that ordinary schemas benefit.
 
 ## Blockers
 
-Depends on D18A baseline/profile.
+None. Cancellation is deliberate, not blocked.
 
 ## Evidence
 
-Pending.
+No implementation was attempted. D18A records the native sink floor and greater than four million
+rows per second on the full-year TLC control; D18B records the retained sparse-wide improvement.
 
 ## Review
 
-Pending.
+Cancellation preserves the existing measured defaults and introduces no product behavior.
 
 ## Retrospective
 
-Pending.
+DuckDB-native storage tuning should resume only with a representative workload and same-host proof
+that a specific setting improves it without penalizing ordinary schemas.

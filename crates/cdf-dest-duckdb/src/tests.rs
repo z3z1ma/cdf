@@ -1953,6 +1953,51 @@ fn complete_all_null_statistics_preserve_schema_across_dispositions() {
 }
 
 #[test]
+fn complete_all_null_statistics_override_existing_destination_defaults() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("sparse-default.duckdb");
+    let connection = Connection::open(&database).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE orders (\
+                id BIGINT NOT NULL, \
+                sparse_value VARCHAR DEFAULT 'must-not-leak', \
+                name VARCHAR NOT NULL, \
+                _cdf_row_key UBIGINT NOT NULL\
+            )",
+        )
+        .unwrap();
+    drop(connection);
+
+    let package = temp.path().join("pkg-sparse-default");
+    let package_hash = build_profiled_package_for_commit(
+        &package,
+        "pkg-sparse-default",
+        &[sparse_profile_batch(vec![1], vec!["one"])],
+        WriteDisposition::Append,
+        Vec::new(),
+    );
+    commit_current(
+        &destination(&database),
+        request(
+            &package,
+            package_hash,
+            WriteDisposition::Append,
+            Vec::new(),
+            1,
+        ),
+    );
+
+    let connection = Connection::open(database).unwrap();
+    let sparse = connection
+        .query_row("SELECT sparse_value FROM orders", [], |row| {
+            row.get::<_, Option<String>>(0)
+        })
+        .unwrap();
+    assert_eq!(sparse, None);
+}
+
+#[test]
 fn merge_deduplicates_exact_replayed_rows_and_updates_keys() {
     let temp = tempfile::tempdir().unwrap();
     let initial_package = temp.path().join("pkg-initial");

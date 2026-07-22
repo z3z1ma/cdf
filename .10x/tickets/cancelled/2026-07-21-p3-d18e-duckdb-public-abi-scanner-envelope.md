@@ -1,7 +1,7 @@
-Status: open
+Status: cancelled
 Created: 2026-07-21
-Updated: 2026-07-21
-Parent: .10x/tickets/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md
+Updated: 2026-07-22
+Parent: .10x/tickets/done/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md
 Depends-On: .10x/tickets/done/2026-07-21-p3-d18a-duckdb-wide-roofline-profile.md
 
 # P3 D18E: DuckDB public-ABI scanner envelope
@@ -46,20 +46,26 @@ appender, unsafe code outside `cdf-dest-duckdb`, or speculative rewrite without 
 
 ## Journal
 
-None.
+- 2026-07-22: Cancelled by explicit user direction. D18A's authority-bound comparison already
+  showed the sole stock public-C-API product scanner faster end to end than its independent raw
+  comparator, while ordinary TLC ingestion exceeds four million rows per second. No profile-backed
+  public-ABI change remained obvious enough to justify another hot-path experiment.
 
 ## Blockers
 
-Depends on D18A baseline/profile.
+None. Cancellation is deliberate, not blocked.
 
 ## Evidence
 
-Pending.
+`.10x/tickets/done/2026-07-21-p3-d18a-duckdb-wide-roofline-profile.md` records the retained scanner
+and raw comparator profiles. No D18E implementation was attempted.
 
 ## Review
 
-Pending.
+Cancellation keeps one scanner and adds no alternate path, feature flag, unsafe surface, or custom
+build.
 
 ## Retrospective
 
-Pending.
+A modest comparator gap is not an optimization mandate when the product path wins at the governed
+boundary and another experiment would add complexity without a profile-backed target.

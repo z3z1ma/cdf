@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-21
 Updated: 2026-07-22
-Parent: .10x/tickets/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md
+Parent: .10x/tickets/done/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md
 
 # P3 D18A: DuckDB wide roofline and profile
 

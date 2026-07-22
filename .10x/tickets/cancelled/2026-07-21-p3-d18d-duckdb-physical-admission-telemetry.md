@@ -1,7 +1,7 @@
-Status: open
+Status: cancelled
 Created: 2026-07-21
 Updated: 2026-07-22
-Parent: .10x/tickets/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md
+Parent: .10x/tickets/done/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md
 Depends-On: .10x/tickets/done/2026-07-21-p3-d18a-duckdb-wide-roofline-profile.md
 
 # P3 D18D: DuckDB physical admission and telemetry
@@ -58,19 +58,27 @@ unbounded native allocation, or generic runtime knowledge of DuckDB settings.
   value to its live temporary-directory limiter. This ticket must apply the effective limiter after
   open and verify it behaviorally; it must also benchmark the automatic ceiling rather than turning
   the nominal 1 GiB value into a default failure for the 2,052-column reference workload.
+- 2026-07-22: Cancelled by explicit user direction as part of the DuckDB closeout. Current
+  schema-derived admission, typed OOM rollback/redrive, explicit memory/concurrency controls, and
+  successful no-tuning wide completion remain the product boundary. The DuckDB 1.5.4 live
+  temp-limiter mismatch and schema-width final-binding statistics allocation remain accepted,
+  documented residuals rather than claims of enforced limits.
 
 ## Blockers
 
-Depends on D18A baseline/profile.
+None. Cancellation is deliberate, not blocked.
 
 ## Evidence
 
-Pending.
+D18A retains exact writer settings plus observed native buffer/temp peaks; D18B retains the final
+wide/TLC cgroup evidence. No D18D implementation was attempted.
 
 ## Review
 
-Pending.
+Cancellation adds no unmeasured resource policy and does not weaken the existing typed OOM safety
+backstop.
 
 ## Retrospective
 
-Pending.
+Configuration values reported by an embedded engine are not enforcement evidence. Reopening this
+work requires a behaviorally verified live-limit API and representative performance evidence.

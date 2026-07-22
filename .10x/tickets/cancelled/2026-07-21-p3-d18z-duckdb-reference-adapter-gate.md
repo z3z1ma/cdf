@@ -1,8 +1,8 @@
-Status: open
+Status: cancelled
 Created: 2026-07-21
-Updated: 2026-07-21
-Parent: .10x/tickets/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md
-Depends-On: .10x/tickets/done/2026-07-21-p3-d18a-duckdb-wide-roofline-profile.md, .10x/tickets/2026-07-21-p3-d18b-duckdb-sparse-wide-projection.md, .10x/tickets/2026-07-21-p3-d18c-duckdb-native-write-envelope.md, .10x/tickets/2026-07-21-p3-d18d-duckdb-physical-admission-telemetry.md, .10x/tickets/2026-07-21-p3-d18e-duckdb-public-abi-scanner-envelope.md, .10x/tickets/2026-07-21-p3-d18f-duckdb-lossless-type-closure.md
+Updated: 2026-07-22
+Parent: .10x/tickets/done/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md
+Depends-On: .10x/tickets/done/2026-07-21-p3-d18a-duckdb-wide-roofline-profile.md, .10x/tickets/done/2026-07-21-p3-d18b-duckdb-sparse-wide-projection.md, .10x/tickets/cancelled/2026-07-21-p3-d18c-duckdb-native-write-envelope.md, .10x/tickets/cancelled/2026-07-21-p3-d18d-duckdb-physical-admission-telemetry.md, .10x/tickets/cancelled/2026-07-21-p3-d18e-duckdb-public-abi-scanner-envelope.md, .10x/tickets/cancelled/2026-07-21-p3-d18f-duckdb-lossless-type-closure.md
 
 # P3 D18Z: DuckDB reference-adapter gate
 
@@ -31,7 +31,7 @@ No new optimization during closure review and no baseline reset to make a regres
 
 ## References
 
-- `.10x/tickets/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md`
+- `.10x/tickets/done/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md`
 - `.10x/knowledge/quality-gate-execution.md`
 - `.10x/knowledge/runtime-conformance-throughput-rule.md`
 - `.10x/tickets/2026-07-18-p3-l7-ec2-benchmark-tranche-lifecycle.md`
@@ -43,20 +43,25 @@ No new optimization during closure review and no baseline reset to make a regres
 
 ## Journal
 
-None.
+- 2026-07-22: Cancelled by explicit user direction after D18A and D18B closure. The user chose to
+  stop further DuckDB-specific work, accept the native pathological-wide floor, and retain the
+  statistics-based improvement. This cancellation does not claim the original D18A-F matrix was
+  executed; it records that D18C-F were deliberately cancelled instead.
 
 ## Blockers
 
-Depends on D18A-F.
+None. Cancellation is deliberate, not blocked.
 
 ## Evidence
 
-Pending.
+D18A and D18B contain their own complete verification and adversarial review. No separate D18Z
+matrix was run.
 
 ## Review
 
-Pending.
+Cancellation avoids misrepresenting a partial child graph as a fully executed gate.
 
 ## Retrospective
 
-Pending.
+A closeout gate should be cancelled rather than weakened when the user intentionally terminates its
+remaining experiments.

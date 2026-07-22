@@ -1,7 +1,7 @@
-Status: open
+Status: cancelled
 Created: 2026-07-21
-Updated: 2026-07-21
-Parent: .10x/tickets/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md
+Updated: 2026-07-22
+Parent: .10x/tickets/done/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md
 
 # P3 D18F: DuckDB lossless type closure
 
@@ -45,20 +45,25 @@ lossless, per-row scalar conversion, or parallel logical type system.
 
 ## Journal
 
-None.
+- 2026-07-22: Cancelled by explicit user direction as part of the DuckDB closeout. Existing exact
+  mappings and fail-closed unsupported/lossy verdicts remain authoritative; no speculative
+  representation transform or scalar fallback was added.
 
 ## Blockers
 
-None.
+None. Cancellation is deliberate, not blocked.
 
 ## Evidence
 
-Pending.
+No implementation was attempted. Existing destination type-matrix and round-trip tests remain the
+current evidence boundary.
 
 ## Review
 
-Pending.
+Cancellation preserves exactness: it neither converts an unsupported mapping into a silent loss nor
+adds an unmeasured transform.
 
 ## Retrospective
 
-Pending.
+Further type expansion should be driven by a real source/destination need and an exact vectorized
+mapping, not by completeness for its own sake.

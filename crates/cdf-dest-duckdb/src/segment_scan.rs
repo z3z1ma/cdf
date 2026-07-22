@@ -22,6 +22,7 @@ use crate::{
     CDF_ROW_KEY_COLUMN, CDF_STAGE_ORDER_COLUMN, DuckDbCommitWriter, DuckDbNativeResources,
     package::duckdb_type,
     sql::{DuckDbFailure, quote_ident},
+    table::existing_columns,
 };
 
 pub(crate) const SEGMENT_SCAN_FUNCTION: &str = "__cdf_canonical_segments";
@@ -154,6 +155,13 @@ pub(crate) fn ingest_canonical_segments(
         .map_err(DuckDbFailure::other)?;
     let mut insert_columns = Vec::with_capacity(writer.persisted_fields.len());
     let mut select_columns = Vec::with_capacity(writer.persisted_fields.len());
+    let omitted_target_columns = if writer.omitted_user_fields.iter().any(|omitted| *omitted)
+        && !merge
+    {
+        Some(existing_columns(&writer.conn, &writer.write_target).map_err(DuckDbFailure::other)?)
+    } else {
+        None
+    };
     for (field, omitted) in writer.persisted_fields[..writer.user_field_count]
         .iter()
         .zip(&writer.omitted_user_fields)
@@ -162,6 +170,18 @@ pub(crate) fn ingest_canonical_segments(
             let name = quote_ident(&field.name);
             insert_columns.push(name.clone());
             select_columns.push(name);
+        } else if omitted_target_columns
+            .as_ref()
+            .and_then(|columns| columns.get(&field.name))
+            .and_then(|column| column.default_expression.as_ref())
+            .is_some()
+        {
+            insert_columns.push(quote_ident(&field.name));
+            select_columns.push(format!(
+                "CAST(NULL AS {}) AS {}",
+                field.sql_type,
+                quote_ident(&field.name)
+            ));
         }
     }
     insert_columns.push(quote_ident(CDF_ROW_KEY_COLUMN));

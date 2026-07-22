@@ -1,6 +1,6 @@
-Status: open
+Status: done
 Created: 2026-07-21
-Updated: 2026-07-21
+Updated: 2026-07-22
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
 Depends-On: .10x/tickets/done/2026-07-18-p3-d14-duckdb-nanoarrow-080-lz4-revalidation.md, .10x/tickets/done/2026-07-21-p0-duckdb-wide-ingest-memory.md
 
@@ -15,12 +15,12 @@ public-C-API table function and delete every experiment that does not improve a 
 This parent is an aggregate plan and is not executable. Its children are:
 
 1. `.10x/tickets/done/2026-07-21-p3-d18a-duckdb-wide-roofline-profile.md`
-2. `.10x/tickets/2026-07-21-p3-d18b-duckdb-sparse-wide-projection.md`
-3. `.10x/tickets/2026-07-21-p3-d18c-duckdb-native-write-envelope.md`
-4. `.10x/tickets/2026-07-21-p3-d18d-duckdb-physical-admission-telemetry.md`
-5. `.10x/tickets/2026-07-21-p3-d18e-duckdb-public-abi-scanner-envelope.md`
-6. `.10x/tickets/2026-07-21-p3-d18f-duckdb-lossless-type-closure.md`
-7. `.10x/tickets/2026-07-21-p3-d18z-duckdb-reference-adapter-gate.md`
+2. `.10x/tickets/done/2026-07-21-p3-d18b-duckdb-sparse-wide-projection.md`
+3. `.10x/tickets/cancelled/2026-07-21-p3-d18c-duckdb-native-write-envelope.md`
+4. `.10x/tickets/cancelled/2026-07-21-p3-d18d-duckdb-physical-admission-telemetry.md`
+5. `.10x/tickets/cancelled/2026-07-21-p3-d18e-duckdb-public-abi-scanner-envelope.md`
+6. `.10x/tickets/cancelled/2026-07-21-p3-d18f-duckdb-lossless-type-closure.md`
+7. `.10x/tickets/cancelled/2026-07-21-p3-d18z-duckdb-reference-adapter-gate.md`
 
 ## Non-goals
 
@@ -79,6 +79,10 @@ This parent is an aggregate plan and is not executable. Its children are:
 - 2026-07-21: Opened after the user rejected treating the repaired wide-schema survivor as the
   endpoint. Work is split so measurement precedes tuning and each independent candidate can be
   deleted if it fails its own performance premise.
+- 2026-07-22: Closed by explicit user direction after D18A established the native DuckDB
+  pathological-wide floor and D18B retained a statistics-authorized 11.364% improvement without a
+  meaningful TLC regression. D18C-F and the aggregate D18Z gate were deliberately cancelled rather
+  than turned into speculative tuning, another ingress, or weakened acceptance claims.
 
 ## Blockers
 
@@ -86,12 +90,20 @@ None at parent level. Child dependencies govern execution.
 
 ## Evidence
 
-Pending child closure.
+D18A and D18B are done with authority-bound EC2 medians, affected-suite verification, and
+independent adversarial review. Each cancelled child records its own no-action rationale and no
+product implementation.
 
 ## Review
 
-Pending child closure and final independent adversarial review.
+The retained adapter still has one stock-libduckdb public-C-API scanner, destination-owned ingress,
+typed OOM rollback/redrive, exact provenance, and no superseded alternate path. D18B's adversarial
+correctness finding was repaired generically before closure. The original all-child acceptance
+matrix is not claimed: D18Z is cancelled explicitly.
 
 ## Retrospective
 
-Pending.
+The 2,052-column workload was valuable for finding memory and statistics-authority defects, but it
+is not a useful endless optimization target once DuckDB's physical table sink dominates. The
+highest-value retained result is reusable verified package-statistics authority; future destination
+work should consume that generic fact only when its own semantics and measurements justify it.

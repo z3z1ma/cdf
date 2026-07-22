@@ -159,24 +159,33 @@ impl PackageReader {
             return Ok(None);
         }
 
-        let mut columns = Vec::new();
+        let mut segment_aggregate = BatchStats::default();
+        let mut segment_columns = Vec::new();
+        let mut current_segment = None;
+        let mut package_columns = Vec::new();
         self.for_each_verified_statistics_profile(verified, &mut |row| {
-            if row.grain == StatisticsProfileGrain::Package {
-                columns.push(ColumnStats {
-                    field_path: row.field_path,
-                    data_type: row.data_type,
-                    row_count: row.row_count,
-                    null_count: row.null_count,
-                    minimum: row.minimum,
-                    maximum: row.maximum,
-                    completeness: row.completeness,
-                });
+            if row.grain == StatisticsProfileGrain::Segment {
+                if current_segment.is_some_and(|ordinal| ordinal != row.container_ordinal) {
+                    merge_profile_columns(&mut segment_aggregate, &mut segment_columns)?;
+                }
+                current_segment = Some(row.container_ordinal);
+                segment_columns.push(profile_column(row));
+            } else {
+                merge_profile_columns(&mut segment_aggregate, &mut segment_columns)?;
+                package_columns.push(profile_column(row));
             }
             Ok(())
         })?;
-        Ok(Some(BatchStats {
-            columns: columns.into_boxed_slice(),
-        }))
+        merge_profile_columns(&mut segment_aggregate, &mut segment_columns)?;
+        let package_statistics = BatchStats {
+            columns: package_columns.into_boxed_slice(),
+        };
+        if package_statistics != segment_aggregate {
+            return Err(CdfError::data(
+                "statistics profile package aggregate does not reconcile with its segment statistics",
+            ));
+        }
+        Ok(Some(package_statistics))
     }
 
     /// Visits profile rows in canonical order without retaining the artifact or manifest segment
@@ -303,6 +312,27 @@ impl PackageReader {
         }
         Ok(window_count)
     }
+}
+
+fn profile_column(row: StatisticsProfileRow) -> ColumnStats {
+    ColumnStats {
+        field_path: row.field_path,
+        data_type: row.data_type,
+        row_count: row.row_count,
+        null_count: row.null_count,
+        minimum: row.minimum,
+        maximum: row.maximum,
+        completeness: row.completeness,
+    }
+}
+
+fn merge_profile_columns(aggregate: &mut BatchStats, columns: &mut Vec<ColumnStats>) -> Result<()> {
+    if columns.is_empty() {
+        return Ok(());
+    }
+    aggregate.merge_owned(BatchStats {
+        columns: std::mem::take(columns).into_boxed_slice(),
+    })
 }
 
 fn emit_verified_statistics_window(

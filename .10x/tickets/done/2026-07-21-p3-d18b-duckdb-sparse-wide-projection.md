@@ -1,7 +1,7 @@
-Status: active
+Status: done
 Created: 2026-07-21
-Updated: 2026-07-21
-Parent: .10x/tickets/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md
+Updated: 2026-07-22
+Parent: .10x/tickets/done/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md
 Depends-On: .10x/tickets/done/2026-07-21-p3-d18a-duckdb-wide-roofline-profile.md
 
 # P3 D18B: DuckDB sparse-wide projection
@@ -78,6 +78,24 @@ DuckDB branch, package mutation, or second scanner.
   remaining samples and removed the sink-side work as well: omitted nullable fields are now absent
   from the INSERT column list, preserving the same visible NULL values through ordinary nullable
   defaults.
+- 2026-07-22: The retained shape completed the controlled wide median-of-three at
+  `180.180250924s` (`166.041655ms` MAD), versus D18A's `203.280955s`: an 11.364% wall-time
+  improvement with exact 3,513,266 rows and package/schema/byte authority. TLC completed at
+  `10.151752277s` versus `10.145533317s`, a 0.061% delta inside noise and far below the 3% gate.
+  The wide cell's maximum child RSS was 5,111,205,888 bytes versus D18A's 4,546,355,200 bytes and
+  the cgroup peak was 13,040,189,440 bytes under a 16 GiB ceiling with no pressure or OOM event.
+  The wall win is retained; the wide physical-table sink remains DuckDB's dominant memory floor.
+- 2026-07-22: Closed the final semantic edge before review. A pre-existing append target may define
+  a non-null column default even when its column is nullable. Omitted proven-null fields now stay
+  absent from ordinary CDF-owned INSERTs, but fields with an existing destination default receive
+  an explicit typed NULL so the default cannot leak into persisted values. A focused integration
+  test proves this against a real DuckDB target.
+- 2026-07-22: Adversarial review found that structural profile validation did not yet prove the
+  package aggregate agreed with every segment aggregate. Repaired the generic package-statistics
+  authority: package statistics are exposed only after recomputing the aggregate from every
+  manifest-bound segment statistic and requiring exact equality. A forged profile that claims an
+  all-null package column over a non-null segment now fails before final binding or destination
+  mutation.
 
 ## Blockers
 
@@ -85,12 +103,39 @@ None.
 
 ## Evidence
 
-Pending.
+- `.10x/evidence/.storage/2026-07-22-p3-d18b/d18b-wide-profiled-v2-median3.json` and adjacent
+  request, run-cell, and systemd log: revision `a363027e`, controlled c7i.4xlarge median-of-three,
+  exact package/schema/row/physical-byte authority, 11.364% faster than D18A, no cgroup event.
+- `.10x/evidence/.storage/2026-07-22-p3-d18b/d18b-tlc-control-median3.json` and adjacent request,
+  run-cell, and systemd log: exact 41,169,720-row TLC control at 10.151752277 seconds, 0.061% above
+  the D18A baseline and therefore within the 3% no-regression gate.
+- `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=12 cargo test -p cdf-package-contract -p cdf-package
+  -p cdf-runtime -p cdf-dest-duckdb --locked -j 12`: 10 package-contract, 83 package, 148
+  runtime, 51 DuckDB, eight build-graph/doc tests passed; six deliberate performance tests ignored.
+- `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=12 cargo clippy -p cdf-dest-duckdb --all-targets
+  --locked -j 12 -- -D warnings`, formatting, and `git diff --check` passed. `graphify update .`
+  refreshed the architecture graph after the implementation.
 
 ## Review
 
-Pending.
+Fresh adversarial review initially failed closure on one critical issue: independently supplied
+package-grain statistics could disagree with segment-grain evidence, allowing unsafe omission. The
+generic package reader now derives and exactly reconciles the segment aggregate before exposing the
+package aggregate; `verified_package_statistics_reject_aggregate_drift_from_segments` proves the
+failure mode. The reviewer reported no other blocker and judged the existing-destination default
+handling sound. Closure verdict after the focused repair and complete affected suite: pass.
+
+Accepted residuals: the final binding retains schema-width `BatchStats` without a separate memory
+lease, and the pathological wide cell's maximum child RSS rose 12.424% while wall time improved
+11.364%. Both are bounded and disclosed; the 16 GiB cgroup recorded no pressure or OOM. The user
+explicitly chose to retain statistics-driven pruning and to stop further DuckDB wide-table tuning.
 
 ## Retrospective
 
-Pending.
+The optimization became useful only when omission crossed both boundaries: Arrow IPC decode and the
+DuckDB INSERT column list. Synthesizing explicit NULL vectors preserved values but left the sink
+cost largely intact. More importantly, manifest membership and profile shape were not sufficient
+semantic authority for an aggregate optimization; derived evidence must reconcile with its source
+grains before it can authorize data elimination. Future destinations can reuse the verified package
+aggregate, but must keep omission policy destination-owned and preserve exact defaults, keys,
+provenance, schema, and null semantics.

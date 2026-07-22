@@ -105,7 +105,7 @@ pub(crate) fn existing_columns(
 ) -> Result<BTreeMap<String, ExistingColumn>> {
     let mut stmt = conn
         .prepare(
-            "SELECT column_name, data_type, is_nullable FROM information_schema.columns \
+            "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns \
              WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position",
         )
         .map_err(|error| duckdb_error("prepare information_schema column query", error))?;
@@ -118,6 +118,7 @@ pub(crate) fn existing_columns(
                     ExistingColumn {
                         data_type: row.get::<_, String>(1)?,
                         nullable: row.get::<_, String>(2)? == "YES",
+                        default_expression: row.get::<_, Option<String>>(3)?,
                     },
                 ))
             },
