@@ -136,6 +136,33 @@ No product tuning, path change, source re-extraction, or conclusion from a lapto
   10 `cdf-bench-core`, 274 `cdf-cli`, and 214 `cdf-project` tests, plus strict affected-crate
   Clippy and formatting. That gate also exposed and repaired a stale `quasar` test-destination
   capability sheet that omitted the framework's UTF-8 residual column.
+- 2026-07-21: Re-ran both wide cells at current revision `2ba50791` under the same
+  `host-class-35789da2705a032d`, 16 GiB systemd cgroup, 16 DuckDB threads, two scanner threads,
+  exact 3,513,266-row authority, exact 115,421,208,360 logical-byte authority, and exact
+  1,291,273,686 physical-IPC-byte authority. The corrected raw median is 217.217974 s
+  (0.288080 s MAD); the corrected full-CDF median is 205.170661 s (0.014638 s MAD). CDF is 5.55%
+  faster than the semantics-labeled raw comparator. Neither cell recorded cgroup pressure or OOM.
+  The macro harness cannot observe DuckDB temp spill and therefore serializes zero; the retained
+  native profiles' `system_peak_temp_directory_size` is the explicit spill authority.
+- 2026-07-21: Corrected current-revision native profiles preserve the same conclusion. The raw
+  comparator spent 217.030 s native latency, 414.306 aggregate CPU-seconds, 323.829 aggregate
+  seconds in `CREATE_TABLE_AS`, and 90.142 in its scan; peak buffer/temp were 8,450,850,816 and
+  6,960,742,400 bytes. The product spent 194.032 s native latency, 369.357 aggregate CPU-seconds,
+  325.358 aggregate seconds in `INSERT`, and 43.374 in its scan; peak buffer/temp were
+  5,177,131,008 and 7,475,789,824 bytes. The product scanner is not the wide floor: DuckDB's
+  columnar storage sink dominates both plans.
+- 2026-07-21: Replay-owned telemetry now attributes the profiled product sample without inference:
+  195.648 s destination settlement, 67.547 ms checkpoint gate, and 195.724 s total package replay
+  within 205.161 s command wall. The 9.437 s outside package replay remains a bounded CLI/package
+  open/runtime/report interval; D18A does not invent subdivisions the event spine did not observe.
+  One of three product macro samples reported 580.74 CPU-seconds while the other two reported
+  385.27 and 390.68 despite near-identical wall/replay phases. Aggregate `/usr/bin/time` CPU is
+  consequently inconclusive for fine attribution; the native DuckDB operator profile is authority.
+- 2026-07-21: Re-ran TLC at current revision without a systemd memory cap on the exact historical
+  `host-class-649c6f28be3544c8`. The warm median is 10.226223 s (21.554 ms MAD), 4,025,897 rows/s,
+  and 3,733,745,664 bytes peak child RSS for all 41,169,720 rows with no cgroup pressure/OOM. It is
+  0.29% faster than the 10.255643 s retained floor. The earlier 10.247909 s capped control remains
+  a valid observation but is not the comparison authority because its host-class identity differs.
 
 ## Blockers
 
@@ -150,21 +177,24 @@ None.
   segment/batch shape, and absence of an optional statistics-profile artifact.
 - Repeatable cells: commit `5f38d6ee` added opt-in product/reference native profiles and the
   versioned profile reader; `bc8e737d` made package sync portable; `2c61cf73` admitted the exact
-  nested list schema in the independent comparator. Default product execution remains unchanged
-  when profiling is absent.
-- Product profile: `.10x/evidence/.storage/2026-07-21-p3-d18a-wide-product-profiled.json`,
-  `.10x/evidence/.storage/2026-07-21-p3-d18a-wide-product-measured.duckdb-profile.json`, and its
-  adjacent systemd log record wall/CPU/RSS/cgroup, native operators, peak DuckDB buffer memory
-  (4,961,632,256 bytes), and peak temp storage (7,564,656,640 bytes).
-- Raw profile and median: `.10x/evidence/.storage/2026-07-21-p3-d18a-wide-raw-profiled-success.json`,
-  `.10x/evidence/.storage/2026-07-21-p3-d18a-wide-raw-measured.duckdb-profile.json`, and
-  `.10x/evidence/.storage/2026-07-21-p3-d18a-wide-raw-median3.json` record the same exact package,
-  public-C-API comparator, native operators, memory/temp, and stable warm median.
-- Full-CDF median: `.10x/evidence/.storage/2026-07-21-p3-d18a-wide-product-median3.json` and its
-  adjacent systemd log record three exact samples under the 16 GiB cgroup.
-- TLC control: `.10x/evidence/.storage/2026-07-21-p3-d18a-tlc-control-current-median3.json` and its
-  adjacent systemd log record the same revision/host/cgroup control. The initial stale-template
-  failure is retained separately and made no performance claim.
+  nested list schema in the independent comparator; `2ba50791` added destination-neutral replay
+  phase metrics. Profiling is absent by default and does not change ordinary execution.
+- Corrected raw cell: the retained `2026-07-21-p3-d18a-wide-raw-corrected-{profiled,median3}`
+  request, run-cell, report, and systemd-log files record the command, host class, revision,
+  authorities, biases, exact samples, and cgroup state. The adjacent
+  `2026-07-21-p3-d18a-wide-raw-corrected.duckdb-profile{,.normalized}.json` pair retains native and
+  normalized operator evidence. The raw comparison deliberately excludes CDF evidence work.
+- Corrected product cell: the retained
+  `2026-07-21-p3-d18a-wide-product-corrected-{profiled,median3}` request, run-cell, report, and
+  systemd-log files record the same authorities on the same host class. The adjacent
+  `2026-07-21-p3-d18a-wide-product-corrected.duckdb-profile{,.normalized}.json` pair retains native
+  and normalized operators. Replay phase metrics directly attribute destination settlement,
+  checkpoint, and total package replay.
+- TLC control: the retained
+  `2026-07-21-p3-d18a-tlc-control-corrected-uncapped-median3-{request,run-cell}.json` and adjacent
+  report record current revision `2ba50791` on historical unbounded host class
+  `host-class-649c6f28be3544c8`. The older capped control and initial stale-template failure remain
+  historical observations and are not used for the non-regression comparison.
 - Verification: affected unit/integration suites passed (19 benchmark lab unit tests, 7 fixtures,
   6 policy tests, 11 runner tests, and 47 DuckDB tests); the required product smoke matrix passed
   5 CLI, 2 project runtime, preview/run parity, and 3 Iceberg authority/projection tests. Strict
@@ -173,7 +203,18 @@ None.
 
 ## Review
 
-Pending.
+Prior adversarial verdict: fail. It found stale revision labels, unlike host classes, unmatched byte
+authorities, a macro spill field presented as observed, missing product replay attribution, weak
+nested-list comparator coverage, unretained requests/specs/profiles, unexplained CPU dispersion,
+and an overbroad claim that the hot path was unchanged.
+
+Resolution: every performance claim above now uses current revision `2ba50791`; both wide cells use
+the same 16 GiB host class and exact row/logical/physical authorities; requests, run-cell specs,
+reports, systemd logs, native profiles, and normalized profiles are retained; native DuckDB temp
+storage is named as spill authority; replay phase metrics are serialized by the product; the
+recursive list binding has a real bind/execute test; macro CPU dispersion is disclosed as
+inconclusive; and the absence-by-default profiling scope is stated narrowly. The uncapped TLC
+control uses the historical comparison host class. Final independent verdict pending.
 
 ## Retrospective
 
@@ -187,3 +228,9 @@ Pending.
   sink/storage floor without changing package identity, runtime orchestration, or the hot path.
 - Benchmark templates are versioned inputs. Reusing an artifact across an intentionally broken
   customer-zero contract is not a valid control; prepare a current pin outside the timed region.
+- Comparable evidence requires identical semantic counters and host-class identity, not merely the
+  same EC2 instance. Retaining executable requests and run-cell specs makes that distinction
+  auditable instead of relying on prose.
+- Phase attribution should be a generic runtime product surface. Destination-specific profiling
+  answers native operator questions; replay-owned phases answer lifecycle questions without leaking
+  DuckDB into orchestration.

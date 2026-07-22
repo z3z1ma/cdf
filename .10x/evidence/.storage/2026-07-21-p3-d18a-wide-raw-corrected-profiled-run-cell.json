@@ -1,0 +1,53 @@
+{
+  "allow_privileged_cache_control": false,
+  "bias": [
+    {
+      "code": "excludes_cdf_evidence",
+      "description": "independent stock-public-C-API CTAS omits package verification, receipt, checkpoint, and destination mirror work"
+    },
+    {
+      "code": "same_scan_concurrency",
+      "description": "DuckDB has 16 internal threads while the canonical IPC scanner is fixed at the product-admitted width of 2"
+    },
+    {
+      "code": "shared_byte_authority",
+      "description": "logical bytes are the exact 115421208360-byte materialized Arrow-vector authority shared with the product cell; physical bytes are the exact 1291273686 source IPC bytes only"
+    },
+    {
+      "code": "native_spill_authority",
+      "description": "the macro spill field is unavailable for this worker and serializes zero; matching DuckDB native peak_temp_directory_size is authoritative for temporary spill"
+    },
+    {
+      "code": "systemd_memory_max",
+      "description": "measured worker runs inside a transient user systemd MemoryMax=16G cgroup"
+    }
+  ],
+  "command": {
+    "args": [
+      "reference-worker",
+      "/home/ec2-user/cdf-bench/repo/target/cdf-benchmarks/d18a-wide-raw-corrected-profiled-request.json"
+    ],
+    "current_dir": "/home/ec2-user/cdf-bench/repo",
+    "environment": {},
+    "program": "/home/ec2-user/cdf-bench/repo/target/release/cdf-p3-lab"
+  },
+  "comparability": {
+    "cdf_revision": "2ba50791ceb8441d3e2ba14d2995082148232f2c",
+    "dataset_id": "flolake_transactions_exact_package",
+    "dependency_tuple": "Cargo.lock",
+    "host_class": "host-class-35789da2705a032d",
+    "io_mode": "warm",
+    "os_toolchain": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "timed_region_version": 1,
+    "workload_id": "duckdb_wide_raw_table_function_ctas_corrected_profiled"
+  },
+  "expected_host_class": "host-class-35789da2705a032d",
+  "reference": {
+    "kind": "independent_engine",
+    "name": "stock_libduckdb_public_c_api_table_function",
+    "semantic_work": "CTAS from the same finalized canonical LZ4 IPC segments with identical row-key derivation; excludes CDF verification, transaction metadata, receipt, and checkpoint work",
+    "version": "1.5.4"
+  },
+  "sample_count": 1,
+  "timeout_ms": 900000
+}
