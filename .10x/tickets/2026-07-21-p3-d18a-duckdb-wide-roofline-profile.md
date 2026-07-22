@@ -94,6 +94,20 @@ No product tuning, path change, source re-extraction, or conclusion from a lapto
   scan admission it consumed more scanner CPU and more DuckDB buffer memory while finishing 11.9%
   slower. The warm median-of-three remains the comparison authority; this single profiled sample
   establishes the operator-level hypothesis to test.
+- 2026-07-21: The raw warm median-of-three confirmed the profile without material variance:
+  217.385 s median wall time, 0.151 s median absolute deviation, approximately 642.05 CPU-seconds,
+  and 4,605,509,632 bytes peak child RSS. All three samples completed the exact row count with no
+  cgroup pressure or OOM event. The session cgroup was observational rather than capped
+  (`memory.max = max`); the workload's explicit DuckDB buffer-manager limit remained 4 GiB and its
+  temp-directory budget 32 GiB. The product median uses the same host and explicit DuckDB policy
+  under a 16 GiB process cgroup.
+- 2026-07-21: Recorded the package's schema authorities in addition to its package identity. The
+  compiled effective schema hash is
+  `sha256:1585e0c7c1e2a0f1824ef739ea2adb091ce9e736ec00fe63dd06a22475e76943`; the manifest-bound
+  runtime Arrow-schema artifact is
+  `sha256:f3ed582ec053a7e45f4d16e868412b98fe47727faa399bb187af53b0a4a37b85`. This retained package
+  has no `stats/profile.parquet` identity artifact because the source run did not enable the
+  optional statistics profile; no statistics-based projection conclusion may be drawn from it.
 
 ## Blockers
 
