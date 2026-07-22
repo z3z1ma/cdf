@@ -108,6 +108,26 @@ No product tuning, path change, source re-extraction, or conclusion from a lapto
   `sha256:f3ed582ec053a7e45f4d16e868412b98fe47727faa399bb187af53b0a4a37b85`. This retained package
   has no `stats/profile.parquet` identity artifact because the source run did not enable the
   optional statistics profile; no statistics-based projection conclusion may be drawn from it.
+- 2026-07-21: The full-CDF warm median-of-three under `MemoryMax=16G` was 204.913 s with 0.022 s
+  median absolute deviation, approximately 579.39 median CPU-seconds, 4,180,824,064 bytes peak
+  child RSS, and zero cgroup pressure/OOM events. CDF was 5.74% faster than the independent raw
+  comparator's 217.385 s median. In the profiled product sample, DuckDB's native query occupied
+  194.152 s of the 205.224 s full wall. Package verification, database setup, receipt/checkpoint
+  publication, and CLI/report teardown are therefore jointly bounded by the remaining 11.072 s
+  (5.39%); the replay command does not currently emit individual phase measurements, so D18A does
+  not fabricate a finer split. DuckDB's profile attributes the native work directly: 324.963
+  aggregate CPU-seconds to `INSERT`, 43.980 to canonical scan, and 0.627 to projection.
+- 2026-07-21: The first TLC control attempt correctly failed before measurement because its retained
+  `cdf.lock` was produced before the current discovery-binding artifact contract. Customer-zero
+  policy does not preserve old artifact compatibility. Prepared a new current-revision template,
+  pinned `tlc.yellow` outside the timed region at schema
+  `sha256:f9ae139ae8c63e93fa57ff3ba5edf8fe8c9565bd11a557c6ab12b3a855a1d847`, and reran the
+  control rather than weakening the authority check.
+- 2026-07-21: The current-revision full-year TLC control completed 41,169,720 rows in a 10.247909 s
+  warm median with 1.464 ms median absolute deviation, 4,017,377 rows/s, 3,736,166,400 bytes peak
+  child RSS, and zero cgroup pressure/OOM/spill. The retained stock-scanner authority is
+  10.255643 s; current code is 0.08% faster. D18A therefore preserves the narrow/TLC envelope and
+  identifies the 2,052-column DuckDB storage sink as the wide-specific floor.
 
 ## Blockers
 
@@ -115,7 +135,33 @@ None.
 
 ## Evidence
 
-Pending.
+- Package authority: the verified manifest records package hash
+  `sha256:69183c567f1b15bdf2cf6eafcfb3669d83ee1a3f3a29dd39f785a68a331d43c4`, effective schema
+  `sha256:1585e0c7c1e2a0f1824ef739ea2adb091ce9e736ec00fe63dd06a22475e76943`, runtime Arrow schema
+  artifact `sha256:f3ed582ec053a7e45f4d16e868412b98fe47727faa399bb187af53b0a4a37b85`, exact row/field/
+  segment/batch shape, and absence of an optional statistics-profile artifact.
+- Repeatable cells: commit `5f38d6ee` added opt-in product/reference native profiles and the
+  versioned profile reader; `bc8e737d` made package sync portable; `2c61cf73` admitted the exact
+  nested list schema in the independent comparator. Default product execution remains unchanged
+  when profiling is absent.
+- Product profile: `.10x/evidence/.storage/2026-07-21-p3-d18a-wide-product-profiled.json`,
+  `.10x/evidence/.storage/2026-07-21-p3-d18a-wide-product-measured.duckdb-profile.json`, and its
+  adjacent systemd log record wall/CPU/RSS/cgroup, native operators, peak DuckDB buffer memory
+  (4,961,632,256 bytes), and peak temp storage (7,564,656,640 bytes).
+- Raw profile and median: `.10x/evidence/.storage/2026-07-21-p3-d18a-wide-raw-profiled-success.json`,
+  `.10x/evidence/.storage/2026-07-21-p3-d18a-wide-raw-measured.duckdb-profile.json`, and
+  `.10x/evidence/.storage/2026-07-21-p3-d18a-wide-raw-median3.json` record the same exact package,
+  public-C-API comparator, native operators, memory/temp, and stable warm median.
+- Full-CDF median: `.10x/evidence/.storage/2026-07-21-p3-d18a-wide-product-median3.json` and its
+  adjacent systemd log record three exact samples under the 16 GiB cgroup.
+- TLC control: `.10x/evidence/.storage/2026-07-21-p3-d18a-tlc-control-current-median3.json` and its
+  adjacent systemd log record the same revision/host/cgroup control. The initial stale-template
+  failure is retained separately and made no performance claim.
+- Verification: affected unit/integration suites passed (19 benchmark lab unit tests, 7 fixtures,
+  6 policy tests, 11 runner tests, and 47 DuckDB tests); the required product smoke matrix passed
+  5 CLI, 2 project runtime, preview/run parity, and 3 Iceberg authority/projection tests. Strict
+  affected-crate Clippy, formatting, `git diff --check`, ShellCheck, Gitleaks, and graph refresh all
+  passed.
 
 ## Review
 
@@ -123,4 +169,13 @@ Pending.
 
 ## Retrospective
 
-Pending.
+- Exact production artifacts expose workload shape that synthetic wide tables miss: the 3.5M-row
+  package represents roughly 115.4 GB of DuckDB result vectors and 7.2 billion field positions, so
+  row/s alone badly understates work.
+- A raw comparator must be schema-complete and semantics-labeled. Its stable loss to the product
+  path prevents replacing a faster product implementation merely because the comparator is called
+  a roofline.
+- Native profiling belongs behind an absent-by-default destination-owned switch. It identifies the
+  sink/storage floor without changing package identity, runtime orchestration, or the hot path.
+- Benchmark templates are versioned inputs. Reusing an artifact across an intentionally broken
+  customer-zero contract is not a valid control; prepare a current pin outside the timed region.

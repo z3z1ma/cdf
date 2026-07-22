@@ -1,0 +1,10 @@
+Running as unit: run-u26.service
+Finished with result: success
+Main processes terminated with: code=exited/status=0
+Service runtime: 32ms
+CPU time consumed: 34ms
+Running as unit: run-u27.service
+Finished with result: success
+Main processes terminated with: code=exited/status=0
+Service runtime: 41.731s
+CPU time consumed: 5min 202ms
