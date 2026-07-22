@@ -29,7 +29,7 @@ No product tuning, path change, source re-extraction, or conclusion from a lapto
 
 - `.10x/specs/performance-lab-and-envelope.md`
 - `.10x/specs/destination-bulk-path-runtime.md`
-- `.10x/tickets/2026-07-18-p3-l7-ec2-benchmark-tranche-lifecycle.md`
+- `.10x/tickets/done/2026-07-18-p3-l7-ec2-benchmark-tranche-lifecycle.md`
 - `.10x/tickets/done/2026-07-21-p0-duckdb-wide-ingest-memory.md`
 
 ## Assumptions

@@ -34,7 +34,7 @@ No new optimization during closure review and no baseline reset to make a regres
 - `.10x/tickets/done/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md`
 - `.10x/knowledge/quality-gate-execution.md`
 - `.10x/knowledge/runtime-conformance-throughput-rule.md`
-- `.10x/tickets/2026-07-18-p3-l7-ec2-benchmark-tranche-lifecycle.md`
+- `.10x/tickets/done/2026-07-18-p3-l7-ec2-benchmark-tranche-lifecycle.md`
 
 ## Assumptions
 

@@ -2,7 +2,7 @@ Status: done
 Created: 2026-07-18
 Updated: 2026-07-18
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
-Depends-On: .10x/tickets/done/2026-07-18-p3-l6-ec2-benchmark-host.md, .10x/tickets/2026-07-18-p3-l7-ec2-benchmark-tranche-lifecycle.md
+Depends-On: .10x/tickets/done/2026-07-18-p3-l6-ec2-benchmark-host.md, .10x/tickets/done/2026-07-18-p3-l7-ec2-benchmark-tranche-lifecycle.md
 
 # P3 L8: EC2 preflight record-only drift
 
@@ -28,7 +28,7 @@ Repair the dedicated EC2 benchmark helper so durable record commits do not recur
 ## References
 
 - `.10x/tickets/done/2026-07-18-p3-l6-ec2-benchmark-host.md`
-- `.10x/tickets/2026-07-18-p3-l7-ec2-benchmark-tranche-lifecycle.md`
+- `.10x/tickets/done/2026-07-18-p3-l7-ec2-benchmark-tranche-lifecycle.md`
 - `.10x/specs/performance-lab-and-envelope.md`
 
 ## Assumptions

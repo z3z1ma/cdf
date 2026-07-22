@@ -90,7 +90,7 @@ The preflight proof closes the last major measurement-authority gap found in thi
 
 ## Limits
 
-The EC2 instance was intentionally left running for reuse across the current benchmark tranche. Therefore this evidence proves provisioning, reuse readiness, bootstrap, synchronization, build, verification, workspace compilation, and baseline emission, but not final tranche teardown. `.10x/tickets/2026-07-18-p3-l7-ec2-benchmark-tranche-lifecycle.md` owns the eventual teardown evidence.
+The EC2 instance was intentionally left running for reuse across the benchmark tranche. Therefore this evidence proves provisioning, reuse readiness, bootstrap, synchronization, build, verification, workspace compilation, and baseline emission, but not final tranche teardown. `.10x/tickets/done/2026-07-18-p3-l7-ec2-benchmark-tranche-lifecycle.md` owns the completed teardown evidence.
 
 The baseline report is a smoke-scale machine-evidence proof, not a claim that the P3 throughput envelope is met. Large TLC/TPC-H/stress cells remain owned by their P3 performance tickets and must reuse the same host-labeled path.
 

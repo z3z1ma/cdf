@@ -1,6 +1,6 @@
-Status: active
+Status: done
 Created: 2026-07-18
-Updated: 2026-07-18
+Updated: 2026-07-21
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
 Depends-On: .10x/tickets/done/2026-07-18-p3-l6-ec2-benchmark-host.md
 
@@ -68,10 +68,11 @@ Own the lifecycle of the currently running dedicated EC2 benchmark host for the 
 
 - 2026-07-19: Refreshed the measured-command host to clean record/build authority `bf46c16469325e1e93f5d8ce642e4ab14dd4eb9c` after narrowing G4's spool surface. Release `cdf` and `cdf-p3-measure` were cache hits after the source relink, preflight passed on host class `host-class-649c6f28be3544c8`, and the explicit `spool_mode = "complete"` Hugging Face full-year TLC cell completed in `15.783324269s` with exact rows and zero pressure/OOM/spill events. The benchmark workspace was restored to its default overlap configuration after the cell. Markers: `.10x/evidence/.storage/2026-07-19-p3-g4-final-revision.env`, `.10x/evidence/.storage/2026-07-19-p3-g4-final-build.env`; run evidence: `.10x/evidence/.storage/2026-07-19-p3-g4-hf-complete-final-clean.json`. G4 and WS-G are terminal; the host remains intentionally active for D16 Postgres package-COPY amortization.
 - 2026-07-18 final current-tree pass: synchronized commit `5496254820f94fa72958b5a0e74ceb048ae230ee` plus concurrent record/test-policy dirt, rebuilt release `cdf` and the lean measurement runner with downloaded prebuilt DuckDB, and passed measurement preflight on host class `host-class-649c6f28be3544c8`. A fresh current-format workspace over the retained twelve local TLC files produced a three-sample `10.477064330s` median for all `41,169,720` rows, `3,929,509` rows/s, `3,958,956,032` bytes peak process RSS, and zero pressure/OOM/spill events. This is 2.16% slower than the retained `10.255642670s` median and remains below the lab's 10% regression gate. A separate `MemoryMax=6G` sample completed in `10.426919222s`, with `3,916,914,688` bytes process RSS and `6,175,449,088` cgroup peak under the exact ceiling, again with zero pressure/OOM/spill. Evidence: `.10x/evidence/2026-07-18-final-correctness-performance-pass.md`, `.10x/evidence/.storage/2026-07-18-final-pass-current-tlc.json`, and `.10x/evidence/.storage/2026-07-18-final-pass-current-tlc-6g.json`.
+- 2026-07-21: The user ended the DuckDB benchmark tranche after D18 retained sparse-wide projection and cancelled the remaining destination experiments. Ran `tools/p3-ec2-benchmark-host.sh teardown`; its built-in waiter observed termination before removing `target/cdf-benchmarks/ec2-host/state.env`. An independent read-only AWS query then reported instance `i-05011a85b7f2a33fe` as `terminated` (`c7i.4xlarge`, `us-west-2`). The active-host state file is absent. The retained `ssh-resources.env` is reusable provisioning metadata, not active-instance state and contains no cloud credential material.
 
 ## Blockers
 
-The active P3 benchmark tranche still needs the host for G4 and follow-on performance measurements. Teardown is intentionally deferred until that tranche completes.
+None. The benchmark tranche ended, the instance is terminated, and active local host state is removed.
 
 ## Evidence
 
@@ -132,11 +133,12 @@ The active P3 benchmark tranche still needs the host for G4 and follow-on perfor
 - `.10x/evidence/.storage/2026-07-19-p3-g4-hf-complete-final-clean.json` records the final explicit-complete live TLC cell.
 - `.10x/evidence/.storage/2026-07-18-final-pass-current-tlc.json` records the final current-tree three-sample local full-year TLC-to-DuckDB control.
 - `.10x/evidence/.storage/2026-07-18-final-pass-current-tlc-6g.json` records the matching one-sample `MemoryMax=6G` enforcement control.
+- `tools/p3-ec2-benchmark-host.sh teardown` waited for AWS termination and removed the active state file; the follow-up `aws --profile PowerUser-617739438897 --region us-west-2 ec2 describe-instances --instance-ids i-05011a85b7f2a33fe` observation returned `terminated` on 2026-07-21.
 
 ## Review
 
-Pending tranche completion and teardown.
+Pass. The ticket's only mutable external resource reached the required terminal state, active state was removed, no secret material was committed, and the accumulated benchmark records identify each measured host/build context. Residual provisioning metadata is intentionally retained for future explicitly provisioned tranches.
 
 ## Retrospective
 
-Pending tranche completion and teardown.
+The explicit lifecycle owner prevented a costly benchmark host from becoming invisible after its provisioning ticket closed. Keeping active-instance state separate from reusable SSH/network provisioning metadata made teardown both idempotent and auditable. Future tranches should preserve this split and close their lifecycle owner immediately when the last benchmark program using the host terminates.

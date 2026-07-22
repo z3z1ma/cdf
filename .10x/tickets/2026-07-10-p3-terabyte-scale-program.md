@@ -52,7 +52,7 @@ This parent is an aggregate plan. Workstream records own sequencing and integrat
 - `.10x/tickets/2026-07-12-p3-ws-j-datafusion-currency-bridges.md`
 - `.10x/tickets/2026-07-13-p0-fixed-schema-discovery-stream-admission.md`
 - `.10x/tickets/done/2026-07-18-p3-l6-ec2-benchmark-host.md`
-- `.10x/tickets/2026-07-18-p3-l7-ec2-benchmark-tranche-lifecycle.md`
+- `.10x/tickets/done/2026-07-18-p3-l7-ec2-benchmark-tranche-lifecycle.md`
 - `.10x/tickets/done/2026-07-18-p3-l9-ec2-measure-runner-build-graph.md`
 - `.10x/tickets/cancelled/2026-07-18-p3-d17-duckdb-wide-string-overlap.md`
 - `.10x/tickets/done/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md`

@@ -62,7 +62,7 @@ This parent is an aggregate plan and is not executable. Its children are:
 - `.10x/decisions/schema-planned-destination-bulk-paths.md`
 - `.10x/decisions/destination-runtime-composition-boundary.md`
 - `.10x/decisions/terabyte-scale-performance-envelope.md`
-- `.10x/tickets/2026-07-18-p3-l7-ec2-benchmark-tranche-lifecycle.md`
+- `.10x/tickets/done/2026-07-18-p3-l7-ec2-benchmark-tranche-lifecycle.md`
 
 ## Assumptions
 
