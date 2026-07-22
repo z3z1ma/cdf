@@ -201,6 +201,12 @@ No product tuning, path change, source re-extraction, or conclusion from a lapto
   while its native profile uses 3,434,788,864 fewer peak DuckDB buffer bytes and roughly half the
   scanner CPU. The independent comparator does not justify a product-path replacement. Macro
   process CPU remains unsuitable for operator attribution; native profiles are the authority.
+- 2026-07-22: Re-ran the full-year TLC control on measured revision `b4635a2c` rather than relying
+  on the earlier `2ba50791` observation. The new exact baseline is 10.174552 s median (18.928 ms
+  MAD), 4,046,342 rows/s, and 3,722,199,040 bytes peak child RSS for all 41,169,720 rows, with the
+  expected effective schema and no cgroup pressure/OOM. Its workload id is deliberately
+  `duckdb_tlc_full_year_d18a_baseline`; it is the forward comparison key for D18B-E and is not
+  compared numerically to D14's differently identified historical fixture.
 
 ## Blockers
 
@@ -232,10 +238,11 @@ None.
   and normalized operators. Replay phase metrics directly attribute destination settlement,
   checkpoint, and total package replay.
 - TLC control: the retained
-  `2026-07-21-p3-d18a-tlc-control-corrected-uncapped-median3-{request,run-cell}.json` and adjacent
-  report record current revision `2ba50791` on historical unbounded host class
-  `host-class-649c6f28be3544c8`. The older capped control and initial stale-template failure remain
-  historical observations and are not used for the non-regression comparison.
+  `2026-07-22-p3-d18a-tlc-control-authority-current-median3-{request,run-cell}.json` and adjacent
+  report record measured revision `b4635a2c`, the expected schema, exact row count, and the
+  unbounded `host-class-649c6f28be3544c8`. This is the new D18A baseline; the older controls and
+  initial stale-template failure remain historical observations and are not used for a numeric
+  regression comparison.
 - Verification: affected unit/integration suites passed (19 benchmark lab unit tests, 7 fixtures,
   6 policy tests, 11 runner tests, and 47 DuckDB tests); the required product smoke matrix passed
   5 CLI, 2 project runtime, preview/run parity, and 3 Iceberg authority/projection tests. Strict
@@ -255,8 +262,8 @@ identity-bound logical bytes. Requests, run-cell specs, reports, systemd logs, n
 normalized profiles are retained; product settings and raw/product semantic differences are
 explicit. Native DuckDB temp storage remains spill authority and macro CPU remains inconclusive for
 fine attribution. The current TLC result is a new baseline rather than an invalid comparison to a
-different historical workload. The final raw median confirms the product's 6.981% lead. Final
-independent verdict pending.
+different historical workload, and it is now measured at the same code revision as the wide cells.
+The final raw median confirms the product's 6.981% lead. Final independent verdict pending.
 
 ## Retrospective
 
