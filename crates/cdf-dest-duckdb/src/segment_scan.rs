@@ -152,26 +152,19 @@ pub(crate) fn ingest_canonical_segments(
         .first_row_key
         .ok_or_else(|| CdfError::internal("DuckDB row-key allocator is not initialized"))
         .map_err(DuckDbFailure::other)?;
-    let mut insert_columns = writer
-        .persisted_fields
-        .iter()
-        .map(|field| quote_ident(&field.name))
-        .collect::<Vec<_>>();
-    let mut select_columns = writer.persisted_fields[..writer.user_field_count]
+    let mut insert_columns = Vec::with_capacity(writer.persisted_fields.len());
+    let mut select_columns = Vec::with_capacity(writer.persisted_fields.len());
+    for (field, omitted) in writer.persisted_fields[..writer.user_field_count]
         .iter()
         .zip(&writer.omitted_user_fields)
-        .map(|(field, omitted)| {
-            if *omitted {
-                format!(
-                    "CAST(NULL AS {}) AS {}",
-                    field.sql_type,
-                    quote_ident(&field.name)
-                )
-            } else {
-                quote_ident(&field.name)
-            }
-        })
-        .collect::<Vec<_>>();
+    {
+        if !omitted {
+            let name = quote_ident(&field.name);
+            insert_columns.push(name.clone());
+            select_columns.push(name);
+        }
+    }
+    insert_columns.push(quote_ident(CDF_ROW_KEY_COLUMN));
     select_columns.push(format!(
         "CAST({first_row_key} + {} AS UBIGINT) AS {}",
         quote_ident(cdf_package_contract::CDF_PACKAGE_ROW_ORD_FIELD),

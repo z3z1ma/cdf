@@ -58,9 +58,9 @@ DuckDB branch, package mutation, or second scanner.
   Arrow types, total row counts, completeness, null counts, and canonical segment schema before
   constructing an Arrow IPC projection. Only complete all-null nullable user fields may disappear
   from decode/conversion; merge keys, nonnullable fields, every reserved `_cdf_*` field, and the
-  package ordinal remain physical. DuckDB synthesizes typed nulls in the existing materialization
-  statement, so target DDL and persisted values remain complete. Missing profile evidence retains
-  the preexisting full scan.
+  package ordinal remain physical. Target DDL remains complete, while omitted fields are absent
+  from the INSERT column list so DuckDB applies their nullable default without materializing typed
+  NULL vectors. Missing profile evidence retains the preexisting full scan.
 - 2026-07-22: The affected suite passes: 50 DuckDB tests, 82 package tests with four deliberate
   performance ignores, 10 package-contract tests, 148 runtime tests with two deliberate ignores,
   seven build-graph tests, and doc tests. New tests prove manifest-bound aggregate reconstruction,
@@ -70,6 +70,14 @@ DuckDB branch, package mutation, or second scanner.
   package hash `sha256:5ca00b991ce2e5a5a8dd32a69880be458d2465a25684e9f29c588cb7c35ecde7`,
   3,513,266 rows, 231 unchanged canonical segments, and a 1.5 MiB typed profile. The temporary
   generator source was deleted after the artifact was verified; it is not a product or legacy path.
+- 2026-07-22: Falsified the first SQL shape on the controlled EC2 host before spending the full
+  median-of-three cell. IPC projection correctly removed 2,012 of 2,053 complete all-null package
+  fields from Arrow decode, but the first draft reconstructed those fields as explicit typed NULL
+  expressions in the insert. Its first sample remained in the same order of magnitude as the
+  approximately 203-second baseline and still produced multi-gigabyte DuckDB spill. Stopped the
+  remaining samples and removed the sink-side work as well: omitted nullable fields are now absent
+  from the INSERT column list, preserving the same visible NULL values through ordinary nullable
+  defaults.
 
 ## Blockers
 
