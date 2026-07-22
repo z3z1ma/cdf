@@ -1,0 +1,10 @@
+Running as unit: run-u0.service
+Finished with result: success
+Main processes terminated with: code=exited/status=0
+Service runtime: 31ms
+CPU time consumed: 33ms
+Running as unit: run-u3.service
+Finished with result: success
+Main processes terminated with: code=exited/status=0
+Service runtime: 13min 34.155s
+CPU time consumed: 38min 27.504s

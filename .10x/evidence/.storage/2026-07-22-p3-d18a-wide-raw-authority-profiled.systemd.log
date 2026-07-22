@@ -1,0 +1,5 @@
+Running as unit: run-u0.service
+Finished with result: success
+Main processes terminated with: code=exited/status=0
+Service runtime: 7min 16.116s
+CPU time consumed: 14min 18.449s

@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-21
-Updated: 2026-07-21
+Updated: 2026-07-22
 Parent: .10x/tickets/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md
 
 # P3 D18A: DuckDB wide roofline and profile
@@ -163,6 +163,38 @@ No product tuning, path change, source re-extraction, or conclusion from a lapto
   and 3,733,745,664 bytes peak child RSS for all 41,169,720 rows with no cgroup pressure/OOM. It is
   0.29% faster than the 10.255643 s retained floor. The earlier 10.247909 s capped control remains
   a valid observation but is not the comparison authority because its host-class identity differs.
+- 2026-07-22: Final adversarial review found that the current TLC cell and historical D14 cell do
+  not share a workload id or package/byte authority. The preceding 0.29% comparison is therefore
+  superseded and inconclusive, despite the shared host class. The current 10.226223 s median is the
+  new exact baseline for D18B-E; D18A makes no numeric regression claim against D14.
+- 2026-07-22: The same review found that the wide cells named row/logical/physical authorities in
+  prose without making the workers verify package/schema identity and observed counters. Commit
+  `b4635a2c` now makes successful CDF-command cells parse and validate observed JSON rows, physical
+  bytes, package hash, and schema hash instead of substituting requested values. Replay JSON exposes
+  those facts. The raw worker now fully verifies the package, schema, and manifest segment order
+  before its inner DuckDB timer. Package verification remains visible to process CPU/RSS while the
+  raw inner wall excludes it, and that semantic bias is serialized in the run-cell specification.
+- 2026-07-22: An initial attempt to force the raw comparator's 32 GiB temp-directory setting onto
+  the product correctly failed before mutation: the destination could not reserve 32 GiB from the
+  shared spill authority. Recovered the product's actual admitted policy rather than weakening the
+  ledger: 16 DuckDB threads, two scanner threads, 4 GiB buffer-manager memory, 1 GiB CDF spill
+  reservation, and a 16 GiB process cgroup. These exact values are now retained in both product
+  requests; the raw cell retains its independently declared 32 GiB DuckDB temp budget and labels
+  the difference rather than presenting it as identical semantics.
+- 2026-07-22: The package/schema-bound product profile completed in 204.119 s command wall with
+  4,680,904,704 bytes peak child RSS and no cgroup pressure/OOM. DuckDB attributed 192.896 s native
+  latency and 366.582 aggregate CPU-seconds to materialization: 322.681 aggregate seconds in
+  `INSERT`, 43.274 in the canonical scanner, and 0.626 in projections. Peak DuckDB buffer/temp
+  storage was 5,080,735,744 and 6,957,465,600 bytes. The bound warm median-of-three is 203.280955 s
+  (267.088 ms MAD), 4,546,355,200 bytes peak child RSS, with exact rows/bytes/hashes and no cgroup
+  pressure/OOM. A separate roughly 0.7-core Python process appeared during part of the third sample;
+  that sample was 0.33% above the median and did not move the median beyond the two clean samples.
+- 2026-07-22: The package/schema-bound raw profile completed in 218.003 s inner wall with
+  4,552,876,032 bytes peak child RSS and no cgroup pressure/OOM. DuckDB attributed 216.482 s native
+  latency and 413.671 aggregate CPU-seconds to materialization: 323.483 aggregate seconds in
+  `CREATE_TABLE_AS`, 89.852 in the independent scanner, and 0.335 in projection. Peak DuckDB
+  buffer/temp storage was 8,515,524,608 and 6,908,674,048 bytes. The final raw median-of-three is
+  still running on the controlled host; no comparison percentage is claimed until it completes.
 
 ## Blockers
 
@@ -179,15 +211,17 @@ None.
   versioned profile reader; `bc8e737d` made package sync portable; `2c61cf73` admitted the exact
   nested list schema in the independent comparator; `2ba50791` added destination-neutral replay
   phase metrics. Profiling is absent by default and does not change ordinary execution.
-- Corrected raw cell: the retained `2026-07-21-p3-d18a-wide-raw-corrected-{profiled,median3}`
-  request, run-cell, report, and systemd-log files record the command, host class, revision,
-  authorities, biases, exact samples, and cgroup state. The adjacent
-  `2026-07-21-p3-d18a-wide-raw-corrected.duckdb-profile{,.normalized}.json` pair retains native and
-  normalized operator evidence. The raw comparison deliberately excludes CDF evidence work.
-- Corrected product cell: the retained
-  `2026-07-21-p3-d18a-wide-product-corrected-{profiled,median3}` request, run-cell, report, and
-  systemd-log files record the same authorities on the same host class. The adjacent
-  `2026-07-21-p3-d18a-wide-product-corrected.duckdb-profile{,.normalized}.json` pair retains native
+- Authority-bound raw cell: the retained `2026-07-22-p3-d18a-wide-raw-authority-profiled` request,
+  run-cell, report, and systemd-log files bind the command to the fully verified package/schema and
+  manifest segment order. The adjacent
+  `2026-07-22-p3-d18a-wide-raw-authority.duckdb-profile{,.normalized}.json` pair retains native and
+  normalized operator evidence. The raw comparison excludes CDF destination/receipt/checkpoint work
+  after verification; its inner wall excludes verification while process CPU/RSS includes it.
+- Authority-bound product cell: the retained
+  `2026-07-22-p3-d18a-wide-product-authority-{profiled,median3}` request, run-cell, report, and
+  systemd-log files record exact package/schema/row/physical-byte assertions and the explicit
+  product DuckDB policy on the same host class. The adjacent
+  `2026-07-22-p3-d18a-wide-product-authority.duckdb-profile{,.normalized}.json` pair retains native
   and normalized operators. Replay phase metrics directly attribute destination settlement,
   checkpoint, and total package replay.
 - TLC control: the retained
@@ -208,13 +242,13 @@ authorities, a macro spill field presented as observed, missing product replay a
 nested-list comparator coverage, unretained requests/specs/profiles, unexplained CPU dispersion,
 and an overbroad claim that the hot path was unchanged.
 
-Resolution: every performance claim above now uses current revision `2ba50791`; both wide cells use
-the same 16 GiB host class and exact row/logical/physical authorities; requests, run-cell specs,
-reports, systemd logs, native profiles, and normalized profiles are retained; native DuckDB temp
-storage is named as spill authority; replay phase metrics are serialized by the product; the
-recursive list binding has a real bind/execute test; macro CPU dispersion is disclosed as
-inconclusive; and the absence-by-default profiling scope is stated narrowly. The uncapped TLC
-control uses the historical comparison host class. Final independent verdict pending.
+Resolution in progress: current authority-bound cells use revision `b4635a2c`, the same 16 GiB host
+class, an exact verified package/schema/segment order, validated observed rows/physical bytes, and
+identity-bound logical bytes. Requests, run-cell specs, reports, systemd logs, native profiles, and
+normalized profiles are retained; product settings and raw/product semantic differences are
+explicit. Native DuckDB temp storage remains spill authority and macro CPU remains inconclusive for
+fine attribution. The current TLC result is a new baseline rather than an invalid comparison to a
+different historical workload. Final raw median and independent verdict pending.
 
 ## Retrospective
 
