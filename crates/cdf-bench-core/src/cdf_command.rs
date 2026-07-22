@@ -34,11 +34,15 @@ pub struct CdfCommandWorkload {
     pub workspace_mode: CdfWorkspaceMode,
     pub args: Vec<String>,
     #[serde(default)]
-    pub rows: Option<u64>,
+    pub expected_rows: Option<u64>,
     #[serde(default)]
-    pub logical_bytes: Option<u64>,
+    pub derived_logical_bytes: Option<u64>,
     #[serde(default)]
-    pub physical_bytes: Option<u64>,
+    pub expected_physical_bytes: Option<u64>,
+    #[serde(default)]
+    pub expected_package_hash: Option<String>,
+    #[serde(default)]
+    pub expected_schema_hash: Option<String>,
     #[serde(default)]
     pub spill_bytes: Option<u64>,
     #[serde(default)]
@@ -100,26 +104,53 @@ pub fn run_cdf_command_workload(workload: &CdfCommandWorkload) -> BenchResult<Wo
         )));
     }
 
-    let stdout_json = serde_json::from_slice::<Value>(&output.stdout).ok();
-    let observed_rows = workload
-        .rows
-        .or_else(|| stdout_json.as_ref().and_then(extract_row_count))
-        .unwrap_or(0);
-    let phases = stdout_json
-        .as_ref()
-        .map(extract_phase_metrics)
-        .unwrap_or_default();
+    let stdout_json = serde_json::from_slice::<Value>(&output.stdout).map_err(|error| {
+        bench_error(format!(
+            "successful CDF command emitted invalid JSON output: {error}"
+        ))
+    })?;
+    let observed_rows = extract_row_count(&stdout_json).unwrap_or(0);
+    let phases = extract_phase_metrics(&stdout_json);
     let observed_bytes = phases
         .iter()
         .map(|phase| phase.bytes)
         .max()
         .filter(|bytes| *bytes > 0);
+    let observed_physical_bytes = extract_physical_bytes(&stdout_json)
+        .or(observed_bytes)
+        .unwrap_or(0);
+    validate_expected_u64("row count", workload.expected_rows, observed_rows)?;
+    validate_expected_u64(
+        "physical byte count",
+        workload.expected_physical_bytes,
+        observed_physical_bytes,
+    )?;
+    validate_expected_text(
+        "package hash",
+        workload.expected_package_hash.as_deref(),
+        extract_package_hash(&stdout_json),
+    )?;
+    validate_expected_text(
+        "schema hash",
+        workload.expected_schema_hash.as_deref(),
+        extract_schema_hash(&stdout_json),
+    )?;
+    if workload.derived_logical_bytes.is_some()
+        && (workload.expected_package_hash.is_none() || workload.expected_schema_hash.is_none())
+    {
+        return Err(bench_error(
+            "derived logical bytes require expected package and schema hashes",
+        ));
+    }
 
     Ok(WorkerMeasurement {
         timed_wall_time_ns: Some(timed_wall_time_ns),
         rows: observed_rows,
-        logical_bytes: workload.logical_bytes.or(observed_bytes).unwrap_or(0),
-        physical_bytes: workload.physical_bytes.or(observed_bytes).unwrap_or(0),
+        logical_bytes: workload
+            .derived_logical_bytes
+            .or(observed_bytes)
+            .unwrap_or(0),
+        physical_bytes: observed_physical_bytes,
         spill_bytes: workload.spill_bytes.unwrap_or(0),
         phases,
     })
@@ -344,7 +375,53 @@ fn extract_row_count(value: &Value) -> Option<u64> {
     value
         .pointer("/result/row_count")
         .and_then(Value::as_u64)
+        .or_else(|| {
+            value
+                .pointer("/result/receipt/counts/rows_written")
+                .and_then(Value::as_u64)
+        })
         .or_else(|| value.pointer("/row_count").and_then(Value::as_u64))
+}
+
+fn extract_physical_bytes(value: &Value) -> Option<u64> {
+    value.pointer("/result/byte_count").and_then(Value::as_u64)
+}
+
+fn extract_package_hash(value: &Value) -> Option<&str> {
+    value
+        .pointer("/result/package_hash")
+        .and_then(Value::as_str)
+}
+
+fn extract_schema_hash(value: &Value) -> Option<&str> {
+    value.pointer("/result/schema_hash").and_then(Value::as_str)
+}
+
+fn validate_expected_u64(label: &str, expected: Option<u64>, observed: u64) -> BenchResult<()> {
+    if let Some(expected) = expected
+        && observed != expected
+    {
+        return Err(bench_error(format!(
+            "CDF command {label} mismatch: expected {expected}, observed {observed}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_expected_text(
+    label: &str,
+    expected: Option<&str>,
+    observed: Option<&str>,
+) -> BenchResult<()> {
+    if let Some(expected) = expected
+        && observed != Some(expected)
+    {
+        return Err(bench_error(format!(
+            "CDF command {label} mismatch: expected {expected}, observed {}",
+            observed.unwrap_or("<missing>")
+        )));
+    }
+    Ok(())
 }
 
 fn extract_phase_metrics(value: &Value) -> Vec<PhaseMetric> {
@@ -466,9 +543,11 @@ mod tests {
                 "-c".to_owned(),
                 "touch marker; printf '%s' '{\"result\":{\"row_count\":7,\"ledger_events\":{\"events\":[{\"kind\":\"phase_measured\",\"details\":{\"attributes\":{\"metric\":{\"value\":{\"phase\":\"destination_ingress\",\"duration_ns\":11,\"output_bytes\":13}}}}}]}}}'".to_owned(),
             ],
-            rows: None,
-            logical_bytes: None,
-            physical_bytes: None,
+            expected_rows: Some(7),
+            derived_logical_bytes: None,
+            expected_physical_bytes: Some(13),
+            expected_package_hash: None,
+            expected_schema_hash: None,
             spill_bytes: None,
             preserve_state: false,
             timeout_ms: None,
@@ -515,9 +594,11 @@ mod tests {
             workspace_parent: temp.path().join("workspaces"),
             workspace_mode: CdfWorkspaceMode::FreshCopy,
             args: vec!["-c".to_owned(), "sleep 5".to_owned()],
-            rows: None,
-            logical_bytes: None,
-            physical_bytes: None,
+            expected_rows: None,
+            derived_logical_bytes: None,
+            expected_physical_bytes: None,
+            expected_package_hash: None,
+            expected_schema_hash: None,
             spill_bytes: None,
             preserve_state: false,
             timeout_ms: Some(50),
@@ -546,11 +627,13 @@ mod tests {
             workspace_mode: CdfWorkspaceMode::FreshCopy,
             args: vec![
                 "-c".to_owned(),
-                "test \"$CDF_BENCH_TEST_FLAG\" = seen; printf '%s' '{\"row_count\":1}'".to_owned(),
+                "test \"$CDF_BENCH_TEST_FLAG\" = seen; printf '%s' '{\"result\":{\"package_hash\":\"sha256:package\",\"schema_hash\":\"sha256:schema\",\"receipt\":{\"counts\":{\"rows_written\":1}},\"byte_count\":3}}'".to_owned(),
             ],
-            rows: None,
-            logical_bytes: Some(1),
-            physical_bytes: Some(1),
+            expected_rows: Some(1),
+            derived_logical_bytes: Some(2),
+            expected_physical_bytes: Some(3),
+            expected_package_hash: Some("sha256:package".to_owned()),
+            expected_schema_hash: Some("sha256:schema".to_owned()),
             spill_bytes: None,
             preserve_state: false,
             timeout_ms: None,
@@ -558,5 +641,36 @@ mod tests {
         };
         let measurement = run_cdf_command_workload(&workload).unwrap();
         assert_eq!(measurement.rows, 1);
+        assert_eq!(measurement.logical_bytes, 2);
+        assert_eq!(measurement.physical_bytes, 3);
+    }
+
+    #[test]
+    fn cdf_command_worker_rejects_requested_values_that_child_did_not_observe() {
+        let temp = tempfile::tempdir().unwrap();
+        let template = temp.path().join("template");
+        fs::create_dir(&template).unwrap();
+        let workload = CdfCommandWorkload {
+            cdf_executable: PathBuf::from("/bin/sh"),
+            workspace_template: template,
+            workspace_parent: temp.path().join("workspaces"),
+            workspace_mode: CdfWorkspaceMode::FreshCopy,
+            args: vec![
+                "-c".to_owned(),
+                "printf '%s' '{\"result\":{\"package_hash\":\"sha256:other\",\"schema_hash\":\"sha256:schema\",\"row_count\":1,\"byte_count\":3}}'".to_owned(),
+            ],
+            expected_rows: Some(1),
+            derived_logical_bytes: Some(2),
+            expected_physical_bytes: Some(3),
+            expected_package_hash: Some("sha256:package".to_owned()),
+            expected_schema_hash: Some("sha256:schema".to_owned()),
+            spill_bytes: None,
+            preserve_state: false,
+            timeout_ms: None,
+            environment: BTreeMap::new(),
+        };
+
+        let error = run_cdf_command_workload(&workload).unwrap_err();
+        assert!(error.to_string().contains("package hash mismatch"));
     }
 }

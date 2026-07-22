@@ -558,6 +558,10 @@ pub(crate) struct ReplayPackageCliReport {
     package_id: String,
     package_dir: String,
     package_hash: String,
+    schema_hash: String,
+    row_count: u64,
+    byte_count: u64,
+    segment_count: usize,
     destination: RunDestinationReport,
     target: String,
     package_status: String,
@@ -582,12 +586,28 @@ impl ReplayPackageCliReport {
         ledger_snapshot: &RunLedgerSnapshot,
     ) -> Self {
         let receipt_source_kind = destination.receipt_source_kind;
+        let row_count = report
+            .receipt
+            .segment_acks
+            .iter()
+            .map(|segment| segment.row_count)
+            .sum();
+        let byte_count = report
+            .receipt
+            .segment_acks
+            .iter()
+            .map(|segment| segment.byte_count)
+            .sum();
         Self {
             command: "replay package",
             run_id,
             package_id,
             package_dir: package_dir.display().to_string(),
             package_hash: report.receipt.package_hash.to_string(),
+            schema_hash: report.checkpoint.delta.schema_hash.to_string(),
+            row_count,
+            byte_count,
+            segment_count: report.receipt.segment_acks.len(),
             destination,
             target: report.receipt.target.to_string(),
             package_status: report.package_status.as_str().to_owned(),

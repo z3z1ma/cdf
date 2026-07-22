@@ -259,6 +259,8 @@ pub enum ReferenceWorkload {
     },
     DuckDbArrowIpcTableFunctionIngest {
         paths: Vec<PathBuf>,
+        #[serde(default)]
+        package_authority: Option<ReferencePackageAuthority>,
         output: PathBuf,
         profiling_directory: Option<PathBuf>,
         #[serde(default)]
@@ -291,6 +293,13 @@ pub enum ReferenceWorkload {
         include_row_key: bool,
         checkpoint: bool,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReferencePackageAuthority {
+    pub package_dir: PathBuf,
+    pub package_hash: String,
+    pub schema_hash: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -567,6 +576,7 @@ pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurem
         ),
         ReferenceWorkload::DuckDbArrowIpcTableFunctionIngest {
             paths,
+            package_authority,
             output,
             profiling_directory,
             logical_output_bytes,
@@ -578,6 +588,7 @@ pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurem
             duckdb_temp_directory_budget_bytes,
         } => run_duckdb_arrow_ipc_table_function_ingest(
             paths,
+            package_authority.as_ref(),
             output,
             DuckDbArrowIpcTableFunctionOptions {
                 profiling_directory: profiling_directory.as_deref(),
@@ -1120,6 +1131,7 @@ struct DuckDbArrowIpcTableFunctionOptions<'a> {
 
 fn run_duckdb_arrow_ipc_table_function_ingest(
     paths: &[PathBuf],
+    package_authority: Option<&ReferencePackageAuthority>,
     output: &Path,
     options: DuckDbArrowIpcTableFunctionOptions<'_>,
 ) -> BenchResult<WorkerMeasurement> {
@@ -1133,6 +1145,10 @@ fn run_duckdb_arrow_ipc_table_function_ingest(
             "DuckDB Arrow IPC table-function logical_output_bytes must be positive when supplied",
         ));
     }
+    if let Some(authority) = package_authority {
+        validate_reference_package_authority(paths, authority)?;
+    }
+    let started = std::time::Instant::now();
     let physical_input_bytes = input_bytes(paths)?;
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
@@ -1249,7 +1265,7 @@ fn run_duckdb_arrow_ipc_table_function_ingest(
     }
 
     Ok(WorkerMeasurement {
-        timed_wall_time_ns: None,
+        timed_wall_time_ns: Some(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)),
         rows,
         logical_bytes: options.logical_output_bytes.unwrap_or(logical_bytes),
         // This workload's physical-throughput denominator is source IPC bytes read. The native
@@ -1258,6 +1274,40 @@ fn run_duckdb_arrow_ipc_table_function_ingest(
         spill_bytes: 0,
         phases: Vec::new(),
     })
+}
+
+fn validate_reference_package_authority(
+    paths: &[PathBuf],
+    authority: &ReferencePackageAuthority,
+) -> BenchResult<()> {
+    let verified = cdf_package::PackageReader::open(&authority.package_dir)?.into_verified()?;
+    if verified.verification().package_hash() != authority.package_hash {
+        return Err(bench_error(format!(
+            "reference package hash mismatch: expected {}, observed {}",
+            authority.package_hash,
+            verified.verification().package_hash()
+        )));
+    }
+    let replay = verified.replay_inputs()?;
+    if replay.schema_hash.as_str() != authority.schema_hash {
+        return Err(bench_error(format!(
+            "reference package schema hash mismatch: expected {}, observed {}",
+            authority.schema_hash, replay.schema_hash
+        )));
+    }
+    let mut manifest_paths = Vec::new();
+    verified
+        .verification()
+        .for_each_identity_segment(&mut |segment| {
+            manifest_paths.push(authority.package_dir.join(segment.path));
+            Ok(())
+        })?;
+    if manifest_paths != paths {
+        return Err(bench_error(
+            "reference package segment paths differ from the verified manifest order",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -3242,6 +3292,7 @@ mod tests {
 
         let measurement = run_reference(&ReferenceWorkload::DuckDbArrowIpcTableFunctionIngest {
             paths,
+            package_authority: None,
             output: output.clone(),
             profiling_directory: Some(temp.path().join("profiles")),
             logical_output_bytes: None,
@@ -3371,6 +3422,7 @@ mod tests {
         let output = temp.path().join("nested.duckdb");
         let measurement = run_reference(&ReferenceWorkload::DuckDbArrowIpcTableFunctionIngest {
             paths: vec![path],
+            package_authority: None,
             output: output.clone(),
             profiling_directory: None,
             logical_output_bytes: Some(128),

@@ -65,8 +65,10 @@ Environment:
   CDF_BENCH_TIMEOUT_MS              default: 900000 for measure-cdf
   CDF_BENCH_IO_MODE                 default: warm for measure-cdf
   CDF_BENCH_EXPECTED_ROWS           optional row authority for measure-cdf
-  CDF_BENCH_LOGICAL_BYTES           optional logical byte authority for measure-cdf
-  CDF_BENCH_PHYSICAL_BYTES          optional physical byte authority for measure-cdf
+  CDF_BENCH_DERIVED_LOGICAL_BYTES   optional identity-bound derived logical byte authority
+  CDF_BENCH_EXPECTED_PHYSICAL_BYTES optional observed physical-byte assertion for measure-cdf
+  CDF_BENCH_EXPECTED_PACKAGE_HASH   optional observed package-hash assertion for measure-cdf
+  CDF_BENCH_EXPECTED_SCHEMA_HASH    optional observed schema-hash assertion for measure-cdf
   CDF_BENCH_SYSTEMD_MEMORY_MAX      optional systemd MemoryMax for measure-cdf, e.g. 6G
   CDF_BENCH_RUST_TOOLCHAIN          default: stable
   CDF_BENCH_STATE                   default: target/cdf-benchmarks/ec2-host/state.env
@@ -937,12 +939,13 @@ EOF"
     if [[ -z "${measure_env_json}" ]]; then
       measure_env_json="{}"
     fi
+    measure_env_json="$(python3 -c 'import json, sys; value=json.loads(sys.argv[1]); value["__cdf_bench_expected_package_hash"]=sys.argv[2] or None; value["__cdf_bench_expected_schema_hash"]=sys.argv[3] or None; print(json.dumps(value))' "${measure_env_json}" "${CDF_BENCH_EXPECTED_PACKAGE_HASH:-}" "${CDF_BENCH_EXPECTED_SCHEMA_HASH:-}")"
     measure_env_json_b64="$(printf '%s' "${measure_env_json}" | base64 | tr -d '\n')"
     measure_env_json_b64_q="$(printf '%q' "${measure_env_json_b64}")"
     timed_region_version_q="$(printf '%q' "${CDF_BENCH_TIMED_REGION_VERSION:-1}")"
     rows_q="$(printf '%q' "${CDF_BENCH_EXPECTED_ROWS:-}")"
-    logical_bytes_q="$(printf '%q' "${CDF_BENCH_LOGICAL_BYTES:-}")"
-    physical_bytes_q="$(printf '%q' "${CDF_BENCH_PHYSICAL_BYTES:-}")"
+    logical_bytes_q="$(printf '%q' "${CDF_BENCH_DERIVED_LOGICAL_BYTES:-}")"
+    physical_bytes_q="$(printf '%q' "${CDF_BENCH_EXPECTED_PHYSICAL_BYTES:-}")"
     systemd_memory_max_q="$(printf '%q' "${CDF_BENCH_SYSTEMD_MEMORY_MAX:-}")"
     run_cmd ssh -i "${CDF_BENCH_SSH_KEY}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new "${ssh_user}@${host}" \
       "set -euo pipefail; ${remote_prelude}; cd '${remote_repo}'; out=${output_q}; dataset=${dataset_q}; workload=${workload_q}; cdf_args_json=${args_json_q}; samples=${samples_q}; timeout_ms=${timeout_q}; io_mode=${io_mode_q}; workspace_mode=${workspace_mode_q}; preserve_state=${preserve_state_q}; measure_env_json_b64=${measure_env_json_b64_q}; timed_region_version=${timed_region_version_q}; expected_rows=${rows_q}; logical_bytes=${logical_bytes_q}; physical_bytes=${physical_bytes_q}; systemd_memory_max=${systemd_memory_max_q}; mkdir -p \"\$(dirname \"\${out}\")\" target/cdf-benchmarks/requests target/cdf-benchmarks/cdf-command-workspaces; . ./.cdf-bench-revision.env; host_class=\"\$(target/release/cdf-p3-measure host-class)\"; toolchain=\"\$(rustc --version)\"; request_path=\"target/cdf-benchmarks/requests/\$(basename \"\${out}\" .json)-cdf-command.json\"; spec_path=\"target/cdf-benchmarks/requests/\$(basename \"\${out}\" .json)-run-cell.json\"; systemd_log=\"\${out%.json}.systemd.log\"; if [ -n \"\${systemd_memory_max}\" ]; then host_class_path=\"\${spec_path%.json}-host-class.txt\"; systemd-run --user --wait --collect -p \"MemoryMax=\${systemd_memory_max}\" bash -lc 'cd \"\$1\"; target/release/cdf-p3-measure host-class > \"\$2\"' bash '${remote_repo}' \"\${host_class_path}\" > \"\${systemd_log}\" 2>&1; host_class=\"\$(cat \"\${host_class_path}\")\"; fi; CDF_BENCH_MEASURE_OUT=\"\${out}\" CDF_BENCH_MEASURE_DATASET=\"\${dataset}\" CDF_BENCH_MEASURE_WORKLOAD=\"\${workload}\" CDF_BENCH_MEASURE_ARGS_JSON=\"\${cdf_args_json}\" CDF_BENCH_MEASURE_SAMPLES=\"\${samples}\" CDF_BENCH_MEASURE_TIMEOUT_MS=\"\${timeout_ms}\" CDF_BENCH_MEASURE_IO_MODE=\"\${io_mode}\" CDF_BENCH_MEASURE_WORKSPACE_MODE=\"\${workspace_mode}\" CDF_BENCH_MEASURE_PRESERVE_STATE=\"\${preserve_state}\" CDF_BENCH_MEASURE_ENV_JSON_B64=\"\${measure_env_json_b64}\" CDF_BENCH_MEASURE_TIMED_REGION_VERSION=\"\${timed_region_version}\" CDF_BENCH_MEASURE_ROWS=\"\${expected_rows}\" CDF_BENCH_MEASURE_LOGICAL_BYTES=\"\${logical_bytes}\" CDF_BENCH_MEASURE_PHYSICAL_BYTES=\"\${physical_bytes}\" CDF_BENCH_MEASURE_SYSTEMD_MEMORY_MAX=\"\${systemd_memory_max}\" CDF_BENCH_MEASURE_REQUEST=\"\${request_path}\" CDF_BENCH_MEASURE_SPEC=\"\${spec_path}\" CDF_BENCH_MEASURE_REPO='${remote_repo}' CDF_BENCH_MEASURE_WORKSPACE='${remote_workspace}' CDF_BENCH_MEASURE_REVISION=\"\${repo_revision_label:-unknown}\" CDF_BENCH_MEASURE_HOST_CLASS=\"\${host_class}\" CDF_BENCH_MEASURE_TOOLCHAIN=\"\${toolchain}\" python3 - <<'PY'
@@ -959,17 +962,22 @@ repo = os.environ[\"CDF_BENCH_MEASURE_REPO\"]
 request_path = Path(os.environ[\"CDF_BENCH_MEASURE_REQUEST\"])
 spec_path = Path(os.environ[\"CDF_BENCH_MEASURE_SPEC\"])
 measure_env = json.loads(base64.b64decode(os.environ[\"CDF_BENCH_MEASURE_ENV_JSON_B64\"]).decode())
-if not isinstance(measure_env, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in measure_env.items()):
+nullable_authority_keys = {\"__cdf_bench_expected_package_hash\", \"__cdf_bench_expected_schema_hash\"}
+if not isinstance(measure_env, dict) or not all(isinstance(k, str) and (isinstance(v, str) or (k in nullable_authority_keys and v is None)) for k, v in measure_env.items()):
     raise SystemExit(\"CDF_BENCH_MEASURE_ENV_JSON must be a JSON object with string keys and string values\")
+expected_package_hash = measure_env.pop(\"__cdf_bench_expected_package_hash\", None)
+expected_schema_hash = measure_env.pop(\"__cdf_bench_expected_schema_hash\", None)
 request = {
     \"cdf_executable\": f\"{repo}/target/release/cdf\",
     \"workspace_template\": os.environ[\"CDF_BENCH_MEASURE_WORKSPACE\"],
     \"workspace_parent\": f\"{repo}/target/cdf-benchmarks/cdf-command-workspaces\",
     \"workspace_mode\": os.environ[\"CDF_BENCH_MEASURE_WORKSPACE_MODE\"],
     \"args\": json.loads(os.environ[\"CDF_BENCH_MEASURE_ARGS_JSON\"]),
-    \"rows\": optional_u64(\"CDF_BENCH_MEASURE_ROWS\"),
-    \"logical_bytes\": optional_u64(\"CDF_BENCH_MEASURE_LOGICAL_BYTES\"),
-    \"physical_bytes\": optional_u64(\"CDF_BENCH_MEASURE_PHYSICAL_BYTES\"),
+    \"expected_rows\": optional_u64(\"CDF_BENCH_MEASURE_ROWS\"),
+    \"derived_logical_bytes\": optional_u64(\"CDF_BENCH_MEASURE_LOGICAL_BYTES\"),
+    \"expected_physical_bytes\": optional_u64(\"CDF_BENCH_MEASURE_PHYSICAL_BYTES\"),
+    \"expected_package_hash\": expected_package_hash,
+    \"expected_schema_hash\": expected_schema_hash,
     \"spill_bytes\": 0,
     \"preserve_state\": os.environ[\"CDF_BENCH_MEASURE_PRESERVE_STATE\"] == \"1\",
     \"timeout_ms\": max(1, int(os.environ[\"CDF_BENCH_MEASURE_TIMEOUT_MS\"]) - 1000),
