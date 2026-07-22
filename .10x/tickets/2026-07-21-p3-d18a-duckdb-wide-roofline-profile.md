@@ -195,6 +195,12 @@ No product tuning, path change, source re-extraction, or conclusion from a lapto
   `CREATE_TABLE_AS`, 89.852 in the independent scanner, and 0.335 in projection. Peak DuckDB
   buffer/temp storage was 8,515,524,608 and 6,908,674,048 bytes. The final raw median-of-three is
   still running on the controlled host; no comparison percentage is claimed until it completes.
+- 2026-07-22: The final package/schema-bound raw median-of-three completed at 218.537542 s
+  (879.261 ms MAD), 4,575,227,904 bytes peak child RSS, and no cgroup pressure/OOM. The retained
+  product median is 203.280955 s (267.088 ms MAD), so CDF is 6.981% faster on the same host class
+  while its native profile uses 3,434,788,864 fewer peak DuckDB buffer bytes and roughly half the
+  scanner CPU. The independent comparator does not justify a product-path replacement. Macro
+  process CPU remains unsuitable for operator attribution; native profiles are the authority.
 
 ## Blockers
 
@@ -211,9 +217,10 @@ None.
   versioned profile reader; `bc8e737d` made package sync portable; `2c61cf73` admitted the exact
   nested list schema in the independent comparator; `2ba50791` added destination-neutral replay
   phase metrics. Profiling is absent by default and does not change ordinary execution.
-- Authority-bound raw cell: the retained `2026-07-22-p3-d18a-wide-raw-authority-profiled` request,
-  run-cell, report, and systemd-log files bind the command to the fully verified package/schema and
-  manifest segment order. The adjacent
+- Authority-bound raw cell: the retained
+  `2026-07-22-p3-d18a-wide-raw-authority-{profiled,median3}` request, run-cell, report, and
+  systemd-log files bind the command to the fully verified package/schema and manifest segment
+  order. The adjacent
   `2026-07-22-p3-d18a-wide-raw-authority.duckdb-profile{,.normalized}.json` pair retains native and
   normalized operator evidence. The raw comparison excludes CDF destination/receipt/checkpoint work
   after verification; its inner wall excludes verification while process CPU/RSS includes it.
@@ -242,13 +249,14 @@ authorities, a macro spill field presented as observed, missing product replay a
 nested-list comparator coverage, unretained requests/specs/profiles, unexplained CPU dispersion,
 and an overbroad claim that the hot path was unchanged.
 
-Resolution in progress: current authority-bound cells use revision `b4635a2c`, the same 16 GiB host
+Resolution: current authority-bound cells use revision `b4635a2c`, the same 16 GiB host
 class, an exact verified package/schema/segment order, validated observed rows/physical bytes, and
 identity-bound logical bytes. Requests, run-cell specs, reports, systemd logs, native profiles, and
 normalized profiles are retained; product settings and raw/product semantic differences are
 explicit. Native DuckDB temp storage remains spill authority and macro CPU remains inconclusive for
 fine attribution. The current TLC result is a new baseline rather than an invalid comparison to a
-different historical workload. Final raw median and independent verdict pending.
+different historical workload. The final raw median confirms the product's 6.981% lead. Final
+independent verdict pending.
 
 ## Retrospective
 
@@ -268,3 +276,9 @@ different historical workload. Final raw median and independent verdict pending.
 - Phase attribution should be a generic runtime product surface. Destination-specific profiling
   answers native operator questions; replay-owned phases answer lifecycle questions without leaking
   DuckDB into orchestration.
+- A requested benchmark counter is not evidence. The worker must observe and validate rows, bytes,
+  package identity, schema identity, and segment order; derived logical bytes are legitimate only
+  when explicitly bound to those observed identities.
+- Controlled hosts need load-awareness as well as cgroups. A short unrelated process did not move
+  this median beyond clean samples, but the observation belongs in the evidence rather than being
+  hidden behind a low MAD.
