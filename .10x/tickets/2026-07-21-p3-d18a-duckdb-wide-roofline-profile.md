@@ -207,10 +207,25 @@ No product tuning, path change, source re-extraction, or conclusion from a lapto
   expected effective schema and no cgroup pressure/OOM. Its workload id is deliberately
   `duckdb_tlc_full_year_d18a_baseline`; it is the forward comparison key for D18B-E and is not
   compared numerically to D14's differently identified historical fixture.
+- 2026-07-22: Final adversarial review found two material evidence contradictions. First, the
+  product request declared a 1 GiB DuckDB temp-directory ceiling while the retained native profile
+  reported 6,957,465,600 peak temp bytes. DuckDB 1.5.4 source confirms that the metric samples
+  `BufferManager::GetUsedSwap()` and that the ceiling rejects writes beyond its configured maximum;
+  prose cannot reconcile the values. Opt-in product profiles now embed the effective live DuckDB
+  settings captured from the same writer connection before materialization, so the rerun will
+  prove the actual ceiling rather than infer it from process environment. Second, the command
+  benchmark's fallback incorrectly used the largest phase byte count for both logical and physical
+  throughput. Physical bytes now come only from the command's explicit byte count or the named
+  `source_read` phase, while logical bytes come from an identity-bound derivation, the named
+  `validation_normalization` phase, or the explicit command byte count. A protective test proves
+  that a larger logical phase can never become physical-I/O authority.
 
 ## Blockers
 
-None.
+- Rerun the profiled product cell with embedded live DuckDB settings and reconcile or repair any
+  observed temp-directory ceiling violation.
+- Rerun the TLC cell with 693,001,713 expected physical source bytes under the corrected benchmark
+  worker so its forward baseline has honest logical and physical counters.
 
 ## Evidence
 
@@ -263,7 +278,8 @@ normalized profiles are retained; product settings and raw/product semantic diff
 explicit. Native DuckDB temp storage remains spill authority and macro CPU remains inconclusive for
 fine attribution. The current TLC result is a new baseline rather than an invalid comparison to a
 different historical workload, and it is now measured at the same code revision as the wide cells.
-The final raw median confirms the product's 6.981% lead. Final independent verdict pending.
+The final raw median confirms the product's 6.981% lead. A subsequent independent review found the
+two active blockers above; closure remains rejected until both are repaired and re-reviewed.
 
 ## Retrospective
 

@@ -11,6 +11,7 @@ use crate::{CdfError, Result, sql::duckdb_error};
 pub(crate) struct DuckDbProfileCapture {
     output_path: PathBuf,
     scratch_path: PathBuf,
+    runtime_settings: serde_json::Value,
 }
 
 impl DuckDbProfileCapture {
@@ -39,6 +40,7 @@ impl DuckDbProfileCapture {
         );
         let output_path = directory.join(&name);
         let scratch_path = directory.join(format!(".{name}.capture.json"));
+        let runtime_settings = capture_runtime_settings(connection)?;
         let scratch = sql_string_literal(&scratch_path)?;
         connection
             .execute_batch(&format!(
@@ -48,6 +50,7 @@ impl DuckDbProfileCapture {
         Ok(Some(Self {
             output_path,
             scratch_path,
+            runtime_settings,
         }))
     }
 
@@ -60,14 +63,29 @@ impl DuckDbProfileCapture {
                 ))
             })
             .and_then(|bytes| {
-                serde_json::from_slice::<serde_json::Value>(&bytes)
-                    .map_err(|error| {
+                let mut profile =
+                    serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|error| {
                         CdfError::destination(format!(
                             "DuckDB materialization profile {} is not valid JSON: {error}",
                             self.scratch_path.display()
                         ))
-                    })
-                    .map(|_| bytes)
+                    })?;
+                let profile = profile.as_object_mut().ok_or_else(|| {
+                    CdfError::destination(format!(
+                        "DuckDB materialization profile {} must be a JSON object",
+                        self.scratch_path.display()
+                    ))
+                })?;
+                profile.insert(
+                    "cdf_duckdb_runtime_settings".to_owned(),
+                    self.runtime_settings.clone(),
+                );
+                serde_json::to_vec(&profile).map_err(|error| {
+                    CdfError::destination(format!(
+                        "serialize DuckDB materialization profile {}: {error}",
+                        self.scratch_path.display()
+                    ))
+                })
             });
         let disable = connection
             .execute_batch("CALL disable_profiling()")
@@ -97,6 +115,22 @@ impl DuckDbProfileCapture {
         })?;
         Ok(self.output_path)
     }
+}
+
+fn capture_runtime_settings(connection: &Connection) -> Result<serde_json::Value> {
+    let settings: (String, i64, String, bool) = connection
+        .query_row(
+            "SELECT current_setting('memory_limit'), current_setting('threads'), current_setting('max_temp_directory_size'), current_setting('preserve_insertion_order')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .map_err(|error| duckdb_error("capture DuckDB materialization runtime settings", error))?;
+    Ok(serde_json::json!({
+        "memory_limit": settings.0,
+        "threads": settings.1,
+        "max_temp_directory_size": settings.2,
+        "preserve_insertion_order": settings.3,
+    }))
 }
 
 fn sql_string_literal(path: &Path) -> Result<String> {
@@ -131,6 +165,15 @@ mod tests {
         );
         assert!(profile.get("system_peak_buffer_memory").is_some());
         assert!(profile.get("system_peak_temp_dir_size").is_some());
+        assert_eq!(
+            profile["cdf_duckdb_runtime_settings"]["preserve_insertion_order"],
+            true
+        );
+        assert!(
+            profile["cdf_duckdb_runtime_settings"]["memory_limit"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
     }
 
     #[test]

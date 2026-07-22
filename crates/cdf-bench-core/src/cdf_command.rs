@@ -111,13 +111,13 @@ pub fn run_cdf_command_workload(workload: &CdfCommandWorkload) -> BenchResult<Wo
     })?;
     let observed_rows = extract_row_count(&stdout_json).unwrap_or(0);
     let phases = extract_phase_metrics(&stdout_json);
-    let observed_bytes = phases
-        .iter()
-        .map(|phase| phase.bytes)
-        .max()
-        .filter(|bytes| *bytes > 0);
     let observed_physical_bytes = extract_physical_bytes(&stdout_json)
-        .or(observed_bytes)
+        .or_else(|| phase_bytes(&phases, "source_read"))
+        .unwrap_or(0);
+    let observed_logical_bytes = workload
+        .derived_logical_bytes
+        .or_else(|| phase_bytes(&phases, "validation_normalization"))
+        .or_else(|| extract_physical_bytes(&stdout_json))
         .unwrap_or(0);
     validate_expected_u64("row count", workload.expected_rows, observed_rows)?;
     validate_expected_u64(
@@ -146,14 +146,18 @@ pub fn run_cdf_command_workload(workload: &CdfCommandWorkload) -> BenchResult<Wo
     Ok(WorkerMeasurement {
         timed_wall_time_ns: Some(timed_wall_time_ns),
         rows: observed_rows,
-        logical_bytes: workload
-            .derived_logical_bytes
-            .or(observed_bytes)
-            .unwrap_or(0),
+        logical_bytes: observed_logical_bytes,
         physical_bytes: observed_physical_bytes,
         spill_bytes: workload.spill_bytes.unwrap_or(0),
         phases,
     })
+}
+
+fn phase_bytes(phases: &[PhaseMetric], expected_phase: &str) -> Option<u64> {
+    phases
+        .iter()
+        .find(|phase| phase.phase == expected_phase)
+        .map(|phase| phase.bytes)
 }
 
 struct CdfChildOutput {
@@ -541,7 +545,7 @@ mod tests {
             workspace_mode: CdfWorkspaceMode::FreshCopy,
             args: vec![
                 "-c".to_owned(),
-                "touch marker; printf '%s' '{\"result\":{\"row_count\":7,\"ledger_events\":{\"events\":[{\"kind\":\"phase_measured\",\"details\":{\"attributes\":{\"metric\":{\"value\":{\"phase\":\"destination_ingress\",\"duration_ns\":11,\"output_bytes\":13}}}}}]}}}'".to_owned(),
+                "touch marker; printf '%s' '{\"result\":{\"row_count\":7,\"ledger_events\":{\"events\":[{\"kind\":\"phase_measured\",\"details\":{\"attributes\":{\"metric\":{\"value\":{\"phase\":\"source_read\",\"duration_ns\":11,\"output_bytes\":13}}}}},{\"kind\":\"phase_measured\",\"details\":{\"attributes\":{\"metric\":{\"value\":{\"phase\":\"validation_normalization\",\"duration_ns\":17,\"output_bytes\":101}}}}}]}}}'".to_owned(),
             ],
             expected_rows: Some(7),
             derived_logical_bytes: None,
@@ -556,14 +560,34 @@ mod tests {
 
         let measurement = run_cdf_command_workload(&workload).unwrap();
         assert_eq!(measurement.rows, 7);
-        assert_eq!(measurement.logical_bytes, 13);
+        assert_eq!(measurement.logical_bytes, 101);
         assert_eq!(measurement.physical_bytes, 13);
-        assert_eq!(measurement.phases.len(), 1);
-        assert_eq!(measurement.phases[0].phase, "destination_ingress");
+        assert_eq!(measurement.phases.len(), 2);
+        assert_eq!(measurement.phases[0].phase, "source_read");
         assert!(
             !marker.exists(),
             "fresh sample polluted the workspace template"
         );
+    }
+
+    #[test]
+    fn physical_bytes_never_fall_back_to_a_logical_phase_counter() {
+        let phases = vec![
+            PhaseMetric {
+                phase: "source_read".to_owned(),
+                duration_ns: 1,
+                bytes: 7,
+            },
+            PhaseMetric {
+                phase: "validation_normalization".to_owned(),
+                duration_ns: 2,
+                bytes: 101,
+            },
+        ];
+
+        assert_eq!(phase_bytes(&phases, "source_read"), Some(7));
+        assert_eq!(phase_bytes(&phases, "validation_normalization"), Some(101));
+        assert_eq!(phase_bytes(&phases, "missing"), None);
     }
 
     #[test]
