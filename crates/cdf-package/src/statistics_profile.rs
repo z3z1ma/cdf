@@ -6,8 +6,8 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use cdf_kernel::{
-    BatchStats, CdfError, IncompleteStatisticsReason, Result, STATISTICS_MODEL_VERSION,
-    StatisticsArrowType, StatisticsCompleteness, TypedScalar,
+    BatchStats, CdfError, ColumnStats, IncompleteStatisticsReason, Result,
+    STATISTICS_MODEL_VERSION, StatisticsArrowType, StatisticsCompleteness, TypedScalar,
 };
 use cdf_package_contract::{FileEntry, SegmentEntry};
 use parquet::{
@@ -144,6 +144,41 @@ impl StatisticsProfileWriter {
 }
 
 impl PackageReader {
+    /// Returns the package-grain aggregate only after the complete manifest-bound profile has
+    /// passed validation. Missing optional evidence is conservative absence rather than an error.
+    pub fn verified_package_statistics(
+        &self,
+        verified: &VerifiedPackage,
+    ) -> Result<Option<BatchStats>> {
+        let mut profile_present = false;
+        self.for_each_identity_file(&mut |entry| {
+            profile_present |= entry.path == STATISTICS_PROFILE_FILE;
+            Ok(())
+        })?;
+        if !profile_present {
+            return Ok(None);
+        }
+
+        let mut columns = Vec::new();
+        self.for_each_verified_statistics_profile(verified, &mut |row| {
+            if row.grain == StatisticsProfileGrain::Package {
+                columns.push(ColumnStats {
+                    field_path: row.field_path,
+                    data_type: row.data_type,
+                    row_count: row.row_count,
+                    null_count: row.null_count,
+                    minimum: row.minimum,
+                    maximum: row.maximum,
+                    completeness: row.completeness,
+                });
+            }
+            Ok(())
+        })?;
+        Ok(Some(BatchStats {
+            columns: columns.into_boxed_slice(),
+        }))
+    }
+
     /// Visits profile rows in canonical order without retaining the artifact or manifest segment
     /// set. Visited rows remain provisional until this method returns `Ok(())`, because a later
     /// row or the end-of-stream completeness check can still invalidate the profile.

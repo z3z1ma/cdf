@@ -99,6 +99,10 @@ impl VerifiedPackageAccess for VerifiedPackageReader {
         self.reader.runtime_arrow_schema_verified(&self.verified)
     }
 
+    fn verified_package_statistics(&self) -> Result<Option<cdf_kernel::BatchStats>> {
+        self.reader.verified_package_statistics(&self.verified)
+    }
+
     fn for_each_quarantine_record(
         &self,
         visitor: &mut dyn FnMut(QuarantineRecord) -> Result<()>,

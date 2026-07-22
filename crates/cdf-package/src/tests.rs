@@ -420,6 +420,12 @@ fn verified_statistics_profile_is_manifest_bound_typed_parquet() {
     );
     assert_eq!(rows[2].grain, StatisticsProfileGrain::Package);
 
+    let package_statistics = reader
+        .verified_package_statistics(&verified)
+        .unwrap()
+        .expect("manifest-bound profile exposes package statistics");
+    assert_eq!(package_statistics, stats);
+
     let mut windows = Vec::new();
     let window_count = reader
         .for_each_verified_statistics_profile_window(&verified, 1, &mut |window| {
@@ -468,6 +474,27 @@ fn verified_statistics_profile_is_manifest_bound_typed_parquet() {
             .contains("identity artifact stats/profile.parquet changed after package verification"),
         "{error}"
     );
+}
+
+#[test]
+fn verified_package_statistics_are_conservatively_absent_without_profile() {
+    let temp = tempfile::tempdir().unwrap();
+    let builder = package_builder!(temp.path(), "pkg-no-stats-profile").unwrap();
+    let batch = sample_batch();
+    builder
+        .write_runtime_arrow_schema(batch.schema().as_ref())
+        .unwrap();
+    builder
+        .write_segment(
+            SegmentId::new("seg-000001").unwrap(),
+            0,
+            &[canonical_batch(batch, 0)],
+        )
+        .unwrap();
+    let (_, verified) = builder.finish_verified().unwrap();
+    let reader = PackageReader::open(temp.path()).unwrap();
+
+    assert_eq!(reader.verified_package_statistics(&verified).unwrap(), None);
 }
 
 #[test]

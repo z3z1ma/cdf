@@ -9,8 +9,8 @@ use std::{
 use arrow_array::RecordBatch;
 use arrow_schema::Schema;
 use cdf_kernel::{
-    CdfError, CommitPlan, DestinationCommitRequest, DestinationId, PackageHash, PlanId, Result,
-    SchemaHash, SegmentId, TargetName, WriteDisposition,
+    BatchStats, CdfError, CommitPlan, DestinationCommitRequest, DestinationId, PackageHash, PlanId,
+    Result, SchemaHash, SegmentId, TargetName, WriteDisposition,
 };
 use cdf_package_contract::{SegmentEntry, VerifiedPackageAccess};
 use serde::{Deserialize, Serialize};
@@ -484,6 +484,7 @@ pub struct VerifiedFinalBinding {
     pub(crate) merge_keys: Vec<String>,
     pub(crate) plan: CommitPlan,
     pub(crate) ordered_segments: Vec<StagedSegmentIdentity>,
+    pub(crate) package_statistics: Option<BatchStats>,
 }
 
 impl VerifiedFinalBinding {
@@ -517,6 +518,10 @@ impl VerifiedFinalBinding {
 
     pub fn ordered_segments(&self) -> &[StagedSegmentIdentity] {
         &self.ordered_segments
+    }
+
+    pub fn package_statistics(&self) -> Option<&BatchStats> {
+        self.package_statistics.as_ref()
     }
 
     pub fn from_verified_package(
@@ -554,6 +559,7 @@ impl VerifiedFinalBinding {
             ));
         }
         let output_schema = package.runtime_arrow_schema()?;
+        let package_statistics = package.verified_package_statistics()?;
         let output_arrow_schema_hash =
             cdf_kernel::canonical_arrow_schema_hash(output_schema.as_ref())?;
         let schema_hash = inputs.schema_hash.clone();
@@ -607,6 +613,7 @@ impl VerifiedFinalBinding {
             merge_keys: inputs.merge_keys,
             plan,
             ordered_segments,
+            package_statistics,
         })
     }
 

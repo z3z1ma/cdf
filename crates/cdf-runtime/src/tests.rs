@@ -2060,6 +2060,7 @@ fn final_binding_requires_exact_ordered_staged_identities() {
             delivery_guarantee: DeliveryGuarantee::EffectivelyOncePerPackage,
         },
         ordered_segments: vec![first.clone(), second.clone()],
+        package_statistics: None,
     };
     binding
         .validate_staged_identities(&[first.clone(), second.clone()])
@@ -2829,6 +2830,7 @@ fn test_final_binding(
             delivery_guarantee: DeliveryGuarantee::EffectivelyOncePerPackage,
         },
         ordered_segments,
+        package_statistics: None,
     }
 }
 

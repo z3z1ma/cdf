@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use arrow_schema::SchemaRef;
-use cdf_kernel::{Result, ScanPlan};
+use cdf_kernel::{BatchStats, Result, ScanPlan};
 
 use crate::{PackageReplayInputs, QuarantineRecord, SegmentEntry};
 
@@ -20,6 +20,11 @@ pub trait VerifiedPackageAccess: Send + Sync {
     fn recorded_scan_plan(&self) -> Result<ScanPlan>;
     fn replay_inputs(&self) -> Result<PackageReplayInputs>;
     fn runtime_arrow_schema(&self) -> Result<SchemaRef>;
+    /// Returns complete package-grain statistics only when a manifest-bound profile artifact was
+    /// emitted and fully verified. Absence is conservative: consumers must retain every field.
+    fn verified_package_statistics(&self) -> Result<Option<BatchStats>> {
+        Ok(None)
+    }
     fn for_each_quarantine_record(
         &self,
         visitor: &mut dyn FnMut(QuarantineRecord) -> Result<()>,

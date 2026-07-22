@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-21
 Updated: 2026-07-21
 Parent: .10x/tickets/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md
@@ -47,11 +47,33 @@ DuckDB branch, package mutation, or second scanner.
 
 ## Journal
 
-None.
+- 2026-07-22: Began execution after D18A closure. The optimization must enter through verified
+  package statistics, not a DuckDB-specific package reader or runtime branch. The intended seam is
+  a conservative optional `BatchStats` fact on `VerifiedPackageAccess`, captured into final-binding
+  authority only after the package is complete. DuckDB then owns projection planning and null
+  synthesis inside its sole canonical-segment scanner. Missing statistics remain the current full
+  scan; no default profile-generation tax is introduced without separate evidence.
+- 2026-07-22: Implemented the candidate as one scanner path. A fully verified optional package
+  aggregate is captured by generic final-binding authority; DuckDB validates exact field paths,
+  Arrow types, total row counts, completeness, null counts, and canonical segment schema before
+  constructing an Arrow IPC projection. Only complete all-null nullable user fields may disappear
+  from decode/conversion; merge keys, nonnullable fields, every reserved `_cdf_*` field, and the
+  package ordinal remain physical. DuckDB synthesizes typed nulls in the existing materialization
+  statement, so target DDL and persisted values remain complete. Missing profile evidence retains
+  the preexisting full scan.
+- 2026-07-22: The affected suite passes: 50 DuckDB tests, 82 package tests with four deliberate
+  performance ignores, 10 package-contract tests, 148 runtime tests with two deliberate ignores,
+  seven build-graph tests, and doc tests. New tests prove manifest-bound aggregate reconstruction,
+  conservative absence, exact IPC projection, protected framework/merge fields, stale/incomplete
+  handling, and complete append/replace/merge target semantics. Created a benchmark-only profiled
+  variant of the exact D18A package from verified canonical bytes without source re-extraction:
+  package hash `sha256:5ca00b991ce2e5a5a8dd32a69880be458d2465a25684e9f29c588cb7c35ecde7`,
+  3,513,266 rows, 231 unchanged canonical segments, and a 1.5 MiB typed profile. The temporary
+  generator source was deleted after the artifact was verified; it is not a product or legacy path.
 
 ## Blockers
 
-Depends on D18A baseline/profile.
+None.
 
 ## Evidence
 

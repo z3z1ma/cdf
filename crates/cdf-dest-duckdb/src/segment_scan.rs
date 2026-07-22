@@ -16,7 +16,7 @@ use std::{
 use arrow_array::{Array, StructArray, ffi::FFI_ArrowArray};
 use arrow_ipc::reader::FileReader as IpcFileReader;
 use arrow_schema::{DataType, Schema, SchemaRef, TimeUnit, ffi::FFI_ArrowSchema};
-use cdf_kernel::{CdfError, Result};
+use cdf_kernel::{BatchStats, CdfError, Result, StatisticsArrowType, StatisticsCompleteness};
 
 use crate::{
     CDF_ROW_KEY_COLUMN, CDF_STAGE_ORDER_COLUMN, DuckDbCommitWriter, DuckDbNativeResources,
@@ -25,6 +25,118 @@ use crate::{
 };
 
 pub(crate) const SEGMENT_SCAN_FUNCTION: &str = "__cdf_canonical_segments";
+
+#[derive(Clone, Debug)]
+pub(crate) struct DuckDbSegmentProjection {
+    source_schema: SchemaRef,
+    schema: SchemaRef,
+    ipc_projection: Option<Vec<usize>>,
+    omitted_user_fields: Vec<bool>,
+}
+
+impl DuckDbSegmentProjection {
+    pub(crate) fn from_verified_package_statistics(
+        output_schema: &Schema,
+        segment_schema: &Schema,
+        statistics: Option<&BatchStats>,
+        expected_rows: u64,
+        merge_keys: &[String],
+    ) -> Result<Self> {
+        let Some(statistics) = statistics else {
+            return Ok(Self::full(segment_schema, output_schema.fields().len()));
+        };
+        if statistics.columns.len() != output_schema.fields().len() {
+            return Err(CdfError::data(format!(
+                "verified package statistics contain {} fields for {} output fields",
+                statistics.columns.len(),
+                output_schema.fields().len()
+            )));
+        }
+
+        let mut retained_indices = Vec::with_capacity(segment_schema.fields().len());
+        let mut omitted_user_fields = Vec::with_capacity(output_schema.fields().len());
+        for (index, (field, column)) in output_schema
+            .fields()
+            .iter()
+            .zip(statistics.columns.iter())
+            .enumerate()
+        {
+            let expected_path = [field.name().as_str()];
+            let observed_path = column
+                .field_path
+                .iter()
+                .map(AsRef::as_ref)
+                .collect::<Vec<&str>>();
+            let expected_type = StatisticsArrowType::from_arrow_data_type(field.data_type())?;
+            if observed_path != expected_path
+                || column.data_type != expected_type
+                || column.row_count != expected_rows
+                || column.null_count > column.row_count
+            {
+                return Err(CdfError::data(format!(
+                    "verified package statistics for field {:?} do not match the final output schema and row authority",
+                    field.name()
+                )));
+            }
+            let protected = merge_keys.iter().any(|key| key == field.name())
+                || field.name().starts_with("_cdf_");
+            let omit = field.is_nullable()
+                && !protected
+                && column.null_count == expected_rows
+                && matches!(column.completeness, StatisticsCompleteness::Complete);
+            omitted_user_fields.push(omit);
+            if !omit {
+                retained_indices.push(index);
+            }
+        }
+        let package_row_ord_index = output_schema.fields().len();
+        let ordinal = segment_schema
+            .fields()
+            .get(package_row_ord_index)
+            .ok_or_else(|| {
+                CdfError::data("canonical segment schema omitted package row ordinal")
+            })?;
+        if !cdf_package_contract::is_package_row_ord_field(ordinal.as_ref())
+            || segment_schema.fields().len() != package_row_ord_index + 1
+        {
+            return Err(CdfError::data(
+                "canonical segment schema does not end with exact package row ordinal authority",
+            ));
+        }
+        retained_indices.push(package_row_ord_index);
+
+        if omitted_user_fields.iter().all(|omitted| !omitted) {
+            return Ok(Self::full(segment_schema, output_schema.fields().len()));
+        }
+        let fields = retained_indices
+            .iter()
+            .map(|index| segment_schema.fields()[*index].clone())
+            .collect::<Vec<_>>();
+        Ok(Self {
+            source_schema: Arc::new(segment_schema.clone()),
+            schema: Arc::new(Schema::new_with_metadata(
+                fields,
+                segment_schema.metadata().clone(),
+            )),
+            ipc_projection: Some(retained_indices),
+            omitted_user_fields,
+        })
+    }
+
+    fn full(segment_schema: &Schema, user_field_count: usize) -> Self {
+        let schema = Arc::new(segment_schema.clone());
+        Self {
+            source_schema: Arc::clone(&schema),
+            schema,
+            ipc_projection: None,
+            omitted_user_fields: vec![false; user_field_count],
+        }
+    }
+
+    pub(crate) fn omitted_user_fields(&self) -> &[bool] {
+        &self.omitted_user_fields
+    }
+}
 
 pub(crate) fn ingest_canonical_segments(
     writer: &mut DuckDbCommitWriter,
@@ -47,7 +159,18 @@ pub(crate) fn ingest_canonical_segments(
         .collect::<Vec<_>>();
     let mut select_columns = writer.persisted_fields[..writer.user_field_count]
         .iter()
-        .map(|field| quote_ident(&field.name))
+        .zip(&writer.omitted_user_fields)
+        .map(|(field, omitted)| {
+            if *omitted {
+                format!(
+                    "CAST(NULL AS {}) AS {}",
+                    field.sql_type,
+                    quote_ident(&field.name)
+                )
+            } else {
+                quote_ident(&field.name)
+            }
+        })
         .collect::<Vec<_>>();
     select_columns.push(format!(
         "CAST({first_row_key} + {} AS UBIGINT) AS {}",
@@ -103,7 +226,7 @@ impl DuckDbSegmentScanRuntime {
         path: &Path,
         resources: &DuckDbNativeResources,
         files: Vec<cdf_runtime::DurableLocalFileAccess>,
-        schema: SchemaRef,
+        projection: DuckDbSegmentProjection,
         scan_threads: usize,
     ) -> Result<Self> {
         if files.is_empty() {
@@ -168,7 +291,7 @@ impl DuckDbSegmentScanRuntime {
         let registration = register_segment_scan(
             registration_connection,
             files,
-            schema,
+            projection,
             scan_threads,
             telemetry.clone(),
         );
@@ -222,7 +345,9 @@ struct SegmentScanTelemetry {
 
 struct SegmentScanContext {
     files: Vec<std::sync::Mutex<Option<cdf_runtime::DurableLocalFileAccess>>>,
+    source_schema: SchemaRef,
     schema: SchemaRef,
+    ipc_projection: Option<Vec<usize>>,
     connection: duckdb::ffi::duckdb_connection,
     converted_schema: ConvertedSchema,
     next_file: AtomicUsize,
@@ -289,13 +414,14 @@ impl SegmentScanLocalState {
                 .ok_or_else(|| CdfError::internal("DuckDB segment file was claimed twice"))?;
             let local_file = local_file.open()?;
             let (path, file) = local_file.into_parts();
-            let reader = IpcFileReader::try_new_buffered(file, None).map_err(|error| {
-                CdfError::data(format!(
-                    "open canonical Arrow IPC segment {} for DuckDB: {error}",
-                    path.display()
-                ))
-            })?;
-            if reader.schema().as_ref() != context.schema.as_ref() {
+            let reader = IpcFileReader::try_new_buffered(file, context.ipc_projection.clone())
+                .map_err(|error| {
+                    CdfError::data(format!(
+                        "open canonical Arrow IPC segment {} for DuckDB: {error}",
+                        path.display()
+                    ))
+                })?;
+            if reader.schema().as_ref() != context.source_schema.as_ref() {
                 return Err(CdfError::data(format!(
                     "DuckDB canonical segment {} schema differs from its bound schema",
                     path.display()
@@ -540,18 +666,26 @@ impl Drop for LogicalType {
 fn register_segment_scan(
     connection: duckdb::ffi::duckdb_connection,
     files: Vec<cdf_runtime::DurableLocalFileAccess>,
-    schema: SchemaRef,
+    projection: DuckDbSegmentProjection,
     max_threads: usize,
     telemetry: Arc<SegmentScanTelemetry>,
 ) -> Result<()> {
     assert_c_data_layout();
+    let DuckDbSegmentProjection {
+        source_schema,
+        schema,
+        ipc_projection,
+        omitted_user_fields: _,
+    } = projection;
     let converted_schema = ConvertedSchema::new(connection, schema.as_ref())?;
     let context = Box::new(SegmentScanContext {
         files: files
             .into_iter()
             .map(|file| std::sync::Mutex::new(Some(file)))
             .collect(),
+        source_schema,
         schema,
+        ipc_projection,
         connection,
         converted_schema,
         next_file: AtomicUsize::new(0),
@@ -862,4 +996,112 @@ fn cstr_message(pointer: *const c_char) -> String {
     unsafe { CStr::from_ptr(pointer) }
         .to_string_lossy()
         .into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, sync::Arc};
+
+    use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
+    use cdf_kernel::{BatchStats, StatisticsCompleteness};
+
+    use super::DuckDbSegmentProjection;
+
+    fn sparse_batch() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("sparse", DataType::Utf8, true),
+            Field::new("merge_key", DataType::Utf8, true),
+            Field::new("_cdf_future", DataType::Utf8, true).with_metadata(HashMap::from([(
+                cdf_kernel::SEMANTIC_METADATA_KEY.to_owned(),
+                "future-provenance".to_owned(),
+            )])),
+        ]));
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(Int64Array::from(vec![1, 2])),
+            Arc::new(StringArray::from(vec![None::<&str>, None])),
+            Arc::new(StringArray::from(vec![None::<&str>, None])),
+            Arc::new(StringArray::from(vec![None::<&str>, None])),
+        ];
+        RecordBatch::try_new(schema, columns).unwrap()
+    }
+
+    #[test]
+    fn projection_omits_only_complete_nullable_unprotected_fields() {
+        let batch = sparse_batch();
+        let output_schema = batch.schema();
+        let segment_schema =
+            cdf_package_contract::canonical_segment_schema(output_schema.as_ref()).unwrap();
+        let statistics = BatchStats::compute(&batch).unwrap();
+
+        let projection = DuckDbSegmentProjection::from_verified_package_statistics(
+            output_schema.as_ref(),
+            &segment_schema,
+            Some(&statistics),
+            2,
+            &["merge_key".to_owned()],
+        )
+        .unwrap();
+
+        assert_eq!(projection.omitted_user_fields, [false, true, false, false]);
+        assert_eq!(projection.ipc_projection, Some(vec![0, 2, 3, 4]));
+        assert_eq!(
+            projection
+                .schema
+                .fields()
+                .iter()
+                .map(|field| field.name().as_str())
+                .collect::<Vec<_>>(),
+            ["id", "merge_key", "_cdf_future", "_cdf_package_row_ord"]
+        );
+    }
+
+    #[test]
+    fn projection_is_conservative_without_complete_exact_authority() {
+        let batch = sparse_batch();
+        let output_schema = batch.schema();
+        let segment_schema =
+            cdf_package_contract::canonical_segment_schema(output_schema.as_ref()).unwrap();
+
+        let absent = DuckDbSegmentProjection::from_verified_package_statistics(
+            output_schema.as_ref(),
+            &segment_schema,
+            None,
+            2,
+            &[],
+        )
+        .unwrap();
+        assert!(absent.ipc_projection.is_none());
+        assert!(absent.omitted_user_fields.iter().all(|omitted| !omitted));
+
+        let mut incomplete = BatchStats::compute(&batch).unwrap();
+        incomplete.columns[1].completeness = StatisticsCompleteness::Incomplete {
+            reason: cdf_kernel::IncompleteStatisticsReason::UnsupportedType,
+        };
+        let incomplete = DuckDbSegmentProjection::from_verified_package_statistics(
+            output_schema.as_ref(),
+            &segment_schema,
+            Some(&incomplete),
+            2,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(incomplete.omitted_user_fields, [false, false, true, false]);
+
+        let mut stale = BatchStats::compute(&batch).unwrap();
+        stale.columns[0].row_count = 1;
+        assert!(
+            DuckDbSegmentProjection::from_verified_package_statistics(
+                output_schema.as_ref(),
+                &segment_schema,
+                Some(&stale),
+                2,
+                &[],
+            )
+            .unwrap_err()
+            .message
+            .contains("row authority")
+        );
+    }
 }

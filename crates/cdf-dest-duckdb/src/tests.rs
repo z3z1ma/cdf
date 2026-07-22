@@ -219,6 +219,41 @@ fn build_package_segments_for_commit(
     disposition: WriteDisposition,
     merge_keys: Vec<String>,
 ) -> PackageHash {
+    build_package_segments_for_commit_with_statistics(
+        package_dir,
+        package_id,
+        segments,
+        disposition,
+        merge_keys,
+        false,
+    )
+}
+
+fn build_profiled_package_for_commit(
+    package_dir: &Path,
+    package_id: &str,
+    batches: &[RecordBatch],
+    disposition: WriteDisposition,
+    merge_keys: Vec<String>,
+) -> PackageHash {
+    build_package_segments_for_commit_with_statistics(
+        package_dir,
+        package_id,
+        &[(SegmentId::new("seg-000001").unwrap(), batches.to_vec())],
+        disposition,
+        merge_keys,
+        true,
+    )
+}
+
+fn build_package_segments_for_commit_with_statistics(
+    package_dir: &Path,
+    package_id: &str,
+    segments: &[(SegmentId, Vec<RecordBatch>)],
+    disposition: WriteDisposition,
+    merge_keys: Vec<String>,
+    emit_statistics: bool,
+) -> PackageHash {
     let builder = PackageBuilder::create(
         package_dir,
         package_id,
@@ -241,6 +276,8 @@ fn build_package_segments_for_commit(
         )
         .unwrap();
     let mut entries = Vec::with_capacity(segments.len());
+    let mut segment_statistics = Vec::with_capacity(segments.len());
+    let mut package_statistics = cdf_kernel::BatchStats::default();
     let mut package_row_ord_start = 0_u64;
     for (segment_id, batches) in segments {
         let row_count = batches.iter().map(RecordBatch::num_rows).sum::<usize>() as u64;
@@ -252,11 +289,66 @@ fn build_package_segments_for_commit(
                 .write_segment(segment_id.clone(), package_row_ord_start, &canonical)
                 .unwrap(),
         );
+        if emit_statistics {
+            let mut statistics = cdf_kernel::BatchStats::default();
+            for batch in batches {
+                statistics
+                    .merge_owned(cdf_kernel::BatchStats::compute(batch).unwrap())
+                    .unwrap();
+            }
+            package_statistics.merge(&statistics).unwrap();
+            segment_statistics.push((segment_id.clone(), statistics));
+        }
         package_row_ord_start += row_count;
+    }
+    if emit_statistics {
+        let schema_hash = cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())
+            .unwrap()
+            .to_string();
+        let mut profile = builder.begin_statistics_profile().unwrap();
+        for (ordinal, (segment_id, statistics)) in segment_statistics.iter().enumerate() {
+            profile
+                .write_stats(
+                    cdf_package::StatisticsProfileGrain::Segment,
+                    u64::try_from(ordinal).unwrap(),
+                    segment_id.as_str(),
+                    &schema_hash,
+                    statistics,
+                )
+                .unwrap();
+        }
+        profile
+            .write_stats(
+                cdf_package::StatisticsProfileGrain::Package,
+                0,
+                package_id,
+                &schema_hash,
+                &package_statistics,
+            )
+            .unwrap();
+        profile.finish().unwrap();
     }
     write_current_state_artifacts(&builder, &entries, disposition, merge_keys);
     let manifest = builder.finish().unwrap();
     PackageHash::new(manifest.package_hash).unwrap()
+}
+
+fn sparse_profile_batch(ids: Vec<i64>, names: Vec<&str>) -> RecordBatch {
+    let rows = ids.len();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("sparse_value", DataType::Utf8, true),
+        Field::new("name", DataType::Utf8, false),
+    ]));
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from(ids)),
+            Arc::new(StringArray::from(vec![None::<&str>; rows])),
+            Arc::new(StringArray::from(names)),
+        ],
+    )
+    .unwrap()
 }
 
 fn write_current_plan_artifacts(builder: &PackageBuilder, schema: &Schema) {
@@ -1758,6 +1850,105 @@ fn replace_rebuilds_target_atomically() {
     assert_eq!(
         provenance,
         (second_hash.to_string(), "seg-000001".to_owned(), 0)
+    );
+}
+
+#[test]
+fn complete_all_null_statistics_preserve_schema_across_dispositions() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("sparse-projection.duckdb");
+    let destination = destination(&database);
+
+    let append_dir = temp.path().join("pkg-sparse-append");
+    let append_hash = build_profiled_package_for_commit(
+        &append_dir,
+        "pkg-sparse-append",
+        &[sparse_profile_batch(vec![1, 2], vec!["one", "two"])],
+        WriteDisposition::Append,
+        Vec::new(),
+    );
+    commit_current(
+        &destination,
+        request(
+            &append_dir,
+            append_hash,
+            WriteDisposition::Append,
+            Vec::new(),
+            2,
+        ),
+    );
+
+    let replace_dir = temp.path().join("pkg-sparse-replace");
+    let replace_hash = build_profiled_package_for_commit(
+        &replace_dir,
+        "pkg-sparse-replace",
+        &[sparse_profile_batch(vec![3], vec!["three"])],
+        WriteDisposition::Replace,
+        Vec::new(),
+    );
+    commit_current(
+        &destination,
+        request(
+            &replace_dir,
+            replace_hash,
+            WriteDisposition::Replace,
+            Vec::new(),
+            1,
+        ),
+    );
+
+    let merge_dir = temp.path().join("pkg-sparse-merge");
+    let merge_hash = build_profiled_package_for_commit(
+        &merge_dir,
+        "pkg-sparse-merge",
+        &[sparse_profile_batch(
+            vec![3, 4],
+            vec!["three-updated", "four"],
+        )],
+        WriteDisposition::Merge,
+        vec!["id".to_owned()],
+    );
+    commit_current(
+        &destination,
+        request(
+            &merge_dir,
+            merge_hash,
+            WriteDisposition::Merge,
+            vec!["id".to_owned()],
+            2,
+        ),
+    );
+
+    let connection = Connection::open(database).unwrap();
+    let columns = connection
+        .prepare(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'orders' ORDER BY ordinal_position",
+        )
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(columns, ["id", "sparse_value", "name", CDF_ROW_KEY_COLUMN]);
+    let rows = connection
+        .prepare("SELECT id, sparse_value, name FROM orders ORDER BY id")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows,
+        [
+            (3, None, "three-updated".to_owned()),
+            (4, None, "four".to_owned()),
+        ]
     );
 }
 

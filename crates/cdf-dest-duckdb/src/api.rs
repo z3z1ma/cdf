@@ -66,6 +66,7 @@ pub(crate) struct DuckDbCommitWriter {
     pub(crate) first_row_key: Option<u64>,
     pub(crate) persisted_fields: Vec<FieldPlan>,
     pub(crate) user_field_count: usize,
+    pub(crate) omitted_user_fields: Vec<bool>,
     pub(crate) rows_received: u64,
     duckdb_version: String,
 }
@@ -246,6 +247,7 @@ impl DuckDbDestination {
         request: &cdf_runtime::StagedIngressRequest,
         files: Vec<cdf_runtime::DurableLocalFileAccess>,
         scan_threads: usize,
+        projection: DuckDbSegmentProjection,
     ) -> Result<(DuckDbCommitWriter, Vec<MigrationRecord>)> {
         validate_user_schema_fields(request.output_schema())?;
         let user_fields = request
@@ -261,7 +263,7 @@ impl DuckDbDestination {
             &self.database_path,
             &self.native_resources,
             files,
-            Arc::new(request.segment_schema().clone()),
+            projection.clone(),
             scan_threads,
         )?;
         let conn = segment_scan.connection()?;
@@ -316,6 +318,7 @@ impl DuckDbDestination {
                 first_row_key: Some(first_row_key),
                 persisted_fields,
                 user_field_count: user_fields.len(),
+                omitted_user_fields: projection.omitted_user_fields().to_vec(),
                 rows_received: 0,
                 duckdb_version,
             },
@@ -824,6 +827,13 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
                 .checked_add(identity.row_count)
                 .ok_or_else(|| CdfError::data("DuckDB canonical segment row count overflowed"))
         })?;
+        let projection = DuckDbSegmentProjection::from_verified_package_statistics(
+            self.request.output_schema(),
+            self.request.segment_schema(),
+            binding.package_statistics(),
+            expected_rows,
+            &self.request.binding().merge_keys,
+        )?;
         let envelope = DuckDbIngestEnvelope::resolve(
             &self.destination.native_resources,
             self.request.segment_schema(),
@@ -834,9 +844,12 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
         let mut scan_threads = envelope.initial_scan_threads();
         let mut attempt = 1_usize;
         let (writer, migrations) = loop {
-            let (mut writer, migrations) =
-                self.destination
-                    .start_staged_writer(&self.request, files.clone(), scan_threads)?;
+            let (mut writer, migrations) = self.destination.start_staged_writer(
+                &self.request,
+                files.clone(),
+                scan_threads,
+                projection.clone(),
+            )?;
             if let Some(receipt) = find_duplicate_receipt(&writer.conn, binding.commit())? {
                 rollback_staged_writer(&mut writer, "rollback duplicate staged transaction")?;
                 return Ok(cdf_runtime::DestinationCommitOutcome::new(
