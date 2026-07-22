@@ -71,6 +71,19 @@ No product tuning, path change, source re-extraction, or conclusion from a lapto
   system rsync rejected GNU-only `--info=progress2` before transferring payload. Replaced the
   display-only flag with portable `--stats`; the failed attempt left only an empty remote target
   directory and produced no measurement or package mutation.
+- 2026-07-21: Controlled-host profiled replay on revision `bc8e737d` took 205.224 s for 3,513,266
+  rows. DuckDB attributed 194.152 s of query latency and 369.570 aggregate CPU-seconds to the
+  materialization: 324.963 aggregate seconds in `INSERT`, 43.980 in the canonical table scan, and
+  0.627 in projections. Peak DuckDB buffer memory was 4,961,632,256 bytes and peak temp-directory
+  storage was 7,564,656,640 bytes. The 16 GiB cgroup recorded no pressure or OOM event; child peak
+  RSS was 4,134,821,888 bytes. This identifies DuckDB wide-table storage/encoding as the dominant
+  cost, not CDF verification or canonical IPC decoding.
+- 2026-07-21: The first exact raw-reference probe failed at bind time before reading payload because
+  the intentionally independent benchmark table-function mapper supported primitives/decimals but
+  not the package's `List<Utf8>` fields. The product adapter already supports that type. Added
+  generic recursive list binding to the benchmark-only mapper rather than altering product code or
+  special-casing field names; the failed observation is retained as evidence and makes no
+  performance claim.
 
 ## Blockers
 

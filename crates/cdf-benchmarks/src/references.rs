@@ -2289,6 +2289,16 @@ impl DuckDbLogicalType {
                 };
                 return Self::from_handle(handle, data_type);
             }
+            DataType::List(field)
+            | DataType::LargeList(field)
+            | DataType::ListView(field)
+            | DataType::LargeListView(field) => {
+                let child = Self::from_arrow(field.data_type())?;
+                // SAFETY: DuckDB copies the live child logical type into the
+                // returned list type, which this wrapper owns.
+                let handle = unsafe { duckdb::ffi::duckdb_create_list_type(child.handle) };
+                return Self::from_handle(handle, data_type);
+            }
             _ => None,
         };
         let primitive = primitive.ok_or_else(|| {
@@ -3296,6 +3306,13 @@ mod tests {
             !scratch_path.exists(),
             "a query after failed reference capture must not recreate the profile output"
         );
+    }
+
+    #[test]
+    fn duckdb_reference_logical_type_binds_lists_recursively() {
+        let list = DataType::List(Arc::new(Field::new("element", DataType::Utf8, true)));
+        let logical_type = DuckDbLogicalType::from_arrow(&list).unwrap();
+        assert!(!logical_type.handle.is_null());
     }
 
     #[test]
