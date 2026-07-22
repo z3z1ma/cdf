@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-21
 Updated: 2026-07-21
 Parent: .10x/tickets/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md
-Depends-On: .10x/tickets/2026-07-21-p3-d18a-duckdb-wide-roofline-profile.md
+Depends-On: .10x/tickets/done/2026-07-21-p3-d18a-duckdb-wide-roofline-profile.md
 
 # P3 D18E: DuckDB public-ABI scanner envelope
 
@@ -33,7 +33,7 @@ appender, unsafe code outside `cdf-dest-duckdb`, or speculative rewrite without 
 - `.10x/specs/destination-bulk-path-runtime.md`
 - `.10x/decisions/duckdb-stream-scan-staged-ingress.md`
 - `.10x/tickets/done/2026-07-18-p3-d14-duckdb-nanoarrow-080-lz4-revalidation.md`
-- `.10x/tickets/2026-07-21-p3-d18a-duckdb-wide-roofline-profile.md`
+- `.10x/tickets/done/2026-07-21-p3-d18a-duckdb-wide-roofline-profile.md`
 - `https://duckdb.org/docs/lts/clients/c/api.html`
 
 ## Assumptions

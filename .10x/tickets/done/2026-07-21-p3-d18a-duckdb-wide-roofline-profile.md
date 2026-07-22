@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-21
 Updated: 2026-07-22
 Parent: .10x/tickets/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md
@@ -219,13 +219,32 @@ No product tuning, path change, source re-extraction, or conclusion from a lapto
   `source_read` phase, while logical bytes come from an identity-bound derivation, the named
   `validation_normalization` phase, or the explicit command byte count. A protective test proves
   that a larger logical phase can never become physical-I/O authority.
+- 2026-07-22: The exact wide replay rerun on revision `22ad562c` completed in 203.590 s command
+  wall, with 192.690 s DuckDB-native latency, 4,642,234,368 bytes peak child RSS, and no cgroup
+  pressure or OOM. Both warmup and measured profiles captured the same writer-connection settings:
+  `memory_limit=4.0 GiB`, `threads=16`, `max_temp_directory_size=1.0 GiB`, and
+  `preserve_insertion_order=false`. The measured native profile nevertheless reports
+  6,973,063,168 bytes for `system_peak_temp_dir_size`.
+- 2026-07-22: Source inspection of the exact DuckDB 1.5.4 tag (`08e34c447b`) reconciles that
+  contradiction. `MaxTempDirectorySizeSetting::SetGlobal` stores an open-time setting in
+  `DBConfig::options.maximum_swap_space`, but `DatabaseInstance::Initialize` constructs
+  `StandardBufferManager` with only the temp path; the constructor never transfers the configured
+  swap limit into `temporary_directory.maximum_swap_space`. `current_setting()` reads DBConfig,
+  while `GetUsedSwap()` and `IncreaseSizeOnDisk()` use the live temporary-file manager. The 1 GiB
+  value was therefore requested and reported, but was not the enforced runtime ceiling. The
+  earlier journal wording "actual admitted policy" is superseded. D18A retains the observed
+  6,973,063,168-byte native peak as its temp-storage evidence; D18D now owns applying and proving
+  the live limiter after open, plus benchmarking a no-tuning default that preserves success.
+- 2026-07-22: The corrected TLC median-of-three on the same `host-class-649c6f28be3544c8` and
+  measured revision `22ad562c` completed all 41,169,720 rows in 10.145533 s (30.813 ms MAD),
+  4,057,915 rows/s, and 3,744,530,432 bytes peak child RSS. Every sample observed exactly
+  11,868,646,460 logical bytes and 693,001,713 physical source bytes. The retained request makes
+  the physical-byte value an assertion, so the worker would have failed rather than substitute the
+  larger validation counter. This is the corrected forward TLC baseline for D18B-E.
 
 ## Blockers
 
-- Rerun the profiled product cell with embedded live DuckDB settings and reconcile or repair any
-  observed temp-directory ceiling violation.
-- Rerun the TLC cell with 693,001,713 expected physical source bytes under the corrected benchmark
-  worker so its forward baseline has honest logical and physical counters.
+None.
 
 ## Evidence
 
@@ -255,9 +274,20 @@ No product tuning, path change, source re-extraction, or conclusion from a lapto
 - TLC control: the retained
   `2026-07-22-p3-d18a-tlc-control-authority-current-median3-{request,run-cell}.json` and adjacent
   report record measured revision `b4635a2c`, the expected schema, exact row count, and the
-  unbounded `host-class-649c6f28be3544c8`. This is the new D18A baseline; the older controls and
-  initial stale-template failure remain historical observations and are not used for a numeric
-  regression comparison.
+  unbounded `host-class-649c6f28be3544c8`. This report is superseded by the corrected physical-byte
+  control below; it and the initial stale-template failure remain historical observations and are
+  not used for a numeric regression comparison.
+- Live-settings reconciliation: the retained
+  `2026-07-22-p3-d18a-wide-product-live-settings-profiled-{request,run-cell}.json`, adjacent report
+  and systemd log, and warmup/measured DuckDB profiles bind the exact wide package to the settings
+  observed on its writer connection. They prove that the requested 1 GiB config value and the
+  6,973,063,168-byte live peak coexist under DuckDB 1.5.4; the exact-version source trace above
+  identifies the missing config-to-buffer-manager transfer and D18D owns enforcement.
+- Corrected TLC control: the retained
+  `2026-07-22-p3-d18a-tlc-corrected-physical-final-median3-{request,run-cell}.json` and adjacent
+  report bind revision `22ad562c`, 41,169,720 rows, the expected schema, and the asserted
+  693,001,713 physical source bytes. Its 10.145533 s median is the forward D18B-E baseline; the
+  earlier report's physical-throughput field is superseded.
 - Verification: affected unit/integration suites passed (19 benchmark lab unit tests, 7 fixtures,
   6 policy tests, 11 runner tests, and 47 DuckDB tests); the required product smoke matrix passed
   5 CLI, 2 project runtime, preview/run parity, and 3 Iceberg authority/projection tests. Strict
@@ -271,15 +301,22 @@ authorities, a macro spill field presented as observed, missing product replay a
 nested-list comparator coverage, unretained requests/specs/profiles, unexplained CPU dispersion,
 and an overbroad claim that the hot path was unchanged.
 
-Resolution: current authority-bound cells use revision `b4635a2c`, the same 16 GiB host
-class, an exact verified package/schema/segment order, validated observed rows/physical bytes, and
-identity-bound logical bytes. Requests, run-cell specs, reports, systemd logs, native profiles, and
-normalized profiles are retained; product settings and raw/product semantic differences are
-explicit. Native DuckDB temp storage remains spill authority and macro CPU remains inconclusive for
-fine attribution. The current TLC result is a new baseline rather than an invalid comparison to a
-different historical workload, and it is now measured at the same code revision as the wide cells.
-The final raw median confirms the product's 6.981% lead. A subsequent independent review found the
-two active blockers above; closure remains rejected until both are repaired and re-reviewed.
+Resolution: the authority-bound wide comparison cells use revision `b4635a2c`, the same 16 GiB
+host class, an exact verified package/schema/segment order, validated observed rows/physical bytes,
+and identity-bound logical bytes. The later live-settings diagnostic and corrected TLC control use
+revision `22ad562c`; the latter is explicitly the forward D18B-E baseline rather than an invalid
+comparison to a different historical workload. Requests, run-cell specs, reports, systemd logs,
+native profiles, and normalized profiles are retained; product settings and raw/product semantic
+differences are explicit. Native DuckDB temp storage is the observed spill authority and macro CPU
+remains inconclusive for fine attribution. The final raw median confirms the product's 6.981% lead.
+
+Final independent verdict: pass. No critical or significant findings remain. The prior temp-budget
+contradiction is reconciled by same-connection settings evidence plus the exact DuckDB 1.5.4 source
+path; D18D legitimately owns live limiter enforcement because D18A measures rather than tunes. The
+TLC counter defect is repaired in code, directly tested, asserted in the retained request, and
+observed identically in all three samples. Residual risk: native profiles are operationally rather
+than cryptographically associated with their run cell; future profile evidence should embed its
+revision, workload, and package identities directly.
 
 ## Retrospective
 
@@ -305,3 +342,6 @@ two active blockers above; closure remains rejected until both are repaired and 
 - Controlled hosts need load-awareness as well as cgroups. A short unrelated process did not move
   this median beyond clean samples, but the observation belongs in the evidence rather than being
   hidden behind a low MAD.
+- A database setting reported by `current_setting()` is not proof that a native subsystem enforces
+  it. Resource-authority evidence must join configured value, live implementation path, and
+  observed peak; when those disagree, retain the contradiction and route the repair explicitly.

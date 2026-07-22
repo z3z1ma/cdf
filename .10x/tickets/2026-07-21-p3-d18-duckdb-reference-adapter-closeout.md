@@ -14,7 +14,7 @@ public-C-API table function and delete every experiment that does not improve a 
 
 This parent is an aggregate plan and is not executable. Its children are:
 
-1. `.10x/tickets/2026-07-21-p3-d18a-duckdb-wide-roofline-profile.md`
+1. `.10x/tickets/done/2026-07-21-p3-d18a-duckdb-wide-roofline-profile.md`
 2. `.10x/tickets/2026-07-21-p3-d18b-duckdb-sparse-wide-projection.md`
 3. `.10x/tickets/2026-07-21-p3-d18c-duckdb-native-write-envelope.md`
 4. `.10x/tickets/2026-07-21-p3-d18d-duckdb-physical-admission-telemetry.md`

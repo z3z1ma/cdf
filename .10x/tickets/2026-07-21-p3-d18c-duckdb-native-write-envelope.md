@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-21
 Updated: 2026-07-21
 Parent: .10x/tickets/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md
-Depends-On: .10x/tickets/2026-07-21-p3-d18a-duckdb-wide-roofline-profile.md
+Depends-On: .10x/tickets/done/2026-07-21-p3-d18a-duckdb-wide-roofline-profile.md
 
 # P3 D18C: DuckDB native write envelope
 
@@ -33,7 +33,7 @@ specific change to canonical package segmentation.
 
 - `.10x/specs/destination-bulk-path-runtime.md`
 - `.10x/specs/runtime-memory-backpressure.md`
-- `.10x/tickets/2026-07-21-p3-d18a-duckdb-wide-roofline-profile.md`
+- `.10x/tickets/done/2026-07-21-p3-d18a-duckdb-wide-roofline-profile.md`
 - `https://duckdb.org/docs/current/configuration/overview.html`
 - `https://duckdb.org/docs/current/guides/performance/how_to_tune_workloads.html`
 

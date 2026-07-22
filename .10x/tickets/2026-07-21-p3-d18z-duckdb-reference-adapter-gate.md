@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-21
 Updated: 2026-07-21
 Parent: .10x/tickets/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md
-Depends-On: .10x/tickets/2026-07-21-p3-d18a-duckdb-wide-roofline-profile.md, .10x/tickets/2026-07-21-p3-d18b-duckdb-sparse-wide-projection.md, .10x/tickets/2026-07-21-p3-d18c-duckdb-native-write-envelope.md, .10x/tickets/2026-07-21-p3-d18d-duckdb-physical-admission-telemetry.md, .10x/tickets/2026-07-21-p3-d18e-duckdb-public-abi-scanner-envelope.md, .10x/tickets/2026-07-21-p3-d18f-duckdb-lossless-type-closure.md
+Depends-On: .10x/tickets/done/2026-07-21-p3-d18a-duckdb-wide-roofline-profile.md, .10x/tickets/2026-07-21-p3-d18b-duckdb-sparse-wide-projection.md, .10x/tickets/2026-07-21-p3-d18c-duckdb-native-write-envelope.md, .10x/tickets/2026-07-21-p3-d18d-duckdb-physical-admission-telemetry.md, .10x/tickets/2026-07-21-p3-d18e-duckdb-public-abi-scanner-envelope.md, .10x/tickets/2026-07-21-p3-d18f-duckdb-lossless-type-closure.md
 
 # P3 D18Z: DuckDB reference-adapter gate
 
