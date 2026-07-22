@@ -84,6 +84,16 @@ No product tuning, path change, source re-extraction, or conclusion from a lapto
   generic recursive list binding to the benchmark-only mapper rather than altering product code or
   special-casing field names; the failed observation is retained as evidence and makes no
   performance claim.
+- 2026-07-21: The corrected independent raw-reference profile completed all 3,513,266 rows from all
+  231 canonical segments on revision `2c61cf73`. Its native DuckDB query took 217.364 s versus
+  194.152 s for the product query. DuckDB attributed 324.875 aggregate seconds to
+  `CREATE_TABLE_AS`, 90.103 to the independent canonical scanner, and 0.330 to projection. Peak
+  buffer memory was 8,544,073,728 bytes and peak temp-directory storage was 6,949,044,224 bytes;
+  child peak RSS was 4,581,232,640 bytes and the cgroup recorded no pressure or OOM event. The raw
+  reference therefore does not justify replacing the product scanner: under the same two-thread
+  scan admission it consumed more scanner CPU and more DuckDB buffer memory while finishing 11.9%
+  slower. The warm median-of-three remains the comparison authority; this single profiled sample
+  establishes the operator-level hypothesis to test.
 
 ## Blockers
 
