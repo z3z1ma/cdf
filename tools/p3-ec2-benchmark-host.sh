@@ -853,7 +853,7 @@ EOF"
     run_cmd "${local_cdf}" package verify "${package_dir}" --json
     run_cmd ssh -i "${CDF_BENCH_SSH_KEY}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new "${ssh_user}@${host}" \
       "mkdir -p '${remote_package}'"
-    run_cmd rsync -a --delete --info=progress2 \
+    run_cmd rsync -a --delete --stats \
       -e "ssh -i ${CDF_BENCH_SSH_KEY} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" \
       "${package_dir%/}/" "${ssh_user}@${host}:${remote_package}/"
     run_cmd ssh -i "${CDF_BENCH_SSH_KEY}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new "${ssh_user}@${host}" \

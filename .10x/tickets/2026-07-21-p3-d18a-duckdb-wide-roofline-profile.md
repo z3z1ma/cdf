@@ -67,6 +67,10 @@ No product tuning, path change, source re-extraction, or conclusion from a lapto
   cleanup. Strict affected-crate Clippy passes. The benchmark catalog test exposed a stale DuckDB
   `max_in_flight_bytes` fixture left by the earlier 256 MiB segment-envelope change; the fixture is
   realigned to the runtime authority rather than weakening the test.
+- 2026-07-21: The first live `sync-package` attempt verified all 246 package files, then macOS's
+  system rsync rejected GNU-only `--info=progress2` before transferring payload. Replaced the
+  display-only flag with portable `--stats`; the failed attempt left only an empty remote target
+  directory and produced no measurement or package mutation.
 
 ## Blockers
 
