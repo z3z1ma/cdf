@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-21
 Updated: 2026-07-21
 Parent: .10x/tickets/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md
@@ -40,7 +40,33 @@ No product tuning, path change, source re-extraction, or conclusion from a lapto
 
 ## Journal
 
-None.
+- 2026-07-21: Began execution from the retained exact 3,513,266-row package. The existing lab
+  already owns an independent stock-public-C-API canonical-segment scanner and the lean measured
+  command runner already owns full `cdf replay` phase/RSS/cgroup evidence. The missing authority is
+  DuckDB's native operator profile. The retained design adds opt-in profiling around only the
+  materialization query in the destination and the same opt-in to the independent comparator; the
+  default path, artifact identity, and performance configuration remain unchanged.
+- 2026-07-21: Verified the retained finalized package before transfer: package id
+  `pkg-flolake-transactions-92680-1784668000407799000`, package hash
+  `sha256:69183c567f1b15bdf2cf6eafcfb3669d83ee1a3f3a29dd39f785a68a331d43c4`, 3,513,266 rows,
+  231 canonical segments, 1,291,273,686 segment bytes, and 2,053 persisted fields (2,052 user
+  fields plus `_cdf_package_row_ord`). The shape has 1,247 Arrow batches, 15,208 average rows per
+  segment, and 2,817 average rows per batch; this is the exact artifact D18A must explain rather
+  than a synthetic wide-table approximation.
+- 2026-07-21: Added destination-owned, opt-in native DuckDB profiling around only the canonical
+  segment `INSERT ... SELECT` materialization statement. `CDF_DUCKDB_PROFILE_DIRECTORY` is absent
+  by default, so ordinary commits retain their configuration and path; enabled captures use unique
+  filenames and always disable profiling before returning, including failed capture and OOM-retry
+  paths. Added the same capture to the independent stock-public-C-API comparator and separated its
+  global DuckDB threads from scanner threads so the raw and product cells can use the same admitted
+  wide-schema scanner width without artificially suppressing the sink.
+- 2026-07-21: Added a versioned DuckDB JSON-profile normalizer to `cdf-p3-lab` and a benchmark-host
+  `sync-package` command that verifies the finalized package before and after rsync. The affected
+  full tests pass (benchmark lab 19 unit + 7 fixture + 6 policy + 11 runner, one deliberate live
+  PostgreSQL ignore; DuckDB 47 tests), including real product/reference profiles and failed-capture
+  cleanup. Strict affected-crate Clippy passes. The benchmark catalog test exposed a stale DuckDB
+  `max_in_flight_bytes` fixture left by the earlier 256 MiB segment-envelope change; the fixture is
+  realigned to the runtime authority rather than weakening the test.
 
 ## Blockers
 

@@ -208,6 +208,7 @@ mod tests {
                 internal_threads: Some(threads),
                 scan_threads,
                 max_in_flight_bytes: None,
+                profiling_directory: None,
             },
         )
         .unwrap()

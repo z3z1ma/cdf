@@ -260,9 +260,11 @@ pub enum ReferenceWorkload {
     DuckDbArrowIpcTableFunctionIngest {
         paths: Vec<PathBuf>,
         output: PathBuf,
+        profiling_directory: Option<PathBuf>,
         row_key_start: u64,
         checkpoint: bool,
         duckdb_threads: Option<usize>,
+        scan_threads: Option<usize>,
         duckdb_memory_limit_bytes: Option<u64>,
         duckdb_temp_directory_budget_bytes: Option<u64>,
     },
@@ -564,19 +566,25 @@ pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurem
         ReferenceWorkload::DuckDbArrowIpcTableFunctionIngest {
             paths,
             output,
+            profiling_directory,
             row_key_start,
             checkpoint,
             duckdb_threads,
+            scan_threads,
             duckdb_memory_limit_bytes,
             duckdb_temp_directory_budget_bytes,
         } => run_duckdb_arrow_ipc_table_function_ingest(
             paths,
             output,
-            *row_key_start,
-            *checkpoint,
-            *duckdb_threads,
-            *duckdb_memory_limit_bytes,
-            *duckdb_temp_directory_budget_bytes,
+            DuckDbArrowIpcTableFunctionOptions {
+                profiling_directory: profiling_directory.as_deref(),
+                row_key_start: *row_key_start,
+                checkpoint: *checkpoint,
+                duckdb_threads: *duckdb_threads,
+                scan_threads: *scan_threads,
+                duckdb_memory_limit_bytes: *duckdb_memory_limit_bytes,
+                duckdb_temp_directory_budget_bytes: *duckdb_temp_directory_budget_bytes,
+            },
         ),
         ReferenceWorkload::DuckDbArrowIpcHandoffIngest {
             output,
@@ -1094,14 +1102,21 @@ fn run_duckdb_arrow_ipc_existing_read(
     )
 }
 
-fn run_duckdb_arrow_ipc_table_function_ingest(
-    paths: &[PathBuf],
-    output: &Path,
+#[derive(Clone, Copy)]
+struct DuckDbArrowIpcTableFunctionOptions<'a> {
+    profiling_directory: Option<&'a Path>,
     row_key_start: u64,
     checkpoint: bool,
     duckdb_threads: Option<usize>,
+    scan_threads: Option<usize>,
     duckdb_memory_limit_bytes: Option<u64>,
     duckdb_temp_directory_budget_bytes: Option<u64>,
+}
+
+fn run_duckdb_arrow_ipc_table_function_ingest(
+    paths: &[PathBuf],
+    output: &Path,
+    options: DuckDbArrowIpcTableFunctionOptions<'_>,
 ) -> BenchResult<WorkerMeasurement> {
     if paths.is_empty() {
         return Err(bench_error(
@@ -1119,7 +1134,7 @@ fn run_duckdb_arrow_ipc_table_function_ingest(
     let schema = first_reader.schema();
     drop(first_reader);
     cdf_package_contract::logical_output_schema(schema.as_ref())?;
-    let resolved_threads = match duckdb_threads {
+    let resolved_threads = match options.duckdb_threads {
         Some(0) => {
             return Err(bench_error(
                 "DuckDB Arrow IPC table-function duckdb_threads must be positive",
@@ -1130,31 +1145,58 @@ fn run_duckdb_arrow_ipc_table_function_ingest(
             .map(usize::from)
             .unwrap_or(1),
     };
+    let scan_threads = match options.scan_threads {
+        Some(0) => {
+            return Err(bench_error(
+                "DuckDB Arrow IPC table-function scan_threads must be positive",
+            ));
+        }
+        Some(threads) => threads,
+        None => resolved_threads,
+    };
 
     let mut connection = RawDuckDbConnection::open(output)?;
     configure_duckdb_parallel_scan(
         &mut connection,
         Some(i64::try_from(resolved_threads)?),
-        duckdb_memory_limit_bytes,
-        duckdb_temp_directory_budget_bytes,
+        options.duckdb_memory_limit_bytes,
+        options.duckdb_temp_directory_budget_bytes,
     )?;
     let telemetry = register_duckdb_arrow_ipc_table_function(
         connection.handle(),
         "cdf_arrow_ipc_scan",
         paths,
         schema,
-        resolved_threads,
+        scan_threads,
     )?;
-    connection.query(&format!(
+    let profile = ReferenceDuckDbProfileCapture::start(
+        &mut connection,
+        options.profiling_directory,
+        scan_threads,
+    )?;
+    let materialization = connection.query(&format!(
         "CREATE TABLE arrow_ipc_table_function AS \
          SELECT * EXCLUDE ({}), \
-         CAST({row_key_start} + {} AS UBIGINT) AS {} \
+         CAST({} + {} AS UBIGINT) AS {} \
          FROM cdf_arrow_ipc_scan()",
         duckdb_ident(cdf_package_contract::CDF_PACKAGE_ROW_ORD_FIELD),
+        options.row_key_start,
         duckdb_ident(cdf_package_contract::CDF_PACKAGE_ROW_ORD_FIELD),
         duckdb_ident(cdf_dest_duckdb::CDF_ROW_KEY_COLUMN),
-    ))?;
-    if checkpoint {
+    ));
+    let profile = profile
+        .map(|profile| profile.finish(&mut connection))
+        .transpose();
+    match (materialization, profile) {
+        (Ok(()), Ok(_)) => {}
+        (Err(error), Ok(_)) | (Ok(()), Err(error)) => return Err(error),
+        (Err(error), Err(profile_error)) => {
+            return Err(bench_error(format!(
+                "{error}; DuckDB reference profile capture also failed: {profile_error}"
+            )));
+        }
+    }
+    if options.checkpoint {
         connection.query("CHECKPOINT")?;
     }
     let logical_bytes = telemetry.logical_bytes.load(Ordering::Relaxed);
@@ -1182,14 +1224,17 @@ fn run_duckdb_arrow_ipc_table_function_ingest(
     let expected_maximum = rows
         .checked_sub(1)
         .map(|last| {
-            row_key_start
+            options
+                .row_key_start
                 .checked_add(last)
                 .ok_or_else(|| bench_error("DuckDB Arrow IPC table-function row key overflow"))
         })
         .transpose()?;
-    if minimum != rows.checked_sub(1).map(|_| row_key_start) || maximum != expected_maximum {
+    if minimum != rows.checked_sub(1).map(|_| options.row_key_start) || maximum != expected_maximum
+    {
         return Err(bench_error(format!(
-            "DuckDB Arrow IPC table-function row-key verification failed: min={minimum:?}, max={maximum:?}, expected start={row_key_start}, expected max={expected_maximum:?}, rows={rows}"
+            "DuckDB Arrow IPC table-function row-key verification failed: min={minimum:?}, max={maximum:?}, expected start={}, expected max={expected_maximum:?}, rows={rows}",
+            options.row_key_start
         )));
     }
 
@@ -1747,6 +1792,65 @@ fn tlc_duckdb_arrow_batch(
 struct RawDuckDbConnection {
     database: duckdb::ffi::duckdb_database,
     connection: duckdb::ffi::duckdb_connection,
+}
+
+struct ReferenceDuckDbProfileCapture {
+    output_path: PathBuf,
+    scratch_path: PathBuf,
+}
+
+impl ReferenceDuckDbProfileCapture {
+    fn start(
+        connection: &mut RawDuckDbConnection,
+        directory: Option<&Path>,
+        scan_threads: usize,
+    ) -> BenchResult<Option<Self>> {
+        let Some(directory) = directory else {
+            return Ok(None);
+        };
+        fs::create_dir_all(directory)?;
+        let started_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let name = format!(
+            "duckdb-reference-p{}-{started_ns}-scan-{scan_threads}.json",
+            std::process::id()
+        );
+        let output_path = directory.join(&name);
+        let scratch_path = directory.join(format!(".{name}.capture.json"));
+        connection.query(&format!(
+            "CALL enable_profiling(format := 'json', save_location := {}, coverage := 'all', mode := 'detailed')",
+            duckdb_string_literal(&scratch_path)
+        ))?;
+        Ok(Some(Self {
+            output_path,
+            scratch_path,
+        }))
+    }
+
+    fn finish(self, connection: &mut RawDuckDbConnection) -> BenchResult<PathBuf> {
+        let capture = (|| -> BenchResult<Vec<u8>> {
+            let bytes = fs::read(&self.scratch_path)?;
+            serde_json::from_slice::<serde_json::Value>(&bytes)?;
+            Ok(bytes)
+        })();
+        let disable = connection.query("CALL disable_profiling()");
+        let _ = fs::remove_file(&self.scratch_path);
+        let bytes = match (capture, disable) {
+            (Ok(bytes), Ok(())) => bytes,
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
+            (Err(error), Err(disable_error)) => {
+                return Err(bench_error(format!(
+                    "{error}; DuckDB reference profiler cleanup also failed: {disable_error}"
+                )));
+            }
+        };
+        let publish_path = self.output_path.with_extension("json.publish");
+        fs::write(&publish_path, bytes)?;
+        fs::rename(&publish_path, &self.output_path)?;
+        Ok(self.output_path)
+    }
 }
 
 impl RawDuckDbConnection {
@@ -3114,9 +3218,11 @@ mod tests {
         let measurement = run_reference(&ReferenceWorkload::DuckDbArrowIpcTableFunctionIngest {
             paths,
             output: output.clone(),
+            profiling_directory: Some(temp.path().join("profiles")),
             row_key_start: 1,
             checkpoint: true,
             duckdb_threads: Some(2),
+            scan_threads: Some(2),
             duckdb_memory_limit_bytes: None,
             duckdb_temp_directory_budget_bytes: None,
         })
@@ -3125,6 +3231,24 @@ mod tests {
         assert_eq!(measurement.rows, 2048);
         assert!(measurement.logical_bytes > 0);
         assert!(measurement.physical_bytes > 0);
+        let profile = fs::read_dir(temp.path().join("profiles"))
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "json")
+            })
+            .expect("reference profile");
+        let summary = crate::read_duckdb_profile(&profile).unwrap();
+        assert!(
+            summary
+                .query_name
+                .contains("CREATE TABLE arrow_ipc_table_function")
+        );
+        assert!(summary.system_peak_buffer_memory_bytes.is_some());
+        assert!(summary.system_peak_temp_directory_bytes.is_some());
+        assert!(!summary.operators.is_empty());
         let connection = duckdb::Connection::open(output).unwrap();
         let observed = connection
             .query_row(
@@ -3150,6 +3274,28 @@ mod tests {
             )
             .unwrap();
         assert_eq!(leaked_ordinal, 0);
+    }
+
+    #[test]
+    fn duckdb_reference_failed_capture_disables_profiling() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("profile-cleanup.duckdb");
+        let profile_directory = temp.path().join("profiles");
+        let mut connection = RawDuckDbConnection::open(&output).unwrap();
+        let capture =
+            ReferenceDuckDbProfileCapture::start(&mut connection, Some(&profile_directory), 2)
+                .unwrap()
+                .unwrap();
+        connection.query("SELECT * FROM range(32)").unwrap();
+        let scratch_path = capture.scratch_path.clone();
+        fs::remove_file(&scratch_path).unwrap();
+
+        assert!(capture.finish(&mut connection).is_err());
+        connection.query("SELECT * FROM range(16)").unwrap();
+        assert!(
+            !scratch_path.exists(),
+            "a query after failed reference capture must not recreate the profile output"
+        );
     }
 
     #[test]

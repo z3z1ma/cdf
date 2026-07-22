@@ -18,6 +18,8 @@ Commands:
   bootstrap        Install host build prerequisites and Rust toolchain.
   sync-repo        Rsync this repo to the benchmark host, honoring .gitignore and excluding local state.
   sync-workspace   Rsync a CDF workspace to the benchmark host.
+  sync-package PACKAGE_DIR [LABEL]
+                   Verify and rsync one finalized package to workspace/benchmark-input/LABEL.
   build            Build optimized release CDF, cdf-p3-measure, and cdf-p3-lab binaries on the benchmark host.
   build-measure    Build optimized release CDF and cdf-p3-measure binaries on the benchmark host.
   verify           Run on-host cdf --version and cdf-p3-lab host.
@@ -196,6 +198,7 @@ remote_command() {
   printf '%s\n' "${quoted[*]}"
 }
 
+# shellcheck disable=SC2016 # expands on the remote host, not in this local shell.
 remote_prelude='if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi'
 
 local_revision_label() {
@@ -816,6 +819,45 @@ EOF"
         exit 2
         ;;
     esac
+    ;;
+
+  sync-package)
+    package_dir="${1:-}"
+    package_label="${2:-}"
+    if [[ -z "${package_dir}" ]]; then
+      echo "sync-package requires PACKAGE_DIR and optional LABEL" >&2
+      exit 2
+    fi
+    package_dir="$(cd "${package_dir}" && pwd)"
+    if [[ ! -f "${package_dir}/manifest.json" ]]; then
+      echo "sync-package requires a finalized package containing manifest.json: ${package_dir}" >&2
+      exit 2
+    fi
+    if [[ -z "${package_label}" ]]; then
+      package_label="$(basename "${package_dir}")"
+    fi
+    if [[ ! "${package_label}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+      echo "sync-package LABEL must contain only letters, digits, dot, underscore, or hyphen" >&2
+      exit 2
+    fi
+    load_resource_state
+    require_env CDF_BENCH_SSH_KEY
+    host="$(target_host)"
+    local_cdf="${repo_root}/target/release/cdf"
+    if [[ ! -x "${local_cdf}" ]]; then
+      echo "sync-package requires ${local_cdf}; build the release binary first" >&2
+      exit 2
+    fi
+    remote_package_root="${remote_workspace}/benchmark-input"
+    remote_package="${remote_package_root}/${package_label}"
+    run_cmd "${local_cdf}" package verify "${package_dir}" --json
+    run_cmd ssh -i "${CDF_BENCH_SSH_KEY}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new "${ssh_user}@${host}" \
+      "mkdir -p '${remote_package}'"
+    run_cmd rsync -a --delete --info=progress2 \
+      -e "ssh -i ${CDF_BENCH_SSH_KEY} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" \
+      "${package_dir%/}/" "${ssh_user}@${host}:${remote_package}/"
+    run_cmd ssh -i "${CDF_BENCH_SSH_KEY}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new "${ssh_user}@${host}" \
+      "set -euo pipefail; ${remote_prelude}; '${remote_repo}/target/release/cdf' package verify '${remote_package}' --json"
     ;;
 
   build)

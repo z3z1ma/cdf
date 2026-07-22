@@ -469,6 +469,54 @@ fn connections_enforce_bounded_native_resources() {
     assert_eq!(threads, 1);
 }
 
+#[test]
+fn opt_in_profile_wraps_the_product_materialization_query() {
+    let temp = tempfile::tempdir().unwrap();
+    let package = temp.path().join("pkg-profile");
+    let package_hash = build_package(
+        &package,
+        "pkg-profile",
+        &[sample_batch(
+            vec![1, 2, 3],
+            vec![Some("ada"), Some("grace"), None],
+        )],
+    );
+    let mut destination = destination(&temp.path().join("profiled.duckdb"));
+    let profile_directory = temp.path().join("profiles");
+    destination.native_resources.profiling_directory = Some(profile_directory.clone());
+    let request = request(
+        &package,
+        package_hash,
+        WriteDisposition::Append,
+        Vec::new(),
+        3,
+    );
+
+    let outcome = commit_current(&destination, request);
+
+    assert_eq!(outcome.receipt.counts.rows_written, 3);
+    let profiles = std::fs::read_dir(profile_directory)
+        .unwrap()
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(profiles.len(), 1);
+    let profile: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&profiles[0]).unwrap()).unwrap();
+    assert!(
+        profile
+            .get("query_name")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|query| query.contains("INSERT INTO"))
+    );
+    assert!(profile.get("system_peak_buffer_memory").is_some());
+    assert!(profile.get("system_peak_temp_dir_size").is_some());
+}
+
 #[derive(Debug)]
 struct CurrentCommitOutcome {
     receipt: Receipt,

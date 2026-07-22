@@ -1,6 +1,7 @@
 mod baseline;
 mod catalog;
 mod comparison;
+mod duckdb_profile;
 mod envelope;
 mod fixtures;
 mod interop;
@@ -16,6 +17,10 @@ pub use baseline::{PreoptimizationBaselineConfig, run_preoptimization_baseline};
 pub use catalog::{FixtureCatalog, FixtureSpec, fixture_catalog, fixture_spec};
 pub use cdf_bench_core::*;
 pub use comparison::*;
+pub use duckdb_profile::{
+    DUCKDB_PROFILE_SUMMARY_VERSION, DuckDbOperatorProfile, DuckDbProfileSummary,
+    read_duckdb_profile, summarize_duckdb_profile,
+};
 pub use envelope::*;
 pub use fixtures::write_all_local_fixture_formats;
 pub use interop::*;

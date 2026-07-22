@@ -19,16 +19,18 @@ pub(crate) struct DuckDbNativeResources {
     pub(crate) internal_threads: i64,
     pub(crate) scan_threads_override: Option<usize>,
     pub(crate) max_in_flight_bytes: u64,
+    pub(crate) profiling_directory: Option<PathBuf>,
     scratch_reservation: Option<Arc<cdf_runtime::SpillReservation>>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DuckDbNativeResourceOverrides {
     pub(crate) memory_limit_bytes: Option<u64>,
     pub(crate) maximum_temp_directory_bytes: Option<u64>,
     pub(crate) internal_threads: Option<i64>,
     pub(crate) scan_threads: Option<usize>,
     pub(crate) max_in_flight_bytes: Option<u64>,
+    pub(crate) profiling_directory: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for DuckDbNativeResources {
@@ -43,6 +45,7 @@ impl std::fmt::Debug for DuckDbNativeResources {
             .field("internal_threads", &self.internal_threads)
             .field("scan_threads_override", &self.scan_threads_override)
             .field("max_in_flight_bytes", &self.max_in_flight_bytes)
+            .field("profiling_directory", &self.profiling_directory)
             .field(
                 "scratch_reserved_bytes",
                 &self
@@ -459,6 +462,7 @@ impl DuckDbNativeResources {
             internal_threads: DUCKDB_DEFAULT_INTERNAL_THREADS,
             scan_threads_override: None,
             max_in_flight_bytes: DUCKDB_DEFAULT_MAX_IN_FLIGHT_BYTES,
+            profiling_directory: None,
             scratch_reservation: None,
         }
     }
@@ -527,6 +531,7 @@ impl DuckDbNativeResources {
             internal_threads,
             scan_threads_override,
             max_in_flight_bytes,
+            profiling_directory: overrides.profiling_directory,
             scratch_reservation: Some(Arc::new(scratch_reservation)),
         })
     }
@@ -548,8 +553,35 @@ impl DuckDbNativeResourceOverrides {
                 })
                 .transpose()?,
             max_in_flight_bytes: optional_env_byte_size(DUCKDB_MAX_IN_FLIGHT_BYTES_ENV)?,
+            profiling_directory: optional_env_directory(DUCKDB_PROFILE_DIRECTORY_ENV)?,
         })
     }
+}
+
+fn optional_env_directory(name: &str) -> Result<Option<PathBuf>> {
+    match std::env::var(name) {
+        Ok(value) => parse_profile_directory(name, &value).map(Some),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(CdfError::contract(format!(
+            "{name} must be valid UTF-8 when set"
+        ))),
+    }
+}
+
+fn parse_profile_directory(name: &str, value: &str) -> Result<PathBuf> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(CdfError::contract(format!(
+            "{name} must be a nonempty absolute directory path"
+        )));
+    }
+    let path = PathBuf::from(value);
+    if !path.is_absolute() {
+        return Err(CdfError::contract(format!(
+            "{name} must be an absolute directory path"
+        )));
+    }
+    Ok(path)
 }
 
 fn optional_env_byte_size(name: &str) -> Result<Option<u64>> {
@@ -800,6 +832,7 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
         )?;
         let _lock = self.destination.acquire_writer_lock()?;
         let mut scan_threads = envelope.initial_scan_threads();
+        let mut attempt = 1_usize;
         let (writer, migrations) = loop {
             let (mut writer, migrations) =
                 self.destination
@@ -813,11 +846,36 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
                     },
                 ));
             }
-            match ingest_canonical_segments(
+            let profile = crate::profiling::DuckDbProfileCapture::start(
+                &writer.conn,
+                self.destination
+                    .native_resources
+                    .profiling_directory
+                    .as_deref(),
+                attempt,
+                scan_threads,
+            )?;
+            let ingest = ingest_canonical_segments(
                 &mut writer,
                 expected_rows,
                 self.request.binding().disposition == WriteDisposition::Merge,
-            ) {
+            );
+            let profile = profile
+                .map(|profile| profile.finish(&writer.conn))
+                .transpose();
+            let ingest = match (ingest, profile) {
+                (Ok(()), Ok(_)) => Ok(()),
+                (Ok(()), Err(error)) => Err(DuckDbFailure::other(error)),
+                (Err(failure), Ok(_)) => Err(failure),
+                (Err(mut failure), Err(profile_error)) => {
+                    failure.error.message = format!(
+                        "{}; DuckDB materialization profile capture also failed: {}",
+                        failure.error.message, profile_error.message
+                    );
+                    Err(failure)
+                }
+            };
+            match ingest {
                 Ok(()) => break (writer, migrations),
                 Err(failure) => match resolve_failed_ingest_attempt(
                     &writer.conn,
@@ -828,6 +886,7 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
                 )? {
                     FailedIngestDisposition::Retry(next) => {
                         scan_threads = next;
+                        attempt = attempt.saturating_add(1);
                         continue;
                     }
                     FailedIngestDisposition::Fail(error) => return Err(error),
@@ -1092,6 +1151,7 @@ mod native_resource_tests {
                 internal_threads: Some(4),
                 scan_threads: Some(3),
                 max_in_flight_bytes: Some(512 * 1024 * 1024),
+                profiling_directory: None,
             },
         )
         .unwrap();
@@ -1140,6 +1200,14 @@ mod native_resource_tests {
 
         let thread_error = parse_threads(DUCKDB_THREADS_ENV, "0").unwrap_err();
         assert!(thread_error.message.contains("positive integer"));
+
+        let profile_path =
+            parse_profile_directory(DUCKDB_PROFILE_DIRECTORY_ENV, " /tmp/profiles ").unwrap();
+        assert_eq!(profile_path, PathBuf::from("/tmp/profiles"));
+        for invalid in ["", "relative/profiles"] {
+            let error = parse_profile_directory(DUCKDB_PROFILE_DIRECTORY_ENV, invalid).unwrap_err();
+            assert!(error.message.contains("absolute directory path"));
+        }
     }
 
     #[test]
@@ -1174,6 +1242,7 @@ mod native_resource_tests {
                 internal_threads: Some(16),
                 scan_threads: None,
                 max_in_flight_bytes: None,
+                profiling_directory: None,
             },
         )
         .unwrap();
