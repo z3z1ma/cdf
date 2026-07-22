@@ -261,6 +261,8 @@ pub enum ReferenceWorkload {
         paths: Vec<PathBuf>,
         output: PathBuf,
         profiling_directory: Option<PathBuf>,
+        #[serde(default)]
+        logical_output_bytes: Option<u64>,
         row_key_start: u64,
         checkpoint: bool,
         duckdb_threads: Option<usize>,
@@ -567,6 +569,7 @@ pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurem
             paths,
             output,
             profiling_directory,
+            logical_output_bytes,
             row_key_start,
             checkpoint,
             duckdb_threads,
@@ -578,6 +581,7 @@ pub fn run_reference(workload: &ReferenceWorkload) -> BenchResult<WorkerMeasurem
             output,
             DuckDbArrowIpcTableFunctionOptions {
                 profiling_directory: profiling_directory.as_deref(),
+                logical_output_bytes: *logical_output_bytes,
                 row_key_start: *row_key_start,
                 checkpoint: *checkpoint,
                 duckdb_threads: *duckdb_threads,
@@ -1105,6 +1109,7 @@ fn run_duckdb_arrow_ipc_existing_read(
 #[derive(Clone, Copy)]
 struct DuckDbArrowIpcTableFunctionOptions<'a> {
     profiling_directory: Option<&'a Path>,
+    logical_output_bytes: Option<u64>,
     row_key_start: u64,
     checkpoint: bool,
     duckdb_threads: Option<usize>,
@@ -1121,6 +1126,11 @@ fn run_duckdb_arrow_ipc_table_function_ingest(
     if paths.is_empty() {
         return Err(bench_error(
             "DuckDB Arrow IPC table-function reference requires at least one input path",
+        ));
+    }
+    if options.logical_output_bytes == Some(0) {
+        return Err(bench_error(
+            "DuckDB Arrow IPC table-function logical_output_bytes must be positive when supplied",
         ));
     }
     let physical_input_bytes = input_bytes(paths)?;
@@ -1241,8 +1251,10 @@ fn run_duckdb_arrow_ipc_table_function_ingest(
     Ok(WorkerMeasurement {
         timed_wall_time_ns: None,
         rows,
-        logical_bytes,
-        physical_bytes: physical_input_bytes.saturating_add(duckdb_database_bytes(output)?),
+        logical_bytes: options.logical_output_bytes.unwrap_or(logical_bytes),
+        // This workload's physical-throughput denominator is source IPC bytes read. The native
+        // DuckDB profile separately owns database output and peak temporary-storage evidence.
+        physical_bytes: physical_input_bytes,
         spill_bytes: 0,
         phases: Vec::new(),
     })
@@ -2916,7 +2928,10 @@ fn require_batch(value: usize) -> BenchResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use arrow_array::{Int64Array, RecordBatch, StringArray};
+    use arrow_array::{
+        Int64Array, RecordBatch, StringArray,
+        builder::{ListBuilder, StringBuilder},
+    };
     use arrow_ipc::reader::FileReader;
     use arrow_schema::{DataType, Field, Schema};
 
@@ -3229,6 +3244,7 @@ mod tests {
             paths,
             output: output.clone(),
             profiling_directory: Some(temp.path().join("profiles")),
+            logical_output_bytes: None,
             row_key_start: 1,
             checkpoint: true,
             duckdb_threads: Some(2),
@@ -3313,6 +3329,95 @@ mod tests {
         let list = DataType::List(Arc::new(Field::new("element", DataType::Utf8, true)));
         let logical_type = DuckDbLogicalType::from_arrow(&list).unwrap();
         assert!(!logical_type.handle.is_null());
+    }
+
+    #[test]
+    fn duckdb_arrow_ipc_table_function_preserves_nested_values_and_nulls() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("nested.arrow");
+        let mut values = ListBuilder::new(StringBuilder::new());
+        values.values().append_value("alpha");
+        values.values().append_value("beta");
+        values.append(true);
+        values.append(false);
+        values.values().append_value("gamma");
+        values.values().append_null();
+        values.append(true);
+        let values = values.finish();
+        let user_batch = arrow_array::RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "values",
+                values.data_type().clone(),
+                true,
+            )])),
+            vec![Arc::new(values)],
+        )
+        .unwrap();
+        let batch = cdf_package_contract::append_package_row_ord(vec![user_batch], 0)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let mut writer = IpcFileWriter::try_new_with_options(
+            fs::File::create(&path).unwrap(),
+            batch.schema().as_ref(),
+            IpcWriteOptions::default()
+                .try_with_compression(Some(IpcCompressionType::LZ4_FRAME))
+                .unwrap(),
+        )
+        .unwrap();
+        writer.write(&batch).unwrap();
+        writer.finish().unwrap();
+
+        let output = temp.path().join("nested.duckdb");
+        let measurement = run_reference(&ReferenceWorkload::DuckDbArrowIpcTableFunctionIngest {
+            paths: vec![path],
+            output: output.clone(),
+            profiling_directory: None,
+            logical_output_bytes: Some(128),
+            row_key_start: 7,
+            checkpoint: false,
+            duckdb_threads: Some(2),
+            scan_threads: Some(2),
+            duckdb_memory_limit_bytes: None,
+            duckdb_temp_directory_budget_bytes: None,
+        })
+        .unwrap();
+        assert_eq!(measurement.rows, 3);
+        assert_eq!(measurement.logical_bytes, 128);
+        assert_eq!(
+            measurement.physical_bytes,
+            fs::metadata(temp.path().join("nested.arrow"))
+                .unwrap()
+                .len()
+        );
+
+        let connection = duckdb::Connection::open(output).unwrap();
+        let mut statement = connection
+            .prepare(
+                "SELECT list_extract(values, 1), list_extract(values, 2), values IS NULL, _cdf_row_key \
+                 FROM arrow_ipc_table_function ORDER BY _cdf_row_key",
+            )
+            .unwrap();
+        let observed = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, bool>(2)?,
+                    row.get::<_, u64>(3)?,
+                ))
+            })
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            observed,
+            vec![
+                (Some("alpha".to_owned()), Some("beta".to_owned()), false, 7),
+                (None, None, true, 8),
+                (Some("gamma".to_owned()), None, false, 9),
+            ]
+        );
     }
 
     #[test]
