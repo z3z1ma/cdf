@@ -548,6 +548,7 @@ pub(crate) struct PreparedReplayReportRef<'a> {
     pub(crate) receipt: &'a cdf_kernel::Receipt,
     pub(crate) receipt_source: ProjectReceiptSource,
     pub(crate) package_status: &'a cdf_package_contract::PackageStatus,
+    pub(crate) phase_metrics: &'a [cdf_kernel::RunPhaseMetric],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -565,6 +566,7 @@ pub(crate) struct ReplayPackageCliReport {
     receipt_id: String,
     receipt: RunReceiptReport,
     receipt_source: RunReceiptSourceReport,
+    phases: Vec<cdf_kernel::RunPhaseMetric>,
     ledger_events: RunLedgerSummary,
     writes: WriteEffects,
 }
@@ -597,6 +599,7 @@ impl ReplayPackageCliReport {
                 &receipt_source,
                 receipt_source_kind,
             ),
+            phases: report.phase_metrics.to_vec(),
             ledger_events: RunLedgerSummary::from_snapshot(ledger_snapshot),
             writes: WriteEffects {
                 package: true,

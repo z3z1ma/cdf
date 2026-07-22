@@ -9348,6 +9348,31 @@ fn replay_commits_duckdb_receipt_then_checkpoint_and_marks_package_checkpointed(
             package_receipt_recorded: true
         }
     );
+    assert_eq!(
+        report
+            .phase_metrics
+            .iter()
+            .map(|metric| metric.phase)
+            .collect::<Vec<_>>(),
+        vec![
+            RunPhase::DestinationWriteReceipt,
+            RunPhase::CheckpointGate,
+            RunPhase::PackageExecution,
+        ]
+    );
+    assert!(
+        report
+            .phase_metrics
+            .iter()
+            .all(|metric| metric.status == RunPhaseStatus::Completed)
+    );
+    assert_eq!(
+        report.phase_metrics[0].input_bytes,
+        delta.segments[0].byte_count
+    );
+    assert_eq!(report.phase_metrics[0].operations, 1);
+    assert_eq!(report.phase_metrics[1].operations, 1);
+    assert_eq!(report.phase_metrics[2].operations, 1);
 }
 
 #[test]

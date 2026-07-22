@@ -349,6 +349,16 @@ fn extract_row_count(value: &Value) -> Option<u64> {
 
 fn extract_phase_metrics(value: &Value) -> Vec<PhaseMetric> {
     let mut phases = Vec::new();
+    if let Some(metrics) = value.pointer("/result/phases").and_then(Value::as_array) {
+        for metric in metrics {
+            if let Some(metric) = phase_metric_from_value(metric) {
+                phases.push(metric);
+            }
+        }
+        if !phases.is_empty() {
+            return phases;
+        }
+    }
     let Some(events) = value
         .pointer("/result/ledger_events/events")
         .and_then(Value::as_array)
@@ -365,30 +375,79 @@ fn extract_phase_metrics(value: &Value) -> Vec<PhaseMetric> {
         else {
             continue;
         };
-        let Some(phase) = metric.get("phase").and_then(Value::as_str) else {
-            continue;
-        };
-        let Some(duration_ns) = metric.get("duration_ns").and_then(Value::as_u64) else {
-            continue;
-        };
-        let bytes = metric
-            .get("output_bytes")
-            .and_then(Value::as_u64)
-            .filter(|bytes| *bytes > 0)
-            .or_else(|| metric.get("input_bytes").and_then(Value::as_u64))
-            .unwrap_or(0);
-        phases.push(PhaseMetric {
-            phase: phase.to_owned(),
-            duration_ns,
-            bytes,
-        });
+        if let Some(metric) = phase_metric_from_value(&Value::Object(metric.clone())) {
+            phases.push(metric);
+        }
     }
     phases
+}
+
+fn phase_metric_from_value(metric: &Value) -> Option<PhaseMetric> {
+    let phase = metric.get("phase").and_then(Value::as_str)?;
+    let duration_ns = metric.get("duration_ns").and_then(Value::as_u64)?;
+    let bytes = metric
+        .get("output_bytes")
+        .and_then(Value::as_u64)
+        .filter(|bytes| *bytes > 0)
+        .or_else(|| metric.get("input_bytes").and_then(Value::as_u64))
+        .unwrap_or(0);
+    Some(PhaseMetric {
+        phase: phase.to_owned(),
+        duration_ns,
+        bytes,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_replay_phase_metrics_are_preferred_over_ledger_fallback() {
+        let value = serde_json::json!({
+            "result": {
+                "phases": [
+                    {
+                        "phase": "destination_write_receipt",
+                        "duration_ns": 17,
+                        "input_bytes": 19,
+                        "output_bytes": 23
+                    },
+                    {
+                        "phase": "checkpoint_gate",
+                        "duration_ns": 29,
+                        "input_bytes": 0,
+                        "output_bytes": 0
+                    }
+                ],
+                "ledger_events": {
+                    "events": [{
+                        "kind": "phase_measured",
+                        "details": {
+                            "attributes": {
+                                "metric": {
+                                    "value": {
+                                        "phase": "wrong_fallback",
+                                        "duration_ns": 31,
+                                        "output_bytes": 37
+                                    }
+                                }
+                            }
+                        }
+                    }]
+                }
+            }
+        });
+
+        let phases = extract_phase_metrics(&value);
+        assert_eq!(phases.len(), 2);
+        assert_eq!(phases[0].phase, "destination_write_receipt");
+        assert_eq!(phases[0].duration_ns, 17);
+        assert_eq!(phases[0].bytes, 23);
+        assert_eq!(phases[1].phase, "checkpoint_gate");
+        assert_eq!(phases[1].duration_ns, 29);
+        assert_eq!(phases[1].bytes, 0);
+    }
 
     #[test]
     fn cdf_command_worker_uses_fresh_workspace_and_extracts_json_metrics() {

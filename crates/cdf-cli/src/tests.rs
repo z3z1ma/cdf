@@ -10921,6 +10921,26 @@ fn replay_package_duckdb_replays_from_artifacts_without_source_contact() {
     assert_eq!(report["receipt_source"]["duplicate"], false);
     assert_eq!(report["receipt_source"]["no_op"], false);
     assert_eq!(report["package_status"], "checkpointed");
+    assert_eq!(
+        report["phases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|metric| metric["phase"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec![
+            "destination_write_receipt",
+            "checkpoint_gate",
+            "package_execution",
+        ]
+    );
+    assert!(
+        report["phases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|metric| metric["status"] == "completed")
+    );
     assert_eq!(report["ledger_events"]["event_count"], 8);
     assert_eq!(report["ledger_events"]["terminal_kind"], "replay_recorded");
     assert_eq!(report["ledger_events"]["kinds"]["package_finalized"], 1);

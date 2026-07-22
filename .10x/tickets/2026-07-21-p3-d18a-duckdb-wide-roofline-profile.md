@@ -128,6 +128,14 @@ No product tuning, path change, source re-extraction, or conclusion from a lapto
   child RSS, and zero cgroup pressure/OOM/spill. The retained stock-scanner authority is
   10.255643 s; current code is 0.08% faster. D18A therefore preserves the narrow/TLC envelope and
   identifies the 2,052-column DuckDB storage sink as the wide-specific floor.
+- 2026-07-21: Adversarial review correctly rejected attributing the approximately 11-second
+  non-DuckDB remainder as a single unexplained bound. Added generic replay-owned phase metrics for
+  destination settlement, the checkpoint gate, and total package replay; the CLI now serializes
+  those metrics and the command benchmark consumes them before its legacy ledger fallback. The
+  change is destination-neutral and does not touch DuckDB ingestion. Full affected suites pass:
+  10 `cdf-bench-core`, 274 `cdf-cli`, and 214 `cdf-project` tests, plus strict affected-crate
+  Clippy and formatting. That gate also exposed and repaired a stale `quasar` test-destination
+  capability sheet that omitted the framework's UTF-8 residual column.
 
 ## Blockers
 

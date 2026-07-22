@@ -1549,6 +1549,7 @@ pub(crate) fn replay_package_with_runtime_and_staged<Store>(
 where
     Store: CheckpointStore + ?Sized,
 {
+    let replay_started = Instant::now();
     let inputs = package
         .reader()
         .replay_inputs_verified(package.verification())?;
@@ -1584,9 +1585,22 @@ where
     };
     let active_staged = active_staged;
     notify_destination_replay_stage(&hooks, PackageReplayStage::PackageReplayVerified)?;
+    let destination_input_bytes =
+        inputs
+            .destination_commit
+            .segments
+            .iter()
+            .try_fold(0_u64, |total, segment| {
+                total
+                    .checked_add(segment.byte_count)
+                    .ok_or_else(|| CdfError::data("replay destination input byte count overflow"))
+            })?;
+    let destination_operations = u64::try_from(inputs.destination_commit.segments.len())
+        .map_err(|error| CdfError::internal(format!("replay segment count overflow: {error}")))?;
 
     let checkpoint_id = inputs.state_delta.checkpoint_id.clone();
     propose_or_reuse_exact_checkpoint(checkpoint_store, &inputs.state_delta)?;
+    let destination_started = Instant::now();
     let settlement = (|| {
         notify_destination_replay_stage(
             &hooks,
@@ -1703,16 +1717,56 @@ where
     let receipt_source =
         super::destinations::project_receipt_source(receipt_policy, package_receipt_recorded);
     notify_verified_receipt(&receipt, &hooks)?;
+    let destination_metric = completed_replay_metric(
+        RunPhase::DestinationWriteReceipt,
+        destination_started,
+        destination_input_bytes,
+        destination_input_bytes,
+        destination_operations.max(1),
+    )?;
 
+    let checkpoint_started = Instant::now();
     let checkpoint = checkpoint_store.commit(&inputs.state_delta.checkpoint_id, receipt.clone())?;
     let package_status =
         mark_package_checkpointed_after_commit(package.reader_mut(), &checkpoint, &hooks)?;
+    let checkpoint_metric =
+        completed_replay_metric(RunPhase::CheckpointGate, checkpoint_started, 0, 0, 1)?;
+    let package_metric = completed_replay_metric(
+        RunPhase::PackageExecution,
+        replay_started,
+        destination_input_bytes,
+        destination_input_bytes,
+        1,
+    )?;
 
     Ok(PackageReplayReport {
         checkpoint,
         receipt,
         receipt_source,
         package_status,
+        phase_metrics: vec![destination_metric, checkpoint_metric, package_metric],
+    })
+}
+
+fn completed_replay_metric(
+    phase: RunPhase,
+    started: Instant,
+    input_bytes: u64,
+    output_bytes: u64,
+    operations: u64,
+) -> Result<RunPhaseMetric> {
+    Ok(RunPhaseMetric {
+        phase,
+        context: None,
+        status: RunPhaseStatus::Completed,
+        duration_ns: u64::try_from(started.elapsed().as_nanos()).map_err(|error| {
+            CdfError::internal(format!(
+                "replay phase duration does not fit in u64: {error}"
+            ))
+        })?,
+        input_bytes,
+        output_bytes,
+        operations,
     })
 }
 
@@ -2178,6 +2232,7 @@ where
         receipt,
         receipt_source: ProjectReceiptSource::SuppliedDurableReceipt,
         package_status,
+        phase_metrics: Vec::new(),
     })
 }
 

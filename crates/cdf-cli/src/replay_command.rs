@@ -396,6 +396,7 @@ fn replay_report_ref(report: &PackageReplayReport) -> PreparedReplayReportRef<'_
         receipt: &report.receipt,
         receipt_source: report.receipt_source.clone(),
         package_status: &report.package_status,
+        phase_metrics: &report.phase_metrics,
     }
 }
 

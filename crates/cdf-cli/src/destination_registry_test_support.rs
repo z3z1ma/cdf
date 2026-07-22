@@ -202,11 +202,18 @@ impl QuasarDestinationProtocol {
                 supported_dispositions: vec![WriteDisposition::Append],
                 transactions: TransactionSupport::AtomicPackage,
                 idempotency: IdempotencySupport::PackageToken,
-                type_mappings: vec![TypeMapping {
-                    arrow_type: "int64".to_owned(),
-                    destination_type: "BIGINT".to_owned(),
-                    fidelity: TypeMappingFidelity::Lossless,
-                }],
+                type_mappings: vec![
+                    TypeMapping {
+                        arrow_type: "int64".to_owned(),
+                        destination_type: "BIGINT".to_owned(),
+                        fidelity: TypeMappingFidelity::Lossless,
+                    },
+                    TypeMapping {
+                        arrow_type: "utf8".to_owned(),
+                        destination_type: "VARCHAR".to_owned(),
+                        fidelity: TypeMappingFidelity::Lossless,
+                    },
+                ],
                 identifier_rules: IdentifierRules {
                     normalizer: "namecase-v1".to_owned(),
                     max_length: Some(63),

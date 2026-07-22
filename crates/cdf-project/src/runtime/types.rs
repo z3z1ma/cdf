@@ -61,6 +61,7 @@ pub struct PackageReplayReport {
     pub receipt: Receipt,
     pub receipt_source: ProjectReceiptSource,
     pub package_status: PackageStatus,
+    pub phase_metrics: Vec<cdf_kernel::RunPhaseMetric>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
