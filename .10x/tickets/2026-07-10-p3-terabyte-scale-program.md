@@ -55,6 +55,7 @@ This parent is an aggregate plan. Workstream records own sequencing and integrat
 - `.10x/tickets/2026-07-18-p3-l7-ec2-benchmark-tranche-lifecycle.md`
 - `.10x/tickets/done/2026-07-18-p3-l9-ec2-measure-runner-build-graph.md`
 - `.10x/tickets/cancelled/2026-07-18-p3-d17-duckdb-wide-string-overlap.md`
+- `.10x/tickets/2026-07-21-p3-d18-duckdb-reference-adapter-closeout.md`
 
 ## Sequencing
 
@@ -111,6 +112,11 @@ P3 does not implement a distributed scheduler, remote worker leases, resident st
 - 2026-07-20: Closed WS-C after all five children reached terminal evidence. Jobs invariance now spans the permanent source/destination matrix, shared CPU admission covers native/DataFusion/Python execution, and the canonical serialized isolated-worker seam reproduces direct package and verdict semantics without source/destination branches or a remote scheduler.
 - 2026-07-18 final pass: opened D17 as a direct program residual after current controlled TLC remained within 2.16% of its retained median but the exact local FineWeb wide-string workload exposed lost package/DuckDB overlap and excess macOS RSS. The historical WS-D closure remains accurate for the stock-scanner promotion and deleted legacy paths; D17 owns only restoring wide-string overlap through that same sole scanner without reopening the superseded appender/nanoarrow/callback designs.
 - 2026-07-21: Closed the P0 performance-gate authority repair at `.10x/tickets/done/2026-07-18-p0-performance-gate-authority-repair.md`. Current WX1 engine/package/replay smoke executes end to end; destination evidence now joins on content-addressed execution mechanics plus exact schema-preflight identity, so descriptor drift cannot inherit old measurements or resurrect the superseded DuckDB appender. Final release smoke completed all six cells with no regression.
+- 2026-07-21: Opened D18 after the repaired 2,052-column DuckDB path proved default survival but
+  not a wide-schema roofline. D18 preserves the sole stock public-C-API scanner and separately gates
+  wide profiling, statistics-proven all-null projection, DuckDB-native write policy, physical
+  admission/telemetry, scanner overhead, and avoidable lossless type mappings before one final
+  reference-adapter closure review.
 
 ## Blockers
 
