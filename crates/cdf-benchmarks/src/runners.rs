@@ -761,6 +761,7 @@ pub fn run_prepared_iceberg_to_package(
                 execution_extent: ExecutionExtent::bounded(),
                 segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
                 package_id: "pkg-p3-iceberg-prepared".to_owned(),
+                committed_frontier: None,
             },
         )?
         .bind_compiled_source(&source_plan)?
@@ -1580,6 +1581,7 @@ fn identity_engine_plan<R: ResourceStream + ?Sized>(
                 execution_extent: ExecutionExtent::bounded(),
                 segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
                 package_id: package_id.to_owned(),
+                committed_frontier: None,
             },
         )
         .map_err(Into::into)
@@ -1621,6 +1623,7 @@ fn engine_plan_with_policy<R: ResourceStream + ?Sized>(
                 execution_extent: ExecutionExtent::bounded(),
                 segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
                 package_id: package_id.to_owned(),
+                committed_frontier: None,
             },
         )
         .map_err(Into::into)
@@ -1673,6 +1676,7 @@ fn queryable_engine_plan_with_policy<R: QueryableResource + ?Sized>(
                 execution_extent: ExecutionExtent::bounded(),
                 segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
                 package_id: package_id.to_owned(),
+                committed_frontier: None,
             },
         )
         .map_err(Into::into)
@@ -1712,6 +1716,7 @@ fn identity_queryable_engine_plan_with_policy<R: QueryableResource + ?Sized>(
                 execution_extent: ExecutionExtent::bounded(),
                 segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
                 package_id: package_id.to_owned(),
+                committed_frontier: None,
             },
         )
         .map_err(Into::into)

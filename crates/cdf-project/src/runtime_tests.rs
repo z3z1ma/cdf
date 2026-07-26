@@ -2368,6 +2368,7 @@ fn artifact_expression_plan() -> EnginePlan {
                 execution_extent: ExecutionExtent::bounded(),
                 segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
                 package_id: "artifact-test-package".to_owned(),
+                committed_frontier: None,
             },
         )
         .unwrap()
@@ -3663,6 +3664,7 @@ fn live_plan_for_queryable(resource: &dyn QueryableResource, package_id: &str) -
                 execution_extent: ExecutionExtent::bounded(),
                 segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
                 package_id: package_id.to_owned(),
+                committed_frontier: None,
             },
         )
         .unwrap()
@@ -3694,6 +3696,7 @@ fn live_plan_for_queryable_with_exact_policy(
                 execution_extent: ExecutionExtent::bounded(),
                 segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
                 package_id: package_id.to_owned(),
+                committed_frontier: None,
             },
         )
         .unwrap()

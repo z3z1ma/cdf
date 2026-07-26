@@ -69,6 +69,9 @@ impl Planner {
             None,
             delivery_guarantee(write_disposition.clone()),
         );
+        if let Some(frontier) = input.committed_frontier.as_ref() {
+            scan = resource.rebind_scan_for_resume(scan, frontier)?;
+        }
         cdf_kernel::validate_scan_partition_observation_identities(&scan)?;
         let effective_schema_evidence = bind_effective_schema_evidence(&mut scan, resource)?;
         let output_schema = CompiledArrowSchema::from_arrow(
@@ -140,7 +143,10 @@ impl Planner {
             &input.validation_program,
             &required_fields,
         )?;
-        let mut scan = resource.negotiate(&physical_request)?;
+        let mut scan = resource.negotiate_with_committed_frontier(
+            &physical_request,
+            input.committed_frontier.as_ref(),
+        )?;
         validate_negotiated_scan(&physical_request, &scan, resource.capabilities())?;
         cdf_kernel::validate_scan_partition_observation_identities(&scan)?;
         let effective_schema_evidence = bind_effective_schema_evidence(&mut scan, resource)?;
@@ -300,6 +306,7 @@ impl Planner {
 
         Ok(EnginePlan {
             scan,
+            initial_committed_frontier: input.committed_frontier,
             compiled_source_execution: None,
             partition_schedule: None,
             operator_graph: None,

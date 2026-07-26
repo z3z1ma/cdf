@@ -120,19 +120,16 @@ async fn run_project_with_context(
         .await;
     }
 
-    let mut plan = plan;
-    if let Some(frontier) = checkpoint_store
-        .head(
-            &pipeline_id,
-            &resource.descriptor().resource_id,
-            &resource.descriptor().state_scope,
-        )?
+    let current_head = checkpoint_store.head(
+        &pipeline_id,
+        &resource.descriptor().resource_id,
+        &resource.descriptor().state_scope,
+    )?;
+    let current_frontier = current_head
         .as_ref()
         .map(|checkpoint| checkpoint.delta.source_resume_position())
-        .filter(|position| !matches!(position, SourcePosition::FileManifest(_)))
-    {
-        plan = plan.rebind_initial_committed_frontier(resource.stream(), frontier)?;
-    }
+        .filter(|position| !matches!(position, SourcePosition::FileManifest(_)));
+    let plan = bind_initial_frontier_if_cheap(plan, resource, current_frontier)?;
 
     let package_dir = package_root.join(&package_id);
     refuse_existing_package_dir(&package_dir)?;
@@ -278,14 +275,11 @@ async fn run_project_drain(execution: DrainProjectExecution<'_>) -> Result<Proje
         plan_file_manifest_incrementality(&plan, resource, initial_head.as_ref())?;
     let mut next_manifest_summary = initial_manifest.summary;
     let mut remaining_plan = initial_manifest.plan.into_owned();
-    if let Some(frontier) = initial_head
+    let current_frontier = initial_head
         .as_ref()
         .map(|checkpoint| checkpoint.delta.source_resume_position())
-        .filter(|position| !matches!(position, SourcePosition::FileManifest(_)))
-    {
-        remaining_plan =
-            remaining_plan.rebind_initial_committed_frontier(resource.stream(), frontier)?;
-    }
+        .filter(|position| !matches!(position, SourcePosition::FileManifest(_)));
+    remaining_plan = bind_initial_frontier_if_cheap(remaining_plan, resource, current_frontier)?;
     let mut first_run_id = None;
     let mut epoch_count = 0_u64;
     let mut total_row_count = 0_u64;
@@ -1040,6 +1034,28 @@ async fn run_project_inner(
 struct FileManifestPlanning<'a> {
     plan: Cow<'a, EnginePlan>,
     summary: Option<FileManifestRunSummary>,
+}
+
+fn bind_initial_frontier_if_cheap(
+    plan: EnginePlan,
+    resource: ProjectRunSource<'_>,
+    current_frontier: Option<&SourcePosition>,
+) -> Result<EnginePlan> {
+    match (plan.initial_committed_frontier.as_ref(), current_frontier) {
+        (None, None) => Ok(plan),
+        (Some(planned), Some(current)) if planned == current => Ok(plan),
+        (None, Some(current)) if plan.scan.inline_partitions().is_some() => {
+            plan.rebind_initial_committed_frontier(resource.stream(), current)
+        }
+        (None, Some(_)) => Err(CdfError::contract(format!(
+            "resource `{}` materialized external task authority before its committed frontier was bound; recompile the plan from current checkpoint state",
+            resource.descriptor().resource_id
+        ))),
+        (Some(_), None) | (Some(_), Some(_)) => Err(CdfError::contract(format!(
+            "resource `{}` checkpoint state changed after its task authority was compiled; recompile the plan from current checkpoint state",
+            resource.descriptor().resource_id
+        ))),
+    }
 }
 
 impl FileManifestPlanning<'_> {

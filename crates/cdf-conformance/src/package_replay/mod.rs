@@ -239,6 +239,7 @@ fn write_compiled_plan_artifacts(
             execution_extent: ExecutionExtent::bounded(),
             segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
             package_id: "conformance-prepared-package".to_owned(),
+            committed_frontier: None,
         },
     )?;
     builder.write_json_artifact("plan/validation-program.json", &plan.validation_program)?;

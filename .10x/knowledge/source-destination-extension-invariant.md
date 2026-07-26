@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-10
-Updated: 2026-07-10
+Updated: 2026-07-25
 
 # Source and destination extension invariant
 
@@ -21,3 +21,8 @@ Every non-trivial integration review must ask:
 Repeated edits across generic orchestration for each driver, copied source pipelines, source-specific command branches, parallel receipt/checkpoint logic, and one-off helpers in shared crates are stop-line findings. They require repair in the owning ticket when in scope or a bounded P0 owner before the parent program may close. Passing focused tests does not waive this invariant.
 
 Format-specific parsing and destination-specific physical commit code are expected inside adapters. The smell is not specificity itself; it is specificity controlling shared semantics outside the adapter boundary.
+
+Wrappers are part of the extension boundary. When a source or destination trait gains a semantic
+override—not merely an accessor—every registry, validation, scope, policy, and instrumentation
+wrapper must deliberately forward it. Relying on the trait default can silently erase an
+adapter's optimized or correctness-bearing behavior while still compiling.

@@ -235,4 +235,15 @@ impl QueryableResource for WindowScopedResource<'_> {
         let plan = self.inner.negotiate(&self.inner_request(request))?;
         self.map_scan_scope(plan, request.clone(), self.descriptor.state_scope.clone())
     }
+
+    fn negotiate_with_committed_frontier(
+        &self,
+        request: &ScanRequest,
+        committed_frontier: Option<&SourcePosition>,
+    ) -> Result<ScanPlan> {
+        let plan = self
+            .inner
+            .negotiate_with_committed_frontier(&self.inner_request(request), committed_frontier)?;
+        self.map_scan_scope(plan, request.clone(), self.descriptor.state_scope.clone())
+    }
 }

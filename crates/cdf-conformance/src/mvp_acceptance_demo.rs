@@ -556,6 +556,7 @@ fn engine_plan(
             execution_extent: ExecutionExtent::bounded(),
             segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
             package_id: package_id.to_owned(),
+            committed_frontier: None,
         },
     )
 }

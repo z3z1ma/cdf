@@ -602,6 +602,7 @@ fn destination_check(
                         segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(
                         ),
                         package_id: format!("deep-validate-{}", resource.descriptor().resource_id),
+                        committed_frontier: None,
                     },
                 )
             })

@@ -9,10 +9,10 @@ use cdf_engine::{
     EnginePreviewSelectionEvidence, Planner,
 };
 use cdf_kernel::{
-    CapabilitySupport, CdfError, DeliveryGuarantee, DestinationSheet, IdempotencySupport, OrderBy,
-    PartitionPlan, PredicateId, QueryableResource, ResourceStream, ScanPredicate, ScanRequest,
-    SchemaSource, SortDirection, SourceDiscoveryBinding, TargetName, TransactionSupport,
-    WriteDisposition,
+    CapabilitySupport, CdfError, CheckpointStore, DeliveryGuarantee, DestinationSheet,
+    IdempotencySupport, OrderBy, PartitionPlan, PipelineId, PredicateId, QueryableResource,
+    ResourceStream, ScanPredicate, ScanRequest, SchemaSource, SortDirection,
+    SourceDiscoveryBinding, SourcePosition, TargetName, TransactionSupport, WriteDisposition,
 };
 use serde::Serialize;
 
@@ -37,6 +37,7 @@ use crate::{
     reports::{
         DiscoveryCoverageReport, SchemaSnapshotActionReport, WriteEffects, discovery_coverage_panel,
     },
+    run_command::DEFAULT_RUN_PIPELINE_ID,
 };
 
 pub(crate) struct PreparedSchemaForCli {
@@ -151,10 +152,16 @@ pub(crate) fn plan_or_explain(
         command,
     )?;
     let identifier_policy = resolved.destination.column_identifier_policy()?;
+    let committed_frontier = planning_frontier(
+        &context,
+        prepared.resource.as_queryable().descriptor(),
+        &PipelineId::new(DEFAULT_RUN_PIPELINE_ID)?,
+    )?;
     let plan = build_engine_plan_for_resource(
         &prepared.resource,
         &args,
         None,
+        committed_frontier,
         identifier_policy.as_ref(),
         &resolved.destination.runtime_capabilities(),
     )?;
@@ -207,6 +214,7 @@ pub(crate) fn preview(
     let plan = build_engine_plan_for_resource(
         &prepared.resource,
         &args,
+        None,
         None,
         identifier_policy.as_ref(),
         &resolved.destination.runtime_capabilities(),
@@ -366,6 +374,7 @@ pub(crate) fn build_engine_plan_for_resource(
     source: &crate::project_run_resource::CliProjectRunSource,
     args: &ScanArgs,
     run_package_id: Option<&str>,
+    committed_frontier: Option<SourcePosition>,
     identifier_policy: Option<&IdentifierPolicy>,
     destination_capabilities: &cdf_runtime::DestinationRuntimeCapabilities,
 ) -> Result<EnginePlan, CliError> {
@@ -389,6 +398,7 @@ pub(crate) fn build_engine_plan_for_resource(
         package_id: run_package_id
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| format!("cli-{}", resource.descriptor().resource_id)),
+        committed_frontier,
     };
     let plan = Planner::new()
         .plan_tier_b(resource, input)
@@ -397,6 +407,34 @@ pub(crate) fn build_engine_plan_for_resource(
     plan.bind_compiled_source(source_plan)
         .and_then(|plan| plan.bind_operator_graph(source_plan, destination_capabilities))
         .map_err(CliError::from)
+}
+
+pub(crate) fn planning_frontier(
+    context: &ProjectContext,
+    descriptor: &cdf_kernel::ResourceDescriptor,
+    pipeline_id: &PipelineId,
+) -> Result<Option<SourcePosition>, CliError> {
+    let state_path = context.state_store_path()?;
+    if !state_path.try_exists().map_err(|error| {
+        CdfError::internal(format!(
+            "inspect checkpoint store {}: {error}",
+            state_path.display()
+        ))
+    })? {
+        return Ok(None);
+    }
+    let frontier = cdf_state_sqlite::SqliteCheckpointStore::open(state_path)?
+        .head(
+            pipeline_id,
+            &descriptor.resource_id,
+            &descriptor.state_scope,
+        )?
+        .map(|checkpoint| checkpoint.delta.source_resume_position().clone())
+        // File resources already compute a changed/unchanged summary while binding their
+        // manifest in project orchestration. Until that summary is compiled into ScanPlan,
+        // preserve its single existing binding point instead of filtering the task set twice.
+        .filter(|position| !matches!(position, SourcePosition::FileManifest(_)));
+    Ok(frontier)
 }
 
 pub(crate) fn segmentation_policy_from_tuning(

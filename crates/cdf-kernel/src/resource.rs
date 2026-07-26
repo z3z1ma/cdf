@@ -2662,4 +2662,20 @@ pub struct TypePolicyAllowances {
 pub trait QueryableResource: ResourceStream {
     fn capabilities(&self) -> &ResourceCapabilities;
     fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan>;
+    /// Negotiates one scan against the checkpoint frontier committed before planning.
+    ///
+    /// The default remains optimal for sources whose partition authority is cheap to construct:
+    /// plan once, then bind inline resume positions. Sources with expensive or external task
+    /// authority override this method so the frontier constrains task materialization itself.
+    fn negotiate_with_committed_frontier(
+        &self,
+        request: &ScanRequest,
+        committed_frontier: Option<&SourcePosition>,
+    ) -> Result<ScanPlan> {
+        let scan = self.negotiate(request)?;
+        match committed_frontier {
+            Some(frontier) => self.rebind_scan_for_resume(scan, frontier),
+            None => Ok(scan),
+        }
+    }
 }

@@ -335,6 +335,7 @@ pub async fn run_live_local_file_fixture_with_destination(
             execution_extent: ExecutionExtent::bounded(),
             segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
             package_id: spec.package_id.clone(),
+            committed_frontier: None,
         },
     )?;
     let plan = runtime_resource.bind_plan(plan)?;

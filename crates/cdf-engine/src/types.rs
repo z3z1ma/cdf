@@ -29,12 +29,18 @@ pub struct EnginePlanInput {
     pub execution_extent: ExecutionExtent,
     pub segmentation: crate::CanonicalSegmentationPolicy,
     pub package_id: String,
+    /// Checkpoint frontier resolved before source task authority is materialized.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub committed_frontier: Option<SourcePosition>,
 }
 
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnginePlan {
     pub scan: ScanPlan,
+    /// Checkpoint frontier consumed while compiling this exact scan authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_committed_frontier: Option<SourcePosition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compiled_source_execution: Option<cdf_runtime::CompiledSourceExecutionPlan>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

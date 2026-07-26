@@ -2534,6 +2534,30 @@ fn tier_a_rejects_partition_intent_that_claims_source_pushdown() {
 }
 
 #[test]
+fn tier_b_planning_binds_the_committed_frontier_during_source_negotiation() {
+    let resource = MockResource::tier_b(sample_batches()).with_partition_count(1);
+    let frontier = SourcePosition::Cursor(CursorPosition {
+        version: cdf_kernel::SOURCE_POSITION_VERSION,
+        field: "id".to_owned(),
+        value: CursorValue::I64(7),
+    });
+    let mut input = plan_input(Vec::new(), None, None, ExecutionExtent::bounded());
+    input.committed_frontier = Some(frontier.clone());
+
+    let plan = Planner::new().plan_tier_b(&resource, input).unwrap();
+
+    assert_eq!(
+        resource.negotiated_frontier.lock().unwrap().as_ref(),
+        Some(&frontier)
+    );
+    assert_eq!(plan.initial_committed_frontier, Some(frontier.clone()));
+    assert_eq!(
+        plan.scan.inline_partitions().unwrap()[0].start_position,
+        Some(frontier)
+    );
+}
+
+#[test]
 fn residual_limit_is_consumed_across_partitions() {
     let mut batches = sample_batches();
     for batch in &mut batches {
@@ -9512,6 +9536,7 @@ struct MockResource {
     batches: Vec<Batch>,
     partition_count: usize,
     negotiate_count: Arc<AtomicUsize>,
+    negotiated_frontier: Arc<Mutex<Option<SourcePosition>>>,
     open_count: Arc<AtomicUsize>,
     batch_poll_count: Arc<AtomicUsize>,
     attest_count: Arc<AtomicUsize>,
@@ -9724,6 +9749,7 @@ impl MockResource {
             batches,
             partition_count: if tier_b { 2 } else { 1 },
             negotiate_count: Arc::new(AtomicUsize::new(0)),
+            negotiated_frontier: Arc::new(Mutex::new(None)),
             open_count: Arc::new(AtomicUsize::new(0)),
             batch_poll_count: Arc::new(AtomicUsize::new(0)),
             attest_count: Arc::new(AtomicUsize::new(0)),
@@ -10260,6 +10286,19 @@ impl QueryableResource for MockResource {
         }
         Ok(plan)
     }
+
+    fn negotiate_with_committed_frontier(
+        &self,
+        request: &ScanRequest,
+        committed_frontier: Option<&SourcePosition>,
+    ) -> Result<ScanPlan> {
+        *self.negotiated_frontier.lock().unwrap() = committed_frontier.cloned();
+        let scan = self.negotiate(request)?;
+        match committed_frontier {
+            Some(frontier) => self.rebind_scan_for_resume(scan, frontier),
+            None => Ok(scan),
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -10556,6 +10595,7 @@ fn plan_input_for_schema(
         execution_extent,
         segmentation: CanonicalSegmentationPolicy::performance_default(),
         package_id: "pkg-engine-test".to_owned(),
+        committed_frontier: None,
     }
 }
 

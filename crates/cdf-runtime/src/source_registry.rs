@@ -644,6 +644,18 @@ impl QueryableResource for RegistryValidatedResource {
         validate_scan_observation_bindings(self.inner.effective_schema_runtime(), &scan)?;
         Ok(scan)
     }
+
+    fn negotiate_with_committed_frontier(
+        &self,
+        request: &ScanRequest,
+        committed_frontier: Option<&cdf_kernel::SourcePosition>,
+    ) -> Result<ScanPlan> {
+        let scan = self
+            .inner
+            .negotiate_with_committed_frontier(request, committed_frontier)?;
+        validate_scan_observation_bindings(self.inner.effective_schema_runtime(), &scan)?;
+        Ok(scan)
+    }
 }
 
 struct RegistryValidatedPartitionReader {

@@ -8,11 +8,11 @@ use cdf_http::{HttpTransport, SecretProvider};
 use cdf_kernel::{
     BackpressureSupport, BatchStream, CapabilitySupport, CdfError, EffectiveSchemaCatalogEntry,
     EffectiveSchemaRuntime, EstimateSupport, ExecutablePartition, FilterCapabilities,
-    IncrementalShape, PartitionAttestation, PartitionAttestationAttempt, PartitionAuthority,
-    PartitionOpenAttempt, PartitionPlan, PartitionStreamPayload, PartitioningCapabilities,
-    PayloadRetention, PlannedPartitionReader, PlannedTaskSetReference, QueryableResource,
-    ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, ScanPlan,
-    ScanRequest, ScopeKind, SourcePosition, TypePolicyAllowances,
+    IncrementalShape, PartitionAttestation, PartitionAttestationAttempt, PartitionOpenAttempt,
+    PartitionPlan, PartitionStreamPayload, PartitioningCapabilities, PayloadRetention,
+    PlannedPartitionReader, PlannedTaskSetReference, QueryableResource, ReplaySupport,
+    ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, ScanPlan, ScanRequest,
+    ScopeKind, SourcePosition, TypePolicyAllowances,
 };
 use cdf_object_access::FileTransport;
 use cdf_runtime::{
@@ -25,13 +25,12 @@ use cdf_runtime::{
     SourceHealthResult, SourceHealthSink, SourceHealthStatus, SourceResolutionContext,
     SourceRetryGranularity, artifact_hash,
 };
-use cdf_task_store::{ExternalTaskStore, TaskSetLimits};
+use cdf_task_store::ExternalTaskStore;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    GlueCatalogClient, ICEBERG_TASK_SET_TYPE, IcebergCatalogContext, IcebergCatalogLoadRequest,
-    IcebergCatalogRegistry, IcebergResourceOptions, IcebergScanMode, IcebergScanTask,
-    IcebergSourceOptions, IcebergTaskSetAuthority, LoadedIcebergTable,
+    GlueCatalogClient, IcebergCatalogContext, IcebergCatalogLoadRequest, IcebergCatalogRegistry,
+    IcebergResourceOptions, IcebergScanMode, IcebergSourceOptions, LoadedIcebergTable,
     execution::{
         IcebergTaskExecution, execute_task_scan, prepare_task_scan, project_output_schema,
     },
@@ -704,35 +703,6 @@ impl ResourceStream for IcebergResource {
         )?))
     }
 
-    fn rebind_scan_for_resume(
-        &self,
-        scan: ScanPlan,
-        committed_frontier: &SourcePosition,
-    ) -> Result<ScanPlan> {
-        committed_frontier.validate()?;
-        let SourcePosition::TableSnapshot(committed) = committed_frontier else {
-            return Err(CdfError::data(format!(
-                "Iceberg resource `{}` cannot resume from a {} position",
-                self.descriptor.resource_id,
-                committed_frontier.kind().as_str()
-            )));
-        };
-        let selected = self.table.selected.as_ref().ok_or_else(|| {
-            CdfError::data(format!(
-                "Iceberg resource `{}` has a committed table snapshot but the selected table is empty",
-                self.descriptor.resource_id
-            ))
-        })?;
-        if committed.as_ref() == &selected.position {
-            return self.retain_append_snapshot_tasks(scan, &BTreeSet::new());
-        }
-        if self.table.resource.mode == IcebergScanMode::AppendSnapshots {
-            let admitted_snapshots = append_snapshot_ancestry(&self.table, committed, selected)?;
-            return self.retain_append_snapshot_tasks(scan, &admitted_snapshots);
-        }
-        Ok(scan)
-    }
-
     fn open(&self, _partition: PartitionPlan) -> PartitionOpenAttempt<'_> {
         PartitionOpenAttempt::materialized(Box::pin(async {
             Err(CdfError::contract(
@@ -863,81 +833,6 @@ impl ResourceStream for IcebergResource {
     }
 }
 
-impl IcebergResource {
-    fn retain_append_snapshot_tasks(
-        &self,
-        scan: ScanPlan,
-        admitted_snapshots: &BTreeSet<i64>,
-    ) -> Result<ScanPlan> {
-        let reference = scan.external_task_set().cloned().ok_or_else(|| {
-            CdfError::data(format!(
-                "Iceberg append_snapshots resource `{}` has no planned task-set authority",
-                self.descriptor.resource_id
-            ))
-        })?;
-        let mut reader = self.task_store.reader(
-            reference,
-            ICEBERG_TASK_SET_TYPE,
-            self.source.maximum_task_bytes,
-            self.source.maximum_task_authority_bytes,
-            self.catalog.execution.memory(),
-        )?;
-        let authority: IcebergTaskSetAuthority =
-            serde_json::from_slice(reader.authority().payload()).map_err(|error| {
-                CdfError::data(format!("decode Iceberg task-set authority: {error}"))
-            })?;
-        let authority = authority.into_validated()?;
-        let spill = self.catalog.execution.spill();
-        let mut writer = self.task_store.writer(
-            ICEBERG_TASK_SET_TYPE,
-            TaskSetLimits {
-                maximum_task_bytes: self.source.maximum_task_bytes,
-                maximum_authority_bytes: self.source.maximum_task_authority_bytes,
-                writer_buffer_bytes: self.source.task_writer_buffer_bytes,
-            },
-            self.catalog.execution.memory(),
-            spill.as_ref(),
-        )?;
-        let mut next_ordinal = 0_u64;
-        let mut estimated_rows = 0_u64;
-        let mut estimated_bytes = 0_u64;
-        while let Some(record) = reader.next_record()? {
-            let mut task: IcebergScanTask = serde_json::from_slice(record.payload.payload())
-                .map_err(|error| CdfError::data(format!("decode Iceberg scan task: {error}")))?;
-            task.validate_against(&authority)?;
-            if !admitted_snapshots.contains(&task.data_file.added_snapshot_id) {
-                continue;
-            }
-            task.canonical_ordinal = next_ordinal;
-            estimated_rows = estimated_rows
-                .checked_add(task.data_file.record_count.unwrap_or(0))
-                .ok_or_else(|| CdfError::data("Iceberg append row estimate exceeds u64"))?;
-            estimated_bytes = estimated_bytes
-                .checked_add(task.data_file.file_size_bytes)
-                .ok_or_else(|| CdfError::data("Iceberg append byte estimate exceeds u64"))?;
-            task.append_to(&mut writer)?;
-            next_ordinal = next_ordinal
-                .checked_add(1)
-                .ok_or_else(|| CdfError::data("Iceberg append task ordinal exceeds u64"))?;
-        }
-        let artifact = writer.finalize(|output| authority.encode_to(output))?;
-        if artifact.authority_sha256 != authority.content_sha256() {
-            return Err(CdfError::internal(
-                "filtered Iceberg task-set authority hash changed during append binding",
-            ));
-        }
-        let mut rebound = scan.try_map_partition_authority(|planned| match planned {
-            PartitionAuthority::External(_) => Ok(PartitionAuthority::External(artifact.reference)),
-            PartitionAuthority::Inline(_) => Err(CdfError::contract(
-                "Iceberg append resume binding requires external task authority",
-            )),
-        })?;
-        rebound.estimated_rows = Some(estimated_rows);
-        rebound.planned_source_bytes = Some(cdf_kernel::PlannedSourceBytes::new(estimated_bytes));
-        Ok(rebound)
-    }
-}
-
 fn append_snapshot_ancestry(
     table: &LoadedIcebergTable,
     committed: &cdf_kernel::TableSnapshotPosition,
@@ -1012,6 +907,7 @@ impl QueryableResource for IcebergResource {
             &self.source,
             &self.table,
             request,
+            None,
             IcebergPlanningContext {
                 catalog: &self.catalog,
                 task_store: &self.task_store,
@@ -1019,6 +915,63 @@ impl QueryableResource for IcebergResource {
             },
         )
     }
+
+    fn negotiate_with_committed_frontier(
+        &self,
+        request: &ScanRequest,
+        committed_frontier: Option<&SourcePosition>,
+    ) -> Result<ScanPlan> {
+        let admitted_snapshots = match committed_frontier {
+            None => None,
+            Some(frontier) => {
+                frontier.validate()?;
+                let SourcePosition::TableSnapshot(committed) = frontier else {
+                    return Err(CdfError::data(format!(
+                        "Iceberg resource `{}` cannot resume from a {} position",
+                        self.descriptor.resource_id,
+                        frontier.kind().as_str()
+                    )));
+                };
+                let selected = self.table.selected.as_ref().ok_or_else(|| {
+                    CdfError::data(format!(
+                        "Iceberg resource `{}` has a committed table snapshot but the selected table is empty",
+                        self.descriptor.resource_id
+                    ))
+                })?;
+                if same_selected_snapshot(committed, selected) {
+                    Some(BTreeSet::new())
+                } else if self.table.resource.mode == IcebergScanMode::AppendSnapshots {
+                    Some(append_snapshot_ancestry(&self.table, committed, selected)?)
+                } else {
+                    None
+                }
+            }
+        };
+        plan_snapshot_scan(
+            &self.descriptor,
+            &self.source,
+            &self.table,
+            request,
+            admitted_snapshots.as_ref(),
+            IcebergPlanningContext {
+                catalog: &self.catalog,
+                task_store: &self.task_store,
+                cancellation: self.cancellation.clone(),
+            },
+        )
+    }
+}
+
+fn same_selected_snapshot(
+    committed: &cdf_kernel::TableSnapshotPosition,
+    selected: &crate::SelectedIcebergSnapshot,
+) -> bool {
+    committed.protocol == "iceberg"
+        && committed.catalog == selected.position.catalog
+        && committed.namespace == selected.position.namespace
+        && committed.table == selected.position.table
+        && committed.selector == selected.position.selector
+        && committed.snapshot_id == selected.position.snapshot_id
 }
 
 fn prepared_table_key(plan: &CompiledSourcePlan) -> Result<PreparedSourcePayloadKey> {
@@ -1177,7 +1130,7 @@ mod tests {
     use parquet::{arrow::ArrowWriter, basic::Compression as ParquetCompression};
 
     use super::*;
-    use crate::UnsupportedGlueCatalogClient;
+    use crate::{IcebergScanTask, IcebergTaskSetAuthority, UnsupportedGlueCatalogClient};
 
     struct NoopSecretProvider;
 
@@ -2852,16 +2805,21 @@ mod tests {
             .unwrap();
         let authority: crate::IcebergTaskSetAuthority =
             serde_json::from_slice(reader.authority().payload()).unwrap();
+        let manifest_list_path = table.join("metadata/snap-101.avro");
+        let manifest_list_payload = fs::read(&manifest_list_path).unwrap();
+        fs::remove_file(&manifest_list_path).unwrap();
         let unchanged_scan = resource
-            .rebind_scan_for_resume(
-                one_job_scan.clone(),
-                &SourcePosition::TableSnapshot(Box::new(
+            .negotiate_with_committed_frontier(
+                &request,
+                Some(&SourcePosition::TableSnapshot(Box::new(
                     authority.snapshot.clone().expect("selected snapshot"),
-                )),
+                ))),
             )
             .unwrap();
+        fs::write(&manifest_list_path, manifest_list_payload).unwrap();
         assert_eq!(unchanged_scan.partition_count().unwrap(), 0);
-        assert_eq!(unchanged_scan.external_task_set().unwrap().task_count, 0);
+        assert!(unchanged_scan.external_task_set().is_none());
+        assert!(unchanged_scan.inline_partitions().unwrap().is_empty());
         assert_eq!(authority.output_schema_id, 1);
         assert_eq!(authority.projected_field_ids, vec![1, 2]);
         assert_eq!(
@@ -3076,6 +3034,7 @@ mod tests {
                     execution_extent: ExecutionExtent::bounded(),
                     segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
                     package_id: "pkg-iceberg-external-preview-run".to_owned(),
+                    committed_frontier: None,
                 },
             )
             .unwrap()
@@ -3164,6 +3123,7 @@ mod tests {
                     execution_extent: ExecutionExtent::bounded(),
                     segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
                     package_id: "pkg-iceberg-residual-projection".to_owned(),
+                    committed_frontier: None,
                 },
             )
             .unwrap()
@@ -3325,12 +3285,19 @@ mod tests {
         let (execution, resource, scan, committed) = planned_append_resource(root.path(), "append");
         assert_eq!(scan.external_task_set().unwrap().task_count, 2);
         let full_scan = scan.clone();
+        let request = scan.request.clone();
+        let old_manifest_path = root
+            .path()
+            .join("analytics/events/metadata/manifest-old.avro");
+        let old_manifest_payload = fs::read(&old_manifest_path).unwrap();
+        fs::remove_file(&old_manifest_path).unwrap();
         let scan = resource
-            .rebind_scan_for_resume(
-                scan,
-                &SourcePosition::TableSnapshot(Box::new(committed.clone())),
+            .negotiate_with_committed_frontier(
+                &request,
+                Some(&SourcePosition::TableSnapshot(Box::new(committed.clone()))),
             )
             .unwrap();
+        fs::write(&old_manifest_path, old_manifest_payload).unwrap();
         assert_eq!(scan.estimated_rows, Some(5));
         assert_eq!(scan.planned_source_bytes.unwrap().get(), 1);
         let reference = scan.external_task_set().cloned().unwrap();
@@ -3418,18 +3385,18 @@ mod tests {
         let mut divergent_position = committed.clone();
         divergent_position.snapshot_id = 99;
         let divergent = resource
-            .rebind_scan_for_resume(
-                full_scan.clone(),
-                &SourcePosition::TableSnapshot(Box::new(divergent_position)),
+            .negotiate_with_committed_frontier(
+                &full_scan.request,
+                Some(&SourcePosition::TableSnapshot(Box::new(divergent_position))),
             )
             .unwrap_err();
         assert!(divergent.message.contains("is not an ancestor"));
         let mut missing_position = committed;
         missing_position.snapshot_id = 98;
         let missing = resource
-            .rebind_scan_for_resume(
-                full_scan,
-                &SourcePosition::TableSnapshot(Box::new(missing_position)),
+            .negotiate_with_committed_frontier(
+                &full_scan.request,
+                Some(&SourcePosition::TableSnapshot(Box::new(missing_position))),
             )
             .unwrap_err();
         assert!(missing.message.contains("history no longer contains"));
@@ -3438,7 +3405,10 @@ mod tests {
         let (_execution, resource, scan, committed) =
             planned_append_resource(rejected.path(), "overwrite");
         let error = resource
-            .rebind_scan_for_resume(scan, &SourcePosition::TableSnapshot(Box::new(committed)))
+            .negotiate_with_committed_frontier(
+                &scan.request,
+                Some(&SourcePosition::TableSnapshot(Box::new(committed))),
+            )
             .unwrap_err();
         assert!(error.message.contains("snapshot 101 operation `overwrite`"));
         assert!(error.message.contains("mode = `snapshot`"));

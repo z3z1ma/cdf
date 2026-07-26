@@ -13741,6 +13741,37 @@ fn state_show_renders_typed_table_snapshot_authority() {
 }
 
 #[test]
+fn compiler_planning_frontier_comes_from_the_default_pipeline_head() {
+    let project = TestProject::new();
+    commit_status_head(
+        &project,
+        "cdf-run",
+        "checkpoint-planning-frontier",
+        "package-planning-frontier",
+        "receipt-planning-frontier",
+        1_700_000_000_000,
+    );
+    let context = crate::context::ProjectContext::load(Some(&project.root), None).unwrap();
+    let descriptor = context.resource("local.events").unwrap().descriptor();
+
+    let frontier = crate::scan_command::planning_frontier(
+        &context,
+        descriptor,
+        &PipelineId::new("cdf-run").unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        frontier,
+        Some(SourcePosition::Cursor(CursorPosition {
+            version: CHECKPOINT_STATE_VERSION,
+            field: "updated_at".to_owned(),
+            value: CursorValue::I64(42),
+        }))
+    );
+}
+
+#[test]
 fn state_recover_commits_verified_package_receipt_without_destination_rows() {
     let project = TestProject::new();
     let package_dir = create_replay_package_fixture(&project);
@@ -15355,6 +15386,7 @@ fn write_current_replay_artifacts(
                 execution_extent: ExecutionExtent::bounded(),
                 segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
                 package_id: "cli-current-fixture-package".to_owned(),
+                committed_frontier: None,
             },
         )
         .unwrap();

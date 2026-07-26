@@ -41,6 +41,7 @@ pub(crate) fn plan_snapshot_scan(
     source: &IcebergSourceOptions,
     table: &LoadedIcebergTable,
     request: &ScanRequest,
+    admitted_snapshot_ids: Option<&BTreeSet<i64>>,
     context: IcebergPlanningContext<'_>,
 ) -> Result<ScanPlan> {
     if request.resource_id != descriptor.resource_id {
@@ -73,6 +74,18 @@ pub(crate) fn plan_snapshot_scan(
         limit: None,
         order_by: Vec::new(),
     };
+    if admitted_snapshot_ids.is_some_and(BTreeSet::is_empty) {
+        return Ok(ScanPlan::from_partition_authority(
+            PlanId::new(format!("plan-{}", descriptor.resource_id))?,
+            request.clone(),
+            PartitionAuthority::Inline(Vec::new()),
+            Vec::new(),
+            request.filters.clone(),
+            Some(0),
+            Some(0),
+            delivery_guarantee(descriptor.write_disposition.clone()),
+        ));
+    }
     let mut planning_index = None;
     if let Some(selected) = &table.selected {
         let manifest_list = load_catalog_object(
@@ -98,6 +111,7 @@ pub(crate) fn plan_snapshot_scan(
             manifest_list.payload.payload(),
             table.metadata.format_version(),
             source.maximum_metadata_files,
+            admitted_snapshot_ids,
             &mut index,
             &context.cancellation,
         )?;
@@ -214,6 +228,7 @@ fn parse_manifest_list(
     payload: &[u8],
     version: FormatVersion,
     maximum_manifests: usize,
+    admitted_snapshot_ids: Option<&BTreeSet<i64>>,
     index: &mut IcebergPlanningIndex,
     cancellation: &cdf_runtime::RunCancellation,
 ) -> Result<()> {
@@ -224,8 +239,14 @@ fn parse_manifest_list(
     }
     loop {
         index.begin_manifest_ingest()?;
-        let attempt =
-            parse_manifest_list_attempt(payload, version, maximum_manifests, index, cancellation);
+        let attempt = parse_manifest_list_attempt(
+            payload,
+            version,
+            maximum_manifests,
+            admitted_snapshot_ids,
+            index,
+            cancellation,
+        );
         match attempt {
             Ok(true) => match index.finish_manifest_ingest() {
                 Ok(true) => return Ok(()),
@@ -248,6 +269,7 @@ fn parse_manifest_list_attempt(
     payload: &[u8],
     version: FormatVersion,
     maximum_manifests: usize,
+    admitted_snapshot_ids: Option<&BTreeSet<i64>>,
     index: &mut IcebergPlanningIndex,
     cancellation: &cdf_runtime::RunCancellation,
 ) -> Result<bool> {
@@ -321,6 +343,11 @@ fn parse_manifest_list_attempt(
             return Err(CdfError::data(format!(
                 "Iceberg snapshot contains more than maximum_metadata_files={maximum_manifests} manifests"
             )));
+        }
+        if admitted_snapshot_ids
+            .is_some_and(|snapshots| !snapshots.contains(&manifest.added_snapshot_id))
+        {
+            continue;
         }
         if !index.insert_manifest(&manifest)? {
             return Ok(false);
@@ -1292,6 +1319,7 @@ mod tests {
             &fs::read(manifest_list).unwrap(),
             FormatVersion::V1,
             1,
+            None,
             &mut index,
             &cdf_runtime::RunCancellation::default(),
         )

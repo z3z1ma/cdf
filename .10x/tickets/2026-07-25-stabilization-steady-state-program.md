@@ -19,7 +19,7 @@ the user deliberately activates them.
 
 ### WS-A — Source lifecycle closure
 
-1. `.10x/tickets/2026-07-20-source-resume-aware-negotiation.md`
+1. `.10x/tickets/done/2026-07-20-source-resume-aware-negotiation.md` — done.
 2. `.10x/tickets/2026-07-13-p0-sa4-dynamic-producer-admission.md`
 3. `.10x/tickets/2026-07-13-p0-sa5-fixed-schema-admission-conformance.md`
 4. `.10x/tickets/2026-07-13-p0-fixed-schema-discovery-stream-admission.md`

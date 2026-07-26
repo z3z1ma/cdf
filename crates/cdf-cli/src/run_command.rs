@@ -30,7 +30,9 @@ use crate::{
     reports::{
         AdhocRunReport, RunCliReport, RunDestinationReport, RunMemoryReport, RunNoOpCliReport,
     },
-    scan_command::{build_engine_plan_for_resource, default_target_for_resource},
+    scan_command::{
+        build_engine_plan_for_resource, default_target_for_resource, planning_frontier,
+    },
 };
 
 pub(crate) const DEFAULT_RUN_PIPELINE_ID: &str = "cdf-run";
@@ -86,6 +88,11 @@ pub(crate) fn run(
         Some(&run_services),
     )?;
     let state_store_path = context.state_store_path()?;
+    let committed_frontier = planning_frontier(
+        &context,
+        prepared.resource.as_queryable().descriptor(),
+        &explicit.pipeline_id,
+    )?;
     let resolved = resolve_selected_destination_with_services(
         destinations,
         &context,
@@ -110,6 +117,7 @@ pub(crate) fn run(
             segmentation: explicit.segmentation.clone(),
         },
         Some(&explicit.package_id),
+        committed_frontier,
         identifier_policy.as_ref(),
         &resolved.destination.runtime_capabilities(),
     )?;

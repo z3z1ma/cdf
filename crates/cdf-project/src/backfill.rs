@@ -107,6 +107,7 @@ pub fn plan_backfill(
                 execution_extent: ExecutionExtent::bounded(),
                 segmentation: request.segmentation.clone(),
                 package_id: package_id.clone(),
+                committed_frontier: None,
             },
         )?;
         let engine_plan = engine_plan.bind_compiled_source(source_plan)?;
