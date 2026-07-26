@@ -118,6 +118,10 @@ jobs:
     needs:
       - metadata
       - cli-artifacts
+    env:
+      # The tracked Cargo config optimizes developer builds with the pinned prebuilt library.
+      # Published binaries instead compile DuckDB from source and link it statically.
+      DUCKDB_DOWNLOAD_LIB: "0"
     strategy:
       fail-fast: false
       matrix:
@@ -177,6 +181,28 @@ jobs:
           esac
           cargo build -p cdf-cli --release --locked --target "${{ matrix.target }}" \
             --features duckdb/bundled
+
+      - name: Verify DuckDB is statically linked
+        shell: bash
+        run: |
+          binary="target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          case "${{ matrix.target }}" in
+            *-apple-darwin)
+              dependencies="$(otool -L "$binary")"
+              ;;
+            *-unknown-linux-gnu)
+              dependencies="$(ldd "$binary")"
+              ;;
+            x86_64-pc-windows-msvc)
+              dependencies="$(dumpbin //dependents "$binary")"
+              ;;
+          esac
+          if grep -Eiq 'duckdb[^[:space:]]*\.(dll|so|dylib)' <<<"$dependencies"; then
+            echo "release binary unexpectedly depends on a dynamic DuckDB library" >&2
+            printf '%s\n' "$dependencies" >&2
+            exit 1
+          fi
+          echo "DuckDB is statically linked"
 
       - name: Download canonical CLI artifacts
         uses: actions/download-artifact@v4
