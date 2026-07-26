@@ -6,7 +6,7 @@ on:
       version:
         description: "Release version without leading v"
         required: true
-        default: "0.1.0"
+        default: "0.2.0-alpha.1"
       upload_github_prerelease:
         description: "Upload artifacts to a GitHub prerelease"
         required: true
@@ -166,8 +166,17 @@ jobs:
       - name: Build cdf
         shell: bash
         run: |
-          DUCKDB_DOWNLOAD_LIB=1 \
-            cargo build -p cdf-cli --release --locked --target "${{ matrix.target }}"
+          export PYO3_PYTHON="$(command -v python)"
+          case "${{ matrix.target }}" in
+            *-apple-darwin)
+              export RUSTFLAGS="-C link-arg=-Wl,-rpath,@loader_path -C link-arg=-Wl,-rpath,@loader_path/deps"
+              ;;
+            *-unknown-linux-gnu)
+              export RUSTFLAGS='-C link-arg=-Wl,-rpath,$ORIGIN -C link-arg=-Wl,-rpath,$ORIGIN/deps'
+              ;;
+          esac
+          cargo build -p cdf-cli --release --locked --target "${{ matrix.target }}" \
+            --features duckdb/bundled
 
       - name: Download canonical CLI artifacts
         uses: actions/download-artifact@v4
@@ -183,33 +192,43 @@ jobs:
           binary="target/${target}/release/${{ matrix.binary }}"
           case "$target" in
             *-apple-darwin)
-              duckdb_name="libduckdb.dylib"
+              python_library="$(otool -L "$binary" | awk 'NR > 1 { print $1 }' | grep -E '/(libpython[^/]*\\.dylib|Python)$' | head -1)"
+              python_runtime_name="libpython$(python -c 'import sys; print(f\"{sys.version_info.major}.{sys.version_info.minor}\")').dylib"
               ;;
             *-unknown-linux-gnu)
-              duckdb_name="libduckdb.so"
+              python_library="$(ldd "$binary" | awk '/libpython/ { print $3; exit }')"
+              python_runtime_name="$(basename "$python_library")"
               ;;
             x86_64-pc-windows-msvc)
-              duckdb_name="duckdb.dll"
+              python_library_windows="$(python -c 'import pathlib, sys; name=f\"python{sys.version_info.major}{sys.version_info.minor}.dll\"; matches=list(pathlib.Path(sys.base_prefix).rglob(name)); print(matches[0] if matches else \"\")')"
+              python_library="$(cygpath -u "$python_library_windows")"
+              python_runtime_name="$(basename "$python_library")"
               ;;
-            *) echo "unsupported release target: $target" >&2; exit 1 ;;
           esac
-          duckdb_library="$(find "target/duckdb-download/${target}" -type f -name "$duckdb_name" -print -quit)"
-          if [[ -z "$duckdb_library" ]]; then
-            echo "downloaded DuckDB library is absent for ${target}" >&2
+          if [[ -z "$python_library" || ! -f "$python_library" ]]; then
+            echo "linked Python runtime library is absent for ${target}: ${python_library:-not resolved}" >&2
             exit 1
           fi
-          duckdb_dir="$(dirname "$duckdb_library")"
+          python_license="$(python -c 'import pathlib, sys; roots={pathlib.Path(sys.base_prefix), pathlib.Path(sys.prefix)}; matches=[path for root in roots if root.exists() for path in root.rglob(\"LICENSE*\") if path.is_file()]; print(min(matches, key=lambda path: (len(path.parts), str(path))) if matches else \"\")')"
+          if [[ "$target" == "x86_64-pc-windows-msvc" && -n "$python_license" ]]; then
+            python_license="$(cygpath -u "$python_license")"
+          fi
+          if [[ -z "$python_license" || ! -f "$python_license" ]]; then
+            echo "Python runtime license is absent for ${target}" >&2
+            exit 1
+          fi
           case "$target" in
-            *-apple-darwin) export DYLD_FALLBACK_LIBRARY_PATH="$PWD/${duckdb_dir}${DYLD_FALLBACK_LIBRARY_PATH:+:${DYLD_FALLBACK_LIBRARY_PATH}}" ;;
-            *-unknown-linux-gnu) export LD_LIBRARY_PATH="$PWD/${duckdb_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" ;;
-            x86_64-pc-windows-msvc) export PATH="$PWD/${duckdb_dir}:${PATH}" ;;
+            *-apple-darwin) export DYLD_FALLBACK_LIBRARY_PATH="$(dirname "$python_library")${DYLD_FALLBACK_LIBRARY_PATH:+:${DYLD_FALLBACK_LIBRARY_PATH}}" ;;
+            *-unknown-linux-gnu) export LD_LIBRARY_PATH="$(dirname "$python_library")${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" ;;
+            x86_64-pc-windows-msvc) export PATH="$(dirname "$python_library"):${PATH}" ;;
           esac
           host="$(rustc -vV | awk '/^host:/ { print $2 }')"
           args=(
             --version "$version"
             --target "$target"
             --binary "$binary"
-            --duckdb-library "$duckdb_library"
+            --runtime-library "${python_runtime_name}=${python_library}"
+            --runtime-license "Python=$python_license"
             --out-dir "dist"
           )
           if [[ -d target/generated/completions ]]; then

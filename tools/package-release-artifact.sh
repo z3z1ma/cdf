@@ -12,7 +12,10 @@ Package a built CDF binary into a checksummed release archive.
 
 Usage:
   package-release-artifact.sh --version VERSION --target TARGET --binary PATH
-                              --duckdb-library PATH
+                              --runtime-library [NAME=]PATH
+                              [--runtime-library [NAME=]PATH ...]
+                              --runtime-license NAME=PATH
+                              [--runtime-license NAME=PATH ...]
                               --out-dir DIR
                               [--completions-dir DIR] [--man-dir DIR]
                               [--skip-binary-run REASON]
@@ -31,15 +34,6 @@ sha256_file() {
   else
     die 'SHA-256 tool unavailable: install sha256sum or shasum'
   fi
-}
-
-duckdb_library_name() {
-  case "$1" in
-    *-apple-darwin) printf 'libduckdb.dylib\n' ;;
-    *-unknown-linux-gnu) printf 'libduckdb.so\n' ;;
-    x86_64-pc-windows-msvc) printf 'duckdb.dll\n' ;;
-    *) die "unsupported release target: $1" ;;
-  esac
 }
 
 python_cmd() {
@@ -72,7 +66,8 @@ copy_generated_dir() {
 version=""
 target=""
 binary=""
-duckdb_library=""
+runtime_libraries=()
+runtime_licenses=()
 out_dir=""
 completions_dir=""
 man_dir=""
@@ -95,9 +90,14 @@ while [[ $# -gt 0 ]]; do
       binary="$2"
       shift 2
       ;;
-    --duckdb-library)
-      [[ -n "${2:-}" && "${2:-}" != --* ]] || die '--duckdb-library requires a value'
-      duckdb_library="$2"
+    --runtime-library)
+      [[ -n "${2:-}" && "${2:-}" != --* ]] || die '--runtime-library requires a value'
+      runtime_libraries+=("$2")
+      shift 2
+      ;;
+    --runtime-license)
+      [[ -n "${2:-}" && "${2:-}" != --* ]] || die '--runtime-license requires NAME=PATH'
+      runtime_licenses+=("$2")
       shift 2
       ;;
     --out-dir)
@@ -133,11 +133,15 @@ done
 [[ -n "$version" ]] || die '--version is required'
 [[ -n "$target" ]] || die '--target is required'
 [[ -n "$binary" ]] || die '--binary is required'
-[[ -n "$duckdb_library" ]] || die '--duckdb-library is required'
+[[ "${#runtime_libraries[@]}" -gt 0 ]] || die 'at least one --runtime-library is required'
+[[ "${#runtime_licenses[@]}" -gt 0 ]] || die 'at least one --runtime-license is required'
 [[ -n "$out_dir" ]] || die '--out-dir is required'
 [[ -f "$binary" ]] || die "binary does not exist: $binary"
 [[ -x "$binary" ]] || die "binary is not executable: $binary"
-[[ -f "$duckdb_library" ]] || die "DuckDB library does not exist: $duckdb_library"
+for runtime_library in "${runtime_libraries[@]}"; do
+  runtime_path="${runtime_library#*=}"
+  [[ -f "$runtime_path" ]] || die "runtime library does not exist: $runtime_path"
+done
 [[ -f LICENSE ]] || die 'LICENSE is required'
 [[ -f CHANGELOG.md ]] || die 'CHANGELOG.md is required'
 [[ -f tools/write-reproducible-targz.py ]] || die 'tools/write-reproducible-targz.py is required'
@@ -151,8 +155,96 @@ if sys.version_info < (3, 8):
     raise SystemExit("Python 3.8+ is required")
 PYTHON_CHECK
 
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/cdf-release-artifact.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+
+archive_base="cdf-${version}-${target}"
+stage_dir="${tmpdir}/${archive_base}"
+mkdir -p "$stage_dir/bin" "$stage_dir/generated" "$stage_dir/THIRD_PARTY_LICENSES" "$out_dir"
+
+binary_name="$(basename "$binary")"
+case "$target" in
+  x86_64-pc-windows-msvc) binary_name="cdf.exe" ;;
+  *) binary_name="cdf" ;;
+esac
+cp "$binary" "${stage_dir}/bin/${binary_name}"
+chmod 0755 "${stage_dir}/bin/${binary_name}"
+
+runtime_names=()
+runtime_dependency_names=()
+for runtime_library in "${runtime_libraries[@]}"; do
+  case "$runtime_library" in
+    *=*)
+      runtime_name="${runtime_library%%=*}"
+      runtime_path="${runtime_library#*=}"
+      ;;
+    *)
+      runtime_path="$runtime_library"
+      runtime_name="$(basename "$runtime_path")"
+      ;;
+  esac
+  case "$runtime_name" in
+    *.dylib | *.so | *.so.* | *.dll) ;;
+    *) die "runtime library has unsupported filename: $runtime_name" ;;
+  esac
+  if [[ -e "${stage_dir}/bin/${runtime_name}" ]]; then
+    die "duplicate runtime library filename: $runtime_name"
+  fi
+  cp "$runtime_path" "${stage_dir}/bin/${runtime_name}"
+  runtime_names+=("$runtime_name")
+  runtime_dependency_names+=("$(basename "$runtime_path")")
+done
+
+for runtime_license in "${runtime_licenses[@]}"; do
+  case "$runtime_license" in
+    *=*) ;;
+    *) die "runtime license must use NAME=PATH: $runtime_license" ;;
+  esac
+  license_name="${runtime_license%%=*}"
+  license_path="${runtime_license#*=}"
+  [[ "$license_name" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid runtime license name: $license_name"
+  [[ -f "$license_path" ]] || die "runtime license does not exist: $license_path"
+  cp "$license_path" "${stage_dir}/THIRD_PARTY_LICENSES/${license_name}.txt"
+done
+
+if [[ "$target" == *-apple-darwin ]]; then
+  command -v otool >/dev/null 2>&1 || die 'otool is required to inspect macOS runtime linkage'
+  command -v install_name_tool >/dev/null 2>&1 || die 'install_name_tool is required to make macOS runtime linkage relocatable'
+  for index in "${!runtime_names[@]}"; do
+    runtime_name="${runtime_names[$index]}"
+    dependency_name="${runtime_dependency_names[$index]}"
+    dependency="$(
+      otool -L "${stage_dir}/bin/${binary_name}" \
+        | awk 'NR > 1 { print $1 }' \
+        | awk -v name="$dependency_name" '$0 == name || $0 ~ ("/" name "$") || $0 ~ ("@rpath/" name "$") { print; exit }'
+    )"
+    [[ -n "$dependency" ]] || die "binary does not reference staged runtime library $runtime_name"
+    if [[ "$dependency" != "@rpath/${runtime_name}" ]]; then
+      install_name_tool -change "$dependency" "@rpath/${runtime_name}" "${stage_dir}/bin/${binary_name}"
+    fi
+  done
+fi
+
+cp LICENSE "${stage_dir}/LICENSE"
+
+tools/verify-release-metadata.sh "$version" --write-changelog-excerpt "${stage_dir}/CHANGELOG-excerpt.md" >/dev/null
+
 if [[ -z "$skip_binary_run_reason" ]]; then
-  version_output="$("$binary" version 2>/dev/null)" || die "binary failed version probe: $binary"
+  case "$target" in
+    *-apple-darwin)
+      version_output="$(DYLD_FALLBACK_LIBRARY_PATH="${stage_dir}/bin${DYLD_FALLBACK_LIBRARY_PATH:+:${DYLD_FALLBACK_LIBRARY_PATH}}" "${stage_dir}/bin/${binary_name}" version 2>/dev/null)" \
+        || die "staged binary failed version probe: ${stage_dir}/bin/${binary_name}"
+      ;;
+    *-unknown-linux-gnu)
+      version_output="$(LD_LIBRARY_PATH="${stage_dir}/bin${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" "${stage_dir}/bin/${binary_name}" version 2>/dev/null)" \
+        || die "staged binary failed version probe: ${stage_dir}/bin/${binary_name}"
+      ;;
+    x86_64-pc-windows-msvc)
+      version_output="$(PATH="${stage_dir}/bin:${PATH}" "${stage_dir}/bin/${binary_name}" version 2>/dev/null)" \
+        || die "staged binary failed version probe: ${stage_dir}/bin/${binary_name}"
+      ;;
+    *) die "unsupported release target: $target" ;;
+  esac
   case "$version_output" in
     *"$version"*) ;;
     *) die "binary version output '$version_output' does not contain $version" ;;
@@ -160,26 +252,6 @@ if [[ -z "$skip_binary_run_reason" ]]; then
 else
   version_output="skipped: $skip_binary_run_reason"
 fi
-
-tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/cdf-release-artifact.XXXXXX")"
-trap 'rm -rf "$tmpdir"' EXIT
-
-archive_base="cdf-${version}-${target}"
-stage_dir="${tmpdir}/${archive_base}"
-mkdir -p "$stage_dir/bin" "$stage_dir/generated" "$out_dir"
-
-binary_name="$(basename "$binary")"
-duckdb_library_name="$(duckdb_library_name "$target")"
-case "$target" in
-  x86_64-pc-windows-msvc) binary_name="cdf.exe" ;;
-  *) binary_name="cdf" ;;
-esac
-cp "$binary" "${stage_dir}/bin/${binary_name}"
-chmod 0755 "${stage_dir}/bin/${binary_name}"
-cp "$duckdb_library" "${stage_dir}/bin/${duckdb_library_name}"
-cp LICENSE "${stage_dir}/LICENSE"
-
-tools/verify-release-metadata.sh "$version" --write-changelog-excerpt "${stage_dir}/CHANGELOG-excerpt.md" >/dev/null
 
 {
   copy_generated_dir "$completions_dir" "${stage_dir}/generated/completions" "completions"
@@ -192,13 +264,15 @@ version: ${version}
 target: ${target}
 archive: ${archive_base}.tar.gz
 binary: bin/${binary_name}
-duckdb_library: bin/${duckdb_library_name}
-duckdb_linkage: pinned stock dynamic runtime
+runtime_linkage: pinned stock dynamic runtimes beside executable
 binary_version_probe: ${version_output}
 license: Apache-2.0
 crates_io_publication: disabled while the DataFusion git pin is active
 generated_cli_artifacts: conditional; see generated/ARTIFACTS.txt
 METADATA
+for runtime_name in "${runtime_names[@]}"; do
+  printf 'runtime_library: bin/%s\n' "$runtime_name" >>"${stage_dir}/release-metadata.txt"
+done
 
 archive_path="${out_dir}/${archive_base}.tar.gz"
 checksum_path="${archive_path}.sha256"

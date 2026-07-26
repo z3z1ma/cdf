@@ -58,18 +58,19 @@ for target in "$@"; do
   grep -qx "${base}/CHANGELOG-excerpt.md" "$list_file" || die "archive lacks changelog excerpt: $archive"
   grep -qx "${base}/release-metadata.txt" "$list_file" || die "archive lacks release metadata: $archive"
   grep -qx "${base}/generated/ARTIFACTS.txt" "$list_file" || die "archive lacks generated artifact inventory: $archive"
+  grep -qx "${base}/THIRD_PARTY_LICENSES/Python.txt" "$list_file" || die "archive lacks Python license: $archive"
   case "$target" in
     x86_64-pc-windows-msvc)
       grep -qx "${base}/bin/cdf.exe" "$list_file" || die "archive lacks cdf.exe: $archive"
-      grep -qx "${base}/bin/duckdb.dll" "$list_file" || die "archive lacks duckdb.dll: $archive"
+      grep -Eq "^${base}/bin/python[0-9]+\\.dll$" "$list_file" || die "archive lacks Python runtime DLL: $archive"
       ;;
     *-apple-darwin)
       grep -qx "${base}/bin/cdf" "$list_file" || die "archive lacks cdf binary: $archive"
-      grep -qx "${base}/bin/libduckdb.dylib" "$list_file" || die "archive lacks libduckdb.dylib: $archive"
+      grep -Eq "^${base}/bin/libpython[^/]*\\.dylib$" "$list_file" || die "archive lacks Python runtime dylib: $archive"
       ;;
     *-unknown-linux-gnu)
       grep -qx "${base}/bin/cdf" "$list_file" || die "archive lacks cdf binary: $archive"
-      grep -qx "${base}/bin/libduckdb.so" "$list_file" || die "archive lacks libduckdb.so: $archive"
+      grep -Eq "^${base}/bin/libpython[^/]*\\.so(\\.[0-9]+)*$" "$list_file" || die "archive lacks Python runtime shared object: $archive"
       ;;
     *)
       die "unsupported release target: $target"

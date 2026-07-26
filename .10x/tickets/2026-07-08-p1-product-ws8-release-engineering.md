@@ -1,6 +1,6 @@
-Status: open
+Status: active
 Created: 2026-07-08
-Updated: 2026-07-09
+Updated: 2026-07-25
 Parent: .10x/tickets/2026-07-08-p1-product-experience-program.md
 Depends-On: QUALITY.md, .10x/specs/conformance-governance-roadmap.md, .10x/knowledge/dependency-tuple-migration-guard.md
 
@@ -43,7 +43,44 @@ No claim of crates.io publication while the distributable graph contains disallo
 - 2026-07-08: WS8B reproducibility blocker repaired. Packaging now uses deterministic tar/gzip writing through `tools/write-reproducible-targz.py`, and WS8B evidence includes a two-package identical-input SHA-256 and byte-identity smoke proof.
 - 2026-07-11: Fast CI was reduced to the ratified smoke/deep boundary in `.10x/decisions/fast-ci-budget-and-deep-gate-separation.md`. Evidence is `.10x/evidence/2026-07-11-fast-ci-lean-boundary.md`; review is `.10x/reviews/2026-07-11-fast-ci-lean-boundary-review.md`. The gitleaks false-positive failure was fixed structurally by scanning `git archive HEAD`, not by suppressing findings.
 - 2026-07-17: That fast-CI authority was superseded by `.10x/decisions/fast-ci-leaf-owner-gates.md` after CG1 extracted `cdf-cli-core`; the smoke/deep boundary remains, but CLI grammar/render/artifact owner checks now run against the lean core package rather than the full product graph.
+- 2026-07-25: Activated the final hosted release gate after CX4 closed the holistic CLI lane. The existing public `v0.1.0` prerelease is not a valid current install channel. A direct smoke with the then-current dynamic-runtime installer failed with `artifact does not contain libduckdb.dylib`; all five public archives were inspected and lack that runtime. The release path will cut `0.2.0-alpha.1` from current `main` rather than preserving the obsolete archive layout through a compatibility shim.
+- 2026-07-25: Direct inspection of the old public macOS binary found a second independent portability defect: it names `/Library/Frameworks/Python.framework/Versions/3.14/Python` absolutely and aborts on a clean host without that runner-specific framework. The release contract now stages every required non-system runtime library beside `cdf`, rewrites macOS load commands to `@rpath`, installs the complete verified runtime set, and includes third-party licenses. Per user direction, published artifacts do **not** use `DUCKDB_DOWNLOAD_LIB`: the workflow enables `duckdb/bundled` and pays the one-time source-build cost for static DuckDB, while developer and benchmark builds retain the prebuilt dynamic optimization.
 
 ## Blockers
 
 None for shaping. Actual crates.io publication remains blocked while the current Arrow-rs and Iceberg git pins are reachable from the distributable crate graph; binary release work is not blocked.
+
+## Evidence
+
+- Public `v0.1.0` audit: all five published archives lack an adjacent DuckDB runtime, and the
+  aarch64 macOS executable names
+  `/Library/Frameworks/Python.framework/Versions/3.14/Python` absolutely. Running that exact
+  executable on the current host aborts in `dyld` before `cdf version`; this proves the old
+  prerelease is not a portable install channel.
+- `tools/verify-release-metadata.sh 0.2.0-alpha.1`,
+  `tools/test-release-artifacts.sh`, and `tools/test-install-cdf.sh`: pass. The matrix covers
+  deterministic byte-identical archives, generated artifacts, required runtime/license presence,
+  checksum mismatch, missing checksum/artifact, unsupported target, dry-run, clean-prefix install,
+  and requested/artifact version mismatch.
+- `cargo tree -p cdf-cli --features duckdb/bundled -e features -i libduckdb-sys`: the release
+  command activates `libduckdb-sys feature "bundled"` through the command-line DuckDB feature.
+- Local artifact-mechanism smoke with the optimized aarch64 macOS binary: the packager rewrote
+  absolute Python and dynamic developer DuckDB references to `@rpath`, verification passed, the
+  installer populated a clean prefix, and `env -u DYLD_LIBRARY_PATH -u
+  DYLD_FALLBACK_LIBRARY_PATH <prefix>/bin/cdf version` printed `cdf 0.2.0-alpha.1`. This validates
+  relocatable runtime staging and installation, but the hosted workflow remains authority for the
+  release-only static DuckDB build.
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`: pass.
+- Fast-core local equivalent: 399 kernel/contract/package/runtime tests passed with six intentional
+  performance ignores; 44 CLI-core all-feature tests passed; formatting, generated CLI/docs
+  freshness, shell parsing, workflow lint where installed, and `git diff --check` passed.
+
+## Review
+
+Fresh-hat review rejected the first apparent fix because it merely packaged dynamic DuckDB and
+would have preserved an avoidable release dependency. User direction ratified static DuckDB for
+published artifacts. The second pass also found runner-native CPU flags and runner-absolute Python
+linkage that ordinary tests did not falsify. Release builds now override local `target-cpu=native`,
+link DuckDB statically, stage the genuine embedded-Python runtime, rewrite macOS linkage, verify
+the staged executable, and include the Python license. Hosted target-by-target execution remains
+the closure gate.

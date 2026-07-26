@@ -1,45 +1,54 @@
 # Release and Install
 
-CDF does not currently have a published installer or crates.io release channel.
-Build from the repository checkout for local operation.
+CDF publishes checksummed binary prereleases for mainstream macOS, Linux, and
+Windows targets. The shell installer supports macOS and Linux and installs into
+`$HOME/.local` by default without privilege escalation.
 
-## Local Build
-
-```bash
-cargo build -p cdf-cli --locked
-target/debug/cdf version
-```
-
-Expected:
-
-```text
-cdf 0.1.0
-```
-
-For a release-shaped local binary:
+## Install the Current Prerelease
 
 ```bash
-cargo build -p cdf-cli --release --locked
+curl -fsSL https://raw.githubusercontent.com/z3z1ma/cdf/main/tools/install-cdf.sh \
+  | bash -s -- --version 0.2.0-alpha.1
+```
+
+Add the installation directory to `PATH` if needed, then verify:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+cdf version
+```
+
+Use `--dry-run` to inspect URLs and paths without writing anything, or choose a
+different prefix:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/z3z1ma/cdf/main/tools/install-cdf.sh \
+  | bash -s -- --version 0.2.0-alpha.1 --prefix "$HOME/.cdf" --dry-run
+```
+
+Every archive has an adjacent `.sha256` file and the installer verifies it
+before extracting or writing the binary. Release binaries statically link the
+pinned DuckDB runtime and archives include the matching Python runtime beside
+`cdf`, plus generated completions and man pages.
+
+## Build from Source
+
+```bash
+CARGO_BUILD_JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.logicalcpu)" \
+  cargo build -p cdf-cli --release --locked
 target/release/cdf version
 ```
 
-## Current Publication Boundary
+Developer builds download the pinned prebuilt DuckDB runtime and link it
+dynamically. No system DuckDB installation or source compilation is required
+for ordinary local iteration; the release workflow deliberately builds DuckDB
+from source and links it statically for portable artifacts.
 
-Crate publication is blocked while Apache DataFusion is sourced from a pinned
-git dependency. Binary pre-release artifacts may be added by release workflow
-work, but crates.io publication remains disabled until the active release policy
-or a later decision supersedes that constraint.
+## Publication Boundary
 
-Open release/install work:
+Crates.io publication remains disabled while distributable crates depend on
+pinned git sources. That does not block the checksummed binary prerelease
+channel.
 
-- [WS8 release engineering](../../.10x/tickets/2026-07-08-p1-product-ws8-release-engineering.md)
-- [WS8B release artifact workflow](../../.10x/tickets/2026-07-08-p1-product-ws8b-release-artifact-workflow.md)
-- [WS8C changelog and installer channel](../../.10x/tickets/2026-07-08-p1-product-ws8c-changelog-installer-channel.md)
-
-The governing release policy is
+The governing policy is
 [`versioning-lts-release-policy.md`](../../.10x/specs/versioning-lts-release-policy.md).
-
-## Generated Shell Artifacts
-
-Generated completions and man pages are not present yet. WS2D owns the generator,
-and WS6B/WS8 own docs/release freshness once that generator exists.

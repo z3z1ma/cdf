@@ -11,16 +11,25 @@ Arguments:
   [RESOURCE]...  Resource identifier
 
 Options:
-  -q, --quiet                  Suppress progress and non-primary success narration
-      --to <DEST>              Destination URI or cursor upper bound, as shown in usage
-      --jobs <N>               Maximum concurrent jobs
-  -v, --verbose...             Show evidence detail; repeat for diagnostics
-      --color <WHEN>           Color policy: auto, always, or never [possible values: auto, always, never]
-      --stats-profile          Write the typed statistics profile artifact
-      --loop                   Continue polling for work
-      --progress <WHEN>        Progress policy: auto, always, or never [possible values: auto, always, never]
-      --unicode <WHEN>         Unicode policy: auto, always, or never [possible values: auto, always, never]
-      --memory-budget <BYTES>  Process memory budget, e.g. 4GiB or 512MiB
-      --spill-budget <BYTES>   Spill/disk budget, e.g. 64GiB or 512MiB
-  -h, --help                   Print help
+  -q, --quiet                         Suppress progress and non-primary success narration
+      --to <DEST>                     Destination URI or cursor upper bound, as shown in usage
+      --jobs <N>                      Maximum concurrent jobs
+  -v, --verbose...                    Show evidence detail; repeat for diagnostics
+      --color <WHEN>                  Color policy: auto, always, or never [possible values: auto, always, never]
+      --stats-profile                 Write the typed statistics profile artifact
+      --explain-memory                Include memory-ledger detail in the run report
+      --progress <WHEN>               Progress policy: auto, always, or never [possible values: auto, always, never]
+      --loop                          Continue polling for work
+      --unicode <WHEN>                Unicode policy: auto, always, or never [possible values: auto, always, never]
+      --memory-budget <BYTES>         Process memory budget, e.g. 4GiB or 512MiB
+      --segment-target-rows <ROWS>    Set the value named in this command's usage
+      --segment-target-bytes <BYTES>  Set the value named in this command's usage
+      --spill-budget <BYTES>          Spill/disk budget, e.g. 64GiB or 512MiB
+      --segment-max-rows <ROWS>       Set the value named in this command's usage
+      --segment-max-bytes <BYTES>     Set the value named in this command's usage
+      --microbatch-min-rows <ROWS>    Set the value named in this command's usage
+      --microbatch-max-rows <ROWS>    Set the value named in this command's usage
+      --microbatch-min-bytes <BYTES>  Set the value named in this command's usage
+      --microbatch-max-bytes <BYTES>  Set the value named in this command's usage
+  -h, --help                          Print help
 ```

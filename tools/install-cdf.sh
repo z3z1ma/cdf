@@ -16,7 +16,7 @@ Usage:
                  [--target TARGET] [--dry-run]
 
 Environment overrides:
-  CDF_INSTALL_VERSION   Release version to install. Default: 0.1.0
+  CDF_INSTALL_VERSION   Release version to install. Default: 0.2.0-alpha.1
   CDF_INSTALL_PREFIX    Install prefix. Default: $HOME/.local
   CDF_INSTALL_BASE_URL  Artifact directory or URL.
   CDF_INSTALL_ARTIFACT  Explicit artifact URL or local path.
@@ -69,14 +69,6 @@ ensure_supported_target() {
     *)
       die "unsupported target: $1"
       ;;
-  esac
-}
-
-duckdb_library_name() {
-  case "$1" in
-    *-apple-darwin) printf 'libduckdb.dylib\n' ;;
-    *-unknown-linux-gnu) printf 'libduckdb.so\n' ;;
-    *) die "unsupported target: $1" ;;
   esac
 }
 
@@ -158,7 +150,7 @@ read_expected_checksum() {
   printf '%s\n' "$expected"
 }
 
-version="${CDF_INSTALL_VERSION:-0.1.0}"
+version="${CDF_INSTALL_VERSION:-0.2.0-alpha.1}"
 prefix="$(default_prefix)"
 base_url="${CDF_INSTALL_BASE_URL:-}"
 artifact_source="${CDF_INSTALL_ARTIFACT:-}"
@@ -236,8 +228,6 @@ fi
 
 install_dir="${prefix}/bin"
 target_path="${install_dir}/cdf"
-duckdb_name="$(duckdb_library_name "$target")"
-duckdb_target_path="${install_dir}/${duckdb_name}"
 
 if [[ "$dry_run" -eq 1 ]]; then
   cat <<DRYRUN
@@ -248,7 +238,7 @@ artifact: ${artifact_source}
 checksum: ${checksum_source}
 prefix: ${prefix}
 install path: ${target_path}
-DuckDB library: ${duckdb_target_path}
+runtime libraries: installed beside cdf from the verified archive
 No files written.
 DRYRUN
   exit 0
@@ -274,32 +264,77 @@ if [[ "$actual_checksum" != "$expected_checksum" ]]; then
   die "checksum mismatch for $artifact_name: expected $expected_checksum, got $actual_checksum"
 fi
 
+archive_list="${tmpdir}/${artifact_name}.list"
+tar -tzf "$artifact_file" >"$archive_list" || die "failed to inspect artifact: $artifact_source"
+if awk -F/ '
+  /^\// { invalid = 1 }
+  {
+    for (field = 1; field <= NF; field += 1) {
+      if ($field == "..") {
+        invalid = 1
+      }
+    }
+  }
+  END { exit invalid ? 0 : 1 }
+' "$archive_list"; then
+  die "artifact contains an unsafe path: $artifact_source"
+fi
+if tar -tvzf "$artifact_file" | awk 'substr($0, 1, 1) != "d" && substr($0, 1, 1) != "-" { invalid = 1 } END { exit invalid ? 0 : 1 }'; then
+  die "artifact contains a link or unsupported entry type: $artifact_source"
+fi
+
 tar -xzf "$artifact_file" -C "$extract_dir" || die "failed to extract artifact: $artifact_source"
 binary_path="$(find "$extract_dir" -type f -name cdf -print -quit)"
-duckdb_path="$(find "$extract_dir" -type f -name "$duckdb_name" -print -quit)"
 [[ -n "$binary_path" ]] || die 'artifact does not contain a cdf binary'
 [[ -x "$binary_path" ]] || die 'artifact cdf binary is not executable'
-[[ -n "$duckdb_path" ]] || die "artifact does not contain ${duckdb_name}"
+archive_bin_dir="$(dirname "$binary_path")"
+runtime_count="$(
+  find "$archive_bin_dir" -mindepth 1 -maxdepth 1 -type f ! -name cdf -print \
+    | awk 'END { print NR + 0 }'
+)"
+[[ "$runtime_count" -gt 0 ]] || die 'artifact does not contain required runtime libraries'
 
 installed_version="$("$binary_path" version 2>/dev/null)" || die 'artifact cdf binary did not print a version'
 [[ -n "$installed_version" ]] || die 'artifact cdf binary printed an empty version'
+case "$installed_version" in
+  *"$version"*) ;;
+  *) die "artifact version output '$installed_version' does not contain requested version $version" ;;
+esac
 
 install -d "$install_dir" || die "failed to create install directory: $install_dir"
 tmp_target="${install_dir}/.cdf.tmp.$$"
-tmp_duckdb_target="${install_dir}/.${duckdb_name}.tmp.$$"
-rm -f "$tmp_target" "$tmp_duckdb_target"
+staged_runtime_paths=()
+rm -f "$tmp_target"
 if ! install -m 0755 "$binary_path" "$tmp_target"; then
-  rm -f "$tmp_target" "$tmp_duckdb_target"
+  rm -f "$tmp_target"
   die "failed to stage cdf binary in $install_dir"
 fi
-if ! install -m 0755 "$duckdb_path" "$tmp_duckdb_target"; then
-  rm -f "$tmp_target" "$tmp_duckdb_target"
-  die "failed to stage ${duckdb_name} in $install_dir"
-fi
-if ! mv "$tmp_duckdb_target" "$duckdb_target_path"; then
-  rm -f "$tmp_target" "$tmp_duckdb_target"
-  die "failed to install DuckDB library at $duckdb_target_path"
-fi
+while IFS= read -r runtime_path; do
+  runtime_name="$(basename "$runtime_path")"
+  case "$runtime_name" in
+    *.dylib | *.so | *.so.* | *.dll) ;;
+    *)
+      rm -f "$tmp_target" "${staged_runtime_paths[@]}"
+      die "artifact contains unsupported runtime filename: $runtime_name"
+      ;;
+  esac
+  tmp_runtime="${install_dir}/.${runtime_name}.tmp.$$"
+  if ! install -m 0755 "$runtime_path" "$tmp_runtime"; then
+    rm -f "$tmp_target" "$tmp_runtime" "${staged_runtime_paths[@]}"
+    die "failed to stage runtime library $runtime_name in $install_dir"
+  fi
+  staged_runtime_paths+=("$tmp_runtime")
+done < <(find "$archive_bin_dir" -mindepth 1 -maxdepth 1 -type f ! -name cdf -print | LC_ALL=C sort)
+
+for tmp_runtime in "${staged_runtime_paths[@]}"; do
+  runtime_name="$(basename "$tmp_runtime")"
+  runtime_name="${runtime_name#.}"
+  runtime_name="${runtime_name%.tmp.$$}"
+  if ! mv "$tmp_runtime" "${install_dir}/${runtime_name}"; then
+    rm -f "$tmp_target" "${staged_runtime_paths[@]}"
+    die "failed to install runtime library at ${install_dir}/${runtime_name}"
+  fi
+done
 if ! mv "$tmp_target" "$target_path"; then
   rm -f "$tmp_target"
   die "failed to install cdf binary at $target_path"

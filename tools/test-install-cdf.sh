@@ -54,7 +54,7 @@ installer="${repo_root}/tools/install-cdf.sh"
 test_root="$(mktemp -d "${TMPDIR:-/tmp}/cdf-install-test.XXXXXX")"
 trap 'rm -rf "$test_root"' EXIT
 
-version="0.1.0"
+version="0.2.0-alpha.1"
 target="x86_64-unknown-linux-gnu"
 artifact_name="cdf-${version}-${target}.tar.gz"
 
@@ -68,15 +68,15 @@ make_fixture() {
   cat >"${build_dir}/cdf" <<'FAKE_CDF'
 #!/usr/bin/env sh
 if [ "${1:-}" = "version" ] || [ "${1:-}" = "--version" ]; then
-  echo "cdf 0.1.0"
+  echo "cdf 0.2.0-alpha.1"
   exit 0
 fi
 echo "fake cdf"
 FAKE_CDF
   chmod +x "${build_dir}/cdf"
-  printf 'fixture DuckDB shared library\n' >"${build_dir}/libduckdb.so"
+  printf 'fixture Python shared library\n' >"${build_dir}/libpython3.12.so.1.0"
 
-  tar -czf "${fixture_dir}/${artifact_name}" -C "$build_dir" cdf libduckdb.so
+  tar -czf "${fixture_dir}/${artifact_name}" -C "$build_dir" cdf libpython3.12.so.1.0
   digest="$(sha256_file "${fixture_dir}/${artifact_name}")"
   if [[ "$checksum_mode" == 'mismatch' ]]; then
     digest="0000000000000000000000000000000000000000000000000000000000000000"
@@ -102,9 +102,9 @@ success_output="${test_root}/success.out"
   --base-url "$valid_fixture" \
   --prefix "$success_prefix" >"$success_output"
 [[ -x "${success_prefix}/bin/cdf" ]] || fail 'success install did not write an executable cdf'
-[[ -f "${success_prefix}/bin/libduckdb.so" ]] || fail 'success install did not write libduckdb.so'
-[[ "$("${success_prefix}/bin/cdf" version)" == 'cdf 0.1.0' ]] || fail 'installed fixture version output mismatch'
-assert_contains "$success_output" "Installed cdf 0.1.0 to ${success_prefix}/bin/cdf"
+[[ -f "${success_prefix}/bin/libpython3.12.so.1.0" ]] || fail 'success install did not write libpython3.12.so.1.0'
+[[ "$("${success_prefix}/bin/cdf" version)" == 'cdf 0.2.0-alpha.1' ]] || fail 'installed fixture version output mismatch'
+assert_contains "$success_output" "Installed cdf 0.2.0-alpha.1 to ${success_prefix}/bin/cdf"
 printf 'ok success install verifies checksum and prints version\n'
 
 dry_prefix="${test_root}/prefix-dry-run"
@@ -151,5 +151,22 @@ expect_failure "${test_root}/unsupported" 'unsupported target' \
   "$installer" --version "$version" --target "riscv64-unknown-linux-gnu" --base-url "$valid_fixture" --prefix "$unsupported_prefix"
 assert_absent "${unsupported_prefix}/bin/cdf"
 printf 'ok unsupported target fails before install\n'
+
+wrong_version_fixture="${test_root}/fixtures-wrong-version"
+wrong_version_build="${test_root}/build-wrong-version"
+mkdir -p "$wrong_version_fixture" "$wrong_version_build"
+cat >"${wrong_version_build}/cdf" <<'WRONG_VERSION_CDF'
+#!/usr/bin/env sh
+echo "cdf 9.9.9"
+WRONG_VERSION_CDF
+chmod +x "${wrong_version_build}/cdf"
+printf 'fixture Python shared library\n' >"${wrong_version_build}/libpython3.12.so.1.0"
+tar -czf "${wrong_version_fixture}/${artifact_name}" -C "$wrong_version_build" cdf libpython3.12.so.1.0
+wrong_version_digest="$(sha256_file "${wrong_version_fixture}/${artifact_name}")"
+printf '%s  %s\n' "$wrong_version_digest" "$artifact_name" >"${wrong_version_fixture}/${artifact_name}.sha256"
+expect_failure "${test_root}/wrong-version" 'does not contain requested version' \
+  "$installer" --version "$version" --target "$target" --base-url "$wrong_version_fixture" --prefix "${test_root}/prefix-wrong-version"
+assert_absent "${test_root}/prefix-wrong-version/bin/cdf"
+printf 'ok artifact version mismatch fails before install\n'
 
 printf 'installer smoke tests passed\n'

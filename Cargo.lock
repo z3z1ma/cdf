@@ -933,7 +933,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-aws"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "aws-credential-types",
  "aws-sigv4",
@@ -951,7 +951,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-bench-core"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "cdf-memory",
  "hex",
@@ -963,7 +963,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-bench-measure"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -977,7 +977,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-benchmarks"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
  "arrow-csv",
@@ -1027,7 +1027,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-cli"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -1085,7 +1085,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-cli-benchmarks"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "cdf-cli-core",
  "cdf-kernel",
@@ -1094,7 +1094,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-cli-core"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "cdf-kernel",
  "clap",
@@ -1108,7 +1108,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-conformance"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
  "arrow-cast",
@@ -1151,7 +1151,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-contract"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -1173,7 +1173,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-declarative"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-schema",
  "cdf-contract",
@@ -1190,7 +1190,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-dest-duckdb"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -1210,7 +1210,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-dest-parquet"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1237,7 +1237,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-dest-postgres"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1261,7 +1261,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-engine"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -1290,7 +1290,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-expression"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -1303,7 +1303,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-foreign-stream"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1319,7 +1319,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-format-arrow-ipc"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -1337,7 +1337,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-format-avro"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "apache-avro",
  "arrow-array",
@@ -1356,7 +1356,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-format-delimited"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
  "arrow-cast",
@@ -1375,7 +1375,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-format-json"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
  "arrow-json",
@@ -1393,7 +1393,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-format-parquet"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1412,7 +1412,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-format-protobuf"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1431,7 +1431,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-http"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "bytes",
  "cdf-kernel",
@@ -1441,7 +1441,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-kernel"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -1458,7 +1458,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-memory"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -1472,7 +1472,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-object-access"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1495,7 +1495,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-package"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -1516,7 +1516,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-package-contract"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1527,7 +1527,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-postgres"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "cdf-kernel",
  "serde",
@@ -1535,7 +1535,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-project"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
  "arrow-cast",
@@ -1581,7 +1581,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-python"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
  "arrow-data",
@@ -1605,7 +1605,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-runtime"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1628,7 +1628,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-source-files"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -1665,7 +1665,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-source-glue"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
  "arrow-cast",
@@ -1696,7 +1696,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-source-iceberg"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "apache-avro",
  "arrow-array",
@@ -1732,7 +1732,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-source-postgres"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1752,7 +1752,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-source-rest"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1771,7 +1771,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-state-sqlite"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "cdf-conformance",
  "cdf-kernel",
@@ -1783,7 +1783,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-subprocess"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -1809,7 +1809,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-task-store"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "bytes",
  "cdf-kernel",
@@ -1826,7 +1826,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-transform-brotli"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "brotli",
  "bytes",
@@ -1839,7 +1839,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-transform-bzip2"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "bytes",
  "bzip2",
@@ -1852,7 +1852,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-transform-character"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "bytes",
  "cdf-kernel",
@@ -1865,7 +1865,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-transform-gzip"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "bytes",
  "cdf-kernel",
@@ -1879,7 +1879,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-transform-lz4"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "bytes",
  "cdf-kernel",
@@ -1893,7 +1893,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-transform-snappy"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "bytes",
  "cdf-kernel",
@@ -1907,7 +1907,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-transform-xz"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "bytes",
  "cdf-kernel",
@@ -1920,7 +1920,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-transform-zstd"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "bytes",
  "cdf-kernel",
@@ -1933,7 +1933,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-transport-http"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "bytes",
  "cdf-http",
@@ -1949,7 +1949,7 @@ dependencies = [
 
 [[package]]
 name = "cdf-wasm"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 
 [[package]]
 name = "cfg-if"
