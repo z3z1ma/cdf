@@ -1,7 +1,7 @@
-Status: active
+Status: done
 Created: 2026-07-26
 Updated: 2026-07-26
-Parent: .10x/tickets/2026-07-26-stage-local-cpu-saturation.md
+Parent: .10x/tickets/done/2026-07-26-stage-local-cpu-saturation.md
 
 # Keep staged destination pressure out of run-wide jobs
 
@@ -100,6 +100,11 @@ old global-pressure interpretation rather than leaving a compatibility surface.
   16 row-group slots, four active partitions get four each, and 16 active partitions get one each.
   This is a generic registered-format rule; it neither caps total CPU below the host authority nor
   introduces a Parquet branch.
+- 2026-07-26: Final product evidence exercised the neutral scheduler on 1,024 files. The selected
+  destination path recorded 16 prepared writers, the complete run averaged `678%` CPU on the
+  eight-physical-core/16-SMT host, and all 5,120 segments completed under the default managed
+  budget with zero ending ownership, spill, or OOM. This closes the host-scale residual owned by
+  the dependent Parquet ticket.
 
 ## Blockers
 
@@ -123,23 +128,28 @@ None.
 - Reopened repair: the exact runtime decode-unit resolver test and source-files transient-pressure
   regression passed; strict all-target Clippy for both touched crates and formatting/diff checks
   passed. The engine staged-window admission test also passed with two maximum-sized retained
-  items, and strict touched Engine/Parquet Clippy remained clean. EC2 automatic multi-partition
-  proof remains pending.
+  items, and strict touched Engine/Parquet Clippy remained clean. The final EC2 automatic
+  multi-partition proof is recorded below.
 - Nested-frontier repair: `nested_decode_fanout_shares_the_run_cpu_authority` and
   `blocked_decode_publication_releases_shared_run_work` passed. The partitioned DataFusion lease
   regression passed alongside them. Strict all-feature Clippy for source-files and Engine,
   formatting, and diff checks passed.
+- `.10x/evidence/2026-07-26-parquet-parallel-one-tib-rerun.md`: exact product run selected
+  16 destination writers and sustained 6.78 equivalent cores while preserving constant memory
+  and verified identity. This is integration evidence beyond the focused resolver and
+  jobs-invariance tests.
 
 ## Review
 
-Fresh-hat adversarial review: **pass**. The diff deletes both destination-derived candidates
+Fresh-hat adversarial review: **pass**. The final diff deletes both destination-derived candidates
 rather than special-casing Parquet, leaves the explicit jobs/CPU/memory/source/lane/scope
 authorities intact, and leaves `destination_writer_concurrency` plus
 `destination_in_flight_segments` as report-only stage facts. Graph-node validation and
 `StagingSchedulingContext` still bind the destination item/byte/lane limits. The jobs matrix
 would fail if either destination's bounded stream stopped composing or if canonical identity
-changed. Residual risk is limited to host-scale throughput, deliberately owned by the dependent
-Parquet ticket rather than this neutral admission repair.
+changed. Reopened repairs use only stable total-budget and shared run-CPU authorities; no source
+or destination id entered the generic resolver. The dependent one-TiB run discharged the former
+host-scale residual with verified product evidence.
 
 ## Retrospective
 
@@ -147,3 +157,8 @@ The bug survived because one field named “in flight” represented two differe
 destination queue and the global leaf-work pool. Deleting the ambiguous global candidates is
 safer than adding an exception. Stage capacity already had complete graph, channel, lane, and
 telemetry authorities; reusing those boundaries made the repair small and generic.
+
+Removing the global cap exposed two unrelated defects it had masked: transient free memory had
+been treated as a planning input, and nested partition/row-group fan-out multiplied one CPU
+authority. Repairing those generic authorities was preferable to restoring a conservative
+destination-derived ceiling.

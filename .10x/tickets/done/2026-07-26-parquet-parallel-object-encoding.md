@@ -1,8 +1,8 @@
-Status: active
+Status: done
 Created: 2026-07-26
 Updated: 2026-07-26
-Parent: .10x/tickets/2026-07-26-stage-local-cpu-saturation.md
-Depends-On: .10x/tickets/2026-07-26-runtime-stage-local-destination-pressure.md
+Parent: .10x/tickets/done/2026-07-26-stage-local-cpu-saturation.md
+Depends-On: .10x/tickets/done/2026-07-26-runtime-stage-local-destination-pressure.md
 
 # Encode deterministic Parquet object groups concurrently
 
@@ -38,8 +38,9 @@ compatibility path.
   manifests, acknowledgements, receipts, package identity, or final checkpoint semantics.
 - Cancellation or one group failure stops admission, joins every sibling, rolls back exact
   attempt state, and releases all memory, CPU/lane, spill, staging, and content claims.
-- The session reserves exactly the prepared writer working sets and bounds retained segment
-  handles/bytes through the existing staged protocol; the managed-memory ending balance is zero.
+- The session reserves one required writer working set before input, admits additional writer
+  sets from actual object demand and available memory up to the prepared ceiling, and bounds
+  retained segment handles/bytes through the staged protocol; ending managed memory is zero.
 - Writer preparation has no arbitrary fixed default ceiling. Explicit run jobs is an upper
   bound; host CPU, memory, and destination safety can lower it without user tuning.
 - Parquet compression is a compiled physical-path identity, defaults to a measured fast
@@ -49,6 +50,9 @@ compatibility path.
   four useful writers; an ordinary-schema control must not regress by more than 5%. If the
   threshold is falsified, do not select the slower concurrency as the default and record the
   null result.
+- The exact prior one-TiB acceptance completes on the 16-logical-CPU EC2 host with the default
+  memory policy, no swap, no OOM, no spill, verified package identity, and a recorded comparison
+  against the 411.5 MB/s / 44:54.863 baseline.
 - Focused Parquet/runtime/project tests, strict Clippy for touched crates, formatting, diff, and
   graph refresh checks pass. No full workspace suite is required.
 
@@ -242,6 +246,13 @@ compatibility path.
   `1.16 s` with Zstd and `1.57 s` with Snappy, versus the retained parent baseline's `2.407 s`.
   Zstd therefore improves both the CPU-heavy multi-object path and the ordinary control rather
   than trading one for the other.
+- 2026-07-26: Final revision `e74bb2fd` completed the exact one-TiB acceptance in `8:19.07`
+  at `2.222 GB/s`, `10.892 million rows/s`, and `678%` average CPU, a `5.40x` wall-time
+  improvement over the `44:54.863` baseline. The prepared path recorded 16 writers and
+  `arrow_ipc_to_parquet_zstd@6`. Peak RSS was `3,923,718,144` bytes under the default 4 GiB
+  process policy; managed peak was `3,163,272,636 / 3,650,722,202`, ending ownership was zero,
+  spill was zero, and the 5 GiB/no-swap cgroup recorded no OOM or kill. The independent verifier
+  checked all 5,135 package files and reproduced the committed package hash.
 
 ## Blockers
 
@@ -272,8 +283,8 @@ None.
 - Post-falsification `cargo test -p cdf-dest-parquet --lib --locked -- --test-threads=2`: passed
   `40`, ignored the explicit release-only roofline test.
 - Post-falsification strict Clippy for Engine, Parquet destination, and Project: passed.
-- Final release retention comparison after accounted-reader transfer: pending dedicated-host
-  execution.
+- The intermediate accounted-reader transfer required the later dedicated-host comparison
+  recorded in the final evidence below.
 - Post-forward-progress repair: all `40` runnable Parquet library tests passed, including actual
   multi-group overlap, explicit one-writer serialization, exact writer-window accounting, grouped
   identity, abort, duplicate, and receipt paths; one explicit release benchmark remained ignored.
@@ -307,8 +318,8 @@ None.
   passed all `40` runnable tests with one explicit release benchmark ignored. The focused
   multi-group test observes at least two simultaneous encoders and the one-job control remains
   serial. Strict all-feature Clippy for Parquet destination, Engine, and Files source passed with
-  warnings denied; formatting and diff checks passed. Dedicated-host release retention and the
-  exact 1 TiB acceptance remain pending.
+  warnings denied; formatting and diff checks passed. Dedicated-host retention and exact one-TiB
+  evidence were subsequently completed below.
 - Verified-artifact open:
   `CARGO_BUILD_JOBS=6 cargo test -p cdf-runtime
   staged_segment_request_uses_verified_durable_local_file_authority --lib --offline -j6` passed;
@@ -324,7 +335,7 @@ None.
   exercises both representations in one run: object zero consumes the existing accounted reader,
   object one consumes its durable IPC capability, and their encoders overlap; explicit jobs=1
   remains serial. Strict Parquet destination Clippy passed with warnings denied, formatting and
-  diff checks passed. Release retention evidence remains pending.
+  diff checks passed. Final release retention evidence follows below.
 - Compiled compression and demand-driven writer memory:
   `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=6 cargo test -p cdf-dest-parquet --lib
   --all-features --offline -j6` passed `41`, with one explicit release benchmark ignored.
@@ -336,11 +347,41 @@ None.
   multi-object Zstd `6.95 s` / `499%` CPU / `5,723,465` Parquet bytes; LZ4 `7.99 s`;
   Snappy `8.33 s`; uncompressed `14.41 s`. Ordinary one-object Zstd median was `1.16 s`,
   exceeding the no-regression guard against the `2.407 s` parent baseline.
+- `.10x/evidence/2026-07-26-parquet-parallel-one-tib-rerun.md`: exact final one-TiB run,
+  host/binary identity, CPU samples, codec matrix, memory envelope, receipt/checkpoint identity,
+  and independent package verification. The 5.40x speedup used 2.6% fewer total CPU-seconds than
+  baseline, supporting parallel scheduling rather than added work as the cause.
 
 ## Review
 
-Pending fresh adversarial review.
+Fresh-hat adversarial review: **pass**. The final implementation has one staged object-worker
+algorithm and no destination branch in generic orchestration. Multi-object input transfers only
+immutable durable-file capabilities; the bounded first-object warm start cannot multiply across
+writers. Object ordinals and manifest assembly remain completion-order independent. Writer
+memory is mandatory for one worker, grows only on real group demand, stops at the prepared
+host/jobs ceiling, and falls back to joining the oldest group under pressure rather than failing
+or exceeding the ledger. Every compression choice is a distinct prepared path id, the default is
+supported by both multi-object and ordinary-control measurements, and replay cannot consult an
+ambient codec setting.
+
+Failure paths still cancel and join sibling tasks before cleanup; exact package and receipt
+verification passed after the long run. Strict tests exercise overlap, one-writer serialization,
+abort, duplicate replay, deterministic grouping, metadata identity, default physical codec, and
+zero ending memory. No critical or significant finding remains. Residual risk is workload
+specificity: repeated content strongly favors Zstd and content-addressed publication, so
+incompressible workloads may prefer the retained explicit Snappy, LZ4, or none path.
 
 ## Retrospective
 
-Pending.
+The apparent two-segment problem crossed three authorities: run-wide jobs, destination payload
+retention, and physical output bytes. Removing only the scheduler cap exposed real memory
+ownership defects; removing only the payload window exposed the uncompressed device bottleneck.
+The durable result came from keeping those authorities separate: CPU work is admitted by the
+host/run ceiling, memory grows per demanded object worker, and codec semantics are compiled into
+the physical path. The strongest performance proof was not CPU percentage alone: total CPU work
+stayed essentially flat while wall time fell 5.40x.
+
+The long independent `package verify` scan was deliberately outside the timed run and remained
+single-threaded over 69.5 GB of canonical files. It is useful diagnostic evidence but not a
+closure blocker: the governed run already includes receipt verification, and the second scan is
+an acceptance-only audit rather than hidden pipeline overhead.

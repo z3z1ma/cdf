@@ -22,11 +22,12 @@ The stabilization program is terminal at
 statistics pruning, daily-driver CLI and hosted release, constant-memory and interop proof, and
 P1/P3 aggregate lanes are all closed.
 
-Current 1 TiB evidence exposed a bounded performance defect: a staged destination's two-item
-window is treated as a run-wide jobs ceiling, while Parquet's declared two-writer path owns only
-one active row encoder. The deliberately activated successor is
-`.10x/tickets/2026-07-26-stage-local-cpu-saturation.md`, with separate runtime-admission and
-Parquet-encoder children. It does not reopen P3 or authorize any parked capability below.
+The successor CPU-saturation program is terminal at
+`.10x/tickets/done/2026-07-26-stage-local-cpu-saturation.md`. Stage-local destination pressure
+no longer caps run-wide jobs, Parquet object groups encode independently, and the exact prior
+one-TiB acceptance improved from 44:54.863 to 8:19.07 at 2.222 GB/s with constant memory and
+verified identity. No executable ticket is active; parked capabilities below remain
+demand-activated rather than silently reopened.
 
 ## Parked future programs
 
