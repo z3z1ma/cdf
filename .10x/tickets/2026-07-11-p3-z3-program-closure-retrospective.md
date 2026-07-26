@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
-Depends-On: .10x/tickets/2026-07-11-p3-z2-scale-demo-adversarial-review.md
+Depends-On: .10x/tickets/done/2026-07-11-p3-z2-scale-demo-adversarial-review.md
 
 # P3 Z3: program closure and retrospective
 
@@ -28,7 +28,7 @@ No implementation repair or evidence invention under closure bookkeeping; blocke
 
 ## Blockers
 
-Blocked on Z2.
+None. Z2 is terminal with explicit non-green limits.
 
 ## References
 
