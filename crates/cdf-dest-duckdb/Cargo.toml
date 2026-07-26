@@ -6,6 +6,9 @@ license.workspace = true
 publish = false
 description = "DuckDB destination boundary for cdf."
 
+[features]
+bundled-duckdb = ["duckdb/bundled"]
+
 [dependencies]
 arrow-array = { version = "58.3.0", features = ["ffi"] }
 arrow-ipc = { version = "58.3.0", features = ["lz4"] }

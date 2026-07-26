@@ -10,6 +10,9 @@ description = "Command-line entry point for cdf."
 name = "cdf"
 path = "src/main.rs"
 
+[features]
+bundled-duckdb = ["cdf-dest-duckdb/bundled-duckdb"]
+
 [dependencies]
 arrow-array = "58.3.0"
 cdf-aws = { path = "../cdf-aws" }

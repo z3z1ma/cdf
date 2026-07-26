@@ -14,12 +14,12 @@ use cdf_kernel::{CdfError, PayloadRetention, Result};
 use cdf_memory::MemoryCoordinator;
 use cdf_runtime::{ByteSource, ContentIdentity, GenerationStrength, RunCancellation};
 use serde::{Deserialize, Serialize};
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use sha2::{Digest, Sha256};
 
 const CACHE_VERSION: u16 = 1;
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 const HASH_BUFFER_BYTES: usize = 1024 * 1024;
 const ROOT_LOCK_RETRY: Duration = Duration::from_millis(5);
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -834,6 +834,13 @@ fn private_directory_owner(path: &Path) -> Result<u32> {
     Ok(metadata.uid())
 }
 
+#[cfg(not(unix))]
+fn private_directory_owner(_path: &Path) -> Result<u32> {
+    Err(CdfError::contract(
+        "payload cache owner-only storage is unsupported on this build",
+    ))
+}
+
 fn set_private_directory_permissions(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
@@ -896,6 +903,11 @@ fn private_immutable_file(path: &Path, size_bytes: u64, owner_uid: u32) -> bool 
     })
 }
 
+#[cfg(not(unix))]
+fn private_immutable_file(_path: &Path, _size_bytes: u64, _owner_uid: u32) -> bool {
+    false
+}
+
 #[cfg(unix)]
 fn private_mutable_file(path: &Path, owner_uid: u32) -> bool {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -904,6 +916,11 @@ fn private_mutable_file(path: &Path, owner_uid: u32) -> bool {
             && metadata.uid() == owner_uid
             && metadata.permissions().mode() & 0o077 == 0
     })
+}
+
+#[cfg(not(unix))]
+fn private_mutable_file(_path: &Path, _owner_uid: u32) -> bool {
+    false
 }
 
 fn valid_sha256(value: &str) -> bool {
@@ -935,7 +952,7 @@ fn read_manifest(path: &Path) -> std::io::Result<Option<FilePayloadCacheManifest
         .map_err(std::io::Error::other)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn hash_file_cancellable(path: &Path, cancellation: &RunCancellation) -> Result<String> {
     let mut file = File::open(path)
         .map_err(|error| CdfError::data(format!("open payload cache object: {error}")))?;
@@ -1004,7 +1021,7 @@ fn now_ms() -> u64 {
         })
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

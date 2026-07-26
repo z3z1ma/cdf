@@ -45,8 +45,20 @@ No claim of crates.io publication while the distributable graph contains disallo
 - 2026-07-17: That fast-CI authority was superseded by `.10x/decisions/fast-ci-leaf-owner-gates.md` after CG1 extracted `cdf-cli-core`; the smoke/deep boundary remains, but CLI grammar/render/artifact owner checks now run against the lean core package rather than the full product graph.
 - 2026-07-25: Activated the final hosted release gate after CX4 closed the holistic CLI lane. The existing public `v0.1.0` prerelease is not a valid current install channel. A direct smoke with the then-current dynamic-runtime installer failed with `artifact does not contain libduckdb.dylib`; all five public archives were inspected and lack that runtime. The release path will cut `0.2.0-alpha.1` from current `main` rather than preserving the obsolete archive layout through a compatibility shim.
 - 2026-07-25: Direct inspection of the old public macOS binary found a second independent portability defect: it names `/Library/Frameworks/Python.framework/Versions/3.14/Python` absolutely and aborts on a clean host without that runner-specific framework. The release contract now stages every required non-system runtime library beside `cdf`, rewrites macOS load commands to `@rpath`, installs the complete verified runtime set, and includes third-party licenses. Per user direction, published artifacts do **not** use `DUCKDB_DOWNLOAD_LIB`: the workflow enables `duckdb/bundled` and pays the one-time source-build cost for static DuckDB, while developer and benchmark builds retain the prebuilt dynamic optimization.
-- 2026-07-25: Made the release/CI boundary mechanically explicit after user correction. The release matrix overrides the developer Cargo setting with `DUCKDB_DOWNLOAD_LIB=0`, continues to build with `duckdb/bundled`, and now inspects each platform binary's dependency table and fails if any dynamic DuckDB library is present. Developer and benchmark builds remain fast without weakening the published static-binary contract.
+- 2026-07-25: Made the release/CI boundary mechanically explicit after user correction. The
+  release matrix does not set `DUCKDB_DOWNLOAD_LIB`; it activates the first-class
+  `cdf-cli/bundled-duckdb` feature, which propagates through `cdf-dest-duckdb` to
+  `duckdb/bundled` and selects `libduckdb-sys`'s static source-build backend. The matrix also
+  inspects each platform binary's dependency table and fails if any dynamic DuckDB library is
+  present. Developer and benchmark builds retain the prebuilt dynamic optimization without
+  weakening the published static-binary contract.
 - 2026-07-25: The first hosted static matrix falsified two portability assumptions before publication. Windows/MSVC cannot compile `sha2-asm`'s GNU assembly, so the two feature-enabling owners now retain hardware assembly on non-Windows targets and use RustCrypto's portable implementation only on Windows. ARM Linux completed the full 13-minute bundled DuckDB build but exposed literal backslashes in three shell-single-quoted Python packaging snippets; those snippets now pass valid Python on every shell. Neither repair changes the non-Windows hashing hot path or the static DuckDB release contract.
+- 2026-07-25: A subsequent hosted matrix exposed that Cargo's dependency feature syntax on the
+  `cdf-cli` command line did not activate DuckDB's bundled backend through the package boundary;
+  Unix jobs therefore attempted `-lduckdb`, while Windows separately found Unix-only payload-cache
+  test helpers compiled without definitions. Added explicit feature forwarding at both owning
+  package boundaries and fail-closed non-Unix payload-cache helpers. The release command now has
+  one public static-link feature rather than reaching into a transitive dependency.
 
 ## Blockers
 
@@ -64,8 +76,16 @@ None for shaping. Actual crates.io publication remains blocked while the current
   deterministic byte-identical archives, generated artifacts, required runtime/license presence,
   checksum mismatch, missing checksum/artifact, unsupported target, dry-run, clean-prefix install,
   and requested/artifact version mismatch.
-- `cargo tree -p cdf-cli --features duckdb/bundled -e features -i libduckdb-sys`: the release
-  command activates `libduckdb-sys feature "bundled"` through the command-line DuckDB feature.
+- `cargo tree -p cdf-cli --locked --features bundled-duckdb -e features -i libduckdb-sys`: the
+  exact release feature resolves
+  `cdf-cli/bundled-duckdb → cdf-dest-duckdb/bundled-duckdb → duckdb/bundled →
+  libduckdb-sys/bundled`, including `libduckdb-sys/cc`; this proves the release command selects
+  the static source-build backend rather than the developer download backend.
+- `cargo test -p cdf-object-access --locked`: 39 passed and the one million-entry slow test was
+  intentionally ignored. Strict all-target Clippy over `cdf-object-access`, `cdf-dest-duckdb`,
+  and `cdf-cli`, formatting, and `git diff --check` passed. A local Windows cross-check reached
+  the native AWS-LC build and stopped because this macOS host has no Windows SDK; the hosted
+  Windows matrix remains the target authority.
 - Local artifact-mechanism smoke with the optimized aarch64 macOS binary: the packager rewrote
   absolute Python and dynamic developer DuckDB references to `@rpath`, verification passed, the
   installer populated a clean prefix, and `env -u DYLD_LIBRARY_PATH -u

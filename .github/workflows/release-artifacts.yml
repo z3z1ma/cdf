@@ -118,10 +118,6 @@ jobs:
     needs:
       - metadata
       - cli-artifacts
-    env:
-      # The tracked Cargo config optimizes developer builds with the pinned prebuilt library.
-      # Published binaries instead compile DuckDB from source and link it statically.
-      DUCKDB_DOWNLOAD_LIB: "0"
     strategy:
       fail-fast: false
       matrix:
@@ -180,7 +176,7 @@ jobs:
               ;;
           esac
           cargo build -p cdf-cli --release --locked --target "${{ matrix.target }}" \
-            --features duckdb/bundled
+            --features bundled-duckdb
 
       - name: Verify DuckDB is statically linked
         shell: bash
