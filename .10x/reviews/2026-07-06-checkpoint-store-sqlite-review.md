@@ -41,4 +41,4 @@ Pass. The ticket acceptance criteria are implemented and covered by recorded evi
 
 ## Residual Risk
 
-The checkpoint conformance suite is not yet a reusable cross-store harness; that broader work remains owned by `.10x/tickets/2026-07-05-conformance-chaos-golden.md`. Destination mirror recovery is outside this ticket and remains governed by `.10x/specs/checkpoint-state-commit-gate.md` and future destination/CLI tickets.
+The checkpoint conformance suite is not yet a reusable cross-store harness; that broader work remains owned by `.10x/tickets/done/2026-07-05-conformance-chaos-golden.md`. Destination mirror recovery is outside this ticket and remains governed by `.10x/specs/checkpoint-state-commit-gate.md` and future destination/CLI tickets.

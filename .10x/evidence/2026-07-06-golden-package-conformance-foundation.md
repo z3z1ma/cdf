@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-06
-Relates-To: .10x/tickets/done/2026-07-06-golden-package-conformance-foundation.md, .10x/tickets/2026-07-05-conformance-chaos-golden.md, .10x/specs/package-lifecycle-determinism.md, .10x/specs/conformance-governance-roadmap.md
+Relates-To: .10x/tickets/done/2026-07-06-golden-package-conformance-foundation.md, .10x/tickets/done/2026-07-05-conformance-chaos-golden.md, .10x/specs/package-lifecycle-determinism.md, .10x/specs/conformance-governance-roadmap.md
 
 # Golden package conformance foundation evidence
 
@@ -86,4 +86,4 @@ Generated scanner and metrics artifacts remain under ignored `reports/ai-quality
 
 ## What this supports
 
-The ticket acceptance criteria are satisfied for the first golden-package conformance foundation: package evidence is committed, verified before comparison, compared hash-by-hash, proven deterministic across 100 local rebuilds, and hardened with negative self-tests plus mutation testing. Full live-run golden fixtures, cross-OS golden stability, CLI golden update behavior, archive persistence, and MVP acceptance demo evidence remain owned by `.10x/tickets/2026-07-05-conformance-chaos-golden.md`.
+The ticket acceptance criteria are satisfied for the first golden-package conformance foundation: package evidence is committed, verified before comparison, compared hash-by-hash, proven deterministic across 100 local rebuilds, and hardened with negative self-tests plus mutation testing. Full live-run golden fixtures, cross-OS golden stability, CLI golden update behavior, archive persistence, and MVP acceptance demo evidence remain owned by `.10x/tickets/done/2026-07-05-conformance-chaos-golden.md`.

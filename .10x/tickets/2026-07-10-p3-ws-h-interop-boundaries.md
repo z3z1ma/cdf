@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-10
-Updated: 2026-07-19
+Updated: 2026-07-25
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
 Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md, .10x/tickets/done/2026-07-07-interop-boundary-overhead-triage.md
 
@@ -15,7 +15,7 @@ Measure and document Python PyCapsule/C Data Interface, subprocess Arrow IPC fra
 - `.10x/tickets/done/2026-07-11-p3-h1-interop-measurement-copy-proof.md`
 - `.10x/tickets/done/2026-07-11-p3-h2-python-incremental-arrow-boundary.md`
 - `.10x/tickets/done/2026-07-11-p3-h3-subprocess-stream-supervision.md`
-- `.10x/tickets/2026-07-11-p3-h4-wasm-cost-interface-model.md`
+- `.10x/tickets/cancelled/2026-07-11-p3-h4-wasm-cost-interface-model.md`
 - `.10x/tickets/2026-07-11-p3-h5-interop-envelope-closeout.md`
 
 ## Acceptance criteria
@@ -28,7 +28,7 @@ Measure and document Python PyCapsule/C Data Interface, subprocess Arrow IPC fra
 
 ## Blockers
 
-H2 is done. Remaining closure depends on H3, H4, and H5; no Wasmtime implementation is authorized by this workstream.
+H1–H3 are done. H5 owns the remaining implemented-runtime closeout; prospective WASM measurement is parked outside P3 closure.
 
 ## References
 
@@ -40,3 +40,4 @@ H2 is done. Remaining closure depends on H3, H4, and H5; no Wasmtime implementat
 
 - 2026-07-19 — H2 closed after real GIL/free-threaded and PyArrow matrices, constant-memory/backpressure evidence, neutral `ForeignProducer` production integration, explicit runtime-resolved lane admission, and a final independent pass. H3/H4/H5 remain the active children; H5 owns the calibrated native-memory/copy/release envelope rather than H2 overstating it.
 - 2026-07-18 — H3 closed after incremental Arrow IPC/NDJSON/Singer/Airbyte production paths, cancellation-aware bounded supervision, process-tree cleanup, explicit Linux child-memory fencing, protocol-state preservation, release envelopes, a full adversarial repair pass, and workspace-wide static/fast checks. H4 and H5 remain; H5 owns exact copy accounting, aggregate process RSS/cgroup evidence, and the residual control-event retention law.
+- 2026-07-25 — Backlog grooming parked H4 with the unimplemented WASM runtime. H5 can close the measured interop envelope over the implemented Python and subprocess modes without manufacturing speculative measurements.

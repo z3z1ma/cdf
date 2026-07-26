@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-06
 Updated: 2026-07-07
-Parent: .10x/tickets/2026-07-05-conformance-chaos-golden.md
+Parent: .10x/tickets/done/2026-07-05-conformance-chaos-golden.md
 Depends-On: .10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md, .10x/tickets/done/2026-07-05-duckdb-destination.md, .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md, .10x/tickets/done/2026-07-05-package-builder-reader.md
 
 # Implement prepared-package chaos conformance foundation
@@ -38,7 +38,7 @@ Significant closure must follow `QUALITY.md`. Reuse the CodeQL database path fro
 
 No general process-kill chaos runner beyond the narrow helper-process test needed for this hook, no CLI `resume` command, no CLI `replay package` command, no `cdf run` orchestration, no live source extraction, no generic destination finalize trait, no Postgres/Parquet replay chaos, no persisted golden-package fixture suite, no package archive behavior, no package GC retention policy, no CI workflow changes, no MVP acceptance demo harness, and no post-checkpoint package-status failure hook.
 
-The broader `.10x/tickets/2026-07-05-conformance-chaos-golden.md` parent still owns full lifecycle killpoints, golden-package determinism, MVP acceptance demo evidence, resource data completeness, live Postgres conformance, and cross-destination chaos.
+The broader `.10x/tickets/done/2026-07-05-conformance-chaos-golden.md` parent still owns full lifecycle killpoints, golden-package determinism, MVP acceptance demo evidence, resource data completeness, live Postgres conformance, and cross-destination chaos.
 
 ## References
 
@@ -49,7 +49,7 @@ The broader `.10x/tickets/2026-07-05-conformance-chaos-golden.md` parent still o
 - `.10x/specs/destination-receipts-guarantees.md`
 - `.10x/knowledge/rust-crate-organization.md`
 - `.10x/knowledge/quality-gate-execution.md`
-- `.10x/tickets/2026-07-05-conformance-chaos-golden.md`
+- `.10x/tickets/done/2026-07-05-conformance-chaos-golden.md`
 - `.10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md`
 - `.10x/evidence/2026-07-06-package-replay-commit-gate-runtime.md`
 - `.10x/reviews/2026-07-06-package-replay-commit-gate-runtime-review.md`

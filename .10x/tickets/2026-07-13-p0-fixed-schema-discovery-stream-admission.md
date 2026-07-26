@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-13
-Updated: 2026-07-19
+Updated: 2026-07-25
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
 
 # P0 fixed-schema discovery and stream-admission program
@@ -15,7 +15,7 @@ Separate cold discovery from pinned execution: freeze a persistent or run-local 
 2. `.10x/tickets/done/2026-07-13-p0-sa1-compiled-stream-admission-plan.md` defines the source/codec-neutral compiled stream-admission operation and package evidence. Done.
 3. `.10x/tickets/done/2026-07-13-p0-sa2-metadata-inventory-observation-cache.md` removes payload reads/hashing from inventory, encodes both coverage axes, and adds exact cache identity. Done.
 4. `.10x/tickets/done/2026-07-13-p0-sa3-fused-codec-admission.md` fuses row/binary observation with extraction, retains first windows, and hands discovery spools to execution. Done.
-5. `.10x/tickets/2026-07-13-p0-sa4-dynamic-producer-admission.md` applies the bootstrap-barrier law to Python/Lua/WASM.
+5. `.10x/tickets/2026-07-13-p0-sa4-dynamic-producer-admission.md` applies the bootstrap-barrier law to registered dynamic producers; future language runtimes inherit the law when activated.
 6. `.10x/tickets/2026-07-13-p0-sa5-fixed-schema-admission-conformance.md` owns adversarial transport/process counters, preview parity, and closure.
 
 SA0, SA1, and SA2 may proceed independently because the required registry, source-generation, and byte-source seams already exist. SA3 depends on SA0-SA2. SA4 depends on SA0-SA1 and may proceed alongside SA3. SA5 depends on every implementation child.
@@ -50,10 +50,11 @@ No same-run typed schema epoch, implicit promotion, or cache-as-authority behavi
 - 2026-07-18: Graph audit marked SA4 blocked on H1/H2/H4/WIT because the neutral incremental foreign-stream producer boundary did not yet exist. This is a real architecture blocker, not a reason to add Python/WASM-specific discovery hacks. SA5 remains blocked through SA4.
 - 2026-07-18: IX1 and H1 are now done. SA4 remains blocked on H2/H4/WIT: the neutral contract and measurement harness exist, but concrete Python/WASM dynamic producer execution does not.
 - 2026-07-19: H2 closed the concrete Python neutral producer path. SA4 remains blocked on H4/WIT before the bootstrap-barrier law can be language-neutral; no Python-specific workaround is needed or authorized.
+- 2026-07-25: Backlog grooming removed speculative WASM work from this program's critical path. SA4 is executable against the completed neutral producer boundary and concrete Python implementation; future runtimes inherit the resulting law without blocking closure.
 
 ## Blockers
 
-SA4 is blocked on the remaining foreign-stream/language-runtime graph: `.10x/tickets/2026-07-11-p3-h4-wasm-cost-interface-model.md` and `.10x/tickets/2026-07-08-wasm-wit-interface-foundation.md`. IX1, H1, and H2 are done; children own the remaining implementation graph; no source-specific workaround is authorized.
+None at the parent level. SA4 and SA5 own the remaining executable sequence.
 
 ## Evidence
 

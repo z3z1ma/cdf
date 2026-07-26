@@ -1,28 +1,49 @@
 Status: active
-Created: 2026-07-05
-Updated: 2026-07-05
+Created: 2026-07-25
+Updated: 2026-07-25
 
-# Adopt the cdf book as the ratified system contract
+# Preserve vision authority while separating execution from roadmap
 
 ## Context
 
-The repository currently contains `VISION.md` and no pre-existing `.10x/` records. The user requested implementation of the entire system described by the book, explicitly instructed use of 10x, and ratified anything unambiguous or clear enough from the book. The book says it will eventually be removed from the repository once the system is complete, so durable project memory cannot depend on chat or on the book remaining present forever.
+The original authority decision at
+`.10x/decisions/superseded/cdf-system-authority.md` correctly made `VISION.md` and active `.10x/`
+records the system contract, but it also coupled execution to one monolithic parent ticket and
+treated the entire long-horizon vision as one continuously active backlog. Weeks of implementation
+left that graph mixing current stabilization, completed work, speculative connectors, future
+runtimes, and research reminders. The user ratified pruning the executable backlog while
+preserving future product direction.
 
 ## Decision
 
-Implement cdf according to the book's clear contracts, with active `.10x/` specifications and tickets serving as the durable execution graph. Until a specific behavior is copied into or superseded by an active `.10x/` record, `VISION.md` remains the canonical source for that behavior. When an active decision or specification is more specific than the book, the active record governs implementation.
+`VISION.md` remains authoritative until a more specific active decision or specification
+supersedes it. Active `.10x/` records remain the durable execution and institutional-memory
+system.
 
-The implementation will proceed by subagent-owned executable child tickets under `.10x/tickets/2026-07-05-implement-cdf-system.md`. The parent agent acts as orchestrator: it assigns child tickets, integrates outputs, records evidence, performs review, and reconciles the record graph.
+Executable tickets MUST represent currently prioritized, bounded, dependency-ready outcomes.
+Long-horizon vision commitments that are not currently executable MUST remain visible in active
+specifications, decisions, research, the coverage matrix, and
+`.10x/knowledge/active-backlog-and-future-roadmap.md`; they MUST NOT remain open merely as
+reminders.
 
-The system will be implemented in roadmap order: MVP first, then fast-follow and post-MVP surfaces, unless a dependency edge requires an earlier seam. "Entire system" includes MVP, fast-follow, and beyond-MVP features described by the book; the book's own cutline only controls sequencing, not deletion of later scope.
+`.10x/tickets/2026-07-25-stabilization-steady-state-program.md` is the current aggregate execution
+graph. Later feature programs are activated deliberately from current product need and temporal
+evidence. Cancellation of a speculative or over-broad ticket parks its implementation graph; it
+does not reject the capability or weaken the vision.
 
 ## Alternatives Considered
 
-- Implement directly from the book without records. Rejected because the book is large, will be removed later, and direct implementation would force future agents to rediscover authority.
-- Treat the book as a loose inspiration. Rejected because the user ratified clear book behavior.
-- Build only the MVP. Rejected as final scope because the user requested the entire system. Accepted only as the first milestone.
+- Keep the original monolithic parent active until every long-horizon capability ships. Rejected
+  because it makes the active backlog unbounded and obscures the actual critical path.
+- Delete future scope from records. Rejected because it would discard ratified direction and force
+  later rediscovery.
+- Keep reminder tickets open but mark them low priority. Rejected because open status would still
+  falsely communicate executable ownership and dependencies.
 
 ## Consequences
 
-This creates a spec-first gate: code implementation must wait until the focused specifications and executable tickets exist. The book can be removed only after active records and implemented artifacts contain the behavior needed by future maintainers. If source, tests, or later user input conflict with active records, the conflict must be named and resolved by superseding records rather than silently choosing.
-
+The active backlog becomes a trustworthy execution queue. Parked capabilities retain their
+architecture, research, and reactivation tests without blocking P1/P3 closure. The coverage
+matrix may remain `pending` for a vision commitment even when no active implementation ticket
+exists, provided the roadmap names its activation boundary. Future programs must revalidate
+temporal facts and open the smallest bounded owner rather than reopening historical monoliths.

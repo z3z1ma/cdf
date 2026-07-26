@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-06
-Relates-To: .10x/tickets/done/2026-07-06-postgres-destination-conformance-consumer.md, .10x/tickets/2026-07-05-conformance-chaos-golden.md, .10x/specs/conformance-governance-roadmap.md, .10x/specs/destination-receipts-guarantees.md
+Relates-To: .10x/tickets/done/2026-07-06-postgres-destination-conformance-consumer.md, .10x/tickets/done/2026-07-05-conformance-chaos-golden.md, .10x/specs/conformance-governance-roadmap.md, .10x/specs/destination-receipts-guarantees.md
 
 # Postgres destination conformance consumer evidence
 
@@ -48,7 +48,7 @@ Supply-chain, static analysis, and dependency hygiene:
 
 This supports closing `.10x/tickets/done/2026-07-06-postgres-destination-conformance-consumer.md`: Postgres now participates in the reusable destination conformance harness at the same planning/sheet level as DuckDB and Parquet, and its existing live execution tests still provide runtime evidence for commit, duplicate/no-op replay, receipt verification, mirrors, rollback, and decimal fidelity.
 
-The evidence also supports progress on `.10x/tickets/2026-07-05-conformance-chaos-golden.md`: the previously open live Postgres destination conformance gap is now covered at the planning harness level, while broader lifecycle chaos and MVP demo work remain separate parent scope.
+The evidence also supports progress on `.10x/tickets/done/2026-07-05-conformance-chaos-golden.md`: the previously open live Postgres destination conformance gap is now covered at the planning harness level, while broader lifecycle chaos and MVP demo work remain separate parent scope.
 
 ## Limits
 

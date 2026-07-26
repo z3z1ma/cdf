@@ -69,7 +69,7 @@ after proving the supported topology, explicit pre-I/O rejection, bounded contro
 and the full tamper/fence/capability admission matrix.
 
 Future whole-plan distribution has an honest owner in
-`.10x/tickets/2026-07-05-distributed-execution-and-remote-state.md`, with DataFusion plan translation
-work in `.10x/tickets/2026-07-12-p3-j5-execution-plan-marshaling-metrics.md`. Either may introduce a
+`.10x/tickets/cancelled/2026-07-05-distributed-execution-and-remote-state.md`, with DataFusion plan translation
+work in `.10x/tickets/cancelled/2026-07-12-p3-j5-execution-plan-marshaling-metrics.md`. Either may introduce a
 new global task only through a separately ratified contract; neither may weaken this partition
 capsule or move identity-bearing bytes into DataFusion.

@@ -1,7 +1,7 @@
 Status: active
 Created: 2026-07-12
-Updated: 2026-07-18
-Parent: .10x/tickets/2026-07-12-p3-ws-j-datafusion-currency-bridges.md
+Updated: 2026-07-25
+Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
 Depends-On: .10x/specs/datafusion-currency-bridges.md, .10x/tickets/done/2026-07-12-p3-j0-typed-statistics-evidence-spine.md
 
 # P3 J1: evidence statistics pruning
@@ -38,6 +38,9 @@ None. J0 is closed with typed, manifest-bound segment/package evidence and expli
 - 2026-07-18: J0 closed after exact scalar-vocabulary coverage, the slim kernel envelope, and paired large-file profile-on/profile-off RSS/overhead evidence. J1 is unblocked. Its file adapter must conservatively retain when no sound file-grain typed facts exist; it may associate segment facts with a file only when existing package/lineage evidence proves that mapping.
 - 2026-07-18: Activated J1 at the neutral adapter boundary. The first slice will lower an already-recorded CDF predicate into DataFusion's pruning predicate, marshal complete J0 typed bounds into vectorized `PruningStatistics`, return conservative unknowns for every incomplete/unsupported fact, and expose decisions without adding DataFusion types below `cdf-engine`. Consumer-specific replay/backfill/SQL/merge integration remains subsequent work in this ticket.
 - 2026-07-18: Implemented the bounded neutral adapter slice. `cdf-package` now exposes sealed whole-container windows only after a complete first-pass verification of the profile and rereads the same verified identity object in caller-sized windows; provisional visitor rows cannot become skip authority. `cdf-engine` binds pruning to an indexed predicate in the digest-verified `CompiledExpressionPlan`, performs schema-directed literal lowering without reoptimization, supplies DataFusion only complete typed dimensions, and serializes DataFusion-free decisions. Unsupported decimal/timezone predicates and incomplete/NaN facts retain conservatively. The double profile read is deliberate bounded verification, not a payload read; consumer integration must still install shared-memory admission and record skipped byte/unit evidence.
+- 2026-07-25: Backlog grooming retained J1 as the sole active DataFusion currency bridge and
+  reparented it directly to P3. Broader object-store/catalog/plan-marshaling adoption is parked;
+  this ticket remains justified by a concrete existing evidence spine and bounded consumer value.
 
 ## Evidence
 

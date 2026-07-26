@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-12
 Updated: 2026-07-12
-Target: .10x/decisions/datafusion-analysis-scheduling-identity-boundary.md, .10x/specs/datafusion-currency-bridges.md, .10x/tickets/2026-07-12-p3-ws-j-datafusion-currency-bridges.md
+Target: .10x/decisions/datafusion-analysis-scheduling-identity-boundary.md, .10x/specs/datafusion-currency-bridges.md, .10x/tickets/cancelled/2026-07-12-p3-ws-j-datafusion-currency-bridges.md
 Verdict: pass
 
 # P3 DataFusion currency graph review

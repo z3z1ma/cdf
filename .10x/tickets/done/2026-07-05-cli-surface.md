@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-05
 Updated: 2026-07-08
-Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
+Parent: .10x/tickets/cancelled/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md, .10x/tickets/done/2026-07-05-datafusion-engine-planner.md, .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md, .10x/tickets/done/2026-07-07-cli-run-resume-replay-inspect-spine.md, .10x/tickets/done/2026-07-07-cli-remaining-command-planners.md, .10x/tickets/done/2026-07-07-cli-init-scaffold.md, .10x/tickets/done/2026-07-07-cli-plan-explain-ddl-guarantee.md, .10x/tickets/done/2026-07-07-cli-status-runtime-ledger-freshness.md, .10x/tickets/done/2026-07-07-cli-preview-resource-breadth.md, .10x/tickets/done/2026-07-07-cli-contract-registry-freeze-test.md, .10x/tickets/done/2026-07-07-cli-state-migrate-recover.md, .10x/tickets/done/2026-07-07-cli-backfill-planner.md, .10x/tickets/done/2026-07-07-cli-package-gc-retention.md
 
 # Implement CLI surface

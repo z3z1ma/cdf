@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
-Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
+Parent: .10x/tickets/cancelled/2026-07-05-implement-cdf-system.md
 Depends-On: VISION.md
 
 # Create the initial VISION coverage matrix

@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-06
 Updated: 2026-07-07
-Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
+Parent: .10x/tickets/cancelled/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-06-rustsec-paste-parquet-exception.md, .10x/tickets/done/2026-07-05-parquet-object-store-destination.md, .10x/tickets/done/2026-07-06-package-archive-persistence-cli.md
 
 # Replace DuckDB Parquet writer and archive path with native Arrow/DataFusion path

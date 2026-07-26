@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-06
-Relates-To: .10x/tickets/done/2026-07-06-parquet-format-source-supply-chain.md, .10x/tickets/2026-07-05-implement-cdf-system.md
+Relates-To: .10x/tickets/done/2026-07-06-parquet-format-source-supply-chain.md, .10x/tickets/cancelled/2026-07-05-implement-cdf-system.md
 
 # Parquet file source quality evidence
 

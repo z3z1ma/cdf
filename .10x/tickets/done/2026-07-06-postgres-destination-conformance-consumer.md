@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-06
 Updated: 2026-07-06
-Parent: .10x/tickets/2026-07-05-conformance-chaos-golden.md
+Parent: .10x/tickets/done/2026-07-05-conformance-chaos-golden.md
 Depends-On: .10x/tickets/done/2026-07-06-destination-conformance-suite-foundation.md, .10x/tickets/done/2026-07-06-postgres-live-execution.md
 
 # Add Postgres destination conformance consumer
@@ -47,7 +47,7 @@ No new Postgres production commit behavior, no new destination semantics, no CDC
 - `VISION.md` Chapter 13 and Chapter 19.
 - `.10x/specs/conformance-governance-roadmap.md`
 - `.10x/specs/destination-receipts-guarantees.md`
-- `.10x/tickets/2026-07-05-conformance-chaos-golden.md`
+- `.10x/tickets/done/2026-07-05-conformance-chaos-golden.md`
 - `.10x/tickets/done/2026-07-06-destination-conformance-suite-foundation.md`
 - `.10x/tickets/done/2026-07-06-postgres-live-execution.md`
 - `.10x/evidence/2026-07-06-postgres-live-execution.md`

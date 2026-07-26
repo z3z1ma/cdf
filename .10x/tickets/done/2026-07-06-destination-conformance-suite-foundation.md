@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-06
 Updated: 2026-07-06
-Parent: .10x/tickets/2026-07-05-conformance-chaos-golden.md
+Parent: .10x/tickets/done/2026-07-05-conformance-chaos-golden.md
 Depends-On: .10x/tickets/done/2026-07-05-duckdb-destination.md, .10x/tickets/done/2026-07-05-parquet-object-store-destination.md, .10x/tickets/done/2026-07-06-checkpoint-store-conformance-suite.md
 
 # Implement destination conformance suite foundation
@@ -38,7 +38,7 @@ No live Postgres conformance execution in this foundation slice; it remains owne
 - `.10x/specs/destination-receipts-guarantees.md`
 - `.10x/knowledge/rust-crate-organization.md`
 - `.10x/knowledge/quality-gate-execution.md`
-- `.10x/tickets/2026-07-05-conformance-chaos-golden.md`
+- `.10x/tickets/done/2026-07-05-conformance-chaos-golden.md`
 - `.10x/tickets/done/2026-07-05-duckdb-destination.md`
 - `.10x/tickets/done/2026-07-05-parquet-object-store-destination.md`
 - `.10x/tickets/done/2026-07-06-checkpoint-store-conformance-suite.md`

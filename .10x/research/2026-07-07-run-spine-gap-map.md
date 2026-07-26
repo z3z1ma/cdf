@@ -15,7 +15,7 @@ What high-leverage architectural gap most directly blocks broader `cdf run`, `re
 - `.10x/specs/conformance-governance-roadmap.md`
 - `.10x/specs/project-cli-observability-security.md`
 - `.10x/tickets/done/2026-07-05-cli-surface.md`
-- `.10x/tickets/2026-07-05-observability-doctor-status-sql.md`
+- `.10x/tickets/done/2026-07-05-observability-doctor-status-sql.md`
 - Source inspection:
   - `crates/cdf-project/src/runtime.rs`
   - `crates/cdf-kernel/src/destination.rs`

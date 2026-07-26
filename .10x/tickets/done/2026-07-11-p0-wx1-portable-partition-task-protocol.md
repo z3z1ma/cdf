@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-11
 Updated: 2026-07-19
-Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
+Parent: .10x/tickets/cancelled/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-11-p0-sx1-source-extension-boundary.md, .10x/tickets/done/2026-07-11-p0-dx1-neutral-runtime-crate.md, .10x/tickets/done/2026-07-11-p0-bx1-kernel-stream-extent-artifacts.md, .10x/specs/portable-partition-task-protocol.md
 
 # P0 WX1: portable partition task/result protocol
@@ -39,7 +39,7 @@ None. SX1, DX1, and BX1 are done; this ticket is executable.
 
 ## Progress and notes
 
-- 2026-07-12: `.10x/tickets/2026-07-12-p3-j5-execution-plan-marshaling-metrics.md` will translate native CDF operators into DataFusion plan/metrics shells only after WX1 establishes canonical task authority. DataFusion/Ballista serialization cannot replace the capsule or gain credential, package-finalization, receipt, or checkpoint authority.
+- 2026-07-12: `.10x/tickets/cancelled/2026-07-12-p3-j5-execution-plan-marshaling-metrics.md` will translate native CDF operators into DataFusion plan/metrics shells only after WX1 establishes canonical task authority. DataFusion/Ballista serialization cannot replace the capsule or gain credential, package-finalization, receipt, or checkpoint authority.
 - 2026-07-19: Activated as the P0 half of the critical path to C5. Implementation will establish the smallest neutral canonical capsule/result authority first; A7/A8 can then complete the independent stream-epoch half of the dependency chain before C5 proves isolated-worker equivalence.
 - 2026-07-19: Implemented the protocol authority in neutral `cdf-runtime`: versioned canonical task/result digests; exact CDF/artifact/Arrow/relational-engine/normalizer compatibility; content-addressed compiled-source, partition, input, segment, quarantine, residual, verdict, and lineage references; portable resource/control budgets; runtime-resolved host capability admission; task-bound fenced attempts; semantic results whose operational telemetry is explicitly nonidentity; and coordinator admission that rejects expired/stale fences, unauthorized output scopes, wrong partition ordinals, count/hash mismatches, and non-success terminal states. Control metadata bounds are task knobs rather than hard-coded throughput ceilings.
 - 2026-07-19: Kept task payloads out of control messages. The compiled source and partition plans are immutable typed artifact references, so the protocol contains no borrowed plan/resource, local filesystem path, store implementation, open handle, or transport. Added source-registry admission for exact driver version/option-schema identity and proved a serialized plan can be dropped, reloaded by content hash, and resolved through the ordinary registry plus injected execution services.

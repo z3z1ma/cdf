@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-06
-Relates-To: .10x/tickets/done/2026-07-06-python-doctor-interpreter-probe.md, .10x/tickets/2026-07-05-observability-doctor-status-sql.md
+Relates-To: .10x/tickets/done/2026-07-06-python-doctor-interpreter-probe.md, .10x/tickets/done/2026-07-05-observability-doctor-status-sql.md
 
 # Python doctor interpreter probe
 

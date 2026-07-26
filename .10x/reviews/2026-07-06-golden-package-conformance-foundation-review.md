@@ -38,4 +38,4 @@ Pass. The implementation satisfies the scoped golden-package conformance foundat
 
 ## Residual risk
 
-The committed fixture proves determinism on the current OS and current dependency tuple only. Cross-OS golden stability and live `cdf run` package evidence are explicitly outside this ticket and remain active parent scope in `.10x/tickets/2026-07-05-conformance-chaos-golden.md`.
+The committed fixture proves determinism on the current OS and current dependency tuple only. Cross-OS golden stability and live `cdf run` package evidence are explicitly outside this ticket and remain active parent scope in `.10x/tickets/done/2026-07-05-conformance-chaos-golden.md`.

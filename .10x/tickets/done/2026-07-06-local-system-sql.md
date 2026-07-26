@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-06
 Updated: 2026-07-06
-Parent: .10x/tickets/2026-07-05-observability-doctor-status-sql.md
+Parent: .10x/tickets/done/2026-07-05-observability-doctor-status-sql.md
 Depends-On: .10x/tickets/done/2026-07-05-cli-surface.md, .10x/tickets/done/2026-07-05-package-builder-reader.md, .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md
 
 # Implement local system SQL
@@ -29,7 +29,7 @@ No destination mirror drift comparison, live DuckDB/Postgres mirror querying, ru
 
 ## Progress and notes
 
-- 2026-07-06: Split from `.10x/tickets/2026-07-05-observability-doctor-status-sql.md` as the first bounded observability child. The goal is to remove the CLI `sql` blocker without inventing runtime commit semantics.
+- 2026-07-06: Split from `.10x/tickets/done/2026-07-05-observability-doctor-status-sql.md` as the first bounded observability child. The goal is to remove the CLI `sql` blocker without inventing runtime commit semantics.
 - 2026-07-06: First broad worker attempt was shut down without integration after it did not return a status checkpoint. Re-dispatched a narrower CLI-only worker with an explicit in-memory SQLite/system-history mounting path.
 - 2026-07-06: Implemented local read-only `cdf sql` in `crates/cdf-cli/src/system_sql.rs`, mounting checkpoint rows and package manifest/receipt metadata into an in-memory SQLite database. Targeted CLI tests, formatting, and clippy pass. Evidence recorded in `.10x/evidence/2026-07-06-local-system-sql.md`; closure review recorded in `.10x/reviews/2026-07-06-local-system-sql-review.md`.
 

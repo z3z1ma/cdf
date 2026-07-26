@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-06
 Updated: 2026-07-06
-Parent: .10x/tickets/2026-07-05-conformance-chaos-golden.md
+Parent: .10x/tickets/done/2026-07-05-conformance-chaos-golden.md
 Depends-On: .10x/tickets/done/2026-07-06-resource-conformance-suite-foundation.md, .10x/tickets/done/2026-07-06-parquet-format-source-supply-chain.md
 
 # Add resource execution conformance for file sources
@@ -58,7 +58,7 @@ Boundedness honesty remains parent scope until a public boundedness signal exist
 - `.10x/specs/conformance-governance-roadmap.md`
 - `.10x/knowledge/rust-crate-organization.md`
 - `.10x/knowledge/quality-gate-execution.md`
-- `.10x/tickets/2026-07-05-conformance-chaos-golden.md`
+- `.10x/tickets/done/2026-07-05-conformance-chaos-golden.md`
 - `.10x/tickets/done/2026-07-06-resource-conformance-suite-foundation.md`
 - `.10x/tickets/done/2026-07-06-parquet-format-source-supply-chain.md`
 

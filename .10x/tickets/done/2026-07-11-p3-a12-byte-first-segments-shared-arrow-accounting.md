@@ -32,7 +32,7 @@ None.
 
 ## References
 
-- `.10x/decisions/byte-first-canonical-segmentation-v2.md`
+- `.10x/decisions/superseded/byte-first-canonical-segmentation-v2.md`
 - `.10x/specs/canonical-segmentation-adaptive-batching.md`
 - `.10x/specs/package-io-hashing-durability.md`
 

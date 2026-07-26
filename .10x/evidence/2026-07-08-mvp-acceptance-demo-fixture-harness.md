@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-08
 Updated: 2026-07-08
-Relates-To: .10x/tickets/done/2026-07-08-mvp-acceptance-demo-fixture-harness.md, .10x/decisions/mvp-acceptance-demo-fixture-boundary.md, .10x/tickets/2026-07-05-conformance-chaos-golden.md
+Relates-To: .10x/tickets/done/2026-07-08-mvp-acceptance-demo-fixture-harness.md, .10x/decisions/mvp-acceptance-demo-fixture-boundary.md, .10x/tickets/done/2026-07-05-conformance-chaos-golden.md
 
 # MVP acceptance demo fixture harness evidence
 
@@ -91,7 +91,7 @@ The reusable CodeQL wrapper reused `target/quality/codeql-db-rust` and refreshed
 
 This supports closing `.10x/tickets/done/2026-07-08-mvp-acceptance-demo-fixture-harness.md`.
 
-It also advances `.10x/tickets/2026-07-05-conformance-chaos-golden.md` and `VISION.md` Chapter 23 coverage by converting the acceptance demo from an open concept into a deterministic conformance-owned foundation harness.
+It also advances `.10x/tickets/done/2026-07-05-conformance-chaos-golden.md` and `VISION.md` Chapter 23 coverage by converting the acceptance demo from an open concept into a deterministic conformance-owned foundation harness.
 
 ## Limits
 

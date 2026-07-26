@@ -1,8 +1,8 @@
 Status: open
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-25
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
-Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md, .10x/tickets/done/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md, .10x/tickets/2026-07-10-p3-ws-b-format-decode-engines.md, .10x/tickets/done/2026-07-10-p3-ws-c-deterministic-parallelism.md, .10x/tickets/done/2026-07-10-p3-ws-d-destination-bulk-paths.md, .10x/tickets/done/2026-07-10-p3-ws-e-hashing-package-io.md, .10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md, .10x/tickets/done/2026-07-10-p3-ws-g-remote-io-overlap.md, .10x/tickets/2026-07-10-p3-ws-h-interop-boundaries.md, .10x/tickets/done/2026-07-11-p3-ws-v-vectorized-validation.md
+Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md, .10x/tickets/done/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md, .10x/tickets/done/2026-07-10-p3-ws-b-format-decode-engines.md, .10x/tickets/done/2026-07-10-p3-ws-c-deterministic-parallelism.md, .10x/tickets/done/2026-07-10-p3-ws-d-destination-bulk-paths.md, .10x/tickets/done/2026-07-10-p3-ws-e-hashing-package-io.md, .10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md, .10x/tickets/done/2026-07-10-p3-ws-g-remote-io-overlap.md, .10x/tickets/2026-07-10-p3-ws-h-interop-boundaries.md, .10x/tickets/done/2026-07-11-p3-ws-v-vectorized-validation.md, .10x/tickets/2026-07-12-p3-j1-evidence-statistics-pruning.md, .10x/tickets/2026-07-13-p0-fixed-schema-discovery-stream-admission.md
 
 # P3 Z1: envelope, triage, and coverage evidence reconciliation
 
@@ -16,7 +16,7 @@ Generate/publish the final host-labeled performance envelope, map every P3 targe
 |---|---|
 | Parquet file/glob → package | B2, C4, E4 |
 | CSV → package | B4, C4, E4 |
-| streamed compressed NDJSON/JSON | B1, B5, G3, B13 |
+| streamed compressed NDJSON/JSON | B1, B5, G3 |
 | contract validation | V1–V3 |
 | package build/hash | E1–E4 |
 | package → DuckDB | D1, D2, D5 |
@@ -27,7 +27,7 @@ Generate/publish the final host-labeled performance envelope, map every P3 targe
 | ≤10% correctness overhead | L5/final lab plus A/E/V/D phase evidence |
 | constant process-tree memory | F1–F4 |
 | jobs invariance | C4/C5 and per-workstream conformance |
-| native format breadth | B13 |
+| core native format engines | WS-B |
 | foreign boundaries | H5 |
 | VISION 6.1–6.6 | A/C/F/V plus A9 coverage evidence |
 

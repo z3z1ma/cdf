@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-06
 Updated: 2026-07-06
-Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
+Parent: .10x/tickets/cancelled/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-05-package-builder-reader.md, .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md, .10x/tickets/done/2026-07-05-datafusion-engine-planner.md, .10x/tickets/done/2026-07-05-duckdb-destination.md
 
 # Implement prepared package commit-gate runtime foundation
@@ -56,7 +56,7 @@ This ticket intentionally provides the lower-layer primitive needed by later CLI
 - `.10x/knowledge/rust-crate-organization.md`
 - `.10x/knowledge/quality-gate-execution.md`
 - `.10x/tickets/done/2026-07-05-cli-surface.md`
-- `.10x/tickets/2026-07-05-conformance-chaos-golden.md`
+- `.10x/tickets/done/2026-07-05-conformance-chaos-golden.md`
 
 ## Progress and notes
 

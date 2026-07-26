@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-11
 Updated: 2026-07-14
-Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
+Parent: .10x/tickets/cancelled/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/specs/stream-epochs-watermarks.md
 
 # P0 BX1: kernel-owned execution extent and watermark artifacts

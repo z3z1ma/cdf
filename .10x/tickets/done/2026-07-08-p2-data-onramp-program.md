@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-08
 Updated: 2026-07-10
-Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
+Parent: .10x/tickets/cancelled/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-07-p0-structural-debt-program.md
 
 # P2 data onramp, source experience, schema intelligence, and happy path program

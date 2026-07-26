@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-07
 Updated: 2026-07-07
-Relates-To: .10x/tickets/done/2026-07-07-declarative-postgres-sql-resource-execution.md, .10x/tickets/2026-07-05-conformance-chaos-golden.md
+Relates-To: .10x/tickets/done/2026-07-07-declarative-postgres-sql-resource-execution.md, .10x/tickets/done/2026-07-05-conformance-chaos-golden.md
 
 # Declarative Postgres SQL resource execution evidence
 

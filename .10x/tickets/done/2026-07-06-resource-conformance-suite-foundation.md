@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-06
 Updated: 2026-07-06
-Parent: .10x/tickets/2026-07-05-conformance-chaos-golden.md
+Parent: .10x/tickets/done/2026-07-05-conformance-chaos-golden.md
 Depends-On: .10x/tickets/done/2026-07-05-declarative-resources.md, .10x/tickets/done/2026-07-06-destination-conformance-suite-foundation.md
 
 # Implement resource conformance suite foundation
@@ -42,7 +42,7 @@ Full resource data completeness, replay, and boundedness honesty remain parent s
 - `.10x/specs/conformance-governance-roadmap.md`
 - `.10x/knowledge/rust-crate-organization.md`
 - `.10x/knowledge/quality-gate-execution.md`
-- `.10x/tickets/2026-07-05-conformance-chaos-golden.md`
+- `.10x/tickets/done/2026-07-05-conformance-chaos-golden.md`
 - `.10x/tickets/done/2026-07-05-declarative-resources.md`
 - `.10x/tickets/done/2026-07-06-destination-conformance-suite-foundation.md`
 

@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-06
 Updated: 2026-07-06
-Parent: .10x/tickets/2026-07-05-observability-doctor-status-sql.md
+Parent: .10x/tickets/done/2026-07-05-observability-doctor-status-sql.md
 Depends-On: .10x/tickets/done/2026-07-05-datafusion-engine-planner.md, .10x/tickets/done/2026-07-05-package-builder-reader.md
 
 # Add engine execution tracing spans
@@ -42,7 +42,7 @@ No `inspect run`, no CLI parser or command changes, no run ledger, no run id gen
 
 - `VISION.md` Chapter 15 observability and Chapter 17 CLI.
 - `.10x/specs/project-cli-observability-security.md`
-- `.10x/tickets/2026-07-05-observability-doctor-status-sql.md`
+- `.10x/tickets/done/2026-07-05-observability-doctor-status-sql.md`
 - `.10x/tickets/done/2026-07-05-cli-surface.md`
 - `.10x/knowledge/rust-crate-organization.md`
 - `.10x/knowledge/quality-gate-execution.md`

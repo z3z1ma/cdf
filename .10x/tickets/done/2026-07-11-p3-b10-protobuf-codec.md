@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-11
 Updated: 2026-07-18
-Parent: .10x/tickets/2026-07-10-p3-ws-b-format-decode-engines.md
+Parent: .10x/tickets/done/2026-07-10-p3-ws-b-format-decode-engines.md
 Depends-On: .10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md, .10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md
 
 # P3 B10: descriptor-bound length-delimited Protobuf codec

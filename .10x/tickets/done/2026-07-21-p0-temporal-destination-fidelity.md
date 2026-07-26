@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-21
 Updated: 2026-07-21
-Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
+Parent: .10x/tickets/cancelled/2026-07-05-implement-cdf-system.md
 
 # Make first-party destination type fidelity truthful and executable
 

@@ -1,7 +1,7 @@
 Status: cancelled
 Created: 2026-07-11
 Updated: 2026-07-18
-Parent: .10x/tickets/2026-07-10-p3-ws-b-format-decode-engines.md
+Parent: .10x/tickets/done/2026-07-10-p3-ws-b-format-decode-engines.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-b1-streaming-byte-transforms.md, .10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md, .10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md
 
 # P3 B4: delimited and fixed-width codecs

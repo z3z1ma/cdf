@@ -1,41 +1,48 @@
 Status: active
-Created: 2026-07-11
-Updated: 2026-07-11
+Created: 2026-07-25
+Updated: 2026-07-25
 
-# Native enterprise format catalog v1
+# Make the native enterprise format catalog demand-activated
 
 ## Context
 
-The user expanded P3 from optimizing the current five file formats to native enterprise coverage across the inputs a general data-integration system encounters. “Everything” needs a concrete closeable catalog while the format-driver boundary keeps future additions local.
+The superseded decision at
+`.10x/decisions/superseded/native-enterprise-format-catalog-v1.md` correctly classified the
+enterprise format families and established native codec laws, but it made every catalog entry a
+P3 closure requirement. That converted the finite performance-architecture program into an
+indefinite connector catalog. The generic format-driver and byte-source boundaries now exist, and
+the high-throughput Parquet, Arrow IPC, delimited, JSON/NDJSON, and Protobuf paths have terminal
+evidence. The user ratified removing unprioritized enterprise codecs from P3 closure while
+preserving native breadth as product direction.
 
 ## Decision
 
-P3 native enterprise catalog v1 includes:
+The catalog and `.10x/specs/native-enterprise-format-catalog.md` remain the classification and
+semantic authority for native enterprise formats. Catalog membership does not make a codec
+immediately executable work.
 
-- columnar/batch: Parquet, Arrow IPC file, Arrow IPC stream, ORC;
-- delimited/text: CSV/TSV/custom delimited, fixed-width records, NDJSON, streaming JSON document, streaming XML records;
-- self-describing/schema-bearing binary: Avro object container, Avro single-object with explicit schema, MessagePack sequence/array, CBOR sequence/array;
-- schema-bound binary: length-delimited Protobuf with explicit descriptor set/message;
-- spreadsheets: XLSX, XLS, XLSB, and ODS read-only worksheets;
-- byte transforms: none, gzip, zstd, bzip2, xz, LZ4 frame, Snappy framed, and Brotli;
-- character transforms for text codecs: UTF-8/BOM, UTF-16LE/BE with explicit/BOM authority, Windows-1252, and ISO-8859-1;
-- archives: ZIP and TAR, including composition with supported byte compression.
+Parquet, Arrow IPC file/stream, supported delimited text, JSON/NDJSON, and Protobuf constitute the
+terminal P3 core-format set. Avro, ORC, XML, spreadsheets, MessagePack/CBOR, additional byte
+transforms, and archive containers are demand-activated future capabilities indexed by
+`.10x/knowledge/active-backlog-and-future-roadmap.md`.
 
-All implementations are native Rust in the ordinary process. No JVM, Python parser subprocess, shell utility, or destination-side reader is the semantic implementation. A native library dependency is acceptable only after WS-L comparison, supply-chain review, and codec-local isolation.
+A future codec activates only from a current product need, current dependency/supply-chain
+evidence, and one focused ticket behind the existing registry/byte-source contract. No codec may
+extend generic compiler/runtime match trees or weaken streaming, memory, discovery, provenance,
+preview/run-parity, malformed-input, or performance laws.
 
-Iceberg, Delta, and Hudi are table/source/destination protocols, not byte codecs. Database files such as SQLite are source drivers, not format drivers. Image/media/PDF extraction is interpretation/OCR and not implied by file ingestion. Their exclusion prevents the codec catalog from absorbing unrelated source semantics.
+## Alternatives Considered
 
-Every catalog entry must support bounded discovery where meaningful, pinned schema or explicit schema for non-self-describing inputs, preview/run parity, physical provenance, malformed-input policy, local/remote byte sources, memory accounting/spill, deterministic decode units/order, and reference-decoder performance evidence. A codec without truthful splitting/pushdown declares unsupported capabilities rather than faking them.
-
-The native catalog is not the end of format extensibility. After v1, a new format is admitted by a focused codec ticket and registry/catalog entry without changing generic compiler/runtime code. Format requests are classified as codec, byte transform, archive container, or source/table protocol before implementation.
-
-## Alternatives considered
-
-- Optimize only current formats: rejected because it would preserve a narrow MVP architecture.
-- Claim arbitrary formats via Python/fsspec: rejected because native performance, evidence, dependency isolation, and failure semantics would be lost.
-- Treat every filename as a codec: rejected because archives, table formats, databases, and document interpretation have different lifecycle/state contracts.
-- Promise literally every historical/proprietary format: rejected as non-falsifiable; v1 covers the enterprise families and leaves a local addition path.
+- Keep every catalog entry in P3. Rejected because P3's performance architecture can close without
+  implementing an unbounded connector catalog.
+- Delete the catalog. Rejected because its type/framing/security classification remains valuable
+  authority for future implementations.
+- Add placeholder drivers. Rejected because unsupported stubs would increase product surface and
+  build cost without ingesting data.
 
 ## Consequences
 
-WS-B expands into codec/transform/container children and cannot close on Parquet/CSV/JSON alone. New dependencies are not pre-approved. Performance targets for new codecs are ratios to their best viable native reference on the same host, with absolute numbers reported but not invented before the lab runs.
+P3 WS-B may close over its implemented core engines and extension boundary. Future format work is
+smaller and evidence-driven, while the semantic bar remains unchanged. A pending coverage row may
+point to the roadmap rather than an open reminder ticket. Reactivation must revalidate temporal
+dependency constraints, especially Avro's dependency-owned buffering and ORC's resource authority.

@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-25
 Parent: .10x/tickets/2026-07-08-p1-product-experience-program.md
 Depends-On: .10x/specs/cli-interaction-excellence.md, .10x/decisions/cli-progressive-disclosure-terminal-contract.md
 
@@ -12,7 +12,7 @@ Turn the P1 renderer foundation into a daily-driver CLI with progressive disclos
 
 ## Children
 
-- `.10x/tickets/2026-07-11-p1-cx1-terminal-policy-help.md`
+- `.10x/tickets/cancelled/2026-07-11-p1-cx1-terminal-policy-help.md`
 - `.10x/tickets/2026-07-11-p1-cx2-compact-renderer-errors.md`
 - `.10x/tickets/2026-07-11-p1-cx3-live-progress-activity.md`
 - `.10x/tickets/2026-07-11-p1-cx4-cli-conformance-performance.md`
@@ -29,6 +29,12 @@ Turn the P1 renderer foundation into a daily-driver CLI with progressive disclos
 ## Blockers
 
 None. CX4 depends on the earlier implementation children and P3 lab telemetry.
+
+## Journal
+
+- 2026-07-25: CX1 moved terminal with its implemented terminal/help foundation retained and only
+  the unratified pager remainder cancelled. CX2 is unblocked; WS9 does not require speculative
+  paging machinery to deliver the ratified daily-driver experience.
 
 ## Evidence expectations
 

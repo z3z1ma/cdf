@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-11
 Updated: 2026-07-17
-Parent: .10x/tickets/2026-07-10-p3-ws-b-format-decode-engines.md
+Parent: .10x/tickets/done/2026-07-10-p3-ws-b-format-decode-engines.md
 Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md, .10x/tickets/done/2026-07-11-p0-fx1-native-format-extension-boundary.md, .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md
 
 # P3 B1: streaming byte and character transforms
@@ -89,7 +89,7 @@ The early significant product-composition concern in `.10x/reviews/2026-07-12-p3
 
 Residual risks are deliberately not B1 blockers:
 
-- Catalog-wide fuzz/matrix breadth remains owned by `.10x/tickets/2026-07-11-p3-b13-native-format-matrix.md` and the individual format tickets.
+- Catalog-wide fuzz/matrix breadth remains owned by `.10x/tickets/cancelled/2026-07-11-p3-b13-native-format-matrix.md` and the individual format tickets.
 - Remote weak-provider compatibility spooling and growing-spool overlap remain owned by G2/G3/G4 remote I/O tickets.
 - Format-specific text/binary semantics beyond byte transforms remain owned by the corresponding format codec tickets.
 

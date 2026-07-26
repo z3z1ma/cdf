@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-06
 Updated: 2026-07-07
-Parent: .10x/tickets/2026-07-05-conformance-chaos-golden.md
+Parent: .10x/tickets/done/2026-07-05-conformance-chaos-golden.md
 Depends-On: .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md
 
 # Implement checkpoint store conformance suite
@@ -35,7 +35,7 @@ No resource conformance suite, destination conformance suite, chaos killpoints, 
 
 - `.10x/specs/checkpoint-state-commit-gate.md`
 - `.10x/specs/conformance-governance-roadmap.md`
-- `.10x/tickets/2026-07-05-conformance-chaos-golden.md`
+- `.10x/tickets/done/2026-07-05-conformance-chaos-golden.md`
 - `.10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md`
 - `.10x/reviews/2026-07-06-checkpoint-store-sqlite-review.md`
 

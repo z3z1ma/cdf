@@ -1,7 +1,7 @@
 Status: open
 Created: 2026-07-10
-Updated: 2026-07-22
-Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
+Updated: 2026-07-25
+Parent: .10x/tickets/2026-07-25-stabilization-steady-state-program.md
 Depends-On: .10x/tickets/done/2026-07-08-p2-data-onramp-program.md
 
 # P3 terabyte scale: the performance architecture
@@ -41,7 +41,7 @@ This parent is an aggregate plan. Workstream records own sequencing and integrat
 
 - `.10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md`
 - `.10x/tickets/done/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md`
-- `.10x/tickets/2026-07-10-p3-ws-b-format-decode-engines.md`
+- `.10x/tickets/done/2026-07-10-p3-ws-b-format-decode-engines.md`
 - `.10x/tickets/done/2026-07-10-p3-ws-c-deterministic-parallelism.md`
 - `.10x/tickets/done/2026-07-10-p3-ws-d-destination-bulk-paths.md`
 - `.10x/tickets/done/2026-07-10-p3-ws-e-hashing-package-io.md`
@@ -49,7 +49,7 @@ This parent is an aggregate plan. Workstream records own sequencing and integrat
 - `.10x/tickets/done/2026-07-10-p3-ws-g-remote-io-overlap.md`
 - `.10x/tickets/2026-07-10-p3-ws-h-interop-boundaries.md`
 - `.10x/tickets/done/2026-07-11-p3-ws-v-vectorized-validation.md`
-- `.10x/tickets/2026-07-12-p3-ws-j-datafusion-currency-bridges.md`
+- `.10x/tickets/2026-07-12-p3-j1-evidence-statistics-pruning.md`
 - `.10x/tickets/2026-07-13-p0-fixed-schema-discovery-stream-admission.md`
 - `.10x/tickets/done/2026-07-18-p3-l6-ec2-benchmark-host.md`
 - `.10x/tickets/done/2026-07-18-p3-l7-ec2-benchmark-tranche-lifecycle.md`
@@ -101,7 +101,7 @@ P3 does not implement a distributed scheduler, remote worker leases, resident st
 - 2026-07-13: Added the P0 fixed-schema discovery and stream-admission program after the 100-remote-JSON-file counterexample exposed runtime pre-observation as a second source execution. The corrected authority requires a fixed schema before final planning, removes current-schema pre-scans from pinned execution, represents file and within-file discovery coverage independently, and reuses materially downloaded payloads during the same command. SA0-SA5 join FX1, G1/G2/G3, B4/B5, and H2/H4 without adding source-format branches.
 - 2026-07-14: Closed WS-D after D7 replaced the superseded per-segment staged-ingress API with one generic bounded acknowledgement stream and completed the reopened wide-string investigation. The exact 2.205 GB package path measures 2.017 seconds; the only public Arrow alternative is 41% slower and unbounded by upstream contract, while TLC remains 9.51M rows/s. All destination-specific behavior remains behind adapter ingress capabilities. Active backlog moved from 89 to 87 in this closure audit; C2 is the next high-impact executable frontier because it unlocks C3/C4, G4, V3, and F4.
 - 2026-07-15: Closed C4 after the current generic staged path completed the 8.59 GB FineWeb workload in 17.56 seconds at its measured jobs=2 knee, down from the former 40.67-second jobs=4 path. Jobs invariance now covers complete logical receipts across file, REST, SQL, DuckDB, Parquet, and live PostgreSQL archetypes, while generic task/permit/frontier reports make scheduler overhead and speculative waste observable without adapter-specific branches. Active tickets fell from 85 to 84 and done tickets rose to 301; C4 no longer blocks F4, G4, or V3.
-- 2026-07-16: Closed B5 with JSON/NDJSON at the codec envelope: REST selector+tape decode is 3.10x the deleted DOM path and 450.4 MiB/s aggregate, while full-content inference is 1.02x raw Arrow and reuses the same retained source transfer. B5's closure makes G3 dependency-ready. Its attempted macro run exposed a separate L3 isolated-child regression that also fails raw Arrow while exact workers succeed; `.10x/tickets/2026-07-16-p3-l3r-isolated-benchmark-child-regression.md` now owns that defect. Active count remains 80 because one completed child and one real discovered regression offset; done count rises to 306.
+- 2026-07-16: Closed B5 with JSON/NDJSON at the codec envelope: REST selector+tape decode is 3.10x the deleted DOM path and 450.4 MiB/s aggregate, while full-content inference is 1.02x raw Arrow and reuses the same retained source transfer. B5's closure makes G3 dependency-ready. Its attempted macro run exposed a separate L3 isolated-child regression that also fails raw Arrow while exact workers succeed; `.10x/tickets/done/2026-07-16-p3-l3r-isolated-benchmark-child-regression.md` now owns that defect. Active count remains 80 because one completed child and one real discovered regression offset; done count rises to 306.
 - 2026-07-18: Ratified dedicated-host benchmark evidence for P3 performance promotion. Developer-laptop timings remain useful for smoke, triage, and rejecting risky defaults, but P3 envelope closeout/default promotion now uses a reusable AWS EC2 benchmark host in the FQ12 environment, with optimized release builds performed on-host from a synchronized repo/workspace and explicit teardown after each tranche. The governing protocol is in `.10x/specs/performance-lab-and-envelope.md`; `.10x/tickets/done/2026-07-18-p3-l6-ec2-benchmark-host.md` proves the provisioning/sync/run/teardown procedure.
 - 2026-07-18: Closed L6 as the dedicated-host protocol/tooling owner after a clean `a37a4d8645bfcc1919c04e22615e5364542ad238` preflight refresh. L7 now owns the intentionally running benchmark-tranche host lifecycle and eventual teardown evidence, so the active backlog tracks real remaining work rather than keeping a completed protocol ticket open as a reminder.
 - 2026-07-18: Closed L9 after splitting measured-command EC2 runs from the heavyweight `cdf-p3-lab` binary. The new `cdf-bench-core` crate owns shared measurement primitives; `cdf-bench-measure` produces a 606K/734K `cdf-p3-measure` runner; EC2 `build-measure` completed in `10.27s` without rebuilding `cdf-p3-lab`; and both tiny-control and full-year TLC measured-command cells are recorded in `.10x/evidence/.storage/`.
@@ -122,6 +122,11 @@ P3 does not implement a distributed scheduler, remote worker leases, resident st
   exact, reconciled statistics-driven null-column pruning for an 11.364% wide wall improvement with
   a 0.061% TLC delta. D18C-F and D18Z were cancelled rather than adding speculative knobs,
   alternate scanners, or completeness work without a current product need.
+- 2026-07-25: Backlog grooming narrowed P3 closure to the implemented performance architecture.
+  WS-B is terminal for the native core engines; enterprise codec breadth moved to the future
+  roadmap. J1 remains as the one high-leverage DataFusion bridge because it consumes existing
+  statistics without producing identity-bearing bytes; J2/J4/J5/J6 and the WS-J umbrella moved
+  terminal. Prospective WASM work is no longer a WS-H or fixed-schema-admission dependency.
 
 ## Blockers
 

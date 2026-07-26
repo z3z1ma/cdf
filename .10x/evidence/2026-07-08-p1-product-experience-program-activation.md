@@ -19,7 +19,7 @@ The P1 product experience, instrumentation, and enterprise surface directive was
   - `.10x/tickets/done/2026-07-08-p1-product-ws6-docs-onboarding.md`
   - `.10x/tickets/done/2026-07-08-p1-product-ws7-python-front-door.md`
   - `.10x/tickets/2026-07-08-p1-product-ws8-release-engineering.md`
-- `.10x/tickets/2026-07-05-implement-cdf-system.md` now lists the P1 product program under fast-follow/full-system completion.
+- `.10x/tickets/cancelled/2026-07-05-implement-cdf-system.md` now lists the P1 product program under fast-follow/full-system completion.
 - `.10x/knowledge/vision-coverage-matrix.md` now has a dedicated `P1 Product Experience Program` active row.
 
 ## Procedure
@@ -29,9 +29,9 @@ Read the active goal objective file at `/Users/alexanderbut/.codex/attachments/b
 Inspected related existing records:
 
 - `.10x/tickets/done/2026-07-08-p1-contract-depth-program.md` to avoid overloading the earlier P1 contract-depth parent.
-- `.10x/tickets/2026-07-05-implement-cdf-system.md`.
+- `.10x/tickets/cancelled/2026-07-05-implement-cdf-system.md`.
 - `.10x/specs/project-cli-observability-security.md`.
-- `.10x/tickets/2026-07-05-observability-doctor-status-sql.md`.
+- `.10x/tickets/done/2026-07-05-observability-doctor-status-sql.md`.
 - `.10x/knowledge/vision-coverage-matrix.md`.
 
 Quality commands run:

@@ -23,7 +23,7 @@ Current engine execution is shaped around iterating planned partitions and strea
 - How should per-resource rate limits, HTTP retry budgets, and auth refresh interact with concurrent partition opens?
 - How should memory be bounded when multiple partitions produce Arrow batches at once?
 - Does partition parallelism belong in `cdf-engine`, source-specific runtimes, a future distributed scheduler, or both local and distributed layers?
-- How does local partition parallelism interact with `.10x/tickets/2026-07-05-distributed-execution-and-remote-state.md`?
+- How does local partition parallelism interact with `.10x/tickets/cancelled/2026-07-05-distributed-execution-and-remote-state.md`?
 
 ## Candidate measurement scenarios
 
@@ -57,7 +57,7 @@ No engine rewrite, no Tokio runtime adoption, no worker pool, no distributed sch
 - `.10x/tickets/done/2026-07-07-performance-investigation-backlog.md`
 - `.10x/specs/resource-authoring-planning-batches.md`
 - `.10x/specs/package-lifecycle-determinism.md`
-- `.10x/tickets/2026-07-05-distributed-execution-and-remote-state.md`
+- `.10x/tickets/cancelled/2026-07-05-distributed-execution-and-remote-state.md`
 - `crates/cdf-engine/src/execution.rs`
 - `crates/cdf-kernel/src/resource.rs`
 

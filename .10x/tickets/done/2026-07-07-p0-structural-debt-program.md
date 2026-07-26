@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-07
 Updated: 2026-07-08
-Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
+Parent: .10x/tickets/cancelled/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/decisions/p0-structural-debt-stop-line.md
 
 # P0 structural debt stop-the-line program

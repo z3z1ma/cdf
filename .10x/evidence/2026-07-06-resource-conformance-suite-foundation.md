@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-06
-Relates-To: .10x/tickets/done/2026-07-06-resource-conformance-suite-foundation.md, .10x/specs/resource-authoring-planning-batches.md, .10x/specs/conformance-governance-roadmap.md, .10x/tickets/2026-07-05-conformance-chaos-golden.md
+Relates-To: .10x/tickets/done/2026-07-06-resource-conformance-suite-foundation.md, .10x/specs/resource-authoring-planning-batches.md, .10x/specs/conformance-governance-roadmap.md, .10x/tickets/done/2026-07-05-conformance-chaos-golden.md
 
 # Resource conformance suite foundation evidence
 

@@ -1,8 +1,8 @@
 Status: open
 Created: 2026-07-11
-Updated: 2026-07-19
+Updated: 2026-07-25
 Parent: .10x/tickets/2026-07-10-p3-ws-h-interop-boundaries.md
-Depends-On: .10x/tickets/done/2026-07-11-p3-h2-python-incremental-arrow-boundary.md, .10x/tickets/done/2026-07-11-p3-h3-subprocess-stream-supervision.md, .10x/tickets/2026-07-11-p3-h4-wasm-cost-interface-model.md, .10x/tickets/2026-07-11-p3-f3-stress-generators-laws.md
+Depends-On: .10x/tickets/done/2026-07-11-p3-h2-python-incremental-arrow-boundary.md, .10x/tickets/done/2026-07-11-p3-h3-subprocess-stream-supervision.md, .10x/tickets/2026-07-11-p3-f3-stress-generators-laws.md
 
 # P3 H5: interop conformance and envelope closeout
 
@@ -27,7 +27,7 @@ No Wasmtime host or native-speed guarantee for compatibility rows.
 
 ## Blockers
 
-Depends on H2–H4 and F3.
+Depends on completed H2/H3 and active F3. WASM remains prospective and outside the implemented-runtime envelope.
 
 ## Journal
 

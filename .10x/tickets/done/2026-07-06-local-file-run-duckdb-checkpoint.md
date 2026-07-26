@@ -73,7 +73,7 @@ No REST or SQL resource execution, no Postgres/Parquet/object-store run executio
 - `.10x/specs/destination-receipts-guarantees.md`
 - `.10x/specs/project-cli-observability-security.md`
 - `.10x/tickets/done/2026-07-05-cli-surface.md`
-- `.10x/tickets/2026-07-05-conformance-chaos-golden.md`
+- `.10x/tickets/done/2026-07-05-conformance-chaos-golden.md`
 - `.10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md`
 - `.10x/tickets/done/2026-07-06-declarative-file-preview-execution.md`
 - `.10x/knowledge/rust-crate-organization.md`

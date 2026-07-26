@@ -24,7 +24,7 @@ Read before editing:
 - `.10x/knowledge/quality-gate-execution.md`
 - `VISION.md` Chapter 6 and Chapter 10 excerpts
 - `.10x/decisions/cdf-book-decision-register.md`
-- `.10x/tickets/2026-07-05-implement-cdf-system.md`
+- `.10x/tickets/cancelled/2026-07-05-implement-cdf-system.md`
 - `.10x/tickets/done/2026-07-05-kernel-core-types.md`
 
 Commands run:

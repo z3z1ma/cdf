@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
-Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
+Parent: .10x/tickets/cancelled/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/decisions/arrow-datafusion-tuple-policy.md, .10x/decisions/superseded/datafusion-git-pin-arrow59-tuple.md, .10x/tickets/done/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md
 
 # Evaluate the DuckDB Arrow 58 transitive residual

@@ -1,7 +1,7 @@
 Status: open
 Created: 2026-07-08
-Updated: 2026-07-11
-Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
+Updated: 2026-07-25
+Parent: .10x/tickets/2026-07-25-stabilization-steady-state-program.md
 Depends-On: .10x/tickets/done/2026-07-07-p0-structural-debt-program.md
 
 # P1 product experience, instrumentation, and enterprise surface program
@@ -88,6 +88,7 @@ No dashboard or GUI. No breaking changes to JSON output. No scheduler semantics.
 - 2026-07-10: The user elevated source/destination extension architecture to a P0 closure invariant. Remaining P1 integration and parent closure reviews use `.10x/knowledge/source-destination-extension-invariant.md`; product convenience cannot bypass the generic registry/trait/capability/conformance boundaries.
 - 2026-07-10: WS7 Python front door closed with aggregate evidence and adversarial review. The initial closed source enum was removed before closure; Python now enters the generic resource trait and the permanent destination matrix.
 - 2026-07-11: Opened WS9 after the user's comparative-quality challenge and source/record audit showed the P1 renderer is centralized but defaults to report-like repetition, heavy framing, incomplete terminal policy, and unbudgeted progress rendering. Governing research, decision, and spec are `.10x/research/2026-07-11-rust-cli-experience-study.md`, `.10x/decisions/cli-progressive-disclosure-terminal-contract.md`, and `.10x/specs/cli-interaction-excellence.md`.
+- 2026-07-25: Backlog grooming retained the daily-driver CLI sequence and hosted release proof. CX1's implemented terminal/help foundation remains authoritative; only its unratified pager remainder was cancelled, so CX2 is now directly executable.
 
 ## Blockers
 

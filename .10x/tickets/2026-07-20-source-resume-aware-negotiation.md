@@ -1,6 +1,7 @@
 Status: open
 Created: 2026-07-20
 Updated: 2026-07-20
+Parent: .10x/tickets/2026-07-25-stabilization-steady-state-program.md
 
 # Source-neutral resume-aware negotiation
 

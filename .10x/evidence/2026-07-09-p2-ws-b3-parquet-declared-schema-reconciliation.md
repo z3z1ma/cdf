@@ -31,7 +31,7 @@ Focused tests cover `int32 -> int64`, `float32 -> float64`, source-name projecti
   - Result: passed.
 - `cargo fmt --all -- --check`
   - Result: passed.
-- `git diff --check -- . ':(exclude)crates/cdf-cli/src/tests.rs' ':(exclude).10x/tickets/2026-07-05-wasm-components-registry-signing.md' ':(exclude).10x/tickets/2026-07-08-wasm-wit-interface-foundation.md'`
+- `git diff --check -- . ':(exclude)crates/cdf-cli/src/tests.rs' ':(exclude).10x/tickets/cancelled/2026-07-05-wasm-components-registry-signing.md' ':(exclude).10x/tickets/cancelled/2026-07-08-wasm-wit-interface-foundation.md'`
   - Result: passed.
 - `npx --yes jscpd --reporters console --exit-code 0 --min-lines 6 --min-tokens 60 crates/cdf-formats/src/readers.rs crates/cdf-formats/src/tests.rs crates/cdf-declarative/src/file_runtime.rs`
   - Result: exited 0.

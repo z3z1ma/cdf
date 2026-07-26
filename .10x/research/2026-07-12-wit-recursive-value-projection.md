@@ -17,7 +17,7 @@ Inspected on 2026-07-12:
 - `VISION.md` D-26 and sections 8, 9.5, 12.5, 13.3-13.4, 20, and 22: WIT is independently versioned; resource interchange remains descriptor plus Arrow batches; state positions are typed and versioned; scopes preserve checkpoint/concurrency meaning; replay artifacts are deterministic.
 - `.10x/specs/resource-authoring-planning-batches.md`: Tier 3 exports `describe`, `negotiate`, and async `open(partition) -> stream<u8>`; its control model must remain faithful to the resource vocabulary.
 - `.10x/specs/foreign-stream-interop.md`: foreign boundaries are incremental and bounded; WIT must eventually prove typed state/control, cancellation, and arbitrary-chunk IPC behavior.
-- `.10x/tickets/2026-07-08-wasm-wit-interface-foundation.md`, including both adversarial reviews and cleanup evidence: direct recursive WIT was rejected, and no partial implementation remains.
+- `.10x/tickets/cancelled/2026-07-08-wasm-wit-interface-foundation.md`, including both adversarial reviews and cleanup evidence: direct recursive WIT was rejected, and no partial implementation remains.
 - `crates/cdf-kernel/src/scope.rs`: `Composite.parts` is an ordered `Vec<ScopeKey>` and can nest without an application-level depth bound.
 - `crates/cdf-kernel/src/position.rs`: `CompositePosition.positions` is a `BTreeMap<String, SourcePosition>`, carries its own `u16` version, and can nest without an application-level depth bound.
 - `crates/cdf-state-sqlite/src/support.rs`: current ledger persistence uses Serde JSON behind a checkpoint `state_version`; boundary ABI bytes are not current checkpoint identity bytes.

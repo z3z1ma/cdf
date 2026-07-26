@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-06
 Updated: 2026-07-06
-Parent: .10x/tickets/2026-07-05-conformance-chaos-golden.md
+Parent: .10x/tickets/done/2026-07-05-conformance-chaos-golden.md
 Depends-On: .10x/tickets/done/2026-07-05-package-builder-reader.md, .10x/tickets/done/2026-07-06-prepared-package-chaos-conformance.md
 
 # Implement golden-package conformance foundation
@@ -36,7 +36,7 @@ Significant closure must follow `QUALITY.md`. Reuse the CodeQL database path fro
 
 No live `cdf run` orchestration, no DataFusion execution, no source execution, no cross-OS CI workflow changes, no dependency pin upgrade, no archive persistence contract, no `cdf package archive` behavior, no CLI command changes, no MVP acceptance demo harness, no chaos killpoints beyond package hash determinism checks, no golden update command, and no production package hashing changes unless the current public API cannot express the conformance invariant; any such need must be recorded as a blocker before editing outside `crates/cdf-conformance/**`.
 
-The broader `.10x/tickets/2026-07-05-conformance-chaos-golden.md` parent still owns full golden-package release gates across operating systems, 100-run stability, live run fixtures, full lifecycle chaos, resource data completeness, live Postgres conformance, and MVP acceptance demo evidence.
+The broader `.10x/tickets/done/2026-07-05-conformance-chaos-golden.md` parent still owns full golden-package release gates across operating systems, 100-run stability, live run fixtures, full lifecycle chaos, resource data completeness, live Postgres conformance, and MVP acceptance demo evidence.
 
 ## References
 
@@ -45,7 +45,7 @@ The broader `.10x/tickets/2026-07-05-conformance-chaos-golden.md` parent still o
 - `.10x/specs/conformance-governance-roadmap.md`
 - `.10x/knowledge/rust-crate-organization.md`
 - `.10x/knowledge/quality-gate-execution.md`
-- `.10x/tickets/2026-07-05-conformance-chaos-golden.md`
+- `.10x/tickets/done/2026-07-05-conformance-chaos-golden.md`
 - `.10x/tickets/done/2026-07-05-package-builder-reader.md`
 - `.10x/evidence/2026-07-06-package-builder-reader.md`
 - `.10x/reviews/2026-07-06-package-builder-reader-review.md`

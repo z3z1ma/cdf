@@ -1,12 +1,16 @@
 Status: active
 Created: 2026-07-12
-Updated: 2026-07-12
+Updated: 2026-07-25
 
 # DataFusion currency bridges
 
 ## Purpose and scope
 
 This specification governs how CDF exposes statistics, expressions, catalogs, memory/object stores, and physical plans through DataFusion while preserving native package identity, deterministic replay, extension boundaries, and the pinned dependency tuple.
+
+Only statistics pruning is an active P3 bridge. Other sections govern future bridges when a
+concrete consumer activates them; they are not aggregate P3 closure requirements. Activation is
+indexed by `.10x/knowledge/active-backlog-and-future-roadmap.md`.
 
 ## Identity and layering law
 

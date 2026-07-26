@@ -1,0 +1,46 @@
+Status: cancelled
+Created: 2026-07-05
+Updated: 2026-07-25
+Parent: .10x/tickets/cancelled/2026-07-05-implement-cdf-system.md
+Depends-On: .10x/tickets/done/2026-07-05-parquet-object-store-destination.md, .10x/tickets/done/2026-07-05-postgres-destination.md, .10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md, .10x/tickets/done/2026-07-05-conformance-chaos-golden.md, .10x/tickets/done/2026-07-07-p0-workstream-a-streaming-commit-session.md, .10x/tickets/done/2026-07-07-p0-workstream-b-open-orchestrator-world.md, .10x/tickets/done/2026-07-07-p0-workstream-c-spine-conformance-harness.md
+
+# Implement lakehouse, warehouse, and vault-class integrations
+
+## Scope
+
+Implement first warehouse destination, vault-class secret providers, and lakehouse destinations `cdf-dest-iceberg` and `cdf-dest-delta` over the destination sheet/conformance protocol. Owns new destination/secret-provider crates or modules created for these integrations.
+
+## Acceptance criteria
+
+- Warehouse destination passes destination conformance and declares honest sheets.
+- Vault/cloud secret providers resolve only by reference and preserve redaction guarantees.
+- Iceberg and Delta are implemented as destinations, not package formats.
+- Lakehouse receipts embed the table format's snapshot/transaction metadata alongside cdf package receipt data.
+- Parquet/object-store destination remains the seam, not a competing metadata story.
+
+## Evidence expectations
+
+Record destination conformance output, secret provider redaction tests, lakehouse commit/replay tests, and receipt verification tests.
+
+## Explicit exclusions
+
+Vector-store destinations and UI remain out of scope unless later ratified by active decision.
+
+## Progress and notes
+
+- 2026-07-05: Opened from book and specs.
+- 2026-07-07: Destination and lakehouse portions are blocked by the P0 structural-debt stop-line until Workstreams A, B, and C close. A vault-only child may be split separately if prioritized because the stop-line is specifically about new destination/source/streaming lanes.
+- 2026-07-08: Workstream B closed. New destination/lakehouse lanes remain blocked by the P0 stop-line until Workstream C closes.
+- 2026-07-08: Workstream C closed at `.10x/tickets/done/2026-07-07-p0-workstream-c-spine-conformance-harness.md`; the A-C stop-line is lifted for new destination lanes. This ticket is open again, though broader P0 Workstreams E and F remain the current structural-debt priority.
+
+## Blockers
+
+None.
+
+## Cancellation
+
+Cancelled on 2026-07-25 because warehouses, Iceberg/Delta destinations, and vault/cloud secret
+providers are independent adapter programs and should not share one executable owner. The
+destination sheet/ingress/receipt and secret-reference/redaction invariants remain active.
+Future work is indexed by `.10x/knowledge/active-backlog-and-future-roadmap.md` and MUST open one
+bounded adapter or provider-boundary program at a time.

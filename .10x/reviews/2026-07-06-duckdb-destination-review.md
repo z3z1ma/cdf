@@ -28,6 +28,6 @@ Pass. The DuckDB destination satisfies the executable ticket's current acceptanc
 
 ## Residual risk
 
-The single-writer lock is a lockfile created with `create_new`; it prevents concurrent cdf writers under normal process exit but can leave a stale lock after a hard process kill. No separate follow-up ticket was opened in this write scope because `.10x/tickets/2026-07-05-conformance-chaos-golden.md` owns crash-matrix hardening and can decide whether stale-lock fencing is required.
+The single-writer lock is a lockfile created with `create_new`; it prevents concurrent cdf writers under normal process exit but can leave a stale lock after a hard process kill. No separate follow-up ticket was opened in this write scope because `.10x/tickets/done/2026-07-05-conformance-chaos-golden.md` owns crash-matrix hardening and can decide whether stale-lock fencing is required.
 
-The type surface is intentionally conservative. Nested types, decimals, timezone-aware timestamps, and nanosecond temporal values that would lose precision are rejected rather than coerced. Destination conformance under `.10x/tickets/2026-07-05-conformance-chaos-golden.md` should keep falsifying the sheet as new mappings are added.
+The type surface is intentionally conservative. Nested types, decimals, timezone-aware timestamps, and nanosecond temporal values that would lose precision are rejected rather than coerced. Destination conformance under `.10x/tickets/done/2026-07-05-conformance-chaos-golden.md` should keep falsifying the sheet as new mappings are added.

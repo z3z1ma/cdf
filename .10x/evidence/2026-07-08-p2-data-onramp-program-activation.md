@@ -32,7 +32,7 @@ The P2 data-onramp directive was converted into a durable 10x program graph:
 
 The old preview one-batch decision was moved to `.10x/decisions/superseded/preview-one-batch-sampling-semantics.md` and superseded by `.10x/decisions/data-onramp-source-identity-preview-disposition.md`.
 
-The full-system parent `.10x/tickets/2026-07-05-implement-cdf-system.md` now lists the P2 parent, and `.10x/knowledge/vision-coverage-matrix.md` has a dedicated active P2 row plus P2 owners on the Chapter 7.5, 8.2, 8.6, 9.2, 13.3, D-14, and D-15 rows.
+The full-system parent `.10x/tickets/cancelled/2026-07-05-implement-cdf-system.md` now lists the P2 parent, and `.10x/knowledge/vision-coverage-matrix.md` has a dedicated active P2 row plus P2 owners on the Chapter 7.5, 8.2, 8.6, 9.2, 13.3, D-14, and D-15 rows.
 
 ## Procedure
 
@@ -46,7 +46,7 @@ Inspected governing and adjacent records:
 - `.10x/specs/conformance-governance-roadmap.md`.
 - `.10x/decisions/source-decode-type-drift-quarantine.md`.
 - `.10x/decisions/superseded/preview-one-batch-sampling-semantics.md`.
-- `.10x/tickets/2026-07-05-implement-cdf-system.md`.
+- `.10x/tickets/cancelled/2026-07-05-implement-cdf-system.md`.
 
 Inspected source anchors for the P2 diagnosis:
 

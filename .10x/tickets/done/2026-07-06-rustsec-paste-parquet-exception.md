@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-06
 Updated: 2026-07-07
-Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
+Parent: .10x/tickets/cancelled/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-06-native-arrow-parquet-policy.md, .10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md
 
 # Implement scoped RUSTSEC paste exception for native Parquet

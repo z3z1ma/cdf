@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-06
 Updated: 2026-07-07
-Parent: .10x/tickets/2026-07-05-conformance-chaos-golden.md
+Parent: .10x/tickets/done/2026-07-05-conformance-chaos-golden.md
 Depends-On: .10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md, .10x/tickets/done/2026-07-06-prepared-package-chaos-conformance.md, .10x/tickets/done/2026-07-06-live-local-file-run-golden-conformance.md
 
 # Mechanize local DuckDB lifecycle chaos failpoints

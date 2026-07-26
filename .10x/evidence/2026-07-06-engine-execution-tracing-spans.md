@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-06
-Relates-To: .10x/tickets/done/2026-07-06-engine-execution-tracing-spans.md, .10x/tickets/2026-07-05-observability-doctor-status-sql.md
+Relates-To: .10x/tickets/done/2026-07-06-engine-execution-tracing-spans.md, .10x/tickets/done/2026-07-05-observability-doctor-status-sql.md
 
 # Engine Execution Tracing Spans Evidence
 

@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-12
 Updated: 2026-07-12
-Relates-To: .10x/decisions/datafusion-analysis-scheduling-identity-boundary.md, .10x/specs/datafusion-currency-bridges.md, .10x/tickets/2026-07-12-p3-ws-j-datafusion-currency-bridges.md
+Relates-To: .10x/decisions/datafusion-analysis-scheduling-identity-boundary.md, .10x/specs/datafusion-currency-bridges.md, .10x/tickets/cancelled/2026-07-12-p3-ws-j-datafusion-currency-bridges.md
 
 # P3 DataFusion currency graph activation evidence
 

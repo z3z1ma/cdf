@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
-Parent: .10x/tickets/2026-07-05-conformance-chaos-golden.md
+Parent: .10x/tickets/done/2026-07-05-conformance-chaos-golden.md
 Depends-On: .10x/tickets/done/2026-07-05-postgres-destination.md, .10x/tickets/done/2026-07-06-postgres-live-execution.md, .10x/tickets/done/2026-07-06-resource-conformance-suite-foundation.md, .10x/tickets/done/2026-07-07-declarative-rest-resource-execution.md
 
 # Add declarative Postgres SQL resource execution

@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-06
 Updated: 2026-07-06
-Parent: .10x/tickets/2026-07-05-observability-doctor-status-sql.md
+Parent: .10x/tickets/done/2026-07-05-observability-doctor-status-sql.md
 Depends-On: .10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md, .10x/tickets/done/2026-07-05-python-sdk-bridge.md
 
 # Implement Python interpreter doctor probe

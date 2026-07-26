@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-06
-Relates-To: .10x/tickets/done/2026-07-06-resource-execution-conformance-file-sources.md, .10x/tickets/2026-07-05-conformance-chaos-golden.md, .10x/specs/conformance-governance-roadmap.md, .10x/specs/resource-authoring-planning-batches.md
+Relates-To: .10x/tickets/done/2026-07-06-resource-execution-conformance-file-sources.md, .10x/tickets/done/2026-07-05-conformance-chaos-golden.md, .10x/specs/conformance-governance-roadmap.md, .10x/specs/resource-authoring-planning-batches.md
 
 # Resource Execution Conformance File Sources Evidence
 
@@ -69,7 +69,7 @@ The evidence maps to the child acceptance criteria:
 - CSV, JSON, NDJSON, and Parquet fixtures consume both planning and execution harnesses.
 - No native arrow-rs `parquet`/`paste` path or advisory exception was added.
 
-This also advances `.10x/tickets/2026-07-05-conformance-chaos-golden.md` by covering resource file-source execution/data-completeness for CSV, JSON, NDJSON, and Parquet. Full lifecycle chaos, broader source execution families, boundedness honesty, live-run golden gates, and the MVP acceptance demo harness remain parent scope.
+This also advances `.10x/tickets/done/2026-07-05-conformance-chaos-golden.md` by covering resource file-source execution/data-completeness for CSV, JSON, NDJSON, and Parquet. Full lifecycle chaos, broader source execution families, boundedness honesty, live-run golden gates, and the MVP acceptance demo harness remain parent scope.
 
 ## Limits
 

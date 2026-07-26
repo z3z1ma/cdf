@@ -40,4 +40,4 @@ Pass. Acceptance criteria are covered by focused tests, workspace checks, mutati
 
 Miri cannot execute the targeted runtime test because it reaches `rusqlite` native SQLite FFI after filesystem isolation is disabled. This is mitigated by no new owned unsafe code, direct unsafe inventory, Geiger zero-unsafe counts for `cdf-project` and first-party dependencies in the scanned surface, and `cargo +nightly careful` passing all 24 `cdf-project` tests.
 
-Post-checkpoint package status write failure is not separately simulated in this primitive; the function would surface the package status write error after the checkpoint store has already committed. That crash/status boundary belongs with the broader lifecycle/chaos work in `.10x/tickets/2026-07-05-conformance-chaos-golden.md`, which remains open.
+Post-checkpoint package status write failure is not separately simulated in this primitive; the function would surface the package status write error after the checkpoint store has already committed. That crash/status boundary belongs with the broader lifecycle/chaos work in `.10x/tickets/done/2026-07-05-conformance-chaos-golden.md`, which remains open.

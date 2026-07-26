@@ -10,6 +10,8 @@ Depends-On: .10x/tickets/2026-07-11-p3-f3-stress-generators-laws.md, .10x/ticket
 
 Run the scheduled/manual 1 TB synthetic glob-to-Parquet scenario under default budget, attach memory/performance/profile evidence, publish the owner/stress matrix, and make the enforced laws permanent slow-tier gates.
 
+NOTE: we do not have 1TB of disk on this laptop. You need to provision a machine in AWS temporarily with enough disk space.
+
 ## Acceptance criteria
 
 - 1 TB completes under default process budget with stable RSS, correct spill/cleanup, verified package/destination receipt, and scaling until device saturation.

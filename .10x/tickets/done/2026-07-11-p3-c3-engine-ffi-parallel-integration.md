@@ -68,7 +68,7 @@ None. C2 and A4 are complete.
 - `.10x/tickets/done/2026-07-08-p1-product-ws7c-python-interpreter-ci-matrix.md`
 - `.10x/tickets/done/2026-07-11-p3-h2-python-incremental-arrow-boundary.md`
 - `.10x/tickets/done/2026-07-11-p3-h3-subprocess-stream-supervision.md`
-- `.10x/tickets/2026-07-12-p3-j5-execution-plan-marshaling-metrics.md`
+- `.10x/tickets/cancelled/2026-07-12-p3-j5-execution-plan-marshaling-metrics.md`
 
 ## Review
 

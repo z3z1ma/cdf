@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-12
 Updated: 2026-07-12
-Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
+Parent: .10x/tickets/cancelled/2026-07-05-implement-cdf-system.md
 Depends-On: None
 
 # P0: remove object-store quick-xml namespace allocation vulnerability

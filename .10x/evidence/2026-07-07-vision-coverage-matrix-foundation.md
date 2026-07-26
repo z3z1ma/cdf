@@ -103,7 +103,7 @@ The row coverage is intentionally conservative. Rows marked `active` or `pending
 
 This evidence does not prove implementation conformance for every row. It records the initial coverage map and the obvious owner/evidence pointers found from current records.
 
-The matrix is not a final parent-closure proof. It must be updated at every relevant child or parent ticket closure, and especially before `.10x/tickets/2026-07-05-implement-cdf-system.md` can close.
+The matrix is not a final parent-closure proof. It must be updated at every relevant child or parent ticket closure, and especially before `.10x/tickets/cancelled/2026-07-05-implement-cdf-system.md` can close.
 
 The requested `git diff --check -- ...` command was run and exited 0, but because the three owned paths were untracked, it should be treated as the requested hygiene command rather than a tracked-diff inspection.
 

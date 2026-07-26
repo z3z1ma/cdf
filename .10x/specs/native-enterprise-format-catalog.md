@@ -1,12 +1,17 @@
 Status: active
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-25
 
 # Native enterprise format catalog
 
 ## Purpose and scope
 
 This specification defines catalog-v1 format semantics and cross-codec acceptance. Driver/runtime behavior is governed by `.10x/specs/native-format-codec-runtime.md`.
+
+Catalog membership defines semantics when a codec is activated; it does not itself authorize an
+implementation ticket or make every codec a current program dependency. Activation is governed by
+`.10x/decisions/native-enterprise-format-catalog-v1.md` and
+`.10x/knowledge/active-backlog-and-future-roadmap.md`.
 
 ## Cross-codec laws
 
