@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-11
 Updated: 2026-07-25
 Parent: .10x/tickets/2026-07-08-p1-product-experience-program.md
@@ -15,7 +15,7 @@ Turn the P1 renderer foundation into a daily-driver CLI with progressive disclos
 - `.10x/tickets/cancelled/2026-07-11-p1-cx1-terminal-policy-help.md`
 - `.10x/tickets/done/2026-07-11-p1-cx2-compact-renderer-errors.md`
 - `.10x/tickets/done/2026-07-11-p1-cx3-live-progress-activity.md`
-- `.10x/tickets/2026-07-11-p1-cx4-cli-conformance-performance.md`
+- `.10x/tickets/done/2026-07-11-p1-cx4-cli-conformance-performance.md`
 
 ## Acceptance criteria
 
@@ -44,6 +44,10 @@ None. CX4 depends on the earlier implementation children and P3 lab telemetry.
   progressive disclosure, and live progress share one renderer vocabulary; the complete CLI/core
   suite, strict Clippy, local benchmark, and public HTTPS-to-DuckDB smoke are green. CX4 owns only
   the hosted overhead cell, canonical recordings, and aggregate adversarial review.
+- 2026-07-25: WS9 is complete. CX4 closed the remaining hosted and recording gates: progress
+  enabled measured within noise of disabled (`-0.4407%` median delta against a maximum `+1%`),
+  the exact 2.147 GB reference run completed with defaults, and canonical normal, verbose,
+  redirected, JSON, replay, and failure transcripts passed severity-focused review.
 
 ## Evidence expectations
 
@@ -55,3 +59,24 @@ Aggregate closure maps every spec scenario to snapshots/terminal recordings, par
 - `.10x/decisions/cli-design-language-and-renderer.md`
 - `.10x/specs/cli-live-progress.md`
 - `.10x/specs/cli-error-experience-catalog.md`
+
+## Evidence
+
+- `.10x/evidence/2026-07-25-cli-experience-rewrite.md`
+- `.10x/evidence/2026-07-25-cli-hosted-conformance.md`
+- CX2, CX3, and CX4 terminal ticket evidence.
+
+## Review
+
+Pass. The coordinated tranche is one renderer grammar rather than three intermediate designs.
+Every child is terminal; the active CLI scenarios have automated channel/terminal coverage;
+slow-output backpressure cannot enter runtime authority; machine output remains isolated; and the
+hosted whole-command overhead gate passes. No high-severity experience or architecture residual
+remains.
+
+## Retrospective
+
+CLI quality improved when information architecture, static outcomes, progress, errors, and
+conformance were treated as one product surface. Child tickets remained useful as evidence
+owners, but a single visual grammar prevented locally polished commands from diverging into
+different products.

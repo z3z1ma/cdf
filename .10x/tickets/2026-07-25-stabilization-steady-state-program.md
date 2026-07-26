@@ -40,8 +40,8 @@ consumer path. Other DataFusion bridges remain parked.
 
 1. `.10x/tickets/done/2026-07-11-p1-cx2-compact-renderer-errors.md` — done.
 2. `.10x/tickets/done/2026-07-11-p1-cx3-live-progress-activity.md` — done.
-3. `.10x/tickets/2026-07-11-p1-cx4-cli-conformance-performance.md`
-4. `.10x/tickets/2026-07-11-p1-ws9-cli-experience-excellence.md`
+3. `.10x/tickets/done/2026-07-11-p1-cx4-cli-conformance-performance.md` — done.
+4. `.10x/tickets/done/2026-07-11-p1-ws9-cli-experience-excellence.md` — done.
 5. `.10x/tickets/2026-07-08-p1-product-ws8-release-engineering.md`
 6. `.10x/tickets/2026-07-11-p1-z1-product-program-closeout.md`
 7. `.10x/tickets/2026-07-08-p1-product-experience-program.md`
@@ -120,6 +120,10 @@ WASM, distributed execution, CDC, and new connectors are not P3 closure dependen
   renderer-wide information-architecture rewrite, bounded nonblocking live progress, 320 passing
   CLI/core tests, strict Clippy, 19.26 million governed events/second, and a real five-partition
   public HTTPS-to-DuckDB smoke. CX4 now owns the hosted overhead and recording closure only.
+- 2026-07-25: WS-C's daily-driver CLI lane is closed. Hosted FineWeb evidence measured progress
+  enabled within ordinary variance of disabled (`-0.4407%` median delta), exact default execution
+  completed after a generic staged-singleton repair, and 100×40 canonical recordings cover normal,
+  verbose, redirected, JSON, replay, and failure surfaces. WS8 release engineering is next.
 
 ## Blockers
 

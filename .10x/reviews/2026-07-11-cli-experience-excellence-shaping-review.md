@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Target: .10x/decisions/cli-progressive-disclosure-terminal-contract.md, .10x/specs/cli-interaction-excellence.md, .10x/tickets/2026-07-11-p1-ws9-cli-experience-excellence.md
+Target: .10x/decisions/cli-progressive-disclosure-terminal-contract.md, .10x/specs/cli-interaction-excellence.md, .10x/tickets/done/2026-07-11-p1-ws9-cli-experience-excellence.md
 Verdict: pass
 
 # CLI experience excellence shaping review

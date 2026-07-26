@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-11
 Updated: 2026-07-25
-Parent: .10x/tickets/2026-07-11-p1-ws9-cli-experience-excellence.md
+Parent: .10x/tickets/done/2026-07-11-p1-ws9-cli-experience-excellence.md
 Depends-On: .10x/tickets/done/2026-07-11-p1-cx2-compact-renderer-errors.md, .10x/specs/runtime-event-spine.md
 
 # P1 CX3: live progress activity model

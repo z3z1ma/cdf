@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-11
 Updated: 2026-07-25
-Parent: .10x/tickets/2026-07-11-p1-ws9-cli-experience-excellence.md
+Parent: .10x/tickets/done/2026-07-11-p1-ws9-cli-experience-excellence.md
 Depends-On: .10x/tickets/cancelled/2026-07-11-p1-cx1-terminal-policy-help.md
 
 # P1 CX2: compact renderer and actionable errors

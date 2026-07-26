@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "observed_at_utc": "2026-07-26T03:23:00Z",
+  "revision": "28765dbf2b75c951a7bebc76c2c912ca659f58a1",
+  "host": {
+    "instance_type": "c7i.4xlarge",
+    "host_class": "host-class-73b34264145bfec4",
+    "storage": "gp3 16000 IOPS / 1000 MiB/s",
+    "swap": "none"
+  },
+  "workload": {
+    "resource": "fineweb_local.documents",
+    "source_bytes": 2147509487,
+    "destination": "DuckDB",
+    "fresh_state_per_sample": true,
+    "io_mode": "warm"
+  },
+  "samples": {
+    "never": [
+      {
+        "sample": 1,
+        "elapsed_seconds": 24.03,
+        "user_seconds": 51.45,
+        "system_seconds": 14.61,
+        "max_rss_kib": 6686852,
+        "stdout_bytes": 716,
+        "stderr_bytes": 0
+      },
+      {
+        "sample": 2,
+        "elapsed_seconds": 22.69,
+        "user_seconds": 39.13,
+        "system_seconds": 14.3,
+        "max_rss_kib": 6367808,
+        "stdout_bytes": 716,
+        "stderr_bytes": 0
+      },
+      {
+        "sample": 3,
+        "elapsed_seconds": 22.52,
+        "user_seconds": 47.49,
+        "system_seconds": 13.93,
+        "max_rss_kib": 6825984,
+        "stdout_bytes": 716,
+        "stderr_bytes": 0
+      }
+    ],
+    "always": [
+      {
+        "sample": 1,
+        "elapsed_seconds": 22.59,
+        "user_seconds": 43.03,
+        "system_seconds": 12.6,
+        "max_rss_kib": 6712408,
+        "stdout_bytes": 717,
+        "stderr_bytes": 2216
+      },
+      {
+        "sample": 2,
+        "elapsed_seconds": 22.81,
+        "user_seconds": 46.43,
+        "system_seconds": 13.71,
+        "max_rss_kib": 6484324,
+        "stdout_bytes": 717,
+        "stderr_bytes": 2216
+      },
+      {
+        "sample": 3,
+        "elapsed_seconds": 21.7,
+        "user_seconds": 48.42,
+        "system_seconds": 13.63,
+        "max_rss_kib": 6512536,
+        "stdout_bytes": 717,
+        "stderr_bytes": 2216
+      }
+    ]
+  },
+  "median_seconds": {
+    "progress_never": 22.69,
+    "progress_always": 22.59
+  },
+  "enabled_overhead_fraction": -0.004407227853680085,
+  "enabled_overhead_percent": -0.44072278536800846,
+  "acceptance": {
+    "maximum_percent": 1.0,
+    "passed": true
+  },
+  "notes": [
+    "progress output is stderr-only; final human result is stdout",
+    "negative overhead is ordinary sample variance and is not a speedup claim"
+  ]
+}
