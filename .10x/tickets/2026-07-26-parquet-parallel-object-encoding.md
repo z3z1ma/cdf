@@ -156,6 +156,15 @@ compatibility path.
   source frontier at all 16 jobs; under the ordinary 4 GiB host budget this reduces only canonical
   IPC encoder fan-out from two to one. Destination object-writer concurrency remains independently
   admitted. A production-shaped unit case fixes that topology in the executable contract.
+- 2026-07-26: The unchanged probe at `2f83cca7` falsified that admission hypothesis and pinpointed
+  the actual ownership bug from the DataFusion error: the construction lease began at `9.5 MiB`
+  (only the package ordinal allocation, proving canonicalization was zero-copy), then attempted to
+  grow by `247.2 MiB` to the complete output footprint. Traveling transform leases already owned
+  those reused Arrow buffers and remained attached through staged ingress, so this was a duplicate
+  charge introduced by the allocation optimization. Removed the full-output reconciliation; the
+  construction lease now remains responsible only for new concat/ordinal/unaccounted allocations.
+  Reverted the speculative admission reduction in the same correction, preserving the faster
+  automatic encoder topology.
 
 ## Blockers
 
@@ -208,6 +217,10 @@ None.
   pipeline_concurrency_ --offline -j6` passed all three topology tests. The production-shaped
   `3,481 MiB` case resolves `16` source jobs and one canonical IPC encoder while preserving the
   complete `512 MiB` staged handoff. Strict all-feature Engine Clippy passed with warnings denied.
+- Ownership correction after live falsification: the three pipeline topology tests and
+  `accounted_canonical_input_is_not_reserved_again_during_construction` passed. Strict all-feature
+  Engine Clippy, formatting, and diff checks passed. The speculative topology change is not
+  retained; the repeat release probe is the product-level regression proof.
 
 ## Review
 
