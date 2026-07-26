@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-16
 Updated: 2026-07-17
-Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
+Parent: .10x/tickets/done/2026-07-10-p3-terabyte-scale-program.md
 Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l3-macro-roofline-runners.md
 
 # P3 L3R: repair isolated benchmark child execution

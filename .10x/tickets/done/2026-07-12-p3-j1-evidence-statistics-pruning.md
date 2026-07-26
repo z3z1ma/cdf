@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-12
 Updated: 2026-07-25
-Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
+Parent: .10x/tickets/done/2026-07-10-p3-terabyte-scale-program.md
 Depends-On: .10x/specs/datafusion-currency-bridges.md, .10x/tickets/done/2026-07-12-p3-j0-typed-statistics-evidence-spine.md
 
 # P3 J1: evidence statistics pruning

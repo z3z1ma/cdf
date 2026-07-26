@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-10
 Updated: 2026-07-11
-Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
+Parent: .10x/tickets/done/2026-07-10-p3-terabyte-scale-program.md
 Depends-On: .10x/specs/performance-lab-and-envelope.md, .10x/tickets/done/2026-07-07-p0-workstream-f-benchmark-gate.md
 
 # P3 WS-L: performance lab and baseline

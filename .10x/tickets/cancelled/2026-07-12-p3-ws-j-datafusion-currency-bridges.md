@@ -1,7 +1,7 @@
 Status: cancelled
 Created: 2026-07-12
 Updated: 2026-07-25
-Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
+Parent: .10x/tickets/done/2026-07-10-p3-terabyte-scale-program.md
 Depends-On: .10x/decisions/datafusion-analysis-scheduling-identity-boundary.md, .10x/specs/datafusion-currency-bridges.md
 
 # P3 WS-J: DataFusion currency bridges

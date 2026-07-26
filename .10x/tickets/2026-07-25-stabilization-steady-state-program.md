@@ -67,9 +67,9 @@ open-ended optimization rabbit holes. WASM cost modeling is not a P3 dependency.
 ### WS-E — P3 aggregate closure
 
 1. `.10x/tickets/done/2026-07-11-p3-z1-envelope-evidence-reconciliation.md`
-2. `.10x/tickets/2026-07-11-p3-z2-scale-demo-adversarial-review.md`
-3. `.10x/tickets/2026-07-11-p3-z3-program-closure-retrospective.md`
-4. `.10x/tickets/2026-07-10-p3-terabyte-scale-program.md`
+2. `.10x/tickets/done/2026-07-11-p3-z2-scale-demo-adversarial-review.md`
+3. `.10x/tickets/done/2026-07-11-p3-z3-program-closure-retrospective.md`
+4. `.10x/tickets/done/2026-07-10-p3-terabyte-scale-program.md`
 
 P3 closes against its core performance architecture, implemented interop modes, fixed-schema
 admission, J1 pruning, and scale evidence. Enterprise codec breadth, broad DataFusion adoption,
@@ -151,6 +151,11 @@ WASM, distributed execution, CDC, and new connectors are not P3 closure dependen
   actual host/mode/reference, preserves the immutable pre-optimization baseline, retains partial
   and unproven ambitions visibly non-green, and rejects dead evidence sources or unaccepted
   residuals. Z2 now owns aggregate demo/adversarial synthesis without rerunning the 1 TiB cell.
+- 2026-07-25: WS-E and P3 are closed. Z2 joined the exact full-year TLC and 1.0086 TiB
+  demonstrations with a ten-category adversarial review; Z3 audited all 24 direct descendants,
+  runtime/extension topology, references, coverage, and terminal limits. The generated envelope
+  retains every non-green cell. No benchmark host was reprovisioned; the EC2 tranche remains
+  terminated. WS8 is now the sole executable program workstream.
 
 ## Blockers
 

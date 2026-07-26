@@ -22,11 +22,11 @@ the work that must reach terminal state before the next two major feature progra
 
 Its ordered lanes are:
 
-1. Source lifecycle and fixed-schema admission closure.
-2. Evidence-driven statistics pruning.
-3. Daily-driver CLI and release readiness.
-4. Constant-memory and implemented-interop proof.
-5. P1/P3 aggregate evidence and closure.
+1. Source lifecycle and fixed-schema admission closure — done.
+2. Evidence-driven statistics pruning — done.
+3. Daily-driver CLI and release readiness — CLI done; hosted release remains.
+4. Constant-memory and implemented-interop proof — done.
+5. P3 aggregate evidence and closure — done; P1 aggregate closure follows its hosted release.
 
 Only bounded implementation tickets inside these lanes are executable. Parent and closeout
 tickets coordinate or audit; they are not implementation units.

@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-18
 Updated: 2026-07-21
-Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
+Parent: .10x/tickets/done/2026-07-10-p3-terabyte-scale-program.md
 Depends-On: .10x/tickets/done/2026-07-11-p0-wx1-portable-partition-task-protocol.md
 
 # P0: restore current execution and evidence authority in the performance gate

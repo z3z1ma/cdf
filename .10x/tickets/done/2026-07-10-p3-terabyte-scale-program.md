@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-10
 Updated: 2026-07-25
 Parent: .10x/tickets/2026-07-25-stabilization-steady-state-program.md
@@ -65,19 +65,30 @@ After all workstreams close, program proof/closure proceeds through:
 
 - `.10x/tickets/done/2026-07-11-p3-z1-envelope-evidence-reconciliation.md`
 - `.10x/tickets/done/2026-07-11-p3-z2-scale-demo-adversarial-review.md`
-- `.10x/tickets/2026-07-11-p3-z3-program-closure-retrospective.md`
+- `.10x/tickets/done/2026-07-11-p3-z3-program-closure-retrospective.md`
 
-## Acceptance criteria
+## Closure criteria
 
-- Every target in `.10x/decisions/terabyte-scale-performance-envelope.md` is green on recorded host classes.
-- Correctness/evidence overhead is at most 10% of equivalent raw read-plus-write.
-- Jobs-invariance and the 100 GB/2 GiB constant-memory law are permanent CI gates.
-- The 1 TB synthetic scenario completes under the default budget and is I/O-bound in the attached profile.
-- All ten current data-plane gaps in the P3 directive have before/after evidence.
+The original numerical ambitions remain immutable in
+`.10x/decisions/terabyte-scale-performance-envelope.md`. Stabilization closure does not reset them.
+By user-ratified backlog grooming, explicit G4 residual acceptance, and the directive to cancel
+measured no-value work rather than keep speculative tickets active, P3 closes when:
+
+- Every target is reconciled to a host-labelled `green`, `partial`, `accepted_residual`,
+  `not_demonstrated`, or `observed` result without relabelling or baseline reset.
+- Component correctness/evidence overhead is measured; the aggregate 10% cell remains visibly
+  non-green unless a semantically equivalent whole-product comparator exists.
+- Jobs-invariance and the 100 GiB/2 GiB constant-memory law are permanent gates.
+- The 1 TiB synthetic scenario completes under the default budget with exact package, receipt,
+  checkpoint, and memory evidence; unique-byte device saturation is claimed only if measured.
+- All ten current data-plane gaps in the P3 directive have before/after evidence or explicit
+  measured no-action rationale.
 - The generated envelope document is published and README claims link to it.
-- Every open performance-triage ticket is terminal with evidence or an explicit measured no-action rationale.
-- Coverage rows for `VISION.md` 6.1 through 6.6 leave pending where P3 owns the implementation.
-- Final adversarial review includes a workload intended to embarrass the envelope and finds no critical/high unresolved issue or architecture leak.
+- Every performance-triage ticket is terminal with evidence or an explicit measured no-action
+  rationale.
+- Coverage rows for `VISION.md` 6.1 through 6.6 leave pending where P3 owns implementation.
+- Final adversarial review includes workloads intended to embarrass the envelope and finds no
+  critical/high unresolved issue or architecture leak.
 
 ## Evidence expectations
 
@@ -140,7 +151,42 @@ P3 does not implement a distributed scheduler, remote worker leases, resident st
   transfer/copy/control evidence outside package identity, release/lifetime/control laws are
   permanent, and mode-specific host-labelled measurements make no unearned zero-copy or WASM
   claim. Z1 is now dependency-ready.
+- 2026-07-25: Z1 and Z2 reconciled the final envelope and scale demonstrations without resetting
+  the immutable baseline. The final envelope leaves the remote TLC composite, aggregate overhead,
+  CSV absolute ambition, Parquet absolute ambition, and unique-byte one-TiB scaling limits
+  explicit. The implemented architecture and every direct workstream are terminal; Z3 owns the
+  final reference/status/coverage move.
 
 ## Blockers
 
 None at program level. Workstream dependencies and the WS-A runtime-spine freeze govern sequencing.
+
+## Evidence
+
+- `.10x/evidence/2026-07-25-p3-z3-program-closure.md` maps the direct child graph, original
+  criteria, architecture topology, references, coverage, and retrospective.
+- `docs/performance-envelope.md` is the generated terminal envelope; its source fixture is
+  validated by the benchmark lab.
+- `.10x/evidence/2026-07-25-p3-z2-scale-demo-adversarial-review.md` preserves the exact TLC,
+  one-TiB, replay, memory, lifecycle, and adversarial observations.
+- `.10x/evidence/2026-07-11-p3-l5-preoptimization-baseline.md` remains the immutable before
+  picture.
+
+## Review
+
+Verdict: pass with explicitly recorded non-green results.
+
+Z3 reviewed all direct descendants and the shared execution topology. It found no unresolved
+critical/high correctness, performance, or architecture issue in the implemented P3 scope.
+Target misses remain visible in the generated envelope; distributed execution, resident
+supervision, enterprise format breadth, broader DataFusion bridges, WASM, and new destinations are
+parked rather than claimed.
+
+## Retrospective
+
+P3 established a repeatable rule for future optimization: measure the whole product on a named
+host, compare it to an explicit roofline, retain only improvements, and delete superseded paths.
+The generated envelope and its typed bias labels are the durable guard against baseline
+laundering. The deeper architectural result is one composable runtime: sources, codecs,
+partitions, foreign producers, packages, and destinations expose neutral capabilities while
+identity-bearing bytes remain native and deterministic.

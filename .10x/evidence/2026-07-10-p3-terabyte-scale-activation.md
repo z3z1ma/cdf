@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-10
 Updated: 2026-07-10
-Relates-To: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md, .10x/decisions/terabyte-scale-performance-envelope.md, .10x/specs/performance-lab-and-envelope.md
+Relates-To: .10x/tickets/done/2026-07-10-p3-terabyte-scale-program.md, .10x/decisions/terabyte-scale-performance-envelope.md, .10x/specs/performance-lab-and-envelope.md
 
 # P3 terabyte-scale activation evidence
 

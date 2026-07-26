@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-21
 Updated: 2026-07-22
-Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
+Parent: .10x/tickets/done/2026-07-10-p3-terabyte-scale-program.md
 Depends-On: .10x/tickets/done/2026-07-18-p3-d14-duckdb-nanoarrow-080-lz4-revalidation.md, .10x/tickets/done/2026-07-21-p0-duckdb-wide-ingest-memory.md
 
 # P3 D18: DuckDB reference-adapter closeout

@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-13
 Updated: 2026-07-25
-Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
+Parent: .10x/tickets/done/2026-07-10-p3-terabyte-scale-program.md
 
 # P0 fixed-schema discovery and stream-admission program
 

@@ -1,7 +1,7 @@
 Status: cancelled
 Created: 2026-07-18
 Updated: 2026-07-21
-Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
+Parent: .10x/tickets/done/2026-07-10-p3-terabyte-scale-program.md
 Depends-On: .10x/tickets/done/2026-07-18-p3-d14-duckdb-nanoarrow-080-lz4-revalidation.md
 
 # P3 D17: restore wide-string DuckDB overlap on the sole canonical scanner
