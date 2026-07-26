@@ -117,6 +117,7 @@ struct ParquetPhysicalWritePlan {
     rows_per_batch: u64,
     bytes_per_batch: u64,
     object_layout: ParquetObjectLayoutPolicy,
+    live_single_object: bool,
 }
 
 impl ParquetPhysicalWritePlan {
@@ -128,13 +129,35 @@ impl ParquetPhysicalWritePlan {
                 descriptor.path_id, descriptor.version
             )));
         }
+        let object_layout = ParquetObjectLayoutPolicy::current().validate()?;
+        let live_single_object = match request.workload() {
+            cdf_runtime::StagedIngressWorkload::PlannedStream {
+                partition_count,
+                planned_source_bytes: Some(planned_source_bytes),
+            } => {
+                *partition_count <= u64::from(object_layout.max_segments)
+                    && *planned_source_bytes <= object_layout.target_package_bytes
+            }
+            cdf_runtime::StagedIngressWorkload::FinalizedPackage {
+                segment_count,
+                package_bytes,
+            } => {
+                *segment_count <= u64::from(object_layout.max_segments)
+                    && *package_bytes <= object_layout.target_package_bytes
+            }
+            cdf_runtime::StagedIngressWorkload::PlannedStream {
+                planned_source_bytes: None,
+                ..
+            } => false,
+        };
         Ok(Self {
             encoder: destination.object_key_encoder(),
             target: request.binding().target.clone(),
             writers: request.bulk_path().writers,
             rows_per_batch: request.bulk_path().rows_per_batch,
             bytes_per_batch: request.bulk_path().bytes_per_batch,
-            object_layout: ParquetObjectLayoutPolicy::current().validate()?,
+            object_layout,
+            live_single_object,
         })
     }
 
@@ -441,7 +464,7 @@ impl ParquetStagedIngressSession {
         Ok(PendingParquetGroup {
             package_byte_count: 0,
             segment_count: 0,
-            input: if object_ordinal == 0 {
+            input: if object_ordinal == 0 && self.physical_plan.live_single_object {
                 ParquetGroupInput::Live
             } else {
                 ParquetGroupInput::Durable
@@ -482,9 +505,9 @@ impl ParquetStagedIngressSession {
             .commands
             .send(ParquetGroupCommand::segment(input))
             .map_err(|_| CdfError::destination("Parquet object group encoder stopped"))?;
-        // The first object is a bounded zero-copy warm start. Later objects transfer only exact
-        // durable-file capabilities, releasing live Arrow payloads immediately so N-way writer
-        // concurrency cannot multiply segment-sized retained batches.
+        // A compiled one-object workload keeps its existing zero-copy readers. Multi-object or
+        // unknown workloads transfer only exact durable-file capabilities from object zero
+        // onward, releasing live Arrow payloads immediately so every prepared writer can work.
         stream.acknowledge(cdf_runtime::StagedSegmentAck {
             attempt_id: self.request.attempt_id().clone(),
             identity: identity.clone(),

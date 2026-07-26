@@ -69,14 +69,54 @@ pub struct StagedIngressCapabilities {
     pub final_binding_requires_exclusive_writer: bool,
 }
 
+/// Compiled work shape presented to a staged destination before payload execution.
+///
+/// Live execution can know its source partition cardinality and planned physical input bytes
+/// before canonical segments exist. Finalized-package replay instead knows exact segment and
+/// package-byte cardinality. Destinations may use this distinction only to select an equivalent
+/// execution representation; commit identity and correctness never depend on the estimate.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StagedIngressWorkload {
+    PlannedStream {
+        partition_count: u64,
+        planned_source_bytes: Option<u64>,
+    },
+    FinalizedPackage {
+        segment_count: u64,
+        package_bytes: u64,
+    },
+}
+
+impl StagedIngressWorkload {
+    pub fn planned_stream(partition_count: u64, planned_source_bytes: Option<u64>) -> Self {
+        Self::PlannedStream {
+            partition_count,
+            planned_source_bytes,
+        }
+    }
+
+    pub fn finalized_package(segment_count: u64, package_bytes: u64) -> Self {
+        Self::FinalizedPackage {
+            segment_count,
+            package_bytes,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StagingSchedulingContext {
     pub max_in_flight_segments: u16,
     pub max_in_flight_bytes: u64,
+    pub workload: StagedIngressWorkload,
 }
 
 impl StagingSchedulingContext {
-    pub fn new(max_in_flight_segments: u16, max_in_flight_bytes: u64) -> Result<Self> {
+    pub fn new(
+        max_in_flight_segments: u16,
+        max_in_flight_bytes: u64,
+        workload: StagedIngressWorkload,
+    ) -> Result<Self> {
         if max_in_flight_segments == 0 || max_in_flight_bytes == 0 {
             return Err(CdfError::contract(
                 "staged ingress scheduling bounds must be nonzero",
@@ -85,6 +125,7 @@ impl StagingSchedulingContext {
         Ok(Self {
             max_in_flight_segments,
             max_in_flight_bytes,
+            workload,
         })
     }
 }
@@ -178,6 +219,10 @@ impl StagedIngressRequest {
 
     pub fn scheduling(&self) -> &StagingSchedulingContext {
         &self.scheduling
+    }
+
+    pub fn workload(&self) -> &StagedIngressWorkload {
+        &self.scheduling.workload
     }
 
     pub fn output_schema(&self) -> &Schema {

@@ -706,6 +706,7 @@ fn staged_ingress_retains_no_segment_count_file_handles() {
         cdf_runtime::StagingSchedulingContext::new(
             capabilities.max_in_flight_segments.unwrap(),
             capabilities.max_in_flight_bytes.unwrap(),
+            cdf_runtime::StagedIngressWorkload::finalized_package(u64::from(SEGMENTS), 0),
         )
         .unwrap(),
         output_schema.as_ref().clone(),
@@ -824,6 +825,19 @@ fn try_commit_current(
             capabilities
                 .max_in_flight_bytes
                 .ok_or_else(|| CdfError::contract("test destination omitted byte bound"))?,
+            cdf_runtime::StagedIngressWorkload::finalized_package(
+                u64::try_from(request.commit.segments.len())
+                    .map_err(|_| CdfError::data("test package segment count exceeds u64"))?,
+                request
+                    .commit
+                    .segments
+                    .iter()
+                    .try_fold(0_u64, |total, segment| {
+                        total
+                            .checked_add(segment.byte_count)
+                            .ok_or_else(|| CdfError::data("test package bytes exceed u64"))
+                    })?,
+            ),
         )?,
         output_schema.as_ref().clone(),
     )?)?;

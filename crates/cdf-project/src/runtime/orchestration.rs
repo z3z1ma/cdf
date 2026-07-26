@@ -480,6 +480,14 @@ where
                     schema_hash: context.schema_hash.clone(),
                     output_schema: context.plan.output_arrow_schema()?.as_ref().clone(),
                     merge_keys: context.descriptor.merge_key.clone(),
+                    workload: cdf_runtime::StagedIngressWorkload::planned_stream(
+                        context.plan.scan.partition_count()?,
+                        context
+                            .plan
+                            .scan
+                            .planned_source_bytes
+                            .map(|bytes| bytes.get()),
+                    ),
                 },
                 context.services,
             )?;
@@ -752,6 +760,14 @@ async fn run_project_inner(
             schema_hash: execution.schema_hash.clone(),
             output_schema: manifest_plan.plan.output_arrow_schema()?.as_ref().clone(),
             merge_keys: descriptor.merge_key.clone(),
+            workload: cdf_runtime::StagedIngressWorkload::planned_stream(
+                manifest_plan.plan.scan.partition_count()?,
+                manifest_plan
+                    .plan
+                    .scan
+                    .planned_source_bytes
+                    .map(|bytes| bytes.get()),
+            ),
         },
         &execution.services,
     )?;

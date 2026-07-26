@@ -833,6 +833,13 @@ fn stage_through_ingress_with_lease(
                 .clone()
         });
     let identity_segments = identity_segments(&reader)?;
+    let staged_segment_count = u64::try_from(identity_segments.len())
+        .map_err(|_| CdfError::data("Parquet test segment count exceeds u64"))?;
+    let staged_package_bytes = identity_segments.iter().try_fold(0_u64, |total, segment| {
+        total
+            .checked_add(segment.byte_count)
+            .ok_or_else(|| CdfError::data("Parquet test package bytes exceed u64"))
+    })?;
     let plan = dest.plan_package_commit(&commit, &identity_segments)?;
     let inputs = replay_inputs(&commit);
     let capabilities = dest.runtime_capabilities();
@@ -857,6 +864,10 @@ fn stage_through_ingress_with_lease(
         cdf_runtime::StagingSchedulingContext::new(
             capabilities.max_in_flight_segments.unwrap(),
             capabilities.max_in_flight_bytes.unwrap(),
+            cdf_runtime::StagedIngressWorkload::finalized_package(
+                staged_segment_count,
+                staged_package_bytes,
+            ),
         )?,
         output_schema.clone(),
     )?;
@@ -2735,7 +2746,12 @@ fn staged_writer_window_is_reserved_before_input_and_not_charged_again() {
         staging_lease,
         managed_lease.mutation_guard().unwrap(),
         bulk_path,
-        cdf_runtime::StagingSchedulingContext::new(2, 128 * 1024 * 1024).unwrap(),
+        cdf_runtime::StagingSchedulingContext::new(
+            2,
+            128 * 1024 * 1024,
+            cdf_runtime::StagedIngressWorkload::planned_stream(1, Some(1)),
+        )
+        .unwrap(),
         output_schema,
     )
     .unwrap();

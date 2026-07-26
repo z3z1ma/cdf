@@ -1941,7 +1941,8 @@ fn staged_ingress_types_cannot_claim_package_commit_authority() {
         lease,
         guard,
         test_prepared_bulk_path(),
-        StagingSchedulingContext::new(2, 1024).unwrap(),
+        StagingSchedulingContext::new(2, 1024, StagedIngressWorkload::finalized_package(0, 0))
+            .unwrap(),
         arrow_schema::Schema::empty(),
     )
     .unwrap();
@@ -2016,7 +2017,8 @@ fn staged_ingress_request_rejects_schema_payload_outside_binding_authority() {
         lease,
         guard,
         test_prepared_bulk_path(),
-        StagingSchedulingContext::new(2, 1024).unwrap(),
+        StagingSchedulingContext::new(2, 1024, StagedIngressWorkload::finalized_package(0, 0))
+            .unwrap(),
         arrow_schema::Schema::empty(),
     )
     .unwrap_err();
@@ -2287,7 +2289,8 @@ fn staged_request_for_target(
         lease,
         guard,
         test_prepared_bulk_path(),
-        StagingSchedulingContext::new(2, 1024).unwrap(),
+        StagingSchedulingContext::new(2, 1024, StagedIngressWorkload::finalized_package(0, 0))
+            .unwrap(),
         arrow_schema::Schema::empty(),
     )
     .unwrap()

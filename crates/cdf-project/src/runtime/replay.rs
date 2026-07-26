@@ -42,6 +42,7 @@ pub(crate) struct StagedIngressPlan {
     pub(crate) schema_hash: SchemaHash,
     pub(crate) output_schema: Schema,
     pub(crate) merge_keys: Vec<String>,
+    pub(crate) workload: cdf_runtime::StagedIngressWorkload,
 }
 
 struct BackgroundStaging {
@@ -255,6 +256,7 @@ impl ActiveStagedIngress {
             capabilities
                 .max_in_flight_bytes
                 .expect("validated staged byte bound"),
+            plan.workload,
         )?;
         let cdf_runtime::DestinationIngress::StagedSegments(staged_runtime) = runtime.ingress()
         else {
@@ -1982,6 +1984,20 @@ fn commit_package_through_staged_ingress(
     }
     let output_arrow_schema_hash = cdf_kernel::canonical_arrow_schema_hash(output_schema.as_ref())?;
     let execution_plan_id = reader.recorded_scan_plan_verified(verified)?.plan_id;
+    let package_bytes =
+        inputs
+            .destination_commit
+            .segments
+            .iter()
+            .try_fold(0_u64, |total, segment| {
+                total
+                    .checked_add(segment.byte_count)
+                    .ok_or_else(|| CdfError::data("replay destination input byte count overflow"))
+            })?;
+    let segment_count = cardinality_u64(
+        inputs.destination_commit.segments.len(),
+        "destination commit segment count",
+    )?;
     let scheduling = cdf_runtime::StagingSchedulingContext::new(
         capabilities
             .max_in_flight_segments
@@ -1989,6 +2005,7 @@ fn commit_package_through_staged_ingress(
         capabilities
             .max_in_flight_bytes
             .ok_or_else(|| CdfError::contract("staged ingress omitted its byte bound"))?,
+        cdf_runtime::StagedIngressWorkload::finalized_package(segment_count, package_bytes),
     )?;
     let staging_lease = services.acquire_staging_lease(cdf_runtime::StagingLeaseIdentity::new(
         destination_id.clone(),
