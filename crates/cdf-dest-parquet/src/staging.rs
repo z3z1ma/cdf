@@ -321,11 +321,17 @@ impl ParquetStagedIngressSession {
             "parquet-stage-{}-object-{object_ordinal}",
             attempt_id.as_str()
         );
-        // The queue is bounded by the deterministic maximum membership of one object. Requests
-        // retain their existing ledger leases while queued, and the worker starts immediately so
-        // it can release those leases before a complete object group has been assembled.
-        let (commands, command_receiver) =
-            mpsc::sync_channel(usize::from(self.physical_plan.object_layout.max_segments));
+        // The worker itself owns one current request, so the queue holds only the residual of the
+        // compiled staged-ingress item window. Object membership remains independently bounded by
+        // the deterministic layout. This starts encoding immediately without allowing N writers
+        // to retain N complete groups of live Arrow memory.
+        let queued_segments = self
+            .request
+            .scheduling()
+            .max_in_flight_segments
+            .saturating_sub(1)
+            .min(self.physical_plan.object_layout.max_segments);
+        let (commands, command_receiver) = mpsc::sync_channel(usize::from(queued_segments));
         let task = self.destination.execution().spawn_blocking_value(
             &run_id,
             ENCODE_LANE,

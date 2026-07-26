@@ -116,6 +116,14 @@ compatibility path.
   reread, unaccounted queue, compatibility path, or destination-private executor was introduced.
   Finished groups still join and assemble by object ordinal, and failure closes/cancels/joins both
   active and completed siblings.
+- 2026-07-26: The repaired forced-serial cell completed in `26.181 s`, but the first automatic
+  16-writer cell exposed that bounding each queue by object membership was still too permissive:
+  sixteen workers could collectively retain enough accounted Arrow payloads to leave zero memory
+  for the next source decode unit. No destination corruption occurred; the run failed before that
+  partition decoded and was excluded. The queue now holds only the residual of the compiled staged
+  item window after the worker's current request, additionally capped by object membership. Writer
+  count remains independently host/memory/jobs-admitted, while retained requests can no longer
+  multiply into complete per-writer object groups.
 
 ## Blockers
 
