@@ -44,3 +44,6 @@ tuned 2 TiB root volume and sufficient capacity for the scheduled product run.
   The 1 TiB law will use 1,024 deterministic files representing exactly 1 GiB each, run with no
   CDF memory override inside `MemoryMax=5G`/`MemorySwapMax=0`. The default resolver therefore keeps
   its exact 4 GiB process authority while the enclosing cgroup retains enforcement headroom.
+- 2026-07-25: Extended the existing product stress runner with an explicit `default` mode that
+  omits `--memory-budget` rather than laundering the configured 4 GiB value into a default-policy
+  claim. F3's omitted argument still means its exact 2 GiB law; no existing invocation changes.

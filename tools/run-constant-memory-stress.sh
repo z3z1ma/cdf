@@ -11,7 +11,7 @@ usage() {
 Run the product-shaped constant-memory Parquet stress law.
 
 Usage:
-  run-constant-memory-stress.sh ROOT FILE_COUNT LOGICAL_BYTES_PER_FILE [MEMORY_BUDGET]
+  run-constant-memory-stress.sh ROOT FILE_COUNT LOGICAL_BYTES_PER_FILE [MEMORY_BUDGET|default]
 
 Environment:
   CDF_STRESS_CDF        cdf executable; default: target/release/cdf
@@ -21,7 +21,8 @@ Environment:
 
 ROOT must be absent or empty. Generator setup is outside the timed CDF run. The
 script preserves generator, run, process-RSS, package-verification, and summary
-JSON evidence below ROOT.
+JSON evidence below ROOT. MEMORY_BUDGET defaults to 2GiB for the enforced F3
+law; pass the literal `default` to exercise CDF's unoverridden budget policy.
 USAGE
 }
 
@@ -45,6 +46,10 @@ batch_rows="${CDF_STRESS_BATCH_ROWS:-65536}"
 payload_bytes="${CDF_STRESS_PAYLOAD_BYTES:-192}"
 [[ -x "$cdf" ]] || die "cdf executable is absent: $cdf"
 [[ -x "$lab" ]] || die "cdf-p3-lab executable is absent: $lab"
+memory_args=()
+if [[ "$memory_budget" != "default" ]]; then
+  memory_args=(--memory-budget "$memory_budget")
+fi
 
 mkdir -p "$root"
 root="$(cd "$root" && pwd)"
@@ -106,7 +111,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   (
     cd "$root"
     /usr/bin/time -lp "$cdf" run stress.rows \
-      --memory-budget "$memory_budget" \
+      "${memory_args[@]}" \
       --progress never \
       --color never \
       --unicode never \
@@ -116,7 +121,7 @@ else
   (
     cd "$root"
     /usr/bin/time -v -o process-time.txt "$cdf" run stress.rows \
-      --memory-budget "$memory_budget" \
+      "${memory_args[@]}" \
       --progress never \
       --color never \
       --unicode never \
