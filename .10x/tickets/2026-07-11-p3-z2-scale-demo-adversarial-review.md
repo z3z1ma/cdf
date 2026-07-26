@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
-Depends-On: .10x/tickets/2026-07-11-p3-z1-envelope-evidence-reconciliation.md
+Depends-On: .10x/tickets/done/2026-07-11-p3-z1-envelope-evidence-reconciliation.md
 
 # P3 Z2: scale demonstrations and adversarial performance review
 
@@ -28,7 +28,7 @@ No distributed/exabyte throughput claim, edited timing, warm/cold ambiguity, or 
 
 ## Blockers
 
-Blocked on Z1 green envelope/reconciliation.
+None. Z1 is terminal with an honest generated envelope; non-green cells remain explicit.
 
 ## References
 

@@ -11,8 +11,11 @@ contributors.
 - [Iceberg source](iceberg.md) documents catalog bindings, snapshot selectors,
   append-only incrementality, and the explicit capability boundary.
 - [Performance envelope](performance-envelope.md) is generated from the P3
-  machine report and is the only authority for performance claims. Its current
-  pre-baseline banner means no claim is yet authorized.
+  host-labelled reconciliation manifest and exact destination-path report. It
+  is the only authority for performance claims and keeps partial, accepted,
+  and unproven targets visibly non-green.
+- [Pre-optimization performance baseline](performance-baseline.md) preserves
+  the immutable before picture used by the P3 program.
 - [Foreign source boundaries](interop-boundaries.md) documents Python and
   subprocess transfer, copy, memory, and host-labelled performance evidence.
 - [Operators](operators/README.md) contains scoped operational guides for

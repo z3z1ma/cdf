@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Component, Path};
 
 use serde::{Deserialize, Serialize};
 
@@ -40,6 +40,48 @@ pub struct DestinationEnvelopeTarget {
 pub struct DestinationBulkCatalogEntry {
     pub destination_id: String,
     pub runtime: cdf_runtime::DestinationRuntimeCapabilities,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloseoutEnvelope {
+    pub schema_version: u16,
+    pub title: String,
+    pub evidence_status: String,
+    pub baseline_document: String,
+    pub targets: Vec<CloseoutEnvelopeCell>,
+    pub architecture: Vec<CloseoutEnvelopeCell>,
+    pub destination_paths: Vec<DestinationEnvelopeTarget>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloseoutEnvelopeCell {
+    pub id: String,
+    pub label: String,
+    pub target: String,
+    pub absolute_result: String,
+    pub relative_result: String,
+    pub memory_result: String,
+    pub host: String,
+    pub mode: String,
+    pub reference: String,
+    pub bias: String,
+    pub status: CloseoutEnvelopeStatus,
+    pub evidence_record: String,
+    pub sources: Vec<String>,
+    #[serde(default)]
+    pub residual: Option<String>,
+    #[serde(default)]
+    pub acceptance_authority: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseoutEnvelopeStatus {
+    Green,
+    Partial,
+    AcceptedResidual,
+    NotDemonstrated,
+    Observed,
 }
 
 pub fn destination_execution_descriptor_sha256(
@@ -131,55 +173,13 @@ pub fn generate_envelope(
         }
     }
 
-    if !spec.destination_paths.is_empty() {
-        output.push_str("\n## Destination bulk-path matrix\n\n");
-        output.push_str("| Destination | Path | Cell | Evidence version | Host class | Target | Observation | Status | Evidence |\n");
-        output.push_str("|---|---|---|---|---|---:|---:|---|---|\n");
-        if spec.destination_paths.len() != destination_catalog.len()
-            || spec.destination_paths.iter().any(|target| {
-                !destination_catalog
-                    .iter()
-                    .any(|entry| entry.destination_id == target.destination_id)
-            })
-        {
-            return Err(bench_error(
-                "destination envelope targets must exactly cover the registered destination catalog",
-            ));
-        }
-        validate_destination_observation_joins(
-            destination_report,
-            destination_catalog,
-            &spec.destination_paths,
-            evidence_root,
-        )?;
-        for entry in destination_catalog {
-            let target = spec
-                .destination_paths
-                .iter()
-                .find(|target| target.destination_id == entry.destination_id)
-                .ok_or_else(|| {
-                    bench_error(format!(
-                        "destination envelope has no target for registered destination {}",
-                        entry.destination_id
-                    ))
-                })?;
-            for path in &entry.runtime.bulk_paths {
-                for eligibility in [
-                    DestinationPathEligibility::Eligible,
-                    DestinationPathEligibility::Ineligible,
-                ] {
-                    destination_path_row(
-                        &mut output,
-                        destination_report,
-                        entry,
-                        path,
-                        eligibility,
-                        target,
-                    )?;
-                }
-            }
-        }
-    }
+    append_destination_matrix(
+        &mut output,
+        &spec.destination_paths,
+        destination_catalog,
+        destination_report,
+        evidence_root,
+    )?;
 
     output.push_str("\n## Bias and unavailable evidence\n\n");
     for observation in &report.observations {
@@ -220,6 +220,297 @@ pub fn generate_envelope(
         }
     }
     Ok(output)
+}
+
+pub fn generate_closeout_envelope(
+    envelope: &CloseoutEnvelope,
+    destination_catalog: &[DestinationBulkCatalogEntry],
+    destination_report: &BenchmarkReport,
+    evidence_root: &Path,
+) -> BenchResult<String> {
+    validate_report(destination_report)?;
+    validate_closeout_envelope(envelope, evidence_root)?;
+    let digest = canonical_sha256(envelope)?;
+    let mut output = String::new();
+    output.push_str(&format!("# {}\n\n", escape(&envelope.title)));
+    output.push_str(&format!("> **{}**\n\n", escape(&envelope.evidence_status)));
+    output.push_str(
+        "This document is generated from a host-labelled reconciliation manifest and the exact \
+         registered destination-path report; edit those inputs, not this file.\n\n",
+    );
+    output.push_str("## Evidence authority\n\n");
+    output.push_str(&format!("- Reconciliation manifest: `{digest}`\n"));
+    let baseline_link = Path::new(&envelope.baseline_document)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(&envelope.baseline_document);
+    output.push_str(&format!(
+        "- Pre-optimization baseline: [{}]({})\n",
+        escape(&envelope.baseline_document),
+        escape(baseline_link)
+    ));
+    output.push_str(
+        "- Comparisons are host- and mode-specific. A row is never promoted by combining \
+         measurements from different hosts.\n",
+    );
+    output.push_str(
+        "- `partial`, `accepted residual`, and `not demonstrated` are deliberately non-green.\n",
+    );
+
+    append_closeout_cells(&mut output, "Performance target matrix", &envelope.targets);
+    append_closeout_cells(
+        &mut output,
+        "Architecture and correctness matrix",
+        &envelope.architecture,
+    );
+    append_destination_matrix(
+        &mut output,
+        &envelope.destination_paths,
+        destination_catalog,
+        destination_report,
+        evidence_root,
+    )?;
+
+    output.push_str("\n## Evidence, references, and bias\n\n");
+    for cell in envelope.targets.iter().chain(&envelope.architecture) {
+        output.push_str(&format!(
+            "### {} — {}\n\n",
+            escape(&cell.label),
+            closeout_status_text(cell.status)
+        ));
+        output.push_str(&format!(
+            "- Evidence: [{}](../{})\n",
+            escape(&cell.evidence_record),
+            escape(&cell.evidence_record)
+        ));
+        output.push_str(&format!("- Reference: {}\n", escape(&cell.reference)));
+        output.push_str(&format!("- Bias/limit: {}\n", escape(&cell.bias)));
+        output.push_str(&format!(
+            "- Sources: {}\n",
+            cell.sources
+                .iter()
+                .map(|source| format!("[{}](../{})", escape(source), escape(source)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        if let Some(residual) = &cell.residual {
+            output.push_str(&format!("- Residual: {}\n", escape(residual)));
+        }
+        if let Some(authority) = &cell.acceptance_authority {
+            output.push_str(&format!(
+                "- Acceptance authority: [{}](../{})\n",
+                escape(authority),
+                escape(authority)
+            ));
+        }
+        output.push('\n');
+    }
+    output.pop();
+    Ok(output)
+}
+
+fn append_closeout_cells(output: &mut String, title: &str, cells: &[CloseoutEnvelopeCell]) {
+    output.push_str(&format!("\n## {}\n\n", escape(title)));
+    output.push_str(
+        "| Workload | Target | Absolute result | Relative result | Memory | Host / mode | Status |\n",
+    );
+    output.push_str("|---|---|---|---|---|---|---|\n");
+    for cell in cells {
+        output.push_str(&format!(
+            "| {} | {} | {} | {} | {} | {} / {} | {} |\n",
+            escape(&cell.label),
+            escape(&cell.target),
+            escape(&cell.absolute_result),
+            escape(&cell.relative_result),
+            escape(&cell.memory_result),
+            escape(&cell.host),
+            escape(&cell.mode),
+            closeout_status_text(cell.status),
+        ));
+    }
+}
+
+fn validate_closeout_envelope(
+    envelope: &CloseoutEnvelope,
+    evidence_root: &Path,
+) -> BenchResult<()> {
+    if envelope.schema_version != 1
+        || envelope.title.trim().is_empty()
+        || envelope.evidence_status.trim().is_empty()
+        || envelope.targets.is_empty()
+        || envelope.architecture.is_empty()
+    {
+        return Err(bench_error(
+            "invalid closeout envelope version, title, status, or matrix",
+        ));
+    }
+    let baseline = safe_repository_path(&envelope.baseline_document)?;
+    if !evidence_root.join(baseline).is_file() {
+        return Err(bench_error(format!(
+            "closeout baseline document {} does not exist",
+            envelope.baseline_document
+        )));
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    for cell in envelope.targets.iter().chain(&envelope.architecture) {
+        if [
+            cell.id.as_str(),
+            cell.label.as_str(),
+            cell.target.as_str(),
+            cell.absolute_result.as_str(),
+            cell.relative_result.as_str(),
+            cell.memory_result.as_str(),
+            cell.host.as_str(),
+            cell.mode.as_str(),
+            cell.reference.as_str(),
+            cell.bias.as_str(),
+            cell.evidence_record.as_str(),
+        ]
+        .iter()
+        .any(|value| value.trim().is_empty())
+            || !ids.insert(cell.id.as_str())
+            || cell.sources.is_empty()
+        {
+            return Err(bench_error(
+                "closeout cells require unique ids and complete host-labelled evidence fields",
+            ));
+        }
+        require_existing_repository_path(evidence_root, &cell.evidence_record)?;
+        for source in &cell.sources {
+            require_existing_repository_path(evidence_root, source)?;
+        }
+        match cell.status {
+            CloseoutEnvelopeStatus::AcceptedResidual => {
+                if cell
+                    .residual
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty())
+                    || cell
+                        .acceptance_authority
+                        .as_deref()
+                        .is_none_or(|value| value.trim().is_empty())
+                {
+                    return Err(bench_error(
+                        "accepted residual cells require a rationale and acceptance authority",
+                    ));
+                }
+                require_existing_repository_path(
+                    evidence_root,
+                    cell.acceptance_authority.as_deref().unwrap(),
+                )?;
+            }
+            CloseoutEnvelopeStatus::Green | CloseoutEnvelopeStatus::Observed => {
+                if cell.residual.is_some() || cell.acceptance_authority.is_some() {
+                    return Err(bench_error(
+                        "green and observed closeout cells cannot carry residual acceptance",
+                    ));
+                }
+            }
+            CloseoutEnvelopeStatus::Partial | CloseoutEnvelopeStatus::NotDemonstrated => {
+                if cell
+                    .residual
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty())
+                    || cell.acceptance_authority.is_some()
+                {
+                    return Err(bench_error(
+                        "partial and unproven closeout cells require a visible residual and cannot name acceptance authority",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn require_existing_repository_path(root: &Path, value: &str) -> BenchResult<()> {
+    let path = safe_repository_path(value)?;
+    if !root.join(path).is_file() {
+        return Err(bench_error(format!(
+            "closeout evidence source {value} does not exist"
+        )));
+    }
+    Ok(())
+}
+
+fn safe_repository_path(value: &str) -> BenchResult<&Path> {
+    let path = Path::new(value);
+    if value.trim().is_empty()
+        || path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(bench_error(format!(
+            "closeout evidence source {value} must be a repository-relative path"
+        )));
+    }
+    Ok(path)
+}
+
+fn closeout_status_text(status: CloseoutEnvelopeStatus) -> &'static str {
+    match status {
+        CloseoutEnvelopeStatus::Green => "green",
+        CloseoutEnvelopeStatus::Partial => "partial",
+        CloseoutEnvelopeStatus::AcceptedResidual => "accepted residual",
+        CloseoutEnvelopeStatus::NotDemonstrated => "not demonstrated",
+        CloseoutEnvelopeStatus::Observed => "observed",
+    }
+}
+
+fn append_destination_matrix(
+    output: &mut String,
+    targets: &[DestinationEnvelopeTarget],
+    destination_catalog: &[DestinationBulkCatalogEntry],
+    destination_report: &BenchmarkReport,
+    evidence_root: &Path,
+) -> BenchResult<()> {
+    if targets.is_empty() {
+        return Ok(());
+    }
+    output.push_str("\n## Destination bulk-path matrix\n\n");
+    output.push_str("| Destination | Path | Cell | Evidence version | Host class | Target | Observation | Status | Evidence |\n");
+    output.push_str("|---|---|---|---|---|---:|---:|---|---|\n");
+    if targets.len() != destination_catalog.len()
+        || targets.iter().any(|target| {
+            !destination_catalog
+                .iter()
+                .any(|entry| entry.destination_id == target.destination_id)
+        })
+    {
+        return Err(bench_error(
+            "destination envelope targets must exactly cover the registered destination catalog",
+        ));
+    }
+    validate_destination_observation_joins(
+        destination_report,
+        destination_catalog,
+        targets,
+        evidence_root,
+    )?;
+    for entry in destination_catalog {
+        let target = targets
+            .iter()
+            .find(|target| target.destination_id == entry.destination_id)
+            .ok_or_else(|| {
+                bench_error(format!(
+                    "destination envelope has no target for registered destination {}",
+                    entry.destination_id
+                ))
+            })?;
+        for path in &entry.runtime.bulk_paths {
+            for eligibility in [
+                DestinationPathEligibility::Eligible,
+                DestinationPathEligibility::Ineligible,
+            ] {
+                destination_path_row(output, destination_report, entry, path, eligibility, target)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn envelope_row(

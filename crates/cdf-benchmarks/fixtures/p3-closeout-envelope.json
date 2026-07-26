@@ -1,0 +1,348 @@
+{
+  "schema_version": 1,
+  "title": "CDF Terabyte-Scale Performance Envelope",
+  "evidence_status": "P3 IMPLEMENTATION CLOSEOUT — green results, partial cells, accepted residuals, and unproven ambitions are shown without relabeling.",
+  "baseline_document": "docs/performance-baseline.md",
+  "targets": [
+    {
+      "id": "parquet_to_package",
+      "label": "Parquet file/glob → package",
+      "target": "≥0.7× raw Arrow; ≥1.5 GB/s aggregate; row-group parallel",
+      "absolute_result": "425.1 MB logical decoded in 113.9 ms (3.73 GB/s logical); no like-for-like 1.5 GB/s physical package cell",
+      "relative_result": "0.90× raw Arrow decode; governed FineWeb path 0.779× favorable same-data reference",
+      "memory_result": "bounded row-group frontier; 8.59 GB scale curve stayed below 1.6 GB RSS",
+      "host": "Apple M5 Pro local release controls",
+      "mode": "warm local",
+      "reference": "arrow-rs Parquet decode and favorable same-data Parquet rewrite",
+      "bias": "The logical decode rate omits package persistence; the governed path includes destination work. No cross-host synthesis is used.",
+      "status": "partial",
+      "evidence_record": ".10x/evidence/2026-07-11-p3-parquet-stream-byte-first-segments.md",
+      "sources": [
+        ".10x/tickets/done/2026-07-11-p3-b2-parquet-codec.md",
+        ".10x/evidence/2026-07-14-p3-c4-fineweb-local-scaling.md"
+      ],
+      "residual": "The ratio target and row-group architecture are demonstrated; a comparable physical-byte package cell at 1.5 GB/s is not."
+    },
+    {
+      "id": "csv_to_package",
+      "label": "CSV → package",
+      "target": "≥0.6× raw Arrow; ≥400 MB/s aggregate",
+      "absolute_result": "257.0 MB/s over four files",
+      "relative_result": "0.680× raw Arrow CSV with the same bounded inference pass",
+      "memory_result": "one-pass sequential decode; no retained parallel pre-scan",
+      "host": "EC2 c7i.4xlarge / 16 vCPU / tuned gp3",
+      "mode": "warm local, median-of-3",
+      "reference": "arrow-csv 59.1.0 with identical 1,000-record inference",
+      "bias": "Hard-linked warm files minimize device pressure; CDF additionally validates, segments, compresses, hashes, and finalizes.",
+      "status": "partial",
+      "evidence_record": ".10x/evidence/2026-07-19-p3-b4-csv-envelope.md",
+      "sources": [
+        ".10x/evidence/.storage/2026-07-19-p3-b4-csv-reference-bounded-runs.jsonl",
+        ".10x/evidence/.storage/2026-07-19-p3-b4-csv-cdf-bounded-runs.jsonl",
+        ".10x/evidence/.storage/2026-07-19-p3-b4-csv-multi-runs.jsonl"
+      ],
+      "residual": "The roofline ratio is green; the 400 MB/s absolute ambition is not."
+    },
+    {
+      "id": "json_to_package",
+      "label": "NDJSON/JSON decode",
+      "target": "≥300–500 MB/s aggregate; ≥3× deleted DOM path",
+      "absolute_result": "450.4 MiB/s and 9.3 million rows/s",
+      "relative_result": "3.10× conservative deleted-DOM control; full inference 1.02× raw Arrow",
+      "memory_result": "streamed tape decode with accounted windows",
+      "host": "Apple M5 Pro local release control",
+      "mode": "warm isolated codec",
+      "reference": "conservative full-DOM compatibility shape and raw Arrow inference",
+      "bias": "Codec controls exclude complete package fixed costs; the tiny product macro remains separately recorded and is not used as codec evidence.",
+      "status": "green",
+      "evidence_record": ".10x/tickets/done/2026-07-11-p3-b5-json-codecs.md",
+      "sources": [
+        ".10x/tickets/done/2026-07-11-p3-b5-json-codecs.md",
+        ".10x/evidence/2026-07-12-p3-b5-streaming-json-document-driver.md"
+      ]
+    },
+    {
+      "id": "validation",
+      "label": "Contract validation",
+      "target": "≥1 GB/s/core at 64k rows",
+      "absolute_result": "3.016–7.254 GB/s across all 12 gated cells",
+      "relative_result": "18.1%–43.5% of 16.689 GB/s memcpy roofline",
+      "memory_result": "selected evidence materialization measured separately from hot masks",
+      "host": "EC2 c7i.4xlarge / taskset one core",
+      "mode": "warm isolated kernel, median-of-7",
+      "reference": "same-host memcpy roofline",
+      "bias": "Only data-inspecting 64k hot-kernel cells gate; boundary and evidence-materialization cells remain trend-only.",
+      "status": "green",
+      "evidence_record": ".10x/evidence/2026-07-19-p3-v3-validation-envelope.md",
+      "sources": [
+        ".10x/evidence/.storage/2026-07-19-p3-v3-validation-envelope-ec2.json",
+        ".10x/evidence/.storage/2026-07-19-p3-v3-validation-envelope-ec2.time"
+      ]
+    },
+    {
+      "id": "package_build",
+      "label": "Package build/hash",
+      "target": "≥70% sequential-write roofline; hashing ≤5% wall",
+      "absolute_result": "1,033.8 MiB/s over three alternating 32 GiB samples",
+      "relative_result": "0.903× direct-I/O device write; SHA-256 attributable wall 0.06%",
+      "memory_result": "1,024 independently synced segments per sample; each sample exceeded host RAM",
+      "host": "EC2 c7i.4xlarge / tuned gp3",
+      "mode": "sustained cold-capacity release",
+      "reference": "fio direct sequential write and exact hash-free durability control",
+      "bias": "Local filesystem durability cell; object-store multipart throughput is governed by transport/destination evidence.",
+      "status": "green",
+      "evidence_record": ".10x/evidence/2026-07-19-p3-e4-package-io-envelope.md",
+      "sources": [
+        ".10x/evidence/.storage/2026-07-19-p3-e4-ipc-package-writer-sustained.log",
+        ".10x/evidence/.storage/2026-07-19-p3-e4-fio-direct.json"
+      ]
+    },
+    {
+      "id": "duckdb",
+      "label": "Package → DuckDB",
+      "target": "≥1 million TLC rows/s; ≥5× removed scalar path",
+      "absolute_result": "4,014,348 rows/s over 41,169,720 rows; 10.256 s median",
+      "relative_result": "stock public-ABI parallel scanner; materially above the removed scalar/appender floor",
+      "memory_result": "bounded by compiled DuckDB admission and cgroup evidence",
+      "host": "EC2 c7i.4xlarge / host-class-649c6f28be3544c8",
+      "mode": "warm local full product, median-of-3",
+      "reference": "removed scalar/appender controls and same-package scanner controls",
+      "bias": "Local DuckDB materialization; wide 2,052-column schemas have a separately recorded native sink floor.",
+      "status": "green",
+      "evidence_record": ".10x/evidence/2026-07-12-p3-d5-destination-matrix.md",
+      "sources": [
+        ".10x/evidence/.storage/2026-07-19-p3-d14-stock-default-full-year-three-sample.json",
+        ".10x/evidence/.storage/p3-destination-matrix-ec2-current.json"
+      ]
+    },
+    {
+      "id": "postgres",
+      "label": "Package → PostgreSQL",
+      "target": "binary COPY; ≥2× CSV COPY",
+      "absolute_result": "1,801,714 rows/s local binary COPY control; 672,531 rows/s full-year direct-target sample",
+      "relative_result": "3.00× retained CSV COPY control",
+      "memory_result": "Arrow batches encoded incrementally; no full-package text staging",
+      "host": "EC2 destination matrix plus local temporary PostgreSQL control",
+      "mode": "loopback release",
+      "reference": "same-schema CSV COPY compatibility control",
+      "bias": "Loopback/local server evidence; remote network latency and server tuning are not generalized.",
+      "status": "green",
+      "evidence_record": ".10x/evidence/2026-07-12-p3-d5-destination-matrix.md",
+      "sources": [
+        ".10x/evidence/.storage/2026-07-19-p3-d16-postgres-direct-copy-fresh.json",
+        ".10x/evidence/.storage/p3-destination-matrix-ec2-current.json"
+      ]
+    },
+    {
+      "id": "parquet_destination",
+      "label": "Package → Parquet",
+      "target": "≥60% device-write roofline",
+      "absolute_result": "4,953,986 rows/s over full-year TLC; selected-path report 1,362 MiB/s",
+      "relative_result": "isolated writer 0.786× raw durable write; selected path clears 0.60 floor",
+      "memory_result": "bounded staged row-group writers; no full-table buffer",
+      "host": "EC2 destination matrix plus Apple M5 Pro writer control",
+      "mode": "warm local release",
+      "reference": "equal-byte durable raw writes",
+      "bias": "Full-year row rate and isolated device ratio are distinct labelled cells, not combined into one synthetic ratio.",
+      "status": "green",
+      "evidence_record": ".10x/evidence/2026-07-15-p3-d8-parquet-staged-ingress.md",
+      "sources": [
+        ".10x/evidence/.storage/2026-07-18-p3-d15-ec2-parquet-full-year-current.json",
+        ".10x/evidence/.storage/p3-destination-matrix-ec2-current.json"
+      ]
+    },
+    {
+      "id": "remote_tlc",
+      "label": "Full-year TLC HTTPS → DuckDB",
+      "target": "≤1.5× download + native ingest; I/O dominated",
+      "absolute_result": "15.783 s with explicit complete spool; 2,608,431 rows/s; exact 41,169,720 rows",
+      "relative_result": "19.4% faster than unchanged 19.580 s overlap default; original composite target remains red",
+      "memory_result": "3.91 GiB process peak; 6.22 GiB cgroup peak; zero OOM/pressure/spill",
+      "host": "EC2 c7i.4xlarge / Hugging Face public mirror",
+      "mode": "live uncontrolled network",
+      "reference": "same-host local CDF 10.256 s and parallel curl 2.26 s",
+      "bias": "Public CDN timing is uncontrolled. The faster complete-spool strategy is explicit, not a speculative default heuristic.",
+      "status": "accepted_residual",
+      "evidence_record": ".10x/tickets/done/2026-07-11-p3-g4-tlc-remote-io-envelope.md",
+      "sources": [
+        ".10x/evidence/.storage/2026-07-19-p3-g4-hf-complete-final-clean.json",
+        ".10x/evidence/.storage/2026-07-19-p3-g4-hf-stock-full-year-smoke.json",
+        ".10x/evidence/.storage/2026-07-19-p3-g4-local-auto-final-clean.json"
+      ],
+      "residual": "The original 1.5× download-plus-native composite and separate live S3/GCS/Azure cells were not met.",
+      "acceptance_authority": ".10x/tickets/done/2026-07-11-p3-g4-tlc-remote-io-envelope.md"
+    },
+    {
+      "id": "one_tib",
+      "label": "1 TiB synthetic glob → Parquet",
+      "target": "default budget; stable RSS; linear scaling to device saturation",
+      "absolute_result": "1.0086 TiB and 5.436 billion rows in 2,694.863 s; 411.5 MB/s logical",
+      "relative_result": "complete governed product path; scaling knee retained from the separate C4/D8 curve",
+      "memory_result": "1.896 GiB process peak under default 4 GiB; zero cgroup OOM",
+      "host": "EC2 c7i.4xlarge / 2 TiB tuned gp3",
+      "mode": "generated default-policy scale run",
+      "reference": "C4/D8 same-path concurrency curve; no synthetic unique-byte device roofline",
+      "bias": "The generator uses hard links and content-addressed destination reuse; this proves logical work, lifecycle, and memory, not unique-source-byte cold storage throughput.",
+      "status": "partial",
+      "evidence_record": ".10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md",
+      "sources": [
+        ".10x/evidence/.storage/2026-07-25-p3-f4-ec2-1t-summary.json",
+        ".10x/evidence/.storage/2026-07-25-p3-f4-ec2-1t-package-verify.json",
+        ".10x/evidence/.storage/2026-07-25-p3-f4-ec2-1t-cgroup-last.txt"
+      ],
+      "residual": "Default-budget completion is green; unique-byte cold-device saturation and linear core scaling were not demonstrated by this hard-link fixture."
+    },
+    {
+      "id": "correctness_overhead",
+      "label": "Correctness/evidence overhead",
+      "target": "≤10% versus equivalent raw read + write",
+      "absolute_result": "hashing 0.06%; CLI rendering -0.44% within variance; validation and destination work reported separately",
+      "relative_result": "no single semantically equivalent whole-product raw comparator exists",
+      "memory_result": "correctness structures share the governed memory ledger",
+      "host": "mixed, explicitly separated component controls",
+      "mode": "component controls only",
+      "reference": "exact hash-free durability control and progress-disabled product control",
+      "bias": "Adding unlike component percentages would create a false whole-product scalar. The global 10% claim is therefore withheld.",
+      "status": "not_demonstrated",
+      "evidence_record": ".10x/evidence/2026-07-19-p3-e4-package-io-envelope.md",
+      "sources": [
+        ".10x/evidence/.storage/2026-07-19-p3-e4-ipc-package-writer-sustained.log",
+        ".10x/evidence/.storage/2026-07-25-cx4-hosted-cli-overhead.json"
+      ],
+      "residual": "A whole-product semantically equivalent raw comparator remains unavailable; CDF makes no ≤10% aggregate claim."
+    }
+  ],
+  "architecture": [
+    {
+      "id": "constant_memory",
+      "label": "Constant process memory",
+      "target": "RSS is a function of policy, not input size; clean failure below minimum",
+      "absolute_result": "5/20/100 GiB under 2 GiB with 1.54–1.58 GiB RSS; 1 TiB under default 4 GiB",
+      "relative_result": "flat memory curve across 20× input growth",
+      "memory_result": "64 MiB policy fails typed Data before artifacts; forced spill laws clean up",
+      "host": "EC2 c7i.4xlarge",
+      "mode": "cgroup-enforced release",
+      "reference": "input-size geometric curve and explicit impossible-budget control",
+      "bias": "Repeated-content fixtures prove memory/lifecycle slope, not unique-byte device capacity.",
+      "status": "green",
+      "evidence_record": ".10x/evidence/2026-07-25-p3-f3-constant-memory-matrix.md",
+      "sources": [
+        ".10x/evidence/.storage/2026-07-25-p3-f3-ec2-5g-a-summary.json",
+        ".10x/evidence/.storage/2026-07-25-p3-f3-ec2-20g-summary.json",
+        ".10x/evidence/.storage/2026-07-25-p3-f3-ec2-100g-summary.json",
+        ".10x/evidence/.storage/2026-07-25-p3-f3-ec2-too-small.json"
+      ]
+    },
+    {
+      "id": "jobs_invariance",
+      "label": "Jobs invariance",
+      "target": "fixed inputs produce identical package/receipt/state semantics at jobs 1/N",
+      "absolute_result": "format, destination, REST, SQL, failure, drain, and isolated-worker matrices pass",
+      "relative_result": "jobs 1/2/auto/4 retain exact logical artifacts",
+      "memory_result": "task/permit/frontier peaks remain within admitted authorities",
+      "host": "deterministic fixtures plus Apple M5 Pro scale curve",
+      "mode": "multi-job conformance",
+      "reference": "jobs=1 semantic artifacts",
+      "bias": "Scale timing is host-specific; identity equivalence is the portable law.",
+      "status": "green",
+      "evidence_record": ".10x/tickets/done/2026-07-11-p3-c4-jobs-invariance-scaling-matrix.md",
+      "sources": [
+        ".10x/evidence/2026-07-14-p3-c4-fineweb-local-scaling.md",
+        ".10x/tickets/done/2026-07-11-p3-c5-isolated-worker-equivalence.md"
+      ]
+    },
+    {
+      "id": "native_formats",
+      "label": "Core native format engines",
+      "target": "streaming, fail-closed, registry-owned Parquet/CSV/JSON/NDJSON and transforms",
+      "absolute_result": "all core engines and gzip/zstd/bzip2/xz/lz4/snappy/brotli transforms are terminal",
+      "relative_result": "adding a codec does not extend generic source/runtime match trees",
+      "memory_result": "byte sources, transforms, codecs, and batches share accounted ownership",
+      "host": "cross-platform conformance plus named release controls",
+      "mode": "native registry",
+      "reference": "deleted monolithic/source-owned parser paths",
+      "bias": "Enterprise long-tail codecs are parked and are not claimed by P3.",
+      "status": "green",
+      "evidence_record": ".10x/tickets/done/2026-07-10-p3-ws-b-format-decode-engines.md",
+      "sources": [
+        ".10x/tickets/done/2026-07-11-p3-b2-parquet-codec.md",
+        ".10x/tickets/done/2026-07-11-p3-b5-json-codecs.md",
+        ".10x/evidence/2026-07-12-p3-b1-streaming-transform-product-composition.md"
+      ]
+    },
+    {
+      "id": "foreign_boundaries",
+      "label": "Implemented foreign boundaries",
+      "target": "honest transfer/copy/memory/cancellation evidence for Python and subprocess",
+      "absolute_result": "Python 2.82 million rows/s at 8,192 rows; subprocess IPC 524,288 rows in 33.6 ms",
+      "relative_result": "IPC and row compatibility are reported separately; WASM remains unmeasured",
+      "memory_result": "exact Python release; bounded control retention; copy-unknown remains explicit",
+      "host": "aarch64-apple-darwin local release",
+      "mode": "boundary micro/macro controls",
+      "reference": "mode-specific transfer reports, not a fabricated zero-copy baseline",
+      "bias": "These are boundary results, not EC2 whole-product promotion claims.",
+      "status": "observed",
+      "evidence_record": ".10x/evidence/2026-07-25-p3-h5-interop-envelope.md",
+      "sources": [
+        ".10x/evidence/2026-07-25-p3-h5-interop-envelope.md",
+        ".10x/tickets/done/2026-07-10-p3-ws-h-interop-boundaries.md"
+      ]
+    },
+    {
+      "id": "bounded_unbounded",
+      "label": "Bounded and drain-epoch execution",
+      "target": "finite and unbounded-capability inputs share deterministic package/gate semantics",
+      "absolute_result": "monotone receipt-gated watermarks and exact late-data outcomes pass",
+      "relative_result": "jobs/recovery/replay invariance retained",
+      "memory_result": "bounded epoch state and replay retention",
+      "host": "deterministic conformance",
+      "mode": "finite drain epochs",
+      "reference": "bounded execution package/receipt/checkpoint law",
+      "bias": "Resident supervision and distributed scheduling remain parked.",
+      "status": "green",
+      "evidence_record": ".10x/evidence/2026-07-19-p3-a9-watermark-late-data-conformance.md",
+      "sources": [
+        ".10x/evidence/2026-07-19-p3-a9-watermark-late-data-conformance.md",
+        ".10x/tickets/done/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md"
+      ]
+    },
+    {
+      "id": "statistics_pruning",
+      "label": "Evidence-driven pruning",
+      "target": "verified statistics may skip work but never produce identity-bearing bytes",
+      "absolute_result": "verified-package segment planner streams retained/skipped decisions",
+      "relative_result": "missing/unsupported evidence conservatively retains every segment",
+      "memory_result": "one caller-sized shared-memory reservation",
+      "host": "deterministic package/engine conformance",
+      "mode": "analysis-only DataFusion bridge",
+      "reference": "unpruned verified package scan",
+      "bias": "Broader DataFusion expression/catalog/scheduling adoption remains parked.",
+      "status": "green",
+      "evidence_record": ".10x/tickets/done/2026-07-12-p3-j1-evidence-statistics-pruning.md",
+      "sources": [
+        ".10x/tickets/done/2026-07-12-p3-j1-evidence-statistics-pruning.md",
+        ".10x/evidence/.storage/p3-j0-statistics-envelope-macos.json"
+      ]
+    }
+  ],
+  "destination_paths": [
+    {
+      "destination_id": "duckdb",
+      "target": "≥1M rows/s; ≥5× scalar appender",
+      "eligible_schema_fixture": "tlc-v1",
+      "ineligible_schema_fixture": "decimal256-v1"
+    },
+    {
+      "destination_id": "postgres",
+      "target": "binary COPY; ≥2× CSV COPY",
+      "eligible_schema_fixture": "tpch-orders-v1",
+      "ineligible_schema_fixture": "time32-microsecond-invalid-v1"
+    },
+    {
+      "destination_id": "parquet_object_store",
+      "target": "≥60% device-write roofline",
+      "eligible_schema_fixture": "wide-entropy-v1",
+      "ineligible_schema_fixture": "month-day-nano-interval-v1"
+    }
+  ]
+}

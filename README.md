@@ -205,8 +205,10 @@ Useful entry points:
 - [`VISION.md`](VISION.md): the full system vision
 - [`QUALITY.md`](QUALITY.md): the Rust quality and verification procedure
 - [`docs/performance-envelope.md`](docs/performance-envelope.md): generated P3
-  performance evidence; it is explicitly pre-baseline and authorizes no
-  throughput claim until recorded measurements replace the fixture
+  performance evidence with host, mode, reference, bias, memory, and raw
+  artifact labels; non-green targets remain explicit
+- [`docs/performance-baseline.md`](docs/performance-baseline.md): immutable
+  pre-optimization before picture
 - [`.10x/`](.10x/): durable project memory, decisions, specs, tickets, evidence,
   and reviews
 

@@ -63,7 +63,7 @@ WS-L runs first and alone until a full pre-optimization baseline evidence record
 
 After all workstreams close, program proof/closure proceeds through:
 
-- `.10x/tickets/2026-07-11-p3-z1-envelope-evidence-reconciliation.md`
+- `.10x/tickets/done/2026-07-11-p3-z1-envelope-evidence-reconciliation.md`
 - `.10x/tickets/2026-07-11-p3-z2-scale-demo-adversarial-review.md`
 - `.10x/tickets/2026-07-11-p3-z3-program-closure-retrospective.md`
 

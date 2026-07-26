@@ -1,9 +1,10 @@
 use std::{fs, path::Path};
 
 use cdf_benchmarks::{
-    BenchmarkReport, ComparisonVerdict, DestinationBulkCatalogEntry, DestinationPathEligibility,
-    DestinationPathMeasurementIdentity, EnvelopeSpec, IoMode, ReferenceIdentity, canonical_sha256,
-    compare_reports, comparison_fails, destination_execution_descriptor_sha256, generate_envelope,
+    BenchmarkReport, CloseoutEnvelope, CloseoutEnvelopeStatus, ComparisonVerdict,
+    DestinationBulkCatalogEntry, DestinationPathEligibility, DestinationPathMeasurementIdentity,
+    EnvelopeSpec, IoMode, ReferenceIdentity, canonical_sha256, compare_reports, comparison_fails,
+    destination_execution_descriptor_sha256, generate_closeout_envelope, generate_envelope,
     host_class, install_baseline, report_fixture, summarize_samples,
 };
 use cdf_dest_duckdb::DuckDbRuntimeDriver;
@@ -259,7 +260,69 @@ fn generated_envelope_matches_committed_golden() {
     .unwrap();
     assert_eq!(
         generated,
+        include_str!("../../../docs/performance-baseline.md")
+    );
+}
+
+#[test]
+fn generated_closeout_envelope_matches_committed_golden() {
+    let envelope: CloseoutEnvelope =
+        serde_json::from_str(include_str!("../fixtures/p3-closeout-envelope.json")).unwrap();
+    let destination_report: BenchmarkReport = serde_json::from_str(include_str!(
+        "../../../.10x/evidence/.storage/p3-destination-matrix-ec2-current.json"
+    ))
+    .unwrap();
+    let generated = generate_closeout_envelope(
+        &envelope,
+        &first_party_destination_catalog(),
+        &destination_report,
+        workspace_root(),
+    )
+    .unwrap();
+    assert_eq!(
+        generated,
         include_str!("../../../docs/performance-envelope.md")
+    );
+}
+
+#[test]
+fn closeout_envelope_fails_closed_on_missing_sources_and_unaccepted_residuals() {
+    let original: CloseoutEnvelope =
+        serde_json::from_str(include_str!("../fixtures/p3-closeout-envelope.json")).unwrap();
+    let destination_report: BenchmarkReport = serde_json::from_str(include_str!(
+        "../../../.10x/evidence/.storage/p3-destination-matrix-ec2-current.json"
+    ))
+    .unwrap();
+    let catalog = first_party_destination_catalog();
+
+    let mut missing_source = original.clone();
+    missing_source.targets[0].sources[0] =
+        ".10x/evidence/.storage/not-a-real-report.json".to_owned();
+    let error = generate_closeout_envelope(
+        &missing_source,
+        &catalog,
+        &destination_report,
+        workspace_root(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("does not exist"), "{error}");
+
+    let mut unaccepted = original;
+    let remote = unaccepted
+        .targets
+        .iter_mut()
+        .find(|cell| cell.id == "remote_tlc")
+        .unwrap();
+    remote.acceptance_authority = None;
+    remote.status = CloseoutEnvelopeStatus::AcceptedResidual;
+    let error =
+        generate_closeout_envelope(&unaccepted, &catalog, &destination_report, workspace_root())
+            .unwrap_err()
+            .to_string();
+    assert!(
+        error.contains("require a rationale and acceptance authority"),
+        "{error}"
     );
 }
 

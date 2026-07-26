@@ -66,7 +66,7 @@ open-ended optimization rabbit holes. WASM cost modeling is not a P3 dependency.
 
 ### WS-E — P3 aggregate closure
 
-1. `.10x/tickets/2026-07-11-p3-z1-envelope-evidence-reconciliation.md`
+1. `.10x/tickets/done/2026-07-11-p3-z1-envelope-evidence-reconciliation.md`
 2. `.10x/tickets/2026-07-11-p3-z2-scale-demo-adversarial-review.md`
 3. `.10x/tickets/2026-07-11-p3-z3-program-closure-retrospective.md`
 4. `.10x/tickets/2026-07-10-p3-terabyte-scale-program.md`
@@ -147,6 +147,10 @@ WASM, distributed execution, CDC, and new connectors are not P3 closure dependen
   evidence through the product path, proved exact Arrow ownership and bounded control retention,
   published honest Python/subprocess release cells, and left prospective WASM outside the
   implemented envelope. WS-H is terminal; P3 aggregate reconciliation is next.
+- 2026-07-25: P3 Z1 is closed. The final generated envelope reconciles every target across its
+  actual host/mode/reference, preserves the immutable pre-optimization baseline, retains partial
+  and unproven ambitions visibly non-green, and rejects dead evidence sources or unaccepted
+  residuals. Z2 now owns aggregate demo/adversarial synthesis without rerunning the 1 TiB cell.
 
 ## Blockers
 
