@@ -66,6 +66,11 @@ Depends on F1/F2.
   respective 2 GiB and 1.5 GiB authorities, and required no spill. The no-spill observation is
   recorded honestly: it proves the bounded steady-state pipeline did not need disk spill for this
   case, not that the independent spill failure laws are satisfied.
+- 2026-07-25: The first repaired EC2 run at commit `980b8312` crossed canonical construction under
+  `MemoryMax=2G` and exposed the next independent frontier: the already-selected Parquet staged
+  path had not reserved its 16 MiB writer floor before upstream work occupied the ledger. That P0
+  is bounded by `.10x/tickets/2026-07-25-p0-staged-writer-memory-headroom.md`; F3 remains the
+  integration acceptance owner rather than absorbing its implementation.
 
 ## Evidence
 

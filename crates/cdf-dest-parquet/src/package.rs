@@ -48,6 +48,7 @@ pub(crate) struct EncodedParquetObject {
 pub(crate) struct StagedParquetEncodeContext<'a> {
     pub(crate) expected_schema: &'a arrow_schema::Schema,
     pub(crate) writer_memory: Arc<dyn MemoryCoordinator>,
+    pub(crate) writer_memory_authority: cdf_memory::MemoryLease,
     pub(crate) spill: Arc<dyn SpillBudgetCoordinator>,
     pub(crate) file: NamedTempFile,
     pub(crate) cancellation: &'a cdf_runtime::RunCancellation,
@@ -97,6 +98,7 @@ pub(crate) fn write_parquet_segment(
             settings,
         },
         writer_memory,
+        None,
         spill,
         file,
         || Ok(batches.next().map(|batch| batch.batch)),
@@ -120,6 +122,7 @@ pub(crate) fn write_parquet_staged_group(
             settings: context.settings,
         },
         context.writer_memory,
+        Some(context.writer_memory_authority),
         context.spill,
         context.file,
         || reader.next_batch(),
@@ -242,6 +245,7 @@ impl StagedGroupBatchReader {
 fn write_parquet_batches(
     plan: ParquetBatchWritePlan<'_>,
     writer_memory: Arc<dyn MemoryCoordinator>,
+    writer_memory_authority: Option<cdf_memory::MemoryLease>,
     spill: Arc<dyn SpillBudgetCoordinator>,
     file: NamedTempFile,
     mut next_batch: impl FnMut() -> Result<Option<arrow_array::RecordBatch>>,
@@ -261,16 +265,14 @@ fn write_parquet_batches(
     if let Some(mutation_guard) = mutation_guard {
         mutation_guard.assert_current()?;
     }
-    // Acquire the bounded input window before attempting the writer reservation. A verified
-    // replay reader and the Parquet writer share one ledger; reserving in the opposite order can
-    // deadlock when neither window alone exceeds the budget but their sum does.
+    // Finalized/test-only callers acquire the bounded input before independently reserving the
+    // writer. Staged ingress instead carries authority reserved when its session began, before
+    // extraction could occupy the downstream working set.
     let first =
         cdf_package_contract::strip_package_row_ord(next_batch()?.ok_or_else(|| {
             CdfError::data("Parquet destination segment contains no Arrow batches")
         })?)?;
-    let writer_bytes = settings
-        .bytes_per_batch
-        .clamp(1024 * 1024, 64 * 1024 * 1024);
+    let writer_bytes = parquet_writer_working_set_bytes(settings);
     let request = cdf_memory::ReservationRequest::new(
         cdf_memory::ConsumerKey::new(
             "parquet-row-group-writer",
@@ -288,10 +290,21 @@ fn write_parquet_batches(
             detail.map_or_else(String::new, |error| format!(" ({error})"))
         ))
     };
-    let _writer_lease = writer_memory
-        .try_reserve(&request)
-        .map_err(|error| memory_failure(Some(&error)))?
-        .ok_or_else(|| memory_failure(None))?;
+    let _writer_lease = match writer_memory_authority {
+        Some(authority) => {
+            if authority.bytes() < writer_bytes {
+                return Err(CdfError::contract(format!(
+                    "Parquet staged writer authority holds {} bytes below its {writer_bytes}-byte compiled working set",
+                    authority.bytes()
+                )));
+            }
+            authority
+        }
+        None => writer_memory
+            .try_reserve(&request)
+            .map_err(|error| memory_failure(Some(&error)))?
+            .ok_or_else(|| memory_failure(None))?,
+    };
     let initial_spill = retained_bytes.clamp(1, SPILL_GROWTH_BYTES);
     let reservation = spill.try_reserve(initial_spill)?.ok_or_else(|| {
         CdfError::data(format!(
@@ -376,6 +389,12 @@ fn write_parquet_batches(
             .map_err(|error| parquet_error("finish streaming Parquet writer", error))?;
     }
     output.finish()
+}
+
+pub(crate) fn parquet_writer_working_set_bytes(settings: ParquetWriterSettings) -> u64 {
+    settings
+        .bytes_per_batch
+        .clamp(1024 * 1024, 64 * 1024 * 1024)
 }
 
 struct SpillHashWriter {

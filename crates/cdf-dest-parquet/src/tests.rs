@@ -2593,6 +2593,132 @@ fn constrained_writer_memory_fails_cleanly_instead_of_waiting_on_its_input() {
 }
 
 #[test]
+fn staged_writer_window_is_reserved_before_input_and_not_charged_again() {
+    const BUDGET: u64 = 64 * 1024 * 1024;
+    const WRITER_BYTES: u64 = 16 * 1024 * 1024;
+    let (_, services) = cdf_engine::StandaloneExecutionHost::default_services(BUDGET).unwrap();
+    let services = services
+        .with_staging_lease_authority(Arc::new(cdf_runtime::ScopeStagingLeaseAuthority::new(
+            Arc::new(cdf_state_sqlite::InMemoryScopeLeaseStore::new()),
+        )))
+        .unwrap()
+        .with_content_reachability_store(Arc::new(
+            cdf_state_sqlite::SqliteContentReachabilityStore::open_in_memory().unwrap(),
+        ));
+    let memory = services.memory();
+    let temp = tempfile::tempdir().unwrap();
+    let mut destination = ParquetDestination::new_filesystem(temp.path(), services).unwrap();
+    let output_schema = sample_batch(vec![1, 2], vec![Some("left"), Some("right")])
+        .schema()
+        .as_ref()
+        .clone();
+    let bulk_path = destination
+        .prepare_selected_bulk_path(
+            &cdf_runtime::BulkPathPreparationInput::new(&output_schema)
+                .with_execution(destination.execution().capabilities()),
+        )
+        .unwrap();
+    assert_eq!(bulk_path.writers, 2);
+    assert_eq!(bulk_path.bytes_per_batch, WRITER_BYTES);
+    let attempt_id = cdf_runtime::LoadAttemptId::new("writer-headroom").unwrap();
+    let target = cdf_kernel::TargetName::new("writer_headroom").unwrap();
+    let managed_lease = destination
+        .execution()
+        .acquire_staging_lease(cdf_runtime::StagingLeaseIdentity::new(
+            destination.sheet().destination.clone(),
+            target.clone(),
+            attempt_id.clone(),
+        ))
+        .unwrap();
+    let staging_lease = managed_lease.snapshot().unwrap();
+    let schema_hash = cdf_kernel::canonical_arrow_schema_hash(&output_schema).unwrap();
+    let request = cdf_runtime::StagedIngressRequest::new(
+        attempt_id.clone(),
+        cdf_runtime::StagingAttemptBinding {
+            destination_id: destination.sheet().destination.clone(),
+            target,
+            disposition: cdf_kernel::WriteDisposition::Append,
+            schema_hash: schema_hash.clone(),
+            output_arrow_schema_hash: schema_hash.clone(),
+            merge_keys: Vec::new(),
+            execution_plan_id: PlanId::new("writer-headroom-plan").unwrap(),
+        },
+        staging_lease,
+        managed_lease.mutation_guard().unwrap(),
+        bulk_path,
+        cdf_runtime::StagingSchedulingContext::new(2, 128 * 1024 * 1024).unwrap(),
+        output_schema,
+    )
+    .unwrap();
+    let before = memory.snapshot().current_bytes;
+    let mut session = match destination.ingress() {
+        cdf_runtime::DestinationIngress::StagedSegments(ingress) => {
+            ingress.begin_staged_ingress(request).unwrap()
+        }
+        cdf_runtime::DestinationIngress::FinalizedPackage(_) => {
+            panic!("Parquet destination exposed finalized ingress")
+        }
+    };
+    let writer_window = 2 * WRITER_BYTES;
+    assert_eq!(memory.snapshot().current_bytes - before, writer_window);
+
+    // Occupy every remaining managed byte after session admission. Encoding can still progress
+    // only if the writer consumes its pre-reserved authority instead of requesting it again.
+    let remaining = BUDGET - memory.snapshot().current_bytes;
+    let blocker = memory
+        .try_reserve(
+            &cdf_memory::ReservationRequest::new(
+                cdf_memory::ConsumerKey::new(
+                    "upstream-after-writer-admission",
+                    cdf_memory::MemoryClass::Transform,
+                )
+                .unwrap(),
+                remaining,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+    let batch = canonical_batches(
+        vec![sample_batch(vec![1, 2], vec![Some("left"), Some("right")])],
+        0,
+    )
+    .pop()
+    .unwrap();
+    let identity = cdf_runtime::StagedSegmentIdentity {
+        segment_id: SegmentId::new("writer-headroom-segment").unwrap(),
+        sha256: "sha256:test-writer-headroom".to_owned(),
+        package_row_ord_start: 0,
+        row_count: 2,
+        byte_count: 1,
+        schema_hash,
+        ordinal: 0,
+    };
+    let segment = cdf_runtime::StagedSegmentRequest::new(
+        identity.clone(),
+        Box::new(TestSegmentReader {
+            identity,
+            batches: vec![batch].into_iter(),
+        }),
+    )
+    .unwrap();
+    let mut stream = TestStagedStream {
+        attempt_id,
+        requests: VecDeque::from([segment]),
+        in_flight: BTreeMap::new(),
+        accepted: BTreeMap::new(),
+    };
+
+    session.stage_stream(&mut stream).unwrap();
+    assert_eq!(stream.accepted.len(), 1);
+    session.abort().unwrap();
+    managed_lease.finish().unwrap();
+    assert_eq!(memory.snapshot().current_bytes, remaining);
+    drop(blocker);
+    assert_eq!(memory.snapshot().current_bytes, 0);
+}
+
+#[test]
 fn replace_writes_current_pointer_to_latest_manifest() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("lake");
