@@ -88,6 +88,18 @@ compatibility path.
   The complete Parquet library suite passed `40` tests with one release benchmark ignored;
   touched Engine/Parquet strict Clippy and formatting also passed. Graph refresh could not run
   because the required `graphify` executable is absent from this environment.
+- 2026-07-26: The first dedicated-host retention comparison falsified the initial file-reread
+  implementation. Against the true parent baseline (`702212b8`), a one-object 1 GiB logical
+  fixture regressed from a `2,407 ms` median to `3,171 ms` (`+31.7%`). The same draft improved
+  the ten-object 10 GiB fixture from `18,480 ms` to `12,921 ms` and was `2.55x` faster than its
+  own forced-serial path, so independent object tasks were valuable but the redundant canonical
+  IPC decode was not.
+- 2026-07-26: Reworked each task input to own the existing destination-neutral
+  `StagedSegmentRequest`. Its live Arrow batches and memory leases now transfer intact into the
+  admitted worker; verified package replay continues through the same reader abstraction. This
+  deletes the Parquet crate's added direct `arrow-ipc` dependency, preserves exact ledger
+  ownership, and removes both the reread and second decode rather than adding a single-object
+  special case. The release retention comparison must be rerun before selection.
 
 ## Blockers
 
@@ -110,7 +122,16 @@ None.
 - `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=6 cargo clippy -p cdf-engine
   -p cdf-dest-parquet --all-targets -- -D warnings`: passed.
 - `cargo fmt --all -- --check` and `git diff --check`: passed.
-- Release retention comparison: pending dedicated-host execution.
+- EC2 `c7i.4xlarge`, production release profile, median-of-three initial draft:
+  parent baseline control `2,407 ms`; draft control `3,171 ms`; parent baseline multi-object
+  `18,480 ms`; draft automatic multi-object `12,921 ms`; draft forced-serial multi-object
+  `32,944 ms`. This proves actual parallel benefit while falsifying the reread implementation
+  against the ordinary-schema guard.
+- Post-falsification `cargo test -p cdf-dest-parquet --lib --locked -- --test-threads=2`: passed
+  `40`, ignored the explicit release-only roofline test.
+- Post-falsification strict Clippy for Engine, Parquet destination, and Project: passed.
+- Final release retention comparison after accounted-reader transfer: pending dedicated-host
+  execution.
 
 ## Review
 

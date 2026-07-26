@@ -438,23 +438,11 @@ impl ParquetStagedIngressSession {
     fn feed_group_segment(
         &mut self,
         group: &mut PendingParquetGroup,
-        mut segment: StagedSegmentRequest,
+        segment: StagedSegmentRequest,
         stream: &mut dyn StagedSegmentStream,
     ) -> Result<()> {
         let identity = segment.identity.clone();
         self.validate_identity(&identity)?;
-        let file = segment.take_durable_local_file_access().ok_or_else(|| {
-            CdfError::data(format!(
-                "Parquet canonical segment encoding requires durable file access for segment {}",
-                identity.segment_id
-            ))
-        })?;
-        if !file.path().is_absolute() {
-            return Err(CdfError::data(format!(
-                "Parquet canonical segment path must be absolute: {}",
-                file.path().display()
-            )));
-        }
         self.request.mutation_guard().assert_current()?;
         stream.acknowledge(cdf_runtime::StagedSegmentAck {
             attempt_id: self.request.attempt_id().clone(),
@@ -462,7 +450,6 @@ impl ParquetStagedIngressSession {
             external_durable: false,
         })?;
         self.request.mutation_guard().assert_current()?;
-        drop(segment);
         if self
             .accepted
             .insert(identity.ordinal, identity.clone())
@@ -476,7 +463,12 @@ impl ParquetStagedIngressSession {
             .package_byte_count
             .checked_add(identity.byte_count)
             .ok_or_else(|| CdfError::data("Parquet object package byte count overflow"))?;
-        group.segments.push(StagedParquetSegment { identity, file });
+        // The request owns the source's existing batch leases until the worker consumes it.
+        // Acknowledgement transfers that accounted payload into destination-stage authority; it
+        // does not permit an unaccounted resident copy or a redundant canonical IPC decode.
+        group
+            .segments
+            .push(StagedParquetSegment { request: segment });
         Ok(())
     }
 

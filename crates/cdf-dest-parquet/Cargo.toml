@@ -8,7 +8,6 @@ description = "Parquet object-store destination boundary for cdf."
 
 [dependencies]
 arrow-array = "58.3.0"
-arrow-ipc = { version = "58.3.0", features = ["lz4"] }
 arrow-schema = "58.3.0"
 cdf-contract = { path = "../cdf-contract" }
 cdf-kernel = { path = "../cdf-kernel" }

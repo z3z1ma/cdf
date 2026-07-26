@@ -2787,7 +2787,11 @@ fn staged_writer_window_is_reserved_before_input_and_not_charged_again() {
         identity.clone(),
         Box::new(TestSegmentReader {
             identity,
-            batches: Vec::new().into_iter(),
+            batches: canonical_batches(
+                vec![sample_batch(vec![1, 2], vec![Some("left"), Some("right")])],
+                0,
+            )
+            .into_iter(),
             durable_file_access: Some(test_durable_file_access(
                 &package_dir.join(&entry.path),
                 &entry,
