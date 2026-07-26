@@ -147,6 +147,15 @@ compatibility path.
   are computed and merged one batch at a time, but CDF summed scratch for every batch. The
   engine now proves zero-copy canonicalization before omitting the copy reserve and uses maximum
   sequential statistics scratch. Fragmented canonical groups retain the conservative copy bound.
+- 2026-07-26: The production release probe at `1843288b` correctly retained the copy bound for
+  this byte-split stress schema and exposed the final admission omission: the concurrency resolver
+  budgeted the retained canonical input, but not its simultaneously allocated replacement
+  microbatches. At 16 source jobs and two IPC encoders the ledger had only `113.9 MiB` free when
+  the exact `247.2 MiB` copy request arrived. Automatic admission now reserves a two-segment
+  canonical-head working set (retained input plus worst-case replacement) while leaving the
+  source frontier at all 16 jobs; under the ordinary 4 GiB host budget this reduces only canonical
+  IPC encoder fan-out from two to one. Destination object-writer concurrency remains independently
+  admitted. A production-shaped unit case fixes that topology in the executable contract.
 
 ## Blockers
 
@@ -194,6 +203,11 @@ None.
   statistics-scratch test, accounted canonical construction test, and staged-handoff admission
   test passed. `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=6 cargo clippy -p cdf-engine --tests
   --all-features --offline -- -D warnings`, formatting, and diff checks passed.
+- Canonical-head admission repair:
+  `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=6 cargo test -p cdf-engine
+  pipeline_concurrency_ --offline -j6` passed all three topology tests. The production-shaped
+  `3,481 MiB` case resolves `16` source jobs and one canonical IPC encoder while preserving the
+  complete `512 MiB` staged handoff. Strict all-feature Engine Clippy passed with warnings denied.
 
 ## Review
 

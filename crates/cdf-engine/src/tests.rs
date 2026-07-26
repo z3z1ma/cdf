@@ -6576,7 +6576,7 @@ fn pipeline_concurrency_joins_source_segment_and_encode_bounds() {
         0,
     )
     .unwrap();
-    assert_eq!(constrained.source_jobs, 7);
+    assert_eq!(constrained.source_jobs, 3);
     assert_eq!(constrained.segment_encode_jobs, 1);
 
     let roomy = crate::execution::resolve_pipeline_concurrency_from_bounds(
@@ -6650,6 +6650,20 @@ fn pipeline_concurrency_reserves_the_staged_handoff_window() {
     .unwrap();
     assert_eq!(roomy.source_jobs, 16);
     assert_eq!(roomy.segment_encode_jobs, 15);
+
+    // The production 4 GiB managed budget keeps full source fan-out while retaining enough
+    // headroom for one fragmented canonical segment to allocate its replacement microbatches.
+    let ordinary_host = crate::execution::resolve_pipeline_concurrency_from_bounds(
+        16,
+        15,
+        3_481 * MIB,
+        64 * MIB,
+        256 * MIB,
+        512 * MIB,
+    )
+    .unwrap();
+    assert_eq!(ordinary_host.source_jobs, 16);
+    assert_eq!(ordinary_host.segment_encode_jobs, 1);
 }
 
 fn skewed_resource(

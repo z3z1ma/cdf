@@ -2313,10 +2313,16 @@ fn resolve_pipeline_concurrency(
     if compiled_source.batch_memory_contract()
         == cdf_runtime::SourceBatchMemoryContract::FrontierReserved
     {
+        // The canonical head can retain one complete segment while constructing a replacement
+        // microbatch layout of the same size. Exact source batches avoid the second allocation at
+        // runtime, but automatic admission must preserve it for fragmented or byte-split inputs.
+        let canonical_head_working_set_bytes = maximum_segment_bytes
+            .checked_mul(2)
+            .ok_or_else(|| CdfError::data("canonical head working set overflow"))?;
         let encode_working_set_bytes = maximum_segment_bytes
             .checked_mul(3)
             .ok_or_else(|| CdfError::data("segment encode working set overflow"))?;
-        let parallel_floor = maximum_segment_bytes
+        let parallel_floor = canonical_head_working_set_bytes
             .checked_add(encode_working_set_bytes)
             .and_then(|bytes| bytes.checked_add(staged_handoff_bytes))
             .and_then(|bytes| bytes.checked_add(source_working_set_bytes))
@@ -2329,7 +2335,7 @@ fn resolve_pipeline_concurrency(
             // allocation ledger instead of waiting on another operator.
             let source_capacity = available_bytes
                 .saturating_sub(staged_handoff_bytes)
-                .saturating_sub(maximum_segment_bytes)
+                .saturating_sub(canonical_head_working_set_bytes)
                 / source_working_set_bytes;
             return Ok(PipelineConcurrency {
                 source_jobs: requested_source_jobs.min(
@@ -2370,10 +2376,16 @@ pub(crate) fn resolve_pipeline_concurrency_from_bounds(
             "pipeline admission requires nonzero source and segment working-set bounds",
         ));
     }
+    // Segment assembly may hold the retained input while canonical microbatching allocates an
+    // equally large output. This is one stage-local headroom reservation, independent of encoder
+    // fan-out. Runtime allocation planning elides the output for zero-copy batches.
+    let canonical_head_working_set_bytes = segment_admission_bytes
+        .checked_mul(2)
+        .ok_or_else(|| CdfError::data("canonical head working set overflow"))?;
     let encode_working_set_bytes = segment_admission_bytes
         .checked_mul(3)
         .ok_or_else(|| CdfError::data("segment encode working set overflow"))?;
-    let parallel_floor = segment_admission_bytes
+    let parallel_floor = canonical_head_working_set_bytes
         .checked_add(encode_working_set_bytes)
         .and_then(|bytes| bytes.checked_add(staged_handoff_bytes))
         .and_then(|bytes| bytes.checked_add(source_working_set_bytes))
@@ -2385,7 +2397,7 @@ pub(crate) fn resolve_pipeline_concurrency_from_bounds(
         // compromising the canonical head's next source poll.
         let source_capacity = available_bytes
             .saturating_sub(staged_handoff_bytes)
-            .saturating_sub(segment_admission_bytes)
+            .saturating_sub(canonical_head_working_set_bytes)
             .saturating_sub(encode_working_set_bytes)
             / source_working_set_bytes;
         let source_jobs = requested_source_jobs.min(
@@ -2399,7 +2411,7 @@ pub(crate) fn resolve_pipeline_concurrency_from_bounds(
             .ok_or_else(|| CdfError::data("source frontier working set overflow"))?;
         let remaining = available_bytes
             .saturating_sub(staged_handoff_bytes)
-            .saturating_sub(segment_admission_bytes)
+            .saturating_sub(canonical_head_working_set_bytes)
             .saturating_sub(used_by_source);
         let encode_capacity = remaining / encode_working_set_bytes;
         let segment_encode_jobs = requested_encode_jobs.min(
@@ -2418,7 +2430,7 @@ pub(crate) fn resolve_pipeline_concurrency_from_bounds(
     // topology independently rather than pretending the parallel floor is mandatory.
     let execution_bytes = available_bytes.saturating_sub(staged_handoff_bytes);
     let assembly_capacity =
-        execution_bytes.saturating_sub(segment_admission_bytes) / source_working_set_bytes;
+        execution_bytes.saturating_sub(canonical_head_working_set_bytes) / source_working_set_bytes;
     let encode_prefetch_capacity = if execution_bytes >= encode_working_set_bytes {
         1_u64.saturating_add(
             execution_bytes.saturating_sub(encode_working_set_bytes) / source_working_set_bytes,
