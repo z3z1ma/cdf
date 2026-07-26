@@ -42,7 +42,7 @@ consumer path. Other DataFusion bridges remain parked.
 2. `.10x/tickets/done/2026-07-11-p1-cx3-live-progress-activity.md` — done.
 3. `.10x/tickets/done/2026-07-11-p1-cx4-cli-conformance-performance.md` — done.
 4. `.10x/tickets/done/2026-07-11-p1-ws9-cli-experience-excellence.md` — done.
-5. `.10x/tickets/2026-07-08-p1-product-ws8-release-engineering.md`
+5. `.10x/tickets/done/2026-07-08-p1-product-ws8-release-engineering.md`
 6. `.10x/tickets/2026-07-11-p1-z1-product-program-closeout.md`
 7. `.10x/tickets/2026-07-08-p1-product-experience-program.md`
 
@@ -156,6 +156,11 @@ WASM, distributed execution, CDC, and new connectors are not P3 closure dependen
   runtime/extension topology, references, coverage, and terminal limits. The generated envelope
   retains every non-green cell. No benchmark host was reprovisioned; the EC2 tranche remains
   terminated. WS8 is now the sole executable program workstream.
+- 2026-07-26: WS8 is closed. Hosted run `30196650532` built and verified all five static-DuckDB
+  targets and published `v0.2.0-alpha.1`; the public installer then passed against the published
+  aarch64 macOS archive. No EC2 host was reprovisioned, and a read-only FQ12 inventory found no
+  running CDF-tagged instance. P1 Z1 is now the sole active child before aggregate stabilization
+  closure.
 
 ## Blockers
 

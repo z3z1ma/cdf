@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Relates-To: .10x/tickets/2026-07-08-p1-product-ws8-release-engineering.md, .10x/decisions/fast-ci-budget-and-deep-gate-separation.md
+Relates-To: .10x/tickets/done/2026-07-08-p1-product-ws8-release-engineering.md, .10x/decisions/fast-ci-budget-and-deep-gate-separation.md
 
 # Fast CI lean-boundary evidence
 

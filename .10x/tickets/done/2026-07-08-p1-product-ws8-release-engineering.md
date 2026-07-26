@@ -1,6 +1,6 @@
-Status: active
+Status: done
 Created: 2026-07-08
-Updated: 2026-07-25
+Updated: 2026-07-26
 Parent: .10x/tickets/2026-07-08-p1-product-experience-program.md
 Depends-On: QUALITY.md, .10x/specs/conformance-governance-roadmap.md, .10x/knowledge/dependency-tuple-migration-guard.md
 
@@ -59,6 +59,13 @@ No claim of crates.io publication while the distributable graph contains disallo
   test helpers compiled without definitions. Added explicit feature forwarding at both owning
   package boundaries and fail-closed non-Unix payload-cache helpers. The release command now has
   one public static-link feature rather than reaching into a transitive dependency.
+- 2026-07-26: Closed from hosted run
+  <https://github.com/z3z1ma/cdf/actions/runs/30196650532>. All five native targets passed static
+  DuckDB dependency inspection, relocatable Python packaging, archive verification, and upload;
+  the aggregate bundle verified and published
+  <https://github.com/z3z1ma/cdf/releases/tag/v0.2.0-alpha.1>. The actual published aarch64 macOS
+  archive then passed checksum verification, clean-prefix installation, environment-independent
+  version execution, strict signature verification, and generated completion/man-page inspection.
 
 ## Blockers
 
@@ -96,6 +103,10 @@ None for shaping. Actual crates.io publication remains blocked while the current
 - Fast-core local equivalent: 399 kernel/contract/package/runtime tests passed with six intentional
   performance ignores; 44 CLI-core all-feature tests passed; formatting, generated CLI/docs
   freshness, shell parsing, workflow lint where installed, and `git diff --check` passed.
+- `.10x/evidence/2026-07-26-p1-ws8-hosted-release.md`: hosted run `30196650532` passed all nine
+  jobs at head `2928ee09`; `v0.2.0-alpha.1` publishes five checksummed target archives plus
+  `SHA256SUMS`; the actual published aarch64 macOS artifact passed the shell installer and ran
+  without local dynamic-library environment overrides.
 
 ## Review
 
@@ -104,5 +115,21 @@ would have preserved an avoidable release dependency. User direction ratified st
 published artifacts. The second pass also found runner-native CPU flags and runner-absolute Python
 linkage that ordinary tests did not falsify. Release builds now override local `target-cpu=native`,
 link DuckDB statically, stage the genuine embedded-Python runtime, rewrite macOS linkage, verify
-the staged executable, and include the Python license. Hosted target-by-target execution remains
-the closure gate.
+the staged executable, and include the Python license.
+
+The final adversarial pass checked the failure classes that had escaped local fixtures: native
+Windows dependency-tool discovery, macOS framework-signature invalidation after standalone
+staging, absolute runtime paths, dynamic DuckDB leakage, checksum aggregation, generated artifact
+omission, and installer dependence on the developer environment. The hosted run and subsequent
+published-artifact install falsified none of those boundaries. Verdict: pass.
+
+## Retrospective
+
+The original artifact fixture proved archive mechanics but could not prove native linkage or
+runtime portability. The effective release gate must execute on every promised target and then
+test one published artifact through the public installer; merely uploading workflow artifacts is
+not a release. Static DuckDB makes release builds intentionally expensive, so the static feature
+belongs at the release composition boundary while ordinary development and benchmark builds keep
+the downloaded prebuilt path. macOS framework executables also carry bundle signatures that become
+invalid when staged alone; relocation must end with deterministic ad-hoc re-signing and strict
+verification.

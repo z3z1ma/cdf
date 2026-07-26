@@ -24,9 +24,10 @@ Its ordered lanes are:
 
 1. Source lifecycle and fixed-schema admission closure — done.
 2. Evidence-driven statistics pruning — done.
-3. Daily-driver CLI and release readiness — CLI done; hosted release remains.
+3. Daily-driver CLI and release readiness — CLI and hosted prerelease done; P1 aggregate closeout
+   remains.
 4. Constant-memory and implemented-interop proof — done.
-5. P3 aggregate evidence and closure — done; P1 aggregate closure follows its hosted release.
+5. P3 aggregate evidence and closure — done; P1 aggregate closure is the final active lane.
 
 Only bounded implementation tickets inside these lanes are executable. Parent and closeout
 tickets coordinate or audit; they are not implementation units.

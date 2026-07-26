@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-08-p1-product-experience-program.md
-Depends-On: .10x/tickets/2026-07-08-p1-product-ws8-release-engineering.md, .10x/tickets/done/2026-07-11-p1-ws9-cli-experience-excellence.md
+Depends-On: .10x/tickets/done/2026-07-08-p1-product-ws8-release-engineering.md, .10x/tickets/done/2026-07-11-p1-ws9-cli-experience-excellence.md
 
 # P1 Z1: product-experience program closeout
 

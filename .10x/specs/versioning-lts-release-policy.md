@@ -8,7 +8,7 @@ Updated: 2026-07-09
 
 This specification governs CDF versioning, serialized artifact compatibility, dependency tuple cadence, changelog convention, CI/release phases, binary artifacts, generated CLI artifacts, and initial install-channel expectations.
 
-It derives from `VISION.md` Chapter 22, `.10x/specs/conformance-governance-roadmap.md`, `.10x/knowledge/dependency-tuple-migration-guard.md`, `.10x/knowledge/quality-gate-execution.md`, and `.10x/tickets/2026-07-08-p1-product-ws8-release-engineering.md`.
+It derives from `VISION.md` Chapter 22, `.10x/specs/conformance-governance-roadmap.md`, `.10x/knowledge/dependency-tuple-migration-guard.md`, `.10x/knowledge/quality-gate-execution.md`, and `.10x/tickets/done/2026-07-08-p1-product-ws8-release-engineering.md`.
 
 ## Versioning policy
 

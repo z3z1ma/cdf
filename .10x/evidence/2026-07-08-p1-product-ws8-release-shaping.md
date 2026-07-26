@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-08
 Updated: 2026-07-08
-Relates-To: .10x/tickets/2026-07-08-p1-product-ws8-release-engineering.md, .10x/specs/versioning-lts-release-policy.md
+Relates-To: .10x/tickets/done/2026-07-08-p1-product-ws8-release-engineering.md, .10x/specs/versioning-lts-release-policy.md
 
 # P1 WS8 release engineering shaping evidence
 
@@ -20,7 +20,7 @@ Existing authority already covered several required semantics:
 Inspected:
 
 - P1 directive attachment and objective file content.
-- `.10x/tickets/2026-07-08-p1-product-ws8-release-engineering.md`.
+- `.10x/tickets/done/2026-07-08-p1-product-ws8-release-engineering.md`.
 - `.10x/specs/conformance-governance-roadmap.md`.
 - `.10x/knowledge/dependency-tuple-migration-guard.md`.
 - `.10x/knowledge/quality-gate-execution.md`.
@@ -35,11 +35,11 @@ Created:
 
 Updated:
 
-- `.10x/tickets/2026-07-08-p1-product-ws8-release-engineering.md`.
+- `.10x/tickets/done/2026-07-08-p1-product-ws8-release-engineering.md`.
 
 Checks:
 
-- `git diff --check -- .10x/specs/versioning-lts-release-policy.md .10x/tickets/2026-07-08-p1-product-ws8-release-engineering.md .10x/tickets/done/2026-07-08-p1-product-ws8a-ci-quality-workflows.md .10x/tickets/done/2026-07-08-p1-product-ws8b-release-artifact-workflow.md .10x/tickets/done/2026-07-08-p1-product-ws8c-changelog-installer-channel.md` passed.
+- `git diff --check -- .10x/specs/versioning-lts-release-policy.md .10x/tickets/done/2026-07-08-p1-product-ws8-release-engineering.md .10x/tickets/done/2026-07-08-p1-product-ws8a-ci-quality-workflows.md .10x/tickets/done/2026-07-08-p1-product-ws8b-release-artifact-workflow.md .10x/tickets/done/2026-07-08-p1-product-ws8c-changelog-installer-channel.md` passed.
 - `rg -n "[Kk]iller[ _-]?[Dd]emo" . --hidden` found no matches.
 
 ## What this supports or challenges

@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
-Parent: .10x/tickets/2026-07-08-p1-product-ws8-release-engineering.md
+Parent: .10x/tickets/done/2026-07-08-p1-product-ws8-release-engineering.md
 Depends-On: QUALITY.md, .10x/specs/versioning-lts-release-policy.md, .10x/knowledge/quality-gate-execution.md
 
 # P1 product WS8A: CI quality workflows
