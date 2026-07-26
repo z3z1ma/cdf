@@ -15,7 +15,7 @@ Separate cold discovery from pinned execution: freeze a persistent or run-local 
 2. `.10x/tickets/done/2026-07-13-p0-sa1-compiled-stream-admission-plan.md` defines the source/codec-neutral compiled stream-admission operation and package evidence. Done.
 3. `.10x/tickets/done/2026-07-13-p0-sa2-metadata-inventory-observation-cache.md` removes payload reads/hashing from inventory, encodes both coverage axes, and adds exact cache identity. Done.
 4. `.10x/tickets/done/2026-07-13-p0-sa3-fused-codec-admission.md` fuses row/binary observation with extraction, retains first windows, and hands discovery spools to execution. Done.
-5. `.10x/tickets/2026-07-13-p0-sa4-dynamic-producer-admission.md` applies the bootstrap-barrier law to registered dynamic producers; future language runtimes inherit the law when activated.
+5. `.10x/tickets/done/2026-07-13-p0-sa4-dynamic-producer-admission.md` applies the bootstrap-barrier law to registered dynamic producers; future language runtimes inherit the law when activated. Done.
 6. `.10x/tickets/2026-07-13-p0-sa5-fixed-schema-admission-conformance.md` owns adversarial transport/process counters, preview parity, and closure.
 
 SA0, SA1, and SA2 may proceed independently because the required registry, source-generation, and byte-source seams already exist. SA3 depends on SA0-SA2. SA4 depends on SA0-SA1 and may proceed alongside SA3. SA5 depends on every implementation child.
@@ -51,10 +51,11 @@ No same-run typed schema epoch, implicit promotion, or cache-as-authority behavi
 - 2026-07-18: IX1 and H1 are now done. SA4 remains blocked on H2/H4/WIT: the neutral contract and measurement harness exist, but concrete Python/WASM dynamic producer execution does not.
 - 2026-07-19: H2 closed the concrete Python neutral producer path. SA4 remains blocked on H4/WIT before the bootstrap-barrier law can be language-neutral; no Python-specific workaround is needed or authorized.
 - 2026-07-25: Backlog grooming removed speculative WASM work from this program's critical path. SA4 is executable against the completed neutral producer boundary and concrete Python implementation; future runtimes inherit the resulting law without blocking closure.
+- 2026-07-25: SA4 closed. Foreign producers now declare metadata-handshake versus stream-bootstrap schema acquisition; Python without a handshake starts once, retains its first accounted batch and live invocation across schema freeze, and continues that same stream during execution. Configured source references now participate in first lock generation and locked-snapshot hydration. SA5 is the only remaining child.
 
 ## Blockers
 
-None at the parent level. SA4 and SA5 own the remaining executable sequence.
+None at the parent level. SA5 owns the remaining conformance closure.
 
 ## Evidence
 

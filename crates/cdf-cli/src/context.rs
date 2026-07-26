@@ -261,55 +261,60 @@ fn hydrate_locked_schema_snapshots(
     resources: Vec<CompiledResource>,
     lock: Option<&CdfLock>,
 ) -> CdfResult<Vec<CompiledResource>> {
-    let Some(lock) = lock else {
-        return Ok(resources);
-    };
-    let store = SchemaSnapshotStore::new(root);
     resources
         .into_iter()
-        .map(|resource| {
-            if resource
-                .descriptor()
-                .schema_source
-                .without_pinned_snapshot()
-                .is_none()
-            {
-                return Ok(resource);
-            }
-            let resource_id = resource.descriptor().resource_id.as_str();
-            let Some(locked) = lock.resources.get(resource_id) else {
-                return Ok(resource);
-            };
-            let Some(reference) = locked.schema_snapshot.as_ref() else {
-                return Ok(resource);
-            };
-            if locked.schema_hash.as_deref() != Some(reference.schema_hash.as_str())
-                || locked.descriptor.schema_source.pinned_snapshot() != Some(reference)
-            {
-                return Err(CdfError::data(format!(
-                    "{LOCK_FILE_NAME} has inconsistent schema snapshot pointers for resource `{resource_id}`"
-                )));
-            }
-            let artifact = store.read(reference)?;
-            if artifact.resource_id != resource_id {
-                return Err(CdfError::data(format!(
-                    "schema snapshot {} belongs to resource `{}` instead of locked resource `{resource_id}`",
-                    reference.path, artifact.resource_id
-                )));
-            }
-            let pinned_source = resource
-                .descriptor()
-                .schema_source
-                .with_pinned_snapshot(reference.clone())
-                .ok_or_else(|| {
-                    CdfError::internal("schema source lost pinning support during lock hydration")
-                })?;
-            Ok(resource.with_schema_source_and_schema(
-                pinned_source,
-                Arc::new(artifact.schema.to_arrow()?),
-            ))
-        })
+        .map(|resource| hydrate_locked_schema_snapshot(root, resource, lock))
         .collect()
+}
+
+pub(crate) fn hydrate_locked_schema_snapshot(
+    root: &Path,
+    resource: CompiledResource,
+    lock: Option<&CdfLock>,
+) -> CdfResult<CompiledResource> {
+    let Some(lock) = lock else {
+        return Ok(resource);
+    };
+    if resource
+        .descriptor()
+        .schema_source
+        .without_pinned_snapshot()
+        .is_none()
+    {
+        return Ok(resource);
+    }
+    let resource_id = resource.descriptor().resource_id.as_str();
+    let Some(locked) = lock.resources.get(resource_id) else {
+        return Ok(resource);
+    };
+    let Some(reference) = locked.schema_snapshot.as_ref() else {
+        return Ok(resource);
+    };
+    if locked.schema_hash.as_deref() != Some(reference.schema_hash.as_str())
+        || locked.descriptor.schema_source.pinned_snapshot() != Some(reference)
+    {
+        return Err(CdfError::data(format!(
+            "{LOCK_FILE_NAME} has inconsistent schema snapshot pointers for resource `{resource_id}`"
+        )));
+    }
+    let artifact = SchemaSnapshotStore::new(root).read(reference)?;
+    if artifact.resource_id != resource_id {
+        return Err(CdfError::data(format!(
+            "schema snapshot {} belongs to resource `{}` instead of locked resource `{resource_id}`",
+            reference.path, artifact.resource_id
+        )));
+    }
+    let pinned_source = resource
+        .descriptor()
+        .schema_source
+        .with_pinned_snapshot(reference.clone())
+        .ok_or_else(|| {
+            CdfError::internal("schema source lost pinning support during lock hydration")
+        })?;
+    Ok(
+        resource
+            .with_schema_source_and_schema(pinned_source, Arc::new(artifact.schema.to_arrow()?)),
+    )
 }
 
 fn resource_not_compiled_message(

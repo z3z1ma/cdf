@@ -1,15 +1,20 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
+use cdf_foreign_stream::{
+    ForeignCancellation, ForeignSchemaAcquisition, ForeignStreamEvent, ForeignStreamOpenRequest,
+    ForeignTerminalStatus,
+};
 use cdf_kernel::{
     CdfError, QueryableResource, ResourceStream, Result, ScopeKey, TypePolicyAllowances,
 };
 use cdf_runtime::{
     BlockingLaneSpec, CompiledSourcePlan, CompiledSourcePlanInput, LaneAffinity,
+    PreparedSourcePayload, PreparedSourcePayloadKey, PreparedSourcePayloads,
     SourceAttestationStrength, SourceBatchMemoryContract, SourceCompileRequest,
     SourceDiscoveryCandidate, SourceDiscoveryKind, SourceDiscoveryRequest, SourceDiscoverySession,
     SourceDriver, SourceDriverDescriptor, SourceDriverId, SourceExecutionCapabilities,
@@ -17,9 +22,12 @@ use cdf_runtime::{
     SourceReferenceCompileRequest, SourceReferenceCompiler, SourceResolutionContext,
     SourceRetryGranularity, SourceSchemaObservation, artifact_hash,
 };
+use futures_util::StreamExt;
 use serde::Deserialize;
 
-use crate::{PythonPhysicalPlan, PythonResource, validate_attached_interpreter};
+use crate::{
+    PreparedPythonInvocation, PythonPhysicalPlan, PythonResource, validate_attached_interpreter,
+};
 
 const DRIVER_ID: &str = "python";
 const MIN_PYTHON_MAJOR: u16 = 3;
@@ -79,7 +87,7 @@ impl PythonSourceDriver {
         Ok(Self {
             descriptor: SourceDriverDescriptor {
                 driver_id: SourceDriverId::new(DRIVER_ID)?,
-                driver_version: "1.0.0".to_owned(),
+                driver_version: "2.0.0".to_owned(),
                 option_schema_hash: artifact_hash(&option_schema)?,
                 kinds: vec![DRIVER_ID.to_owned()],
                 schemes: vec![DRIVER_ID.to_owned()],
@@ -177,9 +185,34 @@ impl SourceDriver for PythonSourceDriver {
     fn discovery_session(
         &self,
         plan: &CompiledSourcePlan,
-        _context: &SourceResolutionContext<'_>,
+        context: &SourceResolutionContext<'_>,
     ) -> Result<Box<dyn SourceDiscoverySession>> {
         let physical = physical_plan(plan)?;
+        let bootstrap = match physical.schema_acquisition {
+            ForeignSchemaAcquisition::DeclaredHandshake => None,
+            ForeignSchemaAcquisition::StreamBootstrap => {
+                let lane = plan
+                    .execution_capabilities
+                    .blocking_lane
+                    .as_ref()
+                    .ok_or_else(|| {
+                        CdfError::contract("compiled Python source omitted its blocking lane")
+                    })?;
+                let resource =
+                    PythonResource::from_compiled(context.project_root(), plan, physical.clone())?
+                        .with_execution_services_and_lane(
+                            context.execution().clone(),
+                            lane.lane_id.clone(),
+                        )?;
+                Some(PythonBootstrapDiscovery {
+                    resource,
+                    execution: context.execution().clone(),
+                    prepared_payloads: context.prepared_payloads().clone(),
+                    prepared_key: prepared_python_invocation_key(plan, &physical)?,
+                    observed: Mutex::new(false),
+                })
+            }
+        };
         Ok(Box::new(PythonDiscoverySession {
             location: format!(
                 "python://{}#{}",
@@ -187,6 +220,8 @@ impl SourceDriver for PythonSourceDriver {
             ),
             content_hash: physical.content_hash,
             schema: plan.schema.clone(),
+            schema_acquisition: physical.schema_acquisition,
+            bootstrap,
         }))
     }
 
@@ -217,12 +252,25 @@ impl SourceDriver for PythonSourceDriver {
             .ok_or_else(|| {
                 CdfError::contract("compiled Python source omitted its blocking lane")
             })?;
-        let resource =
-            PythonResource::from_compiled(context.project_root(), plan, physical_plan(plan)?)?
-                .with_execution_services_and_lane(
-                    context.execution().clone(),
-                    lane.lane_id.clone(),
-                )?;
+        let physical = physical_plan(plan)?;
+        let prepared = context
+            .prepared_payloads()
+            .take(&prepared_python_invocation_key(plan, &physical)?)?
+            .map(|payload| {
+                let (prepared, retention) =
+                    payload.into_typed::<PreparedPythonInvocation>("Python invocation")?;
+                drop(retention);
+                Result::Ok(prepared)
+            })
+            .transpose()?;
+        let mut resource = PythonResource::from_compiled(context.project_root(), plan, physical)?
+            .with_execution_services_and_lane(
+            context.execution().clone(),
+            lane.lane_id.clone(),
+        )?;
+        if let Some(prepared) = prepared {
+            resource = resource.with_prepared_invocation(prepared)?;
+        }
         Ok(Arc::new(resource))
     }
 }
@@ -379,7 +427,8 @@ fn validate_declarative_metadata(
     resource: &PythonResource,
 ) -> Result<()> {
     let observed = resource.descriptor();
-    if resource.schema().as_ref() != &request.schema
+    if (resource.schema_acquisition() == ForeignSchemaAcquisition::DeclaredHandshake
+        && resource.schema().as_ref() != &request.schema)
         || observed.primary_key != request.descriptor.primary_key
         || observed.merge_key != request.descriptor.merge_key
         || observed.cursor != request.descriptor.cursor
@@ -391,6 +440,22 @@ fn validate_declarative_metadata(
         ));
     }
     Ok(())
+}
+
+fn prepared_python_invocation_key(
+    plan: &CompiledSourcePlan,
+    physical: &PythonPhysicalPlan,
+) -> Result<PreparedSourcePayloadKey> {
+    PreparedSourcePayloadKey::new(
+        plan.descriptor.resource_id.clone(),
+        plan.driver.driver_id.clone(),
+        artifact_hash(&serde_json::json!({
+            "kind": "python_stream_bootstrap_v1",
+            "module": physical.module_relative,
+            "callable": physical.callable,
+            "content_hash": physical.content_hash,
+        }))?,
+    )
 }
 
 fn physical_plan(plan: &CompiledSourcePlan) -> Result<PythonPhysicalPlan> {
@@ -725,6 +790,16 @@ struct PythonDiscoverySession {
     location: String,
     content_hash: String,
     schema: arrow_schema::Schema,
+    schema_acquisition: ForeignSchemaAcquisition,
+    bootstrap: Option<PythonBootstrapDiscovery>,
+}
+
+struct PythonBootstrapDiscovery {
+    resource: PythonResource,
+    execution: cdf_runtime::ExecutionServices,
+    prepared_payloads: PreparedSourcePayloads,
+    prepared_key: PreparedSourcePayloadKey,
+    observed: Mutex<bool>,
 }
 
 impl SourceDiscoverySession for PythonDiscoverySession {
@@ -750,14 +825,182 @@ impl SourceDiscoverySession for PythonDiscoverySession {
         request: &SourceDiscoveryRequest,
     ) -> Result<SourceSchemaObservation> {
         request.validate()?;
+        let Some(bootstrap) = &self.bootstrap else {
+            if self.schema_acquisition != ForeignSchemaAcquisition::DeclaredHandshake {
+                return Err(CdfError::internal(
+                    "Python stream-bootstrap discovery omitted its invocation state",
+                ));
+            }
+            return SourceSchemaObservation::new(
+                candidate,
+                self.schema.clone(),
+                BTreeMap::from([
+                    ("content_hash".to_owned(), self.content_hash.clone()),
+                    (
+                        "schema_handshake".to_owned(),
+                        "declared_metadata".to_owned(),
+                    ),
+                    ("producer_invocations".to_owned(), "0".to_owned()),
+                ]),
+                0,
+                0,
+            );
+        };
+        let mut observed = bootstrap
+            .observed
+            .lock()
+            .map_err(|_| CdfError::internal("Python bootstrap discovery state was poisoned"))?;
+        if *observed {
+            return Err(CdfError::internal(
+                "Python bootstrap discovery attempted to start the producer more than once",
+            ));
+        }
+        *observed = true;
+        drop(observed);
+
+        let request_open = ForeignStreamOpenRequest {
+            resource_id: bootstrap.resource.descriptor().resource_id.clone(),
+            partition_id: cdf_kernel::PartitionId::new("python-000001")?,
+            cancellation: ForeignCancellation::default(),
+        };
+        let resource = bootstrap.resource.clone();
+        let mut opened = bootstrap
+            .execution
+            .run_io(async move { resource.open_fresh(request_open).await })?;
+        if opened.descriptor.schema_acquisition != ForeignSchemaAcquisition::StreamBootstrap {
+            return terminate_bootstrap_with_error(
+                &bootstrap.execution,
+                &opened,
+                CdfError::contract(
+                    "Python discovery opened a producer that did not declare stream-bootstrap schema acquisition",
+                ),
+            );
+        }
+        let mut prefix = VecDeque::new();
+        let (schema, retained_rows, retained_bytes, retention) = loop {
+            let event = match next_foreign_event(&bootstrap.execution, &mut opened) {
+                Ok(event) => event,
+                Err(error) => {
+                    return terminate_bootstrap_with_error(&bootstrap.execution, &opened, error);
+                }
+            };
+            match event {
+                Some(Ok(ForeignStreamEvent::Outcome(outcome))) => {
+                    let Some(batch) = outcome.batch.record_batch() else {
+                        return terminate_bootstrap_with_error(
+                            &bootstrap.execution,
+                            &opened,
+                            CdfError::data(
+                                "Python bootstrap outcome must carry an in-memory Arrow batch",
+                            ),
+                        );
+                    };
+                    let schema = batch.schema().as_ref().clone();
+                    let retained_rows = outcome.batch.header.row_count;
+                    let retained_bytes = outcome.batch.retained_bytes();
+                    let Some(retention) = outcome.batch.retention().cloned() else {
+                        return terminate_bootstrap_with_error(
+                            &bootstrap.execution,
+                            &opened,
+                            CdfError::internal(
+                                "Python bootstrap outcome omitted its accounted payload retention",
+                            ),
+                        );
+                    };
+                    prefix.push_back(ForeignStreamEvent::Outcome(outcome));
+                    break (schema, retained_rows, retained_bytes, retention);
+                }
+                Some(Ok(ForeignStreamEvent::Control(control))) => {
+                    prefix.push_back(ForeignStreamEvent::Control(control));
+                }
+                Some(Ok(ForeignStreamEvent::Terminal(ForeignTerminalStatus::Succeeded {
+                    ..
+                })))
+                | None => {
+                    return terminate_bootstrap_with_error(
+                        &bootstrap.execution,
+                        &opened,
+                        CdfError::data(
+                            "Python producer completed before emitting a batch from which to freeze its schema",
+                        ),
+                    );
+                }
+                Some(Ok(ForeignStreamEvent::Terminal(ForeignTerminalStatus::Cancelled))) => {
+                    return terminate_bootstrap_with_error(
+                        &bootstrap.execution,
+                        &opened,
+                        CdfError::transient(
+                            "Python producer was cancelled before emitting its bootstrap batch",
+                        ),
+                    );
+                }
+                Some(Ok(ForeignStreamEvent::Terminal(ForeignTerminalStatus::Failed {
+                    retryable,
+                    message,
+                }))) => {
+                    let error = if retryable {
+                        CdfError::transient(message)
+                    } else {
+                        CdfError::data(message)
+                    };
+                    return terminate_bootstrap_with_error(&bootstrap.execution, &opened, error);
+                }
+                Some(Err(error)) => {
+                    return terminate_bootstrap_with_error(&bootstrap.execution, &opened, error);
+                }
+            }
+        };
+        let prepared = PreparedPythonInvocation::new(opened, prefix)?;
+        bootstrap.prepared_payloads.install(
+            bootstrap.prepared_key.clone(),
+            PreparedSourcePayload::new(prepared, retention),
+        )?;
         SourceSchemaObservation::new(
             candidate,
-            self.schema.clone(),
-            BTreeMap::from([("content_hash".to_owned(), self.content_hash.clone())]),
+            schema,
+            BTreeMap::from([
+                ("content_hash".to_owned(), self.content_hash.clone()),
+                ("schema_handshake".to_owned(), "stream_bootstrap".to_owned()),
+                ("producer_invocations".to_owned(), "1".to_owned()),
+                ("retained_batches".to_owned(), "1".to_owned()),
+                ("retained_rows".to_owned(), retained_rows.to_string()),
+                ("retained_bytes".to_owned(), retained_bytes.to_string()),
+            ]),
+            // The compiler reads only the Arrow schema metadata. The generated payload remains
+            // accounted and is retained for execution rather than sampled or transferred twice.
             0,
             0,
         )
     }
+}
+
+fn terminate_bootstrap_with_error<T>(
+    execution: &cdf_runtime::ExecutionServices,
+    opened: &cdf_foreign_stream::ForeignStreamOpen,
+    mut error: CdfError,
+) -> Result<T> {
+    let termination = opened.termination.clone();
+    if let Err(cleanup) = execution.run_io(async move { termination.terminate_and_join().await }) {
+        error.message.push_str(&format!(
+            "; Python bootstrap termination also failed: {}",
+            cleanup.message
+        ));
+    }
+    Err(error)
+}
+
+fn next_foreign_event(
+    execution: &cdf_runtime::ExecutionServices,
+    opened: &mut cdf_foreign_stream::ForeignStreamOpen,
+) -> Result<Option<Result<ForeignStreamEvent>>> {
+    let events = std::mem::replace(&mut opened.events, Box::pin(futures_util::stream::empty()));
+    let (event, events) = execution.run_io(async move {
+        let mut events = events;
+        let event = events.next().await;
+        Result::Ok((event, events))
+    })?;
+    opened.events = events;
+    Ok(event)
 }
 
 #[cfg(test)]

@@ -26,3 +26,9 @@ Wrappers are part of the extension boundary. When a source or destination trait 
 override—not merely an accessor—every registry, validation, scope, policy, and instrumentation
 wrapper must deliberately forward it. Relying on the trait default can silently erase an
 adapter's optimized or correctness-bearing behavior while still compiling.
+
+Dynamic sources declare schema acquisition through the neutral producer descriptor. A metadata
+handshake performs no row-producing invocation. A stream bootstrap starts the real invocation
+once, retains its first accounted batches through the compiler's schema-freeze barrier, and
+continues that exact stream during execution. Project/compiler orchestration may retain the opaque
+prepared payload but must not branch on the language runtime.

@@ -26,12 +26,24 @@ pub struct ForeignProducerDescriptor {
     pub producer_id: ForeignProducerId,
     pub protocol_version: ForeignProtocolVersion,
     pub transfer_modes: Vec<ForeignTransferMode>,
+    pub schema_acquisition: ForeignSchemaAcquisition,
     pub startup: ForeignStartupModel,
     pub lanes: ForeignLaneCapabilities,
     pub memory: ForeignMemoryContract,
     pub cancellation: ForeignCancellationContract,
     pub state: ForeignStateContract,
     pub security: ForeignSecurityContract,
+}
+
+/// How a foreign producer supplies the fixed schema required before execution begins.
+///
+/// A declared handshake is metadata-only. A stream bootstrap starts the real producer and
+/// requires the compiler to retain that same invocation across the schema-freeze barrier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForeignSchemaAcquisition {
+    DeclaredHandshake,
+    StreamBootstrap,
 }
 
 impl ForeignProducerDescriptor {
@@ -906,6 +918,7 @@ mod tests {
             producer_id: ForeignProducerId::new("mock_foreign").unwrap(),
             protocol_version: ForeignProtocolVersion::new("1").unwrap(),
             transfer_modes: vec![mode],
+            schema_acquisition: ForeignSchemaAcquisition::DeclaredHandshake,
             startup: ForeignStartupModel::InProcessAttached,
             lanes: ForeignLaneCapabilities {
                 execution_lane: ForeignExecutionLane::Cpu,

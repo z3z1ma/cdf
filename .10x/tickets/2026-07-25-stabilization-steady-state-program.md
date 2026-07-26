@@ -20,7 +20,7 @@ the user deliberately activates them.
 ### WS-A — Source lifecycle closure
 
 1. `.10x/tickets/done/2026-07-20-source-resume-aware-negotiation.md` — done.
-2. `.10x/tickets/2026-07-13-p0-sa4-dynamic-producer-admission.md`
+2. `.10x/tickets/done/2026-07-13-p0-sa4-dynamic-producer-admission.md` — done.
 3. `.10x/tickets/2026-07-13-p0-sa5-fixed-schema-admission-conformance.md`
 4. `.10x/tickets/2026-07-13-p0-fixed-schema-discovery-stream-admission.md`
 
@@ -105,6 +105,9 @@ WASM, distributed execution, CDC, and new connectors are not P3 closure dependen
   preserving its source research. Stale umbrella tickets and completed observability/conformance
   parents move terminal; future ambitions move to the roadmap rather than remaining open
   implementation tickets.
+- 2026-07-25: WS-A SA4 closed with the neutral foreign-producer schema-acquisition capability,
+  single-invocation Python bootstrap retention, configured-reference pin/hydration repair, and
+  491-test CLI/project integration evidence. SA5 is now the only source-lifecycle child.
 
 ## Blockers
 

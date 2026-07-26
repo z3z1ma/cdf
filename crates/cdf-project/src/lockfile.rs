@@ -620,7 +620,7 @@ pub fn pin_schema_snapshot_in_project_lockfile(
 
     let selected_id = pinned_resource.descriptor().resource_id.as_str();
     let mut found = false;
-    let resources = resources
+    let mut resources = resources
         .iter()
         .map(|resource| {
             if resource.descriptor().resource_id.as_str() == selected_id {
@@ -632,9 +632,15 @@ pub fn pin_schema_snapshot_in_project_lockfile(
         })
         .collect::<Vec<_>>();
     if !found {
-        return Err(CdfError::contract(format!(
-            "cannot pin schema snapshot for resource `{selected_id}` because it is not compiled in the project"
-        )));
+        let configured_reference = config.resources.get(selected_id).is_some_and(|mapping| {
+            matches!(mapping.source_kind(), ResourceSourceKind::Reference { .. })
+        });
+        if !configured_reference {
+            return Err(CdfError::contract(format!(
+                "cannot pin schema snapshot for resource `{selected_id}` because it is not configured in the project"
+            )));
+        }
+        resources.push(pinned_resource.clone());
     }
     generate_lockfile_with_destination_artifacts(
         config,

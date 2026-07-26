@@ -12832,6 +12832,61 @@ fn python_resource_plan_preview_run_and_replay_use_the_product_spine() {
 }
 
 #[test]
+fn python_resource_without_schema_bootstraps_and_executes_one_invocation() {
+    let project = TestProject::new();
+    let marker = project.root.join("python-bootstrap-invocations");
+    let interpreter = cdf_python::attached_interpreter_report()
+        .unwrap()
+        .executable;
+    write_python_bootstrap_project(&project, &interpreter, &marker);
+
+    let run_result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        "events.raw",
+    ]);
+    assert_eq!(run_result.exit_code, 0, "stderr: {}", run_result.stderr);
+    let report = stderr_or_stdout_json(&run_result.stdout);
+    assert_eq!(report["result"]["row_count"], 2);
+    assert_eq!(report["result"]["checkpoint"]["status"], "committed");
+    assert_eq!(
+        fs::read_to_string(&marker).unwrap(),
+        "called\n",
+        "cold discovery and extraction must continue one producer invocation"
+    );
+    let package = run_package_dir(&project, &run_result);
+    let manifest = cdf_package::read_manifest(&package).unwrap();
+    assert_eq!(
+        manifest
+            .identity
+            .segments
+            .iter()
+            .map(|segment| segment.row_count)
+            .sum::<u64>(),
+        2,
+        "the bootstrap batch must not be consumed or omitted at the schema-freeze barrier"
+    );
+
+    let plan = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "events.raw",
+    ]);
+    assert_eq!(plan.exit_code, 0, "stderr: {}", plan.stderr);
+    assert_eq!(
+        fs::read_to_string(&marker).unwrap(),
+        "called\n",
+        "the pinned schema must make later planning metadata-only"
+    );
+}
+
+#[test]
 fn python_resource_errors_route_to_doctor_without_path_escape() {
     let project = TestProject::new();
     let interpreter = cdf_python::attached_interpreter_report()
@@ -17079,6 +17134,57 @@ raw_events.__cdf_merge_key__ = ()
 raw_events.__cdf_cursor__ = "updated_at"
 raw_events.__cdf_bounded__ = True
 raw_events.__cdf_schema__ = (("id", "int64", False), ("name", "utf8", False), ("updated_at", "int64", False))
+raw_events.__cdf_write_disposition__ = "append"
+"#,
+            serde_json::to_string(marker.to_str().unwrap()).unwrap()
+        ),
+    )
+    .unwrap();
+}
+
+fn write_python_bootstrap_project(project: &TestProject, interpreter: &Path, marker: &Path) {
+    fs::create_dir_all(project.root.join("src")).unwrap();
+    fs::write(
+        project.root.join("cdf.toml"),
+        format!(
+            r#"
+[project]
+name = "python_bootstrap"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.db"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/python.duckdb"
+
+[python]
+interpreter = {}
+
+[resources."events.raw"]
+source = "python://src/events.py#raw_events"
+trust = "governed"
+"#,
+            serde_json::to_string(interpreter.to_str().unwrap()).unwrap()
+        ),
+    )
+    .unwrap();
+    fs::write(
+        project.root.join("src/events.py"),
+        format!(
+            r#"
+def raw_events():
+    with open({}, "a", encoding="utf-8") as marker:
+        marker.write("called\n")
+    yield {{"id": 1, "name": "ada", "updated_at": 10}}
+    yield {{"id": 2, "name": "grace", "updated_at": 20}}
+
+raw_events.__cdf_resource__ = True
+raw_events.__cdf_primary_key__ = ()
+raw_events.__cdf_merge_key__ = ()
+raw_events.__cdf_cursor__ = "updated_at"
+raw_events.__cdf_bounded__ = True
+raw_events.__cdf_schema__ = ()
 raw_events.__cdf_write_disposition__ = "append"
 "#,
             serde_json::to_string(marker.to_str().unwrap()).unwrap()

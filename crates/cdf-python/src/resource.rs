@@ -1,9 +1,9 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     ffi::CString,
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use arrow_array::{Array, Int64Array, TimestampMicrosecondArray, UInt64Array};
@@ -29,9 +29,9 @@ use crate::{PythonBridgeOptions, PythonResourceBridge, internal::py_error};
 use cdf_foreign_stream::{
     ForeignBackpressure, ForeignCancellation, ForeignCancellationContract, ForeignExecutionLane,
     ForeignLaneCapabilities, ForeignMemoryContract, ForeignProducer, ForeignProducerDescriptor,
-    ForeignProducerId, ForeignProtocolVersion, ForeignSecurityContract, ForeignStartupModel,
-    ForeignStateContract, ForeignStreamEvent, ForeignStreamOpen, ForeignStreamOpenRequest,
-    ForeignTerminalStatus, ForeignTransferMode,
+    ForeignProducerId, ForeignProtocolVersion, ForeignSchemaAcquisition, ForeignSecurityContract,
+    ForeignStartupModel, ForeignStateContract, ForeignStreamEvent, ForeignStreamOpen,
+    ForeignStreamOpenRequest, ForeignTerminalStatus, ForeignTransferMode,
 };
 
 const PARTITION_ID: &str = "python-000001";
@@ -55,6 +55,7 @@ pub struct PythonResource {
     baseline_observation_schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
     type_policy_allowances: TypePolicyAllowances,
     foreign_descriptor: ForeignProducerDescriptor,
+    prepared_invocation: Arc<Mutex<PreparedInvocationState>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -66,6 +67,61 @@ pub(crate) struct PythonPhysicalPlan {
     pub(crate) bounded: bool,
     pub(crate) dict_batch_rows: usize,
     pub(crate) max_boundary_bytes: u64,
+    pub(crate) schema_acquisition: ForeignSchemaAcquisition,
+}
+
+#[derive(Debug)]
+enum PreparedInvocationState {
+    Fresh,
+    Ready(Box<PreparedPythonInvocation>),
+    Consumed,
+}
+
+#[derive(Debug)]
+pub(crate) struct PreparedPythonInvocation {
+    opened: Option<ForeignStreamOpen>,
+    prefix: VecDeque<ForeignStreamEvent>,
+}
+
+impl PreparedPythonInvocation {
+    pub(crate) fn new(
+        opened: ForeignStreamOpen,
+        prefix: VecDeque<ForeignStreamEvent>,
+    ) -> Result<Self> {
+        if prefix.is_empty()
+            || !prefix
+                .iter()
+                .any(|event| matches!(event, ForeignStreamEvent::Outcome(_)))
+        {
+            return Err(cdf_kernel::CdfError::internal(
+                "prepared Python invocation requires a retained bootstrap outcome",
+            ));
+        }
+        Ok(Self {
+            opened: Some(opened),
+            prefix,
+        })
+    }
+
+    fn into_open(mut self) -> Result<ForeignStreamOpen> {
+        use futures_util::StreamExt;
+
+        let mut opened = self.opened.take().ok_or_else(|| {
+            cdf_kernel::CdfError::internal("prepared Python invocation was already consumed")
+        })?;
+        let prefix =
+            futures_util::stream::iter(std::mem::take(&mut self.prefix).into_iter().map(Ok));
+        opened.events = Box::pin(prefix.chain(opened.events));
+        Ok(opened)
+    }
+}
+
+impl Drop for PreparedPythonInvocation {
+    fn drop(&mut self) {
+        if let Some(opened) = &self.opened {
+            opened.termination.cancel();
+        }
+    }
 }
 
 impl PythonResource {
@@ -91,6 +147,11 @@ impl PythonResource {
             ))
         })?;
         let metadata = inspect_metadata(&source, &module_relative, &callable)?;
+        let schema_acquisition = if metadata.schema.is_empty() {
+            ForeignSchemaAcquisition::StreamBootstrap
+        } else {
+            ForeignSchemaAcquisition::DeclaredHandshake
+        };
         let schema = Arc::new(Schema::new(
             metadata
                 .schema
@@ -104,7 +165,13 @@ impl PythonResource {
                 })
                 .collect::<Result<Vec<_>>>()?,
         ));
-        let schema_hash = cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?;
+        let schema_source = match schema_acquisition {
+            ForeignSchemaAcquisition::DeclaredHandshake => SchemaSource::Declared {
+                schema_hash: cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?,
+                source: uri.to_owned(),
+            },
+            ForeignSchemaAcquisition::StreamBootstrap => SchemaSource::Discover,
+        };
         let write_disposition = match metadata.write_disposition.as_str() {
             "append" => WriteDisposition::Append,
             "replace" => WriteDisposition::Replace,
@@ -127,14 +194,11 @@ impl PythonResource {
             lag_tolerance_ms: 0,
         });
         let content_hash = format!("sha256:{}", hex::encode(Sha256::digest(source.as_bytes())));
-        let foreign_descriptor = python_foreign_descriptor(max_boundary_bytes)?;
+        let foreign_descriptor = python_foreign_descriptor(max_boundary_bytes, schema_acquisition)?;
         Ok(Self {
             descriptor: ResourceDescriptor {
                 resource_id,
-                schema_source: SchemaSource::Declared {
-                    schema_hash,
-                    source: uri.to_owned(),
-                },
+                schema_source,
                 primary_key: metadata.primary_key,
                 merge_key: metadata.merge_key,
                 cursor,
@@ -179,6 +243,7 @@ impl PythonResource {
             baseline_observation_schema_catalog: Vec::new(),
             type_policy_allowances: TypePolicyAllowances::default(),
             foreign_descriptor,
+            prepared_invocation: Arc::new(Mutex::new(PreparedInvocationState::Fresh)),
         })
     }
 
@@ -190,7 +255,12 @@ impl PythonResource {
             bounded: self.bounded,
             dict_batch_rows: self.dict_batch_rows,
             max_boundary_bytes: self.max_boundary_bytes,
+            schema_acquisition: self.foreign_descriptor.schema_acquisition,
         }
+    }
+
+    pub(crate) fn schema_acquisition(&self) -> ForeignSchemaAcquisition {
+        self.foreign_descriptor.schema_acquisition
     }
 
     pub(crate) fn from_compiled(
@@ -204,7 +274,8 @@ impl PythonResource {
             ));
         }
         let module_path = resolve_module_path(project_root, &physical.module_relative)?;
-        let foreign_descriptor = python_foreign_descriptor(physical.max_boundary_bytes)?;
+        let foreign_descriptor =
+            python_foreign_descriptor(physical.max_boundary_bytes, physical.schema_acquisition)?;
         Ok(Self {
             descriptor: plan.descriptor.clone(),
             schema: Arc::new(plan.schema.clone()),
@@ -223,7 +294,18 @@ impl PythonResource {
             baseline_observation_schema_catalog: plan.baseline_observation_schema_catalog.clone(),
             type_policy_allowances: plan.type_policy_allowances,
             foreign_descriptor,
+            prepared_invocation: Arc::new(Mutex::new(PreparedInvocationState::Fresh)),
         })
+    }
+
+    pub(crate) fn with_prepared_invocation(
+        mut self,
+        prepared: PreparedPythonInvocation,
+    ) -> Result<Self> {
+        self.prepared_invocation = Arc::new(Mutex::new(PreparedInvocationState::Ready(Box::new(
+            prepared,
+        ))));
+        Ok(self)
     }
 
     pub(crate) fn with_execution_services_and_lane(
@@ -260,7 +342,7 @@ impl PythonResource {
             cdf_kernel::bind_partition_schema_observation(
                 &mut partition,
                 runtime,
-                self.descriptor.resource_id.as_str(),
+                &format!("python://{}", self.module_relative),
             )?;
         }
         Ok(partition)
@@ -502,7 +584,10 @@ fn max_u64(array: &UInt64Array, field: &str) -> Result<u64> {
         })
 }
 
-fn python_foreign_descriptor(max_boundary_bytes: u64) -> Result<ForeignProducerDescriptor> {
+fn python_foreign_descriptor(
+    max_boundary_bytes: u64,
+    schema_acquisition: ForeignSchemaAcquisition,
+) -> Result<ForeignProducerDescriptor> {
     let descriptor = ForeignProducerDescriptor {
         producer_id: ForeignProducerId::new("cdf.python")?,
         protocol_version: ForeignProtocolVersion::new("1")?,
@@ -510,6 +595,7 @@ fn python_foreign_descriptor(max_boundary_bytes: u64) -> Result<ForeignProducerD
             ForeignTransferMode::ArrowCData,
             ForeignTransferMode::RowCompat,
         ],
+        schema_acquisition,
         startup: ForeignStartupModel::InProcessAttached,
         lanes: ForeignLaneCapabilities {
             execution_lane: ForeignExecutionLane::Blocking,
@@ -551,6 +637,56 @@ impl ForeignProducer for PythonResource {
     }
 
     fn open(
+        &self,
+        request: ForeignStreamOpenRequest,
+    ) -> cdf_kernel::BoxFuture<'_, Result<ForeignStreamOpen>> {
+        if request.resource_id != self.descriptor.resource_id
+            || request.partition_id.as_str() != PARTITION_ID
+        {
+            return Box::pin(async {
+                Err(cdf_kernel::CdfError::contract(
+                    "Python foreign stream request does not match the resolved resource partition",
+                ))
+            });
+        }
+        let prepared = {
+            let mut state = match self.prepared_invocation.lock() {
+                Ok(state) => state,
+                Err(_) => {
+                    return Box::pin(async {
+                        Err(cdf_kernel::CdfError::internal(
+                            "prepared Python invocation state was poisoned",
+                        ))
+                    });
+                }
+            };
+            match std::mem::replace(&mut *state, PreparedInvocationState::Consumed) {
+                PreparedInvocationState::Fresh => {
+                    *state = PreparedInvocationState::Fresh;
+                    None
+                }
+                PreparedInvocationState::Ready(prepared) => Some(*prepared),
+                PreparedInvocationState::Consumed => {
+                    return Box::pin(async {
+                        Err(cdf_kernel::CdfError::contract(
+                            "prepared Python invocation cannot be opened more than once",
+                        ))
+                    });
+                }
+            }
+        };
+        if let Some(prepared) = prepared {
+            return Box::pin(async move {
+                request.cancellation.check()?;
+                prepared.into_open()
+            });
+        }
+        self.open_fresh(request)
+    }
+}
+
+impl PythonResource {
+    pub(crate) fn open_fresh(
         &self,
         request: ForeignStreamOpenRequest,
     ) -> cdf_kernel::BoxFuture<'_, Result<ForeignStreamOpen>> {
@@ -755,14 +891,9 @@ fn inspect_metadata(source: &str, file_name: &str, callable_name: &str) -> Resul
             .and_then(|value| value.extract::<Vec<(String, String, bool)>>())
             .map_err(|_| {
                 cdf_kernel::CdfError::contract(format!(
-                    "Python resource target `{file_name}#{callable_name}` requires explicit `schema={{...}}` metadata for plan-time discovery"
+                    "Python resource target `{file_name}#{callable_name}` has invalid `schema={{...}}` metadata"
                 ))
             })?;
-        if schema.is_empty() {
-            return Err(cdf_kernel::CdfError::contract(
-                "Python resource schema metadata cannot be empty",
-            ));
-        }
         Ok(PythonMetadata {
             schema,
             primary_key: callable

@@ -73,6 +73,17 @@ impl Batch {
             BatchPayload::Reference(_) => 0,
         }
     }
+
+    /// Returns the ownership token already accounting for an in-memory payload.
+    ///
+    /// Invocation-local handoff stores may clone this token to retain the same accounted bytes
+    /// across a compiler barrier; cloning does not reserve or double-count another buffer.
+    pub fn retention(&self) -> Option<&PayloadRetention> {
+        match &self.payload {
+            BatchPayload::RecordBatch(payload) => payload.retention.as_ref(),
+            BatchPayload::Reference(_) => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

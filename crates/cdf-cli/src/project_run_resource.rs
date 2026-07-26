@@ -96,12 +96,17 @@ fn compile_project_source_reference(
             "source reference resource ids must use `<source>.<resource>`",
         ))
     })?;
-    Ok(Some(CompiledResource::from_compiled_source_with_execution(
+    let resource = CompiledResource::from_compiled_source_with_execution(
         source_name,
         resource_name,
         Some(context.root.clone()),
         source_plan,
         cdf_declarative::compile_execution_extent(mapping.execution.as_ref())?,
+    )?;
+    Ok(Some(crate::context::hydrate_locked_schema_snapshot(
+        &context.root,
+        resource,
+        context.lock.as_ref(),
     )?))
 }
 

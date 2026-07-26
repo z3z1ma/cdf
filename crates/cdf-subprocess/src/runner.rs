@@ -639,6 +639,7 @@ impl SubprocessProducer {
             producer_id: ForeignProducerId::new("cdf-subprocess")?,
             protocol_version: ForeignProtocolVersion::new("1")?,
             transfer_modes: vec![transfer_mode],
+            schema_acquisition: cdf_foreign_stream::ForeignSchemaAcquisition::DeclaredHandshake,
             startup: ForeignStartupModel::ChildProcess,
             lanes: ForeignLaneCapabilities {
                 execution_lane: ForeignExecutionLane::IsolatedProcess,
