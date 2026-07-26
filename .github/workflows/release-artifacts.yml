@@ -219,14 +219,14 @@ jobs:
           case "$target" in
             *-apple-darwin)
               python_library="$(otool -L "$binary" | awk 'NR > 1 { print $1 }' | grep -E '/(libpython[^/]*\\.dylib|Python)$' | head -1)"
-              python_runtime_name="libpython$(python -c 'import sys; print(f\"{sys.version_info.major}.{sys.version_info.minor}\")').dylib"
+              python_runtime_name="libpython$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")').dylib"
               ;;
             *-unknown-linux-gnu)
               python_library="$(ldd "$binary" | awk '/libpython/ { print $3; exit }')"
               python_runtime_name="$(basename "$python_library")"
               ;;
             x86_64-pc-windows-msvc)
-              python_library_windows="$(python -c 'import pathlib, sys; name=f\"python{sys.version_info.major}{sys.version_info.minor}.dll\"; matches=list(pathlib.Path(sys.base_prefix).rglob(name)); print(matches[0] if matches else \"\")')"
+              python_library_windows="$(python -c 'import pathlib, sys; name=f"python{sys.version_info.major}{sys.version_info.minor}.dll"; matches=list(pathlib.Path(sys.base_prefix).rglob(name)); print(matches[0] if matches else "")')"
               python_library="$(cygpath -u "$python_library_windows")"
               python_runtime_name="$(basename "$python_library")"
               ;;
@@ -235,7 +235,7 @@ jobs:
             echo "linked Python runtime library is absent for ${target}: ${python_library:-not resolved}" >&2
             exit 1
           fi
-          python_license="$(python -c 'import pathlib, sys; roots={pathlib.Path(sys.base_prefix), pathlib.Path(sys.prefix)}; matches=[path for root in roots if root.exists() for path in root.rglob(\"LICENSE*\") if path.is_file()]; print(min(matches, key=lambda path: (len(path.parts), str(path))) if matches else \"\")')"
+          python_license="$(python -c 'import pathlib, sys; roots={pathlib.Path(sys.base_prefix), pathlib.Path(sys.prefix)}; matches=[path for root in roots if root.exists() for path in root.rglob("LICENSE*") if path.is_file()]; print(min(matches, key=lambda path: (len(path.parts), str(path))) if matches else "")')"
           if [[ "$target" == "x86_64-pc-windows-msvc" && -n "$python_license" ]]; then
             python_license="$(cygpath -u "$python_license")"
           fi

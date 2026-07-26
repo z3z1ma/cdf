@@ -20,5 +20,10 @@ parquet = { version = "58.3.0", default-features = false, features = ["arrow"] }
 rusqlite = { version = "0.40.1", default-features = false, features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
-sha2 = { version = "0.10.9", features = ["asm"] }
 tempfile = "3.27.0"
+
+[target.'cfg(not(windows))'.dependencies]
+sha2 = { version = "0.10.9", features = ["asm"] }
+
+[target.'cfg(windows)'.dependencies]
+sha2 = "0.10.9"
