@@ -181,8 +181,15 @@ struct StagedParquetObject {
 struct PendingParquetGroup {
     package_byte_count: u64,
     segment_count: usize,
+    input: ParquetGroupInput,
     commands: mpsc::SyncSender<ParquetGroupCommand>,
     task: cdf_runtime::ScopedBlockingTask<CompletedParquetGroup>,
+}
+
+#[derive(Clone, Copy)]
+enum ParquetGroupInput {
+    Live,
+    Durable,
 }
 
 struct CompletedParquetGroup {
@@ -434,6 +441,11 @@ impl ParquetStagedIngressSession {
         Ok(PendingParquetGroup {
             package_byte_count: 0,
             segment_count: 0,
+            input: if object_ordinal == 0 {
+                ParquetGroupInput::Live
+            } else {
+                ParquetGroupInput::Durable
+            },
             commands,
             task,
         })
@@ -447,37 +459,38 @@ impl ParquetStagedIngressSession {
     ) -> Result<()> {
         let identity = segment.identity.clone();
         self.validate_identity(&identity)?;
-        let file = segment.take_durable_local_file_access().ok_or_else(|| {
-            CdfError::data(format!(
-                "Parquet canonical segment encoding requires durable file access for segment {}",
-                identity.segment_id
-            ))
-        })?;
-        if !file.path().is_absolute() {
-            return Err(CdfError::data(format!(
-                "Parquet canonical segment path must be absolute: {}",
-                file.path().display()
-            )));
-        }
+        let input = match group.input {
+            ParquetGroupInput::Live => StagedParquetSegment::live(segment),
+            ParquetGroupInput::Durable => {
+                let file = segment.take_durable_local_file_access().ok_or_else(|| {
+                    CdfError::data(format!(
+                        "Parquet canonical segment encoding requires durable file access for segment {}",
+                        identity.segment_id
+                    ))
+                })?;
+                if !file.path().is_absolute() {
+                    return Err(CdfError::data(format!(
+                        "Parquet canonical segment path must be absolute: {}",
+                        file.path().display()
+                    )));
+                }
+                StagedParquetSegment::durable(identity.clone(), file)
+            }
+        };
         self.request.mutation_guard().assert_current()?;
         group
             .commands
-            .send(ParquetGroupCommand::Segment(StagedParquetSegment::new(
-                identity.clone(),
-                file,
-            )))
+            .send(ParquetGroupCommand::segment(input))
             .map_err(|_| CdfError::destination("Parquet object group encoder stopped"))?;
-        // Acknowledgement releases the live Arrow payload after its exact durable-file capability
-        // has entered the bounded object worker. The worker's pre-reserved memory authority owns
-        // IPC replay and Parquet encoding, so writer concurrency does not multiply segment-sized
-        // retained batches.
+        // The first object is a bounded zero-copy warm start. Later objects transfer only exact
+        // durable-file capabilities, releasing live Arrow payloads immediately so N-way writer
+        // concurrency cannot multiply segment-sized retained batches.
         stream.acknowledge(cdf_runtime::StagedSegmentAck {
             attempt_id: self.request.attempt_id().clone(),
             identity: identity.clone(),
             external_durable: false,
         })?;
         self.request.mutation_guard().assert_current()?;
-        drop(segment);
         if self
             .accepted
             .insert(identity.ordinal, identity.clone())
@@ -501,7 +514,7 @@ impl ParquetStagedIngressSession {
         pending: &mut VecDeque<cdf_runtime::ScopedBlockingTask<CompletedParquetGroup>>,
     ) -> Result<()> {
         let PendingParquetGroup { commands, task, .. } = group;
-        if commands.send(ParquetGroupCommand::Finish).is_err() {
+        if commands.send(ParquetGroupCommand::finish()).is_err() {
             task.termination().cancel();
             pending.push_back(task);
             return Err(self.with_join_failures(

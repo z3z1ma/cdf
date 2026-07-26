@@ -57,22 +57,44 @@ pub(crate) struct StagedParquetEncodeContext<'a> {
     pub(crate) settings: ParquetWriterSettings,
 }
 
-pub(crate) enum ParquetGroupCommand {
-    Segment(StagedParquetSegment),
-    Finish,
+pub(crate) struct ParquetGroupCommand(Option<StagedParquetSegment>);
+
+impl ParquetGroupCommand {
+    pub(crate) fn segment(segment: StagedParquetSegment) -> Self {
+        Self(Some(segment))
+    }
+
+    pub(crate) const fn finish() -> Self {
+        Self(None)
+    }
 }
 
 pub(crate) struct StagedParquetSegment {
     identity: cdf_runtime::StagedSegmentIdentity,
-    file: cdf_runtime::DurableLocalFileAccess,
+    input: StagedParquetSegmentInput,
+}
+
+enum StagedParquetSegmentInput {
+    Live(cdf_runtime::StagedSegmentRequest),
+    Durable(cdf_runtime::DurableLocalFileAccess),
 }
 
 impl StagedParquetSegment {
-    pub(crate) fn new(
+    pub(crate) fn live(request: cdf_runtime::StagedSegmentRequest) -> Self {
+        Self {
+            identity: request.identity.clone(),
+            input: StagedParquetSegmentInput::Live(request),
+        }
+    }
+
+    pub(crate) fn durable(
         identity: cdf_runtime::StagedSegmentIdentity,
         file: cdf_runtime::DurableLocalFileAccess,
     ) -> Self {
-        Self { identity, file }
+        Self {
+            identity,
+            input: StagedParquetSegmentInput::Durable(file),
+        }
     }
 }
 
@@ -149,13 +171,31 @@ pub(crate) fn write_parquet_staged_group(
 
 struct StagedGroupBatchReader {
     commands: mpsc::Receiver<ParquetGroupCommand>,
-    current: Option<(
-        cdf_runtime::StagedSegmentIdentity,
-        FileReader<std::fs::File>,
-        u64,
-    )>,
+    current: Option<(cdf_runtime::StagedSegmentIdentity, SegmentBatchReader, u64)>,
     identities: Vec<cdf_runtime::StagedSegmentIdentity>,
     finished: bool,
+}
+
+enum SegmentBatchReader {
+    Live(cdf_runtime::StagedSegmentRequest),
+    Durable(FileReader<std::fs::File>),
+}
+
+impl SegmentBatchReader {
+    fn next_batch(
+        &mut self,
+        identity: &cdf_runtime::StagedSegmentIdentity,
+    ) -> Result<Option<arrow_array::RecordBatch>> {
+        match self {
+            Self::Live(request) => request.reader_mut().next_batch(),
+            Self::Durable(reader) => reader.next().transpose().map_err(|error| {
+                CdfError::data(format!(
+                    "read canonical Arrow IPC segment {} for Parquet destination: {error}",
+                    identity.segment_id
+                ))
+            }),
+        }
+    }
 }
 
 impl StagedGroupBatchReader {
@@ -171,14 +211,8 @@ impl StagedGroupBatchReader {
     fn next_batch(&mut self) -> Result<Option<arrow_array::RecordBatch>> {
         loop {
             if let Some((identity, reader, rows)) = &mut self.current {
-                match reader.next() {
+                match reader.next_batch(identity)? {
                     Some(batch) => {
-                        let batch = batch.map_err(|error| {
-                            CdfError::data(format!(
-                                "read canonical Arrow IPC segment {} for Parquet destination: {error}",
-                                identity.segment_id
-                            ))
-                        })?;
                         let batch_rows = u64::try_from(batch.num_rows()).map_err(|_| {
                             CdfError::data("Parquet destination row count exceeds u64")
                         })?;
@@ -213,23 +247,31 @@ impl StagedGroupBatchReader {
                 continue;
             }
             match self.commands.recv() {
-                Ok(ParquetGroupCommand::Segment(request)) => {
+                Ok(ParquetGroupCommand(Some(request))) => {
                     if self.finished {
                         return Err(CdfError::internal(
                             "Parquet object group received a segment after finish",
                         ));
                     }
-                    let durable = request.file.open()?;
-                    let (_, file) = durable.into_parts();
-                    let reader = FileReader::try_new(file, None).map_err(|error| {
-                        CdfError::data(format!(
-                            "open canonical Arrow IPC segment {} for Parquet destination: {error}",
-                            request.identity.segment_id
-                        ))
-                    })?;
+                    let reader = match request.input {
+                        StagedParquetSegmentInput::Live(request) => {
+                            SegmentBatchReader::Live(request)
+                        }
+                        StagedParquetSegmentInput::Durable(file) => {
+                            let durable = file.open()?;
+                            let (_, file) = durable.into_parts();
+                            let reader = FileReader::try_new(file, None).map_err(|error| {
+                                CdfError::data(format!(
+                                    "open canonical Arrow IPC segment {} for Parquet destination: {error}",
+                                    request.identity.segment_id
+                                ))
+                            })?;
+                            SegmentBatchReader::Durable(reader)
+                        }
+                    };
                     self.current = Some((request.identity, reader, 0));
                 }
-                Ok(ParquetGroupCommand::Finish) => {
+                Ok(ParquetGroupCommand(None)) => {
                     self.finished = true;
                     return Ok(None);
                 }

@@ -209,6 +209,15 @@ compatibility path.
   authority. Replaced the ambiguous public constructor with `from_verified_artifact` and made
   `open` revalidate the retained root capability, file kind, and exact length without rehashing.
   This is one lifecycle-driven path shared by Parquet and DuckDB, not a one-object branch.
+- 2026-07-26: The verified-open release control remained `3.039 s`; removing the duplicate hash
+  reduced system work but proved canonical IPC decompression was the material single-object tax.
+  The final ingress algorithm now uses the first deterministic object as a bounded zero-copy warm
+  start and durable replay for every later object. The warm object begins consuming immediately
+  and is bounded by the existing eight-segment object policy; it cannot multiply across writers.
+  Once the next object begins, durable capabilities release live Arrow ownership immediately and
+  preserve full N-way writer admission. This is an adaptive representation choice inside one
+  object-ingress algorithm, not a legacy destination path or a destination-specific generic
+  runtime branch.
 
 ## Blockers
 
@@ -286,6 +295,12 @@ None.
   passed. Strict Clippy for Runtime, Package, Project, Parquet destination, and DuckDB destination
   passed with warnings denied, using the downloaded dynamic DuckDB path rather than a local
   bundled build; formatting and diff checks passed.
+- Bounded zero-copy warm start: the complete Parquet destination library suite passed all `40`
+  runnable tests with the release roofline test explicitly ignored. The nine-segment overlap test
+  exercises both representations in one run: object zero consumes the existing accounted reader,
+  object one consumes its durable IPC capability, and their encoders overlap; explicit jobs=1
+  remains serial. Strict Parquet destination Clippy passed with warnings denied, formatting and
+  diff checks passed. Release retention evidence remains pending.
 
 ## Review
 
