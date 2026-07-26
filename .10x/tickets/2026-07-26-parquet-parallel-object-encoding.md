@@ -25,7 +25,8 @@ compatibility path.
 - No alternate Parquet codec, compression default, row-group size, or object-layout change.
 - No private thread pool, destination branch in generic orchestration, unbounded retained
   segments, or package-sized materialization.
-- No 1 TiB rerun or universal throughput claim.
+- No universal throughput claim. The user subsequently required the exact prior 1 TiB acceptance
+  run as the final promotion gate; that run is now in scope as comparative evidence.
 
 ## Acceptance Criteria
 
@@ -60,6 +61,9 @@ compatibility path.
 
 - User-ratified: real N-way encoding is worth a bounded implementation and performance
   falsification; no long stress rerun is needed.
+- User-ratified, superseding the preceding bounded-only assumption: rerun the exact prior 1 TiB
+  acceptance workload on the 16-vCPU EC2 host, permit all 16 CPUs, compare it with the recorded
+  411.5 MB/s / 44:54.863 baseline, and tear the host down after evidence capture.
 - Record-backed: durable canonical segments are safe task inputs, staged acknowledgements may
   complete out of order, and final Parquet objects are already stored in ordinal-keyed maps.
 - Record-backed: the prior four-writer result did not execute multiple row encoders and therefore
@@ -100,6 +104,18 @@ compatibility path.
   deletes the Parquet crate's added direct `arrow-ipc` dependency, preserves exact ledger
   ownership, and removes both the reread and second decode rather than adding a single-object
   special case. The release retention comparison must be rerun before selection.
+- 2026-07-26: The first exact post-transfer multi-object `--jobs 1` falsification found a
+  forward-progress defect rather than a throughput result. The session retained twelve live,
+  accounted canonical segments while waiting to complete a group; the encoder was only submitted
+  after all eight segments in that group had accumulated, so the managed ledger could fill before
+  the consumer able to release those leases began. The run was stopped and excluded from evidence.
+- 2026-07-26: Replaced whole-group batch retention with one deterministic, bounded command stream
+  per object. The worker now starts when its group starts, receives at most the layout's recorded
+  `max_segments` requests, and consumes the existing accounted readers while later segments arrive.
+  Acknowledgement follows successful transfer into the rollback/redrive scope; no payload copy,
+  reread, unaccounted queue, compatibility path, or destination-private executor was introduced.
+  Finished groups still join and assemble by object ordinal, and failure closes/cancels/joins both
+  active and completed siblings.
 
 ## Blockers
 
@@ -132,6 +148,10 @@ None.
 - Post-falsification strict Clippy for Engine, Parquet destination, and Project: passed.
 - Final release retention comparison after accounted-reader transfer: pending dedicated-host
   execution.
+- Post-forward-progress repair: all `40` runnable Parquet library tests passed, including actual
+  multi-group overlap, explicit one-writer serialization, exact writer-window accounting, grouped
+  identity, abort, duplicate, and receipt paths; one explicit release benchmark remained ignored.
+  Strict all-target Parquet Clippy, formatting, and diff checks passed.
 
 ## Review
 

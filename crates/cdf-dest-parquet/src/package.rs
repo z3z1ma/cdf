@@ -1,4 +1,7 @@
-use std::io::{self, BufWriter, Write};
+use std::{
+    io::{self, BufWriter, Write},
+    sync::mpsc,
+};
 
 use cdf_memory::MemoryCoordinator;
 use cdf_runtime::{SpillBudgetCoordinator, SpillReservation};
@@ -53,8 +56,9 @@ pub(crate) struct StagedParquetEncodeContext<'a> {
     pub(crate) settings: ParquetWriterSettings,
 }
 
-pub(crate) struct StagedParquetSegment {
-    pub(crate) request: cdf_runtime::StagedSegmentRequest,
+pub(crate) enum ParquetGroupCommand {
+    Segment(cdf_runtime::StagedSegmentRequest),
+    Finish,
 }
 
 pub(crate) struct EncodedParquetGroup {
@@ -103,10 +107,10 @@ pub(crate) fn write_parquet_segment(
 }
 
 pub(crate) fn write_parquet_staged_group(
-    segments: Vec<StagedParquetSegment>,
+    commands: mpsc::Receiver<ParquetGroupCommand>,
     context: StagedParquetEncodeContext<'_>,
 ) -> Result<EncodedParquetGroup> {
-    let mut reader = StagedGroupBatchReader::new(segments)?;
+    let mut reader = StagedGroupBatchReader::new(commands);
     let encoded = write_parquet_batches(
         ParquetBatchWritePlan {
             retained_bytes: context.settings.bytes_per_batch.max(1),
@@ -129,23 +133,20 @@ pub(crate) fn write_parquet_staged_group(
 }
 
 struct StagedGroupBatchReader {
-    segments: std::vec::IntoIter<StagedParquetSegment>,
+    commands: mpsc::Receiver<ParquetGroupCommand>,
     current: Option<(cdf_runtime::StagedSegmentRequest, u64)>,
     identities: Vec<cdf_runtime::StagedSegmentIdentity>,
+    finished: bool,
 }
 
 impl StagedGroupBatchReader {
-    fn new(segments: Vec<StagedParquetSegment>) -> Result<Self> {
-        if segments.is_empty() {
-            return Err(CdfError::internal(
-                "Parquet object group requires at least one durable segment",
-            ));
-        }
-        Ok(Self {
-            segments: segments.into_iter(),
+    fn new(commands: mpsc::Receiver<ParquetGroupCommand>) -> Self {
+        Self {
+            commands,
             current: None,
             identities: Vec::new(),
-        })
+            finished: false,
+        }
     }
 
     fn next_batch(&mut self) -> Result<Option<arrow_array::RecordBatch>> {
@@ -188,19 +189,30 @@ impl StagedGroupBatchReader {
                 }
                 continue;
             }
-            match self.segments.next() {
-                Some(segment) => {
-                    self.current = Some((segment.request, 0));
+            match self.commands.recv() {
+                Ok(ParquetGroupCommand::Segment(request)) => {
+                    if self.finished {
+                        return Err(CdfError::internal(
+                            "Parquet object group received a segment after finish",
+                        ));
+                    }
+                    self.current = Some((request, 0));
                 }
-                None => {
+                Ok(ParquetGroupCommand::Finish) => {
+                    self.finished = true;
                     return Ok(None);
+                }
+                Err(_) => {
+                    return Err(CdfError::destination(
+                        "Parquet object group command stream closed before finish",
+                    ));
                 }
             }
         }
     }
 
     fn finish(self) -> Result<Vec<cdf_runtime::StagedSegmentIdentity>> {
-        if self.current.is_some() || self.segments.len() != 0 || self.identities.is_empty() {
+        if !self.finished || self.current.is_some() || self.identities.is_empty() {
             return Err(CdfError::internal(
                 "Parquet object group did not finish with at least one complete segment",
             ));

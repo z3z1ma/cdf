@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    sync::mpsc,
+};
 
 use cdf_kernel::{
     CdfError, CommittedContentMembership, CommittedContentRoot, CommittedContentRootId,
@@ -23,7 +26,7 @@ use crate::{
     manifest::canonical_json_bytes,
     manifest::{ParquetObjectEntry, ParquetObjectSegmentEntry},
     package::{
-        ParquetWriterSettings, StagedParquetEncodeContext, StagedParquetSegment,
+        ParquetGroupCommand, ParquetWriterSettings, StagedParquetEncodeContext,
         parquet_worker_working_set_bytes, write_parquet_staged_group,
     },
     store::{
@@ -176,9 +179,10 @@ struct StagedParquetObject {
 }
 
 struct PendingParquetGroup {
-    object_ordinal: u32,
     package_byte_count: u64,
-    segments: Vec<StagedParquetSegment>,
+    segment_count: usize,
+    commands: mpsc::SyncSender<ParquetGroupCommand>,
+    task: cdf_runtime::ScopedBlockingTask<CompletedParquetGroup>,
 }
 
 struct CompletedParquetGroup {
@@ -299,19 +303,11 @@ impl ParquetStagedIngressSession {
         Ok(())
     }
 
-    fn start_group(&self, object_ordinal: u32) -> PendingParquetGroup {
-        PendingParquetGroup {
-            object_ordinal,
-            package_byte_count: 0,
-            segments: Vec::new(),
-        }
-    }
-
-    fn dispatch_group(
+    fn start_group(
         &self,
-        group: PendingParquetGroup,
+        object_ordinal: u32,
         writer_memory: cdf_memory::MemoryLease,
-    ) -> Result<cdf_runtime::ScopedBlockingTask<CompletedParquetGroup>> {
+    ) -> Result<PendingParquetGroup> {
         let destination = self.destination.clone();
         let output_schema = self.request.output_schema().clone();
         let attempt_id = self.request.attempt_id().clone();
@@ -321,12 +317,15 @@ impl ParquetStagedIngressSession {
             bytes_per_batch: self.physical_plan.bytes_per_batch,
         };
         let mutation_guard = self.request.mutation_guard().clone();
-        let object_ordinal = group.object_ordinal;
-        let segments = group.segments;
         let run_id = format!(
             "parquet-stage-{}-object-{object_ordinal}",
             attempt_id.as_str()
         );
+        // The queue is bounded by the deterministic maximum membership of one object. Requests
+        // retain their existing ledger leases while queued, and the worker starts immediately so
+        // it can release those leases before a complete object group has been assembled.
+        let (commands, command_receiver) =
+            mpsc::sync_channel(usize::from(self.physical_plan.object_layout.max_segments));
         let task = self.destination.execution().spawn_blocking_value(
             &run_id,
             ENCODE_LANE,
@@ -340,7 +339,7 @@ impl ParquetStagedIngressSession {
                 let file = destination.store().staging_file()?;
                 let retained_writer_memory = writer_memory.clone();
                 let group = write_parquet_staged_group(
-                    segments,
+                    command_receiver,
                     StagedParquetEncodeContext {
                         expected_schema: &output_schema,
                         writer_memory: destination.execution().memory(),
@@ -432,7 +431,12 @@ impl ParquetStagedIngressSession {
                 })
             },
         )?;
-        Ok(task)
+        Ok(PendingParquetGroup {
+            package_byte_count: 0,
+            segment_count: 0,
+            commands,
+            task,
+        })
     }
 
     fn feed_group_segment(
@@ -444,6 +448,13 @@ impl ParquetStagedIngressSession {
         let identity = segment.identity.clone();
         self.validate_identity(&identity)?;
         self.request.mutation_guard().assert_current()?;
+        group
+            .commands
+            .send(ParquetGroupCommand::Segment(segment))
+            .map_err(|_| CdfError::destination("Parquet object group encoder stopped"))?;
+        // A successful bounded handoff transfers the already-accounted payload into the
+        // destination's rollback/redrive staging scope. Encoding need not finish before this
+        // acknowledgement because the verified package remains the durable replay authority.
         stream.acknowledge(cdf_runtime::StagedSegmentAck {
             attempt_id: self.request.attempt_id().clone(),
             identity: identity.clone(),
@@ -459,16 +470,30 @@ impl ParquetStagedIngressSession {
                 "Parquet object group acknowledged a duplicate segment ordinal",
             ));
         }
+        group.segment_count += 1;
         group.package_byte_count = group
             .package_byte_count
             .checked_add(identity.byte_count)
             .ok_or_else(|| CdfError::data("Parquet object package byte count overflow"))?;
-        // The request owns the source's existing batch leases until the worker consumes it.
-        // Acknowledgement transfers that accounted payload into destination-stage authority; it
-        // does not permit an unaccounted resident copy or a redundant canonical IPC decode.
-        group
-            .segments
-            .push(StagedParquetSegment { request: segment });
+        Ok(())
+    }
+
+    fn finish_group(
+        &mut self,
+        group: PendingParquetGroup,
+        pending: &mut VecDeque<cdf_runtime::ScopedBlockingTask<CompletedParquetGroup>>,
+    ) -> Result<()> {
+        let PendingParquetGroup { commands, task, .. } = group;
+        if commands.send(ParquetGroupCommand::Finish).is_err() {
+            task.termination().cancel();
+            pending.push_back(task);
+            return Err(self.with_join_failures(
+                CdfError::destination("Parquet object group encoder stopped before finish"),
+                None,
+                pending,
+            ));
+        }
+        pending.push_back(task);
         Ok(())
     }
 
@@ -498,8 +523,15 @@ impl ParquetStagedIngressSession {
 
     fn cancel_and_join(
         &mut self,
+        active: Option<PendingParquetGroup>,
         pending: &mut VecDeque<cdf_runtime::ScopedBlockingTask<CompletedParquetGroup>>,
     ) -> Result<()> {
+        if let Some(active) = active {
+            let PendingParquetGroup { commands, task, .. } = active;
+            drop(commands);
+            task.termination().cancel();
+            pending.push_back(task);
+        }
         for task in pending.iter() {
             task.termination().cancel();
         }
@@ -536,10 +568,10 @@ impl ParquetStagedIngressSession {
     fn with_join_failures(
         &mut self,
         error: CdfError,
-        _active: Option<PendingParquetGroup>,
+        active: Option<PendingParquetGroup>,
         pending: &mut VecDeque<cdf_runtime::ScopedBlockingTask<CompletedParquetGroup>>,
     ) -> CdfError {
-        match self.cancel_and_join(pending) {
+        match self.cancel_and_join(active, pending) {
             Ok(()) => error,
             Err(cleanup) => attach_secondary(error, "Parquet staged sibling cleanup", cleanup),
         }
@@ -738,12 +770,15 @@ impl StagedIngressSession for ParquetStagedIngressSession {
             };
             if active.as_ref().is_some_and(|group: &PendingParquetGroup| {
                 self.physical_plan.object_layout.closes_before(
-                    group.segments.len(),
+                    group.segment_count,
                     group.package_byte_count,
                     segment.identity.byte_count,
                 )
             }) {
                 let group = active.take().expect("active group was observed");
+                self.finish_group(group, &mut pending)?;
+            }
+            if active.is_none() {
                 if self.available_writer_memory.is_empty()
                     && let Err(error) = self.complete_oldest(&mut pending)
                 {
@@ -752,16 +787,12 @@ impl StagedIngressSession for ParquetStagedIngressSession {
                 let writer_memory = self.available_writer_memory.pop().ok_or_else(|| {
                     CdfError::internal("Parquet writer memory pool is unexpectedly empty")
                 })?;
-                let task = match self.dispatch_group(group, writer_memory) {
-                    Ok(task) => task,
+                active = match self.start_group(next_object_ordinal, writer_memory) {
+                    Ok(group) => Some(group),
                     Err(error) => {
                         return Err(self.with_join_failures(error, None, &mut pending));
                     }
                 };
-                pending.push_back(task);
-            }
-            if active.is_none() {
-                active = Some(self.start_group(next_object_ordinal));
                 next_object_ordinal = next_object_ordinal.checked_add(1).ok_or_else(|| {
                     CdfError::data("Parquet destination object count exceeds u32")
                 })?;
@@ -775,19 +806,7 @@ impl StagedIngressSession for ParquetStagedIngressSession {
             }
         }
         if let Some(group) = active.take() {
-            if self.available_writer_memory.is_empty() {
-                self.complete_oldest(&mut pending)?;
-            }
-            let writer_memory = self.available_writer_memory.pop().ok_or_else(|| {
-                CdfError::internal("Parquet writer memory pool is unexpectedly empty")
-            })?;
-            let task = match self.dispatch_group(group, writer_memory) {
-                Ok(task) => task,
-                Err(error) => {
-                    return Err(self.with_join_failures(error, None, &mut pending));
-                }
-            };
-            pending.push_back(task);
+            self.finish_group(group, &mut pending)?;
         }
         while !pending.is_empty() {
             self.complete_oldest(&mut pending)?;
