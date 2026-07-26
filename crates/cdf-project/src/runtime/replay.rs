@@ -181,17 +181,20 @@ struct InFlightByteBudget {
 
 impl InFlightByteBudget {
     fn acquire(self: &Arc<Self>, bytes: u64) -> Result<InFlightBytePermit> {
-        if bytes > self.maximum {
-            return Err(CdfError::data(format!(
-                "staged segment retains {bytes} bytes above the destination in-flight bound {}; rebuild with smaller canonical segments or raise the destination bound",
-                self.maximum
-            )));
-        }
+        let oversized = bytes > self.maximum;
         let mut current = self
             .current
             .lock()
             .map_err(|_| CdfError::internal("staged byte budget lock is poisoned"))?;
-        while current.saturating_add(bytes) > self.maximum {
+        // The destination byte bound is a concurrency window, not a second validity limit for a
+        // segment whose retained memory the shared ledger has already admitted. Let one
+        // oversized segment make progress only as an exclusive singleton. This is the same
+        // anti-deadlock rule used by byte-bounded channels for indivisible messages.
+        while if oversized {
+            *current != 0
+        } else {
+            current.saturating_add(bytes) > self.maximum
+        } {
             current = self
                 .released
                 .wait(current)
@@ -2658,7 +2661,11 @@ fn validate_package_segments_match_delta(
 
 #[cfg(test)]
 mod stream_admission_replay_tests {
-    use std::collections::BTreeMap;
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, mpsc},
+        time::Duration,
+    };
 
     use cdf_kernel::{
         CursorPosition, CursorValue, FileManifest, FilePosition, PartitionId, PartitionPlan,
@@ -2668,9 +2675,48 @@ mod stream_admission_replay_tests {
     use cdf_engine::{LineageInputObservation, LineageSummary};
 
     use super::{
-        partial_lineage_matches_exactly, partial_position_matches_partition_scope,
-        validate_finalized_segment_acknowledgements, validate_stream_admission_lineage_coverage,
+        InFlightByteBudget, partial_lineage_matches_exactly,
+        partial_position_matches_partition_scope, validate_finalized_segment_acknowledgements,
+        validate_stream_admission_lineage_coverage,
     };
+
+    #[test]
+    fn staged_byte_window_admits_oversized_segment_only_as_singleton() {
+        let budget = Arc::new(InFlightByteBudget {
+            maximum: 8,
+            current: std::sync::Mutex::new(0),
+            released: std::sync::Condvar::new(),
+        });
+        let first = budget.acquire(4).unwrap();
+        let second = budget.acquire(4).unwrap();
+        assert_eq!(*budget.current.lock().unwrap(), 8);
+        drop(second);
+
+        let (acquired_sender, acquired_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        let worker_budget = Arc::clone(&budget);
+        let worker = std::thread::spawn(move || {
+            let permit = worker_budget.acquire(12).unwrap();
+            acquired_sender.send(()).unwrap();
+            release_receiver.recv().unwrap();
+            drop(permit);
+        });
+
+        assert!(
+            acquired_receiver
+                .recv_timeout(Duration::from_millis(25))
+                .is_err()
+        );
+        drop(first);
+        acquired_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(*budget.current.lock().unwrap(), 12);
+
+        release_sender.send(()).unwrap();
+        worker.join().unwrap();
+        assert_eq!(*budget.current.lock().unwrap(), 0);
+    }
 
     fn state_segment(id: &str, rows: u64) -> StateSegment {
         StateSegment {
