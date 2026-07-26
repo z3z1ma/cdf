@@ -11,12 +11,17 @@ Depends-On: .10x/tickets/done/2026-07-25-p0-canonical-segment-memory-admission.m
 Guarantee forward progress for staged destination writers under a valid shared memory budget.
 Reserve the compiled Parquet writer working set when the staged ingress session begins—before
 source extraction can occupy the remaining ledger—and consume that authority throughout the
-bounded writer window. Preserve explicit bulk-path writer/batch settings and fail before source
-contact only when the complete compiled writer floor genuinely cannot fit.
+bounded writer window. At the generic engine boundary, join the remaining source-frontier,
+canonical-segment, and segment-encode maxima into one runtime admission envelope so independently
+valid operators cannot collectively deadlock. Preserve explicit bulk-path writer/batch settings
+and fail before source contact only when the complete irreducible pipeline floor genuinely cannot
+fit.
 
 ## Non-goals
 
-- No segment-size reduction, jobs cap, or required operator tuning.
+- No segment-size reduction, hard-coded jobs cap, or required operator tuning. Runtime admission
+  MAY narrow optional concurrency from compiled bounds when the admitted host budget cannot prove
+  the requested topology safe.
 - No global memory-budget increase.
 - No source-, engine-, or project-runtime branch keyed to Parquet identity.
 - No relaxation or unaccounted writer allocation.
@@ -29,6 +34,8 @@ contact only when the complete compiled writer floor genuinely cannot fit.
 - Finalized/test-only writes retain independent per-writer admission.
 - A lifecycle regression proves downstream writer progress while upstream uses the rest of the
   budget.
+- Source-frontier and segment-encode concurrency are jointly resolved from the remaining ledger;
+  ordinary roomy budgets preserve the requested source concurrency.
 - The EC2 100 GiB / 2 GiB run passes the writer frontier without user tuning.
 - Focused tests, full affected suites, strict Clippy, formatting, and EC2 stress evidence are green.
 
@@ -62,6 +69,22 @@ contact only when the complete compiled writer floor genuinely cannot fit.
 - 2026-07-25: Added an adversarial lifecycle with a 64 MiB ledger: the two-writer session reserves
   32 MiB, a simulated upstream consumer occupies every remaining byte, and staged Parquet encoding
   still acknowledges its segment. Abort plus upstream release settles the ledger to zero.
+- 2026-07-25: The exact EC2 100 GiB / 2 GiB rerun crossed the repaired writer frontier but reached
+  a quiescent generic pipeline deadlock after publishing two segments. For more than eight minutes
+  process I/O remained byte-for-byte unchanged, CPU stayed near zero, and every source, CPU,
+  package, and destination thread slept. The compiled graph admitted 16 source partitions, two
+  256 MiB segment encoders, a 256 MiB canonical accumulator, and the destination floor
+  independently; their combined maxima exceeded the 1.5 GiB managed ledger. This is the same
+  forward-progress invariant at the adjacent engine admission boundary, not a Parquet codec
+  behavior.
+- 2026-07-25: Replaced independent source/encoder admission with one engine-owned topology
+  resolution. For pre-accounted producers, the remaining ledger now reserves the canonical
+  accumulator plus one encoder first, preserves as much requested source fan-out as fits, then
+  expands encoder fan-out from residual capacity. Frontier-reserved producers retain source-edge
+  concurrency under small budgets because their queues own exact one-batch reservations; if a
+  parallel encoder cannot fit, they encode inline rather than globally serializing tiny runs.
+  The observed 1,504 MiB / 64 MiB source / 256 MiB segment shape resolves from 16 source jobs and
+  15 encoders to 7 and 1; a 16 GiB shape preserves all 16 and 15.
 
 ## Blockers
 
@@ -74,6 +97,13 @@ None.
   duplicate replay, object-store and filesystem publication, and the new zero-free-byte progress
   lifecycle.
 - `cargo clippy -p cdf-dest-parquet --all-targets --locked -j 12 -- -D warnings`: green.
+- `cargo test -p cdf-engine -p cdf-dest-parquet --locked -j 12`: engine 201 passed / 7
+  intentional slow benchmarks ignored; Parquet 39 passed / one release benchmark ignored.
+- `cargo clippy -p cdf-engine -p cdf-dest-parquet --all-targets --locked -j 12 -- -D warnings`:
+  green after the joined-admission repair.
+- Focused topology tests prove constrained narrowing, roomy-budget preservation, safe inline
+  fallback, and preservation of source-frontier parallelism under small frontier-reserved
+  workloads.
 - `cargo fmt --all -- --check` and `git diff --check`: green.
 - EC2 100 GiB / 2 GiB closure rerun: pending this commit's deployment.
 

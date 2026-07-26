@@ -6563,6 +6563,60 @@ fn engine_keeps_non_speculative_source_frontier_serial() {
     assert_eq!(crate::execution::partition_open_jobs(&plan, &options), 1);
 }
 
+#[test]
+fn pipeline_concurrency_joins_source_segment_and_encode_bounds() {
+    const MIB: u64 = 1024 * 1024;
+
+    let constrained = crate::execution::resolve_pipeline_concurrency_from_bounds(
+        16,
+        15,
+        1_504 * MIB,
+        64 * MIB,
+        256 * MIB,
+    )
+    .unwrap();
+    assert_eq!(constrained.source_jobs, 7);
+    assert_eq!(constrained.segment_encode_jobs, 1);
+
+    let roomy = crate::execution::resolve_pipeline_concurrency_from_bounds(
+        16,
+        15,
+        16 * 1024 * MIB,
+        64 * MIB,
+        256 * MIB,
+    )
+    .unwrap();
+    assert_eq!(roomy.source_jobs, 16);
+    assert_eq!(roomy.segment_encode_jobs, 15);
+}
+
+#[test]
+fn pipeline_concurrency_falls_back_to_safe_inline_encoding() {
+    const MIB: u64 = 1024 * 1024;
+
+    let inline = crate::execution::resolve_pipeline_concurrency_from_bounds(
+        16,
+        15,
+        900 * MIB,
+        64 * MIB,
+        256 * MIB,
+    )
+    .unwrap();
+    assert_eq!(inline.source_jobs, 3);
+    assert_eq!(inline.segment_encode_jobs, 0);
+
+    let serial = crate::execution::resolve_pipeline_concurrency_from_bounds(
+        1,
+        15,
+        700 * MIB,
+        64 * MIB,
+        256 * MIB,
+    )
+    .unwrap();
+    assert_eq!(serial.source_jobs, 1);
+    assert_eq!(serial.segment_encode_jobs, 0);
+}
+
 fn skewed_resource(
     seed: usize,
     terminal_failure_partitions: impl IntoIterator<Item = usize>,
