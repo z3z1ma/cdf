@@ -3935,15 +3935,17 @@ fn stream_registered_format(
                 ));
             }
             let no_lookback_frontiers = decode_unit_no_lookback_frontiers(&units)?;
-            let memory_snapshot = memory.snapshot();
-            let available_memory = memory_snapshot
-                .budget_bytes
-                .saturating_sub(memory_snapshot.current_bytes);
+            // Decode-unit width is stable plan tuning. Live allocations may temporarily consume
+            // the entire ledger while sibling partitions or downstream stages make progress;
+            // each decoder's cancellable reservation already waits on that shared coordinator.
+            // Using instantaneous free bytes here turns normal backpressure into a nondeterministic
+            // planning failure and makes concurrency depend on scheduling order.
+            let managed_memory_budget = stable_decode_memory_budget(memory.as_ref());
             let unit_jobs = usize::from(resolve_decode_unit_concurrency(
                 &units,
                 &unit_execution.capabilities(),
                 &decode_cpu,
-                available_memory,
+                managed_memory_budget,
                 source.capabilities().useful_range_concurrency.max(1),
                 NATIVE_TARGET_BATCH_BYTES,
                 NATIVE_UNIT_BUFFERED_BATCHES,
@@ -4051,6 +4053,10 @@ fn stream_registered_format(
         },
     )?;
     Ok(Box::pin(stream))
+}
+
+fn stable_decode_memory_budget(memory: &dyn MemoryCoordinator) -> u64 {
+    memory.snapshot().budget_bytes
 }
 
 fn physical_projection_names(
@@ -5939,6 +5945,33 @@ mod tests {
         assert_eq!(lane.maximum_concurrency, FILE_SOURCE_ADVERTISED_PARALLELISM);
         assert_eq!(lane.cpu_slot_cost, 1);
         assert_eq!(lane.native_internal_parallelism, 1);
+    }
+
+    #[test]
+    fn decode_unit_width_uses_budget_not_transient_free_memory() {
+        const BUDGET: u64 = 64 * 1024 * 1024;
+        let memory = cdf_memory::DeterministicMemoryCoordinator::new(
+            BUDGET,
+            std::collections::BTreeMap::new(),
+        )
+        .unwrap();
+        let held = memory
+            .try_reserve(
+                &cdf_memory::ReservationRequest::new(
+                    cdf_memory::ConsumerKey::new(
+                        "transient-sibling",
+                        cdf_memory::MemoryClass::Transform,
+                    )
+                    .unwrap(),
+                    BUDGET,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(memory.snapshot().current_bytes, BUDGET);
+        assert_eq!(stable_decode_memory_budget(&memory), BUDGET);
+        drop(held);
     }
 
     fn physical_runtime(

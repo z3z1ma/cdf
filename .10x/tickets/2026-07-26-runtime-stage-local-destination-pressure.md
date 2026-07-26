@@ -1,4 +1,4 @@
-Status: done
+Status: active
 Created: 2026-07-26
 Updated: 2026-07-26
 Parent: .10x/tickets/2026-07-26-stage-local-cpu-saturation.md
@@ -35,6 +35,9 @@ old global-pressure interpretation rather than leaving a compatibility surface.
   before payload execution.
 - No generic runtime type or serialized report describes a stage-local item window as a
   run-wide jobs ceiling.
+- Decode-unit tuning uses stable managed-budget authority rather than transient free bytes;
+  actual reservations continue to wait on the shared memory coordinator, so restored upstream
+  concurrency cannot turn ordinary stage pressure into a planning failure.
 - Focused runtime/CLI/benchmark-policy tests pass, strict Clippy passes for touched crates, and
   formatting/diff checks pass.
 
@@ -70,6 +73,18 @@ old global-pressure interpretation rather than leaving a compatibility surface.
 - 2026-07-26: The first benchmark-test invocation reached the linker but correctly exposed the
   absent local dynamic DuckDB library. Repeating only that focused test with the repository's
   supported `DUCKDB_DOWNLOAD_LIB=1` local mode passed; CI's static DuckDB policy is unchanged.
+- 2026-07-26: Reopened during the dependent EC2 retention gate. With stage-local admission
+  restoring sixteen active file partitions, partition 16 reproducibly failed before decode because
+  `stream_registered_format` passed the ledger's instantaneous free-byte snapshot into
+  `resolve_decode_unit_concurrency`. That value is transient runtime pressure, not a stable
+  planning authority; the Parquet decoder already performs cancellable async reservations and
+  waits for release. The old global destination cap merely hid this defect.
+- 2026-07-26: `resolve_decode_unit_concurrency` now names and consumes a stable managed-budget
+  authority. The registered-format caller passes total managed budget rather than free bytes at
+  that scheduling instant; actual Parquet batch allocations still use cancellable async
+  `cdf-memory` reservations, so live contention waits and releases rather than bypassing the
+  ledger. A focused regression fills the ledger completely with a sibling lease and proves decode
+  planning still sees the unchanged budget authority.
 
 ## Blockers
 
@@ -90,6 +105,9 @@ None.
 - `rg -n "destination_writers|staged_destination_in_flight" crates --glob '*.rs'` — no
   matches, proving the superseded run-wide vocabulary is absent from product and test source.
 - `git diff --check` — passed.
+- Reopened repair: the exact runtime decode-unit resolver test and source-files transient-pressure
+  regression passed; strict all-target Clippy for both touched crates and formatting/diff checks
+  passed. EC2 automatic multi-partition proof remains pending.
 
 ## Review
 

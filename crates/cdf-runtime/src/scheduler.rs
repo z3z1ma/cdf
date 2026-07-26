@@ -490,7 +490,7 @@ pub fn resolve_decode_unit_concurrency(
     units: &[DecodeUnitPlan],
     host: &ExecutionHostCapabilities,
     cpu: &crate::CpuTaskSpec,
-    managed_memory_available_bytes: u64,
+    managed_memory_budget_bytes: u64,
     useful_concurrency: u16,
     target_batch_bytes: u64,
     buffered_batches_per_unit: u16,
@@ -506,7 +506,7 @@ pub fn resolve_decode_unit_concurrency(
             limiting_factors: vec!["no_units".to_owned()],
         });
     }
-    if managed_memory_available_bytes == 0
+    if managed_memory_budget_bytes == 0
         || useful_concurrency == 0
         || target_batch_bytes == 0
         || buffered_batches_per_unit == 0
@@ -530,12 +530,12 @@ pub fn resolve_decode_unit_concurrency(
         .checked_add(buffered_batch_bytes)
         .ok_or_else(|| CdfError::contract("decode-unit working set overflowed"))?;
     let memory_jobs = u16::try_from(
-        (managed_memory_available_bytes / estimated_bytes_per_job).min(u64::from(u16::MAX)),
+        (managed_memory_budget_bytes / estimated_bytes_per_job).min(u64::from(u16::MAX)),
     )
     .unwrap_or(u16::MAX);
     if memory_jobs == 0 {
         return Err(CdfError::data(format!(
-            "one decode unit requires an estimated {estimated_bytes_per_job} bytes including bounded handoff, but only {managed_memory_available_bytes} managed bytes are available; raise the memory budget, reduce the codec batch target, or reduce decode concurrency"
+            "one decode unit requires an estimated {estimated_bytes_per_job} bytes including bounded handoff, but the managed budget is {managed_memory_budget_bytes} bytes; raise the memory budget, reduce the codec batch target, or reduce decode concurrency"
         )));
     }
     let cpu_jobs = host.logical_cpu_slots / cpu.claimed_cpu_slots();

@@ -2,7 +2,7 @@ Status: active
 Created: 2026-07-26
 Updated: 2026-07-26
 Parent: .10x/tickets/2026-07-26-stage-local-cpu-saturation.md
-Depends-On: .10x/tickets/done/2026-07-26-runtime-stage-local-destination-pressure.md
+Depends-On: .10x/tickets/2026-07-26-runtime-stage-local-destination-pressure.md
 
 # Encode deterministic Parquet object groups concurrently
 
@@ -124,6 +124,11 @@ compatibility path.
   item window after the worker's current request, additionally capped by object membership. Writer
   count remains independently host/memory/jobs-admitted, while retained requests can no longer
   multiply into complete per-writer object groups.
+- 2026-07-26: The bounded destination queue alone did not eliminate the automatic failure:
+  partition 16 failed at the same generic file decode-planning boundary before opening its unit.
+  Control-flow tracing proved the caller sampled instantaneous free ledger bytes while sibling
+  stages were active. The runtime dependency was reopened for the stable-budget correction; no
+  further Parquet-specific memory heuristic was added.
 
 ## Blockers
 

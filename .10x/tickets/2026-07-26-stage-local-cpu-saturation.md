@@ -14,7 +14,7 @@ This is a parent plan, not an executable ticket.
 
 ## Children and sequence
 
-1. `.10x/tickets/done/2026-07-26-runtime-stage-local-destination-pressure.md` removes the incorrect
+1. `.10x/tickets/2026-07-26-runtime-stage-local-destination-pressure.md` removes the incorrect
    run-wide scheduler join while preserving destination-stage backpressure and evidence.
 2. `.10x/tickets/2026-07-26-parquet-parallel-object-encoding.md` depends on the first child and
    implements measured, bounded N-way Parquet group encoding.
