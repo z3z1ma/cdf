@@ -6234,21 +6234,17 @@ fn persist_canonical_segments(
             retained_bytes,
             canonical_batch_rows,
             canonical_batch_bytes,
+            unaccounted_retained_bytes,
             memory_leases: _transform_memory_leases,
             ..
         } = canonical;
         let mut _memory_lease = match state.memory.map(Arc::clone) {
             Some(memory) => {
-                let ordinal_bytes = row_count
-                    .checked_mul(8)
-                    .ok_or_else(|| CdfError::data("canonical ordinal buffer size overflow"))?;
-                let bytes = retained_bytes
-                    .max(1)
-                    .checked_mul(2)
-                    .and_then(|bytes| bytes.checked_add(ordinal_bytes))
-                    .ok_or_else(|| {
-                        CdfError::data("canonical concat and ordinal working set overflow")
-                    })?;
+                let bytes = canonical_construction_reservation_bytes(
+                    retained_bytes,
+                    row_count,
+                    unaccounted_retained_bytes,
+                )?;
                 let request = ReservationRequest::new(
                     ConsumerKey::new("canonical-segment-concat", MemoryClass::Package)?,
                     bytes,
@@ -6260,7 +6256,7 @@ fn persist_canonical_segments(
                     state,
                     sink,
                     &format!(
-                        "canonical segment requires {bytes} bytes for retained input, concat output, and package ordinal"
+                        "canonical segment requires {bytes} bytes for concat output, package ordinal, and any unaccounted input"
                     ),
                 )?)
             }
@@ -6353,11 +6349,12 @@ fn persist_canonical_segments(
                 )
                 .ok_or_else(|| CdfError::data("canonical output bytes overflow"))
         })?;
-        // Construction needs the retained input, canonical concat output, and ordinal buffer at
-        // once. Once construction finishes, only the canonical output follows the encode/staged
-        // path; retaining the peak scratch reservation there can starve source-frontier progress
-        // and form a memory/backpressure cycle. Transform leases continue to own any shared input
-        // buffers, while this reconciled lease owns the complete canonical output working set.
+        // Traveling transform leases already own accounted input buffers. Construction reserves
+        // only allocations that are new at this boundary: canonical concat output, the ordinal
+        // buffer, and input only for paths that arrived without a traveling lease. Once
+        // construction finishes, only canonical output follows the encode/staged path; retaining
+        // peak scratch authority there can starve source-frontier progress. This reconciled lease
+        // owns the complete canonical output working set.
         if let Some(lease) = &_memory_lease {
             lease.reconcile(normalization_output_bytes.max(1))?;
         }
@@ -6379,6 +6376,21 @@ fn persist_canonical_segments(
         )?;
     }
     Ok(())
+}
+
+pub(crate) fn canonical_construction_reservation_bytes(
+    retained_bytes: u64,
+    row_count: u64,
+    unaccounted_input_bytes: u64,
+) -> Result<u64> {
+    let ordinal_bytes = row_count
+        .checked_mul(8)
+        .ok_or_else(|| CdfError::data("canonical ordinal buffer size overflow"))?;
+    retained_bytes
+        .max(1)
+        .checked_add(unaccounted_input_bytes)
+        .and_then(|bytes| bytes.checked_add(ordinal_bytes))
+        .ok_or_else(|| CdfError::data("canonical concat and ordinal working set overflow"))
 }
 
 fn reserve_with_encode_backpressure(

@@ -52,11 +52,12 @@ criterion and is sequenced after the daily-driver surface stabilizes.
 
 ### WS-D — Scale and implemented-interop proof
 
-1. `.10x/tickets/2026-07-11-p3-f3-stress-generators-laws.md`
-2. `.10x/tickets/2026-07-11-p3-f4-one-tb-memory-closeout.md`
-3. `.10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md`
-4. `.10x/tickets/2026-07-11-p3-h5-interop-envelope-closeout.md`
-5. `.10x/tickets/2026-07-10-p3-ws-h-interop-boundaries.md`
+1. `.10x/tickets/2026-07-25-p0-canonical-segment-memory-admission.md`
+2. `.10x/tickets/2026-07-11-p3-f3-stress-generators-laws.md`
+3. `.10x/tickets/2026-07-11-p3-f4-one-tb-memory-closeout.md`
+4. `.10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md`
+5. `.10x/tickets/2026-07-11-p3-h5-interop-envelope-closeout.md`
+6. `.10x/tickets/2026-07-10-p3-ws-h-interop-boundaries.md`
 
 This lane proves the already-built architecture. Any implementation defect discovered by a
 stress or envelope run receives a separate bounded repair owner; proof tickets do not absorb

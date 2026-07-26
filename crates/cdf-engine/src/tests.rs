@@ -9323,6 +9323,164 @@ fn parallel_segment_encoding_is_identical_to_inline_canonical_registration() {
 }
 
 #[test]
+fn accounted_canonical_input_is_not_reserved_again_during_construction() {
+    const ROWS: usize = 700_000;
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "value",
+        DataType::Int64,
+        false,
+    )]));
+    let record_batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int64Array::from_iter_values(0..ROWS as i64)) as ArrayRef],
+    )
+    .unwrap();
+    let retained_bytes = u64::try_from(record_batch.get_array_memory_size()).unwrap();
+    let source_bytes = cdf_memory::record_batch_retained_bytes(&record_batch).unwrap();
+    assert!(retained_bytes < 8 * 1024 * 1024);
+    let row_count = u64::try_from(ROWS).unwrap();
+    let accounted_construction =
+        crate::execution::canonical_construction_reservation_bytes(retained_bytes, row_count, 0)
+            .unwrap();
+    let former_duplicate_charge = crate::execution::canonical_construction_reservation_bytes(
+        retained_bytes,
+        row_count,
+        retained_bytes,
+    )
+    .unwrap();
+    assert_eq!(
+        former_duplicate_charge - accounted_construction,
+        retained_bytes
+    );
+
+    let batch = Batch {
+        header: BatchHeader::new(
+            BatchId::new("accounted-canonical-construction").unwrap(),
+            ResourceId::new("orders").unwrap(),
+            PartitionId::new("part-0").unwrap(),
+            cdf_kernel::canonical_arrow_schema_hash(schema.as_ref()).unwrap(),
+            row_count,
+            retained_bytes,
+        ),
+        payload: cdf_kernel::BatchPayload::in_memory(record_batch),
+    };
+    let resource = MockResource::tier_a(vec![batch]).without_control_keys();
+    let plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input_for_schema(schema, Vec::new(), None, None, ExecutionExtent::bounded()),
+        )
+        .unwrap();
+
+    // At construction the source payload and normalized output are already owned. Exactly one new
+    // concat output plus the ordinal vector fits; the former duplicate input charge does not.
+    let admission_budget = source_bytes
+        .checked_add(retained_bytes)
+        .and_then(|bytes| bytes.checked_add(accounted_construction))
+        .unwrap();
+    assert!(
+        source_bytes + retained_bytes + former_duplicate_charge > admission_budget,
+        "fixture must reject the superseded duplicate input charge"
+    );
+    let admission: Arc<dyn cdf_memory::MemoryCoordinator> = Arc::new(
+        cdf_memory::DeterministicMemoryCoordinator::new(admission_budget, BTreeMap::new()).unwrap(),
+    );
+    let source_lease = admission
+        .try_reserve(
+            &cdf_memory::ReservationRequest::new(
+                cdf_memory::ConsumerKey::new(
+                    "canonical-admission-source",
+                    cdf_memory::MemoryClass::Source,
+                )
+                .unwrap(),
+                source_bytes,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+    let output_lease = admission
+        .try_reserve(
+            &cdf_memory::ReservationRequest::new(
+                cdf_memory::ConsumerKey::new(
+                    "canonical-admission-output",
+                    cdf_memory::MemoryClass::Transform,
+                )
+                .unwrap(),
+                retained_bytes,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+    let former_request = cdf_memory::ReservationRequest::new(
+        cdf_memory::ConsumerKey::new(
+            "canonical-admission-former",
+            cdf_memory::MemoryClass::Package,
+        )
+        .unwrap(),
+        former_duplicate_charge,
+    )
+    .unwrap();
+    assert!(admission.try_reserve(&former_request).unwrap().is_none());
+    let current_request = cdf_memory::ReservationRequest::new(
+        cdf_memory::ConsumerKey::new(
+            "canonical-admission-current",
+            cdf_memory::MemoryClass::Package,
+        )
+        .unwrap(),
+        accounted_construction,
+    )
+    .unwrap();
+    let construction_lease = admission
+        .try_reserve(&current_request)
+        .unwrap()
+        .expect("actual construction working set must fit");
+    drop((construction_lease, output_lease, source_lease));
+    assert_eq!(admission.snapshot().current_bytes, 0);
+
+    // The governed default residual-capture policy reserves its own worst-case transform
+    // expansion. Keep that independent policy out of this boundary-specific lifecycle proof.
+    let budget = 192 * 1024 * 1024;
+    let memory: Arc<dyn cdf_memory::MemoryCoordinator> =
+        Arc::new(cdf_memory::DeterministicMemoryCoordinator::new(budget, BTreeMap::new()).unwrap());
+    let host = Arc::new(
+        StandaloneExecutionHost::new(
+            cdf_runtime::ExecutionHostCapabilities {
+                logical_cpu_slots: 1,
+                io_workers: 1,
+                blocking_lanes: Vec::new(),
+            },
+            Arc::clone(&memory),
+        )
+        .unwrap(),
+    );
+    let services = cdf_runtime::ExecutionServices::new(host).unwrap();
+    let package = TempDir::new().unwrap();
+    let pre_finalize =
+        |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
+
+    let output = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
+        &plan,
+        &resource,
+        package.path(),
+        &pre_finalize,
+        EngineExecutionConfig::default().with_execution_services(services),
+    ))
+    .unwrap();
+
+    assert_eq!(output.output.profile.output_rows, row_count);
+    assert_eq!(output.output.identity_segments().len(), 1);
+    cdf_package::PackageReader::open(package.path())
+        .unwrap()
+        .verify()
+        .unwrap();
+    let snapshot = memory.snapshot();
+    assert!(snapshot.peak_bytes <= budget);
+    assert_eq!(snapshot.current_bytes, 0);
+}
+
+#[test]
 fn parallel_segment_frontier_failure_joins_workers_and_prevents_finalization() {
     let resource = MockResource::tier_a(sample_batches());
     let mut plan = Planner::new()

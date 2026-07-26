@@ -104,6 +104,7 @@ pub struct CanonicalSegment {
     pub retained_bytes: u64,
     pub canonical_batch_rows: u32,
     pub canonical_batch_bytes: u64,
+    pub(crate) unaccounted_retained_bytes: u64,
     pub(crate) memory_leases: Vec<MemoryLease>,
 }
 
@@ -127,6 +128,7 @@ pub struct CanonicalSegmentAssembler {
     rows: u64,
     logical_bytes: u64,
     retained_bytes: u64,
+    unaccounted_retained_bytes: u64,
 }
 
 impl CanonicalSegmentAssembler {
@@ -142,6 +144,7 @@ impl CanonicalSegmentAssembler {
             rows: 0,
             logical_bytes: 0,
             retained_bytes: 0,
+            unaccounted_retained_bytes: 0,
         })
     }
 
@@ -291,6 +294,7 @@ impl CanonicalSegmentAssembler {
             retained_bytes: std::mem::take(&mut self.retained_bytes),
             canonical_batch_rows: self.policy.microbatch_maximum_rows,
             canonical_batch_bytes: self.policy.microbatch_maximum_bytes,
+            unaccounted_retained_bytes: std::mem::take(&mut self.unaccounted_retained_bytes),
             memory_leases: std::mem::take(&mut self.memory_leases),
         }))
     }
@@ -346,6 +350,12 @@ impl CanonicalSegmentAssembler {
             ));
         }
         self.retained_bytes = self.retained_bytes.saturating_add(retained_bytes);
+        if lease.is_none() {
+            self.unaccounted_retained_bytes = self
+                .unaccounted_retained_bytes
+                .checked_add(retained_bytes)
+                .ok_or_else(|| CdfError::data("unaccounted canonical input memory overflow"))?;
+        }
         self.batches.push(chunk);
         if let Some(lease) = lease {
             self.memory_leases.push(lease.clone());
@@ -1030,6 +1040,46 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(values(&one), values(&many));
+    }
+
+    #[test]
+    fn assembler_tracks_exact_unaccounted_input_across_mixed_batch_ownership() {
+        use cdf_memory::{
+            ConsumerKey, DeterministicMemoryCoordinator, MemoryClass, MemoryCoordinator,
+            ReservationRequest,
+        };
+
+        let accounted = batch(&[1, 2]);
+        let unaccounted = batch(&[3, 4]);
+        let accounted_bytes = accounted.get_array_memory_size() as u64;
+        let unaccounted_bytes = unaccounted.get_array_memory_size() as u64;
+        let memory = DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap();
+        let lease = memory
+            .try_reserve(
+                &ReservationRequest::new(
+                    ConsumerKey::new("segmentation-mixed-ownership", MemoryClass::Transform)
+                        .unwrap(),
+                    accounted_bytes,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        let mut assembler = CanonicalSegmentAssembler::new(test_policy(), 0).unwrap();
+
+        assert!(
+            assembler
+                .push_accounted(accounted, None, Some(lease.clone()))
+                .unwrap()
+                .is_empty()
+        );
+        drop(lease);
+        let segments = assembler.push(unaccounted, None).unwrap();
+
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].unaccounted_retained_bytes, unaccounted_bytes);
+        drop(segments);
+        assert_eq!(memory.snapshot().current_bytes, 0);
     }
 
     #[test]
