@@ -2358,14 +2358,16 @@ fn status_updates_are_atomic_and_preserve_identity_hash() {
 }
 
 #[test]
-fn verification_detects_tampered_identity_file() {
+fn verification_detects_same_length_tampered_identity_file() {
     let temp = tempfile::tempdir().unwrap();
     build_fixture(temp.path());
 
     let segment_path = temp.path().join("data").join("seg-000001.arrow");
-    let mut file = OpenOptions::new().append(true).open(&segment_path).unwrap();
+    let original_len = segment_path.metadata().unwrap().len();
+    let mut file = OpenOptions::new().write(true).open(&segment_path).unwrap();
     file.write_all(b"tamper").unwrap();
     file.sync_all().unwrap();
+    assert_eq!(segment_path.metadata().unwrap().len(), original_len);
 
     let error = verify_package(temp.path()).unwrap_err();
     assert!(
