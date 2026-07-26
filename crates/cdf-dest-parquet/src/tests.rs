@@ -12,7 +12,7 @@ use crate::{
     store::{ObjectKeyEncoder, data_object_key, package_manifest_key, staged_data_object_key},
 };
 use ::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use ::parquet::basic::Compression;
+use ::parquet::basic::{Compression, ZstdLevel};
 use arrow_array::{
     Array, ArrayRef, DurationSecondArray, Float64Array, Int64Array, StringArray,
     TimestampMicrosecondArray,
@@ -1752,8 +1752,8 @@ fn filesystem_append_materializes_parquet_and_verifies_receipt() {
     assert!(
         parquet_compressions(&bytes)
             .into_iter()
-            .all(|compression| compression == Compression::SNAPPY),
-        "the default physical path must record Snappy in every Parquet column chunk"
+            .all(|compression| compression == Compression::ZSTD(ZstdLevel::try_new(1).unwrap())),
+        "the default physical path must record Zstd in every Parquet column chunk"
     );
     assert_eq!(
         std::fs::read_dir(root.join(".cdf-staging"))
@@ -1793,7 +1793,7 @@ fn parquet_destination_uri_compiles_compression_into_the_physical_path() {
     }
     let (_, default) =
         crate::runtime::parse_parquet_destination_uri("parquet://lake/data").unwrap();
-    assert_eq!(default, crate::ParquetCompression::Snappy);
+    assert_eq!(default, crate::ParquetCompression::Zstd);
     assert!(
         crate::runtime::parse_parquet_destination_uri(
             "parquet://lake/data?compression=snappy&compression=zstd"
@@ -2119,10 +2119,7 @@ fn staged_attempt_records_the_exact_prepared_physical_plan() {
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(
-        metadata["physical_plan_path"],
-        "arrow_ipc_to_parquet_snappy"
-    );
+    assert_eq!(metadata["physical_plan_path"], "arrow_ipc_to_parquet_zstd");
     assert_eq!(metadata["physical_plan_version"], 6);
     assert_eq!(
         metadata["object_publication_mode"],
@@ -2375,7 +2372,7 @@ fn abandoned_attempt_cleanup_requires_exact_expiry_proof() {
                 "version": 1,
                 "target": commit.commit.target.as_str(),
                 "attempt_id": attempt_id.as_str(),
-                "physical_plan_path": "arrow_ipc_to_parquet_snappy",
+                "physical_plan_path": "arrow_ipc_to_parquet_zstd",
                 "physical_plan_version": 6,
                 "object_publication_mode": "atomic_content_create_v1",
                 "writers": 1,
@@ -2518,7 +2515,7 @@ fn independent_lease_domains_cannot_collide_or_collect_each_others_staging() {
                     "version": 1,
                     "target": commit.commit.target.as_str(),
                     "attempt_id": attempt_id.as_str(),
-                    "physical_plan_path": "arrow_ipc_to_parquet_snappy",
+                    "physical_plan_path": "arrow_ipc_to_parquet_zstd",
                     "physical_plan_version": 6,
                     "object_publication_mode": "atomic_content_create_v1",
                     "writers": 1,
@@ -2626,7 +2623,7 @@ fn failed_staging_cleanup_retains_attempt_marker_until_payload_deletion_complete
                 "version": 1,
                 "target": target.as_str(),
                 "attempt_id": attempt_id.as_str(),
-                "physical_plan_path": "arrow_ipc_to_parquet_snappy",
+                "physical_plan_path": "arrow_ipc_to_parquet_zstd",
                 "physical_plan_version": 6,
                 "object_publication_mode": "atomic_content_create_v1",
                 "writers": 1,

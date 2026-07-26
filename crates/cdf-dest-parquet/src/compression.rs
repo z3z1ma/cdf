@@ -6,9 +6,9 @@ pub(crate) const PHYSICAL_PLAN_VERSION: u16 = 6;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ParquetCompression {
     None,
-    #[default]
     Snappy,
     Lz4Raw,
+    #[default]
     Zstd,
 }
 

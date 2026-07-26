@@ -231,11 +231,17 @@ compatibility path.
   roughly 1 TiB of avoidable temporary destination bytes.
 - 2026-07-26: Added compiled `none`, Snappy, LZ4 raw, and Zstd Parquet paths.
   `compression=...` selects one before planning; the path id and version are recorded in prepared
-  bulk-path and staging metadata, so replay never depends on an ambient setting. Default Snappy
-  is provisional until the dedicated-host codec comparison. Unknown-size sessions reserve one
+  bulk-path and staging metadata, so replay never depends on an ambient setting. Unknown-size
+  sessions reserve one
   mandatory writer working set and acquire further sets lazily as real object groups appear, up
   to the compiled host/jobs ceiling. Memory pressure drains the oldest group instead of failing
   admission or reintroducing a fixed retained-segment window.
+- 2026-07-26: The interleaved dedicated-host codec comparison selected Zstd level 1 as the
+  default. Ten-object medians were Zstd `6.95 s`, LZ4 `7.99 s`, Snappy `8.33 s`, and uncompressed
+  `14.41 s`; Zstd used `5,723,465` destination bytes. The one-object ordinary control was
+  `1.16 s` with Zstd and `1.57 s` with Snappy, versus the retained parent baseline's `2.407 s`.
+  Zstd therefore improves both the CPU-heavy multi-object path and the ordinary control rather
+  than trading one for the other.
 
 ## Blockers
 
@@ -326,6 +332,10 @@ None.
   and reject ambiguous options; the multi-object probe proves lazy memory admission still reaches
   actual concurrent encoders. Strict all-target/all-feature Clippy for Parquet, Project, and CLI
   passed with warnings denied; formatting and diff checks passed.
+- EC2 `c7i.4xlarge`, production release `ef27aa84`, interleaved median-of-three:
+  multi-object Zstd `6.95 s` / `499%` CPU / `5,723,465` Parquet bytes; LZ4 `7.99 s`;
+  Snappy `8.33 s`; uncompressed `14.41 s`. Ordinary one-object Zstd median was `1.16 s`,
+  exceeding the no-regression guard against the `2.407 s` parent baseline.
 
 ## Review
 
