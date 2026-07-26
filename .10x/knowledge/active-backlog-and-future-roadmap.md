@@ -15,16 +15,18 @@ specifications, research, and this roadmap; they do not remain open tickets mere
 Cancelled tickets preserve investigation history and may be mined when a future program is
 deliberately activated. Cancellation does not reject the capability.
 
-## Current steady state
+## Current execution
 
 The stabilization program is terminal at
 `.10x/tickets/done/2026-07-25-stabilization-steady-state-program.md`. Its source lifecycle,
 statistics pruning, daily-driver CLI and hosted release, constant-memory and interop proof, and
 P1/P3 aggregate lanes are all closed.
 
-The executable backlog is empty. No parked capability below is authorized merely by appearing in
-this roadmap. The next feature program begins only through the activation rule at the end of this
-record and the authority in `.10x/decisions/cdf-system-authority-steady-state.md`.
+Current 1 TiB evidence exposed a bounded performance defect: a staged destination's two-item
+window is treated as a run-wide jobs ceiling, while Parquet's declared two-writer path owns only
+one active row encoder. The deliberately activated successor is
+`.10x/tickets/2026-07-26-stage-local-cpu-saturation.md`, with separate runtime-admission and
+Parquet-encoder children. It does not reopen P3 or authorize any parked capability below.
 
 ## Parked future programs
 
