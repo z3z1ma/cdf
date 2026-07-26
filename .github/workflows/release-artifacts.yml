@@ -190,7 +190,24 @@ jobs:
               dependencies="$(ldd "$binary")"
               ;;
             x86_64-pc-windows-msvc)
-              dependencies="$(dumpbin //dependents "$binary")"
+              vswhere="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
+              if [[ ! -f "$vswhere" ]]; then
+                echo "vswhere is unavailable; cannot locate the MSVC dependency inspector" >&2
+                exit 1
+              fi
+              dumpbin_windows="$("$vswhere" \
+                -latest \
+                -products '*' \
+                -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 \
+                -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' \
+                | tr -d '\r' \
+                | tail -1)"
+              if [[ -z "$dumpbin_windows" ]]; then
+                echo "MSVC dumpbin is unavailable; cannot inspect release dependencies" >&2
+                exit 1
+              fi
+              dumpbin="$(cygpath -u "$dumpbin_windows")"
+              dependencies="$("$dumpbin" //dependents "$binary")"
               ;;
           esac
           if grep -Eiq 'duckdb[^[:space:]]*\.(dll|so|dylib)' <<<"$dependencies"; then

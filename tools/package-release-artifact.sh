@@ -210,6 +210,7 @@ done
 if [[ "$target" == *-apple-darwin ]]; then
   command -v otool >/dev/null 2>&1 || die 'otool is required to inspect macOS runtime linkage'
   command -v install_name_tool >/dev/null 2>&1 || die 'install_name_tool is required to make macOS runtime linkage relocatable'
+  command -v codesign >/dev/null 2>&1 || die 'codesign is required to validate relocated macOS runtime libraries'
   for index in "${!runtime_names[@]}"; do
     runtime_name="${runtime_names[$index]}"
     dependency_name="${runtime_dependency_names[$index]}"
@@ -222,7 +223,17 @@ if [[ "$target" == *-apple-darwin ]]; then
     if [[ "$dependency" != "@rpath/${runtime_name}" ]]; then
       install_name_tool -change "$dependency" "@rpath/${runtime_name}" "${stage_dir}/bin/${binary_name}"
     fi
+    # A Python framework executable carries a bundle signature whose sealed Info.plist is not
+    # present after the executable is staged as a standalone dylib. Re-sign every relocated
+    # runtime ad hoc so dyld sees a valid self-contained Mach-O instead of host-specific bundle
+    # authority. Release signing/notarization remains a separate future distribution concern.
+    codesign --force --sign - --timestamp=none "${stage_dir}/bin/${runtime_name}"
+    codesign --verify --strict --verbose=2 "${stage_dir}/bin/${runtime_name}"
   done
+  # install_name_tool changes the executable's load commands. Restore a valid deterministic
+  # ad-hoc signature after the final change and verify it before the executable smoke.
+  codesign --force --sign - --timestamp=none "${stage_dir}/bin/${binary_name}"
+  codesign --verify --strict --verbose=2 "${stage_dir}/bin/${binary_name}"
 fi
 
 cp LICENSE "${stage_dir}/LICENSE"
@@ -232,15 +243,15 @@ tools/verify-release-metadata.sh "$version" --write-changelog-excerpt "${stage_d
 if [[ -z "$skip_binary_run_reason" ]]; then
   case "$target" in
     *-apple-darwin)
-      version_output="$(DYLD_FALLBACK_LIBRARY_PATH="${stage_dir}/bin${DYLD_FALLBACK_LIBRARY_PATH:+:${DYLD_FALLBACK_LIBRARY_PATH}}" "${stage_dir}/bin/${binary_name}" version 2>/dev/null)" \
+      version_output="$(DYLD_FALLBACK_LIBRARY_PATH="${stage_dir}/bin${DYLD_FALLBACK_LIBRARY_PATH:+:${DYLD_FALLBACK_LIBRARY_PATH}}" "${stage_dir}/bin/${binary_name}" version)" \
         || die "staged binary failed version probe: ${stage_dir}/bin/${binary_name}"
       ;;
     *-unknown-linux-gnu)
-      version_output="$(LD_LIBRARY_PATH="${stage_dir}/bin${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" "${stage_dir}/bin/${binary_name}" version 2>/dev/null)" \
+      version_output="$(LD_LIBRARY_PATH="${stage_dir}/bin${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" "${stage_dir}/bin/${binary_name}" version)" \
         || die "staged binary failed version probe: ${stage_dir}/bin/${binary_name}"
       ;;
     x86_64-pc-windows-msvc)
-      version_output="$(PATH="${stage_dir}/bin:${PATH}" "${stage_dir}/bin/${binary_name}" version 2>/dev/null)" \
+      version_output="$(PATH="${stage_dir}/bin:${PATH}" "${stage_dir}/bin/${binary_name}" version)" \
         || die "staged binary failed version probe: ${stage_dir}/bin/${binary_name}"
       ;;
     *) die "unsupported release target: $target" ;;
@@ -264,7 +275,7 @@ version: ${version}
 target: ${target}
 archive: ${archive_base}.tar.gz
 binary: bin/${binary_name}
-runtime_linkage: pinned stock dynamic runtimes beside executable
+runtime_linkage: required non-system runtime libraries staged beside executable
 binary_version_probe: ${version_output}
 license: Apache-2.0
 crates_io_publication: disabled while the DataFusion git pin is active
