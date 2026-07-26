@@ -425,6 +425,48 @@ pub(crate) fn canonicalize_batches(
     Ok(output)
 }
 
+/// Returns whether canonical microbatching can reuse every input batch without allocating a
+/// concatenated replacement. This is an allocation-plan fact, not a logical-byte estimate.
+pub(crate) fn canonicalization_is_zero_copy(
+    batches: &[RecordBatch],
+    maximum_rows: u32,
+    maximum_bytes: u64,
+) -> Result<bool> {
+    let maximum_rows = usize::try_from(maximum_rows)
+        .map_err(|_| CdfError::data("canonical microbatch rows exceed usize"))?;
+    let mut rows = 0_usize;
+    let mut bytes = 0_u64;
+
+    for batch in batches {
+        if batch.num_rows() == 0 {
+            continue;
+        }
+        if batch.num_rows() > maximum_rows || logical_batch_bytes(batch)? > maximum_bytes {
+            return Ok(false);
+        }
+        if rows != 0 {
+            let row_capacity = maximum_rows.saturating_sub(rows);
+            let byte_capacity = maximum_bytes.saturating_sub(bytes);
+            if largest_prefix_within_bytes(
+                batch,
+                row_capacity.min(batch.num_rows()),
+                byte_capacity,
+            )? != 0
+            {
+                // The canonicalizer will combine at least one row with the preceding fragment.
+                return Ok(false);
+            }
+        }
+        rows = batch.num_rows();
+        bytes = logical_batch_bytes(batch)?;
+        if rows == maximum_rows || bytes == maximum_bytes {
+            rows = 0;
+            bytes = 0;
+        }
+    }
+    Ok(true)
+}
+
 fn finish_canonical_batch(mut fragments: Vec<RecordBatch>) -> Result<RecordBatch> {
     if fragments.len() == 1 {
         return Ok(fragments.pop().expect("one canonical fragment"));
@@ -1371,12 +1413,14 @@ mod tests {
     fn canonical_microbatch_reuses_exact_batches_and_coalesces_only_boundary_fragments() {
         let exact = batch(&[1, 2, 3, 4]);
         let exact_column = exact.column(0).clone();
+        assert!(canonicalization_is_zero_copy(std::slice::from_ref(&exact), 4, 1024).unwrap());
         let output = canonicalize_batches(vec![exact], 4, 1024).unwrap();
         assert_eq!(output.len(), 1);
         assert!(std::sync::Arc::ptr_eq(output[0].column(0), &exact_column));
 
-        let fragmented =
-            canonicalize_batches(vec![batch(&[1]), batch(&[2, 3, 4])], 4, 1024).unwrap();
+        let fragments = vec![batch(&[1]), batch(&[2, 3, 4])];
+        assert!(!canonicalization_is_zero_copy(&fragments, 4, 1024).unwrap());
+        let fragmented = canonicalize_batches(fragments, 4, 1024).unwrap();
         assert_eq!(fragmented.len(), 1);
         assert_eq!(
             fragmented[0]

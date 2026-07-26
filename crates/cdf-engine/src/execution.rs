@@ -6448,8 +6448,18 @@ fn persist_canonical_segments(
         } = canonical;
         let mut _memory_lease = match state.memory.map(Arc::clone) {
             Some(memory) => {
+                let canonical_output_allocation_bytes =
+                    if crate::segmentation::canonicalization_is_zero_copy(
+                        &batches,
+                        canonical_batch_rows,
+                        canonical_batch_bytes,
+                    )? {
+                        0
+                    } else {
+                        retained_bytes
+                    };
                 let bytes = canonical_construction_reservation_bytes(
-                    retained_bytes,
+                    canonical_output_allocation_bytes,
                     row_count,
                     unaccounted_retained_bytes,
                 )?;
@@ -6489,13 +6499,7 @@ fn persist_canonical_segments(
             )));
         }
         if state.statistics.is_some() {
-            let statistics_reservation_bytes = output.iter().try_fold(0_u64, |total, batch| {
-                total
-                    .checked_add(cdf_kernel::BatchStats::computation_reservation_bytes(
-                        batch,
-                    )?)
-                    .ok_or_else(|| CdfError::data("segment statistics working set overflow"))
-            })?;
+            let statistics_reservation_bytes = statistics_computation_reservation_bytes(&output)?;
             let request = ReservationRequest::new(
                 ConsumerKey::new("profile-statistics", MemoryClass::Package)?,
                 statistics_reservation_bytes.max(1),
@@ -6587,18 +6591,28 @@ fn persist_canonical_segments(
 }
 
 pub(crate) fn canonical_construction_reservation_bytes(
-    retained_bytes: u64,
+    canonical_output_allocation_bytes: u64,
     row_count: u64,
     unaccounted_input_bytes: u64,
 ) -> Result<u64> {
     let ordinal_bytes = row_count
         .checked_mul(8)
         .ok_or_else(|| CdfError::data("canonical ordinal buffer size overflow"))?;
-    retained_bytes
+    canonical_output_allocation_bytes
         .max(1)
         .checked_add(unaccounted_input_bytes)
         .and_then(|bytes| bytes.checked_add(ordinal_bytes))
         .ok_or_else(|| CdfError::data("canonical concat and ordinal working set overflow"))
+}
+
+pub(crate) fn statistics_computation_reservation_bytes(batches: &[RecordBatch]) -> Result<u64> {
+    batches.iter().try_fold(1_u64, |maximum, batch| {
+        Ok(
+            maximum.max(cdf_kernel::BatchStats::computation_reservation_bytes(
+                batch,
+            )?),
+        )
+    })
 }
 
 fn reserve_with_encode_backpressure(

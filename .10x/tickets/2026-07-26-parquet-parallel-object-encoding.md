@@ -137,6 +137,16 @@ compatibility path.
   an RAII permit until its existing accounted reader is exhausted or dropped. Engine admission
   independently reserves `maximum_segment_bytes × staged-node maximum_concurrency`. This changes
   neither writer count nor a product tuning knob; it makes the existing graph authority true.
+- 2026-07-26: The first `d38c3223` automatic retention probe still exhausted managed memory at
+  the first canonical segment. Controlled release runs completed at jobs 12 (`18.361 s`,
+  `3,744,944 KiB` RSS), 10 (`18.623 s`, `3,342,624 KiB`), and 8 (`17.816 s`,
+  `3,018,096 KiB`), proving the failure was memory topology rather than an intrinsic CPU cap.
+  Static tracing then found two false reservations at the exact failure boundary. Canonical
+  64k batches already match the recorded microbatch shape and are reused by Arrow, but CDF
+  reserved the complete retained segment as though every batch were concatenated. Statistics
+  are computed and merged one batch at a time, but CDF summed scratch for every batch. The
+  engine now proves zero-copy canonicalization before omitting the copy reserve and uses maximum
+  sequential statistics scratch. Fragmented canonical groups retain the conservative copy bound.
 
 ## Blockers
 
@@ -180,6 +190,10 @@ None.
   multi-object overlap/one-writer test and the engine staged-handoff admission test passed.
   `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=6 cargo clippy -p cdf-dest-parquet -p cdf-engine
   --tests --all-features --offline -- -D warnings`, formatting, and diff checks passed.
+- Canonical allocation repair: the exact/refragmented canonicalization test, sequential
+  statistics-scratch test, accounted canonical construction test, and staged-handoff admission
+  test passed. `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=6 cargo clippy -p cdf-engine --tests
+  --all-features --offline -- -D warnings`, formatting, and diff checks passed.
 
 ## Review
 

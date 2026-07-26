@@ -9570,6 +9570,33 @@ fn accounted_canonical_input_is_not_reserved_again_during_construction() {
 }
 
 #[test]
+fn sequential_statistics_scratch_reserves_only_the_largest_batch() {
+    let first = batch_for_partition(
+        "stats-first",
+        "part-0",
+        vec![1, 2, 3],
+        vec!["one", "two", "three"],
+        vec![true, false, true],
+    );
+    let second = batch_for_partition(
+        "stats-second",
+        "part-0",
+        vec![4, 5],
+        vec!["four", "five"],
+        vec![false, true],
+    );
+    let first = first.record_batch().unwrap().clone();
+    let second = second.record_batch().unwrap().clone();
+    let expected = cdf_kernel::BatchStats::computation_reservation_bytes(&first)
+        .unwrap()
+        .max(cdf_kernel::BatchStats::computation_reservation_bytes(&second).unwrap());
+    assert_eq!(
+        crate::execution::statistics_computation_reservation_bytes(&[first, second]).unwrap(),
+        expected
+    );
+}
+
+#[test]
 fn parallel_segment_frontier_failure_joins_workers_and_prevents_finalization() {
     let resource = MockResource::tier_a(sample_batches());
     let mut plan = Planner::new()
