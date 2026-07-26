@@ -22,7 +22,9 @@ compatibility path.
 ## Non-goals
 
 - No package or destination artifact-version change.
-- No alternate Parquet codec, compression default, row-group size, or object-layout change.
+- No row-group-size or object-layout change. Compression became in scope only after release
+  evidence proved the prior uncompressed path made the parallel topology device-bound before
+  CPU saturation.
 - No private thread pool, destination branch in generic orchestration, unbounded retained
   segments, or package-sized materialization.
 - No universal throughput claim. The user subsequently required the exact prior 1 TiB acceptance
@@ -40,6 +42,8 @@ compatibility path.
   handles/bytes through the existing staged protocol; the managed-memory ending balance is zero.
 - Writer preparation has no arbitrary fixed default ceiling. Explicit run jobs is an upper
   bound; host CPU, memory, and destination safety can lower it without user tuning.
+- Parquet compression is a compiled physical-path identity, defaults to a measured fast
+  interoperable codec, and remains explicitly selectable without an ambient override.
 - A bounded release-mode, CPU-heavy, multi-object fixture records writers=1 and automatic/N
   results. Automatic/N must improve median wall by at least 1.5x when the host admits at least
   four useful writers; an ordinary-schema control must not regress by more than 5%. If the
@@ -218,6 +222,20 @@ compatibility path.
   preserve full N-way writer admission. This is an adaptive representation choice inside one
   object-ingress algorithm, not a legacy destination path or a destination-specific generic
   runtime branch.
+- 2026-07-26: The final retained-window topology made all ten deterministic object groups runnable
+  at once and improved the bounded automatic median to `15.77 s` versus `31.90 s` at jobs=1
+  (`2.02x`). It averaged only about `319%` CPU because the writer emitted approximately `11.2 GB`
+  of uncompressed staging data for `11.23 GB` of logical input, saturating the configured 1 GB/s
+  gp3 device. A second automatic sample also exceeded the default 8 GiB spill authority when
+  enough uncompressed sibling objects overlapped. The exact 1 TiB run would therefore write
+  roughly 1 TiB of avoidable temporary destination bytes.
+- 2026-07-26: Added compiled `none`, Snappy, LZ4 raw, and Zstd Parquet paths.
+  `compression=...` selects one before planning; the path id and version are recorded in prepared
+  bulk-path and staging metadata, so replay never depends on an ambient setting. Default Snappy
+  is provisional until the dedicated-host codec comparison. Unknown-size sessions reserve one
+  mandatory writer working set and acquire further sets lazily as real object groups appear, up
+  to the compiled host/jobs ceiling. Memory pressure drains the oldest group instead of failing
+  admission or reintroducing a fixed retained-segment window.
 
 ## Blockers
 
@@ -301,6 +319,13 @@ None.
   object one consumes its durable IPC capability, and their encoders overlap; explicit jobs=1
   remains serial. Strict Parquet destination Clippy passed with warnings denied, formatting and
   diff checks passed. Release retention evidence remains pending.
+- Compiled compression and demand-driven writer memory:
+  `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=6 cargo test -p cdf-dest-parquet --lib
+  --all-features --offline -j6` passed `41`, with one explicit release benchmark ignored.
+  The default output test proves Snappy is physically recorded; URI-path tests cover every codec
+  and reject ambiguous options; the multi-object probe proves lazy memory admission still reaches
+  actual concurrent encoders. Strict all-target/all-feature Clippy for Parquet, Project, and CLI
+  passed with warnings denied; formatting and diff checks passed.
 
 ## Review
 

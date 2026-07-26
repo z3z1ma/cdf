@@ -44,6 +44,7 @@ const CORRECTION_SIDECAR_VERSION: u16 = 1;
 const CORRECTION_SIDECAR_MANIFEST_VERSION: u16 = 1;
 
 mod api;
+mod compression;
 mod corrections;
 mod layout;
 mod manifest;
@@ -57,6 +58,7 @@ mod store;
 mod tests;
 
 pub use api::*;
+pub use compression::ParquetCompression;
 pub use corrections::{
     ParquetVersionedRematerializationPlan, ParquetVersionedRematerializationRequest,
 };

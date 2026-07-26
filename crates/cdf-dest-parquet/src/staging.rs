@@ -20,9 +20,8 @@ use sha2::Digest;
 use crate::{
     ParquetCommitRequest, ParquetDestination,
     api::{duplicate_parquet_receipt, finalize_parquet_objects},
-    layout::{
-        PHYSICAL_PLAN_PATH, PHYSICAL_PLAN_VERSION, ParquetObjectLayoutPolicy, ParquetSegmentLayout,
-    },
+    compression::{PHYSICAL_PLAN_VERSION, ParquetCompression},
+    layout::{ParquetObjectLayoutPolicy, ParquetSegmentLayout},
     manifest::canonical_json_bytes,
     manifest::{ParquetObjectEntry, ParquetObjectSegmentEntry},
     package::{
@@ -38,6 +37,17 @@ use crate::{
 const ENCODE_LANE: &str = "parquet.encode";
 const STAGING_METADATA_VERSION: u16 = 1;
 const OBJECT_PUBLICATION_MODE: &str = "atomic_content_create_v1";
+
+fn parquet_writer_memory_request(bytes: u64) -> Result<cdf_memory::ReservationRequest> {
+    Ok(cdf_memory::ReservationRequest::new(
+        cdf_memory::ConsumerKey::new(
+            "parquet-staged-writer-window",
+            cdf_memory::MemoryClass::Destination,
+        )?,
+        bytes,
+    )?
+    .as_minimum_working_set())
+}
 
 #[cfg(test)]
 pub(crate) struct ParquetEncodeConcurrencyProbe {
@@ -103,6 +113,7 @@ pub(crate) struct ParquetStagedIngressSession {
     destination: ParquetDestination,
     request: StagedIngressRequest,
     available_writer_memory: Vec<cdf_memory::MemoryLease>,
+    writer_working_set_bytes: u64,
     accepted: BTreeMap<u32, StagedSegmentIdentity>,
     objects: BTreeMap<u32, StagedParquetObject>,
     prepared_root: Option<(CommittedContentRootId, u64)>,
@@ -118,17 +129,19 @@ struct ParquetPhysicalWritePlan {
     bytes_per_batch: u64,
     object_layout: ParquetObjectLayoutPolicy,
     live_single_object: bool,
+    compression: ParquetCompression,
 }
 
 impl ParquetPhysicalWritePlan {
     fn compile(destination: &ParquetDestination, request: &StagedIngressRequest) -> Result<Self> {
         let descriptor = &request.bulk_path().descriptor;
-        if descriptor.path_id != PHYSICAL_PLAN_PATH || descriptor.version != PHYSICAL_PLAN_VERSION {
+        if descriptor.version != PHYSICAL_PLAN_VERSION {
             return Err(CdfError::contract(format!(
-                "Parquet staged ingress requires physical plan {PHYSICAL_PLAN_PATH}@{PHYSICAL_PLAN_VERSION}, got {}@{}",
+                "Parquet staged ingress requires physical-plan version {PHYSICAL_PLAN_VERSION}, got {}@{}",
                 descriptor.path_id, descriptor.version
             )));
         }
+        let compression = ParquetCompression::from_path_id(&descriptor.path_id)?;
         let object_layout = ParquetObjectLayoutPolicy::current().validate()?;
         let live_single_object = match request.workload() {
             cdf_runtime::StagedIngressWorkload::PlannedStream {
@@ -158,6 +171,7 @@ impl ParquetPhysicalWritePlan {
             bytes_per_batch: request.bulk_path().bytes_per_batch,
             object_layout,
             live_single_object,
+            compression,
         })
     }
 
@@ -240,34 +254,21 @@ impl ParquetStagedIngressSession {
         let writer_settings = ParquetWriterSettings {
             rows_per_batch: physical_plan.rows_per_batch,
             bytes_per_batch: physical_plan.bytes_per_batch,
+            compression: physical_plan.compression,
         };
         let worker_bytes = parquet_worker_working_set_bytes(writer_settings)?;
-        let writer_memory_bytes = worker_bytes
-            .checked_mul(u64::from(physical_plan.writers))
-            .ok_or_else(|| CdfError::data("Parquet staged writer memory floor overflowed"))?;
         let writer_memory = destination.execution().memory();
-        let writer_memory_request = cdf_memory::ReservationRequest::new(
-            cdf_memory::ConsumerKey::new(
-                "parquet-staged-writer-window",
-                cdf_memory::MemoryClass::Destination,
-            )?,
-            writer_memory_bytes,
-        )?
-        .as_minimum_working_set();
+        let writer_memory_request = parquet_writer_memory_request(worker_bytes)?;
         let snapshot = writer_memory.snapshot();
         let writer_memory_authority = writer_memory
             .try_reserve(&writer_memory_request)?
             .ok_or_else(|| {
                 CdfError::data(format!(
-                    "Parquet staged ingress requires {writer_memory_bytes} managed bytes for {} compiled writer working sets before extraction, but only {} of {} bytes are free",
-                    physical_plan.writers,
+                    "Parquet staged ingress requires {worker_bytes} managed bytes for one writer working set before extraction, but only {} of {} bytes are free",
                     snapshot.budget_bytes.saturating_sub(snapshot.current_bytes),
                     snapshot.budget_bytes,
                 ))
             })?;
-        let available_writer_memory =
-            writer_memory_authority
-                .into_partitions(vec![worker_bytes; usize::from(physical_plan.writers)])?;
         let started_at_ms = now_ms()?;
         let metadata_key = staged_attempt_metadata_key(
             destination.object_key_encoder(),
@@ -280,7 +281,7 @@ impl ParquetStagedIngressSession {
             version: STAGING_METADATA_VERSION,
             target: request.binding().target.as_str().to_owned(),
             attempt_id: request.attempt_id().as_str().to_owned(),
-            physical_plan_path: PHYSICAL_PLAN_PATH.to_owned(),
+            physical_plan_path: physical_plan.compression.path_id().to_owned(),
             physical_plan_version: PHYSICAL_PLAN_VERSION,
             object_publication_mode: OBJECT_PUBLICATION_MODE.to_owned(),
             writers: physical_plan.writers,
@@ -301,12 +302,22 @@ impl ParquetStagedIngressSession {
         Ok(Self {
             destination,
             request,
-            available_writer_memory,
+            available_writer_memory: vec![writer_memory_authority],
+            writer_working_set_bytes: worker_bytes,
             accepted: BTreeMap::new(),
             objects: BTreeMap::new(),
             prepared_root: None,
             physical_plan,
         })
+    }
+
+    fn reserve_additional_writer(&self) -> Result<Option<cdf_memory::MemoryLease>> {
+        self.destination
+            .execution()
+            .memory()
+            .try_reserve(&parquet_writer_memory_request(
+                self.writer_working_set_bytes,
+            )?)
     }
 
     fn validate_identity(&self, identity: &StagedSegmentIdentity) -> Result<()> {
@@ -345,6 +356,7 @@ impl ParquetStagedIngressSession {
         let writer_settings = ParquetWriterSettings {
             rows_per_batch: self.physical_plan.rows_per_batch,
             bytes_per_batch: self.physical_plan.bytes_per_batch,
+            compression: self.physical_plan.compression,
         };
         let mutation_guard = self.request.mutation_guard().clone();
         let run_id = format!(
@@ -832,10 +844,22 @@ impl StagedIngressSession for ParquetStagedIngressSession {
                 self.finish_group(group, &mut pending)?;
             }
             if active.is_none() {
-                if self.available_writer_memory.is_empty()
-                    && let Err(error) = self.complete_oldest(&mut pending)
-                {
-                    return Err(error);
+                if self.available_writer_memory.is_empty() {
+                    if pending.len() < maximum {
+                        match self.reserve_additional_writer() {
+                            Ok(Some(writer_memory)) => {
+                                self.available_writer_memory.push(writer_memory);
+                            }
+                            Ok(None) => {
+                                self.complete_oldest(&mut pending)?;
+                            }
+                            Err(error) => {
+                                return Err(self.with_join_failures(error, None, &mut pending));
+                            }
+                        }
+                    } else {
+                        self.complete_oldest(&mut pending)?;
+                    }
                 }
                 let writer_memory = self.available_writer_memory.pop().ok_or_else(|| {
                     CdfError::internal("Parquet writer memory pool is unexpectedly empty")

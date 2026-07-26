@@ -22,6 +22,7 @@ const OUTPUT_BUFFER_BYTES: usize = 1024 * 1024;
 pub(crate) struct ParquetWriterSettings {
     pub(crate) rows_per_batch: u64,
     pub(crate) bytes_per_batch: u64,
+    pub(crate) compression: crate::compression::ParquetCompression,
 }
 
 impl ParquetWriterSettings {
@@ -386,6 +387,7 @@ fn write_parquet_batches(
     let data_page_bytes = bytes_per_batch.min(8 * 1024 * 1024);
     let properties = WriterProperties::builder()
         .set_created_by("cdf native arrow-rs parquet writer".to_owned())
+        .set_compression(settings.compression.codec()?)
         .set_write_batch_size(rows_per_batch)
         .set_data_page_row_count_limit(data_page_rows)
         .set_data_page_size_limit(data_page_bytes)

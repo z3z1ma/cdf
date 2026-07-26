@@ -12,6 +12,7 @@ use crate::{
     store::{ObjectKeyEncoder, data_object_key, package_manifest_key, staged_data_object_key},
 };
 use ::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use ::parquet::basic::Compression;
 use arrow_array::{
     Array, ArrayRef, DurationSecondArray, Float64Array, Int64Array, StringArray,
     TimestampMicrosecondArray,
@@ -62,6 +63,7 @@ fn test_writer_settings() -> crate::package::ParquetWriterSettings {
     crate::package::ParquetWriterSettings {
         rows_per_batch: 64 * 1024,
         bytes_per_batch: 16 * 1024 * 1024,
+        compression: crate::ParquetCompression::default(),
     }
 }
 
@@ -484,6 +486,21 @@ fn parquet_field_names(bytes: &[u8]) -> Vec<String> {
         .fields()
         .iter()
         .map(|field| field.name().clone())
+        .collect()
+}
+
+fn parquet_compressions(bytes: &[u8]) -> Vec<Compression> {
+    let mut temp = tempfile::NamedTempFile::new().unwrap();
+    temp.write_all(bytes).unwrap();
+    temp.flush().unwrap();
+    let file = fs::File::open(temp.path()).unwrap();
+    ParquetRecordBatchReaderBuilder::try_new(file)
+        .unwrap()
+        .metadata()
+        .row_groups()
+        .iter()
+        .flat_map(|row_group| row_group.columns())
+        .map(|column| column.compression())
         .collect()
 }
 
@@ -1732,6 +1749,12 @@ fn filesystem_append_materializes_parquet_and_verifies_receipt() {
         .unwrap();
     assert_eq!(parquet_rows(&bytes), 3);
     assert_eq!(parquet_field_names(&bytes), vec!["id", "name"]);
+    assert!(
+        parquet_compressions(&bytes)
+            .into_iter()
+            .all(|compression| compression == Compression::SNAPPY),
+        "the default physical path must record Snappy in every Parquet column chunk"
+    );
     assert_eq!(
         std::fs::read_dir(root.join(".cdf-staging"))
             .unwrap()
@@ -1744,6 +1767,41 @@ fn filesystem_append_materializes_parquet_and_verifies_receipt() {
     assert!(
         receipts.is_empty(),
         "package receipts belong to orchestration"
+    );
+}
+
+#[test]
+fn parquet_destination_uri_compiles_compression_into_the_physical_path() {
+    for (value, expected) in [
+        ("none", crate::ParquetCompression::None),
+        ("snappy", crate::ParquetCompression::Snappy),
+        ("lz4", crate::ParquetCompression::Lz4Raw),
+        ("zstd", crate::ParquetCompression::Zstd),
+    ] {
+        let (path, compression) = crate::runtime::parse_parquet_destination_uri(&format!(
+            "parquet://lake/data?compression={value}"
+        ))
+        .unwrap();
+        assert_eq!(path, "lake/data");
+        assert_eq!(compression, expected);
+        assert_eq!(
+            crate::runtime::parquet_runtime_capabilities(compression)
+                .bulk_path
+                .as_deref(),
+            Some(compression.path_id())
+        );
+    }
+    let (_, default) =
+        crate::runtime::parse_parquet_destination_uri("parquet://lake/data").unwrap();
+    assert_eq!(default, crate::ParquetCompression::Snappy);
+    assert!(
+        crate::runtime::parse_parquet_destination_uri(
+            "parquet://lake/data?compression=snappy&compression=zstd"
+        )
+        .is_err()
+    );
+    assert!(
+        crate::runtime::parse_parquet_destination_uri("parquet://lake/data?codec=snappy").is_err()
     );
 }
 
@@ -2061,8 +2119,11 @@ fn staged_attempt_records_the_exact_prepared_physical_plan() {
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(metadata["physical_plan_path"], "arrow_ipc_to_parquet");
-    assert_eq!(metadata["physical_plan_version"], 5);
+    assert_eq!(
+        metadata["physical_plan_path"],
+        "arrow_ipc_to_parquet_snappy"
+    );
+    assert_eq!(metadata["physical_plan_version"], 6);
     assert_eq!(
         metadata["object_publication_mode"],
         "atomic_content_create_v1"
@@ -2314,8 +2375,8 @@ fn abandoned_attempt_cleanup_requires_exact_expiry_proof() {
                 "version": 1,
                 "target": commit.commit.target.as_str(),
                 "attempt_id": attempt_id.as_str(),
-                "physical_plan_path": "arrow_ipc_to_parquet",
-                "physical_plan_version": 5,
+                "physical_plan_path": "arrow_ipc_to_parquet_snappy",
+                "physical_plan_version": 6,
                 "object_publication_mode": "atomic_content_create_v1",
                 "writers": 1,
                 "rows_per_batch": 65_536,
@@ -2457,8 +2518,8 @@ fn independent_lease_domains_cannot_collide_or_collect_each_others_staging() {
                     "version": 1,
                     "target": commit.commit.target.as_str(),
                     "attempt_id": attempt_id.as_str(),
-                    "physical_plan_path": "arrow_ipc_to_parquet",
-                    "physical_plan_version": 5,
+                    "physical_plan_path": "arrow_ipc_to_parquet_snappy",
+                    "physical_plan_version": 6,
                     "object_publication_mode": "atomic_content_create_v1",
                     "writers": 1,
                     "rows_per_batch": 65_536,
@@ -2565,8 +2626,8 @@ fn failed_staging_cleanup_retains_attempt_marker_until_payload_deletion_complete
                 "version": 1,
                 "target": target.as_str(),
                 "attempt_id": attempt_id.as_str(),
-                "physical_plan_path": "arrow_ipc_to_parquet",
-                "physical_plan_version": 5,
+                "physical_plan_path": "arrow_ipc_to_parquet_snappy",
+                "physical_plan_version": 6,
                 "object_publication_mode": "atomic_content_create_v1",
                 "writers": 1,
                 "rows_per_batch": 65_536,
@@ -2692,7 +2753,7 @@ fn constrained_writer_memory_fails_cleanly_instead_of_waiting_on_its_input() {
 }
 
 #[test]
-fn staged_writer_window_is_reserved_before_input_and_not_charged_again() {
+fn staged_minimum_writer_is_reserved_before_input_and_not_charged_again() {
     const BUDGET: u64 = 80 * 1024 * 1024;
     const BATCH_BYTES: u64 = 16 * 1024 * 1024;
     const WORKER_BYTES: u64 = 32 * 1024 * 1024;
@@ -2764,11 +2825,11 @@ fn staged_writer_window_is_reserved_before_input_and_not_charged_again() {
             panic!("Parquet destination exposed finalized ingress")
         }
     };
-    let writer_window = 2 * WORKER_BYTES;
-    assert_eq!(memory.snapshot().current_bytes - before, writer_window);
+    assert_eq!(memory.snapshot().current_bytes - before, WORKER_BYTES);
 
-    // Occupy every remaining managed byte after session admission. Encoding can still progress
-    // only if the writer consumes its pre-reserved authority instead of requesting it again.
+    // Occupy every remaining managed byte after session admission. The first encoder can still
+    // progress only if it consumes its pre-reserved authority instead of requesting it again.
+    // Additional writers are admitted lazily from real object-group demand and available memory.
     let remaining = BUDGET - memory.snapshot().current_bytes;
     let blocker = memory
         .try_reserve(

@@ -20,6 +20,7 @@ pub struct ParquetDestination {
     execution: cdf_runtime::ExecutionServices,
     sheet: DestinationSheet,
     object_key_encoder: ObjectKeyEncoder,
+    compression: crate::ParquetCompression,
     pub(crate) pending_corrections: Arc<Mutex<BTreeMap<PlanId, ParquetCorrectionContext>>>,
     #[cfg(test)]
     pub(crate) encode_probe: Option<Arc<crate::staging::ParquetEncodeConcurrencyProbe>>,
@@ -79,7 +80,11 @@ impl ParquetDestination {
         root: impl AsRef<Path>,
         execution: cdf_runtime::ExecutionServices,
     ) -> Result<Self> {
-        Self::from_store(StoreClient::new_filesystem(root.as_ref())?, execution)
+        Self::from_store(
+            StoreClient::new_filesystem(root.as_ref())?,
+            execution,
+            crate::ParquetCompression::default(),
+        )
     }
 
     pub fn new_object_store(
@@ -91,11 +96,22 @@ impl ParquetDestination {
         Self::from_store(
             StoreClient::new_object_store(namespace, store, root_prefix)?,
             execution,
+            crate::ParquetCompression::default(),
         )
     }
 
-    fn from_store(store: StoreClient, execution: cdf_runtime::ExecutionServices) -> Result<Self> {
-        execution.ensure_blocking_lanes(&parquet_runtime_capabilities().blocking_lanes)?;
+    pub fn with_compression(mut self, compression: crate::ParquetCompression) -> Self {
+        self.compression = compression;
+        self
+    }
+
+    fn from_store(
+        store: StoreClient,
+        execution: cdf_runtime::ExecutionServices,
+        compression: crate::ParquetCompression,
+    ) -> Result<Self> {
+        execution
+            .ensure_blocking_lanes(&parquet_runtime_capabilities(compression).blocking_lanes)?;
         let artifact = Self::destination_sheet_artifact()?;
         let sheet = artifact.sheet;
         let protocol_capabilities = artifact.protocol_capabilities;
@@ -105,6 +121,7 @@ impl ParquetDestination {
             execution,
             sheet,
             object_key_encoder,
+            compression,
             pending_corrections: Arc::new(Mutex::new(BTreeMap::new())),
             #[cfg(test)]
             encode_probe: None,
@@ -170,6 +187,10 @@ impl ParquetDestination {
 
     pub(crate) fn object_key_encoder(&self) -> ObjectKeyEncoder {
         self.object_key_encoder
+    }
+
+    pub(crate) fn compression(&self) -> crate::ParquetCompression {
+        self.compression
     }
 
     pub fn reclaim_unreachable_content(

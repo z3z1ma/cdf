@@ -10,12 +10,57 @@ use cdf_runtime::{
     DestinationDriver, DestinationHealthProbe, DestinationHealthResult, DestinationHealthStatus,
     DestinationIngressMode, DestinationInspection, DestinationResolutionContext,
     DestinationRuntime, DestinationRuntimeCapabilities, DestinationWriterModel,
-    absolute_under_root, artifact_hash, local_uri_path,
+    absolute_under_root, artifact_hash,
 };
 
-use crate::ParquetDestination;
+use crate::{ParquetCompression, ParquetDestination, compression::PHYSICAL_PLAN_VERSION};
 
 pub struct ParquetRuntimeDriver;
+
+pub(crate) fn parse_parquet_destination_uri(uri: &str) -> Result<(String, ParquetCompression)> {
+    let raw = uri.strip_prefix("parquet://").ok_or_else(|| {
+        CdfError::contract(format!(
+            "destination URI `{uri}` is unsupported; expected parquet://path"
+        ))
+    })?;
+    let (path, query) = raw
+        .split_once('?')
+        .map_or((raw, None), |(path, query)| (path, Some(query)));
+    if path.trim().is_empty() || path.contains("://") || path.contains('#') {
+        return Err(CdfError::contract(format!(
+            "destination URI `{uri}` is malformed or non-local; expected parquet://path"
+        )));
+    }
+    let mut compression = ParquetCompression::default();
+    let mut compression_seen = false;
+    if let Some(query) = query {
+        if query.is_empty() || query.contains('#') {
+            return Err(CdfError::contract(
+                "Parquet destination query must contain compression=none|snappy|lz4|zstd",
+            ));
+        }
+        for option in query.split('&') {
+            let (key, value) = option.split_once('=').ok_or_else(|| {
+                CdfError::contract(format!(
+                    "Parquet destination option `{option}` must use key=value syntax"
+                ))
+            })?;
+            if key != "compression" {
+                return Err(CdfError::contract(format!(
+                    "Parquet destination option `{key}` is unsupported; expected compression"
+                )));
+            }
+            if compression_seen {
+                return Err(CdfError::contract(
+                    "Parquet destination compression option may appear only once",
+                ));
+            }
+            compression = ParquetCompression::from_name(value)?;
+            compression_seen = true;
+        }
+    }
+    Ok((path.to_owned(), compression))
+}
 
 impl DestinationDriver for ParquetRuntimeDriver {
     fn schemes(&self) -> &'static [&'static str] {
@@ -27,13 +72,14 @@ impl DestinationDriver for ParquetRuntimeDriver {
         uri: &str,
         context: &DestinationResolutionContext<'_>,
     ) -> Result<DestinationInspection> {
-        let root = absolute_under_root(context.project_root()?, local_uri_path(uri, "parquet")?);
+        let (path, compression) = parse_parquet_destination_uri(uri)?;
+        let root = absolute_under_root(context.project_root()?, &path);
         let sheet_artifact = ParquetDestination::destination_sheet_artifact()?;
         Ok(DestinationInspection {
             description: filesystem_description(&root),
             sheet_artifact_hash: artifact_hash(&sheet_artifact)?,
             sheet_artifact,
-            runtime: parquet_runtime_capabilities(),
+            runtime: parquet_runtime_capabilities(compression),
             health_probes: vec![DestinationHealthProbe {
                 probe_id: "filesystem_root".to_owned(),
                 description: format!("inspect Parquet filesystem root {}", root.display()),
@@ -48,11 +94,13 @@ impl DestinationDriver for ParquetRuntimeDriver {
         uri: &str,
         context: &DestinationResolutionContext<'_>,
     ) -> Result<Box<dyn DestinationRuntime>> {
-        let root = absolute_under_root(context.project_root()?, local_uri_path(uri, "parquet")?);
+        let (path, compression) = parse_parquet_destination_uri(uri)?;
+        let root = absolute_under_root(context.project_root()?, &path);
         Ok(Box::new(FilesystemParquetRuntime {
             destination: None,
             root,
             execution: context.execution_services().cloned(),
+            compression,
         }))
     }
 
@@ -61,15 +109,22 @@ impl DestinationDriver for ParquetRuntimeDriver {
         uri: &str,
         context: &DestinationResolutionContext<'_>,
     ) -> Result<Vec<DestinationHealthResult>> {
-        let root = absolute_under_root(context.project_root()?, local_uri_path(uri, "parquet")?);
+        let (path, compression) = parse_parquet_destination_uri(uri)?;
+        let root = absolute_under_root(context.project_root()?, &path);
         Ok(vec![DestinationHealthResult {
             probe_id: "destination".to_owned(),
             status: DestinationHealthStatus::Passed,
             message: "Parquet destination capabilities loaded".to_owned(),
-            details: [(
-                "filesystem_root".to_owned(),
-                serde_json::json!(root.display().to_string()),
-            )]
+            details: [
+                (
+                    "filesystem_root".to_owned(),
+                    serde_json::json!(root.display().to_string()),
+                ),
+                (
+                    "compression".to_owned(),
+                    serde_json::json!(compression.name()),
+                ),
+            ]
             .into_iter()
             .collect(),
         }])
@@ -94,7 +149,7 @@ impl DestinationRuntime for ParquetDestination {
     }
 
     fn runtime_capabilities(&self) -> DestinationRuntimeCapabilities {
-        parquet_runtime_capabilities()
+        parquet_runtime_capabilities(self.compression())
     }
 
     fn prepare_bulk_paths(
@@ -149,6 +204,7 @@ pub struct FilesystemParquetRuntime {
     destination: Option<ParquetDestination>,
     root: PathBuf,
     execution: Option<cdf_runtime::ExecutionServices>,
+    compression: ParquetCompression,
 }
 
 impl FilesystemParquetRuntime {
@@ -157,6 +213,7 @@ impl FilesystemParquetRuntime {
             destination: None,
             root,
             execution: None,
+            compression: ParquetCompression::default(),
         }
     }
 
@@ -168,6 +225,7 @@ impl FilesystemParquetRuntime {
             destination: None,
             root,
             execution: Some(execution),
+            compression: ParquetCompression::default(),
         }
     }
 
@@ -178,7 +236,10 @@ impl FilesystemParquetRuntime {
                     "Parquet destination execution requires injected ExecutionServices",
                 )
             })?;
-            self.destination = Some(ParquetDestination::new_filesystem(&self.root, execution)?);
+            self.destination = Some(
+                ParquetDestination::new_filesystem(&self.root, execution)?
+                    .with_compression(self.compression),
+            );
         }
         Ok(self.destination.as_ref().expect("destination was just set"))
     }
@@ -209,7 +270,7 @@ impl DestinationRuntime for FilesystemParquetRuntime {
     }
 
     fn runtime_capabilities(&self) -> DestinationRuntimeCapabilities {
-        parquet_runtime_capabilities()
+        parquet_runtime_capabilities(self.compression)
     }
 
     fn prepare_bulk_paths(
@@ -295,7 +356,9 @@ fn filesystem_description(root: &Path) -> DestinationDescription {
     .with_product_location_field("root")
 }
 
-pub(crate) fn parquet_runtime_capabilities() -> DestinationRuntimeCapabilities {
+pub(crate) fn parquet_runtime_capabilities(
+    compression: ParquetCompression,
+) -> DestinationRuntimeCapabilities {
     DestinationRuntimeCapabilities {
         blocking_lanes: vec![
             cdf_runtime::BlockingLaneSpec {
@@ -331,32 +394,35 @@ pub(crate) fn parquet_runtime_capabilities() -> DestinationRuntimeCapabilities {
         commit_payload_mode: cdf_runtime::DestinationCommitPayloadMode::SegmentStreaming,
         max_in_flight_segments: Some(2),
         max_in_flight_bytes: Some(128 * 1024 * 1024),
-        bulk_paths: vec![cdf_runtime::BulkPathDescriptor {
-            path_id: "arrow_ipc_to_parquet".to_owned(),
-            version: 5,
-            ingress_mode: DestinationIngressMode::StagedDurableSegments,
-            writer_model: DestinationWriterModel::ConcurrentSegments,
-            ordering: cdf_runtime::BulkOrdering::ManifestOrder,
-            rows: cdf_runtime::BulkSizeRange {
-                minimum: 8 * 1024,
-                preferred: 64 * 1024,
-                maximum: 1024 * 1024,
-            },
-            bytes: cdf_runtime::BulkSizeRange {
-                minimum: 1024 * 1024,
-                preferred: 16 * 1024 * 1024,
-                maximum: 64 * 1024 * 1024,
-            },
-            max_useful_writers: u16::MAX,
-            blocking_lane: Some("parquet.encode".to_owned()),
-            native_internal_parallelism: 1,
-            external_staging: true,
-            fallback: cdf_runtime::BulkFallbackMode::Forbidden,
-            schema_preflight_version: "parquet-arrow-mapping@2".to_owned(),
-            measured_evidence_version: Some("p3-d8-2026-07-15-v5".to_owned()),
-        }],
-        bulk_path: Some("arrow_ipc_to_parquet".to_owned()),
-        bulk_evidence_version: Some("p3-d8-2026-07-15-v5".to_owned()),
+        bulk_paths: ParquetCompression::ALL
+            .into_iter()
+            .map(|candidate| cdf_runtime::BulkPathDescriptor {
+                path_id: candidate.path_id().to_owned(),
+                version: PHYSICAL_PLAN_VERSION,
+                ingress_mode: DestinationIngressMode::StagedDurableSegments,
+                writer_model: DestinationWriterModel::ConcurrentSegments,
+                ordering: cdf_runtime::BulkOrdering::ManifestOrder,
+                rows: cdf_runtime::BulkSizeRange {
+                    minimum: 8 * 1024,
+                    preferred: 64 * 1024,
+                    maximum: 1024 * 1024,
+                },
+                bytes: cdf_runtime::BulkSizeRange {
+                    minimum: 1024 * 1024,
+                    preferred: 16 * 1024 * 1024,
+                    maximum: 64 * 1024 * 1024,
+                },
+                max_useful_writers: u16::MAX,
+                blocking_lane: Some("parquet.encode".to_owned()),
+                native_internal_parallelism: 1,
+                external_staging: true,
+                fallback: cdf_runtime::BulkFallbackMode::Forbidden,
+                schema_preflight_version: "parquet-arrow-mapping@2".to_owned(),
+                measured_evidence_version: Some("p3-parquet-compression-2026-07-26-v1".to_owned()),
+            })
+            .collect(),
+        bulk_path: Some(compression.path_id().to_owned()),
+        bulk_evidence_version: Some("p3-parquet-compression-2026-07-26-v1".to_owned()),
         replay_requires_explicit_target: false,
         replay_target_hint: None,
         replay_policy_values: Default::default(),
@@ -378,6 +444,7 @@ fn prepare_parquet_bulk_paths(
         let settings = crate::package::ParquetWriterSettings {
             rows_per_batch: path.rows_per_batch,
             bytes_per_batch: path.bytes_per_batch,
+            compression: ParquetCompression::from_path_id(&path.descriptor.path_id)?,
         };
         let worker_bytes = crate::package::parquet_worker_working_set_bytes(settings)?;
         let memory_writers = execution.map_or(1, |execution| {
