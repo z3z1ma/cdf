@@ -85,10 +85,23 @@ fit.
   parallel encoder cannot fit, they encode inline rather than globally serializing tiny runs.
   The observed 1,504 MiB / 64 MiB source / 256 MiB segment shape resolves from 16 source jobs and
   15 encoders to 7 and 1; a 16 GiB shape preserves all 16 and 15.
+- 2026-07-25: A 20 GiB diagnostic rerun under the exact 2 GiB cgroup disproved staged-file cache
+  pressure: immediately before the OOM, cgroup `anon` ranged from 1.88–2.00 GiB while `file`
+  ranged from 0.10–0.22 GiB and dirty/writeback pages remained tens of MiB. Control-flow tracing
+  found the missing anonymous-memory term: after one canonical segment becomes durable, its
+  batches and existing leases move into background staged ingress while the encoder begins the
+  next segment. The previous topology join accounted the accumulator and encoder, but not this
+  simultaneously retained downstream handoff.
+- 2026-07-25: Added the destination-neutral staged-handoff window to the same topology resolver.
+  Its bound is the greater of the compiled staged-ingress byte window and one maximum canonical
+  segment, matching the existing oversized-message singleton law. The constrained EC2 shape now
+  resolves to three source jobs and one encoder; the 16 GiB shape still preserves all requested
+  concurrency. Finalized destinations and executions without streaming handoff reserve nothing.
 
 ## Blockers
 
-None.
+The exact EC2 100 GiB / 2 GiB closure rerun is pending deployment of the staged-handoff admission
+repair.
 
 ## Evidence
 
@@ -102,9 +115,16 @@ None.
 - `cargo clippy -p cdf-engine -p cdf-dest-parquet --all-targets --locked -j 12 -- -D warnings`:
   green after the joined-admission repair.
 - Focused topology tests prove constrained narrowing, roomy-budget preservation, safe inline
-  fallback, and preservation of source-frontier parallelism under small frontier-reserved
-  workloads.
+  fallback, preservation of source-frontier parallelism under small frontier-reserved workloads,
+  and the simultaneous staged-handoff window.
+- EC2 20 GiB / 2 GiB memory profile at revision `7b68b091`: OOM after 17.28 seconds; sampled
+  `memory.stat` proved anonymous memory, not staged-file cache, exhausted the cgroup. This
+  falsified output-cache eviction as the repair and exposed the omitted downstream handoff.
 - `cargo fmt --all -- --check` and `git diff --check`: green.
+- `cargo test -p cdf-engine --locked -j 12 pipeline_concurrency`: three focused topology tests
+  passed after the staged-handoff repair.
+- `cargo clippy -p cdf-engine --all-targets --locked -j 12 -- -D warnings`: green after the
+  staged-handoff repair.
 - EC2 100 GiB / 2 GiB closure rerun: pending this commit's deployment.
 
 ## Review

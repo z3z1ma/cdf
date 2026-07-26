@@ -2255,6 +2255,7 @@ fn resolve_pipeline_concurrency(
     options: &EngineExecutionInvocation,
     requested_source_jobs: usize,
     maximum_segment_bytes: u64,
+    staged_handoff: bool,
 ) -> Result<PipelineConcurrency> {
     let Some(services) = options.services.as_ref() else {
         return Ok(PipelineConcurrency {
@@ -2289,6 +2290,21 @@ fn resolve_pipeline_concurrency(
     })?;
     let snapshot = services.memory().snapshot();
     let available_bytes = snapshot.budget_bytes.saturating_sub(snapshot.current_bytes);
+    let staged_handoff_bytes = if staged_handoff {
+        plan.operator_graph
+            .as_ref()
+            .and_then(|graph| {
+                graph
+                    .nodes
+                    .iter()
+                    .find(|node| node.kind == cdf_runtime::GraphNodeKind::StagedIngress)
+            })
+            .map_or(maximum_segment_bytes, |node| {
+                node.maximum_working_set_bytes.max(maximum_segment_bytes)
+            })
+    } else {
+        0
+    };
     if compiled_source.batch_memory_contract()
         == cdf_runtime::SourceBatchMemoryContract::FrontierReserved
     {
@@ -2297,6 +2313,7 @@ fn resolve_pipeline_concurrency(
             .ok_or_else(|| CdfError::data("segment encode working set overflow"))?;
         let parallel_floor = maximum_segment_bytes
             .checked_add(encode_working_set_bytes)
+            .and_then(|bytes| bytes.checked_add(staged_handoff_bytes))
             .and_then(|bytes| bytes.checked_add(source_working_set_bytes))
             .ok_or_else(|| CdfError::data("parallel pipeline working set overflow"))?;
         if available_bytes < parallel_floor {
@@ -2305,8 +2322,10 @@ fn resolve_pipeline_concurrency(
             // coexist with a maximum canonical segment and encode inline. Tiny runs remain
             // parallel at the source edge; a real oversized encode still fails through the exact
             // allocation ledger instead of waiting on another operator.
-            let source_capacity =
-                available_bytes.saturating_sub(maximum_segment_bytes) / source_working_set_bytes;
+            let source_capacity = available_bytes
+                .saturating_sub(staged_handoff_bytes)
+                .saturating_sub(maximum_segment_bytes)
+                / source_working_set_bytes;
             return Ok(PipelineConcurrency {
                 source_jobs: requested_source_jobs.min(
                     usize::try_from(source_capacity)
@@ -2323,6 +2342,7 @@ fn resolve_pipeline_concurrency(
         available_bytes,
         source_working_set_bytes,
         maximum_segment_bytes,
+        staged_handoff_bytes,
     )
 }
 
@@ -2332,6 +2352,7 @@ pub(crate) fn resolve_pipeline_concurrency_from_bounds(
     available_bytes: u64,
     source_working_set_bytes: u64,
     segment_admission_bytes: u64,
+    staged_handoff_bytes: u64,
 ) -> Result<PipelineConcurrency> {
     if requested_source_jobs == 0 {
         return Ok(PipelineConcurrency {
@@ -2349,6 +2370,7 @@ pub(crate) fn resolve_pipeline_concurrency_from_bounds(
         .ok_or_else(|| CdfError::data("segment encode working set overflow"))?;
     let parallel_floor = segment_admission_bytes
         .checked_add(encode_working_set_bytes)
+        .and_then(|bytes| bytes.checked_add(staged_handoff_bytes))
         .and_then(|bytes| bytes.checked_add(source_working_set_bytes))
         .ok_or_else(|| CdfError::data("parallel pipeline working set overflow"))?;
 
@@ -2357,6 +2379,7 @@ pub(crate) fn resolve_pipeline_concurrency_from_bounds(
         // the irreducible parallel sink; remaining capacity expands encoder fan-out without
         // compromising the canonical head's next source poll.
         let source_capacity = available_bytes
+            .saturating_sub(staged_handoff_bytes)
             .saturating_sub(segment_admission_bytes)
             .saturating_sub(encode_working_set_bytes)
             / source_working_set_bytes;
@@ -2370,6 +2393,7 @@ pub(crate) fn resolve_pipeline_concurrency_from_bounds(
             .and_then(|jobs| jobs.checked_mul(source_working_set_bytes))
             .ok_or_else(|| CdfError::data("source frontier working set overflow"))?;
         let remaining = available_bytes
+            .saturating_sub(staged_handoff_bytes)
             .saturating_sub(segment_admission_bytes)
             .saturating_sub(used_by_source);
         let encode_capacity = remaining / encode_working_set_bytes;
@@ -2387,11 +2411,12 @@ pub(crate) fn resolve_pipeline_concurrency_from_bounds(
     // A single-threaded encoder does not coexist with a growing canonical segment, but later
     // prefetched source partitions remain live while the canonical head encodes. Resolve that
     // topology independently rather than pretending the parallel floor is mandatory.
+    let execution_bytes = available_bytes.saturating_sub(staged_handoff_bytes);
     let assembly_capacity =
-        available_bytes.saturating_sub(segment_admission_bytes) / source_working_set_bytes;
-    let encode_prefetch_capacity = if available_bytes >= encode_working_set_bytes {
+        execution_bytes.saturating_sub(segment_admission_bytes) / source_working_set_bytes;
+    let encode_prefetch_capacity = if execution_bytes >= encode_working_set_bytes {
         1_u64.saturating_add(
-            available_bytes.saturating_sub(encode_working_set_bytes) / source_working_set_bytes,
+            execution_bytes.saturating_sub(encode_working_set_bytes) / source_working_set_bytes,
         )
     } else {
         0
@@ -3639,6 +3664,7 @@ where
         None
     };
     let segmentation_policy = plan.segmentation_policy()?.clone();
+    let staged_handoff = durable_segment.is_some();
     let mut durable_segment_observer = DurableSegmentObserver {
         hook: durable_segment,
     };
@@ -3652,6 +3678,7 @@ where
         &options,
         requested_partition_jobs,
         segmentation_policy.maximum_bytes,
+        staged_handoff,
     )?;
     let mut segment_queue = SegmentEncodeQueue::new(
         &builder,
