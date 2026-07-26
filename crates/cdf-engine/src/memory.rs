@@ -289,22 +289,30 @@ impl LeaseAccount for DataFusionLeaseAccount {
     }
 
     fn release(&self, bytes: u64) {
+        let bytes = usize::try_from(bytes)
+            .expect("DataFusion lease bytes originated from a platform-sized reservation");
         if let Some(coordinator) = self.coordinator.upgrade() {
             let waiters = {
                 let mut state = coordinator.state.lock().unwrap();
                 // Keep pool capacity and the CDF snapshot under the same coordinator lock. If
                 // pool capacity becomes visible first, a waiter can reserve it while the old
                 // lease is still present in the snapshot, producing an impossible peak above
-                // the finite budget even though resident reservations never exceeded it.
-                self.reservation.free();
-                apply_release(&mut state.snapshot, &self.request, bytes);
+                // the finite budget even though resident reservations never exceeded it. A lease
+                // can be partitioned into several payload owners sharing this account, so release
+                // exactly this owner's bytes rather than freeing the complete reservation.
+                self.reservation.shrink(bytes);
+                apply_release(
+                    &mut state.snapshot,
+                    &self.request,
+                    u64::try_from(bytes).expect("platform-sized lease release fits u64"),
+                );
                 state.waiters.take_all()
             };
             for waiter in waiters {
                 waiter.wake();
             }
         } else {
-            self.reservation.free();
+            self.reservation.shrink(bytes);
         }
     }
 }
@@ -433,6 +441,34 @@ mod tests {
         assert_eq!(coordinator.snapshot().current_bytes, 64);
         assert!(coordinator.try_reserve(&request).unwrap().is_none());
         drop(lease);
+        assert_eq!(coordinator.snapshot().current_bytes, 0);
+        assert_eq!(pool.reserved(), 0);
+    }
+
+    #[test]
+    fn partitioned_lease_releases_only_each_payload_share() {
+        let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(128));
+        let coordinator =
+            DataFusionMemoryCoordinator::new(Arc::clone(&pool), BTreeMap::new()).unwrap();
+        let request = ReservationRequest::new(
+            ConsumerKey::new("partitioned", MemoryClass::Decode).unwrap(),
+            128,
+        )
+        .unwrap();
+        let lease = coordinator.try_reserve(&request).unwrap().unwrap();
+        let mut partitions = lease.into_partitions(vec![64, 64]).unwrap();
+        assert_eq!(pool.reserved(), 128);
+
+        drop(partitions.pop());
+        assert_eq!(pool.reserved(), 64);
+        assert_eq!(coordinator.snapshot().current_bytes, 64);
+        assert!(coordinator.try_reserve(&request).unwrap().is_none());
+
+        drop(partitions);
+        assert_eq!(pool.reserved(), 0);
+        let replacement = coordinator.try_reserve(&request).unwrap().unwrap();
+        assert_eq!(coordinator.snapshot().peak_bytes, 128);
+        drop(replacement);
         assert_eq!(coordinator.snapshot().current_bytes, 0);
         assert_eq!(pool.reserved(), 0);
     }

@@ -165,6 +165,15 @@ compatibility path.
   construction lease now remains responsible only for new concat/ordinal/unaccounted allocations.
   Reverted the speculative admission reduction in the same correction, preserving the faster
   automatic encoder topology.
+- 2026-07-26: The corrected `5b0e0a99` probe completed in `19.239 s`, but its terminal report
+  exposed an impossible managed peak: `4,187,574,880` bytes against a `3,650,722,202`-byte pool,
+  with `4,253,392 KiB` RSS. Control-flow tracing found the shared-account defect beneath every
+  partitioned memory lease. `MemoryLease::into_partitions` creates multiple owners over one
+  DataFusion reservation, but dropping any owner called `free()` on the entire reservation while
+  subtracting only that owner's bytes from CDF's snapshot. The pool therefore readmitted memory
+  still physically retained by sibling payloads. Release now shrinks exactly the owner's byte
+  share. A 128-byte two-partition regression proves that dropping one owner leaves 64 bytes
+  reserved, blocks a new 128-byte allocation, and never reports a peak above the finite pool.
 
 ## Blockers
 
@@ -221,6 +230,10 @@ None.
   `accounted_canonical_input_is_not_reserved_again_during_construction` passed. Strict all-feature
   Engine Clippy, formatting, and diff checks passed. The speculative topology change is not
   retained; the repeat release probe is the product-level regression proof.
+- Partitioned DataFusion ownership repair:
+  `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=6 cargo test -p cdf-engine
+  partitioned_lease_releases_only_each_payload_share --offline -j6` and the accounted-canonical
+  integration test passed. Strict all-feature Engine Clippy, formatting, and diff checks passed.
 
 ## Review
 
