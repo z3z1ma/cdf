@@ -332,6 +332,15 @@ def load_nonledger_rows() -> list[dict[str, str]]:
         seen.add(row["owner"])
         if row["status"] not in {"bounded", "measured", "open"}:
             raise ValueError(f"invalid non-ledger status for {row['owner']!r}")
+        evidence = Path(row["evidence"])
+        if evidence.is_absolute() or ".." in evidence.parts or evidence.parts[:1] != (".10x",):
+            raise ValueError(
+                f"non-ledger owner {row['owner']!r} has an unsafe evidence path: {row['evidence']!r}"
+            )
+        if not (ROOT / evidence).is_file():
+            raise ValueError(
+                f"non-ledger owner {row['owner']!r} references missing evidence: {row['evidence']!r}"
+            )
     return sorted(rows, key=lambda row: (row["class"], row["owner"]))
 
 
@@ -392,7 +401,7 @@ def render() -> str:
     lines.extend(
         [
             "",
-            "`open` is a closure blocker, not a soft warning. A row may become `bounded` only when code admits it under the named authority, and `measured` only when reproducible host evidence falsifies the bound.",
+            "`open` is a closure blocker, not a soft warning. A row may become `bounded` only when code admits it under the named authority, and `measured` only when reproducible host evidence demonstrates a stable bound within its stated envelope and limits.",
             "",
         ]
     )
@@ -402,8 +411,22 @@ def render() -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true", help="fail when the committed matrix is stale")
+    parser.add_argument(
+        "--require-closed",
+        action="store_true",
+        help="fail while any non-ledger owner remains open",
+    )
     args = parser.parse_args()
     self_test()
+    nonledger = load_nonledger_rows()
+    if args.require_closed:
+        open_owners = [row["owner"] for row in nonledger if row["status"] == "open"]
+        if open_owners:
+            print(
+                "memory-owner closure has open rows: " + ", ".join(open_owners),
+                file=sys.stderr,
+            )
+            return 1
     generated = render()
     if args.check:
         existing = OUTPUT.read_text(encoding="utf-8") if OUTPUT.exists() else ""

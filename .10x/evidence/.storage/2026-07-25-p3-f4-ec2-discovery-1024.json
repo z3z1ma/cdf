@@ -1,0 +1,79 @@
+{
+  "ok": true,
+  "command": "schema discover",
+  "result": {
+    "discovery": {
+      "file_coverage": "all_files",
+      "matched_files": 1024,
+      "selected_files": 1024,
+      "unobserved_files": 0,
+      "within_file_coverage": "format_metadata"
+    },
+    "environment": "stress",
+    "fields": [
+      {
+        "data_type": {
+          "bits": 64,
+          "kind": "int",
+          "signed": true
+        },
+        "metadata": {
+          "cdf:source_name": "row_id"
+        },
+        "name": "row_id",
+        "nullable": false,
+        "source_name": "row_id"
+      },
+      {
+        "data_type": {
+          "kind": "utf8",
+          "offset_width": 32
+        },
+        "metadata": {
+          "cdf:source_name": "payload"
+        },
+        "name": "payload",
+        "nullable": false,
+        "source_name": "payload"
+      }
+    ],
+    "next_command": "cdf plan stress.rows",
+    "project": "constant_memory_stress",
+    "resource_id": "stress.rows",
+    "schema_hash": "sha256:569f9088bed2d6689afd9f58f049130caa79f39cc6a7ea2a84a542c077910739",
+    "schema_snapshot_path": ".cdf/schemas/stress.rows@sha256:569f9088bed2d6689afd9f58f049130caa79f39cc6a7ea2a84a542c077910739.json",
+    "snapshot_metadata": {
+      "cdf:discovery_manifest_hash": "sha256:4d9ea6a264e9c6af9416d9ce0e9d4e95ad296af87052e251f98cf64b0176326a",
+      "cdf:discovery_manifest_path": ".cdf/schemas/stress.rows@sha256:4d9ea6a264e9c6af9416d9ce0e9d4e95ad296af87052e251f98cf64b0176326a.discovery.json",
+      "cdf:normalizer": "namecase-v1",
+      "probe": "registered-source-discovery",
+      "source_discovery_binding": "sha256:317244c0a4474667cdd12c1f3ae484259f78ad795957ce479407c86dd7cd6912",
+      "source_driver": "files",
+      "source_driver_version": "1.0.0"
+    },
+    "source_identity": {
+      "discovery_manifest_hash": "sha256:4d9ea6a264e9c6af9416d9ce0e9d4e95ad296af87052e251f98cf64b0176326a",
+      "discovery_manifest_path": ".cdf/schemas/stress.rows@sha256:4d9ea6a264e9c6af9416d9ce0e9d4e95ad296af87052e251f98cf64b0176326a.discovery.json",
+      "discovery_source_bytes_read": "34863104",
+      "file_coverage": "all_files",
+      "matched_files": "1024",
+      "observation_cache_bypasses": "1024",
+      "observation_cache_hits": "0",
+      "observation_cache_misses": "0",
+      "probe_bytes_read": "34863104",
+      "probe_records_read": "0",
+      "selected_files": "1024",
+      "source_driver": "files",
+      "transport": "files",
+      "unobserved_files": "0",
+      "within_file_coverage": "format_metadata"
+    },
+    "writes": {
+      "checkpoint": false,
+      "destination": false,
+      "lockfile": false,
+      "package": false,
+      "schema_snapshot": false
+    }
+  }
+}

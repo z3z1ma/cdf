@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Relates-To: .10x/decisions/process-tree-constant-memory-proof.md, .10x/specs/constant-memory-proof.md, .10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md
+Relates-To: .10x/decisions/process-tree-constant-memory-proof.md, .10x/specs/constant-memory-proof.md, .10x/tickets/done/2026-07-10-p3-ws-f-constant-memory-guarantee.md
 
 # Constant-memory shaping evidence
 

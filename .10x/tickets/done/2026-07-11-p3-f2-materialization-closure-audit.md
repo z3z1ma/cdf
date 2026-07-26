@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-11
 Updated: 2026-07-18
-Parent: .10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md
+Parent: .10x/tickets/done/2026-07-10-p3-ws-f-constant-memory-guarantee.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-a5-streaming-operator-graph.md, .10x/tickets/done/2026-07-11-p3-a6-spillable-package-dedup.md, .10x/tickets/done/2026-07-11-p3-d5-bulk-path-matrix.md, .10x/tickets/done/2026-07-11-p3-e4-package-io-envelope.md, .10x/tickets/done/2026-07-11-p3-g3-codec-download-decode-overlap.md
 
 # P3 F2: production materialization and allocation-owner closure
@@ -30,7 +30,7 @@ No unrelated product feature or performance tuning beyond closure blockers.
 None for this completed audit tranche. The remaining proof work is deliberately split rather than keeping F2 as an unbounded catch-all:
 
 - `.10x/tickets/done/2026-07-11-p3-f3-stress-generators-laws.md` owns geometric metadata/cardinality, spill, compression, dedup, quarantine, slow-destination, and too-small-budget falsification.
-- `.10x/tickets/2026-07-11-p3-f4-one-tb-memory-closeout.md` owns the final owner-matrix open rows, native dependency scratch calibration, `FileManifest`/state/receipt cardinality closure, and the no-unclassified-allocation exit gate.
+- `.10x/tickets/done/2026-07-11-p3-f4-one-tb-memory-closeout.md` owns the final owner-matrix open rows, native dependency scratch calibration, `FileManifest`/state/receipt cardinality closure, and the no-unclassified-allocation exit gate.
 - Format and interop children own their own native allocation envelope before product registration; in particular B6 retains Avro decompression containment and H5 retains Python native/pre-admission RSS calibration.
 
 ## References

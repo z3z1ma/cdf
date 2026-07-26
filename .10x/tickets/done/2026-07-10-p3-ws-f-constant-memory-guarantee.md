@@ -1,6 +1,6 @@
-Status: active
+Status: done
 Created: 2026-07-10
-Updated: 2026-07-19
+Updated: 2026-07-25
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md, .10x/specs/performance-lab-and-envelope.md, .10x/specs/runtime-memory-backpressure.md
 
@@ -15,7 +15,7 @@ Make the memory law executable: generated 100 GB input under 2 GiB, peak-RSS ass
 - `.10x/tickets/done/2026-07-11-p3-f1-budget-enforcement-headroom.md`
 - `.10x/tickets/done/2026-07-11-p3-f2-materialization-closure-audit.md`
 - `.10x/tickets/done/2026-07-11-p3-f3-stress-generators-laws.md`
-- `.10x/tickets/2026-07-11-p3-f4-one-tb-memory-closeout.md`
+- `.10x/tickets/done/2026-07-11-p3-f4-one-tb-memory-closeout.md`
 
 ## Acceptance criteria
 
@@ -26,7 +26,7 @@ Make the memory law executable: generated 100 GB input under 2 GiB, peak-RSS ass
 
 ## Blockers
 
-None at the parent level. Child dependencies and closure gaps remain authoritative in F1–F4.
+None. All four children are terminal.
 
 ## Progress
 
@@ -37,8 +37,44 @@ None at the parent level. Child dependencies and closure gaps remain authoritati
   showed no input-size slope. Forced spill, exhausted spill, impossible budget, compressed remote,
   slow-consumer, metadata, dedup, quarantine, staged-writer, and foreign-child laws are terminal.
   F4 retains the final 1 TiB/default-budget scale and permanent slow-tier integration.
+- 2026-07-25: F4 closed the exact default-policy scale cell. The complete governed path processed
+  1.0086 TiB, 5.436 billion rows, 1,024 files, and 5,120 segments at 1.896 GiB peak process RSS
+  under CDF's unoverridden 4 GiB process policy; package, receipt, and checkpoint verification
+  succeeded and the enclosing cgroup recorded zero OOM. Cold discovery over all 1,024 Parquet
+  footers completed at 106,496 KiB peak RSS. The generated allocation-owner matrix has no open
+  row, its evidence paths are validated in slow quality, and `QUALITY.md` preserves the 100 GiB
+  and 1 TiB dedicated-host procedures without returning giant fixtures to hosted CI.
 
 ## References
 
 - `.10x/decisions/process-tree-constant-memory-proof.md`
 - `.10x/specs/constant-memory-proof.md`
+
+## Evidence
+
+- F1: `.10x/tickets/done/2026-07-11-p3-f1-budget-enforcement-headroom.md`
+- F2: `.10x/tickets/done/2026-07-11-p3-f2-materialization-closure-audit.md`
+- F3: `.10x/evidence/2026-07-25-p3-f3-constant-memory-matrix.md`
+- F4: `.10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md`
+- Permanent gate and ownership matrix: `QUALITY.md`, `.github/workflows/slow-quality.yml`,
+  `docs/memory-allocation-owners.md`, and `tools/generate-memory-owner-matrix.py`
+
+## Review
+
+Verdict: pass.
+
+The child evidence covers process-tree enforcement, native materialization boundaries, geometric
+input-size falsification, forced spill/exhaustion, compressed and slow-consumer backpressure,
+foreign children, metadata/cardinality, the exact 1 TiB/default-policy cell, and a permanent
+dedicated-host procedure. No critical or significant finding remains. The terminal evidence does
+not claim constant metadata at million-file or unbounded-stream horizons; that distinct future
+boundary is recorded in the active roadmap.
+
+## Retrospective
+
+Constant memory must be proved at three separate layers: the managed ledger, foreign/native
+process ownership, and actual process-tree RSS. Treating one as a proxy for the others caused the
+early audit churn. The durable matrix now names each owner and the exact authority that bounds or
+measures it, while the scale runner makes semantic success, receipt verification, cleanup, and RSS
+part of the same law. Large stress fixtures belong on controlled dedicated hosts; only the cheap
+failure law and owner-matrix closure check belong in hosted slow CI.

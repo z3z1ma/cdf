@@ -82,6 +82,23 @@ parallel runtime. Historical owner:
 
 - `.10x/tickets/cancelled/2026-07-05-cdc-and-streaming-supervisor.md`
 
+### Extreme metadata cardinality
+
+P3's enforced constant-memory envelope is exact through 1 TiB, 1,024 file positions, and 5,120
+canonical segments. Current artifact contracts still retain one semantic file-position,
+state-segment, and destination-acknowledgement record per corresponding identity. That measured
+envelope is not a claim of constant metadata at million-file/package scale or over an unbounded
+checkpoint horizon.
+
+Before a future million-file, petabyte-duration, or continuously rotating package program claims
+that larger envelope, it must externalize those semantic arrays behind content-addressed,
+stream-verified position/state/receipt authorities while preserving the existing package,
+checkpoint, and commit identities. It must not reintroduce eager compatibility readers or make a
+resident cache the execution authority. Historical analysis and the current measured boundary:
+
+- `.10x/tickets/done/2026-07-11-p3-f2-materialization-closure-audit.md`
+- `.10x/tickets/done/2026-07-11-p3-f4-one-tb-memory-closeout.md`
+
 ### Distributed execution and remote state
 
 Remote workers, fenced shared state, object-store packages, and Spark/Flink/Ballista adapters

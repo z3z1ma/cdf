@@ -4,8 +4,8 @@
       "owner": "process runtime and allocator headroom",
       "class": "native",
       "boundary": "cdf-memory budget resolution and cgroup process-tree observation",
-      "bound_authority": "MemoryBudgetResolution.native_headroom_bytes",
-      "evidence": ".10x/tickets/done/2026-07-11-p3-f1-budget-enforcement-headroom.md",
+      "bound_authority": "MemoryBudgetResolution.native_headroom_bytes plus executable-scoped allocator retention calibration",
+      "evidence": ".10x/evidence/2026-07-25-p3-f3-constant-memory-matrix.md",
       "status": "measured"
     },
     {
@@ -20,17 +20,17 @@
       "owner": "Arrow and Parquet encoder page/compression scratch",
       "class": "native",
       "boundary": "cdf-package and cdf-dest-parquet streaming writers",
-      "bound_authority": "decoded/output ledger window; dependency-internal scratch not yet isolated",
-      "evidence": ".10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md",
-      "status": "open"
+      "bound_authority": "one admitted decoded/output window per writer plus measured arrow-rs Parquet scratch under the exact 1 TiB process envelope",
+      "evidence": ".10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md",
+      "status": "measured"
     },
     {
       "owner": "codec parser and compressor dependency scratch",
       "class": "native",
       "boundary": "registered format and byte-transform drivers",
-      "bound_authority": "declared format working set covers CDF input/output; dependency-internal scratch audit is incomplete",
-      "evidence": ".10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md",
-      "status": "open"
+      "bound_authority": "driver-declared parser/transform working sets plus measured native headroom across Parquet scale and compressed-stream laws",
+      "evidence": ".10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md",
+      "status": "measured"
     },
     {
       "owner": "DataFusion execution allocations",
@@ -52,17 +52,17 @@
       "owner": "HTTP, TLS, and object-store client internals",
       "class": "native",
       "boundary": "cdf-object-access and transport adapters",
-      "bound_authority": "bounded response chunks plus process native headroom",
-      "evidence": ".10x/tickets/done/2026-07-11-p3-g1-streaming-transport-byte-sources.md",
-      "status": "open"
+      "bound_authority": "one admitted response frame per request, bounded connection concurrency, and measured process native headroom",
+      "evidence": ".10x/evidence/2026-07-14-p3-g2-fineweb-growing-spool-overlap.md",
+      "status": "measured"
     },
     {
       "owner": "PostgreSQL source and destination client internals",
       "class": "native",
       "boundary": "cdf-source-postgres and cdf-dest-postgres synchronous client sessions",
-      "bound_authority": "Arrow/COPY payloads are bounded; connection, protocol, and TLS native growth is not yet isolated",
-      "evidence": ".10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md",
-      "status": "open"
+      "bound_authority": "one admitted Arrow/COPY window per synchronous session plus measured client/server protocol headroom",
+      "evidence": ".10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md",
+      "status": "measured"
     },
     {
       "owner": "subprocess and foreign worker process tree",
@@ -77,7 +77,7 @@
       "class": "external_staging",
       "boundary": "cdf-task-store canonical builder and cdf-package draft index",
       "bound_authority": "managed index-cache leases plus spill-growth reservations",
-      "evidence": ".10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md",
+      "evidence": ".10x/tickets/done/2026-07-11-p3-f2-materialization-closure-audit.md",
       "status": "measured"
     },
     {
@@ -100,49 +100,49 @@
       "owner": "discovery candidate and evidence cardinality",
       "class": "metadata",
       "boundary": "SourceDiscoverySession and DiscoveryManifestArtifact",
-      "bound_authority": "resident vectors; external observation authority not yet implemented",
-      "evidence": ".10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md",
-      "status": "open"
+      "bound_authority": "spill-backed file inventory plus resident selected discovery observations; measured at the 1,024-file scale cell",
+      "evidence": ".10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md",
+      "status": "measured"
     },
     {
       "owner": "committed file positions",
       "class": "metadata",
       "boundary": "FileManifest checkpoint position",
-      "bound_authority": "resident vector/map; external manifest authority not yet implemented",
-      "evidence": ".10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md",
-      "status": "open"
+      "bound_authority": "one canonical committed position per selected file; measured through checkpoint publication at the 1,024-file scale cell",
+      "evidence": ".10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md",
+      "status": "measured"
     },
     {
       "owner": "state-delta and destination acknowledgement cardinality",
       "class": "metadata",
       "boundary": "package state preimage and destination receipt",
-      "bound_authority": "resident ordered segment arrays retained by current artifact contract",
-      "evidence": ".10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md",
-      "status": "open"
+      "bound_authority": "one ordered artifact-contract record per canonical segment; measured through receipt and checkpoint settlement at the 1 TiB scale cell",
+      "evidence": ".10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md",
+      "status": "measured"
     },
     {
       "owner": "DuckDB canonical segment handoff registry",
       "class": "metadata",
       "boundary": "cdf-dest-duckdb in-process segment table function",
-      "bound_authority": "resident file-handle vector proportional to package segments",
-      "evidence": ".10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md",
-      "status": "open"
+      "bound_authority": "resident path/identity metadata per segment with file handles opened only by admitted scan workers; measured at 512 segments",
+      "evidence": ".10x/tickets/done/2026-07-11-p3-f3-stress-generators-laws.md",
+      "status": "measured"
     },
     {
       "owner": "Postgres binary COPY encoder buffers",
       "class": "metadata",
       "boundary": "cdf-dest-postgres binary encoder",
-      "bound_authority": "fixed writer buffer plus one duplicated variable-width field; no ledger lease yet",
-      "evidence": ".10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md",
-      "status": "open"
+      "bound_authority": "fixed aggregate writer buffer plus one canonical-batch-bounded field scratch; measured on the release binary-COPY path",
+      "evidence": ".10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md",
+      "status": "measured"
     },
     {
       "owner": "package control-artifact semantic models",
       "class": "metadata",
       "boundary": "cdf-package verified identity, contract-evolution, and archive-fidelity readers",
-      "bound_authority": "raw bytes stream under exact identity length; state, observation, and late-data semantic vectors remain resident without external authority",
-      "evidence": ".10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md",
-      "status": "open"
+      "bound_authority": "streamed identity/control bytes plus current artifact-contract semantic records; measured through 1 TiB package verification and settlement",
+      "evidence": ".10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md",
+      "status": "measured"
     }
   ]
 }

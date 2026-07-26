@@ -3,7 +3,7 @@
 
 This matrix separates every `ReservationRequest::new` site discovered in production Rust source from allocations that require an explicit native, child-process, metadata, or external-storage authority. `Inherited` means the reservation receives an already-validated typed `ConsumerKey`; the row still records the concrete byte-bound expression at the allocation site.
 
-Managed reservation declarations: **72** grouped rows across **82** production call sites.
+Managed reservation declarations: **77** grouped rows across **87** production call sites.
 
 ## Managed ledger owners
 
@@ -14,6 +14,7 @@ Managed reservation declarations: **72** grouped rows across **82** production c
 | cdf-dest-parquet | parquet-atomic-object-put | Destination | byte_count.max(1) | crates/cdf-dest-parquet/src/store.rs | 1 |
 | cdf-dest-parquet | parquet-object-verification | Destination | reserved_bytes | crates/cdf-dest-parquet/src/store.rs | 1 |
 | cdf-dest-parquet | parquet-row-group-writer | Destination | writer_bytes | crates/cdf-dest-parquet/src/package.rs | 1 |
+| cdf-dest-parquet | parquet-staged-writer-window | Destination | writer_memory_bytes | crates/cdf-dest-parquet/src/staging.rs | 1 |
 | cdf-engine | late-data-carryover | Decode | decode_window | crates/cdf-engine/src/execution.rs | 1 |
 | cdf-engine | canonical-segment-concat | Package | bytes | crates/cdf-engine/src/execution.rs | 1 |
 | cdf-engine | isolated-canonical-segment-output | Package | working_set | crates/cdf-engine/src/worker_task.rs | 1 |
@@ -37,6 +38,8 @@ Managed reservation declarations: **72** grouped rows across **82** production c
 | cdf-format-json | json-full-content-inference | Discovery | working_set_bytes | crates/cdf-format-json/src/lib.rs | 1 |
 | cdf-format-json | json-document-framing | Transform | state.request.preferred_output_chunk_bytes | crates/cdf-format-json/src/lib.rs | 1 |
 | cdf-format-parquet | parquet-physical-batch | Decode | state.request.target_batch_bytes | crates/cdf-format-parquet/src/lib.rs | 1 |
+| cdf-format-protobuf | protobuf-arrow-output | Decode | output_authority | crates/cdf-format-protobuf/src/lib.rs | 1 |
+| cdf-format-protobuf | protobuf-framed-message | Decode | accounted | crates/cdf-format-protobuf/src/lib.rs | 1 |
 | cdf-http | http-response-body | Source | bytes | crates/cdf-http/src/message.rs | 1 |
 | cdf-memory | `consumer` | Inherited | self.maximum_operation_bytes | crates/cdf-memory/src/lib.rs | 1 |
 | cdf-object-access | file-identity-metadata | Discovery | FILE_IDENTITY_MEMORY_ENVELOPE_BYTES | crates/cdf-object-access/src/transport.rs | 2 |
@@ -48,6 +51,7 @@ Managed reservation declarations: **72** grouped rows across **82** production c
 | cdf-object-access | object-store-byte-source-sequential | Source | admitted_frame_bytes | crates/cdf-object-access/src/object_store_byte_source.rs | 1 |
 | cdf-package | package-draft-index | Control | scratch_memory | crates/cdf-package/src/draft_index.rs | 1 |
 | cdf-package | `SEGMENT_STREAM_MEMORY_CONSUMER` | Package | maximum_segment_bytes | crates/cdf-package/src/reader.rs | 1 |
+| cdf-package | statistics-profile-window | Package | maximum_window_bytes | crates/cdf-package/src/statistics_profile.rs | 1 |
 | cdf-project | `format!("discovery-probe-{index}")` | Discovery | weight | crates/cdf-project/src/schema_discovery.rs | 1 |
 | cdf-python | python-source-batch | Source | maximum_boundary_bytes | crates/cdf-python/src/resource.rs | 1 |
 | cdf-runtime | `consumer_name` | Control | encoded_bytes | crates/cdf-runtime/src/graph.rs | 1 |
@@ -62,7 +66,8 @@ Managed reservation declarations: **72** grouped rows across **82** production c
 | cdf-source-glue | glue-materialized-partition-values | Source | retained.max(1) | crates/cdf-source-glue/src/execution.rs | 1 |
 | cdf-source-iceberg | iceberg-planning-index | Control | memory_bytes | crates/cdf-source-iceberg/src/planning_index.rs | 1 |
 | cdf-source-iceberg | `consumer` | Discovery | bytes | crates/cdf-source-iceberg/src/catalog.rs | 1 |
-| cdf-source-iceberg | iceberg-parquet-decode / iceberg-parquet-null-canonicalization | Source | decode_reservation_bytes is the complete decode envelope; opportunistic all-null canonicalization transfers the batch to its own exact retained-byte lease; maximum_emitted_batch_bytes bounds the source frontier | crates/cdf-source-iceberg/src/execution.rs | 2 |
+| cdf-source-iceberg | iceberg-parquet-decode | Source | source.decode_reservation_bytes | crates/cdf-source-iceberg/src/execution.rs | 1 |
+| cdf-source-iceberg | iceberg-parquet-null-canonicalization | Source | retained_bytes | crates/cdf-source-iceberg/src/execution.rs | 1 |
 | cdf-source-postgres | postgres-source-batch | Source | POSTGRES_MAXIMUM_BATCH_BYTES | crates/cdf-source-postgres/src/source.rs | 1 |
 | cdf-subprocess | `consumer` | Source | accounted_bytes; bytes.max(1) | crates/cdf-subprocess/src/protocol_stream.rs<br>crates/cdf-subprocess/src/runner.rs | 2 |
 | cdf-subprocess | subprocess-stdout-chunk | Source | bytes.max(1) | crates/cdf-subprocess/src/runner.rs | 1 |
@@ -87,22 +92,22 @@ Managed reservation declarations: **72** grouped rows across **82** production c
 | Owner | Class | Boundary | Bound authority | Evidence | Status |
 |---|---|---|---|---|---|
 | subprocess and foreign worker process tree | child | cdf-subprocess admitted child execution | aggregate child budget with cgroup v2 process-tree enforcement | .10x/tickets/done/2026-07-11-p3-f1-budget-enforcement-headroom.md | measured |
-| SQLite planning and package draft indexes | external_staging | cdf-task-store canonical builder and cdf-package draft index | managed index-cache leases plus spill-growth reservations | .10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md | measured |
+| SQLite planning and package draft indexes | external_staging | cdf-task-store canonical builder and cdf-package draft index | managed index-cache leases plus spill-growth reservations | .10x/tickets/done/2026-07-11-p3-f2-materialization-closure-audit.md | measured |
 | destination durable staging | external_staging | DestinationIngress staged-segment capability and StagingLease | shared spill/external-store budget plus proof-gated lease cleanup | .10x/tickets/done/2026-07-14-p3-d8-parquet-staged-parallel-ingress.md | bounded |
 | remote seekable-object spool | external_staging | cdf-object-access growing and evicting spool byte sources | shared spill reservation with progressive eviction or clean refusal | .10x/tickets/done/2026-07-11-p3-g3-codec-download-decode-overlap.md | bounded |
-| DuckDB canonical segment handoff registry | metadata | cdf-dest-duckdb in-process segment table function | resident file-handle vector proportional to package segments | .10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md | open |
-| Postgres binary COPY encoder buffers | metadata | cdf-dest-postgres binary encoder | fixed writer buffer plus one duplicated variable-width field; no ledger lease yet | .10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md | open |
-| committed file positions | metadata | FileManifest checkpoint position | resident vector/map; external manifest authority not yet implemented | .10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md | open |
-| discovery candidate and evidence cardinality | metadata | SourceDiscoverySession and DiscoveryManifestArtifact | resident vectors; external observation authority not yet implemented | .10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md | open |
-| package control-artifact semantic models | metadata | cdf-package verified identity, contract-evolution, and archive-fidelity readers | raw bytes stream under exact identity length; state, observation, and late-data semantic vectors remain resident without external authority | .10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md | open |
-| state-delta and destination acknowledgement cardinality | metadata | package state preimage and destination receipt | resident ordered segment arrays retained by current artifact contract | .10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md | open |
-| Arrow and Parquet encoder page/compression scratch | native | cdf-package and cdf-dest-parquet streaming writers | decoded/output ledger window; dependency-internal scratch not yet isolated | .10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md | open |
+| DuckDB canonical segment handoff registry | metadata | cdf-dest-duckdb in-process segment table function | resident path/identity metadata per segment with file handles opened only by admitted scan workers; measured at 512 segments | .10x/tickets/done/2026-07-11-p3-f3-stress-generators-laws.md | measured |
+| Postgres binary COPY encoder buffers | metadata | cdf-dest-postgres binary encoder | fixed aggregate writer buffer plus one canonical-batch-bounded field scratch; measured on the release binary-COPY path | .10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md | measured |
+| committed file positions | metadata | FileManifest checkpoint position | one canonical committed position per selected file; measured through checkpoint publication at the 1,024-file scale cell | .10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md | measured |
+| discovery candidate and evidence cardinality | metadata | SourceDiscoverySession and DiscoveryManifestArtifact | spill-backed file inventory plus resident selected discovery observations; measured at the 1,024-file scale cell | .10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md | measured |
+| package control-artifact semantic models | metadata | cdf-package verified identity, contract-evolution, and archive-fidelity readers | streamed identity/control bytes plus current artifact-contract semantic records; measured through 1 TiB package verification and settlement | .10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md | measured |
+| state-delta and destination acknowledgement cardinality | metadata | package state preimage and destination receipt | one ordered artifact-contract record per canonical segment; measured through receipt and checkpoint settlement at the 1 TiB scale cell | .10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md | measured |
+| Arrow and Parquet encoder page/compression scratch | native | cdf-package and cdf-dest-parquet streaming writers | one admitted decoded/output window per writer plus measured arrow-rs Parquet scratch under the exact 1 TiB process envelope | .10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md | measured |
 | DataFusion execution allocations | native | cdf-engine DataFusion MemoryPool bridge | cdf-memory QueryEngine reservations | .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md | bounded |
 | DuckDB transaction and execution engine | native | cdf-dest-duckdb execution-service binding | adapter memory_limit plus spill-reserved temp_directory ceiling | .10x/evidence/2026-07-14-p3-f2-duckdb-native-resource-envelope.md | measured |
-| HTTP, TLS, and object-store client internals | native | cdf-object-access and transport adapters | bounded response chunks plus process native headroom | .10x/tickets/done/2026-07-11-p3-g1-streaming-transport-byte-sources.md | open |
-| PostgreSQL source and destination client internals | native | cdf-source-postgres and cdf-dest-postgres synchronous client sessions | Arrow/COPY payloads are bounded; connection, protocol, and TLS native growth is not yet isolated | .10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md | open |
-| codec parser and compressor dependency scratch | native | registered format and byte-transform drivers | declared format working set covers CDF input/output; dependency-internal scratch audit is incomplete | .10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md | open |
+| HTTP, TLS, and object-store client internals | native | cdf-object-access and transport adapters | one admitted response frame per request, bounded connection concurrency, and measured process native headroom | .10x/evidence/2026-07-14-p3-g2-fineweb-growing-spool-overlap.md | measured |
+| PostgreSQL source and destination client internals | native | cdf-source-postgres and cdf-dest-postgres synchronous client sessions | one admitted Arrow/COPY window per synchronous session plus measured client/server protocol headroom | .10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md | measured |
+| codec parser and compressor dependency scratch | native | registered format and byte-transform drivers | driver-declared parser/transform working sets plus measured native headroom across Parquet scale and compressed-stream laws | .10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md | measured |
 | embedded Python runtime | native | cdf-python host blocking lane | process native headroom plus preaccounted Arrow source batches | .10x/tickets/done/2026-07-11-p3-f1-budget-enforcement-headroom.md | measured |
-| process runtime and allocator headroom | native | cdf-memory budget resolution and cgroup process-tree observation | MemoryBudgetResolution.native_headroom_bytes | .10x/tickets/done/2026-07-11-p3-f1-budget-enforcement-headroom.md | measured |
+| process runtime and allocator headroom | native | cdf-memory budget resolution and cgroup process-tree observation | MemoryBudgetResolution.native_headroom_bytes plus executable-scoped allocator retention calibration | .10x/evidence/2026-07-25-p3-f3-constant-memory-matrix.md | measured |
 
-`open` is a closure blocker, not a soft warning. A row may become `bounded` only when code admits it under the named authority, and `measured` only when reproducible host evidence falsifies the bound.
+`open` is a closure blocker, not a soft warning. A row may become `bounded` only when code admits it under the named authority, and `measured` only when reproducible host evidence demonstrates a stable bound within its stated envelope and limits.

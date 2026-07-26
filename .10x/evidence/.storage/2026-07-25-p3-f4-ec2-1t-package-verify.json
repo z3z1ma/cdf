@@ -1,0 +1,9 @@
+{
+  "ok": true,
+  "command": "package verify",
+  "result": {
+    "checked_archive_count": 0,
+    "checked_file_count": 5135,
+    "package_hash": "sha256:078686f3b6d38b4416c695c6fd585b3d35bb8458da26b7cba6785f9ebf3f21e0"
+  }
+}

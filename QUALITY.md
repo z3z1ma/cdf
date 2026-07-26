@@ -342,6 +342,38 @@ as trend-only costs and cannot inflate the kernel byte-throughput claim.
 
 P3 macro reports use `cdf-p3-lab run-cell`; cold-cache control is explicit opt-in. Baseline replacement uses `baseline-install` with a `.10x/evidence/` record, and comparisons use `compare` without rewriting baseline history.
 
+Constant-memory scale laws run only on a dedicated Linux release host with cgroup v2 enforcement
+and sufficient scratch disk. They are permanent scheduled/manual performance-tier gates, not
+GitHub-hosted or pull-request fast checks:
+
+```bash
+# Geometric and required 100 GiB / 2 GiB law.
+systemd-run --user --wait --collect \
+  --property=WorkingDirectory="$PWD" \
+  --property=MemoryMax=2G \
+  --property=MemorySwapMax=0 \
+  "$PWD/tools/run-constant-memory-stress.sh" \
+    "$PWD/target/cdf-benchmarks/constant-memory-100g" 100 1082939544 2GiB
+
+# Exact 1 TiB/default-policy law. MemoryMax leaves cgroup/file-cache headroom
+# while the runner independently asserts CDF process RSS <= the resolved 4 GiB default.
+systemd-run --user --wait --collect \
+  --property=WorkingDirectory="$PWD" \
+  --property=MemoryMax=5G \
+  --property=MemorySwapMax=0 \
+  "$PWD/tools/run-constant-memory-stress.sh" \
+    "$PWD/target/cdf-benchmarks/constant-memory-1t" 1024 1073741824 default
+```
+
+Each invocation is valid evidence only when `summary.json` records the expected logical bytes,
+verified package/receipt/checkpoint semantics, managed peak within authority, process RSS within
+the resolved process budget, and the enclosing cgroup reports zero OOM/kill events. Fixture
+generation is measured separately and excluded from the product timing. The too-small-budget and
+spill-exhaustion laws remain focused deterministic tests in the ordinary slow-quality workflow;
+the giant scale cells must not be moved there merely to make them appear automated.
+Choose an absent or empty output root for every invocation; retained prior state is never a valid
+scale-cell input.
+
 For binary size:
 
 ```bash

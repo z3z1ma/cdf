@@ -45,7 +45,7 @@ This parent is an aggregate plan. Workstream records own sequencing and integrat
 - `.10x/tickets/done/2026-07-10-p3-ws-c-deterministic-parallelism.md`
 - `.10x/tickets/done/2026-07-10-p3-ws-d-destination-bulk-paths.md`
 - `.10x/tickets/done/2026-07-10-p3-ws-e-hashing-package-io.md`
-- `.10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md`
+- `.10x/tickets/done/2026-07-10-p3-ws-f-constant-memory-guarantee.md`
 - `.10x/tickets/done/2026-07-10-p3-ws-g-remote-io-overlap.md`
 - `.10x/tickets/2026-07-10-p3-ws-h-interop-boundaries.md`
 - `.10x/tickets/done/2026-07-11-p3-ws-v-vectorized-validation.md`
@@ -131,6 +131,10 @@ P3 does not implement a distributed scheduler, remote worker leases, resident st
   consumes only complete manifest-bound statistics, shares CDF's finite memory authority, streams
   decisions and retained capabilities, and remains outside identity-bearing package production.
   Broader DataFusion adoption remains parked.
+- 2026-07-25: Closed WS-F with the exact 1.0086 TiB/default-policy product run at 1.896 GiB
+  process peak RSS, zero cgroup OOM, verified package/receipt/checkpoint, and a cold exhaustive
+  1,024-file Parquet discovery control. The generated owner matrix has no open row and its closure
+  validator is permanent slow quality; giant scale cells remain dedicated-host gates.
 
 ## Blockers
 
