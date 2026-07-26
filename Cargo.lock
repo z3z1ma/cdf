@@ -1214,6 +1214,7 @@ name = "cdf-dest-parquet"
 version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
+ "arrow-ipc",
  "arrow-schema",
  "bytes",
  "cdf-conformance",

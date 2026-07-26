@@ -1,6 +1,6 @@
 use super::*;
 
-use std::{collections::VecDeque, io::Write, time::Duration};
+use std::{collections::VecDeque, io::Write};
 
 use crate::{
     corrections::{build_correction_context, build_correction_receipt},
@@ -2118,36 +2118,6 @@ fn object_groups_use_prepared_parallelism_and_one_writer_remains_serial() {
     );
     staged.session.abort().unwrap();
     staged.managed_lease.take().unwrap().finish().unwrap();
-}
-
-#[test]
-fn retained_segment_window_is_global_across_object_writers() {
-    let window = crate::package::RetainedParquetSegmentWindow::new(2).unwrap();
-    let first = window.acquire().unwrap();
-    let second = window.acquire().unwrap();
-    assert_eq!(window.current(), 2);
-
-    let waiting_window = Arc::clone(&window);
-    let (started_tx, started_rx) = std::sync::mpsc::channel();
-    let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
-    let waiter = std::thread::spawn(move || {
-        started_tx.send(()).unwrap();
-        let third = waiting_window.acquire().unwrap();
-        acquired_tx.send(third).unwrap();
-    });
-    started_rx.recv().unwrap();
-    assert!(
-        acquired_rx.recv_timeout(Duration::from_millis(50)).is_err(),
-        "a third object writer must not exceed the compiled two-segment ingress window"
-    );
-
-    drop(first);
-    let third = acquired_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-    assert_eq!(window.current(), 2);
-    drop(second);
-    drop(third);
-    waiter.join().unwrap();
-    assert_eq!(window.current(), 0);
 }
 
 #[test]

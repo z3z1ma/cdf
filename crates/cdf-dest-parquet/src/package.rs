@@ -1,8 +1,9 @@
 use std::{
     io::{self, BufWriter, Write},
-    sync::{Arc, Condvar, Mutex, mpsc},
+    sync::{Arc, mpsc},
 };
 
+use arrow_ipc::reader::FileReader;
 use cdf_memory::MemoryCoordinator;
 use cdf_runtime::{SpillBudgetCoordinator, SpillReservation};
 use parquet::{
@@ -62,83 +63,16 @@ pub(crate) enum ParquetGroupCommand {
 }
 
 pub(crate) struct StagedParquetSegment {
-    request: cdf_runtime::StagedSegmentRequest,
-    _retained: RetainedParquetSegmentPermit,
+    identity: cdf_runtime::StagedSegmentIdentity,
+    file: cdf_runtime::DurableLocalFileAccess,
 }
 
 impl StagedParquetSegment {
     pub(crate) fn new(
-        request: cdf_runtime::StagedSegmentRequest,
-        retained: RetainedParquetSegmentPermit,
+        identity: cdf_runtime::StagedSegmentIdentity,
+        file: cdf_runtime::DurableLocalFileAccess,
     ) -> Self {
-        Self {
-            request,
-            _retained: retained,
-        }
-    }
-}
-
-pub(crate) struct RetainedParquetSegmentWindow {
-    maximum: u16,
-    current: Mutex<u16>,
-    released: Condvar,
-}
-
-impl RetainedParquetSegmentWindow {
-    pub(crate) fn new(maximum: u16) -> Result<Arc<Self>> {
-        if maximum == 0 {
-            return Err(CdfError::contract(
-                "Parquet retained segment window must be nonzero",
-            ));
-        }
-        Ok(Arc::new(Self {
-            maximum,
-            current: Mutex::new(0),
-            released: Condvar::new(),
-        }))
-    }
-
-    pub(crate) fn acquire(self: &Arc<Self>) -> Result<RetainedParquetSegmentPermit> {
-        let mut current = self
-            .current
-            .lock()
-            .map_err(|_| CdfError::internal("Parquet retained segment window lock poisoned"))?;
-        while *current >= self.maximum {
-            current = self
-                .released
-                .wait(current)
-                .map_err(|_| CdfError::internal("Parquet retained segment window lock poisoned"))?;
-        }
-        *current = current
-            .checked_add(1)
-            .ok_or_else(|| CdfError::internal("Parquet retained segment window overflow"))?;
-        Ok(RetainedParquetSegmentPermit {
-            window: Arc::clone(self),
-        })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn current(&self) -> u16 {
-        *self
-            .current
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-}
-
-pub(crate) struct RetainedParquetSegmentPermit {
-    window: Arc<RetainedParquetSegmentWindow>,
-}
-
-impl Drop for RetainedParquetSegmentPermit {
-    fn drop(&mut self) {
-        let mut current = self
-            .window
-            .current
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *current = current.saturating_sub(1);
-        self.window.released.notify_one();
+        Self { identity, file }
     }
 }
 
@@ -215,7 +149,11 @@ pub(crate) fn write_parquet_staged_group(
 
 struct StagedGroupBatchReader {
     commands: mpsc::Receiver<ParquetGroupCommand>,
-    current: Option<(StagedParquetSegment, u64)>,
+    current: Option<(
+        cdf_runtime::StagedSegmentIdentity,
+        FileReader<std::fs::File>,
+        u64,
+    )>,
     identities: Vec<cdf_runtime::StagedSegmentIdentity>,
     finished: bool,
 }
@@ -232,15 +170,19 @@ impl StagedGroupBatchReader {
 
     fn next_batch(&mut self) -> Result<Option<arrow_array::RecordBatch>> {
         loop {
-            if let Some((segment, rows)) = &mut self.current {
-                match segment.request.reader_mut().next_batch()? {
+            if let Some((identity, reader, rows)) = &mut self.current {
+                match reader.next() {
                     Some(batch) => {
+                        let batch = batch.map_err(|error| {
+                            CdfError::data(format!(
+                                "read canonical Arrow IPC segment {} for Parquet destination: {error}",
+                                identity.segment_id
+                            ))
+                        })?;
                         let batch_rows = u64::try_from(batch.num_rows()).map_err(|_| {
                             CdfError::data("Parquet destination row count exceeds u64")
                         })?;
-                        let expected_start = segment
-                            .request
-                            .identity
+                        let expected_start = identity
                             .package_row_ord_start
                             .checked_add(*rows)
                             .ok_or_else(|| {
@@ -257,9 +199,8 @@ impl StagedGroupBatchReader {
                         return Ok(Some(batch));
                     }
                     None => {
-                        let (segment, rows) =
+                        let (identity, _, rows) =
                             self.current.take().expect("group segment is present");
-                        let identity = segment.request.identity;
                         if rows != identity.row_count {
                             return Err(CdfError::data(format!(
                                 "Parquet destination segment {} has {rows} payload rows but its durable identity expects {}",
@@ -278,7 +219,15 @@ impl StagedGroupBatchReader {
                             "Parquet object group received a segment after finish",
                         ));
                     }
-                    self.current = Some((request, 0));
+                    let durable = request.file.open()?;
+                    let (_, file) = durable.into_parts();
+                    let reader = FileReader::try_new(file, None).map_err(|error| {
+                        CdfError::data(format!(
+                            "open canonical Arrow IPC segment {} for Parquet destination: {error}",
+                            request.identity.segment_id
+                        ))
+                    })?;
+                    self.current = Some((request.identity, reader, 0));
                 }
                 Ok(ParquetGroupCommand::Finish) => {
                     self.finished = true;

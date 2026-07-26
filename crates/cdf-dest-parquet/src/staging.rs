@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    sync::{Arc, mpsc},
+    sync::mpsc,
 };
 
 use cdf_kernel::{
@@ -26,9 +26,8 @@ use crate::{
     manifest::canonical_json_bytes,
     manifest::{ParquetObjectEntry, ParquetObjectSegmentEntry},
     package::{
-        ParquetGroupCommand, ParquetWriterSettings, RetainedParquetSegmentWindow,
-        StagedParquetEncodeContext, StagedParquetSegment, parquet_worker_working_set_bytes,
-        write_parquet_staged_group,
+        ParquetGroupCommand, ParquetWriterSettings, StagedParquetEncodeContext,
+        StagedParquetSegment, parquet_worker_working_set_bytes, write_parquet_staged_group,
     },
     store::{
         ObjectKeyEncoder, StoredObject, data_object_key, now_ms, package_publication_metadata_key,
@@ -108,7 +107,6 @@ pub(crate) struct ParquetStagedIngressSession {
     objects: BTreeMap<u32, StagedParquetObject>,
     prepared_root: Option<(CommittedContentRootId, u64)>,
     physical_plan: ParquetPhysicalWritePlan,
-    retained_segments: Arc<RetainedParquetSegmentWindow>,
 }
 
 #[derive(Clone)]
@@ -209,8 +207,6 @@ impl ParquetStagedIngressSession {
         }
         cdf_package::validate_parquet_schema(request.output_schema())?;
         let physical_plan = ParquetPhysicalWritePlan::compile(&destination, &request)?;
-        let retained_segments =
-            RetainedParquetSegmentWindow::new(request.scheduling().max_in_flight_segments)?;
         let writer_settings = ParquetWriterSettings {
             rows_per_batch: physical_plan.rows_per_batch,
             bytes_per_batch: physical_plan.bytes_per_batch,
@@ -280,7 +276,6 @@ impl ParquetStagedIngressSession {
             objects: BTreeMap::new(),
             prepared_root: None,
             physical_plan,
-            retained_segments,
         })
     }
 
@@ -326,16 +321,10 @@ impl ParquetStagedIngressSession {
             "parquet-stage-{}-object-{object_ordinal}",
             attempt_id.as_str()
         );
-        // The worker itself owns one current request, so the queue holds only the residual of the
-        // compiled staged-ingress item window. Object membership remains independently bounded by
-        // the deterministic layout. This starts encoding immediately without allowing N writers
-        // to retain N complete groups of live Arrow memory.
-        let queued_segments = self
-            .request
-            .scheduling()
-            .max_in_flight_segments
-            .saturating_sub(1)
-            .min(self.physical_plan.object_layout.max_segments);
+        // Commands retain only immutable durable-file capabilities. Arrow payload memory is
+        // released immediately after handoff, so queue cardinality follows deterministic object
+        // membership rather than the staged live-payload window.
+        let queued_segments = self.physical_plan.object_layout.max_segments;
         let (commands, command_receiver) = mpsc::sync_channel(usize::from(queued_segments));
         let task = self.destination.execution().spawn_blocking_value(
             &run_id,
@@ -453,29 +442,42 @@ impl ParquetStagedIngressSession {
     fn feed_group_segment(
         &mut self,
         group: &mut PendingParquetGroup,
-        segment: StagedSegmentRequest,
+        mut segment: StagedSegmentRequest,
         stream: &mut dyn StagedSegmentStream,
     ) -> Result<()> {
         let identity = segment.identity.clone();
         self.validate_identity(&identity)?;
-        self.request.mutation_guard().assert_current()?;
-        let retained = self.retained_segments.acquire()?;
+        let file = segment.take_durable_local_file_access().ok_or_else(|| {
+            CdfError::data(format!(
+                "Parquet canonical segment encoding requires durable file access for segment {}",
+                identity.segment_id
+            ))
+        })?;
+        if !file.path().is_absolute() {
+            return Err(CdfError::data(format!(
+                "Parquet canonical segment path must be absolute: {}",
+                file.path().display()
+            )));
+        }
         self.request.mutation_guard().assert_current()?;
         group
             .commands
             .send(ParquetGroupCommand::Segment(StagedParquetSegment::new(
-                segment, retained,
+                identity.clone(),
+                file,
             )))
             .map_err(|_| CdfError::destination("Parquet object group encoder stopped"))?;
-        // A successful bounded handoff transfers the already-accounted payload into the
-        // destination's rollback/redrive staging scope. Encoding need not finish before this
-        // acknowledgement because the verified package remains the durable replay authority.
+        // Acknowledgement releases the live Arrow payload after its exact durable-file capability
+        // has entered the bounded object worker. The worker's pre-reserved memory authority owns
+        // IPC replay and Parquet encoding, so writer concurrency does not multiply segment-sized
+        // retained batches.
         stream.acknowledge(cdf_runtime::StagedSegmentAck {
             attempt_id: self.request.attempt_id().clone(),
             identity: identity.clone(),
             external_durable: false,
         })?;
         self.request.mutation_guard().assert_current()?;
+        drop(segment);
         if self
             .accepted
             .insert(identity.ordinal, identity.clone())

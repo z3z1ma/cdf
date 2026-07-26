@@ -181,6 +181,20 @@ compatibility path.
   heads waited for allocations, creating a liveness cycle. The runtime child now divides host CPU
   slots across active partition jobs for inner decode fan-out, preserving 16 aggregate decode
   slots and the full single-file row-group path without hidden overcommit.
+- 2026-07-26: The repaired bounded fixture completed in `18.726 s` with truthful managed peak
+  `2,879,965,756 / 3,650,722,202` bytes, zero ending balance, and no spill or OOM. The first exact
+  1 TiB run then averaged only about `203%` process CPU and projected roughly 35 minutes. It was
+  stopped without promotion: the destination-global two-request retention window remained a
+  physical row-encoding ceiling even though the prepared plan admitted sixteen writers. The user
+  explicitly rejected that topology; the result is falsification evidence, not acceptance.
+- 2026-07-26: Deleted the destination-private retained-payload window and its compatibility test.
+  Object workers now receive only `DurableLocalFileAccess` capabilities for canonical IPC files.
+  Handoff acknowledges and drops each live `StagedSegmentRequest` immediately after the capability
+  enters the bounded deterministic object command stream. Every admitted worker independently
+  verifies, opens, and streams its canonical IPC segments under its pre-reserved writer/input
+  working set. The staged protocol's item/byte window continues to bound unacknowledged transfer;
+  it no longer caps Parquet CPU concurrency. There is one object-worker path, deterministic
+  assembly remains by object ordinal, and no destination behavior leaked into generic runtime.
 
 ## Blockers
 
@@ -241,6 +255,13 @@ None.
   `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=6 cargo test -p cdf-engine
   partitioned_lease_releases_only_each_payload_share --offline -j6` and the accounted-canonical
   integration test passed. Strict all-feature Engine Clippy, formatting, and diff checks passed.
+- Durable-capability worker topology:
+  `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=6 cargo test -p cdf-dest-parquet --lib --offline -j6`
+  passed all `40` runnable tests with one explicit release benchmark ignored. The focused
+  multi-group test observes at least two simultaneous encoders and the one-job control remains
+  serial. Strict all-feature Clippy for Parquet destination, Engine, and Files source passed with
+  warnings denied; formatting and diff checks passed. Dedicated-host release retention and the
+  exact 1 TiB acceptance remain pending.
 
 ## Review
 
