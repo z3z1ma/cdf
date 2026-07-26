@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{mem::size_of, sync::Arc};
 
 use arrow_array::{
     Array, ArrayRef, BinaryArray, BooleanArray, Decimal128Array, RecordBatch, StringArray,
@@ -8,6 +8,9 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use cdf_kernel::{
     BatchStats, CdfError, ColumnStats, IncompleteStatisticsReason, Result,
     STATISTICS_MODEL_VERSION, StatisticsArrowType, StatisticsCompleteness, TypedScalar,
+};
+use cdf_memory::{
+    ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest, reserve_blocking,
 };
 use cdf_package_contract::{FileEntry, SegmentEntry};
 use parquet::{
@@ -70,6 +73,8 @@ pub struct VerifiedStatisticsProfileWindow {
     schema: SchemaRef,
     schema_hash: String,
     rows: Box<[StatisticsProfileRow]>,
+    retained_bytes: u64,
+    reserved_bytes: u64,
 }
 
 impl VerifiedStatisticsProfileWindow {
@@ -83,6 +88,19 @@ impl VerifiedStatisticsProfileWindow {
 
     pub fn rows(&self) -> &[StatisticsProfileRow] {
         &self.rows
+    }
+
+    /// Logical bytes retained by the decoded evidence rows in this window.
+    pub const fn retained_bytes(&self) -> u64 {
+        self.retained_bytes
+    }
+
+    /// Shared-memory authority held across the synchronous consumer callback.
+    ///
+    /// Engine adapters may allocate transient pruning arrays inside this reservation after
+    /// proving their combined working set fits. The window cannot escape the callback.
+    pub const fn reserved_bytes(&self) -> u64 {
+        self.reserved_bytes
     }
 }
 
@@ -227,14 +245,28 @@ impl PackageReader {
     pub fn for_each_verified_statistics_profile_window(
         &self,
         verified: &VerifiedPackage,
+        memory: Arc<dyn MemoryCoordinator>,
         maximum_containers: usize,
-        visitor: &mut dyn FnMut(VerifiedStatisticsProfileWindow) -> Result<()>,
+        maximum_window_bytes: u64,
+        visitor: &mut dyn FnMut(&VerifiedStatisticsProfileWindow) -> Result<()>,
     ) -> Result<u64> {
         if maximum_containers == 0 {
             return Err(CdfError::contract(
                 "statistics profile window requires at least one container",
             ));
         }
+        if maximum_window_bytes == 0 || maximum_window_bytes > memory.snapshot().budget_bytes {
+            return Err(CdfError::contract(format!(
+                "statistics profile window bytes must be nonzero and no larger than the managed memory budget {}",
+                memory.snapshot().budget_bytes
+            )));
+        }
+        let reservation = ReservationRequest::new(
+            ConsumerKey::new("statistics-profile-window", MemoryClass::Package)?,
+            maximum_window_bytes,
+        )?
+        .as_minimum_working_set();
+        let lease = reserve_blocking(memory, &reservation)?;
 
         self.for_each_verified_statistics_profile(verified, &mut |_| Ok(()))?;
         let schema = self.runtime_arrow_schema_verified(verified)?;
@@ -271,6 +303,7 @@ impl PackageReader {
                             CdfError::internal("verified statistics window schema hash is absent")
                         })?,
                         &mut rows,
+                        &lease,
                         visitor,
                     )?;
                     window_count = window_count.checked_add(1).ok_or_else(|| {
@@ -304,6 +337,7 @@ impl PackageReader {
                     CdfError::internal("verified statistics window schema hash is absent")
                 })?,
                 &mut rows,
+                &lease,
                 visitor,
             )?;
             window_count = window_count
@@ -339,12 +373,49 @@ fn emit_verified_statistics_window(
     schema: SchemaRef,
     schema_hash: &str,
     rows: &mut Vec<StatisticsProfileRow>,
-    visitor: &mut dyn FnMut(VerifiedStatisticsProfileWindow) -> Result<()>,
+    lease: &MemoryLease,
+    visitor: &mut dyn FnMut(&VerifiedStatisticsProfileWindow) -> Result<()>,
 ) -> Result<()> {
-    visitor(VerifiedStatisticsProfileWindow {
+    let rows = std::mem::take(rows).into_boxed_slice();
+    let retained_bytes = statistics_profile_rows_retained_bytes(&rows)?;
+    if retained_bytes > lease.bytes() {
+        return Err(CdfError::data(format!(
+            "statistics profile window retains {retained_bytes} bytes above its {}-byte managed window; increase the pruning memory window or reduce containers per window",
+            lease.bytes()
+        )));
+    }
+    visitor(&VerifiedStatisticsProfileWindow {
         schema,
         schema_hash: schema_hash.to_owned(),
-        rows: std::mem::take(rows).into_boxed_slice(),
+        rows,
+        retained_bytes,
+        reserved_bytes: lease.bytes(),
+    })
+}
+
+fn statistics_profile_rows_retained_bytes(rows: &[StatisticsProfileRow]) -> Result<u64> {
+    rows.iter().try_fold(1_u64, |total, row| {
+        let encoded = serde_json::to_vec(&(
+            &row.container_id,
+            &row.schema_hash,
+            &row.field_path,
+            &row.data_type,
+            row.row_count,
+            row.null_count,
+            &row.completeness,
+            &row.minimum,
+            &row.maximum,
+        ))
+        .map_err(|error| CdfError::data(format!("measure statistics profile row: {error}")))?;
+        let encoded = u64::try_from(encoded.len())
+            .map_err(|_| CdfError::data("statistics profile row size exceeds u64"))?;
+        let owned = u64::try_from(size_of::<StatisticsProfileRow>())
+            .map_err(|_| CdfError::data("statistics profile row storage exceeds u64"))?
+            .checked_add(encoded.saturating_mul(2))
+            .ok_or_else(|| CdfError::data("statistics profile window size overflow"))?;
+        total
+            .checked_add(owned)
+            .ok_or_else(|| CdfError::data("statistics profile window size overflow"))
     })
 }
 

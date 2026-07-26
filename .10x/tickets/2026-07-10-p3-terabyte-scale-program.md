@@ -49,7 +49,7 @@ This parent is an aggregate plan. Workstream records own sequencing and integrat
 - `.10x/tickets/done/2026-07-10-p3-ws-g-remote-io-overlap.md`
 - `.10x/tickets/2026-07-10-p3-ws-h-interop-boundaries.md`
 - `.10x/tickets/done/2026-07-11-p3-ws-v-vectorized-validation.md`
-- `.10x/tickets/2026-07-12-p3-j1-evidence-statistics-pruning.md`
+- `.10x/tickets/done/2026-07-12-p3-j1-evidence-statistics-pruning.md`
 - `.10x/tickets/done/2026-07-13-p0-fixed-schema-discovery-stream-admission.md`
 - `.10x/tickets/done/2026-07-18-p3-l6-ec2-benchmark-host.md`
 - `.10x/tickets/done/2026-07-18-p3-l7-ec2-benchmark-tranche-lifecycle.md`
@@ -127,6 +127,10 @@ P3 does not implement a distributed scheduler, remote worker leases, resident st
   roadmap. J1 remains as the one high-leverage DataFusion bridge because it consumes existing
   statistics without producing identity-bearing bytes; J2/J4/J5/J6 and the WS-J umbrella moved
   terminal. Prospective WASM work is no longer a WS-H or fixed-schema-admission dependency.
+- 2026-07-25: Closed J1 with a concrete verified-package segment planner. Its DataFusion adapter
+  consumes only complete manifest-bound statistics, shares CDF's finite memory authority, streams
+  decisions and retained capabilities, and remains outside identity-bearing package production.
+  Broader DataFusion adoption remains parked.
 
 ## Blockers
 

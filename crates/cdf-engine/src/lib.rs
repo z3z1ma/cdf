@@ -40,8 +40,9 @@ pub use segmentation::{
 };
 pub use standalone_host::StandaloneExecutionHost;
 pub use statistics_pruning::{
-    StatisticsPruningContainerGrain, StatisticsPruningDecision, StatisticsPruningOutcome,
-    StatisticsPruningReport, evaluate_verified_statistics_pruning,
+    StatisticsPruningContainerGrain, StatisticsPruningDecision, StatisticsPruningEvidence,
+    StatisticsPruningLimits, StatisticsPruningOutcome, StatisticsPruningSummary,
+    VerifiedPackageSegmentPruning, for_each_verified_package_segment_pruning,
 };
 pub use table_provider::{QueryableResourceTableProvider, queryable_resource_table_provider};
 pub use types::*;

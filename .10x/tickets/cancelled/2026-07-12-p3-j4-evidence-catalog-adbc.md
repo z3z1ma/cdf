@@ -2,7 +2,7 @@ Status: cancelled
 Created: 2026-07-12
 Updated: 2026-07-25
 Parent: .10x/tickets/cancelled/2026-07-12-p3-ws-j-datafusion-currency-bridges.md
-Depends-On: .10x/tickets/2026-07-12-p3-j1-evidence-statistics-pruning.md, .10x/tickets/done/2026-07-05-observability-doctor-status-sql.md
+Depends-On: .10x/tickets/done/2026-07-12-p3-j1-evidence-statistics-pruning.md, .10x/tickets/done/2026-07-05-observability-doctor-status-sql.md
 
 # P3 J4: evidence catalog and ADBC exposure
 

@@ -31,7 +31,7 @@ cross-archetype evidence.
 
 ### WS-B — Evidence-driven statistics pruning
 
-1. `.10x/tickets/2026-07-12-p3-j1-evidence-statistics-pruning.md`
+1. `.10x/tickets/done/2026-07-12-p3-j1-evidence-statistics-pruning.md` — done.
 
 Complete the implemented neutral pruning adapter, its memory/soundness boundary, and a concrete
 consumer path. Other DataFusion bridges remain parked.
@@ -111,6 +111,11 @@ WASM, distributed execution, CDC, and new connectors are not P3 closure dependen
 - 2026-07-25: WS-A is closed. SA5's assertion audit and complete source/conformance suite proved
   the fixed-schema lifecycle across inventory, discovery, retained payloads, jobs, preview/run,
   retry/replay, residuals, and quarantine; the fixed-schema parent and all six children are done.
+- 2026-07-25: WS-B is closed. J1 now streams manifest-aligned pruning decisions from a completely
+  verified statistics profile under one caller-sized shared-memory reservation, exposes payload
+  capabilities only for retained segments, records skipped/retained rows and bytes, and retains
+  every segment conservatively when evidence is absent or unsupported. The current package/engine
+  integration surface passed 280 tests and strict all-target Clippy.
 
 ## Blockers
 

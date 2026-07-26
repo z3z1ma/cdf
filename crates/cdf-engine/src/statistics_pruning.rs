@@ -5,9 +5,13 @@ use arrow_schema::{DataType, SchemaRef, TimeUnit};
 use cdf_contract::{CompiledExpressionPlan, Expression, ExpressionUse, PlannedExpression};
 use cdf_kernel::{
     CdfError, Result, STATISTICS_MODEL_VERSION, StatisticsArrowType, StatisticsCompleteness,
-    TypedScalar,
+    TypedScalar, canonical_arrow_schema_hash,
 };
-use cdf_package::{StatisticsProfileGrain, StatisticsProfileRow, VerifiedStatisticsProfileWindow};
+use cdf_memory::MemoryCoordinator;
+use cdf_package::{
+    PackageReader, STATISTICS_PROFILE_FILE, StatisticsProfileGrain, StatisticsProfileRow,
+    VerifiedPackage, VerifiedSegmentObject, VerifiedStatisticsProfileWindow,
+};
 use datafusion::{
     common::{Column, DFSchema, ScalarValue},
     physical_expr::{execution_props::ExecutionProps, planner::create_physical_expr},
@@ -47,19 +51,298 @@ pub struct StatisticsPruningDecision {
     pub container_ordinal: u64,
     pub container_id: String,
     pub row_count: u64,
+    pub byte_count: u64,
     pub outcome: StatisticsPruningOutcome,
     pub conservative_fields: Box<[Box<str>]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct StatisticsPruningReport {
+struct StatisticsPruningReport {
     pub statistics_model_version: u16,
     pub schema_hash: String,
     pub predicate: Expression,
     pub container_count: u64,
     pub pruned_count: u64,
     pub decisions: Box<[StatisticsPruningDecision]>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StatisticsPruningLimits {
+    maximum_containers_per_window: usize,
+    maximum_window_bytes: u64,
+}
+
+impl StatisticsPruningLimits {
+    pub fn new(maximum_containers_per_window: usize, maximum_window_bytes: u64) -> Result<Self> {
+        if maximum_containers_per_window == 0 || maximum_window_bytes == 0 {
+            return Err(CdfError::contract(
+                "statistics pruning container and memory windows must be nonzero",
+            ));
+        }
+        Ok(Self {
+            maximum_containers_per_window,
+            maximum_window_bytes,
+        })
+    }
+
+    pub const fn maximum_containers_per_window(self) -> usize {
+        self.maximum_containers_per_window
+    }
+
+    pub const fn maximum_window_bytes(self) -> u64 {
+        self.maximum_window_bytes
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StatisticsPruningEvidence {
+    VerifiedProfile,
+    MissingProfile,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StatisticsPruningSummary {
+    pub statistics_model_version: u16,
+    pub evidence_generation: String,
+    pub evidence: StatisticsPruningEvidence,
+    pub schema_hash: String,
+    pub predicate: Expression,
+    pub segment_count: u64,
+    pub pruned_count: u64,
+    pub pruned_rows: u64,
+    pub pruned_bytes: u64,
+    pub retained_count: u64,
+    pub retained_rows: u64,
+    pub retained_bytes: u64,
+    pub conservative_count: u64,
+}
+
+/// One canonical package segment after a verified statistics-pruning decision.
+///
+/// Pruned segments expose only recorded evidence. Retained segments carry the verified capability
+/// a replay/backfill/query/merge consumer may open; the planner never opens segment payloads.
+pub enum VerifiedPackageSegmentPruning {
+    Pruned {
+        decision: StatisticsPruningDecision,
+    },
+    Retained {
+        decision: StatisticsPruningDecision,
+        segment: VerifiedSegmentObject<()>,
+    },
+}
+
+/// Streams sound segment decisions for one verified package.
+///
+/// The package profile and DataFusion arrays share one caller-sized `cdf-memory` reservation.
+/// Missing profile evidence retains every segment. Decisions are delivered incrementally so the
+/// planner's memory is independent of package cardinality.
+pub fn for_each_verified_package_segment_pruning(
+    reader: &PackageReader,
+    verified: &VerifiedPackage,
+    compiled: &CompiledExpressionPlan,
+    predicate_index: usize,
+    memory: Arc<dyn MemoryCoordinator>,
+    limits: StatisticsPruningLimits,
+    visitor: &mut dyn FnMut(VerifiedPackageSegmentPruning) -> Result<()>,
+) -> Result<StatisticsPruningSummary> {
+    compiled.validate_recorded()?;
+    let planned = compiled.predicates.get(predicate_index).ok_or_else(|| {
+        CdfError::contract(format!(
+            "statistics pruning predicate index {predicate_index} is absent from the recorded compiled expression plan"
+        ))
+    })?;
+    if planned.use_kind != ExpressionUse::Filter {
+        return Err(CdfError::contract(
+            "statistics pruning requires a recorded filter expression",
+        ));
+    }
+    let schema = reader.runtime_arrow_schema_verified(verified)?;
+    let schema_hash = canonical_arrow_schema_hash(schema.as_ref())?.to_string();
+    let mut profile_present = false;
+    reader.for_each_identity_file(&mut |entry| {
+        profile_present |= entry.path == STATISTICS_PROFILE_FILE;
+        Ok(())
+    })?;
+    let evidence = if profile_present {
+        StatisticsPruningEvidence::VerifiedProfile
+    } else {
+        StatisticsPruningEvidence::MissingProfile
+    };
+    let mut summary = StatisticsPruningSummary {
+        statistics_model_version: STATISTICS_MODEL_VERSION,
+        evidence_generation: verified.package_hash().to_owned(),
+        evidence,
+        schema_hash: schema_hash.clone(),
+        predicate: planned.optimized.clone(),
+        segment_count: 0,
+        pruned_count: 0,
+        pruned_rows: 0,
+        pruned_bytes: 0,
+        retained_count: 0,
+        retained_rows: 0,
+        retained_bytes: 0,
+        conservative_count: 0,
+    };
+    let mut segments = reader.verified_canonical_segment_object_stream_with(verified)?;
+
+    if !profile_present {
+        let conservative_fields = planned
+            .optimized
+            .column_dependencies()
+            .into_iter()
+            .map(Into::into)
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        for segment in &mut segments {
+            let segment = segment?;
+            let decision = StatisticsPruningDecision {
+                grain: StatisticsPruningContainerGrain::Segment,
+                container_ordinal: summary.segment_count,
+                container_id: segment.entry.segment_id.as_str().to_owned(),
+                row_count: segment.entry.row_count,
+                byte_count: segment.entry.byte_count,
+                outcome: StatisticsPruningOutcome::RetainedConservatively,
+                conservative_fields: conservative_fields.clone(),
+            };
+            record_segment_decision(&mut summary, &decision)?;
+            visitor(VerifiedPackageSegmentPruning::Retained { decision, segment })?;
+        }
+        return Ok(summary);
+    }
+
+    reader.for_each_verified_statistics_profile_window(
+        verified,
+        memory,
+        limits.maximum_containers_per_window,
+        limits.maximum_window_bytes,
+        &mut |window| {
+            validate_pruning_window_memory(window)?;
+            let report =
+                evaluate_verified_statistics_pruning(compiled, predicate_index, window)?;
+            if summary.segment_count == 0 {
+                summary.schema_hash = report.schema_hash.clone();
+            } else if summary.schema_hash != report.schema_hash {
+                return Err(CdfError::data(
+                    "statistics pruning profile schema hash changed between windows",
+                ));
+            }
+            for mut decision in report.decisions.into_vec() {
+                if decision.grain == StatisticsPruningContainerGrain::Package {
+                    continue;
+                }
+                let segment = segments.next().transpose()?.ok_or_else(|| {
+                    CdfError::data("statistics profile contains more segments than the manifest")
+                })?;
+                if decision.container_ordinal != summary.segment_count
+                    || decision.container_id != segment.entry.segment_id.as_str()
+                    || decision.row_count != segment.entry.row_count
+                {
+                    return Err(CdfError::data(
+                        "statistics pruning decision does not align with canonical manifest segment authority",
+                    ));
+                }
+                decision.byte_count = segment.entry.byte_count;
+                record_segment_decision(&mut summary, &decision)?;
+                match decision.outcome {
+                    StatisticsPruningOutcome::Pruned => {
+                        visitor(VerifiedPackageSegmentPruning::Pruned { decision })?
+                    }
+                    StatisticsPruningOutcome::RetainedMayMatch
+                    | StatisticsPruningOutcome::RetainedConservatively => {
+                        visitor(VerifiedPackageSegmentPruning::Retained { decision, segment })?
+                    }
+                }
+            }
+            Ok(())
+        },
+    )?;
+    if segments.next().transpose()?.is_some() {
+        return Err(CdfError::data(
+            "statistics profile omitted canonical manifest segments",
+        ));
+    }
+    Ok(summary)
+}
+
+fn validate_pruning_window_memory(window: &VerifiedStatisticsProfileWindow) -> Result<()> {
+    let container_count = window
+        .rows()
+        .windows(2)
+        .filter(|pair| {
+            pair[0].grain != pair[1].grain || pair[0].container_ordinal != pair[1].container_ordinal
+        })
+        .count()
+        .saturating_add(usize::from(!window.rows().is_empty()));
+    let cells = container_count
+        .checked_mul(window.schema().fields().len())
+        .ok_or_else(|| CdfError::data("statistics pruning window cell count overflow"))?;
+    let transient = u64::try_from(cells)
+        .map_err(|_| CdfError::data("statistics pruning window cell count exceeds u64"))?
+        .checked_mul(192)
+        .ok_or_else(|| CdfError::data("statistics pruning transient memory overflow"))?;
+    let required = window
+        .retained_bytes()
+        .checked_mul(4)
+        .and_then(|bytes| bytes.checked_add(transient))
+        .ok_or_else(|| CdfError::data("statistics pruning working set overflow"))?;
+    if required > window.reserved_bytes() {
+        return Err(CdfError::data(format!(
+            "statistics pruning window requires {required} bytes under its conservative Arrow working-set model but the configured window holds {}; increase the pruning memory window or reduce containers per window",
+            window.reserved_bytes()
+        )));
+    }
+    Ok(())
+}
+
+fn record_segment_decision(
+    summary: &mut StatisticsPruningSummary,
+    decision: &StatisticsPruningDecision,
+) -> Result<()> {
+    summary.segment_count = summary
+        .segment_count
+        .checked_add(1)
+        .ok_or_else(|| CdfError::data("statistics pruning segment count overflow"))?;
+    match decision.outcome {
+        StatisticsPruningOutcome::Pruned => {
+            summary.pruned_count = summary
+                .pruned_count
+                .checked_add(1)
+                .ok_or_else(|| CdfError::data("statistics pruning pruned count overflow"))?;
+            summary.pruned_rows = summary
+                .pruned_rows
+                .checked_add(decision.row_count)
+                .ok_or_else(|| CdfError::data("statistics pruning pruned rows overflow"))?;
+            summary.pruned_bytes = summary
+                .pruned_bytes
+                .checked_add(decision.byte_count)
+                .ok_or_else(|| CdfError::data("statistics pruning pruned bytes overflow"))?;
+        }
+        StatisticsPruningOutcome::RetainedMayMatch
+        | StatisticsPruningOutcome::RetainedConservatively => {
+            summary.retained_count = summary
+                .retained_count
+                .checked_add(1)
+                .ok_or_else(|| CdfError::data("statistics pruning retained count overflow"))?;
+            summary.retained_rows = summary
+                .retained_rows
+                .checked_add(decision.row_count)
+                .ok_or_else(|| CdfError::data("statistics pruning retained rows overflow"))?;
+            summary.retained_bytes = summary
+                .retained_bytes
+                .checked_add(decision.byte_count)
+                .ok_or_else(|| CdfError::data("statistics pruning retained bytes overflow"))?;
+            if decision.outcome == StatisticsPruningOutcome::RetainedConservatively {
+                summary.conservative_count =
+                    summary.conservative_count.checked_add(1).ok_or_else(|| {
+                        CdfError::data("statistics pruning conservative count overflow")
+                    })?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Evaluates one sealed, bounded, verified profile window against one predicate bound to the
@@ -69,7 +352,7 @@ pub struct StatisticsPruningReport {
 /// Missing or incomplete field evidence becomes a typed NULL statistic and can only retain data.
 /// The package layer constructs the sealed window only after validating the complete profile, so
 /// provisional visitor rows cannot authorize a payload skip.
-pub fn evaluate_verified_statistics_pruning(
+fn evaluate_verified_statistics_pruning(
     compiled: &CompiledExpressionPlan,
     predicate_index: usize,
     window: &VerifiedStatisticsProfileWindow,
@@ -165,6 +448,7 @@ fn evaluate_statistics_rows(
                 container_ordinal: container.ordinal,
                 container_id: container.id.into(),
                 row_count: container.row_count,
+                byte_count: 0,
                 outcome,
                 conservative_fields,
             }
@@ -496,6 +780,7 @@ fn conservative_report(
             container_ordinal: container.ordinal,
             container_id: container.id.into(),
             row_count: container.row_count,
+            byte_count: 0,
             outcome: StatisticsPruningOutcome::RetainedConservatively,
             conservative_fields: conservative_fields.clone(),
         })
@@ -642,16 +927,26 @@ fn datafusion_error(error: impl std::fmt::Display) -> CdfError {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{collections::BTreeMap, sync::Arc};
 
-    use arrow_schema::{DataType, Field, Schema, TimeUnit};
+    use arrow_array::{Array, Int32Array, RecordBatch};
+    use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
     use cdf_contract::{CompiledExpressionPlan, Expression, ExpressionNode, ExpressionUse};
     use cdf_kernel::{
-        IncompleteStatisticsReason, StatisticsArrowType, StatisticsCompleteness, TypedScalar,
+        BatchStats, IncompleteStatisticsReason, SegmentId, StatisticsArrowType,
+        StatisticsCompleteness, TypedScalar,
     };
-    use cdf_package::{StatisticsProfileGrain, StatisticsProfileRow};
+    use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
+    use cdf_package::{
+        PackageBuilder, PackageBuilderResources, PackageReader, StatisticsProfileGrain,
+        StatisticsProfileRow, VerifiedPackage,
+    };
 
-    use super::{StatisticsPruningOutcome, evaluate_statistics_rows};
+    use super::{
+        StatisticsPruningEvidence, StatisticsPruningLimits, StatisticsPruningOutcome,
+        VerifiedPackageSegmentPruning, evaluate_statistics_rows,
+        for_each_verified_package_segment_pruning,
+    };
 
     const SCHEMA_HASH: &str = "sha256:statistics-pruning-fixture";
 
@@ -724,6 +1019,78 @@ mod tests {
         compiled(Expression::parse_comparison(source).unwrap(), schema)
     }
 
+    fn package_with_segment_statistics(
+        root: &std::path::Path,
+        with_profile: bool,
+    ) -> (PackageReader, VerifiedPackage, SchemaRef) {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batches = [0..5, 5..10]
+            .into_iter()
+            .map(|values| {
+                RecordBatch::try_new(
+                    Arc::clone(&schema),
+                    vec![Arc::new(Int32Array::from_iter_values(values))],
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let builder = PackageBuilder::create(
+            root,
+            "pkg-pruning-consumer",
+            PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024).unwrap(),
+        )
+        .unwrap();
+        builder.write_runtime_arrow_schema(schema.as_ref()).unwrap();
+        let stats = batches
+            .iter()
+            .map(|batch| BatchStats::compute(batch).unwrap())
+            .collect::<Vec<_>>();
+        if with_profile {
+            let mut aggregate = stats[0].clone();
+            aggregate.merge(&stats[1]).unwrap();
+            let mut profile = builder.begin_statistics_profile().unwrap();
+            for (ordinal, stats) in stats.iter().enumerate() {
+                profile
+                    .write_stats(
+                        StatisticsProfileGrain::Segment,
+                        u64::try_from(ordinal).unwrap(),
+                        &format!("segment-{ordinal}"),
+                        SCHEMA_HASH,
+                        stats,
+                    )
+                    .unwrap();
+            }
+            profile
+                .write_stats(
+                    StatisticsProfileGrain::Package,
+                    0,
+                    "pkg-pruning-consumer",
+                    SCHEMA_HASH,
+                    &aggregate,
+                )
+                .unwrap();
+            profile.finish().unwrap();
+        }
+        for (ordinal, batch) in batches.into_iter().enumerate() {
+            let start = u64::try_from(ordinal * 5).unwrap();
+            let canonical =
+                cdf_package_contract::append_package_row_ord(vec![batch], start).unwrap();
+            builder
+                .write_segment(
+                    SegmentId::new(format!("segment-{ordinal}")).unwrap(),
+                    start,
+                    &canonical,
+                )
+                .unwrap();
+        }
+        let (_, verified) = builder.finish_verified().unwrap();
+        (
+            PackageReader::open(root).unwrap(),
+            verified,
+            Arc::clone(&schema),
+        )
+    }
+
     #[test]
     fn typed_bounds_prune_only_impossible_containers() {
         let field = Field::new("id", DataType::Int32, true);
@@ -771,6 +1138,54 @@ mod tests {
             report.decisions[1].outcome,
             StatisticsPruningOutcome::RetainedMayMatch
         );
+    }
+
+    #[test]
+    fn integer_pruning_never_skips_a_matching_value() {
+        let field = Field::new("id", DataType::Int32, false);
+        let schema = Arc::new(Schema::new(vec![field.clone()]));
+        let mut state = 0x7f4a_7c15_d0e1_9b31_u64;
+        for container in 0..2_000_u64 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let first = i32::try_from(state % 2_001).unwrap() - 1_000;
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let second = i32::try_from(state % 2_001).unwrap() - 1_000;
+            let minimum = first.min(second);
+            let maximum = first.max(second);
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let threshold = i32::try_from(state % 2_001).unwrap() - 1_000;
+            let rows = [row(
+                container,
+                0,
+                &field,
+                complete(
+                    u64::try_from(i64::from(maximum) - i64::from(minimum) + 1).unwrap(),
+                    0,
+                    Some(TypedScalar::Signed(i64::from(minimum))),
+                    Some(TypedScalar::Signed(i64::from(maximum))),
+                ),
+            )];
+            let report = evaluate_statistics_rows(
+                &planned(&format!("id >= {threshold}"), schema.as_ref()),
+                0,
+                Arc::clone(&schema),
+                SCHEMA_HASH,
+                &rows,
+            )
+            .unwrap();
+            if report.decisions[0].outcome == StatisticsPruningOutcome::Pruned {
+                assert!(
+                    (minimum..=maximum).all(|value| value < threshold),
+                    "pruned [{minimum}, {maximum}] for id >= {threshold}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -994,5 +1409,114 @@ mod tests {
             .to_string()
             .contains("has 1 fields, expected 2")
         );
+    }
+
+    #[test]
+    fn verified_package_consumer_skips_payloads_and_matches_unpruned_rows() {
+        let temp = tempfile::tempdir().unwrap();
+        let (reader, verified, schema) = package_with_segment_statistics(temp.path(), true);
+        let compiled = planned("id >= 5", schema.as_ref());
+        let memory: Arc<dyn MemoryCoordinator> = Arc::new(
+            DeterministicMemoryCoordinator::new(8 * 1024 * 1024, BTreeMap::new()).unwrap(),
+        );
+        let mut selected = Vec::new();
+        let mut skipped = Vec::new();
+        let summary = for_each_verified_package_segment_pruning(
+            &reader,
+            &verified,
+            &compiled,
+            0,
+            Arc::clone(&memory),
+            StatisticsPruningLimits::new(1, 1024 * 1024).unwrap(),
+            &mut |item| {
+                match item {
+                    VerifiedPackageSegmentPruning::Pruned { decision } => {
+                        skipped.push(decision.container_id);
+                    }
+                    VerifiedPackageSegmentPruning::Retained { segment, .. } => {
+                        let segment = segment.read(Arc::clone(&memory), 1024 * 1024)?;
+                        for batch in segment.batches {
+                            let ids = batch
+                                .column(0)
+                                .as_any()
+                                .downcast_ref::<Int32Array>()
+                                .unwrap();
+                            selected.extend(ids.iter().flatten().filter(|value| *value >= 5));
+                        }
+                    }
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        let mut unpruned = Vec::new();
+        for segment in reader
+            .verified_canonical_segment_object_stream_with(&verified)
+            .unwrap()
+        {
+            let segment = segment
+                .unwrap()
+                .read(Arc::clone(&memory), 1024 * 1024)
+                .unwrap();
+            for batch in segment.batches {
+                let ids = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap();
+                unpruned.extend(ids.iter().flatten().filter(|value| *value >= 5));
+            }
+        }
+
+        assert_eq!(summary.evidence, StatisticsPruningEvidence::VerifiedProfile);
+        assert_eq!(summary.evidence_generation, verified.package_hash());
+        assert_eq!(summary.segment_count, 2);
+        assert_eq!(summary.pruned_count, 1);
+        assert_eq!(summary.retained_count, 1);
+        assert_eq!(summary.conservative_count, 0);
+        assert!(summary.pruned_bytes > 0);
+        assert!(summary.retained_bytes > 0);
+        assert_eq!(skipped, ["segment-0"]);
+        assert_eq!(selected, unpruned);
+        assert_eq!(selected, [5, 6, 7, 8, 9]);
+        assert_eq!(memory.snapshot().current_bytes, 0);
+    }
+
+    #[test]
+    fn missing_profile_streams_every_segment_as_conservative_retention() {
+        let temp = tempfile::tempdir().unwrap();
+        let (reader, verified, schema) = package_with_segment_statistics(temp.path(), false);
+        let compiled = planned("id >= 5", schema.as_ref());
+        let memory: Arc<dyn MemoryCoordinator> = Arc::new(
+            DeterministicMemoryCoordinator::new(2 * 1024 * 1024, BTreeMap::new()).unwrap(),
+        );
+        let mut retained = Vec::new();
+        let summary = for_each_verified_package_segment_pruning(
+            &reader,
+            &verified,
+            &compiled,
+            0,
+            memory,
+            StatisticsPruningLimits::new(4, 1024 * 1024).unwrap(),
+            &mut |item| {
+                let VerifiedPackageSegmentPruning::Retained { decision, segment } = item else {
+                    panic!("missing profile must never authorize a skip");
+                };
+                assert_eq!(
+                    decision.outcome,
+                    StatisticsPruningOutcome::RetainedConservatively
+                );
+                retained.push(segment.entry.segment_id.to_string());
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.evidence, StatisticsPruningEvidence::MissingProfile);
+        assert_eq!(summary.pruned_count, 0);
+        assert_eq!(summary.retained_count, 2);
+        assert_eq!(summary.conservative_count, 2);
+        assert_eq!(retained, ["segment-0", "segment-1"]);
     }
 }

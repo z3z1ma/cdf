@@ -13,7 +13,7 @@ Marshal CDF's existing statistics, memory/object-store authority, expression sem
 ## Activated children and existing owners
 
 - `.10x/tickets/done/2026-07-12-p3-j0-typed-statistics-evidence-spine.md`
-- `.10x/tickets/2026-07-12-p3-j1-evidence-statistics-pruning.md`
+- `.10x/tickets/done/2026-07-12-p3-j1-evidence-statistics-pruning.md`
 - `.10x/tickets/cancelled/2026-07-12-p3-j2-datafusion-object-store-registry.md`
 - `.10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md` — shared `MemoryPool` authority already complete
 - `.10x/tickets/done/2026-07-12-p3-j3-expression-ir-contract-linter.md`
@@ -62,4 +62,5 @@ None at parent level. Child dependencies govern execution.
 Cancelled as an aggregate P3 dependency on 2026-07-25. DataFusion remains governed by the active
 identity-boundary decision and currency-bridge specification, but object-store sessions,
 catalog/ADBC, execution-plan marshaling, and selective-adoption audits require concrete consumers
-before becoming executable tickets. J1 is reparented directly to P3 and remains active.
+before becoming executable tickets. J1 was reparented directly to P3 and subsequently closed as
+`.10x/tickets/done/2026-07-12-p3-j1-evidence-statistics-pruning.md`.

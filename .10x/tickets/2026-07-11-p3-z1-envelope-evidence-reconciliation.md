@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-11
 Updated: 2026-07-25
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
-Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md, .10x/tickets/done/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md, .10x/tickets/done/2026-07-10-p3-ws-b-format-decode-engines.md, .10x/tickets/done/2026-07-10-p3-ws-c-deterministic-parallelism.md, .10x/tickets/done/2026-07-10-p3-ws-d-destination-bulk-paths.md, .10x/tickets/done/2026-07-10-p3-ws-e-hashing-package-io.md, .10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md, .10x/tickets/done/2026-07-10-p3-ws-g-remote-io-overlap.md, .10x/tickets/2026-07-10-p3-ws-h-interop-boundaries.md, .10x/tickets/done/2026-07-11-p3-ws-v-vectorized-validation.md, .10x/tickets/2026-07-12-p3-j1-evidence-statistics-pruning.md, .10x/tickets/done/2026-07-13-p0-fixed-schema-discovery-stream-admission.md
+Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md, .10x/tickets/done/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md, .10x/tickets/done/2026-07-10-p3-ws-b-format-decode-engines.md, .10x/tickets/done/2026-07-10-p3-ws-c-deterministic-parallelism.md, .10x/tickets/done/2026-07-10-p3-ws-d-destination-bulk-paths.md, .10x/tickets/done/2026-07-10-p3-ws-e-hashing-package-io.md, .10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md, .10x/tickets/done/2026-07-10-p3-ws-g-remote-io-overlap.md, .10x/tickets/2026-07-10-p3-ws-h-interop-boundaries.md, .10x/tickets/done/2026-07-11-p3-ws-v-vectorized-validation.md, .10x/tickets/done/2026-07-12-p3-j1-evidence-statistics-pruning.md, .10x/tickets/done/2026-07-13-p0-fixed-schema-discovery-stream-admission.md
 
 # P3 Z1: envelope, triage, and coverage evidence reconciliation
 

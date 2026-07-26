@@ -109,8 +109,8 @@ Current Python and subprocess admission MUST close independently of these future
 ### DataFusion ecosystem expansion
 
 CDF retains DataFusion as a standard analysis/scheduling currency under the identity boundary.
-J1 statistics pruning remains active because its neutral adapter is implemented and its
-soundness/consumer closure is current work. Object-store session registration, evidence
+J1 statistics pruning is complete as a verified-package segment-selection authority with shared
+memory admission, streamed decisions, and conservative absence. Object-store session registration, evidence
 catalog/ADBC, `ExecutionPlan` marshaling, Ballista groundwork, exotic `FileFormat` hosting, and
 selective kernel adoption are parked until a concrete consumer makes each bounded outcome
 valuable. Authority:

@@ -426,32 +426,65 @@ fn verified_statistics_profile_is_manifest_bound_typed_parquet() {
         .expect("manifest-bound profile exposes package statistics");
     assert_eq!(package_statistics, stats);
 
+    let profile_memory: Arc<dyn MemoryCoordinator> =
+        Arc::new(DeterministicMemoryCoordinator::new(1024 * 1024, BTreeMap::new()).unwrap());
     let mut windows = Vec::new();
     let window_count = reader
-        .for_each_verified_statistics_profile_window(&verified, 1, &mut |window| {
-            windows.push((
-                window.schema_hash().to_owned(),
-                window.schema().fields().len(),
-                window
-                    .rows()
-                    .iter()
-                    .map(|row| row.container_id.clone())
-                    .collect::<Vec<_>>(),
-            ));
-            Ok(())
-        })
+        .for_each_verified_statistics_profile_window(
+            &verified,
+            Arc::clone(&profile_memory),
+            1,
+            256 * 1024,
+            &mut |window| {
+                windows.push((
+                    window.schema_hash().to_owned(),
+                    window.schema().fields().len(),
+                    window
+                        .rows()
+                        .iter()
+                        .map(|row| row.container_id.clone())
+                        .collect::<Vec<_>>(),
+                    window.retained_bytes(),
+                    window.reserved_bytes(),
+                ));
+                Ok(())
+            },
+        )
         .unwrap();
     assert_eq!(window_count, 2);
     assert_eq!(windows[0].0, "sha256:schema");
     assert_eq!(windows[0].1, 2);
     assert_eq!(windows[0].2, ["seg-000001", "seg-000001"]);
     assert_eq!(windows[1].2, ["pkg-stats-profile", "pkg-stats-profile"]);
+    assert!(windows.iter().all(|window| window.3 > 0));
+    assert!(windows.iter().all(|window| window.3 <= window.4));
+    assert_eq!(profile_memory.snapshot().current_bytes, 0);
+    assert_eq!(profile_memory.snapshot().peak_bytes, 256 * 1024);
     assert!(
         reader
-            .for_each_verified_statistics_profile_window(&verified, 0, &mut |_| Ok(()))
+            .for_each_verified_statistics_profile_window(
+                &verified,
+                Arc::clone(&profile_memory),
+                0,
+                256 * 1024,
+                &mut |_| Ok(()),
+            )
             .unwrap_err()
             .message
             .contains("at least one container")
+    );
+    assert!(
+        reader
+            .for_each_verified_statistics_profile_window(
+                &verified,
+                profile_memory,
+                1,
+                0,
+                &mut |_| Ok(()),
+            )
+            .unwrap_err()
+            .message
+            .contains("window bytes")
     );
 
     let mut visited = 0_u64;
