@@ -92,6 +92,14 @@ old global-pressure interpretation rather than leaving a compatibility surface.
   Generic engine admission now derives the handoff working set from that graph node. Parquet
   enforces the same count globally across its independent writers; neither layer branches on a
   destination id.
+- 2026-07-26: Correcting partitioned DataFusion lease release exposed a previously masked nested
+  frontier deadlock: 16 file partitions each independently admitted up to 16 row-group decode
+  units, so later canonical units could collectively retain the entire real pool while the head
+  awaited its next batch. Per-partition decode-unit fan-out now shares the compiled run CPU
+  authority: `ceil(host logical slots / effective partition jobs)`. A one-file run retains all
+  16 row-group slots, four active partitions get four each, and 16 active partitions get one each.
+  This is a generic registered-format rule; it neither caps total CPU below the host authority nor
+  introduces a Parquet branch.
 
 ## Blockers
 
@@ -117,6 +125,10 @@ None.
   passed. The engine staged-window admission test also passed with two maximum-sized retained
   items, and strict touched Engine/Parquet Clippy remained clean. EC2 automatic multi-partition
   proof remains pending.
+- Nested-frontier repair: `nested_decode_fanout_shares_the_run_cpu_authority` and
+  `blocked_decode_publication_releases_shared_run_work` passed. The partitioned DataFusion lease
+  regression passed alongside them. Strict all-feature Clippy for source-files and Engine,
+  formatting, and diff checks passed.
 
 ## Review
 

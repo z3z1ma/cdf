@@ -174,6 +174,13 @@ compatibility path.
   still physically retained by sibling payloads. Release now shrinks exactly the owner's byte
   share. A 128-byte two-partition regression proves that dropping one owner leaves 64 bytes
   reserved, blocks a new 128-byte allocation, and never reports a peak above the finite pool.
+- 2026-07-26: The first probe with truthful partitioned ownership was stopped after three minutes
+  at about `6%` CPU and `3.34 GiB` RSS; the prior cell took 19 seconds. The pool was correctly
+  applying backpressure, but nested canonical frontiers had multiplied 16 partition jobs by up to
+  16 row-group jobs per partition. Buffered later-unit batches consumed the pool while canonical
+  heads waited for allocations, creating a liveness cycle. The runtime child now divides host CPU
+  slots across active partition jobs for inner decode fan-out, preserving 16 aggregate decode
+  slots and the full single-file row-group path without hidden overcommit.
 
 ## Blockers
 

@@ -3950,7 +3950,11 @@ fn stream_registered_format(
                 NATIVE_TARGET_BATCH_BYTES,
                 NATIVE_UNIT_BUFFERED_BATCHES,
             )?
-            .jobs);
+            .jobs)
+            .min(per_partition_decode_unit_ceiling(
+                unit_execution.capabilities().logical_cpu_slots,
+                unit_execution.run_job_ceiling()?,
+            ));
 
             let units = Arc::new(units);
             let unit_count = units.len();
@@ -4053,6 +4057,15 @@ fn stream_registered_format(
         },
     )?;
     Ok(Box::pin(stream))
+}
+
+fn per_partition_decode_unit_ceiling(
+    logical_cpu_slots: u16,
+    run_partition_jobs: Option<u16>,
+) -> usize {
+    let logical_cpu_slots = usize::from(logical_cpu_slots.max(1));
+    let run_partition_jobs = usize::from(run_partition_jobs.unwrap_or(1).max(1));
+    logical_cpu_slots.div_ceil(run_partition_jobs).max(1)
 }
 
 fn stable_decode_memory_budget(memory: &dyn MemoryCoordinator) -> u64 {
@@ -5972,6 +5985,15 @@ mod tests {
         assert_eq!(memory.snapshot().current_bytes, BUDGET);
         assert_eq!(stable_decode_memory_budget(&memory), BUDGET);
         drop(held);
+    }
+
+    #[test]
+    fn nested_decode_fanout_shares_the_run_cpu_authority() {
+        assert_eq!(per_partition_decode_unit_ceiling(16, Some(16)), 1);
+        assert_eq!(per_partition_decode_unit_ceiling(16, Some(4)), 4);
+        assert_eq!(per_partition_decode_unit_ceiling(16, Some(1)), 16);
+        assert_eq!(per_partition_decode_unit_ceiling(16, None), 16);
+        assert_eq!(per_partition_decode_unit_ceiling(1, Some(16)), 1);
     }
 
     fn physical_runtime(
