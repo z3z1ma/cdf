@@ -195,6 +195,20 @@ compatibility path.
   working set. The staged protocol's item/byte window continues to bound unacknowledged transfer;
   it no longer caps Parquet CPU concurrency. There is one object-worker path, deterministic
   assembly remains by object ordinal, and no destination behavior leaked into generic runtime.
+- 2026-07-26: The first release measurement of that topology processed the 40-file, 10.46 GiB
+  logical fixture in `12.497 s`, versus the retained parent baseline's `18.480 s` median
+  (`1.48x` faster). Process CPU was `367%`, RSS was `2,628,868 KiB`, managed peak was
+  `2,303,119,317 / 3,650,722,202` bytes, and ending managed ownership was zero. A one-object
+  control completed in `2.949 s` versus the `2.407 s` baseline and therefore failed the 5%
+  regression guard. Phase evidence localized the delta to destination ingress.
+- 2026-07-26: Tracing found a systemic duplicate read rather than a concurrency tradeoff. Live
+  segments are atomically published and hash-bound while written; replay hashes the complete
+  package before issuing `VerifiedSegmentObject`s. `DurableLocalFileAccess::open` then hashed
+  every segment again before rewinding it for decode. That second pass cannot protect against
+  in-place mutation after rewind and contradicted the package store's immutable-after-finalization
+  authority. Replaced the ambiguous public constructor with `from_verified_artifact` and made
+  `open` revalidate the retained root capability, file kind, and exact length without rehashing.
+  This is one lifecycle-driven path shared by Parquet and DuckDB, not a one-object branch.
 
 ## Blockers
 
@@ -262,6 +276,16 @@ None.
   serial. Strict all-feature Clippy for Parquet destination, Engine, and Files source passed with
   warnings denied; formatting and diff checks passed. Dedicated-host release retention and the
   exact 1 TiB acceptance remain pending.
+- Verified-artifact open:
+  `CARGO_BUILD_JOBS=6 cargo test -p cdf-runtime
+  staged_segment_request_uses_verified_durable_local_file_authority --lib --offline -j6` passed;
+  exact content identity remains an upstream package-verification/hash-while-write precondition
+  and local open still rejects a changed file kind or byte count.
+  `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=6 cargo test -p cdf-dest-parquet
+  object_groups_use_prepared_parallelism_and_one_writer_remains_serial --lib --offline -j6`
+  passed. Strict Clippy for Runtime, Package, Project, Parquet destination, and DuckDB destination
+  passed with warnings denied, using the downloaded dynamic DuckDB path rather than a local
+  bundled build; formatting and diff checks passed.
 
 ## Review
 

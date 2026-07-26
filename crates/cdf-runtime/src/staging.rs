@@ -1,7 +1,6 @@
 use std::{
     collections::BTreeSet,
     fs::File,
-    io::{Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -14,7 +13,6 @@ use cdf_kernel::{
 };
 use cdf_package_contract::{SegmentEntry, VerifiedPackageAccess};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::{StagingLease, StagingMutationGuard};
 
@@ -294,7 +292,15 @@ impl std::fmt::Debug for DurableLocalFileAccess {
 }
 
 impl DurableLocalFileAccess {
-    pub fn new<F>(
+    /// Retains local access to an immutable artifact whose bytes are already bound to
+    /// `expected_sha256` by upstream package verification or atomic hash-while-write publication.
+    ///
+    /// The opener MUST remain rooted in that retained artifact authority rather than resolving
+    /// the diagnostic pathname. `open` revalidates file kind and length, but deliberately does
+    /// not hash the complete file again: the immutable package contract is the content authority,
+    /// and a second pre-read would neither prevent later in-place mutation nor justify reading
+    /// every package byte twice.
+    pub fn from_verified_artifact<F>(
         path: impl Into<PathBuf>,
         expected_byte_count: u64,
         expected_sha256: impl Into<String>,
@@ -324,7 +330,7 @@ impl DurableLocalFileAccess {
     }
 
     pub fn open(&self) -> Result<DurableLocalFile> {
-        let mut file = (self.opener)()?;
+        let file = (self.opener)()?;
         let metadata = file.metadata().map_err(|error| {
             CdfError::data(format!(
                 "inspect durable staged segment at {}: {error}",
@@ -339,36 +345,6 @@ impl DurableLocalFileAccess {
                 metadata.len()
             )));
         }
-        let mut hasher = Sha256::new();
-        let observed_byte_count = std::io::copy(&mut file, &mut hasher).map_err(|error| {
-            CdfError::data(format!(
-                "hash durable staged segment at {}: {error}",
-                self.path.display()
-            ))
-        })?;
-        let observed_sha256 = hex::encode(hasher.finalize());
-        let expected_sha256 = self
-            .expected_sha256
-            .strip_prefix("sha256:")
-            .unwrap_or(&self.expected_sha256);
-        if observed_byte_count != self.expected_byte_count
-            || !observed_sha256.eq_ignore_ascii_case(expected_sha256)
-        {
-            return Err(CdfError::data(format!(
-                "durable staged segment at {} changed after publication: expected {} bytes with sha256 {}, observed {} bytes with sha256 {}",
-                self.path.display(),
-                self.expected_byte_count,
-                self.expected_sha256,
-                observed_byte_count,
-                observed_sha256
-            )));
-        }
-        file.seek(SeekFrom::Start(0)).map_err(|error| {
-            CdfError::data(format!(
-                "rewind durable staged segment at {}: {error}",
-                self.path.display()
-            ))
-        })?;
         Ok(DurableLocalFile::new(self.path.clone(), file))
     }
 }

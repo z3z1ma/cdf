@@ -519,7 +519,7 @@ impl DurableSegmentReader for LocalFileSegmentReader {
             return Ok(None);
         };
         let open_path = path.clone();
-        Ok(Some(DurableLocalFileAccess::new(
+        Ok(Some(DurableLocalFileAccess::from_verified_artifact(
             path,
             self.identity.byte_count,
             self.identity.sha256.clone(),
@@ -1960,7 +1960,7 @@ fn staged_ingress_types_cannot_claim_package_commit_authority() {
 }
 
 #[test]
-fn staged_segment_request_defers_exact_durable_local_file_verification() {
+fn staged_segment_request_uses_verified_durable_local_file_authority() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("segment.arrow");
     std::fs::write(&path, b"12345678").unwrap();
@@ -1981,7 +1981,7 @@ fn staged_segment_request_defers_exact_durable_local_file_verification() {
     std::io::Read::read_to_end(&mut file, &mut bytes).unwrap();
     assert_eq!(bytes, b"12345678");
 
-    std::fs::write(&path, b"replaced").unwrap();
+    std::fs::write(&path, b"replacement").unwrap();
     let mut request = StagedSegmentRequest::new(
         identity.clone(),
         Box::new(LocalFileSegmentReader {
@@ -1995,7 +1995,7 @@ fn staged_segment_request_defers_exact_durable_local_file_verification() {
         .unwrap()
         .open()
         .unwrap_err();
-    assert!(error.message.contains("changed after publication"));
+    assert!(error.message.contains("must be a file of exactly 8 bytes"));
 }
 
 #[test]

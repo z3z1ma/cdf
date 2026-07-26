@@ -198,8 +198,10 @@ pub struct VerifiedSegmentObject<T> {
 /// Reopen capability for one durable canonical segment beneath a retained package root.
 ///
 /// The diagnostic pathname is never used as access authority. Each open is resolved relative to
-/// the already-opened package directory without following links. The generic staged-file boundary
-/// verifies the exact manifest digest on that handle before exposing it to a destination.
+/// the already-opened package directory without following links. Exact bytes were bound either
+/// by atomic hash-while-write publication in the live path or by complete package verification in
+/// replay; the retained package root and immutable-after-finalization contract carry that
+/// authority into destination ingress without a redundant full-file hash pass.
 #[derive(Clone, Debug)]
 pub struct DurableSegmentFile {
     entry: SegmentEntry,

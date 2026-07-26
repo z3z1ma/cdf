@@ -735,9 +735,12 @@ fn durable_local_file_access(
     let path = durable_file.display_path().to_path_buf();
     let byte_count = durable_file.byte_count();
     let sha256 = durable_file.sha256().to_owned();
-    cdf_runtime::DurableLocalFileAccess::new(path, byte_count, sha256, move || {
-        durable_file.open_file()
-    })
+    cdf_runtime::DurableLocalFileAccess::from_verified_artifact(
+        path,
+        byte_count,
+        sha256,
+        move || durable_file.open_file(),
+    )
 }
 
 impl cdf_runtime::DurableSegmentReader for LiveStagedSegmentReader {

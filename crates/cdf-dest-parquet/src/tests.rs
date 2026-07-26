@@ -657,7 +657,7 @@ fn test_durable_file_access(
 ) -> cdf_runtime::DurableLocalFileAccess {
     let display_path = path.to_path_buf();
     let open_path = display_path.clone();
-    cdf_runtime::DurableLocalFileAccess::new(
+    cdf_runtime::DurableLocalFileAccess::from_verified_artifact(
         display_path,
         entry.byte_count,
         entry.sha256.clone(),

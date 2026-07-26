@@ -734,7 +734,7 @@ fn staged_ingress_retains_no_segment_count_file_handles() {
             cdf_runtime::StagedSegmentRequest::new(
                 identity.clone(),
                 Box::new(TestDurableSegmentReader {
-                    access: Some(cdf_runtime::DurableLocalFileAccess::new(
+                    access: Some(cdf_runtime::DurableLocalFileAccess::from_verified_artifact(
                         segment_path.clone(),
                         8,
                         identity.sha256.clone(),
@@ -842,7 +842,7 @@ fn try_commit_current(
             cdf_runtime::StagedSegmentRequest::new(
                 identity.clone(),
                 Box::new(TestDurableSegmentReader {
-                    access: Some(cdf_runtime::DurableLocalFileAccess::new(
+                    access: Some(cdf_runtime::DurableLocalFileAccess::from_verified_artifact(
                         path,
                         identity.byte_count,
                         identity.sha256.clone(),
