@@ -715,7 +715,7 @@ impl StandaloneExecutionHost {
                         lane.clone(),
                         FixedTaskPool::new(
                             &lane.lane_id,
-                            lane.maximum_concurrency,
+                            admitted_lane_workers(lane, capabilities.logical_cpu_slots),
                             Arc::clone(&slots),
                         )?,
                     ),
@@ -869,7 +869,7 @@ impl ExecutionHost for StandaloneExecutionHost {
             }
             let pool = FixedTaskPool::new(
                 &lane.lane_id,
-                lane.maximum_concurrency,
+                admitted_lane_workers(lane, capabilities.logical_cpu_slots),
                 Arc::clone(&self.slots),
             )?;
             registered.insert(lane.lane_id.clone(), (lane.clone(), pool));
@@ -911,6 +911,15 @@ impl ExecutionHost for StandaloneExecutionHost {
         })?;
         value?
     }
+}
+
+fn admitted_lane_workers(lane: &BlockingLaneSpec, logical_cpu_slots: u16) -> u16 {
+    lane.maximum_concurrency.min(
+        logical_cpu_slots
+            .checked_div(lane.claimed_cpu_slots())
+            .unwrap_or(0)
+            .max(1),
+    )
 }
 
 struct StandaloneTaskScope {
@@ -2125,6 +2134,36 @@ mod tests {
         let mut conflict = lane;
         conflict.maximum_concurrency = 2;
         assert!(services.ensure_blocking_lanes(&[conflict]).is_err());
+    }
+
+    #[test]
+    fn representational_lane_ceiling_allocates_only_host_admitted_workers() {
+        let host = Arc::new(host());
+        let services = cdf_runtime::ExecutionServices::new(host.clone()).unwrap();
+        let lane = BlockingLaneSpec {
+            lane_id: "wide.adapter".to_owned(),
+            binding: cdf_runtime::BlockingLaneBinding::Static,
+            maximum_concurrency: u16::MAX,
+            cpu_slot_cost: 1,
+            native_internal_parallelism: 1,
+            affinity: LaneAffinity::Shared,
+            interruption: InterruptionSafety::CooperativeOnly,
+        };
+        services
+            .ensure_blocking_lanes(std::slice::from_ref(&lane))
+            .unwrap();
+        let registered = host.lanes.lock().unwrap();
+        let (_, pool) = registered.get("wide.adapter").unwrap();
+        assert_eq!(pool.capacity, host.capabilities().logical_cpu_slots);
+        assert_eq!(
+            host.capabilities()
+                .blocking_lanes
+                .iter()
+                .find(|registered| registered.lane_id == "wide.adapter")
+                .unwrap()
+                .maximum_concurrency,
+            u16::MAX,
+        );
     }
 
     #[test]

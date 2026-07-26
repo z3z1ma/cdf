@@ -101,7 +101,7 @@ impl DestinationRuntime for ParquetDestination {
         &mut self,
         input: &cdf_runtime::BulkPathPreparationInput<'_>,
     ) -> Result<cdf_runtime::BulkPathPreparation> {
-        prepare_parquet_bulk_paths(input, &self.runtime_capabilities())
+        prepare_parquet_bulk_paths(input, &self.runtime_capabilities(), Some(self.execution()))
     }
 }
 
@@ -216,7 +216,7 @@ impl DestinationRuntime for FilesystemParquetRuntime {
         &mut self,
         input: &cdf_runtime::BulkPathPreparationInput<'_>,
     ) -> Result<cdf_runtime::BulkPathPreparation> {
-        prepare_parquet_bulk_paths(input, &self.runtime_capabilities())
+        prepare_parquet_bulk_paths(input, &self.runtime_capabilities(), self.execution.as_ref())
     }
 
     fn destination_sheet(&self) -> Result<DestinationSheet> {
@@ -310,7 +310,7 @@ pub(crate) fn parquet_runtime_capabilities() -> DestinationRuntimeCapabilities {
             cdf_runtime::BlockingLaneSpec {
                 lane_id: "parquet.encode".to_owned(),
                 binding: cdf_runtime::BlockingLaneBinding::Static,
-                maximum_concurrency: 2,
+                maximum_concurrency: u16::MAX,
                 cpu_slot_cost: 1,
                 native_internal_parallelism: 1,
                 affinity: cdf_runtime::LaneAffinity::Shared,
@@ -347,7 +347,7 @@ pub(crate) fn parquet_runtime_capabilities() -> DestinationRuntimeCapabilities {
                 preferred: 16 * 1024 * 1024,
                 maximum: 64 * 1024 * 1024,
             },
-            max_useful_writers: 2,
+            max_useful_writers: u16::MAX,
             blocking_lane: Some("parquet.encode".to_owned()),
             native_internal_parallelism: 1,
             external_staging: true,
@@ -366,15 +366,34 @@ pub(crate) fn parquet_runtime_capabilities() -> DestinationRuntimeCapabilities {
 fn prepare_parquet_bulk_paths(
     input: &cdf_runtime::BulkPathPreparationInput<'_>,
     capabilities: &DestinationRuntimeCapabilities,
+    execution: Option<&cdf_runtime::ExecutionServices>,
 ) -> Result<cdf_runtime::BulkPathPreparation> {
     cdf_package::validate_parquet_schema(input.output_schema)?;
     let mut preparation = cdf_runtime::BulkPathPreparation::from_capabilities(capabilities)?;
-    let available_writers = input
+    let host_writers = input
         .execution
         .as_ref()
         .map_or(1, |execution| execution.logical_cpu_slots.max(1));
     for path in &mut preparation.eligible {
-        path.writers = available_writers.min(path.descriptor.max_useful_writers);
+        let settings = crate::package::ParquetWriterSettings {
+            rows_per_batch: path.rows_per_batch,
+            bytes_per_batch: path.bytes_per_batch,
+        };
+        let worker_bytes = crate::package::parquet_worker_working_set_bytes(settings)?;
+        let memory_writers = execution.map_or(1, |execution| {
+            let snapshot = execution.memory().snapshot();
+            (snapshot.budget_bytes / worker_bytes).clamp(1, u64::from(u16::MAX)) as u16
+        });
+        let run_writers = execution
+            .map(cdf_runtime::ExecutionServices::run_job_ceiling)
+            .transpose()?
+            .flatten()
+            .unwrap_or(host_writers);
+        path.writers = host_writers
+            .min(run_writers)
+            .min(memory_writers)
+            .min(path.descriptor.max_useful_writers)
+            .max(1);
     }
     preparation.validate()?;
     Ok(preparation)

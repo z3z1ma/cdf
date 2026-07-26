@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-26
 Updated: 2026-07-26
 Parent: .10x/tickets/2026-07-26-stage-local-cpu-saturation.md
@@ -71,14 +71,46 @@ compatibility path.
   segment to be consumed before progressing. `pending` contains only groups already sent
   `Finish`, so current concurrency overlaps encode finalization/publication with the next active
   group but does not execute several groups' row encoding concurrently.
+- 2026-07-26: Execution began after the runtime dependency closed. The implementation will
+  transfer each acknowledged canonical segment into its retained `DurableLocalFileAccess`,
+  compile deterministic object groups without retaining decoded batches, and decode those
+  files inside independently admitted writer tasks. This reuses the destination-neutral staged
+  capability already consumed by DuckDB and avoids a second Parquet-specific buffering protocol.
+- 2026-07-26: The first focused test exposed an important host-boundary bug before executing any
+  payload: declaring the representational `u16::MAX` lane ceiling caused the standalone host to
+  try creating that many fixed workers (`os error 35`). The host now sizes a lane's physical
+  worker pool to `min(declared ceiling, host slots / slot cost)` while retaining the declared
+  capability for admission. This is the non-arbitrary host clamp required by the decision and
+  prevents a capability ceiling from becoming eager resource allocation.
+- 2026-07-26: The bounded topology probe passed for both sides of the invariant: nine canonical
+  segments (deterministic `8+1` objects) reached two simultaneous encoders with automatic
+  admission, while the same package under a one-job execution authority observed a peak of one.
+  The complete Parquet library suite passed `40` tests with one release benchmark ignored;
+  touched Engine/Parquet strict Clippy and formatting also passed. Graph refresh could not run
+  because the required `graphify` executable is absent from this environment.
 
 ## Blockers
 
-Depends on the runtime child so the benchmark observes the intended default graph.
+None.
 
 ## Evidence
 
-Pending execution.
+- `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=6 cargo test -p cdf-dest-parquet
+  object_groups_use_prepared_parallelism_and_one_writer_remains_serial --
+  --nocapture --test-threads=1`: passed; proves actual overlap and explicit one-job serialization.
+- `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=6 cargo test -p cdf-dest-parquet
+  staged_writer_window_is_reserved_before_input_and_not_charged_again --
+  --nocapture --test-threads=1`: passed; proves exact pre-reservation and zero ending balance.
+- `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=6 cargo test -p cdf-engine
+  representational_lane_ceiling_allocates_only_host_admitted_workers --
+  --nocapture --test-threads=1`: passed; proves large declared ceilings do not eagerly allocate
+  beyond host admission.
+- `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=6 cargo test -p cdf-dest-parquet --lib --
+  --test-threads=2`: passed `40`, ignored the one explicit release benchmark.
+- `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=6 cargo clippy -p cdf-engine
+  -p cdf-dest-parquet --all-targets -- -D warnings`: passed.
+- `cargo fmt --all -- --check` and `git diff --check`: passed.
+- Release retention comparison: pending dedicated-host execution.
 
 ## Review
 

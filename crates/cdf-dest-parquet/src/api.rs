@@ -21,6 +21,8 @@ pub struct ParquetDestination {
     sheet: DestinationSheet,
     object_key_encoder: ObjectKeyEncoder,
     pub(crate) pending_corrections: Arc<Mutex<BTreeMap<PlanId, ParquetCorrectionContext>>>,
+    #[cfg(test)]
+    pub(crate) encode_probe: Option<Arc<crate::staging::ParquetEncodeConcurrencyProbe>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -104,7 +106,17 @@ impl ParquetDestination {
             sheet,
             object_key_encoder,
             pending_corrections: Arc::new(Mutex::new(BTreeMap::new())),
+            #[cfg(test)]
+            encode_probe: None,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_encode_probe(
+        &mut self,
+        probe: Arc<crate::staging::ParquetEncodeConcurrencyProbe>,
+    ) {
+        self.encode_probe = Some(probe);
     }
 
     pub fn dry_plan_commit(

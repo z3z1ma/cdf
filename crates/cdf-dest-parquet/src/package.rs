@@ -1,8 +1,6 @@
-use std::{
-    io::{self, BufWriter, Write},
-    sync::mpsc,
-};
+use std::io::{self, BufWriter, Write};
 
+use arrow_ipc::reader::FileReader;
 use cdf_memory::MemoryCoordinator;
 use cdf_runtime::{SpillBudgetCoordinator, SpillReservation};
 use parquet::{
@@ -56,9 +54,9 @@ pub(crate) struct StagedParquetEncodeContext<'a> {
     pub(crate) settings: ParquetWriterSettings,
 }
 
-pub(crate) enum ParquetGroupCommand {
-    Segment(cdf_runtime::StagedSegmentRequest),
-    Finish,
+pub(crate) struct StagedParquetSegment {
+    pub(crate) identity: cdf_runtime::StagedSegmentIdentity,
+    pub(crate) file: cdf_runtime::DurableLocalFileAccess,
 }
 
 pub(crate) struct EncodedParquetGroup {
@@ -107,12 +105,11 @@ pub(crate) fn write_parquet_segment(
 }
 
 pub(crate) fn write_parquet_staged_group(
-    commands: mpsc::Receiver<ParquetGroupCommand>,
-    consumed: mpsc::SyncSender<Result<cdf_runtime::StagedSegmentIdentity>>,
+    segments: Vec<StagedParquetSegment>,
     context: StagedParquetEncodeContext<'_>,
 ) -> Result<EncodedParquetGroup> {
-    let mut reader = StagedGroupBatchReader::new(commands, consumed);
-    let result = write_parquet_batches(
+    let mut reader = StagedGroupBatchReader::new(segments)?;
+    let encoded = write_parquet_batches(
         ParquetBatchWritePlan {
             retained_bytes: context.settings.bytes_per_batch.max(1),
             expected_rows: None,
@@ -126,51 +123,52 @@ pub(crate) fn write_parquet_staged_group(
         context.spill,
         context.file,
         || reader.next_batch(),
-    );
-    match result {
-        Ok(encoded) => Ok(EncodedParquetGroup {
-            identities: reader.finish()?,
-            encoded,
-        }),
-        Err(error) => {
-            reader.report_failure(error.clone());
-            Err(error)
-        }
-    }
+    )?;
+    Ok(EncodedParquetGroup {
+        identities: reader.finish()?,
+        encoded,
+    })
 }
 
 struct StagedGroupBatchReader {
-    commands: mpsc::Receiver<ParquetGroupCommand>,
-    consumed: mpsc::SyncSender<Result<cdf_runtime::StagedSegmentIdentity>>,
-    current: Option<(cdf_runtime::StagedSegmentRequest, u64)>,
+    segments: std::vec::IntoIter<StagedParquetSegment>,
+    current: Option<(
+        cdf_runtime::StagedSegmentIdentity,
+        FileReader<std::fs::File>,
+        u64,
+    )>,
     identities: Vec<cdf_runtime::StagedSegmentIdentity>,
-    finished: bool,
 }
 
 impl StagedGroupBatchReader {
-    fn new(
-        commands: mpsc::Receiver<ParquetGroupCommand>,
-        consumed: mpsc::SyncSender<Result<cdf_runtime::StagedSegmentIdentity>>,
-    ) -> Self {
-        Self {
-            commands,
-            consumed,
+    fn new(segments: Vec<StagedParquetSegment>) -> Result<Self> {
+        if segments.is_empty() {
+            return Err(CdfError::internal(
+                "Parquet object group requires at least one durable segment",
+            ));
+        }
+        Ok(Self {
+            segments: segments.into_iter(),
             current: None,
             identities: Vec::new(),
-            finished: false,
-        }
+        })
     }
 
     fn next_batch(&mut self) -> Result<Option<arrow_array::RecordBatch>> {
         loop {
-            if let Some((request, rows)) = &mut self.current {
-                match request.reader_mut().next_batch()? {
+            if let Some((identity, reader, rows)) = &mut self.current {
+                match reader.next() {
                     Some(batch) => {
+                        let batch = batch.map_err(|error| {
+                            CdfError::data(format!(
+                                "read canonical Arrow IPC segment {} for Parquet destination: {error}",
+                                identity.segment_id
+                            ))
+                        })?;
                         let batch_rows = u64::try_from(batch.num_rows()).map_err(|_| {
                             CdfError::data("Parquet destination row count exceeds u64")
                         })?;
-                        let expected_start = request
-                            .identity
+                        let expected_start = identity
                             .package_row_ord_start
                             .checked_add(*rows)
                             .ok_or_else(|| {
@@ -187,53 +185,40 @@ impl StagedGroupBatchReader {
                         return Ok(Some(batch));
                     }
                     None => {
-                        let (request, rows) =
+                        let (identity, _, rows) =
                             self.current.take().expect("group segment is present");
-                        let identity = request.identity;
                         if rows != identity.row_count {
                             return Err(CdfError::data(format!(
                                 "Parquet destination segment {} has {rows} payload rows but its durable identity expects {}",
                                 identity.segment_id, identity.row_count
                             )));
                         }
-                        self.consumed.send(Ok(identity.clone())).map_err(|_| {
-                            CdfError::destination(
-                                "Parquet staged ingress stopped before segment acknowledgement",
-                            )
-                        })?;
                         self.identities.push(identity);
                     }
                 }
                 continue;
             }
-            match self.commands.recv() {
-                Ok(ParquetGroupCommand::Segment(request)) => {
-                    if self.finished {
-                        return Err(CdfError::internal(
-                            "Parquet object group received a segment after finish",
-                        ));
-                    }
-                    self.current = Some((request, 0));
+            match self.segments.next() {
+                Some(segment) => {
+                    let durable = segment.file.open()?;
+                    let (_, file) = durable.into_parts();
+                    let reader = FileReader::try_new(file, None).map_err(|error| {
+                        CdfError::data(format!(
+                            "open canonical Arrow IPC segment {} for Parquet destination: {error}",
+                            segment.identity.segment_id
+                        ))
+                    })?;
+                    self.current = Some((segment.identity, reader, 0));
                 }
-                Ok(ParquetGroupCommand::Finish) => {
-                    self.finished = true;
+                None => {
                     return Ok(None);
-                }
-                Err(_) => {
-                    return Err(CdfError::destination(
-                        "Parquet object group command stream closed before finish",
-                    ));
                 }
             }
         }
     }
 
-    fn report_failure(&self, error: CdfError) {
-        let _ = self.consumed.send(Err(error));
-    }
-
     fn finish(self) -> Result<Vec<cdf_runtime::StagedSegmentIdentity>> {
-        if !self.finished || self.current.is_some() || self.identities.is_empty() {
+        if self.current.is_some() || self.segments.len() != 0 || self.identities.is_empty() {
             return Err(CdfError::internal(
                 "Parquet object group did not finish with at least one complete segment",
             ));
@@ -292,9 +277,10 @@ fn write_parquet_batches(
     };
     let _writer_lease = match writer_memory_authority {
         Some(authority) => {
-            if authority.bytes() < writer_bytes {
+            let worker_bytes = parquet_worker_working_set_bytes(settings)?;
+            if authority.bytes() != worker_bytes {
                 return Err(CdfError::contract(format!(
-                    "Parquet staged writer authority holds {} bytes below its {writer_bytes}-byte compiled working set",
+                    "Parquet staged worker authority holds {} bytes but its compiled writer and input working set requires exactly {worker_bytes} bytes",
                     authority.bytes()
                 )));
             }
@@ -395,6 +381,12 @@ pub(crate) fn parquet_writer_working_set_bytes(settings: ParquetWriterSettings) 
     settings
         .bytes_per_batch
         .clamp(1024 * 1024, 64 * 1024 * 1024)
+}
+
+pub(crate) fn parquet_worker_working_set_bytes(settings: ParquetWriterSettings) -> Result<u64> {
+    parquet_writer_working_set_bytes(settings)
+        .checked_add(settings.validate()?.bytes_per_batch)
+        .ok_or_else(|| CdfError::data("Parquet worker memory working set overflowed"))
 }
 
 struct SpillHashWriter {

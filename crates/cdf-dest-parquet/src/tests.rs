@@ -632,6 +632,7 @@ impl VerifiedPackageAccess for TestVerifiedPackage {
 struct TestSegmentReader {
     identity: cdf_runtime::StagedSegmentIdentity,
     batches: std::vec::IntoIter<RecordBatch>,
+    durable_file_access: Option<cdf_runtime::DurableLocalFileAccess>,
 }
 
 impl cdf_runtime::DurableSegmentReader for TestSegmentReader {
@@ -639,9 +640,36 @@ impl cdf_runtime::DurableSegmentReader for TestSegmentReader {
         &self.identity
     }
 
+    fn take_durable_local_file_access(
+        &mut self,
+    ) -> Result<Option<cdf_runtime::DurableLocalFileAccess>> {
+        Ok(self.durable_file_access.take())
+    }
+
     fn next_batch(&mut self) -> Result<Option<RecordBatch>> {
         Ok(self.batches.next())
     }
+}
+
+fn test_durable_file_access(
+    path: &Path,
+    entry: &SegmentEntry,
+) -> cdf_runtime::DurableLocalFileAccess {
+    let display_path = path.to_path_buf();
+    let open_path = display_path.clone();
+    cdf_runtime::DurableLocalFileAccess::new(
+        display_path,
+        entry.byte_count,
+        entry.sha256.clone(),
+        move || {
+            std::fs::File::open(&open_path).map_err(|error| {
+                CdfError::data(format!(
+                    "open test durable segment {}: {error}",
+                    open_path.display()
+                ))
+            })
+        },
+    )
 }
 
 struct TestStagedStream {
@@ -858,6 +886,10 @@ fn stage_through_ingress_with_lease(
                 Box::new(TestSegmentReader {
                     identity,
                     batches: segment.batches.into_iter(),
+                    durable_file_access: Some(test_durable_file_access(
+                        &package_dir.join(&entry.path),
+                        entry,
+                    )),
                 }),
             )
         })
@@ -2024,12 +2056,68 @@ fn staged_attempt_records_the_exact_prepared_physical_plan() {
         metadata["object_publication_mode"],
         "atomic_content_create_v1"
     );
-    assert_eq!(metadata["writers"], 2);
+    assert_eq!(
+        metadata["writers"],
+        destination.execution().capabilities().logical_cpu_slots
+    );
     assert_eq!(metadata["rows_per_batch"], 64 * 1024);
     assert_eq!(metadata["bytes_per_batch"], 16 * 1024 * 1024);
     assert_eq!(metadata["object_target_package_bytes"], 256 * 1024 * 1024);
     assert_eq!(metadata["max_segments_per_object"], 8);
     staged.session.abort().unwrap();
+}
+
+#[test]
+fn object_groups_use_prepared_parallelism_and_one_writer_remains_serial() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-parallel-groups");
+    let segments = (0..9)
+        .map(|ordinal| {
+            (
+                format!("seg-{ordinal:06}"),
+                vec![sample_batch(
+                    vec![i64::from(ordinal)],
+                    vec![Some("parallel")],
+                )],
+            )
+        })
+        .collect::<Vec<_>>();
+    let built = build_package(&package_dir, "pkg-parallel-groups", segments);
+
+    let parallel_probe = Arc::new(crate::staging::ParquetEncodeConcurrencyProbe::new(2));
+    let mut parallel = test_filesystem(temp.path().join("parallel")).unwrap();
+    parallel.set_encode_probe(Arc::clone(&parallel_probe));
+    let mut staged = stage_through_ingress(
+        &mut parallel,
+        &package_dir,
+        request(&package_dir, &built, WriteDisposition::Append),
+    )
+    .unwrap();
+    assert!(
+        parallel_probe.peak() >= 2,
+        "prepared multi-writer ingress must run object encoders simultaneously"
+    );
+    staged.session.abort().unwrap();
+    staged.managed_lease.take().unwrap().finish().unwrap();
+
+    let serial_probe = Arc::new(crate::staging::ParquetEncodeConcurrencyProbe::new(1));
+    let serial_execution = test_execution().with_run_job_ceiling(1).unwrap();
+    let mut serial =
+        ParquetDestination::new_filesystem(temp.path().join("serial"), serial_execution).unwrap();
+    serial.set_encode_probe(Arc::clone(&serial_probe));
+    let mut staged = stage_through_ingress(
+        &mut serial,
+        &package_dir,
+        request(&package_dir, &built, WriteDisposition::Append),
+    )
+    .unwrap();
+    assert_eq!(
+        serial_probe.peak(),
+        1,
+        "an explicit one-job ceiling must keep object encoding serial"
+    );
+    staged.session.abort().unwrap();
+    staged.managed_lease.take().unwrap().finish().unwrap();
 }
 
 #[test]
@@ -2594,8 +2682,9 @@ fn constrained_writer_memory_fails_cleanly_instead_of_waiting_on_its_input() {
 
 #[test]
 fn staged_writer_window_is_reserved_before_input_and_not_charged_again() {
-    const BUDGET: u64 = 64 * 1024 * 1024;
-    const WRITER_BYTES: u64 = 16 * 1024 * 1024;
+    const BUDGET: u64 = 80 * 1024 * 1024;
+    const BATCH_BYTES: u64 = 16 * 1024 * 1024;
+    const WORKER_BYTES: u64 = 32 * 1024 * 1024;
     let (_, services) = cdf_engine::StandaloneExecutionHost::default_services(BUDGET).unwrap();
     let services = services
         .with_staging_lease_authority(Arc::new(cdf_runtime::ScopeStagingLeaseAuthority::new(
@@ -2619,7 +2708,7 @@ fn staged_writer_window_is_reserved_before_input_and_not_charged_again() {
         )
         .unwrap();
     assert_eq!(bulk_path.writers, 2);
-    assert_eq!(bulk_path.bytes_per_batch, WRITER_BYTES);
+    assert_eq!(bulk_path.bytes_per_batch, BATCH_BYTES);
     let attempt_id = cdf_runtime::LoadAttemptId::new("writer-headroom").unwrap();
     let target = cdf_kernel::TargetName::new("writer_headroom").unwrap();
     let managed_lease = destination
@@ -2659,7 +2748,7 @@ fn staged_writer_window_is_reserved_before_input_and_not_charged_again() {
             panic!("Parquet destination exposed finalized ingress")
         }
     };
-    let writer_window = 2 * WRITER_BYTES;
+    let writer_window = 2 * WORKER_BYTES;
     assert_eq!(memory.snapshot().current_bytes - before, writer_window);
 
     // Occupy every remaining managed byte after session admission. Encoding can still progress
@@ -2679,26 +2768,30 @@ fn staged_writer_window_is_reserved_before_input_and_not_charged_again() {
         )
         .unwrap()
         .unwrap();
-    let batch = canonical_batches(
-        vec![sample_batch(vec![1, 2], vec![Some("left"), Some("right")])],
-        0,
-    )
-    .pop()
-    .unwrap();
-    let identity = cdf_runtime::StagedSegmentIdentity {
-        segment_id: SegmentId::new("writer-headroom-segment").unwrap(),
-        sha256: "sha256:test-writer-headroom".to_owned(),
-        package_row_ord_start: 0,
-        row_count: 2,
-        byte_count: 1,
-        schema_hash,
-        ordinal: 0,
-    };
+    let package_dir = temp.path().join("writer-headroom-package");
+    build_package(
+        &package_dir,
+        "writer-headroom-package",
+        vec![(
+            "writer-headroom-segment",
+            vec![sample_batch(vec![1, 2], vec![Some("left"), Some("right")])],
+        )],
+    );
+    let entry = identity_segments(&PackageReader::open(&package_dir).unwrap())
+        .unwrap()
+        .pop()
+        .unwrap();
+    let identity =
+        cdf_runtime::StagedSegmentIdentity::from_manifest_entry(&entry, schema_hash, 0).unwrap();
     let segment = cdf_runtime::StagedSegmentRequest::new(
         identity.clone(),
         Box::new(TestSegmentReader {
             identity,
-            batches: vec![batch].into_iter(),
+            batches: Vec::new().into_iter(),
+            durable_file_access: Some(test_durable_file_access(
+                &package_dir.join(&entry.path),
+                &entry,
+            )),
         }),
     )
     .unwrap();
