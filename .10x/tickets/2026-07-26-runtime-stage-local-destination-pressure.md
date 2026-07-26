@@ -85,6 +85,13 @@ old global-pressure interpretation rather than leaving a compatibility surface.
   `cdf-memory` reservations, so live contention waits and releases rather than bypassing the
   ledger. A focused regression fills the ledger completely with a sibling lease and proves decode
   planning still sees the unchanged budget authority.
+- 2026-07-26: The automatic EC2 probe passed the former partition-16 planning failure after the
+  stable-budget repair, then failed later when canonical assembly had no memory left to make
+  progress. Control-flow review located a separate graph-accounting mismatch: staged handoff
+  budgeted one maximum segment regardless of the staged node's compiled two-item concurrency.
+  Generic engine admission now derives the handoff working set from that graph node. Parquet
+  enforces the same count globally across its independent writers; neither layer branches on a
+  destination id.
 
 ## Blockers
 
@@ -107,7 +114,9 @@ None.
 - `git diff --check` — passed.
 - Reopened repair: the exact runtime decode-unit resolver test and source-files transient-pressure
   regression passed; strict all-target Clippy for both touched crates and formatting/diff checks
-  passed. EC2 automatic multi-partition proof remains pending.
+  passed. The engine staged-window admission test also passed with two maximum-sized retained
+  items, and strict touched Engine/Parquet Clippy remained clean. EC2 automatic multi-partition
+  proof remains pending.
 
 ## Review
 

@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    sync::mpsc,
+    sync::{Arc, mpsc},
 };
 
 use cdf_kernel::{
@@ -26,8 +26,9 @@ use crate::{
     manifest::canonical_json_bytes,
     manifest::{ParquetObjectEntry, ParquetObjectSegmentEntry},
     package::{
-        ParquetGroupCommand, ParquetWriterSettings, StagedParquetEncodeContext,
-        parquet_worker_working_set_bytes, write_parquet_staged_group,
+        ParquetGroupCommand, ParquetWriterSettings, RetainedParquetSegmentWindow,
+        StagedParquetEncodeContext, StagedParquetSegment, parquet_worker_working_set_bytes,
+        write_parquet_staged_group,
     },
     store::{
         ObjectKeyEncoder, StoredObject, data_object_key, now_ms, package_publication_metadata_key,
@@ -107,6 +108,7 @@ pub(crate) struct ParquetStagedIngressSession {
     objects: BTreeMap<u32, StagedParquetObject>,
     prepared_root: Option<(CommittedContentRootId, u64)>,
     physical_plan: ParquetPhysicalWritePlan,
+    retained_segments: Arc<RetainedParquetSegmentWindow>,
 }
 
 #[derive(Clone)]
@@ -207,6 +209,8 @@ impl ParquetStagedIngressSession {
         }
         cdf_package::validate_parquet_schema(request.output_schema())?;
         let physical_plan = ParquetPhysicalWritePlan::compile(&destination, &request)?;
+        let retained_segments =
+            RetainedParquetSegmentWindow::new(request.scheduling().max_in_flight_segments)?;
         let writer_settings = ParquetWriterSettings {
             rows_per_batch: physical_plan.rows_per_batch,
             bytes_per_batch: physical_plan.bytes_per_batch,
@@ -276,6 +280,7 @@ impl ParquetStagedIngressSession {
             objects: BTreeMap::new(),
             prepared_root: None,
             physical_plan,
+            retained_segments,
         })
     }
 
@@ -454,9 +459,13 @@ impl ParquetStagedIngressSession {
         let identity = segment.identity.clone();
         self.validate_identity(&identity)?;
         self.request.mutation_guard().assert_current()?;
+        let retained = self.retained_segments.acquire()?;
+        self.request.mutation_guard().assert_current()?;
         group
             .commands
-            .send(ParquetGroupCommand::Segment(segment))
+            .send(ParquetGroupCommand::Segment(StagedParquetSegment::new(
+                segment, retained,
+            )))
             .map_err(|_| CdfError::destination("Parquet object group encoder stopped"))?;
         // A successful bounded handoff transfers the already-accounted payload into the
         // destination's rollback/redrive staging scope. Encoding need not finish before this

@@ -33,7 +33,8 @@ hidden global clamp.
 
 ## Non-goals
 
-- No reopening of P3 or repetition of the 1 TiB run.
+- No reopening of the broader P3 program. The user subsequently required repetition of the exact
+  prior 1 TiB acceptance run as this parent's final integration gate.
 - No source-, Parquet-, or destination-id branch in generic orchestration.
 - No package, receipt, manifest, checkpoint, or artifact-version change.
 - No unbounded queues, private executors, hard-coded replacement writer count, or default
@@ -74,6 +75,13 @@ hidden global clamp.
   did not exercise the proposed N-way object topology.
 - 2026-07-26: The runtime child closed. Default staged destinations now keep upstream jobs
   work-conserving while their item/byte/lane pressure remains enforced and reported locally.
+- 2026-07-26: The runtime child was reopened when the dependent EC2 run exposed two hidden
+  topology assumptions previously masked by the global jobs clamp: decode-unit planning sampled
+  transient free memory, and engine admission budgeted one staged segment while concurrent
+  Parquet object writers could collectively retain one each. The first now uses stable total
+  budget authority. The second is repaired by one exact destination-global item window plus
+  engine admission for the compiled staged-node concurrency; writer CPU admission remains
+  independent.
 
 ## Blockers
 

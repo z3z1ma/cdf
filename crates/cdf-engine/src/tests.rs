@@ -6625,17 +6625,19 @@ fn pipeline_concurrency_falls_back_to_safe_inline_encoding() {
 fn pipeline_concurrency_reserves_the_staged_handoff_window() {
     const MIB: u64 = 1024 * 1024;
 
+    // Staged ingress admits two maximum-sized segment requests globally. The engine must reserve
+    // both live payloads before resolving source and canonical-encode fan-out.
     let constrained = crate::execution::resolve_pipeline_concurrency_from_bounds(
         16,
         15,
         1_504 * MIB,
         64 * MIB,
         256 * MIB,
-        256 * MIB,
+        512 * MIB,
     )
     .unwrap();
-    assert_eq!(constrained.source_jobs, 3);
-    assert_eq!(constrained.segment_encode_jobs, 1);
+    assert_eq!(constrained.source_jobs, 4);
+    assert_eq!(constrained.segment_encode_jobs, 0);
 
     let roomy = crate::execution::resolve_pipeline_concurrency_from_bounds(
         16,
@@ -6643,7 +6645,7 @@ fn pipeline_concurrency_reserves_the_staged_handoff_window() {
         16 * 1024 * MIB,
         64 * MIB,
         256 * MIB,
-        256 * MIB,
+        512 * MIB,
     )
     .unwrap();
     assert_eq!(roomy.source_jobs, 16);

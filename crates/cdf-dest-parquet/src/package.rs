@@ -1,6 +1,6 @@
 use std::{
     io::{self, BufWriter, Write},
-    sync::mpsc,
+    sync::{Arc, Condvar, Mutex, mpsc},
 };
 
 use cdf_memory::MemoryCoordinator;
@@ -57,8 +57,89 @@ pub(crate) struct StagedParquetEncodeContext<'a> {
 }
 
 pub(crate) enum ParquetGroupCommand {
-    Segment(cdf_runtime::StagedSegmentRequest),
+    Segment(StagedParquetSegment),
     Finish,
+}
+
+pub(crate) struct StagedParquetSegment {
+    request: cdf_runtime::StagedSegmentRequest,
+    _retained: RetainedParquetSegmentPermit,
+}
+
+impl StagedParquetSegment {
+    pub(crate) fn new(
+        request: cdf_runtime::StagedSegmentRequest,
+        retained: RetainedParquetSegmentPermit,
+    ) -> Self {
+        Self {
+            request,
+            _retained: retained,
+        }
+    }
+}
+
+pub(crate) struct RetainedParquetSegmentWindow {
+    maximum: u16,
+    current: Mutex<u16>,
+    released: Condvar,
+}
+
+impl RetainedParquetSegmentWindow {
+    pub(crate) fn new(maximum: u16) -> Result<Arc<Self>> {
+        if maximum == 0 {
+            return Err(CdfError::contract(
+                "Parquet retained segment window must be nonzero",
+            ));
+        }
+        Ok(Arc::new(Self {
+            maximum,
+            current: Mutex::new(0),
+            released: Condvar::new(),
+        }))
+    }
+
+    pub(crate) fn acquire(self: &Arc<Self>) -> Result<RetainedParquetSegmentPermit> {
+        let mut current = self
+            .current
+            .lock()
+            .map_err(|_| CdfError::internal("Parquet retained segment window lock poisoned"))?;
+        while *current >= self.maximum {
+            current = self
+                .released
+                .wait(current)
+                .map_err(|_| CdfError::internal("Parquet retained segment window lock poisoned"))?;
+        }
+        *current = current
+            .checked_add(1)
+            .ok_or_else(|| CdfError::internal("Parquet retained segment window overflow"))?;
+        Ok(RetainedParquetSegmentPermit {
+            window: Arc::clone(self),
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn current(&self) -> u16 {
+        *self
+            .current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+pub(crate) struct RetainedParquetSegmentPermit {
+    window: Arc<RetainedParquetSegmentWindow>,
+}
+
+impl Drop for RetainedParquetSegmentPermit {
+    fn drop(&mut self) {
+        let mut current = self
+            .window
+            .current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *current = current.saturating_sub(1);
+        self.window.released.notify_one();
+    }
 }
 
 pub(crate) struct EncodedParquetGroup {
@@ -134,7 +215,7 @@ pub(crate) fn write_parquet_staged_group(
 
 struct StagedGroupBatchReader {
     commands: mpsc::Receiver<ParquetGroupCommand>,
-    current: Option<(cdf_runtime::StagedSegmentRequest, u64)>,
+    current: Option<(StagedParquetSegment, u64)>,
     identities: Vec<cdf_runtime::StagedSegmentIdentity>,
     finished: bool,
 }
@@ -151,13 +232,14 @@ impl StagedGroupBatchReader {
 
     fn next_batch(&mut self) -> Result<Option<arrow_array::RecordBatch>> {
         loop {
-            if let Some((request, rows)) = &mut self.current {
-                match request.reader_mut().next_batch()? {
+            if let Some((segment, rows)) = &mut self.current {
+                match segment.request.reader_mut().next_batch()? {
                     Some(batch) => {
                         let batch_rows = u64::try_from(batch.num_rows()).map_err(|_| {
                             CdfError::data("Parquet destination row count exceeds u64")
                         })?;
-                        let expected_start = request
+                        let expected_start = segment
+                            .request
                             .identity
                             .package_row_ord_start
                             .checked_add(*rows)
@@ -175,9 +257,9 @@ impl StagedGroupBatchReader {
                         return Ok(Some(batch));
                     }
                     None => {
-                        let (request, rows) =
+                        let (segment, rows) =
                             self.current.take().expect("group segment is present");
-                        let identity = request.identity;
+                        let identity = segment.request.identity;
                         if rows != identity.row_count {
                             return Err(CdfError::data(format!(
                                 "Parquet destination segment {} has {rows} payload rows but its durable identity expects {}",

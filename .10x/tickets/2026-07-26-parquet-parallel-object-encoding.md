@@ -129,6 +129,14 @@ compatibility path.
   Control-flow tracing proved the caller sampled instantaneous free ledger bytes while sibling
   stages were active. The runtime dependency was reopened for the stable-budget correction; no
   further Parquet-specific memory heuristic was added.
+- 2026-07-26: Stable decode admission allowed the automatic ten-object run past partition 16 and
+  exposed the remaining exact mismatch at canonical assembly: every object writer owned its own
+  residual queue, so writer count could multiply the compiled two-segment stage window, while
+  engine pipeline admission reserved only one maximum segment for staged handoff. The destination
+  now applies the compiled item window once across every writer. Each transferred request carries
+  an RAII permit until its existing accounted reader is exhausted or dropped. Engine admission
+  independently reserves `maximum_segment_bytes × staged-node maximum_concurrency`. This changes
+  neither writer count nor a product tuning knob; it makes the existing graph authority true.
 
 ## Blockers
 
@@ -165,6 +173,13 @@ None.
   multi-group overlap, explicit one-writer serialization, exact writer-window accounting, grouped
   identity, abort, duplicate, and receipt paths; one explicit release benchmark remained ignored.
   Strict all-target Parquet Clippy, formatting, and diff checks passed.
+- Final retained-window repair:
+  `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=6 cargo test -p cdf-dest-parquet --lib --offline`
+  passed `41`, with the one explicit release benchmark ignored. The new cross-writer test proves
+  the compiled two-item authority blocks a third request and releases to zero. The actual
+  multi-object overlap/one-writer test and the engine staged-handoff admission test passed.
+  `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=6 cargo clippy -p cdf-dest-parquet -p cdf-engine
+  --tests --all-features --offline -- -D warnings`, formatting, and diff checks passed.
 
 ## Review
 

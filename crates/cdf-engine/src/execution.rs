@@ -2299,9 +2299,14 @@ fn resolve_pipeline_concurrency(
                     .iter()
                     .find(|node| node.kind == cdf_runtime::GraphNodeKind::StagedIngress)
             })
-            .map_or(maximum_segment_bytes, |node| {
-                node.maximum_working_set_bytes.max(maximum_segment_bytes)
+            .map(|node| {
+                maximum_segment_bytes
+                    .checked_mul(u64::from(node.maximum_concurrency))
+                    .map(|retained_bytes| node.maximum_working_set_bytes.max(retained_bytes))
+                    .ok_or_else(|| CdfError::data("staged ingress working set overflow"))
             })
+            .transpose()?
+            .unwrap_or(maximum_segment_bytes)
     } else {
         0
     };
