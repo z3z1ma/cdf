@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-25
-Updated: 2026-07-25
-Parent: .10x/tickets/2026-07-25-stabilization-steady-state-program.md
+Updated: 2026-07-26
+Parent: .10x/tickets/done/2026-07-25-stabilization-steady-state-program.md
 
 # P0: canonical segment memory admission
 

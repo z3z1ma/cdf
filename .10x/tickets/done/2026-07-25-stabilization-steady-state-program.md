@@ -1,6 +1,6 @@
-Status: active
+Status: done
 Created: 2026-07-25
-Updated: 2026-07-25
+Updated: 2026-07-26
 
 # Stabilization steady-state program
 
@@ -98,6 +98,7 @@ WASM, distributed execution, CDC, and new connectors are not P3 closure dependen
 - `.10x/knowledge/source-destination-extension-invariant.md`
 - `.10x/specs/performance-lab-and-envelope.md`
 - `.10x/specs/cli-interaction-excellence.md`
+- `.10x/decisions/cdf-system-authority-steady-state.md`
 
 ## Journal
 
@@ -166,7 +167,54 @@ WASM, distributed execution, CDC, and new connectors are not P3 closure dependen
   crash/resume/replay/drift session. The P1 parent is ready to move terminal.
 - 2026-07-26: P1 is closed. All nine workstreams and Z1 are terminal; the coverage matrix records
   P1 and Chapter 23 done. Stabilization is now the only active ticket.
+- 2026-07-26: Aggregate closure found and repaired one stale live recovery link and coverage claim
+  for the removed pre-production `state migrate` command. The current recovery surface is strict
+  schema-v1 state plus receipt-gated package recovery, with a migration-ready seam but no upgrade
+  product before a real predecessor exists.
+- 2026-07-26: Stabilization is closed. Terminal-status and repository-wide reference audits pass;
+  P1/P3 and every bounded child are terminal; the hosted five-target prerelease remains public;
+  the FQ12 inventory contains no CDF benchmark host; and future capability rows are parked behind
+  an explicit activation rule rather than open reminder tickets.
 
 ## Blockers
 
-None at the aggregate level. Child tickets own technical blockers and evidence.
+None.
+
+## Evidence
+
+| Acceptance criterion | Evidence |
+|---|---|
+| Every active executable child is terminal | All workstream paths above are terminal; `.10x/evidence/2026-07-26-stabilization-steady-state-closure.md` records the zero-child and terminal-status audits. |
+| No reminder-only active ticket remains | The final active-ticket inventory is empty; `.10x/knowledge/active-backlog-and-future-roadmap.md` owns inactive capabilities. |
+| P1 and P3 are honestly reconciled | `.10x/evidence/2026-07-26-p1-z1-program-closure.md` and `.10x/evidence/2026-07-25-p3-z3-program-closure.md`. |
+| Parent, dependency, reference, and status coherence | Repository-wide reference and terminal-directory status audits in the aggregate closure evidence. |
+| No hidden P1/P3 sequencing blocker | Both program parents and all bounded descendants are terminal; their aggregate reviews pass. |
+| Active backlog reaches zero | Final `.10x/tickets/` depth-one inventory contains zero Markdown tickets. |
+
+## Review
+
+The final fresh-hat review traced the terminal graph, active authority, roadmap, coverage matrix,
+operator recovery docs, hosted release, current Chapter 23 session, and benchmark-host inventory.
+It specifically challenged closure through stale current paths, reminder-ticket laundering,
+unsupported completion claims, removed-command docs, and cloud-resource leakage.
+
+One significant record-coherence finding was repaired before closure: current documentation still
+claimed a `state migrate` command that the pre-production compatibility cleanup intentionally
+deleted, and several coverage rows described already-closed work as active. One minor
+temporal-authority finding was also repaired by superseding the decision that called the
+now-terminal stabilization graph current. No critical or significant finding remains. Verdict:
+pass.
+
+## Retrospective
+
+The backlog became trustworthy only after separating executable ownership from long-horizon
+vision. Open reminder tickets hid the true critical path, while monolithic proof tickets invited
+optimization rabbit holes. The successful pattern was a bounded owner, measured evidence, an
+explicit keep/kill decision, terminal history, and a roadmap activation trigger for work that is
+real but not current.
+
+Aggregate closure also showed why reference and live-documentation audits belong at the program
+boundary. Tests cannot detect a removed command still promised by operator docs, or an active
+decision whose temporal statement expired when its program closed. Future program closeouts
+should always audit executable status, record paths, live docs, external cost-bearing resources,
+and the distinction between implemented coverage and parked ambition.

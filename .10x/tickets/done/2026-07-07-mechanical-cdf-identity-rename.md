@@ -1,6 +1,6 @@
 Status: done
 Created: 2026-07-07
-Updated: 2026-07-07
+Updated: 2026-07-26
 Parent: .10x/tickets/cancelled/2026-07-05-implement-cdf-system.md
 Depends-On: None
 
@@ -40,7 +40,7 @@ No semantic redesign, no native Parquet implementation, no commit-gate terminolo
 ## References
 
 - `VISION.md` D-24 and Preface.
-- `.10x/decisions/cdf-system-authority.md`
+- `.10x/decisions/superseded/cdf-system-authority.md`
 - `.10x/decisions/cdf-book-decision-register.md`
 - `.10x/knowledge/cdf-product-objective.md`
 - `QUALITY.md`

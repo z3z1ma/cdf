@@ -1,6 +1,6 @@
-Status: active
+Status: superseded
 Created: 2026-07-25
-Updated: 2026-07-25
+Updated: 2026-07-26
 
 # Preserve vision authority while separating execution from roadmap
 
@@ -26,7 +26,7 @@ specifications, decisions, research, the coverage matrix, and
 `.10x/knowledge/active-backlog-and-future-roadmap.md`; they MUST NOT remain open merely as
 reminders.
 
-`.10x/tickets/2026-07-25-stabilization-steady-state-program.md` is the current aggregate execution
+`.10x/tickets/done/2026-07-25-stabilization-steady-state-program.md` is the current aggregate execution
 graph. Later feature programs are activated deliberately from current product need and temporal
 evidence. Cancellation of a speculative or over-broad ticket parks its implementation graph; it
 does not reject the capability or weaken the vision.

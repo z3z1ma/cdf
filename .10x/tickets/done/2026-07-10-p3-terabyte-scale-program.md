@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-10
-Updated: 2026-07-25
-Parent: .10x/tickets/2026-07-25-stabilization-steady-state-program.md
+Updated: 2026-07-26
+Parent: .10x/tickets/done/2026-07-25-stabilization-steady-state-program.md
 Depends-On: .10x/tickets/done/2026-07-08-p2-data-onramp-program.md
 
 # P3 terabyte scale: the performance architecture

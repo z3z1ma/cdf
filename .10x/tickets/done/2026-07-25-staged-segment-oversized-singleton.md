@@ -1,10 +1,10 @@
 Status: done
 Created: 2026-07-25
-Updated: 2026-07-25
+Updated: 2026-07-26
 
 # Admit a legal oversized staged segment as a singleton
 
-Parent: `.10x/tickets/2026-07-25-stabilization-steady-state-program.md`
+Parent: `.10x/tickets/done/2026-07-25-stabilization-steady-state-program.md`
 
 ## Scope
 

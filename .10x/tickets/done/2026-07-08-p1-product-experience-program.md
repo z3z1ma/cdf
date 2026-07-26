@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-08
 Updated: 2026-07-26
-Parent: .10x/tickets/2026-07-25-stabilization-steady-state-program.md
+Parent: .10x/tickets/done/2026-07-25-stabilization-steady-state-program.md
 Depends-On: .10x/tickets/done/2026-07-07-p0-structural-debt-program.md
 
 # P1 product experience, instrumentation, and enterprise surface program

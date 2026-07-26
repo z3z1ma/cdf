@@ -73,4 +73,4 @@ Use `--scope-json` only when the resource uses a non-default scope key.
 
 - [Project CLI, observability, and security](../../.10x/specs/project-cli-observability-security.md)
 - [Run orchestration ledger](../../.10x/specs/run-orchestration-ledger.md)
-- [State recover package receipt decision](../../.10x/decisions/state-migrate-recover-package-receipt.md)
+- [Current-schema state and package-receipt recovery decision](../../.10x/decisions/state-current-schema-package-receipt-recovery.md)

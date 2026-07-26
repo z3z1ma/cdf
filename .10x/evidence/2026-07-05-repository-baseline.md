@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-05
-Updated: 2026-07-05
-Relates-To: .10x/decisions/cdf-system-authority.md, .10x/research/2026-07-05-book-ingestion.md
+Updated: 2026-07-26
+Relates-To: .10x/decisions/superseded/cdf-system-authority.md, .10x/research/2026-07-05-book-ingestion.md
 
 # Repository baseline before cdf implementation
 
@@ -27,4 +27,3 @@ This supports treating the book as the only initial project authority and confir
 ## Limits
 
 This evidence records the initial repository state only. It does not validate implementation correctness.
-

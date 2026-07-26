@@ -1,6 +1,6 @@
 Status: done
 Created: 2026-07-08
-Updated: 2026-07-10
+Updated: 2026-07-26
 Parent: .10x/tickets/cancelled/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-07-p0-structural-debt-program.md
 
@@ -15,7 +15,7 @@ This parent is a plan and orchestration record. Workstream tickets own the major
 ## Governing records
 
 - `VISION.md`, especially Chapters 7, 8, 11, 13, 18, 19, and 20.
-- `.10x/decisions/cdf-system-authority.md`.
+- `.10x/decisions/superseded/cdf-system-authority.md`.
 - `.10x/decisions/data-onramp-schema-discovery-reconciliation.md`.
 - `.10x/decisions/data-onramp-file-source-transport-manifest.md`.
 - `.10x/decisions/data-onramp-source-identity-preview-disposition.md`.

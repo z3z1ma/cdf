@@ -1,6 +1,6 @@
 Status: cancelled
 Created: 2026-07-05
-Updated: 2026-07-25
+Updated: 2026-07-26
 
 # Implement the cdf system
 
@@ -12,7 +12,7 @@ The parent agent owns sequencing, assignment to subagents, integration, evidence
 
 ## Governing records
 
-- `.10x/decisions/cdf-system-authority.md`
+- `.10x/decisions/superseded/cdf-system-authority.md`
 - `.10x/decisions/cdf-book-decision-register.md`
 - `.10x/knowledge/cdf-product-objective.md`
 - `.10x/knowledge/cdf-glossary.md`
@@ -186,7 +186,7 @@ None for the historical parent plan.
 Cancelled on 2026-07-25 because an unbounded “implement the entire system” ticket can never be an
 executable or auditable unit. Completed history remains in its terminal children. Current
 stabilization is owned by
-`.10x/tickets/2026-07-25-stabilization-steady-state-program.md`; deliberately unprioritized
+`.10x/tickets/done/2026-07-25-stabilization-steady-state-program.md`; deliberately unprioritized
 capabilities are preserved in `.10x/knowledge/active-backlog-and-future-roadmap.md`.
 
 This cancellation removes an obsolete orchestration shell; it does not cancel CDF's product

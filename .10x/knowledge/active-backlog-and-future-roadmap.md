@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-25
-Updated: 2026-07-25
+Updated: 2026-07-26
 
 # Active backlog and future roadmap
 
@@ -15,22 +15,16 @@ specifications, research, and this roadmap; they do not remain open tickets mere
 Cancelled tickets preserve investigation history and may be mined when a future program is
 deliberately activated. Cancellation does not reject the capability.
 
-## Current stabilization program
+## Current steady state
 
-`.10x/tickets/2026-07-25-stabilization-steady-state-program.md` is the sole aggregate owner for
-the work that must reach terminal state before the next two major feature programs begin.
+The stabilization program is terminal at
+`.10x/tickets/done/2026-07-25-stabilization-steady-state-program.md`. Its source lifecycle,
+statistics pruning, daily-driver CLI and hosted release, constant-memory and interop proof, and
+P1/P3 aggregate lanes are all closed.
 
-Its ordered lanes are:
-
-1. Source lifecycle and fixed-schema admission closure — done.
-2. Evidence-driven statistics pruning — done.
-3. Daily-driver CLI and release readiness — CLI and hosted prerelease done; P1 aggregate closeout
-   remains.
-4. Constant-memory and implemented-interop proof — done.
-5. P3 aggregate evidence and closure — done; P1 aggregate closure is the final active lane.
-
-Only bounded implementation tickets inside these lanes are executable. Parent and closeout
-tickets coordinate or audit; they are not implementation units.
+The executable backlog is empty. No parked capability below is authorized merely by appearing in
+this roadmap. The next feature program begins only through the activation rule at the end of this
+record and the authority in `.10x/decisions/cdf-system-authority-steady-state.md`.
 
 ## Parked future programs
 
