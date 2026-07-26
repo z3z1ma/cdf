@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-13
 Updated: 2026-07-14
-Parent: .10x/tickets/2026-07-13-p0-fixed-schema-discovery-stream-admission.md
+Parent: .10x/tickets/done/2026-07-13-p0-fixed-schema-discovery-stream-admission.md
 Depends-On: .10x/tickets/done/2026-07-13-p0-sa1-compiled-stream-admission-plan.md
 
 # P0 SA0: cold discovery to final-plan lifecycle

@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-13
 Updated: 2026-07-25
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
@@ -16,7 +16,7 @@ Separate cold discovery from pinned execution: freeze a persistent or run-local 
 3. `.10x/tickets/done/2026-07-13-p0-sa2-metadata-inventory-observation-cache.md` removes payload reads/hashing from inventory, encodes both coverage axes, and adds exact cache identity. Done.
 4. `.10x/tickets/done/2026-07-13-p0-sa3-fused-codec-admission.md` fuses row/binary observation with extraction, retains first windows, and hands discovery spools to execution. Done.
 5. `.10x/tickets/done/2026-07-13-p0-sa4-dynamic-producer-admission.md` applies the bootstrap-barrier law to registered dynamic producers; future language runtimes inherit the law when activated. Done.
-6. `.10x/tickets/2026-07-13-p0-sa5-fixed-schema-admission-conformance.md` owns adversarial transport/process counters, preview parity, and closure.
+6. `.10x/tickets/done/2026-07-13-p0-sa5-fixed-schema-admission-conformance.md` owns adversarial transport/process counters, preview parity, and closure. Done.
 
 SA0, SA1, and SA2 may proceed independently because the required registry, source-generation, and byte-source seams already exist. SA3 depends on SA0-SA2. SA4 depends on SA0-SA1 and may proceed alongside SA3. SA5 depends on every implementation child.
 
@@ -52,19 +52,20 @@ No same-run typed schema epoch, implicit promotion, or cache-as-authority behavi
 - 2026-07-19: H2 closed the concrete Python neutral producer path. SA4 remains blocked on H4/WIT before the bootstrap-barrier law can be language-neutral; no Python-specific workaround is needed or authorized.
 - 2026-07-25: Backlog grooming removed speculative WASM work from this program's critical path. SA4 is executable against the completed neutral producer boundary and concrete Python implementation; future runtimes inherit the resulting law without blocking closure.
 - 2026-07-25: SA4 closed. Foreign producers now declare metadata-handshake versus stream-bootstrap schema acquisition; Python without a handshake starts once, retains its first accounted batch and live invocation across schema freeze, and continues that same stream during execution. Configured source references now participate in first lock generation and locked-snapshot hydration. SA5 is the only remaining child.
+- 2026-07-25: SA5 closed after assertion-level audit and 143-test source/conformance plus 491-test CLI/project evidence. Every child is terminal. Cold discovery, pinned admission, retained payloads, dynamic bootstrap, preview/run parity, jobs invariance, replay, residuals, and quarantine now share one fixed-schema lifecycle.
 
 ## Blockers
 
-None at the parent level. SA5 owns the remaining conformance closure.
+None.
 
 ## Evidence
 
-Pending child completion.
+All six children are done with evidence and passing review. Aggregate evidence is indexed in `.10x/tickets/done/2026-07-13-p0-sa5-fixed-schema-admission-conformance.md`; implementation evidence remains in each child ticket. The closure suites passed 143/143 source/conformance and 491/491 CLI/project tests with 12 build jobs.
 
 ## Review
 
-Pending.
+Fresh parent review verified that every child path is terminal, every acceptance clause maps to child or SA5 evidence, and no ordinary pinned execution path re-enters schema discovery. Verdict: **pass**. No unresolved finding remains.
 
 ## Retrospective
 
-Pending.
+The program succeeded by moving schema choice to the compiler boundary and leaving physical observations in the stream. The durable architectural lesson is that source-specific payload shapes can remain private while orchestration carries a neutral, single-use prepared payload with accounted ownership. Closing the program required synthesizing evidence across lifecycle children; future parent journals should accumulate that mapping incrementally.

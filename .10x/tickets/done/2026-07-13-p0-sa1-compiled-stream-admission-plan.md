@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-13
 Updated: 2026-07-14
-Parent: .10x/tickets/2026-07-13-p0-fixed-schema-discovery-stream-admission.md
+Parent: .10x/tickets/done/2026-07-13-p0-fixed-schema-discovery-stream-admission.md
 
 # P0 SA1: compiled stream-admission plan IR
 

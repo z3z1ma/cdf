@@ -21,8 +21,8 @@ the user deliberately activates them.
 
 1. `.10x/tickets/done/2026-07-20-source-resume-aware-negotiation.md` — done.
 2. `.10x/tickets/done/2026-07-13-p0-sa4-dynamic-producer-admission.md` — done.
-3. `.10x/tickets/2026-07-13-p0-sa5-fixed-schema-admission-conformance.md`
-4. `.10x/tickets/2026-07-13-p0-fixed-schema-discovery-stream-admission.md`
+3. `.10x/tickets/done/2026-07-13-p0-sa5-fixed-schema-admission-conformance.md` — done.
+4. `.10x/tickets/done/2026-07-13-p0-fixed-schema-discovery-stream-admission.md` — done.
 
 Resume-aware negotiation lands first because it prevents expensive source planning before the
 committed frontier is known. SA4 then applies the bootstrap barrier to currently registered
@@ -108,6 +108,9 @@ WASM, distributed execution, CDC, and new connectors are not P3 closure dependen
 - 2026-07-25: WS-A SA4 closed with the neutral foreign-producer schema-acquisition capability,
   single-invocation Python bootstrap retention, configured-reference pin/hydration repair, and
   491-test CLI/project integration evidence. SA5 is now the only source-lifecycle child.
+- 2026-07-25: WS-A is closed. SA5's assertion audit and complete source/conformance suite proved
+  the fixed-schema lifecycle across inventory, discovery, retained payloads, jobs, preview/run,
+  retry/replay, residuals, and quarantine; the fixed-schema parent and all six children are done.
 
 ## Blockers
 

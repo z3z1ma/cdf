@@ -50,7 +50,7 @@ This parent is an aggregate plan. Workstream records own sequencing and integrat
 - `.10x/tickets/2026-07-10-p3-ws-h-interop-boundaries.md`
 - `.10x/tickets/done/2026-07-11-p3-ws-v-vectorized-validation.md`
 - `.10x/tickets/2026-07-12-p3-j1-evidence-statistics-pruning.md`
-- `.10x/tickets/2026-07-13-p0-fixed-schema-discovery-stream-admission.md`
+- `.10x/tickets/done/2026-07-13-p0-fixed-schema-discovery-stream-admission.md`
 - `.10x/tickets/done/2026-07-18-p3-l6-ec2-benchmark-host.md`
 - `.10x/tickets/done/2026-07-18-p3-l7-ec2-benchmark-tranche-lifecycle.md`
 - `.10x/tickets/done/2026-07-18-p3-l9-ec2-measure-runner-build-graph.md`
