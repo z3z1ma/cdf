@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-11
 Updated: 2026-07-15
 Parent: .10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md
@@ -29,9 +29,18 @@ No distributed execution claim.
 
 ## Blockers
 
-Depends on F3; C4 and the Parquet streaming destination are complete.
+None. F3, C4, and the Parquet streaming destination are complete. The retained EC2 host has a
+tuned 2 TiB root volume and sufficient capacity for the scheduled product run.
 
 ## References
 
 - `.10x/decisions/process-tree-constant-memory-proof.md`
 - `.10x/specs/constant-memory-proof.md`
+
+## Journal
+
+- 2026-07-25: Activated after F3 closed the 100 GiB / 2 GiB and adversarial matrix. The retained
+  `c7i.4xlarge` exposes 16 logical CPUs and a tuned 2 TiB gp3 root volume with 1.9 TiB free.
+  The 1 TiB law will use 1,024 deterministic files representing exactly 1 GiB each, run with no
+  CDF memory override inside `MemoryMax=5G`/`MemorySwapMax=0`. The default resolver therefore keeps
+  its exact 4 GiB process authority while the enclosing cgroup retains enforcement headroom.
