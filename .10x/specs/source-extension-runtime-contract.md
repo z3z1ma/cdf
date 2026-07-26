@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-26
 
 # Source extension runtime contract
 
@@ -42,7 +42,10 @@ Deep validation, preview, plan, and run MUST call the same compiled driver/optio
 
 Source implementation crates MAY depend on neutral runtime/kernel/memory and their own protocols/formats. They MUST NOT depend on project, CLI, destination implementations, or sibling sources. Shared transports/formats live behind their registries rather than copied source helpers.
 
-`cdf-project` MUST NOT depend on `cdf-source-*`; generic CLI command modules MUST NOT import source implementations. Standard composition is one module. A new source requires no generic compiler/discovery/run/preview/doctor/conformance assertion edits.
+`cdf-project` MUST NOT depend on `cdf-source-*`; generic CLI command modules MUST NOT import source
+implementations. Standard catalog construction is the one `cdf-builtin-drivers` leaf installed by
+the CLI application root. A new source requires no generic
+compiler/discovery/run/preview/doctor/conformance assertion edits.
 
 ## Conformance
 

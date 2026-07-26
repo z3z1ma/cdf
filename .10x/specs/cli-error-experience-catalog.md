@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-08
-Updated: 2026-07-13
+Updated: 2026-07-26
 
 # CLI error experience catalog
 
@@ -22,13 +22,19 @@ Every CLI error MUST carry:
 - optional structured offending value or location when it is safe to show,
 - `not_supported` marker where applicable.
 
+The shared taxonomy includes `Environment` as governed by
+`.10x/specs/cli-report-authority-and-environment-errors.md`. Environment failures are host or
+process conditions—not user contract, source data, destination semantics, or CDF invariant
+defects—and retain exit 70 in the current compatibility envelope.
+
 Existing JSON fields are stable. JSON error envelopes MUST retain `ok`, `error.kind`, `error.message`, `error.exit_code`, and `error.not_supported`. Error-code work MAY add fields such as `error.code`, `error.remediation`, `error.location`, and `error.suggestions`, but MUST NOT remove or rename existing fields.
 
 Human errors MUST show what failed, why it failed, and the next useful action. Once the WS3 renderer foundation exists, human errors MUST render through the renderer with TTY/headless snapshots. Before that, structured fields may exist behind the current plain text path.
 
 Error codes MUST be product-stable identifiers, not internal source line labels. The code format is `CDF-<AREA>-<SLUG>`, where:
 
-- `AREA` is a short uppercase product area such as `CLI`, `PROJECT`, `RESOURCE`, `RUN`, `DEST`, `STATE`, `PACKAGE`, `CONTRACT`, `SQL`, `DOCTOR`, or `INTERNAL`.
+- `AREA` is a short uppercase product area such as `CLI`, `PROJECT`, `RESOURCE`, `RUN`, `DEST`,
+  `STATE`, `PACKAGE`, `CONTRACT`, `SQL`, `DOCTOR`, `ENV`, or `INTERNAL`.
 - `SLUG` is an uppercase hyphenated phrase that names the product failure, for example `UNKNOWN-COMMAND`, `MISSING-RESOURCE`, `DESTINATION-NOT-SUPPORTED`, or `PYTHON-INTERPRETER-FAILED`.
 
 Codes MAY be grouped in source by module, but generated docs MUST list code, area, error kind, exit code, meaning, remediation, and representative command.
@@ -58,6 +64,7 @@ The existing exit-code taxonomy remains:
 | Destination error | 6 |
 | Transient or rate-limited retryable error | 75 |
 | Not supported in the current implementation | 78 |
+| Host/process environment error | 70 |
 | Internal error | 70 |
 
 Commands that intentionally encode command-specific status, such as contract drift or status freshness breach, MAY continue returning their existing nonzero domain exit codes if JSON and docs explain them.
@@ -74,4 +81,7 @@ Commands that intentionally encode command-specific status, such as contract dri
 
 ## Explicit exclusions
 
-This spec does not change the shared kernel `ErrorKind` taxonomy, existing stable exit codes, success JSON envelopes, or product behavior that produced the underlying failure. It does not require renderer implementation before WS3B exists.
+Except for the active `Environment` extension referenced above, this spec does not change the
+shared kernel `ErrorKind` taxonomy, existing stable exit codes, success JSON envelopes, or product
+behavior that produced the underlying failure. It does not require renderer implementation
+before WS3B exists.

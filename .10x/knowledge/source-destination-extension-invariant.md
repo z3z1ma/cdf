@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-10
-Updated: 2026-07-25
+Updated: 2026-07-26
 
 # Source and destination extension invariant
 
@@ -32,3 +32,15 @@ handshake performs no row-producing invocation. A stream bootstrap starts the re
 once, retains its first accounted batches through the compiler's schema-freeze barrier, and
 continues that exact stream during execution. Project/compiler orchestration may retain the opaque
 prepared payload but must not branch on the language runtime.
+
+Shared implementation archetypes are also part of the invariant. Once two adapters duplicate an
+identity-, memory-, retry-, receipt-, mirror-, or task-lifecycle implementation, the next adapter
+must not copy it again. Extract the proven lower mechanism while keeping source/destination
+semantics in the adapter. A universal trait that merely mirrors `SourceDriver` or
+`DestinationRuntime` is not a valid extraction.
+
+Driver concurrency follows `.10x/decisions/driver-session-concurrency-canon.md`: drivers are
+thread-safe factories, resolved runtimes are run-owned, finalized sessions may borrow
+thread-affine state, staged sessions are movable and bounded, and all actual concurrency comes
+from injected host/stage authorities. Adapter authors must never acquire `Send + Sync` through a
+mutex wrapper solely to satisfy an imagined universal runtime.

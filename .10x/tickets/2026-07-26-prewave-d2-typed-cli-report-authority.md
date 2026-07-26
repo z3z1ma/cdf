@@ -1,0 +1,60 @@
+Status: open
+Created: 2026-07-26
+Updated: 2026-07-26
+Parent: `.10x/tickets/2026-07-26-pre-wave-architecture-hardening-program.md`
+Depends-On: `.10x/tickets/2026-07-26-prewave-d1c-product-error-audit.md`
+
+# Complete typed CLI report authority
+
+## Scope
+
+Make one typed serializable report the sole success authority for every command and move all
+human layout construction out of command execution modules into report renderers. Remove
+superseded command-local layout helpers and plain compatibility surfaces.
+
+## Non-goals
+
+- No command grammar, execution behavior, JSON field removal, or dynamic renderer plugin.
+- No trait-per-command service architecture.
+- No visual redesign beyond consistency required to complete the authority migration.
+
+## Acceptance criteria
+
+- Every command constructs one typed report consumed by JSON and human rendering.
+- Command execution modules contain no `RenderDocument`/primitive layout assembly.
+- Report renderers own TTY/headless documents and have paired snapshots plus JSON parity tests.
+- Redaction occurs before both render paths.
+- Static migration gates reject new command-local layout and legacy plain-string output.
+- CLI-core build-graph and renderer throughput floors remain green.
+
+## References
+
+- `.10x/specs/cli-report-authority-and-environment-errors.md`
+- `.10x/decisions/cli-design-language-and-renderer.md`
+- `.10x/specs/product-build-graph-boundaries.md`
+
+## Assumptions
+
+- Source-backed: `CommandOutput` already accepts only `RenderDocument`; this ticket completes the
+  partially migrated report-to-document ownership rather than replacing output transport.
+
+## Journal
+
+- 2026-07-26: Inventory found many typed reports and a closed plain-output gate, but layout
+  methods/functions remain distributed through command modules.
+
+## Blockers
+
+None.
+
+## Evidence
+
+Pending.
+
+## Review
+
+Pending.
+
+## Retrospective
+
+Pending.

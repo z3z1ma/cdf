@@ -26,8 +26,14 @@ The successor CPU-saturation program is terminal at
 `.10x/tickets/done/2026-07-26-stage-local-cpu-saturation.md`. Stage-local destination pressure
 no longer caps run-wide jobs, Parquet object groups encode independently, and the exact prior
 one-TiB acceptance improved from 44:54.863 to 8:19.07 at 2.222 GB/s with constant memory and
-verified identity. No executable ticket is active; parked capabilities below remain
-demand-activated rather than silently reopened.
+verified identity.
+
+The active successor is the pre-wave architecture hardening program at
+`.10x/tickets/2026-07-26-pre-wave-architecture-hardening-program.md`. It contains fourteen bounded
+executable children across product-boundary enforcement, catalog-task source commons,
+destination common services, typed CLI/error authority, holistic CLI experience, and final
+extension-authoring proof. This program must return the active graph to zero before the next
+connector wave. Parked capabilities below remain demand-activated rather than silently reopened.
 
 ## Parked future programs
 

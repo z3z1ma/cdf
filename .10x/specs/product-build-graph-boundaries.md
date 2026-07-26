@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-12
-Updated: 2026-07-12
+Updated: 2026-07-26
 
 # Product build-graph boundaries
 
@@ -12,7 +12,12 @@ This specification governs compile-time isolation for the CLI experience, comple
 
 `cdf-cli-core` MUST own only grammar/arguments, help/completion/man generation, terminal policy, rendering, and transport-neutral output/error envelopes. It MUST NOT depend directly or transitively on `cdf-project`, `cdf-engine`, `cdf-runtime`, `cdf-package`, `cdf-state-*`, `cdf-source-*`, `cdf-format-*`, `cdf-transform-*`, `cdf-dest-*`, database/network implementation clients, DataFusion, Parquet, or DuckDB.
 
-`cdf-cli` MUST remain the complete standard first-party composition root and production `cdf` binary. Its production registry catalogs MUST remain the single catalogs governed by SX1, FX1, and DX3/DX4. The shipped binary MUST include the same command and built-in adapter surface before and after extraction.
+`cdf-cli` MUST remain the complete standard first-party application composition root and
+production `cdf` binary. Catalog construction MUST be delegated to the one
+`cdf-builtin-drivers` leaf governed by
+`.10x/decisions/builtin-driver-catalog-composition.md`; `cdf-cli` installs that catalog and owns
+product command/context wiring. The shipped binary MUST include the same command and built-in
+adapter surface before and after extraction.
 
 Core types MUST describe CLI requests and rendered results, not product services. The split MUST NOT introduce a service locator, global registration, callback map, command-handler trait per command, or a generic provider abstraction with one implementation.
 
@@ -43,6 +48,8 @@ DataFusion types and dependencies MUST remain in `cdf-engine` or focused engine-
 
 - Given a parser/help/render-only edit, when its focused owner tests run, then Cargo does not compile DataFusion, DuckDB, Parquet, object stores, databases, transports, package I/O, or concrete adapters.
 - Given the production `cdf` binary, when its built-in catalog is inspected, then every supported first-party source, format, transform, transport, and destination remains registered through the existing single composition authority.
+- Given a benchmark, conformance runner, or first-party test requiring the shipped catalog, then
+  it consumes `cdf-builtin-drivers` rather than duplicating the adapter list or importing CLI.
 - Given a new destination or source, when it is enrolled, then `cdf-cli-core`, `cdf-package-contract`, and `cdf-runtime` require no concrete-adapter edit.
 - Given a verified package from `cdf-package`, when a destination runtime prepares/finalizes staged ingress, then runtime validates the same manifest/replay/segment facts through the package contract without filesystem access or package-implementation types.
 - Given package golden fixtures before and after the model extraction, then manifest bytes, package hashes, replay inputs, receipts, lifecycle transitions, and rejection behavior are identical.

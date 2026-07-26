@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-11
-Updated: 2026-07-18
+Updated: 2026-07-26
 
 # Destination extension runtime contract
 
@@ -14,7 +14,10 @@ This specification governs the compile-time/runtime boundary for adding destinat
 
 Destination runtimes MUST receive run-scoped executor, cancellation, memory, telemetry, and blocking-lane services through the injected host contract in `.10x/specs/execution-host-structured-runtime.md`. They MUST NOT construct an async runtime, call a blocking executor around async work, or make generic orchestration identify a concrete destination to schedule it.
 
-The CLI MUST construct the first-party registry in one composition module. Generic CLI commands MUST resolve, inspect, plan, run, replay, resume, and doctor destinations through that registry. A concrete destination reference outside composition or an adapter-specific diagnostic module is a stop-line finding.
+The `cdf-builtin-drivers` leaf MUST construct the first-party registry and the CLI application
+root MUST install it. Generic CLI commands MUST resolve, inspect, plan, run, replay, resume, and
+doctor destinations through that registry. A concrete destination reference outside the catalog
+leaf or an adapter-specific diagnostic module is a stop-line finding.
 
 ## Driver contract
 
