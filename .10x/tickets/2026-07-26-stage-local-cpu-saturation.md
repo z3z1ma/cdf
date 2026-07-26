@@ -14,7 +14,7 @@ This is a parent plan, not an executable ticket.
 
 ## Children and sequence
 
-1. `.10x/tickets/2026-07-26-runtime-stage-local-destination-pressure.md` removes the incorrect
+1. `.10x/tickets/done/2026-07-26-runtime-stage-local-destination-pressure.md` removes the incorrect
    run-wide scheduler join while preserving destination-stage backpressure and evidence.
 2. `.10x/tickets/2026-07-26-parquet-parallel-object-encoding.md` depends on the first child and
    implements measured, bounded N-way Parquet group encoding.
@@ -72,6 +72,8 @@ hidden global clamp.
   confirmed the default `staged_destination_in_flight` global jobs join and Parquet's singular
   active encoder. Historical four-writer evidence changed only declared capacity and therefore
   did not exercise the proposed N-way object topology.
+- 2026-07-26: The runtime child closed. Default staged destinations now keep upstream jobs
+  work-conserving while their item/byte/lane pressure remains enforced and reported locally.
 
 ## Blockers
 

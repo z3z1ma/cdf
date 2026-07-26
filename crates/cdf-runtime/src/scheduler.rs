@@ -353,8 +353,6 @@ pub struct AdmissionCeilings {
     pub container_cpu_slots: u16,
     pub managed_memory_bytes: u64,
     pub transport_connections: Option<u16>,
-    pub destination_writers: Option<u16>,
-    pub staged_destination_in_flight: Option<u16>,
     pub lane_concurrency: Option<u16>,
     pub scope_concurrency: Option<u16>,
 }
@@ -365,8 +363,6 @@ impl AdmissionCeilings {
             || self.managed_memory_bytes == 0
             || self.configured_jobs == Some(0)
             || self.transport_connections == Some(0)
-            || self.destination_writers == Some(0)
-            || self.staged_destination_in_flight == Some(0)
             || self.lane_concurrency == Some(0)
             || self.scope_concurrency == Some(0)
         {
@@ -598,15 +594,6 @@ pub fn resolve_runtime_scheduler(
         == DestinationIngressMode::StagedDurableSegments)
         .then_some(destination.max_in_flight_segments)
         .flatten();
-    let default_staged_destination_pressure = (configured_jobs.is_none()
-        && destination.ingress_mode == DestinationIngressMode::StagedDurableSegments)
-        .then_some(destination.max_in_flight_segments)
-        .flatten();
-    // Staged destinations are a bounded downstream pressure authority, not a hidden unbounded
-    // queue. By default, join their declared in-flight window into source admission so a fast
-    // local source cannot overdrive a single-writer staged destination into low-progress waits.
-    // An explicit --jobs/configured_jobs value remains the operator knob for deliberate
-    // overdrive experiments; explicit configuration is still bounded by source, CPU, and memory.
     let lane_concurrency = source
         .blocking_lane
         .as_ref()
@@ -640,8 +627,6 @@ pub fn resolve_runtime_scheduler(
         container_cpu_slots: host.logical_cpu_slots,
         managed_memory_bytes: available_memory,
         transport_connections: None,
-        destination_writers: None,
-        staged_destination_in_flight: default_staged_destination_pressure,
         lane_concurrency,
         scope_concurrency: None,
     };
@@ -760,14 +745,6 @@ pub fn resolve_effective_jobs(
         (
             "transport_connections",
             ceilings.transport_connections.unwrap_or(u16::MAX),
-        ),
-        (
-            "destination_writers",
-            ceilings.destination_writers.unwrap_or(u16::MAX),
-        ),
-        (
-            "staged_destination_in_flight",
-            ceilings.staged_destination_in_flight.unwrap_or(u16::MAX),
         ),
         (
             "blocking_lane",
@@ -1101,8 +1078,6 @@ mod tests {
             container_cpu_slots: 16,
             managed_memory_bytes: 1_000,
             transport_connections: Some(5),
-            destination_writers: Some(4),
-            staged_destination_in_flight: None,
             lane_concurrency: None,
             scope_concurrency: Some(3),
         };
@@ -1182,7 +1157,7 @@ mod tests {
     }
 
     #[test]
-    fn effective_jobs_join_staged_destination_pressure_by_default_only() {
+    fn effective_jobs_keep_staged_destination_pressure_stage_local() {
         let source = SourceExecutionCapabilities {
             minimum_poll_bytes: 10,
             maximum_poll_bytes: 100,
@@ -1218,18 +1193,13 @@ mod tests {
                 container_cpu_slots: 16,
                 managed_memory_bytes: 10_000,
                 transport_connections: None,
-                destination_writers: None,
-                staged_destination_in_flight: Some(2),
                 lane_concurrency: None,
                 scope_concurrency: None,
             },
         )
         .unwrap();
-        assert_eq!(defaulted.jobs, 2);
-        assert_eq!(
-            defaulted.limiting_factors,
-            vec!["staged_destination_in_flight"]
-        );
+        assert_eq!(defaulted.jobs, 12);
+        assert_eq!(defaulted.limiting_factors, vec!["partition_count"]);
 
         let explicit = resolve_effective_jobs(
             12,
@@ -1239,19 +1209,15 @@ mod tests {
                 container_cpu_slots: 16,
                 managed_memory_bytes: 10_000,
                 transport_connections: None,
-                destination_writers: None,
-                staged_destination_in_flight: None,
                 lane_concurrency: None,
                 scope_concurrency: None,
             },
         )
         .unwrap();
         assert_eq!(explicit.jobs, 12);
-        assert!(
-            !explicit
-                .limiting_factors
-                .iter()
-                .any(|factor| factor == "staged_destination_in_flight")
+        assert_eq!(
+            explicit.limiting_factors,
+            vec!["partition_count", "configured_jobs"]
         );
     }
 

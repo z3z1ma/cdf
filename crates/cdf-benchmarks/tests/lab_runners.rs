@@ -489,13 +489,11 @@ fn destination_ingress_categories_preserve_jobs_identity() {
 
         assert_eq!(runs[0].effective_jobs, 1);
         assert_eq!(runs[1].effective_jobs, 2);
-        assert_eq!(runs[2].effective_jobs, 2);
-        assert!(
-            runs[2]
-                .limiting_factors
-                .iter()
-                .any(|factor| factor == "staged_destination_in_flight"),
-            "{label} auto run should inherit staged destination pressure"
+        assert_eq!(runs[2].effective_jobs, 4);
+        assert_eq!(
+            runs[2].limiting_factors,
+            vec!["partition_count", "container_cpu"],
+            "{label} auto run must resolve only from run-wide authorities"
         );
         assert_eq!(runs[3].effective_jobs, 4);
         for run in &runs {

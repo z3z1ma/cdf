@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-26
 Updated: 2026-07-26
 Parent: .10x/tickets/2026-07-26-stage-local-cpu-saturation.md
-Depends-On: .10x/tickets/2026-07-26-runtime-stage-local-destination-pressure.md
+Depends-On: .10x/tickets/done/2026-07-26-runtime-stage-local-destination-pressure.md
 
 # Encode deterministic Parquet object groups concurrently
 
