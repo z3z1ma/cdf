@@ -1,6 +1,6 @@
-Status: open
+Status: done
 Created: 2026-07-08
-Updated: 2026-07-25
+Updated: 2026-07-26
 Parent: .10x/tickets/2026-07-25-stabilization-steady-state-program.md
 Depends-On: .10x/tickets/done/2026-07-07-p0-structural-debt-program.md
 
@@ -100,4 +100,30 @@ No dashboard or GUI. No breaking changes to JSON output. No scheduler semantics.
 
 ## Blockers
 
-None for parent activation. Workstream implementation tickets may carry technical dependencies.
+None.
+
+## Evidence
+
+- `.10x/evidence/2026-07-26-p1-z1-program-closure.md` maps every parent criterion to permanent
+  evidence and records the final architecture/adversarial review.
+- `.10x/evidence/2026-07-26-p1-ws8-hosted-release.md` proves the five-target static-DuckDB hosted
+  prerelease and public installer.
+- `.10x/evidence/.storage/2026-07-26-p1-chapter23-terminal-session.txt` is the fresh redacted
+  Chapter 23 recording.
+- WS1-WS9 are all terminal with focused evidence and review.
+
+## Review
+
+Pass. The aggregate review found one human renderer, one machine JSON envelope, bounded
+nonblocking progress, generated parser/error artifacts, generic source and destination
+composition, a real public install channel, and a receipt-gated Chapter 23 demonstration. No
+critical or significant P1 finding or unowned P1 residual remains.
+
+## Retrospective
+
+The program succeeded when experience work stopped being command-local polish and became one
+coherent interaction contract with executable negative laws. The renderer migration gate,
+channel-isolation tests, source/destination extension invariant, progress backpressure law, and
+published-artifact smoke are the durable controls future work must extend. Parked distribution
+and capability ambitions remain in the roadmap rather than keeping completed programs
+artificially active.

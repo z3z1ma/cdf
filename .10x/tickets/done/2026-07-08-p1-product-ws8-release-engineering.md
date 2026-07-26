@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-08
 Updated: 2026-07-26
-Parent: .10x/tickets/2026-07-08-p1-product-experience-program.md
+Parent: .10x/tickets/done/2026-07-08-p1-product-experience-program.md
 Depends-On: QUALITY.md, .10x/specs/conformance-governance-roadmap.md, .10x/knowledge/dependency-tuple-migration-guard.md
 
 # P1 product WS8: Release engineering and distribution

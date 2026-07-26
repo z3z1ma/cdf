@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-08
 Updated: 2026-07-13
-Parent: .10x/tickets/2026-07-08-p1-product-experience-program.md
+Parent: .10x/tickets/done/2026-07-08-p1-product-experience-program.md
 Depends-On: .10x/specs/project-cli-observability-security.md
 
 # P1 product WS2: Command grammar redesign

@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-08
 Updated: 2026-07-10
-Parent: .10x/tickets/2026-07-08-p1-product-experience-program.md
+Parent: .10x/tickets/done/2026-07-08-p1-product-experience-program.md
 Depends-On: .10x/specs/cli-live-progress.md, .10x/tickets/done/2026-07-08-p1-product-ws1-runtime-event-spine.md, .10x/tickets/done/2026-07-08-p1-product-ws3-rendering-system-design-language.md
 
 # P1 product WS5: Live progress

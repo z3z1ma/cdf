@@ -44,7 +44,7 @@ consumer path. Other DataFusion bridges remain parked.
 4. `.10x/tickets/done/2026-07-11-p1-ws9-cli-experience-excellence.md` — done.
 5. `.10x/tickets/done/2026-07-08-p1-product-ws8-release-engineering.md`
 6. `.10x/tickets/done/2026-07-11-p1-z1-product-program-closeout.md`
-7. `.10x/tickets/2026-07-08-p1-product-experience-program.md`
+7. `.10x/tickets/done/2026-07-08-p1-product-experience-program.md`
 
 CX1's implemented terminal/help foundation is retained; its unratified pager remainder is
 cancelled rather than blocking the compact renderer. A hosted release remains a real P1 closure
@@ -164,6 +164,8 @@ WASM, distributed execution, CDC, and new connectors are not P3 closure dependen
 - 2026-07-26: P1 Z1 is closed. The aggregate matrix joins all WS1-WS9 evidence, the hosted
   prerelease, direct renderer/registry topology inspection, and a newly executed Chapter 23
   crash/resume/replay/drift session. The P1 parent is ready to move terminal.
+- 2026-07-26: P1 is closed. All nine workstreams and Z1 are terminal; the coverage matrix records
+  P1 and Chapter 23 done. Stabilization is now the only active ticket.
 
 ## Blockers
 

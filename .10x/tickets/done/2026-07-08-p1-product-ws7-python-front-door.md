@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-08
 Updated: 2026-07-10
-Parent: .10x/tickets/2026-07-08-p1-product-experience-program.md
+Parent: .10x/tickets/done/2026-07-08-p1-product-experience-program.md
 Depends-On: .10x/tickets/done/2026-07-05-python-sdk-bridge.md, .10x/specs/resource-authoring-planning-batches.md, .10x/specs/python-front-door-product-surface.md
 
 # P1 product WS7: Python through the front door

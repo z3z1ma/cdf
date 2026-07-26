@@ -1,14 +1,14 @@
 Status: recorded
 Created: 2026-07-08
 Updated: 2026-07-08
-Target: .10x/tickets/2026-07-08-p1-product-experience-program.md
+Target: .10x/tickets/done/2026-07-08-p1-product-experience-program.md
 Verdict: pass
 
 # P1 product experience program activation review
 
 ## Target
 
-Record-only activation of `.10x/tickets/2026-07-08-p1-product-experience-program.md`, its eight workstream tickets, the parent system ticket link, and the coverage-matrix row.
+Record-only activation of `.10x/tickets/done/2026-07-08-p1-product-experience-program.md`, its eight workstream tickets, the parent system ticket link, and the coverage-matrix row.
 
 ## Findings
 

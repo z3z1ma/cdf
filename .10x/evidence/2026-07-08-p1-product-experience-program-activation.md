@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-08
 Updated: 2026-07-08
-Relates-To: .10x/tickets/2026-07-08-p1-product-experience-program.md, .10x/knowledge/vision-coverage-matrix.md
+Relates-To: .10x/tickets/done/2026-07-08-p1-product-experience-program.md, .10x/knowledge/vision-coverage-matrix.md
 
 # P1 product experience program activation evidence
 
@@ -9,7 +9,7 @@ Relates-To: .10x/tickets/2026-07-08-p1-product-experience-program.md, .10x/knowl
 
 The P1 product experience, instrumentation, and enterprise surface directive was converted into a durable 10x program graph:
 
-- Parent: `.10x/tickets/2026-07-08-p1-product-experience-program.md`.
+- Parent: `.10x/tickets/done/2026-07-08-p1-product-experience-program.md`.
 - Workstream owners:
   - `.10x/tickets/done/2026-07-08-p1-product-ws1-runtime-event-spine.md`
   - `.10x/tickets/done/2026-07-08-p1-product-ws2-command-grammar-redesign.md`

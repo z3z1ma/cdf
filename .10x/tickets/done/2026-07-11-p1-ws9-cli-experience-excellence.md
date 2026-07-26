@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-11
 Updated: 2026-07-25
-Parent: .10x/tickets/2026-07-08-p1-product-experience-program.md
+Parent: .10x/tickets/done/2026-07-08-p1-product-experience-program.md
 Depends-On: .10x/specs/cli-interaction-excellence.md, .10x/decisions/cli-progressive-disclosure-terminal-contract.md
 
 # P1 WS9: CLI experience excellence
