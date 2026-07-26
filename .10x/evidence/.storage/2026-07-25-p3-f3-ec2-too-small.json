@@ -1,0 +1,16 @@
+{
+  "ok": false,
+  "error": {
+    "kind": "data",
+    "message": "process memory budget 67108864 leaves less than the 67108864-byte minimum working set after 536870912 bytes of native headroom; raise the budget or reduce the working set",
+    "exit_code": 5,
+    "not_supported": false,
+    "code": "CDF-PACKAGE-DATA",
+    "remediation": {
+      "summary": "Inspect the referenced data, package, or source artifact.",
+      "steps": [
+        "Use the matching `cdf inspect` command when an artifact id or path is shown."
+      ]
+    }
+  }
+}

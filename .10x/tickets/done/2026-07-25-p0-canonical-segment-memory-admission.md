@@ -35,7 +35,7 @@ under a budget that admits exactly the real simultaneous working set.
 
 - `.10x/specs/runtime-memory-backpressure.md`
 - `.10x/specs/constant-memory-proof.md`
-- `.10x/tickets/2026-07-11-p3-f3-stress-generators-laws.md`
+- `.10x/tickets/done/2026-07-11-p3-f3-stress-generators-laws.md`
 - `.10x/tickets/done/2026-07-11-p3-a5b-fused-transform-kernel.md`
 - `.10x/tickets/done/2026-07-21-p0-segmentation-v3.md`
 

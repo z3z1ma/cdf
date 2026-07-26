@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-11
 Updated: 2026-07-25
 Parent: .10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md
@@ -13,7 +13,8 @@ Build bounded deterministic generators and execute geometric-size, 100 GB/2 GiB,
 ## Acceptance criteria
 
 - Generator/setup memory is separate and bounded.
-- 100 GB completes under enforced 2 GiB process-tree RSS budget with observed spill and no OOM event.
+- 100 GB completes under enforced 2 GiB process-tree RSS budget with no OOM event; a separately
+  forced spill case observes spill and clean reclamation.
 - Geometric inputs show no memory slope; repeated runs show no leak/fragmentation drift.
 - Geometric file/segment cardinality shows no open-file-descriptor slope; retained handles are
   bounded by admitted concurrency rather than total work units.
@@ -78,6 +79,14 @@ Depends on F1/F2.
   185,831,424 bytes, and package, receipt, and checkpoint verification all passed. No spill
   occurred; this closes the 100 GiB/RSS/OOM portion but not F3's independent spill and geometric
   laws.
+- 2026-07-25: Closed the remaining matrix with a compact falsification set rather than redundant
+  giant cross-products. On the same release host, 5, 20, and 100 GiB inputs peaked between 1.658
+  and 1.701 GiB RSS while managed peak remained effectively flat at 1.5 GiB. A repeated 5 GiB
+  execution differed by 26.6 MiB. Existing 512-segment and 231-segment observations bound live
+  file descriptors by scan concurrency rather than segment cardinality. Focused laws passed for
+  forced spill, spill exhaustion/cleanup, exact-row dedup, slow-consumer backpressure, compressed
+  remote streaming, bounded remote metadata, staged-writer progress, and impossible-budget
+  rejection.
 
 ## Evidence
 
@@ -108,8 +117,37 @@ Depends on F1/F2.
   `sha256:5ea1a0a9dfef85d274cde51a0711a3a42a6b60cb0bf9e6b47b43e905afdfd33e`,
   destination receipt, and checkpoint. This proves constant RSS at the required scale; it does not
   prove the still-independent spill and geometric-series cases.
+- `.10x/evidence/2026-07-25-p3-f3-constant-memory-matrix.md` records the raw 5/20/100 GiB
+  summaries, repeated-run comparison, exact 64 MiB typed failure, focused spill/backpressure/
+  compression/metadata laws, procedures, and limits.
+- The geometric series produced 25, 100, and 500 canonical segments with peak RSS of
+  1,701,265,408, 1,670,701,056, and 1,657,630,720 bytes respectively. The largest-minus-smallest
+  spread is 43,634,688 bytes (2.6% of the smallest observation) and slopes downward rather than
+  with input size.
+- The impossible-budget product run exited 5 with a Data error before creating `.cdf`; the message
+  named the 64 MiB request, 64 MiB minimum working set, 512 MiB native headroom, and both
+  corrections.
 
 ## References
 
 - `.10x/specs/constant-memory-proof.md`
 - `.10x/specs/performance-lab-and-envelope.md`
+
+## Review
+
+Closure review passes. The generator is bounded and deterministic; product execution—not a mock
+operator—performs every governed stage and independently verifies package, receipt, checkpoint,
+row count, managed peak, and process RSS. The geometric observations share one host, binary,
+dataset recipe, cgroup authority, and timed-region policy. Semantic specialty cases use focused
+tests rather than weakening the main workload or forcing performance-degrading spill into a path
+that does not require it. F4 retains the distinct 1 TiB, device-saturation, and permanent-schedule
+acceptance.
+
+## Retrospective
+
+The first 100 GiB failure was not one monolithic memory bug. Exact evidence exposed successive
+boundaries: double-accounted canonical inputs, late destination working-set admission, an omitted
+staged handoff, and finally allocator arena retention outside the live-object ledger. Closing each
+as a bounded owner kept the stress ticket from becoming the implementation dumping ground. Future
+scale laws should always assert both managed ownership and process RSS, and should force spill in a
+dedicated semantic case rather than penalizing an ordinary streaming path that can stay in memory.

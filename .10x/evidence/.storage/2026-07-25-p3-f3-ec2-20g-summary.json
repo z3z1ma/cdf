@@ -1,0 +1,49 @@
+{
+  "generator": {
+    "base_file_sha256": "sha256:d552be383ca2202d3edc55173a8cbc62d64afb729c44181640619db4c0a7d1d3",
+    "file_count": 20,
+    "file_glob": "part-*.parquet",
+    "generator_peak_batch_bytes": 13369624,
+    "generator_version": "constant-memory-parquet-v1",
+    "logical_bytes_per_file": 1082939544,
+    "peak_rss_bytes": 218537984,
+    "represented_physical_bytes": 1060243880,
+    "rows_per_file": 5308416,
+    "schema_version": 1,
+    "total_logical_bytes": 21658790880,
+    "total_rows": 106168320,
+    "unique_physical_bytes": 53012194
+  },
+  "requested_memory_budget": "2GiB",
+  "run": {
+    "checkpoint_id": "checkpoint-stress-rows-63644-1785048517043110235",
+    "destination_bytes": 9492519378,
+    "elapsed_ms": 48659,
+    "managed_budget_bytes": 1610612736,
+    "managed_peak_bytes": 1610598697,
+    "package_hash": "sha256:3b960686a2af203a01345bad2e249b3e89e7a3646ff426219539e62933ae343a",
+    "peak_rss_bytes": 1670701056,
+    "process_budget_bytes": 2147483648,
+    "receipt_id": "parquet:rows:sha256:3b960686a2af203a01345bad2e249b3e89e7a3646ff426219539e62933ae343a",
+    "row_count": 106168320,
+    "segment_count": 100,
+    "spill_bytes": 0
+  },
+  "schema_version": 1,
+  "timed_region": {
+    "excludes": [
+      "fixture generation",
+      "project setup",
+      "summary serialization"
+    ],
+    "includes": [
+      "metadata inventory",
+      "source decode",
+      "validation and normalization",
+      "canonical package persistence and hashing",
+      "Parquet destination commit",
+      "receipt verification",
+      "checkpoint commit"
+    ]
+  }
+}

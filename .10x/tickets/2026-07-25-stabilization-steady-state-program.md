@@ -54,7 +54,7 @@ criterion and is sequenced after the daily-driver surface stabilizes.
 
 1. `.10x/tickets/done/2026-07-25-p0-canonical-segment-memory-admission.md`
 2. `.10x/tickets/done/2026-07-25-p0-staged-writer-memory-headroom.md`
-3. `.10x/tickets/2026-07-11-p3-f3-stress-generators-laws.md`
+3. `.10x/tickets/done/2026-07-11-p3-f3-stress-generators-laws.md`
 4. `.10x/tickets/2026-07-11-p3-f4-one-tb-memory-closeout.md`
 5. `.10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md`
 5. `.10x/tickets/2026-07-11-p3-h5-interop-envelope-closeout.md`
@@ -132,6 +132,12 @@ WASM, distributed execution, CDC, and new connectors are not P3 closure dependen
   untuned exact 100 GiB / 2 GiB EC2 law passed in 263.493 seconds at 1.658 GiB peak RSS with
   verified package, receipt, and checkpoint semantics. F3 now owns only its independent
   geometric, spill, and failure-mode acceptance matrix.
+- 2026-07-25: F3 is closed. The same clean optimized binary completed 5, 20, and 100 GiB
+  product-shaped runs under an enforced 2 GiB cgroup with flat RSS, and a repeated 5 GiB run
+  showed no allocator/handle drift. Typed impossible-budget failure plus focused spill,
+  spill-exhaustion, backpressure, compression, metadata, dedup, foreign-child, and staged-writer
+  laws complete the matrix. F4 now owns only the 1 TiB scale run, device saturation, generated
+  owner matrix, and permanent slow-tier gate.
 
 ## Blockers
 

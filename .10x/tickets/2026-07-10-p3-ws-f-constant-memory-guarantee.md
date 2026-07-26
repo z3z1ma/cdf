@@ -14,7 +14,7 @@ Make the memory law executable: generated 100 GB input under 2 GiB, peak-RSS ass
 
 - `.10x/tickets/done/2026-07-11-p3-f1-budget-enforcement-headroom.md`
 - `.10x/tickets/done/2026-07-11-p3-f2-materialization-closure-audit.md`
-- `.10x/tickets/2026-07-11-p3-f3-stress-generators-laws.md`
+- `.10x/tickets/done/2026-07-11-p3-f3-stress-generators-laws.md`
 - `.10x/tickets/2026-07-11-p3-f4-one-tb-memory-closeout.md`
 
 ## Acceptance criteria
@@ -32,6 +32,11 @@ None at the parent level. Child dependencies and closure gaps remain authoritati
 
 - 2026-07-14: F2 isolated and bounded DuckDB's package-long native transaction, cutting the 2.15 GB FineWeb run's peak footprint from about 3.25 GB to 1.39 GB while retaining 85.8% of uncapped local throughput. DuckDB scratch capacity now reserves against the shared spill authority. This is a child milestone, not the parent constant-memory proof; F1–F4 remain active/open.
 - 2026-07-19: F1 closed process-tree enforcement and calibrated reporting. A clean 41,169,720-row EC2 TLC-to-DuckDB run completed in `10.477s` under a 6 GiB cgroup with child RSS and aggregate cgroup peaks reported separately and zero memory events; product JSON/human diagnostics and an actual bounded Python child case satisfy the authority/reporting slice. F3/F4 retain the synthetic 100 GB/2 GiB stress-and-spill law.
+- 2026-07-25: F3 closed the 100 GiB / 2 GiB and adversarial stress matrix. The exact product run
+  completed at 1.658 GiB peak RSS with verified evidence, and 5/20/100 GiB geometric observations
+  showed no input-size slope. Forced spill, exhausted spill, impossible budget, compressed remote,
+  slow-consumer, metadata, dedup, quarantine, staged-writer, and foreign-child laws are terminal.
+  F4 retains the final 1 TiB/default-budget scale and permanent slow-tier integration.
 
 ## References
 

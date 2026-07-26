@@ -43,7 +43,7 @@ fit.
 
 - `.10x/specs/runtime-memory-backpressure.md`
 - `.10x/specs/constant-memory-proof.md`
-- `.10x/tickets/2026-07-11-p3-f3-stress-generators-laws.md`
+- `.10x/tickets/done/2026-07-11-p3-f3-stress-generators-laws.md`
 - `.10x/tickets/done/2026-07-25-p0-canonical-segment-memory-admission.md`
 
 ## Assumptions
