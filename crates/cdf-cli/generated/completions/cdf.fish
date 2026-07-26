@@ -140,6 +140,14 @@ complete -c cdf -n "__fish_cdf_using_subcommand plan" -l filter -d 'Filter expre
 complete -c cdf -n "__fish_cdf_using_subcommand plan" -l limit -d 'Maximum rows to read' -r
 complete -c cdf -n "__fish_cdf_using_subcommand plan" -l order-by -d 'Ordering field and optional direction' -r
 complete -c cdf -n "__fish_cdf_using_subcommand plan" -l to -d 'Destination URI or cursor upper bound, as shown in usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand plan" -l segment-target-rows -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand plan" -l segment-target-bytes -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand plan" -l segment-max-rows -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand plan" -l segment-max-bytes -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand plan" -l microbatch-min-rows -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand plan" -l microbatch-max-rows -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand plan" -l microbatch-min-bytes -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand plan" -l microbatch-max-bytes -d 'Set the value named in this command\'s usage' -r
 complete -c cdf -n "__fish_cdf_using_subcommand plan" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
 always\t''
 never\t''"
@@ -160,6 +168,14 @@ complete -c cdf -n "__fish_cdf_using_subcommand explain" -l filter -d 'Filter ex
 complete -c cdf -n "__fish_cdf_using_subcommand explain" -l limit -d 'Maximum rows to read' -r
 complete -c cdf -n "__fish_cdf_using_subcommand explain" -l order-by -d 'Ordering field and optional direction' -r
 complete -c cdf -n "__fish_cdf_using_subcommand explain" -l to -d 'Destination URI or cursor upper bound, as shown in usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand explain" -l segment-target-rows -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand explain" -l segment-target-bytes -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand explain" -l segment-max-rows -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand explain" -l segment-max-bytes -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand explain" -l microbatch-min-rows -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand explain" -l microbatch-max-rows -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand explain" -l microbatch-min-bytes -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand explain" -l microbatch-max-bytes -d 'Set the value named in this command\'s usage' -r
 complete -c cdf -n "__fish_cdf_using_subcommand explain" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
 always\t''
 never\t''"
@@ -177,6 +193,14 @@ complete -c cdf -n "__fish_cdf_using_subcommand explain" -s v -l verbose -d 'Sho
 complete -c cdf -n "__fish_cdf_using_subcommand explain" -s h -l help -d 'Print help'
 complete -c cdf -n "__fish_cdf_using_subcommand run" -l to -d 'Destination URI or cursor upper bound, as shown in usage' -r
 complete -c cdf -n "__fish_cdf_using_subcommand run" -l jobs -d 'Maximum concurrent jobs' -r
+complete -c cdf -n "__fish_cdf_using_subcommand run" -l segment-target-rows -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand run" -l segment-target-bytes -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand run" -l segment-max-rows -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand run" -l segment-max-bytes -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand run" -l microbatch-min-rows -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand run" -l microbatch-max-rows -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand run" -l microbatch-min-bytes -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand run" -l microbatch-max-bytes -d 'Set the value named in this command\'s usage' -r
 complete -c cdf -n "__fish_cdf_using_subcommand run" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
 always\t''
 never\t''"
@@ -198,6 +222,14 @@ complete -c cdf -n "__fish_cdf_using_subcommand preview" -l select -d 'Comma-sep
 complete -c cdf -n "__fish_cdf_using_subcommand preview" -l filter -d 'Filter expression; may be repeated' -r
 complete -c cdf -n "__fish_cdf_using_subcommand preview" -l limit -d 'Maximum rows to read' -r
 complete -c cdf -n "__fish_cdf_using_subcommand preview" -l order-by -d 'Ordering field and optional direction' -r
+complete -c cdf -n "__fish_cdf_using_subcommand preview" -l segment-target-rows -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand preview" -l segment-target-bytes -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand preview" -l segment-max-rows -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand preview" -l segment-max-bytes -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand preview" -l microbatch-min-rows -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand preview" -l microbatch-max-rows -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand preview" -l microbatch-min-bytes -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand preview" -l microbatch-max-bytes -d 'Set the value named in this command\'s usage' -r
 complete -c cdf -n "__fish_cdf_using_subcommand preview" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
 always\t''
 never\t''"
@@ -663,6 +695,14 @@ complete -c cdf -n "__fish_cdf_using_subcommand backfill" -l from -d 'Inclusive 
 complete -c cdf -n "__fish_cdf_using_subcommand backfill" -l to -d 'Destination URI or cursor upper bound, as shown in usage' -r
 complete -c cdf -n "__fish_cdf_using_subcommand backfill" -l target -d 'Destination target or table' -r
 complete -c cdf -n "__fish_cdf_using_subcommand backfill" -l slice-size -d 'Rows per backfill slice' -r
+complete -c cdf -n "__fish_cdf_using_subcommand backfill" -l segment-target-rows -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand backfill" -l segment-target-bytes -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand backfill" -l segment-max-rows -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand backfill" -l segment-max-bytes -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand backfill" -l microbatch-min-rows -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand backfill" -l microbatch-max-rows -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand backfill" -l microbatch-min-bytes -d 'Set the value named in this command\'s usage' -r
+complete -c cdf -n "__fish_cdf_using_subcommand backfill" -l microbatch-max-bytes -d 'Set the value named in this command\'s usage' -r
 complete -c cdf -n "__fish_cdf_using_subcommand backfill" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
 always\t''
 never\t''"

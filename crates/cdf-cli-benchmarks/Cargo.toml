@@ -1,0 +1,16 @@
+[package]
+name = "cdf-cli-benchmarks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Opt-in dependency-light benchmark harness for the CDF CLI."
+
+[dependencies]
+cdf-cli-core = { path = "../cdf-cli-core" }
+cdf-kernel = { path = "../cdf-kernel" }
+criterion = "0.5.1"
+
+[[bench]]
+name = "cli_renderer"
+harness = false

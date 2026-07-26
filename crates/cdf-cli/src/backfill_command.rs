@@ -12,12 +12,12 @@ use crate::{
     destination_uri::{destination_error_suggestions, redact_error_value},
     error_catalog,
     output::{CliError, CommandOutput},
-    progress::{ProgressSnapshot, human_progress_sink},
+    progress::{CliProgressSink, ProgressDelivery, ProgressSnapshot, human_progress_sink},
     project_run_resource::build_project_run_resource,
     render::{
         RenderDocument,
         humanize::humanize_rows,
-        primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
+        primitives::{KeyValuePanel, NextCommand, StatusKind, StatusLine, Table},
         redaction::redact_uri_userinfo,
     },
     reports::{RunDestinationReport, WriteEffects},
@@ -32,6 +32,7 @@ pub(crate) fn backfill(
         &cdf_runtime::ExecutionServices,
     ),
     destinations: &cdf_runtime::DestinationRegistry,
+    progress_delivery: ProgressDelivery,
 ) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
     let resource = context.resource(&args.resource_id)?;
@@ -69,28 +70,30 @@ pub(crate) fn backfill(
 
     source.validate_supported().map_err(CliError::from)?;
     let pipeline_id = backfill_pipeline_id()?;
-    let progress = human_progress_sink(cli.json, &cli.terminal);
-    let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);
-    let executor = BackfillSliceExecutor {
-        destinations,
-        context: &context,
-        target: &target,
-        source,
-        pipeline_id: &pipeline_id,
-        event_sink,
-        host,
-        services,
-    };
+    let mut progress = human_progress_sink(cli.json, &cli.terminal, progress_delivery);
     let mut reports = Vec::with_capacity(plan.slices.len());
     for slice in &plan.slices {
-        let report = executor.execute(slice).map_err(|error| {
-            annotate_backfill_slice_error(
-                error,
-                slice,
-                progress.as_ref().map(|progress| progress.snapshot()),
-            )
-        })?;
-        reports.push(report);
+        let result = {
+            let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);
+            BackfillSliceExecutor {
+                destinations,
+                context: &context,
+                target: &target,
+                source,
+                pipeline_id: &pipeline_id,
+                event_sink,
+                host,
+                services,
+            }
+            .execute(slice)
+        };
+        match result {
+            Ok(report) => reports.push(report),
+            Err(error) => {
+                let snapshot = progress.take().map(CliProgressSink::finish);
+                return Err(annotate_backfill_slice_error(error, slice, snapshot));
+            }
+        }
     }
     let report = BackfillCliReport::executed(&plan, args.slice_size, reports);
     match progress {
@@ -98,7 +101,7 @@ pub(crate) fn backfill(
             "backfill",
             report.render_document(),
             report,
-            progress.snapshot(),
+            progress.finish(),
         ),
         None => CommandOutput::rendered("backfill", report.render_document(), report),
     }
@@ -298,7 +301,6 @@ impl BackfillCliReport {
     fn render_document(&self) -> RenderDocument {
         let executed = self.mode == "execute";
         let mut document = RenderDocument::new()
-            .push(SectionRule::new())
             .push(StatusLine::new(
                 StatusKind::Success,
                 format!(

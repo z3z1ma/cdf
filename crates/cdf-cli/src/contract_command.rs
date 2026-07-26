@@ -13,7 +13,7 @@ use crate::{
     output::{CliError, CommandOutput},
     render::{
         RenderDocument,
-        primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
+        primitives::{KeyValuePanel, NextCommand, StatusKind, StatusLine, Table},
     },
 };
 
@@ -106,7 +106,6 @@ struct ContractShowCliReport {
 impl ContractShowCliReport {
     fn render_document(&self) -> RenderDocument {
         RenderDocument::new()
-            .push(SectionRule::new())
             .push(StatusLine::new(
                 StatusKind::Success,
                 format!("contract policy {}", self.policy),
@@ -145,7 +144,6 @@ fn contract_freeze_document(report: &ContractFreezeReport) -> RenderDocument {
     );
 
     let mut document = RenderDocument::new()
-        .push(SectionRule::new())
         .push(StatusLine::new(
             StatusKind::Success,
             format!("froze {} contract snapshot(s)", report.counts.frozen),
@@ -193,7 +191,6 @@ fn contract_test_document(report: &ContractTestReport) -> RenderDocument {
     );
 
     let mut document = RenderDocument::new()
-        .push(SectionRule::new())
         .push(StatusLine::new(
             if drifted {
                 StatusKind::Warning

@@ -1,8 +1,8 @@
 Status: open
 Created: 2026-07-11
-Updated: 2026-07-11
+Updated: 2026-07-25
 Parent: .10x/tickets/2026-07-11-p1-ws9-cli-experience-excellence.md
-Depends-On: .10x/tickets/2026-07-11-p1-cx3-live-progress-activity.md, .10x/tickets/done/2026-07-10-p3-ws-l2-phase-telemetry.md
+Depends-On: .10x/tickets/done/2026-07-11-p1-cx3-live-progress-activity.md, .10x/tickets/done/2026-07-10-p3-ws-l2-phase-telemetry.md
 
 # P1 CX4: CLI conformance, performance, and demo
 
@@ -30,3 +30,18 @@ Permanent matrix output, million-event and end-to-end benchmark artifacts, canon
 
 - `.10x/specs/performance-lab-and-envelope.md`
 - `.10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md`
+
+## Journal
+
+- 2026-07-25: CX2/CX3 landed as one coordinated renderer/progress rewrite. Permanent tests now
+  cover the 40/80/160-column TTY/headless ASCII/Unicode/no-color matrix, JSON isolation,
+  progressive disclosure, generated artifacts, redaction, slow terminals, bounded state, and
+  terminal-event preservation.
+- 2026-07-25: Moved the benchmark out of the heavyweight general benchmark crate into the
+  dependency-light `cdf-cli-benchmarks` leaf so ordinary CLI checks do not compile unrelated
+  engines/destinations. Criterion measured 19.260 million governed events/second for one million
+  buffered events and 19.400 million events/second for the 10,000-partition case, with no detected
+  regression.
+- 2026-07-25: `.10x/evidence/2026-07-25-cli-experience-rewrite.md` records the current conformance,
+  benchmark, and real-project smoke. Remaining closure work is the enabled-versus-disabled
+  reference-workload cell, canonical hosted recordings, and the final severity-focused review.

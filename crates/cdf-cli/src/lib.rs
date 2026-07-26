@@ -36,11 +36,24 @@ mod status_freshness;
 mod system_sql;
 
 pub fn invoke(args: impl IntoIterator<Item = OsString>) -> cdf_cli_core::output::InvocationResult {
+    invoke_with_progress_delivery(args, progress::ProgressDelivery::Buffered)
+}
+
+pub fn invoke_streaming(
+    args: impl IntoIterator<Item = OsString>,
+) -> cdf_cli_core::output::InvocationResult {
+    invoke_with_progress_delivery(args, progress::ProgressDelivery::LiveStderr)
+}
+
+fn invoke_with_progress_delivery(
+    args: impl IntoIterator<Item = OsString>,
+    progress_delivery: progress::ProgressDelivery,
+) -> cdf_cli_core::output::InvocationResult {
     let args = args.into_iter().collect::<Vec<_>>();
     let json_mode = args.iter().any(|arg| arg == "--json");
     match cdf_cli_core::args::Cli::parse(args) {
         Ok(cli) => match destination_registry::builtin_destination_registry() {
-            Ok(registry) => commands::execute(cli, &registry),
+            Ok(registry) => commands::execute(cli, &registry, progress_delivery),
             Err(error) => {
                 cdf_cli_core::output::InvocationResult::from_error(json_mode, error.into())
             }
@@ -56,7 +69,7 @@ pub fn invoke_with_destination_registry(
     let args = args.into_iter().collect::<Vec<_>>();
     let json_mode = args.iter().any(|arg| arg == "--json");
     match cdf_cli_core::args::Cli::parse(args) {
-        Ok(cli) => commands::execute(cli, registry),
+        Ok(cli) => commands::execute(cli, registry, progress::ProgressDelivery::Buffered),
         Err(error) => cdf_cli_core::output::InvocationResult::from_error(json_mode, error),
     }
 }

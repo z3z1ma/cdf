@@ -13,7 +13,7 @@ use crate::{
     output::{CliError, CommandOutput},
     render::{
         RenderDocument,
-        primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
+        primitives::{KeyValuePanel, NextCommand, StatusKind, StatusLine, Table},
     },
     run_command::DEFAULT_RUN_PIPELINE_ID,
 };
@@ -136,7 +136,6 @@ fn state_show_document(
     head: Option<&cdf_kernel::Checkpoint>,
 ) -> RenderDocument {
     let mut document = RenderDocument::new()
-        .push(SectionRule::new())
         .push(StatusLine::new(
             if head.is_some() {
                 StatusKind::Success
@@ -194,7 +193,6 @@ fn state_history_document(
     );
 
     RenderDocument::new()
-        .push(SectionRule::new())
         .push(StatusLine::new(
             StatusKind::Success,
             format!("{} checkpoint(s)", history.len()),
@@ -224,7 +222,6 @@ fn state_rewind_document(
         });
 
     RenderDocument::new()
-        .push(SectionRule::new())
         .push(StatusLine::new(
             StatusKind::Success,
             format!("rewound to {}", report.head.delta.checkpoint_id),

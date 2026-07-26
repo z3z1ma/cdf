@@ -22,7 +22,7 @@ use crate::{
     render::{
         RenderDocument,
         humanize::humanize_bytes,
-        primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
+        primitives::{KeyValuePanel, NextCommand, StatusKind, StatusLine, Table},
         redaction::redact_uri_userinfo,
     },
 };
@@ -351,7 +351,6 @@ impl PackageListReport {
         );
 
         let mut document = RenderDocument::new()
-            .push(SectionRule::new())
             .push(StatusLine::new(
                 StatusKind::Success,
                 format!("{} package(s)", self.packages.len()),
@@ -406,7 +405,6 @@ impl PackageGcPlanReport {
         );
 
         let mut document = RenderDocument::new()
-            .push(SectionRule::new())
             .push(StatusLine::new(
                 StatusKind::Success,
                 format!("planned package gc for {}", self.package_root),
@@ -567,7 +565,6 @@ struct PackageVerifyReport {
 impl PackageVerifyReport {
     fn render_document(&self) -> RenderDocument {
         RenderDocument::new()
-            .push(SectionRule::new())
             .push(StatusLine::new(
                 StatusKind::Success,
                 format!("verified package {}", self.package_hash),
@@ -601,7 +598,6 @@ struct PackageArchiveCliReport {
 impl PackageArchiveCliReport {
     fn render_document(&self) -> RenderDocument {
         RenderDocument::new()
-            .push(SectionRule::new())
             .push(StatusLine::new(
                 StatusKind::Success,
                 format!("archived package {}", self.package_hash),

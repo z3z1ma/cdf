@@ -4,7 +4,7 @@
 .SH NAME
 cdf\-backfill \- Plan or execute a bounded cursor backfill
 .SH SYNOPSIS
-\fBcdf backfill\fR [\fB\-\-from\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-to\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-target\fR] [\fB\-\-execute\fR] [\fB\-\-progress\fR] [\fB\-\-slice\-size\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-spill\-budget\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE\fR]
+\fBcdf backfill\fR [\fB\-\-from\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-\-to\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\fR] [\fB\-\-target\fR] [\fB\-\-execute\fR] [\fB\-\-progress\fR] [\fB\-\-slice\-size\fR] [\fB\-\-unicode\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-segment\-target\-rows\fR] [\fB\-\-segment\-target\-bytes\fR] [\fB\-\-spill\-budget\fR] [\fB\-\-segment\-max\-rows\fR] [\fB\-\-segment\-max\-bytes\fR] [\fB\-\-microbatch\-min\-rows\fR] [\fB\-\-microbatch\-max\-rows\fR] [\fB\-\-microbatch\-min\-bytes\fR] [\fB\-\-microbatch\-max\-bytes\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIRESOURCE\fR]
 .SH DESCRIPTION
 Plan or execute a bounded cursor backfill
 .SH OPTIONS
@@ -78,8 +78,32 @@ never
 \fB\-\-memory\-budget\fR \fI<BYTES>\fR
 Process memory budget, e.g. 4GiB or 512MiB
 .TP
+\fB\-\-segment\-target\-rows\fR \fI<ROWS>\fR
+Set the value named in this command\*(Aqs usage
+.TP
+\fB\-\-segment\-target\-bytes\fR \fI<BYTES>\fR
+Set the value named in this command\*(Aqs usage
+.TP
 \fB\-\-spill\-budget\fR \fI<BYTES>\fR
 Spill/disk budget, e.g. 64GiB or 512MiB
+.TP
+\fB\-\-segment\-max\-rows\fR \fI<ROWS>\fR
+Set the value named in this command\*(Aqs usage
+.TP
+\fB\-\-segment\-max\-bytes\fR \fI<BYTES>\fR
+Set the value named in this command\*(Aqs usage
+.TP
+\fB\-\-microbatch\-min\-rows\fR \fI<ROWS>\fR
+Set the value named in this command\*(Aqs usage
+.TP
+\fB\-\-microbatch\-max\-rows\fR \fI<ROWS>\fR
+Set the value named in this command\*(Aqs usage
+.TP
+\fB\-\-microbatch\-min\-bytes\fR \fI<BYTES>\fR
+Set the value named in this command\*(Aqs usage
+.TP
+\fB\-\-microbatch\-max\-bytes\fR \fI<BYTES>\fR
+Set the value named in this command\*(Aqs usage
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help

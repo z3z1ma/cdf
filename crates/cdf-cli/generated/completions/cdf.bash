@@ -233,7 +233,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__backfill)
-            opts="-q -v -h --from --to --target --execute --slice-size --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
+            opts="-q -v -h --from --to --target --execute --slice-size --segment-target-rows --segment-target-bytes --segment-max-rows --segment-max-bytes --microbatch-min-rows --microbatch-max-rows --microbatch-min-bytes --microbatch-max-bytes --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -252,6 +252,38 @@ _cdf() {
                     return 0
                     ;;
                 --slice-size)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --segment-target-rows)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --segment-target-bytes)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --segment-max-rows)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --segment-max-bytes)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --microbatch-min-rows)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --microbatch-max-rows)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --microbatch-min-bytes)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --microbatch-max-bytes)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -521,7 +553,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__explain)
-            opts="-q -v -h --select --filter --limit --order-by --to --no-pin --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
+            opts="-q -v -h --select --filter --limit --order-by --to --no-pin --segment-target-rows --segment-target-bytes --segment-max-rows --segment-max-bytes --microbatch-min-rows --microbatch-max-rows --microbatch-min-bytes --microbatch-max-bytes --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -544,6 +576,38 @@ _cdf() {
                     return 0
                     ;;
                 --to)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --segment-target-rows)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --segment-target-bytes)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --segment-max-rows)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --segment-max-bytes)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --microbatch-min-rows)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --microbatch-max-rows)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --microbatch-min-bytes)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --microbatch-max-bytes)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -1093,7 +1157,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__plan)
-            opts="-q -v -h --select --filter --limit --order-by --to --no-pin --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
+            opts="-q -v -h --select --filter --limit --order-by --to --no-pin --segment-target-rows --segment-target-bytes --segment-max-rows --segment-max-bytes --microbatch-min-rows --microbatch-max-rows --microbatch-min-bytes --microbatch-max-bytes --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1116,6 +1180,38 @@ _cdf() {
                     return 0
                     ;;
                 --to)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --segment-target-rows)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --segment-target-bytes)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --segment-max-rows)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --segment-max-bytes)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --microbatch-min-rows)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --microbatch-max-rows)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --microbatch-min-bytes)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --microbatch-max-bytes)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -1147,7 +1243,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__preview)
-            opts="-q -v -h --select --filter --limit --order-by --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
+            opts="-q -v -h --select --filter --limit --order-by --segment-target-rows --segment-target-bytes --segment-max-rows --segment-max-bytes --microbatch-min-rows --microbatch-max-rows --microbatch-min-bytes --microbatch-max-bytes --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1166,6 +1262,38 @@ _cdf() {
                     return 0
                     ;;
                 --order-by)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --segment-target-rows)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --segment-target-bytes)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --segment-max-rows)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --segment-max-bytes)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --microbatch-min-rows)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --microbatch-max-rows)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --microbatch-min-bytes)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --microbatch-max-bytes)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -1311,7 +1439,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__run)
-            opts="-q -v -h --to --jobs --stats-profile --explain-memory --loop --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
+            opts="-q -v -h --to --jobs --stats-profile --explain-memory --loop --segment-target-rows --segment-target-bytes --segment-max-rows --segment-max-bytes --microbatch-min-rows --microbatch-max-rows --microbatch-min-bytes --microbatch-max-bytes --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1322,6 +1450,38 @@ _cdf() {
                     return 0
                     ;;
                 --jobs)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --segment-target-rows)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --segment-target-bytes)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --segment-max-rows)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --segment-max-bytes)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --microbatch-min-rows)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --microbatch-max-rows)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --microbatch-min-bytes)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --microbatch-max-bytes)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;

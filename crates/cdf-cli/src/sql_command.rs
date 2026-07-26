@@ -4,7 +4,7 @@ use crate::{
     output::{CliError, CommandOutput},
     render::{
         RenderDocument,
-        primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
+        primitives::{KeyValuePanel, NextCommand, StatusKind, StatusLine, Table},
     },
     system_sql,
     system_sql::SystemSqlReport,
@@ -20,7 +20,6 @@ pub(crate) fn sql(cli: &Cli, args: SqlArgs) -> Result<CommandOutput, CliError> {
 
 fn sql_document(report: &SystemSqlReport) -> RenderDocument {
     let mut document = RenderDocument::new()
-        .push(SectionRule::new())
         .push(StatusLine::new(
             StatusKind::Success,
             format!(

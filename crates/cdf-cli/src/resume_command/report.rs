@@ -7,7 +7,7 @@ use crate::{
     progress::ProgressSnapshot,
     render::{
         RenderDocument,
-        primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine},
+        primitives::{KeyValuePanel, NextCommand, StatusKind, StatusLine},
         redaction::redact_uri_userinfo,
     },
 };
@@ -62,7 +62,6 @@ impl ResumeReport {
             StatusKind::Error
         };
         RenderDocument::new()
-            .push(SectionRule::new())
             .push(StatusLine::new(
                 status,
                 format!(

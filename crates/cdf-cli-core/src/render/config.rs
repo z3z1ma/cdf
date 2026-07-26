@@ -1,4 +1,4 @@
-use crate::terminal::{OutputChannel, PolicyMode, TerminalEnvironment, TerminalPolicy};
+use crate::terminal::{OutputChannel, PolicyMode, TerminalEnvironment, TerminalPolicy, Verbosity};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DisplayMode {
@@ -103,5 +103,9 @@ impl RenderConfig {
 
     pub fn policy(&self) -> TerminalPolicy {
         self.policy
+    }
+
+    pub fn verbosity(&self) -> Verbosity {
+        self.policy.verbosity
     }
 }

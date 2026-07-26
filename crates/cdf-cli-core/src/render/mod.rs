@@ -1,5 +1,3 @@
-#![allow(dead_code)] // 10x: WS3B creates the renderer boundary before WS3C/WS3D migrate command families into it.
-
 pub mod config;
 pub mod humanize;
 pub mod primitives;
@@ -16,7 +14,7 @@ mod tests {
         config::{DisplayMode, RenderEnv},
         humanize::{humanize_bytes, humanize_duration, humanize_rate, humanize_rows},
         primitives::{
-            KeyValuePanel, NextCommand, RenderPrimitive, SectionRule, StatusKind, StatusLine, Table,
+            ErrorBlock, KeyValuePanel, NextCommand, RenderPrimitive, StatusKind, StatusLine, Table,
         },
     };
     use crate::terminal::{PolicyMode, TerminalPolicy};
@@ -55,22 +53,18 @@ mod tests {
         assert_eq!(
             rendered,
             concat!(
-                "\u{1b}[36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u{1b}[0m\n",
-                "\u{1b}[32m✓\u{1b}[0m package finalized\n",
+                "\u{1b}[32m✓\u{1b}[0m \u{1b}[1mpackage finalized\u{1b}[0m\n",
                 "\n",
-                "\u{1b}[36mRun summary\u{1b}[0m\n",
-                "  rows      12.3k\n",
-                "  bytes     2.5 MiB\n",
-                "  duration  1m 05s\n",
+                "\u{1b}[1mRun summary\u{1b}[0m\n",
+                "\u{1b}[2m  rows      \u{1b}[0m12.3k\n",
+                "\u{1b}[2m  bytes     \u{1b}[0m2.5 MiB\n",
+                "\u{1b}[2m  duration  \u{1b}[0m1m 05s\n",
                 "\n",
-                "┌──────────┬────────────┬─────────┐\n",
-                "│ resource │ rows       │ rate    │\n",
-                "├──────────┼────────────┼─────────┤\n",
-                "│ events   │ 12.3k      │ 4 MiB/s │\n",
-                "│ users    │ [redacted] │ 988 B/s │\n",
-                "└──────────┴────────────┴─────────┘\n",
+                "\u{1b}[2mresource  rows        rate   \u{1b}[0m\n",
+                "events    12.3k       4 MiB/s\n",
+                "users     [redacted]  988 B/s\n",
                 "\n",
-                "\u{1b}[36m→\u{1b}[0m cdf inspect run run-123\n"
+                "\u{1b}[2mNext:\u{1b}[0m \u{1b}[36mcdf inspect run run-123\u{1b}[0m\n"
             )
         );
     }
@@ -83,7 +77,6 @@ mod tests {
         assert_eq!(
             rendered,
             concat!(
-                "--------------------------------------------------------\n",
                 "OK package finalized\n",
                 "\n",
                 "Run summary\n",
@@ -91,14 +84,11 @@ mod tests {
                 "  bytes     2.5 MiB\n",
                 "  duration  1m 05s\n",
                 "\n",
-                "+----------+------------+---------+\n",
-                "| resource | rows       | rate    |\n",
-                "+----------+------------+---------+\n",
-                "| events   | 12.3k      | 4 MiB/s |\n",
-                "| users    | [redacted] | 988 B/s |\n",
-                "+----------+------------+---------+\n",
+                "resource  rows        rate   \n",
+                "events    12.3k       4 MiB/s\n",
+                "users     [redacted]  988 B/s\n",
                 "\n",
-                "-> cdf inspect run run-123\n"
+                "Next: cdf inspect run run-123\n"
             )
         );
     }
@@ -196,10 +186,135 @@ mod tests {
     }
 
     #[test]
+    fn terminal_matrix_preserves_width_and_semantics_at_40_80_and_160_columns() {
+        for width in [40, 80, 160] {
+            for display_mode in [DisplayMode::Tty, DisplayMode::Headless] {
+                for unicode_supported in [false, true] {
+                    let config = RenderConfig::new(
+                        display_mode,
+                        width,
+                        RenderEnv {
+                            no_color: true,
+                            clicolor_force: false,
+                            unicode_supported,
+                        },
+                        TerminalPolicy {
+                            color: PolicyMode::Never,
+                            ..TerminalPolicy::default()
+                        },
+                    );
+                    let rendered = representative_document().render(&config);
+                    assert!(rendered.contains("package finalized"));
+                    assert!(rendered.contains("12.3k"));
+                    assert!(rendered.contains("cdf inspect run run-123"));
+                    for line in rendered.lines() {
+                        assert!(
+                            unicode_width::UnicodeWidthStr::width(line) <= width,
+                            "{display_mode:?}/{unicode_supported}/{width}: {line:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compact_primitives_wrap_without_losing_narrow_terminal_content() {
+        let config = RenderConfig::headless_for_width(40);
+        let document = RenderDocument::new()
+            .push(StatusLine::new(
+                StatusKind::Success,
+                "loaded a resource whose outcome needs a second line",
+            ))
+            .push(
+                KeyValuePanel::new("A deliberately long summary title that wraps").row(
+                    "a-deliberately-long-evidence-key-that-wraps",
+                    "and its complete evidence value remains visible",
+                ),
+            );
+        let rendered = document.render(&config);
+        let actionable = RenderDocument::new()
+            .push(NextCommand::new(
+                "cdf inspect run run-with-a-deliberately-long-identifier",
+            ))
+            .push(
+                ErrorBlock::new(
+                    "CDF-CLI-DELIBERATELY-LONG",
+                    "the causal error message remains readable at narrow widths",
+                )
+                .detail("offending-value", "a complete value that wraps")
+                .help("run a complete corrective command without truncation")
+                .suggestion("cdf validate --deep"),
+            )
+            .render(&config);
+
+        let compact = rendered
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        for expected in [
+            "loaded a resource",
+            "a-deliberately-long-evidence-key",
+            "complete evidence value remains visible",
+        ] {
+            let compact_expected = expected
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .collect::<String>();
+            assert!(
+                compact.contains(&compact_expected),
+                "missing {expected:?}:\n{rendered}"
+            );
+        }
+        assert!(
+            rendered
+                .lines()
+                .all(|line| unicode_width::UnicodeWidthStr::width(line) <= 40),
+            "narrow primitive output exceeded width:\n{rendered}"
+        );
+        for expected in [
+            "Next: cdf inspect run run-with-a-deliberately-long-identifier",
+            "error[CDF-CLI-DELIBERATELY-LONG]: the causal error message remains readable at narrow widths",
+            "offending-value: a complete value that wraps",
+            "help: run a complete corrective command without truncation",
+            "try: cdf validate --deep",
+        ] {
+            assert!(
+                actionable.contains(expected),
+                "actionable output was not copyable:\n{actionable}"
+            );
+        }
+    }
+
+    #[test]
+    fn progressive_disclosure_keeps_proof_available_without_dominating_normal_output() {
+        let document = RenderDocument::new()
+            .push(StatusLine::new(StatusKind::Success, "loaded"))
+            .push_verbose(KeyValuePanel::new("Proof").row("hash", "sha256:abc"));
+        let normal = document.render(&rich_config());
+        let verbose = document.render(&RenderConfig::new(
+            DisplayMode::Tty,
+            72,
+            RenderEnv {
+                no_color: false,
+                clicolor_force: false,
+                unicode_supported: true,
+            },
+            TerminalPolicy {
+                verbosity: crate::terminal::Verbosity::Verbose(1),
+                ..TerminalPolicy::default()
+            },
+        ));
+
+        assert!(normal.contains("loaded"));
+        assert!(!normal.contains("sha256:abc"));
+        assert!(verbose.contains("sha256:abc"));
+    }
+
+    #[test]
     fn width_is_applied_to_rules_and_cell_values() {
         let config = RenderConfig::headless_for_width(24);
         let rendered = RenderDocument::new()
-            .push(SectionRule::new())
             .push(
                 Table::new(["name", "value"])
                     .row(["long-resource-name", "full value is available via json"]),
@@ -226,14 +341,21 @@ mod tests {
         let unicode = RenderConfig::new(
             DisplayMode::Tty,
             20,
-            RenderEnv::default(),
-            TerminalPolicy::default(),
+            RenderEnv {
+                unicode_supported: true,
+                ..RenderEnv::default()
+            },
+            TerminalPolicy {
+                color: PolicyMode::Never,
+                ..TerminalPolicy::default()
+            },
         );
         let ascii = RenderConfig::new(
             DisplayMode::Tty,
             20,
             RenderEnv::default(),
             TerminalPolicy {
+                color: PolicyMode::Never,
                 unicode: PolicyMode::Never,
                 ..TerminalPolicy::default()
             },
@@ -305,7 +427,6 @@ mod tests {
 
     fn representative_document() -> RenderDocument {
         RenderDocument::new()
-            .push(SectionRule::new())
             .push(StatusLine::new(StatusKind::Success, "package finalized"))
             .blank_line()
             .push(

@@ -9,7 +9,7 @@ use crate::{
     render::{
         RenderDocument,
         humanize::humanize_bytes,
-        primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
+        primitives::{KeyValuePanel, NextCommand, StatusKind, StatusLine, Table},
         redaction::redact_uri_userinfo,
     },
 };
@@ -357,7 +357,6 @@ impl DoctorReport {
         );
 
         RenderDocument::new()
-            .push(SectionRule::new())
             .push(StatusLine::new(
                 if self.failed > 0 {
                     StatusKind::Error

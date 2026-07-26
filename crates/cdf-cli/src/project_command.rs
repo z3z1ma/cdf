@@ -17,7 +17,7 @@ use crate::{
     output::{CliError, CommandOutput},
     render::{
         RenderDocument,
-        primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
+        primitives::{KeyValuePanel, NextCommand, StatusKind, StatusLine, Table},
     },
 };
 
@@ -97,7 +97,6 @@ pub(crate) fn diff_schema(cli: &Cli) -> Result<CommandOutput, CliError> {
 
 fn init_document(report: &ProjectScaffoldReport) -> RenderDocument {
     RenderDocument::new()
-        .push(SectionRule::new())
         .push(StatusLine::new(
             StatusKind::Success,
             format!("initialized project {}", report.project_name),
@@ -128,7 +127,6 @@ fn validate_document(context: &ProjectContext, report: &ProjectValidationReport)
     );
 
     let mut document = RenderDocument::new()
-        .push(SectionRule::new())
         .push(StatusLine::new(
             StatusKind::Success,
             format!("validated project {}", context.config.project.name),
@@ -175,7 +173,6 @@ fn diff_schema_document(report: &DiffSchemaCliReport) -> RenderDocument {
     );
 
     let mut document = RenderDocument::new()
-        .push(SectionRule::new())
         .push(StatusLine::new(
             if report.diffs.is_empty() {
                 StatusKind::Success

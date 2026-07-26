@@ -45,6 +45,7 @@ members = [
     "crates/cdf-dest-postgres",
     "crates/cdf-project",
     "crates/cdf-cli",
+    "crates/cdf-cli-benchmarks",
     "crates/cdf-conformance",
     "crates/cdf-bench-core",
     "crates/cdf-benchmarks",

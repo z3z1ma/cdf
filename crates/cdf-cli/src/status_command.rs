@@ -4,7 +4,7 @@ use crate::{
     output::{CliError, CommandOutput},
     render::{
         RenderDocument,
-        primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
+        primitives::{KeyValuePanel, NextCommand, StatusKind, StatusLine, Table},
     },
     status_freshness,
     status_freshness::{
@@ -29,7 +29,6 @@ fn status_document(report: &StatusReport) -> RenderDocument {
         StatusKind::Success
     };
     let mut document = RenderDocument::new()
-        .push(SectionRule::new())
         .push(StatusLine::new(kind, summary))
         .blank_line()
         .push(

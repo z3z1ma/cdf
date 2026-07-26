@@ -23,7 +23,7 @@ use crate::{
     destination_uri::{destination_error_suggestions, redact_destination_uri, redact_error_value},
     error_catalog,
     output::{CliError, CommandOutput},
-    progress::human_progress_sink,
+    progress::{ProgressDelivery, human_progress_sink},
     reports::{
         PreparedReplayReportRef, ReplayPackageCliReport, RunDestinationReport, replay_event_details,
     },
@@ -606,6 +606,7 @@ pub(crate) fn replay_package(
     args: ReplayPackageArgs,
     execution: &cdf_runtime::ExecutionServices,
     destinations: &cdf_runtime::DestinationRegistry,
+    progress_delivery: ProgressDelivery,
 ) -> Result<CommandOutput, CliError> {
     let package = load_package_replay_context(cli, &args.package_dir)?;
     let mut replay_destination = build_replay_destination(
@@ -629,7 +630,7 @@ pub(crate) fn replay_package(
     let run_ledger = SqliteRunLedger::open(&state_store_path)?;
     let run = run_ledger.create_run(None)?;
     let store = package.project.state_store()?;
-    let progress = human_progress_sink(cli.json, &cli.terminal);
+    let progress = human_progress_sink(cli.json, &cli.terminal, progress_delivery);
     let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);
     let progress_recorder = ReplayProgressRecorder::new(
         &run_ledger,
@@ -643,8 +644,8 @@ pub(crate) fn replay_package(
         match replay_destination.replay(args.package_dir.clone(), &store, &progress_recorder) {
             Ok(report) => report,
             Err(error) => {
-                let error = match progress.as_ref() {
-                    Some(progress) => error.with_progress(progress.snapshot()),
+                let error = match progress {
+                    Some(progress) => error.with_progress(progress.finish()),
                     None => error,
                 };
                 return Err(error);
@@ -690,7 +691,7 @@ pub(crate) fn replay_package(
             "replay package",
             document,
             cli_report,
-            progress.snapshot(),
+            progress.finish(),
         ),
         None => CommandOutput::rendered("replay package", document, cli_report),
     }

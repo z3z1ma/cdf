@@ -3,7 +3,10 @@ use serde::Serialize;
 
 use crate::error_catalog;
 use crate::progress::ProgressSnapshot;
-use crate::render::{RenderConfig, RenderDocument};
+use crate::render::{
+    RenderConfig, RenderDocument,
+    primitives::{ErrorBlock, RenderPrimitive},
+};
 use crate::terminal::{OutputChannel, TerminalPolicy};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -364,16 +367,6 @@ impl InvocationResult {
         } else {
             let progress = error.progress;
             let exit_code = error.exit_code;
-            let message = error.message;
-            let details = error
-                .details
-                .map(|details| format_error_details(&details))
-                .unwrap_or_default();
-            let remediation = error
-                .remediation
-                .map(|remediation| format_remediation(*remediation))
-                .unwrap_or_default();
-            let suggestions = format_suggestions(&error.suggestions);
             let mut stderr = String::new();
             if let Some(progress) = progress {
                 let rendered = progress.render_for_config(render_config);
@@ -385,9 +378,26 @@ impl InvocationResult {
                     stderr.push('\n');
                 }
             }
-            stderr.push_str(&format!(
-                "error: {message}{details}{remediation}{suggestions}\n"
-            ));
+            let mut error_block = ErrorBlock::new(error.code, error.message);
+            if let Some(details) = error.details {
+                if let Some(object) = details.as_object() {
+                    for (key, value) in object {
+                        error_block = error_block.detail(key, display_json_value(value));
+                    }
+                } else {
+                    error_block = error_block.detail("details", details.to_string());
+                }
+            }
+            if let Some(remediation) = error.remediation {
+                error_block = error_block.help(remediation.summary);
+                for step in remediation.steps {
+                    error_block = error_block.help(step);
+                }
+            }
+            for suggestion in error.suggestions {
+                error_block = error_block.suggestion(suggestion);
+            }
+            stderr.push_str(&error_block.render(render_config));
             Self {
                 exit_code,
                 stdout: String::new(),
@@ -405,40 +415,9 @@ impl InvocationResult {
     }
 }
 
-fn format_error_details(details: &serde_json::Value) -> String {
-    let Some(object) = details.as_object() else {
-        return format!("\ndetails: {details}");
-    };
-    let mut rendered = String::from("\ndetails:");
-    for (key, value) in object {
-        rendered.push_str("\n  ");
-        rendered.push_str(key);
-        rendered.push_str(": ");
-        match value {
-            serde_json::Value::String(value) => rendered.push_str(value),
-            _ => rendered.push_str(&value.to_string()),
-        }
+fn display_json_value(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(value) => value.clone(),
+        _ => value.to_string(),
     }
-    rendered
-}
-
-fn format_remediation(remediation: ErrorRemediation) -> String {
-    let mut text = format!("\nremediation: {}", remediation.summary);
-    for step in &remediation.steps {
-        text.push_str("\n  - ");
-        text.push_str(step);
-    }
-    text
-}
-
-fn format_suggestions(suggestions: &[String]) -> String {
-    if suggestions.is_empty() {
-        return String::new();
-    }
-    let mut text = String::from("\nsuggestions:");
-    for suggestion in suggestions {
-        text.push_str("\n  - ");
-        text.push_str(suggestion);
-    }
-    text
 }

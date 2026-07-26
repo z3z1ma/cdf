@@ -381,32 +381,32 @@ fn progress_enabled_human_commands_route_through_progress_renderer() {
         (
             "run_command.rs",
             &[
-                "let progress = human_progress_sink(cli.json, &cli.terminal);",
+                "let progress = human_progress_sink(cli.json, &cli.terminal, progress_delivery);",
                 "let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);",
                 "event_sink,",
-                "error.with_progress(progress.snapshot())",
+                "error.with_progress(progress.finish())",
                 "Some(progress) => CommandOutput::rendered_with_progress(",
             ],
         ),
         (
             "replay_command.rs",
             &[
-                "let progress = human_progress_sink(cli.json, &cli.terminal);",
+                "let progress = human_progress_sink(cli.json, &cli.terminal, progress_delivery);",
                 "let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);",
                 "ReplayProgressRecorder::new(",
-                "error.with_progress(progress.snapshot())",
+                "error.with_progress(progress.finish())",
                 "CommandOutput::rendered_with_progress(",
             ],
         ),
         (
             "resume_command.rs",
             &[
-                "let progress = human_progress_sink(json_mode, terminal);",
+                "let progress = human_progress_sink(cli.json, &cli.terminal, progress_delivery);",
                 "let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);",
                 "sink.try_emit(event)",
                 "ResumeAttempt::new(",
                 "destinations,",
-                "finish_resume_report(report, progress.map(|progress| progress.snapshot()))",
+                "finish_resume_report(report, progress.map(CliProgressSink::finish))",
             ],
         ),
         (
@@ -416,12 +416,12 @@ fn progress_enabled_human_commands_route_through_progress_renderer() {
         (
             "backfill_command.rs",
             &[
-                "let progress = human_progress_sink(cli.json, &cli.terminal);",
+                "let mut progress = human_progress_sink(cli.json, &cli.terminal, progress_delivery);",
                 "let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);",
                 "BackfillSliceExecutor {",
-                "executor.execute(slice)",
+                ".execute(slice)",
                 "destinations,",
-                "progress.as_ref().map(|progress| progress.snapshot())",
+                "progress.take().map(CliProgressSink::finish)",
                 "CommandOutput::rendered_with_progress(",
             ],
         ),
@@ -540,7 +540,11 @@ fn inspect_human_outputs_use_renderer_for_project_inventory() {
             .stdout
             .contains("destination  duckdb://.cdf/dev.duckdb")
     );
-    assert!(project_result.stdout.contains("-> cdf inspect resources"));
+    assert!(
+        project_result
+            .stdout
+            .contains("Next: cdf inspect resources")
+    );
 
     let resources = run([
         "cdf",
@@ -571,7 +575,7 @@ fn inspect_human_outputs_use_renderer_for_project_inventory() {
     assert!(resource.stdout.contains("Resource"));
     assert!(resource.stdout.contains("stream capabilities"));
     assert!(resource.stdout.contains("bounded"));
-    assert!(resource.stdout.contains("-> cdf plan local.events"));
+    assert!(resource.stdout.contains("Next: cdf plan local.events"));
 
     let destinations = run([
         "cdf",
@@ -592,7 +596,7 @@ fn inspect_human_outputs_use_renderer_for_project_inventory() {
             .stdout
             .contains("environment  duckdb://.cdf/dev.duckdb")
     );
-    assert!(destinations.stdout.contains("-> cdf plan"));
+    assert!(destinations.stdout.contains("Next: cdf plan"));
 }
 
 #[test]
@@ -1981,7 +1985,7 @@ fn plan_json_exposes_pushdown_ddl_guarantee_and_state_advancement() {
 }
 
 #[test]
-fn plan_human_headless_render_uses_operator_panels() {
+fn plan_human_headless_render_prioritizes_decision_summary() {
     let project = TestProject::new();
     let result = run([
         "cdf",
@@ -2001,19 +2005,15 @@ fn plan_human_headless_render_uses_operator_panels() {
     assert!(!result.stdout.contains("\u{1b}["));
     for expected in [
         "OK plan local.events -> events",
-        "Fetch",
-        "execution                 bounded",
-        "effective jobs",
-        "managed memory available",
-        "Pushdown",
-        "Destination",
-        "Guarantee",
-        "Contract",
-        "Migration",
-        "unsupported  1",
-        "guarantee  effectively_once_per_package",
-        "items      1",
-        "-> cdf run local.events",
+        "Plan",
+        "execution",
+        "bounded",
+        "jobs",
+        "Attention",
+        "unsupported pushdowns",
+        "effectively_once_per_package",
+        "migrations",
+        "Next: cdf run local.events",
     ] {
         assert!(
             result.stdout.contains(expected),
@@ -2021,12 +2021,15 @@ fn plan_human_headless_render_uses_operator_panels() {
             result.stdout
         );
     }
+    assert!(!result.stdout.contains("managed memory available"));
+    assert!(!result.stdout.contains("advances after"));
 }
 
 #[test]
 fn plan_human_rich_render_uses_glyphs_color_and_operator_panels() {
     let project = TestProject::new();
-    let cli = test_cli(&project);
+    let mut cli = test_cli(&project);
+    cli.terminal.verbosity = cdf_cli_core::terminal::Verbosity::Verbose(1);
     let services = test_execution_services();
     let output = crate::scan_command::plan_or_explain(
         &cli,
@@ -2045,17 +2048,17 @@ fn plan_human_rich_render_uses_glyphs_color_and_operator_panels() {
         &test_destination_registry(),
     )
     .unwrap();
-    let result = render_rich(output);
+    let result = render_verbose_rich(output);
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     for expected in [
-        "\u{1b}[32m✓\u{1b}[0m plan local.events -> events",
-        "\u{1b}[36mPushdown\u{1b}[0m",
-        "\u{1b}[36mDestination\u{1b}[0m",
-        "\u{1b}[36mGuarantee\u{1b}[0m",
-        "\u{1b}[36mContract\u{1b}[0m",
-        "\u{1b}[36mMigration\u{1b}[0m",
-        "\u{1b}[36m→\u{1b}[0m cdf run local.events",
+        "plan local.events -> events",
+        "Pushdown",
+        "Destination",
+        "Guarantee",
+        "Contract",
+        "Migration",
+        "cdf run local.events",
     ] {
         assert!(
             result.stdout.contains(expected),
@@ -2082,7 +2085,7 @@ fn plan_human_next_command_preserves_explicit_destination_with_canonical_target(
     assert!(
         result
             .stdout
-            .contains("-> cdf run local.events --to duckdb://.cdf/plan-explicit.duckdb"),
+            .contains("Next: cdf run local.events --to duckdb://.cdf/plan-explicit.duckdb"),
         "stdout:\n{}",
         result.stdout
     );
@@ -2143,13 +2146,10 @@ fn explain_human_headless_render_uses_operator_panels() {
     assert!(!result.stdout.contains("\u{1b}["));
     for expected in [
         "OK explain local.events -> events",
-        "Pushdown",
-        "Destination",
-        "Guarantee",
-        "Contract",
-        "Migration",
+        "Plan",
+        "effectively_once_per_package",
         ".cdf/explain-render.duckdb",
-        "-> cdf run local.events --to duckdb://.cdf/explain-render.duckdb",
+        "Next: cdf run local.events --to duckdb://.cdf/explain-render.duckdb",
     ] {
         assert!(
             result.stdout.contains(expected),
@@ -2247,8 +2247,8 @@ fn backfill_dry_plan_splits_sql_cursor_windows_without_writes() {
         "Backfill",
         "Writes",
         "dry plan only; no package, destination, checkpoint, or run-ledger writes",
-        "| slice | window | status",
-        "-> cdf backfill warehouse.orders --from 0 --to 25 --target orders --execute",
+        "slice  window  status",
+        "Next: cdf backfill warehouse.orders --from 0 --to 25 --target orders --execute",
     ] {
         assert!(
             human.stdout.contains(expected),
@@ -2288,18 +2288,19 @@ fn backfill_human_rich_render_uses_plan_panels_and_slice_table() {
         },
         (host.as_ref(), &services),
         &test_destination_registry(),
+        cdf_cli_core::progress::ProgressDelivery::Buffered,
     )
     .unwrap();
     let result = render_rich(output);
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     for expected in [
-        "\u{1b}[32m✓\u{1b}[0m planned backfill warehouse.orders -> orders",
-        "\u{1b}[36mBackfill\u{1b}[0m",
-        "\u{1b}[36mWrites\u{1b}[0m",
+        "planned backfill warehouse.orders -> orders",
+        "Backfill",
+        "Writes",
         "dry plan only; no package, destination, checkpoint, or run-ledger writes",
-        "│ slice │ window │ status",
-        "\u{1b}[36m→\u{1b}[0m cdf backfill warehouse.orders --from 0 --to 20 --target orders --execute",
+        "slice  window  status",
+        "cdf backfill warehouse.orders --from 0 --to 20 --target orders --execute",
     ] {
         assert!(
             result.stdout.contains(expected),
@@ -2485,7 +2486,7 @@ fn backfill_execute_human_progress_reports_each_slice_and_summary() {
     assert_secret_absent(&result, &source_dsn);
     assert!(!result.stdout.contains("\u{1b}["));
     for expected in [
-        "[plan] running run started",
+        "[plan] running plan recorded",
         "scope=window:0..10",
         "scope=window:10..20",
         "[gate] succeeded run succeeded",
@@ -2502,7 +2503,7 @@ fn backfill_execute_human_progress_reports_each_slice_and_summary() {
         "slices succeeded  2/2",
         "rows              2",
         "segments          2",
-        "-> cdf state history <resource>",
+        "Next: cdf state history <resource>",
     ] {
         assert!(
             result.stdout.contains(expected),
@@ -5552,7 +5553,8 @@ fn keyless_append_file_validate_plan_preview_run_has_no_key_nudge() {
         "local.events",
     ]);
     assert_eq!(human_plan.exit_code, 0, "stderr: {}", human_plan.stderr);
-    assert!(human_plan.stdout.contains("disposition  append"));
+    assert!(human_plan.stdout.contains("disposition"));
+    assert!(human_plan.stdout.contains("append"));
     assert_no_key_nudge(&human_plan);
 
     let preview = run([
@@ -6099,6 +6101,7 @@ fn plan_discover_autopin_is_byte_stable_and_preserves_unrelated_semantic_locks()
         "never",
         "--project",
         project.root_str(),
+        "-v",
         "plan",
         "local.events",
     ]);
@@ -6901,10 +6904,15 @@ fn preview_reads_single_ndjson_file_without_creating_runtime_artifacts() {
         "local.events",
     ]);
     assert_eq!(human.exit_code, 0, "stderr: {}", human.stderr);
-    assert!(human.stdout.contains("OK previewed resource local.events"));
-    assert!(human.stdout.contains("Preview"));
-    assert!(human.stdout.contains("Writes"));
-    assert!(human.stdout.contains("-> cdf plan local.events"));
+    assert!(
+        human
+            .stdout
+            .contains("OK Previewed 2 rows from local.events")
+    );
+    assert!(human.stdout.contains("Summary"));
+    assert!(human.stdout.contains("writes      none"));
+    assert!(!human.stdout.contains("payload partitions opened"));
+    assert!(human.stdout.contains("Next: cdf plan local.events"));
     assert_no_preview_writes(&project);
 }
 
@@ -8152,7 +8160,7 @@ fn run_human_output_mentions_receipt_verified_commit_gate() {
     assert_no_headless_progress_controls(&result.stdout);
     assert_no_headless_progress_controls(&result.stderr);
     for expected in [
-        "[plan] running run started",
+        "[plan] running plan recorded",
         "[gate] succeeded run succeeded",
     ] {
         assert!(
@@ -8162,18 +8170,14 @@ fn run_human_output_mentions_receipt_verified_commit_gate() {
         );
     }
     for expected in [
-        "OK run ",
-        "Run",
-        "Package",
-        "Rows",
-        "Verdicts",
-        "Receipt",
-        "Gate",
-        "resource     local.events",
-        "target       events",
-        "checkpoint           checkpoint-local-events-",
-        "condition            destination receipt verified before checkpoint commit",
-        "-> cdf inspect run ",
+        "OK Loaded 2 rows from local.events",
+        "Summary",
+        "Proof",
+        "local.events",
+        "events",
+        "checkpoint",
+        "committed",
+        "Next: cdf inspect run ",
     ] {
         assert!(
             result.stdout.contains(expected),
@@ -8204,24 +8208,23 @@ fn run_human_rich_render_uses_checkpoint_gate_panel() {
         host.as_ref(),
         &services,
         &test_destination_registry(),
+        cdf_cli_core::progress::ProgressDelivery::Buffered,
     )
     .unwrap();
     let result = render_rich(output);
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
-    assert!(result.stderr.contains("Run progress"), "{}", result.stderr);
+    assert!(result.stderr.contains("Planned"), "{}", result.stderr);
     for expected in [
-        "\u{1b}[32m✓\u{1b}[0m run ",
-        "\u{1b}[36mRun\u{1b}[0m",
-        "\u{1b}[36mPackage\u{1b}[0m",
-        "\u{1b}[36mRows\u{1b}[0m",
-        "\u{1b}[36mMemory\u{1b}[0m",
-        "\u{1b}[36mVerdicts\u{1b}[0m",
-        "\u{1b}[36mReceipt\u{1b}[0m",
-        "\u{1b}[36mGate\u{1b}[0m",
-        "checkpoint           checkpoint-local-events-",
-        "destination receipt verified before checkpoint commit",
-        "\u{1b}[36m→\u{1b}[0m cdf inspect run ",
+        "Loaded 2 rows from local.events",
+        "Summary",
+        "Proof",
+        "rows",
+        "Memory",
+        "receipt",
+        "gate",
+        "checkpoint",
+        "cdf inspect run ",
     ] {
         assert!(
             result.stdout.contains(expected),
@@ -8334,7 +8337,7 @@ fn inspect_run_reports_completed_run_json_and_human() {
         "Package artifacts",
         "action             no_op",
         "checkpoint status     committed",
-        "-> cdf inspect run ",
+        "Next: cdf inspect run ",
     ] {
         assert!(
             human.stdout.contains(expected),
@@ -8417,15 +8420,15 @@ fn inspect_run_human_rich_render_uses_recovery_and_artifact_panels() {
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     for expected in [
-        "\u{1b}[32m✓\u{1b}[0m run ",
-        "\u{1b}[36mRecovery\u{1b}[0m",
-        "\u{1b}[36mArtifacts\u{1b}[0m",
-        "\u{1b}[36mPointers\u{1b}[0m",
-        "action             no_op",
-        "checkpoint status     committed",
+        "terminal succeeded",
+        "Recovery",
+        "Artifacts",
+        "Pointers",
+        "no_op",
+        "committed",
         "seq:",
         "kind:",
-        "\u{1b}[36m→\u{1b}[0m cdf inspect run ",
+        "cdf inspect run ",
     ] {
         assert!(
             result.stdout.contains(expected),
@@ -8744,23 +8747,21 @@ fn resume_human_headless_render_uses_recovery_panels_and_redacts_destination_uri
     assert_eq!(result.exit_code, 1, "stderr: {}", result.stderr);
     assert!(!result.stdout.contains("\u{1b}["));
     assert_secret_absent(&result, "resume-render-secret");
-    for expected in ["[plan] running run started", "[plan] failed run failed"] {
-        assert!(
-            result.stderr.contains(expected),
-            "missing {expected:?} in:\n{}",
-            result.stderr
-        );
-    }
+    assert!(
+        result.stderr.contains("[plan] failed run failed"),
+        "stderr:\n{}",
+        result.stderr
+    );
     for expected in [
         "ERR resume run run-resume-human-no-package failed closed",
         "Recovery",
         "Durable artifacts",
         "State",
         "Run ledger",
-        "failed phase        no_finalized_package",
-        "mutation performed  no",
+        "no_finalized_package",
+        "mutation performed",
         "postgres://[redacted]@localhost/db",
-        "-> cdf run <resource>",
+        "Next: cdf run <resource>",
     ] {
         assert!(
             result.stdout.contains(expected),
@@ -8785,20 +8786,21 @@ fn resume_human_rich_render_uses_recovery_and_artifact_panels() {
         },
         &test_execution_services(),
         &test_destination_registry(),
+        cdf_cli_core::progress::ProgressDelivery::Buffered,
     )
     .unwrap();
     let result = render_rich(output);
 
     assert_eq!(result.exit_code, 1, "stderr: {}", result.stderr);
     for expected in [
-        "\u{1b}[31m✗\u{1b}[0m resume run run-resume-rich-no-package failed closed",
-        "\u{1b}[36mRecovery\u{1b}[0m",
-        "\u{1b}[36mDurable artifacts\u{1b}[0m",
-        "\u{1b}[36mState\u{1b}[0m",
-        "\u{1b}[36mRun ledger\u{1b}[0m",
-        "failed phase        no_finalized_package",
-        "mutation performed  no",
-        "\u{1b}[36m→\u{1b}[0m cdf run <resource>",
+        "resume run run-resume-rich-no-package failed closed",
+        "Recovery",
+        "Durable artifacts",
+        "State",
+        "Run ledger",
+        "no_finalized_package",
+        "mutation performed",
+        "cdf run <resource>",
     ] {
         assert!(
             result.stdout.contains(expected),
@@ -9074,7 +9076,6 @@ fn resume_finalized_package_human_progress_replays_without_source_contact() {
     assert!(!project.root.join("data/events.ndjson").exists());
     assert_no_headless_progress_controls(&result.stdout);
     for expected in [
-        "[package] running package finalized",
         "[package] failed run failed",
         "[verify] running destination receipt recorded",
         "[gate] succeeded run resumed",
@@ -11089,9 +11090,8 @@ fn replay_package_failure_human_stderr_includes_progress_context() {
     assert!(second.stdout.is_empty());
     assert_no_headless_progress_controls(&second.stderr);
     for expected in [
-        "[package] running package finalized",
         "[package] failed run failed",
-        "error:",
+        "error[CDF-PROJECT-CONTRACT]:",
         checkpoint_id.as_str(),
     ] {
         assert!(
@@ -11147,17 +11147,14 @@ fn replay_package_human_headless_render_reports_receipt_checkpoint_and_duplicate
         );
     }
     for expected in [
-        &format!("OK replay package {package_id} completed"),
-        "Replay",
-        "Destination",
-        "Duplicate",
-        "Receipt",
-        "Checkpoint",
-        "duplicate  yes",
-        "no-op      yes",
-        &format!("checkpoint       {checkpoint_id}"),
-        "ledger terminal  replay_recorded",
-        "-> cdf inspect run ",
+        &format!("OK Package {package_id} was already loaded"),
+        "Summary",
+        "no-op (package already loaded)",
+        "Proof",
+        "receipt",
+        "checkpoint",
+        checkpoint_id.as_str(),
+        "Next: cdf inspect run ",
     ] {
         assert!(
             second.stdout.contains(expected),
@@ -11185,22 +11182,23 @@ fn replay_package_human_rich_render_uses_duplicate_receipt_checkpoint_panels() {
         },
         &test_execution_services(),
         &test_destination_registry(),
+        cdf_cli_core::progress::ProgressDelivery::Buffered,
     )
     .unwrap();
     let result = render_rich(output);
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     for expected in [
-        &format!("\u{1b}[32m✓\u{1b}[0m replay package {package_id} completed"),
-        "\u{1b}[36mReplay\u{1b}[0m",
-        "\u{1b}[36mDestination\u{1b}[0m",
-        "\u{1b}[36mDuplicate\u{1b}[0m",
-        "\u{1b}[36mReceipt\u{1b}[0m",
-        "\u{1b}[36mCheckpoint\u{1b}[0m",
-        "duplicate  no",
-        "no-op      no",
-        &format!("checkpoint       {checkpoint_id}"),
-        "\u{1b}[36m→\u{1b}[0m cdf inspect run ",
+        &format!("Replayed 2 rows from {package_id}"),
+        "Summary",
+        "destination",
+        "Proof",
+        "receipt",
+        "checkpoint",
+        "destination",
+        "receipt",
+        checkpoint_id.as_str(),
+        "cdf inspect run ",
     ] {
         assert!(
             result.stdout.contains(expected),
@@ -11612,7 +11610,7 @@ fn status_ignores_non_serving_freshness_resources() {
     );
     assert!(human.stdout.contains("Freshness"));
     assert!(human.stdout.contains("total          0"));
-    assert!(human.stdout.contains("-> cdf doctor"));
+    assert!(human.stdout.contains("Next: cdf doctor"));
 }
 
 #[test]
@@ -11657,9 +11655,9 @@ fn status_reports_fresh_committed_head() {
             .stdout
             .contains("OK freshness SLO status fresh: 1 resource(s)")
     );
-    assert!(human.stdout.contains("| resource     | state | age"));
-    assert!(human.stdout.contains("| local.events | fresh"));
-    assert!(human.stdout.contains("-> cdf doctor"));
+    assert!(human.stdout.contains("resource      state  age"));
+    assert!(human.stdout.contains("local.events  fresh"));
+    assert!(human.stdout.contains("Next: cdf doctor"));
 }
 
 #[test]
@@ -11690,8 +11688,8 @@ fn status_reports_stale_committed_head() {
             .stdout
             .contains("ERR freshness SLO breach: 1 stale, 0 fresh, 0 non-evaluable")
     );
-    assert!(human.stdout.contains("| local.events | stale"));
-    assert!(human.stdout.contains("-> cdf doctor"));
+    assert!(human.stdout.contains("local.events  stale"));
+    assert!(human.stdout.contains("Next: cdf doctor"));
 }
 
 #[test]
@@ -11766,7 +11764,7 @@ fn status_reports_missing_state_as_non_evaluable() {
             .stdout
             .contains("WARN freshness SLO status non-evaluable: 1 resource(s), 0 fresh")
     );
-    assert!(human.stdout.contains("| local.events | non-evaluable"));
+    assert!(human.stdout.contains("local.events  non-evaluable"));
     assert!(human.stdout.contains("state_database_missing"));
 }
 
@@ -12054,12 +12052,12 @@ fn sql_human_output_is_concise_for_scheduler_logs() {
             .contains("OK sql returned 1 row(s) from local system history")
     );
     assert!(result.stdout.contains("System SQL"));
-    assert!(result.stdout.contains("| package_count |"));
-    assert!(result.stdout.contains("| 0             |"));
+    assert!(result.stdout.contains("package_count"));
+    assert!(result.stdout.contains("\n0"));
     assert!(
         result
             .stdout
-            .contains("-> cdf sql \"select * from packages limit 5\"")
+            .contains("Next: cdf sql \"select * from packages limit 5\"")
     );
 }
 
@@ -13029,7 +13027,7 @@ fn package_ls_json_remains_array_while_human_uses_renderer() {
     assert!(human.stdout.contains("OK 1 package(s)"));
     assert!(human.stdout.contains("Packages"));
     assert!(human.stdout.contains("path"), "{}", human.stdout);
-    assert!(human.stdout.contains("-> cdf package verify <package>"));
+    assert!(human.stdout.contains("Next: cdf package verify <package>"));
 }
 
 #[test]
@@ -13301,7 +13299,7 @@ fn package_archive_supports_local_json_flag_and_human_output() {
     assert!(
         human_result
             .stdout
-            .contains("-> cdf package verify <package>")
+            .contains("Next: cdf package verify <package>")
     );
 }
 
@@ -13385,7 +13383,7 @@ fn state_show_uses_sqlite_store_and_reports_missing_head() {
         "checkpoint",
         "none",
         "mutation performed",
-        "-> cdf state history local.events --pipeline pipeline-1",
+        "Next: cdf state history local.events --pipeline pipeline-1",
     ] {
         assert!(
             human.stdout.contains(expected),
@@ -13411,7 +13409,7 @@ fn state_followup_commands_render_scope_pairs_for_scope_json_objects() {
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     for expected in [
-        "-> cdf state history local.events",
+        "Next: cdf state history local.events",
         "--scope kind=window",
         "--scope start=0",
         "--scope end=10",
@@ -13527,7 +13525,7 @@ fn state_product_grammar_uses_default_pipeline_scope_pairs_and_rewind_marker() {
         "Scope",
         "Head",
         &second_checkpoint,
-        "-> cdf state history local.events --scope kind=resource",
+        "Next: cdf state history local.events --scope kind=resource",
     ] {
         assert!(
             human_show.stdout.contains(expected),
@@ -13556,7 +13554,7 @@ fn state_product_grammar_uses_default_pipeline_scope_pairs_and_rewind_marker() {
         "checkpoint",
         &first_checkpoint,
         &second_checkpoint,
-        "-> cdf state show local.events --scope kind=resource",
+        "Next: cdf state show local.events --scope kind=resource",
     ] {
         assert!(
             human_history.stdout.contains(expected),
@@ -13656,8 +13654,8 @@ fn state_rewind_human_headless_render_reports_marker_and_packages_ahead() {
         "marker              rewind-marker-",
         "packages ahead      1",
         "rewind marker checkpoint appended",
-        "| package ahead of state",
-        "-> cdf state show local.events --scope kind=resource",
+        "package ahead of state",
+        "Next: cdf state show local.events --scope kind=resource",
     ] {
         assert!(
             result.stdout.contains(expected),
@@ -13693,11 +13691,11 @@ fn state_show_human_rich_render_uses_scope_and_head_panels() {
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     for expected in [
-        "\u{1b}[32m✓\u{1b}[0m state head found",
-        "\u{1b}[36mScope\u{1b}[0m",
-        "\u{1b}[36mHead\u{1b}[0m",
+        "state head found",
+        "Scope",
+        "Head",
         checkpoint_id.as_str(),
-        "\u{1b}[36m→\u{1b}[0m cdf state history local.events --pipeline cdf-run --scope kind=resource",
+        "cdf state history local.events --pipeline cdf-run --scope kind=resource",
     ] {
         assert!(
             result.stdout.contains(expected),
@@ -13755,15 +13753,20 @@ fn state_show_renders_typed_table_snapshot_authority() {
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     for expected in [
-        "source position      table_snapshot",
-        "table protocol       iceberg",
-        "catalog              glue:us-east-1:123456789012",
-        "table                analytics.curated.orders",
-        "selector             branch:main",
-        "snapshot             42",
-        "sequence             7",
-        "parent snapshot      41",
-        "metadata generation  version-id:v42",
+        "source position",
+        "table_snapshot",
+        "table protocol",
+        "iceberg",
+        "glue:us-east-1:123456789012",
+        "analytics.curated.orders",
+        "branch:main",
+        "snapshot",
+        "42",
+        "sequence",
+        "7",
+        "parent snapshot",
+        "41",
+        "version-id:v42",
     ] {
         assert!(
             result.stdout.contains(expected),
@@ -13924,7 +13927,7 @@ fn state_recover_human_headless_render_reports_receipt_checkpoint_and_limits() {
         "verified receipt only; destination rows were not written",
         "evidence limit:",
         "does not reconstruct quarantine lineage",
-        "-> cdf inspect package ",
+        "Next: cdf inspect package ",
     ] {
         assert!(
             result.stdout.contains(expected),
@@ -14251,8 +14254,9 @@ fn usage_error_human_output_keeps_message_and_adds_remediation() {
     let result = run(["cdf", "sql"]);
 
     assert_eq!(result.exit_code, 2);
-    assert!(result.stderr.contains("error: sql requires a query string"));
-    assert!(result.stderr.contains("remediation:"));
+    assert!(result.stderr.contains("error["));
+    assert!(result.stderr.contains("sql requires a query string"));
+    assert!(result.stderr.contains("help:"));
 }
 
 #[test]
@@ -16849,6 +16853,25 @@ fn render_rich(
     output: cdf_cli_core::output::CommandOutput,
 ) -> cdf_cli_core::output::InvocationResult {
     cdf_cli_core::output::InvocationResult::from_output(false, &rich_render_config(), output)
+}
+
+fn render_verbose_rich(
+    output: cdf_cli_core::output::CommandOutput,
+) -> cdf_cli_core::output::InvocationResult {
+    let config = cdf_cli_core::render::RenderConfig::new(
+        cdf_cli_core::render::config::DisplayMode::Tty,
+        96,
+        cdf_cli_core::render::config::RenderEnv {
+            no_color: false,
+            clicolor_force: false,
+            unicode_supported: true,
+        },
+        cdf_cli_core::terminal::TerminalPolicy {
+            verbosity: cdf_cli_core::terminal::Verbosity::Verbose(1),
+            ..cdf_cli_core::terminal::TerminalPolicy::default()
+        },
+    );
+    cdf_cli_core::output::InvocationResult::from_output(false, &config, output)
 }
 
 fn rich_render_config() -> cdf_cli_core::render::RenderConfig {

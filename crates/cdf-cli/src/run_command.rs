@@ -25,7 +25,7 @@ use crate::{
     },
     error_catalog,
     output::{CliError, CommandOutput},
-    progress::human_progress_sink,
+    progress::{ProgressDelivery, human_progress_sink},
     project_run_resource::prepare_runtime_resource_for_cli,
     reports::{
         AdhocRunReport, RunCliReport, RunDestinationReport, RunMemoryReport, RunNoOpCliReport,
@@ -43,6 +43,7 @@ pub(crate) fn run(
     host: &cdf_engine::StandaloneExecutionHost,
     services: &cdf_runtime::ExecutionServices,
     destinations: &cdf_runtime::DestinationRegistry,
+    progress_delivery: ProgressDelivery,
 ) -> Result<CommandOutput, CliError> {
     if args.loop_mode {
         return Err(CliError::not_supported_with(
@@ -134,7 +135,7 @@ pub(crate) fn run(
     run_services.tighten_run_job_ceiling(scheduler.effective_jobs.jobs)?;
     let destination_report =
         RunDestinationReport::from_project(&destination.describe(), destination.target());
-    let progress = human_progress_sink(cli.json, &cli.terminal);
+    let progress = human_progress_sink(cli.json, &cli.terminal, progress_delivery);
     let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);
     let report = match host
         .block_on_root(run_project_with_scheduler_and_telemetry(
@@ -160,8 +161,8 @@ pub(crate) fn run(
         Ok(report) => report,
         Err(error) => {
             let error = CliError::from(error);
-            let error = match progress.as_ref() {
-                Some(progress) => error.with_progress(progress.snapshot()),
+            let error = match progress {
+                Some(progress) => error.with_progress(progress.finish()),
                 None => error,
             };
             return Err(error);
@@ -188,7 +189,7 @@ pub(crate) fn run(
                     "run",
                     document,
                     cli_report,
-                    progress.snapshot(),
+                    progress.finish(),
                 ),
                 None => CommandOutput::rendered("run", document, cli_report),
             }
@@ -211,7 +212,7 @@ pub(crate) fn run(
                     "run",
                     document,
                     cli_report,
-                    progress.snapshot(),
+                    progress.finish(),
                 ),
                 None => CommandOutput::rendered("run", document, cli_report),
             }

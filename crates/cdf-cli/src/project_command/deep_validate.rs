@@ -20,7 +20,7 @@ use crate::{
     },
     render::{
         RenderDocument,
-        primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
+        primitives::{KeyValuePanel, NextCommand, StatusKind, StatusLine, Table},
         redaction::redact_uri_userinfo,
     },
     scan_command::{default_target_for_resource, validate_resource_source_authority},
@@ -844,7 +844,6 @@ fn document(report: &DeepValidateReport) -> RenderDocument {
         StatusKind::Error
     };
     let mut document = RenderDocument::new()
-        .push(SectionRule::new())
         .push(StatusLine::new(
             status,
             format!(

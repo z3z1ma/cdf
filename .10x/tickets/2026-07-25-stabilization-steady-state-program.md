@@ -38,8 +38,8 @@ consumer path. Other DataFusion bridges remain parked.
 
 ### WS-C — Daily-driver CLI and release readiness
 
-1. `.10x/tickets/2026-07-11-p1-cx2-compact-renderer-errors.md`
-2. `.10x/tickets/2026-07-11-p1-cx3-live-progress-activity.md`
+1. `.10x/tickets/done/2026-07-11-p1-cx2-compact-renderer-errors.md` — done.
+2. `.10x/tickets/done/2026-07-11-p1-cx3-live-progress-activity.md` — done.
 3. `.10x/tickets/2026-07-11-p1-cx4-cli-conformance-performance.md`
 4. `.10x/tickets/2026-07-11-p1-ws9-cli-experience-excellence.md`
 5. `.10x/tickets/2026-07-08-p1-product-ws8-release-engineering.md`
@@ -116,6 +116,10 @@ WASM, distributed execution, CDC, and new connectors are not P3 closure dependen
   capabilities only for retained segments, records skipped/retained rows and bytes, and retains
   every segment conservatively when evidence is absent or unsupported. The current package/engine
   integration surface passed 280 tests and strict all-target Clippy.
+- 2026-07-25: WS-C's holistic implementation tranche is complete. CX2/CX3 closed after a
+  renderer-wide information-architecture rewrite, bounded nonblocking live progress, 320 passing
+  CLI/core tests, strict Clippy, 19.26 million governed events/second, and a real five-partition
+  public HTTPS-to-DuckDB smoke. CX4 now owns the hosted overhead and recording closure only.
 
 ## Blockers
 

@@ -13,8 +13,8 @@ Turn the P1 renderer foundation into a daily-driver CLI with progressive disclos
 ## Children
 
 - `.10x/tickets/cancelled/2026-07-11-p1-cx1-terminal-policy-help.md`
-- `.10x/tickets/2026-07-11-p1-cx2-compact-renderer-errors.md`
-- `.10x/tickets/2026-07-11-p1-cx3-live-progress-activity.md`
+- `.10x/tickets/done/2026-07-11-p1-cx2-compact-renderer-errors.md`
+- `.10x/tickets/done/2026-07-11-p1-cx3-live-progress-activity.md`
 - `.10x/tickets/2026-07-11-p1-cx4-cli-conformance-performance.md`
 
 ## Acceptance criteria
@@ -35,6 +35,15 @@ None. CX4 depends on the earlier implementation children and P3 lab telemetry.
 - 2026-07-25: CX1 moved terminal with its implemented terminal/help foundation retained and only
   the unratified pager remainder cancelled. CX2 is unblocked; WS9 does not require speculative
   paging machinery to deliver the ratified daily-driver experience.
+- 2026-07-25: The user required WS-C to execute as a holistic CLI redesign rather than a sequence
+  of disconnected cosmetic tickets. CX2-CX4 remain evidence owners, but implementation is one
+  coordinated tranche: shared information architecture and primitives, execution summaries and
+  errors, nonblocking live progress, then a single terminal/channel/accessibility/performance
+  conformance matrix. No child may preserve a conflicting intermediate visual grammar.
+- 2026-07-25: CX2 and CX3 are done from the coordinated tranche. Static output, error grammar,
+  progressive disclosure, and live progress share one renderer vocabulary; the complete CLI/core
+  suite, strict Clippy, local benchmark, and public HTTPS-to-DuckDB smoke are green. CX4 owns only
+  the hosted overhead cell, canonical recordings, and aggregate adversarial review.
 
 ## Evidence expectations
 

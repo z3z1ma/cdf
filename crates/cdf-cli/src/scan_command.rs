@@ -31,7 +31,7 @@ use crate::{
     render::{
         RenderDocument,
         humanize::{humanize_bytes, humanize_rows},
-        primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
+        primitives::{KeyValuePanel, NextCommand, StatusKind, StatusLine, Table},
         redaction::redact_uri_userinfo,
     },
     reports::{
@@ -765,8 +765,34 @@ fn scan_report_document(
         .as_ref()
         .map(|scheduler| humanize_bytes(scheduler.managed_memory_available_bytes))
         .unwrap_or_else(|| "not declared".to_owned());
-    let document = RenderDocument::new()
-        .push(SectionRule::new())
+    let summary = KeyValuePanel::new("Plan")
+        .row("resource", report.resource_id.clone())
+        .row("destination", report.destination.destination_id.clone())
+        .row("target", report.destination.target.clone())
+        .row("location", safe_display_value(&report.destination.label))
+        .row(
+            "execution",
+            execution_extent_name(&report.explain.execution_extent),
+        )
+        .row("partitions", report.will_fetch.partition_count.to_string())
+        .row("jobs", scheduler_jobs.clone())
+        .row(
+            "projection",
+            list_or_default(&report.will_fetch.projection, "all fields"),
+        )
+        .row(
+            "filters",
+            list_or_default(&report.will_fetch.filters, "none"),
+        )
+        .row("limit", optional_u64(report.will_fetch.limit))
+        .row("disposition", report.destination.disposition.clone())
+        .row("guarantee", report.delivery_guarantee.clone())
+        .row(
+            "schema fields",
+            report.resource_schema.fields.len().to_string(),
+        )
+        .row("migrations", migrations.to_string());
+    let mut document = RenderDocument::new()
         .push(StatusLine::new(
             StatusKind::Success,
             format!(
@@ -775,7 +801,21 @@ fn scan_report_document(
             ),
         ))
         .blank_line()
-        .push(
+        .push(summary);
+    if inexact > 0 || unsupported > 0 {
+        document = document.blank_line().push(
+            KeyValuePanel::new("Attention")
+                .row("inexact pushdowns", inexact.to_string())
+                .row("unsupported pushdowns", unsupported.to_string())
+                .row(
+                    "effect",
+                    "CDF evaluates these operations after source extraction",
+                ),
+        );
+    }
+    let document = document
+        .blank_line()
+        .push_verbose(
             KeyValuePanel::new("Fetch")
                 .row("project", report.project.clone())
                 .row("environment", report.environment.clone())
@@ -799,7 +839,7 @@ fn scan_report_document(
                 .row("limit", optional_u64(report.will_fetch.limit)),
         )
         .blank_line()
-        .push(
+        .push_verbose(
             KeyValuePanel::new("Pushdown")
                 .row("pushed", pushed.to_string())
                 .row("inexact", inexact.to_string())
@@ -808,7 +848,7 @@ fn scan_report_document(
                 .row("limit", yes_no(report.explain.limit_pushed)),
         )
         .blank_line()
-        .push(
+        .push_verbose(
             KeyValuePanel::new("Destination")
                 .row("destination", report.destination.destination_id.clone())
                 .row("target", report.destination.target.clone())
@@ -818,7 +858,7 @@ fn scan_report_document(
                 .row("idempotency", report.destination.idempotency.clone()),
         )
         .blank_line()
-        .push(
+        .push_verbose(
             KeyValuePanel::new("Guarantee")
                 .row("guarantee", report.delivery_guarantee.clone())
                 .row(
@@ -828,7 +868,7 @@ fn scan_report_document(
                 .row("basis", report.delivery_guarantee_detail.basis.clone()),
         )
         .blank_line()
-        .push(
+        .push_verbose(
             KeyValuePanel::new("Contract")
                 .row("schema", report.resource_schema.schema_hash.clone())
                 .row("normalizer", report.normalization.version.clone())
@@ -860,7 +900,7 @@ fn scan_report_document(
                 ),
         );
     let mut document = if let Some(snapshot) = &report.schema_snapshot {
-        let document = document.blank_line().push(
+        let document = document.blank_line().push_verbose(
             KeyValuePanel::new("Schema Snapshot")
                 .row("outcome", snapshot.outcome)
                 .row("hash", snapshot.schema_hash.clone())
@@ -871,14 +911,14 @@ fn scan_report_document(
         if let Some(discovery) = &snapshot.discovery {
             document
                 .blank_line()
-                .push(discovery_coverage_panel(discovery))
+                .push_verbose(discovery_coverage_panel(discovery))
         } else {
             document
         }
     } else {
         document
     };
-    document = document.blank_line().push(
+    document = document.blank_line().push_verbose(
         KeyValuePanel::new("Migration")
             .row("supported", yes_no(report.ddl_preview.supported))
             .row("support", report.ddl_preview.migration_support.clone())
@@ -896,7 +936,7 @@ fn scan_report_document(
                 ])
             },
         );
-        document = document.blank_line().push(table);
+        document = document.blank_line().push_verbose(table);
     }
 
     document
@@ -952,14 +992,40 @@ fn next_run_command(resource_id: &str, target: &str, destination_uri: Option<&st
 }
 
 fn preview_document(report: &PreviewReport) -> RenderDocument {
+    let mut summary = KeyValuePanel::new("Summary")
+        .row("resource", report.resource.clone())
+        .row("rows", humanize_rows(report.row_count))
+        .row("data", humanize_bytes(report.byte_count))
+        .row("partitions", report.selected_partition_count.to_string())
+        .row("batches", report.inspected_batch_count.to_string())
+        .row("fields", report.fields.len().to_string())
+        .row("truncated", yes_no(report.truncated))
+        .row("writes", "none");
+    if report.quarantined_row_count > 0
+        || report.residual_row_count > 0
+        || report.terminal_quarantine_count > 0
+    {
+        summary = summary
+            .row("quarantined rows", report.quarantined_row_count.to_string())
+            .row("rows with residuals", report.residual_row_count.to_string())
+            .row(
+                "quarantined files",
+                report.terminal_quarantine_count.to_string(),
+            );
+    }
     let document = RenderDocument::new()
-        .push(SectionRule::new())
         .push(StatusLine::new(
             StatusKind::Success,
-            format!("previewed resource {}", report.resource_id),
+            format!(
+                "Previewed {} rows from {}",
+                humanize_rows(report.row_count),
+                report.resource_id
+            ),
         ))
         .blank_line()
-        .push(
+        .push(summary)
+        .blank_line()
+        .push_verbose(
             KeyValuePanel::new("Preview")
                 .row("resource", report.resource.clone())
                 .row("partition", report.partition.clone())
@@ -1019,7 +1085,7 @@ fn preview_document(report: &PreviewReport) -> RenderDocument {
                 .row("fields", report.fields.join(", ")),
         );
     let document = if let Some(snapshot) = &report.schema_snapshot {
-        let document = document.blank_line().push(
+        let document = document.blank_line().push_verbose(
             KeyValuePanel::new("Schema Snapshot")
                 .row("outcome", snapshot.outcome)
                 .row("hash", snapshot.schema_hash.clone())
@@ -1030,7 +1096,7 @@ fn preview_document(report: &PreviewReport) -> RenderDocument {
         if let Some(discovery) = &snapshot.discovery {
             document
                 .blank_line()
-                .push(discovery_coverage_panel(discovery))
+                .push_verbose(discovery_coverage_panel(discovery))
         } else {
             document
         }
@@ -1039,7 +1105,7 @@ fn preview_document(report: &PreviewReport) -> RenderDocument {
     };
     document
         .blank_line()
-        .push(
+        .push_verbose(
             KeyValuePanel::new("Writes")
                 .row("package", yes_no(report.writes.package()))
                 .row("destination", yes_no(report.writes.destination()))

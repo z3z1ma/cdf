@@ -19,4 +19,4 @@ Pass.
 
 ## Residual risk
 
-The human run panel does not yet render the selected effective-jobs evidence; plan already does. Runtime progress/effective-jobs rendering remains owned by `.10x/tickets/2026-07-11-p1-cx3-live-progress-activity.md` rather than this parser slice.
+The human run panel does not yet render the selected effective-jobs evidence; plan already does. Runtime progress/effective-jobs rendering remains owned by `.10x/tickets/done/2026-07-11-p1-cx3-live-progress-activity.md` rather than this parser slice.

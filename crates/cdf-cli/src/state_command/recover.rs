@@ -9,7 +9,7 @@ use crate::{
     output::{CliError, CommandOutput},
     render::{
         RenderDocument,
-        primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
+        primitives::{KeyValuePanel, NextCommand, StatusKind, StatusLine, Table},
         redaction::redact_uri_userinfo,
     },
     replay_command::{
@@ -213,7 +213,6 @@ impl StateRecoverCliReport {
             });
 
         RenderDocument::new()
-            .push(SectionRule::new())
             .push(StatusLine::new(
                 StatusKind::Success,
                 format!("recovered checkpoint {}", self.checkpoint_id),

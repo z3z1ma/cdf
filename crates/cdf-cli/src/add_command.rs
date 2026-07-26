@@ -21,7 +21,7 @@ use crate::{
     output::{CliError, CommandOutput},
     render::{
         RenderDocument,
-        primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
+        primitives::{KeyValuePanel, NextCommand, StatusKind, StatusLine, Table},
     },
 };
 
@@ -520,7 +520,6 @@ fn add_document(report: &AddReport) -> RenderDocument {
         },
     );
     RenderDocument::new()
-        .push(SectionRule::new())
         .push(StatusLine::new(
             StatusKind::Success,
             if report.writes.resource_config {

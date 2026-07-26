@@ -10,8 +10,8 @@ use serde::Serialize;
 
 use cdf_cli_core::render::{
     RenderDocument,
-    humanize::{humanize_bytes, humanize_rows},
-    primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine},
+    humanize::{humanize_bytes, humanize_duration, humanize_rate, humanize_rows},
+    primitives::{KeyValuePanel, NextCommand, StatusKind, StatusLine},
     redaction::redact_uri_userinfo,
 };
 
@@ -114,7 +114,9 @@ pub(crate) struct RunCliReport {
     receipt: RunReceiptReport,
     receipt_source: RunReceiptSourceReport,
     row_count: u64,
+    byte_count: u64,
     segment_count: u64,
+    elapsed_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     file_manifest: Option<RunFileManifestReport>,
     terminal_schema_quarantines: Vec<TerminalSchemaObservationQuarantine>,
@@ -133,6 +135,22 @@ impl RunCliReport {
         memory: RunMemoryReport,
     ) -> Self {
         let receipt_source_kind = destination.receipt_source_kind;
+        let byte_count = report
+            .receipt
+            .segment_acks
+            .iter()
+            .try_fold(0_u64, |total, segment| {
+                total.checked_add(segment.byte_count)
+            })
+            .unwrap_or(u64::MAX);
+        let elapsed_ms = report
+            .ledger_snapshot
+            .events
+            .first()
+            .zip(report.ledger_snapshot.events.last())
+            .map(|(first, last)| last.timestamp_ms.saturating_sub(first.timestamp_ms))
+            .and_then(|elapsed| u64::try_from(elapsed).ok())
+            .unwrap_or(0);
         Self {
             command: "run",
             run_id: report.run_id.to_string(),
@@ -156,7 +174,9 @@ impl RunCliReport {
                 receipt_source_kind,
             ),
             row_count: report.row_count,
+            byte_count,
             segment_count: report.segment_count,
+            elapsed_ms,
             file_manifest: report
                 .file_manifest
                 .as_ref()
@@ -175,32 +195,75 @@ impl RunCliReport {
     }
 
     pub(crate) fn render_document(&self, explain_memory: bool) -> RenderDocument {
+        let elapsed = std::time::Duration::from_millis(self.elapsed_ms);
+        let seconds = elapsed.as_secs_f64();
+        let row_rate = (seconds > 0.0).then(|| {
+            format!(
+                "{}/s",
+                humanize_rows((self.row_count as f64 / seconds) as u64)
+            )
+        });
+        let byte_rate = (seconds > 0.0).then(|| humanize_rate(self.byte_count as f64 / seconds));
+        let quarantine_count = self.terminal_schema_quarantines.len();
+        let mut summary = KeyValuePanel::new("Summary")
+            .row("resource", self.resource_id.clone())
+            .row("destination", self.destination.summary())
+            .row("rows", humanize_rows(self.row_count))
+            .row("data", humanize_bytes(self.byte_count))
+            .row("segments", self.segment_count.to_string())
+            .row("elapsed", humanize_duration(elapsed));
+        if let Some(row_rate) = row_rate {
+            summary = summary.row("row rate", row_rate);
+        }
+        if let Some(byte_rate) = byte_rate {
+            summary = summary.row("byte rate", byte_rate);
+        }
+        if quarantine_count > 0 {
+            summary = summary.row("quarantined files", quarantine_count.to_string());
+        }
         let document = RenderDocument::new()
-            .push(SectionRule::new())
             .push(StatusLine::new(
                 StatusKind::Success,
-                format!("run {} completed for {}", self.run_id, self.resource_id),
+                format!(
+                    "Loaded {} rows from {}",
+                    humanize_rows(self.row_count),
+                    self.resource_id
+                ),
             ))
             .blank_line()
-            .push(
-                KeyValuePanel::new("Run")
-                    .row("run", self.run_id.clone())
-                    .row("resource", self.resource_id.clone())
-                    .row("pipeline", self.pipeline_id.clone())
-                    .row("target", self.target.clone())
-                    .row("destination", self.destination.summary()),
-            )
+            .push(summary)
             .blank_line()
             .push(
-                KeyValuePanel::new("Package")
+                KeyValuePanel::new("Proof")
                     .row("package", self.package_id.clone())
+                    .row("receipt", self.receipt_id.clone())
+                    .row("checkpoint", self.checkpoint_id.clone())
+                    .row(
+                        "gate",
+                        if self.checkpoint.committed {
+                            "committed"
+                        } else {
+                            "not committed"
+                        },
+                    ),
+            )
+            .blank_line()
+            .push_verbose(
+                KeyValuePanel::new("Run detail")
+                    .row("run", self.run_id.clone())
+                    .row("pipeline", self.pipeline_id.clone())
+                    .row("target", self.target.clone()),
+            )
+            .blank_line()
+            .push_verbose(
+                KeyValuePanel::new("Package detail")
                     .row("status", self.package_status.clone())
                     .row("hash", self.package_hash.clone())
                     .row("schema", self.schema_hash.clone())
                     .row("dir", safe_display_value(&self.package_dir)),
             );
         let document = if let Some(snapshot) = &self.schema_snapshot {
-            let document = document.blank_line().push(
+            let document = document.blank_line().push_verbose(
                 KeyValuePanel::new("Schema Snapshot")
                     .row("outcome", snapshot.outcome)
                     .row("hash", snapshot.schema_hash.clone())
@@ -211,14 +274,14 @@ impl RunCliReport {
             if let Some(discovery) = &snapshot.discovery {
                 document
                     .blank_line()
-                    .push(discovery_coverage_panel(discovery))
+                    .push_verbose(discovery_coverage_panel(discovery))
             } else {
                 document
             }
         } else {
             document
         };
-        let document = document.blank_line().push(
+        let document = document.blank_line().push_verbose(
             KeyValuePanel::new("Rows")
                 .row("rows", humanize_rows(self.row_count))
                 .row("segments", self.segment_count.to_string())
@@ -232,7 +295,7 @@ impl RunCliReport {
                 ),
         );
         let document = if let Some(panel) = file_manifest_panel(self.file_manifest.as_ref()) {
-            document.blank_line().push(panel)
+            document.blank_line().push_verbose(panel)
         } else {
             document
         };
@@ -285,7 +348,7 @@ impl RunCliReport {
         };
         document
             .blank_line()
-            .push(
+            .push_verbose(
                 KeyValuePanel::new("Verdicts")
                     .row("package", self.package_status.clone())
                     .row("checkpoint", self.checkpoint.status.clone())
@@ -299,7 +362,7 @@ impl RunCliReport {
                     .row("events", self.ledger_events.event_count.to_string()),
             )
             .blank_line()
-            .push(
+            .push_verbose(
                 KeyValuePanel::new("Receipt")
                     .row("receipt", self.receipt_id.clone())
                     .row("destination", self.receipt.destination_id.clone())
@@ -308,7 +371,7 @@ impl RunCliReport {
                     .row("source", receipt_source_summary(&self.receipt_source)),
             )
             .blank_line()
-            .push(
+            .push_verbose(
                 KeyValuePanel::new("Gate")
                     .row("checkpoint", self.checkpoint_id.clone())
                     .row("committed", yes_no(self.checkpoint.committed))
@@ -396,20 +459,22 @@ impl RunNoOpCliReport {
 
     pub(crate) fn render_document(&self, explain_memory: bool) -> RenderDocument {
         let document = RenderDocument::new()
-            .push(SectionRule::new())
             .push(StatusLine::new(
                 StatusKind::Success,
-                format!("run {} completed with no source changes", self.run_id),
+                format!("No changes for {}", self.resource_id),
             ))
             .blank_line()
             .push(
-                KeyValuePanel::new("Run")
-                    .row("run", self.run_id.clone())
-                    .row("resource", self.resource_id.clone())
-                    .row("pipeline", self.pipeline_id.clone())
+                KeyValuePanel::new("Summary")
                     .row("destination", self.destination.summary())
                     .row("outcome", "no-op")
                     .row("reason", self.reason),
+            )
+            .blank_line()
+            .push_verbose(
+                KeyValuePanel::new("Run detail")
+                    .row("run", self.run_id.clone())
+                    .row("pipeline", self.pipeline_id.clone()),
             );
         let document = match &self.current_checkpoint_id {
             Some(checkpoint) => {
@@ -420,12 +485,12 @@ impl RunNoOpCliReport {
                 } else {
                     panel
                 };
-                document.blank_line().push(panel)
+                document.blank_line().push_verbose(panel)
             }
             None => document,
         };
         let document = if let Some(panel) = file_manifest_panel(self.file_manifest.as_ref()) {
-            document.blank_line().push(panel)
+            document.blank_line().push_verbose(panel)
         } else {
             document
         };
@@ -441,7 +506,7 @@ impl RunNoOpCliReport {
         };
         document
             .blank_line()
-            .push(
+            .push_verbose(
                 KeyValuePanel::new("Effects")
                     .row("package written", "no")
                     .row("destination written", "no")
@@ -630,36 +695,70 @@ impl ReplayPackageCliReport {
     }
 
     pub(crate) fn render_document(&self) -> RenderDocument {
+        let duplicate = self
+            .receipt_source
+            .duplicate_no_op()
+            .is_some_and(|(_, no_op)| no_op);
+        let outcome = if duplicate {
+            "no-op (package already loaded)"
+        } else {
+            "loaded"
+        };
         RenderDocument::new()
-            .push(SectionRule::new())
             .push(StatusLine::new(
                 StatusKind::Success,
-                format!("replay package {} completed", self.package_id),
+                if duplicate {
+                    format!("Package {} was already loaded", self.package_id)
+                } else {
+                    format!(
+                        "Replayed {} rows from {}",
+                        humanize_rows(self.row_count),
+                        self.package_id
+                    )
+                },
             ))
             .blank_line()
             .push(
-                KeyValuePanel::new("Replay")
-                    .row("run", self.run_id.clone())
-                    .row("package", self.package_id.clone())
-                    .row("status", self.package_status.clone())
-                    .row("hash", self.package_hash.clone())
-                    .row("dir", safe_display_value(&self.package_dir)),
+                KeyValuePanel::new("Summary")
+                    .row("outcome", outcome)
+                    .row("destination", self.destination.summary())
+                    .row("rows", humanize_rows(self.row_count))
+                    .row("data", humanize_bytes(self.byte_count))
+                    .row("segments", self.segment_count.to_string()),
             )
             .blank_line()
             .push(
-                KeyValuePanel::new("Destination")
-                    .row("destination", self.destination.summary())
+                KeyValuePanel::new("Proof")
+                    .row("receipt", self.receipt_id.clone())
+                    .row("checkpoint", self.checkpoint_id.clone())
+                    .row(
+                        "gate",
+                        if self.checkpoint.committed {
+                            "committed"
+                        } else {
+                            "not committed"
+                        },
+                    ),
+            )
+            .blank_line()
+            .push_verbose(
+                KeyValuePanel::new("Replay detail")
+                    .row("run", self.run_id.clone())
+                    .row("status", self.package_status.clone())
+                    .row("hash", self.package_hash.clone())
+                    .row("schema", self.schema_hash.clone())
+                    .row("dir", safe_display_value(&self.package_dir))
                     .row("target", self.target.clone()),
             )
             .blank_line()
-            .push(
+            .push_verbose(
                 KeyValuePanel::new("Duplicate")
                     .row("source", receipt_source_summary(&self.receipt_source))
                     .row("duplicate", duplicate_value(&self.receipt_source))
                     .row("no-op", no_op_value(&self.receipt_source)),
             )
             .blank_line()
-            .push(
+            .push_verbose(
                 KeyValuePanel::new("Receipt")
                     .row("receipt", self.receipt_id.clone())
                     .row("destination", self.receipt.destination_id.clone())
@@ -668,7 +767,7 @@ impl ReplayPackageCliReport {
                     .row("segments", self.receipt.segment_ack_count.to_string()),
             )
             .blank_line()
-            .push(
+            .push_verbose(
                 KeyValuePanel::new("Checkpoint")
                     .row("checkpoint", self.checkpoint_id.clone())
                     .row("status", self.checkpoint.status.clone())
@@ -1161,7 +1260,9 @@ mod tests {
                 package_receipt_recorded: Some(true),
             },
             row_count: 2,
+            byte_count: 256,
             segment_count: 1,
+            elapsed_ms: 1,
             file_manifest: None,
             terminal_schema_quarantines: Vec::new(),
             memory: test_memory_report(),

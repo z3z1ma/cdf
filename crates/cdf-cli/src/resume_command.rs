@@ -14,10 +14,10 @@ use crate::{
     context::ProjectContext,
     error_catalog,
     output::{CliError, CommandOutput},
-    progress::human_progress_sink,
+    progress::{CliProgressSink, ProgressDelivery, human_progress_sink},
     render::{
         RenderDocument,
-        primitives::{KeyValuePanel, SectionRule, StatusKind, StatusLine},
+        primitives::{KeyValuePanel, StatusKind, StatusLine},
     },
 };
 
@@ -28,6 +28,7 @@ pub(crate) fn resume(
     args: ResumeArgs,
     execution: &cdf_runtime::ExecutionServices,
     destinations: &cdf_runtime::DestinationRegistry,
+    progress_delivery: ProgressDelivery,
 ) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
     let state_path = context.state_store_path()?;
@@ -65,9 +66,9 @@ pub(crate) fn resume(
         &context,
         &state_path,
         run_id,
-        cli.json,
-        &cli.terminal,
+        cli,
         &execution,
+        progress_delivery,
     )
 }
 
@@ -76,9 +77,9 @@ fn resume_run(
     context: &ProjectContext,
     state_path: &std::path::Path,
     run_id: RunId,
-    json_mode: bool,
-    terminal: &cdf_cli_core::terminal::TerminalPolicy,
+    cli: &Cli,
     execution: &cdf_runtime::ExecutionServices,
+    progress_delivery: ProgressDelivery,
 ) -> Result<CommandOutput, CliError> {
     let run_ledger = SqliteRunLedger::open(state_path)?;
     let snapshot = run_ledger.snapshot(&run_id)?.ok_or_else(|| {
@@ -87,7 +88,7 @@ fn resume_run(
             run_id
         ))
     })?;
-    let progress = human_progress_sink(json_mode, terminal);
+    let progress = human_progress_sink(cli.json, &cli.terminal, progress_delivery);
     let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);
     if let Some(sink) = event_sink {
         for event in &snapshot.events {
@@ -104,11 +105,11 @@ fn resume_run(
     )?;
     let outcome = attempt.execute();
     match outcome {
-        Ok(report) => finish_resume_report(report, progress.map(|progress| progress.snapshot())),
+        Ok(report) => finish_resume_report(report, progress.map(CliProgressSink::finish)),
         Err(error) => {
             let report = attempt.fail_closed("recovery_failed", "fail_closed", error.message);
             let _ = attempt.append_run_failed(&report);
-            finish_resume_report(report, progress.map(|progress| progress.snapshot()))
+            finish_resume_report(report, progress.map(CliProgressSink::finish))
         }
     }
 }
@@ -170,7 +171,6 @@ fn no_interrupted_runs_report() -> Result<CommandOutput, CliError> {
 
 fn bare_resume_document(report: &BareResumeReport) -> RenderDocument {
     RenderDocument::new()
-        .push(SectionRule::new())
         .push(StatusLine::new(
             StatusKind::Success,
             "no interrupted runs found",

@@ -1,9 +1,12 @@
-#![allow(dead_code)] // 10x: progress still has grammar/backfill-only helpers until WS5C and display flag wiring land.
-
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    sync::Mutex,
-    time::Duration,
+    io::Write,
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver, SyncSender, TrySendError},
+    },
+    thread::JoinHandle,
+    time::{Duration, Instant},
 };
 
 use cdf_kernel::{
@@ -14,12 +17,20 @@ use crate::render::{
     RenderConfig, RenderDocument,
     config::DisplayMode,
     humanize::{humanize_bytes, humanize_duration, humanize_rows},
-    primitives::{KeyValuePanel, SectionRule, StatusKind, StatusLine, Table},
+    primitives::{ActivityLine, ActivityState, KeyValuePanel, StatusKind, StatusLine, Table},
     redaction::{is_sensitive_key, redact_uri_userinfo, redacted},
 };
 use crate::terminal::{OutputChannel, TerminalPolicy, Verbosity};
 
 const DEFAULT_PROGRESS_CAPACITY: usize = 128;
+const INTERACTIVE_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ProgressDelivery {
+    #[default]
+    Buffered,
+    LiveStderr,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DisplayVerbosity {
@@ -64,7 +75,7 @@ impl ProgressConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ProgressPhase {
     Plan,
     Extract,
@@ -152,6 +163,8 @@ pub struct ProgressSnapshot {
     milestones: Vec<ProgressMilestone>,
     dropped_count: u64,
     last_disposition: Option<ProgressEventDisposition>,
+    verbosity: DisplayVerbosity,
+    streamed_live: bool,
 }
 
 impl ProgressSnapshot {
@@ -192,21 +205,22 @@ impl ProgressSnapshot {
 
     pub fn render(&self, config: &ProgressConfig) -> String {
         match config.render.display_mode() {
-            DisplayMode::Headless => self.render_headless(),
-            DisplayMode::Tty => self.render_interactive(config.render_config()),
+            DisplayMode::Headless => self.render_headless(config.verbosity),
+            DisplayMode::Tty => self.render_interactive(config.render_config(), config.verbosity),
         }
     }
 
     pub fn render_for_config(&self, render_config: &RenderConfig) -> String {
-        self.render(&ProgressConfig::new(
-            render_config.clone(),
-            DisplayVerbosity::Normal,
-        ))
+        if self.streamed_live {
+            return String::new();
+        }
+        self.render(&ProgressConfig::new(render_config.clone(), self.verbosity))
     }
 
-    fn render_headless(&self) -> String {
+    fn render_headless(&self, verbosity: DisplayVerbosity) -> String {
         let mut output = String::new();
-        for milestone in &self.milestones {
+        let milestones = self.display_milestones(verbosity);
+        for milestone in milestones {
             output.push_str(&format!(
                 "{} [{}] {} {}",
                 milestone.timestamp_ms,
@@ -231,26 +245,30 @@ impl ProgressSnapshot {
         output
     }
 
-    fn render_interactive(&self, render_config: &RenderConfig) -> String {
+    fn render_interactive(
+        &self,
+        render_config: &RenderConfig,
+        verbosity: DisplayVerbosity,
+    ) -> String {
         let status = self
             .milestones
             .last()
             .map(|milestone| milestone.status)
             .unwrap_or(ProgressStatus::Running);
-        let mut document = RenderDocument::new()
-            .push(SectionRule::new())
-            .push(StatusLine::new(
-                status.status_kind(),
-                format!("{} progress", self.current_phase.as_str()),
-            ))
-            .blank_line()
-            .push(
-                KeyValuePanel::new("Run progress")
-                    .row("phase", self.current_phase.as_str())
-                    .row("events", self.milestones.len().to_string())
-                    .row("dropped", self.dropped_count.to_string()),
-            );
-        if !self.milestones.is_empty() {
+        let mut document = RenderDocument::new();
+        if verbosity == DisplayVerbosity::Verbose {
+            document = document
+                .push(StatusLine::new(
+                    status.status_kind(),
+                    format!("{} progress", self.current_phase.as_str()),
+                ))
+                .blank_line()
+                .push(
+                    KeyValuePanel::new("Run progress")
+                        .row("phase", self.current_phase.as_str())
+                        .row("events", self.milestones.len().to_string())
+                        .row("dropped", self.dropped_count.to_string()),
+                );
             let mut table = Table::new(["seq", "phase", "status", "event", "details"]);
             for milestone in &self.milestones {
                 table = table.row([
@@ -267,8 +285,43 @@ impl ProgressSnapshot {
                 ]);
             }
             document = document.blank_line().push(table);
+        } else {
+            for milestone in self.display_milestones(verbosity) {
+                let state = match milestone.status {
+                    ProgressStatus::Running => ActivityState::Active,
+                    ProgressStatus::Succeeded => ActivityState::Complete,
+                    ProgressStatus::Failed => ActivityState::Failed,
+                };
+                let mut activity = ActivityLine::new(
+                    state,
+                    activity_verb(milestone.phase),
+                    activity_detail(milestone),
+                );
+                for metric in activity_metrics(milestone) {
+                    activity = activity.metric(metric);
+                }
+                document = document.push(activity);
+            }
+            if self.dropped_count > 0 {
+                document = document.push(ActivityLine::new(
+                    ActivityState::Warning,
+                    "Progress",
+                    format!("{} events coalesced or dropped", self.dropped_count),
+                ));
+            }
         }
         document.render(render_config)
+    }
+
+    fn display_milestones(&self, verbosity: DisplayVerbosity) -> Vec<&ProgressMilestone> {
+        if verbosity == DisplayVerbosity::Verbose {
+            return self.milestones.iter().collect();
+        }
+        let mut by_phase = BTreeMap::new();
+        for milestone in &self.milestones {
+            by_phase.insert((milestone.run_id.as_str(), milestone.phase), milestone);
+        }
+        by_phase.into_values().collect()
     }
 }
 
@@ -276,7 +329,6 @@ impl ProgressSnapshot {
 struct ProgressState {
     current_phase: ProgressPhase,
     active_run_id: Option<String>,
-    seen_sequences: BTreeSet<(String, u64)>,
     max_sequence_by_run: BTreeMap<String, u64>,
     terminal: Option<TerminalState>,
     milestones: VecDeque<ProgressMilestone>,
@@ -289,7 +341,6 @@ impl Default for ProgressState {
         Self {
             current_phase: ProgressPhase::Plan,
             active_run_id: None,
-            seen_sequences: BTreeSet::new(),
             max_sequence_by_run: BTreeMap::new(),
             terminal: None,
             milestones: VecDeque::new(),
@@ -304,26 +355,26 @@ impl ProgressState {
         &mut self,
         event: &RunEvent,
         config: &ProgressConfig,
+        overflow: MilestoneOverflow,
     ) -> ProgressEventDisposition {
         let run_id = event.run_id.as_str().to_owned();
-        let sequence_key = (run_id.clone(), event.sequence);
-        if self.seen_sequences.contains(&sequence_key) {
-            return self.record_disposition(ProgressEventDisposition::Duplicate);
-        }
-        if self
-            .max_sequence_by_run
-            .get(&run_id)
-            .is_some_and(|max_sequence| event.sequence < *max_sequence)
-        {
-            self.seen_sequences.insert(sequence_key);
-            return self.record_disposition(ProgressEventDisposition::OutOfOrder);
+        if let Some(max_sequence) = self.max_sequence_by_run.get(&run_id) {
+            if event.sequence == *max_sequence {
+                return self.record_disposition(ProgressEventDisposition::Duplicate);
+            }
+            if event.sequence < *max_sequence {
+                return self.record_disposition(ProgressEventDisposition::OutOfOrder);
+            }
         }
 
-        self.seen_sequences.insert(sequence_key);
+        if !self.max_sequence_by_run.contains_key(&run_id)
+            && self.max_sequence_by_run.len() >= config.capacity
+            && let Some(evicted_run) = self.max_sequence_by_run.keys().next().cloned()
+        {
+            self.max_sequence_by_run.remove(&evicted_run);
+        }
         self.max_sequence_by_run
-            .entry(run_id.clone())
-            .and_modify(|max_sequence| *max_sequence = (*max_sequence).max(event.sequence))
-            .or_insert(event.sequence);
+            .insert(run_id.clone(), event.sequence);
 
         if self.active_run_id.as_deref() != Some(run_id.as_str()) {
             self.active_run_id = Some(run_id);
@@ -359,6 +410,9 @@ impl ProgressState {
             if self.milestones.len() >= config.capacity {
                 if status.is_terminal() {
                     self.milestones.pop_front();
+                } else if overflow == MilestoneOverflow::Coalesce {
+                    self.milestones.pop_front();
+                    self.dropped_count += 1;
                 } else {
                     self.dropped_count += 1;
                     return self.record_disposition(ProgressEventDisposition::Dropped);
@@ -379,13 +433,15 @@ impl ProgressState {
         }
     }
 
-    fn snapshot(&self) -> ProgressSnapshot {
+    fn snapshot(&self, verbosity: DisplayVerbosity, streamed_live: bool) -> ProgressSnapshot {
         ProgressSnapshot {
             current_phase: self.current_phase,
             terminal: self.terminal,
             milestones: self.milestones.iter().cloned().collect(),
             dropped_count: self.dropped_count,
             last_disposition: self.last_disposition,
+            verbosity,
+            streamed_live,
         }
     }
 
@@ -398,44 +454,145 @@ impl ProgressState {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MilestoneOverflow {
+    Drop,
+    Coalesce,
+}
+
+enum ProgressSinkMode {
+    Buffered,
+    Live {
+        sender: SyncSender<RunEvent>,
+        terminal_sender: SyncSender<RunEvent>,
+        worker: JoinHandle<()>,
+    },
+}
+
 pub struct CliProgressSink {
     config: ProgressConfig,
-    state: Mutex<ProgressState>,
+    state: Arc<Mutex<ProgressState>>,
+    mode: ProgressSinkMode,
 }
 
 impl CliProgressSink {
     pub fn new(config: ProgressConfig) -> Self {
         Self {
             config,
-            state: Mutex::new(ProgressState::default()),
+            state: Arc::new(Mutex::new(ProgressState::default())),
+            mode: ProgressSinkMode::Buffered,
         }
     }
 
     pub fn snapshot(&self) -> ProgressSnapshot {
-        self.state.lock().unwrap().snapshot()
+        self.state
+            .lock()
+            .unwrap()
+            .snapshot(self.config.verbosity, false)
+    }
+
+    fn live_stderr(config: ProgressConfig) -> Self {
+        Self::live_with_writer(config, Box::new(std::io::stderr()))
+    }
+
+    fn live_with_writer(config: ProgressConfig, writer: Box<dyn Write + Send>) -> Self {
+        let state = Arc::new(Mutex::new(ProgressState::default()));
+        let (sender, receiver) = mpsc::sync_channel(config.capacity);
+        let (terminal_sender, terminal_receiver) = mpsc::sync_channel(1);
+        let worker = spawn_live_progress_worker(
+            config.clone(),
+            Arc::clone(&state),
+            receiver,
+            terminal_receiver,
+            writer,
+        );
+        match worker {
+            Ok(worker) => Self {
+                config,
+                state,
+                mode: ProgressSinkMode::Live {
+                    sender,
+                    terminal_sender,
+                    worker,
+                },
+            },
+            Err(_) => Self {
+                config,
+                state,
+                mode: ProgressSinkMode::Buffered,
+            },
+        }
+    }
+
+    pub fn finish(self) -> ProgressSnapshot {
+        let streamed_live = match self.mode {
+            ProgressSinkMode::Buffered => false,
+            ProgressSinkMode::Live {
+                sender,
+                terminal_sender,
+                worker,
+            } => {
+                drop(sender);
+                drop(terminal_sender);
+                worker.join().is_ok()
+            }
+        };
+        self.state
+            .lock()
+            .unwrap()
+            .snapshot(self.config.verbosity, streamed_live)
     }
 }
 
-pub fn human_progress_sink(json_mode: bool, terminal: &TerminalPolicy) -> Option<CliProgressSink> {
+pub fn human_progress_sink(
+    json_mode: bool,
+    terminal: &TerminalPolicy,
+    delivery: ProgressDelivery,
+) -> Option<CliProgressSink> {
     terminal.progress_enabled(json_mode).then(|| {
         let verbosity = match terminal.verbosity {
             Verbosity::Quiet => DisplayVerbosity::Quiet,
             Verbosity::Normal => DisplayVerbosity::Normal,
             Verbosity::Verbose(_) => DisplayVerbosity::Verbose,
         };
-        CliProgressSink::new(ProgressConfig::new(
+        let config = ProgressConfig::new(
             RenderConfig::detect(terminal, OutputChannel::Stderr),
             verbosity,
-        ))
+        );
+        match delivery {
+            ProgressDelivery::Buffered => CliProgressSink::new(config),
+            ProgressDelivery::LiveStderr => CliProgressSink::live_stderr(config),
+        }
     })
 }
 
 impl RunEventSink for CliProgressSink {
     fn try_emit(&self, event: &RunEvent) -> RunEventSinkResult {
+        if let ProgressSinkMode::Live {
+            sender,
+            terminal_sender,
+            ..
+        } = &self.mode
+        {
+            return match sender.try_send(event.clone()) {
+                Ok(()) => RunEventSinkResult::Accepted,
+                Err(TrySendError::Full(event)) if terminal_for_event(event.kind).is_some() => {
+                    match terminal_sender.try_send(event) {
+                        Ok(()) => RunEventSinkResult::Accepted,
+                        Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
+                            RunEventSinkResult::Dropped
+                        }
+                    }
+                }
+                Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
+                    RunEventSinkResult::Dropped
+                }
+            };
+        }
         let Ok(mut state) = self.state.try_lock() else {
             return RunEventSinkResult::Dropped;
         };
-        match state.apply_event(event, &self.config) {
+        match state.apply_event(event, &self.config, MilestoneOverflow::Drop) {
             ProgressEventDisposition::Dropped => RunEventSinkResult::Dropped,
             ProgressEventDisposition::Accepted
             | ProgressEventDisposition::Duplicate
@@ -444,6 +601,158 @@ impl RunEventSink for CliProgressSink {
             | ProgressEventDisposition::Terminal => RunEventSinkResult::Accepted,
         }
     }
+}
+
+fn spawn_live_progress_worker(
+    config: ProgressConfig,
+    state: Arc<Mutex<ProgressState>>,
+    receiver: Receiver<RunEvent>,
+    terminal_receiver: Receiver<RunEvent>,
+    writer: Box<dyn Write + Send>,
+) -> std::io::Result<JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("cdf-cli-progress".to_owned())
+        .spawn(move || {
+            let mut renderer = LiveProgressRenderer::new(config, state, writer);
+            while let Ok(event) = receiver.recv() {
+                renderer.process(&event);
+            }
+            for event in terminal_receiver.try_iter() {
+                renderer.process(&event);
+            }
+            renderer.finish();
+        })
+}
+
+struct LiveProgressRenderer {
+    config: ProgressConfig,
+    state: Arc<Mutex<ProgressState>>,
+    writer: Box<dyn Write + Send>,
+    interactive: bool,
+    last_refresh: Instant,
+    rendered_lines: usize,
+    headless_run_id: Option<String>,
+    emitted_headless_phases: BTreeSet<ProgressPhase>,
+}
+
+impl LiveProgressRenderer {
+    fn new(
+        config: ProgressConfig,
+        state: Arc<Mutex<ProgressState>>,
+        writer: Box<dyn Write + Send>,
+    ) -> Self {
+        let interactive = config.render_config().display_mode() == DisplayMode::Tty;
+        let last_refresh = Instant::now()
+            .checked_sub(INTERACTIVE_REFRESH_INTERVAL)
+            .unwrap_or_else(Instant::now);
+        Self {
+            config,
+            state,
+            writer,
+            interactive,
+            last_refresh,
+            rendered_lines: 0,
+            headless_run_id: None,
+            emitted_headless_phases: BTreeSet::new(),
+        }
+    }
+
+    fn process(&mut self, event: &RunEvent) {
+        let disposition = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            state.apply_event(event, &self.config, MilestoneOverflow::Coalesce)
+        };
+        if self.interactive {
+            let terminal = disposition == ProgressEventDisposition::Terminal;
+            if terminal || self.last_refresh.elapsed() >= INTERACTIVE_REFRESH_INTERVAL {
+                self.redraw();
+                self.last_refresh = Instant::now();
+            }
+        } else if matches!(
+            disposition,
+            ProgressEventDisposition::Accepted | ProgressEventDisposition::Terminal
+        ) {
+            let phase = phase_for_event(event.kind);
+            if self.headless_run_id.as_deref() != Some(event.run_id.as_str()) {
+                self.headless_run_id = Some(event.run_id.as_str().to_owned());
+                self.emitted_headless_phases.clear();
+            }
+            if self.emitted_headless_phases.insert(phase)
+                || disposition == ProgressEventDisposition::Terminal
+            {
+                let snapshot = self
+                    .state
+                    .lock()
+                    .ok()
+                    .map(|state| state.snapshot(self.config.verbosity, false));
+                if let Some(snapshot) = snapshot
+                    && let Some(milestone) = snapshot.milestones.last()
+                {
+                    let _ = write_headless_milestone(&mut self.writer, milestone);
+                    let _ = self.writer.flush();
+                }
+            }
+        }
+    }
+
+    fn redraw(&mut self) {
+        self.rendered_lines = redraw_live_progress(
+            &self.state,
+            &self.config,
+            &mut self.writer,
+            self.rendered_lines,
+        );
+    }
+
+    fn finish(&mut self) {
+        if self.interactive {
+            self.redraw();
+        }
+    }
+}
+
+fn redraw_live_progress(
+    state: &Arc<Mutex<ProgressState>>,
+    config: &ProgressConfig,
+    writer: &mut dyn Write,
+    previous_lines: usize,
+) -> usize {
+    let snapshot = match state.lock() {
+        Ok(state) => state.snapshot(config.verbosity, false),
+        Err(_) => return previous_lines,
+    };
+    let rendered = snapshot.render_interactive(config.render_config(), config.verbosity);
+    if rendered.is_empty() {
+        return previous_lines;
+    }
+    if previous_lines > 0 {
+        for _ in 0..previous_lines {
+            let _ = writer.write_all(b"\x1b[1A\r\x1b[2K");
+        }
+    }
+    let _ = writer.write_all(rendered.as_bytes());
+    let _ = writer.flush();
+    rendered.lines().count()
+}
+
+fn write_headless_milestone(
+    writer: &mut dyn Write,
+    milestone: &ProgressMilestone,
+) -> std::io::Result<()> {
+    write!(
+        writer,
+        "{} [{}] {} {}",
+        milestone.timestamp_ms,
+        milestone.phase.as_str(),
+        milestone.status.as_str(),
+        milestone.message
+    )?;
+    for (key, value) in &milestone.fields {
+        write!(writer, " {key}={value}")?;
+    }
+    writeln!(writer)
 }
 
 impl ProgressMilestone {
@@ -537,6 +846,48 @@ fn milestone_fields(event: &RunEvent, verbosity: DisplayVerbosity) -> Vec<(Strin
     }
 
     fields
+}
+
+fn activity_verb(phase: ProgressPhase) -> &'static str {
+    match phase {
+        ProgressPhase::Plan => "Planned",
+        ProgressPhase::Extract => "Read",
+        ProgressPhase::Validate => "Validated",
+        ProgressPhase::Package => "Packaged",
+        ProgressPhase::Commit => "Loaded",
+        ProgressPhase::Verify => "Verified",
+        ProgressPhase::Gate => "Committed",
+    }
+}
+
+fn activity_detail(milestone: &ProgressMilestone) -> String {
+    milestone
+        .fields
+        .iter()
+        .find(|(key, _)| key == "resource")
+        .map(|(_, value)| value.clone())
+        .or_else(|| {
+            milestone
+                .fields
+                .iter()
+                .find(|(key, _)| key == "package")
+                .map(|(_, value)| value.clone())
+        })
+        .unwrap_or_else(|| milestone.message.clone())
+}
+
+fn activity_metrics(milestone: &ProgressMilestone) -> Vec<String> {
+    milestone
+        .fields
+        .iter()
+        .filter(|(key, _)| {
+            matches!(
+                key.as_str(),
+                "rows" | "bytes" | "segments" | "batches" | "quarantine_rows" | "duration" | "rate"
+            )
+        })
+        .map(|(key, value)| format!("{value} {}", key.replace('_', " ")))
+        .collect()
 }
 
 fn push_optional<T: AsRef<str>>(fields: &mut Vec<(String, String)>, key: &str, value: Option<&T>) {
@@ -700,7 +1051,12 @@ fn display_u64_value(key: &str, value: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::{
+        collections::BTreeMap,
+        io,
+        sync::Arc,
+        time::{Duration, Instant},
+    };
 
     use cdf_kernel::{
         CheckpointId, DestinationId, PackageHash, PlanId, ReceiptId, ResourceId, RunId, RunPhase,
@@ -721,7 +1077,7 @@ mod tests {
             ..TerminalPolicy::default()
         };
 
-        assert!(human_progress_sink(false, &policy).is_none());
+        assert!(human_progress_sink(false, &policy, ProgressDelivery::Buffered).is_none());
     }
 
     fn bounded_sink(capacity: usize) -> CliProgressSink {
@@ -772,6 +1128,92 @@ mod tests {
             plan_id: Some(PlanId::new("plan-progress-test").unwrap()),
             details: cdf_kernel::RunEventDetails { attributes },
         }
+    }
+
+    #[derive(Clone)]
+    struct SlowSharedWriter {
+        bytes: Arc<Mutex<Vec<u8>>>,
+        delay: Duration,
+    }
+
+    impl Write for SlowSharedWriter {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            std::thread::sleep(self.delay);
+            self.bytes.lock().unwrap().extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn headless_live_coalescing_state_stays_bounded_across_many_runs() {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let state = Arc::new(Mutex::new(ProgressState::default()));
+        let mut renderer = LiveProgressRenderer::new(
+            ProgressConfig::new(headless_config(), DisplayVerbosity::Normal),
+            state,
+            Box::new(SlowSharedWriter {
+                bytes,
+                delay: Duration::ZERO,
+            }),
+        );
+
+        for index in 0..1_000 {
+            renderer.process(&event_for_run(
+                &format!("run-progress-slice-{index:04}"),
+                1,
+                RunEventKind::RunStarted,
+            ));
+        }
+
+        assert_eq!(
+            renderer.headless_run_id.as_deref(),
+            Some("run-progress-slice-0999")
+        );
+        assert_eq!(renderer.emitted_headless_phases.len(), 1);
+    }
+
+    #[test]
+    fn live_progress_never_backpressures_runtime_and_preserves_terminal_event() {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let sink = CliProgressSink::live_with_writer(
+            ProgressConfig::new(tty_config(), DisplayVerbosity::Normal).with_capacity(1),
+            Box::new(SlowSharedWriter {
+                bytes: Arc::clone(&bytes),
+                delay: Duration::from_millis(25),
+            }),
+        );
+
+        let started = Instant::now();
+        let mut dropped = 0;
+        for sequence in 1..=10_000 {
+            if sink.try_emit(&event(sequence, RunEventKind::PackageSegmentRecorded))
+                == RunEventSinkResult::Dropped
+            {
+                dropped += 1;
+            }
+        }
+        assert!(
+            started.elapsed() < Duration::from_millis(250),
+            "runtime event emission waited on the slow terminal writer"
+        );
+        assert!(dropped > 0, "the bounded live queue never saturated");
+        assert_eq!(
+            sink.try_emit(&event(10_001, RunEventKind::RunSucceeded)),
+            RunEventSinkResult::Accepted
+        );
+
+        let snapshot = sink.finish();
+        assert_eq!(
+            snapshot.last_disposition(),
+            Some(ProgressEventDisposition::Terminal)
+        );
+        assert!(snapshot.render_for_config(&tty_config()).is_empty());
+        let rendered = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(rendered.contains("Committed"), "{rendered:?}");
     }
 
     #[test]
@@ -1001,6 +1443,24 @@ mod tests {
         ));
         assert!(rendered.contains("run=run-progress-slice-1"));
         assert!(rendered.contains("run=run-progress-slice-2"));
+    }
+
+    #[test]
+    fn sequence_bookkeeping_is_bounded_for_many_runs() {
+        let sink = bounded_sink(4);
+        for index in 0..1_000 {
+            let run_id = format!("run-progress-slice-{index:04}");
+            assert_eq!(
+                sink.try_emit(&event_for_run(&run_id, 1, RunEventKind::RunStarted)),
+                if index < 4 {
+                    RunEventSinkResult::Accepted
+                } else {
+                    RunEventSinkResult::Dropped
+                }
+            );
+        }
+
+        assert_eq!(sink.state.lock().unwrap().max_sequence_by_run.len(), 4);
     }
 
     #[test]

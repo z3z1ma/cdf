@@ -23,7 +23,7 @@ use crate::{
     output::{CliError, CommandOutput},
     render::{
         RenderDocument,
-        primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
+        primitives::{KeyValuePanel, NextCommand, StatusKind, StatusLine, Table},
     },
     reports::{DiscoveryCoverageReport, discovery_coverage_panel},
 };
@@ -935,7 +935,6 @@ fn schema_snapshot_document(
     data: SnapshotDocumentData<'_>,
 ) -> RenderDocument {
     let mut document = RenderDocument::new()
-        .push(SectionRule::new())
         .push(StatusLine::new(StatusKind::Success, status))
         .blank_line()
         .push(
@@ -1001,7 +1000,6 @@ fn schema_diff_document(report: &SchemaDiffReport) -> RenderDocument {
         StatusKind::Success
     };
     let document = RenderDocument::new()
-        .push(SectionRule::new())
         .push(StatusLine::new(
             status,
             if report.summary.changed {
@@ -1088,7 +1086,6 @@ fn schema_promotion_execution_document(
         },
     );
     RenderDocument::new()
-        .push(SectionRule::new())
         .push(StatusLine::new(
             StatusKind::Success,
             format!("schema promotion complete for {}", report.resource_id),
@@ -1118,7 +1115,6 @@ fn schema_promotion_execution_document(
 
 fn schema_promote_document(report: &cdf_project::SchemaPromotionPlanReport) -> RenderDocument {
     let mut document = RenderDocument::new()
-        .push(SectionRule::new())
         .push(StatusLine::new(
             if report.executable {
                 StatusKind::Success

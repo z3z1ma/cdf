@@ -10,7 +10,7 @@ use crate::{
     output::{CliError, CommandOutput},
     render::{
         RenderDocument,
-        primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
+        primitives::{KeyValuePanel, NextCommand, StatusKind, StatusLine, Table},
         redaction::redact_uri_userinfo,
     },
 };
@@ -197,7 +197,6 @@ fn resource_summaries(context: &ProjectContext) -> Result<Vec<ResourceSummary>, 
 
 fn inspect_project_document(context: &ProjectContext) -> RenderDocument {
     RenderDocument::new()
-        .push(SectionRule::new())
         .push(StatusLine::new(
             StatusKind::Success,
             format!(
@@ -245,7 +244,6 @@ fn inspect_resources_document(resources: &[ResourceSummary]) -> RenderDocument {
     );
 
     RenderDocument::new()
-        .push(SectionRule::new())
         .push(StatusLine::new(
             StatusKind::Success,
             format!("{} compiled resource(s)", resources.len()),
@@ -258,7 +256,6 @@ fn inspect_resources_document(resources: &[ResourceSummary]) -> RenderDocument {
 
 fn inspect_resource_document(resource: &ResourceSummary) -> RenderDocument {
     RenderDocument::new()
-        .push(SectionRule::new())
         .push(StatusLine::new(
             StatusKind::Success,
             format!("resource {}", resource.descriptor.resource_id),
@@ -321,7 +318,6 @@ fn mapping_display(resource: &ResourceSummary) -> String {
 
 fn inspect_lock_document(lock: &cdf_project::CdfLock) -> RenderDocument {
     RenderDocument::new()
-        .push(SectionRule::new())
         .push(StatusLine::new(
             StatusKind::Success,
             format!(
@@ -347,7 +343,6 @@ fn inspect_destinations_document(
     runtime: &DestinationRuntime,
 ) -> RenderDocument {
     let mut document = RenderDocument::new()
-        .push(SectionRule::new())
         .push(StatusLine::new(
             StatusKind::Success,
             "inspected destination capabilities",
@@ -407,7 +402,6 @@ fn inspect_destinations_document(
 
 fn inspect_package_document(path: &Path, manifest: &PackageManifest) -> RenderDocument {
     RenderDocument::new()
-        .push(SectionRule::new())
         .push(StatusLine::new(
             StatusKind::Success,
             format!(

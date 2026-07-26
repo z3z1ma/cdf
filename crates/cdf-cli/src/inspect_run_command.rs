@@ -12,7 +12,7 @@ use crate::{
     output::{CliError, CommandOutput},
     render::{
         RenderDocument,
-        primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
+        primitives::{KeyValuePanel, NextCommand, StatusKind, StatusLine, Table},
         redaction::redact_uri_userinfo,
     },
 };
@@ -102,7 +102,6 @@ impl InspectRunReport {
             .count();
         let missing_receipts = self.artifacts.receipt.missing_receipt_ids.len();
         let mut document = RenderDocument::new()
-            .push(SectionRule::new())
             .push(StatusLine::new(
                 StatusKind::Success,
                 format!("run {} terminal {}", self.run_id, self.terminal_state),

@@ -5,17 +5,22 @@ use crate::{
     args::{Cli, Command},
     error_catalog,
     output::{CliError, CommandOutput, InvocationResult},
+    progress::ProgressDelivery,
     render::{RenderConfig, RenderDocument},
     terminal::OutputChannel,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub fn execute(cli: Cli, destinations: &cdf_runtime::DestinationRegistry) -> InvocationResult {
+pub fn execute(
+    cli: Cli,
+    destinations: &cdf_runtime::DestinationRegistry,
+    progress_delivery: ProgressDelivery,
+) -> InvocationResult {
     let json_mode = cli.json;
     let stdout_config = RenderConfig::detect(&cli.terminal, OutputChannel::Stdout);
     let stderr_config = RenderConfig::detect(&cli.terminal, OutputChannel::Stderr);
-    match dispatch(cli, destinations) {
+    match dispatch(cli, destinations, progress_delivery) {
         Ok(output) => InvocationResult::from_output_with_configs(
             json_mode,
             &stdout_config,
@@ -29,6 +34,7 @@ pub fn execute(cli: Cli, destinations: &cdf_runtime::DestinationRegistry) -> Inv
 fn dispatch(
     cli: Cli,
     destinations: &cdf_runtime::DestinationRegistry,
+    progress_delivery: ProgressDelivery,
 ) -> Result<CommandOutput, CliError> {
     let command = cli.command.clone();
     match command {
@@ -61,7 +67,14 @@ fn dispatch(
         }
         Command::Run(args) => {
             let (host, services) = default_services(&cli)?;
-            crate::run_command::run(&cli, args, host.as_ref(), &services, destinations)
+            crate::run_command::run(
+                &cli,
+                args,
+                host.as_ref(),
+                &services,
+                destinations,
+                progress_delivery,
+            )
         }
         Command::Preview(args) => {
             let (host, services) = default_services(&cli)?;
@@ -83,15 +96,27 @@ fn dispatch(
         }
         Command::Resume(args) => {
             let (_, services) = default_services(&cli)?;
-            crate::resume_command::resume(&cli, args, &services, destinations)
+            crate::resume_command::resume(&cli, args, &services, destinations, progress_delivery)
         }
         Command::ReplayPackage(args) => {
             let (_, services) = default_services(&cli)?;
-            crate::replay_command::replay_package(&cli, args, &services, destinations)
+            crate::replay_command::replay_package(
+                &cli,
+                args,
+                &services,
+                destinations,
+                progress_delivery,
+            )
         }
         Command::Backfill(args) => {
             let (host, services) = default_services(&cli)?;
-            crate::backfill_command::backfill(&cli, args, (host.as_ref(), &services), destinations)
+            crate::backfill_command::backfill(
+                &cli,
+                args,
+                (host.as_ref(), &services),
+                destinations,
+                progress_delivery,
+            )
         }
         Command::Package(command) => crate::package_command::package(&cli, command),
         Command::Doctor => {

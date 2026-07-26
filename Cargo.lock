@@ -1084,6 +1084,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdf-cli-benchmarks"
+version = "0.1.0"
+dependencies = [
+ "cdf-cli-core",
+ "cdf-kernel",
+ "criterion",
+]
+
+[[package]]
 name = "cdf-cli-core"
 version = "0.1.0"
 dependencies = [
