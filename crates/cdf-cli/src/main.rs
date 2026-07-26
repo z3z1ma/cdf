@@ -1,3 +1,6 @@
+#[global_allocator]
+static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() {
     // nosemgrep: rust.lang.security.args.args -- argv is parsed for CLI dispatch only; argv[0] is not trusted for security decisions.
     let result = cdf_cli::invoke_streaming(std::env::args().map(std::ffi::OsString::from));

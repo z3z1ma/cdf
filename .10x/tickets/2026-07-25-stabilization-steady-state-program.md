@@ -53,7 +53,7 @@ criterion and is sequenced after the daily-driver surface stabilizes.
 ### WS-D — Scale and implemented-interop proof
 
 1. `.10x/tickets/done/2026-07-25-p0-canonical-segment-memory-admission.md`
-2. `.10x/tickets/2026-07-25-p0-staged-writer-memory-headroom.md`
+2. `.10x/tickets/done/2026-07-25-p0-staged-writer-memory-headroom.md`
 3. `.10x/tickets/2026-07-11-p3-f3-stress-generators-laws.md`
 4. `.10x/tickets/2026-07-11-p3-f4-one-tb-memory-closeout.md`
 5. `.10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md`
@@ -126,6 +126,12 @@ WASM, distributed execution, CDC, and new connectors are not P3 closure dependen
   enabled within ordinary variance of disabled (`-0.4407%` median delta), exact default execution
   completed after a generic staged-singleton repair, and 100×40 canonical recordings cover normal,
   verbose, redirected, JSON, replay, and failure surfaces. WS8 release engineering is next.
+- 2026-07-25: WS-D crossed its final P0 memory boundary. Generic topology admission now joins
+  source, canonical construction, encoding, staged handoff, and destination floors; mimalloc at the
+  executable boundary removes glibc arena retention without native-library interposition. The
+  untuned exact 100 GiB / 2 GiB EC2 law passed in 263.493 seconds at 1.658 GiB peak RSS with
+  verified package, receipt, and checkpoint semantics. F3 now owns only its independent
+  geometric, spill, and failure-mode acceptance matrix.
 
 ## Blockers
 

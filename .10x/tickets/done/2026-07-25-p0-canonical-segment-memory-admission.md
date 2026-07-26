@@ -80,7 +80,7 @@ None.
   `MemoryMax=2G`/`MemorySwapMax=0` service and reached Parquet destination writing. The former
   528,321,296-byte canonical reservation failure did not recur. A distinct destination writer
   headroom failure is owned by
-  `.10x/tickets/2026-07-25-p0-staged-writer-memory-headroom.md`.
+  `.10x/tickets/done/2026-07-25-p0-staged-writer-memory-headroom.md`.
 
 ## Review
 

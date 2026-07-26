@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-25
 Updated: 2026-07-25
 Parent: .10x/tickets/2026-07-25-stabilization-steady-state-program.md
@@ -97,11 +97,21 @@ fit.
   segment, matching the existing oversized-message singleton law. The constrained EC2 shape now
   resolves to three source jobs and one encoder; the 16 GiB shape still preserves all requested
   concurrency. Finalized destinations and executions without streaming handoff reserve nothing.
+- 2026-07-25: The resulting topology remained within its 1.5 GiB managed authority but an exact
+  cgroup run exposed allocator retention outside that ledger. Process maps showed 53 anonymous
+  mappings near 64 MiB and 1.68 GiB retained across the long-lived worker pools. Constraining
+  glibc with `MALLOC_ARENA_MAX=2` completed the 100 GiB law, proving allocator arenas—not a live
+  CDF object, staged file cache, or missing operator lease—were the residual RSS term.
+- 2026-07-25: Ratified `.10x/decisions/runtime-global-allocator.md` and selected mimalloc at the
+  executable boundary with native-library override disabled. The identical 20 GiB workload became
+  slightly faster while peak RSS fell by 448 MiB. The untuned optimized binary then completed the
+  exact 100 GiB / 2 GiB law in 263.493 seconds at 1,657,630,720 bytes peak RSS, with every one of
+  530,841,600 rows represented by 500 segments and verified package, receipt, and checkpoint
+  semantics.
 
 ## Blockers
 
-The exact EC2 100 GiB / 2 GiB closure rerun is pending deployment of the staged-handoff admission
-repair.
+None.
 
 ## Evidence
 
@@ -125,15 +135,28 @@ repair.
   passed after the staged-handoff repair.
 - `cargo clippy -p cdf-engine --all-targets --locked -j 12 -- -D warnings`: green after the
   staged-handoff repair.
-- EC2 100 GiB / 2 GiB closure rerun: pending this commit's deployment.
+- On the same EC2 `c7i.4xlarge`, the 20 GiB product run changed from 48.939 seconds and
+  2,119,090,176 bytes peak RSS with glibc to 48.659 seconds and 1,670,701,056 bytes with mimalloc.
+  This falsifies a throughput cost in the measured workload while demonstrating the retained-arena
+  reduction.
+- The exact untuned 100 GiB run under `MemoryMax=2G` and `MemorySwapMax=0` passed in 263.493
+  seconds at 1,657,630,720 bytes peak RSS and 1,610,598,707 bytes managed peak. It represented
+  108,293,954,400 source bytes, processed 530,841,600 rows into 500 segments, and verified package
+  `sha256:5ea1a0a9dfef85d274cde51a0711a3a42a6b60cb0bf9e6b47b43e905afdfd33e`,
+  its destination receipt, and committed checkpoint without an OOM event.
+- `cargo test -p cdf-cli --locked -j 12`: 276 library tests, one integration test, binary tests,
+  and doc tests passed with mimalloc selected.
+- `cargo clippy -p cdf-cli --all-targets --locked -j 12 -- -D warnings`: green.
+- `cargo deny check`: advisories, bans, licenses, and source policy passed.
 
 ## Review
 
-Fresh-hat local review passes. Writer memory remains destination-owned; generic orchestration sees
+Closure review passes. Writer memory remains destination-owned; generic orchestration sees
 only the existing prepared bulk path and ingress trait. The reservation is derived from recorded
 batch/writer settings rather than a new hard cap, is acquired before source contact, and is bounded
-by the already-validated maximum writer concurrency. No source, engine, or project-runtime
-Parquet branch was introduced.
+by the already-validated maximum writer concurrency. The allocator selection is confined to the
+final executable, leaves libraries neutral, and does not enable native allocation interposition.
+No source, engine, or project-runtime Parquet branch was introduced.
 
 ## Retrospective
 
@@ -141,3 +164,6 @@ Backpressure cannot guarantee progress if downstream minimum working sets are di
 upstream admission. A selected physical path must reserve its irreducible downstream floor at
 session construction, while optional concurrency remains the tunable portion. This preserves both
 constant memory and throughput without forcing operators to reverse-engineer pipeline headroom.
+Process RSS additionally includes allocator retention that a live-object ledger cannot release;
+constant-memory claims therefore need both exact ledger accounting and a production allocator
+whose cross-thread reclamation behavior matches the runtime topology.

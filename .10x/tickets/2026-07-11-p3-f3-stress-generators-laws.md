@@ -69,8 +69,15 @@ Depends on F1/F2.
 - 2026-07-25: The first repaired EC2 run at commit `980b8312` crossed canonical construction under
   `MemoryMax=2G` and exposed the next independent frontier: the already-selected Parquet staged
   path had not reserved its 16 MiB writer floor before upstream work occupied the ledger. That P0
-  is bounded by `.10x/tickets/2026-07-25-p0-staged-writer-memory-headroom.md`; F3 remains the
+  is closed by `.10x/tickets/done/2026-07-25-p0-staged-writer-memory-headroom.md`; F3 remains the
   integration acceptance owner rather than absorbing its implementation.
+- 2026-07-25: The untuned optimized binary completed the exact 100 GiB law under an enforced
+  `MemoryMax=2G` and `MemorySwapMax=0` cgroup. It processed 530,841,600 rows and
+  108,293,954,400 represented bytes into 500 segments in 263.493 seconds. Peak process RSS was
+  1,657,630,720 bytes, peak managed memory was 1,610,598,707 bytes, generator peak RSS was
+  185,831,424 bytes, and package, receipt, and checkpoint verification all passed. No spill
+  occurred; this closes the 100 GiB/RSS/OOM portion but not F3's independent spill and geometric
+  laws.
 
 ## Evidence
 
@@ -95,7 +102,12 @@ Depends on F1/F2.
   67108864 2GiB`: pass on the local macOS host. `summary.json`, generator timing, process timing,
   CDF's JSON report, package verification, and destination output were retained in the ephemeral
   smoke root. This proves the executable law and its assertions at 0.32 GiB; the required enforced
-  100 GiB release-host observation remains the next closure gate.
+  100 GiB release-host observation is recorded below.
+- Exact EC2 100 GiB / 2 GiB product law: pass in 263.493 seconds with 1,657,630,720 bytes peak RSS,
+  1,610,598,707 bytes managed peak, 530,841,600 rows, 500 segments, and verified package
+  `sha256:5ea1a0a9dfef85d274cde51a0711a3a42a6b60cb0bf9e6b47b43e905afdfd33e`,
+  destination receipt, and checkpoint. This proves constant RSS at the required scale; it does not
+  prove the still-independent spill and geometric-series cases.
 
 ## References
 
