@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-11
 Updated: 2026-07-25
 Parent: .10x/tickets/2026-07-11-p1-ws9-cli-experience-excellence.md
@@ -45,3 +45,9 @@ Permanent matrix output, million-event and end-to-end benchmark artifacts, canon
 - 2026-07-25: `.10x/evidence/2026-07-25-cli-experience-rewrite.md` records the current conformance,
   benchmark, and real-project smoke. Remaining closure work is the enabled-versus-disabled
   reference-workload cell, canonical hosted recordings, and the final severity-focused review.
+- 2026-07-25: Hosted measurement is active on the reusable tuned `c7i.4xlarge` authority. The
+  first no-progress FineWeb sample exposed a generic staged-ingress defect before destination
+  mutation: a segment already admitted by the managed-memory ledger was rejected because its
+  retained Arrow bytes narrowly exceeded the destination's concurrent byte window. The bounded
+  repair is owned by `.10x/tickets/2026-07-25-staged-segment-oversized-singleton.md`; CX4 resumes
+  from its clean revision rather than hiding the defect with a benchmark-only override.
