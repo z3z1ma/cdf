@@ -2093,3 +2093,46 @@ fn terminal_file_attestation_may_only_add_a_content_hash() {
     assert!(!changed.is_monotonic_refinement_of(&earlier));
     assert!(!earlier.is_monotonic_refinement_of(&completed));
 }
+
+#[test]
+fn source_transfer_reports_merge_in_canonical_mode_order_without_claiming_unknown_copies() {
+    let mut first = SourceTransferReport::default();
+    first
+        .record_outcome(
+            SourceTransferMode::RowCompat,
+            10,
+            80,
+            &SourceCopyClassification::PayloadCopyKnown { bytes: 80 },
+        )
+        .unwrap();
+    first.record_control().unwrap();
+
+    let mut second = SourceTransferReport::default();
+    second
+        .record_outcome(
+            SourceTransferMode::ArrowCData,
+            20,
+            160,
+            &SourceCopyClassification::CopyUnknown,
+        )
+        .unwrap();
+    second
+        .record_outcome(
+            SourceTransferMode::RowCompat,
+            5,
+            40,
+            &SourceCopyClassification::PayloadCopyKnown { bytes: 40 },
+        )
+        .unwrap();
+    first.merge(&second).unwrap();
+
+    assert_eq!(first.control_events, 1);
+    assert_eq!(first.modes.len(), 2);
+    assert_eq!(first.modes[0].mode, SourceTransferMode::ArrowCData);
+    assert_eq!(first.modes[0].unknown_copy_batches, 1);
+    assert_eq!(first.modes[0].zero_copy_verified_batches, 0);
+    assert_eq!(first.modes[1].mode, SourceTransferMode::RowCompat);
+    assert_eq!(first.modes[1].rows, 15);
+    assert_eq!(first.modes[1].known_copy_batches, 2);
+    assert_eq!(first.modes[1].known_copy_bytes, 120);
+}

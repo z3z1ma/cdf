@@ -1,7 +1,7 @@
 Status: cancelled
 Created: 2026-07-11
 Updated: 2026-07-25
-Parent: .10x/tickets/2026-07-10-p3-ws-h-interop-boundaries.md
+Parent: .10x/tickets/done/2026-07-10-p3-ws-h-interop-boundaries.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-h1-interop-measurement-copy-proof.md
 
 # P3 H4: prospective WASM stream cost and interface model

@@ -14,8 +14,9 @@ use cdf_kernel::{
     EffectiveSchemaRuntime, ErrorKind, EstimateSupport, FilterCapabilities, ForeignState,
     IncrementalShape, PartitionAuthority, PartitionId, PartitionPlan, PartitioningCapabilities,
     PlanId, QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceId,
-    ResourceStream, Result, ScanPlan, ScanRequest, SchemaSource, ScopeKey, SourcePosition,
-    TrustLevel, TypePolicyAllowances, WriteDisposition, parse_arrow_field_type,
+    ResourceStream, Result, ScanPlan, ScanRequest, SchemaSource, ScopeKey,
+    SourceBoundaryCapabilities, SourcePosition, TrustLevel, TypePolicyAllowances, WriteDisposition,
+    parse_arrow_field_type,
 };
 use cdf_runtime::CompiledSourcePlan;
 use pyo3::{
@@ -771,6 +772,17 @@ impl ResourceStream for PythonResource {
         self.compiled_source_plan_hash.as_ref()
     }
 
+    fn source_boundary_capabilities(&self) -> Option<SourceBoundaryCapabilities> {
+        Some(
+            SourceBoundaryCapabilities::new(
+                self.foreign_descriptor.transfer_modes.clone(),
+                self.foreign_descriptor.lanes.execution_lane,
+                self.foreign_descriptor.lanes.maximum_internal_parallelism,
+            )
+            .expect("validated foreign descriptor has valid source-boundary capabilities"),
+        )
+    }
+
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
         self.effective_schema_runtime.as_ref()
     }
@@ -825,10 +837,15 @@ impl ResourceStream for PythonResource {
         }
         let termination = opened.termination.clone();
         let opening = Box::pin(async move {
-            let stream = cdf_foreign_stream::batch_stream_from_foreign_events(opened.events);
+            let projection = cdf_foreign_stream::project_foreign_events(opened.events);
+            let completion = projection.completion;
             Ok(cdf_kernel::PartitionStreamPayload::new(
-                stream,
-                Box::pin(async { Ok(cdf_kernel::PartitionCompletion::default()) }),
+                projection.batches,
+                Box::pin(async move {
+                    let source_transfer = completion.await?;
+                    Ok(cdf_kernel::PartitionCompletion::default()
+                        .with_source_transfer(source_transfer))
+                }),
             ))
         });
         cdf_kernel::PartitionOpenAttempt::with_termination(opening, termination)

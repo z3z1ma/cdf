@@ -1842,6 +1842,8 @@ pub struct ExplainData {
     pub delivery_guarantee: DeliveryGuarantee,
     pub execution_extent: ExecutionExtent,
     pub operator_chain: Vec<OperatorNode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_boundary: Option<cdf_kernel::SourceBoundaryCapabilities>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2049,6 +2051,8 @@ pub struct EngineRunOutputWithSegmentPositions {
     pub segment_positions: Vec<EngineSegmentPosition>,
     pub phase_metrics: Vec<RunPhaseMetric>,
     pub source_frontier: cdf_runtime::SourceFrontierReport,
+    /// Invocation-local source-boundary telemetry. This never participates in package identity.
+    pub source_transfer: cdf_kernel::SourceTransferReport,
     pub drain_epoch: Option<EngineDrainEpoch>,
     pub(crate) execution_evidence: EngineExecutionEvidence,
 }
@@ -2100,6 +2104,7 @@ impl EngineRunOutputWithSegmentPositions {
             segment_positions,
             phase_metrics: Vec::new(),
             source_frontier: cdf_runtime::SourceFrontierReport::default(),
+            source_transfer: cdf_kernel::SourceTransferReport::default(),
             drain_epoch: None,
             execution_evidence,
         }

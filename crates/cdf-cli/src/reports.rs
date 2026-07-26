@@ -120,6 +120,8 @@ pub(crate) struct RunCliReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     file_manifest: Option<RunFileManifestReport>,
     terminal_schema_quarantines: Vec<TerminalSchemaObservationQuarantine>,
+    #[serde(skip_serializing_if = "cdf_kernel::SourceTransferReport::is_empty")]
+    source_transfer: cdf_kernel::SourceTransferReport,
     memory: RunMemoryReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     adhoc: Option<AdhocRunReport>,
@@ -182,6 +184,7 @@ impl RunCliReport {
                 .as_ref()
                 .map(RunFileManifestReport::from_project),
             terminal_schema_quarantines: report.terminal_schema_quarantines.clone(),
+            source_transfer: report.source_transfer.clone(),
             memory,
             adhoc: None,
             ledger_events: RunLedgerSummary::from_snapshot(&report.ledger_snapshot),
@@ -299,6 +302,31 @@ impl RunCliReport {
         } else {
             document
         };
+        let document = if self.source_transfer.is_empty() {
+            document
+        } else {
+            let panel = self.source_transfer.modes.iter().fold(
+                KeyValuePanel::new("Source Boundary").row(
+                    "control events",
+                    self.source_transfer.control_events.to_string(),
+                ),
+                |panel, mode| {
+                    panel.row(
+                        source_transfer_mode_name(mode.mode),
+                        format!(
+                            "{} batches · {} rows · zero-copy verified {} · known-copy {} ({} bytes) · copy unknown {}",
+                            mode.batches,
+                            humanize_rows(mode.rows),
+                            mode.zero_copy_verified_batches,
+                            mode.known_copy_batches,
+                            mode.known_copy_bytes,
+                            mode.unknown_copy_batches,
+                        ),
+                    )
+                },
+            );
+            document.blank_line().push_verbose(panel)
+        };
         let document = if explain_memory {
             document.blank_line().push(self.memory.panel())
         } else {
@@ -386,6 +414,14 @@ impl RunCliReport {
             )
             .blank_line()
             .push(NextCommand::new(format!("cdf inspect run {}", self.run_id)))
+    }
+}
+
+fn source_transfer_mode_name(mode: cdf_kernel::SourceTransferMode) -> &'static str {
+    match mode {
+        cdf_kernel::SourceTransferMode::ArrowCData => "arrow c data",
+        cdf_kernel::SourceTransferMode::ArrowIpcStream => "arrow ipc stream",
+        cdf_kernel::SourceTransferMode::RowCompat => "row compatibility",
     }
 }
 
@@ -1265,6 +1301,7 @@ mod tests {
             elapsed_ms: 1,
             file_manifest: None,
             terminal_schema_quarantines: Vec::new(),
+            source_transfer: cdf_kernel::SourceTransferReport::default(),
             memory: test_memory_report(),
             adhoc: None,
             ledger_events: RunLedgerSummary::default(),

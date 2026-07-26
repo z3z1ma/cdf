@@ -813,7 +813,7 @@ fn scan_report_document(
                 ),
         );
     }
-    let document = document
+    let mut document = document
         .blank_line()
         .push_verbose(
             KeyValuePanel::new("Fetch")
@@ -899,6 +899,28 @@ fn scan_report_document(
                     report.state_advancement.advances_after.clone(),
                 ),
         );
+    if let Some(boundary) = &report.explain.source_boundary {
+        document = document.blank_line().push_verbose(
+            KeyValuePanel::new("Source Boundary")
+                .row(
+                    "transfer modes",
+                    boundary
+                        .transfer_modes
+                        .iter()
+                        .map(|mode| source_transfer_mode_name(*mode))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                )
+                .row(
+                    "execution lane",
+                    source_execution_lane_name(boundary.execution_lane),
+                )
+                .row(
+                    "internal parallelism",
+                    boundary.maximum_internal_parallelism.to_string(),
+                ),
+        );
+    }
     let mut document = if let Some(snapshot) = &report.schema_snapshot {
         let document = document.blank_line().push_verbose(
             KeyValuePanel::new("Schema Snapshot")
@@ -953,6 +975,23 @@ fn execution_extent_name(extent: &cdf_kernel::ExecutionExtent) -> &'static str {
         cdf_kernel::ExecutionExtent::Bounded { .. } => "bounded",
         cdf_kernel::ExecutionExtent::Drain { .. } => "drain",
         cdf_kernel::ExecutionExtent::Resident { .. } => "resident",
+    }
+}
+
+fn source_transfer_mode_name(mode: cdf_kernel::SourceTransferMode) -> &'static str {
+    match mode {
+        cdf_kernel::SourceTransferMode::ArrowCData => "arrow_c_data",
+        cdf_kernel::SourceTransferMode::ArrowIpcStream => "arrow_ipc_stream",
+        cdf_kernel::SourceTransferMode::RowCompat => "row_compat",
+    }
+}
+
+fn source_execution_lane_name(lane: cdf_kernel::SourceExecutionLane) -> &'static str {
+    match lane {
+        cdf_kernel::SourceExecutionLane::Cpu => "cpu",
+        cdf_kernel::SourceExecutionLane::Blocking => "blocking",
+        cdf_kernel::SourceExecutionLane::IsolatedProcess => "isolated_process",
+        cdf_kernel::SourceExecutionLane::Sandbox => "sandbox",
     }
 }
 

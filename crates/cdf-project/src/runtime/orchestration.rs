@@ -1025,6 +1025,7 @@ async fn run_project_inner(
             terminal_schema_quarantines: output.output.terminal_schema_quarantines.clone(),
             runtime_scheduler: execution.services.scheduler_report()?,
             source_frontier: output.source_frontier.clone(),
+            source_transfer: output.source_transfer.clone(),
             drain: None,
         },
         drain_epoch,

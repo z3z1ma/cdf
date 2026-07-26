@@ -37,6 +37,7 @@ struct PlanFinishContext {
     type_policy: cdf_contract::TypePolicy,
     expression_schema: arrow_schema::Schema,
     cursor_field: Option<String>,
+    source_boundary: Option<cdf_kernel::SourceBoundaryCapabilities>,
 }
 
 #[derive(Debug, Default)]
@@ -106,6 +107,7 @@ impl Planner {
                     .cursor
                     .as_ref()
                     .map(|cursor| cursor.field.clone()),
+                source_boundary: resource.source_boundary_capabilities(),
             },
         )?;
         plan.compiled_schema_admission
@@ -188,6 +190,7 @@ impl Planner {
                     .cursor
                     .as_ref()
                     .map(|cursor| cursor.field.clone()),
+                source_boundary: resource.source_boundary_capabilities(),
             },
         )?;
         let baseline_projection = (resource.capabilities().projection
@@ -302,6 +305,7 @@ impl Planner {
             finish.projection_pushed,
             finish.limit_pushed,
             finish.estimate_support,
+            finish.source_boundary,
         );
 
         Ok(EnginePlan {
@@ -1171,6 +1175,7 @@ fn explain_data(
     projection_pushed: bool,
     limit_pushed: bool,
     estimate_support: EstimateSupport,
+    source_boundary: Option<cdf_kernel::SourceBoundaryCapabilities>,
 ) -> ExplainData {
     let pushed_predicates = scan
         .pushed_predicates
@@ -1225,6 +1230,7 @@ fn explain_data(
         delivery_guarantee: scan.delivery_guarantee.clone(),
         execution_extent: execution_extent.clone(),
         operator_chain: operator_chain.to_vec(),
+        source_boundary,
     }
 }
 

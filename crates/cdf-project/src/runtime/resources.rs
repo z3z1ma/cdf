@@ -138,6 +138,10 @@ impl ResourceStream for WindowScopedResource<'_> {
         self.inner.compiled_source_plan_hash()
     }
 
+    fn source_boundary_capabilities(&self) -> Option<cdf_kernel::SourceBoundaryCapabilities> {
+        self.inner.source_boundary_capabilities()
+    }
+
     fn validate_runtime_dependencies(&self) -> Result<()> {
         self.inner.validate_runtime_dependencies()
     }

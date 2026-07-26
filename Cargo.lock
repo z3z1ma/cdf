@@ -1585,10 +1585,12 @@ name = "cdf-python"
 version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
+ "arrow-buffer",
  "arrow-data",
  "arrow-ipc",
  "arrow-json",
  "arrow-schema",
+ "bytes",
  "cdf-engine",
  "cdf-foreign-stream",
  "cdf-http",

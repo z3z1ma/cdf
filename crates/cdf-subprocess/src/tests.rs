@@ -228,7 +228,7 @@ async fn arrow_ipc_stdout_adapter_streams_unknown_length_without_executor_deadlo
         memory(),
     )
     .unwrap();
-    let mut opened = producer
+    let opened = producer
         .open(ForeignStreamOpenRequest {
             resource_id: ResourceId::new("orders").unwrap(),
             partition_id: PartitionId::new("p0").unwrap(),
@@ -236,31 +236,28 @@ async fn arrow_ipc_stdout_adapter_streams_unknown_length_without_executor_deadlo
         })
         .await
         .unwrap();
-    let mut batches = Vec::new();
-    let mut terminal = None;
-    while let Some(event) = opened.events.next().await {
-        match event.unwrap() {
-            ForeignStreamEvent::Outcome(outcome) => batches.push(outcome),
-            ForeignStreamEvent::Control(_) => {}
-            ForeignStreamEvent::Terminal(status) => terminal = Some(status),
-        }
+    let termination = opened.termination.clone();
+    let projection = cdf_foreign_stream::project_foreign_events(opened.events);
+    let mut batches = projection.batches;
+    let mut observed = Vec::new();
+    while let Some(batch) = batches.next().await {
+        observed.push(batch.unwrap());
     }
-    opened.termination.join().await.unwrap();
+    let report = projection.completion.await.unwrap();
+    termination.join().await.unwrap();
 
-    assert!(matches!(
-        terminal,
-        Some(ForeignTerminalStatus::Succeeded { .. })
-    ));
-    assert_eq!(batches.len(), 1);
+    assert_eq!(observed.len(), 1);
+    assert_eq!(observed[0].header.row_count, 2);
     assert_eq!(
-        batches[0].transfer_mode,
-        ForeignTransferMode::ArrowIpcStream
-    );
-    assert_eq!(batches[0].batch.header.row_count, 2);
-    assert_eq!(
-        batches[0].batch.record_batch().unwrap().schema().as_ref(),
+        observed[0].record_batch().unwrap().schema().as_ref(),
         schema.as_ref()
     );
+    assert_eq!(report.modes.len(), 1);
+    assert_eq!(report.modes[0].mode, ForeignTransferMode::ArrowIpcStream);
+    assert_eq!(report.modes[0].batches, 1);
+    assert_eq!(report.modes[0].rows, 2);
+    assert_eq!(report.modes[0].unknown_copy_batches, 1);
+    assert_eq!(report.modes[0].zero_copy_verified_batches, 0);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1043,6 +1040,103 @@ async fn singer_protocol_streams_selected_rows_and_ordered_control_with_bounded_
     assert_eq!(coordinator.snapshot().current_bytes, 0);
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn singer_control_flood_is_projected_immediately_with_constant_managed_retention() {
+    const STATE_MESSAGES: u64 = 2_048;
+
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("singer-control-flood.ndjson");
+    let mut writer = BufWriter::new(File::create(&input).unwrap());
+    serde_json::to_writer(
+        &mut writer,
+        &json!({
+            "type": "SCHEMA",
+            "stream": "orders",
+            "schema": {"type": "object"},
+            "key_properties": ["id"]
+        }),
+    )
+    .unwrap();
+    writer.write_all(b"\n").unwrap();
+    for sequence in 0..STATE_MESSAGES {
+        serde_json::to_writer(
+            &mut writer,
+            &json!({"type":"STATE","value":{"sequence":sequence}}),
+        )
+        .unwrap();
+        writer.write_all(b"\n").unwrap();
+    }
+    serde_json::to_writer(
+        &mut writer,
+        &json!({"type":"RECORD","stream":"orders","record":{"id":1}}),
+    )
+    .unwrap();
+    writer.write_all(b"\n").unwrap();
+    writer.flush().unwrap();
+
+    let coordinator =
+        Arc::new(DeterministicMemoryCoordinator::new(96 * 1024 * 1024, BTreeMap::new()).unwrap());
+    let admitted: Arc<dyn MemoryCoordinator> = coordinator.clone();
+    let producer = SubprocessProducer::new(
+        CommandSpec::new("cat").with_args([input.to_str().unwrap()]),
+        SubprocessProtocol::Singer {
+            stream: StreamIdentity::singer("orders"),
+        },
+        read_options().with_batch_size(1).unwrap(),
+        DecodeSchemaPlan::fixed_admission(Arc::new(Schema::new(vec![Field::new(
+            "id",
+            DataType::Int64,
+            true,
+        )]))),
+        SupervisionOptions {
+            maximum_stdout_bytes: 8 * 1024 * 1024,
+            maximum_stream_chunk_bytes: 4 * 1024,
+            maximum_protocol_line_bytes: 4 * 1024,
+            protocol_parser_scratch_bytes: 128 * 1024,
+            protocol_row_window_bytes: 64,
+            ..SupervisionOptions::default()
+        },
+        admitted,
+    )
+    .unwrap();
+    let opened = producer
+        .open(ForeignStreamOpenRequest {
+            resource_id: ResourceId::new("orders").unwrap(),
+            partition_id: PartitionId::new("p0").unwrap(),
+            cancellation: Default::default(),
+        })
+        .await
+        .unwrap();
+    let termination = opened.termination.clone();
+    let projection = cdf_foreign_stream::project_foreign_events(opened.events);
+    let mut batches = projection.batches;
+    let mut rows = 0_u64;
+    while let Some(batch) = batches.next().await {
+        rows += batch.unwrap().header.row_count;
+    }
+    let report = projection.completion.await.unwrap();
+    termination.join().await.unwrap();
+
+    assert_eq!(rows, 1);
+    assert_eq!(report.control_events, STATE_MESSAGES + 1);
+    assert_eq!(report.modes.len(), 1);
+    assert_eq!(report.modes[0].mode, ForeignTransferMode::RowCompat);
+    assert_eq!(report.modes[0].rows, 1);
+    let snapshot = coordinator.snapshot();
+    assert_eq!(snapshot.current_bytes, 0);
+    let control = snapshot
+        .consumers
+        .iter()
+        .find(|(consumer, _)| consumer.name == "subprocess-protocol-control")
+        .map(|(_, consumer)| consumer)
+        .expect("protocol control reservation is observable");
+    assert!(
+        control.peak_bytes <= 4 * 1024,
+        "control projection retained {} bytes: {snapshot:?}",
+        control.peak_bytes,
+    );
+}
+
 #[test]
 fn protocol_decoders_preserve_metadata_and_state_variants_without_collecting_streams() {
     let singer = decode_singer_message(
@@ -1488,7 +1582,7 @@ async fn subprocess_stream_release_envelope_reports_ipc_and_row_modes_separately
         )
         .unwrap();
         let started = std::time::Instant::now();
-        let mut opened = producer
+        let opened = producer
             .open(ForeignStreamOpenRequest {
                 resource_id: ResourceId::new("orders").unwrap(),
                 partition_id: PartitionId::new("p0").unwrap(),
@@ -1496,32 +1590,23 @@ async fn subprocess_stream_release_envelope_reports_ipc_and_row_modes_separately
             })
             .await
             .unwrap();
+        let termination = opened.termination.clone();
+        let projection = cdf_foreign_stream::project_foreign_events(opened.events);
+        let mut stream = projection.batches;
         let mut rows = 0_u64;
-        let mut logical_bytes = 0_u64;
         let mut batches = 0_u64;
         let mut first_batch_ns = None;
-        let mut copy = None;
-        let mut terminal = None;
-        while let Some(event) = opened.events.next().await {
-            match event.unwrap() {
-                ForeignStreamEvent::Outcome(outcome) => {
-                    first_batch_ns.get_or_insert_with(|| {
-                        u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
-                    });
-                    rows += outcome.batch.header.row_count;
-                    logical_bytes += outcome.batch.header.byte_count;
-                    batches += 1;
-                    copy.get_or_insert_with(|| format!("{:?}", outcome.copy));
-                }
-                ForeignStreamEvent::Control(_) => {}
-                ForeignStreamEvent::Terminal(status) => terminal = Some(status),
-            }
+        while let Some(batch) = stream.next().await {
+            let batch = batch.unwrap();
+            first_batch_ns.get_or_insert_with(|| {
+                u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+            });
+            rows += batch.header.row_count;
+            batches += 1;
         }
-        opened.termination.join().await.unwrap();
-        assert!(matches!(
-            terminal,
-            Some(ForeignTerminalStatus::Succeeded { .. })
-        ));
+        let report = projection.completion.await.unwrap();
+        termination.join().await.unwrap();
+        let logical_bytes = report.modes.iter().map(|mode| mode.logical_bytes).sum();
         let elapsed_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
         let peak = coordinator.snapshot().peak_bytes;
         assert_eq!(coordinator.snapshot().current_bytes, 0);
@@ -1532,8 +1617,7 @@ async fn subprocess_stream_release_envelope_reports_ipc_and_row_modes_separately
             first_batch_ns.unwrap(),
             elapsed_ns,
             format!(
-                "source_bytes={source_bytes} managed_peak_bytes={peak} copy={}",
-                copy.unwrap()
+                "source_bytes={source_bytes} managed_peak_bytes={peak} transfer_report={report:?}"
             ),
         )
     }

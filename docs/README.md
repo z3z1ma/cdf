@@ -13,6 +13,8 @@ contributors.
 - [Performance envelope](performance-envelope.md) is generated from the P3
   machine report and is the only authority for performance claims. Its current
   pre-baseline banner means no claim is yet authorized.
+- [Foreign source boundaries](interop-boundaries.md) documents Python and
+  subprocess transfer, copy, memory, and host-labelled performance evidence.
 - [Operators](operators/README.md) contains scoped operational guides for
   recovery, replay, backfill, doctor/status, installation, and troubleshooting.
 - [Commands](commands/README.md) is reserved for generated command reference

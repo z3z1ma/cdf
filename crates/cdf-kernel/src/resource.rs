@@ -1353,6 +1353,220 @@ impl SourceIoMetrics {
     }
 }
 
+/// Executor-neutral data-transfer mechanism exposed by a source boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceTransferMode {
+    ArrowCData,
+    ArrowIpcStream,
+    RowCompat,
+}
+
+/// Executor lane required by a source boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceExecutionLane {
+    Cpu,
+    Blocking,
+    IsolatedProcess,
+    Sandbox,
+}
+
+/// Plan-time source-boundary capabilities.
+///
+/// This is intentionally source-neutral: generic planning can explain a foreign or plugin
+/// boundary without importing Python, subprocess, or sandbox runtime types.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceBoundaryCapabilities {
+    pub transfer_modes: Vec<SourceTransferMode>,
+    pub execution_lane: SourceExecutionLane,
+    pub maximum_internal_parallelism: u16,
+}
+
+impl SourceBoundaryCapabilities {
+    pub fn new(
+        mut transfer_modes: Vec<SourceTransferMode>,
+        execution_lane: SourceExecutionLane,
+        maximum_internal_parallelism: u16,
+    ) -> Result<Self> {
+        transfer_modes.sort_unstable();
+        transfer_modes.dedup();
+        if transfer_modes.is_empty() {
+            return Err(CdfError::contract(
+                "source boundary requires at least one transfer mode",
+            ));
+        }
+        if maximum_internal_parallelism == 0 {
+            return Err(CdfError::contract(
+                "source boundary maximum internal parallelism must be greater than zero",
+            ));
+        }
+        Ok(Self {
+            transfer_modes,
+            execution_lane,
+            maximum_internal_parallelism,
+        })
+    }
+}
+
+/// Observed payload-copy behavior at a source boundary.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SourceCopyClassification {
+    PayloadZeroCopyVerified,
+    PayloadCopyKnown { bytes: u64 },
+    CopyUnknown,
+}
+
+impl SourceCopyClassification {
+    pub fn payload_copy_known(bytes: u64) -> Result<Self> {
+        if bytes == 0 {
+            return Err(CdfError::contract(
+                "known source payload copy bytes must be greater than zero",
+            ));
+        }
+        Ok(Self::PayloadCopyKnown { bytes })
+    }
+}
+
+/// Aggregated actual transfer evidence for one transfer mode.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceTransferModeReport {
+    pub mode: SourceTransferMode,
+    pub batches: u64,
+    pub rows: u64,
+    pub logical_bytes: u64,
+    pub zero_copy_verified_batches: u64,
+    pub known_copy_batches: u64,
+    pub known_copy_bytes: u64,
+    pub unknown_copy_batches: u64,
+}
+
+impl SourceTransferModeReport {
+    fn new(mode: SourceTransferMode) -> Self {
+        Self {
+            mode,
+            batches: 0,
+            rows: 0,
+            logical_bytes: 0,
+            zero_copy_verified_batches: 0,
+            known_copy_batches: 0,
+            known_copy_bytes: 0,
+            unknown_copy_batches: 0,
+        }
+    }
+
+    fn record(
+        &mut self,
+        rows: u64,
+        logical_bytes: u64,
+        copy: &SourceCopyClassification,
+    ) -> Result<()> {
+        self.batches = checked_source_transfer_add(self.batches, 1)?;
+        self.rows = checked_source_transfer_add(self.rows, rows)?;
+        self.logical_bytes = checked_source_transfer_add(self.logical_bytes, logical_bytes)?;
+        match copy {
+            SourceCopyClassification::PayloadZeroCopyVerified => {
+                self.zero_copy_verified_batches =
+                    checked_source_transfer_add(self.zero_copy_verified_batches, 1)?;
+            }
+            SourceCopyClassification::PayloadCopyKnown { bytes } => {
+                self.known_copy_batches = checked_source_transfer_add(self.known_copy_batches, 1)?;
+                self.known_copy_bytes = checked_source_transfer_add(self.known_copy_bytes, *bytes)?;
+            }
+            SourceCopyClassification::CopyUnknown => {
+                self.unknown_copy_batches =
+                    checked_source_transfer_add(self.unknown_copy_batches, 1)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn merge(&mut self, other: &Self) -> Result<()> {
+        if self.mode != other.mode {
+            return Err(CdfError::internal(
+                "source transfer report attempted to merge different modes",
+            ));
+        }
+        self.batches = checked_source_transfer_add(self.batches, other.batches)?;
+        self.rows = checked_source_transfer_add(self.rows, other.rows)?;
+        self.logical_bytes = checked_source_transfer_add(self.logical_bytes, other.logical_bytes)?;
+        self.zero_copy_verified_batches = checked_source_transfer_add(
+            self.zero_copy_verified_batches,
+            other.zero_copy_verified_batches,
+        )?;
+        self.known_copy_batches =
+            checked_source_transfer_add(self.known_copy_batches, other.known_copy_batches)?;
+        self.known_copy_bytes =
+            checked_source_transfer_add(self.known_copy_bytes, other.known_copy_bytes)?;
+        self.unknown_copy_batches =
+            checked_source_transfer_add(self.unknown_copy_batches, other.unknown_copy_batches)?;
+        Ok(())
+    }
+}
+
+/// Operational transfer evidence retained through partition completion.
+///
+/// This report is deliberately absent from plan/package identity. It records what the source
+/// boundary actually did during this invocation without changing deterministic data artifacts.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceTransferReport {
+    pub modes: Vec<SourceTransferModeReport>,
+    pub control_events: u64,
+}
+
+impl SourceTransferReport {
+    pub fn is_empty(&self) -> bool {
+        self.modes.is_empty() && self.control_events == 0
+    }
+
+    pub fn record_outcome(
+        &mut self,
+        mode: SourceTransferMode,
+        rows: u64,
+        logical_bytes: u64,
+        copy: &SourceCopyClassification,
+    ) -> Result<()> {
+        match self.modes.binary_search_by_key(&mode, |report| report.mode) {
+            Ok(index) => self.modes[index].record(rows, logical_bytes, copy),
+            Err(index) => {
+                let mut report = SourceTransferModeReport::new(mode);
+                report.record(rows, logical_bytes, copy)?;
+                self.modes.insert(index, report);
+                Ok(())
+            }
+        }
+    }
+
+    pub fn record_control(&mut self) -> Result<()> {
+        self.control_events = checked_source_transfer_add(self.control_events, 1)?;
+        Ok(())
+    }
+
+    pub fn merge(&mut self, other: &Self) -> Result<()> {
+        self.control_events =
+            checked_source_transfer_add(self.control_events, other.control_events)?;
+        for mode in &other.modes {
+            match self
+                .modes
+                .binary_search_by_key(&mode.mode, |report| report.mode)
+            {
+                Ok(index) => self.modes[index].merge(mode)?,
+                Err(index) => self.modes.insert(index, mode.clone()),
+            }
+        }
+        Ok(())
+    }
+}
+
+fn checked_source_transfer_add(left: u64, right: u64) -> Result<u64> {
+    left.checked_add(right)
+        .ok_or_else(|| CdfError::data("source transfer evidence exceeds u64"))
+}
+
 /// EOF-bound outcome of one partition invocation.
 ///
 /// Correctness evidence and operational measurements share the same lifecycle
@@ -1361,6 +1575,7 @@ impl SourceIoMetrics {
 pub struct PartitionCompletion {
     attestation: Option<PartitionAttestation>,
     source_io: Option<SourceIoMetrics>,
+    source_transfer: Option<SourceTransferReport>,
 }
 
 impl PartitionCompletion {
@@ -1371,7 +1586,13 @@ impl PartitionCompletion {
         Self {
             attestation,
             source_io,
+            source_transfer: None,
         }
+    }
+
+    pub fn with_source_transfer(mut self, source_transfer: SourceTransferReport) -> Self {
+        self.source_transfer = (!source_transfer.is_empty()).then_some(source_transfer);
+        self
     }
 
     pub fn attestation(&self) -> Option<&PartitionAttestation> {
@@ -1384,6 +1605,10 @@ impl PartitionCompletion {
 
     pub fn source_io(&self) -> Option<SourceIoMetrics> {
         self.source_io
+    }
+
+    pub fn source_transfer(&self) -> Option<&SourceTransferReport> {
+        self.source_transfer.as_ref()
     }
 }
 
@@ -2122,6 +2347,13 @@ pub trait ResourceStream: Send + Sync {
     /// the source boundary. Keeping it on the resolved resource prevents a serialized engine plan
     /// from coherently rewriting every copy of its own source ceiling.
     fn compiled_source_plan_hash(&self) -> Option<&CompiledSourcePlanHash> {
+        None
+    }
+    /// Returns executor-neutral capabilities for an interop boundary, when one exists.
+    ///
+    /// Native source adapters return `None`. Foreign/plugin adapters expose only transferable
+    /// plan facts here; concrete runtime handles remain behind their source-owned implementation.
+    fn source_boundary_capabilities(&self) -> Option<SourceBoundaryCapabilities> {
         None
     }
     /// Validates adapter-owned runtime dependencies before orchestration starts.

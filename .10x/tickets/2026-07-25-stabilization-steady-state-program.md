@@ -57,8 +57,8 @@ criterion and is sequenced after the daily-driver surface stabilizes.
 3. `.10x/tickets/done/2026-07-11-p3-f3-stress-generators-laws.md`
 4. `.10x/tickets/done/2026-07-11-p3-f4-one-tb-memory-closeout.md` — done.
 5. `.10x/tickets/done/2026-07-10-p3-ws-f-constant-memory-guarantee.md` — done.
-6. `.10x/tickets/2026-07-11-p3-h5-interop-envelope-closeout.md`
-7. `.10x/tickets/2026-07-10-p3-ws-h-interop-boundaries.md`
+6. `.10x/tickets/done/2026-07-11-p3-h5-interop-envelope-closeout.md` — done.
+7. `.10x/tickets/done/2026-07-10-p3-ws-h-interop-boundaries.md` — done.
 
 This lane proves the already-built architecture. Any implementation defect discovered by a
 stress or envelope run receives a separate bounded repair owner; proof tickets do not absorb
@@ -143,6 +143,10 @@ WASM, distributed execution, CDC, and new connectors are not P3 closure dependen
   with verified package, receipt, checkpoint, and zero cgroup OOM. A separate all-file Parquet
   discovery pass closed the 1,024-file evidence boundary, the allocation-owner matrix has no open
   row, and dedicated-host procedures are permanent without inflating hosted CI.
+- 2026-07-25: WS-D is closed. H5 promoted source-neutral planned and actual foreign-boundary
+  evidence through the product path, proved exact Arrow ownership and bounded control retention,
+  published honest Python/subprocess release cells, and left prospective WASM outside the
+  implemented envelope. WS-H is terminal; P3 aggregate reconciliation is next.
 
 ## Blockers
 

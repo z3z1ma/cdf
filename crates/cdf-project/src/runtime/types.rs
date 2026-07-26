@@ -107,6 +107,7 @@ pub struct ProjectRunReport {
     pub terminal_schema_quarantines: Vec<TerminalSchemaObservationQuarantine>,
     pub runtime_scheduler: cdf_runtime::RuntimeSchedulerReport,
     pub source_frontier: cdf_runtime::SourceFrontierReport,
+    pub source_transfer: cdf_kernel::SourceTransferReport,
     pub drain: Option<ProjectDrainRunReport>,
 }
 

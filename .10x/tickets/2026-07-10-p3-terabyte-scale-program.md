@@ -47,7 +47,7 @@ This parent is an aggregate plan. Workstream records own sequencing and integrat
 - `.10x/tickets/done/2026-07-10-p3-ws-e-hashing-package-io.md`
 - `.10x/tickets/done/2026-07-10-p3-ws-f-constant-memory-guarantee.md`
 - `.10x/tickets/done/2026-07-10-p3-ws-g-remote-io-overlap.md`
-- `.10x/tickets/2026-07-10-p3-ws-h-interop-boundaries.md`
+- `.10x/tickets/done/2026-07-10-p3-ws-h-interop-boundaries.md`
 - `.10x/tickets/done/2026-07-11-p3-ws-v-vectorized-validation.md`
 - `.10x/tickets/done/2026-07-12-p3-j1-evidence-statistics-pruning.md`
 - `.10x/tickets/done/2026-07-13-p0-fixed-schema-discovery-stream-admission.md`
@@ -135,6 +135,11 @@ P3 does not implement a distributed scheduler, remote worker leases, resident st
   process peak RSS, zero cgroup OOM, verified package/receipt/checkpoint, and a cold exhaustive
   1,024-file Parquet discovery control. The generated owner matrix has no open row and its closure
   validator is permanent slow quality; giant scale cells remain dedicated-host gates.
+- 2026-07-25: Closed WS-H over the implemented Python and subprocess boundaries. Plans expose
+  executor-neutral transfer/lane capabilities, successful runs expose invocation-local
+  transfer/copy/control evidence outside package identity, release/lifetime/control laws are
+  permanent, and mode-specific host-labelled measurements make no unearned zero-copy or WASM
+  claim. Z1 is now dependency-ready.
 
 ## Blockers
 

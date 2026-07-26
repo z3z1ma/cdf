@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Target: .10x/decisions/neutral-foreign-stream-boundary.md, .10x/specs/foreign-stream-interop.md, .10x/tickets/2026-07-10-p3-ws-h-interop-boundaries.md
+Target: .10x/decisions/neutral-foreign-stream-boundary.md, .10x/specs/foreign-stream-interop.md, .10x/tickets/done/2026-07-10-p3-ws-h-interop-boundaries.md
 Verdict: pass
 
 # Foreign interop architecture review

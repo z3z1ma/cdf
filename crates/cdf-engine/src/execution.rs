@@ -3581,6 +3581,7 @@ where
         )?),
     };
     let mut profile = ExecutionProfile::default();
+    let mut source_transfer = cdf_kernel::SourceTransferReport::default();
     let mut statistics_memory_lease = None;
     let mut statistics_profile = options
         .statistics_profile
@@ -4979,6 +4980,10 @@ where
                     source_io.requests,
                 );
             }
+            let completion_source_transfer = completion
+                .as_ref()
+                .and_then(cdf_kernel::PartitionCompletion::source_transfer)
+                .cloned();
             let completion_attestation = completion
                 .and_then(cdf_kernel::PartitionCompletion::into_attestation);
             Ok::<_, CdfError>((
@@ -4992,6 +4997,7 @@ where
                 partition_input_bytes,
                 partition_epoch_closed,
                 partition_batch_frontiers_observed,
+                completion_source_transfer,
             ))
         }
         .instrument(partition_span)
@@ -5007,7 +5013,11 @@ where
             partition_input_bytes,
             partition_epoch_closed,
             partition_batch_frontiers_observed,
+            completion_source_transfer,
         ) = partition_result?;
+        if let Some(completion_source_transfer) = completion_source_transfer {
+            source_transfer.merge(&completion_source_transfer)?;
+        }
         if drain_finished_noop {
             break;
         }
@@ -5673,6 +5683,7 @@ where
             segment_positions,
             phase_metrics: phase_measurements.into_metrics(),
             source_frontier: source_frontier_report,
+            source_transfer,
             drain_epoch: drain_epoch_closure.map(|closure| EngineDrainEpoch {
                 closure,
                 consumed_partition_count,
@@ -7871,6 +7882,7 @@ pub fn assemble_isolated_worker_package(
         segment_positions,
         phase_metrics,
         source_frontier,
+        source_transfer: cdf_kernel::SourceTransferReport::default(),
         drain_epoch,
         execution_evidence,
     })

@@ -12748,6 +12748,18 @@ fn python_resource_plan_preview_run_and_replay_use_the_product_spine() {
             .len(),
         1
     );
+    assert_eq!(
+        plan_json["result"]["explain"]["source_boundary"]["transfer_modes"],
+        serde_json::json!(["arrow_c_data", "row_compat"])
+    );
+    assert_eq!(
+        plan_json["result"]["explain"]["source_boundary"]["execution_lane"],
+        "blocking"
+    );
+    assert_eq!(
+        plan_json["result"]["explain"]["source_boundary"]["maximum_internal_parallelism"],
+        1
+    );
 
     let preview = run([
         "cdf",
@@ -12755,11 +12767,13 @@ fn python_resource_plan_preview_run_and_replay_use_the_product_spine() {
         "--project",
         project.root_str(),
         "preview",
+        "--limit",
+        "1",
         "events.raw",
     ]);
     assert_eq!(preview.exit_code, 0, "stderr: {}", preview.stderr);
     let preview_json = stderr_or_stdout_json(&preview.stdout);
-    assert_eq!(preview_json["result"]["row_count"], 2);
+    assert_eq!(preview_json["result"]["row_count"], 1);
     assert!(!project.root.join(".cdf/packages").exists());
     assert!(!project.root.join(".cdf/state.db").exists());
     assert!(!project.root.join(".cdf/python.duckdb").exists());
@@ -12785,6 +12799,24 @@ fn python_resource_plan_preview_run_and_replay_use_the_product_spine() {
     assert_eq!(report["result"]["writes"]["package"], true);
     assert_eq!(report["result"]["writes"]["destination"], true);
     assert_eq!(report["result"]["writes"]["checkpoint"], true);
+    assert_eq!(report["result"]["source_transfer"]["control_events"], 0);
+    assert_eq!(
+        report["result"]["source_transfer"]["modes"][0]["mode"],
+        "row_compat"
+    );
+    assert_eq!(
+        report["result"]["source_transfer"]["modes"][0]["batches"],
+        1
+    );
+    assert_eq!(report["result"]["source_transfer"]["modes"][0]["rows"], 2);
+    assert_eq!(
+        report["result"]["source_transfer"]["modes"][0]["known_copy_batches"],
+        1
+    );
+    assert_eq!(
+        report["result"]["source_transfer"]["modes"][0]["unknown_copy_batches"],
+        0
+    );
     let package = run_package_dir(&project, &run_result);
     assert!(package.join("manifest.json").is_file());
     if let Ok(path) = std::env::var("CDF_PYTHON_PACKAGE_DATA_HASH_OUTPUT") {

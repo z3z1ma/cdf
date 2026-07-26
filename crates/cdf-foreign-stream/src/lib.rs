@@ -12,11 +12,16 @@ use std::{
 };
 
 use cdf_kernel::{
-    Batch, BatchStream, CdfError, InvocationTermination, PartitionId, ResourceId, Result,
-    SourcePosition, WatermarkClaim,
+    Batch, BatchStream, BoxFuture, CdfError, InvocationTermination, PartitionId, ResourceId,
+    Result, SourcePosition, SourceTransferReport, WatermarkClaim,
 };
 use futures_core::Stream;
 use serde::{Deserialize, Serialize};
+
+pub use cdf_kernel::{
+    SourceCopyClassification as ForeignCopyClassification,
+    SourceExecutionLane as ForeignExecutionLane, SourceTransferMode as ForeignTransferMode,
+};
 
 pub type ForeignEventStream =
     Pin<Box<dyn Stream<Item = Result<ForeignStreamEvent>> + Send + 'static>>;
@@ -119,14 +124,6 @@ impl fmt::Display for ForeignProtocolVersion {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ForeignTransferMode {
-    ArrowCData,
-    ArrowIpcStream,
-    RowCompat,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ForeignStartupModel {
@@ -140,15 +137,6 @@ pub struct ForeignLaneCapabilities {
     pub execution_lane: ForeignExecutionLane,
     pub maximum_internal_parallelism: u16,
     pub backpressure: ForeignBackpressure,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ForeignExecutionLane {
-    Cpu,
-    Blocking,
-    IsolatedProcess,
-    Sandbox,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -388,25 +376,6 @@ impl ForeignBatchOutcome {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ForeignCopyClassification {
-    PayloadZeroCopyVerified,
-    PayloadCopyKnown { bytes: u64 },
-    CopyUnknown,
-}
-
-impl ForeignCopyClassification {
-    pub fn payload_copy_known(bytes: u64) -> Result<Self> {
-        if bytes == 0 {
-            return Err(CdfError::contract(
-                "known foreign payload copy bytes must be greater than zero",
-            ));
-        }
-        Ok(Self::PayloadCopyKnown { bytes })
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForeignControlEvent {
     pub sequence: u64,
     pub kind: ForeignControlKind,
@@ -482,12 +451,43 @@ pub struct ForeignStreamSummary {
     pub terminal: Option<ForeignTerminalStatus>,
 }
 
-pub fn batch_stream_from_foreign_events(events: ForeignEventStream) -> BatchStream {
-    Box::pin(ForeignBatchStream {
+/// Runtime projection of one neutral foreign event stream.
+///
+/// Batches remain on the ordinary kernel path. Transfer/copy/control telemetry is aggregated
+/// alongside them and becomes observable only after the stream's successful terminal boundary.
+pub struct ForeignBatchProjection {
+    pub batches: BatchStream,
+    pub completion: BoxFuture<'static, Result<SourceTransferReport>>,
+}
+
+pub fn project_foreign_events(events: ForeignEventStream) -> ForeignBatchProjection {
+    let completion = Arc::new(Mutex::new(None::<Result<SourceTransferReport>>));
+    let stream_completion = Arc::clone(&completion);
+    let batches = Box::pin(ForeignBatchStream {
         events,
         terminal: None,
         completed: false,
-    })
+        report: SourceTransferReport::default(),
+        completion: stream_completion,
+    });
+    ForeignBatchProjection {
+        batches,
+        completion: Box::pin(async move {
+            completion
+                .lock()
+                .map_err(|_| CdfError::internal("foreign transfer report lock was poisoned"))?
+                .take()
+                .ok_or_else(|| {
+                    CdfError::internal(
+                        "foreign transfer report was requested before successful stream completion",
+                    )
+                })?
+        }),
+    }
+}
+
+pub fn batch_stream_from_foreign_events(events: ForeignEventStream) -> BatchStream {
+    project_foreign_events(events).batches
 }
 
 pub async fn summarize_foreign_events(
@@ -526,6 +526,8 @@ struct ForeignBatchStream {
     events: ForeignEventStream,
     terminal: Option<ForeignTerminalStatus>,
     completed: bool,
+    report: SourceTransferReport,
+    completion: Arc<Mutex<Option<Result<SourceTransferReport>>>>,
 }
 
 impl Stream for ForeignBatchStream {
@@ -547,6 +549,15 @@ impl Stream for ForeignBatchStream {
                             "foreign stream emitted an outcome after its terminal status",
                         ))));
                     }
+                    if let Err(error) = self.report.record_outcome(
+                        outcome.transfer_mode,
+                        outcome.batch.header.row_count,
+                        outcome.batch.header.byte_count,
+                        &outcome.copy,
+                    ) {
+                        self.completed = true;
+                        return std::task::Poll::Ready(Some(Err(error)));
+                    }
                     return std::task::Poll::Ready(Some(Ok(outcome.batch)));
                 }
                 std::task::Poll::Ready(Some(Ok(ForeignStreamEvent::Control(_)))) => {
@@ -555,6 +566,10 @@ impl Stream for ForeignBatchStream {
                         return std::task::Poll::Ready(Some(Err(CdfError::data(
                             "foreign stream emitted a control event after its terminal status",
                         ))));
+                    }
+                    if let Err(error) = self.report.record_control() {
+                        self.completed = true;
+                        return std::task::Poll::Ready(Some(Err(error)));
                     }
                 }
                 std::task::Poll::Ready(Some(Ok(ForeignStreamEvent::Terminal(status)))) => {
@@ -589,6 +604,19 @@ impl Stream for ForeignBatchStream {
                     };
                     match terminal {
                         ForeignTerminalStatus::Succeeded { .. } => {
+                            let report = std::mem::take(&mut self.report);
+                            let result = self
+                                .completion
+                                .lock()
+                                .map_err(|_| {
+                                    CdfError::internal("foreign transfer report lock was poisoned")
+                                })
+                                .map(|mut completion| {
+                                    *completion = Some(Ok(report));
+                                });
+                            if let Err(error) = result {
+                                return std::task::Poll::Ready(Some(Err(error)));
+                            }
                             return std::task::Poll::Ready(None);
                         }
                         ForeignTerminalStatus::Failed { retryable, message } => {
@@ -705,6 +733,47 @@ mod tests {
             assert_eq!(batches[0].header.row_count, 2);
             assert_eq!(batches[1].header.row_count, 2);
         }
+    }
+
+    #[test]
+    fn projection_preserves_actual_transfer_copy_and_control_evidence_at_eof() {
+        let stream = Box::pin(stream::iter(vec![
+            Ok(ForeignStreamEvent::Control(
+                ForeignControlEvent::new(1, ForeignControlKind::Progress { rows: 0, bytes: 0 })
+                    .unwrap(),
+            )),
+            Ok(ForeignStreamEvent::Outcome(mock_outcome(
+                2,
+                ForeignTransferMode::ArrowCData,
+            ))),
+            Ok(ForeignStreamEvent::Outcome(mock_outcome(
+                3,
+                ForeignTransferMode::RowCompat,
+            ))),
+            Ok(ForeignStreamEvent::Terminal(
+                ForeignTerminalStatus::Succeeded {
+                    final_position: None,
+                },
+            )),
+        ])) as ForeignEventStream;
+        let projection = project_foreign_events(stream);
+        let batches = block_on(projection.batches.try_collect::<Vec<_>>()).unwrap();
+        let report = block_on(projection.completion).unwrap();
+
+        assert_eq!(batches.len(), 2);
+        assert_eq!(report.control_events, 1);
+        assert_eq!(report.modes.len(), 2);
+        assert_eq!(report.modes[0].mode, ForeignTransferMode::ArrowCData);
+        assert_eq!(report.modes[0].batches, 1);
+        assert_eq!(report.modes[0].rows, 2);
+        assert_eq!(report.modes[0].zero_copy_verified_batches, 1);
+        assert_eq!(report.modes[0].known_copy_batches, 0);
+        assert_eq!(report.modes[1].mode, ForeignTransferMode::RowCompat);
+        assert_eq!(report.modes[1].batches, 1);
+        assert_eq!(report.modes[1].rows, 2);
+        assert_eq!(report.modes[1].known_copy_batches, 1);
+        assert_eq!(report.modes[1].known_copy_bytes, 64);
+        assert_eq!(report.modes[1].unknown_copy_batches, 0);
     }
 
     #[test]
