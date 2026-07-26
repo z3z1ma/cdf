@@ -81,6 +81,14 @@ pub enum DatasetRecipe {
         chunk_bytes: u64,
         delivery: GeneratorDelivery,
     },
+    SyntheticParquet {
+        generator_version: String,
+        file_count: u32,
+        minimum_logical_bytes_per_file: u64,
+        batch_rows: u64,
+        payload_bytes: u64,
+        delivery: GeneratorDelivery,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,6 +103,7 @@ pub struct RemoteFilesMirror {
 #[serde(rename_all = "snake_case")]
 pub enum GeneratorDelivery {
     Streaming,
+    HardlinkedPartitions,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -486,6 +495,37 @@ fn validate_recipe(dataset_id: &str, recipe: &DatasetRecipe) -> BenchResult<()> 
                 )));
             }
             validate_chunk(dataset_id, *chunk_bytes)?;
+        }
+        DatasetRecipe::SyntheticParquet {
+            file_count,
+            minimum_logical_bytes_per_file,
+            batch_rows,
+            payload_bytes,
+            delivery,
+            ..
+        } => {
+            if *file_count == 0
+                || *minimum_logical_bytes_per_file == 0
+                || *batch_rows == 0
+                || *payload_bytes == 0
+                || *delivery != GeneratorDelivery::HardlinkedPartitions
+            {
+                return Err(bench_error(format!(
+                    "dataset `{dataset_id}` synthetic Parquet recipe requires positive bounded file, byte, row, and payload values with hardlinked partition delivery"
+                )));
+            }
+            let estimated_batch_bytes = batch_rows
+                .checked_mul(payload_bytes.saturating_add(32))
+                .ok_or_else(|| {
+                    bench_error(format!(
+                        "dataset `{dataset_id}` synthetic Parquet batch estimate overflow"
+                    ))
+                })?;
+            if estimated_batch_bytes > MAX_GENERATOR_CHUNK_BYTES {
+                return Err(bench_error(format!(
+                    "dataset `{dataset_id}` synthetic Parquet batch estimate exceeds {MAX_GENERATOR_CHUNK_BYTES} bytes"
+                )));
+            }
         }
     }
     Ok(())

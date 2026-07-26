@@ -219,9 +219,9 @@
       "id": "constant_memory_100g",
       "description": "Generated 100 GiB constant-memory stress stream",
       "schema_ref": "constant-memory-v1",
-      "expected_rows": 419430400,
-      "expected_logical_bytes": 107374182400,
-      "expected_physical_bytes": 107374182400,
+      "expected_rows": null,
+      "expected_logical_bytes": null,
+      "expected_physical_bytes": null,
       "provenance": {
         "source": "cdf-benchmarks generator",
         "version": "constant-memory-v1",
@@ -229,13 +229,13 @@
         "license_url": null
       },
       "recipe": {
-        "kind": "synthetic_stream",
-        "generator_version": "constant-memory-v1",
-        "seed": 20260711,
-        "logical_bytes": 107374182400,
-        "record_bytes": 256,
-        "chunk_bytes": 8388608,
-        "delivery": "streaming"
+        "kind": "synthetic_parquet",
+        "generator_version": "constant-memory-parquet-v1",
+        "file_count": 100,
+        "minimum_logical_bytes_per_file": 1073741824,
+        "batch_rows": 65536,
+        "payload_bytes": 192,
+        "delivery": "hardlinked_partitions"
       }
     }
   ],

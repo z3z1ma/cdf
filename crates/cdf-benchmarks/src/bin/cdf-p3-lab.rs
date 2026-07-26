@@ -5,11 +5,12 @@ use cdf_benchmarks::{
     MacroRunSpec, PreoptimizationBaselineConfig, PreparedFileDestinationWorkload,
     PreparedFilePackageWorkload, PreparedIcebergPackageWorkload, ProfileTool, ReferenceWorkload,
     StartupControlWorkload, SystemHostProvider, WorkerMeasurement, canonical_json_bytes,
-    compare_reports, comparison_fails, host_class, install_baseline, plan_profile,
-    read_duckdb_profile, read_package_batches, run_cdf_command_workload,
-    run_interop_fixture_workload, run_preoptimization_baseline, run_prepared_file_to_destination,
-    run_prepared_file_to_package, run_prepared_iceberg_to_package, run_reference,
-    run_startup_control_workload, summarize_package_shape,
+    compare_reports, comparison_fails, generate_constant_memory_parquet, host_class,
+    install_baseline, plan_profile, read_duckdb_profile, read_package_batches,
+    run_cdf_command_workload, run_interop_fixture_workload, run_preoptimization_baseline,
+    run_prepared_file_to_destination, run_prepared_file_to_package,
+    run_prepared_iceberg_to_package, run_reference, run_startup_control_workload,
+    summarize_package_shape,
 };
 
 fn main() {
@@ -213,8 +214,25 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 Some(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
             write_stdout(&canonical_json_bytes(&run)?)
         }
+        [
+            command,
+            output_root,
+            file_count,
+            logical_bytes_per_file,
+            batch_rows,
+            payload_bytes,
+        ] if command == "generate-constant-memory-parquet" => {
+            let recipe = generate_constant_memory_parquet(
+                Path::new(output_root),
+                file_count.parse()?,
+                logical_bytes_per_file.parse()?,
+                batch_rows.parse()?,
+                payload_bytes.parse()?,
+            )?;
+            write_stdout(&canonical_json_bytes(&recipe)?)
+        }
         _ => Err(format!(
-            "usage: {} reference-worker REQUEST.json | cdf-command-worker REQUEST.json | host | package-shape PACKAGE | package-read PACKAGE | duckdb-profile PROFILE.json | run-cell REQUEST.json | baseline-run OUTPUT_ROOT REVISION DEPENDENCIES TOOLCHAIN SAMPLES | compare BASELINE.json CURRENT.json",
+            "usage: {} reference-worker REQUEST.json | cdf-command-worker REQUEST.json | generate-constant-memory-parquet OUTPUT_ROOT FILE_COUNT LOGICAL_BYTES_PER_FILE BATCH_ROWS PAYLOAD_BYTES | host | package-shape PACKAGE | package-read PACKAGE | duckdb-profile PROFILE.json | run-cell REQUEST.json | baseline-run OUTPUT_ROOT REVISION DEPENDENCIES TOOLCHAIN SAMPLES | compare BASELINE.json CURRENT.json",
             executable_name()
         )
         .into()),

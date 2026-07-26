@@ -12,6 +12,7 @@ mod profiling;
 mod references;
 mod resource;
 mod runners;
+mod stress;
 
 pub use baseline::{PreoptimizationBaselineConfig, run_preoptimization_baseline};
 pub use catalog::{FixtureCatalog, FixtureSpec, fixture_catalog, fixture_spec};
@@ -43,3 +44,4 @@ pub use runners::{
     StartupControlWorkload, run_case, run_prepared_file_to_destination,
     run_prepared_file_to_package, run_prepared_iceberg_to_package, run_startup_control_workload,
 };
+pub use stress::{ConstantMemoryParquetRecipe, generate_constant_memory_parquet};

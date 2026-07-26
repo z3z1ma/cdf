@@ -142,10 +142,12 @@ fn p3_dataset_catalog_is_regeneration_grade_and_bounded() {
     assert!(catalog.datasets.iter().any(|dataset| {
         matches!(
             dataset.recipe,
-            DatasetRecipe::SyntheticStream {
-                delivery: GeneratorDelivery::Streaming,
-                logical_bytes: 107_374_182_400,
-                chunk_bytes: 8_388_608,
+            DatasetRecipe::SyntheticParquet {
+                delivery: GeneratorDelivery::HardlinkedPartitions,
+                file_count: 100,
+                minimum_logical_bytes_per_file: 1_073_741_824,
+                batch_rows: 65_536,
+                payload_bytes: 192,
                 ..
             }
         )
@@ -185,7 +187,7 @@ fn p3_dataset_catalog_is_regeneration_grade_and_bounded() {
     );
     assert_eq!(
         canonical_sha256(&catalog).unwrap(),
-        "sha256:1972d2ce08d16a987413a6325bf4bf216aac5b5d3072d552e61ff195fa3b58c6"
+        "sha256:9e939f41f516e5ef1ff7e18cd15f0b18a82349e4ee18697301a655cb4957aa4f"
     );
 }
 

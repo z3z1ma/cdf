@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-11
-Updated: 2026-07-21
+Updated: 2026-07-25
 Parent: .10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md
 Depends-On: .10x/tickets/done/2026-07-11-p3-f1-budget-enforcement-headroom.md, .10x/tickets/done/2026-07-11-p3-f2-materialization-closure-audit.md
 
@@ -50,6 +50,22 @@ Depends on F1/F2.
   that staging opens zero segment files before final scanning. The smoke then reproduced the
   already-recorded wide-table DuckDB memory residual owned historically by the cancelled P0/D17
   investigations; no unmeasured thread or buffering default is bundled into this descriptor fix.
+- 2026-07-25: Replaced the catalogue-only 100 GiB placeholder with an executable, deterministic
+  Parquet stress generator and product-shaped runner. The generator creates one bounded base file
+  and hard-links it into the requested file cardinality, so setup cost is independent of represented
+  input size while CDF still decodes and commits every selected partition. Its Arrow batches and
+  Parquet row groups share the same explicit bound; a fresh-hat review caught and removed the
+  `ArrowWriter` default row-group retention that would otherwise have invalidated the 64 MiB setup
+  claim. Generator RSS is measured separately from the timed product run. The runner performs a
+  real governed files -> canonical package -> Parquet destination run, verifies the package,
+  receipt, and checkpoint, and rejects managed-memory or process-RSS ceiling violations.
+- 2026-07-25: The corrected local four-partition smoke represented 320,870,976 logical bytes and
+  1,572,864 rows. Generator peak RSS was 51,953,664 bytes with a 13,369,624-byte peak Arrow batch.
+  CDF completed in 638 ms, wrote all rows across four canonical segments, verified the package and
+  committed checkpoint, peaked at 447,873,024 process bytes and 761,528,610 managed bytes under the
+  respective 2 GiB and 1.5 GiB authorities, and required no spill. The no-spill observation is
+  recorded honestly: it proves the bounded steady-state pipeline did not need disk spill for this
+  case, not that the independent spill failure laws are satisfied.
 
 ## Evidence
 
@@ -70,6 +86,11 @@ Depends on F1/F2.
   seconds before the independently recorded 3.3 GiB wide-table memory ceiling stopped the run. The
   observation proves the reported cardinality no longer controls descriptor count; it does not
   claim a successful destination commit or close the ticket's independent 100 GB/RSS stress matrix.
+- `CDF_STRESS_LAB=target/debug/cdf-p3-lab tools/run-constant-memory-stress.sh <empty-root> 4
+  67108864 2GiB`: pass on the local macOS host. `summary.json`, generator timing, process timing,
+  CDF's JSON report, package verification, and destination output were retained in the ephemeral
+  smoke root. This proves the executable law and its assertions at 0.32 GiB; the required enforced
+  100 GiB release-host observation remains the next closure gate.
 
 ## References
 
