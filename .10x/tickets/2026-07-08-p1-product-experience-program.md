@@ -52,7 +52,7 @@ WS2 and WS3 may proceed in parallel after this program is opened. WS4 lands with
 
 Existing non-CLI program lanes may continue, but any CLI-adjacent ticket opened after WS2/WS3 merge MUST adopt the new grammar and rendering path.
 
-After WS8 and WS9 close, `.10x/tickets/2026-07-11-p1-z1-product-program-closeout.md` owns aggregate proof, final review, retrospective, and terminal graph reconciliation.
+After WS8 and WS9 close, `.10x/tickets/done/2026-07-11-p1-z1-product-program-closeout.md` owns aggregate proof, final review, retrospective, and terminal graph reconciliation.
 
 ## Acceptance criteria
 
@@ -94,6 +94,9 @@ No dashboard or GUI. No breaking changes to JSON output. No scheduler semantics.
   <https://github.com/z3z1ma/cdf/releases/tag/v0.2.0-alpha.1>. All five static-DuckDB targets,
   aggregate checksums, generated completions/man pages, and the actual public installer passed.
   Z1 is now the only remaining P1 child.
+- 2026-07-26: Z1 closed with `.10x/evidence/2026-07-26-p1-z1-program-closure.md` and a fresh
+  Chapter 23 terminal recording. Every P1 criterion now maps to permanent evidence; the parent is
+  ready for terminal reconciliation.
 
 ## Blockers
 

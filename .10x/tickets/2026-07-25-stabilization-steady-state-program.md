@@ -43,7 +43,7 @@ consumer path. Other DataFusion bridges remain parked.
 3. `.10x/tickets/done/2026-07-11-p1-cx4-cli-conformance-performance.md` — done.
 4. `.10x/tickets/done/2026-07-11-p1-ws9-cli-experience-excellence.md` — done.
 5. `.10x/tickets/done/2026-07-08-p1-product-ws8-release-engineering.md`
-6. `.10x/tickets/2026-07-11-p1-z1-product-program-closeout.md`
+6. `.10x/tickets/done/2026-07-11-p1-z1-product-program-closeout.md`
 7. `.10x/tickets/2026-07-08-p1-product-experience-program.md`
 
 CX1's implemented terminal/help foundation is retained; its unratified pager remainder is
@@ -161,6 +161,9 @@ WASM, distributed execution, CDC, and new connectors are not P3 closure dependen
   aarch64 macOS archive. No EC2 host was reprovisioned, and a read-only FQ12 inventory found no
   running CDF-tagged instance. P1 Z1 is now the sole active child before aggregate stabilization
   closure.
+- 2026-07-26: P1 Z1 is closed. The aggregate matrix joins all WS1-WS9 evidence, the hosted
+  prerelease, direct renderer/registry topology inspection, and a newly executed Chapter 23
+  crash/resume/replay/drift session. The P1 parent is ready to move terminal.
 
 ## Blockers
 

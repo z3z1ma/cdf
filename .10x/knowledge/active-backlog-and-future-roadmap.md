@@ -147,6 +147,17 @@ without generic runtime branches. Historical owner:
 
 - `.10x/tickets/cancelled/2026-07-05-lakehouse-warehouse-and-vault.md`
 
+### Distribution hardening
+
+The initial five-target checksummed GitHub install channel is complete. Signing/notarization,
+package-manager channels, auto-update, a post-1.0 LTS selection, and upgrades away from GitHub
+Actions versions carrying Node-runtime deprecation warnings remain demand-activated release work.
+They MUST preserve the static-DuckDB release contract, generated-artifact freshness, reproducible
+archives, checksum-before-install behavior, and the actual published-artifact smoke. Authority:
+
+- `.10x/specs/versioning-lts-release-policy.md`
+- `.10x/evidence/2026-07-26-p1-ws8-hosted-release.md`
+
 ## Activation rule
 
 To activate a parked program:
