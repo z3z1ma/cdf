@@ -75,6 +75,28 @@ formula. A shared extraction must preserve the adapter's memory class, admission
 parsing from fail-fast discovery admission to blocking control admission, for example, would be
 a semantic and liveness regression even if the reservation size were identical.
 
+Shared external-task planning admits its complete lifetime overlap once. A spill-backed index
+must not hold scratch memory and then block while reacquiring writer memory from the same finite
+coordinator; reserve and partition the combined authority before accepting work. Exact duplicate
+and conflict checks precede fresh spill admission so idempotence remains available even at the
+disk ceiling. Publication checks cancellation at the atomic-install boundary, and every error
+path releases the scratch directory, spill reservation, and memory partitions.
+
+Journal-free SQLite scratch is valid only with a fail-before-mutation capacity proof. The current
+canonical builder bounds one insertion from the bundled SQLite B-tree maximum depth, maximum net
+split pages per level, and record overflow pages, admits that disk through the shared spill
+coordinator, and poisons rather than retries on unexpected `SQLITE_FULL` or insertion failure.
+Any SQLite upgrade must revalidate those mirrored structural constants. A retry after
+`SQLITE_FULL` with journaling disabled is forbidden because the failed statement may already have
+discarded accepted rows.
+
+One source-owned canonical task encoder is the byte and content-identity authority. Planning
+hashes exactly the bounded bytes that encoder emits; reading decodes/validates the model, re-encodes
+through the same codec, and compares the resulting content digest before execution. Separate
+planning hash callbacks can drift and publish an artifact their paired reader rejects; hashing or
+serializing the same production task twice merely to reconcile duplicate authorities is also a
+performance defect.
+
 Source compilation and driver-owned portable-plan validation are contact-free. Health and
 discovery remain explicit bounded, contact-capable stages, while row execution and retry happen
 after resolution. Portability conformance must traverse the worker admission path that

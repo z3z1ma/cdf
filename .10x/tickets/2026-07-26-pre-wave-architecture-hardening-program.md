@@ -28,7 +28,7 @@ destination concurrency model executable authoring law.
 ### WS-B — Source archetype hardening
 
 1. `.10x/tickets/done/2026-07-26-prewave-b1-typed-task-set-reader.md`
-2. `.10x/tickets/2026-07-26-prewave-b2-spill-task-planning-lifecycle.md`
+2. `.10x/tickets/done/2026-07-26-prewave-b2-spill-task-planning-lifecycle.md`
 3. `.10x/tickets/2026-07-26-prewave-b3-file-runtime-modularization.md`
 
 B1 and B2 extract only the concrete duplicated external-task machinery already proven by Iceberg
@@ -140,6 +140,12 @@ program review.
   retry, and partition semantics. Review-driven repairs preserve each adapter's memory admission
   policy and share the whole retained payload under one parse lease; source suites and a
   five-sample baseline comparison pass.
+- 2026-07-26: B2 closed with one typed ordered/canonical task-planning lifecycle and one accounted
+  source-index workspace envelope. Glue now delegates its provider-order index to the shared
+  builder; Iceberg retains its manifest/delete index semantics while sharing resource ownership
+  and final publication. Three OCR rounds repaired memory deadlock, spill retry, duplicate,
+  identity, cancellation, and hot-path issues; source suites and a same-cell 5,000-task comparison
+  pass.
 
 ## Blockers
 
