@@ -37,7 +37,7 @@ No universal catalog semantic model is introduced.
 
 ### WS-C — Destination archetype hardening
 
-1. `.10x/tickets/2026-07-26-prewave-c1-receipt-clock-authority.md`
+1. `.10x/tickets/done/2026-07-26-prewave-c1-receipt-clock-authority.md`
 2. `.10x/tickets/2026-07-26-prewave-c2-sql-mirror-commons.md`
 
 C1 eliminates receipt assembly and process-wall-clock duplication. C2 centralizes typed SQL mirror
@@ -151,6 +151,11 @@ program review.
   ownership boundaries; 48 focused tests, strict Clippy, and matched TLC/FineWeb profiles passed
   within the 10% variance envelope. A broader project-suite timing failure was reproduced at the
   exact pre-B3 baseline and recorded as an integration limit rather than misattributed.
+- 2026-07-26: C1 closed with one typed ordinary/correction receipt finalizer and injected host-clock
+  authority across DuckDB, Postgres, and Parquet. Seven review findings repaired string-map and
+  migration authority leaks, historical acknowledgement ordering, zero-data validation, byte-count
+  drift, and premature durable marker publication. Contract, runtime, adapter, replay/crash,
+  strict-lint, formatting, and two independent final review gates pass.
 
 ## Blockers
 

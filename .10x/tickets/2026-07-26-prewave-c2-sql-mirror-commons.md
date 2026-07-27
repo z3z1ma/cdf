@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-26
 Updated: 2026-07-26
 Parent: `.10x/tickets/2026-07-26-pre-wave-architecture-hardening-program.md`
-Depends-On: `.10x/tickets/2026-07-26-prewave-c1-receipt-clock-authority.md`
+Depends-On: `.10x/tickets/done/2026-07-26-prewave-c1-receipt-clock-authority.md`
 
 # Extract typed SQL destination mirror commons
 
