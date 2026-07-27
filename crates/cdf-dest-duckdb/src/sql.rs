@@ -114,7 +114,10 @@ pub(crate) fn duckdb_error(context: impl Into<String>, error: duckdb::Error) -> 
 }
 
 pub(crate) fn io_error(context: impl Into<String>, error: std::io::Error) -> CdfError {
-    CdfError::destination(format!("{}: {}", context.into(), error))
+    CdfError::environment(format!(
+        "{}: {error}; check the local path, permissions, device health, free space, and process file limits",
+        context.into()
+    ))
 }
 
 pub(crate) fn json_error(error: serde_json::Error) -> CdfError {
@@ -124,6 +127,17 @@ pub(crate) fn json_error(error: serde_json::Error) -> CdfError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_filesystem_failure_is_environment_not_destination() {
+        let error = io_error(
+            "create DuckDB sidecar",
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Environment);
+        assert!(error.message.contains("permissions"));
+        assert!(error.message.contains("process file limits"));
+    }
 
     #[test]
     fn structured_duckdb_out_of_memory_is_typed_without_message_matching() {

@@ -41,6 +41,31 @@ kind, retry delay, and primary message while the caller adds context. A codec/sh
 host source is `Data`; an underlying host I/O source is classified by the rules above. Never
 flatten a typed source into a string and reconstruct a new kind.
 
+## Adapter boundaries
+
+- Subprocess spawn/read/wait/kill and process-group syscalls are host facilities and therefore
+  `Environment`. A configured executable path rejected during configuration is `Contract`;
+  failure to spawn that ratified executable is `Environment`. Missing pipes or PIDs after a
+  successful CDF-owned spawn setup, duplicated lifecycle transitions, task joins, and producer
+  panics are `Internal`.
+- Third-party SDK wrappers MUST search their source chain for an embedded typed `CdfError` before
+  applying the SDK's coarser retry or kind mapping. This preserves rate-limit delay, auth, data,
+  destination, environment, and internal ownership across foreign error types. If no typed error
+  exists, raw I/O at an external source boundary uses the source-artifact split: missing,
+  truncated, invalid, wrong-shape, or symlink-loop input is `Data`; permission, device, and local
+  resource failure is `Environment`.
+- A destination backed by the local filesystem has two distinct owners. Host inability to
+  create/open/read/write/sync/lock/install/delete is `Environment`; absence, truncation, invalid
+  encoding, or wrong shape of an externally durable destination artifact is `Destination`.
+  Remote object-store/provider semantics remain `Destination` unless an embedded typed `CdfError`
+  proves otherwise; a remote provider merely sourcing through `std::io::Error` does not make the
+  user's local host the owner. Wrapper APIs must carry local-versus-provider provenance rather than
+  infer ownership from the nested error type. Asynchronous task failure without a host source is
+  `Internal`.
+- Constructing an HTTP client can fail because host TLS, resolver, or runtime facilities are
+  unavailable; that is `Environment`. HTTP status, authentication, retry, and response-data
+  semantics retain their protocol-specific kinds.
+
 ## Journal-free SQLite scratch
 
 When `journal_mode=OFF`, retrying a failed statement is unsafe because statement rollback is not

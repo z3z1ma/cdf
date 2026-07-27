@@ -47,7 +47,7 @@ lifecycle without erasing native transaction/dialect behavior.
 ### WS-D — CLI authority and experience
 
 1. `.10x/tickets/done/2026-07-26-prewave-d1-environment-error-taxonomy.md`
-2. `.10x/tickets/2026-07-26-prewave-d1b-adapter-error-audit.md`
+2. `.10x/tickets/done/2026-07-26-prewave-d1b-adapter-error-audit.md`
 3. `.10x/tickets/2026-07-26-prewave-d1c-product-error-audit.md`
 4. `.10x/tickets/2026-07-26-prewave-d2-typed-cli-report-authority.md`
 5. `.10x/tickets/2026-07-26-prewave-d3-holistic-cli-experience.md`
@@ -168,6 +168,12 @@ program review.
   validation, recoverable facade caching, actual spill-authority transfer for DuckDB, and direct
   promotion binding for only selected targets. The full 272-test CLI gate, adapter/resource
   regressions, strict lint/format gates, and two independent final delegated reviews pass.
+- 2026-07-27: D1b closed after a complete 135-file adapter audit. Host/process/local-I/O failures
+  now remain distinct from external source data, durable destination artifacts, private scratch,
+  remote providers, and CDF invariants across subprocess, HTTP, Parquet, DuckDB, file source, and
+  Iceberg wrappers. Review-driven source-chain and provenance repairs pass focused/full suites,
+  strict lint, two independent final reviews, and are distilled into error-ownership knowledge plus
+  the mirrored `audit-error-ownership` skill.
 
 ## Blockers
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Audit Error Ownership"
+  short_description: "Classify errors without flattening provenance"
+  default_prompt: "Use $audit-error-ownership to audit error constructors and wrapper boundaries in this change."

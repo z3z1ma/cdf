@@ -1207,7 +1207,9 @@ fn resolve_runtime_root(root: &str, project_root: &std::path::Path) -> Result<St
     } else {
         std::env::current_dir()
             .map_err(|error| {
-                CdfError::internal(format!("resolve current project directory: {error}"))
+                CdfError::environment(format!(
+                    "resolve current project directory for relative file source root: {error}; restore an accessible working directory or use an absolute project root"
+                ))
             })?
             .join(project_root)
     };

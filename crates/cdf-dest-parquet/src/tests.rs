@@ -1261,6 +1261,19 @@ fn sheet_declares_append_replace_and_unsupported_semantics_honestly() {
 }
 
 #[test]
+fn local_destination_filesystem_failure_is_environment() {
+    let parent = tempfile::NamedTempFile::new().unwrap();
+    let error = match crate::store::StoreClient::new_filesystem(&parent.path().join("lake")) {
+        Ok(_) => panic!("a destination root beneath a file must fail"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.kind, cdf_kernel::ErrorKind::Environment);
+    assert!(error.message.contains("local path"));
+    assert!(error.message.contains("permissions"));
+}
+
+#[test]
 fn parquet_sheet_lossless_representatives_match_native_writer_preflight() {
     let item = || Arc::new(Field::new("item", DataType::Int64, true));
     let map_entries = Arc::new(Field::new(

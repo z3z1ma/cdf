@@ -6,7 +6,9 @@ use bytes::Bytes;
 use cdf_http::{
     HeaderMap, HttpMethod, HttpRequest, HttpResponse, HttpResponseBudget, HttpTransport,
 };
-use cdf_kernel::{BoxFuture, CdfError, ErrorKind, Result};
+#[cfg(test)]
+use cdf_kernel::ErrorKind;
+use cdf_kernel::{BoxFuture, CdfError, Result};
 use cdf_memory::{
     AccountedBytes, ConsumerKey, MemoryClass, MemoryCoordinator, ReservationRequest, reserve,
 };
@@ -47,13 +49,21 @@ impl ReqwestHttpProvider {
         let asynchronous = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
-            .map_err(|error| CdfError::internal(format!("build async HTTP client: {error}")))?;
+            .map_err(|error| {
+                CdfError::environment(format!(
+                    "build async HTTP client: {error}; verify the host TLS, resolver, and network runtime facilities"
+                ))
+            })?;
         let files = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .http1_only()
             .pool_max_idle_per_host(32)
             .build()
-            .map_err(|error| CdfError::internal(format!("build file HTTP client: {error}")))?;
+            .map_err(|error| {
+                CdfError::environment(format!(
+                    "build file HTTP client: {error}; verify the host TLS, resolver, and network runtime facilities"
+                ))
+            })?;
         Ok(Self {
             asynchronous,
             files,
@@ -695,7 +705,7 @@ fn classify_http_byte_source_status(
             CdfError::data("HTTP byte source ignored the planned exact byte range")
         }
         300..=499 => CdfError::data(message()),
-        _ => CdfError::new(ErrorKind::Internal, message()),
+        _ => CdfError::data(message()),
     }
 }
 
@@ -801,6 +811,7 @@ mod tests {
         let auth = classify_http_byte_source_status(401, 200, None);
         let changed = classify_http_byte_source_status(412, 206, None);
         let ignored_range = classify_http_byte_source_status(200, 206, None);
+        let unexpected_success = classify_http_byte_source_status(204, 200, None);
 
         assert_eq!(rate.kind, ErrorKind::RateLimited);
         assert_eq!(rate.retry_after_ms, Some(7_000));
@@ -808,6 +819,7 @@ mod tests {
         assert_eq!(auth.kind, ErrorKind::Auth);
         assert_eq!(changed.kind, ErrorKind::Data);
         assert_eq!(ignored_range.kind, ErrorKind::Data);
+        assert_eq!(unexpected_success.kind, ErrorKind::Data);
     }
 
     #[tokio::test]

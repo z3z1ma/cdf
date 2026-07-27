@@ -81,7 +81,7 @@ pub async fn run_bounded_command(
 
     let mut child = process
         .spawn()
-        .map_err(|error| CdfError::internal(format!("spawn subprocess: {error}")))?;
+        .map_err(|error| subprocess_environment_error("spawn subprocess", error))?;
     let process_group = ChildProcessGroup::for_child(&child)?;
     let stdout = child
         .stdout
@@ -123,7 +123,9 @@ pub async fn run_bounded_command(
                         exit_status = Some(status);
                         break None;
                     }
-                    Err(error) => break Some(CdfError::internal(format!("wait for subprocess: {error}"))),
+                    Err(error) => {
+                        break Some(subprocess_environment_error("wait for subprocess", error));
+                    }
                 }
             }
             result = &mut stdout_task, if !stdout_done => {
@@ -300,7 +302,9 @@ where
         .take(maximum_bytes.saturating_add(1))
         .read_to_end(&mut bytes)
         .await
-        .map_err(|error| CdfError::internal(format!("read subprocess {stream_name}: {error}")))?;
+        .map_err(|error| {
+            subprocess_environment_error(format!("read subprocess {stream_name}"), error)
+        })?;
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > maximum_bytes {
         return Err(CdfError::data(format!(
             "subprocess {stream_name} exceeded the {maximum_bytes}-byte boundary"
@@ -337,7 +341,7 @@ where
         let read = reader
             .read(&mut buffer)
             .await
-            .map_err(|error| CdfError::internal(format!("read subprocess stderr: {error}")))?;
+            .map_err(|error| subprocess_environment_error("read subprocess stderr", error))?;
         if read == 0 {
             break;
         }
@@ -422,6 +426,16 @@ fn status_message(status: ExitStatus) -> String {
         }
     }
     "unknown exit status".to_owned()
+}
+
+fn subprocess_environment_error(
+    action: impl Into<String>,
+    error: impl std::fmt::Display,
+) -> CdfError {
+    CdfError::environment(format!(
+        "{}: {error}; verify executable availability, OS permissions, process and file limits, and host process facilities before retrying",
+        action.into()
+    ))
 }
 
 fn validate_supervision(supervision: &SupervisionOptions) -> Result<()> {
@@ -1050,10 +1064,13 @@ fn process_group_exists(group: ChildProcessGroup) -> Result<bool> {
         Err(Errno::SRCH) => Ok(false),
         #[cfg(target_os = "macos")]
         Err(Errno::PERM) if darwin_group_leader_is_reaped(group)? => Ok(false),
-        Err(error) => Err(CdfError::internal(format!(
-            "inspect subprocess process group {}: {error}",
-            group.id.as_raw_nonzero()
-        ))),
+        Err(error) => Err(subprocess_environment_error(
+            format!(
+                "inspect subprocess process group {}",
+                group.id.as_raw_nonzero()
+            ),
+            error,
+        )),
     }
 }
 
@@ -1070,10 +1087,13 @@ fn signal_process_group(group: ChildProcessGroup, signal: Signal) -> Result<()> 
         Ok(()) | Err(Errno::SRCH) => Ok(()),
         #[cfg(target_os = "macos")]
         Err(Errno::PERM) if darwin_group_leader_is_reaped(group)? => Ok(()),
-        Err(error) => Err(CdfError::internal(format!(
-            "signal subprocess process group {} with {signal:?}: {error}",
-            group.id.as_raw_nonzero()
-        ))),
+        Err(error) => Err(subprocess_environment_error(
+            format!(
+                "signal subprocess process group {} with {signal:?}",
+                group.id.as_raw_nonzero()
+            ),
+            error,
+        )),
     }
 }
 
@@ -1082,10 +1102,13 @@ fn darwin_group_leader_is_reaped(group: ChildProcessGroup) -> Result<bool> {
     match getpgid(Some(group.id)) {
         Ok(_) => Ok(false),
         Err(Errno::SRCH) => Ok(true),
-        Err(error) => Err(CdfError::internal(format!(
-            "inspect macOS subprocess group leader {} after EPERM: {error}",
-            group.id.as_raw_nonzero()
-        ))),
+        Err(error) => Err(subprocess_environment_error(
+            format!(
+                "inspect macOS subprocess group leader {} after EPERM",
+                group.id.as_raw_nonzero()
+            ),
+            error,
+        )),
     }
 }
 
@@ -1106,8 +1129,8 @@ async fn ensure_process_group_quiescent(
         if wait_for_process_group_exit(group, grace).await? {
             return Ok(());
         }
-        Err(CdfError::internal(format!(
-            "subprocess process group {} survived forced termination",
+        Err(CdfError::environment(format!(
+            "subprocess process group {} survived forced termination; verify that the host permits process-group signaling and termination",
             group.id.as_raw_nonzero()
         )))
     }
@@ -1126,7 +1149,7 @@ async fn terminate_child_tree(
     if child
         .try_wait()
         .map_err(|error| {
-            CdfError::internal(format!("inspect subprocess before termination: {error}"))
+            subprocess_environment_error("inspect subprocess before termination", error)
         })?
         .is_some()
     {
@@ -1138,9 +1161,7 @@ async fn terminate_child_tree(
             if child
                 .try_wait()
                 .map_err(|error| {
-                    CdfError::internal(format!(
-                        "inspect subprocess after termination race: {error}"
-                    ))
+                    subprocess_environment_error("inspect subprocess after termination race", error)
                 })?
                 .is_some()
             {
@@ -1150,25 +1171,28 @@ async fn terminate_child_tree(
                 Ok(Ok(_)) => ensure_process_group_quiescent(group, grace).await,
                 Ok(Err(error)) => Err(with_cleanup_error(
                     signal,
-                    CdfError::internal(format!(
-                        "wait for subprocess after termination signal race: {error}"
-                    )),
+                    subprocess_environment_error(
+                        "wait for subprocess after termination signal race",
+                        error,
+                    ),
                 )),
                 Err(_) => {
                     child.start_kill().map_err(|error| {
                         with_cleanup_error(
                             signal.clone(),
-                            CdfError::internal(format!(
-                                "force terminate subprocess after group-signal failure: {error}"
-                            )),
+                            subprocess_environment_error(
+                                "force terminate subprocess after group-signal failure",
+                                error,
+                            ),
                         )
                     })?;
                     child.wait().await.map_err(|error| {
                         with_cleanup_error(
                             signal,
-                            CdfError::internal(format!(
-                                "wait for force-terminated subprocess after group-signal failure: {error}"
-                            )),
+                            subprocess_environment_error(
+                                "wait for force-terminated subprocess after group-signal failure",
+                                error,
+                            ),
                         )
                     })?;
                     ensure_process_group_quiescent(group, grace).await
@@ -1183,9 +1207,10 @@ async fn terminate_child_tree(
     let child_exited = match tokio::time::timeout(grace, child.wait()).await {
         Ok(Ok(_)) => true,
         Ok(Err(error)) => {
-            return Err(CdfError::internal(format!(
-                "wait for terminated subprocess: {error}"
-            )));
+            return Err(subprocess_environment_error(
+                "wait for terminated subprocess",
+                error,
+            ));
         }
         Err(_) => false,
     };
@@ -1197,15 +1222,15 @@ async fn terminate_child_tree(
         }
         if !child_exited {
             child.start_kill().map_err(|error| {
-                CdfError::internal(format!("force terminate subprocess: {error}"))
+                subprocess_environment_error("force terminate subprocess", error)
             })?;
             child.wait().await.map_err(|error| {
-                CdfError::internal(format!("wait for force-terminated subprocess: {error}"))
+                subprocess_environment_error("wait for force-terminated subprocess", error)
             })?;
         }
         if !wait_for_process_group_exit(group, grace).await? {
-            return Err(CdfError::internal(
-                "subprocess process group survived force termination",
+            return Err(CdfError::environment(
+                "subprocess process group survived force termination; verify that the host permits process-group signaling and termination",
             ));
         }
     }
@@ -1379,7 +1404,7 @@ async fn start_streaming_subprocess(
     let mut process = subprocess_command(command, supervision);
     let mut child = process
         .spawn()
-        .map_err(|error| CdfError::internal(format!("spawn subprocess: {error}")))?;
+        .map_err(|error| subprocess_environment_error("spawn subprocess", error))?;
     let process_group = ChildProcessGroup::for_child(&child)?;
     let stdout = child
         .stdout
@@ -1728,10 +1753,14 @@ async fn read_stdout_or_observe_child_exit(
                 tokio::pin!(sleep);
                 tokio::select! {
                     result = state.stdout.read(buffer) => {
-                        return result.map_err(|error| CdfError::internal(format!("read subprocess stdout: {error}")));
+                        return result.map_err(|error| {
+                            subprocess_environment_error("read subprocess stdout", error)
+                        });
                     }
                     result = state.child.wait() => {
-                        state.exit_status = Some(result.map_err(|error| CdfError::internal(format!("wait for subprocess: {error}")))?);
+                        state.exit_status = Some(result.map_err(|error| {
+                            subprocess_environment_error("wait for subprocess", error)
+                        })?);
                         ensure_process_group_quiescent(state.process_group, state.termination_grace).await?;
                     }
                     () = &mut sleep => return Err(subprocess_timeout(deadline)),
@@ -1741,10 +1770,14 @@ async fn read_stdout_or_observe_child_exit(
             None => {
                 tokio::select! {
                     result = state.stdout.read(buffer) => {
-                        return result.map_err(|error| CdfError::internal(format!("read subprocess stdout: {error}")));
+                        return result.map_err(|error| {
+                            subprocess_environment_error("read subprocess stdout", error)
+                        });
                     }
                     result = state.child.wait() => {
-                        state.exit_status = Some(result.map_err(|error| CdfError::internal(format!("wait for subprocess: {error}")))?);
+                        state.exit_status = Some(result.map_err(|error| {
+                            subprocess_environment_error("wait for subprocess", error)
+                        })?);
                         ensure_process_group_quiescent(state.process_group, state.termination_grace).await?;
                     }
                     () = &mut cancelled => return Err(state.cancellation.check().unwrap_err()),
@@ -1768,7 +1801,9 @@ async fn read_with_deadline<R: AsyncRead + Unpin>(
             tokio::pin!(sleep);
             tokio::select! {
                 result = reader.read(buffer) => {
-                    result.map_err(|error| CdfError::internal(format!("read subprocess stdout: {error}")))
+                    result.map_err(|error| {
+                        subprocess_environment_error("read subprocess stdout", error)
+                    })
                 }
                 () = &mut sleep => Err(subprocess_timeout(deadline)),
                 () = &mut cancelled => Err(cancellation.check().unwrap_err()),
@@ -1777,7 +1812,9 @@ async fn read_with_deadline<R: AsyncRead + Unpin>(
         None => {
             tokio::select! {
                 result = reader.read(buffer) => {
-                    result.map_err(|error| CdfError::internal(format!("read subprocess stdout: {error}")))
+                    result.map_err(|error| {
+                        subprocess_environment_error("read subprocess stdout", error)
+                    })
                 }
                 () = &mut cancelled => Err(cancellation.check().unwrap_err()),
             }
@@ -1798,7 +1835,9 @@ async fn wait_with_deadline(
             tokio::pin!(sleep);
             tokio::select! {
                 result = child.wait() => {
-                    result.map_err(|error| CdfError::internal(format!("wait for subprocess: {error}")))
+                    result.map_err(|error| {
+                        subprocess_environment_error("wait for subprocess", error)
+                    })
                 }
                 () = &mut sleep => Err(subprocess_timeout(deadline)),
                 () = &mut cancelled => Err(cancellation.check().unwrap_err()),
@@ -1807,7 +1846,9 @@ async fn wait_with_deadline(
         None => {
             tokio::select! {
                 result = child.wait() => {
-                    result.map_err(|error| CdfError::internal(format!("wait for subprocess: {error}")))
+                    result.map_err(|error| {
+                        subprocess_environment_error("wait for subprocess", error)
+                    })
                 }
                 () = &mut cancelled => Err(cancellation.check().unwrap_err()),
             }

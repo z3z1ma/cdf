@@ -681,6 +681,23 @@ async fn command_supervisor_bounds_output_and_observes_cancellation() {
     assert!(error.message.contains("cancelled"));
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn missing_executable_is_an_environment_failure_with_host_remediation() {
+    let error = run_bounded_command(
+        CommandSpec::new("/cdf-test/definitely-missing/executable"),
+        SupervisionOptions::default(),
+        cdf_runtime::RunCancellation::default(),
+        memory(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::Environment);
+    assert!(error.message.contains("spawn subprocess"));
+    assert!(error.message.contains("executable availability"));
+    assert!(error.message.contains("process and file limits"));
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "current_thread")]
 async fn inherited_child_address_space_limit_is_declared_and_enforced() {

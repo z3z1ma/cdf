@@ -46,6 +46,12 @@ pub(crate) enum CompareAndSwapOutcome {
     Conflict,
 }
 
+#[derive(Clone, Copy)]
+enum StoreIoOwnership {
+    LocalArtifact,
+    RemoteProvider,
+}
+
 #[derive(Clone)]
 pub(crate) struct StoreClient {
     store: Arc<dyn ObjectStore>,
@@ -82,8 +88,17 @@ impl cdf_runtime::ConditionalContentDeleter for StoreContentDeleter<'_> {
         }
         let path = root.join(self.store.path(content.object_key.as_str())?.as_ref());
         let _lock = lock_content_path(root, &path)?;
-        if !path.exists() {
-            return Ok(cdf_runtime::ConditionalContentDeleteOutcome::AlreadyAbsent);
+        match fs::metadata(&path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(cdf_runtime::ConditionalContentDeleteOutcome::AlreadyAbsent);
+            }
+            Err(error) => {
+                return Err(destination_artifact_io_error(
+                    format!("inspect {} before conditional deletion", path.display()),
+                    &error,
+                ));
+            }
         }
         let actual = sha256_file(&path)?;
         let expected_generation = format!("sha256:{actual}");
@@ -97,7 +112,7 @@ impl cdf_runtime::ConditionalContentDeleter for StoreContentDeleter<'_> {
             return Ok(cdf_runtime::ConditionalContentDeleteOutcome::GenerationMismatch);
         }
         fs::remove_file(&path).map_err(|error| {
-            CdfError::destination(format!("delete {}: {error}", path.display()))
+            destination_artifact_io_error(format!("delete {}", path.display()), &error)
         })?;
         Ok(cdf_runtime::ConditionalContentDeleteOutcome::Deleted)
     }
@@ -132,16 +147,14 @@ impl ObjectKeyEncoder {
 impl StoreClient {
     pub(crate) fn new_filesystem(root: &Path) -> Result<Self> {
         fs::create_dir_all(root).map_err(|error| {
-            CdfError::destination(format!("create {}: {error}", root.display()))
+            local_environment_error(format!("create {}", root.display()), error)
         })?;
         let canonical_root = fs::canonicalize(root).map_err(|error| {
-            CdfError::destination(format!("canonicalize {}: {error}", root.display()))
+            local_environment_error(format!("canonicalize {}", root.display()), error)
         })?;
         let store = LocalFileSystem::new_with_prefix(root)
             .map(|store| store.with_fsync(true))
-            .map_err(|error| {
-                CdfError::destination(format!("open object store filesystem: {error}"))
-            })?;
+            .map_err(|error| local_environment_error("open object store filesystem", error))?;
         Ok(Self {
             store: Arc::new(store),
             namespace: ContentStoreNamespace::new(format!(
@@ -180,18 +193,17 @@ impl StoreClient {
             Some(root) => {
                 let staging = root.join(".cdf-staging");
                 fs::create_dir_all(&staging).map_err(|error| {
-                    CdfError::destination(format!("create {}: {error}", staging.display()))
+                    local_environment_error(format!("create {}", staging.display()), error)
                 })?;
                 tempfile::NamedTempFile::new_in(&staging).map_err(|error| {
-                    CdfError::destination(format!(
-                        "create Parquet staging file under {}: {error}",
-                        staging.display()
-                    ))
+                    local_environment_error(
+                        format!("create Parquet staging file under {}", staging.display()),
+                        error,
+                    )
                 })
             }
-            None => tempfile::NamedTempFile::new().map_err(|error| {
-                CdfError::destination(format!("create Parquet staging file: {error}"))
-            }),
+            None => tempfile::NamedTempFile::new()
+                .map_err(|error| local_environment_error("create Parquet staging file", error)),
         }
     }
 
@@ -205,11 +217,12 @@ impl StoreClient {
         let path = self.path(key)?;
         let store = Arc::clone(&self.store);
         let operation = format!("put {key}");
+        let io_ownership = self.io_ownership();
         let put: PutResult = execution.run_io(async move {
             store
                 .put(&path, PutPayload::from(bytes))
                 .await
-                .map_err(|error| store_error(operation, error))
+                .map_err(|error| store_error(operation, error, io_ownership))
         })?;
         let provider_generation = provider_generation(&put.e_tag, &put.version)?;
         Ok(StoredObject {
@@ -269,12 +282,12 @@ impl StoreClient {
             .await?;
             let bytes = await_fenced(&async_cancellation, &async_mutation_guard, async {
                 tokio::fs::read(&file_path).await.map_err(|error| {
-                    CdfError::destination(format!("read {}: {error}", file_path.display()))
+                    private_scratch_io_error(format!("read {}", file_path.display()), &error)
                 })
             })
             .await?;
             if bytes.len() as u64 != byte_count {
-                return Err(CdfError::destination(format!(
+                return Err(CdfError::internal(format!(
                     "encoded Parquet object changed size from {byte_count} to {} before publication",
                     bytes.len()
                 )));
@@ -316,7 +329,11 @@ impl StoreClient {
                     provider_generation: provider_generation(&metadata.e_tag, &metadata.version)?,
                 })
             }
-            Err(error) => Err(store_error(operation, error)),
+            Err(error) => Err(store_error(
+                operation,
+                error,
+                StoreIoOwnership::RemoteProvider,
+            )),
         }
     }
 
@@ -340,7 +357,7 @@ impl StoreClient {
             ))
         })?;
         fs::create_dir_all(parent).map_err(|error| {
-            CdfError::destination(format!("create {}: {error}", parent.display()))
+            local_environment_error(format!("create {}", parent.display()), error)
         })?;
         let _content_lock = lock_content_path(root, &destination)?;
         mutation_guard.assert_current()?;
@@ -350,7 +367,7 @@ impl StoreClient {
             Ok(file) => {
                 mutation_guard.assert_current()?;
                 file.sync_all().map_err(|error| {
-                    CdfError::destination(format!("sync {}: {error}", destination.display()))
+                    local_environment_error(format!("sync {}", destination.display()), error)
                 })?;
             }
             Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -367,18 +384,17 @@ impl StoreClient {
                 }
             }
             Err(error) => {
-                return Err(CdfError::destination(format!(
-                    "atomically install {}: {}",
-                    destination.display(),
-                    error.error
-                )));
+                return Err(local_environment_error(
+                    format!("atomically install {}", destination.display()),
+                    error.error,
+                ));
             }
         }
         mutation_guard.assert_current()?;
         fs::File::open(parent)
             .and_then(|directory| directory.sync_all())
             .map_err(|error| {
-                CdfError::destination(format!("sync {}: {error}", parent.display()))
+                local_environment_error(format!("sync {}", parent.display()), error)
             })?;
         cancellation.check()?;
         mutation_guard.assert_current()?;
@@ -405,6 +421,7 @@ impl StoreClient {
         };
         let store = Arc::clone(&self.store);
         let key = key.to_owned();
+        let io_ownership = self.io_ownership();
         match execution.run_io(async move {
             Ok(store
                 .put_opts(&path, PutPayload::from(bytes), options)
@@ -422,7 +439,7 @@ impl StoreClient {
             | Err(object_store::Error::Precondition { .. }) => {
                 Ok(CreateObjectOutcome::AlreadyExists)
             }
-            Err(error) => Err(store_error(format!("create {key}"), error)),
+            Err(error) => Err(store_error(format!("create {key}"), error, io_ownership)),
         }
     }
 
@@ -459,15 +476,16 @@ impl StoreClient {
         let path = self.path(key)?;
         let store = Arc::clone(&self.store);
         let key = key.to_owned();
+        let io_ownership = self.io_ownership();
         execution.run_io(async move {
             match store.get(&path).await {
                 Ok(result) => result
                     .bytes()
                     .await
                     .map(|bytes| Some(bytes.to_vec()))
-                    .map_err(|error| store_error(format!("read {key}"), error)),
+                    .map_err(|error| store_error(format!("read {key}"), error, io_ownership)),
                 Err(object_store::Error::NotFound { .. }) => Ok(None),
-                Err(error) => Err(store_error(format!("get {key}"), error)),
+                Err(error) => Err(store_error(format!("get {key}"), error, io_ownership)),
             }
         })
     }
@@ -478,7 +496,7 @@ impl StoreClient {
         key: &str,
     ) -> Result<Vec<u8>> {
         self.get_optional(execution, key)?
-            .ok_or_else(|| CdfError::data(format!("object {key} is missing")))
+            .ok_or_else(|| CdfError::destination(format!("object {key} is missing")))
     }
 
     pub(crate) fn get_optional_versioned(
@@ -489,6 +507,7 @@ impl StoreClient {
         let path = self.path(key)?;
         let store = Arc::clone(&self.store);
         let key = key.to_owned();
+        let io_ownership = self.io_ownership();
         execution.run_io(async move {
             match store.get(&path).await {
                 Ok(result) => {
@@ -505,10 +524,10 @@ impl StoreClient {
                                 version,
                             })
                         })
-                        .map_err(|error| store_error(format!("read {key}"), error))
+                        .map_err(|error| store_error(format!("read {key}"), error, io_ownership))
                 }
                 Err(object_store::Error::NotFound { .. }) => Ok(None),
-                Err(error) => Err(store_error(format!("get {key}"), error)),
+                Err(error) => Err(store_error(format!("get {key}"), error, io_ownership)),
             }
         })
     }
@@ -556,7 +575,11 @@ impl StoreClient {
             Err(object_store::Error::AlreadyExists { .. })
             | Err(object_store::Error::Precondition { .. })
             | Err(object_store::Error::NotFound { .. }) => Ok(CompareAndSwapOutcome::Conflict),
-            Err(error) => Err(store_error(operation, error)),
+            Err(error) => Err(store_error(
+                operation,
+                error,
+                StoreIoOwnership::RemoteProvider,
+            )),
         }
     }
 
@@ -575,7 +598,7 @@ impl StoreClient {
             ))
         })?;
         fs::create_dir_all(parent).map_err(|error| {
-            CdfError::destination(format!("create {}: {error}", parent.display()))
+            local_environment_error(format!("create {}", parent.display()), error)
         })?;
         let filename = destination
             .file_name()
@@ -589,19 +612,19 @@ impl StoreClient {
             .truncate(false)
             .open(&lock_path)
             .map_err(|error| {
-                CdfError::destination(format!("open {}: {error}", lock_path.display()))
+                local_environment_error(format!("open {}", lock_path.display()), error)
             })?;
         lock.lock().map_err(|error| {
-            CdfError::destination(format!("lock {}: {error}", lock_path.display()))
+            local_environment_error(format!("lock {}", lock_path.display()), error)
         })?;
         let observed = match fs::read(&destination) {
             Ok(bytes) => Some(bytes),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => {
-                return Err(CdfError::destination(format!(
-                    "read {}: {error}",
-                    destination.display()
-                )));
+                return Err(destination_artifact_io_error(
+                    format!("read {}", destination.display()),
+                    &error,
+                ));
             }
         };
         if observed.as_deref() != expected.map(|expected| expected.bytes.as_slice()) {
@@ -609,30 +632,29 @@ impl StoreClient {
         }
         let byte_count = replacement.len() as u64;
         let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|error| {
-            CdfError::destination(format!(
-                "create control object under {}: {error}",
-                parent.display()
-            ))
+            local_environment_error(
+                format!("create control object under {}", parent.display()),
+                error,
+            )
         })?;
         temporary.write_all(&replacement).map_err(|error| {
-            CdfError::destination(format!(
-                "write control object {}: {error}",
-                destination.display()
-            ))
+            local_environment_error(
+                format!("write control object {}", destination.display()),
+                error,
+            )
         })?;
         temporary.as_file().sync_all().map_err(|error| {
-            CdfError::destination(format!(
-                "sync control object {}: {error}",
-                destination.display()
-            ))
+            local_environment_error(
+                format!("sync control object {}", destination.display()),
+                error,
+            )
         })?;
         match expected {
             Some(_) => temporary.persist(&destination).map_err(|error| {
-                CdfError::destination(format!(
-                    "atomically replace {}: {}",
-                    destination.display(),
-                    error.error
-                ))
+                local_environment_error(
+                    format!("atomically replace {}", destination.display()),
+                    error.error,
+                )
             })?,
             None => match temporary.persist_noclobber(&destination) {
                 Ok(file) => file,
@@ -640,18 +662,17 @@ impl StoreClient {
                     return Ok(CompareAndSwapOutcome::Conflict);
                 }
                 Err(error) => {
-                    return Err(CdfError::destination(format!(
-                        "atomically create {}: {}",
-                        destination.display(),
-                        error.error
-                    )));
+                    return Err(local_environment_error(
+                        format!("atomically create {}", destination.display()),
+                        error.error,
+                    ));
                 }
             },
         };
         fs::File::open(parent)
             .and_then(|directory| directory.sync_all())
             .map_err(|error| {
-                CdfError::destination(format!("sync {}: {error}", parent.display()))
+                local_environment_error(format!("sync {}", parent.display()), error)
             })?;
         Ok(CompareAndSwapOutcome::Written(StoredObject {
             byte_count,
@@ -667,10 +688,11 @@ impl StoreClient {
     ) -> Result<bool> {
         let path = self.path(key)?;
         let store = Arc::clone(&self.store);
+        let io_ownership = self.io_ownership();
         match execution.run_io(async move { Ok(store.head(&path).await) })? {
             Ok(_) => Ok(true),
             Err(object_store::Error::NotFound { .. }) => Ok(false),
-            Err(error) => Err(store_error(format!("head {key}"), error)),
+            Err(error) => Err(store_error(format!("head {key}"), error, io_ownership)),
         }
     }
 
@@ -684,13 +706,13 @@ impl StoreClient {
             let byte_count = match fs::metadata(&path) {
                 Ok(metadata) => metadata.len(),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    return Err(CdfError::data(format!("object {key} is missing")));
+                    return Err(CdfError::destination(format!("object {key} is missing")));
                 }
                 Err(error) => {
-                    return Err(CdfError::destination(format!(
-                        "inspect {}: {error}",
-                        path.display()
-                    )));
+                    return Err(destination_artifact_io_error(
+                        format!("inspect {}", path.display()),
+                        &error,
+                    ));
                 }
             };
             return Ok(ObjectDigest {
@@ -706,9 +728,15 @@ impl StoreClient {
             let metadata = match store.head(&path).await {
                 Ok(metadata) => metadata,
                 Err(object_store::Error::NotFound { .. }) => {
-                    return Err(CdfError::data(format!("object {key} is missing")));
+                    return Err(CdfError::destination(format!("object {key} is missing")));
                 }
-                Err(error) => return Err(store_error(format!("head {key}"), error)),
+                Err(error) => {
+                    return Err(store_error(
+                        format!("head {key}"),
+                        error,
+                        StoreIoOwnership::RemoteProvider,
+                    ));
+                }
             };
             let reserved_bytes = metadata.size.clamp(1, VERIFY_RANGE_BYTES);
             let request = cdf_memory::ReservationRequest::new(
@@ -727,7 +755,13 @@ impl StoreClient {
                 let bytes = store
                     .get_range(&path, offset..end)
                     .await
-                    .map_err(|error| store_error(format!("read {key} at {offset}..{end}"), error))?;
+                    .map_err(|error| {
+                        store_error(
+                            format!("read {key} at {offset}..{end}"),
+                            error,
+                            StoreIoOwnership::RemoteProvider,
+                        )
+                    })?;
                 let observed = u64::try_from(bytes.len())
                     .map_err(|_| CdfError::destination("verification range exceeds u64"))?;
                 if observed != end.saturating_sub(offset) {
@@ -753,12 +787,13 @@ impl StoreClient {
         let path = self.path(key)?;
         let store = Arc::clone(&self.store);
         let operation = format!("head {key}");
+        let io_ownership = self.io_ownership();
         execution
             .run_io(async move {
                 store
                     .head(&path)
                     .await
-                    .map_err(|error| store_error(operation, error))
+                    .map_err(|error| store_error(operation, error, io_ownership))
             })
             .map(|meta| meta.e_tag)
     }
@@ -771,11 +806,12 @@ impl StoreClient {
         let path = self.path(key)?;
         let store = Arc::clone(&self.store);
         let operation = format!("head {key}");
+        let io_ownership = self.io_ownership();
         execution.run_io(async move {
             store
                 .head(&path)
                 .await
-                .map_err(|error| store_error(operation, error))
+                .map_err(|error| store_error(operation, error, io_ownership))
         })
     }
 
@@ -789,10 +825,10 @@ impl StoreClient {
             return match fs::remove_file(&path) {
                 Ok(()) => Ok(()),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(CdfError::destination(format!(
-                    "delete {}: {error}",
-                    path.display()
-                ))),
+                Err(error) => Err(destination_artifact_io_error(
+                    format!("delete {}", path.display()),
+                    &error,
+                )),
             };
         }
         let path = self.path(key)?;
@@ -801,7 +837,11 @@ impl StoreClient {
         execution.run_io(async move {
             match store.delete(&path).await {
                 Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
-                Err(error) => Err(store_error(operation, error)),
+                Err(error) => Err(store_error(
+                    operation,
+                    error,
+                    StoreIoOwnership::RemoteProvider,
+                )),
             }
         })
     }
@@ -816,12 +856,13 @@ impl StoreClient {
         let store = Arc::clone(&self.store);
         let mutation_guard = mutation_guard.try_clone()?;
         let operation = format!("delete prefix {prefix}");
+        let io_ownership = self.io_ownership();
         execution.run_io(async move {
             let objects = store
                 .list(Some(&prefix))
                 .try_collect::<Vec<_>>()
                 .await
-                .map_err(|error| store_error(&operation, error))?;
+                .map_err(|error| store_error(&operation, error, io_ownership))?;
             let mut removed = 0_u64;
             for object in objects {
                 mutation_guard.assert_current()?;
@@ -829,7 +870,7 @@ impl StoreClient {
                     Ok(()) | Err(object_store::Error::NotFound { .. }) => {
                         removed = removed.saturating_add(1);
                     }
-                    Err(error) => return Err(store_error(&operation, error)),
+                    Err(error) => return Err(store_error(&operation, error, io_ownership)),
                 }
             }
             mutation_guard.assert_current()?;
@@ -854,16 +895,17 @@ impl StoreClient {
         let store = Arc::clone(&self.store);
         let mutation_guard = mutation_guard.try_clone()?;
         let operation = format!("delete prefix {prefix} with marker last");
+        let io_ownership = self.io_ownership();
         execution.run_io(async move {
             let mut objects = store
                 .list(Some(&prefix))
                 .try_collect::<Vec<_>>()
                 .await
-                .map_err(|error| store_error(&operation, error))?;
+                .map_err(|error| store_error(&operation, error, io_ownership))?;
             objects.sort_by(|left, right| left.location.cmp(&right.location));
             let marker_present = objects.iter().any(|object| object.location == marker);
             if !marker_present {
-                return Err(CdfError::data(format!(
+                return Err(CdfError::destination(format!(
                     "staging cleanup marker {marker} disappeared before payload deletion"
                 )));
             }
@@ -877,7 +919,7 @@ impl StoreClient {
                     Ok(()) | Err(object_store::Error::NotFound { .. }) => {
                         removed = removed.saturating_add(1);
                     }
-                    Err(error) => return Err(store_error(&operation, error)),
+                    Err(error) => return Err(store_error(&operation, error, io_ownership)),
                 }
             }
             mutation_guard.assert_current()?;
@@ -885,7 +927,7 @@ impl StoreClient {
                 Ok(()) | Err(object_store::Error::NotFound { .. }) => {
                     removed = removed.saturating_add(1);
                 }
-                Err(error) => return Err(store_error(&operation, error)),
+                Err(error) => return Err(store_error(&operation, error, io_ownership)),
             }
             mutation_guard.assert_current()?;
             Ok(removed)
@@ -901,12 +943,13 @@ impl StoreClient {
         let store = Arc::clone(&self.store);
         let root_prefix = self.root_prefix.clone();
         let operation = format!("list prefix {prefix}");
+        let io_ownership = self.io_ownership();
         execution.run_io(async move {
             let objects = store
                 .list(Some(&prefix_path))
                 .try_collect::<Vec<_>>()
                 .await
-                .map_err(|error| store_error(&operation, error))?;
+                .map_err(|error| store_error(&operation, error, io_ownership))?;
             objects
                 .into_iter()
                 .map(|object| {
@@ -939,6 +982,14 @@ impl StoreClient {
             Ok(ObjectPath::from(key))
         } else {
             Ok(ObjectPath::from(format!("{}/{}", self.root_prefix, key)))
+        }
+    }
+
+    fn io_ownership(&self) -> StoreIoOwnership {
+        if self.local_root.is_some() {
+            StoreIoOwnership::LocalArtifact
+        } else {
+            StoreIoOwnership::RemoteProvider
         }
     }
 }
@@ -1154,8 +1205,38 @@ fn encode_component_v1(value: &str) -> String {
     output
 }
 
-fn store_error(action: impl Into<String>, error: object_store::Error) -> CdfError {
-    CdfError::destination(format!("{}: {error}", action.into()))
+fn store_error(
+    action: impl Into<String>,
+    error: object_store::Error,
+    io_ownership: StoreIoOwnership,
+) -> CdfError {
+    let action = action.into();
+    let mut source = std::error::Error::source(&error);
+    let mut first_io_error = None;
+    while let Some(current) = source {
+        if let Some(classified) = current.downcast_ref::<CdfError>() {
+            let mut classified = classified.clone();
+            classified.message = format!("{action}: {}", classified.message);
+            return classified;
+        }
+        if let Some(io_error) = current.downcast_ref::<std::io::Error>() {
+            if let Some(mut classified) = cdf_kernel::embedded_cdf_error(io_error) {
+                classified.message = format!("{action}: {}", classified.message);
+                return classified;
+            }
+            if first_io_error.is_none() {
+                first_io_error = Some(io_error);
+            }
+        }
+        source = current.source();
+    }
+    if let (StoreIoOwnership::LocalArtifact, Some(io_error)) = (io_ownership, first_io_error) {
+        return destination_artifact_io_error(action, io_error);
+    }
+    if matches!(error, object_store::Error::JoinError { .. }) {
+        return CdfError::internal(format!("{action}: {error}"));
+    }
+    CdfError::destination(format!("{action}: {error}"))
 }
 
 fn provider_generation(
@@ -1189,14 +1270,15 @@ where
 }
 
 fn sha256_file(path: &Path) -> Result<String> {
-    let mut file = fs::File::open(path)
-        .map_err(|error| CdfError::destination(format!("open {}: {error}", path.display())))?;
+    let mut file = fs::File::open(path).map_err(|error| {
+        destination_artifact_io_error(format!("open {}", path.display()), &error)
+    })?;
     let mut hash = Sha256::new();
     let mut buffer = [0_u8; 1024 * 1024];
     loop {
-        let read = file
-            .read(&mut buffer)
-            .map_err(|error| CdfError::destination(format!("read {}: {error}", path.display())))?;
+        let read = file.read(&mut buffer).map_err(|error| {
+            destination_artifact_io_error(format!("read {}", path.display()), &error)
+        })?;
         if read == 0 {
             break;
         }
@@ -1208,7 +1290,7 @@ fn sha256_file(path: &Path) -> Result<String> {
 fn lock_content_path(root: &Path, path: &Path) -> Result<fs::File> {
     let lock_dir = root.join(".cdf-locks/content");
     fs::create_dir_all(&lock_dir).map_err(|error| {
-        CdfError::destination(format!("create {}: {error}", lock_dir.display()))
+        local_environment_error(format!("create {}", lock_dir.display()), error)
     })?;
     let lock_name = hex::encode(Sha256::digest(path.to_string_lossy().as_bytes()));
     let lock_path = lock_dir.join(format!("{lock_name}.lock"));
@@ -1218,13 +1300,132 @@ fn lock_content_path(root: &Path, path: &Path) -> Result<fs::File> {
         .write(true)
         .truncate(false)
         .open(&lock_path)
-        .map_err(|error| CdfError::destination(format!("open {}: {error}", lock_path.display())))?;
+        .map_err(|error| local_environment_error(format!("open {}", lock_path.display()), error))?;
     lock.lock()
-        .map_err(|error| CdfError::destination(format!("lock {}: {error}", lock_path.display())))?;
+        .map_err(|error| local_environment_error(format!("lock {}", lock_path.display()), error))?;
     Ok(lock)
+}
+
+fn local_environment_error(action: impl Into<String>, error: impl std::fmt::Display) -> CdfError {
+    CdfError::environment(format!(
+        "{}: {error}; check the local path, permissions, device health, free space, and process file limits",
+        action.into()
+    ))
+}
+
+fn private_scratch_io_error(action: impl Into<String>, error: &std::io::Error) -> CdfError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
+            | std::io::ErrorKind::IsADirectory
+            | std::io::ErrorKind::NotADirectory
+    ) || cdf_kernel::is_filesystem_loop(error)
+    {
+        CdfError::internal(format!("{}: {error}", action.into()))
+    } else {
+        local_environment_error(action, error)
+    }
+}
+
+fn destination_artifact_io_error(action: impl Into<String>, error: &std::io::Error) -> CdfError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
+            | std::io::ErrorKind::IsADirectory
+            | std::io::ErrorKind::NotADirectory
+    ) || cdf_kernel::is_filesystem_loop(error)
+    {
+        CdfError::destination(format!("{}: {error}", action.into()))
+    } else {
+        local_environment_error(action, error)
+    }
 }
 
 pub(crate) fn now_ms(execution: &cdf_runtime::ExecutionServices) -> Result<i64> {
     i64::try_from(execution.unix_now().as_millis())
         .map_err(|_| CdfError::internal("execution host Unix milliseconds exceed i64"))
+}
+
+#[cfg(test)]
+mod classification_tests {
+    use super::*;
+
+    #[test]
+    fn local_io_classification_distinguishes_private_scratch_and_durable_artifacts() {
+        let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let wrong_shape = std::io::Error::from(std::io::ErrorKind::NotADirectory);
+
+        assert_eq!(
+            private_scratch_io_error("read scratch", &missing).kind,
+            cdf_kernel::ErrorKind::Internal
+        );
+        assert_eq!(
+            destination_artifact_io_error("read object", &missing).kind,
+            cdf_kernel::ErrorKind::Destination
+        );
+        assert_eq!(
+            private_scratch_io_error("read scratch", &denied).kind,
+            cdf_kernel::ErrorKind::Environment
+        );
+        assert_eq!(
+            destination_artifact_io_error("read object", &denied).kind,
+            cdf_kernel::ErrorKind::Environment
+        );
+        assert_eq!(
+            destination_artifact_io_error("read object", &wrong_shape).kind,
+            cdf_kernel::ErrorKind::Destination
+        );
+    }
+
+    #[test]
+    fn object_store_wrappers_preserve_embedded_typed_cdf_errors_before_io_fallback() {
+        let direct = object_store::Error::Generic {
+            store: "fixture",
+            source: Box::new(CdfError::rate_limited("slow down", Some(750))),
+        };
+        let direct = store_error("read fixture", direct, StoreIoOwnership::RemoteProvider);
+        assert_eq!(direct.kind, cdf_kernel::ErrorKind::RateLimited);
+        assert_eq!(direct.retry_after_ms, Some(750));
+        assert!(direct.message.contains("read fixture"));
+        assert!(direct.message.contains("slow down"));
+
+        let wrapped = object_store::Error::Generic {
+            store: "fixture",
+            source: Box::new(std::io::Error::other(CdfError::auth("credentials expired"))),
+        };
+        let wrapped = store_error("head fixture", wrapped, StoreIoOwnership::RemoteProvider);
+        assert_eq!(wrapped.kind, cdf_kernel::ErrorKind::Auth);
+        assert_eq!(wrapped.retry_after_ms, None);
+        assert!(wrapped.message.contains("head fixture"));
+        assert!(wrapped.message.contains("credentials expired"));
+
+        let remote_io = object_store::Error::Generic {
+            store: "fixture",
+            source: Box::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+        };
+        let remote_io = store_error(
+            "read remote fixture",
+            remote_io,
+            StoreIoOwnership::RemoteProvider,
+        );
+        assert_eq!(remote_io.kind, cdf_kernel::ErrorKind::Destination);
+        assert!(!remote_io.message.contains("local path"));
+
+        let local_io = object_store::Error::Generic {
+            store: "fixture",
+            source: Box::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+        };
+        let local_io = store_error(
+            "read local fixture",
+            local_io,
+            StoreIoOwnership::LocalArtifact,
+        );
+        assert_eq!(local_io.kind, cdf_kernel::ErrorKind::Environment);
+        assert!(local_io.message.contains("local path"));
+    }
 }

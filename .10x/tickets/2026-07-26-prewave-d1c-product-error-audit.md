@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-26
 Updated: 2026-07-27
 Parent: `.10x/tickets/2026-07-26-pre-wave-architecture-hardening-program.md`
-Depends-On: `.10x/tickets/2026-07-26-prewave-d1b-adapter-error-audit.md`
+Depends-On: `.10x/tickets/done/2026-07-26-prewave-d1b-adapter-error-audit.md`
 
 # Audit product and governance environment errors
 
@@ -33,7 +33,7 @@ error catalog and prove no unaudited `CdfError::internal` owner remains.
 - `.10x/specs/cli-report-authority-and-environment-errors.md`
 - `.10x/specs/cli-error-experience-catalog.md`
 - `.10x/tickets/done/2026-07-26-prewave-d1-environment-error-taxonomy.md`
-- `.10x/tickets/2026-07-26-prewave-d1b-adapter-error-audit.md`
+- `.10x/tickets/done/2026-07-26-prewave-d1b-adapter-error-audit.md`
 
 ## Assumptions
 

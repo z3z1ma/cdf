@@ -627,6 +627,39 @@ fn upstream_task(executable: &IcebergExecutableTask) -> Result<FileScanTask> {
 }
 
 fn from_iceberg_error(error: IcebergError) -> CdfError {
+    let mut source = std::error::Error::source(&error);
+    let mut first_io_error = None;
+    while let Some(current) = source {
+        if let Some(classified) = current.downcast_ref::<CdfError>() {
+            return classified.clone();
+        }
+        if let Some(io_error) = current.downcast_ref::<std::io::Error>() {
+            if let Some(classified) = cdf_kernel::embedded_cdf_error(io_error) {
+                return classified;
+            }
+            if first_io_error.is_none() {
+                first_io_error = Some(io_error);
+            }
+        }
+        source = current.source();
+    }
+    if let Some(io_error) = first_io_error {
+        let message = error.to_string();
+        if matches!(
+            io_error.kind(),
+            std::io::ErrorKind::NotFound
+                | std::io::ErrorKind::UnexpectedEof
+                | std::io::ErrorKind::InvalidData
+                | std::io::ErrorKind::IsADirectory
+                | std::io::ErrorKind::NotADirectory
+        ) || cdf_kernel::is_filesystem_loop(io_error)
+        {
+            return CdfError::data(message);
+        }
+        return CdfError::environment(format!(
+            "{message}; check source path access, permissions, device health, and process file limits"
+        ));
+    }
     if error.retryable() {
         return CdfError::transient(error.to_string());
     }
@@ -650,6 +683,41 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema};
 
     use super::*;
+
+    #[test]
+    fn iceberg_storage_round_trip_preserves_every_typed_cdf_error_kind() {
+        let cases = [
+            CdfError::transient("transient"),
+            CdfError::rate_limited("rate limited", Some(250)),
+            CdfError::auth("auth"),
+            CdfError::contract("contract"),
+            CdfError::data("data"),
+            CdfError::destination("destination"),
+            CdfError::environment("environment"),
+            CdfError::internal("internal"),
+        ];
+
+        for expected in cases {
+            let observed = from_iceberg_error(crate::storage::to_iceberg_error(expected.clone()));
+            assert_eq!(observed, expected);
+        }
+    }
+
+    #[test]
+    fn iceberg_raw_io_distinguishes_external_data_shape_from_host_environment() {
+        let missing = IcebergError::new(IcebergErrorKind::Unexpected, "read Iceberg object")
+            .with_source(std::io::Error::from(std::io::ErrorKind::NotFound));
+        let missing = from_iceberg_error(missing);
+        assert_eq!(missing.kind, cdf_kernel::ErrorKind::Data);
+        assert!(missing.message.contains("read Iceberg object"));
+
+        let denied = IcebergError::new(IcebergErrorKind::Unexpected, "read Iceberg object")
+            .with_source(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        let denied = from_iceberg_error(denied);
+        assert_eq!(denied.kind, cdf_kernel::ErrorKind::Environment);
+        assert!(denied.message.contains("permissions"));
+        assert!(denied.message.contains("process file limits"));
+    }
 
     fn field(name: &str, data_type: DataType, field_id: i32) -> Field {
         Field::new(name, data_type, false).with_metadata(HashMap::from([(
