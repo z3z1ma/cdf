@@ -38,7 +38,7 @@ No universal catalog semantic model is introduced.
 ### WS-C — Destination archetype hardening
 
 1. `.10x/tickets/done/2026-07-26-prewave-c1-receipt-clock-authority.md`
-2. `.10x/tickets/2026-07-26-prewave-c2-sql-mirror-commons.md`
+2. `.10x/tickets/done/2026-07-26-prewave-c2-sql-mirror-commons.md`
 
 C1 eliminates receipt assembly and process-wall-clock duplication. C2 centralizes typed SQL mirror
 lifecycle without erasing native transaction/dialect behavior.
