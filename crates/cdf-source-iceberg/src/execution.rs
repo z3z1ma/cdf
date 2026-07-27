@@ -44,9 +44,9 @@ pub(crate) fn prepare_task_scan(
     executable: IcebergExecutableTask,
     cancellation: RunCancellation,
 ) -> Result<PreparedIcebergTaskScan> {
-    executable.task.validate_against(executable.authority())?;
+    executable.task().validate_against(executable.authority())?;
     let (file_io, generation_hash) =
-        prepare_task_file_io(context, source, &executable.task, cancellation)?;
+        prepare_task_file_io(context, source, executable.task(), cancellation)?;
     executable.attest_attempt_generation(&generation_hash)?;
     Ok(PreparedIcebergTaskScan {
         executable,
@@ -177,12 +177,12 @@ fn effective_parquet_batch_rows(
 ) -> Result<usize> {
     let file_schema = executable
         .authority()
-        .schema(executable.task.file_schema_id)?;
+        .schema(executable.task().file_schema_id)?;
     parquet_batch_rows_for_observation(
         output_schema,
         file_schema.as_struct().fields().len(),
-        executable.task.data_file.file_size_bytes,
-        executable.task.data_file.record_count,
+        executable.task().data_file.file_size_bytes,
+        executable.task().data_file.record_count,
         source,
     )
 }
@@ -561,7 +561,7 @@ fn arrow_iceberg_field_id(field: &arrow_schema::Field) -> Result<i32> {
 }
 
 fn upstream_task(executable: &IcebergExecutableTask) -> Result<FileScanTask> {
-    let task = &executable.task;
+    let task = executable.task();
     let authority = executable.authority();
     task.validate_against(authority)?;
     let schema = authority.schema(authority.output_schema_id)?;

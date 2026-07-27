@@ -27,7 +27,7 @@ destination concurrency model executable authoring law.
 
 ### WS-B — Source archetype hardening
 
-1. `.10x/tickets/2026-07-26-prewave-b1-typed-task-set-reader.md`
+1. `.10x/tickets/done/2026-07-26-prewave-b1-typed-task-set-reader.md`
 2. `.10x/tickets/2026-07-26-prewave-b2-spill-task-planning-lifecycle.md`
 3. `.10x/tickets/2026-07-26-prewave-b3-file-runtime-modularization.md`
 
@@ -135,6 +135,11 @@ program review.
   fixtures now enforce positive driver/staged/host bounds, legitimate non-`Send` finalized
   lifecycles, capability-selected ingress, contact-free compile, and fail-closed portable worker
   admission without destination identity branches.
+- 2026-07-26: B1 closed with one typed external-task reader shared by Iceberg and Glue. It owns
+  encoded/decoded retention and identity checks while adapters retain catalog, position, schema,
+  retry, and partition semantics. Review-driven repairs preserve each adapter's memory admission
+  policy and share the whole retained payload under one parse lease; source suites and a
+  five-sample baseline comparison pass.
 
 ## Blockers
 

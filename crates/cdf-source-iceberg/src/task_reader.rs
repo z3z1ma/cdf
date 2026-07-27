@@ -9,8 +9,11 @@ use cdf_kernel::{
     PayloadRetention, PlannedPartitionReader, PlannedTaskSetReference, Result, ScopeKey,
     SourcePosition, derive_partition_schema_observation_binding,
 };
-use cdf_memory::{AccountedBytes, MemoryCoordinator, MemoryLease};
-use cdf_task_store::{ExternalTaskSetReader, ExternalTaskStore};
+use cdf_memory::{MemoryClass, MemoryCoordinator, MemoryLease};
+use cdf_task_store::{
+    ExternalTaskParseMemory, ExternalTaskSetCodec, ExternalTaskStore, RetainedExternalTask,
+    TypedExternalTaskSetReader, TypedExternalTaskSetReaderConfig,
+};
 
 use crate::{
     ICEBERG_TASK_SET_TYPE, IcebergScanTask, IcebergSourceOptions, IcebergTaskSetAuthority,
@@ -48,12 +51,6 @@ pub(crate) fn validate_partition_observation_authority(plan: &PartitionPlan) -> 
     Ok(())
 }
 
-struct RetainedTaskAuthority {
-    model: ValidatedIcebergTaskSetAuthority,
-    _encoded: AccountedBytes,
-    _parse: MemoryLease,
-}
-
 struct IcebergTaskGenerationAttestation {
     observed_hash: Mutex<Option<String>>,
     _memory: MemoryLease,
@@ -62,16 +59,17 @@ struct IcebergTaskGenerationAttestation {
 /// Source-private payload carried through bounded scheduler lookahead.
 #[derive(Clone)]
 pub(crate) struct IcebergExecutableTask {
-    pub(crate) task: IcebergScanTask,
-    authority: Arc<RetainedTaskAuthority>,
+    retained: RetainedExternalTask<ValidatedIcebergTaskSetAuthority, IcebergScanTask>,
     generation_attestation: Arc<IcebergTaskGenerationAttestation>,
-    _encoded: AccountedBytes,
-    _parse: MemoryLease,
 }
 
 impl IcebergExecutableTask {
+    pub(crate) fn task(&self) -> &IcebergScanTask {
+        self.retained.task()
+    }
+
     pub(crate) fn authority(&self) -> &ValidatedIcebergTaskSetAuthority {
-        &self.authority.model
+        self.retained.authority()
     }
 
     pub(crate) fn attest_attempt_generation(&self, observed_hash: &str) -> Result<()> {
@@ -94,11 +92,41 @@ impl IcebergExecutableTask {
     }
 }
 
+struct IcebergTaskCodec;
+
+impl ExternalTaskSetCodec for IcebergTaskCodec {
+    type Authority = ValidatedIcebergTaskSetAuthority;
+    type Task = IcebergScanTask;
+
+    fn decode_authority(&self, payload: &[u8]) -> Result<Self::Authority> {
+        serde_json::from_slice::<IcebergTaskSetAuthority>(payload)
+            .map_err(|error| CdfError::data(format!("decode Iceberg task authority: {error}")))?
+            .into_validated()
+    }
+
+    fn authority_content_sha256(&self, authority: &Self::Authority) -> Result<String> {
+        Ok(authority.content_sha256().to_owned())
+    }
+
+    fn decode_task(&self, payload: &[u8], authority: &Self::Authority) -> Result<Self::Task> {
+        let task: IcebergScanTask = serde_json::from_slice(payload)
+            .map_err(|error| CdfError::data(format!("decode Iceberg scan task: {error}")))?;
+        task.validate_against(authority)?;
+        Ok(task)
+    }
+
+    fn task_canonical_ordinal(&self, task: &Self::Task) -> u64 {
+        task.canonical_ordinal
+    }
+
+    fn task_content_sha256(&self, task: &Self::Task) -> Result<String> {
+        task.content_sha256()
+    }
+}
+
 pub(crate) struct IcebergPlannedPartitionReader {
-    reader: ExternalTaskSetReader,
-    authority: Arc<RetainedTaskAuthority>,
+    reader: TypedExternalTaskSetReader<IcebergTaskCodec>,
     memory: Arc<dyn MemoryCoordinator>,
-    parse_amplification_bps: u32,
 }
 
 impl IcebergPlannedPartitionReader {
@@ -107,83 +135,63 @@ impl IcebergPlannedPartitionReader {
         reference: PlannedTaskSetReference,
         source: &IcebergSourceOptions,
         memory: Arc<dyn MemoryCoordinator>,
+        cancellation: cdf_runtime::RunCancellation,
     ) -> Result<Self> {
-        let reader = store.reader(
-            reference,
+        let authority_parse = ExternalTaskParseMemory::fail_fast(
+            "iceberg-task-authority-parse",
+            MemoryClass::Discovery,
+            source.metadata_parse_amplification_bps,
+            0,
+        )?;
+        let task_parse = ExternalTaskParseMemory::fail_fast(
+            "iceberg-task-record-parse",
+            MemoryClass::Discovery,
+            source.metadata_parse_amplification_bps,
+            0,
+        )?;
+        let config = TypedExternalTaskSetReaderConfig::new(
             ICEBERG_TASK_SET_TYPE,
             source.maximum_task_bytes,
             source.maximum_task_authority_bytes,
-            Arc::clone(&memory),
+            authority_parse,
+            task_parse,
         )?;
-        let encoded = reader.authority().clone();
-        let parse = reserve_parse_memory(
-            Arc::clone(&memory),
-            u64::try_from(encoded.payload().len())
-                .map_err(|_| CdfError::data("Iceberg task authority exceeds u64"))?,
-            source.metadata_parse_amplification_bps,
-            "iceberg-task-authority-parse",
-        )?;
-        let model: IcebergTaskSetAuthority = serde_json::from_slice(encoded.payload())
-            .map_err(|error| CdfError::data(format!("decode Iceberg task authority: {error}")))?;
-        let model = model.into_validated()?;
-        if model.content_sha256() != reader.authority_sha256() {
-            return Err(CdfError::data(
-                "Iceberg task authority model does not match its task-store identity",
-            ));
-        }
         Ok(Self {
-            reader,
-            authority: Arc::new(RetainedTaskAuthority {
-                model,
-                _encoded: encoded,
-                _parse: parse,
-            }),
+            reader: TypedExternalTaskSetReader::open(
+                store,
+                reference,
+                Arc::clone(&memory),
+                cancellation,
+                config,
+                IcebergTaskCodec,
+            )?,
             memory,
-            parse_amplification_bps: source.metadata_parse_amplification_bps,
         })
     }
 
     fn decode_task(
         &self,
-        record: cdf_task_store::ExternalTaskRecord,
+        retained: RetainedExternalTask<ValidatedIcebergTaskSetAuthority, IcebergScanTask>,
     ) -> Result<ExecutablePartition> {
-        let encoded_bytes = u64::try_from(record.payload.payload().len())
-            .map_err(|_| CdfError::data("Iceberg task payload exceeds u64"))?;
-        let parse = reserve_parse_memory(
-            Arc::clone(&self.memory),
-            encoded_bytes,
-            self.parse_amplification_bps,
-            "iceberg-task-record-parse",
-        )?;
-        let task: IcebergScanTask = serde_json::from_slice(record.payload.payload())
-            .map_err(|error| CdfError::data(format!("decode Iceberg scan task: {error}")))?;
-        task.validate_against(&self.authority.model)?;
-        if task.canonical_ordinal != record.canonical_ordinal
-            || task.content_sha256()? != record.content_sha256
-        {
-            return Err(CdfError::data(
-                "Iceberg scan task ordinal or content does not match its task-store record",
-            ));
-        }
+        let authority = retained.authority();
+        let canonical_ordinal = retained.canonical_ordinal();
+        let content_sha256 = retained.content_sha256().to_owned();
         let generation_memory = reserve_parse_memory(
             Arc::clone(&self.memory),
             GENERATION_ATTESTATION_MEMORY_BYTES,
             10_000,
             "iceberg-task-generation-attestation",
         )?;
-        let partition_id =
-            PartitionId::new(format!("iceberg-task-{:020}", record.canonical_ordinal))?;
-        let planned_position = self
-            .authority
-            .model
+        let partition_id = PartitionId::new(format!("iceberg-task-{canonical_ordinal:020}"))?;
+        let planned_position = authority
             .snapshot
             .clone()
             .map(|snapshot| SourcePosition::TableSnapshot(Box::new(snapshot)));
         let mut metadata = BTreeMap::new();
-        metadata.insert(TASK_CONTENT_HASH_KEY.to_owned(), record.content_sha256);
+        metadata.insert(TASK_CONTENT_HASH_KEY.to_owned(), content_sha256);
         metadata.insert(
             TASK_SET_AUTHORITY_HASH_KEY.to_owned(),
-            self.authority.model.content_sha256().to_owned(),
+            authority.content_sha256().to_owned(),
         );
         metadata.insert(
             PLAN_SCHEMA_OBSERVATION_ID_KEY.to_owned(),
@@ -195,11 +203,11 @@ impl IcebergPlannedPartitionReader {
             planned_position,
             start_position: None,
             scan_intent: CompiledScanIntent {
-                version: self.authority.model.scan_intent.version,
-                projection: self.authority.model.scan_intent.projection.clone(),
-                predicates: self.authority.model.scan_intent.predicates.clone(),
-                limit: self.authority.model.scan_intent.limit,
-                order_by: self.authority.model.scan_intent.order_by.clone(),
+                version: authority.scan_intent.version,
+                projection: authority.scan_intent.projection.clone(),
+                predicates: authority.scan_intent.predicates.clone(),
+                limit: authority.scan_intent.limit,
+                order_by: authority.scan_intent.order_by.clone(),
             },
             retry_safety: PartitionRetrySafety::Snapshot,
             metadata,
@@ -210,38 +218,29 @@ impl IcebergPlannedPartitionReader {
             observation_binding.to_string(),
         );
         validate_partition_observation_authority(&plan)?;
-        let retained_bytes = encoded_bytes
-            .checked_add(parse.bytes())
-            .and_then(|bytes| bytes.checked_add(generation_memory.bytes()))
+        let retained_bytes = retained
+            .retained_bytes()
+            .checked_add(generation_memory.bytes())
             .ok_or_else(|| CdfError::data("Iceberg retained task bytes overflowed u64"))?;
-        let retained = IcebergExecutableTask {
-            task,
-            authority: Arc::clone(&self.authority),
+        let executable = IcebergExecutableTask {
+            retained,
             generation_attestation: Arc::new(IcebergTaskGenerationAttestation {
                 observed_hash: Mutex::new(None),
                 _memory: generation_memory,
             }),
-            _encoded: record.payload,
-            _parse: parse,
         };
         Ok(ExecutablePartition::retained(
             plan,
-            PayloadRetention::new(Arc::new(retained), retained_bytes)?,
+            PayloadRetention::new(Arc::new(executable), retained_bytes)?,
         ))
     }
 }
 
 impl PlannedPartitionReader for IcebergPlannedPartitionReader {
     fn next_partition(&mut self, expected_ordinal: u64) -> Result<Option<ExecutablePartition>> {
-        let Some(record) = self.reader.next_record()? else {
+        let Some(task) = self.reader.next_task(expected_ordinal)? else {
             return Ok(None);
         };
-        if record.canonical_ordinal != expected_ordinal {
-            return Err(CdfError::data(format!(
-                "Iceberg task reader returned ordinal {} while execution requested {expected_ordinal}",
-                record.canonical_ordinal
-            )));
-        }
-        self.decode_task(record).map(Some)
+        self.decode_task(task).map(Some)
     }
 }

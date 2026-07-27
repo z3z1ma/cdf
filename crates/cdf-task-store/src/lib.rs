@@ -19,10 +19,10 @@ use cdf_kernel::{
     PLANNED_TASK_SET_REFERENCE_VERSION, PlannedTaskSetReference, Result,
 };
 use cdf_memory::{
-    AccountedBytes, ConsumerKey, MemoryClass, MemoryCoordinator, ReservationRequest,
+    AccountedBytes, ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest,
     reserve_blocking,
 };
-use cdf_runtime::{SpillBudgetCoordinator, SpillReservation};
+use cdf_runtime::{RunCancellation, SpillBudgetCoordinator, SpillReservation};
 use rusqlite::{Connection, ErrorCode, params, types::ValueRef};
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
@@ -407,7 +407,10 @@ impl ExternalTaskStore {
             expected_ordinal: 0,
             maximum_task_bytes,
             memory,
-            authority: AccountedBytes::new(Bytes::from(authority), authority_lease)?,
+            authority: Arc::new(AccountedBytes::new(
+                Bytes::from(authority),
+                authority_lease,
+            )?),
             authority_sha256: format!("sha256:{}", hex::encode(observed_authority_digest)),
             task_end: authority_offset,
             footer_task_count,
@@ -890,7 +893,7 @@ pub struct ExternalTaskSetReader {
     expected_ordinal: u64,
     maximum_task_bytes: u64,
     memory: Arc<dyn MemoryCoordinator>,
-    authority: AccountedBytes,
+    authority: Arc<AccountedBytes>,
     authority_sha256: String,
     task_end: u64,
     footer_task_count: u64,
@@ -899,7 +902,11 @@ pub struct ExternalTaskSetReader {
 
 impl ExternalTaskSetReader {
     pub fn authority(&self) -> &AccountedBytes {
-        &self.authority
+        self.authority.as_ref()
+    }
+
+    pub fn retained_authority(&self) -> Arc<AccountedBytes> {
+        Arc::clone(&self.authority)
     }
 
     pub fn authority_sha256(&self) -> &str {
@@ -1058,6 +1065,340 @@ impl ExternalTaskSetReader {
             ));
         }
         Ok(())
+    }
+}
+
+/// Source-owned typed decoding and validation at the external task-set boundary.
+///
+/// The codec owns no catalog lifecycle. It only translates already-accounted canonical bytes
+/// into source types and exposes their independent authority, ordinal, and content identities for
+/// the shared reader to verify.
+pub trait ExternalTaskSetCodec: Send {
+    type Authority: Send + Sync + 'static;
+    type Task: Send + Sync + 'static;
+
+    fn decode_authority(&self, payload: &[u8]) -> Result<Self::Authority>;
+    fn authority_content_sha256(&self, authority: &Self::Authority) -> Result<String>;
+    fn decode_task(&self, payload: &[u8], authority: &Self::Authority) -> Result<Self::Task>;
+    fn task_canonical_ordinal(&self, task: &Self::Task) -> u64;
+    fn task_content_sha256(&self, task: &Self::Task) -> Result<String>;
+}
+
+/// Accounted parse-memory policy for one authority or task record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternalTaskParseMemory {
+    consumer: String,
+    class: MemoryClass,
+    admission: ExternalTaskParseAdmission,
+    amplification_bps: u32,
+    fixed_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExternalTaskParseAdmission {
+    FailFast,
+    Blocking,
+}
+
+impl ExternalTaskParseMemory {
+    pub fn fail_fast(
+        consumer: impl Into<String>,
+        class: MemoryClass,
+        amplification_bps: u32,
+        fixed_bytes: u64,
+    ) -> Result<Self> {
+        Self::new(
+            consumer,
+            class,
+            ExternalTaskParseAdmission::FailFast,
+            amplification_bps,
+            fixed_bytes,
+        )
+    }
+
+    pub fn blocking(
+        consumer: impl Into<String>,
+        class: MemoryClass,
+        amplification_bps: u32,
+        fixed_bytes: u64,
+    ) -> Result<Self> {
+        Self::new(
+            consumer,
+            class,
+            ExternalTaskParseAdmission::Blocking,
+            amplification_bps,
+            fixed_bytes,
+        )
+    }
+
+    fn new(
+        consumer: impl Into<String>,
+        class: MemoryClass,
+        admission: ExternalTaskParseAdmission,
+        amplification_bps: u32,
+        fixed_bytes: u64,
+    ) -> Result<Self> {
+        let consumer = consumer.into();
+        require_token("external task parse-memory consumer", &consumer)?;
+        if amplification_bps == 0 {
+            return Err(CdfError::contract(
+                "external task parse-memory amplification must be nonzero",
+            ));
+        }
+        Ok(Self {
+            consumer,
+            class,
+            admission,
+            amplification_bps,
+            fixed_bytes,
+        })
+    }
+
+    pub fn reservation_bytes(&self, encoded_bytes: u64) -> Result<u64> {
+        let amplified = u128::from(encoded_bytes)
+            .checked_mul(u128::from(self.amplification_bps))
+            .and_then(|bytes| bytes.checked_add(9_999))
+            .map(|bytes| bytes / 10_000)
+            .ok_or_else(|| CdfError::data("external task parse reservation overflowed"))?;
+        u64::try_from(
+            amplified
+                .checked_add(u128::from(self.fixed_bytes))
+                .ok_or_else(|| CdfError::data("external task parse reservation overflowed"))?
+                .max(1),
+        )
+        .map_err(|_| CdfError::data("external task parse reservation exceeds u64"))
+    }
+
+    fn reserve(
+        &self,
+        memory: Arc<dyn MemoryCoordinator>,
+        encoded_bytes: u64,
+    ) -> Result<MemoryLease> {
+        let request = ReservationRequest::new(
+            ConsumerKey::new(&self.consumer, self.class)?,
+            self.reservation_bytes(encoded_bytes)?,
+        )?;
+        match self.admission {
+            ExternalTaskParseAdmission::FailFast => {
+                memory.try_reserve(&request)?.ok_or_else(|| {
+                    CdfError::data(format!(
+                        "external task parsing requires {} bytes for {}, but the memory ledger cannot admit it",
+                        request.bytes, self.consumer
+                    ))
+                })
+            }
+            ExternalTaskParseAdmission::Blocking => reserve_blocking(memory, &request),
+        }
+    }
+}
+
+/// Shared authority retained once for every typed task decoded from one task-set reader.
+pub struct RetainedExternalTaskAuthority<A> {
+    model: A,
+    _encoded: Arc<AccountedBytes>,
+    _parse: MemoryLease,
+}
+
+impl<A> RetainedExternalTaskAuthority<A> {
+    pub fn model(&self) -> &A {
+        &self.model
+    }
+}
+
+/// One decoded source task with its exact encoded and parse-memory leases.
+pub struct RetainedExternalTask<A, T> {
+    inner: Arc<RetainedExternalTaskInner<A, T>>,
+}
+
+struct RetainedExternalTaskInner<A, T> {
+    task: T,
+    authority: Arc<RetainedExternalTaskAuthority<A>>,
+    canonical_ordinal: u64,
+    content_sha256: String,
+    retained_bytes: u64,
+    _encoded: AccountedBytes,
+    _parse: MemoryLease,
+}
+
+impl<A, T> RetainedExternalTask<A, T> {
+    pub fn task(&self) -> &T {
+        &self.inner.task
+    }
+
+    pub fn authority(&self) -> &A {
+        self.inner.authority.model()
+    }
+
+    pub fn canonical_ordinal(&self) -> u64 {
+        self.inner.canonical_ordinal
+    }
+
+    pub fn content_sha256(&self) -> &str {
+        &self.inner.content_sha256
+    }
+
+    pub fn retained_bytes(&self) -> u64 {
+        self.inner.retained_bytes
+    }
+}
+
+impl<A, T> Clone for RetainedExternalTask<A, T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+/// Closed budgets and parse-accounting policy for one typed task-set reader.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypedExternalTaskSetReaderConfig {
+    task_type: String,
+    maximum_task_bytes: u64,
+    maximum_authority_bytes: u64,
+    authority_parse: ExternalTaskParseMemory,
+    task_parse: ExternalTaskParseMemory,
+}
+
+impl TypedExternalTaskSetReaderConfig {
+    pub fn new(
+        task_type: impl Into<String>,
+        maximum_task_bytes: u64,
+        maximum_authority_bytes: u64,
+        authority_parse: ExternalTaskParseMemory,
+        task_parse: ExternalTaskParseMemory,
+    ) -> Result<Self> {
+        let task_type = task_type.into();
+        require_token("typed external task-set type", &task_type)?;
+        if maximum_task_bytes == 0 || maximum_authority_bytes == 0 {
+            return Err(CdfError::contract(
+                "typed external task-set budgets must be nonzero",
+            ));
+        }
+        Ok(Self {
+            task_type,
+            maximum_task_bytes,
+            maximum_authority_bytes,
+            authority_parse,
+            task_parse,
+        })
+    }
+}
+
+/// Typed, cancellation-aware view over one canonical external task set.
+pub struct TypedExternalTaskSetReader<C>
+where
+    C: ExternalTaskSetCodec,
+{
+    reader: ExternalTaskSetReader,
+    codec: C,
+    authority: Arc<RetainedExternalTaskAuthority<C::Authority>>,
+    memory: Arc<dyn MemoryCoordinator>,
+    task_parse: ExternalTaskParseMemory,
+    cancellation: RunCancellation,
+}
+
+impl<C> TypedExternalTaskSetReader<C>
+where
+    C: ExternalTaskSetCodec,
+{
+    pub fn open(
+        store: &ExternalTaskStore,
+        reference: PlannedTaskSetReference,
+        memory: Arc<dyn MemoryCoordinator>,
+        cancellation: RunCancellation,
+        config: TypedExternalTaskSetReaderConfig,
+        codec: C,
+    ) -> Result<Self> {
+        cancellation.check()?;
+        let reader = store.reader(
+            reference,
+            &config.task_type,
+            config.maximum_task_bytes,
+            config.maximum_authority_bytes,
+            Arc::clone(&memory),
+        )?;
+        cancellation.check()?;
+        let encoded = reader.retained_authority();
+        let encoded_bytes = u64::try_from(encoded.payload().len())
+            .map_err(|_| CdfError::data("external task authority exceeds u64"))?;
+        let parse = config
+            .authority_parse
+            .reserve(Arc::clone(&memory), encoded_bytes)?;
+        let authority = codec.decode_authority(encoded.payload())?;
+        cancellation.check()?;
+        if codec.authority_content_sha256(&authority)? != reader.authority_sha256() {
+            return Err(CdfError::data(
+                "decoded task-set authority does not match its task-store identity",
+            ));
+        }
+        Ok(Self {
+            reader,
+            codec,
+            authority: Arc::new(RetainedExternalTaskAuthority {
+                model: authority,
+                _encoded: encoded,
+                _parse: parse,
+            }),
+            memory,
+            task_parse: config.task_parse,
+            cancellation,
+        })
+    }
+
+    pub fn authority(&self) -> &C::Authority {
+        self.authority.model()
+    }
+
+    pub fn next_task(
+        &mut self,
+        expected_ordinal: u64,
+    ) -> Result<Option<RetainedExternalTask<C::Authority, C::Task>>> {
+        self.cancellation.check()?;
+        let Some(record) = self.reader.next_record()? else {
+            return Ok(None);
+        };
+        if record.canonical_ordinal != expected_ordinal {
+            return Err(CdfError::data(format!(
+                "external task reader returned ordinal {} while execution requested {expected_ordinal}",
+                record.canonical_ordinal
+            )));
+        }
+        let encoded_bytes = u64::try_from(record.payload.payload().len())
+            .map_err(|_| CdfError::data("external task payload exceeds u64"))?;
+        let parse = self
+            .task_parse
+            .reserve(Arc::clone(&self.memory), encoded_bytes)?;
+        let task = self
+            .codec
+            .decode_task(record.payload.payload(), self.authority.model())?;
+        let task_ordinal = self.codec.task_canonical_ordinal(&task);
+        let task_content_sha256 = self.codec.task_content_sha256(&task)?;
+        if task_ordinal != record.canonical_ordinal || task_content_sha256 != record.content_sha256
+        {
+            return Err(CdfError::data(
+                "decoded external task ordinal or content does not match its task-store record",
+            ));
+        }
+        self.cancellation.check()?;
+        let retained_bytes = encoded_bytes
+            .checked_add(parse.bytes())
+            .ok_or_else(|| CdfError::data("retained external task bytes overflowed u64"))?;
+        Ok(Some(RetainedExternalTask {
+            inner: Arc::new(RetainedExternalTaskInner {
+                task,
+                authority: Arc::clone(&self.authority),
+                canonical_ordinal: record.canonical_ordinal,
+                content_sha256: record.content_sha256,
+                retained_bytes,
+                _encoded: record.payload,
+                _parse: parse,
+            }),
+        }))
+    }
+
+    pub fn observed_task_count(&self) -> u64 {
+        self.reader.observed_task_count()
     }
 }
 
@@ -1330,6 +1671,90 @@ mod tests {
         path: String,
     }
 
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    struct SyntheticAuthority {
+        version: u32,
+    }
+
+    #[derive(Default)]
+    struct SyntheticCodec {
+        authority_hash_override: Option<String>,
+        task_hash_override: Option<String>,
+    }
+
+    impl ExternalTaskSetCodec for SyntheticCodec {
+        type Authority = SyntheticAuthority;
+        type Task = SyntheticTask;
+
+        fn decode_authority(&self, payload: &[u8]) -> Result<Self::Authority> {
+            let authority: SyntheticAuthority = serde_json::from_slice(payload)
+                .map_err(|error| CdfError::data(format!("decode synthetic authority: {error}")))?;
+            if authority.version != 1 {
+                return Err(CdfError::data(
+                    "synthetic authority has an unsupported version",
+                ));
+            }
+            Ok(authority)
+        }
+
+        fn authority_content_sha256(&self, authority: &Self::Authority) -> Result<String> {
+            if let Some(hash) = &self.authority_hash_override {
+                return Ok(hash.clone());
+            }
+            canonical_json_hash(authority)
+        }
+
+        fn decode_task(&self, payload: &[u8], authority: &Self::Authority) -> Result<Self::Task> {
+            if authority.version != 1 {
+                return Err(CdfError::data(
+                    "synthetic task authority changed during decode",
+                ));
+            }
+            serde_json::from_slice(payload)
+                .map_err(|error| CdfError::data(format!("decode synthetic task: {error}")))
+        }
+
+        fn task_canonical_ordinal(&self, task: &Self::Task) -> u64 {
+            task.partition
+        }
+
+        fn task_content_sha256(&self, task: &Self::Task) -> Result<String> {
+            if let Some(hash) = &self.task_hash_override {
+                return Ok(hash.clone());
+            }
+            canonical_json_hash(task)
+        }
+    }
+
+    fn canonical_json_hash(value: &impl Serialize) -> Result<String> {
+        let bytes = serde_json::to_vec(value)
+            .map_err(|error| CdfError::data(format!("encode synthetic model: {error}")))?;
+        Ok(format!("sha256:{}", hex::encode(Sha256::digest(bytes))))
+    }
+
+    fn typed_config(task_type: &str) -> TypedExternalTaskSetReaderConfig {
+        TypedExternalTaskSetReaderConfig::new(
+            task_type,
+            4096,
+            4096,
+            ExternalTaskParseMemory::blocking(
+                "synthetic-authority-parse",
+                MemoryClass::Control,
+                10_000,
+                0,
+            )
+            .unwrap(),
+            ExternalTaskParseMemory::blocking(
+                "synthetic-task-parse",
+                MemoryClass::Control,
+                10_000,
+                0,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
     fn authorities(
         memory_bytes: u64,
         spill_bytes: u64,
@@ -1435,6 +1860,345 @@ mod tests {
         }
         assert_eq!(count, 100);
         assert_eq!(reader.observed_task_count(), 100);
+    }
+
+    #[test]
+    fn typed_reader_retains_one_accounted_authority_and_task_lifecycle() {
+        let root = TempDir::new().unwrap();
+        let store = store(&root);
+        let (memory, spill) = authorities(64 * 1024, 1024 * 1024);
+        let mut writer = store
+            .writer("synthetic-v1", limits(), Arc::clone(&memory), &spill)
+            .unwrap();
+        let task = SyntheticTask {
+            partition: 0,
+            path: "file:///zero.parquet".to_owned(),
+        };
+        push_task(&mut writer, 0, &task).unwrap();
+        let artifact = writer.finalize(encode_authority).unwrap();
+        assert_eq!(memory.snapshot().current_bytes, 0);
+
+        let authority_bytes = u64::try_from(br#"{"version":1}"#.len()).unwrap();
+        let task_bytes = u64::try_from(serde_json::to_vec(&task).unwrap().len()).unwrap();
+        let mut reader = TypedExternalTaskSetReader::open(
+            &store,
+            artifact.reference,
+            Arc::clone(&memory),
+            RunCancellation::default(),
+            typed_config("synthetic-v1"),
+            SyntheticCodec::default(),
+        )
+        .unwrap();
+        assert_eq!(reader.authority(), &SyntheticAuthority { version: 1 });
+        assert_eq!(
+            memory.snapshot().current_bytes,
+            authority_bytes * 2,
+            "authority encoded and parse memory must each be leased once"
+        );
+
+        let retained = reader.next_task(0).unwrap().unwrap();
+        assert_eq!(retained.task(), &task);
+        assert_eq!(retained.canonical_ordinal(), 0);
+        assert_eq!(
+            retained.content_sha256(),
+            canonical_json_hash(&task).unwrap()
+        );
+        assert_eq!(retained.retained_bytes(), task_bytes * 2);
+        assert_eq!(
+            memory.snapshot().current_bytes,
+            authority_bytes * 2 + task_bytes * 2
+        );
+        let retained_task_address = std::ptr::from_ref(retained.task());
+        let retained_clone = retained.clone();
+        assert_eq!(
+            std::ptr::from_ref(retained_clone.task()),
+            retained_task_address,
+            "scheduler lookahead clones must share one decoded task model"
+        );
+        assert!(reader.next_task(1).unwrap().is_none());
+        drop(reader);
+        assert_eq!(
+            memory.snapshot().current_bytes,
+            authority_bytes * 2 + task_bytes * 2,
+            "retained task must keep its one shared authority alive"
+        );
+        drop(retained);
+        assert_eq!(
+            memory.snapshot().current_bytes,
+            authority_bytes * 2 + task_bytes * 2,
+            "one clone must retain the singular authority/task leases"
+        );
+        drop(retained_clone);
+        assert_eq!(memory.snapshot().current_bytes, 0);
+    }
+
+    #[test]
+    fn typed_reader_fails_closed_on_type_authority_ordinal_content_decode_and_cancellation() {
+        fn artifact_with(
+            store: &ExternalTaskStore,
+            memory: Arc<dyn MemoryCoordinator>,
+            spill: &dyn SpillBudgetCoordinator,
+            encode: impl FnOnce(&mut ExternalTaskSetWriter) -> Result<()>,
+        ) -> ExternalTaskSetArtifact {
+            let mut writer = store
+                .writer("synthetic-v1", limits(), memory, spill)
+                .unwrap();
+            encode(&mut writer).unwrap();
+            writer.finalize(encode_authority).unwrap()
+        }
+
+        let task = SyntheticTask {
+            partition: 0,
+            path: "file:///zero.parquet".to_owned(),
+        };
+
+        let root = TempDir::new().unwrap();
+        let store = store(&root);
+        let (memory, spill) = authorities(64 * 1024, 1024 * 1024);
+        let artifact = artifact_with(&store, Arc::clone(&memory), &spill, |writer| {
+            push_task(writer, 0, &task)
+        });
+        let error = TypedExternalTaskSetReader::open(
+            &store,
+            artifact.reference.clone(),
+            Arc::clone(&memory),
+            RunCancellation::default(),
+            typed_config("wrong-v1"),
+            SyntheticCodec::default(),
+        )
+        .err()
+        .unwrap();
+        assert!(error.message.contains("type"));
+
+        let error = TypedExternalTaskSetReader::open(
+            &store,
+            artifact.reference.clone(),
+            Arc::clone(&memory),
+            RunCancellation::default(),
+            typed_config("synthetic-v1"),
+            SyntheticCodec {
+                authority_hash_override: Some(format!("sha256:{}", "00".repeat(32))),
+                task_hash_override: None,
+            },
+        )
+        .err()
+        .unwrap();
+        assert!(error.message.contains("authority"));
+
+        let mut reader = TypedExternalTaskSetReader::open(
+            &store,
+            artifact.reference.clone(),
+            Arc::clone(&memory),
+            RunCancellation::default(),
+            typed_config("synthetic-v1"),
+            SyntheticCodec::default(),
+        )
+        .unwrap();
+        assert!(
+            reader
+                .next_task(1)
+                .err()
+                .unwrap()
+                .message
+                .contains("execution requested")
+        );
+        drop(reader);
+
+        let mut wrong_content = TypedExternalTaskSetReader::open(
+            &store,
+            artifact.reference.clone(),
+            Arc::clone(&memory),
+            RunCancellation::default(),
+            typed_config("synthetic-v1"),
+            SyntheticCodec {
+                authority_hash_override: None,
+                task_hash_override: Some(format!("sha256:{}", "11".repeat(32))),
+            },
+        )
+        .unwrap();
+        assert!(
+            wrong_content
+                .next_task(0)
+                .err()
+                .unwrap()
+                .message
+                .contains("ordinal or content")
+        );
+        drop(wrong_content);
+
+        let wrong_ordinal = SyntheticTask {
+            partition: 9,
+            path: "file:///nine.parquet".to_owned(),
+        };
+        let ordinal_artifact = artifact_with(&store, Arc::clone(&memory), &spill, |writer| {
+            push_task(writer, 0, &wrong_ordinal)
+        });
+        let mut ordinal_reader = TypedExternalTaskSetReader::open(
+            &store,
+            ordinal_artifact.reference,
+            Arc::clone(&memory),
+            RunCancellation::default(),
+            typed_config("synthetic-v1"),
+            SyntheticCodec::default(),
+        )
+        .unwrap();
+        assert!(
+            ordinal_reader
+                .next_task(0)
+                .err()
+                .unwrap()
+                .message
+                .contains("ordinal or content")
+        );
+        drop(ordinal_reader);
+
+        let decode_artifact = artifact_with(&store, Arc::clone(&memory), &spill, |writer| {
+            writer.push_with(0, |output| {
+                output
+                    .write_all(b"not-json")
+                    .map_err(|error| CdfError::data(format!("write invalid task: {error}")))
+            })
+        });
+        let mut decode_reader = TypedExternalTaskSetReader::open(
+            &store,
+            decode_artifact.reference,
+            Arc::clone(&memory),
+            RunCancellation::default(),
+            typed_config("synthetic-v1"),
+            SyntheticCodec::default(),
+        )
+        .unwrap();
+        assert!(
+            decode_reader
+                .next_task(0)
+                .err()
+                .unwrap()
+                .message
+                .contains("decode synthetic task")
+        );
+        drop(decode_reader);
+
+        let cancellation = RunCancellation::default();
+        let mut cancelled_reader = TypedExternalTaskSetReader::open(
+            &store,
+            artifact.reference,
+            Arc::clone(&memory),
+            cancellation.clone(),
+            typed_config("synthetic-v1"),
+            SyntheticCodec::default(),
+        )
+        .unwrap();
+        cancellation.cancel();
+        assert!(
+            cancelled_reader
+                .next_task(0)
+                .err()
+                .unwrap()
+                .message
+                .contains("cancelled")
+        );
+        drop(cancelled_reader);
+        assert_eq!(
+            memory.snapshot().current_bytes,
+            0,
+            "every failed/cancelled decode must release encoded and parse leases"
+        );
+    }
+
+    #[test]
+    fn typed_reader_parse_policy_rejects_overflow() {
+        let policy = ExternalTaskParseMemory::fail_fast(
+            "synthetic-overflow",
+            MemoryClass::Discovery,
+            u32::MAX,
+            u64::MAX,
+        )
+        .unwrap();
+        assert!(
+            policy
+                .reservation_bytes(u64::MAX)
+                .unwrap_err()
+                .message
+                .contains("u64")
+        );
+    }
+
+    #[test]
+    fn typed_reader_fail_fast_pressure_and_cancellation_never_wait() {
+        let root = TempDir::new().unwrap();
+        let store = store(&root);
+        let (writer_memory, spill) = authorities(64 * 1024, 1024 * 1024);
+        let task = SyntheticTask {
+            partition: 0,
+            path: "file:///pressure.parquet".to_owned(),
+        };
+        let mut writer = store
+            .writer("synthetic-v1", limits(), Arc::clone(&writer_memory), &spill)
+            .unwrap();
+        push_task(&mut writer, 0, &task).unwrap();
+        let artifact = writer.finalize(encode_authority).unwrap();
+
+        let authority_bytes = u64::try_from(br#"{"version":1}"#.len()).unwrap();
+        let task_bytes = u64::try_from(serde_json::to_vec(&task).unwrap().len()).unwrap();
+        let constrained_bytes = authority_bytes
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(task_bytes))
+            .unwrap();
+        let constrained: Arc<dyn MemoryCoordinator> = Arc::new(
+            DeterministicMemoryCoordinator::new(constrained_bytes, BTreeMap::new()).unwrap(),
+        );
+        let fail_fast_config = || {
+            TypedExternalTaskSetReaderConfig::new(
+                "synthetic-v1",
+                4096,
+                4096,
+                ExternalTaskParseMemory::fail_fast(
+                    "synthetic-authority-parse",
+                    MemoryClass::Discovery,
+                    10_000,
+                    0,
+                )
+                .unwrap(),
+                ExternalTaskParseMemory::fail_fast(
+                    "synthetic-task-parse",
+                    MemoryClass::Discovery,
+                    10_000,
+                    0,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+
+        let mut pressure_reader = TypedExternalTaskSetReader::open(
+            &store,
+            artifact.reference.clone(),
+            Arc::clone(&constrained),
+            RunCancellation::default(),
+            fail_fast_config(),
+            SyntheticCodec::default(),
+        )
+        .unwrap();
+        let error = pressure_reader.next_task(0).err().unwrap();
+        assert!(error.message.contains("cannot admit"));
+        drop(pressure_reader);
+        assert_eq!(constrained.snapshot().current_bytes, 0);
+
+        let cancellation = RunCancellation::default();
+        let mut cancelled_reader = TypedExternalTaskSetReader::open(
+            &store,
+            artifact.reference,
+            Arc::clone(&constrained),
+            cancellation.clone(),
+            fail_fast_config(),
+            SyntheticCodec::default(),
+        )
+        .unwrap();
+        cancellation.cancel();
+        let error = cancelled_reader.next_task(0).err().unwrap();
+        assert!(error.message.contains("cancelled"));
+        drop(cancelled_reader);
+        assert_eq!(constrained.snapshot().current_bytes, 0);
     }
 
     #[test]

@@ -62,6 +62,19 @@ to compile. Merely omitting a `Send` assertion proves nothing. Native handles ma
 the exclusively owned ingress protocol or a declared blocking lane; an injected `Send + Sync`
 host does not make the handle movable.
 
+Shared external-task readers own an entire retained decoded payload as one `Arc`-shared unit:
+typed model, canonical identity, encoded bytes, and parse lease. Sharing only the lease while
+deep-cloning the decoded model makes the memory ledger false. The reader may centralize
+authority/task decoding and identity verification, but each adapter retains its position,
+authorization, retry, schema-observation, and partition-plan semantics through a typed codec
+boundary.
+
+Parse-memory policy is part of adapter behavior, not an implementation detail of the byte
+formula. A shared extraction must preserve the adapter's memory class, admission mode
+(fail-fast or blocking), and cancellation boundary explicitly. Changing Iceberg discovery
+parsing from fail-fast discovery admission to blocking control admission, for example, would be
+a semantic and liveness regression even if the reservation size were identical.
+
 Source compilation and driver-owned portable-plan validation are contact-free. Health and
 discovery remain explicit bounded, contact-capable stages, while row execution and retry happen
 after resolution. Portability conformance must traverse the worker admission path that

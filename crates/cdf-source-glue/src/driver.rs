@@ -714,6 +714,7 @@ impl ResourceStream for GlueResource {
             reference.clone(),
             &self.source,
             self.execution.memory(),
+            self.cancellation.clone(),
         )?))
     }
 
@@ -811,7 +812,7 @@ impl ResourceStream for GlueResource {
         };
         let plan = partition.into_plan();
         let prepared = prepare_object(
-            &executable.task,
+            executable.task(),
             executable.authority(),
             &self.source,
             self.table.lake_formation.as_ref(),
@@ -896,17 +897,17 @@ impl ResourceStream for GlueResource {
                 CdfError::contract("Glue attestation omitted its retained object task")
             })?;
             let logical = object_resource(
-                &executable.task.file.path,
+                &executable.task().file.path,
                 &source,
                 lake_formation.as_ref(),
-                &executable.task.partition_values,
+                &executable.task().partition_values,
             )?;
             let observed = object_access.metadata(
                 &egress,
                 &logical,
                 &FileTransportControl::new(cancellation, None),
             )?;
-            if observed.identity().file_position_evidence()? != executable.task.file {
+            if observed.identity().file_position_evidence()? != executable.task().file {
                 return Err(CdfError::data(
                     "Glue object generation changed before retry/commit attestation",
                 ));
@@ -914,7 +915,7 @@ impl ResourceStream for GlueResource {
             Ok(Some(PartitionAttestation::new(
                 SourcePosition::FileManifest(cdf_kernel::FileManifest {
                     version: cdf_kernel::SOURCE_POSITION_VERSION,
-                    files: vec![executable.task.file],
+                    files: vec![executable.task().file.clone()],
                 }),
                 Some(physical_hash?),
             )))

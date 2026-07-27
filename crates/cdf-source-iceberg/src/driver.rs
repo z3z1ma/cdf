@@ -700,6 +700,7 @@ impl ResourceStream for IcebergResource {
             reference.clone(),
             &self.source,
             self.catalog.execution.memory(),
+            self.cancellation.clone(),
         )?))
     }
 
@@ -803,7 +804,7 @@ impl ResourceStream for IcebergResource {
                     "Iceberg executable attestation omitted its retained canonical task payload",
                 )
             })?;
-            executable.task.validate_against(executable.authority())?;
+            executable.task().validate_against(executable.authority())?;
             let snapshot = executable.authority().snapshot.clone().ok_or_else(|| {
                 CdfError::contract("Iceberg executable task omitted immutable snapshot authority")
             })?;
@@ -2933,8 +2934,8 @@ mod tests {
                 .unwrap()
                 .downcast_ref::<IcebergExecutableTask>()
                 .unwrap();
-            assert_eq!(task.task.canonical_ordinal, ordinal);
-            task.task.validate_against(task.authority()).unwrap();
+            assert_eq!(task.task().canonical_ordinal, ordinal);
+            task.task().validate_against(task.authority()).unwrap();
             assert_eq!(
                 executable
                     .plan()
