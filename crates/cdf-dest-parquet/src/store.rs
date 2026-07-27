@@ -1224,10 +1224,7 @@ fn lock_content_path(root: &Path, path: &Path) -> Result<fs::File> {
     Ok(lock)
 }
 
-pub(crate) fn now_ms() -> Result<i64> {
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| CdfError::internal(format!("system clock before epoch: {error}")))?;
-    i64::try_from(duration.as_millis())
-        .map_err(|_| CdfError::internal("system time does not fit i64 milliseconds"))
+pub(crate) fn now_ms(execution: &cdf_runtime::ExecutionServices) -> Result<i64> {
+    i64::try_from(execution.unix_now().as_millis())
+        .map_err(|_| CdfError::internal("execution host Unix milliseconds exceed i64"))
 }

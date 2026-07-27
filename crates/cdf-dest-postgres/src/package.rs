@@ -21,11 +21,10 @@ pub(crate) fn expected_segments_for_session(
     plan: &PostgresLoadPlan,
     request: &DestinationCommitRequest,
 ) -> Result<PostgresSessionSegments> {
-    let plan_hash = plan_package_hash(plan)?;
-    if package.package_hash() != plan_hash.as_str() {
+    if package.package_hash() != plan.package_hash.as_str() {
         return Err(CdfError::data(format!(
             "Postgres plan package hash {} does not match package {}",
-            plan_hash,
+            plan.package_hash,
             package.package_hash()
         )));
     }
@@ -145,14 +144,4 @@ fn plan_segment_map(plan: &PostgresLoadPlan) -> Result<BTreeMap<SegmentId, Segme
         }
     }
     Ok(by_id)
-}
-
-fn plan_package_hash(plan: &PostgresLoadPlan) -> Result<PackageHash> {
-    PackageHash::new(
-        plan.verify
-            .parameters
-            .get("package_hash")
-            .ok_or_else(|| CdfError::internal("verify clause missing package_hash"))?
-            .clone(),
-    )
 }

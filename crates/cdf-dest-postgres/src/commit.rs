@@ -1,7 +1,4 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::collections::{BTreeMap, BTreeSet};
 
 use postgres::{Client, NoTls, Row};
 
@@ -39,6 +36,11 @@ impl PostgresDestination {
         })?;
         Ok(PostgresCommitSession {
             database_url: database_url.to_owned(),
+            execution: self.execution.clone().ok_or_else(|| {
+                CdfError::contract(
+                    "Postgres commit execution requires injected ExecutionServices for receipt time",
+                )
+            })?,
             package: request.package,
             plan: request.plan,
             client: None,
@@ -76,6 +78,7 @@ impl PostgresDestination {
 
 pub(crate) struct PostgresCommitSession {
     database_url: String,
+    execution: cdf_runtime::ExecutionServices,
     package: cdf_package_contract::SharedVerifiedPackageAccess,
     plan: PostgresLoadPlan,
     client: Option<Client>,
@@ -179,7 +182,7 @@ impl PostgresCommitSession {
             .take()
             .ok_or_else(|| CdfError::internal("Postgres commit session has no transaction"))?;
         let xid = query_xid(&mut client, &self.plan)?;
-        let committed_at_ms = now_ms()?;
+        let committed_at_ms = now_ms(&self.execution)?;
         let counts = if self.expected_segments.is_empty() {
             CommitCounts::default()
         } else {
@@ -287,6 +290,7 @@ impl CommitSession for PostgresCommitSession {
             let package_row_key_start = self.first_row_key.ok_or_else(|| {
                 CdfError::internal("Postgres package row-key allocator is not initialized")
             })?;
+            let execution = &self.execution;
             let client = self
                 .client
                 .as_mut()
@@ -298,6 +302,7 @@ impl CommitSession for PostgresCommitSession {
                 &self.expected_segments,
                 &mut accepted_segments,
                 package_row_key_start,
+                execution,
             )?
         };
         require_complete_package_segments(&accepted_segments, &self.expected_segments)?;
@@ -413,8 +418,8 @@ pub(crate) fn validate_session_begin_inputs(
     }
     if request.target != load_plan.kernel.target
         || request.disposition != load_plan.kernel.disposition
-        || request.package_hash.as_str() != verify_parameter(load_plan, "package_hash")?
-        || request.idempotency_token.as_str() != verify_parameter(load_plan, "idempotency_token")?
+        || request.package_hash != load_plan.package_hash
+        || request.idempotency_token != load_plan.idempotency_token
     {
         return Err(CdfError::destination(
             "Postgres commit request does not match prepared load plan",
@@ -466,7 +471,7 @@ fn execute_statements(client: &mut Client, statements: &[PostgresStatement]) -> 
 
 fn find_duplicate_receipt(client: &mut Client, plan: &PostgresLoadPlan) -> Result<Option<Receipt>> {
     let target = plan.kernel.target.as_str();
-    let package_hash = verify_parameter(plan, "package_hash")?;
+    let package_hash = plan.package_hash.as_str();
     let row = client
         .query_opt(&plan.idempotency_check.sql, &[&target, &package_hash])
         .map_err(|error| postgres_error("query Postgres _cdf_loads idempotency", error))?;
@@ -562,6 +567,7 @@ fn prepare_and_copy_package_rows(
     expected_segments: &BTreeMap<SegmentId, PostgresExpectedSegment>,
     accepted_segments: &mut BTreeSet<SegmentId>,
     package_row_key_start: i64,
+    execution: &cdf_runtime::ExecutionServices,
 ) -> Result<PayloadWriteOutcome> {
     let deleted_rows = prepare_payload_target(client, plan)?;
     let copy = plan
@@ -579,7 +585,7 @@ fn prepare_and_copy_package_rows(
         let segment = segment?;
         let (expected, acknowledgement) =
             validate_package_segment(&segment, expected_segments, plan, accepted_segments)?;
-        let loaded_at_ms = now_ms()?;
+        let loaded_at_ms = now_ms(execution)?;
         for batch in segment.into_batches()? {
             encoder.write_batch(&batch.batch, package_row_key_start, loaded_at_ms)?;
         }
@@ -747,7 +753,7 @@ fn insert_segment_range(
                 &row_key_start,
                 &row_key_end,
                 &plan.kernel.target.as_str(),
-                &verify_parameter(plan, "package_hash")?,
+                &plan.package_hash.as_str(),
                 &segment_id.as_str(),
             ],
         )
@@ -1067,7 +1073,7 @@ fn receipt_id(plan: &PostgresLoadPlan) -> Result<ReceiptId> {
     ReceiptId::new(format!(
         "postgres:{}:{}",
         plan.kernel.target.as_str(),
-        token_suffix(verify_parameter(plan, "idempotency_token")?.as_str())
+        token_suffix(plan.idempotency_token.as_str())
     ))
 }
 
@@ -1080,14 +1086,6 @@ fn plan_resource_id(plan: &PostgresLoadPlan) -> Option<&str> {
                 .as_ref()
                 .map(|delta| delta.resource_id.as_str())
         })
-}
-
-fn verify_parameter(plan: &PostgresLoadPlan, name: &str) -> Result<String> {
-    plan.verify
-        .parameters
-        .get(name)
-        .cloned()
-        .ok_or_else(|| CdfError::internal(format!("verify clause missing {name}")))
 }
 
 fn verify_receipt_parameter(receipt: &Receipt, name: &str) -> Result<String> {
@@ -1107,14 +1105,9 @@ fn optional_to_i64(value: Option<u64>, name: &str) -> Result<Option<i64>> {
     value.map(|value| to_i64(value, name)).transpose()
 }
 
-fn now_ms() -> Result<i64> {
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| {
-            CdfError::internal(format!("system clock is before UNIX_EPOCH: {error}"))
-        })?;
-    i64::try_from(duration.as_millis())
-        .map_err(|_| CdfError::internal("system time milliseconds exceed i64"))
+fn now_ms(execution: &cdf_runtime::ExecutionServices) -> Result<i64> {
+    i64::try_from(execution.unix_now().as_millis())
+        .map_err(|_| CdfError::internal("execution host Unix milliseconds exceed i64"))
 }
 
 fn postgres_error(context: impl Into<String>, error: postgres::Error) -> CdfError {

@@ -19,6 +19,10 @@ pub struct PostgresLoadPlanInput {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PostgresLoadPlan {
     pub kernel: CommitPlan,
+    pub package_hash: PackageHash,
+    pub idempotency_token: IdempotencyToken,
+    pub schema_hash: SchemaHash,
+    pub segments: Vec<StateSegment>,
     pub target: PostgresTarget,
     pub stage_table: Option<PostgresIdentifier>,
     pub columns: Vec<PostgresColumn>,

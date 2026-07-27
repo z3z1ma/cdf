@@ -14,6 +14,7 @@ mod late_data;
 mod model;
 mod provenance;
 mod quarantine;
+mod receipt;
 
 pub use access::*;
 pub use artifacts::*;
@@ -21,3 +22,4 @@ pub use late_data::*;
 pub use model::*;
 pub use provenance::*;
 pub use quarantine::*;
+pub use receipt::*;

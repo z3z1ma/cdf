@@ -3,6 +3,7 @@ use crate::*;
 
 pub(crate) fn build_receipt(
     commit: &DestinationCommitRequest,
+    plan: &CommitPlan,
     schema_hash: &SchemaHash,
     segment_acks: &[SegmentAck],
     counts: CommitCounts,
@@ -37,30 +38,31 @@ pub(crate) fn build_receipt(
         commit.package_hash.as_str().to_owned(),
     );
 
-    Ok(Receipt {
-        receipt_id: ReceiptId::new(format!(
+    ReceiptDraft::ordinary(
+        ReceiptId::new(format!(
             "duckdb:{}:{}",
             commit.target.as_str(),
             commit.idempotency_token.as_str()
         ))?,
-        destination: DestinationId::new(DESTINATION_ID)?,
-        target: commit.target.clone(),
-        package_hash: commit.package_hash.clone(),
-        segment_acks: segment_acks.to_vec(),
-        disposition: commit.disposition.clone(),
-        idempotency_token: commit.idempotency_token.clone(),
-        transaction: Some(TransactionMetadata {
-            system: "duckdb".to_owned(),
-            values: transaction_values,
-        }),
-        counts,
-        schema_hash: schema_hash.clone(),
-        migrations: context.migrations.to_vec(),
-        committed_at_ms: context.committed_at_ms,
-        verify: VerifyClause {
-            kind: "duckdb_load_receipt_v1".to_owned(),
-            statement: "SELECT receipt_json FROM _cdf_loads WHERE target = ? AND idempotency_token = ? AND package_hash = ?".to_owned(),
-            parameters,
+        DestinationId::new(DESTINATION_ID)?,
+        commit,
+        plan,
+        segment_acks.to_vec(),
+        schema_hash.clone(),
+        ReceiptEvidence {
+            transaction: Some(TransactionMetadata {
+                system: "duckdb".to_owned(),
+                values: transaction_values,
+            }),
+            counts,
+            committed_at_ms: context.committed_at_ms,
+            verify: VerifyClause {
+                kind: "duckdb_load_receipt_v1".to_owned(),
+                statement: "SELECT receipt_json FROM _cdf_loads WHERE target = ? AND idempotency_token = ? AND package_hash = ?".to_owned(),
+                parameters,
+            },
         },
-    })
+    )
+    ?
+    .finalize()
 }

@@ -42,9 +42,10 @@ pub(crate) fn postgres(
     dedup: MergeDedupPolicy,
     existing_table: Option<PostgresExistingTable>,
 ) -> Result<ResolvedProjectDestination> {
+    let services = execution_services()?;
     let target_name = TargetName::new(target.display_name())?;
     let destination = cdf_dest_postgres::PostgresDestination::connect(database_url)?;
-    Ok(ResolvedProjectDestination::new(
+    ResolvedProjectDestination::new(
         Box::new(cdf_dest_postgres::PostgresRuntime::for_replay(
             &destination,
             target,
@@ -52,7 +53,8 @@ pub(crate) fn postgres(
             existing_table,
         )),
         target_name,
-    ))
+    )
+    .with_bound_execution_services(services)
 }
 
 fn execution_services() -> Result<cdf_runtime::ExecutionServices> {

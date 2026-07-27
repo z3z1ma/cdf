@@ -2545,8 +2545,10 @@ fn resolved_duckdb_destination(
     destination: &DuckDbDestination,
     target: TargetName,
 ) -> ResolvedProjectDestination {
+    let execution = test_execution_services();
     ResolvedProjectDestination::new(Box::new(destination.clone()), target)
-        .with_execution_services(test_execution_services())
+        .with_bound_execution_services(execution)
+        .unwrap()
 }
 
 #[derive(Clone)]

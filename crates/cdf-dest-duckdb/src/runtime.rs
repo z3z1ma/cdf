@@ -234,6 +234,14 @@ impl DestinationRuntime for DuckDbDestination {
         output_schema: &Schema,
         inputs: &DestinationCommitPlanningInputs,
     ) -> Result<DestinationCommitPlanningOutcome> {
+        self.plan_verified_package_commit(output_schema, inputs)
+    }
+
+    fn plan_verified_package_commit(
+        &mut self,
+        output_schema: &Schema,
+        inputs: &DestinationCommitPlanningInputs,
+    ) -> Result<DestinationCommitPlanningOutcome> {
         let plan = self.plan_schema_commit(&inputs.destination_commit, output_schema)?;
         Ok(DestinationCommitPlanningOutcome::new(
             self.sheet().clone(),

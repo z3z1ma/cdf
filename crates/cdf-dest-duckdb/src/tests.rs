@@ -533,7 +533,114 @@ fn request_with_segments(
 }
 
 fn destination(path: &Path) -> DuckDbDestination {
-    DuckDbDestination::new(path).unwrap()
+    static EXECUTION: std::sync::OnceLock<cdf_runtime::ExecutionServices> =
+        std::sync::OnceLock::new();
+    let execution = EXECUTION.get_or_init(|| {
+        cdf_engine::StandaloneExecutionHost::default_services(2 * 1024 * 1024 * 1024)
+            .unwrap()
+            .1
+    });
+    DuckDbDestination::new(path)
+        .unwrap()
+        .with_test_execution_clock(execution.clone())
+}
+
+struct FixedClockHost {
+    inner: Arc<dyn cdf_runtime::ExecutionHost>,
+    unix_now: std::time::Duration,
+}
+
+impl cdf_runtime::ExecutionHost for FixedClockHost {
+    fn capabilities(&self) -> cdf_runtime::ExecutionHostCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn memory(&self) -> Arc<dyn cdf_memory::MemoryCoordinator> {
+        self.inner.memory()
+    }
+
+    fn spill(&self) -> Arc<dyn cdf_runtime::SpillBudgetCoordinator> {
+        self.inner.spill()
+    }
+
+    fn open_scope(&self, run_id: &str) -> Result<Box<dyn cdf_runtime::ExecutionTaskScope>> {
+        self.inner.open_scope(run_id)
+    }
+
+    fn run_io_blocking(&self, task: cdf_runtime::IoValueTask) -> Result<cdf_runtime::IoValue> {
+        self.inner.run_io_blocking(task)
+    }
+
+    fn delay(
+        &self,
+        duration: std::time::Duration,
+        cancellation: cdf_runtime::RunCancellation,
+    ) -> cdf_kernel::BoxFuture<'static, Result<()>> {
+        self.inner.delay(duration, cancellation)
+    }
+
+    fn monotonic_now(&self) -> std::time::Duration {
+        self.inner.monotonic_now()
+    }
+
+    fn unix_now(&self) -> std::time::Duration {
+        self.unix_now
+    }
+
+    fn entropy_u64(&self) -> u64 {
+        self.inner.entropy_u64()
+    }
+
+    fn ensure_blocking_lanes(&self, lanes: &[cdf_runtime::BlockingLaneSpec]) -> Result<()> {
+        self.inner.ensure_blocking_lanes(lanes)
+    }
+
+    fn run_blocking_value(
+        &self,
+        lane: &str,
+        task: cdf_runtime::BlockingValueTask,
+    ) -> Result<cdf_runtime::IoValue> {
+        self.inner.run_blocking_value(lane, task)
+    }
+}
+
+fn fixed_clock_destination(path: &Path, unix_ms: u64) -> DuckDbDestination {
+    let (_, base) =
+        cdf_engine::StandaloneExecutionHost::default_services(512 * 1024 * 1024).unwrap();
+    let execution = cdf_runtime::ExecutionServices::new(Arc::new(FixedClockHost {
+        inner: Arc::clone(base.host()),
+        unix_now: std::time::Duration::from_millis(unix_ms),
+    }))
+    .unwrap();
+    DuckDbDestination::new(path)
+        .unwrap()
+        .with_test_execution_clock(execution)
+}
+
+#[test]
+fn ordinary_and_correction_receipts_use_the_injected_unix_clock() {
+    const FIXED_UNIX_MS: u64 = 1_788_123_456_789;
+    let temp = tempfile::tempdir().unwrap();
+    let destination =
+        fixed_clock_destination(&temp.path().join("fixed-clock.duckdb"), FIXED_UNIX_MS);
+    let package_dir = temp.path().join("pkg-fixed-clock");
+    let package_hash = build_package(&package_dir, "pkg-fixed-clock", &[residual_batch()]);
+    let ordinary = commit_current(
+        &destination,
+        request(
+            &package_dir,
+            package_hash.clone(),
+            WriteDisposition::Append,
+            Vec::new(),
+            2,
+        ),
+    )
+    .receipt;
+    assert_eq!(ordinary.committed_at_ms, FIXED_UNIX_MS as i64);
+
+    let correction = correction_request(vec![correction_operation(&package_hash, 0, 42)]);
+    let correction_receipt = finalize_correction(&destination, &correction);
+    assert_eq!(correction_receipt.committed_at_ms, FIXED_UNIX_MS as i64);
 }
 
 #[test]
@@ -788,7 +895,9 @@ fn try_commit_current(
         &cdf_runtime::BulkPathPreparationInput::new(output_schema.as_ref())
             .with_commit(&request.commit),
     )?;
-    let plan = runtime.plan_commit(&request.commit)?;
+    let plan = runtime
+        .plan_schema_commit(&request.commit, output_schema.as_ref())?
+        .kernel;
     let attempt_id = cdf_runtime::LoadAttemptId::new(format!(
         "duckdb-test-{}",
         ATTEMPT.fetch_add(1, Ordering::Relaxed)
@@ -1745,6 +1854,7 @@ fn zero_data_append_and_replace_record_receipts_without_mutating_target_data() {
     );
     let append_receipt = commit_current(&dest, empty_append).receipt;
     assert!(append_receipt.segment_acks.is_empty());
+    assert!(append_receipt.migrations.is_empty());
     assert_eq!(append_receipt.counts, CommitCounts::default());
     assert!(dest.verify_receipt(&append_receipt).unwrap().verified);
 
@@ -1775,6 +1885,24 @@ fn zero_data_append_and_replace_record_receipts_without_mutating_target_data() {
             2,
         ),
     );
+    let incompatible_empty_request = DestinationCommitRequest {
+        package_hash: PackageHash::new("package-empty-incompatible").unwrap(),
+        target: TargetName::new("orders").unwrap(),
+        disposition: WriteDisposition::Append,
+        segments: Vec::new(),
+        idempotency_token: IdempotencyToken::new("token-empty-incompatible").unwrap(),
+    };
+    let incompatible_schema = Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("name", DataType::Utf8, true),
+    ]);
+    let incompatible_error = dest
+        .plan_schema_commit(&incompatible_empty_request, &incompatible_schema)
+        .unwrap_err();
+    assert!(
+        incompatible_error.to_string().contains("requires VARCHAR"),
+        "{incompatible_error}"
+    );
 
     let empty_replace_dir = temp.path().join("pkg-empty-replace");
     let empty_replace_hash = build_package_segments_for_commit(
@@ -1793,6 +1921,7 @@ fn zero_data_append_and_replace_record_receipts_without_mutating_target_data() {
     );
     let replace_receipt = commit_current(&dest, empty_replace).receipt;
     assert!(replace_receipt.segment_acks.is_empty());
+    assert!(replace_receipt.migrations.is_empty());
     assert_eq!(replace_receipt.counts, CommitCounts::default());
     assert!(dest.verify_receipt(&replace_receipt).unwrap().verified);
 
@@ -1801,6 +1930,65 @@ fn zero_data_append_and_replace_record_receipts_without_mutating_target_data() {
         .query_row("SELECT count(*) FROM orders", [], |row| row.get(0))
         .unwrap();
     assert_eq!(target_rows, 2);
+}
+
+#[test]
+fn zero_data_plan_still_rejects_reserved_user_schema_fields() {
+    let temp = tempfile::tempdir().unwrap();
+    let destination = destination(&temp.path().join("local.duckdb"));
+    let request = DestinationCommitRequest {
+        package_hash: PackageHash::new("package-empty").unwrap(),
+        target: TargetName::new("orders").unwrap(),
+        disposition: WriteDisposition::Append,
+        segments: Vec::new(),
+        idempotency_token: IdempotencyToken::new("token-empty").unwrap(),
+    };
+    let schema = Schema::new(vec![Field::new(
+        CDF_ROW_KEY_COLUMN,
+        DataType::UInt64,
+        false,
+    )]);
+
+    let error = destination
+        .plan_schema_commit(&request, &schema)
+        .unwrap_err();
+    assert!(error.to_string().contains("reserved"));
+
+    let invalid_target_request = DestinationCommitRequest {
+        target: TargetName::new("a.b.c").unwrap(),
+        ..request
+    };
+    let valid_schema = Schema::new(vec![Field::new("id", DataType::UInt64, false)]);
+    let error = destination
+        .plan_schema_commit(&invalid_target_request, &valid_schema)
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("table or schema.table identifier"),
+        "{error}"
+    );
+    assert!(!destination.database_path().exists());
+}
+
+#[test]
+fn zero_data_binding_rejects_a_plan_that_claims_unapplied_migrations() {
+    let mut plan = CommitPlan {
+        plan_id: PlanId::new("empty-plan").unwrap(),
+        target: TargetName::new("orders").unwrap(),
+        disposition: WriteDisposition::Append,
+        idempotency: IdempotencySupport::PackageToken,
+        migrations: Vec::new(),
+        delivery_guarantee: DeliveryGuarantee::EffectivelyOncePerPackage,
+    };
+    assert!(validate_empty_commit_plan(&plan).is_ok());
+    plan.migrations.push(MigrationRecord {
+        migration_id: "unapplied".to_owned(),
+        description: "CREATE TABLE orders (id UBIGINT)".to_owned(),
+    });
+
+    let error = validate_empty_commit_plan(&plan).unwrap_err();
+    assert!(error.to_string().contains("unapplied migrations"));
 }
 
 #[test]

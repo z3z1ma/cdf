@@ -56,38 +56,39 @@ pub(crate) fn build_receipt(
         request.commit.target.as_str().to_owned(),
     );
 
-    Ok(Receipt {
-        receipt_id: ReceiptId::new(format!(
+    ReceiptDraft::ordinary(
+        ReceiptId::new(format!(
             "parquet:{}:{}",
             request.commit.target.as_str(),
             request.commit.idempotency_token.as_str()
         ))?,
-        destination: DestinationId::new(DESTINATION_ID)?,
-        target: request.commit.target.clone(),
-        package_hash: request.commit.package_hash.clone(),
-        segment_acks: segment_acks(manifest)?,
-        disposition: request.commit.disposition.clone(),
-        idempotency_token: request.commit.idempotency_token.clone(),
-        transaction: Some(TransactionMetadata {
-            system: "object_store".to_owned(),
-            values: transaction_values,
-        }),
-        counts: CommitCounts {
-            rows_written: manifest.total_rows,
-            rows_inserted: Some(manifest.total_rows),
-            rows_updated: Some(0),
-            rows_deleted: Some(0),
+        DestinationId::new(DESTINATION_ID)?,
+        &request.commit,
+        &plan.kernel,
+        segment_acks(manifest)?,
+        request.schema_hash.clone(),
+        ReceiptEvidence {
+            transaction: Some(TransactionMetadata {
+                system: "object_store".to_owned(),
+                values: transaction_values,
+            }),
+            counts: CommitCounts {
+                rows_written: manifest.total_rows,
+                rows_inserted: Some(manifest.total_rows),
+                rows_updated: Some(0),
+                rows_deleted: Some(0),
+            },
+            committed_at_ms: manifest.committed_at_ms,
+            verify: VerifyClause {
+                kind: "parquet_object_manifest_v1".to_owned(),
+                statement:
+                    "get manifest_key and verify manifest/object sha256 plus etag-if-present"
+                        .to_owned(),
+                parameters,
+            },
         },
-        schema_hash: request.schema_hash.clone(),
-        migrations: Vec::new(),
-        committed_at_ms: manifest.committed_at_ms,
-        verify: VerifyClause {
-            kind: "parquet_object_manifest_v1".to_owned(),
-            statement: "get manifest_key and verify manifest/object sha256 plus etag-if-present"
-                .to_owned(),
-            parameters,
-        },
-    })
+    )?
+    .finalize()
 }
 
 pub(crate) fn verify_receipt(destination: &ParquetDestination, receipt: &Receipt) -> Result<()> {

@@ -299,7 +299,14 @@ impl LivePostgres {
     }
 
     fn destination(&self) -> PostgresDestination {
-        PostgresDestination::connect(self.url.clone()).unwrap()
+        let (_, execution) =
+            cdf_engine::StandaloneExecutionHost::default_services(512 * 1024 * 1024).unwrap();
+        execution
+            .ensure_blocking_lanes(&crate::runtime::postgres_runtime_capabilities().blocking_lanes)
+            .unwrap();
+        PostgresDestination::connect(self.url.clone())
+            .unwrap()
+            .with_execution_services(Some(execution))
     }
 
     fn client(&self) -> Client {
@@ -825,10 +832,7 @@ fn commit_request(manifest: &PackageManifest, plan: &PostgresLoadPlan) -> Destin
         target: plan.kernel.target.clone(),
         disposition: plan.kernel.disposition.clone(),
         segments: state_segments(manifest),
-        idempotency_token: IdempotencyToken::new(
-            plan.verify.parameters["idempotency_token"].clone(),
-        )
-        .unwrap(),
+        idempotency_token: plan.idempotency_token.clone(),
     }
 }
 

@@ -321,6 +321,23 @@ pub trait DestinationRuntime {
         ))
     }
 
+    /// Plans an already verified package when no live source resource remains available.
+    ///
+    /// Destinations whose migrations depend on the canonical output schema must override this
+    /// path so replay and staged final binding carry the same typed migration authority as live
+    /// resource planning.
+    fn plan_verified_package_commit(
+        &mut self,
+        _output_schema: &Schema,
+        inputs: &DestinationCommitPlanningInputs,
+    ) -> Result<DestinationCommitPlanningOutcome> {
+        let plan = self.protocol().plan_commit(&inputs.destination_commit)?;
+        Ok(DestinationCommitPlanningOutcome::new(
+            self.protocol().sheet().clone(),
+            plan,
+        ))
+    }
+
     fn prepare_correction_commit(
         &mut self,
         _package: SharedVerifiedPackageAccess,

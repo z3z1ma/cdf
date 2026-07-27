@@ -15,6 +15,7 @@ use cdf_kernel::{
     StateSegment, TargetName, TransactionMetadata, TransactionSupport, TypeMapping,
     TypeMappingFidelity, VerifyClause, WriteDisposition,
 };
+use cdf_package_contract::{ReceiptDraft, ReceiptEvidence};
 use serde::{Deserialize, Serialize};
 
 pub use cdf_postgres::{PostgresIdentifier, PostgresTarget, quote_identifier};

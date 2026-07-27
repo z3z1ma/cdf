@@ -3,7 +3,7 @@ use super::*;
 use std::{collections::VecDeque, io::Write};
 
 use crate::{
-    corrections::{build_correction_context, build_correction_receipt},
+    corrections::{build_correction_context, build_correction_receipt, commit_correction_sidecar},
     manifest::{
         CurrentReplacePointer, ParquetCorrectionSidecar, ParquetCorrectionSidecarManifest,
         ParquetObjectManifest, ReplacePointer, canonical_json_bytes, sha256_hex,
@@ -1669,6 +1669,25 @@ fn correction_abort_writes_nothing_and_tampering_invalidates_receipt() {
     let verification = dest.verify_correction(&receipt).unwrap();
     assert!(!verification.verified);
     assert!(verification.reason.unwrap().contains("bytes or hash"));
+}
+
+#[test]
+fn invalid_correction_evidence_cannot_publish_the_create_only_receipt_marker() {
+    let store = Arc::new(InMemory::default());
+    let destination = test_object_store(store, "").unwrap();
+    let request = correction_request(&PackageHash::new("sha256:base").unwrap());
+    let mut context = build_correction_context(destination.object_key_encoder(), &request).unwrap();
+    context.manifest.operation_count = context.manifest.operation_count.saturating_add(1);
+    let receipt_key = context.receipt_key.clone();
+
+    let error = commit_correction_sidecar(&destination, context).unwrap_err();
+    assert!(error.to_string().contains("evidence declares"), "{error}");
+    assert!(
+        !destination
+            .store()
+            .exists(destination.execution(), &receipt_key)
+            .unwrap()
+    );
 }
 
 #[test]

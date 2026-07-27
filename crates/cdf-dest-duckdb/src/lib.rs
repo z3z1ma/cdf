@@ -8,7 +8,6 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 #[cfg(test)]
@@ -33,6 +32,7 @@ use cdf_kernel::{
     RowProvenanceCapabilities, SchemaHash, SegmentAck, TargetName, TransactionMetadata,
     TransactionSupport, TypeMapping, TypeMappingFidelity, VerifyClause, WriteDisposition,
 };
+use cdf_package_contract::{ReceiptDraft, ReceiptEvidence};
 use duckdb::{
     AccessMode, Config, Connection, OptionalExt, params, params_from_iter,
     types::{TimeUnit as DuckTimeUnit, Value},

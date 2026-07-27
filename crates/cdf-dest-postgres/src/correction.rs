@@ -1,7 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::collections::BTreeMap;
 
 use postgres::{Client, NoTls};
 
@@ -261,6 +258,11 @@ impl PostgresDestination {
         validate_correction_package(package.as_ref(), &request)?;
         Ok(PostgresCorrectionSession {
             database_url: database_url.to_owned(),
+            execution: self.execution.clone().ok_or_else(|| {
+                CdfError::contract(
+                    "Postgres correction execution requires injected ExecutionServices for receipt time",
+                )
+            })?,
             request,
             plan,
             client: None,
@@ -332,6 +334,7 @@ impl PostgresDestination {
 
 pub(crate) struct PostgresCorrectionSession {
     database_url: String,
+    execution: cdf_runtime::ExecutionServices,
     request: DestinationCorrectionCommitRequest,
     plan: PostgresCorrectionPlan,
     client: Option<Client>,
@@ -465,7 +468,15 @@ impl CorrectionCommitSession for PostgresCorrectionSession {
             .query_one(POSTGRES_XID_SQL, &[])
             .map(|row| row.get(0))
             .map_err(|error| correction_postgres_error("query Postgres correction xid", error))?;
-        let receipt = build_correction_receipt(&self.request, &self.plan, counts.clone(), xid)?;
+        let committed_at_ms = i64::try_from(self.execution.unix_now().as_millis())
+            .map_err(|_| CdfError::internal("execution host Unix milliseconds exceed i64"))?;
+        let receipt = build_correction_receipt(
+            &self.request,
+            &self.plan,
+            counts.clone(),
+            xid,
+            committed_at_ms,
+        )?;
         insert_correction_load_mirror(&mut client, &receipt)?;
         verify_correction_receipt_in_transaction(&mut client, &receipt)?;
         self.receipt = Some(receipt);
@@ -817,6 +828,7 @@ fn build_correction_receipt(
     plan: &PostgresCorrectionPlan,
     counts: CommitCounts,
     xid: String,
+    committed_at_ms: i64,
 ) -> Result<Receipt> {
     let evidence = DestinationCorrectionReceiptEvidence::for_request(request);
     let transaction = TransactionMetadata {
@@ -831,25 +843,23 @@ fn build_correction_receipt(
             ),
         ]),
     };
-    Ok(Receipt {
-        receipt_id: ReceiptId::new(format!(
+    ReceiptDraft::correction(
+        ReceiptId::new(format!(
             "postgres:{}:{}",
             request.target,
             token_suffix(request.idempotency_token.as_str())
         ))?,
-        destination: DestinationId::new(POSTGRES_DESTINATION_ID)?,
-        target: request.target.clone(),
-        package_hash: request.correction_package_hash.clone(),
-        segment_acks: request.segment_acks(),
-        disposition: request.resource_disposition.clone(),
-        idempotency_token: request.idempotency_token.clone(),
-        transaction: Some(transaction),
-        counts,
-        schema_hash: request.new_schema_hash().clone(),
-        migrations: plan.kernel.kernel.migrations.clone(),
-        committed_at_ms: correction_now_ms()?,
-        verify: plan.verify.clone(),
-    })
+        DestinationId::new(POSTGRES_DESTINATION_ID)?,
+        request,
+        &plan.kernel,
+        ReceiptEvidence {
+            transaction: Some(transaction),
+            counts,
+            committed_at_ms,
+            verify: plan.verify.clone(),
+        },
+    )?
+    .finalize()
 }
 
 fn insert_correction_load_mirror(client: &mut Client, receipt: &Receipt) -> Result<()> {
@@ -953,14 +963,6 @@ fn set_correction_search_path(client: &mut Client, target: &PostgresTarget) -> R
             schema.quoted()
         ))
         .map_err(|error| correction_postgres_error("set Postgres correction search_path", error))
-}
-
-fn correction_now_ms() -> Result<i64> {
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| CdfError::internal(format!("system clock before UNIX_EPOCH: {error}")))?;
-    i64::try_from(duration.as_millis())
-        .map_err(|_| CdfError::internal("system time milliseconds exceed i64"))
 }
 
 fn correction_postgres_error(context: impl Into<String>, error: postgres::Error) -> CdfError {

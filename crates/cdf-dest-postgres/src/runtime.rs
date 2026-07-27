@@ -154,6 +154,17 @@ impl DestinationRuntime for PostgresRuntime {
         cdf_runtime::DestinationIngress::FinalizedPackage(self)
     }
 
+    fn bind_execution_services(
+        &mut self,
+        execution: &cdf_runtime::ExecutionServices,
+    ) -> Result<()> {
+        self.destination = self
+            .destination
+            .clone()
+            .with_execution_services(Some(execution.clone()));
+        Ok(())
+    }
+
     fn describe(&self) -> DestinationDescription {
         destination_description(&self.destination)
     }
@@ -333,7 +344,7 @@ fn destination_description(destination: &PostgresDestination) -> DestinationDesc
     )
 }
 
-fn postgres_runtime_capabilities() -> DestinationRuntimeCapabilities {
+pub(crate) fn postgres_runtime_capabilities() -> DestinationRuntimeCapabilities {
     DestinationRuntimeCapabilities {
         blocking_lanes: vec![cdf_runtime::BlockingLaneSpec {
             lane_id: "postgres.sync".to_owned(),

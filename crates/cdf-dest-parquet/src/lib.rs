@@ -5,7 +5,6 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 #[cfg(test)]
@@ -30,6 +29,7 @@ use cdf_kernel::{CommitSegment, StateSegment};
 use cdf_package::PackageReader;
 #[cfg(test)]
 use cdf_package_contract::SegmentEntry;
+use cdf_package_contract::{ReceiptDraft, ReceiptEvidence};
 use object_store::{
     ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, PutResult, UpdateVersion,
     local::LocalFileSystem, path::Path as ObjectPath,

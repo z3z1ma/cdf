@@ -8,6 +8,7 @@ use crate::{
 pub struct DuckDbDestination {
     database_path: PathBuf,
     sheet: DestinationSheet,
+    execution: Option<cdf_runtime::ExecutionServices>,
     pub(crate) native_resources: DuckDbNativeResources,
     pub(crate) pending_corrections: Arc<Mutex<BTreeMap<PlanId, DuckDbCorrectionContext>>>,
 }
@@ -158,7 +159,6 @@ pub(crate) struct TargetRef {
 }
 
 pub(crate) struct ReceiptBuildContext<'a> {
-    pub(crate) migrations: &'a [MigrationRecord],
     pub(crate) committed_at_ms: i64,
     pub(crate) duckdb_version: &'a str,
     pub(crate) database_path: &'a Path,
@@ -190,6 +190,7 @@ impl DuckDbDestination {
         Ok(Self {
             database_path,
             sheet: duckdb_sheet()?,
+            execution: None,
             native_resources: DuckDbNativeResources::conservative(),
             pending_corrections: Arc::new(Mutex::new(BTreeMap::new())),
         })
@@ -199,8 +200,28 @@ impl DuckDbDestination {
         mut self,
         execution: &cdf_runtime::ExecutionServices,
     ) -> Result<Self> {
+        self.execution = Some(execution.clone());
         self.native_resources = DuckDbNativeResources::for_execution(execution)?;
         Ok(self)
+    }
+
+    pub(crate) fn committed_at_ms(&self) -> Result<i64> {
+        let execution = self.execution.as_ref().ok_or_else(|| {
+            CdfError::contract(
+                "DuckDB commit execution requires injected ExecutionServices for receipt time",
+            )
+        })?;
+        i64::try_from(execution.unix_now().as_millis())
+            .map_err(|_| CdfError::internal("execution host Unix milliseconds exceed i64"))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_execution_clock(
+        mut self,
+        execution: cdf_runtime::ExecutionServices,
+    ) -> Self {
+        self.execution = Some(execution);
+        self
     }
 
     pub fn database_path(&self) -> &Path {
@@ -228,6 +249,12 @@ impl DuckDbDestination {
             plan_absent_table(target, &fields, request.disposition.clone())?
         };
         let mut kernel = self.plan_commit(request)?;
+        if request.is_data_noop() {
+            return Ok(DuckDbCommitPlan {
+                kernel,
+                ddl: Vec::new(),
+            });
+        }
         kernel.migrations = table_plan
             .ddl
             .iter()
@@ -680,6 +707,7 @@ impl DuckDbStagedIngressSession {
                 "DuckDB staged empty binding received data segments",
             ));
         }
+        validate_empty_commit_plan(binding.plan())?;
         self.request.mutation_guard().assert_current()?;
         let lock = self.destination.acquire_writer_lock()?;
         let conn = self.destination.open_connection()?;
@@ -693,14 +721,14 @@ impl DuckDbStagedIngressSession {
             ));
         }
         let duckdb_version = duckdb_version(&conn).unwrap_or_else(|_| "unknown".to_owned());
-        let committed_at_ms = now_ms()?;
+        let committed_at_ms = self.destination.committed_at_ms()?;
         let receipt = build_receipt(
             binding.commit(),
+            binding.plan(),
             binding.schema_hash(),
             &[],
             CommitCounts::default(),
             &ReceiptBuildContext {
-                migrations: &[],
                 committed_at_ms,
                 duckdb_version: &duckdb_version,
                 database_path: &self.destination.database_path,
@@ -796,6 +824,15 @@ impl DuckDbStagedIngressSession {
     }
 }
 
+pub(crate) fn validate_empty_commit_plan(plan: &CommitPlan) -> Result<()> {
+    if !plan.migrations.is_empty() {
+        return Err(CdfError::data(
+            "DuckDB empty commit plan cannot claim unapplied migrations",
+        ));
+    }
+    Ok(())
+}
+
 impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
     fn stage_stream(&mut self, stream: &mut dyn cdf_runtime::StagedSegmentStream) -> Result<()> {
         let Some(first_segment) = stream.next_segment()? else {
@@ -844,7 +881,7 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
         let _lock = self.destination.acquire_writer_lock()?;
         let mut scan_threads = envelope.initial_scan_threads();
         let mut attempt = 1_usize;
-        let (writer, migrations) = loop {
+        let (mut writer, migrations) = loop {
             let (mut writer, migrations) = self.destination.start_staged_writer(
                 &self.request,
                 files.clone(),
@@ -907,6 +944,12 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
                 },
             }
         };
+        if migrations != binding.plan().migrations {
+            rollback_staged_writer(&mut writer, "rollback DuckDB commit-plan migration drift")?;
+            return Err(CdfError::data(
+                "DuckDB physical migrations differ from the verified final commit plan",
+            ));
+        }
         let counts = match binding.commit().disposition.clone() {
             WriteDisposition::Append | WriteDisposition::Replace => CommitCounts {
                 rows_written: writer.rows_received,
@@ -937,14 +980,14 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
                 byte_count: identity.byte_count,
             })
             .collect::<Vec<_>>();
-        let committed_at_ms = now_ms()?;
+        let committed_at_ms = self.destination.committed_at_ms()?;
         let receipt = build_receipt(
             binding.commit(),
+            binding.plan(),
             binding.schema_hash(),
             &segment_acks,
             counts,
             &ReceiptBuildContext {
-                migrations: &migrations,
                 committed_at_ms,
                 duckdb_version: &writer.duckdb_version,
                 database_path: &self.destination.database_path,

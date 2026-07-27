@@ -465,7 +465,7 @@ fn commit_corrections(
     }
 
     let target = parse_target(&context.request.target)?;
-    let committed_at_ms = now_ms()?;
+    let committed_at_ms = destination.committed_at_ms()?;
     let duckdb_version = duckdb_version(&conn).unwrap_or_else(|_| "unknown".to_owned());
     let receipt = {
         let tx = conn
@@ -607,29 +607,28 @@ fn build_correction_receipt(
             request.correction_package_hash.to_string(),
         ),
     ]);
-    Ok(Receipt {
-        receipt_id: ReceiptId::new(format!(
+    ReceiptDraft::correction(
+        ReceiptId::new(format!(
             "duckdb:{}:{}",
             request.target, request.idempotency_token
         ))?,
-        destination: DestinationId::new(DESTINATION_ID)?,
-        target: request.target.clone(),
-        package_hash: request.correction_package_hash.clone(),
-        segment_acks: request.segment_acks(),
-        disposition: request.resource_disposition.clone(),
-        idempotency_token: request.idempotency_token.clone(),
-        transaction: Some(TransactionMetadata {
-            system: "duckdb".to_owned(),
-            values: transaction_values,
-        }),
-        counts,
-        schema_hash: request.new_schema_hash().clone(),
-        migrations: context.plan.kernel.migrations.clone(),
-        committed_at_ms,
-        verify: VerifyClause {
-            kind: "duckdb_load_receipt_v1".to_owned(),
-            statement: "SELECT receipt_json FROM _cdf_loads WHERE target = ? AND idempotency_token = ? AND package_hash = ?".to_owned(),
-            parameters,
+        DestinationId::new(DESTINATION_ID)?,
+        request,
+        &context.plan,
+        ReceiptEvidence {
+            transaction: Some(TransactionMetadata {
+                system: "duckdb".to_owned(),
+                values: transaction_values,
+            }),
+            counts,
+            committed_at_ms,
+            verify: VerifyClause {
+                kind: "duckdb_load_receipt_v1".to_owned(),
+                statement: "SELECT receipt_json FROM _cdf_loads WHERE target = ? AND idempotency_token = ? AND package_hash = ?".to_owned(),
+                parameters,
+            },
         },
-    })
+    )
+    ?
+    .finalize()
 }

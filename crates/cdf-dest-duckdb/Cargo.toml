@@ -24,6 +24,7 @@ serde_json = "1.0.150"
 arrow-buffer = "58.3.0"
 cdf-conformance = { path = "../cdf-conformance" }
 cdf-engine = { path = "../cdf-engine" }
+cdf-memory = { path = "../cdf-memory" }
 cdf-package = { path = "../cdf-package" }
 tempfile = "3.27.0"
 

@@ -26,6 +26,7 @@ sha2 = "0.10.9"
 
 [dev-dependencies]
 cdf-conformance = { path = "../cdf-conformance" }
+cdf-engine = { path = "../cdf-engine" }
 tempfile = "3.27.0"
 
 [lints]

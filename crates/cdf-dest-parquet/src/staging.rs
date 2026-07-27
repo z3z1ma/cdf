@@ -269,7 +269,7 @@ impl ParquetStagedIngressSession {
                     snapshot.budget_bytes,
                 ))
             })?;
-        let started_at_ms = now_ms()?;
+        let started_at_ms = now_ms(destination.execution())?;
         let metadata_key = staged_attempt_metadata_key(
             destination.object_key_encoder(),
             &request.binding().target,

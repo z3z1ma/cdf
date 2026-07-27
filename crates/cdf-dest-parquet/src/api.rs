@@ -680,7 +680,7 @@ pub(crate) fn finalize_parquet_objects(
     mutation_guard: &cdf_runtime::StagingMutationGuard,
 ) -> Result<CommittedParquetPublication> {
     mutation_guard.assert_current()?;
-    let committed_at_ms = now_ms()?;
+    let committed_at_ms = now_ms(destination.execution())?;
     let object_manifest = ParquetObjectManifest {
         manifest_version: MANIFEST_VERSION,
         destination: DESTINATION_ID.to_owned(),

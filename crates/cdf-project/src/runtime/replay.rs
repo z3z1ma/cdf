@@ -1961,10 +1961,19 @@ fn commit_package_through_staged_ingress(
     let reader = package.reader();
     let verified = package.verification();
     runtime.ensure_protocol_ready()?;
-    let plan = runtime.protocol().plan_commit(&inputs.destination_commit)?;
     let destination_id = runtime.describe().destination_id;
     let attempt_id = staging_attempt_id(&inputs.state_delta.checkpoint_id, &destination_id)?;
     let output_schema = reader.runtime_arrow_schema_verified(verified)?;
+    let plan = runtime
+        .plan_verified_package_commit(
+            output_schema.as_ref(),
+            &cdf_runtime::DestinationCommitPlanningInputs {
+                state_delta: inputs.state_delta.clone(),
+                destination_commit: inputs.destination_commit.clone(),
+                schema_hash: inputs.schema_hash.clone(),
+            },
+        )?
+        .plan;
     let memory = services.memory();
     match runtime.ingress() {
         cdf_runtime::DestinationIngress::StagedSegments(staged) => {
@@ -2152,7 +2161,17 @@ fn finalize_active_staged_ingress(
     let result = (|| {
         active.finish_background()?;
         runtime.ensure_protocol_ready()?;
-        let plan = runtime.protocol().plan_commit(&inputs.destination_commit)?;
+        let output_schema = reader.runtime_arrow_schema_verified(verified)?;
+        let plan = runtime
+            .plan_verified_package_commit(
+                output_schema.as_ref(),
+                &cdf_runtime::DestinationCommitPlanningInputs {
+                    state_delta: inputs.state_delta.clone(),
+                    destination_commit: inputs.destination_commit.clone(),
+                    schema_hash: inputs.schema_hash.clone(),
+                },
+            )?
+            .plan;
         notify_destination_replay_stage(
             hooks,
             PackageReplayStage::DestinationCommitStarted {

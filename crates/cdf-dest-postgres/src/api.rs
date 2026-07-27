@@ -66,6 +66,10 @@ pub fn plan_postgres_load(
 
     Ok(PostgresLoadPlan {
         kernel,
+        package_hash: input.package_hash,
+        idempotency_token: input.idempotency_token,
+        schema_hash: input.schema_hash,
+        segments: input.segments,
         target: input.target,
         stage_table,
         columns: input.columns,
@@ -113,40 +117,29 @@ pub fn build_receipt(plan: &PostgresLoadPlan, input: PostgresReceiptInput) -> Re
         CDF_QUARANTINE_TABLE.to_owned(),
     );
 
-    Ok(Receipt {
-        receipt_id: input.receipt_id,
-        destination: DestinationId::new(POSTGRES_DESTINATION_ID)?,
+    let request = DestinationCommitRequest {
+        package_hash: plan.package_hash.clone(),
         target: plan.kernel.target.clone(),
-        package_hash: PackageHash::new(
-            plan.verify
-                .parameters
-                .get("package_hash")
-                .ok_or_else(|| CdfError::internal("verify clause missing package_hash"))?
-                .clone(),
-        )?,
-        segment_acks: plan_segment_acks(plan),
         disposition: plan.kernel.disposition.clone(),
-        idempotency_token: IdempotencyToken::new(
-            plan.verify
-                .parameters
-                .get("idempotency_token")
-                .ok_or_else(|| CdfError::internal("verify clause missing idempotency_token"))?
-                .clone(),
-        )?,
-        transaction: Some(TransactionMetadata {
-            system: POSTGRES_DESTINATION_ID.to_owned(),
-            values: transaction_values,
-        }),
-        counts: input.counts,
-        schema_hash: SchemaHash::new(
-            plan.verify
-                .parameters
-                .get("schema_hash")
-                .ok_or_else(|| CdfError::internal("verify clause missing schema_hash"))?
-                .clone(),
-        )?,
-        migrations: plan.kernel.migrations.clone(),
-        committed_at_ms: input.committed_at_ms,
-        verify: plan.verify.clone(),
-    })
+        segments: plan_segments_in_receipt_order(plan),
+        idempotency_token: plan.idempotency_token.clone(),
+    };
+    ReceiptDraft::ordinary(
+        input.receipt_id,
+        DestinationId::new(POSTGRES_DESTINATION_ID)?,
+        &request,
+        &plan.kernel,
+        plan_segment_acks(plan),
+        plan.schema_hash.clone(),
+        ReceiptEvidence {
+            transaction: Some(TransactionMetadata {
+                system: POSTGRES_DESTINATION_ID.to_owned(),
+                values: transaction_values,
+            }),
+            counts: input.counts,
+            committed_at_ms: input.committed_at_ms,
+            verify: plan.verify.clone(),
+        },
+    )?
+    .finalize()
 }

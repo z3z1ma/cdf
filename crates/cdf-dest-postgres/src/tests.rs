@@ -744,6 +744,40 @@ fn receipt_contains_postgres_xid_verify_clause_and_segment_acks() {
 }
 
 #[test]
+fn receipt_preserves_legacy_lexicographic_segment_ack_order_from_typed_segments() {
+    let destination = PostgresDestination::new();
+    let mut plan_input = input(WriteDisposition::Append, MergeDedupPolicy::Last);
+    plan_input.segments = vec![segment("z-segment", 3), segment("a-segment", 2)];
+    plan_input.state_delta.as_mut().unwrap().segments = plan_input.segments.clone();
+    let plan = destination.plan_load(plan_input).unwrap();
+    let receipt = build_receipt(
+        &plan,
+        PostgresReceiptInput {
+            receipt_id: ReceiptId::new("receipt-order").unwrap(),
+            xid: "123456".to_owned(),
+            committed_at_ms: 1_788_000_000_000,
+            counts: CommitCounts {
+                rows_written: 5,
+                rows_inserted: Some(5),
+                rows_updated: Some(0),
+                rows_deleted: Some(0),
+            },
+            duplicate: false,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        receipt
+            .segment_acks
+            .iter()
+            .map(|ack| ack.segment_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["a-segment", "z-segment"]
+    );
+}
+
+#[test]
 fn mirror_and_drift_hooks_expose_load_and_state_tables() {
     let destination = PostgresDestination::new();
     let plan = destination

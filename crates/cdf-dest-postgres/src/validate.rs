@@ -1,23 +1,18 @@
 use crate::*;
 
+pub(crate) fn plan_segments_in_receipt_order(plan: &PostgresLoadPlan) -> Vec<StateSegment> {
+    let mut segments = plan.segments.clone();
+    segments.sort_by(|left, right| left.segment_id.cmp(&right.segment_id));
+    segments
+}
+
 pub(crate) fn plan_segment_acks(plan: &PostgresLoadPlan) -> Vec<SegmentAck> {
-    plan.verify
-        .parameters
+    plan_segments_in_receipt_order(plan)
         .iter()
-        .filter_map(|(key, value)| {
-            key.strip_prefix("segment.")
-                .and_then(|segment_id| {
-                    value
-                        .split_once(':')
-                        .map(|(rows, bytes)| (segment_id, rows, bytes))
-                })
-                .and_then(|(segment_id, rows, bytes)| {
-                    Some(SegmentAck {
-                        segment_id: cdf_kernel::SegmentId::new(segment_id).ok()?,
-                        row_count: rows.parse().ok()?,
-                        byte_count: bytes.parse().ok()?,
-                    })
-                })
+        .map(|segment| SegmentAck {
+            segment_id: segment.segment_id.clone(),
+            row_count: segment.row_count,
+            byte_count: segment.byte_count,
         })
         .collect()
 }

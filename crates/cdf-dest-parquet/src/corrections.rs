@@ -349,7 +349,7 @@ pub(crate) fn build_correction_context(
     })
 }
 
-fn commit_correction_sidecar(
+pub(crate) fn commit_correction_sidecar(
     destination: &ParquetDestination,
     context: ParquetCorrectionContext,
 ) -> Result<Receipt> {
@@ -377,27 +377,51 @@ fn commit_correction_sidecar(
         &context.manifest_key,
         &context.manifest_sha256,
         &context.receipt_key,
-        now_ms()?,
+        now_ms(destination.execution())?,
     )?;
+    context.plan.validate_receipt(&context.request, &receipt)?;
+    let receipt_key = validate_sidecar_receipt_evidence(destination, &receipt)?;
     let receipt_bytes = canonical_json_bytes(&receipt)?;
-    let receipt = match destination.store().put_create(
+    match destination.store().put_create(
         destination.execution(),
         &context.receipt_key,
         receipt_bytes,
     )? {
-        CreateObjectOutcome::Created(_) => receipt,
-        CreateObjectOutcome::AlreadyExists => {
-            load_correction_receipt(destination, &context.receipt_key)?.ok_or_else(|| {
-                CdfError::destination(format!(
-                    "Parquet correction receipt {} disappeared after create conflict",
-                    context.receipt_key
-                ))
-            })?
+        CreateObjectOutcome::Created(_) => {
+            verify_recorded_sidecar_receipt(destination, &receipt, &receipt_key)?;
+            Ok(receipt)
         }
-    };
-    context.plan.validate_receipt(&context.request, &receipt)?;
-    verify_sidecar_receipt(destination, &receipt)?;
-    Ok(receipt)
+        CreateObjectOutcome::AlreadyExists => {
+            let receipt =
+                load_correction_receipt(destination, &context.receipt_key)?.ok_or_else(|| {
+                    CdfError::destination(format!(
+                        "Parquet correction receipt {} disappeared after create conflict",
+                        context.receipt_key
+                    ))
+                })?;
+            context.plan.validate_receipt(&context.request, &receipt)?;
+            validate_sidecar_receipt_evidence(destination, &receipt)?;
+            Ok(receipt)
+        }
+    }
+}
+
+fn verify_recorded_sidecar_receipt(
+    destination: &ParquetDestination,
+    receipt: &Receipt,
+    receipt_key: &str,
+) -> Result<()> {
+    let recorded_receipt = load_correction_receipt(destination, receipt_key)?.ok_or_else(|| {
+        CdfError::destination(format!(
+            "Parquet correction receipt marker {receipt_key} is missing"
+        ))
+    })?;
+    if &recorded_receipt != receipt {
+        return Err(CdfError::destination(format!(
+            "Parquet correction receipt marker {receipt_key} does not match the supplied receipt"
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn build_correction_receipt(
@@ -455,35 +479,42 @@ pub(crate) fn build_correction_receipt(
         ),
         ("target".to_owned(), request.target.to_string()),
     ]);
-    Ok(Receipt {
-        receipt_id: ReceiptId::new(format!(
+    ReceiptDraft::correction(
+        ReceiptId::new(format!(
             "parquet-correction:{}:{}",
             request.target, request.idempotency_token
         ))?,
-        destination: DestinationId::new(DESTINATION_ID)?,
-        target: request.target.clone(),
-        package_hash: request.correction_package_hash.clone(),
-        segment_acks: request.segment_acks(),
-        disposition: request.resource_disposition.clone(),
-        idempotency_token: request.idempotency_token.clone(),
-        transaction: Some(TransactionMetadata {
-            system: "object_store_correction_sidecar".to_owned(),
-            values: transaction_values,
-        }),
-        counts: sidecar_counts(request),
-        schema_hash: request.new_schema_hash().clone(),
-        migrations: plan.kernel.migrations.clone(),
-        committed_at_ms,
-        verify: VerifyClause {
-            kind: "parquet_correction_sidecar_manifest_v1".to_owned(),
-            statement: "verify the immutable correction manifest and every content-addressed sidecar object; the base target remains unchanged"
-                .to_owned(),
-            parameters,
+        DestinationId::new(DESTINATION_ID)?,
+        request,
+        plan,
+        ReceiptEvidence {
+            transaction: Some(TransactionMetadata {
+                system: "object_store_correction_sidecar".to_owned(),
+                values: transaction_values,
+            }),
+            counts: sidecar_counts(request),
+            committed_at_ms,
+            verify: VerifyClause {
+                kind: "parquet_correction_sidecar_manifest_v1".to_owned(),
+                statement: "verify the immutable correction manifest and every content-addressed sidecar object; the base target remains unchanged"
+                    .to_owned(),
+                parameters,
+            },
         },
-    })
+    )
+    ?
+    .finalize()
 }
 
 fn verify_sidecar_receipt(destination: &ParquetDestination, receipt: &Receipt) -> Result<()> {
+    let receipt_key = validate_sidecar_receipt_evidence(destination, receipt)?;
+    verify_recorded_sidecar_receipt(destination, receipt, &receipt_key)
+}
+
+fn validate_sidecar_receipt_evidence(
+    destination: &ParquetDestination,
+    receipt: &Receipt,
+) -> Result<String> {
     if receipt.destination.as_str() != DESTINATION_ID {
         return Err(CdfError::destination(format!(
             "correction receipt destination {} is not {DESTINATION_ID}",
@@ -572,17 +603,6 @@ fn verify_sidecar_receipt(destination: &ParquetDestination, receipt: &Receipt) -
             "Parquet correction receipt verify parameters contradict its canonical identity",
         ));
     }
-    let recorded_receipt = load_correction_receipt(destination, receipt_key)?.ok_or_else(|| {
-        CdfError::destination(format!(
-            "Parquet correction receipt marker {receipt_key} is missing"
-        ))
-    })?;
-    if &recorded_receipt != receipt {
-        return Err(CdfError::destination(format!(
-            "Parquet correction receipt marker {receipt_key} does not match the supplied receipt"
-        )));
-    }
-
     let manifest_bytes = destination
         .store()
         .get_required(destination.execution(), &evidence.manifest_key)?;
@@ -640,7 +660,7 @@ fn verify_sidecar_receipt(destination: &ParquetDestination, receipt: &Receipt) -
             })?;
         validate_sidecar_manifest(&sidecar, &manifest)?;
     }
-    Ok(())
+    Ok(receipt_key.clone())
 }
 
 fn validate_manifest_receipt(

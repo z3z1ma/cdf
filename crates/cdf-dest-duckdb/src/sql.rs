@@ -62,16 +62,6 @@ pub(crate) fn duckdb_version(conn: &Connection) -> Result<String> {
         .map_err(|error| duckdb_error("query DuckDB version", error))
 }
 
-pub(crate) fn now_ms() -> Result<i64> {
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| {
-            CdfError::internal(format!("system clock is before UNIX_EPOCH: {error}"))
-        })?;
-    i64::try_from(duration.as_millis())
-        .map_err(|_| CdfError::internal("system time milliseconds exceed i64"))
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DuckDbExceptionType {
     OutOfMemory,
