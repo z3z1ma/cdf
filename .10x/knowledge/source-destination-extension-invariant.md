@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-10
-Updated: 2026-07-26
+Updated: 2026-07-27
 
 # Source and destination extension invariant
 
@@ -54,6 +54,19 @@ thread-safe factories, resolved runtimes are run-owned, finalized sessions may b
 thread-affine state, staged sessions are movable and bounded, and all actual concurrency comes
 from injected host/stage authorities. Adapter authors must never acquire `Send + Sync` through a
 mutex wrapper solely to satisfy an imagined universal runtime.
+
+Destination drivers return unbound runtimes. The neutral registry owns the single resolve-time
+execution-service bind and derives capabilities only after that bind, so host-derived native
+parallelism, lane admission, memory, spill, clocks, and cancellation agree. A driver that
+pre-binds can double-reserve resources; a facade that merely tags a wrapper as bound can omit the
+real adapter bind. Both states are forbidden.
+
+Binding is not transactional merely because the trait returns `Result`. A runtime may accept new
+services before post-bind capability/lane validation fails. Facade caches therefore clear their
+successful-bind marker before any non-identical attempt and record the incoming authority only
+after the complete neutral bind succeeds. Resource-owning adapters must support recovery to the
+previous authority without reacquiring an already-held reservation; shared resource identity is
+compared at the actual coordinator boundary, not by assuming execution-host wrapper identity.
 
 Make that law executable in both directions. Positive compile assertions cover driver, staged
 session, and host trait objects; deliberately non-`Send` synthetic runtimes and finalized

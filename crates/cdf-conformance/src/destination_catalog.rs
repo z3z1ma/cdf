@@ -10,7 +10,7 @@ use cdf_kernel::{CdfError, DestinationProtocol, IdempotencySupport, Receipt, Wri
 use cdf_kernel::{Result, TargetName};
 #[cfg(test)]
 use cdf_project::ProjectReceiptSource;
-use cdf_project::ResolvedProjectDestination;
+use cdf_project::{ResolvedProjectDestination, resolve_project_run_destination};
 #[cfg(test)]
 use cdf_runtime::{DestinationInspection, DestinationRuntime};
 use cdf_runtime::{DestinationPolicyProvider, DestinationRegistry, DestinationResolutionContext};
@@ -163,8 +163,7 @@ pub(crate) fn resolve(
         .with_environment_name("conformance")
         .with_destination_policy(&POLICY)
         .with_execution_services(&execution);
-    let runtime = registry()?.resolve(uri, &context)?;
-    Ok(ResolvedProjectDestination::new(runtime, target).with_execution_services(execution))
+    resolve_project_run_destination(&registry()?, uri, &context)
 }
 
 pub(crate) fn local_uri(scheme: &str, path: &Path) -> String {

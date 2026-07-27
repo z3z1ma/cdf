@@ -192,6 +192,7 @@ where
     Store: PromotionSettlementStore,
 {
     validate_execution_request(&request)?;
+    bind_promotion_destinations(&mut request)?;
     let scope = promotion_scope(request.resource);
     let lease = request.settlement_store.acquire(
         scope,
@@ -205,6 +206,21 @@ where
         (Ok(_), Err(error)) => Err(error),
         (Err(error), _) => Err(error),
     }
+}
+
+fn bind_promotion_destinations<Store>(
+    request: &mut SchemaPromotionExecutionRequest<'_, Store>,
+) -> cdf_kernel::Result<()>
+where
+    Store: PromotionSettlementStore,
+{
+    for target in &request.dry_plan.targets {
+        let destination_id = DestinationId::new(target.destination.clone())?;
+        let target_name = TargetName::new(target.target.clone())?;
+        take_destination(&mut request.destinations, &destination_id, &target_name)?
+            .bind_execution_services(request.execution_services.clone())?;
+    }
+    Ok(())
 }
 
 fn execute_under_lease<Store>(

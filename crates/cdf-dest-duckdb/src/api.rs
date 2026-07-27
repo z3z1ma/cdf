@@ -200,6 +200,19 @@ impl DuckDbDestination {
         mut self,
         execution: &cdf_runtime::ExecutionServices,
     ) -> Result<Self> {
+        let reusable_scratch = self.execution.as_ref().and_then(|bound| {
+            let bound_spill = bound.spill();
+            let incoming_spill = execution.spill();
+            Arc::ptr_eq(&bound_spill, &incoming_spill)
+                .then(|| self.native_resources.scratch_reservation.clone())
+                .flatten()
+        });
+        if let Some(scratch) = reusable_scratch {
+            self.native_resources =
+                DuckDbNativeResources::for_execution_with_scratch(execution, scratch)?;
+            self.execution = Some(execution.clone());
+            return Ok(self);
+        }
         self.execution = Some(execution.clone());
         self.native_resources = DuckDbNativeResources::for_execution(execution)?;
         Ok(self)
@@ -499,6 +512,20 @@ impl DuckDbNativeResources {
     }
 
     fn for_execution(execution: &cdf_runtime::ExecutionServices) -> Result<Self> {
+        Self::for_execution_with_optional_scratch(execution, None)
+    }
+
+    fn for_execution_with_scratch(
+        execution: &cdf_runtime::ExecutionServices,
+        scratch_reservation: Arc<cdf_runtime::SpillReservation>,
+    ) -> Result<Self> {
+        Self::for_execution_with_optional_scratch(execution, Some(scratch_reservation))
+    }
+
+    fn for_execution_with_optional_scratch(
+        execution: &cdf_runtime::ExecutionServices,
+        scratch_reservation: Option<Arc<cdf_runtime::SpillReservation>>,
+    ) -> Result<Self> {
         let managed_budget = execution.memory().snapshot().budget_bytes;
         let mut overrides = DuckDbNativeResourceOverrides::from_env()?;
         if overrides.internal_threads.is_none() {
@@ -508,13 +535,28 @@ impl DuckDbNativeResources {
         if overrides.memory_limit_bytes.is_none() {
             overrides.memory_limit_bytes = Some(managed_budget);
         }
-        Self::for_budgets_with_overrides(managed_budget, execution.spill(), overrides)
+        Self::for_budgets_with_overrides_and_scratch(
+            managed_budget,
+            execution.spill(),
+            overrides,
+            scratch_reservation,
+        )
     }
 
+    #[cfg(test)]
     pub(crate) fn for_budgets_with_overrides(
         managed_budget: u64,
         spill: Arc<dyn cdf_runtime::SpillBudgetCoordinator>,
         overrides: DuckDbNativeResourceOverrides,
+    ) -> Result<Self> {
+        Self::for_budgets_with_overrides_and_scratch(managed_budget, spill, overrides, None)
+    }
+
+    fn for_budgets_with_overrides_and_scratch(
+        managed_budget: u64,
+        spill: Arc<dyn cdf_runtime::SpillBudgetCoordinator>,
+        overrides: DuckDbNativeResourceOverrides,
+        scratch_reservation: Option<Arc<cdf_runtime::SpillReservation>>,
     ) -> Result<Self> {
         let memory_limit_bytes = match overrides.memory_limit_bytes {
             Some(0) => {
@@ -549,13 +591,26 @@ impl DuckDbNativeResources {
                 "{DUCKDB_MAX_IN_FLIGHT_BYTES_ENV} must be greater than zero"
             )));
         }
-        let scratch_reservation = spill
-            .try_reserve(maximum_temp_directory_bytes)?
-            .ok_or_else(|| {
-                CdfError::data(format!(
-                    "DuckDB destination requires {maximum_temp_directory_bytes} bytes of reserved scratch disk but the shared spill budget is already committed; increase the spill budget or reduce concurrent spool/sort work"
-                ))
-            })?;
+        let scratch_reservation = match scratch_reservation {
+            Some(reservation) => {
+                if reservation.bytes() != maximum_temp_directory_bytes {
+                    return Err(CdfError::contract(format!(
+                        "DuckDB scratch configuration changed from {} to {maximum_temp_directory_bytes} bytes after the destination bound its spill authority; configure {DUCKDB_TEMP_BUDGET_ENV} once before execution",
+                        reservation.bytes()
+                    )));
+                }
+                reservation
+            }
+            None => Arc::new(
+                spill
+                    .try_reserve(maximum_temp_directory_bytes)?
+                    .ok_or_else(|| {
+                        CdfError::data(format!(
+                            "DuckDB destination requires {maximum_temp_directory_bytes} bytes of reserved scratch disk but the shared spill budget is already committed; increase the spill budget or reduce concurrent spool/sort work"
+                        ))
+                    })?,
+            ),
+        };
         Ok(Self {
             memory_limit_bytes,
             maximum_temp_directory_bytes,
@@ -563,7 +618,7 @@ impl DuckDbNativeResources {
             scan_threads_override,
             max_in_flight_bytes,
             profiling_directory: overrides.profiling_directory,
-            scratch_reservation: Some(Arc::new(scratch_reservation)),
+            scratch_reservation: Some(scratch_reservation),
         })
     }
 }

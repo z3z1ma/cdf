@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-26
-Updated: 2026-07-26
+Updated: 2026-07-27
 
 # Destination receipt authority
 
@@ -35,6 +35,22 @@ Test fixtures that call a runtime directly must bind services to that runtime, n
 them on a wrapper that production orchestration would later bind. Fixed-clock tests should
 exercise at least one full ordinary and correction lifecycle, while replay and crash-window gates
 prove the timestamp migration did not move the receipt/checkpoint boundary.
+
+Destination resolution has one binding authority. A `DestinationDriver` constructs an unbound,
+run-owned runtime; `DestinationRegistry` binds it once, then validates and installs the runtime's
+post-bind lane capabilities because native resource demand may derive from the host. Higher
+facades may remember a successful registry/facade bind so an exact clone is not rebound, but
+wrapper metadata is never proof by itself. Rebinding to a genuinely different
+`ExecutionServices` handle must replace the adapter's clock and every other invocation-local
+authority before destination work begins.
+
+Resource-owning adapters make rebinding a two-authority operation. An adapter may retain a native
+scratch reservation when the incoming services expose the same spill-coordinator object, but it
+must recompute memory- and CPU-derived native settings from the incoming services and replace the
+complete services handle. Host-wrapper identity is neither necessary nor sufficient: decorated
+hosts may share spill while changing clocks or memory authorities. Process-start native-resource
+environment settings must not change after binding; DuckDB rejects a post-bind scratch-size change
+instead of double-reserving or silently retaining contradictory limits.
 
 ## Preservation checklist
 

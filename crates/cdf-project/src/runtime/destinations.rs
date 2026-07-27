@@ -63,16 +63,19 @@ impl ResolvedProjectDestination {
         }
     }
 
-    pub fn with_execution_services(mut self, execution: cdf_runtime::ExecutionServices) -> Self {
-        self.execution = Some(execution);
-        self
-    }
-
     pub fn bind_execution_services(
         &mut self,
         execution: cdf_runtime::ExecutionServices,
     ) -> Result<()> {
-        self.runtime.bind_execution_services(&execution)?;
+        if self
+            .execution
+            .as_ref()
+            .is_some_and(|bound| bound.shares_runtime_authorities_with(&execution))
+        {
+            return Ok(());
+        }
+        self.execution = None;
+        cdf_runtime::bind_destination_runtime(self.runtime.as_mut(), &execution)?;
         self.execution = Some(execution);
         Ok(())
     }
@@ -166,8 +169,6 @@ pub fn resolve_project_run_destination(
         error
     })?;
     let mut destination = ResolvedProjectDestination::new(runtime, context.target()?.clone());
-    if let Some(execution) = context.execution_services() {
-        destination.bind_execution_services(execution.clone())?;
-    }
+    destination.execution = context.execution_services().cloned();
     Ok(destination)
 }

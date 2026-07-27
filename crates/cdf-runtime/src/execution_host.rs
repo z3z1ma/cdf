@@ -1304,6 +1304,26 @@ impl ExecutionServices {
         &self.host
     }
 
+    /// Returns whether two handles share every invocation-local runtime authority.
+    ///
+    /// This is stricter than host equality: derived handles with different run admission,
+    /// staging, reachability, reporting, rate-gate, or I/O-controller state are not the same
+    /// authority. Adapters use this check to avoid repeating a resource-owning bind for an exact
+    /// clone while still accepting a genuinely different execution context.
+    pub fn shares_runtime_authorities_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.host, &other.host)
+            && option_arc_ptr_eq(
+                &self.memory_budget_resolution,
+                &other.memory_budget_resolution,
+            )
+            && option_arc_ptr_eq(&self.run_work, &other.run_work)
+            && option_arc_ptr_eq(&self.staging_leases, &other.staging_leases)
+            && option_arc_ptr_eq(&self.content_reachability, &other.content_reachability)
+            && option_arc_ptr_eq(&self.task_reports, &other.task_reports)
+            && Arc::ptr_eq(&self.source_rate_gates, &other.source_rate_gates)
+            && Arc::ptr_eq(&self.source_io_controllers, &other.source_io_controllers)
+    }
+
     pub fn memory(&self) -> Arc<dyn MemoryCoordinator> {
         self.host.memory()
     }
@@ -1989,6 +2009,14 @@ impl ExecutionServices {
         value.downcast::<T>().map(|value| *value).map_err(|_| {
             CdfError::internal("execution host returned an unexpected blocking result type")
         })
+    }
+}
+
+fn option_arc_ptr_eq<T: ?Sized>(left: &Option<Arc<T>>, right: &Option<Arc<T>>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+        (None, None) => true,
+        _ => false,
     }
 }
 

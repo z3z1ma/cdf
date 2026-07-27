@@ -1,4 +1,19 @@
+use crate::ExecutionServices;
 use crate::prelude::*;
+
+/// Binds one runtime to an execution authority, then installs its post-bind lane capabilities.
+///
+/// Binding may derive native resource demand from the host, so capability validation and lane
+/// installation must observe the bound runtime rather than its conservative construction state.
+pub fn bind_destination_runtime(
+    runtime: &mut dyn DestinationRuntime,
+    execution: &ExecutionServices,
+) -> Result<()> {
+    runtime.bind_execution_services(execution)?;
+    let capabilities = runtime.runtime_capabilities();
+    capabilities.validate()?;
+    execution.ensure_blocking_lanes(&capabilities.blocking_lanes)
+}
 
 /// Thread-safe destination descriptor and runtime factory.
 ///
@@ -21,6 +36,11 @@ pub trait DestinationDriver: Send + Sync {
         ))
     }
 
+    /// Constructs one run-owned runtime without binding execution services.
+    ///
+    /// The registry validates capabilities, installs blocking lanes, and performs the single
+    /// authoritative bind after this returns. Drivers may inspect the context for credentials and
+    /// policy, but must not pre-bind its execution services.
     fn resolve(
         &self,
         uri: &str,
@@ -102,12 +122,12 @@ impl DestinationRegistry {
         uri: &str,
         context: &DestinationResolutionContext<'_>,
     ) -> Result<Box<dyn DestinationRuntime>> {
-        let runtime = self.driver_for_uri(uri)?.resolve(uri, context)?;
+        let mut runtime = self.driver_for_uri(uri)?.resolve(uri, context)?;
         runtime.describe().validate()?;
-        let capabilities = runtime.runtime_capabilities();
-        capabilities.validate()?;
         if let Some(execution) = context.execution_services() {
-            execution.ensure_blocking_lanes(&capabilities.blocking_lanes)?;
+            bind_destination_runtime(runtime.as_mut(), execution)?;
+        } else {
+            runtime.runtime_capabilities().validate()?;
         }
         Ok(runtime)
     }

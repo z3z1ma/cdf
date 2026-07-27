@@ -185,6 +185,14 @@ impl ParquetDestination {
         &self.execution
     }
 
+    pub(crate) fn rebind_execution_services(
+        &mut self,
+        execution: &cdf_runtime::ExecutionServices,
+    ) -> Result<()> {
+        self.execution = execution.clone();
+        Ok(())
+    }
+
     pub(crate) fn object_key_encoder(&self) -> ObjectKeyEncoder {
         self.object_key_encoder
     }

@@ -194,6 +194,75 @@ fn test_execution() -> cdf_runtime::ExecutionServices {
         .clone()
 }
 
+struct FixedClockHost {
+    inner: Arc<dyn cdf_runtime::ExecutionHost>,
+    unix_now: std::time::Duration,
+}
+
+impl cdf_runtime::ExecutionHost for FixedClockHost {
+    fn capabilities(&self) -> cdf_runtime::ExecutionHostCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn memory(&self) -> Arc<dyn cdf_memory::MemoryCoordinator> {
+        self.inner.memory()
+    }
+
+    fn spill(&self) -> Arc<dyn cdf_runtime::SpillBudgetCoordinator> {
+        self.inner.spill()
+    }
+
+    fn open_scope(&self, run_id: &str) -> Result<Box<dyn cdf_runtime::ExecutionTaskScope>> {
+        self.inner.open_scope(run_id)
+    }
+
+    fn run_io_blocking(&self, task: cdf_runtime::IoValueTask) -> Result<cdf_runtime::IoValue> {
+        self.inner.run_io_blocking(task)
+    }
+
+    fn delay(
+        &self,
+        duration: std::time::Duration,
+        cancellation: cdf_runtime::RunCancellation,
+    ) -> cdf_kernel::BoxFuture<'static, Result<()>> {
+        self.inner.delay(duration, cancellation)
+    }
+
+    fn monotonic_now(&self) -> std::time::Duration {
+        self.inner.monotonic_now()
+    }
+
+    fn unix_now(&self) -> std::time::Duration {
+        self.unix_now
+    }
+
+    fn entropy_u64(&self) -> u64 {
+        self.inner.entropy_u64()
+    }
+
+    fn ensure_blocking_lanes(&self, lanes: &[cdf_runtime::BlockingLaneSpec]) -> Result<()> {
+        self.inner.ensure_blocking_lanes(lanes)
+    }
+
+    fn run_blocking_value(
+        &self,
+        lane: &str,
+        task: cdf_runtime::BlockingValueTask,
+    ) -> Result<cdf_runtime::IoValue> {
+        self.inner.run_blocking_value(lane, task)
+    }
+}
+
+fn fixed_clock_execution(unix_ms: u64) -> cdf_runtime::ExecutionServices {
+    let (_, base) =
+        cdf_engine::StandaloneExecutionHost::default_services(512 * 1024 * 1024).unwrap();
+    cdf_runtime::ExecutionServices::new(Arc::new(FixedClockHost {
+        inner: Arc::clone(base.host()),
+        unix_now: std::time::Duration::from_millis(unix_ms),
+    }))
+    .unwrap()
+}
+
 fn test_filesystem(root: impl AsRef<Path>) -> Result<ParquetDestination> {
     ParquetDestination::new_filesystem(root, test_execution())
 }
@@ -1271,6 +1340,27 @@ fn reusable_destination_conformance_suite_accepts_parquet_sheet_and_plans() {
             residual_readback: CapabilitySupport::Unsupported,
             strategies: parquet_correction_capabilities().strategies,
         },
+    );
+}
+
+#[test]
+fn runtime_rebinding_replaces_the_parquet_correction_receipt_clock() {
+    const FIXED_UNIX_MS: u64 = 1_788_123_456_789;
+
+    let temp = tempfile::tempdir().unwrap();
+    let mut destination = test_filesystem(temp.path().join("lake")).unwrap();
+    let base = commit_correction_base(
+        &mut destination,
+        &temp.path().join("base"),
+        "fixed-clock-base",
+    );
+    let request_execution = fixed_clock_execution(FIXED_UNIX_MS);
+    DestinationRuntime::bind_execution_services(&mut destination, &request_execution).unwrap();
+    let receipt = finalize_correction(&destination, &correction_request(&base.hash));
+
+    assert_eq!(
+        receipt.committed_at_ms,
+        i64::try_from(FIXED_UNIX_MS).unwrap()
     );
 }
 

@@ -99,7 +99,7 @@ impl DestinationDriver for ParquetRuntimeDriver {
         Ok(Box::new(FilesystemParquetRuntime {
             destination: None,
             root,
-            execution: context.execution_services().cloned(),
+            execution: None,
             compression,
         }))
     }
@@ -138,6 +138,13 @@ impl DestinationRuntime for ParquetDestination {
 
     fn ingress(&mut self) -> cdf_runtime::DestinationIngress<'_> {
         cdf_runtime::DestinationIngress::StagedSegments(self)
+    }
+
+    fn bind_execution_services(
+        &mut self,
+        execution: &cdf_runtime::ExecutionServices,
+    ) -> Result<()> {
+        self.rebind_execution_services(execution)
     }
 
     fn describe(&self) -> DestinationDescription {

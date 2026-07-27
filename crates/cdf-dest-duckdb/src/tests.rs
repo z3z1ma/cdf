@@ -547,6 +547,7 @@ fn destination(path: &Path) -> DuckDbDestination {
 
 struct FixedClockHost {
     inner: Arc<dyn cdf_runtime::ExecutionHost>,
+    memory: Option<Arc<dyn cdf_memory::MemoryCoordinator>>,
     unix_now: std::time::Duration,
 }
 
@@ -556,7 +557,10 @@ impl cdf_runtime::ExecutionHost for FixedClockHost {
     }
 
     fn memory(&self) -> Arc<dyn cdf_memory::MemoryCoordinator> {
-        self.inner.memory()
+        self.memory
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| self.inner.memory())
     }
 
     fn spill(&self) -> Arc<dyn cdf_runtime::SpillBudgetCoordinator> {
@@ -609,6 +613,7 @@ fn fixed_clock_destination(path: &Path, unix_ms: u64) -> DuckDbDestination {
         cdf_engine::StandaloneExecutionHost::default_services(512 * 1024 * 1024).unwrap();
     let execution = cdf_runtime::ExecutionServices::new(Arc::new(FixedClockHost {
         inner: Arc::clone(base.host()),
+        memory: None,
         unix_now: std::time::Duration::from_millis(unix_ms),
     }))
     .unwrap();
@@ -641,6 +646,83 @@ fn ordinary_and_correction_receipts_use_the_injected_unix_clock() {
     let correction = correction_request(vec![correction_operation(&package_hash, 0, 42)]);
     let correction_receipt = finalize_correction(&destination, &correction);
     assert_eq!(correction_receipt.committed_at_ms, FIXED_UNIX_MS as i64);
+}
+
+#[test]
+fn rebinding_to_decorated_host_reuses_native_authorities_and_replaces_clock() {
+    const BUDGET_BYTES: u64 = 64 * 1024 * 1024;
+    const FIXED_UNIX_MS: u64 = 1_788_234_567_890;
+
+    let temp = tempfile::tempdir().unwrap();
+    let (_, base) = cdf_engine::StandaloneExecutionHost::default_services_with_spill(
+        BUDGET_BYTES,
+        BUDGET_BYTES,
+    )
+    .unwrap();
+    let decorated = cdf_runtime::ExecutionServices::new(Arc::new(FixedClockHost {
+        inner: Arc::clone(base.host()),
+        memory: None,
+        unix_now: std::time::Duration::from_millis(FIXED_UNIX_MS),
+    }))
+    .unwrap();
+    let mut destination = DuckDbDestination::new(temp.path().join("decorated-clock.duckdb"))
+        .unwrap()
+        .with_execution_services(&base)
+        .unwrap();
+    let spill = base.spill();
+    let before = spill.snapshot();
+
+    DestinationRuntime::bind_execution_services(&mut destination, &decorated).unwrap();
+
+    let after = spill.snapshot();
+    assert_eq!(after.current_bytes, before.current_bytes);
+    assert_eq!(after.reservation_failures, before.reservation_failures);
+    assert_eq!(destination.committed_at_ms().unwrap(), FIXED_UNIX_MS as i64);
+}
+
+#[test]
+fn rebinding_shared_spill_recomputes_memory_resources_without_double_reservation() {
+    const INITIAL_MEMORY_BYTES: u64 = 64 * 1024 * 1024;
+    const REBOUND_MEMORY_BYTES: u64 = 32 * 1024 * 1024;
+    const SPILL_BYTES: u64 = 64 * 1024 * 1024;
+    const FIXED_UNIX_MS: u64 = 1_788_345_678_901;
+
+    let temp = tempfile::tempdir().unwrap();
+    let (_, base) = cdf_engine::StandaloneExecutionHost::default_services_with_spill(
+        INITIAL_MEMORY_BYTES,
+        SPILL_BYTES,
+    )
+    .unwrap();
+    let rebound_memory: Arc<dyn cdf_memory::MemoryCoordinator> = Arc::new(
+        cdf_memory::DeterministicMemoryCoordinator::new(
+            REBOUND_MEMORY_BYTES,
+            std::collections::BTreeMap::new(),
+        )
+        .unwrap(),
+    );
+    let decorated = cdf_runtime::ExecutionServices::new(Arc::new(FixedClockHost {
+        inner: Arc::clone(base.host()),
+        memory: Some(rebound_memory),
+        unix_now: std::time::Duration::from_millis(FIXED_UNIX_MS),
+    }))
+    .unwrap();
+    let mut destination = DuckDbDestination::new(temp.path().join("reconfigured-clock.duckdb"))
+        .unwrap()
+        .with_execution_services(&base)
+        .unwrap();
+    let spill = base.spill();
+    let before = spill.snapshot();
+
+    DestinationRuntime::bind_execution_services(&mut destination, &decorated).unwrap();
+
+    let after = spill.snapshot();
+    assert_eq!(
+        destination.native_resources.memory_limit_bytes,
+        REBOUND_MEMORY_BYTES
+    );
+    assert_eq!(after.current_bytes, before.current_bytes);
+    assert_eq!(after.reservation_failures, before.reservation_failures);
+    assert_eq!(destination.committed_at_ms().unwrap(), FIXED_UNIX_MS as i64);
 }
 
 #[test]

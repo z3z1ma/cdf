@@ -3949,6 +3949,164 @@ fn destination_planning_rejects_capability_sheet_drift() {
 }
 
 #[test]
+fn repeated_destination_binding_reuses_the_exact_execution_authority() {
+    const BUDGET_BYTES: u64 = 64 * 1024 * 1024;
+
+    let temp = tempfile::tempdir().unwrap();
+    let (_, execution) = cdf_engine::StandaloneExecutionHost::default_services_with_spill(
+        BUDGET_BYTES,
+        BUDGET_BYTES,
+    )
+    .unwrap();
+    let mut registry = ProjectDestinationRegistry::new();
+    registry
+        .register(cdf_dest_duckdb::DuckDbRuntimeDriver)
+        .unwrap();
+    let target = TargetName::new("events").unwrap();
+    let context = ProjectResolutionContext::for_project_run(temp.path(), &target)
+        .with_execution_services(&execution);
+    let mut destination =
+        resolve_project_run_destination(&registry, "duckdb://bounded.duckdb", &context).unwrap();
+    execution
+        .ensure_blocking_lanes(&destination.runtime_capabilities().blocking_lanes)
+        .unwrap();
+    let spill = execution.spill();
+    let first = spill.snapshot();
+    destination.bind_execution_services(execution).unwrap();
+    let second = spill.snapshot();
+
+    assert_eq!(first.current_bytes, BUDGET_BYTES);
+    assert_eq!(second.current_bytes, first.current_bytes);
+    assert_eq!(second.reservation_failures, first.reservation_failures);
+}
+
+#[test]
+fn failed_destination_rebind_invalidates_cached_execution_authority() {
+    const BUDGET_BYTES: u64 = 64 * 1024 * 1024;
+
+    let temp = tempfile::tempdir().unwrap();
+    let (_, execution_a) = cdf_engine::StandaloneExecutionHost::default_services_with_spill(
+        BUDGET_BYTES,
+        BUDGET_BYTES,
+    )
+    .unwrap();
+    let (_, execution_b) = cdf_engine::StandaloneExecutionHost::default_services_with_spill(
+        BUDGET_BYTES,
+        BUDGET_BYTES,
+    )
+    .unwrap();
+    execution_b
+        .ensure_blocking_lanes(&[cdf_runtime::BlockingLaneSpec {
+            lane_id: "duckdb.final_binding".to_owned(),
+            binding: cdf_runtime::BlockingLaneBinding::Static,
+            maximum_concurrency: 1,
+            cpu_slot_cost: 1,
+            native_internal_parallelism: 1,
+            affinity: cdf_runtime::LaneAffinity::Shared,
+            interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
+        }])
+        .unwrap();
+
+    let mut registry = ProjectDestinationRegistry::new();
+    registry
+        .register(cdf_dest_duckdb::DuckDbRuntimeDriver)
+        .unwrap();
+    let target = TargetName::new("events").unwrap();
+    let context = ProjectResolutionContext::for_project_run(temp.path(), &target)
+        .with_execution_services(&execution_a);
+    let mut destination =
+        resolve_project_run_destination(&registry, "duckdb://retry.duckdb", &context).unwrap();
+
+    let error = destination
+        .bind_execution_services(execution_b.clone())
+        .unwrap_err();
+    assert!(error.message.contains("conflicts"), "{error}");
+    destination
+        .bind_execution_services(execution_a.clone())
+        .unwrap();
+
+    assert_eq!(execution_a.spill().snapshot().current_bytes, BUDGET_BYTES);
+    assert_eq!(execution_b.spill().snapshot().current_bytes, 0);
+}
+
+#[test]
+fn failed_destination_bind_stage_can_restore_the_original_execution_authority() {
+    const BUDGET_BYTES: u64 = 64 * 1024 * 1024;
+
+    let temp = tempfile::tempdir().unwrap();
+    let (_, execution_a) = cdf_engine::StandaloneExecutionHost::default_services_with_spill(
+        BUDGET_BYTES,
+        BUDGET_BYTES,
+    )
+    .unwrap();
+    let (_, execution_b) = cdf_engine::StandaloneExecutionHost::default_services_with_spill(
+        BUDGET_BYTES,
+        BUDGET_BYTES,
+    )
+    .unwrap();
+    let spill_b = execution_b.spill();
+    let competing_reservation = spill_b
+        .try_reserve(BUDGET_BYTES)
+        .unwrap()
+        .expect("the competing reservation fits the empty B budget");
+
+    let mut registry = ProjectDestinationRegistry::new();
+    registry
+        .register(cdf_dest_duckdb::DuckDbRuntimeDriver)
+        .unwrap();
+    let target = TargetName::new("events").unwrap();
+    let context = ProjectResolutionContext::for_project_run(temp.path(), &target)
+        .with_execution_services(&execution_a);
+    let mut destination =
+        resolve_project_run_destination(&registry, "duckdb://retry-stage.duckdb", &context)
+            .unwrap();
+
+    let error = destination
+        .bind_execution_services(execution_b)
+        .unwrap_err();
+    assert!(
+        error.message.contains("spill budget is already committed"),
+        "{error}"
+    );
+    destination
+        .bind_execution_services(execution_a.clone())
+        .unwrap();
+
+    assert_eq!(execution_a.spill().snapshot().current_bytes, BUDGET_BYTES);
+    drop(competing_reservation);
+    assert_eq!(spill_b.snapshot().current_bytes, 0);
+}
+
+#[test]
+fn same_host_destination_rebind_reuses_initialized_native_resources() {
+    const BUDGET_BYTES: u64 = 64 * 1024 * 1024;
+
+    let temp = tempfile::tempdir().unwrap();
+    let (_, execution) = cdf_engine::StandaloneExecutionHost::default_services_with_spill(
+        BUDGET_BYTES,
+        BUDGET_BYTES,
+    )
+    .unwrap();
+    let mut registry = ProjectDestinationRegistry::new();
+    registry
+        .register(cdf_dest_duckdb::DuckDbRuntimeDriver)
+        .unwrap();
+    let target = TargetName::new("events").unwrap();
+    let context = ProjectResolutionContext::for_project_run(temp.path(), &target)
+        .with_execution_services(&execution);
+    let mut destination =
+        resolve_project_run_destination(&registry, "duckdb://derived.duckdb", &context).unwrap();
+    let derived = execution.with_run_job_ceiling(1).unwrap();
+    let before = execution.spill().snapshot();
+
+    destination.bind_execution_services(derived).unwrap();
+
+    let after = execution.spill().snapshot();
+    assert_eq!(after.current_bytes, before.current_bytes);
+    assert_eq!(after.reservation_failures, before.reservation_failures);
+}
+
+#[test]
 fn destination_planning_facade_rejects_parquet_merge_without_writes() {
     let temp = tempfile::tempdir().unwrap();
     let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_MERGE);
