@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-06
-Updated: 2026-07-09
+Updated: 2026-07-26
 
 # Quality gate execution
 
@@ -25,3 +25,30 @@ This local `cargo-mutants` version does not accept Cargo flags such as `--locked
 Do not place generated quality reports or CodeQL databases in tracked source. Prefer ignored build output or `/tmp` for transient reports, and record summarized results in `.10x/evidence/`.
 
 Historical Gitleaks scans have two known false-positive `generic-api-key` findings in removed Python-era Harness SDK-key field declarations. See `.10x/knowledge/historical-gitleaks-findings.md` for exact fingerprints and limits. Treat only those exact fingerprints as documented historical scanner noise; any new history finding, and any finding from a current-tree or staged-diff scan selected by `QUALITY.md`, remains a hard failure until triaged.
+
+## Product lifecycle gate
+
+Focused tests are not product-lifecycle proof when a change crosses discovery, compilation,
+external task authority, package creation, destination ingress, receipt verification, or
+checkpoint commit. Use the mandatory bounded smoke matrix and representative-fixture guidance in
+`.10x/knowledge/product-integration-and-closure-gate.md`. In particular, lifecycle fixtures must
+exercise real identity transitions, more than one partition/segment, and both first-run and no-op
+incremental behavior rather than manufacturing one hash for every phase.
+
+When multiple workers share the repository, one coordinator SHOULD own workspace-wide checks and
+route failures to the authoring lane. Do not run several contending copies of the full Cargo suite.
+Each lane remains responsible for focused tests, formatting its owned paths, and journaled
+evidence.
+
+## Build and performance runbooks
+
+Routine local and EC2 builds that include DuckDB SHOULD follow
+`.10x/skills/build-and-install-cdf/SKILL.md`; published release builds intentionally use the full
+static `bundled-duckdb` path. Performance regressions and promotable defaults follow:
+
+- `.10x/skills/investigate-cdf-performance-regressions/SKILL.md`
+- `.10x/skills/run-cdf-ec2-benchmarks/SKILL.md`
+- `.10x/knowledge/performance-evidence-and-regression-triage.md`
+
+Do not use a one-TiB stress run or a new EC2 host as routine reassurance. Select them only when the
+changed quality vector and ticket acceptance need that evidence.

@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-07
+Updated: 2026-07-26
 
 # cdf glossary
 
@@ -37,3 +37,58 @@ Ice: committed state in the checkpoint ledger.
 Snowfall: raw extraction batches before validation and packaging.
 
 CDF: a load package: compacted evidence that can still melt if it never commits.
+
+Compiled expression plan: the parsed, resolved, optimized, version-bound expression program
+recorded in the plan/package. Execution and replay consume it exactly; they never reparse or
+reoptimize source expressions.
+
+Pinned schema: the hash-addressed fixed effective schema used to compile one execution plan.
+“Pinned” may mean project-persisted or run-local; either form is immutable during that run.
+
+Observed schema: physical schema facts learned from source metadata or streamed payload. It
+constrains admission against the pin and never silently replaces the effective schema.
+
+Discovery coverage: the explicit pair of candidate-file coverage and within-file
+metadata/byte/record coverage used to select a schema before the final plan.
+
+Prepared source session: run-owned source state carrying resolved generation, reusable discovery
+observations or payload, transport/decoder handles, leases, I/O metrics, and terminal cleanup
+through execution.
+
+Admission program: the compiled total classification of observed physical data into exact,
+widened, coerced, residual-captured, quarantined, or failed outcomes.
+
+Task authority: a content-addressed, bounded source-owned description of partition work. Generic
+runtime schedules it without interpreting catalog, file-format, query, or provider semantics.
+
+Destination ingress: the closed execution category exposed by a destination runtime:
+`FinalizedPackage` or `StagedSegments`. Generic orchestration branches on this capability, never
+on a destination name.
+
+Staging lease: the generic externally durable staging liveness authority. It proves ownership,
+renews while an attempt is live, releases on completion, and permits cleanup only after provable
+expiry. It is not a Parquet heartbeat.
+
+Runtime-resolved blocking lane: a portable plan lane whose executable concurrency is tightened
+against the actual embedded runtime and cgroup/host authority at attachment. The canonical
+bindings are `Static`, `RuntimeResolvedRequired`, and `RuntimeResolved`; “host-bound” is
+superseded vocabulary.
+
+Memory lease: active ownership of resident bytes against the run ledger. A planning reservation or
+compiled demand estimate is not a live lease, and transient free memory is not a planning
+authority.
+
+Stage capacity: local queue, worker, retained-object, or writer capacity. It produces
+backpressure at that stage and must not become the run-wide job ceiling.
+
+Package row ordinal: the internal non-null `UInt64` field `_cdf_package_row_ord`, dense and
+zero-based after every row-selecting operation. Destinations use it to derive transaction-owned
+row keys or manifest-bound physical provenance.
+
+Planned bytes: a typed estimate of logical work selected by the compiler. Transferred bytes:
+physical transport I/O observed by runtime metrics. Package bytes and destination bytes are
+separate facts; none may be substituted for another.
+
+Current-only compatibility: CDF preserves current external protocol interoperability and all
+correctness fences, but no runtime compatibility with obsolete pre-production CDF artifacts,
+internal APIs, or execution paths.

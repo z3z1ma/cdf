@@ -1,0 +1,4 @@
+interface:
+  display_name: "CDF EC2 Benchmarks"
+  short_description: "Run CDF performance benchmarks on EC2 safely"
+  default_prompt: "Provision or reuse the governed CDF EC2 benchmark host, run a comparable measurement, fetch durable evidence, and tear the host down when the tranche is complete."

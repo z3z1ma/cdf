@@ -35,6 +35,10 @@ destination common services, typed CLI/error authority, holistic CLI experience,
 extension-authoring proof. This program must return the active graph to zero before the next
 connector wave. Parked capabilities below remain demand-activated rather than silently reopened.
 
+A cold-start engineer begins with `.10x/knowledge/cold-start-engineering-handoff.md`. It indexes
+the current program, operational runbooks, present performance floors, known generated-evidence
+lag, and the architectural invariants that are otherwise distributed across the project memory.
+
 ## Parked future programs
 
 ### Native format breadth

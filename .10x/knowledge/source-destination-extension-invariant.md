@@ -44,3 +44,10 @@ thread-safe factories, resolved runtimes are run-owned, finalized sessions may b
 thread-affine state, staged sessions are movable and bounded, and all actual concurrency comes
 from injected host/stage authorities. Adapter authors must never acquire `Send + Sync` through a
 mutex wrapper solely to satisfy an imagined universal runtime.
+
+The operational consequences are expanded in:
+
+- `.10x/knowledge/runtime-performance-authorities.md`
+- `.10x/knowledge/remote-discovery-and-io-lifecycle.md`
+- `.10x/knowledge/pre-production-current-only-policy.md`
+- `.10x/knowledge/product-integration-and-closure-gate.md`

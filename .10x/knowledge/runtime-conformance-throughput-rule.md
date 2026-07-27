@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-07
-Updated: 2026-07-18
+Updated: 2026-07-26
 
 # Runtime Conformance Throughput Rule
 
@@ -38,3 +38,17 @@ Hidden hard caps, fixed throttles, reduced concurrency defaults, extra pre-scans
 Performance-sensitive code may use a developer laptop for fast smoke timing, reproduction, or bisect predicates, but laptop results are provisional when they can be distorted by swap pressure, thermal state, background load, target-directory pressure, or local network variance. P3 closeout and default-changing performance evidence should come from the dedicated benchmark host protocol in `.10x/specs/performance-lab-and-envelope.md`: provision one reusable AWS EC2 host in the FQ12 environment for a tranche of measurements, build the optimized release binary on that host from the synchronized repo and lockfile, synchronize the CDF workspace/data recipe, record the host/build/workspace facts, and terminate the instance when the tranche is complete.
 
 If a proposed default can plausibly degrade performance, a laptop-only result can reject it, but cannot promote it. Promotion requires same-host benchmark evidence on the dedicated host or a narrower correctness rationale that leaves the behavior opt-in.
+
+The operational benchmark procedure is
+`.10x/skills/run-cdf-ec2-benchmarks/SKILL.md`; regression isolation is
+`.10x/skills/investigate-cdf-performance-regressions/SKILL.md`. The current comparable evidence
+catalog and stage-authority model are:
+
+- `.10x/knowledge/performance-evidence-and-regression-triage.md`
+- `.10x/knowledge/runtime-performance-authorities.md`
+
+As of 2026-07-26, the latest exact one-TiB acceptance is
+`.10x/evidence/2026-07-26-parquet-parallel-one-tib-rerun.md`: 1.0086 TiB in 499.07 seconds at
+2.222 GB/s logical throughput and 3.923 GB peak RSS on the recorded `c7i.4xlarge` cell. This
+supersedes the older 411.5-MB/s observation for that same workload, but does not generalize beyond
+the recorded schema, compression, host, and timed region.

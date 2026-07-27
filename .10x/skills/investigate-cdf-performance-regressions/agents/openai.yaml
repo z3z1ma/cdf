@@ -1,0 +1,4 @@
+interface:
+  display_name: "Investigate CDF Performance"
+  short_description: "Diagnose CDF performance regressions with evidence"
+  default_prompt: "Isolate the first bad CDF performance change with comparable evidence, trace the owning stage, and validate the repair without speculative tuning."

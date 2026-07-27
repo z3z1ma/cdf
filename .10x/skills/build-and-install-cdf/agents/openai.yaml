@@ -1,0 +1,4 @@
+interface:
+  display_name: "Build and Install CDF"
+  short_description: "Build and install CDF with correct DuckDB linkage"
+  default_prompt: "Build or install CDF using the correct developer or published-release DuckDB linkage path, then verify the resulting binary."
