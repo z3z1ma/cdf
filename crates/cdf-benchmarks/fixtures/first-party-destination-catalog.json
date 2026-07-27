@@ -22,7 +22,7 @@
   {
     "destination_id": "parquet_object_store",
     "runtime": {
-      "blocking_lanes": [{"lane_id":"parquet.ingress","maximum_concurrency":1,"cpu_slot_cost":1,"native_internal_parallelism":1,"affinity":"shared","interruption":"cooperative_only","binding":"static"},{"lane_id":"parquet.encode","maximum_concurrency":2,"cpu_slot_cost":1,"native_internal_parallelism":1,"affinity":"shared","interruption":"cooperative_only","binding":"static"}],
+      "blocking_lanes": [{"lane_id":"parquet.ingress","maximum_concurrency":1,"cpu_slot_cost":1,"native_internal_parallelism":1,"affinity":"shared","interruption":"cooperative_only","binding":"static"},{"lane_id":"parquet.encode","maximum_concurrency":65535,"cpu_slot_cost":1,"native_internal_parallelism":1,"affinity":"shared","interruption":"cooperative_only","binding":"static"}],
       "staged_ingress_lane": "parquet.ingress",
       "final_binding_lane": "parquet.ingress",
       "ingress_mode": "staged_durable_segments",
@@ -31,9 +31,14 @@
       "commit_payload_mode": "segment_streaming",
       "max_in_flight_segments": 2,
       "max_in_flight_bytes": 134217728,
-      "bulk_paths": [{"path_id":"arrow_ipc_to_parquet","version":5,"ingress_mode":"staged_durable_segments","writer_model":"concurrent_segments","ordering":"manifest_order","rows":{"minimum":8192,"preferred":65536,"maximum":1048576},"bytes":{"minimum":1048576,"preferred":16777216,"maximum":67108864},"max_useful_writers":2,"blocking_lane":"parquet.encode","native_internal_parallelism":1,"external_staging":true,"fallback":"forbidden","schema_preflight_version":"parquet-arrow-mapping@2","measured_evidence_version":"p3-d8-2026-07-15-v5"}],
-      "bulk_path": "arrow_ipc_to_parquet",
-      "bulk_evidence_version": "p3-d8-2026-07-15-v5",
+      "bulk_paths": [
+        {"path_id":"arrow_ipc_to_parquet_none","version":6,"ingress_mode":"staged_durable_segments","writer_model":"concurrent_segments","ordering":"manifest_order","rows":{"minimum":8192,"preferred":65536,"maximum":1048576},"bytes":{"minimum":1048576,"preferred":16777216,"maximum":67108864},"max_useful_writers":65535,"blocking_lane":"parquet.encode","native_internal_parallelism":1,"external_staging":true,"fallback":"forbidden","schema_preflight_version":"parquet-arrow-mapping@2","measured_evidence_version":"p3-parquet-compression-2026-07-26-v1"},
+        {"path_id":"arrow_ipc_to_parquet_snappy","version":6,"ingress_mode":"staged_durable_segments","writer_model":"concurrent_segments","ordering":"manifest_order","rows":{"minimum":8192,"preferred":65536,"maximum":1048576},"bytes":{"minimum":1048576,"preferred":16777216,"maximum":67108864},"max_useful_writers":65535,"blocking_lane":"parquet.encode","native_internal_parallelism":1,"external_staging":true,"fallback":"forbidden","schema_preflight_version":"parquet-arrow-mapping@2","measured_evidence_version":"p3-parquet-compression-2026-07-26-v1"},
+        {"path_id":"arrow_ipc_to_parquet_lz4_raw","version":6,"ingress_mode":"staged_durable_segments","writer_model":"concurrent_segments","ordering":"manifest_order","rows":{"minimum":8192,"preferred":65536,"maximum":1048576},"bytes":{"minimum":1048576,"preferred":16777216,"maximum":67108864},"max_useful_writers":65535,"blocking_lane":"parquet.encode","native_internal_parallelism":1,"external_staging":true,"fallback":"forbidden","schema_preflight_version":"parquet-arrow-mapping@2","measured_evidence_version":"p3-parquet-compression-2026-07-26-v1"},
+        {"path_id":"arrow_ipc_to_parquet_zstd","version":6,"ingress_mode":"staged_durable_segments","writer_model":"concurrent_segments","ordering":"manifest_order","rows":{"minimum":8192,"preferred":65536,"maximum":1048576},"bytes":{"minimum":1048576,"preferred":16777216,"maximum":67108864},"max_useful_writers":65535,"blocking_lane":"parquet.encode","native_internal_parallelism":1,"external_staging":true,"fallback":"forbidden","schema_preflight_version":"parquet-arrow-mapping@2","measured_evidence_version":"p3-parquet-compression-2026-07-26-v1"}
+      ],
+      "bulk_path": "arrow_ipc_to_parquet_zstd",
+      "bulk_evidence_version": "p3-parquet-compression-2026-07-26-v1",
       "replay_requires_explicit_target": false,
       "replay_target_hint": null,
       "replay_policy_values": {}

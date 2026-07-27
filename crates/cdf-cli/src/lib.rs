@@ -15,7 +15,6 @@ mod destination_registry_test_support;
 mod destination_uri;
 mod doctor_command;
 mod doctor_drift;
-mod http_transport;
 mod inspect_command;
 mod inspect_run_command;
 mod package_command;

@@ -32,19 +32,15 @@ futures-executor = "0.3.32"
 arrow-array = "58.3.0"
 arrow-ipc = "58.3.0"
 bytes = "1.11.0"
+cdf-builtin-drivers = { path = "../cdf-builtin-drivers" }
 cdf-dest-duckdb = { path = "../cdf-dest-duckdb" }
 cdf-dest-parquet = { path = "../cdf-dest-parquet" }
 cdf-dest-postgres = { path = "../cdf-dest-postgres" }
-cdf-format-arrow-ipc = { path = "../cdf-format-arrow-ipc" }
 cdf-format-avro = { path = "../cdf-format-avro" }
-cdf-format-delimited = { path = "../cdf-format-delimited" }
-cdf-format-json = { path = "../cdf-format-json" }
-cdf-format-parquet = { path = "../cdf-format-parquet" }
 cdf-object-access = { path = "../cdf-object-access" }
 cdf-source-files = { path = "../cdf-source-files" }
 cdf-source-postgres = { path = "../cdf-source-postgres" }
 cdf-source-rest = { path = "../cdf-source-rest" }
-cdf-transform-gzip = { path = "../cdf-transform-gzip" }
 flate2 = "1.1.9"
 futures-util = "0.3.32"
 object_store = { git = "https://github.com/apache/arrow-rs-object-store.git", rev = "c7316d29face118e7409eead0cda098f38589428" }

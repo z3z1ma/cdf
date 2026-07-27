@@ -39,6 +39,16 @@ must not copy it again. Extract the proven lower mechanism while keeping source/
 semantics in the adapter. A universal trait that merely mirrors `SourceDriver` or
 `DestinationRuntime` is not a valid extraction.
 
+First-party enrollment has one explicit construction leaf: `cdf-builtin-drivers`. Product,
+benchmark, conformance, and integration-test owners consume or extend that catalog instead of
+recreating shipped driver lists. The catalog leaf never flows downward into neutral production
+crates. Permanent graph gates use all-feature Cargo metadata package identities and dependency
+kinds—not manifest key spelling—so aliases, optional edges, target-specific edges, and build
+dependencies cannot evade the boundary. Data-driven catalog fixtures hash complete descriptors,
+source option schemas, and destination inspection artifacts; their inspection rows come from the
+same construction table that installs destinations, so a test cannot silently omit a newly
+enrolled driver.
+
 Driver concurrency follows `.10x/decisions/driver-session-concurrency-canon.md`: drivers are
 thread-safe factories, resolved runtimes are run-owned, finalized sessions may borrow
 thread-affine state, staged sessions are movable and bounded, and all actual concurrency comes

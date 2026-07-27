@@ -5,9 +5,6 @@ use std::{fs, path::PathBuf};
 #[cfg(test)]
 use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
 
-use cdf_dest_duckdb::DuckDbRuntimeDriver;
-use cdf_dest_parquet::ParquetRuntimeDriver;
-use cdf_dest_postgres::PostgresRuntimeDriver;
 #[cfg(test)]
 use cdf_kernel::{CdfError, DestinationProtocol, IdempotencySupport, Receipt, WriteDisposition};
 use cdf_kernel::{Result, TargetName};
@@ -54,7 +51,7 @@ struct DestinationCatalogEntry {
     runtime_destination_id: &'static str,
     #[cfg(test)]
     expects_row_provenance: bool,
-    install: fn(&mut DestinationRegistry) -> Result<()>,
+    fixture_driver: Option<fn(&mut DestinationRegistry) -> Result<()>>,
     #[cfg(test)]
     inspection_uri: fn(&Path) -> String,
     #[cfg(test)]
@@ -98,7 +95,7 @@ const DESTINATIONS: &[DestinationCatalogEntry] = &[
         runtime_destination_id: "duckdb",
         #[cfg(test)]
         expects_row_provenance: true,
-        install: |registry| registry.register(DuckDbRuntimeDriver),
+        fixture_driver: None,
         #[cfg(test)]
         inspection_uri: |root| local_uri("duckdb", &root.join("conformance.duckdb")),
         #[cfg(test)]
@@ -110,7 +107,7 @@ const DESTINATIONS: &[DestinationCatalogEntry] = &[
         runtime_destination_id: "parquet_object_store",
         #[cfg(test)]
         expects_row_provenance: true,
-        install: |registry| registry.register(ParquetRuntimeDriver),
+        fixture_driver: None,
         #[cfg(test)]
         inspection_uri: |root| local_uri("parquet", &root.join("conformance-lake")),
         #[cfg(test)]
@@ -122,7 +119,7 @@ const DESTINATIONS: &[DestinationCatalogEntry] = &[
         runtime_destination_id: "postgres",
         #[cfg(test)]
         expects_row_provenance: true,
-        install: |registry| registry.register(PostgresRuntimeDriver),
+        fixture_driver: None,
         #[cfg(test)]
         inspection_uri: |_| "postgres://localhost/conformance".to_owned(),
         #[cfg(test)]
@@ -133,7 +130,7 @@ const DESTINATIONS: &[DestinationCatalogEntry] = &[
         id: "quasar",
         runtime_destination_id: "quasar",
         expects_row_provenance: false,
-        install: |registry| registry.register(quasar::QuasarDriver),
+        fixture_driver: Some(|registry| registry.register(quasar::QuasarDriver)),
         inspection_uri: |root| local_uri("quasar", &root.join("conformance-quasar")),
         fixture: quasar_fixture,
     },
@@ -147,9 +144,11 @@ pub(crate) fn conformance_destinations() -> Vec<MatrixDestination> {
 }
 
 pub(crate) fn registry() -> Result<DestinationRegistry> {
-    let mut registry = DestinationRegistry::new();
+    let mut registry = cdf_builtin_drivers::builtin_destination_registry()?;
     for entry in DESTINATIONS {
-        (entry.install)(&mut registry)?;
+        if let Some(install) = entry.fixture_driver {
+            install(&mut registry)?;
+        }
     }
     Ok(registry)
 }

@@ -444,20 +444,7 @@ fn benchmark_schema_fields(spec: &FixtureSpec) -> Vec<String> {
 }
 
 fn benchmark_format_registry() -> BenchResult<Arc<FormatRegistry>> {
-    let mut formats = FormatRegistry::default();
-    formats.register(Arc::new(cdf_format_delimited::CsvFormatDriver::new()?))?;
-    formats.register(Arc::new(cdf_format_delimited::DelimitedFormatDriver::tsv()?))?;
-    formats.register(Arc::new(cdf_format_delimited::DelimitedFormatDriver::psv()?))?;
-    formats.register(Arc::new(
-        cdf_format_delimited::DelimitedFormatDriver::custom()?,
-    ))?;
-    formats.register(Arc::new(
-        cdf_format_delimited::FixedWidthFormatDriver::new()?
-    ))?;
-    formats.register(Arc::new(cdf_format_json::NdjsonFormatDriver::new()?))?;
-    formats.register(Arc::new(cdf_format_json::JsonDocumentFormatDriver::new()?))?;
-    formats.register(Arc::new(cdf_format_parquet::ParquetFormatDriver::new()?))?;
-    Ok(Arc::new(formats))
+    Ok(Arc::new(cdf_builtin_drivers::new_builtin_format_registry()?))
 }
 
 fn benchmark_source_registry() -> BenchResult<SourceRegistry> {

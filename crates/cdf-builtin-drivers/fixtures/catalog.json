@@ -1,0 +1,79 @@
+{
+  "sources": [
+    {
+      "id": "files",
+      "descriptor_sha256": "sha256:691ea492173fbd28df9a4492b7b2dcdaa763281f20cb91b3c44d33f14fd8656e",
+      "option_schema_sha256": "sha256:ad00e76d3d7fcb02b2931a8bf83b336063c4fc884354c1a2aa93dad2441cd537"
+    },
+    {
+      "id": "glue",
+      "descriptor_sha256": "sha256:dd2a4b6fbf5a456e32dc7140bc5e4c7d1588f2f2e4a2da43cf010b1c244c0f61",
+      "option_schema_sha256": "sha256:46cecaa126e642d9945302901c7d549a4eee0965c51af22b812337c19c8e1adf"
+    },
+    {
+      "id": "iceberg",
+      "descriptor_sha256": "sha256:8d887cf92753adbcb345293952d9a0286753177ffae51e617edaf34ed44f2306",
+      "option_schema_sha256": "sha256:506672e747c196f4d2c2f55db8b861a94ad35459a403e455a7b326a5e2b143f5"
+    },
+    {
+      "id": "postgres",
+      "descriptor_sha256": "sha256:a10bbefa63f6c975162a9f7bc4944e050c0aafa711f813ae878d164ec8b91bc9",
+      "option_schema_sha256": "sha256:744901b2ac372d3ec863c866613c69accdf2311020645b2e94ad5604ac719a84"
+    },
+    {
+      "id": "python",
+      "descriptor_sha256": "sha256:51fb6c283ac548ec0bb2b3d2f6ec70de5712b262fcf2d171b8eaa8acc31780ef",
+      "option_schema_sha256": "sha256:8fec04dde2e823475ea864ced03e8acac20633a428fd375b3c2324c72cd33bdb"
+    },
+    {
+      "id": "rest",
+      "descriptor_sha256": "sha256:5972c256582a27540dc3718e43fece0598f5521cbf0e457dd47fc25b051adbc5",
+      "option_schema_sha256": "sha256:e5667b2a88ae75e32e44357454a429ef90cbd41ec62d34466b45a44acdfa7904"
+    }
+  ],
+  "formats": [
+    {"id": "arrow_ipc", "descriptor_sha256": "sha256:dc86338fbb0d11afd926a3cfa8480edd558d932408dfafd57ec7151e1c168e34"},
+    {"id": "arrow_ipc_stream", "descriptor_sha256": "sha256:f36800b365f610da470790fca825bab32056f7e3482e5a5b44b7366c9d593845"},
+    {"id": "csv", "descriptor_sha256": "sha256:dca105f291089370db41f4a25470b7bdb36af4a47d770bdd30684969ed49b5e3"},
+    {"id": "delimited", "descriptor_sha256": "sha256:fd8f3df365f0f1cb51faee0802f452270dfc48ea15f880f41995a7dd9a924a3d"},
+    {"id": "fixed_width", "descriptor_sha256": "sha256:212c06d63290aacf5dff5e9b3d4d89405cb3383037db4b5ac19b59cb9b78bbbd"},
+    {"id": "json", "descriptor_sha256": "sha256:7d9fa581b73460ab971ce896df64d72c8619b099ebf28631a4cd4ae0effd507d"},
+    {"id": "ndjson", "descriptor_sha256": "sha256:1c02ce6b516323c2168046bc059810a77ae82016b1b438fac4eb612342b2d4ae"},
+    {"id": "parquet", "descriptor_sha256": "sha256:a2abbb3d319f613cd7b11db97b99ece44d0dbd4f89e00d7aa58f0df3484395d4"},
+    {"id": "protobuf", "descriptor_sha256": "sha256:96f0665bf53a532c2b2987b98a27d412d149e46c7d58c21d9b4266e9d9706a78"},
+    {"id": "psv", "descriptor_sha256": "sha256:74a38fef49db8c32c3c17f47cd95dc2efd9dd336416d974c8765e113a7d60441"},
+    {"id": "tsv", "descriptor_sha256": "sha256:71f59bc022b492dd796f6b96beab49201c90c6fcdecf5d943b07efee6098e05a"}
+  ],
+  "transforms": [
+    {"id": "brotli", "descriptor_sha256": "sha256:5f083d195fa4381333eeb23adf9829655f2c32084494c47e94be27587afa2398"},
+    {"id": "bzip2", "descriptor_sha256": "sha256:250863a2d612663af7c6bd24aefc618011ab37e18c6e7b09b583f8935b82d5e5"},
+    {"id": "gzip", "descriptor_sha256": "sha256:1db983c0effd80ae7a8039aca0d2ea1131b60ab69e6cac723df9d9b9e40104ca"},
+    {"id": "iso8859_1", "descriptor_sha256": "sha256:b7fb47abe590ad5d2a188bec52d7146ad41458d2510a3b43fc1e365df53e8d73"},
+    {"id": "lz4_frame", "descriptor_sha256": "sha256:5649c043f4c6f86c6cf670abfe1e273e2c004580bc20fe47eb5646922a4247ee"},
+    {"id": "snappy_framed", "descriptor_sha256": "sha256:6124427502e1a8cb3cd4c748b8fcfeb62b0e70d7eb5fc44c166c4bd3e6757b44"},
+    {"id": "text_auto", "descriptor_sha256": "sha256:7bc5eadab19505fec1d58e41ced590a01325171c0c8a2f406a13a19f34348ed1"},
+    {"id": "utf16be", "descriptor_sha256": "sha256:0da97f77e5690e371a844da23d589eeb3a87542f5756b86e8dd9fa8da538b3ee"},
+    {"id": "utf16le", "descriptor_sha256": "sha256:17cd8da23fa8ecd427302aa9ffbd8ffb80278bcc08d81533d1cc4e4de7bf70c3"},
+    {"id": "utf8", "descriptor_sha256": "sha256:efa3afe42a2d76db14963d1afd3adf488812781d578b9dc2b52ff1394107001b"},
+    {"id": "windows1252", "descriptor_sha256": "sha256:2210d6e65a07eb41482010518bc255cdcf155b6f59725366668279a12071588c"},
+    {"id": "xz", "descriptor_sha256": "sha256:f3adc9415e81a8377e1bc9ce4a3143813806db27881947f7ae5c8e64412533b5"},
+    {"id": "zstd", "descriptor_sha256": "sha256:5c17870688e94e8852382c9b613458b1f25f368b3138e8a6ba5372dbcd4ec9f1"}
+  ],
+  "destinations": [
+    {
+      "id": "duckdb",
+      "schemes": ["duckdb"],
+      "inspection_sha256": "sha256:122dc5717f44fbbb62dee1f9907eaa41ad1a3ba62b3a38c6c000a5b6774be569"
+    },
+    {
+      "id": "parquet_object_store",
+      "schemes": ["parquet"],
+      "inspection_sha256": "sha256:645a8aa05e3993d1c605f9282199e82db70f312ba0a18455ecfdb1f7b9433973"
+    },
+    {
+      "id": "postgres",
+      "schemes": ["postgres", "postgresql"],
+      "inspection_sha256": "sha256:baa1932bfbbbef85b31bfbc92ace3dc6245b024322b7201bb612cef9394f2b3c"
+    }
+  ]
+}

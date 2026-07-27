@@ -17,7 +17,7 @@ This is a parent plan and prioritization authority, not an executable implementa
 
 ### WS-A — Enforced product boundaries
 
-1. `.10x/tickets/2026-07-26-prewave-a1-builtin-driver-catalog.md`
+1. `.10x/tickets/done/2026-07-26-prewave-a1-builtin-driver-catalog.md`
 2. `.10x/tickets/2026-07-26-prewave-a2-rust-safety-lint-walls.md`
 3. `.10x/tickets/2026-07-26-prewave-a3-driver-concurrency-conformance.md`
 
@@ -124,6 +124,9 @@ program review.
   owners, and updated every conflicting active spec. Fourteen child references and all dependency
   paths resolve. `graphify-out/graph.json` exists, but the `graphify` executable is unavailable in
   this environment; verification used the current source/import/Cargo graph directly.
+- 2026-07-26: A1 closed with one process-scoped `cdf-builtin-drivers` catalog leaf, all-feature
+  Cargo-metadata boundary gates, complete catalog artifact hashes, shared
+  product/benchmark/conformance/project-test consumption, and a final delegated OCR review pass.
 
 ## Blockers
 

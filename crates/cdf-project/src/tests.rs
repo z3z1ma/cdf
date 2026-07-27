@@ -190,12 +190,7 @@ struct PreparedDiscoveredResource {
 }
 
 fn test_format_registry() -> Arc<cdf_runtime::FormatRegistry> {
-    let mut registry = cdf_runtime::FormatRegistry::default();
-    registry
-        .register(Arc::new(
-            cdf_format_arrow_ipc::ArrowIpcFileFormatDriver::new().unwrap(),
-        ))
-        .unwrap();
+    let mut registry = cdf_builtin_drivers::new_builtin_format_registry().unwrap();
     registry
         .register(Arc::new(
             cdf_format_avro::AvroOcfFormatDriver::new().unwrap(),
@@ -204,46 +199,6 @@ fn test_format_registry() -> Arc<cdf_runtime::FormatRegistry> {
     registry
         .register(Arc::new(
             cdf_format_avro::AvroSingleObjectFormatDriver::new().unwrap(),
-        ))
-        .unwrap();
-    registry
-        .register(Arc::new(
-            cdf_format_delimited::CsvFormatDriver::new().unwrap(),
-        ))
-        .unwrap();
-    registry
-        .register(Arc::new(
-            cdf_format_delimited::DelimitedFormatDriver::tsv().unwrap(),
-        ))
-        .unwrap();
-    registry
-        .register(Arc::new(
-            cdf_format_delimited::DelimitedFormatDriver::psv().unwrap(),
-        ))
-        .unwrap();
-    registry
-        .register(Arc::new(
-            cdf_format_delimited::DelimitedFormatDriver::custom().unwrap(),
-        ))
-        .unwrap();
-    registry
-        .register(Arc::new(
-            cdf_format_delimited::FixedWidthFormatDriver::new().unwrap(),
-        ))
-        .unwrap();
-    registry
-        .register(Arc::new(
-            cdf_format_parquet::ParquetFormatDriver::new().unwrap(),
-        ))
-        .unwrap();
-    registry
-        .register(Arc::new(
-            cdf_format_json::NdjsonFormatDriver::new().unwrap(),
-        ))
-        .unwrap();
-    registry
-        .register(Arc::new(
-            cdf_format_json::JsonDocumentFormatDriver::new().unwrap(),
         ))
         .unwrap();
     Arc::new(registry)
@@ -597,12 +552,7 @@ fn file_dependencies_with_execution(
     transport: FileTransportFacade,
     execution: cdf_runtime::ExecutionServices,
 ) -> FileRuntimeDependencies {
-    let mut transforms = cdf_runtime::ByteTransformRegistry::default();
-    transforms
-        .register(Arc::new(
-            cdf_transform_gzip::GzipTransformDriver::new().unwrap(),
-        ))
-        .unwrap();
+    let transforms = cdf_builtin_drivers::new_builtin_transform_registry().unwrap();
     FileRuntimeDependencies::new(
         transport.with_execution_services(execution.clone()),
         execution,

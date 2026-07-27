@@ -14,6 +14,7 @@ members = [
     "crates/cdf-state-sqlite",
     "crates/cdf-http",
     "crates/cdf-aws",
+    "crates/cdf-builtin-drivers",
     "crates/cdf-cli-core",
     "crates/cdf-format-parquet",
     "crates/cdf-format-arrow-ipc",

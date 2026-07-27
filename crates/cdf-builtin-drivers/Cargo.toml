@@ -1,0 +1,43 @@
+[package]
+name = "cdf-builtin-drivers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Deterministic first-party driver catalog composition for cdf."
+
+[features]
+bundled-duckdb = ["cdf-dest-duckdb/bundled-duckdb"]
+
+[dependencies]
+cdf-aws = { path = "../cdf-aws" }
+cdf-dest-duckdb = { path = "../cdf-dest-duckdb" }
+cdf-dest-parquet = { path = "../cdf-dest-parquet" }
+cdf-dest-postgres = { path = "../cdf-dest-postgres" }
+cdf-format-arrow-ipc = { path = "../cdf-format-arrow-ipc" }
+cdf-format-delimited = { path = "../cdf-format-delimited" }
+cdf-format-json = { path = "../cdf-format-json" }
+cdf-format-parquet = { path = "../cdf-format-parquet" }
+cdf-format-protobuf = { path = "../cdf-format-protobuf" }
+cdf-http = { path = "../cdf-http" }
+cdf-kernel = { path = "../cdf-kernel" }
+cdf-object-access = { path = "../cdf-object-access" }
+cdf-python = { path = "../cdf-python" }
+cdf-runtime = { path = "../cdf-runtime" }
+cdf-source-files = { path = "../cdf-source-files" }
+cdf-source-glue = { path = "../cdf-source-glue" }
+cdf-source-iceberg = { path = "../cdf-source-iceberg" }
+cdf-source-postgres = { path = "../cdf-source-postgres" }
+cdf-source-rest = { path = "../cdf-source-rest" }
+cdf-transform-brotli = { path = "../cdf-transform-brotli" }
+cdf-transform-bzip2 = { path = "../cdf-transform-bzip2" }
+cdf-transform-character = { path = "../cdf-transform-character" }
+cdf-transform-gzip = { path = "../cdf-transform-gzip" }
+cdf-transform-lz4 = { path = "../cdf-transform-lz4" }
+cdf-transform-snappy = { path = "../cdf-transform-snappy" }
+cdf-transform-xz = { path = "../cdf-transform-xz" }
+cdf-transform-zstd = { path = "../cdf-transform-zstd" }
+cdf-transport-http = { path = "../cdf-transport-http" }
+
+[dev-dependencies]
+serde_json = "1.0.150"

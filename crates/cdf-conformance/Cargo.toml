@@ -9,6 +9,7 @@ description = "Conformance harness boundary for cdf."
 [dependencies]
 arrow-array = "58.3.0"
 arrow-schema = "58.3.0"
+cdf-builtin-drivers = { path = "../cdf-builtin-drivers" }
 cdf-contract = { path = "../cdf-contract" }
 cdf-declarative = { path = "../cdf-declarative" }
 cdf-dest-duckdb = { path = "../cdf-dest-duckdb" }

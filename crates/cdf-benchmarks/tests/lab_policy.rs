@@ -7,10 +7,7 @@ use cdf_benchmarks::{
     destination_execution_descriptor_sha256, generate_closeout_envelope, generate_envelope,
     host_class, install_baseline, report_fixture, summarize_samples,
 };
-use cdf_dest_duckdb::DuckDbRuntimeDriver;
-use cdf_dest_parquet::ParquetRuntimeDriver;
-use cdf_dest_postgres::PostgresRuntimeDriver;
-use cdf_runtime::{DestinationRegistry, DestinationResolutionContext};
+use cdf_runtime::DestinationResolutionContext;
 
 fn workspace_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -29,10 +26,7 @@ fn first_party_destination_catalog() -> Vec<DestinationBulkCatalogEntry> {
 #[test]
 fn first_party_destination_catalog_matches_runtime_inspection() {
     let temp = tempfile::tempdir().unwrap();
-    let mut registry = DestinationRegistry::new();
-    registry.register(DuckDbRuntimeDriver).unwrap();
-    registry.register(ParquetRuntimeDriver).unwrap();
-    registry.register(PostgresRuntimeDriver).unwrap();
+    let registry = cdf_builtin_drivers::builtin_destination_registry().unwrap();
     let context = DestinationResolutionContext::for_project_inspection(temp.path());
 
     let uris = [

@@ -767,12 +767,7 @@ fn one_row_cursor_batch(
 
 fn test_file_runtime_dependencies() -> FileRuntimeDependencies {
     let execution = test_execution_services();
-    let mut formats = cdf_runtime::FormatRegistry::default();
-    formats
-        .register(Arc::new(
-            cdf_format_arrow_ipc::ArrowIpcFileFormatDriver::new().unwrap(),
-        ))
-        .unwrap();
+    let mut formats = cdf_builtin_drivers::new_builtin_format_registry().unwrap();
     formats
         .register(Arc::new(
             cdf_format_avro::AvroOcfFormatDriver::new().unwrap(),
@@ -783,52 +778,7 @@ fn test_file_runtime_dependencies() -> FileRuntimeDependencies {
             cdf_format_avro::AvroSingleObjectFormatDriver::new().unwrap(),
         ))
         .unwrap();
-    formats
-        .register(Arc::new(
-            cdf_format_delimited::CsvFormatDriver::new().unwrap(),
-        ))
-        .unwrap();
-    formats
-        .register(Arc::new(
-            cdf_format_delimited::DelimitedFormatDriver::tsv().unwrap(),
-        ))
-        .unwrap();
-    formats
-        .register(Arc::new(
-            cdf_format_delimited::DelimitedFormatDriver::psv().unwrap(),
-        ))
-        .unwrap();
-    formats
-        .register(Arc::new(
-            cdf_format_delimited::DelimitedFormatDriver::custom().unwrap(),
-        ))
-        .unwrap();
-    formats
-        .register(Arc::new(
-            cdf_format_delimited::FixedWidthFormatDriver::new().unwrap(),
-        ))
-        .unwrap();
-    formats
-        .register(Arc::new(
-            cdf_format_json::NdjsonFormatDriver::new().unwrap(),
-        ))
-        .unwrap();
-    formats
-        .register(Arc::new(
-            cdf_format_json::JsonDocumentFormatDriver::new().unwrap(),
-        ))
-        .unwrap();
-    formats
-        .register(Arc::new(
-            cdf_format_parquet::ParquetFormatDriver::new().unwrap(),
-        ))
-        .unwrap();
-    let mut transforms = cdf_runtime::ByteTransformRegistry::default();
-    transforms
-        .register(Arc::new(
-            cdf_transform_gzip::GzipTransformDriver::new().unwrap(),
-        ))
-        .unwrap();
+    let transforms = cdf_builtin_drivers::new_builtin_transform_registry().unwrap();
     FileRuntimeDependencies::new(
         FileTransportFacade::new().with_execution_services(execution.clone()),
         execution,

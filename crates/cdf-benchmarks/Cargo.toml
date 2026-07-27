@@ -15,15 +15,13 @@ arrow-schema = "58.3.0"
 arrow-select = "58.3.0"
 clap = { version = "4.6.1", default-features = false, features = ["std", "help", "usage", "error-context"] }
 cdf-bench-core = { path = "../cdf-bench-core" }
+cdf-builtin-drivers = { path = "../cdf-builtin-drivers" }
 cdf-contract = { path = "../cdf-contract" }
 cdf-declarative = { path = "../cdf-declarative" }
 cdf-dest-postgres = { path = "../cdf-dest-postgres" }
 cdf-dest-duckdb = { path = "../cdf-dest-duckdb" }
 cdf-dest-parquet = { path = "../cdf-dest-parquet" }
 cdf-engine = { path = "../cdf-engine" }
-cdf-format-delimited = { path = "../cdf-format-delimited" }
-cdf-format-json = { path = "../cdf-format-json" }
-cdf-format-parquet = { path = "../cdf-format-parquet" }
 cdf-foreign-stream = { path = "../cdf-foreign-stream" }
 cdf-http = { path = "../cdf-http" }
 cdf-kernel = { path = "../cdf-kernel" }
