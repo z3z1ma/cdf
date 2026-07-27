@@ -1,0 +1,15 @@
+[package]
+name = "cdf-dest-sql"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Typed transactional SQL destination mirror lifecycle for cdf."
+
+[dependencies]
+cdf-kernel = { path = "../cdf-kernel" }
+cdf-package-contract = { path = "../cdf-package-contract" }
+serde = { version = "1.0.228", features = ["derive"] }
+
+[lints]
+workspace = true

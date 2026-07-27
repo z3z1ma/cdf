@@ -134,7 +134,7 @@ pub struct DuckDbMirrorStateRow {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FieldPlan {
-    pub(crate) name: String,
+    pub(crate) name: cdf_dest_sql::ValidatedSqlIdentifier,
     pub(crate) sql_type: String,
     pub(crate) nullable: bool,
 }
@@ -154,8 +154,8 @@ pub(crate) struct ExistingColumn {
 
 #[derive(Clone, Debug)]
 pub(crate) struct TargetRef {
-    pub(crate) schema: String,
-    pub(crate) table: String,
+    pub(crate) schema: cdf_dest_sql::ValidatedSqlIdentifier,
+    pub(crate) table: cdf_dest_sql::ValidatedSqlIdentifier,
 }
 
 pub(crate) struct ReceiptBuildContext<'a> {
@@ -167,7 +167,7 @@ pub(crate) struct ReceiptBuildContext<'a> {
 
 impl TargetRef {
     pub(crate) fn sql_name(&self) -> String {
-        if self.schema == MAIN_SCHEMA {
+        if self.schema.as_str() == MAIN_SCHEMA {
             quote_ident(&self.table)
         } else {
             format!("{}.{}", quote_ident(&self.schema), quote_ident(&self.table))
@@ -316,12 +316,12 @@ impl DuckDbDestination {
         apply_table_plan(&conn, &table_plan, request.binding().disposition.clone())?;
         let write_target = if request.binding().disposition == WriteDisposition::Merge {
             let staging = TargetRef {
-                schema: MAIN_SCHEMA.to_owned(),
-                table: staging_table_name(),
+                schema: framework_ident(MAIN_SCHEMA),
+                table: validate_system_ident(&staging_table_name())?,
             };
             let mut staging_fields = persisted_fields.clone();
             staging_fields.push(FieldPlan {
-                name: CDF_STAGE_ORDER_COLUMN.to_owned(),
+                name: framework_ident(CDF_STAGE_ORDER_COLUMN),
                 sql_type: "UBIGINT".to_owned(),
                 nullable: false,
             });
@@ -712,7 +712,13 @@ impl DuckDbStagedIngressSession {
         let lock = self.destination.acquire_writer_lock()?;
         let conn = self.destination.open_connection()?;
         ensure_mirror_tables(&conn)?;
-        if let Some(receipt) = find_duplicate_receipt(&conn, binding.commit())? {
+        if let Some(receipt) = find_duplicate_receipt(
+            &conn,
+            binding.commit(),
+            binding.plan(),
+            binding.schema_hash(),
+            &[],
+        )? {
             return Ok(cdf_runtime::DestinationCommitOutcome::new(
                 receipt,
                 cdf_runtime::DestinationReceiptReportingPolicy::DestinationCommit {
@@ -888,7 +894,22 @@ impl cdf_runtime::StagedIngressSession for DuckDbStagedIngressSession {
                 scan_threads,
                 projection.clone(),
             )?;
-            if let Some(receipt) = find_duplicate_receipt(&writer.conn, binding.commit())? {
+            let duplicate_segment_acks = self
+                .accepted
+                .iter()
+                .map(|identity| SegmentAck {
+                    segment_id: identity.segment_id.clone(),
+                    row_count: identity.row_count,
+                    byte_count: identity.byte_count,
+                })
+                .collect::<Vec<_>>();
+            if let Some(receipt) = find_duplicate_receipt(
+                &writer.conn,
+                binding.commit(),
+                binding.plan(),
+                binding.schema_hash(),
+                &duplicate_segment_acks,
+            )? {
                 rollback_staged_writer(&mut writer, "rollback duplicate staged transaction")?;
                 return Ok(cdf_runtime::DestinationCommitOutcome::new(
                     receipt,

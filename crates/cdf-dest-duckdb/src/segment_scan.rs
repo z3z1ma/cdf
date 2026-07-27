@@ -24,7 +24,7 @@ use cdf_kernel::{BatchStats, CdfError, Result, StatisticsArrowType, StatisticsCo
 use crate::{
     CDF_ROW_KEY_COLUMN, CDF_STAGE_ORDER_COLUMN, DuckDbCommitWriter, DuckDbNativeResources,
     package::duckdb_type,
-    sql::{DuckDbFailure, quote_ident},
+    sql::{DuckDbFailure, framework_ident, quote_ident},
     table::existing_columns,
 };
 
@@ -175,7 +175,7 @@ pub(crate) fn ingest_canonical_segments(
             select_columns.push(name);
         } else if omitted_target_columns
             .as_ref()
-            .and_then(|columns| columns.get(&field.name))
+            .and_then(|columns| columns.get(field.name.as_str()))
             .and_then(|column| column.default_expression.as_ref())
             .is_some()
         {
@@ -187,15 +187,19 @@ pub(crate) fn ingest_canonical_segments(
             ));
         }
     }
-    insert_columns.push(quote_ident(CDF_ROW_KEY_COLUMN));
+    insert_columns.push(quote_ident(&framework_ident(CDF_ROW_KEY_COLUMN)));
     select_columns.push(format!(
         "CAST({first_row_key} + {} AS UBIGINT) AS {}",
-        quote_ident(cdf_package_contract::CDF_PACKAGE_ROW_ORD_FIELD),
-        quote_ident(CDF_ROW_KEY_COLUMN),
+        quote_ident(&framework_ident(
+            cdf_package_contract::CDF_PACKAGE_ROW_ORD_FIELD,
+        )),
+        quote_ident(&framework_ident(CDF_ROW_KEY_COLUMN)),
     ));
     if merge {
-        insert_columns.push(quote_ident(CDF_STAGE_ORDER_COLUMN));
-        select_columns.push(quote_ident(cdf_package_contract::CDF_PACKAGE_ROW_ORD_FIELD));
+        insert_columns.push(quote_ident(&framework_ident(CDF_STAGE_ORDER_COLUMN)));
+        select_columns.push(quote_ident(&framework_ident(
+            cdf_package_contract::CDF_PACKAGE_ROW_ORD_FIELD,
+        )));
     }
     let sql = format!(
         "INSERT INTO {} ({}) SELECT {} FROM {}()",

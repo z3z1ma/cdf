@@ -33,6 +33,7 @@ pub struct PostgresLoadPlan {
     pub system_ddl: Vec<PostgresStatement>,
     pub target_ddl: Vec<PostgresStatement>,
     pub post_write_ddl: Vec<PostgresStatement>,
+    pub idempotency_lock: PostgresStatement,
     pub idempotency_check: PostgresStatement,
     pub xid_probe: PostgresStatement,
     pub write_sql: Vec<PostgresStatement>,
@@ -46,6 +47,7 @@ impl PostgresLoadPlan {
         let mut statements = vec![PostgresStatement::execute("begin", "BEGIN")];
         statements.extend(self.system_ddl.clone());
         statements.extend(self.target_ddl.clone());
+        statements.push(self.idempotency_lock.clone());
         statements.push(self.idempotency_check.clone());
         statements.push(self.xid_probe.clone());
         statements.extend(self.write_sql.clone());
@@ -103,6 +105,7 @@ pub enum StatementExpectation {
     Execute,
     CopyBinary,
     ReturnsXid,
+    ReturnsIdempotencyLock,
     ReturnsDuplicateReceiptIfPresent,
     ReturnsZeroRows,
     ReturnsVerifyRow,
@@ -119,6 +122,7 @@ pub enum MergeDedupPolicy {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PostgresDriftHooks {
+    pub intents: Vec<cdf_dest_sql::MirrorReadIntent>,
     pub load_for_package: PostgresStatement,
     pub state_for_scope: PostgresStatement,
     pub loads_for_target: PostgresStatement,

@@ -6,6 +6,11 @@ pub fn plan_postgres_load(
     sheet: &PostgresDestinationSheet,
 ) -> Result<PostgresLoadPlan> {
     ensure_supported_disposition(&input.disposition)?;
+    if sheet.kernel.identifier_rules != postgres_identifier_rules() {
+        return Err(CdfError::contract(
+            "Postgres destination sheet identifier rules differ from the SQL adapter authority",
+        ));
+    }
     validate_columns(&input.columns)?;
     validate_merge_shape(&input)?;
 
@@ -80,6 +85,7 @@ pub fn plan_postgres_load(
         system_ddl: system_table_ddl(),
         target_ddl: migrations,
         post_write_ddl,
+        idempotency_lock: idempotency_lock_statement(),
         idempotency_check: idempotency_check_statement(),
         xid_probe: PostgresStatement::query(
             "capture_xid",

@@ -15,6 +15,7 @@ arrow-ipc = { version = "58.3.0", features = ["lz4"] }
 arrow-schema = "58.3.0"
 duckdb.workspace = true
 cdf-contract = { path = "../cdf-contract" }
+cdf-dest-sql = { path = "../cdf-dest-sql" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-package-contract = { path = "../cdf-package-contract" }
 cdf-runtime = { path = "../cdf-runtime" }

@@ -10,6 +10,7 @@ description = "Postgres destination boundary for cdf."
 arrow-array = "58.3.0"
 arrow-schema = "58.3.0"
 cdf-contract = { path = "../cdf-contract" }
+cdf-dest-sql = { path = "../cdf-dest-sql" }
 cdf-http = { path = "../cdf-http" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-memory = { path = "../cdf-memory" }

@@ -658,12 +658,10 @@ fn zero_data_append_and_replace_plans_have_only_receipt_and_state_effects() {
         let plan = destination.plan_load(zero_data_input(disposition)).unwrap();
         assert!(plan.target_ddl.is_empty());
         assert!(plan.write_sql.is_empty());
-        assert!(
-            plan.kernel
-                .migrations
-                .iter()
-                .all(|migration| migration.migration_id.starts_with("postgres.create_cdf_"))
-        );
+        assert!(plan.kernel.migrations.iter().all(|migration| {
+            migration.migration_id.starts_with("postgres.create_cdf_")
+                || migration.migration_id.starts_with("postgres.upgrade_cdf_")
+        }));
         let receipt = build_receipt(
             &plan,
             PostgresReceiptInput {
@@ -677,6 +675,7 @@ fn zero_data_append_and_replace_plans_have_only_receipt_and_state_effects() {
         .unwrap();
         assert!(receipt.segment_acks.is_empty());
         assert_eq!(receipt.counts, CommitCounts::default());
+        crate::commit::validate_postgres_duplicate_counts(&receipt).unwrap();
     }
 }
 
@@ -802,9 +801,21 @@ fn mirror_and_drift_hooks_expose_load_and_state_tables() {
     assert!(plan.drift.load_for_package.sql.contains(CDF_LOADS_TABLE));
     assert!(plan.drift.state_for_scope.sql.contains(CDF_STATE_TABLE));
     assert_eq!(
+        plan.drift.intents,
+        vec![
+            cdf_dest_sql::MirrorReadIntent::LoadForPackage,
+            cdf_dest_sql::MirrorReadIntent::StateForScope,
+            cdf_dest_sql::MirrorReadIntent::LoadsForTarget,
+            cdf_dest_sql::MirrorReadIntent::StateHeads,
+        ]
+    );
+    assert_eq!(
         plan.drift.state_heads.expectation,
         StatementExpectation::ReturnsMirrorRows
     );
+    let round_trip: PostgresLoadPlan =
+        serde_json::from_str(&serde_json::to_string(&plan).unwrap()).unwrap();
+    assert_eq!(round_trip.drift.intents, plan.drift.intents);
 }
 
 #[test]

@@ -1747,7 +1747,7 @@ fn staged_duplicate_returns_existing_receipt_without_extra_rows() {
     assert_eq!(duplicate, first);
     assert!(dest.verify_receipt(&duplicate).unwrap().verified);
 
-    let conn = Connection::open(db_path).unwrap();
+    let conn = Connection::open(&db_path).unwrap();
     let target_rows: u64 = conn
         .query_row("SELECT count(*) FROM orders", [], |row| row.get(0))
         .unwrap();
@@ -1757,6 +1757,108 @@ fn staged_duplicate_returns_existing_receipt_without_extra_rows() {
     let mirror = dest.read_mirror_snapshot_read_only().unwrap();
     assert_eq!(mirror.loads.len(), 1);
     assert_eq!(mirror.state.len(), 1);
+
+    let stored_json: String = conn
+        .query_row("SELECT receipt_json FROM _cdf_loads", [], |row| row.get(0))
+        .unwrap();
+    let mut stored: serde_json::Value = serde_json::from_str(&stored_json).unwrap();
+    stored["counts"]["rows_inserted"] = serde_json::Value::from(2_u64);
+    conn.execute(
+        "UPDATE _cdf_loads SET receipt_json = ?",
+        params![serde_json::to_string(&stored).unwrap()],
+    )
+    .unwrap();
+    drop(conn);
+    let error = try_commit_current(&dest, request.clone()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("independently stored load evidence"),
+        "{error}"
+    );
+
+    let conn = Connection::open(&db_path).unwrap();
+    let mut migration_tamper: serde_json::Value = serde_json::from_str(&stored_json).unwrap();
+    let migrations = migration_tamper["migrations"].as_array_mut().unwrap();
+    assert!(!migrations.is_empty());
+    migrations[0]["description"] = serde_json::Value::String("tampered DDL".to_owned());
+    conn.execute(
+        "UPDATE _cdf_loads SET receipt_json = ?",
+        params![serde_json::to_string(&migration_tamper).unwrap()],
+    )
+    .unwrap();
+    drop(conn);
+    let error = try_commit_current(&dest, request).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("independently stored load evidence"),
+        "{error}"
+    );
+}
+
+#[test]
+fn mirror_failure_rolls_back_payload_load_state_and_row_key_mutations() {
+    let temp = tempfile::tempdir().unwrap();
+    let package = temp.path().join("pkg-mirror-rollback");
+    let package_hash = build_package(
+        &package,
+        "pkg-mirror-rollback",
+        &[sample_batch(
+            vec![1, 2, 3],
+            vec![Some("ada"), Some("grace"), None],
+        )],
+    );
+    let db_path = temp.path().join("local.duckdb");
+    let dest = destination(&db_path);
+    let conn = Connection::open(&db_path).unwrap();
+    crate::mirrors::ensure_mirror_tables(&conn).unwrap();
+    conn.execute_batch(
+        "DROP TABLE _cdf_state;
+         CREATE TABLE _cdf_state (
+           target VARCHAR NOT NULL,
+           package_hash VARCHAR NOT NULL,
+           segment_id VARCHAR NOT NULL,
+           idempotency_token VARCHAR NOT NULL,
+           scope_json VARCHAR,
+           output_position_json VARCHAR,
+           row_count UBIGINT NOT NULL CHECK (row_count = 0),
+           byte_count UBIGINT NOT NULL,
+           committed_at_ms BIGINT NOT NULL,
+           PRIMARY KEY (target, package_hash, segment_id)
+         );",
+    )
+    .unwrap();
+    drop(conn);
+    let request = request(
+        &package,
+        package_hash,
+        WriteDisposition::Append,
+        Vec::new(),
+        3,
+    );
+
+    let error = try_commit_current(&dest, request).unwrap_err();
+    assert!(error.to_string().contains("_cdf_state"), "{error}");
+
+    let conn = Connection::open(db_path).unwrap();
+    let target_present: bool = conn
+        .query_row(
+            "SELECT count(*) > 0 FROM information_schema.tables WHERE table_schema = 'main' AND table_name = 'orders'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let loads: u64 = conn
+        .query_row("SELECT count(*) FROM _cdf_loads", [], |row| row.get(0))
+        .unwrap();
+    let state: u64 = conn
+        .query_row("SELECT count(*) FROM _cdf_state", [], |row| row.get(0))
+        .unwrap();
+    assert!(!target_present);
+    assert_eq!(loads, 0);
+    assert_eq!(state, 0);
+    assert_eq!(crate::mirrors::next_row_key(&conn).unwrap(), 1);
 }
 
 #[test]
@@ -1852,11 +1954,12 @@ fn zero_data_append_and_replace_record_receipts_without_mutating_target_data() {
         Vec::new(),
         Vec::new(),
     );
-    let append_receipt = commit_current(&dest, empty_append).receipt;
+    let append_receipt = commit_current(&dest, empty_append.clone()).receipt;
     assert!(append_receipt.segment_acks.is_empty());
     assert!(append_receipt.migrations.is_empty());
     assert_eq!(append_receipt.counts, CommitCounts::default());
     assert!(dest.verify_receipt(&append_receipt).unwrap().verified);
+    assert_eq!(commit_current(&dest, empty_append).receipt, append_receipt);
 
     let conn = Connection::open(&db_path).unwrap();
     let target_tables: u64 = conn
@@ -1919,11 +2022,15 @@ fn zero_data_append_and_replace_record_receipts_without_mutating_target_data() {
         Vec::new(),
         Vec::new(),
     );
-    let replace_receipt = commit_current(&dest, empty_replace).receipt;
+    let replace_receipt = commit_current(&dest, empty_replace.clone()).receipt;
     assert!(replace_receipt.segment_acks.is_empty());
     assert!(replace_receipt.migrations.is_empty());
     assert_eq!(replace_receipt.counts, CommitCounts::default());
     assert!(dest.verify_receipt(&replace_receipt).unwrap().verified);
+    assert_eq!(
+        commit_current(&dest, empty_replace).receipt,
+        replace_receipt
+    );
 
     let conn = Connection::open(&db_path).unwrap();
     let target_rows: u64 = conn
@@ -2569,6 +2676,32 @@ fn addressed_correction_adds_nullable_column_preserves_residuals_and_replays_as_
         .map(|row| row.unwrap())
         .collect();
     assert_eq!(ages, vec![42, 84]);
+
+    let stored_json: String = conn
+        .query_row(
+            "SELECT receipt_json FROM _cdf_loads WHERE package_hash = ?",
+            params![correction.correction_package_hash.as_str()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut stored: serde_json::Value = serde_json::from_str(&stored_json).unwrap();
+    stored["destination"] = serde_json::Value::String("tampered".to_owned());
+    conn.execute(
+        "UPDATE _cdf_loads SET receipt_json = ? WHERE package_hash = ?",
+        params![
+            serde_json::to_string(&stored).unwrap(),
+            correction.correction_package_hash.as_str()
+        ],
+    )
+    .unwrap();
+    drop(conn);
+    let error = reopened.plan_correction(&correction).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("independently stored load evidence"),
+        "{error}"
+    );
 }
 
 #[test]

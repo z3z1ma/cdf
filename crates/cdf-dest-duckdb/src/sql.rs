@@ -4,21 +4,14 @@ use crate::*;
 pub(crate) fn parse_target(target: &TargetName) -> Result<TargetRef> {
     let parts = target.as_str().split('.').collect::<Vec<_>>();
     match parts.as_slice() {
-        [table] => {
-            validate_ident(table)?;
-            Ok(TargetRef {
-                schema: MAIN_SCHEMA.to_owned(),
-                table: (*table).to_owned(),
-            })
-        }
-        [schema, table] => {
-            validate_ident(schema)?;
-            validate_ident(table)?;
-            Ok(TargetRef {
-                schema: (*schema).to_owned(),
-                table: (*table).to_owned(),
-            })
-        }
+        [table] => Ok(TargetRef {
+            schema: validate_system_ident(MAIN_SCHEMA)?,
+            table: validate_ident(table)?,
+        }),
+        [schema, table] => Ok(TargetRef {
+            schema: validate_ident(schema)?,
+            table: validate_ident(table)?,
+        }),
         _ => Err(CdfError::contract(format!(
             "DuckDB target {} must be a namecase-v1 table or schema.table identifier",
             target.as_str()
@@ -26,26 +19,25 @@ pub(crate) fn parse_target(target: &TargetName) -> Result<TargetRef> {
     }
 }
 
-pub(crate) fn validate_ident(identifier: &str) -> Result<()> {
-    let mut chars = identifier.chars();
-    let Some(first) = chars.next() else {
-        return Err(CdfError::contract("DuckDB identifier cannot be empty"));
-    };
-    if !(first == '_' || first.is_ascii_lowercase()) {
-        return Err(CdfError::contract(format!(
-            "DuckDB identifier {identifier:?} must start with a lowercase letter or underscore"
-        )));
-    }
-    if !chars.all(|ch| ch == '_' || ch.is_ascii_lowercase() || ch.is_ascii_digit()) {
-        return Err(CdfError::contract(format!(
-            "DuckDB identifier {identifier:?} must contain only lowercase letters, digits, and underscores"
-        )));
-    }
-    Ok(())
+pub(crate) fn validate_ident(identifier: &str) -> Result<cdf_dest_sql::ValidatedSqlIdentifier> {
+    cdf_dest_sql::ValidatedSqlIdentifier::user(&crate::sheet::duckdb_identifier_rules(), identifier)
 }
 
-pub(crate) fn quote_ident(identifier: &str) -> String {
-    format!("\"{}\"", identifier.replace('"', "\"\""))
+pub(crate) fn validate_system_ident(
+    identifier: &str,
+) -> Result<cdf_dest_sql::ValidatedSqlIdentifier> {
+    cdf_dest_sql::ValidatedSqlIdentifier::system(
+        &crate::sheet::duckdb_identifier_rules(),
+        identifier,
+    )
+}
+
+pub(crate) fn framework_ident(identifier: &'static str) -> cdf_dest_sql::ValidatedSqlIdentifier {
+    validate_system_ident(identifier).expect("framework identifier must satisfy DuckDB sheet rules")
+}
+
+pub(crate) fn quote_ident(identifier: &cdf_dest_sql::ValidatedSqlIdentifier) -> String {
+    format!("\"{}\"", identifier.as_str().replace('"', "\"\""))
 }
 
 pub(crate) fn disposition_name(disposition: &WriteDisposition) -> &'static str {

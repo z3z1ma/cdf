@@ -1,5 +1,12 @@
 use crate::*;
 use crate::{api::*, sql::*};
+use cdf_dest_sql::{
+    LoadMirrorKey, LoadMirrorMutation, LoadMirrorRow, MirrorCommit, MirrorInsertOutcome,
+    QuarantineMirrorKey, QuarantineMirrorMutation, QuarantineMirrorRow, SegmentMirrorMutation,
+    SegmentMirrorPolicy, SegmentMirrorRow, SegmentRowRange, StateMirrorKey, StateMirrorMutation,
+    StateMirrorRow, TransactionalMirrorBackend, TransactionalMirrorManager,
+};
+use cdf_kernel::IdempotencyToken;
 
 pub(crate) fn ensure_mirror_tables(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -20,11 +27,15 @@ pub(crate) fn ensure_mirror_tables(conn: &Connection) -> Result<()> {
             rows_inserted UBIGINT,
             rows_updated UBIGINT,
             rows_deleted UBIGINT,
+            segment_count UBIGINT NOT NULL,
+            migrations_json VARCHAR NOT NULL,
             receipt_id VARCHAR NOT NULL,
             receipt_json VARCHAR NOT NULL,
             committed_at_ms BIGINT NOT NULL,
             PRIMARY KEY (target, idempotency_token)
         );
+        ALTER TABLE _cdf_loads ADD COLUMN IF NOT EXISTS segment_count UBIGINT;
+        ALTER TABLE _cdf_loads ADD COLUMN IF NOT EXISTS migrations_json VARCHAR;
         CREATE TABLE IF NOT EXISTS _cdf_state (
             target VARCHAR NOT NULL,
             package_hash VARCHAR NOT NULL,
@@ -85,18 +96,280 @@ pub(crate) fn advance_row_key_allocator(
 pub(crate) fn find_duplicate_receipt(
     conn: &Connection,
     request: &DestinationCommitRequest,
+    plan: &CommitPlan,
+    schema_hash: &SchemaHash,
+    segment_acks: &[SegmentAck],
 ) -> Result<Option<Receipt>> {
-    let receipt_json: Option<String> = conn
+    find_duplicate_receipt_with(
+        conn,
+        &LoadMirrorKey {
+            target: request.target.clone(),
+            package_hash: request.package_hash.clone(),
+            idempotency_token: request.idempotency_token.clone(),
+        },
+        |stored| expected_duckdb_duplicate(stored, request, plan, schema_hash, segment_acks),
+    )
+}
+
+pub(crate) fn find_duplicate_receipt_with<F>(
+    conn: &Connection,
+    key: &LoadMirrorKey,
+    expected_logical_receipt: F,
+) -> Result<Option<Receipt>>
+where
+    F: FnOnce(&Receipt) -> Result<Receipt>,
+{
+    let mut backend = DuckDbMirrorBackend { conn };
+    TransactionalMirrorManager::new(&mut backend).find_duplicate(key, expected_logical_receipt)
+}
+
+struct DuckDbMirrorBackend<'a> {
+    conn: &'a Connection,
+}
+
+impl TransactionalMirrorBackend for DuckDbMirrorBackend<'_> {
+    fn read_load(&mut self, key: &LoadMirrorKey) -> Result<Option<LoadMirrorRow>> {
+        read_load(self.conn, key)
+    }
+
+    fn insert_load(
+        &mut self,
+        mutation: &LoadMirrorMutation,
+    ) -> Result<MirrorInsertOutcome<LoadMirrorRow>> {
+        insert_load(self.conn, mutation)?;
+        read_load(self.conn, &mutation.key())?
+            .map(MirrorInsertOutcome::Inserted)
+            .ok_or_else(|| CdfError::destination("DuckDB load mirror is absent after insertion"))
+    }
+
+    fn read_state(&mut self, _key: &StateMirrorKey) -> Result<Option<StateMirrorRow>> {
+        Ok(None)
+    }
+
+    fn upsert_state(
+        &mut self,
+        _mutation: &StateMirrorMutation,
+    ) -> Result<MirrorInsertOutcome<StateMirrorRow>> {
+        Err(CdfError::internal(
+            "DuckDB mirror backend received unsupported checkpoint-head state mutation",
+        ))
+    }
+
+    fn insert_segment(
+        &mut self,
+        mutation: &SegmentMirrorMutation,
+    ) -> Result<MirrorInsertOutcome<SegmentMirrorRow>> {
+        insert_segment(self.conn, mutation)?;
+        read_segment(self.conn, mutation)?
+            .map(MirrorInsertOutcome::Inserted)
+            .ok_or_else(|| CdfError::destination("DuckDB segment mirror is absent after insertion"))
+    }
+
+    fn read_segment(
+        &mut self,
+        mutation: &SegmentMirrorMutation,
+    ) -> Result<Option<SegmentMirrorRow>> {
+        read_segment(self.conn, mutation)
+    }
+
+    fn insert_quarantine(
+        &mut self,
+        _mutation: &QuarantineMirrorMutation,
+    ) -> Result<MirrorInsertOutcome<QuarantineMirrorRow>> {
+        Err(CdfError::internal(
+            "DuckDB mirror backend received unsupported quarantine mutation",
+        ))
+    }
+
+    fn read_quarantine(
+        &mut self,
+        _key: &QuarantineMirrorKey,
+    ) -> Result<Option<QuarantineMirrorRow>> {
+        Err(CdfError::internal(
+            "DuckDB mirror backend received unsupported quarantine readback",
+        ))
+    }
+}
+
+fn expected_duckdb_duplicate(
+    stored: &Receipt,
+    request: &DestinationCommitRequest,
+    plan: &CommitPlan,
+    schema_hash: &SchemaHash,
+    segment_acks: &[SegmentAck],
+) -> Result<Receipt> {
+    if plan.target != request.target || plan.disposition != request.disposition {
+        return Err(CdfError::contract(
+            "DuckDB duplicate request differs from its typed commit plan",
+        ));
+    }
+    if !plan.migrations.is_empty() && plan.migrations != stored.migrations {
+        return Err(CdfError::destination(
+            "DuckDB duplicate receipt migrations differ from the applicable commit plan",
+        ));
+    }
+    validate_duckdb_duplicate_counts(stored, segment_acks)?;
+    let mut expected = stored.clone();
+    expected.receipt_id = ReceiptId::new(format!(
+        "duckdb:{}:{}",
+        request.target.as_str(),
+        request.idempotency_token.as_str()
+    ))?;
+    expected.destination = DestinationId::new(DESTINATION_ID)?;
+    expected.target = request.target.clone();
+    expected.package_hash = request.package_hash.clone();
+    expected.segment_acks = segment_acks.to_vec();
+    expected.disposition = request.disposition.clone();
+    expected.idempotency_token = request.idempotency_token.clone();
+    expected.schema_hash = schema_hash.clone();
+    // A replay plans against the already-migrated target, so its current dry plan legitimately
+    // omits the historical DDL recorded by the first physical commit. The stored receipt remains
+    // the migration authority; generic package receipt reconciliation compares it to the
+    // package-recorded logical receipt before checkpointing.
+    expected.migrations = stored.migrations.clone();
+    Ok(expected)
+}
+
+fn validate_duckdb_duplicate_counts(stored: &Receipt, segment_acks: &[SegmentAck]) -> Result<()> {
+    let rows = segment_acks.iter().try_fold(0_u64, |total, ack| {
+        total
+            .checked_add(ack.row_count)
+            .ok_or_else(|| CdfError::data("DuckDB duplicate row count overflowed"))
+    })?;
+    let counts = &stored.counts;
+    let valid = if segment_acks.is_empty() {
+        counts == &CommitCounts::default()
+    } else {
+        counts.rows_written == rows
+            && match stored.disposition {
+                WriteDisposition::Append | WriteDisposition::Replace => {
+                    counts.rows_inserted == Some(rows)
+                        && counts.rows_updated == Some(0)
+                        && counts.rows_deleted == Some(0)
+                }
+                WriteDisposition::Merge => counts
+                    .rows_inserted
+                    .zip(counts.rows_updated)
+                    .is_some_and(|(inserted, updated)| {
+                        inserted.checked_add(updated) == Some(rows)
+                            && counts.rows_deleted == Some(0)
+                    }),
+                WriteDisposition::CdcApply => false,
+            }
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(CdfError::destination(
+            "DuckDB duplicate receipt counts contradict its segment acknowledgements",
+        ))
+    }
+}
+
+type DuckDbLoadEvidenceRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    u64,
+    Option<u64>,
+    Option<u64>,
+    Option<u64>,
+    Option<u64>,
+    Option<String>,
+    i64,
+);
+
+fn read_load(conn: &Connection, key: &LoadMirrorKey) -> Result<Option<LoadMirrorRow>> {
+    let row: Option<DuckDbLoadEvidenceRow> = conn
         .query_row(
-            "SELECT receipt_json FROM _cdf_loads WHERE target = ? AND idempotency_token = ?",
-            params![request.target.as_str(), request.idempotency_token.as_str()],
-            |row| row.get(0),
+            "SELECT receipt_json, receipt_id, destination, target, package_hash, idempotency_token, disposition, schema_hash, rows_written, rows_inserted, rows_updated, rows_deleted, segment_count, migrations_json, committed_at_ms \
+             FROM _cdf_loads WHERE target = ? AND package_hash = ? AND idempotency_token = ?",
+            params![
+                key.target.as_str(),
+                key.package_hash.as_str(),
+                key.idempotency_token.as_str()
+            ],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                    row.get(11)?,
+                    row.get(12)?,
+                    row.get(13)?,
+                    row.get(14)?,
+                ))
+            },
         )
         .optional()
         .map_err(|error| duckdb_error("query DuckDB idempotency mirror", error))?;
-    receipt_json
-        .map(|json| serde_json::from_str(&json).map_err(json_error))
-        .transpose()
+    row.map(decode_duckdb_load_row).transpose()
+}
+
+fn decode_duckdb_load_row(row: DuckDbLoadEvidenceRow) -> Result<LoadMirrorRow> {
+    let (
+        receipt_json,
+        receipt_id,
+        destination,
+        target,
+        package_hash,
+        idempotency_token,
+        disposition,
+        schema_hash,
+        rows_written,
+        rows_inserted,
+        rows_updated,
+        rows_deleted,
+        segment_count,
+        migrations_json,
+        committed_at_ms,
+    ) = row;
+    let receipt: Receipt = serde_json::from_str(&receipt_json).map_err(json_error)?;
+    let migrations_json = migrations_json.ok_or_else(|| {
+        CdfError::data(
+            "DuckDB load mirror predates independent migration evidence; replay fails closed",
+        )
+    })?;
+    let migrations: Vec<MigrationRecord> =
+        serde_json::from_str(&migrations_json).map_err(json_error)?;
+    let segment_count = segment_count.ok_or_else(|| {
+        CdfError::data(
+            "DuckDB load mirror predates independent segment-count evidence; replay fails closed",
+        )
+    })?;
+    if receipt.receipt_id.as_str() != receipt_id
+        || receipt.destination.as_str() != destination
+        || receipt.target.as_str() != target
+        || receipt.package_hash.as_str() != package_hash
+        || receipt.idempotency_token.as_str() != idempotency_token
+        || disposition_name(&receipt.disposition) != disposition
+        || receipt.schema_hash.as_str() != schema_hash
+        || receipt.counts.rows_written != rows_written
+        || receipt.counts.rows_inserted != rows_inserted
+        || receipt.counts.rows_updated != rows_updated
+        || receipt.counts.rows_deleted != rows_deleted
+        || receipt.segment_acks.len() as u64 != segment_count
+        || receipt.migrations != migrations
+        || receipt.committed_at_ms != committed_at_ms
+    {
+        return Err(CdfError::data(
+            "DuckDB receipt JSON differs from independently stored load evidence",
+        ));
+    }
+    Ok(LoadMirrorRow { receipt })
 }
 
 pub(crate) fn insert_mirrors(
@@ -107,11 +380,31 @@ pub(crate) fn insert_mirrors(
     first_row_key: Option<u64>,
     segment_identities: Option<&[cdf_runtime::StagedSegmentIdentity]>,
 ) -> Result<()> {
+    let row_ranges = segment_row_ranges(segment_acks, first_row_key, segment_identities)?;
+    let commit = MirrorCommit::new(
+        receipt.clone(),
+        None,
+        None,
+        &commit.segments,
+        row_ranges,
+        SegmentMirrorPolicy::Persist {
+            require_row_ranges: false,
+        },
+    )?;
+    let mut backend = DuckDbMirrorBackend { conn };
+    TransactionalMirrorManager::new(&mut backend)
+        .apply(commit)
+        .map(|_| ())
+}
+
+fn insert_load(conn: &Connection, mutation: &LoadMirrorMutation) -> Result<()> {
+    let receipt = &mutation.receipt;
     let receipt_json = serde_json::to_string(receipt).map_err(json_error)?;
+    let migrations_json = serde_json::to_string(&receipt.migrations).map_err(json_error)?;
     conn.execute(
         "INSERT INTO _cdf_loads \
-         (target, idempotency_token, package_hash, destination, disposition, schema_hash, rows_written, rows_inserted, rows_updated, rows_deleted, receipt_id, receipt_json, committed_at_ms) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         (target, idempotency_token, package_hash, destination, disposition, schema_hash, rows_written, rows_inserted, rows_updated, rows_deleted, segment_count, migrations_json, receipt_id, receipt_json, committed_at_ms) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             receipt.target.as_str(),
             receipt.idempotency_token.as_str(),
@@ -123,50 +416,185 @@ pub(crate) fn insert_mirrors(
             receipt.counts.rows_inserted,
             receipt.counts.rows_updated,
             receipt.counts.rows_deleted,
+            receipt.segment_acks.len() as u64,
+            migrations_json,
             receipt.receipt_id.as_str(),
             receipt_json,
             receipt.committed_at_ms,
         ],
     )
     .map_err(|error| duckdb_error("insert DuckDB _cdf_loads row", error))?;
+    Ok(())
+}
 
-    let state_by_segment = commit
-        .segments
-        .iter()
-        .map(|segment| (segment.segment_id.as_str(), segment))
-        .collect::<BTreeMap<_, _>>();
-    for ack in segment_acks {
-        let state = state_by_segment.get(ack.segment_id.as_str()).copied();
-        let scope_json = state
-            .map(|segment| serde_json::to_string(&segment.scope).map_err(json_error))
-            .transpose()?;
-        let position_json = state
-            .map(|segment| serde_json::to_string(&segment.output_position).map_err(json_error))
-            .transpose()?;
-        conn.execute(
-            "INSERT INTO _cdf_state \
-             (target, package_hash, segment_id, idempotency_token, scope_json, output_position_json, row_count, byte_count, committed_at_ms) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+fn insert_segment(conn: &Connection, mutation: &SegmentMirrorMutation) -> Result<()> {
+    let scope_json = mutation
+        .scope
+        .as_ref()
+        .map(|scope| serde_json::to_string(scope).map_err(json_error))
+        .transpose()?;
+    let position_json = mutation
+        .output_position
+        .as_ref()
+        .map(|position| serde_json::to_string(position).map_err(json_error))
+        .transpose()?;
+    conn.execute(
+        "INSERT INTO _cdf_state \
+         (target, package_hash, segment_id, idempotency_token, scope_json, output_position_json, row_count, byte_count, committed_at_ms) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        params![
+            mutation.target.as_str(),
+            mutation.package_hash.as_str(),
+            mutation.segment_id.as_str(),
+            mutation.idempotency_token.as_str(),
+            scope_json,
+            position_json,
+            mutation.row_count,
+            mutation.byte_count,
+            mutation.committed_at_ms,
+        ],
+    )
+    .map_err(|error| duckdb_error("insert DuckDB _cdf_state row", error))?;
+    if let Some(range) = &mutation.row_range {
+        let changed = conn
+            .execute(
+            "INSERT INTO _cdf_segments (row_key_start, row_key_end, target, package_hash, segment_id) \
+             SELECT ?, ?, ?, ?, ? \
+             WHERE NOT EXISTS ( \
+                 SELECT 1 FROM _cdf_segments \
+                 WHERE row_key_start < ? AND row_key_end > ? \
+             )",
             params![
-                receipt.target.as_str(),
-                receipt.package_hash.as_str(),
-                ack.segment_id.as_str(),
-                receipt.idempotency_token.as_str(),
-                scope_json,
-                position_json,
-                ack.row_count,
-                ack.byte_count,
-                receipt.committed_at_ms,
+                range.row_key_start,
+                range.row_key_end,
+                mutation.target.as_str(),
+                mutation.package_hash.as_str(),
+                mutation.segment_id.as_str(),
+                range.row_key_end,
+                range.row_key_start,
             ],
         )
-        .map_err(|error| duckdb_error("insert DuckDB _cdf_state row", error))?;
-        if let Some(first_row_key) = first_row_key {
-            let identity = segment_identities
-                .and_then(|identities| {
-                    identities
-                        .iter()
-                        .find(|identity| identity.segment_id == ack.segment_id)
-                })
+        .map_err(|error| duckdb_error("insert DuckDB _cdf_segments row", error))?;
+        if changed != 1 {
+            return Err(CdfError::data(
+                "DuckDB segment row range overlaps committed provenance",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn read_segment(
+    conn: &Connection,
+    mutation: &SegmentMirrorMutation,
+) -> Result<Option<SegmentMirrorRow>> {
+    type Row = (
+        String,
+        Option<String>,
+        Option<String>,
+        u64,
+        u64,
+        i64,
+        Option<u64>,
+        Option<u64>,
+    );
+    let row: Option<Row> = conn
+        .query_row(
+            "SELECT \"state\".idempotency_token, \"state\".scope_json, \"state\".output_position_json, \
+             \"state\".row_count, \"state\".byte_count, \"state\".committed_at_ms, \
+             \"range\".row_key_start, \"range\".row_key_end \
+             FROM _cdf_state AS \"state\" \
+             LEFT JOIN _cdf_segments AS \"range\" \
+               ON \"range\".target = \"state\".target \
+              AND \"range\".package_hash = \"state\".package_hash \
+              AND \"range\".segment_id = \"state\".segment_id \
+             WHERE \"state\".target = ? AND \"state\".package_hash = ? AND \"state\".segment_id = ?",
+            params![
+                mutation.target.as_str(),
+                mutation.package_hash.as_str(),
+                mutation.segment_id.as_str()
+            ],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| duckdb_error("read DuckDB segment mirror", error))?;
+    row.map(
+        |(
+            idempotency_token,
+            scope_json,
+            output_position_json,
+            row_count,
+            byte_count,
+            committed_at_ms,
+            row_key_start,
+            row_key_end,
+        )| {
+            let scope = scope_json
+                .map(|json| serde_json::from_str(&json).map_err(json_error))
+                .transpose()?;
+            let output_position = output_position_json
+                .map(|json| serde_json::from_str(&json).map_err(json_error))
+                .transpose()?;
+            let row_range = match (row_key_start, row_key_end) {
+                (Some(row_key_start), Some(row_key_end)) => Some(SegmentRowRange {
+                    segment_id: mutation.segment_id.clone(),
+                    row_key_start,
+                    row_key_end,
+                }),
+                (None, None) => None,
+                _ => {
+                    return Err(CdfError::data(
+                        "DuckDB segment mirror contains a partial row range",
+                    ));
+                }
+            };
+            Ok(SegmentMirrorRow {
+                mutation: SegmentMirrorMutation {
+                    target: mutation.target.clone(),
+                    package_hash: mutation.package_hash.clone(),
+                    idempotency_token: IdempotencyToken::new(idempotency_token)?,
+                    segment_id: mutation.segment_id.clone(),
+                    scope,
+                    output_position,
+                    row_count,
+                    byte_count,
+                    committed_at_ms,
+                    row_range,
+                },
+            })
+        },
+    )
+    .transpose()
+}
+
+fn segment_row_ranges(
+    segment_acks: &[SegmentAck],
+    first_row_key: Option<u64>,
+    segment_identities: Option<&[cdf_runtime::StagedSegmentIdentity]>,
+) -> Result<Vec<SegmentRowRange>> {
+    let Some(first_row_key) = first_row_key else {
+        return Ok(Vec::new());
+    };
+    let identities = segment_identities.ok_or_else(|| {
+        CdfError::internal("DuckDB row-key mirror requires canonical segment identities")
+    })?;
+    segment_acks
+        .iter()
+        .map(|ack| {
+            let identity = identities
+                .iter()
+                .find(|identity| identity.segment_id == ack.segment_id)
                 .ok_or_else(|| {
                     CdfError::internal(format!(
                         "DuckDB segment {} is missing canonical ordinal identity",
@@ -185,20 +613,13 @@ pub(crate) fn insert_mirrors(
             let row_key_end = row_key_start
                 .checked_add(ack.row_count)
                 .ok_or_else(|| CdfError::data("DuckDB segment row-key range overflowed"))?;
-            conn.execute(
-                "INSERT INTO _cdf_segments (row_key_start, row_key_end, target, package_hash, segment_id) VALUES (?, ?, ?, ?, ?)",
-                params![
-                    row_key_start,
-                    row_key_end,
-                    receipt.target.as_str(),
-                    receipt.package_hash.as_str(),
-                    ack.segment_id.as_str(),
-                ],
-            )
-            .map_err(|error| duckdb_error("insert DuckDB _cdf_segments row", error))?;
-        }
-    }
-    Ok(())
+            Ok(SegmentRowRange {
+                segment_id: ack.segment_id.clone(),
+                row_key_start,
+                row_key_end,
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn read_mirror_snapshot(conn: &Connection) -> Result<DuckDbMirrorSnapshot> {

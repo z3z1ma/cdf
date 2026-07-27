@@ -2,6 +2,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use postgres::{Client, NoTls, Row};
 
+use cdf_dest_sql::{
+    LoadMirrorKey, LoadMirrorMutation, LoadMirrorRow, MirrorCommit, MirrorInsertOutcome,
+    QuarantineMirrorKey, QuarantineMirrorMutation, QuarantineMirrorRow, SegmentMirrorMutation,
+    SegmentMirrorPolicy, SegmentMirrorRow, SegmentRowRange, StateMirrorKey, StateMirrorMutation,
+    StateMirrorRow, TransactionalMirrorBackend, TransactionalMirrorManager,
+};
+use cdf_kernel::CheckpointId;
+
 use crate::{
     binary_copy::BinaryCopyEncoder, dml::*, package::*, rows::validate_schema_matches_plan,
     validate::*, *,
@@ -171,7 +179,12 @@ impl PostgresCommitSession {
             .map_err(|error| postgres_error("abort Postgres transaction", error))
     }
 
-    fn write_accepted_segments(&mut self, copied_rows: u64, deleted_rows: u64) -> Result<()> {
+    fn write_accepted_segments(
+        &mut self,
+        copied_rows: u64,
+        deleted_rows: u64,
+        row_ranges: Vec<SegmentRowRange>,
+    ) -> Result<()> {
         if self.duplicate_receipt.is_some() {
             self.phase = PostgresCommitSessionPhase::Written;
             return Ok(());
@@ -199,11 +212,13 @@ impl PostgresCommitSession {
                 duplicate: false,
             },
         )?;
-        insert_load_mirror(&mut client, &self.plan, &receipt)?;
-        if let Some(delta) = &self.plan.state_delta {
-            upsert_state_mirror(&mut client, &self.plan, &receipt, delta)?;
-        }
-        insert_quarantine_mirror(&mut client, self.package.as_ref(), &self.plan, &receipt)?;
+        apply_mirror_commit(
+            &mut client,
+            self.package.as_ref(),
+            &self.plan,
+            &receipt,
+            row_ranges,
+        )?;
         verify_receipt_in_transaction(&mut client, &receipt)?;
         self.receipt = Some(receipt);
         self.client = Some(client);
@@ -243,7 +258,7 @@ impl CommitSession for PostgresCommitSession {
         self.client = Some(client);
         self.phase = PostgresCommitSessionPhase::MigrationsApplied;
         if self.expected_segments.is_empty() {
-            self.write_accepted_segments(0, 0)?;
+            self.write_accepted_segments(0, 0, Vec::new())?;
         }
         Ok(())
     }
@@ -285,6 +300,7 @@ impl CommitSession for PostgresCommitSession {
                 copied_rows,
                 deleted_rows: 0,
                 acknowledgements,
+                row_ranges: Vec::new(),
             }
         } else {
             let package_row_key_start = self.first_row_key.ok_or_else(|| {
@@ -307,7 +323,11 @@ impl CommitSession for PostgresCommitSession {
         };
         require_complete_package_segments(&accepted_segments, &self.expected_segments)?;
         self.accepted_segments = accepted_segments;
-        self.write_accepted_segments(outcome.copied_rows, outcome.deleted_rows)?;
+        self.write_accepted_segments(
+            outcome.copied_rows,
+            outcome.deleted_rows,
+            outcome.row_ranges,
+        )?;
         Ok(outcome.acknowledgements)
     }
 
@@ -470,16 +490,76 @@ fn execute_statements(client: &mut Client, statements: &[PostgresStatement]) -> 
 }
 
 fn find_duplicate_receipt(client: &mut Client, plan: &PostgresLoadPlan) -> Result<Option<Receipt>> {
-    let target = plan.kernel.target.as_str();
-    let package_hash = plan.package_hash.as_str();
-    let row = client
-        .query_opt(&plan.idempotency_check.sql, &[&target, &package_hash])
-        .map_err(|error| postgres_error("query Postgres _cdf_loads idempotency", error))?;
-    row.map(|row| {
-        let json: String = row.get(0);
-        serde_json::from_str(&json).map_err(json_error)
-    })
-    .transpose()
+    let mut backend = PostgresMirrorBackend { client, plan };
+    TransactionalMirrorManager::new(&mut backend).find_duplicate(
+        &LoadMirrorKey {
+            target: plan.kernel.target.clone(),
+            package_hash: plan.package_hash.clone(),
+            idempotency_token: plan.idempotency_token.clone(),
+        },
+        |stored| expected_postgres_duplicate(plan, stored),
+    )
+}
+
+fn expected_postgres_duplicate(plan: &PostgresLoadPlan, stored: &Receipt) -> Result<Receipt> {
+    validate_postgres_duplicate_counts(stored)?;
+    let xid = stored
+        .transaction
+        .as_ref()
+        .and_then(|transaction| transaction.values.get("xid"))
+        .cloned()
+        .ok_or_else(|| CdfError::data("Postgres duplicate receipt is missing xid evidence"))?;
+    build_receipt(
+        plan,
+        PostgresReceiptInput {
+            receipt_id: receipt_id(plan)?,
+            xid,
+            committed_at_ms: stored.committed_at_ms,
+            counts: stored.counts.clone(),
+            duplicate: false,
+        },
+    )
+}
+
+pub(crate) fn validate_postgres_duplicate_counts(stored: &Receipt) -> Result<()> {
+    let rows = stored.segment_acks.iter().try_fold(0_u64, |total, ack| {
+        total
+            .checked_add(ack.row_count)
+            .ok_or_else(|| CdfError::data("Postgres duplicate row count overflowed"))
+    })?;
+    let counts = &stored.counts;
+    let valid = if stored.segment_acks.is_empty() {
+        counts == &CommitCounts::default()
+    } else {
+        counts.rows_written == rows
+            && match stored.disposition {
+                WriteDisposition::Append => {
+                    counts.rows_inserted == Some(rows)
+                        && counts.rows_updated == Some(0)
+                        && counts.rows_deleted == Some(0)
+                }
+                WriteDisposition::Replace => {
+                    counts.rows_inserted == Some(rows)
+                        && counts.rows_updated == Some(0)
+                        && counts.rows_deleted.is_some()
+                }
+                WriteDisposition::Merge => counts
+                    .rows_inserted
+                    .zip(counts.rows_updated)
+                    .is_some_and(|(inserted, updated)| {
+                        inserted.checked_add(updated) == Some(rows)
+                            && counts.rows_deleted == Some(0)
+                    }),
+                WriteDisposition::CdcApply => false,
+            }
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(CdfError::destination(
+            "Postgres duplicate receipt counts contradict its segment acknowledgements",
+        ))
+    }
 }
 
 fn query_xid(client: &mut Client, plan: &PostgresLoadPlan) -> Result<String> {
@@ -558,6 +638,7 @@ struct PayloadWriteOutcome {
     acknowledgements: Vec<SegmentAck>,
     copied_rows: u64,
     deleted_rows: u64,
+    row_ranges: Vec<SegmentRowRange>,
 }
 
 fn prepare_and_copy_package_rows(
@@ -595,11 +676,17 @@ fn prepare_and_copy_package_rows(
                     .map_err(|_| CdfError::data("Postgres package row ordinal exceeds BIGINT"))?,
             )
             .ok_or_else(|| CdfError::data("Postgres segment row key overflowed BIGINT"))?;
-        segment_ranges.push((
-            expected.state.segment_id.clone(),
-            segment_row_key_start,
-            expected.state.row_count,
-        ));
+        let row_key_start = u64::try_from(segment_row_key_start).map_err(|_| {
+            CdfError::internal("Postgres row-key allocator returned a negative key")
+        })?;
+        let row_key_end = row_key_start
+            .checked_add(expected.state.row_count)
+            .ok_or_else(|| CdfError::data("Postgres segment row-key range overflowed"))?;
+        segment_ranges.push(SegmentRowRange {
+            segment_id: expected.state.segment_id.clone(),
+            row_key_start,
+            row_key_end,
+        });
         acknowledgements.push(acknowledgement);
     }
     let (writer, encoded_rows) = encoder.finish()?;
@@ -621,13 +708,11 @@ fn prepare_and_copy_package_rows(
             "Postgres binary COPY accepted {copied} rows but segment acknowledgements cover {acknowledged_rows}"
         )));
     }
-    for (segment_id, row_key_start, row_count) in segment_ranges {
-        insert_segment_range(client, plan, &segment_id, row_key_start, row_count)?;
-    }
     Ok(PayloadWriteOutcome {
         acknowledgements,
         copied_rows: copied,
         deleted_rows,
+        row_ranges: segment_ranges,
     })
 }
 
@@ -730,37 +815,6 @@ fn allocate_row_key_range(client: &mut Client, row_count: u64) -> Result<i64> {
         .map_err(|error| postgres_error("allocate Postgres row-key range", error))
 }
 
-fn insert_segment_range(
-    client: &mut Client,
-    plan: &PostgresLoadPlan,
-    segment_id: &SegmentId,
-    row_key_start: i64,
-    row_count: u64,
-) -> Result<()> {
-    let row_count = i64::try_from(row_count)
-        .map_err(|_| CdfError::data("Postgres segment row count exceeds BIGINT"))?;
-    let row_key_end = row_key_start
-        .checked_add(row_count)
-        .ok_or_else(|| CdfError::data("Postgres segment row-key range overflowed BIGINT"))?;
-    let sql = format!(
-        "INSERT INTO {} (\"row_key_start\", \"row_key_end\", \"target\", \"package_hash\", \"segment_id\") VALUES ($1, $2, $3, $4, $5)",
-        quote_identifier_unchecked(CDF_SEGMENTS_TABLE)
-    );
-    client
-        .execute(
-            &sql,
-            &[
-                &row_key_start,
-                &row_key_end,
-                &plan.kernel.target.as_str(),
-                &plan.package_hash.as_str(),
-                &segment_id.as_str(),
-            ],
-        )
-        .map(|_| ())
-        .map_err(|error| postgres_error("record Postgres segment row-key range", error))
-}
-
 fn execute_count(client: &mut Client, statement: &PostgresStatement) -> Result<u64> {
     client
         .execute(&statement.sql, &[])
@@ -800,8 +854,8 @@ fn count_merge_updates(client: &mut Client, plan: &PostgresLoadPlan) -> Result<u
     };
     let sql = format!(
         "{cte}SELECT COUNT(*)::bigint FROM {} AS \"target\" WHERE EXISTS (SELECT 1 FROM {source} AS \"stage\" WHERE {})",
-        plan.target.sql(),
-        merge_match_predicate(&plan.merge_keys)
+        validated_target_sql(&plan.target)?,
+        merge_match_predicate(&plan.merge_keys)?
     );
     query_count(client, &sql, "count Postgres merge updates")
 }
@@ -819,16 +873,16 @@ fn merge_dedup_cte(plan: &PostgresLoadPlan) -> Result<String> {
     let conflict_columns = plan
         .merge_keys
         .iter()
-        .map(PostgresIdentifier::quoted)
-        .collect::<Vec<_>>()
+        .map(quote_user_identifier)
+        .collect::<Result<Vec<_>>>()?
         .join(", ");
     Ok(format!(
         "WITH \"_cdf_ranked\" AS (\n  SELECT {}, ROW_NUMBER() OVER (PARTITION BY {} ORDER BY {}, {}) AS \"_cdf_rank\"\n  FROM {}\n), \"_cdf_dedup\" AS (\n  SELECT * FROM \"_cdf_ranked\" WHERE \"_cdf_rank\" = 1\n)\n",
-        stage_select_list(&plan.columns),
+        stage_select_list(&plan.columns)?,
         conflict_columns,
         order_expression(CDF_ROW_KEY_COLUMN, &plan.dedup),
         order_expression(CDF_LOADED_AT_COLUMN, &plan.dedup),
-        stage_table.quoted()
+        quote_system_identifier(stage_table)?
     ))
 }
 
@@ -838,24 +892,170 @@ fn merge_stage_table(plan: &PostgresLoadPlan) -> Result<&PostgresIdentifier> {
         .ok_or_else(|| CdfError::internal("Postgres merge plan omits its stage table"))
 }
 
-fn merge_match_predicate(keys: &[PostgresIdentifier]) -> String {
+fn merge_match_predicate(keys: &[PostgresIdentifier]) -> Result<String> {
     keys.iter()
         .map(|key| {
-            format!(
-                "\"target\".{} IS NOT DISTINCT FROM \"stage\".{}",
-                key.quoted(),
-                key.quoted()
-            )
+            let key = quote_user_identifier(key)?;
+            Ok(format!(
+                "\"target\".{key} IS NOT DISTINCT FROM \"stage\".{key}"
+            ))
         })
-        .collect::<Vec<_>>()
-        .join(" AND ")
+        .collect::<Result<Vec<_>>>()
+        .map(|predicates| predicates.join(" AND "))
+}
+
+fn apply_mirror_commit(
+    client: &mut Client,
+    package: &dyn cdf_package_contract::VerifiedPackageAccess,
+    plan: &PostgresLoadPlan,
+    receipt: &Receipt,
+    row_ranges: Vec<SegmentRowRange>,
+) -> Result<()> {
+    let resource_id = plan.resource_id.clone().or_else(|| {
+        plan.state_delta
+            .as_ref()
+            .map(|delta| delta.resource_id.clone())
+    });
+    let commit = MirrorCommit::new(
+        receipt.clone(),
+        resource_id,
+        plan.state_delta.as_ref(),
+        &plan.segments,
+        row_ranges,
+        SegmentMirrorPolicy::Persist {
+            require_row_ranges: !receipt.segment_acks.is_empty(),
+        },
+    )?;
+    let mut backend = PostgresMirrorBackend { client, plan };
+    TransactionalMirrorManager::new(&mut backend)
+        .apply_with_quarantines(commit, |visitor| {
+            package.for_each_quarantine_record(visitor)
+        })
+        .map(|_| ())
+}
+
+struct PostgresMirrorBackend<'a> {
+    client: &'a mut Client,
+    plan: &'a PostgresLoadPlan,
+}
+
+impl TransactionalMirrorBackend for PostgresMirrorBackend<'_> {
+    fn read_load(&mut self, key: &LoadMirrorKey) -> Result<Option<LoadMirrorRow>> {
+        self.client
+            .query_one(
+                &self.plan.idempotency_lock.sql,
+                &[&key.target.as_str(), &key.package_hash.as_str()],
+            )
+            .map_err(|error| postgres_error("lock Postgres load idempotency key", error))?;
+        self.client
+            .query_opt(
+                &self.plan.idempotency_check.sql,
+                &[
+                    &key.target.as_str(),
+                    &key.package_hash.as_str(),
+                    &key.idempotency_token.as_str(),
+                ],
+            )
+            .map_err(|error| postgres_error("query Postgres _cdf_loads idempotency", error))?
+            .map(decode_postgres_load_row)
+            .transpose()
+    }
+
+    fn insert_load(
+        &mut self,
+        mutation: &LoadMirrorMutation,
+    ) -> Result<MirrorInsertOutcome<LoadMirrorRow>> {
+        insert_load_mirror(self.client, self.plan, mutation)
+    }
+
+    fn read_state(&mut self, key: &StateMirrorKey) -> Result<Option<StateMirrorRow>> {
+        read_state_mirror(self.client, key)
+    }
+
+    fn upsert_state(
+        &mut self,
+        mutation: &StateMirrorMutation,
+    ) -> Result<MirrorInsertOutcome<StateMirrorRow>> {
+        upsert_state_mirror(self.client, self.plan, mutation)
+    }
+
+    fn insert_segment(
+        &mut self,
+        mutation: &SegmentMirrorMutation,
+    ) -> Result<MirrorInsertOutcome<SegmentMirrorRow>> {
+        insert_segment_mirror(self.client, mutation)
+    }
+
+    fn read_segment(
+        &mut self,
+        mutation: &SegmentMirrorMutation,
+    ) -> Result<Option<SegmentMirrorRow>> {
+        read_segment_mirror(self.client, mutation)
+    }
+
+    fn insert_quarantine(
+        &mut self,
+        mutation: &QuarantineMirrorMutation,
+    ) -> Result<MirrorInsertOutcome<QuarantineMirrorRow>> {
+        insert_quarantine_mirror(self.client, self.plan, mutation)
+    }
+
+    fn read_quarantine(
+        &mut self,
+        key: &QuarantineMirrorKey,
+    ) -> Result<Option<QuarantineMirrorRow>> {
+        read_quarantine_mirror(self.client, key)
+    }
+}
+
+pub(crate) fn decode_postgres_load_row(row: Row) -> Result<LoadMirrorRow> {
+    let receipt_json: String = row.get(0);
+    let receipt: Receipt = serde_json::from_str(&receipt_json).map_err(json_error)?;
+    let rows_written = from_i64(row.get(8), "load rows_written")?;
+    let rows_inserted = row
+        .get::<_, Option<i64>>(9)
+        .map(|value| from_i64(value, "load rows_inserted"))
+        .transpose()?;
+    let rows_updated = row
+        .get::<_, Option<i64>>(10)
+        .map(|value| from_i64(value, "load rows_updated"))
+        .transpose()?;
+    let rows_deleted = row
+        .get::<_, Option<i64>>(11)
+        .map(|value| from_i64(value, "load rows_deleted"))
+        .transpose()?;
+    let segment_count = from_i64(row.get(12), "load segment_count")?;
+    let migrations_json: String = row.get(13);
+    let migrations: Vec<MigrationRecord> =
+        serde_json::from_str(&migrations_json).map_err(json_error)?;
+    if receipt.receipt_id.as_str() != row.get::<_, String>(1)
+        || receipt.destination.as_str() != row.get::<_, String>(2)
+        || receipt.target.as_str() != row.get::<_, String>(3)
+        || receipt.package_hash.as_str() != row.get::<_, String>(4)
+        || receipt.idempotency_token.as_str() != row.get::<_, String>(5)
+        || disposition_name(&receipt.disposition) != row.get::<_, String>(6)
+        || receipt.schema_hash.as_str() != row.get::<_, String>(7)
+        || receipt.counts.rows_written != rows_written
+        || receipt.counts.rows_inserted != rows_inserted
+        || receipt.counts.rows_updated != rows_updated
+        || receipt.counts.rows_deleted != rows_deleted
+        || receipt.segment_acks.len() as u64 != segment_count
+        || receipt.migrations != migrations
+        || receipt.committed_at_ms != row.get::<_, i64>(14)
+    {
+        return Err(CdfError::data(
+            "Postgres receipt JSON differs from independently stored load evidence",
+        ));
+    }
+    Ok(LoadMirrorRow { receipt })
 }
 
 fn insert_load_mirror(
     client: &mut Client,
     plan: &PostgresLoadPlan,
-    receipt: &Receipt,
-) -> Result<()> {
+    mutation: &LoadMirrorMutation,
+) -> Result<MirrorInsertOutcome<LoadMirrorRow>> {
+    let receipt = &mutation.receipt;
     let statement = plan
         .mirror_sql
         .iter()
@@ -868,8 +1068,8 @@ fn insert_load_mirror(
         .as_ref()
         .and_then(|metadata| metadata.values.get("xid"))
         .ok_or_else(|| CdfError::internal("Postgres receipt missing xid"))?;
-    let duplicate = false;
-    let resource_id = plan_resource_id(plan);
+    let duplicate = mutation.duplicate;
+    let resource_id = mutation.resource_id.as_ref().map(ResourceId::as_str);
     let target = receipt.target.as_str();
     let package_hash = receipt.package_hash.as_str();
     let idempotency_token = receipt.idempotency_token.as_str();
@@ -881,7 +1081,7 @@ fn insert_load_mirror(
     let rows_deleted = optional_to_i64(receipt.counts.rows_deleted, "rows_deleted")?;
     let segment_count = to_i64(receipt.segment_acks.len() as u64, "segment_count")?;
     client
-        .execute(
+        .query_opt(
             &statement.sql,
             &[
                 &receipt.receipt_id.as_str(),
@@ -903,50 +1103,217 @@ fn insert_load_mirror(
                 &receipt.committed_at_ms,
             ],
         )
-        .map_err(|error| postgres_error("insert Postgres _cdf_loads mirror", error))?;
-    Ok(())
+        .map_err(|error| postgres_error("insert Postgres _cdf_loads mirror", error))?
+        .map(|row| {
+            let json: String = row.get(0);
+            serde_json::from_str(&json)
+                .map(|receipt| MirrorInsertOutcome::Inserted(LoadMirrorRow { receipt }))
+                .map_err(json_error)
+        })
+        .transpose()
+        .map(|outcome| outcome.unwrap_or(MirrorInsertOutcome::Conflict))
 }
 
 fn upsert_state_mirror(
     client: &mut Client,
     plan: &PostgresLoadPlan,
-    receipt: &Receipt,
-    delta: &StateDelta,
-) -> Result<()> {
+    mutation: &StateMirrorMutation,
+) -> Result<MirrorInsertOutcome<StateMirrorRow>> {
     let statement = plan
         .mirror_sql
         .iter()
         .find(|statement| statement.name == "upsert_cdf_state")
         .ok_or_else(|| CdfError::internal("Postgres plan missing upsert_cdf_state statement"))?;
-    let scope_json = serde_json::to_string(&delta.scope).map_err(json_error)?;
-    let output_position_json = serde_json::to_string(&delta.output_position).map_err(json_error)?;
-    let state_version = i32::from(delta.state_version);
+    let scope_json = serde_json::to_string(&mutation.key.scope).map_err(json_error)?;
+    let output_position_json =
+        serde_json::to_string(&mutation.output_position).map_err(json_error)?;
+    let state_version = i32::from(mutation.state_version);
+    let parent_checkpoint_id = mutation
+        .parent_checkpoint_id
+        .as_ref()
+        .map(CheckpointId::as_str);
     client
-        .execute(
+        .query_opt(
             &statement.sql,
             &[
-                &delta.pipeline_id.as_str(),
-                &delta.resource_id.as_str(),
+                &mutation.key.pipeline_id.as_str(),
+                &mutation.key.resource_id.as_str(),
                 &scope_json,
                 &state_version,
-                &delta.checkpoint_id.as_str(),
-                &receipt.package_hash.as_str(),
-                &receipt.schema_hash.as_str(),
+                &mutation.checkpoint_id.as_str(),
+                &parent_checkpoint_id,
+                &mutation.package_hash.as_str(),
+                &mutation.schema_hash.as_str(),
                 &output_position_json,
-                &receipt.receipt_id.as_str(),
-                &receipt.committed_at_ms,
+                &mutation.receipt_id.as_str(),
+                &mutation.committed_at_ms,
             ],
         )
-        .map_err(|error| postgres_error("upsert Postgres _cdf_state mirror", error))?;
-    Ok(())
+        .map_err(|error| postgres_error("upsert Postgres _cdf_state mirror", error))?
+        .map(|row| decode_state_row(row, &mutation.key))
+        .transpose()
+        .map(|row| {
+            row.map(MirrorInsertOutcome::Inserted)
+                .unwrap_or(MirrorInsertOutcome::Conflict)
+        })
+}
+
+fn read_state_mirror(client: &mut Client, key: &StateMirrorKey) -> Result<Option<StateMirrorRow>> {
+    let scope_json = serde_json::to_string(&key.scope).map_err(json_error)?;
+    client
+        .query_opt(
+            &format!(
+                "SELECT \"state_version\", \"checkpoint_id\", \"parent_checkpoint_id\", \"package_hash\", \"schema_hash\", \"output_position_json\"::text, \"receipt_id\", \"committed_at_ms\" FROM {} WHERE \"pipeline_id\" = $1 AND \"resource_id\" = $2 AND \"scope\" = $3",
+                quote_identifier_unchecked(CDF_STATE_TABLE)
+            ),
+            &[
+                &key.pipeline_id.as_str(),
+                &key.resource_id.as_str(),
+                &scope_json,
+            ],
+        )
+        .map_err(|error| postgres_error("read Postgres _cdf_state mirror", error))?
+        .map(|row| decode_state_row(row, key))
+        .transpose()
+}
+
+fn decode_state_row(row: Row, key: &StateMirrorKey) -> Result<StateMirrorRow> {
+    let state_version = u16::try_from(row.get::<_, i32>(0))
+        .map_err(|_| CdfError::data("Postgres state_version exceeds u16 authority"))?;
+    let parent_checkpoint_id = row
+        .get::<_, Option<String>>(2)
+        .map(CheckpointId::new)
+        .transpose()?;
+    let output_position_json: String = row.get(5);
+    Ok(StateMirrorRow {
+        mutation: StateMirrorMutation {
+            key: key.clone(),
+            state_version,
+            checkpoint_id: CheckpointId::new(row.get::<_, String>(1))?,
+            parent_checkpoint_id,
+            package_hash: PackageHash::new(row.get::<_, String>(3))?,
+            schema_hash: SchemaHash::new(row.get::<_, String>(4))?,
+            output_position: serde_json::from_str(&output_position_json).map_err(json_error)?,
+            receipt_id: ReceiptId::new(row.get::<_, String>(6))?,
+            committed_at_ms: row.get(7),
+        },
+    })
+}
+
+fn insert_segment_mirror(
+    client: &mut Client,
+    mutation: &SegmentMirrorMutation,
+) -> Result<MirrorInsertOutcome<SegmentMirrorRow>> {
+    let Some(range) = &mutation.row_range else {
+        return Ok(MirrorInsertOutcome::Inserted(SegmentMirrorRow::from(
+            mutation,
+        )));
+    };
+    let row_key_start = i64::try_from(range.row_key_start)
+        .map_err(|_| CdfError::data("Postgres segment row key exceeds BIGINT"))?;
+    let row_key_end = i64::try_from(range.row_key_end)
+        .map_err(|_| CdfError::data("Postgres segment row key exceeds BIGINT"))?;
+    let scope_json = mutation
+        .scope
+        .as_ref()
+        .map(|scope| serde_json::to_string(scope).map_err(json_error))
+        .transpose()?;
+    let output_position_json = mutation
+        .output_position
+        .as_ref()
+        .map(|position| serde_json::to_string(position).map_err(json_error))
+        .transpose()?;
+    let row_count = to_i64(mutation.row_count, "segment row_count")?;
+    let byte_count = to_i64(mutation.byte_count, "segment byte_count")?;
+    let sql = format!(
+        "INSERT INTO {} (\"row_key_start\", \"row_key_end\", \"target\", \"package_hash\", \"idempotency_token\", \"segment_id\", \"scope_json\", \"output_position_json\", \"row_count\", \"byte_count\", \"committed_at_ms\") \
+         SELECT $1, $2, $3, $4, $5, $6, $7::text::jsonb, $8::text::jsonb, $9, $10, $11 \
+         WHERE NOT EXISTS ( \
+             SELECT 1 FROM {} WHERE \"row_key_start\" < $2 AND \"row_key_end\" > $1 \
+         ) \
+         RETURNING \"row_key_start\", \"row_key_end\", \"idempotency_token\", \"scope_json\"::text, \"output_position_json\"::text, \"row_count\", \"byte_count\", \"committed_at_ms\"",
+        quote_identifier_unchecked(CDF_SEGMENTS_TABLE),
+        quote_identifier_unchecked(CDF_SEGMENTS_TABLE)
+    );
+    client
+        .query_opt(
+            &sql,
+            &[
+                &row_key_start,
+                &row_key_end,
+                &mutation.target.as_str(),
+                &mutation.package_hash.as_str(),
+                &mutation.idempotency_token.as_str(),
+                &mutation.segment_id.as_str(),
+                &scope_json,
+                &output_position_json,
+                &row_count,
+                &byte_count,
+                &mutation.committed_at_ms,
+            ],
+        )
+        .map_err(|error| postgres_error("record Postgres segment row-key range", error))?
+        .map(|row| decode_segment_row(row, mutation))
+        .transpose()
+        .map(|row| {
+            row.map(MirrorInsertOutcome::Inserted)
+                .unwrap_or(MirrorInsertOutcome::Conflict)
+        })
+}
+
+fn read_segment_mirror(
+    client: &mut Client,
+    mutation: &SegmentMirrorMutation,
+) -> Result<Option<SegmentMirrorRow>> {
+    client
+        .query_opt(
+            &format!(
+                "SELECT \"row_key_start\", \"row_key_end\", \"idempotency_token\", \"scope_json\"::text, \"output_position_json\"::text, \"row_count\", \"byte_count\", \"committed_at_ms\" FROM {} WHERE \"target\" = $1 AND \"package_hash\" = $2 AND \"segment_id\" = $3",
+                quote_identifier_unchecked(CDF_SEGMENTS_TABLE)
+            ),
+            &[
+                &mutation.target.as_str(),
+                &mutation.package_hash.as_str(),
+                &mutation.segment_id.as_str(),
+            ],
+        )
+        .map_err(|error| postgres_error("read Postgres _cdf_segments mirror", error))?
+        .map(|row| decode_segment_row(row, mutation))
+        .transpose()
+}
+
+fn decode_segment_row(row: Row, mutation: &SegmentMirrorMutation) -> Result<SegmentMirrorRow> {
+    let scope_json: Option<String> = row.get(3);
+    let output_position_json: Option<String> = row.get(4);
+    Ok(SegmentMirrorRow {
+        mutation: SegmentMirrorMutation {
+            target: mutation.target.clone(),
+            package_hash: mutation.package_hash.clone(),
+            idempotency_token: IdempotencyToken::new(row.get::<_, String>(2))?,
+            segment_id: mutation.segment_id.clone(),
+            scope: scope_json
+                .map(|json| serde_json::from_str(&json).map_err(json_error))
+                .transpose()?,
+            output_position: output_position_json
+                .map(|json| serde_json::from_str(&json).map_err(json_error))
+                .transpose()?,
+            row_count: from_i64(row.get(5), "segment row_count")?,
+            byte_count: from_i64(row.get(6), "segment byte_count")?,
+            committed_at_ms: row.get(7),
+            row_range: Some(SegmentRowRange {
+                segment_id: mutation.segment_id.clone(),
+                row_key_start: from_i64(row.get(0), "segment row_key_start")?,
+                row_key_end: from_i64(row.get(1), "segment row_key_end")?,
+            }),
+        },
+    })
 }
 
 fn insert_quarantine_mirror(
     client: &mut Client,
-    package: &dyn cdf_package_contract::VerifiedPackageAccess,
     plan: &PostgresLoadPlan,
-    receipt: &Receipt,
-) -> Result<()> {
+    mutation: &QuarantineMirrorMutation,
+) -> Result<MirrorInsertOutcome<QuarantineMirrorRow>> {
     let statement = plan
         .mirror_sql
         .iter()
@@ -954,39 +1321,92 @@ fn insert_quarantine_mirror(
         .ok_or_else(|| {
             CdfError::internal("Postgres plan missing record_cdf_quarantine statement")
         })?;
-    let target = receipt.target.as_str();
-    let package_hash = receipt.package_hash.as_str();
-    let receipt_id = receipt.receipt_id.as_str();
-    package.for_each_quarantine_record(&mut |record| {
-        let source_row_ordinal = to_i64(record.source_row_ordinal, "source_row_ordinal")?;
-        let source_position_json = record
-            .source_position
-            .map(|position| serde_json::to_string(&position).map_err(json_error))
-            .transpose()?;
-        let observed_value_json =
-            serde_json::to_string(&record.observed_value_redacted).map_err(json_error)?;
-        client
-            .execute(
-                &statement.sql,
-                &[
-                    &target,
-                    &package_hash,
-                    &receipt_id,
-                    &source_row_ordinal,
-                    &record.rule_id.as_str(),
-                    &record.error_code.as_str(),
-                    &source_position_json,
-                    &observed_value_json,
-                    &receipt.committed_at_ms,
-                ],
-            )
-            .map_err(|error| postgres_error("insert Postgres _cdf_quarantine mirror", error))?;
-        Ok(())
+    let source_row_ordinal = to_i64(mutation.key.source_row_ordinal, "source_row_ordinal")?;
+    let source_position_json = mutation
+        .source_position
+        .as_ref()
+        .map(|position| serde_json::to_string(position).map_err(json_error))
+        .transpose()?;
+    let observed_value_json =
+        serde_json::to_string(&mutation.observed_value_redacted).map_err(json_error)?;
+    client
+        .query_opt(
+            &statement.sql,
+            &[
+                &mutation.key.target.as_str(),
+                &mutation.key.package_hash.as_str(),
+                &mutation.receipt_id.as_str(),
+                &source_row_ordinal,
+                &mutation.key.rule_id.as_str(),
+                &mutation.key.error_code.as_str(),
+                &source_position_json,
+                &observed_value_json,
+                &mutation.committed_at_ms,
+            ],
+        )
+        .map_err(|error| postgres_error("insert Postgres _cdf_quarantine mirror", error))?
+        .map(|row| decode_quarantine_row(row, &mutation.key))
+        .transpose()
+        .map(|row| {
+            row.map(MirrorInsertOutcome::Inserted)
+                .unwrap_or(MirrorInsertOutcome::Conflict)
+        })
+}
+
+fn read_quarantine_mirror(
+    client: &mut Client,
+    key: &QuarantineMirrorKey,
+) -> Result<Option<QuarantineMirrorRow>> {
+    let source_row_ordinal = to_i64(key.source_row_ordinal, "source_row_ordinal")?;
+    client
+        .query_opt(
+            &format!(
+                "SELECT \"receipt_id\", \"source_position_json\"::text, \"observed_value_json\"::text, \"committed_at_ms\" FROM {} WHERE \"target\" = $1 AND \"package_hash\" = $2 AND \"source_row_ordinal\" = $3 AND \"rule_id\" = $4 AND \"error_code\" = $5",
+                quote_identifier_unchecked(CDF_QUARANTINE_TABLE)
+            ),
+            &[
+                &key.target.as_str(),
+                &key.package_hash.as_str(),
+                &source_row_ordinal,
+                &key.rule_id.as_str(),
+                &key.error_code.as_str(),
+            ],
+        )
+        .map_err(|error| postgres_error("read Postgres _cdf_quarantine mirror", error))?
+        .map(|row| decode_quarantine_row(row, key))
+        .transpose()
+}
+
+fn decode_quarantine_row(row: Row, key: &QuarantineMirrorKey) -> Result<QuarantineMirrorRow> {
+    let source_position_json: Option<String> = row.get(1);
+    let observed_value_json: String = row.get(2);
+    Ok(QuarantineMirrorRow {
+        mutation: QuarantineMirrorMutation {
+            key: key.clone(),
+            receipt_id: ReceiptId::new(row.get::<_, String>(0))?,
+            source_position: source_position_json
+                .map(|json| serde_json::from_str(&json).map_err(json_error))
+                .transpose()?,
+            observed_value_redacted: serde_json::from_str(&observed_value_json)
+                .map_err(json_error)?,
+            committed_at_ms: row.get(3),
+        },
     })
 }
 
 fn verify_receipt_in_transaction(client: &mut Client, receipt: &Receipt) -> Result<()> {
-    let row = query_verify_row(client, receipt)?;
+    let row = client
+        .query_opt(
+            &receipt.verify.statement,
+            &[
+                &verify_receipt_parameter(receipt, "target")?,
+                &verify_receipt_parameter(receipt, "package_hash")?,
+                &verify_receipt_parameter(receipt, "idempotency_token")?,
+                &verify_receipt_parameter(receipt, "schema_hash")?,
+            ],
+        )
+        .map_err(|error| postgres_error("verify Postgres receipt in transaction", error))?
+        .ok_or_else(|| CdfError::destination("receipt is absent from Postgres _cdf_loads"))?;
     let stored = receipt_from_verify_row(row)?;
     if &stored == receipt {
         Ok(())
@@ -1049,21 +1469,6 @@ fn set_receipt_schema_search_path(client: &mut Client, receipt: &Receipt) -> Res
     Ok(())
 }
 
-fn query_verify_row(client: &mut Client, receipt: &Receipt) -> Result<Row> {
-    client
-        .query_opt(
-            &receipt.verify.statement,
-            &[
-                &verify_receipt_parameter(receipt, "target")?,
-                &verify_receipt_parameter(receipt, "package_hash")?,
-                &verify_receipt_parameter(receipt, "idempotency_token")?,
-                &verify_receipt_parameter(receipt, "schema_hash")?,
-            ],
-        )
-        .map_err(|error| postgres_error("query Postgres receipt verification", error))?
-        .ok_or_else(|| CdfError::destination("receipt is absent from Postgres _cdf_loads"))
-}
-
 fn receipt_from_verify_row(row: Row) -> Result<Receipt> {
     let json: String = row.get("receipt_json");
     serde_json::from_str(&json).map_err(json_error)
@@ -1077,17 +1482,6 @@ fn receipt_id(plan: &PostgresLoadPlan) -> Result<ReceiptId> {
     ))
 }
 
-fn plan_resource_id(plan: &PostgresLoadPlan) -> Option<&str> {
-    plan.resource_id
-        .as_ref()
-        .map(ResourceId::as_str)
-        .or_else(|| {
-            plan.state_delta
-                .as_ref()
-                .map(|delta| delta.resource_id.as_str())
-        })
-}
-
 fn verify_receipt_parameter(receipt: &Receipt, name: &str) -> Result<String> {
     receipt
         .verify
@@ -1099,6 +1493,10 @@ fn verify_receipt_parameter(receipt: &Receipt, name: &str) -> Result<String> {
 
 fn to_i64(value: u64, name: &str) -> Result<i64> {
     i64::try_from(value).map_err(|_| CdfError::internal(format!("{name} exceeds i64")))
+}
+
+fn from_i64(value: i64, name: &str) -> Result<u64> {
+    u64::try_from(value).map_err(|_| CdfError::data(format!("{name} is negative")))
 }
 
 fn optional_to_i64(value: Option<u64>, name: &str) -> Result<Option<i64>> {

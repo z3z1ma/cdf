@@ -1,5 +1,6 @@
 use crate::*;
 use crate::{api::*, mirrors::*, package::*, rows::*, sheet::*, sql::*, table::*};
+use cdf_dest_sql::LoadMirrorKey;
 
 #[derive(Clone, Debug)]
 pub(crate) struct DuckDbCorrectionContext {
@@ -11,7 +12,7 @@ pub(crate) struct DuckDbCorrectionContext {
 #[derive(Clone, Debug)]
 struct PreparedCorrectionRow {
     address: RowProvenanceAddress,
-    assignments: Vec<(String, CellValue)>,
+    assignments: Vec<(cdf_dest_sql::ValidatedSqlIdentifier, CellValue)>,
     residual: Option<String>,
 }
 
@@ -78,7 +79,14 @@ pub(crate) fn plan_correction_request(
     }
     let conn = destination.open_read_only_connection()?;
     let mirror_request = mirror_request(request);
-    let context = match find_duplicate_receipt(&conn, &mirror_request)? {
+    let duplicate_key = LoadMirrorKey {
+        target: mirror_request.target.clone(),
+        package_hash: mirror_request.package_hash.clone(),
+        idempotency_token: mirror_request.idempotency_token.clone(),
+    };
+    let context = match find_duplicate_receipt_with(&conn, &duplicate_key, |stored| {
+        expected_duckdb_correction_duplicate(stored, request)
+    })? {
         Some(receipt) => {
             let ddl = receipt
                 .migrations
@@ -188,9 +196,9 @@ pub(crate) fn read_addressed_residual(
         .query_row(
             &format!(
                 "SELECT {} FROM {} WHERE {} = ?",
-                quote_ident(cdf_contract::VARIANT_COLUMN_NAME),
+                quote_ident(&framework_ident(cdf_contract::VARIANT_COLUMN_NAME)),
                 target.sql_name(),
-                quote_ident(CDF_ROW_KEY_COLUMN),
+                quote_ident(&framework_ident(CDF_ROW_KEY_COLUMN)),
             ),
             params![row_key],
             |row| row.get(0),
@@ -294,7 +302,7 @@ fn build_correction_context(
                 field.name
             )));
         }
-        if let Some(previous) = output_fields.insert(field.name.clone(), field.clone())
+        if let Some(previous) = output_fields.insert(field.name.as_str().to_owned(), field.clone())
             && previous != field
         {
             return Err(CdfError::contract(format!(
@@ -306,7 +314,7 @@ fn build_correction_context(
 
     let mut ddl = Vec::new();
     for field in output_fields.values() {
-        match existing.get(&field.name) {
+        match existing.get(field.name.as_str()) {
             Some(column) if same_type(&column.data_type, &field.sql_type) => {}
             Some(column) => {
                 return Err(CdfError::contract(format!(
@@ -394,9 +402,9 @@ fn prepare_correction_rows(
             .query_row(
                 &format!(
                     "SELECT {} FROM {} WHERE {} = ?",
-                    quote_ident(cdf_contract::VARIANT_COLUMN_NAME),
+                    quote_ident(&framework_ident(cdf_contract::VARIANT_COLUMN_NAME)),
                     target.sql_name(),
-                    quote_ident(CDF_ROW_KEY_COLUMN),
+                    quote_ident(&framework_ident(CDF_ROW_KEY_COLUMN)),
                 ),
                 params![row_key],
                 |row| row.get(0),
@@ -440,7 +448,7 @@ fn prepare_correction_rows(
                 .transpose()
                 .map_err(|error| CdfError::internal(error.to_string()))?
                 .unwrap_or_default();
-            assignments.push((operation.output_field.name.clone(), value));
+            assignments.push((validate_ident(&operation.output_field.name)?, value));
         }
         prepared.push(PreparedCorrectionRow {
             address,
@@ -459,7 +467,14 @@ fn commit_corrections(
     let mut conn = destination.open_connection()?;
     ensure_mirror_tables(&conn)?;
     let mirror_request = mirror_request(&context.request);
-    if let Some(receipt) = find_duplicate_receipt(&conn, &mirror_request)? {
+    let duplicate_key = LoadMirrorKey {
+        target: mirror_request.target.clone(),
+        package_hash: mirror_request.package_hash.clone(),
+        idempotency_token: mirror_request.idempotency_token.clone(),
+    };
+    if let Some(receipt) = find_duplicate_receipt_with(&conn, &duplicate_key, |stored| {
+        expected_duckdb_correction_duplicate(stored, &context.request)
+    })? {
         context.plan.validate_receipt(&context.request, &receipt)?;
         return Ok(receipt);
     }
@@ -518,7 +533,7 @@ fn update_correction_row(
         .collect::<Vec<_>>();
     assignments.push(format!(
         "{} = ?",
-        quote_ident(cdf_contract::VARIANT_COLUMN_NAME)
+        quote_ident(&framework_ident(cdf_contract::VARIANT_COLUMN_NAME))
     ));
     let mut values = row
         .assignments
@@ -537,7 +552,7 @@ fn update_correction_row(
                 "UPDATE {} SET {} WHERE {} = ?",
                 target.sql_name(),
                 assignments.join(", "),
-                quote_ident(CDF_ROW_KEY_COLUMN),
+                quote_ident(&framework_ident(CDF_ROW_KEY_COLUMN)),
             ),
             params_from_iter(values),
         )
@@ -571,6 +586,29 @@ fn mirror_request(request: &DestinationCorrectionCommitRequest) -> DestinationCo
         segments: request.segments.clone(),
         idempotency_token: request.idempotency_token.clone(),
     }
+}
+
+fn expected_duckdb_correction_duplicate(
+    stored: &Receipt,
+    request: &DestinationCorrectionCommitRequest,
+) -> Result<Receipt> {
+    let mut expected = stored.clone();
+    expected.receipt_id = ReceiptId::new(format!(
+        "duckdb:{}:{}",
+        request.target, request.idempotency_token
+    ))?;
+    expected.destination = DestinationId::new(DESTINATION_ID)?;
+    expected.target = request.target.clone();
+    expected.package_hash = request.correction_package_hash.clone();
+    expected.segment_acks = request.segment_acks();
+    expected.disposition = request.resource_disposition.clone();
+    expected.idempotency_token = request.idempotency_token.clone();
+    expected.counts = correction_counts(request);
+    expected.schema_hash = request.new_schema_hash().clone();
+    // As with ordinary replay, the committed receipt owns historical DDL after the target has
+    // already been migrated; the correction plan reconstructed below validates that history.
+    expected.migrations = stored.migrations.clone();
+    Ok(expected)
 }
 
 fn build_correction_receipt(

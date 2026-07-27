@@ -27,6 +27,10 @@ pub(crate) fn finalize_merge(
     merge_keys: &[String],
 ) -> Result<CommitCounts> {
     merge_key_indexes(fields, merge_keys)?;
+    let merge_keys = merge_keys
+        .iter()
+        .map(|key| validate_ident(key))
+        .collect::<Result<Vec<_>>>()?;
     if user_field_count > fields.len() {
         return Err(CdfError::internal(
             "DuckDB merge user-field count exceeds persistence schema",
@@ -84,7 +88,7 @@ pub(crate) fn finalize_merge(
             &format!(
                 "SELECT EXISTS (SELECT 1 FROM {stage} AS left_stage JOIN {stage} AS right_stage ON {same_key} AND left_stage.{order} < right_stage.{order} WHERE {different_user_value})",
                 stage = staging.sql_name(),
-                order = quote_ident(CDF_STAGE_ORDER_COLUMN),
+                order = quote_ident(&framework_ident(CDF_STAGE_ORDER_COLUMN)),
             ),
             [],
             |row| row.get(0),
@@ -97,8 +101,8 @@ pub(crate) fn finalize_merge(
     }
 
     let dedup = TargetRef {
-        schema: MAIN_SCHEMA.to_owned(),
-        table: staging_table_name(),
+        schema: framework_ident(MAIN_SCHEMA),
+        table: validate_system_ident(&staging_table_name())?,
     };
     let column_list = fields
         .iter()
@@ -107,7 +111,7 @@ pub(crate) fn finalize_merge(
         .join(", ");
     let key_list = merge_keys
         .iter()
-        .map(|key| quote_ident(key))
+        .map(quote_ident)
         .collect::<Vec<_>>()
         .join(", ");
     conn.execute_batch(&format!(
@@ -115,7 +119,7 @@ pub(crate) fn finalize_merge(
         dedup = dedup.sql_name(),
         columns = column_list,
         keys = key_list,
-        order = quote_ident(CDF_STAGE_ORDER_COLUMN),
+        order = quote_ident(&framework_ident(CDF_STAGE_ORDER_COLUMN)),
         stage = staging.sql_name(),
     ))
     .map_err(|error| duckdb_error("deduplicate DuckDB merge staging", error))?;
@@ -127,7 +131,7 @@ pub(crate) fn finalize_merge(
             |row| row.get(0),
         )
         .map_err(|error| duckdb_error("count DuckDB merge rows", error))?;
-    let predicate = merge_predicate(merge_keys)?;
+    let predicate = merge_predicate_from_validated(&merge_keys)?;
     let updated: u64 = conn
         .query_row(
             &format!(
@@ -164,15 +168,9 @@ pub(crate) fn staging_table_name() -> String {
     format!("_cdf_stage_{}_{}", std::process::id(), counter)
 }
 
-pub(crate) fn merge_predicate(merge_keys: &[String]) -> Result<String> {
-    if merge_keys.is_empty() {
-        return Err(CdfError::contract(
-            "DuckDB merge requires at least one merge key",
-        ));
-    }
-    for key in merge_keys {
-        validate_ident(key)?;
-    }
+fn merge_predicate_from_validated(
+    merge_keys: &[cdf_dest_sql::ValidatedSqlIdentifier],
+) -> Result<String> {
     Ok(merge_keys
         .iter()
         .map(|key| {
@@ -197,7 +195,7 @@ pub(crate) fn merge_key_indexes(fields: &[FieldPlan], merge_keys: &[String]) -> 
         .map(|key| {
             fields
                 .iter()
-                .position(|field| &field.name == key)
+                .position(|field| field.name.as_str() == key)
                 .ok_or_else(|| {
                     CdfError::contract(format!("merge key {key} is not in package schema"))
                 })

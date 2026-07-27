@@ -8,7 +8,10 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
+        mpsc,
     },
+    thread,
+    time::Duration,
     time::Instant,
 };
 
@@ -18,10 +21,11 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema};
 use cdf_kernel::{
-    CHECKPOINT_STATE_VERSION, CanonicalArrowField, CheckpointId, CursorPosition, CursorValue,
-    DestinationCorrectionOperation, DestinationCorrectionPlan, DestinationCorrectionRequest,
-    PartitionId, PipelineId, PromotionId, ResidualCorrectionOperation, ResourceId,
-    RowProvenanceAddress, ScopeKey, SegmentId, SourcePosition,
+    CHECKPOINT_STATE_VERSION, CanonicalArrowField, Checkpoint, CheckpointId, CheckpointStatus,
+    CursorPosition, CursorValue, DestinationCorrectionOperation, DestinationCorrectionPlan,
+    DestinationCorrectionRequest, PackageHash, PartitionId, PipelineId, PromotionId,
+    ResidualCorrectionOperation, ResourceId, RowProvenanceAddress, ScopeKey, SegmentId,
+    SourcePosition, StateDelta,
 };
 use cdf_package::{PackageBuilder, PackageReader};
 use cdf_package_contract::{
@@ -336,6 +340,167 @@ impl Drop for LivePostgres {
     }
 }
 
+#[test]
+fn live_idempotency_lock_serializes_same_package_before_payload_work() {
+    let Some(env) = LivePostgres::start() else {
+        return;
+    };
+    let mut first = env.client();
+    for statement in crate::ddl::system_table_ddl() {
+        first.batch_execute(&statement.sql).unwrap();
+    }
+    first.batch_execute("BEGIN").unwrap();
+    let target = env.target("orders_race").display_name();
+    let package_hash = "sha256:race-package".to_owned();
+    let token = package_hash.clone();
+    let lock_sql = crate::ddl::idempotency_lock_statement().sql;
+    let check_sql = crate::ddl::idempotency_check_statement().sql;
+    first
+        .query_one(&lock_sql, &[&target, &package_hash])
+        .unwrap();
+    let initial = first
+        .query_opt(&check_sql, &[&target, &package_hash, &token])
+        .unwrap()
+        .map(|row| row.get::<_, String>(0));
+    assert!(initial.is_none());
+
+    let url = env.url.clone();
+    let schema = env.schema.clone();
+    let second_target = target.clone();
+    let second_hash = package_hash.clone();
+    let second_token = token.clone();
+    let second_lock = lock_sql.clone();
+    let second_sql = check_sql.clone();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (result_tx, result_rx) = mpsc::channel();
+    let waiter = thread::spawn(move || {
+        let mut second = Client::connect(&url, NoTls).unwrap();
+        second
+            .batch_execute(&format!(
+                "SET search_path = {}, public; BEGIN",
+                quote_identifier(&schema).unwrap()
+            ))
+            .unwrap();
+        started_tx.send(()).unwrap();
+        second
+            .query_one(&second_lock, &[&second_target, &second_hash])
+            .unwrap();
+        let stored = second
+            .query_opt(&second_sql, &[&second_target, &second_hash, &second_token])
+            .unwrap()
+            .map(|row| row.get::<_, String>(0));
+        second.batch_execute("COMMIT").unwrap();
+        result_tx.send(stored).unwrap();
+    });
+    started_rx.recv().unwrap();
+    assert!(
+        result_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+        "same-package contender crossed the transaction-scoped idempotency lock"
+    );
+
+    first
+        .execute(
+            &format!(
+                "INSERT INTO {} (\"receipt_id\", \"destination\", \"target\", \"resource_id\", \"package_hash\", \"idempotency_token\", \"disposition\", \"schema_hash\", \"rows_written\", \"segment_count\", \"migrations_json\", \"receipt_json\", \"xid\", \"duplicate\", \"committed_at_ms\") VALUES ('race-receipt', 'postgres', $1, NULL, $2, $3, 'append', 'schema', 0, 0, '[]'::jsonb, '{{}}'::jsonb, '1', FALSE, 1)",
+                quote_identifier_unchecked(CDF_LOADS_TABLE)
+            ),
+            &[&target, &package_hash, &token],
+        )
+        .unwrap();
+    first.batch_execute("COMMIT").unwrap();
+
+    assert_eq!(
+        result_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        Some("{}".to_owned())
+    );
+    waiter.join().unwrap();
+}
+
+#[test]
+fn live_state_mirror_cas_uses_checkpoint_lineage_not_commit_time() {
+    let Some(env) = LivePostgres::start() else {
+        return;
+    };
+    let mut client = env.client();
+    for statement in crate::ddl::system_table_ddl() {
+        client.batch_execute(&statement.sql).unwrap();
+    }
+    let sql = crate::mirrors::state_mirror_sql();
+    let pipeline = "pipe-lineage";
+    let resource = "resource-lineage";
+    let scope_json = serde_json::to_string(&scope()).unwrap();
+    let position_json = serde_json::to_string(&position(10)).unwrap();
+    let state_version = i32::from(CHECKPOINT_STATE_VERSION);
+    let no_parent: Option<&str> = None;
+    assert_eq!(
+        client
+            .execute(
+                &sql,
+                &[
+                    &pipeline,
+                    &resource,
+                    &scope_json,
+                    &state_version,
+                    &"checkpoint-1",
+                    &no_parent,
+                    &"package-1",
+                    &"schema-1",
+                    &position_json,
+                    &"receipt-1",
+                    &1_000_i64,
+                ],
+            )
+            .unwrap(),
+        1
+    );
+    let parent = Some("checkpoint-1");
+    assert_eq!(
+        client
+            .execute(
+                &sql,
+                &[
+                    &pipeline,
+                    &resource,
+                    &scope_json,
+                    &state_version,
+                    &"checkpoint-2",
+                    &parent,
+                    &"package-2",
+                    &"schema-1",
+                    &position_json,
+                    &"receipt-2",
+                    &1_i64,
+                ],
+            )
+            .unwrap(),
+        1,
+        "a valid successor must survive wall-clock regression"
+    );
+    let stale_parent = Some("checkpoint-1");
+    assert_eq!(
+        client
+            .execute(
+                &sql,
+                &[
+                    &pipeline,
+                    &resource,
+                    &scope_json,
+                    &state_version,
+                    &"checkpoint-3",
+                    &stale_parent,
+                    &"package-3",
+                    &"schema-1",
+                    &position_json,
+                    &"receipt-3",
+                    &2_000_i64,
+                ],
+            )
+            .unwrap(),
+        0,
+        "a competing branch must lose even with a later wall-clock value"
+    );
+}
+
 impl LocalPostgres {
     fn start() -> Option<Self> {
         let _guard = LOCAL_POSTGRES_START.lock().unwrap();
@@ -585,6 +750,7 @@ fn write_replay_artifacts(
     target: TargetName,
     disposition: WriteDisposition,
     checkpoint_id: &str,
+    parent_checkpoint_id: Option<&str>,
     entries: &[SegmentEntry],
 ) {
     let segments = entries
@@ -597,14 +763,43 @@ fn write_replay_artifacts(
             byte_count: entry.byte_count,
         })
         .collect::<Vec<_>>();
+    let input_position = parent_checkpoint_id.map(|_| position(10));
+    let input_checkpoint = parent_checkpoint_id.map(|parent_checkpoint_id| Checkpoint {
+        delta: StateDelta {
+            checkpoint_id: CheckpointId::new(parent_checkpoint_id).unwrap(),
+            pipeline_id: PipelineId::new("pipe-live").unwrap(),
+            resource_id: ResourceId::new("orders").unwrap(),
+            scope: scope(),
+            state_version: CHECKPOINT_STATE_VERSION,
+            parent_checkpoint_id: None,
+            input_position: None,
+            output_position: position(10),
+            output_watermark: None,
+            partition_watermarks: Vec::new(),
+            late_data_carryover: Vec::new(),
+            source_continuation: None,
+            package_hash: PackageHash::new("sha256:fixture-parent").unwrap(),
+            schema_hash: schema_hash(),
+            segments: Vec::new(),
+        },
+        receipt: None,
+        status: CheckpointStatus::Committed,
+        is_head: true,
+        created_at_ms: 1,
+        committed_at_ms: Some(2),
+        rewind_target_checkpoint_id: None,
+    });
     let state_delta = StateDeltaPreimage {
         checkpoint_id: CheckpointId::new(checkpoint_id).unwrap(),
         pipeline_id: PipelineId::new("pipe-live").unwrap(),
         resource_id: ResourceId::new("orders").unwrap(),
         scope: scope(),
         state_version: CHECKPOINT_STATE_VERSION,
-        parent_checkpoint_id: None,
-        input_position: None,
+        parent_checkpoint_id: parent_checkpoint_id
+            .map(CheckpointId::new)
+            .transpose()
+            .unwrap(),
+        input_position,
         output_position: position(10),
         output_watermark: None,
         partition_watermarks: Vec::new(),
@@ -619,7 +814,9 @@ fn write_replay_artifacts(
         replay_merge_keys(&disposition),
         schema_hash(),
     );
-    builder.write_input_checkpoint_artifact(&None).unwrap();
+    builder
+        .write_input_checkpoint_artifact(&input_checkpoint)
+        .unwrap();
     builder
         .write_state_delta_preimage_artifact(&state_delta)
         .unwrap();
@@ -666,7 +863,58 @@ fn build_replay_package(
         );
         package_row_ord_start += rows;
     }
-    write_replay_artifacts(&builder, target, disposition, checkpoint_id, &entries);
+    write_replay_artifacts(&builder, target, disposition, checkpoint_id, None, &entries);
+    builder.finish().unwrap();
+    cdf_package::read_manifest(root).unwrap()
+}
+
+fn build_replay_package_with_parent(
+    root: &Path,
+    package_id: &str,
+    target: TargetName,
+    disposition: WriteDisposition,
+    checkpoint_id: &str,
+    parent_checkpoint_id: &str,
+    segments: Vec<(&str, RecordBatch)>,
+) -> PackageManifest {
+    let builder = PackageBuilder::create(
+        root,
+        package_id,
+        cdf_package::PackageBuilderResources::standalone(8 * 1024 * 1024, 64 * 1024 * 1024)
+            .unwrap(),
+    )
+    .unwrap();
+    if let Some((_, batch)) = segments.first() {
+        builder
+            .write_runtime_arrow_schema(batch.schema().as_ref())
+            .unwrap();
+    }
+    let mut entries = Vec::with_capacity(segments.len());
+    let mut package_row_ord_start = 0_u64;
+    for (segment_id, batch) in segments {
+        let rows = batch.num_rows() as u64;
+        let batch =
+            cdf_package_contract::append_package_row_ord(vec![batch], package_row_ord_start)
+                .unwrap();
+        entries.push(
+            builder
+                .write_segment(
+                    SegmentId::new(segment_id).unwrap(),
+                    package_row_ord_start,
+                    &batch,
+                )
+                .unwrap(),
+        );
+        package_row_ord_start += rows;
+    }
+    write_replay_artifacts(
+        &builder,
+        target,
+        disposition,
+        checkpoint_id,
+        Some(parent_checkpoint_id),
+        &entries,
+    );
     builder.finish().unwrap();
     cdf_package::read_manifest(root).unwrap()
 }
@@ -1017,6 +1265,33 @@ fn live_begin_session_returns_verifiable_receipt_and_preserves_duplicate_noop() 
         .unwrap()
         .get(0);
     assert_eq!(target_count, 2);
+
+    client
+        .execute(
+            &format!(
+                "UPDATE {} SET \"receipt_json\" = jsonb_set(\"receipt_json\", '{{counts,rows_inserted}}', '1'::jsonb) WHERE \"target\" = $1",
+                crate::identifiers::quote_identifier_unchecked(CDF_LOADS_TABLE)
+            ),
+            &[&env
+                .target("orders_session_append")
+                .target_name()
+                .unwrap()
+                .as_str()],
+        )
+        .unwrap();
+    let error = try_session_commit(
+        &env,
+        package_dir.path(),
+        "orders_session_append",
+        MergeDedupPolicy::Last,
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("independently stored load evidence"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -1212,6 +1487,7 @@ fn live_append_populates_quarantine_mirror_when_sheet_supports_it() {
             .unwrap(),
         WriteDisposition::Append,
         "chk-live-quarantine-mirror",
+        None,
         &[segment],
     );
     let manifest = builder.finish().unwrap();
@@ -1252,12 +1528,13 @@ fn live_replace_is_atomic_and_reports_deleted_rows() {
     commit(&env, first_dir.path(), "orders_replace");
 
     let second_dir = tempfile::tempdir().unwrap();
-    let second_manifest = build_replay_package(
+    let second_manifest = build_replay_package_with_parent(
         second_dir.path(),
         "pkg-live-replace-second",
         env.target("orders_replace").target_name().unwrap(),
         WriteDisposition::Replace,
         "chk-live-replace-second",
+        "chk-live-replace-first",
         vec![("seg-000001", batch(&[(3, Some("katherine"))]))],
     );
     let outcome = commit(&env, second_dir.path(), "orders_replace");
@@ -1305,12 +1582,13 @@ fn live_merge_deduplicates_last_row_and_updates_existing_keys() {
     assert_eq!(first.receipt.counts.rows_updated, Some(0));
 
     let second_dir = tempfile::tempdir().unwrap();
-    let _second_manifest = build_replay_package(
+    let _second_manifest = build_replay_package_with_parent(
         second_dir.path(),
         "pkg-live-merge-second",
         env.target("orders_merge").target_name().unwrap(),
         WriteDisposition::Merge,
         "chk-live-merge-second",
+        "chk-live-merge-first",
         vec![(
             "seg-000001",
             batch(&[(1, Some("updated")), (3, Some("three"))]),
@@ -1696,7 +1974,7 @@ fn live_correction_missing_duplicate_and_post_update_failures_roll_back() {
         .unwrap();
     client
         .execute(
-            &format!("INSERT INTO {} (\"row_key_start\", \"row_key_end\", \"target\", \"package_hash\", \"segment_id\") VALUES (1000000000000, 1000000000001, $1, $2, 'seg-000001')", quote_identifier_unchecked(CDF_SEGMENTS_TABLE)),
+            &format!("INSERT INTO {} (\"row_key_start\", \"row_key_end\", \"target\", \"package_hash\", \"idempotency_token\", \"segment_id\", \"row_count\", \"byte_count\", \"committed_at_ms\") VALUES (1000000000000, 1000000000001, $1, $2, $2, 'seg-000001', 1, 1, 1)", quote_identifier_unchecked(CDF_SEGMENTS_TABLE)),
             &[&duplicate_target.display_name(), &duplicate_hash.as_str()],
         )
         .unwrap();

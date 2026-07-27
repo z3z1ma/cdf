@@ -1,5 +1,13 @@
 use crate::*;
 
+pub(crate) fn duckdb_identifier_rules() -> IdentifierRules {
+    IdentifierRules {
+        normalizer: "namecase-v1".to_owned(),
+        max_length: None,
+        allowed_pattern: Some("^[a-z_][a-z0-9_]*$".to_owned()),
+    }
+}
+
 pub(crate) fn duckdb_sheet() -> Result<DestinationSheet> {
     Ok(DestinationSheet {
         destination: DestinationId::new(DESTINATION_ID)?,
@@ -145,11 +153,7 @@ pub(crate) fn duckdb_sheet() -> Result<DestinationSheet> {
                 TypeMappingFidelity::Unsupported,
             ),
         ],
-        identifier_rules: IdentifierRules {
-            normalizer: "namecase-v1".to_owned(),
-            max_length: None,
-            allowed_pattern: Some("^[a-z_][a-z0-9_]*$".to_owned()),
-        },
+        identifier_rules: duckdb_identifier_rules(),
         migration_support: CapabilitySupport::Supported,
         quarantine_tables: CapabilitySupport::Unsupported,
         concurrency: ConcurrencyLimit {

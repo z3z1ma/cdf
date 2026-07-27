@@ -41,6 +41,7 @@ members = [
     "crates/cdf-python",
     "crates/cdf-wasm",
     "crates/cdf-subprocess",
+    "crates/cdf-dest-sql",
     "crates/cdf-dest-duckdb",
     "crates/cdf-dest-parquet",
     "crates/cdf-dest-postgres",

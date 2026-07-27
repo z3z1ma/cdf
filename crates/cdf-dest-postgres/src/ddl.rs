@@ -23,7 +23,14 @@ pub(crate) fn system_table_ddl() -> Vec<PostgresStatement> {
         PostgresStatement::execute(
             "create_cdf_state",
             format!(
-                "CREATE TABLE IF NOT EXISTS {} (\n  \"pipeline_id\" TEXT NOT NULL,\n  \"resource_id\" TEXT NOT NULL,\n  \"scope\" TEXT NOT NULL,\n  \"state_version\" INTEGER NOT NULL,\n  \"checkpoint_id\" TEXT NOT NULL,\n  \"package_hash\" TEXT NOT NULL,\n  \"schema_hash\" TEXT NOT NULL,\n  \"output_position_json\" JSONB NOT NULL,\n  \"receipt_id\" TEXT NOT NULL,\n  \"committed_at_ms\" BIGINT NOT NULL,\n  PRIMARY KEY (\"pipeline_id\", \"resource_id\", \"scope\")\n)",
+                "CREATE TABLE IF NOT EXISTS {} (\n  \"pipeline_id\" TEXT NOT NULL,\n  \"resource_id\" TEXT NOT NULL,\n  \"scope\" TEXT NOT NULL,\n  \"state_version\" INTEGER NOT NULL,\n  \"checkpoint_id\" TEXT NOT NULL,\n  \"parent_checkpoint_id\" TEXT,\n  \"package_hash\" TEXT NOT NULL,\n  \"schema_hash\" TEXT NOT NULL,\n  \"output_position_json\" JSONB NOT NULL,\n  \"receipt_id\" TEXT NOT NULL,\n  \"committed_at_ms\" BIGINT NOT NULL,\n  PRIMARY KEY (\"pipeline_id\", \"resource_id\", \"scope\")\n)",
+                quote_identifier_unchecked(CDF_STATE_TABLE)
+            ),
+        ),
+        PostgresStatement::execute(
+            "upgrade_cdf_state_lineage",
+            format!(
+                "ALTER TABLE {} ADD COLUMN IF NOT EXISTS \"parent_checkpoint_id\" TEXT",
                 quote_identifier_unchecked(CDF_STATE_TABLE)
             ),
         ),
@@ -45,7 +52,20 @@ pub(crate) fn system_table_ddl() -> Vec<PostgresStatement> {
         PostgresStatement::execute(
             "create_cdf_segments",
             format!(
-                "CREATE TABLE IF NOT EXISTS {} (\n  \"row_key_start\" BIGINT PRIMARY KEY,\n  \"row_key_end\" BIGINT NOT NULL,\n  \"target\" TEXT NOT NULL,\n  \"package_hash\" TEXT NOT NULL,\n  \"segment_id\" TEXT NOT NULL,\n  CHECK (\"row_key_start\" < \"row_key_end\"),\n  UNIQUE (\"target\", \"package_hash\", \"segment_id\")\n)",
+                "CREATE TABLE IF NOT EXISTS {} (\n  \"row_key_start\" BIGINT PRIMARY KEY,\n  \"row_key_end\" BIGINT NOT NULL,\n  \"target\" TEXT NOT NULL,\n  \"package_hash\" TEXT NOT NULL,\n  \"idempotency_token\" TEXT NOT NULL,\n  \"segment_id\" TEXT NOT NULL,\n  \"scope_json\" JSONB,\n  \"output_position_json\" JSONB,\n  \"row_count\" BIGINT NOT NULL,\n  \"byte_count\" BIGINT NOT NULL,\n  \"committed_at_ms\" BIGINT NOT NULL,\n  CHECK (\"row_key_start\" < \"row_key_end\"),\n  UNIQUE (\"target\", \"package_hash\", \"segment_id\")\n)",
+                quote_identifier_unchecked(CDF_SEGMENTS_TABLE)
+            ),
+        ),
+        PostgresStatement::execute(
+            "upgrade_cdf_segments_readback",
+            format!(
+                "ALTER TABLE {} \
+                 ADD COLUMN IF NOT EXISTS \"idempotency_token\" TEXT, \
+                 ADD COLUMN IF NOT EXISTS \"scope_json\" JSONB, \
+                 ADD COLUMN IF NOT EXISTS \"output_position_json\" JSONB, \
+                 ADD COLUMN IF NOT EXISTS \"row_count\" BIGINT, \
+                 ADD COLUMN IF NOT EXISTS \"byte_count\" BIGINT, \
+                 ADD COLUMN IF NOT EXISTS \"committed_at_ms\" BIGINT",
                 quote_identifier_unchecked(CDF_SEGMENTS_TABLE)
             ),
         ),
@@ -56,7 +76,7 @@ pub(crate) fn target_migrations(input: &PostgresLoadPlanInput) -> Result<Vec<Pos
     match &input.existing_table {
         None => Ok(vec![PostgresStatement::execute(
             "create_target",
-            create_target_table_sql(&input.target, &input.columns, primary_key_for_create(input)),
+            create_target_table_sql(&input.target, &input.columns, primary_key_for_create(input))?,
         )]),
         Some(existing) => {
             let mut migrations = Vec::new();
@@ -79,8 +99,8 @@ pub(crate) fn target_migrations(input: &PostgresLoadPlanInput) -> Result<Vec<Pos
                             format!("add_column_{}", column.name.as_str()),
                             format!(
                                 "ALTER TABLE {} ADD COLUMN {}",
-                                input.target.sql(),
-                                column.definition_sql()
+                                validated_target_sql(&input.target)?,
+                                validated_user_column_definition(column)?
                             ),
                         ));
                     }
@@ -98,8 +118,8 @@ pub(crate) fn target_migrations(input: &PostgresLoadPlanInput) -> Result<Vec<Pos
                         format!("add_column_{}", system_column.name.as_str()),
                         format!(
                             "ALTER TABLE {} ADD COLUMN {}",
-                            input.target.sql(),
-                            system_column.definition_sql_with_nullability(true)
+                            validated_target_sql(&input.target)?,
+                            validated_column_definition(&system_column, true, true)?
                         ),
                     ));
                 }
@@ -121,31 +141,32 @@ pub(crate) fn create_target_table_sql(
     target: &PostgresTarget,
     columns: &[PostgresColumn],
     primary_key: &[PostgresIdentifier],
-) -> String {
+) -> Result<String> {
     let mut definitions = columns
         .iter()
-        .map(PostgresColumn::definition_sql)
-        .collect::<Vec<_>>();
+        .map(validated_user_column_definition)
+        .collect::<Result<Vec<_>>>()?;
     definitions.extend(
         system_target_columns()
             .into_iter()
-            .map(|column| column.definition_sql()),
+            .map(|column| validated_system_column_definition(&column))
+            .collect::<Result<Vec<_>>>()?,
     );
     if !primary_key.is_empty() {
         definitions.push(format!(
             "PRIMARY KEY ({})",
             primary_key
                 .iter()
-                .map(PostgresIdentifier::quoted)
-                .collect::<Vec<_>>()
+                .map(quote_user_identifier)
+                .collect::<Result<Vec<_>>>()?
                 .join(", ")
         ));
     }
-    format!(
+    Ok(format!(
         "CREATE TABLE IF NOT EXISTS {} (\n  {}\n)",
-        target.sql(),
+        validated_target_sql(target)?,
         definitions.join(",\n  ")
-    )
+    ))
 }
 
 pub(crate) fn provenance_unique_index_statement(
@@ -157,8 +178,8 @@ pub(crate) fn provenance_unique_index_statement(
         "ensure_unique_cdf_provenance",
         format!(
             "CREATE UNIQUE INDEX IF NOT EXISTS {} ON {} ({})",
-            name.quoted(),
-            target.sql(),
+            quote_system_identifier(&name)?,
+            validated_target_sql(target)?,
             quote_identifier_unchecked(CDF_ROW_KEY_COLUMN)
         ),
     ))
@@ -179,11 +200,19 @@ pub(crate) fn system_target_columns() -> Vec<PostgresColumn> {
     ]
 }
 
+pub(crate) fn idempotency_lock_statement() -> PostgresStatement {
+    PostgresStatement::query(
+        "lock_idempotency_key",
+        "SELECT pg_advisory_xact_lock(hashtextextended(jsonb_build_array($1::text, $2::text)::text, 0))",
+        StatementExpectation::ReturnsIdempotencyLock,
+    )
+}
+
 pub(crate) fn idempotency_check_statement() -> PostgresStatement {
     PostgresStatement::query(
         "check_duplicate_package",
         format!(
-            "SELECT \"receipt_json\"::text AS \"receipt_json\" FROM {} WHERE \"target\" = $1 AND \"package_hash\" = $2",
+            "SELECT \"receipt_json\"::text, \"receipt_id\", \"destination\", \"target\", \"package_hash\", \"idempotency_token\", \"disposition\", \"schema_hash\", \"rows_written\", \"rows_inserted\", \"rows_updated\", \"rows_deleted\", \"segment_count\", \"migrations_json\"::text, \"committed_at_ms\" FROM {} WHERE \"target\" = $1 AND \"package_hash\" = $2 AND \"idempotency_token\" = $3",
             quote_identifier_unchecked(CDF_LOADS_TABLE)
         ),
         StatementExpectation::ReturnsDuplicateReceiptIfPresent,

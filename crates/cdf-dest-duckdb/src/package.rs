@@ -4,7 +4,7 @@ use crate::{api::*, sql::*};
 pub(crate) fn persistence_fields(user_fields: &[FieldPlan]) -> Vec<FieldPlan> {
     let mut fields = user_fields.to_vec();
     fields.push(FieldPlan {
-        name: CDF_ROW_KEY_COLUMN.to_owned(),
+        name: framework_ident(CDF_ROW_KEY_COLUMN),
         sql_type: "UBIGINT".to_owned(),
         nullable: false,
     });
@@ -14,7 +14,6 @@ pub(crate) fn persistence_fields(user_fields: &[FieldPlan]) -> Vec<FieldPlan> {
 pub(crate) fn validate_field_names(fields: &[FieldPlan]) -> Result<()> {
     let mut seen = BTreeSet::new();
     for field in fields {
-        validate_ident(&field.name)?;
         if !seen.insert(field.name.clone()) {
             return Err(CdfError::contract(format!(
                 "duplicate destination column name {}",
@@ -39,7 +38,7 @@ pub(crate) fn validate_user_schema_fields(schema: &Schema) -> Result<()> {
 
 pub(crate) fn field_plan(field: &Field) -> Result<FieldPlan> {
     Ok(FieldPlan {
-        name: field.name().clone(),
+        name: validate_ident(field.name())?,
         sql_type: duckdb_type(field.data_type())?,
         nullable: field.is_nullable(),
     })
@@ -127,10 +126,10 @@ pub(crate) fn duckdb_type(data_type: &DataType) -> Result<String> {
             let fields = fields
                 .iter()
                 .map(|field| {
-                    validate_ident(field.name())?;
+                    let identifier = validate_ident(field.name())?;
                     Ok(format!(
                         "{} {}",
-                        quote_ident(field.name()),
+                        quote_ident(&identifier),
                         duckdb_type(field.data_type())?
                     ))
                 })
@@ -163,10 +162,10 @@ pub(crate) fn duckdb_type(data_type: &DataType) -> Result<String> {
             let members = fields
                 .iter()
                 .map(|(_, field)| {
-                    validate_ident(field.name())?;
+                    let identifier = validate_ident(field.name())?;
                     Ok(format!(
                         "{} {}",
-                        quote_ident(field.name()),
+                        quote_ident(&identifier),
                         duckdb_type(field.data_type())?
                     ))
                 })

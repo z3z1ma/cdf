@@ -28,22 +28,21 @@ pub(crate) fn mirror_statements(
 
 pub(crate) fn record_load_sql() -> String {
     format!(
-        "INSERT INTO {} (\"receipt_id\", \"destination\", \"target\", \"resource_id\", \"package_hash\", \"idempotency_token\", \"disposition\", \"schema_hash\", \"rows_written\", \"rows_inserted\", \"rows_updated\", \"rows_deleted\", \"segment_count\", \"migrations_json\", \"receipt_json\", \"xid\", \"duplicate\", \"committed_at_ms\")\nVALUES ($1, 'postgres', $2, $4, $3, $5, $6, $7, $8, $9, $10, $11, $12, $13::text::jsonb, $14::text::jsonb, $15, $16, $17)\nON CONFLICT (\"target\", \"package_hash\") DO NOTHING",
+        "INSERT INTO {} (\"receipt_id\", \"destination\", \"target\", \"resource_id\", \"package_hash\", \"idempotency_token\", \"disposition\", \"schema_hash\", \"rows_written\", \"rows_inserted\", \"rows_updated\", \"rows_deleted\", \"segment_count\", \"migrations_json\", \"receipt_json\", \"xid\", \"duplicate\", \"committed_at_ms\")\nVALUES ($1, 'postgres', $2, $4, $3, $5, $6, $7, $8, $9, $10, $11, $12, $13::text::jsonb, $14::text::jsonb, $15, $16, $17)\nON CONFLICT (\"target\", \"package_hash\") DO NOTHING\nRETURNING \"receipt_json\"::text",
         quote_identifier_unchecked(CDF_LOADS_TABLE)
     )
 }
 
 pub(crate) fn record_quarantine_sql() -> String {
     format!(
-        "INSERT INTO {} (\"target\", \"package_hash\", \"receipt_id\", \"source_row_ordinal\", \"rule_id\", \"error_code\", \"source_position_json\", \"observed_value_json\", \"committed_at_ms\")\nVALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb, $8::text::jsonb, $9)\nON CONFLICT (\"target\", \"package_hash\", \"source_row_ordinal\", \"rule_id\", \"error_code\") DO NOTHING",
+        "INSERT INTO {} (\"target\", \"package_hash\", \"receipt_id\", \"source_row_ordinal\", \"rule_id\", \"error_code\", \"source_position_json\", \"observed_value_json\", \"committed_at_ms\")\nVALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb, $8::text::jsonb, $9)\nON CONFLICT (\"target\", \"package_hash\", \"source_row_ordinal\", \"rule_id\", \"error_code\") DO NOTHING\nRETURNING \"receipt_id\", \"source_position_json\"::text, \"observed_value_json\"::text, \"committed_at_ms\"",
         quote_identifier_unchecked(CDF_QUARANTINE_TABLE)
     )
 }
 
 pub(crate) fn state_mirror_sql() -> String {
     format!(
-        "INSERT INTO {} (\"pipeline_id\", \"resource_id\", \"scope\", \"state_version\", \"checkpoint_id\", \"package_hash\", \"schema_hash\", \"output_position_json\", \"receipt_id\", \"committed_at_ms\")\nVALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::jsonb, $9, $10)\nON CONFLICT (\"pipeline_id\", \"resource_id\", \"scope\") DO UPDATE SET\n  \"state_version\" = EXCLUDED.\"state_version\",\n  \"checkpoint_id\" = EXCLUDED.\"checkpoint_id\",\n  \"package_hash\" = EXCLUDED.\"package_hash\",\n  \"schema_hash\" = EXCLUDED.\"schema_hash\",\n  \"output_position_json\" = EXCLUDED.\"output_position_json\",\n  \"receipt_id\" = EXCLUDED.\"receipt_id\",\n  \"committed_at_ms\" = EXCLUDED.\"committed_at_ms\"\nWHERE {}.\"committed_at_ms\" <= EXCLUDED.\"committed_at_ms\"",
-        quote_identifier_unchecked(CDF_STATE_TABLE),
+        "INSERT INTO {} AS \"current\" (\"pipeline_id\", \"resource_id\", \"scope\", \"state_version\", \"checkpoint_id\", \"parent_checkpoint_id\", \"package_hash\", \"schema_hash\", \"output_position_json\", \"receipt_id\", \"committed_at_ms\")\nVALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::text::jsonb, $10, $11)\nON CONFLICT (\"pipeline_id\", \"resource_id\", \"scope\") DO UPDATE SET\n  \"state_version\" = EXCLUDED.\"state_version\",\n  \"checkpoint_id\" = EXCLUDED.\"checkpoint_id\",\n  \"parent_checkpoint_id\" = EXCLUDED.\"parent_checkpoint_id\",\n  \"package_hash\" = EXCLUDED.\"package_hash\",\n  \"schema_hash\" = EXCLUDED.\"schema_hash\",\n  \"output_position_json\" = EXCLUDED.\"output_position_json\",\n  \"receipt_id\" = EXCLUDED.\"receipt_id\",\n  \"committed_at_ms\" = EXCLUDED.\"committed_at_ms\"\nWHERE (\n  \"current\".\"checkpoint_id\" = EXCLUDED.\"checkpoint_id\"\n  AND \"current\".\"parent_checkpoint_id\" IS NOT DISTINCT FROM EXCLUDED.\"parent_checkpoint_id\"\n  AND \"current\".\"state_version\" = EXCLUDED.\"state_version\"\n  AND \"current\".\"package_hash\" = EXCLUDED.\"package_hash\"\n  AND \"current\".\"schema_hash\" = EXCLUDED.\"schema_hash\"\n  AND \"current\".\"output_position_json\" = EXCLUDED.\"output_position_json\"\n  AND \"current\".\"receipt_id\" = EXCLUDED.\"receipt_id\"\n  AND \"current\".\"committed_at_ms\" = EXCLUDED.\"committed_at_ms\"\n) OR \"current\".\"checkpoint_id\" = EXCLUDED.\"parent_checkpoint_id\"\nRETURNING \"state_version\", \"checkpoint_id\", \"parent_checkpoint_id\", \"package_hash\", \"schema_hash\", \"output_position_json\"::text, \"receipt_id\", \"committed_at_ms\"",
         quote_identifier_unchecked(CDF_STATE_TABLE)
     )
 }
@@ -81,6 +80,12 @@ pub(crate) fn verify_clause(
 
 pub(crate) fn drift_hooks() -> PostgresDriftHooks {
     PostgresDriftHooks {
+        intents: vec![
+            cdf_dest_sql::MirrorReadIntent::LoadForPackage,
+            cdf_dest_sql::MirrorReadIntent::StateForScope,
+            cdf_dest_sql::MirrorReadIntent::LoadsForTarget,
+            cdf_dest_sql::MirrorReadIntent::StateHeads,
+        ],
         load_for_package: PostgresStatement::query(
             "doctor_load_for_package",
             format!(

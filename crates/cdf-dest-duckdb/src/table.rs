@@ -9,7 +9,7 @@ pub(crate) fn plan_table(
 ) -> Result<TablePlan> {
     let existing = existing_columns(conn, &target)?;
     let mut ddl = Vec::new();
-    if target.schema != MAIN_SCHEMA {
+    if target.schema.as_str() != MAIN_SCHEMA {
         ddl.push(format!(
             "CREATE SCHEMA IF NOT EXISTS {}",
             quote_ident(&target.schema)
@@ -35,7 +35,7 @@ pub(crate) fn plan_table(
             } else {
                 require_targetable_provenance(conn, &target, &existing)?;
                 for field in fields {
-                    match existing.get(&field.name) {
+                    match existing.get(field.name.as_str()) {
                         Some(column) if same_type(&column.data_type, &field.sql_type) => {}
                         Some(column) => {
                             return Err(CdfError::contract(format!(
@@ -75,7 +75,7 @@ pub(crate) fn plan_absent_table(
     }
 
     let mut ddl = Vec::new();
-    if target.schema != MAIN_SCHEMA {
+    if target.schema.as_str() != MAIN_SCHEMA {
         ddl.push(format!(
             "CREATE SCHEMA IF NOT EXISTS {}",
             quote_ident(&target.schema)
@@ -200,7 +200,7 @@ pub(crate) fn require_targetable_provenance(
             &format!(
                 "SELECT EXISTS (SELECT 1 FROM {} GROUP BY {} HAVING count(*) > 1)",
                 target.sql_name(),
-                quote_ident(CDF_ROW_KEY_COLUMN),
+                quote_ident(&framework_ident(CDF_ROW_KEY_COLUMN)),
             ),
             [],
             |row| row.get(0),

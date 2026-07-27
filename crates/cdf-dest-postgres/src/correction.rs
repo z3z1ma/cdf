@@ -2,9 +2,24 @@ use std::collections::BTreeMap;
 
 use postgres::{Client, NoTls};
 
+use cdf_dest_sql::{
+    LoadMirrorKey, LoadMirrorMutation, LoadMirrorRow, MirrorCommit, MirrorInsertOutcome,
+    QuarantineMirrorKey, QuarantineMirrorMutation, QuarantineMirrorRow, SegmentMirrorMutation,
+    SegmentMirrorPolicy, SegmentMirrorRow, StateMirrorKey, StateMirrorMutation, StateMirrorRow,
+    TransactionalMirrorBackend, TransactionalMirrorManager,
+};
+
 use crate::{
-    ddl::{provenance_unique_index_statement, system_table_ddl, system_table_migrations},
-    identifiers::quote_identifier_unchecked,
+    commit::decode_postgres_load_row,
+    ddl::{
+        idempotency_check_statement, idempotency_lock_statement, provenance_unique_index_statement,
+        system_table_ddl, system_table_migrations,
+    },
+    identifiers::{
+        postgres_identifier_rules, quote_column_identifier, quote_identifier_unchecked,
+        quote_system_identifier, quote_user_identifier, validated_target_sql,
+        validated_user_column_definition,
+    },
     mirrors::{record_load_sql, verify_clause},
     rows::{correction_cell_text, postgres_type_for_arrow},
     validate::{disposition_name, token_suffix},
@@ -86,6 +101,11 @@ pub fn plan_postgres_correction(
     sheet: &PostgresDestinationSheet,
 ) -> Result<PostgresCorrectionPlan> {
     cdf_contract::validate_destination_correction_commit_request(&input.request)?;
+    if sheet.kernel.identifier_rules != postgres_identifier_rules() {
+        return Err(CdfError::contract(
+            "Postgres correction sheet identifier rules differ from executable authority",
+        ));
+    }
     let capabilities = postgres_correction_capabilities();
     input.request.validate_for(
         &capabilities,
@@ -140,11 +160,11 @@ pub fn plan_postgres_correction(
     )?;
 
     let stage_table = correction_stage_table_name(&input.request.correction_package_hash)?;
-    let create_stage = correction_stage_statement(&stage_table);
+    let create_stage = correction_stage_statement(&stage_table)?;
     let update_sql = fields
         .iter()
         .map(|field| correction_update_statement(&target, &stage_table, field))
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
     let verify = verify_clause(
         &input.request.target,
         target.schema.as_ref(),
@@ -293,8 +313,8 @@ impl PostgresDestination {
         let sql = format!(
             "SELECT \"target\".{} FROM {} AS \"target\" JOIN {} AS \"segment\" ON \"target\".{} >= \"segment\".\"row_key_start\" AND \"target\".{} < \"segment\".\"row_key_end\" WHERE \"segment\".\"target\" = $1 AND \"segment\".\"package_hash\" = $2 AND \"segment\".\"segment_id\" = $3 AND \"target\".{} = \"segment\".\"row_key_start\" + $4",
             quote_identifier_unchecked("_cdf_variant"),
-            target.sql(),
-            target_system_table(&target, CDF_SEGMENTS_TABLE),
+            validated_target_sql(&target)?,
+            target_system_table(&target, CDF_SEGMENTS_TABLE)?,
             quote_identifier_unchecked(CDF_ROW_KEY_COLUMN),
             quote_identifier_unchecked(CDF_ROW_KEY_COLUMN),
             quote_identifier_unchecked(CDF_ROW_KEY_COLUMN)
@@ -477,7 +497,7 @@ impl CorrectionCommitSession for PostgresCorrectionSession {
             xid,
             committed_at_ms,
         )?;
-        insert_correction_load_mirror(&mut client, &receipt)?;
+        apply_correction_mirror(&mut client, &receipt)?;
         verify_correction_receipt_in_transaction(&mut client, &receipt)?;
         self.receipt = Some(receipt);
         self.counts = Some(counts.clone());
@@ -572,8 +592,8 @@ fn correction_column_migrations(
                 format!("add_promoted_column_{}", field.column.name),
                 format!(
                     "ALTER TABLE {} ADD COLUMN {}",
-                    target.sql(),
-                    field.column.definition_sql()
+                    validated_target_sql(target)?,
+                    validated_user_column_definition(&field.column)?
                 ),
             )),
         }
@@ -588,36 +608,36 @@ fn correction_stage_table_name(package_hash: &PackageHash) -> Result<PostgresIde
     ))
 }
 
-fn correction_stage_statement(stage: &PostgresIdentifier) -> PostgresStatement {
-    PostgresStatement::execute(
+fn correction_stage_statement(stage: &PostgresIdentifier) -> Result<PostgresStatement> {
+    Ok(PostgresStatement::execute(
         "create_correction_stage",
         format!(
             "CREATE TEMP TABLE {} (\n  {} BIGINT NOT NULL,\n  \"promoted_path\" TEXT NOT NULL,\n  \"promoted_value\" TEXT,\n  \"residual_after\" TEXT,\n  PRIMARY KEY ({}, \"promoted_path\")\n) ON COMMIT DROP",
-            stage.quoted(),
+            quote_system_identifier(stage)?,
             quote_identifier_unchecked(CDF_ROW_KEY_COLUMN),
             quote_identifier_unchecked(CDF_ROW_KEY_COLUMN)
         ),
-    )
+    ))
 }
 
 fn correction_update_statement(
     target: &PostgresTarget,
     stage: &PostgresIdentifier,
     field: &PostgresCorrectionFieldPlan,
-) -> PostgresStatement {
-    PostgresStatement::execute(
+) -> Result<PostgresStatement> {
+    Ok(PostgresStatement::execute(
         format!("update_promoted_column_{}", field.column.name),
         format!(
             "UPDATE {} AS \"target\" SET {} = \"stage\".\"promoted_value\"::{}, {} = \"stage\".\"residual_after\" FROM {} AS \"stage\" WHERE \"stage\".\"promoted_path\" = $1 AND \"target\".{} = \"stage\".{}",
-            target.sql(),
-            field.column.name.quoted(),
+            validated_target_sql(target)?,
+            quote_column_identifier(&field.column.name)?,
             field.column.data_type,
             quote_identifier_unchecked("_cdf_variant"),
-            stage.quoted(),
+            quote_system_identifier(stage)?,
             quote_identifier_unchecked(CDF_ROW_KEY_COLUMN),
             quote_identifier_unchecked(CDF_ROW_KEY_COLUMN)
         ),
-    )
+    ))
 }
 
 fn validate_correction_package(
@@ -664,11 +684,11 @@ fn validate_correction_package(
     Ok(())
 }
 
-fn target_system_table(target: &PostgresTarget, table: &str) -> String {
-    match &target.schema {
-        Some(schema) => format!("{}.{}", schema.quoted(), quote_identifier_unchecked(table)),
-        None => quote_identifier_unchecked(table),
-    }
+fn target_system_table(target: &PostgresTarget, table: &'static str) -> Result<String> {
+    let table = quote_system_identifier(&PostgresIdentifier::system(table)?)?;
+    target.schema.as_ref().map_or(Ok(table.clone()), |schema| {
+        Ok(format!("{}.{}", quote_user_identifier(schema)?, table))
+    })
 }
 
 fn prepare_correction_rows(
@@ -688,8 +708,8 @@ fn prepare_correction_rows(
         "SELECT \"target\".{}, \"target\".{} FROM {} AS \"target\" JOIN {} AS \"segment\" ON \"target\".{} >= \"segment\".\"row_key_start\" AND \"target\".{} < \"segment\".\"row_key_end\" WHERE \"segment\".\"target\" = $1 AND \"segment\".\"package_hash\" = $2 AND \"segment\".\"segment_id\" = $3 AND \"target\".{} = \"segment\".\"row_key_start\" + $4 FOR UPDATE OF \"target\"",
         quote_identifier_unchecked(CDF_ROW_KEY_COLUMN),
         quote_identifier_unchecked("_cdf_variant"),
-        plan.target.sql(),
-        target_system_table(&plan.target, CDF_SEGMENTS_TABLE),
+        validated_target_sql(&plan.target)?,
+        target_system_table(&plan.target, CDF_SEGMENTS_TABLE)?,
         quote_identifier_unchecked(CDF_ROW_KEY_COLUMN),
         quote_identifier_unchecked(CDF_ROW_KEY_COLUMN),
         quote_identifier_unchecked(CDF_ROW_KEY_COLUMN)
@@ -772,7 +792,7 @@ fn insert_correction_stage_rows(
 ) -> Result<()> {
     let sql = format!(
         "INSERT INTO {} ({}, \"promoted_path\", \"promoted_value\", \"residual_after\") VALUES ($1, $2, $3, $4)",
-        plan.stage_table.quoted(),
+        quote_system_identifier(&plan.stage_table)?,
         quote_identifier_unchecked(CDF_ROW_KEY_COLUMN)
     );
     for row in rows {
@@ -798,29 +818,37 @@ fn find_correction_duplicate(
     request: &DestinationCorrectionCommitRequest,
     plan: &PostgresCorrectionPlan,
 ) -> Result<Option<Receipt>> {
-    let sql = format!(
-        "SELECT \"receipt_json\"::text FROM {} WHERE \"target\" = $1 AND \"package_hash\" = $2",
-        quote_identifier_unchecked(CDF_LOADS_TABLE)
-    );
-    let row = client
-        .query_opt(
-            &sql,
-            &[
-                &request.target.as_str(),
-                &request.correction_package_hash.as_str(),
-            ],
-        )
-        .map_err(|error| {
-            correction_postgres_error("query Postgres correction idempotency", error)
-        })?;
-    row.map(|row| {
-        let json: String = row.get(0);
-        let receipt: Receipt = serde_json::from_str(&json)
-            .map_err(|error| CdfError::data(format!("decode correction receipt: {error}")))?;
-        plan.kernel.validate_receipt(request, &receipt)?;
-        Ok(receipt)
-    })
-    .transpose()
+    let mut backend = PostgresCorrectionMirrorBackend { client };
+    TransactionalMirrorManager::new(&mut backend)
+        .find_duplicate(
+            &LoadMirrorKey {
+                target: request.target.clone(),
+                package_hash: request.correction_package_hash.clone(),
+                idempotency_token: request.idempotency_token.clone(),
+            },
+            |stored| {
+                let xid = stored
+                    .transaction
+                    .as_ref()
+                    .and_then(|transaction| transaction.values.get("xid"))
+                    .cloned()
+                    .ok_or_else(|| {
+                        CdfError::data("Postgres correction duplicate is missing xid evidence")
+                    })?;
+                build_correction_receipt(
+                    request,
+                    plan,
+                    stored.counts.clone(),
+                    xid,
+                    stored.committed_at_ms,
+                )
+            },
+        )?
+        .map(|receipt| {
+            plan.kernel.validate_receipt(request, &receipt)?;
+            Ok(receipt)
+        })
+        .transpose()
 }
 
 fn build_correction_receipt(
@@ -862,7 +890,114 @@ fn build_correction_receipt(
     .finalize()
 }
 
-fn insert_correction_load_mirror(client: &mut Client, receipt: &Receipt) -> Result<()> {
+fn apply_correction_mirror(client: &mut Client, receipt: &Receipt) -> Result<()> {
+    DestinationCorrectionReceiptEvidence::from_receipt(receipt)?;
+    let commit = MirrorCommit::new(
+        receipt.clone(),
+        None,
+        None,
+        &[],
+        Vec::new(),
+        SegmentMirrorPolicy::Exclude,
+    )?;
+    let mut backend = PostgresCorrectionMirrorBackend { client };
+    TransactionalMirrorManager::new(&mut backend)
+        .apply(commit)
+        .map(|_| ())
+}
+
+struct PostgresCorrectionMirrorBackend<'a> {
+    client: &'a mut Client,
+}
+
+impl TransactionalMirrorBackend for PostgresCorrectionMirrorBackend<'_> {
+    fn read_load(&mut self, key: &LoadMirrorKey) -> Result<Option<LoadMirrorRow>> {
+        self.client
+            .query_one(
+                &idempotency_lock_statement().sql,
+                &[&key.target.as_str(), &key.package_hash.as_str()],
+            )
+            .map_err(|error| {
+                correction_postgres_error("lock Postgres correction idempotency key", error)
+            })?;
+        self.client
+            .query_opt(
+                &idempotency_check_statement().sql,
+                &[
+                    &key.target.as_str(),
+                    &key.package_hash.as_str(),
+                    &key.idempotency_token.as_str(),
+                ],
+            )
+            .map_err(|error| {
+                correction_postgres_error("read Postgres correction receipt mirror", error)
+            })?
+            .map(decode_postgres_load_row)
+            .transpose()
+    }
+
+    fn insert_load(
+        &mut self,
+        mutation: &LoadMirrorMutation,
+    ) -> Result<MirrorInsertOutcome<LoadMirrorRow>> {
+        insert_correction_load_mirror(self.client, mutation)
+    }
+
+    fn read_state(&mut self, _key: &StateMirrorKey) -> Result<Option<StateMirrorRow>> {
+        Ok(None)
+    }
+
+    fn upsert_state(
+        &mut self,
+        _mutation: &StateMirrorMutation,
+    ) -> Result<MirrorInsertOutcome<StateMirrorRow>> {
+        Err(CdfError::internal(
+            "Postgres correction mirror received unsupported checkpoint state mutation",
+        ))
+    }
+
+    fn insert_segment(
+        &mut self,
+        _mutation: &SegmentMirrorMutation,
+    ) -> Result<MirrorInsertOutcome<SegmentMirrorRow>> {
+        Err(CdfError::internal(
+            "Postgres correction mirror received excluded segment mutation",
+        ))
+    }
+
+    fn read_segment(
+        &mut self,
+        _mutation: &SegmentMirrorMutation,
+    ) -> Result<Option<SegmentMirrorRow>> {
+        Err(CdfError::internal(
+            "Postgres correction mirror received excluded segment readback",
+        ))
+    }
+
+    fn insert_quarantine(
+        &mut self,
+        _mutation: &QuarantineMirrorMutation,
+    ) -> Result<MirrorInsertOutcome<QuarantineMirrorRow>> {
+        Err(CdfError::internal(
+            "Postgres correction mirror received unsupported quarantine mutation",
+        ))
+    }
+
+    fn read_quarantine(
+        &mut self,
+        _key: &QuarantineMirrorKey,
+    ) -> Result<Option<QuarantineMirrorRow>> {
+        Err(CdfError::internal(
+            "Postgres correction mirror received unsupported quarantine readback",
+        ))
+    }
+}
+
+fn insert_correction_load_mirror(
+    client: &mut Client,
+    mutation: &LoadMirrorMutation,
+) -> Result<MirrorInsertOutcome<LoadMirrorRow>> {
+    let receipt = &mutation.receipt;
     let migrations_json = serde_json::to_string(&receipt.migrations)
         .map_err(|error| CdfError::data(error.to_string()))?;
     let receipt_json =
@@ -884,9 +1019,9 @@ fn insert_correction_load_mirror(client: &mut Client, receipt: &Receipt) -> Resu
     let rows_deleted = Some(0_i64);
     let segment_count = i64::try_from(receipt.segment_acks.len())
         .map_err(|_| CdfError::internal("correction segment count exceeds BIGINT"))?;
-    let duplicate = false;
+    let duplicate = mutation.duplicate;
     client
-        .execute(
+        .query_opt(
             &record_load_sql(),
             &[
                 &receipt.receipt_id.as_str(),
@@ -910,8 +1045,15 @@ fn insert_correction_load_mirror(client: &mut Client, receipt: &Receipt) -> Resu
         )
         .map_err(|error| {
             correction_postgres_error("insert Postgres correction receipt mirror", error)
-        })?;
-    Ok(())
+        })?
+        .map(|row| {
+            let json: String = row.get(0);
+            serde_json::from_str(&json)
+                .map(|receipt| MirrorInsertOutcome::Inserted(LoadMirrorRow { receipt }))
+                .map_err(|error| CdfError::data(error.to_string()))
+        })
+        .transpose()
+        .map(|outcome| outcome.unwrap_or(MirrorInsertOutcome::Conflict))
 }
 
 fn verify_correction_receipt_in_transaction(client: &mut Client, receipt: &Receipt) -> Result<()> {
@@ -960,7 +1102,7 @@ fn set_correction_search_path(client: &mut Client, target: &PostgresTarget) -> R
     client
         .batch_execute(&format!(
             "SET LOCAL search_path = {}, public",
-            schema.quoted()
+            quote_user_identifier(schema)?
         ))
         .map_err(|error| correction_postgres_error("set Postgres correction search_path", error))
 }
