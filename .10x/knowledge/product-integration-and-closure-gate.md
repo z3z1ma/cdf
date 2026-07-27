@@ -174,8 +174,8 @@ Schema are part of acceptance:
 - never hand-edit one generated fact;
 - record when a generated document intentionally lags newer dated evidence.
 
-As of 2026-07-26, `docs/performance-envelope.md` lags the latest one-TiB evidence. The active
-handoff records that fact so a cold agent does not use the old result as the current floor.
+The 2026-07-26 one-TiB result is represented in both the reconciliation manifest and generated
+`docs/performance-envelope.md`, including its repeated-content and physical-I/O limits.
 
 ## Commit discipline
 

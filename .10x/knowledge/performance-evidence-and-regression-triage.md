@@ -73,12 +73,12 @@ path, not a stable internet service-level objective.
 Public endpoints redirect, throttle, omit metadata, expire signed URLs, and change content. A live
 failure can identify a robustness problem but cannot alone prove a code regression.
 
-## The generated envelope may lag
+## Generated-envelope authority
 
-`docs/performance-envelope.md` is generated evidence publication, not a hand-edited authority. As
-of 2026-07-26 it still reports the older 411.5-MB/s one-TiB result. The dated July 26 evidence is
-newer. Refresh the generated envelope only through an owning ticket with reproducible input; do
-not manually replace one number and leave the rest of the cell stale.
+`docs/performance-envelope.md` is generated evidence publication, not a hand-edited authority. Its
+reconciliation manifest was refreshed on 2026-07-26 with the 2.222-GB/s one-TiB observation and
+the matching memory, host, evidence, bias, and residual fields. Future updates must change the
+manifest and regenerate the complete document; never replace one published number in isolation.
 
 ## Diagnose the topology before tuning
 

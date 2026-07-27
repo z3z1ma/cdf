@@ -101,7 +101,8 @@ The audit supports a cold-start handoff in which:
 - Live AWS state was read but not mutated during this record audit. The empty tagged-instance query
   is a dated observation, not a durable guarantee; the EC2 skill requires a fresh status/AWS check
   for every future tranche.
-- The newest one-TiB evidence has not yet regenerated `docs/performance-envelope.md`; the cold-start
-  handoff records that discrepancy rather than editing generated output.
+- At audit time, the newest one-TiB evidence had not regenerated `docs/performance-envelope.md`.
+  Later on 2026-07-26, the reconciliation manifest and generated document were refreshed together
+  and the committed golden-generation test passed.
 - The pre-wave hardening tickets remain open and executable. This audit does not claim their
   architectural outcomes are implemented.

@@ -160,9 +160,9 @@ On the recorded `c7i.4xlarge` host, the exact 1.0086-TiB synthetic acceptance co
 prior 411.5-MB/s result, with identical workload identity and verified receipt/checkpoint/package
 facts.
 
-The generated `docs/performance-envelope.md` still contains the older 411.5-MB/s one-TiB result as
-of this handoff. Treat the dated July 26 evidence as the current observation until the generated
-envelope is refreshed by an owning ticket. Never silently edit generated envelope numbers.
+The generated `docs/performance-envelope.md` was refreshed from its reconciliation manifest on
+2026-07-26 and reports this result with its repeated-content/hard-link and physical-I/O limits.
+Future updates must change the manifest and regenerate the document together.
 
 The controlled full-year TLC-to-DuckDB path and the live FineWeb HTTP path have useful evidence,
 but they are workload-specific floors, not proof that every schema, transport, or destination

@@ -6,7 +6,7 @@ This document is generated from a host-labelled reconciliation manifest and the 
 
 ## Evidence authority
 
-- Reconciliation manifest: `sha256:fea4220e07b774878a75ff216bbe187960d0d2ca2394b40d47f4860c585b8475`
+- Reconciliation manifest: `sha256:7510529b772c6f9b5cedf6bf4f8438708a3b824c92780f40abda899d143dbdb5`
 - Pre-optimization baseline: [docs/performance-baseline.md](performance-baseline.md)
 - Comparisons are host- and mode-specific. A row is never promoted by combining measurements from different hosts.
 - `partial`, `accepted residual`, and `not demonstrated` are deliberately non-green.
@@ -24,14 +24,14 @@ This document is generated from a host-labelled reconciliation manifest and the 
 | Package → PostgreSQL | binary COPY; ≥2× CSV COPY | 1,801,714 rows/s local binary COPY control; 672,531 rows/s full-year direct-target sample | 3.00× retained CSV COPY control | Arrow batches encoded incrementally; no full-package text staging | EC2 destination matrix plus local temporary PostgreSQL control / loopback release | green |
 | Package → Parquet | ≥60% device-write roofline | 4,953,986 rows/s over full-year TLC; selected-path report 1,362 MiB/s | isolated writer 0.786× raw durable write; selected path clears 0.60 floor | bounded staged row-group writers; no full-table buffer | EC2 destination matrix plus Apple M5 Pro writer control / warm local release | green |
 | Full-year TLC HTTPS → DuckDB | ≤1.5× download + native ingest; I/O dominated | 15.783 s with explicit complete spool; 2,608,431 rows/s; exact 41,169,720 rows | 19.4% faster than unchanged 19.580 s overlap default; original composite target remains red | 3.91 GiB process peak; 6.22 GiB cgroup peak; zero OOM/pressure/spill | EC2 c7i.4xlarge / Hugging Face public mirror / live uncontrolled network | accepted residual |
-| 1 TiB synthetic glob → Parquet | default budget; stable RSS; linear scaling to device saturation | 1.0086 TiB and 5.436 billion rows in 2,694.863 s; 411.5 MB/s logical | complete governed product path; scaling knee retained from the separate C4/D8 curve | 1.896 GiB process peak under default 4 GiB; zero cgroup OOM | EC2 c7i.4xlarge / 2 TiB tuned gp3 / generated default-policy scale run | partial |
+| 1 TiB synthetic glob → Parquet | default budget; stable RSS; linear scaling to device saturation | 1.0086 TiB and 5.436 billion rows in 499.07 s; 2.222 GB/s logical; 10.892 million rows/s | 5.40× the identical prior governed run; 6.78 equivalent cores and 84.8% of the physical-core roofline | 3.923 GB process peak under default 4 GiB; 3.163/3.651 GB managed peak; zero spill/OOM | EC2 c7i.4xlarge / 250 GiB tuned gp3 / generated default-policy scale run / 5 GiB cgroup | partial |
 | Correctness/evidence overhead | ≤10% versus equivalent raw read + write | hashing 0.06%; CLI rendering -0.44% within variance; validation and destination work reported separately | no single semantically equivalent whole-product raw comparator exists | correctness structures share the governed memory ledger | mixed, explicitly separated component controls / component controls only | not demonstrated |
 
 ## Architecture and correctness matrix
 
 | Workload | Target | Absolute result | Relative result | Memory | Host / mode | Status |
 |---|---|---|---|---|---|---|
-| Constant process memory | RSS is a function of policy, not input size; clean failure below minimum | 5/20/100 GiB under 2 GiB with 1.54–1.58 GiB RSS; 1 TiB under default 4 GiB | flat memory curve across 20× input growth | 64 MiB policy fails typed Data before artifacts; forced spill laws clean up | EC2 c7i.4xlarge / cgroup-enforced release | green |
+| Constant process memory | RSS is a function of policy, not input size; clean failure below minimum | 5/20/100 GiB under 2 GiB with 1.54–1.58 GiB RSS; 1 TiB at 3.923 GB RSS under default 4 GiB | flat memory curve across 20× input growth | 64 MiB policy fails typed Data before artifacts; forced spill laws clean up | EC2 c7i.4xlarge / cgroup-enforced release | green |
 | Jobs invariance | fixed inputs produce identical package/receipt/state semantics at jobs 1/N | format, destination, REST, SQL, failure, drain, and isolated-worker matrices pass | jobs 1/2/auto/4 retain exact logical artifacts | task/permit/frontier peaks remain within admitted authorities | deterministic fixtures plus Apple M5 Pro scale curve / multi-job conformance | green |
 | Core native format engines | streaming, fail-closed, registry-owned Parquet/CSV/JSON/NDJSON and transforms | all core engines and gzip/zstd/bzip2/xz/lz4/snappy/brotli transforms are terminal | adding a codec does not extend generic source/runtime match trees | byte sources, transforms, codecs, and batches share accounted ownership | cross-platform conformance plus named release controls / native registry | green |
 | Implemented foreign boundaries | honest transfer/copy/memory/cancellation evidence for Python and subprocess | Python 2.82 million rows/s at 8,192 rows; subprocess IPC 524,288 rows in 33.6 ms | IPC and row compatibility are reported separately; WASM remains unmeasured | exact Python release; bounded control retention; copy-unknown remains explicit | aarch64-apple-darwin local release / boundary micro/macro controls | observed |
@@ -120,11 +120,11 @@ This document is generated from a host-labelled reconciliation manifest and the 
 
 ### 1 TiB synthetic glob → Parquet — partial
 
-- Evidence: [.10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md](../.10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md)
-- Reference: C4/D8 same-path concurrency curve; no synthetic unique-byte device roofline
-- Bias/limit: The generator uses hard links and content-addressed destination reuse; this proves logical work, lifecycle, and memory, not unique-source-byte cold storage throughput.
-- Sources: [.10x/evidence/.storage/2026-07-25-p3-f4-ec2-1t-summary.json](../.10x/evidence/.storage/2026-07-25-p3-f4-ec2-1t-summary.json), [.10x/evidence/.storage/2026-07-25-p3-f4-ec2-1t-package-verify.json](../.10x/evidence/.storage/2026-07-25-p3-f4-ec2-1t-package-verify.json), [.10x/evidence/.storage/2026-07-25-p3-f4-ec2-1t-cgroup-last.txt](../.10x/evidence/.storage/2026-07-25-p3-f4-ec2-1t-cgroup-last.txt)
-- Residual: Default-budget completion is green; unique-byte cold-device saturation and linear core scaling were not demonstrated by this hard-link fixture.
+- Evidence: [.10x/evidence/2026-07-26-parquet-parallel-one-tib-rerun.md](../.10x/evidence/2026-07-26-parquet-parallel-one-tib-rerun.md)
+- Reference: identical 2026-07-25 governed baseline; no synthetic unique-byte device roofline
+- Bias/limit: The generator uses repeated content and hard links, and Zstd compressed the destination to 46.4 MB; this proves logical work, CPU scheduling, lifecycle, and memory, not unique-source-byte or cold-device throughput.
+- Sources: [.10x/evidence/.storage/2026-07-26-parquet-parallel-1t-summary.json](../.10x/evidence/.storage/2026-07-26-parquet-parallel-1t-summary.json), [.10x/evidence/.storage/2026-07-26-parquet-parallel-1t-package-verify.json](../.10x/evidence/.storage/2026-07-26-parquet-parallel-1t-package-verify.json), [.10x/evidence/.storage/2026-07-26-parquet-parallel-1t-process-time.txt](../.10x/evidence/.storage/2026-07-26-parquet-parallel-1t-process-time.txt)
+- Residual: Default-budget completion and near physical-core saturation are green; unique-source-byte cold-device saturation and the SMT scaling knee were not demonstrated by this repeated-content hard-link fixture.
 
 ### Correctness/evidence overhead — not demonstrated
 
@@ -139,7 +139,7 @@ This document is generated from a host-labelled reconciliation manifest and the 
 - Evidence: [.10x/evidence/2026-07-25-p3-f3-constant-memory-matrix.md](../.10x/evidence/2026-07-25-p3-f3-constant-memory-matrix.md)
 - Reference: input-size geometric curve and explicit impossible-budget control
 - Bias/limit: Repeated-content fixtures prove memory/lifecycle slope, not unique-byte device capacity.
-- Sources: [.10x/evidence/.storage/2026-07-25-p3-f3-ec2-5g-a-summary.json](../.10x/evidence/.storage/2026-07-25-p3-f3-ec2-5g-a-summary.json), [.10x/evidence/.storage/2026-07-25-p3-f3-ec2-20g-summary.json](../.10x/evidence/.storage/2026-07-25-p3-f3-ec2-20g-summary.json), [.10x/evidence/.storage/2026-07-25-p3-f3-ec2-100g-summary.json](../.10x/evidence/.storage/2026-07-25-p3-f3-ec2-100g-summary.json), [.10x/evidence/.storage/2026-07-25-p3-f3-ec2-too-small.json](../.10x/evidence/.storage/2026-07-25-p3-f3-ec2-too-small.json)
+- Sources: [.10x/evidence/.storage/2026-07-25-p3-f3-ec2-5g-a-summary.json](../.10x/evidence/.storage/2026-07-25-p3-f3-ec2-5g-a-summary.json), [.10x/evidence/.storage/2026-07-25-p3-f3-ec2-20g-summary.json](../.10x/evidence/.storage/2026-07-25-p3-f3-ec2-20g-summary.json), [.10x/evidence/.storage/2026-07-25-p3-f3-ec2-100g-summary.json](../.10x/evidence/.storage/2026-07-25-p3-f3-ec2-100g-summary.json), [.10x/evidence/.storage/2026-07-25-p3-f3-ec2-too-small.json](../.10x/evidence/.storage/2026-07-25-p3-f3-ec2-too-small.json), [.10x/evidence/2026-07-26-parquet-parallel-one-tib-rerun.md](../.10x/evidence/2026-07-26-parquet-parallel-one-tib-rerun.md)
 
 ### Jobs invariance — green
 

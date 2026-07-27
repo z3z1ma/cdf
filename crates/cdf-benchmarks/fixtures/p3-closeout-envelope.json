@@ -176,21 +176,21 @@
       "id": "one_tib",
       "label": "1 TiB synthetic glob → Parquet",
       "target": "default budget; stable RSS; linear scaling to device saturation",
-      "absolute_result": "1.0086 TiB and 5.436 billion rows in 2,694.863 s; 411.5 MB/s logical",
-      "relative_result": "complete governed product path; scaling knee retained from the separate C4/D8 curve",
-      "memory_result": "1.896 GiB process peak under default 4 GiB; zero cgroup OOM",
-      "host": "EC2 c7i.4xlarge / 2 TiB tuned gp3",
-      "mode": "generated default-policy scale run",
-      "reference": "C4/D8 same-path concurrency curve; no synthetic unique-byte device roofline",
-      "bias": "The generator uses hard links and content-addressed destination reuse; this proves logical work, lifecycle, and memory, not unique-source-byte cold storage throughput.",
+      "absolute_result": "1.0086 TiB and 5.436 billion rows in 499.07 s; 2.222 GB/s logical; 10.892 million rows/s",
+      "relative_result": "5.40× the identical prior governed run; 6.78 equivalent cores and 84.8% of the physical-core roofline",
+      "memory_result": "3.923 GB process peak under default 4 GiB; 3.163/3.651 GB managed peak; zero spill/OOM",
+      "host": "EC2 c7i.4xlarge / 250 GiB tuned gp3",
+      "mode": "generated default-policy scale run / 5 GiB cgroup",
+      "reference": "identical 2026-07-25 governed baseline; no synthetic unique-byte device roofline",
+      "bias": "The generator uses repeated content and hard links, and Zstd compressed the destination to 46.4 MB; this proves logical work, CPU scheduling, lifecycle, and memory, not unique-source-byte or cold-device throughput.",
       "status": "partial",
-      "evidence_record": ".10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md",
+      "evidence_record": ".10x/evidence/2026-07-26-parquet-parallel-one-tib-rerun.md",
       "sources": [
-        ".10x/evidence/.storage/2026-07-25-p3-f4-ec2-1t-summary.json",
-        ".10x/evidence/.storage/2026-07-25-p3-f4-ec2-1t-package-verify.json",
-        ".10x/evidence/.storage/2026-07-25-p3-f4-ec2-1t-cgroup-last.txt"
+        ".10x/evidence/.storage/2026-07-26-parquet-parallel-1t-summary.json",
+        ".10x/evidence/.storage/2026-07-26-parquet-parallel-1t-package-verify.json",
+        ".10x/evidence/.storage/2026-07-26-parquet-parallel-1t-process-time.txt"
       ],
-      "residual": "Default-budget completion is green; unique-byte cold-device saturation and linear core scaling were not demonstrated by this hard-link fixture."
+      "residual": "Default-budget completion and near physical-core saturation are green; unique-source-byte cold-device saturation and the SMT scaling knee were not demonstrated by this repeated-content hard-link fixture."
     },
     {
       "id": "correctness_overhead",
@@ -217,7 +217,7 @@
       "id": "constant_memory",
       "label": "Constant process memory",
       "target": "RSS is a function of policy, not input size; clean failure below minimum",
-      "absolute_result": "5/20/100 GiB under 2 GiB with 1.54–1.58 GiB RSS; 1 TiB under default 4 GiB",
+      "absolute_result": "5/20/100 GiB under 2 GiB with 1.54–1.58 GiB RSS; 1 TiB at 3.923 GB RSS under default 4 GiB",
       "relative_result": "flat memory curve across 20× input growth",
       "memory_result": "64 MiB policy fails typed Data before artifacts; forced spill laws clean up",
       "host": "EC2 c7i.4xlarge",
@@ -230,7 +230,8 @@
         ".10x/evidence/.storage/2026-07-25-p3-f3-ec2-5g-a-summary.json",
         ".10x/evidence/.storage/2026-07-25-p3-f3-ec2-20g-summary.json",
         ".10x/evidence/.storage/2026-07-25-p3-f3-ec2-100g-summary.json",
-        ".10x/evidence/.storage/2026-07-25-p3-f3-ec2-too-small.json"
+        ".10x/evidence/.storage/2026-07-25-p3-f3-ec2-too-small.json",
+        ".10x/evidence/2026-07-26-parquet-parallel-one-tib-rerun.md"
       ]
     },
     {
