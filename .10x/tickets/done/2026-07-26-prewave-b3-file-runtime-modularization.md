@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-26
 Updated: 2026-07-26
 Parent: `.10x/tickets/2026-07-26-pre-wave-architecture-hardening-program.md`
@@ -68,6 +68,13 @@ re-exports.
   TLC median moved from 1.35s to 1.28s (-5.2%) and FineWeb from 13.03s to 13.58s (+4.2%);
   median maximum RSS moved from 973,570,048 to 959,332,352 bytes and from 5,959,794,688 to
   5,929,664,512 bytes respectively. Both are within the existing 10% ordinary-variance gate.
+- 2026-07-26: A broader 216-test `cdf-project` integration run reached the final replay case after
+  reporting one HTTP jobs-invariance failure, then was stopped when that replay case remained
+  silent beyond three minutes. The HTTP test failed identically and at the same assertion from an
+  isolated worktree at exact pre-B3 commit `e7b56b06`; five candidate repetitions also reproduced
+  it. This establishes a pre-existing scheduling-sensitive assertion rather than a modularization
+  regression. The long replay test and full-suite completion remain outside B3's behavior-neutral
+  source boundary and are not represented as passing evidence.
 
 ## Blockers
 
@@ -103,6 +110,13 @@ None.
   `e7b56b06`, while the candidate label is `e7b56b06+dirty` until this implementation commit.
   Logs are in ignored `target/b3-perf/{tlc,fineweb}-samples.txt`. This is same-host warm local
   evidence, not a replacement for controlled EC2 full-year TLC or public-network FineWeb floors.
+- Integration limit: `DUCKDB_DOWNLOAD_LIB=1 cargo test -p cdf-project --lib --locked --quiet`
+  executed 216 tests but did not complete because the final Parquet artifact replay case remained
+  silent beyond three minutes. Its only reported failure,
+  `tests::recorded_http_multifile_packages_are_jobs_invariant`, was reproduced unchanged at
+  pre-B3 commit `e7b56b06` in an isolated worktree, failing the same
+  `parallel_progress.peak_active_streams >= 2` timing assertion. This evidence excludes the
+  failure from B3 causality; it does not claim the broader suite passes.
 
 ## Review
 

@@ -29,7 +29,7 @@ destination concurrency model executable authoring law.
 
 1. `.10x/tickets/done/2026-07-26-prewave-b1-typed-task-set-reader.md`
 2. `.10x/tickets/done/2026-07-26-prewave-b2-spill-task-planning-lifecycle.md`
-3. `.10x/tickets/2026-07-26-prewave-b3-file-runtime-modularization.md`
+3. `.10x/tickets/done/2026-07-26-prewave-b3-file-runtime-modularization.md`
 
 B1 and B2 extract only the concrete duplicated external-task machinery already proven by Iceberg
 and Glue. B3 removes the 9,138-line file-source monolith as the misleading authoring template.
@@ -146,6 +146,11 @@ program review.
   and final publication. Three OCR rounds repaired memory deadlock, spill retry, duplicate,
   identity, cancellation, and hot-path issues; source suites and a same-cell 5,000-task comparison
   pass.
+- 2026-07-26: B3 closed after replacing the 9,139-line file runtime with an explicit acyclic
+  internal module graph. Delegated review drove the split from lexical files to compiler-visible
+  ownership boundaries; 48 focused tests, strict Clippy, and matched TLC/FineWeb profiles passed
+  within the 10% variance envelope. A broader project-suite timing failure was reproduced at the
+  exact pre-B3 baseline and recorded as an integration limit rather than misattributed.
 
 ## Blockers
 
