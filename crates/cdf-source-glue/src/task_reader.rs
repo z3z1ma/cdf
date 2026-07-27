@@ -7,8 +7,8 @@ use cdf_kernel::{
 };
 use cdf_memory::{MemoryClass, MemoryCoordinator};
 use cdf_task_store::{
-    ExternalTaskParseMemory, ExternalTaskSetCodec, ExternalTaskStore, RetainedExternalTask,
-    TypedExternalTaskSetReader, TypedExternalTaskSetReaderConfig,
+    ExternalTaskParseMemory, ExternalTaskPlanningCodec, ExternalTaskSetCodec, ExternalTaskStore,
+    RetainedExternalTask, TypedExternalTaskSetReader, TypedExternalTaskSetReaderConfig,
 };
 
 use crate::{GLUE_TASK_SET_TYPE, GlueObjectTask, GlueSourceOptions, GlueTaskAuthority};
@@ -28,7 +28,7 @@ impl GlueExecutableTask {
     }
 }
 
-struct GlueTaskCodec;
+pub(crate) struct GlueTaskCodec;
 
 impl ExternalTaskSetCodec for GlueTaskCodec {
     type Authority = GlueTaskAuthority;
@@ -56,8 +56,22 @@ impl ExternalTaskSetCodec for GlueTaskCodec {
         task.canonical_ordinal
     }
 
-    fn task_content_sha256(&self, task: &Self::Task) -> Result<String> {
-        task.content_sha256()
+    fn encode_task(&self, task: &Self::Task, output: &mut dyn std::io::Write) -> Result<()> {
+        task.encode_to(output)
+    }
+}
+
+impl ExternalTaskPlanningCodec for GlueTaskCodec {
+    fn set_task_canonical_ordinal(&self, task: &mut Self::Task, ordinal: u64) {
+        task.canonical_ordinal = ordinal;
+    }
+
+    fn encode_authority(
+        &self,
+        authority: &Self::Authority,
+        output: &mut dyn std::io::Write,
+    ) -> Result<()> {
+        authority.encode_to(output)
     }
 }
 

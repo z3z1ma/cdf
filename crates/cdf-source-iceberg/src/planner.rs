@@ -10,7 +10,7 @@ use cdf_kernel::{
 };
 use cdf_memory::{AccountedBytes, MemoryLease};
 use cdf_runtime::artifact_hash;
-use cdf_task_store::{ExternalTaskSetWriter, ExternalTaskStore, TaskSetLimits};
+use cdf_task_store::{ExternalTaskStore, TaskSetLimits, TypedExternalTaskSetBuilder};
 use iceberg::spec::{
     DEFAULT_SCHEMA_NAME_MAPPING, DataContentType, DataFileFormat, FormatVersion, Manifest,
     ManifestContentType, ManifestStatus,
@@ -28,6 +28,7 @@ use crate::{
     planning_index::{
         IcebergPlanningIndex, IcebergPlanningManifest, IcebergPlanningManifestReader,
     },
+    task_reader::IcebergTaskCodec,
 };
 
 pub(crate) struct IcebergPlanningContext<'a> {
@@ -127,7 +128,8 @@ pub(crate) fn plan_snapshot_scan(
         sort_order_ids: BTreeSet::from([table.metadata.default_sort_order_id()]),
     };
     let spill = context.catalog.execution.spill();
-    let mut writer = context.task_store.writer(
+    let mut builder = TypedExternalTaskSetBuilder::new(
+        context.task_store,
         ICEBERG_TASK_SET_TYPE,
         TaskSetLimits {
             maximum_task_bytes: source.maximum_task_bytes,
@@ -136,6 +138,8 @@ pub(crate) fn plan_snapshot_scan(
         },
         context.catalog.execution.memory(),
         spill.as_ref(),
+        context.cancellation.clone(),
+        IcebergTaskCodec,
     )?;
 
     let mut estimated_rows = 0_u64;
@@ -152,7 +156,6 @@ pub(crate) fn plan_snapshot_scan(
                 |work| emit_delete_manifest(work, table, &mut index),
             )?;
         }
-        let mut task_ordinal = 0_u64;
         let manifests = index.manifest_reader(ManifestContentType::Data)?;
         process_indexed_manifests(
             manifests,
@@ -163,9 +166,8 @@ pub(crate) fn plan_snapshot_scan(
                 emit_manifest_tasks(
                     work,
                     table,
-                    &mut writer,
+                    &mut builder,
                     &mut required_authority,
-                    &mut task_ordinal,
                     &mut estimated_rows,
                     &mut estimated_bytes,
                     has_deletes.then_some(&index),
@@ -182,12 +184,7 @@ pub(crate) fn plan_snapshot_scan(
         has_deletes,
         &required_authority,
     )?;
-    let artifact = writer.finalize(|output| authority.encode_to(output))?;
-    if artifact.authority_sha256 != authority.content_sha256() {
-        return Err(CdfError::internal(
-            "Iceberg task-store authority hash does not match its canonical model",
-        ));
-    }
+    let artifact = builder.finalize(&authority)?;
     let reference = artifact.reference;
     reference.validate()?;
     Ok(ScanPlan::from_partition_authority(
@@ -609,9 +606,8 @@ fn optional_manifest_header_id(
 fn emit_manifest_tasks(
     work: ManifestWork,
     table: &LoadedIcebergTable,
-    writer: &mut ExternalTaskSetWriter,
+    builder: &mut TypedExternalTaskSetBuilder<IcebergTaskCodec>,
     required_authority: &mut RequiredTaskAuthority,
-    ordinal: &mut u64,
     estimated_rows: &mut u64,
     estimated_bytes: &mut u64,
     delete_index: Option<&IcebergPlanningIndex>,
@@ -643,8 +639,8 @@ fn emit_manifest_tasks(
                 entry.file_path()
             )));
         }
-        let task = data_task(
-            *ordinal,
+        let mut task = data_task(
+            0,
             entry_index,
             entry,
             DataTaskContext {
@@ -673,10 +669,7 @@ fn emit_manifest_tasks(
         *estimated_bytes = estimated_bytes
             .checked_add(entry.file_size_in_bytes())
             .ok_or_else(|| CdfError::data("Iceberg byte estimate exceeds u64"))?;
-        task.append_to(writer)?;
-        *ordinal = ordinal
-            .checked_add(1)
-            .ok_or_else(|| CdfError::data("Iceberg task ordinal exceeds u64"))?;
+        builder.push(&mut task)?;
     }
     Ok(())
 }

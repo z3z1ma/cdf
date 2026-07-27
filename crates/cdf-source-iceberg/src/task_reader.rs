@@ -11,8 +11,8 @@ use cdf_kernel::{
 };
 use cdf_memory::{MemoryClass, MemoryCoordinator, MemoryLease};
 use cdf_task_store::{
-    ExternalTaskParseMemory, ExternalTaskSetCodec, ExternalTaskStore, RetainedExternalTask,
-    TypedExternalTaskSetReader, TypedExternalTaskSetReaderConfig,
+    ExternalTaskParseMemory, ExternalTaskPlanningCodec, ExternalTaskSetCodec, ExternalTaskStore,
+    RetainedExternalTask, TypedExternalTaskSetReader, TypedExternalTaskSetReaderConfig,
 };
 
 use crate::{
@@ -92,7 +92,7 @@ impl IcebergExecutableTask {
     }
 }
 
-struct IcebergTaskCodec;
+pub(crate) struct IcebergTaskCodec;
 
 impl ExternalTaskSetCodec for IcebergTaskCodec {
     type Authority = ValidatedIcebergTaskSetAuthority;
@@ -119,8 +119,24 @@ impl ExternalTaskSetCodec for IcebergTaskCodec {
         task.canonical_ordinal
     }
 
-    fn task_content_sha256(&self, task: &Self::Task) -> Result<String> {
-        task.content_sha256()
+    fn encode_task(&self, task: &Self::Task, output: &mut dyn std::io::Write) -> Result<()> {
+        task.validate()?;
+        serde_json::to_writer(output, task)
+            .map_err(|error| CdfError::data(format!("encode canonical Iceberg task: {error}")))
+    }
+}
+
+impl ExternalTaskPlanningCodec for IcebergTaskCodec {
+    fn set_task_canonical_ordinal(&self, task: &mut Self::Task, ordinal: u64) {
+        task.canonical_ordinal = ordinal;
+    }
+
+    fn encode_authority(
+        &self,
+        authority: &Self::Authority,
+        output: &mut dyn std::io::Write,
+    ) -> Result<()> {
+        authority.encode_to(output)
     }
 }
 

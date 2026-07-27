@@ -23,7 +23,7 @@ use cdf_memory::{
     reserve_blocking,
 };
 use cdf_runtime::{RunCancellation, SpillBudgetCoordinator, SpillReservation};
-use rusqlite::{Connection, ErrorCode, params, types::ValueRef};
+use rusqlite::{Connection, ErrorCode, OptionalExtension, params, types::ValueRef};
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
@@ -34,12 +34,58 @@ const AUTHORITY_TAG: u8 = 2;
 const FOOTER_TAG: u8 = u8::MAX;
 const FOOTER_BYTES: u64 = 1 + 8 + 8;
 const SQLITE_PAGE_BYTES: u64 = 4096;
+// These mirror the bundled SQLite B-tree implementation: BTCURSOR_MAX_DEPTH is 20, balancing
+// replaces at most three old sibling pages with five new pages, and therefore allocates at most
+// two structural pages per level. Eight extra pages cover the root, schema, and conservative
+// record-header slack. Capacity is admitted before journal-free mutation, never after SQLITE_FULL.
+const SQLITE_BTREE_MAX_DEPTH: u64 = 20;
+const SQLITE_BALANCE_NEW_PAGES_PER_LEVEL: u64 = 2;
+const SQLITE_INSERT_GUARD_PAGES: u64 = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaskSetLimits {
     pub maximum_task_bytes: u64,
     pub maximum_authority_bytes: u64,
     pub writer_buffer_bytes: usize,
+}
+
+/// Resource policy for a source-owned spill-backed planning index.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternalTaskWorkspaceLimits {
+    consumer: String,
+    memory_class: MemoryClass,
+    resident_bytes: u64,
+    spill_growth_bytes: u64,
+    minimum_spill_bytes: u64,
+}
+
+impl ExternalTaskWorkspaceLimits {
+    pub fn new(
+        consumer: impl Into<String>,
+        memory_class: MemoryClass,
+        resident_bytes: u64,
+        spill_growth_bytes: u64,
+        minimum_spill_bytes: u64,
+    ) -> Result<Self> {
+        let consumer = consumer.into();
+        require_token("external task workspace consumer", &consumer)?;
+        if resident_bytes == 0
+            || spill_growth_bytes == 0
+            || minimum_spill_bytes == 0
+            || minimum_spill_bytes > spill_growth_bytes
+        {
+            return Err(CdfError::contract(
+                "external task workspace memory, spill growth, and minimum spill budgets must be nonzero, and the minimum cannot exceed one growth quantum",
+            ));
+        }
+        Ok(Self {
+            consumer,
+            memory_class,
+            resident_bytes,
+            spill_growth_bytes,
+            minimum_spill_bytes,
+        })
+    }
 }
 
 /// Resource authority for accepting task records in arbitrary provider order before emitting the
@@ -53,6 +99,7 @@ pub struct CanonicalTaskSetLimits {
     pub maximum_sort_key_bytes: u64,
     pub index_cache_bytes: u64,
     pub spill_growth_bytes: u64,
+    pub minimum_initial_spill_bytes: u64,
 }
 
 impl CanonicalTaskSetLimits {
@@ -61,9 +108,11 @@ impl CanonicalTaskSetLimits {
         if self.maximum_sort_key_bytes == 0
             || self.index_cache_bytes == 0
             || self.spill_growth_bytes < SQLITE_PAGE_BYTES * 2
+            || self.minimum_initial_spill_bytes < SQLITE_PAGE_BYTES * 2
+            || self.minimum_initial_spill_bytes > self.spill_growth_bytes
         {
             return Err(CdfError::contract(
-                "canonical task-set sort-key, index-cache, and spill-growth budgets must be nonzero, and spill growth must cover at least two SQLite pages",
+                "canonical task-set sort-key, index-cache, and spill-growth budgets must be nonzero, and initial/growth spill budgets must cover at least two SQLite pages with the initial minimum no larger than one growth quantum",
             ));
         }
         usize::try_from(self.maximum_sort_key_bytes).map_err(|_| {
@@ -93,6 +142,29 @@ impl TaskSetLimits {
         })?;
         Ok(())
     }
+}
+
+fn task_writer_memory_requirements(
+    task_type: &str,
+    limits: &TaskSetLimits,
+) -> Result<(usize, u64)> {
+    let maximum_payload_bytes = usize::try_from(
+        limits
+            .maximum_task_bytes
+            .max(limits.maximum_authority_bytes),
+    )
+    .map_err(|_| CdfError::contract("task-set payload budget exceeds usize"))?;
+    let task_type_bytes = u64::try_from(task_type.len())
+        .map_err(|_| CdfError::contract("task-set type length exceeds u64"))?;
+    let reserved_memory = u64::try_from(maximum_payload_bytes)
+        .map_err(|_| CdfError::contract("task-set payload budget exceeds u64"))?
+        .checked_add(
+            u64::try_from(limits.writer_buffer_bytes)
+                .map_err(|_| CdfError::contract("task-set writer-buffer budget exceeds u64"))?,
+        )
+        .and_then(|bytes| bytes.checked_add(task_type_bytes))
+        .ok_or_else(|| CdfError::contract("task-set memory budget overflowed u64"))?;
+    Ok((maximum_payload_bytes, reserved_memory))
 }
 
 /// A local content-addressed store for canonical planned task sets.
@@ -125,31 +197,42 @@ impl ExternalTaskStore {
     ) -> Result<ExternalTaskSetWriter> {
         require_token("task-set type", task_type)?;
         limits.validate()?;
+        let (maximum_payload_bytes, reserved_memory) =
+            task_writer_memory_requirements(task_type, &limits)?;
+        let memory_lease = reserve_blocking(
+            memory,
+            &ReservationRequest::new(
+                ConsumerKey::new("external-task-set-writer", MemoryClass::Control)?,
+                reserved_memory,
+            )?,
+        )?;
+        self.writer_with_memory_lease(
+            task_type,
+            limits,
+            spill,
+            maximum_payload_bytes,
+            memory_lease,
+        )
+    }
+
+    fn writer_with_memory_lease(
+        &self,
+        task_type: &str,
+        limits: TaskSetLimits,
+        spill: &dyn SpillBudgetCoordinator,
+        maximum_payload_bytes: usize,
+        memory_lease: MemoryLease,
+    ) -> Result<ExternalTaskSetWriter> {
+        let (_, required_memory) = task_writer_memory_requirements(task_type, &limits)?;
+        if memory_lease.bytes() != required_memory {
+            return Err(CdfError::contract(format!(
+                "task-set writer lease owns {} bytes but its working set requires {required_memory}",
+                memory_lease.bytes()
+            )));
+        }
         let directory = self.root.join(self.namespace.as_str()).join("task-sets");
         fs::create_dir_all(&directory)
             .map_err(|error| io_error("create task-set directory", &directory, error))?;
-
-        let maximum_payload_bytes = usize::try_from(
-            limits
-                .maximum_task_bytes
-                .max(limits.maximum_authority_bytes),
-        )
-        .map_err(|_| CdfError::contract("task-set payload budget exceeds usize"))?;
-        let task_type_bytes = u64::try_from(task_type.len())
-            .map_err(|_| CdfError::contract("task-set type length exceeds u64"))?;
-        let reserved_memory = u64::try_from(maximum_payload_bytes)
-            .map_err(|_| CdfError::contract("task-set payload budget exceeds u64"))?
-            .checked_add(
-                u64::try_from(limits.writer_buffer_bytes)
-                    .map_err(|_| CdfError::contract("task-set writer-buffer budget exceeds u64"))?,
-            )
-            .and_then(|bytes| bytes.checked_add(task_type_bytes))
-            .ok_or_else(|| CdfError::contract("task-set memory budget overflowed u64"))?;
-        let request = ReservationRequest::new(
-            ConsumerKey::new("external-task-set-writer", MemoryClass::Control)?,
-            reserved_memory,
-        )?;
-        let memory_lease = reserve_blocking(memory, &request)?;
         let mut spill_reservation = spill.try_reserve(1)?.ok_or_else(|| {
             CdfError::data(
                 "task-set planning requires spill space but the configured disk budget is exhausted",
@@ -205,19 +288,28 @@ impl ExternalTaskStore {
             .checked_add(limits.tasks.maximum_task_bytes.saturating_mul(2))
             .and_then(|bytes| bytes.checked_add(limits.maximum_sort_key_bytes.saturating_mul(2)))
             .ok_or_else(|| CdfError::contract("canonical task-set memory budget overflowed"))?;
-        let memory_lease = reserve_blocking(
+        let (maximum_payload_bytes, writer_memory_bytes) =
+            task_writer_memory_requirements(task_type, &limits.tasks)?;
+        let combined_memory = scratch_memory
+            .checked_add(writer_memory_bytes)
+            .ok_or_else(|| CdfError::contract("canonical task-set combined memory overflowed"))?;
+        let combined_lease = reserve_blocking(
             Arc::clone(&memory),
             &ReservationRequest::new(
                 ConsumerKey::new("canonical-task-set-index", MemoryClass::Control)?,
-                scratch_memory,
+                combined_memory,
             )?,
         )?;
+        let mut memory_leases =
+            combined_lease.into_partitions(vec![scratch_memory, writer_memory_bytes])?;
+        let memory_lease = memory_leases.remove(0);
+        let writer_memory_lease = memory_leases.remove(0);
         let available = available_spill_bytes(spill.as_ref());
         let initial = limits.spill_growth_bytes.min(available).max(1);
-        if initial < SQLITE_PAGE_BYTES * 2 {
+        if initial < limits.minimum_initial_spill_bytes {
             return Err(CdfError::data(format!(
                 "canonical task planning requires at least {} free spill bytes but only {available} are available; raise the run spill budget or reduce concurrent planning",
-                SQLITE_PAGE_BYTES * 2
+                limits.minimum_initial_spill_bytes
             )));
         }
         let spill_reservation = spill.try_reserve(initial)?.ok_or_else(|| {
@@ -243,13 +335,16 @@ impl ExternalTaskStore {
             store: self.clone(),
             task_type: task_type.to_owned(),
             limits,
-            memory,
             spill,
             spill_reservation,
             connection,
+            database_path,
             payload: Vec::new(),
             task_count: 0,
+            poisoned: false,
             _memory_lease: memory_lease,
+            writer_memory_lease: Some(writer_memory_lease),
+            writer_maximum_payload_bytes: maximum_payload_bytes,
             _workspace: workspace,
         })
     }
@@ -436,6 +531,50 @@ impl ExternalTaskStore {
         Ok(ExternalTaskWorkspace { directory })
     }
 
+    /// Creates one fully accounted scratch workspace for a source-owned planning index.
+    ///
+    /// The source still owns the index schema and algorithms. This envelope owns its resident
+    /// memory, shared spill reservation, growth policy, temporary directory, and exact cleanup.
+    pub fn accounted_workspace(
+        &self,
+        label: &str,
+        limits: ExternalTaskWorkspaceLimits,
+        memory: Arc<dyn MemoryCoordinator>,
+        spill: Arc<dyn SpillBudgetCoordinator>,
+    ) -> Result<AccountedExternalTaskWorkspace> {
+        let memory_lease = reserve_blocking(
+            memory,
+            &ReservationRequest::new(
+                ConsumerKey::new(&limits.consumer, limits.memory_class)?,
+                limits.resident_bytes,
+            )?,
+        )?;
+        let available = available_spill_bytes(spill.as_ref());
+        let initial = limits.spill_growth_bytes.min(available);
+        if initial < limits.minimum_spill_bytes {
+            return Err(CdfError::data(format!(
+                "{} requires at least {} free spill bytes but only {available} are available",
+                limits.consumer, limits.minimum_spill_bytes
+            )));
+        }
+        let spill_reservation = spill.try_reserve(initial)?.ok_or_else(|| {
+            CdfError::data(format!(
+                "{} could not acquire its initial shared spill reservation",
+                limits.consumer
+            ))
+        })?;
+        let workspace = self.temporary_workspace(label)?;
+        Ok(AccountedExternalTaskWorkspace {
+            workspace,
+            spill,
+            spill_reservation,
+            spill_growth_bytes: limits.spill_growth_bytes,
+            minimum_spill_bytes: limits.minimum_spill_bytes,
+            consumer: limits.consumer,
+            _memory_lease: memory_lease,
+        })
+    }
+
     fn path_for_reference(&self, reference: &PlannedTaskSetReference) -> Result<PathBuf> {
         let key = Path::new(reference.object_key.as_str());
         if key.is_absolute()
@@ -456,13 +595,16 @@ pub struct CanonicalTaskSetBuilder {
     store: ExternalTaskStore,
     task_type: String,
     limits: CanonicalTaskSetLimits,
-    memory: Arc<dyn MemoryCoordinator>,
     spill: Arc<dyn SpillBudgetCoordinator>,
     spill_reservation: SpillReservation,
     connection: Connection,
+    database_path: PathBuf,
     payload: Vec<u8>,
     task_count: u64,
+    poisoned: bool,
     _memory_lease: cdf_memory::MemoryLease,
+    writer_memory_lease: Option<MemoryLease>,
+    writer_maximum_payload_bytes: usize,
     _workspace: ExternalTaskWorkspace,
 }
 
@@ -498,6 +640,11 @@ impl CanonicalTaskSetBuilder {
         encode: impl FnOnce(&mut dyn Write) -> Result<()>,
         accept_identical_duplicate: bool,
     ) -> Result<bool> {
+        if self.poisoned {
+            return Err(CdfError::contract(
+                "canonical task index cannot continue after an unexpected partial insertion",
+            ));
+        }
         if sort_key.is_empty()
             || u64::try_from(sort_key.len()).unwrap_or(u64::MAX)
                 > self.limits.maximum_sort_key_bytes
@@ -515,39 +662,48 @@ impl CanonicalTaskSetBuilder {
         if self.payload.is_empty() {
             return Err(CdfError::data("canonical task payload cannot be empty"));
         }
-        loop {
-            match self.connection.execute(
-                "INSERT INTO tasks (sort_key, payload) VALUES (?1, ?2)",
-                params![sort_key, self.payload],
-            ) {
-                Ok(_) => break,
-                Err(error) if is_sqlite_full(&error) => self.grow_spill()?,
-                Err(error) if is_sqlite_constraint(&error) => {
-                    if accept_identical_duplicate {
-                        let identical = self
-                            .connection
-                            .query_row(
-                                "SELECT payload FROM tasks WHERE sort_key = ?1",
-                                params![sort_key],
-                                |row| match row.get_ref(0)? {
-                                    ValueRef::Blob(payload) => {
-                                        Ok(payload == self.payload.as_slice())
-                                    }
-                                    _ => Ok(false),
-                                },
-                            )
-                            .map_err(|lookup| {
-                                sqlite_error("compare duplicate canonical task", lookup)
-                            })?;
-                        if identical {
-                            return Ok(false);
-                        }
-                    }
-                    return Err(CdfError::data(
-                        "canonical task input repeats one ordering key with conflicting payloads",
-                    ));
+        if accept_identical_duplicate {
+            let existing = self
+                .connection
+                .query_row(
+                    "SELECT payload FROM tasks WHERE sort_key = ?1",
+                    params![sort_key],
+                    |row| match row.get_ref(0)? {
+                        ValueRef::Blob(payload) => Ok(Some(payload == self.payload.as_slice())),
+                        _ => Ok(None),
+                    },
+                )
+                .optional()
+                .map_err(|error| sqlite_error("inspect duplicate canonical task", error))?;
+            if let Some(identical) = existing.flatten() {
+                if identical {
+                    return Ok(false);
                 }
-                Err(error) => return Err(sqlite_error("insert canonical task", error)),
+                return Err(CdfError::data(
+                    "canonical task input repeats one ordering key with conflicting payloads",
+                ));
+            }
+        }
+        self.ensure_insert_capacity(sort_key.len(), self.payload.len())?;
+        match self.connection.execute(
+            "INSERT INTO tasks (sort_key, payload) VALUES (?1, ?2)",
+            params![sort_key, self.payload],
+        ) {
+            Ok(_) => {}
+            Err(error) if is_sqlite_full(&error) => {
+                self.poisoned = true;
+                return Err(CdfError::internal(
+                    "canonical task index exhausted its pre-admitted SQLite insertion capacity",
+                ));
+            }
+            Err(error) if is_sqlite_constraint(&error) => {
+                return Err(CdfError::data(
+                    "canonical task input repeats one ordering key with conflicting payloads",
+                ));
+            }
+            Err(error) => {
+                self.poisoned = true;
+                return Err(sqlite_error("insert canonical task", error));
             }
         }
         self.task_count = self
@@ -565,16 +721,68 @@ impl CanonicalTaskSetBuilder {
         self,
         encode_authority: impl FnOnce(&mut dyn Write) -> Result<()>,
     ) -> Result<ExternalTaskSetArtifact> {
-        if self.task_count == 0 {
+        self.finalize_transformed(
+            None,
+            None,
+            false,
+            |_, payload, output| {
+                output.write_all(payload).map_err(|error| {
+                    CdfError::data(format!("write sorted canonical task: {error}"))
+                })?;
+                Ok(())
+            },
+            encode_authority,
+        )
+    }
+
+    pub fn finalize_transformed_with_authority_hash(
+        self,
+        expected_authority_sha256: &str,
+        cancellation: &RunCancellation,
+        transform: impl FnMut(u64, &[u8], &mut dyn Write) -> Result<()>,
+        encode_authority: impl FnOnce(&mut dyn Write) -> Result<()>,
+    ) -> Result<ExternalTaskSetArtifact> {
+        cdf_runtime::validate_artifact_hash(
+            "expected canonical task-set authority",
+            expected_authority_sha256,
+        )?;
+        cancellation.check()?;
+        self.finalize_transformed(
+            Some(expected_authority_sha256),
+            Some(cancellation),
+            true,
+            transform,
+            encode_authority,
+        )
+    }
+
+    fn finalize_transformed(
+        mut self,
+        expected_authority_sha256: Option<&str>,
+        cancellation: Option<&RunCancellation>,
+        allow_empty: bool,
+        mut transform: impl FnMut(u64, &[u8], &mut dyn Write) -> Result<()>,
+        encode_authority: impl FnOnce(&mut dyn Write) -> Result<()>,
+    ) -> Result<ExternalTaskSetArtifact> {
+        if self.poisoned {
+            return Err(CdfError::contract(
+                "canonical task index cannot finalize after a partial insertion",
+            ));
+        }
+        if self.task_count == 0 && !allow_empty {
             return Err(CdfError::data(
                 "canonical task-set cannot finalize an empty provider inventory",
             ));
         }
-        let mut writer = self.store.writer(
+        let writer_memory_lease = self.writer_memory_lease.take().ok_or_else(|| {
+            CdfError::contract("canonical task-set writer memory authority is missing")
+        })?;
+        let mut writer = self.store.writer_with_memory_lease(
             &self.task_type,
             self.limits.tasks.clone(),
-            Arc::clone(&self.memory),
             self.spill.as_ref(),
+            self.writer_maximum_payload_bytes,
+            writer_memory_lease,
         )?;
         {
             let mut statement = self
@@ -600,22 +808,33 @@ impl CanonicalTaskSetBuilder {
                         ));
                     }
                 };
-                writer.push_with(ordinal, |output| {
-                    output.write_all(payload).map_err(|error| {
-                        CdfError::data(format!("write sorted canonical task: {error}"))
-                    })
-                })?;
+                writer.push_with(ordinal, |output| transform(ordinal, payload, output))?;
                 ordinal = ordinal
                     .checked_add(1)
                     .ok_or_else(|| CdfError::data("canonical task ordinal exceeds u64"))?;
             }
             if ordinal != self.task_count {
-                return Err(CdfError::internal(
-                    "canonical task traversal count changed during finalization",
-                ));
+                return Err(CdfError::internal(format!(
+                    "canonical task traversal produced {ordinal} records after accepting {}",
+                    self.task_count
+                )));
             }
         }
-        writer.finalize(encode_authority)
+        if let Some(cancellation) = cancellation {
+            cancellation.check()?;
+        }
+        match expected_authority_sha256 {
+            Some(expected) => writer.finalize_with_authority_hash_and_cancellation(
+                expected,
+                cancellation.ok_or_else(|| {
+                    CdfError::internal(
+                        "typed canonical finalization omitted its cancellation authority",
+                    )
+                })?,
+                encode_authority,
+            ),
+            None => writer.finalize(encode_authority),
+        }
     }
 
     fn grow_spill(&mut self) -> Result<()> {
@@ -628,6 +847,40 @@ impl CanonicalTaskSetBuilder {
         }
         set_page_ceiling(&self.connection, self.spill_reservation.bytes())
     }
+
+    fn ensure_insert_capacity(
+        &mut self,
+        sort_key_bytes: usize,
+        payload_bytes: usize,
+    ) -> Result<()> {
+        let sort_key_bytes = u64::try_from(sort_key_bytes)
+            .map_err(|_| CdfError::data("canonical task sort-key size exceeds u64"))?;
+        let payload_bytes = u64::try_from(payload_bytes)
+            .map_err(|_| CdfError::data("canonical task payload size exceeds u64"))?;
+        let record_bytes = sort_key_bytes
+            .checked_add(payload_bytes)
+            .and_then(|bytes| bytes.checked_add(128))
+            .ok_or_else(|| CdfError::data("canonical task index record size overflowed u64"))?;
+        let record_pages = record_bytes
+            .div_ceil(SQLITE_PAGE_BYTES.saturating_sub(4))
+            .saturating_add(1);
+        let structural_pages = SQLITE_BTREE_MAX_DEPTH
+            .saturating_mul(SQLITE_BALANCE_NEW_PAGES_PER_LEVEL)
+            .saturating_add(SQLITE_INSERT_GUARD_PAGES);
+        let current_pages = fs::metadata(&self.database_path)
+            .map_err(|error| io_error("measure canonical task index", &self.database_path, error))?
+            .len()
+            .div_ceil(SQLITE_PAGE_BYTES);
+        let required_bytes = current_pages
+            .checked_add(record_pages)
+            .and_then(|pages| pages.checked_add(structural_pages))
+            .and_then(|pages| pages.checked_mul(SQLITE_PAGE_BYTES))
+            .ok_or_else(|| CdfError::data("canonical task index capacity overflowed u64"))?;
+        while self.spill_reservation.bytes() < required_bytes {
+            self.grow_spill()?;
+        }
+        Ok(())
+    }
 }
 
 /// RAII ownership for invocation-local planner scratch.
@@ -638,6 +891,61 @@ pub struct ExternalTaskWorkspace {
 impl ExternalTaskWorkspace {
     pub fn path(&self) -> &Path {
         self.directory.path()
+    }
+}
+
+/// RAII envelope for a source-owned task-planning index.
+pub struct AccountedExternalTaskWorkspace {
+    workspace: ExternalTaskWorkspace,
+    spill: Arc<dyn SpillBudgetCoordinator>,
+    spill_reservation: SpillReservation,
+    spill_growth_bytes: u64,
+    minimum_spill_bytes: u64,
+    consumer: String,
+    _memory_lease: MemoryLease,
+}
+
+impl AccountedExternalTaskWorkspace {
+    pub fn path(&self) -> &Path {
+        self.workspace.path()
+    }
+
+    pub fn reserved_spill_bytes(&self) -> u64 {
+        self.spill_reservation.bytes()
+    }
+
+    /// Grows by one admitted quantum, accepting a smaller final quantum only when it still
+    /// satisfies the index's declared minimum.
+    pub fn grow_spill(&mut self) -> Result<()> {
+        let available = available_spill_bytes(self.spill.as_ref());
+        let additional = self.spill_growth_bytes.min(available);
+        if additional < self.minimum_spill_bytes || !self.spill_reservation.try_grow(additional)? {
+            return Err(CdfError::data(format!(
+                "{} exhausted its shared spill budget after {} bytes",
+                self.consumer,
+                self.spill_reservation.bytes()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Ensures an observed file footprint remains subordinate to the shared spill authority.
+    pub fn ensure_spill_bytes(&mut self, required: u64) -> Result<()> {
+        if required <= self.spill_reservation.bytes() {
+            return Ok(());
+        }
+        let additional = required
+            .saturating_sub(self.spill_reservation.bytes())
+            .div_ceil(self.spill_growth_bytes)
+            .saturating_mul(self.spill_growth_bytes);
+        if !self.spill_reservation.try_grow(additional)? {
+            return Err(CdfError::data(format!(
+                "{} requires {} spill bytes but the shared disk budget is exhausted",
+                self.consumer,
+                self.spill_reservation.bytes().saturating_add(additional)
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -665,6 +973,14 @@ impl ExternalTaskSetWriter {
         canonical_ordinal: u64,
         encode: impl FnOnce(&mut dyn Write) -> Result<()>,
     ) -> Result<()> {
+        self.push_checked(canonical_ordinal, encode)
+    }
+
+    fn push_checked(
+        &mut self,
+        canonical_ordinal: u64,
+        encode: impl FnOnce(&mut dyn Write) -> Result<()>,
+    ) -> Result<()> {
         if self.poisoned {
             return Err(CdfError::contract(
                 "task-set writer cannot continue after a partial write failure",
@@ -680,13 +996,14 @@ impl ExternalTaskSetWriter {
         let maximum = usize::try_from(self.limits.maximum_task_bytes)
             .map_err(|_| CdfError::contract("task-set task budget exceeds usize"))?;
         let mut bounded = BoundedVec::new(&mut self.payload, maximum);
-        encode(&mut bounded)?;
+        let mut hashing = DigestingWriter::new(&mut bounded);
+        encode(&mut hashing)?;
+        let payload_digest = hashing.finalize();
         if self.payload.is_empty() {
             return Err(CdfError::data("canonical task payload cannot be empty"));
         }
         let payload_length = u64::try_from(self.payload.len())
             .map_err(|_| CdfError::data("canonical task payload exceeds u64"))?;
-        let payload_digest: [u8; 32] = Sha256::digest(&self.payload).into();
         let frame_bytes = 1_u64
             .checked_add(8)
             .and_then(|value| value.checked_add(8))
@@ -716,7 +1033,46 @@ impl ExternalTaskSetWriter {
     }
 
     pub fn finalize(
+        self,
+        encode_authority: impl FnOnce(&mut dyn Write) -> Result<()>,
+    ) -> Result<ExternalTaskSetArtifact> {
+        self.finalize_checked(None, None, encode_authority)
+    }
+
+    pub fn finalize_with_authority_hash(
+        self,
+        expected_authority_sha256: &str,
+        encode_authority: impl FnOnce(&mut dyn Write) -> Result<()>,
+    ) -> Result<ExternalTaskSetArtifact> {
+        cdf_runtime::validate_artifact_hash(
+            "expected task-set authority",
+            expected_authority_sha256,
+        )?;
+        self.finalize_checked(None, Some(expected_authority_sha256), encode_authority)
+    }
+
+    pub fn finalize_with_authority_hash_and_cancellation(
+        self,
+        expected_authority_sha256: &str,
+        cancellation: &RunCancellation,
+        encode_authority: impl FnOnce(&mut dyn Write) -> Result<()>,
+    ) -> Result<ExternalTaskSetArtifact> {
+        cdf_runtime::validate_artifact_hash(
+            "expected task-set authority",
+            expected_authority_sha256,
+        )?;
+        cancellation.check()?;
+        self.finalize_checked(
+            Some(cancellation),
+            Some(expected_authority_sha256),
+            encode_authority,
+        )
+    }
+
+    fn finalize_checked(
         mut self,
+        cancellation: Option<&RunCancellation>,
+        expected_authority_sha256: Option<&str>,
         encode_authority: impl FnOnce(&mut dyn Write) -> Result<()>,
     ) -> Result<ExternalTaskSetArtifact> {
         if self.poisoned {
@@ -740,6 +1096,11 @@ impl ExternalTaskSetWriter {
             .map_err(|_| CdfError::data("task-set authority payload exceeds u64"))?;
         let authority_digest: [u8; 32] = Sha256::digest(&self.payload).into();
         let authority_sha256 = format!("sha256:{}", hex::encode(authority_digest));
+        if expected_authority_sha256.is_some_and(|expected| expected != authority_sha256) {
+            return Err(CdfError::data(
+                "encoded task-set authority does not match its typed content identity",
+            ));
+        }
 
         self.writer_mut()?
             .flush()
@@ -788,6 +1149,9 @@ impl ExternalTaskSetWriter {
             .file
             .sync_all()
             .map_err(|error| io_error("sync task-set artifact", self.temporary_path(), error))?;
+        if let Some(cancellation) = cancellation {
+            cancellation.check()?;
+        }
         let byte_count = hashing.bytes;
         let digest = format!("sha256:{}", hex::encode(hashing.hasher.finalize()));
         drop(hashing.file);
@@ -800,6 +1164,17 @@ impl ExternalTaskSetWriter {
             .root
             .join(self.store.namespace.as_str())
             .join(&object_key_text);
+        let reference = PlannedTaskSetReference {
+            version: PLANNED_TASK_SET_REFERENCE_VERSION,
+            task_type: self.task_type.clone(),
+            task_count: self.next_ordinal,
+            store_namespace: self.store.namespace.clone(),
+            object_key,
+            byte_count,
+            content_sha256: digest.clone(),
+            provider_generation: ContentProviderGeneration::new(digest.clone())?,
+        };
+        reference.validate()?;
         let temporary = self
             .temporary
             .take()
@@ -809,17 +1184,6 @@ impl ExternalTaskSetWriter {
         if let Some(mut reservation) = self.spill_reservation.take() {
             reservation.shrink(reservation.bytes());
         }
-        let reference = PlannedTaskSetReference {
-            version: PLANNED_TASK_SET_REFERENCE_VERSION,
-            task_type: self.task_type.clone(),
-            task_count: self.next_ordinal,
-            store_namespace: self.store.namespace.clone(),
-            object_key,
-            byte_count,
-            content_sha256: digest.clone(),
-            provider_generation: ContentProviderGeneration::new(digest)?,
-        };
-        reference.validate()?;
         Ok(ExternalTaskSetArtifact {
             task_type: self.task_type,
             task_count: self.next_ordinal,
@@ -1081,7 +1445,164 @@ pub trait ExternalTaskSetCodec: Send {
     fn authority_content_sha256(&self, authority: &Self::Authority) -> Result<String>;
     fn decode_task(&self, payload: &[u8], authority: &Self::Authority) -> Result<Self::Task>;
     fn task_canonical_ordinal(&self, task: &Self::Task) -> u64;
-    fn task_content_sha256(&self, task: &Self::Task) -> Result<String>;
+    fn encode_task(&self, task: &Self::Task, output: &mut dyn Write) -> Result<()>;
+}
+
+fn encoded_task_content_sha256<C>(codec: &C, task: &C::Task) -> Result<String>
+where
+    C: ExternalTaskSetCodec,
+{
+    let mut sink = io::sink();
+    let mut hashing = DigestingWriter::new(&mut sink);
+    codec.encode_task(task, &mut hashing)?;
+    Ok(format!("sha256:{}", hex::encode(hashing.finalize())))
+}
+
+/// The source-owned typed encoding half of an external task-set boundary.
+pub trait ExternalTaskPlanningCodec: ExternalTaskSetCodec {
+    fn set_task_canonical_ordinal(&self, task: &mut Self::Task, ordinal: u64);
+    fn encode_authority(&self, authority: &Self::Authority, output: &mut dyn Write) -> Result<()>;
+}
+
+/// Typed builder for tasks whose source planner already emits canonical order.
+pub struct TypedExternalTaskSetBuilder<C>
+where
+    C: ExternalTaskPlanningCodec,
+{
+    writer: ExternalTaskSetWriter,
+    codec: C,
+    cancellation: RunCancellation,
+    next_ordinal: u64,
+}
+
+impl<C> TypedExternalTaskSetBuilder<C>
+where
+    C: ExternalTaskPlanningCodec,
+{
+    pub fn new(
+        store: &ExternalTaskStore,
+        task_type: &str,
+        limits: TaskSetLimits,
+        memory: Arc<dyn MemoryCoordinator>,
+        spill: &dyn SpillBudgetCoordinator,
+        cancellation: RunCancellation,
+        codec: C,
+    ) -> Result<Self> {
+        cancellation.check()?;
+        Ok(Self {
+            writer: store.writer(task_type, limits, memory, spill)?,
+            codec,
+            cancellation,
+            next_ordinal: 0,
+        })
+    }
+
+    pub fn push(&mut self, task: &mut C::Task) -> Result<u64> {
+        self.cancellation.check()?;
+        let ordinal = self.next_ordinal;
+        self.codec.set_task_canonical_ordinal(task, ordinal);
+        if self.codec.task_canonical_ordinal(task) != ordinal {
+            return Err(CdfError::internal(
+                "typed task codec did not install the requested canonical ordinal",
+            ));
+        }
+        self.writer
+            .push_with(ordinal, |output| self.codec.encode_task(task, output))?;
+        self.next_ordinal = self
+            .next_ordinal
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("typed task-set ordinal exceeds u64"))?;
+        self.cancellation.check()?;
+        Ok(ordinal)
+    }
+
+    pub fn task_count(&self) -> u64 {
+        self.next_ordinal
+    }
+
+    pub fn finalize(self, authority: &C::Authority) -> Result<ExternalTaskSetArtifact> {
+        self.cancellation.check()?;
+        let expected_authority_sha256 = self.codec.authority_content_sha256(authority)?;
+        self.writer.finalize_with_authority_hash_and_cancellation(
+            &expected_authority_sha256,
+            &self.cancellation,
+            |output| self.codec.encode_authority(authority, output),
+        )
+    }
+}
+
+/// Typed builder for provider-order tasks that need spill-backed canonical sorting.
+pub struct TypedCanonicalTaskSetBuilder<C>
+where
+    C: ExternalTaskPlanningCodec,
+{
+    builder: CanonicalTaskSetBuilder,
+    codec: C,
+    cancellation: RunCancellation,
+}
+
+impl<C> TypedCanonicalTaskSetBuilder<C>
+where
+    C: ExternalTaskPlanningCodec,
+{
+    pub fn new(
+        store: &ExternalTaskStore,
+        task_type: &str,
+        limits: CanonicalTaskSetLimits,
+        memory: Arc<dyn MemoryCoordinator>,
+        spill: Arc<dyn SpillBudgetCoordinator>,
+        cancellation: RunCancellation,
+        codec: C,
+    ) -> Result<Self> {
+        cancellation.check()?;
+        Ok(Self {
+            builder: store.canonical_builder(task_type, limits, memory, spill)?,
+            codec,
+            cancellation,
+        })
+    }
+
+    pub fn push_idempotent_by<F>(&mut self, mut task: C::Task, sort_key: F) -> Result<bool>
+    where
+        F: for<'a> FnOnce(&'a C::Task) -> &'a [u8],
+    {
+        self.cancellation.check()?;
+        self.codec.set_task_canonical_ordinal(&mut task, 0);
+        let inserted = self
+            .builder
+            .push_idempotent_with(sort_key(&task), |output| {
+                self.codec.encode_task(&task, output)
+            })?;
+        self.cancellation.check()?;
+        Ok(inserted)
+    }
+
+    pub fn task_count(&self) -> u64 {
+        self.builder.task_count()
+    }
+
+    pub fn finalize(self, authority: &C::Authority) -> Result<ExternalTaskSetArtifact> {
+        self.cancellation.check()?;
+        let expected_authority_sha256 = self.codec.authority_content_sha256(authority)?;
+        let codec = &self.codec;
+        let cancellation = &self.cancellation;
+        self.builder.finalize_transformed_with_authority_hash(
+            &expected_authority_sha256,
+            &self.cancellation,
+            |ordinal, payload, output| {
+                cancellation.check()?;
+                let mut task = codec.decode_task(payload, authority)?;
+                codec.set_task_canonical_ordinal(&mut task, ordinal);
+                if codec.task_canonical_ordinal(&task) != ordinal {
+                    return Err(CdfError::internal(
+                        "typed canonical task codec did not install the requested ordinal",
+                    ));
+                }
+                codec.encode_task(&task, output)
+            },
+            |output| codec.encode_authority(authority, output),
+        )
+    }
 }
 
 /// Accounted parse-memory policy for one authority or task record.
@@ -1373,7 +1894,7 @@ where
             .codec
             .decode_task(record.payload.payload(), self.authority.model())?;
         let task_ordinal = self.codec.task_canonical_ordinal(&task);
-        let task_content_sha256 = self.codec.task_content_sha256(&task)?;
+        let task_content_sha256 = encoded_task_content_sha256(&self.codec, &task)?;
         if task_ordinal != record.canonical_ordinal || task_content_sha256 != record.content_sha256
         {
             return Err(CdfError::data(
@@ -1471,6 +1992,36 @@ impl Write for BoundedVec<'_> {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+struct DigestingWriter<'a> {
+    output: &'a mut dyn Write,
+    hasher: Sha256,
+}
+
+impl<'a> DigestingWriter<'a> {
+    fn new(output: &'a mut dyn Write) -> Self {
+        Self {
+            output,
+            hasher: Sha256::new(),
+        }
+    }
+
+    fn finalize(self) -> [u8; 32] {
+        self.hasher.finalize().into()
+    }
+}
+
+impl Write for DigestingWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let written = self.output.write(bytes)?;
+        self.hasher.update(&bytes[..written]);
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.output.flush()
     }
 }
 
@@ -1718,11 +2269,74 @@ mod tests {
             task.partition
         }
 
-        fn task_content_sha256(&self, task: &Self::Task) -> Result<String> {
-            if let Some(hash) = &self.task_hash_override {
-                return Ok(hash.clone());
+        fn encode_task(&self, task: &Self::Task, output: &mut dyn Write) -> Result<()> {
+            serde_json::to_writer(&mut *output, task)
+                .map_err(|error| CdfError::data(format!("encode synthetic task: {error}")))?;
+            if let Some(suffix) = &self.task_hash_override {
+                output.write_all(suffix.as_bytes()).map_err(|error| {
+                    CdfError::data(format!("encode synthetic task identity suffix: {error}"))
+                })?;
             }
-            canonical_json_hash(task)
+            Ok(())
+        }
+    }
+
+    impl ExternalTaskPlanningCodec for SyntheticCodec {
+        fn set_task_canonical_ordinal(&self, task: &mut Self::Task, ordinal: u64) {
+            task.partition = ordinal;
+        }
+
+        fn encode_authority(
+            &self,
+            authority: &Self::Authority,
+            output: &mut dyn Write,
+        ) -> Result<()> {
+            serde_json::to_writer(output, authority)
+                .map_err(|error| CdfError::data(format!("encode synthetic authority: {error}")))
+        }
+    }
+
+    struct RejectDecodedTaskCodec;
+
+    impl ExternalTaskSetCodec for RejectDecodedTaskCodec {
+        type Authority = SyntheticAuthority;
+        type Task = SyntheticTask;
+
+        fn decode_authority(&self, payload: &[u8]) -> Result<Self::Authority> {
+            serde_json::from_slice(payload)
+                .map_err(|error| CdfError::data(format!("decode synthetic authority: {error}")))
+        }
+
+        fn authority_content_sha256(&self, authority: &Self::Authority) -> Result<String> {
+            canonical_json_hash(authority)
+        }
+
+        fn decode_task(&self, _payload: &[u8], _authority: &Self::Authority) -> Result<Self::Task> {
+            Err(CdfError::data("synthetic malformed planning record"))
+        }
+
+        fn task_canonical_ordinal(&self, task: &Self::Task) -> u64 {
+            task.partition
+        }
+
+        fn encode_task(&self, task: &Self::Task, output: &mut dyn Write) -> Result<()> {
+            serde_json::to_writer(output, task)
+                .map_err(|error| CdfError::data(format!("encode synthetic task: {error}")))
+        }
+    }
+
+    impl ExternalTaskPlanningCodec for RejectDecodedTaskCodec {
+        fn set_task_canonical_ordinal(&self, task: &mut Self::Task, ordinal: u64) {
+            task.partition = ordinal;
+        }
+
+        fn encode_authority(
+            &self,
+            authority: &Self::Authority,
+            output: &mut dyn Write,
+        ) -> Result<()> {
+            serde_json::to_writer(output, authority)
+                .map_err(|error| CdfError::data(format!("encode synthetic authority: {error}")))
         }
     }
 
@@ -1787,6 +2401,7 @@ mod tests {
             maximum_sort_key_bytes: 1024,
             index_cache_bytes: 16 * 1024,
             spill_growth_bytes: 16 * 1024,
+            minimum_initial_spill_bytes: SQLITE_PAGE_BYTES * 2,
         }
     }
 
@@ -2202,6 +2817,433 @@ mod tests {
     }
 
     #[test]
+    fn typed_ordered_and_spill_sorted_builders_publish_one_canonical_identity() {
+        let ordered_root = TempDir::new().unwrap();
+        let canonical_root = TempDir::new().unwrap();
+        let authority = SyntheticAuthority { version: 1 };
+
+        let ordered_store = store(&ordered_root);
+        let (ordered_memory, ordered_spill) = authorities(64 * 1024, 1024 * 1024);
+        let mut ordered = TypedExternalTaskSetBuilder::new(
+            &ordered_store,
+            "synthetic-v1",
+            limits(),
+            Arc::clone(&ordered_memory),
+            &ordered_spill,
+            RunCancellation::default(),
+            SyntheticCodec::default(),
+        )
+        .unwrap();
+        for path in ["s3://bucket/a", "s3://bucket/b"] {
+            ordered
+                .push(&mut SyntheticTask {
+                    partition: u64::MAX,
+                    path: path.to_owned(),
+                })
+                .unwrap();
+        }
+        let ordered_artifact = ordered.finalize(&authority).unwrap();
+
+        let canonical_store = store(&canonical_root);
+        let (canonical_memory, canonical_spill) = authorities(256 * 1024, 1024 * 1024);
+        let canonical_spill: Arc<dyn SpillBudgetCoordinator> = Arc::new(canonical_spill);
+        let mut canonical = TypedCanonicalTaskSetBuilder::new(
+            &canonical_store,
+            "synthetic-v1",
+            canonical_limits(),
+            Arc::clone(&canonical_memory),
+            Arc::clone(&canonical_spill),
+            RunCancellation::default(),
+            SyntheticCodec::default(),
+        )
+        .unwrap();
+        for path in ["s3://bucket/b", "s3://bucket/a"] {
+            let task = SyntheticTask {
+                partition: u64::MAX,
+                path: path.to_owned(),
+            };
+            assert!(
+                canonical
+                    .push_idempotent_by(task, |task| task.path.as_bytes())
+                    .unwrap()
+            );
+        }
+        let canonical_artifact = canonical.finalize(&authority).unwrap();
+
+        assert_eq!(ordered_artifact.reference, canonical_artifact.reference);
+        for (store, reference, memory) in [
+            (
+                &ordered_store,
+                ordered_artifact.reference,
+                Arc::clone(&ordered_memory),
+            ),
+            (
+                &canonical_store,
+                canonical_artifact.reference,
+                Arc::clone(&canonical_memory),
+            ),
+        ] {
+            let mut reader = TypedExternalTaskSetReader::open(
+                store,
+                reference,
+                Arc::clone(&memory),
+                RunCancellation::default(),
+                typed_config("synthetic-v1"),
+                SyntheticCodec::default(),
+            )
+            .unwrap();
+            for (ordinal, path) in ["s3://bucket/a", "s3://bucket/b"].into_iter().enumerate() {
+                let task = reader
+                    .next_task(u64::try_from(ordinal).unwrap())
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(task.task().path, path);
+            }
+            assert!(reader.next_task(2).unwrap().is_none());
+        }
+        assert_eq!(ordered_memory.snapshot().current_bytes, 0);
+        assert_eq!(ordered_spill.snapshot().current_bytes, 0);
+        assert_eq!(canonical_memory.snapshot().current_bytes, 0);
+        assert_eq!(canonical_spill.snapshot().current_bytes, 0);
+    }
+
+    #[test]
+    fn planning_workspace_and_builder_failures_release_every_authority() {
+        let root = TempDir::new().unwrap();
+        let store = store(&root);
+        let (memory, spill) = authorities(64 * 1024, 64 * 1024);
+        let spill: Arc<dyn SpillBudgetCoordinator> = Arc::new(spill);
+        let workspace = store
+            .accounted_workspace(
+                "synthetic-index",
+                ExternalTaskWorkspaceLimits::new(
+                    "synthetic-index",
+                    MemoryClass::Control,
+                    8192,
+                    8192,
+                    8192,
+                )
+                .unwrap(),
+                Arc::clone(&memory),
+                Arc::clone(&spill),
+            )
+            .unwrap();
+        let workspace_path = workspace.path().to_path_buf();
+        assert_eq!(memory.snapshot().current_bytes, 8192);
+        assert_eq!(spill.snapshot().current_bytes, 8192);
+        drop(workspace);
+        assert_eq!(memory.snapshot().current_bytes, 0);
+        assert_eq!(spill.snapshot().current_bytes, 0);
+        assert!(!workspace_path.exists());
+
+        let constrained_spill: Arc<dyn SpillBudgetCoordinator> =
+            Arc::new(FixedSpillBudget::new(4096).unwrap());
+        assert!(
+            store
+                .accounted_workspace(
+                    "constrained-index",
+                    ExternalTaskWorkspaceLimits::new(
+                        "constrained-index",
+                        MemoryClass::Control,
+                        8192,
+                        8192,
+                        8192,
+                    )
+                    .unwrap(),
+                    Arc::clone(&memory),
+                    Arc::clone(&constrained_spill),
+                )
+                .err()
+                .unwrap()
+                .message
+                .contains("free spill")
+        );
+        assert_eq!(memory.snapshot().current_bytes, 0);
+        assert_eq!(constrained_spill.snapshot().current_bytes, 0);
+
+        let cancellation = RunCancellation::default();
+        let mut cancelled = TypedExternalTaskSetBuilder::new(
+            &store,
+            "synthetic-v1",
+            limits(),
+            Arc::clone(&memory),
+            spill.as_ref(),
+            cancellation.clone(),
+            SyntheticCodec::default(),
+        )
+        .unwrap();
+        cancellation.cancel();
+        assert!(
+            cancelled
+                .push(&mut SyntheticTask {
+                    partition: 0,
+                    path: "s3://bucket/cancelled".to_owned(),
+                })
+                .err()
+                .unwrap()
+                .message
+                .contains("cancelled")
+        );
+        drop(cancelled);
+        assert_eq!(memory.snapshot().current_bytes, 0);
+        assert_eq!(spill.snapshot().current_bytes, 0);
+
+        let mut mismatched = TypedExternalTaskSetBuilder::new(
+            &store,
+            "synthetic-v1",
+            limits(),
+            Arc::clone(&memory),
+            spill.as_ref(),
+            RunCancellation::default(),
+            SyntheticCodec {
+                authority_hash_override: Some(format!("sha256:{}", "00".repeat(32))),
+                task_hash_override: None,
+            },
+        )
+        .unwrap();
+        mismatched
+            .push(&mut SyntheticTask {
+                partition: 0,
+                path: "s3://bucket/mismatch".to_owned(),
+            })
+            .unwrap();
+        assert!(
+            mismatched
+                .finalize(&SyntheticAuthority { version: 1 })
+                .err()
+                .unwrap()
+                .message
+                .contains("typed content identity")
+        );
+        assert_eq!(memory.snapshot().current_bytes, 0);
+        assert_eq!(spill.snapshot().current_bytes, 0);
+        let task_directory = root.path().join("planner-artifacts/task-sets");
+        assert_eq!(fs::read_dir(task_directory).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn malformed_canonical_record_and_empty_inventory_are_fail_closed_and_deterministic() {
+        let root = TempDir::new().unwrap();
+        let store = store(&root);
+        let (memory, spill) = authorities(256 * 1024, 1024 * 1024);
+        let spill: Arc<dyn SpillBudgetCoordinator> = Arc::new(spill);
+        let mut malformed = TypedCanonicalTaskSetBuilder::new(
+            &store,
+            "synthetic-v1",
+            canonical_limits(),
+            Arc::clone(&memory),
+            Arc::clone(&spill),
+            RunCancellation::default(),
+            RejectDecodedTaskCodec,
+        )
+        .unwrap();
+        malformed
+            .push_idempotent_by(
+                SyntheticTask {
+                    partition: 0,
+                    path: "s3://bucket/malformed".to_owned(),
+                },
+                |_| b"malformed",
+            )
+            .unwrap();
+        assert!(
+            malformed
+                .finalize(&SyntheticAuthority { version: 1 })
+                .err()
+                .unwrap()
+                .message
+                .contains("malformed planning record")
+        );
+        assert_eq!(memory.snapshot().current_bytes, 0);
+        assert_eq!(spill.snapshot().current_bytes, 0);
+
+        let empty = TypedCanonicalTaskSetBuilder::new(
+            &store,
+            "synthetic-v1",
+            canonical_limits(),
+            Arc::clone(&memory),
+            Arc::clone(&spill),
+            RunCancellation::default(),
+            SyntheticCodec::default(),
+        )
+        .unwrap()
+        .finalize(&SyntheticAuthority { version: 1 })
+        .unwrap();
+        assert_eq!(empty.task_count, 0);
+        assert_eq!(empty.reference.task_count, 0);
+        assert_eq!(memory.snapshot().current_bytes, 0);
+        assert_eq!(spill.snapshot().current_bytes, 0);
+    }
+
+    #[test]
+    fn canonical_builder_admits_the_complete_finalize_overlap_once() {
+        let root = TempDir::new().unwrap();
+        let store = store(&root);
+        let limits = canonical_limits();
+        let scratch_bytes = limits
+            .index_cache_bytes
+            .checked_add(limits.tasks.maximum_task_bytes * 2)
+            .and_then(|bytes| bytes.checked_add(limits.maximum_sort_key_bytes * 2))
+            .unwrap();
+        let (_, writer_bytes) =
+            task_writer_memory_requirements("synthetic-v1", &limits.tasks).unwrap();
+        let combined_bytes = scratch_bytes + writer_bytes;
+
+        let constrained: Arc<dyn MemoryCoordinator> = Arc::new(
+            DeterministicMemoryCoordinator::new(combined_bytes - 1, BTreeMap::new()).unwrap(),
+        );
+        let constrained_spill: Arc<dyn SpillBudgetCoordinator> =
+            Arc::new(FixedSpillBudget::new(1024 * 1024).unwrap());
+        assert!(
+            TypedCanonicalTaskSetBuilder::new(
+                &store,
+                "synthetic-v1",
+                limits.clone(),
+                Arc::clone(&constrained),
+                Arc::clone(&constrained_spill),
+                RunCancellation::default(),
+                SyntheticCodec::default(),
+            )
+            .err()
+            .unwrap()
+            .message
+            .contains("exceeds managed budget")
+        );
+        assert_eq!(constrained.snapshot().current_bytes, 0);
+        assert_eq!(constrained_spill.snapshot().current_bytes, 0);
+
+        let admitted: Arc<dyn MemoryCoordinator> =
+            Arc::new(DeterministicMemoryCoordinator::new(combined_bytes, BTreeMap::new()).unwrap());
+        let admitted_spill: Arc<dyn SpillBudgetCoordinator> =
+            Arc::new(FixedSpillBudget::new(1024 * 1024).unwrap());
+        let mut builder = TypedCanonicalTaskSetBuilder::new(
+            &store,
+            "synthetic-v1",
+            limits,
+            Arc::clone(&admitted),
+            Arc::clone(&admitted_spill),
+            RunCancellation::default(),
+            SyntheticCodec::default(),
+        )
+        .unwrap();
+        builder
+            .push_idempotent_by(
+                SyntheticTask {
+                    partition: 0,
+                    path: "s3://bucket/admitted".to_owned(),
+                },
+                |task| task.path.as_bytes(),
+            )
+            .unwrap();
+        builder
+            .finalize(&SyntheticAuthority { version: 1 })
+            .unwrap();
+        assert_eq!(admitted.snapshot().peak_bytes, combined_bytes);
+        assert_eq!(admitted.snapshot().current_bytes, 0);
+        assert_eq!(admitted_spill.snapshot().current_bytes, 0);
+    }
+
+    #[test]
+    fn canonical_builder_disk_exhaustion_discards_scratch_and_leases() {
+        let root = TempDir::new().unwrap();
+        let store = store(&root);
+        let (memory, spill) = authorities(256 * 1024, 256 * 1024);
+        let spill: Arc<dyn SpillBudgetCoordinator> = Arc::new(spill);
+        let mut builder = store
+            .canonical_builder(
+                "synthetic-v1",
+                canonical_limits(),
+                Arc::clone(&memory),
+                Arc::clone(&spill),
+            )
+            .unwrap();
+        let first = SyntheticTask {
+            partition: 0,
+            path: format!("s3://bucket/{:08}/{}", 0, "x".repeat(1000)),
+        };
+        assert!(
+            builder
+                .push_idempotent_with(first.path.as_bytes(), |output| {
+                    serde_json::to_writer(output, &first)
+                        .map_err(|error| CdfError::data(format!("encode synthetic task: {error}")))
+                })
+                .unwrap()
+        );
+        let error = (1_u64..10_000)
+            .find_map(|ordinal| {
+                let task = SyntheticTask {
+                    partition: ordinal,
+                    path: format!("s3://bucket/{ordinal:08}/{}", "x".repeat(1000)),
+                };
+                builder
+                    .push_idempotent_with(task.path.as_bytes(), |output| {
+                        serde_json::to_writer(output, &task).map_err(|error| {
+                            CdfError::data(format!("encode synthetic task: {error}"))
+                        })
+                    })
+                    .err()
+            })
+            .expect("bounded spill must terminate canonical insertion");
+        assert!(error.message.contains("spill"));
+        assert!(
+            !builder
+                .push_idempotent_with(first.path.as_bytes(), |output| {
+                    serde_json::to_writer(output, &first)
+                        .map_err(|error| CdfError::data(format!("encode synthetic task: {error}")))
+                })
+                .unwrap(),
+            "an exact duplicate must not need fresh spill admission"
+        );
+        let conflicting = SyntheticTask {
+            partition: u64::MAX,
+            path: first.path.clone(),
+        };
+        assert!(
+            builder
+                .push_idempotent_with(conflicting.path.as_bytes(), |output| {
+                    serde_json::to_writer(output, &conflicting)
+                        .map_err(|error| CdfError::data(format!("encode synthetic task: {error}")))
+                })
+                .unwrap_err()
+                .message
+                .contains("conflicting payloads"),
+            "conflicting duplicate detection must not need fresh spill admission"
+        );
+        drop(builder);
+        assert_eq!(memory.snapshot().current_bytes, 0);
+        assert_eq!(spill.snapshot().current_bytes, 0);
+        let scratch = root.path().join("planner-artifacts/scratch");
+        assert_eq!(fs::read_dir(scratch).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn cancellation_during_empty_finalization_prevents_atomic_install() {
+        let root = TempDir::new().unwrap();
+        let store = store(&root);
+        let (memory, spill) = authorities(64 * 1024, 1024 * 1024);
+        let cancellation = RunCancellation::default();
+        let writer = store
+            .writer("synthetic-v1", limits(), Arc::clone(&memory), &spill)
+            .unwrap();
+        let error = writer
+            .finalize_with_authority_hash_and_cancellation(
+                writer_authority_hash(),
+                &cancellation,
+                |output| {
+                    encode_authority(output)?;
+                    cancellation.cancel();
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+        assert!(error.message.contains("cancelled"));
+        assert_eq!(memory.snapshot().current_bytes, 0);
+        assert_eq!(spill.snapshot().current_bytes, 0);
+        let task_directory = root.path().join("planner-artifacts/task-sets");
+        assert_eq!(fs::read_dir(task_directory).unwrap().count(), 0);
+    }
+
+    #[test]
     fn provider_order_is_externalized_into_one_canonical_identity() {
         let first_root = TempDir::new().unwrap();
         let second_root = TempDir::new().unwrap();
@@ -2449,6 +3491,7 @@ mod tests {
             maximum_sort_key_bytes: 64 * 1024,
             index_cache_bytes: 8 * 1024 * 1024,
             spill_growth_bytes: 64 * 1024 * 1024,
+            minimum_initial_spill_bytes: SQLITE_PAGE_BYTES * 2,
         };
         let mut builder = store
             .canonical_builder(

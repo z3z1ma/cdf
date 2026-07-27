@@ -7,14 +7,14 @@ use cdf_kernel::{
 };
 use cdf_object_access::{FileTransport, FileTransportControl, FileTransportResource};
 use cdf_runtime::{ExecutionServices, SourceEgressScope};
-use cdf_task_store::{ExternalTaskStore, TaskSetLimits};
+use cdf_task_store::ExternalTaskStore;
 use futures_util::TryStreamExt;
 
 use crate::{
-    GLUE_TASK_AUTHORITY_VERSION, GLUE_TASK_SET_TYPE, GLUE_TASK_VERSION, GlueCatalogClient,
-    GlueGetPartitionsRequest, GlueObjectTask, GlueResourceOptions, GlueSourceOptions,
-    GlueStorageDescriptor, GlueTable, GlueTableClass, GlueTaskAuthority, classify_table,
-    lake_formation::LakeFormationRuntime, merge_descriptor, planning_index::GluePlanningIndex,
+    GLUE_TASK_AUTHORITY_VERSION, GLUE_TASK_VERSION, GlueCatalogClient, GlueGetPartitionsRequest,
+    GlueObjectTask, GlueResourceOptions, GlueSourceOptions, GlueStorageDescriptor, GlueTable,
+    GlueTableClass, GlueTaskAuthority, classify_table, lake_formation::LakeFormationRuntime,
+    merge_descriptor, planning_index::GluePlanningIndex,
 };
 
 pub struct GluePlanningContext {
@@ -69,8 +69,10 @@ pub fn plan_glue_scan(
     )?;
     let index = GluePlanningIndex::create(
         &context.task_store,
+        source,
+        context.execution.memory(),
         context.execution.spill(),
-        source.planning_spill_growth_bytes,
+        context.cancellation.clone(),
     )?;
     let catalog = Arc::clone(&context.catalog);
     let object_access = Arc::clone(&context.object_access);
@@ -82,7 +84,7 @@ pub fn plan_glue_scan(
     let expected_table_generation = table_generation.to_owned();
     let cancellation = context.cancellation.clone();
     let lake_formation = context.lake_formation.clone();
-    let mut index = context.execution.run_io(async move {
+    let index = context.execution.run_io(async move {
         populate_index(
             index,
             catalog,
@@ -101,16 +103,6 @@ pub fn plan_glue_scan(
         )
         .await
     })?;
-    let mut writer = context.task_store.writer(
-        GLUE_TASK_SET_TYPE,
-        TaskSetLimits {
-            maximum_task_bytes: source.maximum_task_bytes,
-            maximum_authority_bytes: source.maximum_task_authority_bytes,
-            writer_buffer_bytes: source.task_writer_buffer_bytes,
-        },
-        context.execution.memory(),
-        context.execution.spill().as_ref(),
-    )?;
     let authority = GlueTaskAuthority {
         version: GLUE_TASK_AUTHORITY_VERSION,
         region: source.region.clone(),
@@ -121,17 +113,8 @@ pub fn plan_glue_scan(
         partition_expression: resource.partition_expression.clone(),
         scan_intent,
     };
-    index.for_each_canonical(|ordinal, task| {
-        task.validate_against(&authority)?;
-        writer.push_with(ordinal, |output| task.encode_to(output))
-    })?;
     let estimated_bytes = index.estimated_bytes()?;
-    let artifact = writer.finalize(|output| authority.encode_to(output))?;
-    if artifact.authority_sha256 != authority.content_sha256()? {
-        return Err(CdfError::internal(
-            "Glue task authority hash does not match its task-store identity",
-        ));
-    }
+    let artifact = index.finalize(&authority)?;
     Ok(ScanPlan::from_partition_authority(
         PlanId::new(format!("plan-{}", descriptor.resource_id))?,
         request.clone(),
@@ -407,7 +390,7 @@ async fn index_descriptor(
                 .collect(),
             partition_values: partition_values.clone(),
         };
-        index.insert(&task)?;
+        index.insert(task)?;
     }
     Ok(())
 }

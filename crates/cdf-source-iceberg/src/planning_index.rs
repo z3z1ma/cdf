@@ -1,11 +1,11 @@
 use std::{path::PathBuf, sync::Arc};
 
 use cdf_kernel::{CdfError, Result};
-use cdf_memory::{
-    ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest, reserve_blocking,
+use cdf_memory::{MemoryClass, MemoryCoordinator};
+use cdf_runtime::SpillBudgetCoordinator;
+use cdf_task_store::{
+    AccountedExternalTaskWorkspace, ExternalTaskStore, ExternalTaskWorkspaceLimits,
 };
-use cdf_runtime::{SpillBudgetCoordinator, SpillReservation};
-use cdf_task_store::{ExternalTaskStore, ExternalTaskWorkspace};
 use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
 
 use iceberg::spec::ManifestContentType;
@@ -33,13 +33,9 @@ pub(crate) struct IcebergPlanningManifest {
 pub(crate) struct IcebergPlanningIndex {
     connection: Connection,
     database_path: PathBuf,
-    spill: Arc<dyn SpillBudgetCoordinator>,
-    spill_reservation: SpillReservation,
-    spill_growth_bytes: u64,
+    workspace: AccountedExternalTaskWorkspace,
     maximum_task_bytes: u64,
     manifest_counts: [u64; 2],
-    _memory_lease: MemoryLease,
-    _workspace: ExternalTaskWorkspace,
 }
 
 impl IcebergPlanningIndex {
@@ -54,30 +50,18 @@ impl IcebergPlanningIndex {
             .checked_add(source.maximum_task_bytes)
             .and_then(|bytes| bytes.checked_add(MANIFEST_READER_CACHE_BYTES))
             .ok_or_else(|| CdfError::contract("Iceberg planning-index memory budget overflowed"))?;
-        let memory_lease = reserve_blocking(
-            memory,
-            &ReservationRequest::new(
-                ConsumerKey::new("iceberg-planning-index", MemoryClass::Control)?,
+        let workspace = task_store.accounted_workspace(
+            "iceberg-planning-index",
+            ExternalTaskWorkspaceLimits::new(
+                "iceberg-planning-index",
+                MemoryClass::Control,
                 memory_bytes,
+                source.planning_index_spill_growth_bytes,
+                SQLITE_PAGE_BYTES * 2,
             )?,
+            memory,
+            spill,
         )?;
-        let available = available_spill_bytes(spill.as_ref());
-        let initial = source
-            .planning_index_spill_growth_bytes
-            .min(available)
-            .max(1);
-        if initial < SQLITE_PAGE_BYTES * 2 {
-            return Err(CdfError::data(format!(
-                "Iceberg snapshot planning requires at least {} free spill bytes but only {available} are available; raise the run spill budget or reduce concurrent spill operators",
-                SQLITE_PAGE_BYTES * 2
-            )));
-        }
-        let spill_reservation = spill.try_reserve(initial)?.ok_or_else(|| {
-            CdfError::data(
-                "Iceberg snapshot planning could not acquire its initial shared spill reservation",
-            )
-        })?;
-        let workspace = task_store.temporary_workspace("iceberg-planning-index")?;
         let database_path = workspace.path().join("planning-index.sqlite");
         let connection = Connection::open(&database_path)
             .map_err(|error| sqlite_error("open Iceberg planning index", error))?;
@@ -103,7 +87,7 @@ impl IcebergPlanningIndex {
                 -i64::try_from(cache_kib).unwrap_or(i64::MAX),
             )
             .map_err(|error| sqlite_error("configure Iceberg planning-index cache", error))?;
-        set_page_ceiling(&connection, spill_reservation.bytes())?;
+        set_page_ceiling(&connection, workspace.reserved_spill_bytes())?;
         connection
             .execute_batch(
                 "CREATE TABLE manifests (
@@ -136,13 +120,9 @@ impl IcebergPlanningIndex {
         Ok(Self {
             connection,
             database_path,
-            spill,
-            spill_reservation,
-            spill_growth_bytes: source.planning_index_spill_growth_bytes,
+            workspace,
             maximum_task_bytes: source.maximum_task_bytes,
             manifest_counts: [0; 2],
-            _memory_lease: memory_lease,
-            _workspace: workspace,
         })
     }
 
@@ -425,15 +405,8 @@ impl IcebergPlanningIndex {
     }
 
     fn grow(&mut self) -> Result<()> {
-        let available = available_spill_bytes(self.spill.as_ref());
-        let additional = self.spill_growth_bytes.min(available);
-        if additional < SQLITE_PAGE_BYTES * 2 || !self.spill_reservation.try_grow(additional)? {
-            return Err(CdfError::data(format!(
-                "Iceberg planning index exhausted its shared spill budget after {} bytes; raise the run spill budget or reduce concurrent spill operators",
-                self.spill_reservation.bytes()
-            )));
-        }
-        set_page_ceiling(&self.connection, self.spill_reservation.bytes())
+        self.workspace.grow_spill()?;
+        set_page_ceiling(&self.connection, self.workspace.reserved_spill_bytes())
     }
 }
 
@@ -584,11 +557,6 @@ fn set_page_ceiling(connection: &Connection, reserved_bytes: u64) -> Result<()> 
             i64::try_from(pages).unwrap_or(i64::MAX),
         )
         .map_err(|error| sqlite_error("raise Iceberg planning-index page ceiling", error))
-}
-
-fn available_spill_bytes(spill: &dyn SpillBudgetCoordinator) -> u64 {
-    let snapshot = spill.snapshot();
-    snapshot.budget_bytes.saturating_sub(snapshot.current_bytes)
 }
 
 fn is_disk_full(error: &rusqlite::Error) -> bool {

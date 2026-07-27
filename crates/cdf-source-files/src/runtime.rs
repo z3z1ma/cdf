@@ -96,6 +96,7 @@ impl FileTaskStoreOptions {
             maximum_sort_key_bytes: self.maximum_sort_key_bytes,
             index_cache_bytes: self.index_cache_bytes,
             spill_growth_bytes: self.spill_growth_bytes,
+            minimum_initial_spill_bytes: 8192,
         }
     }
 }
