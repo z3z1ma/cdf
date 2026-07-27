@@ -34,3 +34,6 @@ futures-executor = "0.3.32"
 parquet = { version = "58.3.0", default-features = false, features = ["arrow"] }
 tempfile = "3.27.0"
 tokio = { version = "=1.52.3", features = ["rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

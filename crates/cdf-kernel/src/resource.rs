@@ -2559,10 +2559,12 @@ impl Future for PartitionAttestationAttempt<'_> {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if self.result.is_none() {
-            let attesting = self
-                .attesting
-                .as_mut()
-                .expect("partition attestation cannot be polled after completion");
+            let Some(attesting) = self.attesting.as_mut() else {
+                self.terminal = true;
+                return Poll::Ready(Err(CdfError::internal(
+                    "partition attestation was polled after completion",
+                )));
+            };
             let Poll::Ready(result) = attesting.as_mut().poll(cx) else {
                 return Poll::Pending;
             };
@@ -2572,19 +2574,22 @@ impl Future for PartitionAttestationAttempt<'_> {
             self.joining = Some(Box::pin(async move { termination.join().await }));
         }
 
-        let joining = self
-            .joining
-            .as_mut()
-            .expect("partition attestation join was initialized");
+        let Some(joining) = self.joining.as_mut() else {
+            self.terminal = true;
+            return Poll::Ready(Err(CdfError::internal(
+                "partition attestation join was not initialized",
+            )));
+        };
         let Poll::Ready(joined) = joining.as_mut().poll(cx) else {
             return Poll::Pending;
         };
         self.joining = None;
         self.terminal = true;
-        let result = self
-            .result
-            .take()
-            .expect("partition attestation result was initialized");
+        let Some(result) = self.result.take() else {
+            return Poll::Ready(Err(CdfError::internal(
+                "partition attestation result was not initialized",
+            )));
+        };
         match (result, joined) {
             (Ok(attestation), Ok(())) => Poll::Ready(Ok(attestation)),
             (Err(mut error), Err(cleanup)) => {
@@ -2684,10 +2689,12 @@ impl Future for PartitionOpenAttempt<'_> {
     type Output = Result<OpenedPartitionStream>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let opening = self
-            .opening
-            .as_mut()
-            .expect("partition opening attempt cannot be polled after completion");
+        let Some(opening) = self.opening.as_mut() else {
+            self.needs_termination = false;
+            return Poll::Ready(Err(CdfError::internal(
+                "partition opening attempt was polled after completion",
+            )));
+        };
         match opening.as_mut().poll(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Ok(payload)) => {

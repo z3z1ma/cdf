@@ -1,4 +1,12 @@
 #![doc = "Neutral local, HTTP, and object-store access authority for cdf."]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "foundational production code must propagate recoverable failures"
+    )
+)]
 
 mod evicting_spool_byte_source;
 mod growing_spool_byte_source;

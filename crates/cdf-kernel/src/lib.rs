@@ -1,4 +1,12 @@
 #![doc = "Core types, traits, and artifact contracts for cdf."]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "foundational production code must propagate recoverable failures"
+    )
+)]
 
 mod arrow_type;
 mod async_types;

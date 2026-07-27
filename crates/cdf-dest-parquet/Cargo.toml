@@ -31,3 +31,6 @@ tokio = { version = "=1.52.3", features = ["fs", "io-util"] }
 cdf-conformance = { path = "../cdf-conformance" }
 cdf-engine = { path = "../cdf-engine" }
 cdf-state-sqlite = { path = "../cdf-state-sqlite" }
+
+[lints]
+workspace = true

@@ -1,4 +1,12 @@
 #![doc = "Bounded content-addressed task-set artifacts for cdf planners."]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "foundational production code must propagate recoverable failures"
+    )
+)]
 
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
@@ -274,41 +282,32 @@ impl ExternalTaskStore {
         let path = self.path_for_reference(&reference)?;
         let file =
             File::open(&path).map_err(|error| io_error("open task-set artifact", &path, error))?;
-        let mut reader = ExternalTaskSetReader {
-            reference,
+        let mut cursor = ExternalTaskSetReadCursor {
             file,
             path,
             hasher: Sha256::new(),
             observed_bytes: 0,
-            expected_ordinal: 0,
-            maximum_task_bytes,
-            memory,
-            authority: None,
-            authority_sha256: String::new(),
-            task_end: 0,
-            footer_task_count: 0,
-            finished: false,
         };
-        let magic = reader.read_array::<8>()?;
+        let magic = cursor.read_array::<8>()?;
         if &magic != MAGIC {
             return Err(CdfError::data(
                 "task-set artifact has invalid framing magic",
             ));
         }
-        let version = u16::from_be_bytes(reader.read_array::<2>()?);
+        let version = u16::from_be_bytes(cursor.read_array::<2>()?);
         if version != FORMAT_VERSION {
             return Err(CdfError::contract(format!(
                 "task-set format version {version} is unsupported; expected {FORMAT_VERSION}"
             )));
         }
-        let task_type_length = usize::from(u16::from_be_bytes(reader.read_array::<2>()?));
+        let task_type_length = usize::from(u16::from_be_bytes(cursor.read_array::<2>()?));
         let task_type_request = ReservationRequest::new(
             ConsumerKey::new("external-task-set-header", MemoryClass::Control)?,
             u64::try_from(task_type_length)
                 .map_err(|_| CdfError::data("task-set type length exceeds u64"))?,
         )?;
-        let task_type_lease = reserve_blocking(Arc::clone(&reader.memory), &task_type_request)?;
-        let task_type = reader.read_vec(task_type_length)?;
+        let task_type_lease = reserve_blocking(Arc::clone(&memory), &task_type_request)?;
+        let task_type = cursor.read_vec(task_type_length)?;
         if task_type != expected_task_type.as_bytes() {
             return Err(CdfError::contract(format!(
                 "task-set type does not match expected `{expected_task_type}`"
@@ -316,19 +315,18 @@ impl ExternalTaskStore {
         }
         drop(task_type_lease);
 
-        let task_start = reader.observed_bytes;
-        let footer_offset = reader
-            .reference
+        let task_start = cursor.observed_bytes;
+        let footer_offset = reference
             .byte_count
             .checked_sub(FOOTER_BYTES)
             .ok_or_else(|| CdfError::data("task-set artifact is shorter than its footer"))?;
-        let mut tail = File::open(&reader.path)
-            .map_err(|error| io_error("open task-set trailer", &reader.path, error))?;
+        let mut tail = File::open(&cursor.path)
+            .map_err(|error| io_error("open task-set trailer", &cursor.path, error))?;
         tail.seek(SeekFrom::Start(footer_offset))
-            .map_err(|error| io_error("seek task-set footer", &reader.path, error))?;
+            .map_err(|error| io_error("seek task-set footer", &cursor.path, error))?;
         let mut footer = [0_u8; FOOTER_BYTES as usize];
         tail.read_exact(&mut footer)
-            .map_err(|error| io_error("read task-set footer", &reader.path, error))?;
+            .map_err(|error| io_error("read task-set footer", &cursor.path, error))?;
         if footer[0] != FOOTER_TAG {
             return Err(CdfError::data("task-set artifact has invalid footer tag"));
         }
@@ -337,10 +335,10 @@ impl ExternalTaskStore {
                 .try_into()
                 .map_err(|_| CdfError::internal("task-set footer count slice is invalid"))?,
         );
-        if footer_task_count != reader.reference.task_count {
+        if footer_task_count != reference.task_count {
             return Err(CdfError::data(format!(
                 "task-set footer count {footer_task_count} does not match referenced count {}",
-                reader.reference.task_count
+                reference.task_count
             )));
         }
         let authority_offset = u64::from_be_bytes(
@@ -354,10 +352,10 @@ impl ExternalTaskStore {
             ));
         }
         tail.seek(SeekFrom::Start(authority_offset))
-            .map_err(|error| io_error("seek task-set authority", &reader.path, error))?;
+            .map_err(|error| io_error("seek task-set authority", &cursor.path, error))?;
         let mut authority_tag = [0_u8; 1];
         tail.read_exact(&mut authority_tag)
-            .map_err(|error| io_error("read task-set authority tag", &reader.path, error))?;
+            .map_err(|error| io_error("read task-set authority tag", &cursor.path, error))?;
         if authority_tag[0] != AUTHORITY_TAG {
             return Err(CdfError::data(
                 "task-set artifact has invalid authority tag",
@@ -365,7 +363,7 @@ impl ExternalTaskStore {
         }
         let mut authority_length_bytes = [0_u8; 8];
         tail.read_exact(&mut authority_length_bytes)
-            .map_err(|error| io_error("read task-set authority length", &reader.path, error))?;
+            .map_err(|error| io_error("read task-set authority length", &cursor.path, error))?;
         let authority_length = u64::from_be_bytes(authority_length_bytes);
         if authority_length == 0 || authority_length > maximum_authority_bytes {
             return Err(CdfError::data(format!(
@@ -383,12 +381,12 @@ impl ExternalTaskStore {
         }
         let mut expected_authority_digest = [0_u8; 32];
         tail.read_exact(&mut expected_authority_digest)
-            .map_err(|error| io_error("read task-set authority digest", &reader.path, error))?;
+            .map_err(|error| io_error("read task-set authority digest", &cursor.path, error))?;
         let authority_request = ReservationRequest::new(
             ConsumerKey::new("external-task-set-authority", MemoryClass::Control)?,
             authority_length,
         )?;
-        let authority_lease = reserve_blocking(Arc::clone(&reader.memory), &authority_request)?;
+        let authority_lease = reserve_blocking(Arc::clone(&memory), &authority_request)?;
         let mut authority = vec![
             0_u8;
             usize::try_from(authority_length).map_err(|_| {
@@ -396,21 +394,25 @@ impl ExternalTaskStore {
             })?
         ];
         tail.read_exact(&mut authority)
-            .map_err(|error| io_error("read task-set authority", &reader.path, error))?;
+            .map_err(|error| io_error("read task-set authority", &cursor.path, error))?;
         let observed_authority_digest: [u8; 32] = Sha256::digest(&authority).into();
         if observed_authority_digest != expected_authority_digest {
             return Err(CdfError::data(
                 "task-set shared authority does not match its content identity",
             ));
         }
-        reader.authority = Some(AccountedBytes::new(
-            Bytes::from(authority),
-            authority_lease,
-        )?);
-        reader.authority_sha256 = format!("sha256:{}", hex::encode(observed_authority_digest));
-        reader.task_end = authority_offset;
-        reader.footer_task_count = footer_task_count;
-        Ok(reader)
+        Ok(ExternalTaskSetReader {
+            reference,
+            cursor,
+            expected_ordinal: 0,
+            maximum_task_bytes,
+            memory,
+            authority: AccountedBytes::new(Bytes::from(authority), authority_lease)?,
+            authority_sha256: format!("sha256:{}", hex::encode(observed_authority_digest)),
+            task_end: authority_offset,
+            footer_task_count,
+            finished: false,
+        })
     }
 
     /// Creates an invocation-local workspace beside task artifacts.
@@ -875,16 +877,20 @@ pub struct ExternalTaskSetArtifact {
     pub path: PathBuf,
 }
 
-pub struct ExternalTaskSetReader {
-    reference: PlannedTaskSetReference,
+struct ExternalTaskSetReadCursor {
     file: File,
     path: PathBuf,
     hasher: Sha256,
     observed_bytes: u64,
+}
+
+pub struct ExternalTaskSetReader {
+    reference: PlannedTaskSetReference,
+    cursor: ExternalTaskSetReadCursor,
     expected_ordinal: u64,
     maximum_task_bytes: u64,
     memory: Arc<dyn MemoryCoordinator>,
-    authority: Option<AccountedBytes>,
+    authority: AccountedBytes,
     authority_sha256: String,
     task_end: u64,
     footer_task_count: u64,
@@ -893,9 +899,7 @@ pub struct ExternalTaskSetReader {
 
 impl ExternalTaskSetReader {
     pub fn authority(&self) -> &AccountedBytes {
-        self.authority
-            .as_ref()
-            .expect("task-set reader constructor installs verified authority")
+        &self.authority
     }
 
     pub fn authority_sha256(&self) -> &str {
@@ -907,10 +911,10 @@ impl ExternalTaskSetReader {
         if self.finished {
             return Ok(None);
         }
-        if self.observed_bytes == self.task_end {
+        if self.cursor.observed_bytes == self.task_end {
             return self.finish_tail();
         }
-        if self.observed_bytes > self.task_end {
+        if self.cursor.observed_bytes > self.task_end {
             return Err(CdfError::data(
                 "task-set task body crossed the authority boundary",
             ));
@@ -933,12 +937,12 @@ impl ExternalTaskSetReader {
                     )));
                 }
                 let expected_digest = self.read_array::<32>()?;
-                let remaining =
-                    self.task_end
-                        .checked_sub(self.observed_bytes)
-                        .ok_or_else(|| {
-                            CdfError::data("task-set task frame crossed the authority boundary")
-                        })?;
+                let remaining = self
+                    .task_end
+                    .checked_sub(self.cursor.observed_bytes)
+                    .ok_or_else(|| {
+                        CdfError::data("task-set task frame crossed the authority boundary")
+                    })?;
                 if payload_length > remaining {
                     return Err(CdfError::data(
                         "task-set task payload crosses the authority boundary",
@@ -989,12 +993,7 @@ impl ExternalTaskSetReader {
             return Err(CdfError::data("task-set authority tag changed"));
         }
         let authority_length = u64::from_be_bytes(self.read_array::<8>()?);
-        let retained_authority_length = self
-            .authority
-            .as_ref()
-            .ok_or_else(|| CdfError::internal("task-set reader authority is missing"))?
-            .payload()
-            .len();
+        let retained_authority_length = self.authority.payload().len();
         if authority_length
             != u64::try_from(retained_authority_length)
                 .map_err(|_| CdfError::data("task-set authority exceeds u64"))?
@@ -1009,13 +1008,7 @@ impl ExternalTaskSetReader {
             usize::try_from(authority_length)
                 .map_err(|_| CdfError::data("task-set authority exceeds addressable memory"))?,
         )?;
-        if authority.as_slice()
-            != self
-                .authority
-                .as_ref()
-                .ok_or_else(|| CdfError::internal("task-set reader authority is missing"))?
-                .payload()
-        {
+        if authority.as_slice() != self.authority.payload() {
             return Err(CdfError::data("task-set authority payload changed"));
         }
         if self.read_array::<1>()?[0] != FOOTER_TAG {
@@ -1027,16 +1020,48 @@ impl ExternalTaskSetReader {
             return Err(CdfError::data("task-set footer authority changed"));
         }
         let mut trailing = [0_u8; 1];
-        match self.file.read(&mut trailing) {
+        match self.cursor.file.read(&mut trailing) {
             Ok(0) => {}
             Ok(_) => return Err(CdfError::data("task-set artifact has trailing bytes")),
-            Err(error) => return Err(io_error("read task-set trailing byte", &self.path, error)),
+            Err(error) => {
+                return Err(io_error(
+                    "read task-set trailing byte",
+                    &self.cursor.path,
+                    error,
+                ));
+            }
         }
         self.verify_complete()?;
         self.finished = true;
         Ok(None)
     }
 
+    fn read_array<const N: usize>(&mut self) -> Result<[u8; N]> {
+        self.cursor.read_array()
+    }
+
+    fn read_vec(&mut self, length: usize) -> Result<Vec<u8>> {
+        self.cursor.read_vec(length)
+    }
+
+    fn verify_complete(&self) -> Result<()> {
+        let observed_digest = format!(
+            "sha256:{}",
+            hex::encode(self.cursor.hasher.clone().finalize())
+        );
+        if self.cursor.observed_bytes != self.reference.byte_count
+            || observed_digest != self.reference.content_sha256
+            || self.reference.provider_generation.as_str() != self.reference.content_sha256
+        {
+            return Err(CdfError::data(
+                "task-set artifact bytes, content identity, or provider generation changed",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl ExternalTaskSetReadCursor {
     fn read_array<const N: usize>(&mut self) -> Result<[u8; N]> {
         let mut bytes = [0_u8; N];
         self.file
@@ -1064,19 +1089,6 @@ impl ExternalTaskSetReader {
                     .map_err(|_| CdfError::data("task-set observed bytes exceeds u64"))?,
             )
             .ok_or_else(|| CdfError::data("task-set observed bytes overflowed u64"))?;
-        Ok(())
-    }
-
-    fn verify_complete(&self) -> Result<()> {
-        let observed_digest = format!("sha256:{}", hex::encode(self.hasher.clone().finalize()));
-        if self.observed_bytes != self.reference.byte_count
-            || observed_digest != self.reference.content_sha256
-            || self.reference.provider_generation.as_str() != self.reference.content_sha256
-        {
-            return Err(CdfError::data(
-                "task-set artifact bytes, content identity, or provider generation changed",
-            ));
-        }
         Ok(())
     }
 }
@@ -1210,7 +1222,8 @@ fn configure_canonical_index(connection: &Connection, cache_bytes: u64) -> Resul
         .pragma_update(
             None,
             "page_size",
-            i64::try_from(SQLITE_PAGE_BYTES).expect("SQLite page size fits i64"),
+            i64::try_from(SQLITE_PAGE_BYTES)
+                .map_err(|_| CdfError::internal("SQLite page size exceeds i64"))?,
         )
         .and_then(|_| connection.pragma_update(None, "journal_mode", "OFF"))
         .and_then(|_| connection.pragma_update(None, "synchronous", "OFF"))

@@ -232,17 +232,19 @@ impl OrderedStratifiedHashV1 {
             .selected
             .into_iter()
             .map(|selection| {
-                let selection = selection.expect("validated ordered selection is complete");
-                StratifiedHashSelection {
+                let selection = selection.ok_or_else(|| {
+                    CdfError::internal("validated ordered selection was incomplete")
+                })?;
+                Ok(StratifiedHashSelection {
                     canonical_location: selection.candidate.canonical_location,
                     score_sha256: selection.score,
                     bounded_identity_sha256: format!(
                         "sha256:{}",
                         hex::encode(Sha256::digest(&selection.candidate.bounded_identity))
                     ),
-                }
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
         let interior_strata = self
             .strata
             .into_iter()
@@ -265,7 +267,7 @@ impl OrderedStratifiedHashV1 {
     }
 
     fn selection_slot(&self, index: u64) -> Option<usize> {
-        let selected_count = u64::try_from(self.selected.len()).expect("selection fits u64");
+        let selected_count = u64::try_from(self.selected.len()).ok()?;
         if selected_count == 1 {
             return Some(0);
         }

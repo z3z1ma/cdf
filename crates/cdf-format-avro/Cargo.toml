@@ -23,3 +23,6 @@ apache-avro = "0.21.0"
 arrow-buffer = "58.3.0"
 arrow-avro = { version = "58.3.0", features = ["async"] }
 futures-executor = "0.3.32"
+
+[lints]
+workspace = true

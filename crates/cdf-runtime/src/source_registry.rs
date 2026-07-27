@@ -190,10 +190,9 @@ impl SourceRegistry {
         let driver_id = self.schemes.get(scheme).ok_or_else(|| {
             CdfError::contract(format!("no source driver registered for scheme `{scheme}`"))
         })?;
-        Ok(self
-            .drivers
-            .get(driver_id)
-            .expect("source scheme index references registered driver"))
+        self.drivers.get(driver_id).ok_or_else(|| {
+            CdfError::internal("source scheme index references an unregistered driver")
+        })
     }
 
     pub fn descriptors(&self) -> Vec<SourceDriverDescriptor> {
@@ -440,10 +439,9 @@ impl SourceRegistry {
         let driver_id = self.kinds.get(kind).ok_or_else(|| {
             CdfError::contract(format!("no source driver registered for kind `{kind}`"))
         })?;
-        Ok(self
-            .drivers
-            .get(driver_id)
-            .expect("source kind index references registered driver"))
+        self.drivers.get(driver_id).ok_or_else(|| {
+            CdfError::internal("source kind index references an unregistered driver")
+        })
     }
 
     fn driver_for_plan(&self, plan: &CompiledSourcePlan) -> Result<&Arc<dyn SourceDriver>> {
@@ -857,12 +855,10 @@ fn validate_option_schema(schema: &serde_json::Value) -> Result<()> {
                 "source driver option schema `{section}` must be a closed object with properties"
             )));
         }
-        validate_option_schema_node(
-            object
-                .get(section)
-                .expect("validated source option schema section"),
-            &format!("$.{section}"),
-        )?;
+        let section = object.get(section).ok_or_else(|| {
+            CdfError::internal("validated source option schema section disappeared")
+        })?;
+        validate_option_schema_node(section, &format!("$.{section}"))?;
     }
     Ok(())
 }
@@ -873,18 +869,20 @@ fn validate_driver_options(
     resource: &BTreeMap<String, serde_json::Value>,
 ) -> Result<()> {
     let schema = driver.option_schema();
+    let source_schema = schema.get("source").ok_or_else(|| {
+        CdfError::internal("registered source driver lost its source option schema")
+    })?;
     validate_option_instance(
-        schema
-            .get("source")
-            .expect("registered source driver has a source option schema"),
+        source_schema,
         &serde_json::to_value(source)
             .map_err(|error| CdfError::internal(format!("serialize source options: {error}")))?,
         "$.source",
     )?;
+    let resource_schema = schema.get("resource").ok_or_else(|| {
+        CdfError::internal("registered source driver lost its resource option schema")
+    })?;
     validate_option_instance(
-        schema
-            .get("resource")
-            .expect("registered source driver has a resource option schema"),
+        resource_schema,
         &serde_json::to_value(resource)
             .map_err(|error| CdfError::internal(format!("serialize resource options: {error}")))?,
         "$.resource",
@@ -1158,9 +1156,9 @@ fn validate_option_instance(
     instance: &serde_json::Value,
     path: &str,
 ) -> Result<()> {
-    let schema = schema
-        .as_object()
-        .expect("registered option schema nodes are objects");
+    let schema = schema.as_object().ok_or_else(|| {
+        CdfError::internal("registered source option schema node was not an object")
+    })?;
     if let Some(branches) = schema.get("oneOf").and_then(serde_json::Value::as_array) {
         let evaluations = branches
             .iter()

@@ -62,6 +62,12 @@ license = "Apache-2.0"
 [workspace.dependencies]
 duckdb = "=1.10504.0"
 
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
 [patch.crates-io]
 # 10x: Arrow-rs 58.3.0 with Thrift 0.23 plus the upstream map-row and CSV-header
 # validation features backported. Remove these pins when one supported Arrow release has all three.

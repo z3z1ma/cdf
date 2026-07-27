@@ -4,7 +4,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, BufWriter, ErrorKind, Read, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 use cdf_contract::DedupKeepProgram;
@@ -16,6 +16,19 @@ const DEFAULT_SORT_MEMORY_BYTES: usize = 8 * 1024 * 1024;
 const MERGE_FAN_IN: u64 = 32;
 const MAX_KEY_BYTES: usize = 32 * 1024 * 1024;
 const FAST_PATH_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
+trait MutexFailStop<T> {
+    fn lock_fail_stop(&self) -> MutexGuard<'_, T>;
+}
+
+impl<T> MutexFailStop<T> for Mutex<T> {
+    fn lock_fail_stop(&self) -> MutexGuard<'_, T> {
+        match self.lock() {
+            Ok(guard) => guard,
+            Err(_) => panic!("dedup-spill invariant lock is poisoned; refusing recovery"),
+        }
+    }
+}
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct PayloadMetadata {
@@ -311,10 +324,10 @@ impl ExternalDedupIndex {
                     .as_ref()
                     .is_some_and(|lease| lease.reconcile(next_fast_bytes.max(1)).is_ok());
             if retain_fast {
-                self.fast_keys
-                    .as_mut()
-                    .expect("fast keys exist with their lease")
-                    .push(key);
+                let fast_keys = self.fast_keys.as_mut().ok_or_else(|| {
+                    CdfError::internal("dedup fast-key storage is missing while its lease is live")
+                })?;
+                fast_keys.push(key);
                 self.fast_bytes = next_fast_bytes;
             } else {
                 self.transition_fast_keys_to_spill()?;
@@ -393,7 +406,7 @@ impl ExternalDedupIndex {
             self.merge_decision_levels(decision_level, decision_count)?
         };
         let dropped_row_count = self.input_rows.saturating_sub(output_rows);
-        let spill_bytes = self.reservation.lock().unwrap().bytes();
+        let spill_bytes = self.reservation.lock_fail_stop().bytes();
         let reader = DecisionReader::open(&decisions)?;
         Ok(ExternalDedupDecisions {
             source: DecisionSource::File(reader),
@@ -445,7 +458,7 @@ impl ExternalDedupIndex {
             });
         }
         let output_rows = groups.len() as u64;
-        let spill_bytes = self.reservation.lock().unwrap().bytes();
+        let spill_bytes = self.reservation.lock_fail_stop().bytes();
         Ok(ExternalDedupDecisions {
             source: DecisionSource::Memory(decisions.into_iter()),
             summary: DedupIndexSummary {
@@ -932,7 +945,7 @@ impl Write for BudgetedSpillFile {
         }
         let additional = u64::try_from(buffer.len())
             .map_err(|_| std::io::Error::other("spill write exceeds u64"))?;
-        let mut reservation = self.reservation.lock().unwrap();
+        let mut reservation = self.reservation.lock_fail_stop();
         if !reservation
             .try_grow(additional)
             .map_err(|error| std::io::Error::other(error.to_string()))?

@@ -70,6 +70,10 @@ mod profiling;
 mod receipts;
 mod rows;
 mod runtime;
+#[allow(
+    unsafe_code,
+    reason = "DuckDB C API exception governed by .10x/decisions/compiler-enforced-rust-safety-walls.md"
+)]
 mod segment_scan;
 mod sheet;
 mod sql;

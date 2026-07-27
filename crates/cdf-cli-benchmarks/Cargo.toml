@@ -14,3 +14,6 @@ criterion = "0.5.1"
 [[bench]]
 name = "cli_renderer"
 harness = false
+
+[lints]
+workspace = true

@@ -24,3 +24,6 @@ arrow-array = "58.3.0"
 cdf-memory = { path = "../cdf-memory" }
 futures-executor = "0.3.32"
 tempfile = "3.27.0"
+
+[lints]
+workspace = true

@@ -1,4 +1,12 @@
 #![doc = "Canonical package artifacts and verified-access contracts for cdf."]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "foundational production code must propagate recoverable failures"
+    )
+)]
 
 mod access;
 mod artifacts;

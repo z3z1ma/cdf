@@ -685,18 +685,17 @@ impl SourceStreamCapabilities {
             }
             (
                 OperatorWatermarkBehavior::Transform { mapping_id },
-                Some(SourceWatermarkCapability {
-                    authority:
-                        WatermarkAuthority::Derived {
-                            mapping_id: authority_mapping,
-                        },
-                    ..
-                }),
+                Some(
+                    capability @ SourceWatermarkCapability {
+                        authority:
+                            WatermarkAuthority::Derived {
+                                mapping_id: authority_mapping,
+                            },
+                        ..
+                    },
+                ),
             ) if mapping_id == authority_mapping => {
-                self.watermark
-                    .as_ref()
-                    .expect("matched source watermark capability")
-                    .validate()?;
+                capability.validate()?;
             }
             _ => {
                 return Err(CdfError::contract(
@@ -1702,14 +1701,14 @@ impl CompiledSourceExecutionPlan {
             "source_semantics_hash": self.source_semantics_hash,
         });
         if let Some(capabilities) = &self.stream_capabilities {
-            identity
+            let object = identity
                 .as_object_mut()
-                .expect("source execution identity is an object")
-                .insert(
-                    "stream_capabilities".to_owned(),
-                    serde_json::to_value(capabilities)
-                        .map_err(|error| CdfError::internal(error.to_string()))?,
-                );
+                .ok_or_else(|| CdfError::internal("source execution identity was not an object"))?;
+            object.insert(
+                "stream_capabilities".to_owned(),
+                serde_json::to_value(capabilities)
+                    .map_err(|error| CdfError::internal(error.to_string()))?,
+            );
         }
         artifact_hash(&identity)
     }
@@ -1943,14 +1942,14 @@ impl CompiledSourcePlan {
             "physical_plan_hash": self.physical_plan_hash,
         });
         if let Some(capabilities) = &self.stream_capabilities {
-            identity
+            let object = identity
                 .as_object_mut()
-                .expect("source identity is an object")
-                .insert(
-                    "stream_capabilities".to_owned(),
-                    serde_json::to_value(capabilities)
-                        .map_err(|error| CdfError::internal(error.to_string()))?,
-                );
+                .ok_or_else(|| CdfError::internal("source identity was not an object"))?;
+            object.insert(
+                "stream_capabilities".to_owned(),
+                serde_json::to_value(capabilities)
+                    .map_err(|error| CdfError::internal(error.to_string()))?,
+            );
         }
         SourceSemanticsHash::new(artifact_hash(&identity)?)
     }
@@ -2119,7 +2118,7 @@ impl SourceEvidenceLocation {
                 .map_or(without_fragment, |(base, _)| base);
             let (scheme, remainder) = base
                 .split_once("://")
-                .expect("the URI scheme delimiter was already validated");
+                .ok_or_else(|| CdfError::internal("parsed URI lost its scheme delimiter"))?;
             let authority_end = remainder.find('/').unwrap_or(remainder.len());
             let (authority, suffix) = remainder.split_at(authority_end);
             let safe_authority = authority

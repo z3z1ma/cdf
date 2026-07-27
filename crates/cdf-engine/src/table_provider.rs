@@ -202,8 +202,7 @@ impl QueryableResourceExec {
                 "DataFusion query execution requires inline partition authority; external task sets must be adapted by a source-owned table provider".to_owned(),
             )
         })?.len();
-        let output_schema = projected_schema(&input_schema, projection.as_ref())
-            .expect("projection indexes are built from the provider schema");
+        let output_schema = projected_schema(&input_schema, projection.as_ref())?;
         let properties = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(output_schema),
             Partitioning::UnknownPartitioning(partition_count.max(1)),
@@ -448,7 +447,7 @@ impl ExecutionPlan for QueryableResourceExec {
     }
 
     fn with_fetch(&self, limit: Option<usize>) -> Option<Arc<dyn ExecutionPlan>> {
-        let plan = Self::new(
+        Self::new(
             Arc::clone(&self.resource),
             self.scan.clone(),
             self.resource.schema(),
@@ -456,8 +455,8 @@ impl ExecutionPlan for QueryableResourceExec {
             limit,
             self.execution.clone(),
         )
-        .expect("an existing queryable resource plan retains inline partition authority");
-        Some(Arc::new(plan))
+        .ok()
+        .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
     }
 
     fn fetch(&self) -> Option<usize> {

@@ -55,3 +55,6 @@ postgres = "0.19.12"
 [[bench]]
 name = "baseline"
 harness = false
+
+[lints]
+workspace = true

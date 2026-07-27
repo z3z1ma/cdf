@@ -9,3 +9,6 @@ description = "Shared Postgres protocol identifiers for cdf source and destinati
 [dependencies]
 cdf-kernel = { path = "../cdf-kernel" }
 serde = { version = "1.0.228", features = ["derive"] }
+
+[lints]
+workspace = true

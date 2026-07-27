@@ -17,3 +17,6 @@ futures-util = "0.3.32"
 
 [dev-dependencies]
 futures-executor = "0.3.32"
+
+[lints]
+workspace = true

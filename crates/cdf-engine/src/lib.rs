@@ -1,4 +1,12 @@
 #![doc = "Planning and execution boundary for cdf."]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "foundational production code must propagate recoverable failures"
+    )
+)]
 
 mod dedup_spill;
 mod execution;

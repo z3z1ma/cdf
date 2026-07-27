@@ -427,7 +427,8 @@ fn configure_index(connection: &Connection, cache_bytes: u64) -> Result<()> {
         .pragma_update(
             None,
             "page_size",
-            i64::try_from(SQLITE_PAGE_BYTES).expect("SQLite page size fits i64"),
+            i64::try_from(SQLITE_PAGE_BYTES)
+                .map_err(|_| CdfError::internal("SQLite page size exceeds i64"))?,
         )
         .and_then(|_| connection.pragma_update(None, "journal_mode", "OFF"))
         .and_then(|_| connection.pragma_update(None, "synchronous", "OFF"))

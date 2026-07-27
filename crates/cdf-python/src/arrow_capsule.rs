@@ -1,3 +1,6 @@
+//! Arrow/Python FFI safety exception governed by
+//! `.10x/decisions/compiler-enforced-rust-safety-walls.md`.
+
 use std::{ffi::CStr, sync::Arc};
 
 use arrow_array::{
@@ -48,6 +51,8 @@ fn import_record_batch_capsules(
     let ffi_schema = unsafe { schema_ptr.as_ref() };
     let field =
         Field::try_from(ffi_schema).map_err(|error| PyTypeError::new_err(error.to_string()))?;
+    // SAFETY: the array owner and borrowed schema were imported from the two checked capsules,
+    // and both remain live for this synchronous conversion.
     let data = unsafe { from_ffi(ffi_array, ffi_schema) }
         .map_err(|error| PyTypeError::new_err(error.to_string()))?;
     let DataType::Struct(fields) = field.data_type() else {

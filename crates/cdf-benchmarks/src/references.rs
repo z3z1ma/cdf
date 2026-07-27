@@ -1,3 +1,6 @@
+//! Measurement-only FFI safety exception governed by
+//! `.10x/decisions/compiler-enforced-rust-safety-walls.md`.
+
 use std::{
     ffi::{CStr, CString},
     fs,
@@ -1949,6 +1952,8 @@ impl RawDuckDbConnection {
 
     fn query(&mut self, sql: &str) -> BenchResult<()> {
         let sql = CString::new(sql)?;
+        // SAFETY: DuckDB's result handle is a C aggregate whose documented initialization state
+        // is all-zero before `duckdb_query` fills it.
         let mut result = unsafe { std::mem::zeroed::<duckdb::ffi::duckdb_result>() };
         // SAFETY: the connection is owned by this wrapper and `sql` is a live
         // NUL-terminated string. DuckDB initializes `result`; it is destroyed
@@ -2462,6 +2467,11 @@ fn register_duckdb_arrow_ipc_table_function(
     Ok(telemetry)
 }
 
+/// # Safety
+///
+/// `data` must be the live benchmark context pointer transferred to DuckDB, and DuckDB must invoke
+/// this destructor exactly once. Governed by
+/// `.10x/decisions/compiler-enforced-rust-safety-walls.md`.
 unsafe extern "C" fn drop_duckdb_ipc_table_function_context(data: *mut c_void) {
     if !data.is_null() {
         // SAFETY: `data` came from exactly one `Box::into_raw` call during
@@ -2472,6 +2482,11 @@ unsafe extern "C" fn drop_duckdb_ipc_table_function_context(data: *mut c_void) {
     }
 }
 
+/// # Safety
+///
+/// `data` must be the live benchmark worker-local pointer transferred during local init, and
+/// DuckDB must invoke this destructor exactly once. Governed by
+/// `.10x/decisions/compiler-enforced-rust-safety-walls.md`.
 unsafe extern "C" fn drop_duckdb_ipc_table_function_local_state(data: *mut c_void) {
     if !data.is_null() {
         // SAFETY: `data` came from exactly one `Box::into_raw` call in the
@@ -2484,6 +2499,11 @@ unsafe extern "C" fn drop_duckdb_ipc_table_function_local_state(data: *mut c_voi
     }
 }
 
+/// # Safety
+///
+/// DuckDB must invoke this registered callback with a live bind handle whose extra-info pointer is
+/// the benchmark context installed by this module. Governed by
+/// `.10x/decisions/compiler-enforced-rust-safety-walls.md`.
 unsafe extern "C" fn bind_duckdb_ipc_table_function(info: duckdb::ffi::duckdb_bind_info) {
     let result = catch_unwind(AssertUnwindSafe(|| -> BenchResult<()> {
         // SAFETY: DuckDB passes the extra-info pointer installed at
@@ -2511,6 +2531,11 @@ unsafe extern "C" fn bind_duckdb_ipc_table_function(info: duckdb::ffi::duckdb_bi
     }
 }
 
+/// # Safety
+///
+/// DuckDB must invoke this registered callback with a live init handle whose extra-info pointer is
+/// the benchmark context installed by this module. Governed by
+/// `.10x/decisions/compiler-enforced-rust-safety-walls.md`.
 unsafe extern "C" fn init_duckdb_ipc_table_function(info: duckdb::ffi::duckdb_init_info) {
     let result = catch_unwind(AssertUnwindSafe(|| -> BenchResult<()> {
         // SAFETY: DuckDB passes the registered extra-info pointer and keeps it
@@ -2530,6 +2555,11 @@ unsafe extern "C" fn init_duckdb_ipc_table_function(info: duckdb::ffi::duckdb_in
     }
 }
 
+/// # Safety
+///
+/// DuckDB must invoke this registered callback with a live init handle and retain the returned
+/// worker-local pointer until calling its destructor exactly once. Governed by
+/// `.10x/decisions/compiler-enforced-rust-safety-walls.md`.
 unsafe extern "C" fn local_init_duckdb_ipc_table_function(info: duckdb::ffi::duckdb_init_info) {
     let result = catch_unwind(AssertUnwindSafe(|| -> BenchResult<()> {
         let state = Box::new(DuckDbIpcTableFunctionLocalState::new());
@@ -2549,6 +2579,11 @@ unsafe extern "C" fn local_init_duckdb_ipc_table_function(info: duckdb::ffi::duc
     }
 }
 
+/// # Safety
+///
+/// DuckDB must provide live function/output handles from the registered benchmark table function,
+/// retain the shared context, and give this worker exclusive local-state access for the callback.
+/// Governed by `.10x/decisions/compiler-enforced-rust-safety-walls.md`.
 unsafe extern "C" fn scan_duckdb_ipc_table_function(
     info: duckdb::ffi::duckdb_function_info,
     output: duckdb::ffi::duckdb_data_chunk,
@@ -2559,6 +2594,8 @@ unsafe extern "C" fn scan_duckdb_ipc_table_function(
         let context = unsafe {
             duckdb_ipc_table_function_context(duckdb::ffi::duckdb_function_get_extra_info(info))?
         };
+        // SAFETY: DuckDB supplies this worker's exclusive registered local state for the
+        // complete callback.
         let local_state = unsafe {
             duckdb_ipc_table_function_local_state(
                 duckdb::ffi::duckdb_function_get_local_init_data(info),
@@ -2619,6 +2656,7 @@ fn reference_arrow_batch_into_duckdb_output(
     }
     // SAFETY: both chunks are live and DuckDB returns their column counts.
     let input_columns = unsafe { duckdb::ffi::duckdb_data_chunk_get_column_count(converted_chunk) };
+    // SAFETY: both chunks are live and DuckDB returns their column counts.
     let output_columns = unsafe { duckdb::ffi::duckdb_data_chunk_get_column_count(output) };
     if input_columns != output_columns {
         // SAFETY: this function owns the converted chunk.
@@ -2646,6 +2684,10 @@ fn reference_arrow_batch_into_duckdb_output(
     Ok(())
 }
 
+/// # Safety
+///
+/// `pointer` must be the live registered benchmark context pointer and remain valid for `'a`.
+/// Governed by `.10x/decisions/compiler-enforced-rust-safety-walls.md`.
 unsafe fn duckdb_ipc_table_function_context<'a>(
     pointer: *mut c_void,
 ) -> BenchResult<&'a DuckDbIpcTableFunctionContext> {
@@ -2656,6 +2698,11 @@ unsafe fn duckdb_ipc_table_function_context<'a>(
     })
 }
 
+/// # Safety
+///
+/// `pointer` must be the live worker-local benchmark state pointer, remain valid for `'a`, and be
+/// exclusively accessible for that lifetime. Governed by
+/// `.10x/decisions/compiler-enforced-rust-safety-walls.md`.
 unsafe fn duckdb_ipc_table_function_local_state<'a>(
     pointer: *mut c_void,
 ) -> BenchResult<&'a mut DuckDbIpcTableFunctionLocalState> {
@@ -2781,6 +2828,11 @@ fn duckdb_error_data_result(
     }
 }
 
+/// # Safety
+///
+/// `error_data` must be null or a live DuckDB error-data object owned by the caller; this function
+/// consumes and destroys a non-null object exactly once. Governed by
+/// `.10x/decisions/compiler-enforced-rust-safety-walls.md`.
 unsafe fn duckdb_error_data_message_take(
     mut error_data: duckdb::ffi::duckdb_error_data,
 ) -> Option<String> {

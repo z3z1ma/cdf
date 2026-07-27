@@ -7,3 +7,6 @@ publish = false
 description = "WASM component authoring boundary for cdf."
 
 [dependencies]
+
+[lints]
+workspace = true

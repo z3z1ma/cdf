@@ -1,4 +1,12 @@
 #![doc = "Engine-neutral runtime contracts and extension registries for cdf."]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "extension-contract production code must propagate recoverable failures"
+    )
+)]
 
 mod bounded_format;
 mod bulk;

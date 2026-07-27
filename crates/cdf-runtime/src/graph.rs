@@ -509,11 +509,11 @@ fn validate_graph(nodes: &[GraphNodeDescriptor], edges: &[GraphEdgeDescriptor]) 
         let producer = nodes
             .iter()
             .find(|node| node.node_id == edge.producer)
-            .expect("producer membership checked");
+            .ok_or_else(|| CdfError::internal("validated graph producer disappeared"))?;
         let consumer = nodes
             .iter()
             .find(|node| node.node_id == edge.consumer)
-            .expect("consumer membership checked");
+            .ok_or_else(|| CdfError::internal("validated graph consumer disappeared"))?;
         if (edge.transfer == GraphEdgeTransfer::Durable) != producer.durable_output {
             return Err(CdfError::contract(format!(
                 "graph edge `{}` durable transfer disagrees with producer `{}`",

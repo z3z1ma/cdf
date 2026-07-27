@@ -31,3 +31,6 @@ arrow-schema = "58.3.0"
 cdf-package = { path = "../cdf-package" }
 cdf-package-contract = { path = "../cdf-package-contract" }
 tempfile = "3.27.0"
+
+[lints]
+workspace = true

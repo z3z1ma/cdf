@@ -26,3 +26,6 @@ cdf-conformance = { path = "../cdf-conformance" }
 cdf-engine = { path = "../cdf-engine" }
 cdf-package = { path = "../cdf-package" }
 tempfile = "3.27.0"
+
+[lints]
+workspace = true

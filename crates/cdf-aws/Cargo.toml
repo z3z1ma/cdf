@@ -21,3 +21,6 @@ zeroize = { version = "1.8.2", features = ["derive"] }
 
 [dev-dependencies]
 futures-executor = "0.3.32"
+
+[lints]
+workspace = true

@@ -429,8 +429,11 @@ fn aggregate_file_manifests(
             "resource `{resource_id}` produced file manifest positions with no entries"
         )));
     }
+    let version = version.ok_or_else(|| {
+        CdfError::internal("file manifest aggregation received no source positions")
+    })?;
     Ok(SourcePosition::FileManifest(FileManifest {
-        version: version.expect("positions are non-empty"),
+        version,
         files: files.into_values().collect(),
     }))
 }
@@ -471,7 +474,12 @@ fn aggregate_cursor(
     positions: &[SourcePosition],
     lag_tolerance_ms: u64,
 ) -> Result<SourcePosition> {
-    let cursor = descriptor.cursor.as_ref().expect("cursor is present");
+    let cursor = descriptor.cursor.as_ref().ok_or_else(|| {
+        CdfError::contract(format!(
+            "resource `{}` has cursor positions but no cursor descriptor",
+            descriptor.resource_id
+        ))
+    })?;
     if cursor.ordering == CursorOrderingClaim::Unordered {
         return Err(CdfError::contract(format!(
             "resource `{}` cursor field `{}` is unordered and cannot advance checkpoints",
@@ -513,7 +521,12 @@ fn aggregate_cursor(
             maximum = Some(position);
         }
     }
-    let maximum = maximum.expect("cursor positions are non-empty");
+    let maximum = maximum.ok_or_else(|| {
+        CdfError::data(format!(
+            "resource `{}` produced no cursor positions",
+            descriptor.resource_id
+        ))
+    })?;
     Ok(SourcePosition::Cursor(CursorPosition {
         version: maximum.version,
         field: cursor.field.clone(),

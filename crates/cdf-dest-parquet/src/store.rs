@@ -257,7 +257,7 @@ impl StoreClient {
         )?
         .as_minimum_working_set();
         let memory = execution.memory();
-        let async_mutation_guard = mutation_guard.clone();
+        let async_mutation_guard = mutation_guard.try_clone()?;
         let async_cancellation = cancellation.clone();
         let put: object_store::Result<PutResult> = execution.run_io(async move {
             let _encoded = encoded;
@@ -814,7 +814,7 @@ impl StoreClient {
     ) -> Result<u64> {
         let prefix = self.path(prefix)?;
         let store = Arc::clone(&self.store);
-        let mutation_guard = mutation_guard.clone();
+        let mutation_guard = mutation_guard.try_clone()?;
         let operation = format!("delete prefix {prefix}");
         execution.run_io(async move {
             let objects = store
@@ -852,7 +852,7 @@ impl StoreClient {
             ));
         }
         let store = Arc::clone(&self.store);
-        let mutation_guard = mutation_guard.clone();
+        let mutation_guard = mutation_guard.try_clone()?;
         let operation = format!("delete prefix {prefix} with marker last");
         execution.run_io(async move {
             let mut objects = store

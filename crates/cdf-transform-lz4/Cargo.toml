@@ -17,3 +17,6 @@ twox-hash = { version = "2.1.2", default-features = false, features = ["xxhash32
 
 [dev-dependencies]
 futures-executor = "0.3.32"
+
+[lints]
+workspace = true

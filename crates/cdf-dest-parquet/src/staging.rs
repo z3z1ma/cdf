@@ -358,7 +358,7 @@ impl ParquetStagedIngressSession {
             bytes_per_batch: self.physical_plan.bytes_per_batch,
             compression: self.physical_plan.compression,
         };
-        let mutation_guard = self.request.mutation_guard().clone();
+        let mutation_guard = self.request.mutation_guard().try_clone()?;
         let run_id = format!(
             "parquet-stage-{}-object-{object_ordinal}",
             attempt_id.as_str()

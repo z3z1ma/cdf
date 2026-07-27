@@ -4,7 +4,7 @@ use std::{
     hash::BuildHasher,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        Arc, Condvar, Mutex, Weak,
+        Arc, Condvar, Mutex, MutexGuard, Weak,
         atomic::{AtomicU16, AtomicU64, Ordering},
         mpsc,
     },
@@ -22,6 +22,19 @@ use cdf_runtime::{
 };
 use futures_util::{FutureExt, StreamExt, future::Either, stream::FuturesUnordered};
 use tokio::{runtime::Runtime, sync::oneshot, task::JoinHandle as TokioJoinHandle};
+
+trait MutexFailStop<T> {
+    fn lock_fail_stop(&self) -> MutexGuard<'_, T>;
+}
+
+impl<T> MutexFailStop<T> for Mutex<T> {
+    fn lock_fail_stop(&self) -> MutexGuard<'_, T> {
+        match self.lock() {
+            Ok(guard) => guard,
+            Err(_) => panic!("standalone-host invariant lock is poisoned; refusing recovery"),
+        }
+    }
+}
 
 struct WorkCompletion {
     outcome: WorkOutcome,
@@ -171,7 +184,7 @@ impl CpuFutureState {
 
     fn request_poll(self: &Arc<Self>) {
         {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.lock_fail_stop();
             if inner.terminal || inner.queued {
                 return;
             }
@@ -188,7 +201,7 @@ impl CpuFutureState {
             self.finish(WorkOutcome::Completed(Err(CdfError::internal(
                 "CPU executor stopped before the asynchronous task completed",
             ))));
-            self.inner.lock().unwrap().release_pending = false;
+            self.inner.lock_fail_stop().release_pending = false;
             self.publish_terminal();
             return;
         };
@@ -206,14 +219,14 @@ impl CpuFutureState {
         );
         if let Err(error) = submission {
             self.finish(WorkOutcome::Completed(Err(error)));
-            self.inner.lock().unwrap().release_pending = false;
+            self.inner.lock_fail_stop().release_pending = false;
             self.publish_terminal();
         }
     }
 
     fn poll_once(self: &Arc<Self>) {
         let (mut task, queue_wait_ns) = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.lock_fail_stop();
             if inner.terminal {
                 return;
             }
@@ -224,13 +237,15 @@ impl CpuFutureState {
                 .take()
                 .map(|enqueued| u64::try_from(enqueued.elapsed().as_nanos()).unwrap_or(u64::MAX))
                 .unwrap_or_default();
-            (
-                inner
-                    .task
-                    .take()
-                    .expect("nonterminal CPU future retains its task"),
-                queue_wait_ns,
-            )
+            let Some(task) = inner.task.take() else {
+                inner.polling = false;
+                inner.terminal = true;
+                inner.terminal_outcome = Some(WorkOutcome::Completed(Err(CdfError::internal(
+                    "nonterminal CPU future lost its task",
+                ))));
+                return;
+            };
+            (task, queue_wait_ns)
         };
 
         if self.cancellation.is_cancelled() {
@@ -254,7 +269,7 @@ impl CpuFutureState {
                 queue_wait_ns,
             ),
             Ok(Poll::Pending) => {
-                let mut inner = self.inner.lock().unwrap();
+                let mut inner = self.inner.lock_fail_stop();
                 if inner.terminal {
                     return;
                 }
@@ -270,7 +285,7 @@ impl CpuFutureState {
     }
 
     fn finish_with_wait(&self, outcome: WorkOutcome, queue_wait_ns: u64) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock_fail_stop();
         if inner.terminal {
             return;
         }
@@ -288,7 +303,7 @@ impl CpuFutureState {
 
     fn publish_terminal(&self) {
         let completion = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.lock_fail_stop();
             if !inner.terminal {
                 return;
             }
@@ -314,7 +329,7 @@ impl CpuFutureState {
 
     fn after_poll_release(self: &Arc<Self>) {
         let (terminal, schedule) = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.lock_fail_stop();
             inner.release_pending = false;
             let terminal = inner.terminal;
             let schedule = !terminal && std::mem::take(&mut inner.notified);
@@ -366,7 +381,7 @@ impl FixedTaskPool {
                     })?,
             );
         }
-        *pool.workers.lock().unwrap() = handles;
+        *pool.workers.lock_fail_stop() = handles;
         Ok(pool)
     }
 
@@ -396,7 +411,7 @@ impl FixedTaskPool {
         }
         cancellation.check()?;
         let (sender, receiver) = oneshot::channel();
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock_fail_stop();
         if state.shutdown {
             return Err(CdfError::internal("task pool is shutting down"));
         }
@@ -411,7 +426,7 @@ impl FixedTaskPool {
             after_release,
             usage: Some(usage),
         });
-        let _slots = self.slots.state.lock().unwrap();
+        let _slots = self.slots.state.lock_fail_stop();
         self.slots.changed.notify_all();
         Ok(receiver)
     }
@@ -431,7 +446,7 @@ impl FixedTaskPool {
         cancellation.check()?;
         let (completion, _receiver) = oneshot::channel();
         let (released, release_receiver) = mpsc::sync_channel(1);
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock_fail_stop();
         if state.shutdown {
             return Err(CdfError::internal("task pool is shutting down"));
         }
@@ -446,7 +461,7 @@ impl FixedTaskPool {
             after_release: None,
             usage: None,
         });
-        let _slots = self.slots.state.lock().unwrap();
+        let _slots = self.slots.state.lock_fail_stop();
         self.slots.changed.notify_all();
         Ok(release_receiver)
     }
@@ -489,17 +504,17 @@ fn worker_loop(state: Arc<Mutex<PoolState>>, slots: Arc<CpuSlots>) {
     loop {
         let item = {
             loop {
-                let mut state = state.lock().unwrap();
-                let mut slot_state = slots.state.lock().unwrap();
+                let mut state = state.lock_fail_stop();
+                let mut slot_state = slots.state.lock_fail_stop();
                 if state.shutdown && state.queue.is_empty() {
                     return;
                 }
                 let selected = select_work_item(&mut state.queue, &mut slot_state);
                 if let Some(index) = selected {
-                    let item = state
-                        .queue
-                        .remove(index)
-                        .expect("eligible work item index remains present");
+                    let Some(item) = state.queue.remove(index) else {
+                        slots.changed.notify_all();
+                        continue;
+                    };
                     slot_state.available -= item.slot_cost;
                     slot_state.waiting.remove(&item.id);
                     if slot_state.reservation == Some(item.id) {
@@ -508,7 +523,13 @@ fn worker_loop(state: Arc<Mutex<PoolState>>, slots: Arc<CpuSlots>) {
                     break item;
                 }
                 drop(state);
-                drop(slots.changed.wait(slot_state).unwrap());
+                let waited = match slots.changed.wait(slot_state) {
+                    Ok(state) => state,
+                    Err(_) => {
+                        panic!("CPU-slot condition lock is poisoned; refusing recovery")
+                    }
+                };
+                drop(waited);
             }
         };
         if let Some(usage) = &item.usage {
@@ -527,7 +548,7 @@ fn worker_loop(state: Arc<Mutex<PoolState>>, slots: Arc<CpuSlots>) {
         if let Some(usage) = &item.usage {
             usage.release(slot_cost);
         }
-        let mut slot_state = slots.state.lock().unwrap();
+        let mut slot_state = slots.state.lock_fail_stop();
         slot_state.available = slot_state.available.saturating_add(slot_cost);
         slots.changed.notify_all();
         drop(slot_state);
@@ -578,10 +599,7 @@ fn select_work_item(queue: &mut VecDeque<WorkItem>, slots: &mut CpuSlotState) ->
             slots.reservation = Some(oldest_waiter);
             return None;
         }
-        *slots
-            .waiting
-            .get_mut(&oldest_waiter)
-            .expect("oldest waiting work remains registered") += 1;
+        *slots.waiting.entry(oldest_waiter).or_default() += 1;
     }
     Some(selected)
 }
@@ -735,10 +753,10 @@ impl StandaloneExecutionHost {
         })
     }
 
-    fn runtime(&self) -> &Runtime {
+    fn runtime(&self) -> Result<&Runtime> {
         self.runtime
             .as_ref()
-            .expect("standalone execution runtime is present until host teardown")
+            .ok_or_else(|| CdfError::internal("standalone execution runtime is unavailable"))
     }
 }
 
@@ -760,7 +778,7 @@ impl Drop for StandaloneExecutionHost {
 
 impl ExecutionHost for StandaloneExecutionHost {
     fn capabilities(&self) -> ExecutionHostCapabilities {
-        self.capabilities.lock().unwrap().clone()
+        self.capabilities.lock_fail_stop().clone()
     }
 
     fn memory(&self) -> Arc<dyn MemoryCoordinator> {
@@ -773,10 +791,10 @@ impl ExecutionHost for StandaloneExecutionHost {
 
     fn open_scope(&self, _run_id: &str) -> Result<Box<dyn ExecutionTaskScope>> {
         Ok(Box::new(StandaloneTaskScope {
-            handle: self.runtime().handle().clone(),
+            handle: self.runtime()?.handle().clone(),
             cancellation: RunCancellation::default(),
             cpu: Arc::clone(&self.cpu),
-            lanes: self.lanes.lock().unwrap().clone(),
+            lanes: self.lanes.lock_fail_stop().clone(),
             io: Vec::new(),
             cpu_tasks: Vec::new(),
             blocking_tasks: Vec::new(),
@@ -787,7 +805,7 @@ impl ExecutionHost for StandaloneExecutionHost {
 
     fn run_io_blocking(&self, task: IoValueTask) -> Result<IoValue> {
         let (sender, receiver) = mpsc::sync_channel(1);
-        self.runtime().handle().spawn(async move {
+        self.runtime()?.handle().spawn(async move {
             let result = AssertUnwindSafe(task)
                 .catch_unwind()
                 .await
@@ -804,7 +822,10 @@ impl ExecutionHost for StandaloneExecutionHost {
         duration: Duration,
         cancellation: RunCancellation,
     ) -> cdf_kernel::BoxFuture<'static, Result<()>> {
-        let runtime_handle = self.runtime().handle().clone();
+        let runtime_handle = match self.runtime() {
+            Ok(runtime) => runtime.handle().clone(),
+            Err(error) => return Box::pin(async move { Err(error) }),
+        };
         Box::pin(async move {
             struct AbortOnDrop(tokio::task::AbortHandle);
 
@@ -848,8 +869,8 @@ impl ExecutionHost for StandaloneExecutionHost {
     }
 
     fn ensure_blocking_lanes(&self, lanes: &[BlockingLaneSpec]) -> Result<()> {
-        let mut registered = self.lanes.lock().unwrap();
-        let mut capabilities = self.capabilities.lock().unwrap();
+        let mut registered = self.lanes.lock_fail_stop();
+        let mut capabilities = self.capabilities.lock_fail_stop();
         for lane in lanes {
             lane.validate()?;
             if lane.claimed_cpu_slots() > capabilities.logical_cpu_slots {
@@ -881,8 +902,7 @@ impl ExecutionHost for StandaloneExecutionHost {
     fn run_blocking_value(&self, lane: &str, task: BlockingValueTask) -> Result<IoValue> {
         let pool = self
             .lanes
-            .lock()
-            .unwrap()
+            .lock_fail_stop()
             .get(lane)
             .map(|(spec, pool)| (spec.clone(), Arc::clone(pool)))
             .ok_or_else(|| CdfError::contract(format!("unknown blocking lane `{lane}`")))?;
@@ -1222,7 +1242,7 @@ mod tests {
                 }),
             )
             .unwrap();
-        let report = host.runtime().block_on(scope.join()).unwrap();
+        let report = host.runtime().unwrap().block_on(scope.join()).unwrap();
         assert_eq!(report.completed, 4);
         assert_eq!(report.peak_cpu_slots, 2);
         assert_eq!(peak.load(Ordering::SeqCst), 1);
@@ -1348,7 +1368,7 @@ mod tests {
             .unwrap();
         std::thread::sleep(Duration::from_millis(10));
         assert_eq!(
-            host.cpu.state.lock().unwrap().queue.len(),
+            host.cpu.state.lock_fail_stop().queue.len(),
             1,
             "slot-ineligible work must remain visible to admission instead of occupying a worker"
         );
@@ -1506,7 +1526,7 @@ mod tests {
             )
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(1);
-        while host.slots.state.lock().unwrap().waiting.is_empty() {
+        while host.slots.state.lock_fail_stop().waiting.is_empty() {
             assert!(
                 Instant::now() < deadline,
                 "wide lane never registered its wait"
@@ -1595,7 +1615,7 @@ mod tests {
         let report = host.block_on_root(scope.join()).unwrap();
         assert_eq!(report.completed, 1);
         assert_eq!(report.peak_cpu_slots, 1);
-        let slots = host.slots.state.lock().unwrap();
+        let slots = host.slots.state.lock_fail_stop();
         assert_eq!(slots.available, host.slots.capacity);
         assert!(slots.waiting.is_empty());
         assert!(slots.reservation.is_none());
@@ -1682,7 +1702,7 @@ mod tests {
         let (started_sender, started_receiver) = mpsc::sync_channel(1);
         let (release_sender, release_receiver) = mpsc::sync_channel(1);
         let (finished_sender, finished_receiver) = mpsc::sync_channel(1);
-        host.runtime().handle().spawn(async move {
+        host.runtime().unwrap().handle().spawn(async move {
             started_sender.send(()).unwrap();
             release_receiver.recv().unwrap();
             drop(final_io_owner);
@@ -1920,7 +1940,7 @@ mod tests {
             }))
             .unwrap();
 
-        let error = host.runtime().block_on(scope.join()).unwrap_err();
+        let error = host.runtime().unwrap().block_on(scope.join()).unwrap_err();
 
         assert!(error.message.contains("intentional graph stage failure"));
         assert_eq!(memory.snapshot().current_bytes, 0);
@@ -1960,7 +1980,7 @@ mod tests {
 
         scope.cancel();
         release_sender.send(()).unwrap();
-        let report = host.runtime().block_on(scope.join()).unwrap();
+        let report = host.runtime().unwrap().block_on(scope.join()).unwrap();
 
         assert_eq!(report.completed, 1);
         assert_eq!(report.cancelled, 1);
@@ -2152,7 +2172,7 @@ mod tests {
         services
             .ensure_blocking_lanes(std::slice::from_ref(&lane))
             .unwrap();
-        let registered = host.lanes.lock().unwrap();
+        let registered = host.lanes.lock_fail_stop();
         let (_, pool) = registered.get("wide.adapter").unwrap();
         assert_eq!(pool.capacity, host.capabilities().logical_cpu_slots);
         assert_eq!(

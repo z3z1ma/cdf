@@ -378,8 +378,12 @@ fn to_datafusion(node: &ExpressionNode) -> Result<Expr> {
                 ("is_null", 1) => Ok(Expr::IsNull(Box::new(arguments.remove(0)))),
                 ("is_not_null", 1) => Ok(Expr::IsNotNull(Box::new(arguments.remove(0)))),
                 (name, 2) => {
-                    let right = arguments.pop().expect("binary right argument");
-                    let left = arguments.pop().expect("binary left argument");
+                    let right = arguments.pop().ok_or_else(|| {
+                        CdfError::internal("validated binary expression omitted its right argument")
+                    })?;
+                    let left = arguments.pop().ok_or_else(|| {
+                        CdfError::internal("validated binary expression omitted its left argument")
+                    })?;
                     Ok(Expr::BinaryExpr(BinaryExpr::new(
                         Box::new(left),
                         operator(name)?,

@@ -228,6 +228,10 @@ fn subprocess_command(command: &CommandSpec, supervision: &SupervisionOptions) -
 }
 
 #[cfg(target_os = "linux")]
+#[allow(
+    unsafe_code,
+    reason = "Linux pre-exec FFI exception governed by .10x/decisions/compiler-enforced-rust-safety-walls.md"
+)]
 fn install_child_address_space_limit(process: &mut Command, maximum_bytes: Option<u64>) {
     let Some(maximum_bytes) = maximum_bytes else {
         return;
@@ -235,7 +239,8 @@ fn install_child_address_space_limit(process: &mut Command, maximum_bytes: Optio
     // SAFETY: after fork and before exec, this closure captures only one copied integer and calls
     // the async-signal-safe setrlimit syscall through rustix. It does not allocate, lock, log, or
     // observe shared Rust state. The governing decision is
-    // `.10x/decisions/linux-subprocess-address-space-limit.md`.
+    // `.10x/decisions/linux-subprocess-address-space-limit.md` and safety-wall decision
+    // `.10x/decisions/compiler-enforced-rust-safety-walls.md`.
     unsafe {
         process.as_std_mut().pre_exec(move || {
             let existing = getrlimit(Resource::As);

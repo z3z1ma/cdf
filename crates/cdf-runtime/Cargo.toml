@@ -27,3 +27,6 @@ sha2 = "0.10.9"
 [dev-dependencies]
 futures-util = "0.3.32"
 tempfile = "3.27.0"
+
+[lints]
+workspace = true

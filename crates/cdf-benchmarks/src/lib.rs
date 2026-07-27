@@ -9,6 +9,10 @@ mod lab;
 mod matrix;
 mod package_shape;
 mod profiling;
+#[allow(
+    unsafe_code,
+    reason = "measurement-only FFI exception governed by .10x/decisions/compiler-enforced-rust-safety-walls.md"
+)]
 mod references;
 mod resource;
 mod runners;

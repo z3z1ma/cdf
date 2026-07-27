@@ -60,9 +60,7 @@ impl FilePayloadCacheKey {
     }
 
     fn digest(&self) -> &str {
-        self.0
-            .strip_prefix("sha256:")
-            .expect("validated payload cache key")
+        self.0.trim_start_matches("sha256:")
     }
 }
 

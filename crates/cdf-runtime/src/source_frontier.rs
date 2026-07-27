@@ -442,7 +442,7 @@ impl<'a, M: Send + 'a> CanonicalSourceFrontier<'a, M> {
         }));
     }
 
-    fn arm_ready_opened(&mut self) {
+    fn arm_ready_opened(&mut self) -> Result<()> {
         let ordinals = self
             .ready
             .iter()
@@ -459,13 +459,13 @@ impl<'a, M: Send + 'a> CanonicalSourceFrontier<'a, M> {
             let step = self
                 .ready
                 .remove(&ordinal)
-                .expect("ready opened ordinal was collected from this map");
-            self.push_poll(
-                ordinal,
-                step.state.expect("opened source step always carries state"),
-                None,
-            );
+                .ok_or_else(|| CdfError::internal("ready source ordinal disappeared"))?;
+            let state = step.state.ok_or_else(|| {
+                CdfError::internal("opened source step omitted its partition state")
+            })?;
+            self.push_poll(ordinal, state, None);
         }
+        Ok(())
     }
 
     async fn accept_step(&mut self, step: SourceStepResult<M>) -> Result<()> {
@@ -500,11 +500,10 @@ impl<'a, M: Send + 'a> CanonicalSourceFrontier<'a, M> {
                 .is_some_and(|state| state.stream.is_some())
             && self.head_poll_started
         {
-            self.push_poll(
-                ordinal,
-                step.state.expect("opened source state was checked"),
-                None,
-            );
+            let state = step.state.ok_or_else(|| {
+                CdfError::internal("opened source state disappeared before polling")
+            })?;
+            self.push_poll(ordinal, state, None);
             return Ok(());
         }
         if ordinal != self.canonical_ordinal && step.batch.is_some() {
@@ -531,7 +530,10 @@ impl<'a, M: Send + 'a> CanonicalSourceFrontier<'a, M> {
                 "metadata-only source partition cannot be polled for batches",
             ));
         }
-        let current = self.current.take().expect("current source was checked");
+        let current = self
+            .current
+            .take()
+            .ok_or_else(|| CdfError::internal("current source disappeared before polling"))?;
         let head_reservation = reserve_frontier_poll(
             self.maximum_batch_bytes,
             self.memory.clone(),
@@ -543,7 +545,7 @@ impl<'a, M: Send + 'a> CanonicalSourceFrontier<'a, M> {
         self.push_poll(ordinal, current.state, head_reservation);
         if self.batch_memory == crate::SourceBatchMemoryContract::FrontierReserved {
             self.fill_active();
-            self.arm_ready_opened();
+            self.arm_ready_opened()?;
         }
         loop {
             let waiting = self.measurement_enabled.then(Instant::now);
@@ -598,7 +600,7 @@ impl<'a, M: Send + 'a> CanonicalSourceFrontier<'a, M> {
                     // proved that its first retained outcome acquired memory successfully.
                     if self.batch_memory == crate::SourceBatchMemoryContract::Preaccounted {
                         self.fill_active();
-                        self.arm_ready_opened();
+                        self.arm_ready_opened()?;
                     }
                     return Ok(Some(batch.ok_or_else(|| {
                         CdfError::internal("ready source poll omitted its batch")
@@ -687,14 +689,12 @@ pub struct CanonicalSourcePartition<'frontier, 'a, M: Send + 'a> {
 }
 
 impl<'frontier, 'a, M: Send + 'a> CanonicalSourcePartition<'frontier, 'a, M> {
-    pub fn metadata(&self) -> &M {
-        &self
-            .frontier
+    pub fn metadata(&self) -> Result<&M> {
+        self.frontier
             .current
             .as_ref()
-            .expect("canonical source handle always owns current metadata")
-            .state
-            .metadata
+            .map(|current| &current.state.metadata)
+            .ok_or_else(|| CdfError::internal("canonical source partition has no current metadata"))
     }
 
     pub fn has_stream(&self) -> bool {

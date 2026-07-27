@@ -16,3 +16,6 @@ zstd = "0.13.3"
 
 [dev-dependencies]
 futures-executor = "0.3.32"
+
+[lints]
+workspace = true

@@ -1,3 +1,6 @@
+//! DuckDB C API safety exception governed by
+//! `.10x/decisions/compiler-enforced-rust-safety-walls.md`.
+
 use std::{
     ffi::{CStr, CString},
     fs::File,
@@ -736,6 +739,11 @@ fn register_segment_scan(
     Ok(())
 }
 
+/// # Safety
+///
+/// `data` must be the live `SegmentScanContext` pointer transferred to DuckDB by this module, and
+/// DuckDB must invoke this destructor exactly once. Governed by
+/// `.10x/decisions/compiler-enforced-rust-safety-walls.md`.
 unsafe extern "C" fn drop_context(data: *mut c_void) {
     if !data.is_null() {
         // SAFETY: this is the exact pointer transferred at registration.
@@ -743,6 +751,11 @@ unsafe extern "C" fn drop_context(data: *mut c_void) {
     }
 }
 
+/// # Safety
+///
+/// `data` must be the live worker-local pointer transferred by `local_init`, and DuckDB must invoke
+/// this destructor exactly once. Governed by
+/// `.10x/decisions/compiler-enforced-rust-safety-walls.md`.
 unsafe extern "C" fn drop_local_state(data: *mut c_void) {
     if !data.is_null() {
         // SAFETY: this is the exact pointer transferred during local init.
@@ -750,8 +763,14 @@ unsafe extern "C" fn drop_local_state(data: *mut c_void) {
     }
 }
 
+/// # Safety
+///
+/// DuckDB must invoke this registered callback with a live bind handle whose extra-info pointer is
+/// the `SegmentScanContext` installed by this module. Governed by
+/// `.10x/decisions/compiler-enforced-rust-safety-walls.md`.
 unsafe extern "C" fn bind(info: duckdb::ffi::duckdb_bind_info) {
     let result = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
+        // SAFETY: DuckDB supplies the registered context pointer for the complete callback.
         let context = unsafe { context(duckdb::ffi::duckdb_bind_get_extra_info(info))? };
         for field in context.schema.fields() {
             let name = cstring(field.name())?;
@@ -772,12 +791,24 @@ unsafe extern "C" fn bind(info: duckdb::ffi::duckdb_bind_info) {
     }
 }
 
+/// # Safety
+///
+/// DuckDB must invoke this registered callback with a live init handle whose extra-info pointer is
+/// the `SegmentScanContext` installed by this module. Governed by
+/// `.10x/decisions/compiler-enforced-rust-safety-walls.md`.
 unsafe extern "C" fn init(info: duckdb::ffi::duckdb_init_info) {
     let result = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
+        // SAFETY: DuckDB supplies the registered context pointer for the complete callback.
         let context = unsafe { context(duckdb::ffi::duckdb_init_get_extra_info(info))? };
         let threads = context.max_threads.min(context.files.len()).max(1);
         // SAFETY: the init object is live and the thread count is positive.
-        unsafe { duckdb::ffi::duckdb_init_set_max_threads(info, u64::try_from(threads).unwrap()) };
+        unsafe {
+            duckdb::ffi::duckdb_init_set_max_threads(
+                info,
+                u64::try_from(threads)
+                    .map_err(|_| CdfError::destination("DuckDB thread count exceeds u64"))?,
+            )
+        };
         Ok(())
     }));
     if let Err(message) = callback_result(result) {
@@ -785,6 +816,11 @@ unsafe extern "C" fn init(info: duckdb::ffi::duckdb_init_info) {
     }
 }
 
+/// # Safety
+///
+/// DuckDB must invoke this registered callback with a live init handle and must retain the returned
+/// local-state pointer until calling its registered destructor exactly once. Governed by
+/// `.10x/decisions/compiler-enforced-rust-safety-walls.md`.
 unsafe extern "C" fn local_init(info: duckdb::ffi::duckdb_init_info) {
     let result = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
         let state = Box::new(SegmentScanLocalState {
@@ -807,12 +843,19 @@ unsafe extern "C" fn local_init(info: duckdb::ffi::duckdb_init_info) {
     }
 }
 
+/// # Safety
+///
+/// DuckDB must provide live function/output handles from the registered table function, retain the
+/// shared context, and give this worker exclusive access to its local state for the callback.
+/// Governed by `.10x/decisions/compiler-enforced-rust-safety-walls.md`.
 unsafe extern "C" fn scan(
     info: duckdb::ffi::duckdb_function_info,
     output: duckdb::ffi::duckdb_data_chunk,
 ) {
     let result = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
+        // SAFETY: DuckDB supplies the registered context pointer for the complete callback.
         let context = unsafe { context(duckdb::ffi::duckdb_function_get_extra_info(info))? };
+        // SAFETY: DuckDB supplies this worker's exclusive local state for the callback.
         let state = unsafe { local_state(duckdb::ffi::duckdb_function_get_local_init_data(info))? };
         // SAFETY: linked DuckDB reports its active output vector capacity.
         let vector_rows = usize::try_from(unsafe { duckdb::ffi::duckdb_vector_size() })
@@ -861,6 +904,7 @@ fn reference_batch(
     }
     // SAFETY: both chunks are live for all queries and references below.
     let input_columns = unsafe { duckdb::ffi::duckdb_data_chunk_get_column_count(converted) };
+    // SAFETY: both chunks are live for all queries and references below.
     let output_columns = unsafe { duckdb::ffi::duckdb_data_chunk_get_column_count(output) };
     if input_columns != output_columns {
         // SAFETY: this function owns the converted chunk.
@@ -890,12 +934,21 @@ fn reference_batch(
     Ok(())
 }
 
+/// # Safety
+///
+/// `pointer` must be the live registered `SegmentScanContext` pointer and remain valid for `'a`.
+/// Governed by `.10x/decisions/compiler-enforced-rust-safety-walls.md`.
 unsafe fn context<'a>(pointer: *mut c_void) -> Result<&'a SegmentScanContext> {
     // SAFETY: every caller receives the registered pointer from DuckDB.
     unsafe { pointer.cast::<SegmentScanContext>().as_ref() }
         .ok_or_else(|| CdfError::destination("DuckDB segment-scan context is null"))
 }
 
+/// # Safety
+///
+/// `pointer` must be the live worker-local `SegmentScanLocalState` pointer, remain valid for `'a`,
+/// and be exclusively accessible for that lifetime. Governed by
+/// `.10x/decisions/compiler-enforced-rust-safety-walls.md`.
 unsafe fn local_state<'a>(pointer: *mut c_void) -> Result<&'a mut SegmentScanLocalState> {
     // SAFETY: DuckDB gives a local state to only its owning worker callback.
     unsafe { pointer.cast::<SegmentScanLocalState>().as_mut() }

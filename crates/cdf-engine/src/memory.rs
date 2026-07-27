@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     fmt::{Display, Formatter},
-    sync::{Arc, Mutex, Weak},
+    sync::{Arc, Mutex, MutexGuard, Weak},
     task::Waker,
 };
 
@@ -13,6 +13,19 @@ use cdf_memory::{
 use datafusion::execution::memory_pool::{
     MemoryConsumer, MemoryLimit, MemoryPool, MemoryReservation,
 };
+
+trait MutexFailStop<T> {
+    fn lock_fail_stop(&self) -> MutexGuard<'_, T>;
+}
+
+impl<T> MutexFailStop<T> for Mutex<T> {
+    fn lock_fail_stop(&self) -> MutexGuard<'_, T> {
+        match self.lock() {
+            Ok(guard) => guard,
+            Err(_) => panic!("DataFusion memory-ledger lock is poisoned; refusing recovery"),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct DataFusionMemoryCoordinator {
@@ -131,7 +144,7 @@ impl MemoryPool for DataFusionMemoryCoordinator {
 impl DataFusionMemoryCoordinator {
     fn record_external_growth(&self, reservation: &MemoryReservation, bytes: usize) {
         if let Ok(bytes) = u64::try_from(bytes) {
-            let mut state = self.inner.state.lock().unwrap();
+            let mut state = self.inner.state.lock_fail_stop();
             state.snapshot.current_bytes = state.snapshot.current_bytes.saturating_add(bytes);
             state.snapshot.peak_bytes = state.snapshot.peak_bytes.max(state.snapshot.current_bytes);
             if let Some(key) = datafusion_consumer_key(reservation) {
@@ -145,7 +158,7 @@ impl DataFusionMemoryCoordinator {
     fn record_external_release(&self, reservation: &MemoryReservation, bytes: usize) {
         if let Ok(bytes) = u64::try_from(bytes) {
             let waiters = {
-                let mut state = self.inner.state.lock().unwrap();
+                let mut state = self.inner.state.lock_fail_stop();
                 state.snapshot.current_bytes = state.snapshot.current_bytes.saturating_sub(bytes);
                 if let Some(key) = datafusion_consumer_key(reservation)
                     && let Some(usage) = state.snapshot.consumers.get_mut(&key)
@@ -176,7 +189,7 @@ impl MemoryCoordinator for DataFusionMemoryCoordinator {
     fn try_reserve(&self, request: &ReservationRequest) -> Result<Option<MemoryLease>> {
         let bytes = usize::try_from(request.bytes)
             .map_err(|_| CdfError::data("memory reservation exceeds platform usize"))?;
-        let mut state = self.inner.state.lock().unwrap();
+        let mut state = self.inner.state.lock_fail_stop();
         if let Some(tag) = &request.subcap
             && !state.subcap_limits.contains_key(tag)
         {
@@ -216,19 +229,19 @@ impl MemoryCoordinator for DataFusionMemoryCoordinator {
     }
 
     fn register_waiter(&self, waker: &Waker) {
-        self.inner.state.lock().unwrap().waiters.register(waker);
+        self.inner.state.lock_fail_stop().waiters.register(waker);
     }
 
     fn unregister_waiter(&self, waker: &Waker) {
-        self.inner.state.lock().unwrap().waiters.unregister(waker);
+        self.inner.state.lock_fail_stop().waiters.unregister(waker);
     }
 
     fn snapshot(&self) -> MemorySnapshot {
-        self.inner.state.lock().unwrap().snapshot.clone()
+        self.inner.state.lock_fail_stop().snapshot.clone()
     }
 
     fn record_event(&self, event: MemoryEvent) {
-        let mut state = self.inner.state.lock().unwrap();
+        let mut state = self.inner.state.lock_fail_stop();
         match event {
             MemoryEvent::Flush => state.snapshot.flushes += 1,
             MemoryEvent::Spill { bytes } => {
@@ -251,7 +264,7 @@ impl LeaseAccount for DataFusionLeaseAccount {
             CdfError::internal("DataFusion memory coordinator was dropped before its lease")
         })?;
         let waiters = {
-            let mut state = coordinator.state.lock().unwrap();
+            let mut state = coordinator.state.lock_fail_stop();
             if new_bytes > current_bytes {
                 let additional = new_bytes - current_bytes;
                 if subcap_available(&state, &self.request) < additional {
@@ -289,30 +302,27 @@ impl LeaseAccount for DataFusionLeaseAccount {
     }
 
     fn release(&self, bytes: u64) {
-        let bytes = usize::try_from(bytes)
-            .expect("DataFusion lease bytes originated from a platform-sized reservation");
+        let Ok(platform_bytes) = usize::try_from(bytes) else {
+            return;
+        };
         if let Some(coordinator) = self.coordinator.upgrade() {
             let waiters = {
-                let mut state = coordinator.state.lock().unwrap();
+                let mut state = coordinator.state.lock_fail_stop();
                 // Keep pool capacity and the CDF snapshot under the same coordinator lock. If
                 // pool capacity becomes visible first, a waiter can reserve it while the old
                 // lease is still present in the snapshot, producing an impossible peak above
                 // the finite budget even though resident reservations never exceeded it. A lease
                 // can be partitioned into several payload owners sharing this account, so release
                 // exactly this owner's bytes rather than freeing the complete reservation.
-                self.reservation.shrink(bytes);
-                apply_release(
-                    &mut state.snapshot,
-                    &self.request,
-                    u64::try_from(bytes).expect("platform-sized lease release fits u64"),
-                );
+                self.reservation.shrink(platform_bytes);
+                apply_release(&mut state.snapshot, &self.request, bytes);
                 state.waiters.take_all()
             };
             for waiter in waiters {
                 waiter.wake();
             }
         } else {
-            self.reservation.shrink(bytes);
+            self.reservation.shrink(platform_bytes);
         }
     }
 }

@@ -23,3 +23,6 @@ url = "2.5.8"
 
 [dev-dependencies]
 futures-executor = "0.3.32"
+
+[lints]
+workspace = true

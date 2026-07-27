@@ -1,4 +1,12 @@
 #![doc = "Runtime-neutral memory accounting, admission, and payload ownership."]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "foundational production code must propagate recoverable failures"
+    )
+)]
 
 mod spill;
 
@@ -10,7 +18,7 @@ use std::{
     future::Future,
     path::{Component, Path, PathBuf},
     pin::Pin,
-    sync::{Arc, Mutex, Weak},
+    sync::{Arc, Mutex, MutexGuard, Weak},
     task::{Context, Poll, Waker},
 };
 
@@ -20,6 +28,20 @@ use arrow_data::ArrayData;
 use bytes::Bytes;
 use cdf_kernel::{CdfError, Result};
 use serde::{Deserialize, Serialize};
+
+fn lock_infallible<'a, T>(mutex: &'a Mutex<T>, authority: &str) -> MutexGuard<'a, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(_) => panic!("{authority} lock is poisoned"),
+    }
+}
+
+fn get_mut_infallible<'a, T>(mutex: &'a mut Mutex<T>, authority: &str) -> &'a mut T {
+    match mutex.get_mut() {
+        Ok(value) => value,
+        Err(_) => panic!("{authority} lock is poisoned"),
+    }
+}
 
 pub const DEFAULT_PROCESS_BUDGET_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 pub const DEFAULT_SPILL_BUDGET_BYTES: u64 = 8 * 1024 * 1024 * 1024;
@@ -422,11 +444,7 @@ struct LeaseInner {
 
 impl Drop for LeaseInner {
     fn drop(&mut self) {
-        let bytes = self
-            .state
-            .get_mut()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .bytes;
+        let bytes = get_mut_infallible(&mut self.state, "memory lease state").bytes;
         self.account.release(bytes);
     }
 }
@@ -459,7 +477,7 @@ impl MemoryLease {
     }
 
     pub fn bytes(&self) -> u64 {
-        self.inner.state.lock().unwrap().bytes
+        lock_infallible(&self.inner.state, "memory lease state").bytes
     }
 
     pub fn reconcile(&self, observed_bytes: u64) -> Result<()> {
@@ -468,7 +486,11 @@ impl MemoryLease {
                 "accounted payload cannot reconcile to zero bytes",
             ));
         }
-        let mut state = self.inner.state.lock().unwrap();
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .map_err(|_| CdfError::internal("memory lease state lock is poisoned"))?;
         self.inner.account.resize(state.bytes, observed_bytes)?;
         state.bytes = observed_bytes;
         Ok(())
@@ -495,22 +517,14 @@ impl MemoryLease {
         let mut inner = Arc::try_unwrap(self.inner).map_err(|_| {
             CdfError::contract("only an exclusively owned memory lease can be partitioned")
         })?;
-        let reserved = inner
-            .state
-            .get_mut()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .bytes;
+        let reserved = get_mut_infallible(&mut inner.state, "memory lease state").bytes;
         if required > reserved {
             return Err(CdfError::data(format!(
                 "memory lease partitions require {required} bytes but the lease owns {reserved}"
             )));
         }
         let account = Arc::clone(&inner.account);
-        inner
-            .state
-            .get_mut()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .bytes = 0;
+        get_mut_infallible(&mut inner.state, "memory lease state").bytes = 0;
         account.release(reserved - required);
         Ok(partition_bytes
             .into_iter()
@@ -939,7 +953,11 @@ impl DeterministicMemoryCoordinator {
 
 impl MemoryCoordinator for DeterministicMemoryCoordinator {
     fn try_reserve(&self, request: &ReservationRequest) -> Result<Option<MemoryLease>> {
-        let mut state = self.inner.state.lock().unwrap();
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .map_err(|_| CdfError::internal("memory coordinator state lock is poisoned"))?;
         if let Some(tag) = &request.subcap
             && !state.subcap_limits.contains_key(tag)
         {
@@ -992,19 +1010,25 @@ impl MemoryCoordinator for DeterministicMemoryCoordinator {
     }
 
     fn register_waiter(&self, waker: &Waker) {
-        self.inner.state.lock().unwrap().waiters.register(waker);
+        lock_infallible(&self.inner.state, "memory coordinator state")
+            .waiters
+            .register(waker);
     }
 
     fn unregister_waiter(&self, waker: &Waker) {
-        self.inner.state.lock().unwrap().waiters.unregister(waker);
+        lock_infallible(&self.inner.state, "memory coordinator state")
+            .waiters
+            .unregister(waker);
     }
 
     fn snapshot(&self) -> MemorySnapshot {
-        self.inner.state.lock().unwrap().snapshot.clone()
+        lock_infallible(&self.inner.state, "memory coordinator state")
+            .snapshot
+            .clone()
     }
 
     fn record_event(&self, event: MemoryEvent) {
-        let mut state = self.inner.state.lock().unwrap();
+        let mut state = lock_infallible(&self.inner.state, "memory coordinator state");
         match event {
             MemoryEvent::Flush => state.snapshot.flushes += 1,
             MemoryEvent::Spill { bytes } => {
@@ -1028,7 +1052,10 @@ impl LeaseAccount for DeterministicLeaseAccount {
             ));
         };
         let waiters = {
-            let mut state = coordinator.state.lock().unwrap();
+            let mut state = coordinator
+                .state
+                .lock()
+                .map_err(|_| CdfError::internal("memory coordinator state lock is poisoned"))?;
             if let Some(tag) = &self.request.subcap
                 && !state.subcap_limits.contains_key(tag)
             {
@@ -1085,7 +1112,7 @@ impl LeaseAccount for DeterministicLeaseAccount {
     fn release(&self, bytes: u64) {
         if let Some(coordinator) = self.coordinator.upgrade() {
             let waiters = {
-                let mut state = coordinator.state.lock().unwrap();
+                let mut state = lock_infallible(&coordinator.state, "memory coordinator state");
                 apply_release(&mut state.snapshot, &self.request, bytes);
                 state.waiters.take_all()
             };

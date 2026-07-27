@@ -543,8 +543,9 @@ where
     }
 
     let (payload_eligible_partition_count, selection_plan) = if external_tasks {
-        payload_eligible_partition_count
-            .expect("external preview payload accounting was initialized")
+        payload_eligible_partition_count.ok_or_else(|| {
+            CdfError::internal("external preview payload accounting was not initialized")
+        })?
     } else {
         let count = u64::try_from(payload_candidates.len())
             .map_err(|_| CdfError::data("preview payload count exceeds u64"))?;
@@ -2956,6 +2957,13 @@ where
             }
             (None, _) => None,
         };
+        let retry_schedule = if retry_state.is_some() {
+            Some(scheduled.as_ref().ok_or_else(|| {
+                CdfError::internal("retry state was initialized without a retry schedule")
+            })?)
+        } else {
+            None
+        };
         loop {
             let retry_pre_attestation = if retry_state
                 .as_ref()
@@ -2969,24 +2977,38 @@ where
                             "retry of partition `{}` requires source reattestation before reopen",
                             partition.plan().partition_id
                         ));
+                        let state = retry_state.as_mut().ok_or_else(|| {
+                            CdfError::internal("retry state disappeared before reattestation")
+                        })?;
+                        let schedule = retry_schedule.ok_or_else(|| {
+                            CdfError::internal("retry schedule disappeared before reattestation")
+                        })?;
                         schedule_partition_retry(
-                            retry_state.as_mut().expect("retry state exists"),
+                            state,
                             &error,
                             cancellation.clone(),
                             &plan_id,
-                            scheduled.as_ref().expect("retry schedule exists"),
+                            schedule,
                             &retry_journal,
                         )
                         .await?;
                         continue;
                     }
                     Err(error) => {
+                        let state = retry_state.as_mut().ok_or_else(|| {
+                            CdfError::internal("retry state disappeared after attestation failure")
+                        })?;
+                        let schedule = retry_schedule.ok_or_else(|| {
+                            CdfError::internal(
+                                "retry schedule disappeared after attestation failure",
+                            )
+                        })?;
                         schedule_partition_retry(
-                            retry_state.as_mut().expect("retry state exists"),
+                            state,
                             &error,
                             cancellation.clone(),
                             &plan_id,
-                            scheduled.as_ref().expect("retry schedule exists"),
+                            schedule,
                             &retry_journal,
                         )
                         .await?;
@@ -3011,7 +3033,11 @@ where
                                         retry_state,
                                         &error,
                                         &plan_id,
-                                        scheduled.as_ref().expect("retry schedule exists"),
+                                        retry_schedule.ok_or_else(|| {
+                                            CdfError::internal(
+                                                "retry schedule disappeared after stream failure",
+                                            )
+                                        })?,
                                         &retry_journal,
                                     )
                                     .map(Some)
@@ -3057,7 +3083,11 @@ where
                                     &error,
                                     cancellation.clone(),
                                     &plan_id,
-                                    scheduled.as_ref().expect("retry schedule exists"),
+                                    retry_schedule.ok_or_else(|| {
+                                        CdfError::internal(
+                                            "retry schedule disappeared before stream retry",
+                                        )
+                                    })?,
                                     &retry_journal,
                                 )
                                 .await?;
@@ -3100,7 +3130,11 @@ where
                                 state,
                                 &error,
                                 &plan_id,
-                                scheduled.as_ref().expect("retry schedule exists"),
+                                retry_schedule.ok_or_else(|| {
+                                    CdfError::internal(
+                                        "retry schedule disappeared after open failure",
+                                    )
+                                })?,
                                 &retry_journal,
                             )
                         })
@@ -3136,11 +3170,15 @@ where
                     };
                     await_partition_retry(
                         state,
-                        decision.expect("retry state produced a decision"),
+                        decision.ok_or_else(|| {
+                            CdfError::internal("retry state did not produce a retry decision")
+                        })?,
                         &error,
                         cancellation.clone(),
                         &plan_id,
-                        scheduled.as_ref().expect("retry schedule exists"),
+                        retry_schedule.ok_or_else(|| {
+                            CdfError::internal("retry schedule disappeared before open retry")
+                        })?,
                         &retry_journal,
                     )
                     .await?;
@@ -4041,7 +4079,7 @@ where
             }
             break;
         };
-        let open_metadata = opened_partition.metadata().clone();
+        let open_metadata = opened_partition.metadata()?.clone();
         let partition_ordinal = open_metadata.ordinal;
         let executable_partition = open_metadata.partition;
         let partition = executable_partition.plan().clone();
@@ -5580,10 +5618,9 @@ where
             )?,
         )?;
     }
-    builder.write_json_artifact(
-        "schema/output.json",
-        &output_schema.expect("compiled output schema is always present"),
-    )?;
+    let output_schema =
+        output_schema.ok_or_else(|| CdfError::internal("compiled output schema is missing"))?;
+    builder.write_json_artifact("schema/output.json", &output_schema)?;
     builder.write_runtime_arrow_schema(runtime_output_schema.as_ref())?;
     let mut residual_decisions = residual_decisions.finish()?;
     if let Some(evolution) = contract_evolution_artifact_metadata(
@@ -5772,13 +5809,16 @@ fn apply_dedup_and_write_pending_batches(
                     )?,
                 ));
             }
+            let assembler = assembler
+                .as_mut()
+                .ok_or_else(|| CdfError::internal("dedup segment assembler was not initialized"))?;
             write_normalized_output_batch(
                 PreparedKernelOutput {
                     output,
                     memory_lease: None,
                 },
                 payload_batch.output_position,
-                &mut assembler.as_mut().expect("assembler initialized").1,
+                &mut assembler.1,
                 state,
                 sink,
             )?;
@@ -5857,13 +5897,16 @@ fn apply_dedup_and_write_pending_batches(
                 )?,
             ));
         }
+        let assembler = assembler
+            .as_mut()
+            .ok_or_else(|| CdfError::internal("dedup segment assembler was not initialized"))?;
         write_normalized_output_batch(
             PreparedKernelOutput {
                 output,
                 memory_lease: None,
             },
             pending.output_position,
-            &mut assembler.as_mut().expect("assembler initialized").1,
+            &mut assembler.1,
             state,
             sink,
         )?;

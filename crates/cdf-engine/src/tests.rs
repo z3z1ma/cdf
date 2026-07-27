@@ -4400,7 +4400,12 @@ fn canonical_segment_releases_construction_peak_before_durable_ingress() {
 
     let observed = observed.lock().unwrap();
     assert!(!observed.is_empty());
-    assert!(observed.iter().all(|(scratch, output)| scratch == output));
+    assert!(
+        observed
+            .iter()
+            .all(|(scratch, output)| *scratch > 0 && scratch < output),
+        "canonical scratch must own new allocations without duplicating traveling input leases: {observed:?}"
+    );
     assert_eq!(services.memory().snapshot().current_bytes, 0);
 }
 

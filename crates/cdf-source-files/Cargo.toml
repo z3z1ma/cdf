@@ -41,3 +41,6 @@ flate2 = "1.1.9"
 object_store = { git = "https://github.com/apache/arrow-rs-object-store.git", rev = "c7316d29face118e7409eead0cda098f38589428" }
 parquet = "58.3.0"
 tokio = { version = "=1.52.3", features = ["rt-multi-thread"] }
+
+[lints]
+workspace = true

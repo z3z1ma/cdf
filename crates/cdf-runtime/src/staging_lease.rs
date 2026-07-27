@@ -556,10 +556,9 @@ impl StagingLeaseSupervisor {
                 }
                 return Ok(());
             }
-            state
-                .leases
-                .remove(&registration)
-                .expect("staging lease registration was just observed")
+            state.leases.remove(&registration).ok_or_else(|| {
+                CdfError::internal("staging lease registration disappeared during release")
+            })?
         };
         let release = self.authority.release(&entry.lease);
         match (entry.failure, release) {
@@ -655,20 +654,16 @@ pub struct StagingMutationGuard {
     cancellation: RunCancellation,
 }
 
-impl Clone for StagingMutationGuard {
-    fn clone(&self) -> Self {
-        self.supervisor
-            .clone_guard(self.registration)
-            .expect("live staging mutation guard retains its lease registration");
-        Self {
+impl StagingMutationGuard {
+    pub fn try_clone(&self) -> Result<Self> {
+        self.supervisor.clone_guard(self.registration)?;
+        Ok(Self {
             supervisor: Arc::clone(&self.supervisor),
             registration: self.registration,
             cancellation: self.cancellation.clone(),
-        }
+        })
     }
-}
 
-impl StagingMutationGuard {
     pub fn assert_current(&self) -> Result<StagingLease> {
         let lease = self.supervisor.snapshot(self.registration)?;
         self.cancellation.check()?;

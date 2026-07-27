@@ -20,6 +20,10 @@ pub const ARROW_C_STREAM_METHOD: &str = "__arrow_c_stream__";
 pub const DEFAULT_DICT_BATCH_ROWS: usize = 8 * 1024;
 pub const DEFAULT_MAX_BOUNDARY_BYTES: u64 = 64 * 1024 * 1024;
 
+#[allow(
+    unsafe_code,
+    reason = "Arrow/Python FFI exception governed by .10x/decisions/compiler-enforced-rust-safety-walls.md"
+)]
 mod arrow_capsule;
 mod bridge;
 mod context;

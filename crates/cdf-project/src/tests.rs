@@ -2,7 +2,8 @@ use super::*;
 use crate::internal::*;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
-    path::Path,
+    fs,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -51,6 +52,367 @@ use flate2::{Compression, write::GzEncoder};
 use futures_util::stream;
 use object_store::{ObjectStoreExt, PutPayload, memory::InMemory, path::Path as ObjectPath};
 use sha2::{Digest, Sha256};
+use syn::visit::Visit;
+
+const SAFETY_WALL_DECISION: &str = ".10x/decisions/compiler-enforced-rust-safety-walls.md";
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct UnsafeSyntaxInventory {
+    allowance_targets: Vec<String>,
+    unsafe_functions: Vec<String>,
+    unsafe_function_contracts: Vec<String>,
+    unsafe_blocks: usize,
+    unsafe_macro_tokens: usize,
+    unsafe_foreign_modules: usize,
+    unsafe_impls: usize,
+    unsafe_traits: usize,
+}
+
+#[derive(Default)]
+struct UnsafeSyntaxVisitor {
+    inventory: UnsafeSyntaxInventory,
+}
+
+impl UnsafeSyntaxInventory {
+    fn sort_multisets(&mut self) {
+        self.allowance_targets.sort();
+        self.unsafe_functions.sort();
+        self.unsafe_function_contracts.sort();
+    }
+}
+
+impl<'ast> Visit<'ast> for UnsafeSyntaxVisitor {
+    fn visit_file(&mut self, file: &'ast syn::File) {
+        if attributes_allow_unsafe(&file.attrs) {
+            self.inventory.allowance_targets.push("crate".to_owned());
+        }
+        syn::visit::visit_file(self, file);
+    }
+
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        if attributes_allow_unsafe(&item.attrs) {
+            self.inventory
+                .allowance_targets
+                .push(format!("mod {}", item.ident));
+        }
+        syn::visit::visit_item_mod(self, item);
+    }
+
+    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+        if attributes_allow_unsafe(&item.attrs) {
+            self.inventory
+                .allowance_targets
+                .push(format!("fn {}", item.sig.ident));
+        }
+        if item.sig.unsafety.is_some() && has_safety_contract(&item.attrs) {
+            self.inventory
+                .unsafe_function_contracts
+                .push(item.sig.ident.to_string());
+        }
+        syn::visit::visit_item_fn(self, item);
+    }
+
+    fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+        if attributes_allow_unsafe(&item.attrs) {
+            self.inventory
+                .allowance_targets
+                .push(format!("impl fn {}", item.sig.ident));
+        }
+        if item.sig.unsafety.is_some() && has_safety_contract(&item.attrs) {
+            self.inventory
+                .unsafe_function_contracts
+                .push(format!("impl fn {}", item.sig.ident));
+        }
+        syn::visit::visit_impl_item_fn(self, item);
+    }
+
+    fn visit_trait_item_fn(&mut self, item: &'ast syn::TraitItemFn) {
+        if attributes_allow_unsafe(&item.attrs) {
+            self.inventory
+                .allowance_targets
+                .push(format!("trait fn {}", item.sig.ident));
+        }
+        if item.sig.unsafety.is_some() && has_safety_contract(&item.attrs) {
+            self.inventory
+                .unsafe_function_contracts
+                .push(format!("trait fn {}", item.sig.ident));
+        }
+        syn::visit::visit_trait_item_fn(self, item);
+    }
+
+    fn visit_signature(&mut self, signature: &'ast syn::Signature) {
+        if signature.unsafety.is_some() {
+            self.inventory
+                .unsafe_functions
+                .push(signature.ident.to_string());
+        }
+        syn::visit::visit_signature(self, signature);
+    }
+
+    fn visit_expr_unsafe(&mut self, expression: &'ast syn::ExprUnsafe) {
+        self.inventory.unsafe_blocks += 1;
+        syn::visit::visit_expr_unsafe(self, expression);
+    }
+
+    fn visit_macro(&mut self, expression: &'ast syn::Macro) {
+        self.inventory.unsafe_macro_tokens += count_unsafe_tokens(expression.tokens.clone());
+        syn::visit::visit_macro(self, expression);
+    }
+
+    fn visit_item_foreign_mod(&mut self, item: &'ast syn::ItemForeignMod) {
+        self.inventory.unsafe_foreign_modules += 1;
+        syn::visit::visit_item_foreign_mod(self, item);
+    }
+
+    fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
+        if item.unsafety.is_some() {
+            self.inventory.unsafe_impls += 1;
+        }
+        syn::visit::visit_item_impl(self, item);
+    }
+
+    fn visit_item_trait(&mut self, item: &'ast syn::ItemTrait) {
+        if item.unsafety.is_some() {
+            self.inventory.unsafe_traits += 1;
+        }
+        syn::visit::visit_item_trait(self, item);
+    }
+}
+
+fn count_unsafe_tokens(tokens: proc_macro2::TokenStream) -> usize {
+    tokens
+        .into_iter()
+        .map(|token| match token {
+            proc_macro2::TokenTree::Ident(identifier) if identifier == "unsafe" => 1,
+            proc_macro2::TokenTree::Group(group) => count_unsafe_tokens(group.stream()),
+            proc_macro2::TokenTree::Ident(_)
+            | proc_macro2::TokenTree::Punct(_)
+            | proc_macro2::TokenTree::Literal(_) => 0,
+        })
+        .sum()
+}
+
+fn attributes_allow_unsafe(attributes: &[syn::Attribute]) -> bool {
+    attributes.iter().any(|attribute| {
+        attribute.path().is_ident("allow")
+            && match &attribute.meta {
+                syn::Meta::List(list) => list
+                    .tokens
+                    .to_string()
+                    .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+                    .any(|token| token == "unsafe_code"),
+                syn::Meta::Path(_) | syn::Meta::NameValue(_) => false,
+            }
+    })
+}
+
+fn has_safety_contract(attributes: &[syn::Attribute]) -> bool {
+    let documentation = attributes
+        .iter()
+        .filter_map(|attribute| {
+            if !attribute.path().is_ident("doc") {
+                return None;
+            }
+            let syn::Meta::NameValue(value) = &attribute.meta else {
+                return None;
+            };
+            let syn::Expr::Lit(expression) = &value.value else {
+                return None;
+            };
+            let syn::Lit::Str(text) = &expression.lit else {
+                return None;
+            };
+            Some(text.value())
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    documentation.contains("# Safety") && documentation.contains(SAFETY_WALL_DECISION)
+}
+
+#[test]
+fn workspace_safety_lint_policy_and_exception_set_are_closed() {
+    let repository_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let workspace: toml::Value =
+        toml::from_str(&fs::read_to_string(repository_root.join("Cargo.toml")).unwrap()).unwrap();
+    assert_eq!(
+        workspace["workspace"]["lints"]["rust"]["unsafe_code"].as_str(),
+        Some("deny")
+    );
+    assert_eq!(
+        workspace["workspace"]["lints"]["clippy"]["undocumented_unsafe_blocks"].as_str(),
+        Some("deny")
+    );
+
+    let members = workspace["workspace"]["members"].as_array().unwrap();
+    assert_eq!(
+        members.len(),
+        51,
+        "update the closed workspace-member count"
+    );
+    for member in members {
+        let member = member.as_str().unwrap();
+        let manifest: toml::Value = toml::from_str(
+            &fs::read_to_string(repository_root.join(member).join("Cargo.toml")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            manifest["lints"]["workspace"].as_bool(),
+            Some(true),
+            "{member} must explicitly inherit workspace lints"
+        );
+    }
+
+    let benchmark_unsafe_functions = vec![
+        "bind_duckdb_ipc_table_function".to_owned(),
+        "drop_duckdb_ipc_table_function_context".to_owned(),
+        "drop_duckdb_ipc_table_function_local_state".to_owned(),
+        "duckdb_error_data_message_take".to_owned(),
+        "duckdb_ipc_table_function_context".to_owned(),
+        "duckdb_ipc_table_function_local_state".to_owned(),
+        "init_duckdb_ipc_table_function".to_owned(),
+        "local_init_duckdb_ipc_table_function".to_owned(),
+        "scan_duckdb_ipc_table_function".to_owned(),
+    ];
+    let duckdb_unsafe_functions = vec![
+        "bind".to_owned(),
+        "context".to_owned(),
+        "drop_context".to_owned(),
+        "drop_local_state".to_owned(),
+        "init".to_owned(),
+        "local_init".to_owned(),
+        "local_state".to_owned(),
+        "scan".to_owned(),
+    ];
+    let expected_inventories = BTreeMap::from([
+        (
+            "crates/cdf-benchmarks/src/lib.rs".to_owned(),
+            UnsafeSyntaxInventory {
+                allowance_targets: vec!["mod references".to_owned()],
+                ..UnsafeSyntaxInventory::default()
+            },
+        ),
+        (
+            "crates/cdf-benchmarks/src/references.rs".to_owned(),
+            UnsafeSyntaxInventory {
+                unsafe_functions: benchmark_unsafe_functions.clone(),
+                unsafe_function_contracts: benchmark_unsafe_functions,
+                unsafe_blocks: 52,
+                ..UnsafeSyntaxInventory::default()
+            },
+        ),
+        (
+            "crates/cdf-dest-duckdb/src/ingest_envelope.rs".to_owned(),
+            UnsafeSyntaxInventory {
+                allowance_targets: vec!["fn estimate_worker_bytes".to_owned()],
+                unsafe_blocks: 1,
+                ..UnsafeSyntaxInventory::default()
+            },
+        ),
+        (
+            "crates/cdf-dest-duckdb/src/lib.rs".to_owned(),
+            UnsafeSyntaxInventory {
+                allowance_targets: vec!["mod segment_scan".to_owned()],
+                ..UnsafeSyntaxInventory::default()
+            },
+        ),
+        (
+            "crates/cdf-dest-duckdb/src/segment_scan.rs".to_owned(),
+            UnsafeSyntaxInventory {
+                unsafe_functions: duckdb_unsafe_functions.clone(),
+                unsafe_function_contracts: duckdb_unsafe_functions,
+                unsafe_blocks: 40,
+                ..UnsafeSyntaxInventory::default()
+            },
+        ),
+        (
+            "crates/cdf-python/src/arrow_capsule.rs".to_owned(),
+            UnsafeSyntaxInventory {
+                unsafe_blocks: 4,
+                unsafe_macro_tokens: 2,
+                ..UnsafeSyntaxInventory::default()
+            },
+        ),
+        (
+            "crates/cdf-python/src/lib.rs".to_owned(),
+            UnsafeSyntaxInventory {
+                allowance_targets: vec!["mod arrow_capsule".to_owned()],
+                ..UnsafeSyntaxInventory::default()
+            },
+        ),
+        (
+            "crates/cdf-subprocess/src/runner.rs".to_owned(),
+            UnsafeSyntaxInventory {
+                allowance_targets: vec!["fn install_child_address_space_limit".to_owned()],
+                unsafe_blocks: 1,
+                ..UnsafeSyntaxInventory::default()
+            },
+        ),
+    ]);
+    let mut actual_inventories = BTreeMap::new();
+    collect_rust_files(&repository_root.join("crates"), &mut |path| {
+        let source = fs::read_to_string(path).unwrap();
+        let relative = path
+            .strip_prefix(&repository_root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        if relative == "crates/cdf-project/src/tests.rs" {
+            return;
+        }
+        let syntax = syn::parse_file(&source)
+            .unwrap_or_else(|error| panic!("parse Rust safety inventory for {relative}: {error}"));
+        let mut visitor = UnsafeSyntaxVisitor::default();
+        visitor.visit_file(&syntax);
+        visitor.inventory.sort_multisets();
+        if visitor.inventory != UnsafeSyntaxInventory::default() {
+            assert!(
+                source.contains(SAFETY_WALL_DECISION),
+                "{relative} must cite the governing safety-wall decision"
+            );
+            actual_inventories.insert(relative, visitor.inventory);
+        }
+    });
+    assert_eq!(actual_inventories, expected_inventories);
+
+    for package in [
+        "cdf-kernel",
+        "cdf-memory",
+        "cdf-runtime",
+        "cdf-package",
+        "cdf-package-contract",
+        "cdf-engine",
+        "cdf-task-store",
+        "cdf-object-access",
+    ] {
+        let root = fs::read_to_string(
+            repository_root
+                .join("crates")
+                .join(package)
+                .join("src/lib.rs"),
+        )
+        .unwrap();
+        assert!(
+            root.contains("clippy::expect_used") && root.contains("clippy::unwrap_used"),
+            "{package} must deny production unwrap/expect"
+        );
+    }
+}
+
+fn collect_rust_files(directory: &Path, visit: &mut impl FnMut(&Path)) {
+    let mut entries = fs::read_dir(directory)
+        .unwrap()
+        .collect::<std::io::Result<Vec<_>>>()
+        .unwrap();
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let path: PathBuf = entry.path();
+        if path.is_dir() {
+            collect_rust_files(&path, visit);
+        } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
+            visit(&path);
+        }
+    }
+}
 
 #[test]
 fn project_normal_build_graph_has_no_concrete_destination_crates() {

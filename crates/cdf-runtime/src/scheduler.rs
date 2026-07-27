@@ -947,10 +947,9 @@ impl FairAdmissionController {
                 "scheduler admission permit payload did not match active authority",
             ));
         }
-        let request = self
-            .active
-            .remove(&permit.id)
-            .expect("permit authority was checked immediately before removal");
+        let request = self.active.remove(&permit.id).ok_or_else(|| {
+            CdfError::internal("scheduler admission permit disappeared during release")
+        })?;
         self.snapshot.active -= 1;
         self.snapshot.memory_bytes -= request.memory_bytes;
         self.snapshot.cpu_slots -= request.cpu_slots;

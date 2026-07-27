@@ -80,6 +80,10 @@ impl DuckDbIngestEnvelope {
     }
 }
 
+#[allow(
+    unsafe_code,
+    reason = "DuckDB C API exception governed by .10x/decisions/compiler-enforced-rust-safety-walls.md"
+)]
 fn estimate_worker_bytes(schema: &Schema, rows_per_batch: u64, bytes_per_batch: u64) -> u64 {
     let arrow_row_bytes = schema.fields().iter().fold(0_u128, |total, field| {
         total.saturating_add(u128::from(arrow_row_width(field)))
@@ -89,7 +93,8 @@ fn estimate_worker_bytes(schema: &Schema, rows_per_batch: u64, bytes_per_batch: 
     });
     // Query the linked DuckDB rather than freezing its standard vector size in
     // CDF. The call has no mutable state and is stable for the linked runtime.
-    // SAFETY: `duckdb_vector_size` accepts no pointers and returns a value.
+    // SAFETY: `duckdb_vector_size` accepts no pointers and returns a value. The exception is
+    // governed by `.10x/decisions/compiler-enforced-rust-safety-walls.md`.
     let duckdb_vector_rows = unsafe { duckdb::ffi::duckdb_vector_size() };
     let total = arrow_row_bytes
         .saturating_mul(u128::from(rows_per_batch))

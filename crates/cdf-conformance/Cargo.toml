@@ -47,3 +47,6 @@ parquet = { version = "58.3.0", default-features = false, features = ["arrow"] }
 postgres = "0.19"
 proptest = "1.11.0"
 tempfile = "3.27.0"
+
+[lints]
+workspace = true

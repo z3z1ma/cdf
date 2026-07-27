@@ -23,3 +23,6 @@ cdf-memory = { path = "../cdf-memory" }
 futures-executor = "0.3.32"
 prost = "=0.14.4"
 prost-types = "=0.14.4"
+
+[lints]
+workspace = true

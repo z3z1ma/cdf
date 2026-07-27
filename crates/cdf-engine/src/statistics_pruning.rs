@@ -515,7 +515,9 @@ impl PruningContainer {
             }
             let key = (row.grain, row.container_ordinal);
             if current_key.is_some_and(|current| current != key) {
-                let finished_key = current_key.take().expect("current pruning key");
+                let finished_key = current_key
+                    .take()
+                    .ok_or_else(|| CdfError::internal("statistics pruning key disappeared"))?;
                 if last_finished_key
                     .is_some_and(|previous| !profile_key_is_after(previous, finished_key))
                 {
@@ -525,8 +527,12 @@ impl PruningContainer {
                 }
                 containers.push(finish_container(
                     finished_key,
-                    current_id.take().expect("current pruning id"),
-                    current_row_count.take().expect("current pruning row count"),
+                    current_id.take().ok_or_else(|| {
+                        CdfError::internal("statistics pruning container id disappeared")
+                    })?,
+                    current_row_count.take().ok_or_else(|| {
+                        CdfError::internal("statistics pruning row count disappeared")
+                    })?,
                     std::mem::take(&mut columns),
                     field_count,
                 )?);
@@ -615,8 +621,12 @@ impl PruningContainer {
                 .ok_or_else(|| {
                     CdfError::data("statistics pruning containers are not in canonical order")
                 })?,
-            current_id.expect("nonempty pruning rows have a current id"),
-            current_row_count.expect("nonempty pruning rows have a row count"),
+            current_id.ok_or_else(|| {
+                CdfError::internal("nonempty statistics pruning rows omitted a container id")
+            })?,
+            current_row_count.ok_or_else(|| {
+                CdfError::internal("nonempty statistics pruning rows omitted a row count")
+            })?,
             columns,
             field_count,
         )?);

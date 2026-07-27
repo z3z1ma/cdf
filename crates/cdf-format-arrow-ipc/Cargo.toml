@@ -22,3 +22,6 @@ serde_json = "1.0.150"
 
 [dev-dependencies]
 arrow-ipc = "58.3.0"
+
+[lints]
+workspace = true

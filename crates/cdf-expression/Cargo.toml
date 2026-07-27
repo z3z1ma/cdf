@@ -14,3 +14,6 @@ arrow-schema = "58.3.0"
 arrow-select = "58.3.0"
 cdf-contract = { path = "../cdf-contract" }
 cdf-kernel = { path = "../cdf-kernel" }
+
+[lints]
+workspace = true

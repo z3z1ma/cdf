@@ -297,6 +297,9 @@ where
                     }
                 }
             };
+            let value = value.ok_or_else(|| {
+                CdfError::internal("late-data selection retained a null event-time value")
+            })?;
             rows.push(LateDataRowEvidence {
                 source_row_ordinal: source_row_base
                     .checked_add(
@@ -305,7 +308,7 @@ where
                         })?,
                     )
                     .ok_or_else(|| CdfError::data("late-data source row ordinal overflow"))?,
-                event_time: to_watermark(value.expect("late values are non-null")),
+                event_time: to_watermark(value),
                 payload,
             });
         }

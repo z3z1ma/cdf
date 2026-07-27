@@ -48,3 +48,6 @@ cdf-python = { path = "../cdf-python" }
 duckdb.workspace = true
 flate2 = "1.1.9"
 postgres = "0.19"
+
+[lints]
+workspace = true

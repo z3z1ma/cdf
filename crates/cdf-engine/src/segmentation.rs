@@ -181,10 +181,10 @@ impl CanonicalSegmentAssembler {
             match (&self.output_position, &position) {
                 (Some(left), Some(right)) => match join_positions(left, right)? {
                     PositionJoin::Joined(joined) => joined_position = Some(joined),
-                    PositionJoin::Boundary => emitted.push(self.flush()?.unwrap()),
+                    PositionJoin::Boundary => emitted.push(self.flush_required()?),
                 },
                 (None, None) => {}
-                _ => emitted.push(self.flush()?.unwrap()),
+                _ => emitted.push(self.flush_required()?),
             }
         }
         if self.rows == 0 {
@@ -198,7 +198,7 @@ impl CanonicalSegmentAssembler {
                 && (self.rows.saturating_add(batch_rows) > u64::from(self.policy.target_rows)
                     || self.logical_bytes.saturating_add(batch_bytes) > self.policy.target_bytes)
             {
-                emitted.push(self.flush()?.unwrap());
+                emitted.push(self.flush_required()?);
                 self.output_position = position.clone();
             } else if let Some(joined) = joined_position {
                 self.output_position = Some(joined);
@@ -210,10 +210,7 @@ impl CanonicalSegmentAssembler {
                 // for row slices. Preserve exact authority by emitting one conservative oversized
                 // segment rather than rejecting valid data or advancing a fabricated cursor.
                 self.push_exact_positioned_batch(batch, batch_bytes, lease.as_ref())?;
-                emitted.push(
-                    self.flush()?
-                        .expect("positioned batch appended one segment"),
-                );
+                emitted.push(self.flush_required()?);
                 return Ok(emitted);
             }
             if !oversized {
@@ -233,7 +230,7 @@ impl CanonicalSegmentAssembler {
             let take = largest_prefix_within_bytes(&batch, row_take, remaining_bytes)?;
             if take == 0 {
                 if self.rows > 0 {
-                    emitted.push(self.flush()?.unwrap());
+                    emitted.push(self.flush_required()?);
                     continue;
                 }
                 let one_row = batch.slice(0, 1);
@@ -246,7 +243,7 @@ impl CanonicalSegmentAssembler {
                 }
                 self.push_chunk(one_row, one_row_bytes, lease.as_ref())?;
                 batch = batch.slice(1, batch.num_rows() - 1);
-                emitted.push(self.flush()?.unwrap());
+                emitted.push(self.flush_required()?);
                 continue;
             }
             let chunk = if take == batch.num_rows() {
@@ -262,7 +259,7 @@ impl CanonicalSegmentAssembler {
             if self.rows >= u64::from(self.policy.target_rows)
                 || self.logical_bytes >= self.policy.target_bytes
             {
-                emitted.push(self.flush()?.unwrap());
+                emitted.push(self.flush_required()?);
             }
         }
         Ok(emitted)
@@ -297,6 +294,11 @@ impl CanonicalSegmentAssembler {
             unaccounted_retained_bytes: std::mem::take(&mut self.unaccounted_retained_bytes),
             memory_leases: std::mem::take(&mut self.memory_leases),
         }))
+    }
+
+    fn flush_required(&mut self) -> Result<CanonicalSegment> {
+        self.flush()?
+            .ok_or_else(|| CdfError::internal("nonempty canonical segment failed to flush"))
     }
 
     fn push_chunk(
@@ -469,7 +471,9 @@ pub(crate) fn canonicalization_is_zero_copy(
 
 fn finish_canonical_batch(mut fragments: Vec<RecordBatch>) -> Result<RecordBatch> {
     if fragments.len() == 1 {
-        return Ok(fragments.pop().expect("one canonical fragment"));
+        return fragments
+            .pop()
+            .ok_or_else(|| CdfError::internal("canonical fragment disappeared"));
     }
     let schema = fragments
         .first()

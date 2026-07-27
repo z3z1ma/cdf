@@ -243,7 +243,9 @@ impl BulkPathPreparation {
             .eligible
             .into_iter()
             .find(|path| path.descriptor.path_id == self.selected_path_id)
-            .expect("validated selected path");
+            .ok_or_else(|| {
+                CdfError::internal("validated destination bulk path selection disappeared")
+            })?;
         Ok(selected)
     }
 }

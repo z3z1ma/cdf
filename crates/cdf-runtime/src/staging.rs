@@ -141,7 +141,7 @@ pub struct StagingAttemptBinding {
     pub execution_plan_id: PlanId,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct StagedIngressRequest {
     attempt_id: LoadAttemptId,
     binding: StagingAttemptBinding,

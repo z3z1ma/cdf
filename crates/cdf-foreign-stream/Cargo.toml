@@ -19,3 +19,6 @@ cdf-package = { path = "../cdf-package" }
 cdf-package-contract = { path = "../cdf-package-contract" }
 futures-executor = "0.3.32"
 tempfile = "3.27.0"
+
+[lints]
+workspace = true

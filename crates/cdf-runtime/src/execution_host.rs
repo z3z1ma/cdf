@@ -4,7 +4,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
     },
     task::{Context, Poll, Waker},
@@ -16,6 +16,19 @@ use cdf_memory::{MemoryBudgetResolution, MemoryCoordinator};
 use futures_channel::{mpsc, oneshot};
 use futures_util::{SinkExt, Stream, future::Either};
 use serde::{Deserialize, Serialize};
+
+trait MutexFailStop<T> {
+    fn lock_fail_stop(&self) -> MutexGuard<'_, T>;
+}
+
+impl<T> MutexFailStop<T> for Mutex<T> {
+    fn lock_fail_stop(&self) -> MutexGuard<'_, T> {
+        match self.lock() {
+            Ok(guard) => guard,
+            Err(_) => panic!("execution-host invariant lock is poisoned; refusing recovery"),
+        }
+    }
+}
 
 pub type IoTask = BoxFuture<'static, Result<()>>;
 pub type CpuFutureTask = BoxFuture<'static, Result<()>>;
@@ -156,13 +169,13 @@ impl<T> Stream for ScopedTaskStream<T> {
             let termination = stream.termination.clone();
             stream.join = Some(Box::pin(async move { termination.join().await }));
         }
-        match stream
-            .join
-            .as_mut()
-            .expect("task stream join future was initialized")
-            .as_mut()
-            .poll(context)
-        {
+        let Some(join) = stream.join.as_mut() else {
+            stream.terminal = true;
+            return Poll::Ready(Some(Err(CdfError::internal(
+                "task stream join future was not initialized",
+            ))));
+        };
+        match join.as_mut().poll(context) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Ok(_)) => {
                 stream.terminal = true;
@@ -243,7 +256,7 @@ impl RunCancellation {
         if self.0.cancelled.swap(true, Ordering::AcqRel) {
             return;
         }
-        let waiters = self.0.waiters.lock().unwrap().take_all();
+        let waiters = self.0.waiters.lock_fail_stop().take_all();
         for waiter in waiters {
             waiter.wake();
         }
@@ -306,7 +319,7 @@ impl Future for CancellationFuture {
         if future.cancellation.is_cancelled() {
             return Poll::Ready(());
         }
-        let mut waiters = future.cancellation.0.waiters.lock().unwrap();
+        let mut waiters = future.cancellation.0.waiters.lock_fail_stop();
         if future.cancellation.is_cancelled() {
             return Poll::Ready(());
         }
@@ -828,7 +841,7 @@ pub struct SourceIoRequestPermit {
 impl Drop for SourceIoRequestPermit {
     fn drop(&mut self) {
         let waiters = {
-            let mut state = self.controller.state.lock().unwrap();
+            let mut state = self.controller.state.lock_fail_stop();
             debug_assert!(state.active > 0);
             state.active = state.active.saturating_sub(1);
             state.waiters.take_all()
@@ -923,7 +936,7 @@ impl Drop for RunWorkPermit {
             return;
         };
         let waiters = {
-            let mut state = admission.state.lock().unwrap();
+            let mut state = admission.state.lock_fail_stop();
             debug_assert!(state.active > 0);
             state.active = state.active.saturating_sub(1);
             state.waiters.take_all()

@@ -27,3 +27,6 @@ sha2 = "0.10.9"
 [dev-dependencies]
 cdf-conformance = { path = "../cdf-conformance" }
 tempfile = "3.27.0"
+
+[lints]
+workspace = true

@@ -34,6 +34,29 @@ fn shared_payload_clones_release_exactly_once() {
 }
 
 #[test]
+fn poisoned_lease_state_fails_reconcile_without_reusing_stale_accounting() {
+    let lease = MemoryLease::from_account(8, Arc::new(NoopLeaseAccount)).unwrap();
+    let inner = Arc::clone(&lease.inner);
+    assert!(
+        std::thread::spawn(move || {
+            let _state = inner.state.lock().unwrap();
+            panic!("poison lease state");
+        })
+        .join()
+        .is_err()
+    );
+
+    let error = lease.reconcile(16).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("memory lease state lock is poisoned")
+    );
+    lease.inner.state.clear_poison();
+    assert_eq!(lease.bytes(), 8);
+}
+
+#[test]
 fn transferred_bytes_retain_the_ledger_lease_without_copying() {
     let coordinator = DeterministicMemoryCoordinator::new(1024, BTreeMap::new()).unwrap();
     let request =

@@ -16,3 +16,6 @@ liblzma = { version = "0.4.7", default-features = false, features = ["static"] }
 
 [dev-dependencies]
 futures-executor = "0.3.32"
+
+[lints]
+workspace = true

@@ -293,12 +293,11 @@ impl EnginePlan {
         }
         self.scan
             .inline_partitions_mut()
-            .expect("inline authority was validated")
+            .ok_or_else(|| CdfError::internal("validated inline partition authority disappeared"))?
             .retain(|partition| selected.contains(&partition.partition_id));
-        let selected_partitions = self
-            .scan
-            .inline_partitions()
-            .expect("inline authority was validated");
+        let selected_partitions = self.scan.inline_partitions().ok_or_else(|| {
+            CdfError::internal("validated inline partition authority disappeared")
+        })?;
         self.explain.partitions.retain(|partition| {
             selected_partitions
                 .iter()

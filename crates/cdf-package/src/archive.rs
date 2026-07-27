@@ -165,7 +165,9 @@ pub fn persist_package_parquet_archive(
         match verify_parquet_archive_metadata(&package_root, &manifest) {
             Ok(_) if manifest_parquet_archive(&manifest).is_some() => {
                 let metadata = manifest_parquet_archive(&manifest)
-                    .expect("checked archive metadata exists")
+                    .ok_or_else(|| {
+                        CdfError::internal("verified Parquet archive metadata disappeared")
+                    })?
                     .clone();
                 return Ok(persisted_archive_report(
                     manifest.package_hash,

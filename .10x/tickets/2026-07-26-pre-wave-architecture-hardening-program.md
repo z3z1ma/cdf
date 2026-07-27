@@ -18,7 +18,7 @@ This is a parent plan and prioritization authority, not an executable implementa
 ### WS-A — Enforced product boundaries
 
 1. `.10x/tickets/done/2026-07-26-prewave-a1-builtin-driver-catalog.md`
-2. `.10x/tickets/2026-07-26-prewave-a2-rust-safety-lint-walls.md`
+2. `.10x/tickets/done/2026-07-26-prewave-a2-rust-safety-lint-walls.md`
 3. `.10x/tickets/2026-07-26-prewave-a3-driver-concurrency-conformance.md`
 
 A1 creates one reusable first-party catalog authority without moving composition into neutral
@@ -127,6 +127,10 @@ program review.
 - 2026-07-26: A1 closed with one process-scoped `cdf-builtin-drivers` catalog leaf, all-feature
   Cargo-metadata boundary gates, complete catalog artifact hashes, shared
   product/benchmark/conformance/project-test consumption, and a final delegated OCR review pass.
+- 2026-07-26: A2 closed after three delegated OCR passes. All 51 crates inherit workspace safety
+  lints; unsafe allowances, functions, caller contracts, blocks, macro tokens, impls, and traits
+  form an AST-enforced closed inventory; eight foundational crates deny production unwrap/expect;
+  poison handling fails closed; and strict all-target/all-feature workspace Clippy passes.
 
 ## Blockers
 

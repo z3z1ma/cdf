@@ -748,10 +748,11 @@ where
         .collect::<BTreeMap<_, _>>();
     let mut assigned_observations = BTreeSet::new();
     let inline_partitions = match scan.partition_authority() {
-        cdf_kernel::PartitionAuthority::Inline(_) => Some(
-            scan.inline_partitions_mut()
-                .expect("inline partition authority was matched"),
-        ),
+        cdf_kernel::PartitionAuthority::Inline(_) => {
+            Some(scan.inline_partitions_mut().ok_or_else(|| {
+                CdfError::internal("matched inline partition authority disappeared")
+            })?)
+        }
         cdf_kernel::PartitionAuthority::External(_) => {
             // External task records retain the source-authored observation binding. The
             // registry-validated planned-partition reader checks each record as it streams; the
