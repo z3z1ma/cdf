@@ -648,6 +648,11 @@ impl VerifiedFinalBinding {
     }
 }
 
+/// Owned, movable session for durable staged-segment delivery.
+///
+/// `Send` permits generic orchestration to move the session between already-admitted tasks. It
+/// does not permit an adapter-owned executor, hidden semaphore, or concurrency above the selected
+/// bulk path, memory budget, and stage-local pressure limits.
 pub trait StagedIngressSession: Send {
     fn stage_stream(&mut self, stream: &mut dyn StagedSegmentStream) -> Result<()>;
     fn snapshot(&self) -> Result<StagingSnapshot>;

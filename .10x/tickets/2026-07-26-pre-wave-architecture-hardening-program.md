@@ -19,7 +19,7 @@ This is a parent plan and prioritization authority, not an executable implementa
 
 1. `.10x/tickets/done/2026-07-26-prewave-a1-builtin-driver-catalog.md`
 2. `.10x/tickets/done/2026-07-26-prewave-a2-rust-safety-lint-walls.md`
-3. `.10x/tickets/2026-07-26-prewave-a3-driver-concurrency-conformance.md`
+3. `.10x/tickets/done/2026-07-26-prewave-a3-driver-concurrency-conformance.md`
 
 A1 creates one reusable first-party catalog authority without moving composition into neutral
 runtime. A2 turns safety and panic posture into compiler gates. A3 makes the existing source and
@@ -131,6 +131,10 @@ program review.
   lints; unsafe allowances, functions, caller contracts, blocks, macro tokens, impls, and traits
   form an AST-enforced closed inventory; eight foundational crates deny production unwrap/expect;
   poison handling fails closed; and strict all-target/all-feature workspace Clippy passes.
+- 2026-07-26: A3 closed after three delegated OCR passes. Public authoring docs and executable
+  fixtures now enforce positive driver/staged/host bounds, legitimate non-`Send` finalized
+  lifecycles, capability-selected ingress, contact-free compile, and fail-closed portable worker
+  admission without destination identity branches.
 
 ## Blockers
 

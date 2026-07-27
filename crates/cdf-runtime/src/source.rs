@@ -2424,6 +2424,14 @@ impl<'a> SourceResolutionContext<'a> {
     }
 }
 
+/// Thread-safe source descriptor, compiler, and runtime factory.
+///
+/// `compile` and portable-plan validation are synchronous, contact-free, and limited to canonical
+/// typed plan checks. Health and discovery are explicit bounded contact stages using injected
+/// services; row execution and retry happen after resolution through the injected execution host.
+/// Drivers are shared registry entries, so they are stateless or internally synchronized.
+/// Portable execution fails closed until the driver explicitly validates its own compiled plan
+/// and worker evidence.
 pub trait SourceDriver: Send + Sync {
     fn descriptor(&self) -> &SourceDriverDescriptor;
     fn option_schema(&self) -> &serde_json::Value;

@@ -1,5 +1,13 @@
 use crate::prelude::*;
 
+/// Thread-safe destination descriptor and runtime factory.
+///
+/// A driver may be called through a shared registry from multiple threads, so it is stateless or
+/// internally synchronized. Resolution returns a runtime exclusively owned by one logical run;
+/// this bound does not make that runtime, its native handles, or a finalized commit session
+/// `Send`/`Sync`. Native handles remain confined by the resolved runtime's ingress protocol or its
+/// declared blocking lane. Runtime work uses injected execution services rather than an
+/// adapter-owned executor, and host thread safety never makes the native handle movable.
 pub trait DestinationDriver: Send + Sync {
     fn schemes(&self) -> &'static [&'static str];
 

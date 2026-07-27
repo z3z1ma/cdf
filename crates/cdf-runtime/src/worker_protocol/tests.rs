@@ -1,4 +1,12 @@
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc};
+use std::{
+    cell::RefCell,
+    collections::BTreeMap,
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use arrow_schema::Schema;
 use cdf_kernel::{
@@ -20,6 +28,7 @@ use crate::{
 struct PortableMockDriver {
     descriptor: SourceDriverDescriptor,
     option_schema: serde_json::Value,
+    portable_validation_count: Option<Arc<AtomicUsize>>,
 }
 
 impl SourceDriver for PortableMockDriver {
@@ -38,6 +47,9 @@ impl SourceDriver for PortableMockDriver {
     }
 
     fn validate_portable_plan(&self, plan: &CompiledSourcePlan) -> Result<()> {
+        if let Some(validations) = &self.portable_validation_count {
+            validations.fetch_add(1, Ordering::SeqCst);
+        }
         plan.validate()
     }
 
@@ -100,6 +112,47 @@ impl SourceDriver for PortableMockDriver {
         Err(CdfError::internal(
             "portable protocol test does not resolve sources",
         ))
+    }
+}
+
+struct NonPortableWorkerMockDriver(PortableMockDriver);
+
+impl SourceDriver for NonPortableWorkerMockDriver {
+    fn descriptor(&self) -> &SourceDriverDescriptor {
+        self.0.descriptor()
+    }
+
+    fn option_schema(&self) -> &serde_json::Value {
+        self.0.option_schema()
+    }
+
+    fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
+        self.0.compile(request)
+    }
+
+    fn health(
+        &self,
+        request: SourceHealthRequest,
+        context: &SourceResolutionContext<'_>,
+        output: &mut dyn SourceHealthSink,
+    ) -> Result<()> {
+        self.0.health(request, context, output)
+    }
+
+    fn discovery_session(
+        &self,
+        plan: &CompiledSourcePlan,
+        context: &SourceResolutionContext<'_>,
+    ) -> Result<Box<dyn SourceDiscoverySession>> {
+        self.0.discovery_session(plan, context)
+    }
+
+    fn resolve(
+        &self,
+        plan: &CompiledSourcePlan,
+        context: &SourceResolutionContext<'_>,
+    ) -> Result<Arc<dyn cdf_kernel::QueryableResource>> {
+        self.0.resolve(plan, context)
     }
 }
 
@@ -748,12 +801,32 @@ impl Fixture {
     }
 
     fn registry(&self) -> SourceRegistry {
+        self.registry_with_validation_count(None)
+    }
+
+    fn registry_with_validation_count(
+        &self,
+        portable_validation_count: Option<Arc<AtomicUsize>>,
+    ) -> SourceRegistry {
         let mut registry = SourceRegistry::new();
         registry
             .register(PortableMockDriver {
                 descriptor: source_plan().driver,
                 option_schema: mock_option_schema(),
+                portable_validation_count,
             })
+            .unwrap();
+        registry
+    }
+
+    fn nonportable_registry(&self) -> SourceRegistry {
+        let mut registry = SourceRegistry::new();
+        registry
+            .register(NonPortableWorkerMockDriver(PortableMockDriver {
+                descriptor: source_plan().driver,
+                option_schema: mock_option_schema(),
+                portable_validation_count: None,
+            }))
             .unwrap();
         registry
     }
@@ -1179,12 +1252,34 @@ fn isolated_worker_reconstructs_every_authority_from_artifacts() {
         &worker_capabilities(),
     )
     .unwrap();
-    let registry = fixture.registry();
+    let portable_validation_count = Arc::new(AtomicUsize::new(0));
+    let registry =
+        fixture.registry_with_validation_count(Some(Arc::clone(&portable_validation_count)));
     registry
         .validate_portable_source_binding(&task.source)
         .unwrap();
+    assert_eq!(
+        portable_validation_count.load(Ordering::SeqCst),
+        0,
+        "driver portability validation must happen after binding admission reconstructs authority"
+    );
     task.reconstruct_and_validate_authority(&registry, &fixture.store)
         .unwrap();
+    assert_eq!(
+        portable_validation_count.load(Ordering::SeqCst),
+        1,
+        "isolated-worker admission must explicitly validate the reconstructed driver-owned plan"
+    );
+
+    let error = task
+        .reconstruct_and_validate_authority(&fixture.nonportable_registry(), &fixture.store)
+        .unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("has not declared portable-plan validation"),
+        "a serializable plan must fail before isolated execution when its driver did not opt in"
+    );
 
     let attempt = fixture.attempt();
     let result = fixture.result(&attempt);

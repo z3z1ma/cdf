@@ -55,6 +55,20 @@ thread-affine state, staged sessions are movable and bounded, and all actual con
 from injected host/stage authorities. Adapter authors must never acquire `Send + Sync` through a
 mutex wrapper solely to satisfy an imagined universal runtime.
 
+Make that law executable in both directions. Positive compile assertions cover driver, staged
+session, and host trait objects; deliberately non-`Send` synthetic runtimes and finalized
+sessions (for example an `Rc`-backed thread-affinity marker) make accidental blanket bounds fail
+to compile. Merely omitting a `Send` assertion proves nothing. Native handles may be confined by
+the exclusively owned ingress protocol or a declared blocking lane; an injected `Send + Sync`
+host does not make the handle movable.
+
+Source compilation and driver-owned portable-plan validation are contact-free. Health and
+discovery remain explicit bounded, contact-capable stages, while row execution and retry happen
+after resolution. Portability conformance must traverse the worker admission path that
+reconstructs authority and calls the owning driver; a direct registry-helper unit test cannot
+prove an isolated host did not bypass that validation. A serializable plan whose driver retains
+the default validator must fail before isolated execution.
+
 The operational consequences are expanded in:
 
 - `.10x/knowledge/runtime-performance-authorities.md`

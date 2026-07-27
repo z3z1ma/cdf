@@ -12,6 +12,7 @@ use cdf_kernel::{
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
+    rc::Rc,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -52,6 +53,7 @@ impl DestinationProtocol for MockProtocol {
 struct MockRuntime {
     protocol: MockProtocol,
     description: DestinationDescription,
+    thread_affinity: Rc<()>,
 }
 
 impl DestinationRuntime for MockRuntime {
@@ -120,6 +122,7 @@ impl FinalizedPackageIngress for MockRuntime {
             plan: prepared.plan().clone(),
             schema_hash,
             acknowledgements: Vec::new(),
+            _thread_affinity: Rc::clone(&self.thread_affinity),
         }))
     }
 }
@@ -130,6 +133,7 @@ struct MockFinalizedSession {
     plan: CommitPlan,
     schema_hash: SchemaHash,
     acknowledgements: Vec<SegmentAck>,
+    _thread_affinity: Rc<()>,
 }
 
 impl CommitSession for MockFinalizedSession {
@@ -643,6 +647,7 @@ impl DestinationDriver for MockDriver {
         Ok(Box::new(MockRuntime {
             description: self.description(sheet.destination.clone()),
             protocol: MockProtocol { sheet },
+            thread_affinity: Rc::new(()),
         }))
     }
 }
@@ -992,6 +997,7 @@ struct MockSourceDriver {
     tamper_resolve: bool,
     tamper_resolved_runtime: bool,
     omit_partition_binding: bool,
+    contact_count: Option<Arc<AtomicUsize>>,
 }
 
 impl SourceDriver for MockSourceDriver {
@@ -1013,6 +1019,9 @@ impl SourceDriver for MockSourceDriver {
         _context: &SourceResolutionContext<'_>,
         output: &mut dyn SourceHealthSink,
     ) -> Result<()> {
+        if let Some(contacts) = &self.contact_count {
+            contacts.fetch_add(1, Ordering::SeqCst);
+        }
         request.budget.consume_work(1)?;
         output.emit(SourceHealthResult {
             probe_id: "mock".to_owned(),
@@ -1089,6 +1098,9 @@ impl SourceDriver for MockSourceDriver {
         _plan: &CompiledSourcePlan,
         _context: &SourceResolutionContext<'_>,
     ) -> Result<Box<dyn SourceDiscoverySession>> {
+        if let Some(contacts) = &self.contact_count {
+            contacts.fetch_add(1, Ordering::SeqCst);
+        }
         Ok(Box::new(MockSourceDiscoverySession))
     }
 
@@ -1097,6 +1109,9 @@ impl SourceDriver for MockSourceDriver {
         plan: &CompiledSourcePlan,
         _context: &SourceResolutionContext<'_>,
     ) -> Result<Arc<dyn QueryableResource>> {
+        if let Some(contacts) = &self.contact_count {
+            contacts.fetch_add(1, Ordering::SeqCst);
+        }
         let schema = if self.tamper_resolve {
             Arc::new(Schema::new(vec![Field::new(
                 "tampered",
@@ -1320,6 +1335,79 @@ impl ExecutionHost for NoopSourceHost {
     }
 }
 
+#[test]
+fn driver_concurrency_canon_is_compile_and_capability_enforced() {
+    fn assert_send<T: Send>() {}
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    assert_send_sync::<MockDriver>();
+    assert_send_sync::<MockSourceDriver>();
+    assert_send_sync::<Box<dyn DestinationDriver>>();
+    assert_send_sync::<Arc<dyn SourceDriver>>();
+    assert_send::<MockStagedSession>();
+    assert_send::<Box<dyn StagedIngressSession>>();
+    assert_send_sync::<NoopSourceHost>();
+    assert_send_sync::<Arc<dyn ExecutionHost>>();
+    // `MockRuntime` and `MockFinalizedSession` both retain `Rc` state. Their successful trait
+    // implementations are the compile wall against accidental blanket `Send`/`Sync` bounds.
+
+    let finalized_destination = DestinationId::new("mock_finalized_concurrency").unwrap();
+    let mut finalized = MockRuntime {
+        protocol: MockProtocol {
+            sheet: mock_sheet(finalized_destination.as_str()),
+        },
+        description: DestinationDescription::new(
+            finalized_destination,
+            &["mock-finalized-concurrency"],
+            "mock finalized concurrency",
+        ),
+        thread_affinity: Rc::new(()),
+    };
+    assert_destination_ingress_concurrency_law(&mut finalized);
+
+    let mut staged = MockStagedRuntime::new();
+    assert_destination_ingress_concurrency_law(&mut staged);
+}
+
+fn assert_destination_ingress_concurrency_law(runtime: &mut dyn DestinationRuntime) {
+    let capabilities = runtime.runtime_capabilities();
+    capabilities.validate().unwrap();
+    let declared_mode = capabilities.ingress_mode;
+    assert_eq!(
+        runtime.ingress().mode(),
+        declared_mode,
+        "runtime ingress must match capability-discovered orchestration"
+    );
+    match declared_mode {
+        DestinationIngressMode::FinalizedPackageOnly => {
+            assert!(
+                capabilities.staged_ingress.is_none(),
+                "finalized mode is the exact declared exclusion from staged-session laws"
+            );
+            assert_eq!(
+                runtime.protocol().sheet().concurrency.max_writers,
+                Some(1),
+                "synthetic finalized session is a borrowed serial lifecycle"
+            );
+        }
+        DestinationIngressMode::StagedDurableSegments => {
+            assert!(
+                capabilities.staged_ingress.is_some(),
+                "staged mode must declare recovery and visibility law"
+            );
+            assert!(
+                capabilities
+                    .max_in_flight_segments
+                    .is_some_and(|segments| segments > 0)
+                    && capabilities
+                        .max_in_flight_bytes
+                        .is_some_and(|bytes| bytes > 0),
+                "staged movement must remain bounded by explicit segment and byte ceilings"
+            );
+        }
+    }
+}
+
 struct NoopSecretProvider;
 
 impl cdf_http::SecretProvider for NoopSecretProvider {
@@ -1348,6 +1436,7 @@ fn source_registry_add_hook_selects_one_driver_and_rejects_ambiguity() {
         tamper_resolve: false,
         tamper_resolved_runtime: false,
         omit_partition_binding: false,
+        contact_count: None,
     };
     let request = SourceAddRequest {
         source_name: "mock".to_owned(),
@@ -1386,6 +1475,7 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
         kinds: vec!["mock".to_owned()],
         schemes: vec!["mock".to_owned()],
     };
+    let contact_count = Arc::new(AtomicUsize::new(0));
     let mut registry = SourceRegistry::new();
     registry
         .register(MockSourceDriver {
@@ -1395,6 +1485,7 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
             tamper_resolve: false,
             tamper_resolved_runtime: false,
             omit_partition_binding: false,
+            contact_count: Some(Arc::clone(&contact_count)),
         })
         .unwrap();
     let resource_descriptor = ResourceDescriptor {
@@ -1451,6 +1542,11 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
     );
 
     let plan = registry.compile(request.clone()).unwrap();
+    assert_eq!(
+        contact_count.load(Ordering::SeqCst),
+        0,
+        "synchronous source compilation must remain contact-free"
+    );
     let portable_plan_bytes = serde_json::to_vec(&plan).unwrap();
     let portable_source = PortableSourceBinding {
         driver_id: descriptor.driver_id.clone(),
@@ -1477,6 +1573,11 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
     registry
         .validate_portable_source_plan(&portable_source, &plan)
         .unwrap();
+    assert_eq!(
+        contact_count.load(Ordering::SeqCst),
+        0,
+        "portable-plan validation must remain contact-free"
+    );
     let mut stale_portable_source = portable_source.clone();
     stale_portable_source.driver_version = "2.0.0".to_owned();
     assert!(
@@ -1495,6 +1596,7 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
             tamper_resolve: false,
             tamper_resolved_runtime: false,
             omit_partition_binding: false,
+            contact_count: None,
         })
         .unwrap();
     assert!(
@@ -1759,6 +1861,7 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
             tamper_resolve: true,
             tamper_resolved_runtime: false,
             omit_partition_binding: false,
+            contact_count: None,
         })
         .unwrap();
     let error = match hostile_registry.resolve(&plan, &context) {
@@ -1811,6 +1914,7 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
             tamper_resolve: false,
             tamper_resolved_runtime: true,
             omit_partition_binding: false,
+            contact_count: None,
         })
         .unwrap();
     let error = match runtime_tampering_registry.resolve(&runtime_bound_plan, &context) {
@@ -1831,6 +1935,7 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
             tamper_resolve: false,
             tamper_resolved_runtime: false,
             omit_partition_binding: true,
+            contact_count: None,
         })
         .unwrap();
     let missing_binding_resource = missing_binding_registry
@@ -1869,6 +1974,7 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
             tamper_resolve: false,
             tamper_resolved_runtime: false,
             omit_partition_binding: false,
+            contact_count: None,
         })
         .unwrap_err();
     assert!(error.message.contains("does not match its declared hash"));
@@ -1889,6 +1995,7 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
             tamper_resolve: false,
             tamper_resolved_runtime: false,
             omit_partition_binding: false,
+            contact_count: None,
         })
         .unwrap_err();
     assert!(error.message.contains("must be a closed object"));
@@ -1902,6 +2009,7 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
             tamper_resolve: false,
             tamper_resolved_runtime: false,
             omit_partition_binding: false,
+            contact_count: None,
         })
         .unwrap();
     assert_eq!(reordered.descriptors(), registry.descriptors());
@@ -1914,6 +2022,7 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
                 tamper_resolve: false,
                 tamper_resolved_runtime: false,
                 omit_partition_binding: false,
+                contact_count: None,
             })
             .is_err()
     );
@@ -2202,6 +2311,7 @@ fn staged_abort_is_repeatable_and_finalized_only_runtime_fails_closed() {
             &["finalized"],
             "finalized only",
         ),
+        thread_affinity: Rc::new(()),
     };
     assert!(matches!(
         finalized.ingress(),

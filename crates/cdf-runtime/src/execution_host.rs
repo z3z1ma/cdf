@@ -646,6 +646,12 @@ pub trait ExecutionTaskScope: Send {
     fn join(self: Box<Self>) -> BoxFuture<'static, Result<TaskScopeReport>>;
 }
 
+/// Shared authority for all admitted asynchronous, CPU, and blocking work in a run.
+///
+/// Hosts are injected and thread-safe; adapters must use their scopes, lane declarations,
+/// cancellation, memory, spill, clocks, and entropy instead of constructing private runtimes or
+/// unaccounted pools. A thread-affine native handle stays inside its runtime/lane and is not made
+/// movable merely because the host is `Send + Sync`.
 pub trait ExecutionHost: Send + Sync {
     fn capabilities(&self) -> ExecutionHostCapabilities;
     fn memory(&self) -> Arc<dyn MemoryCoordinator>;

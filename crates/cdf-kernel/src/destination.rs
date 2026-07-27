@@ -231,6 +231,12 @@ pub struct CommitPlan {
     pub delivery_guarantee: DeliveryGuarantee,
 }
 
+/// Borrowed finalized-package commit lifecycle.
+///
+/// This trait intentionally has no `Send` or `Sync` bound: the session remains with the
+/// exclusively owned destination runtime and may borrow a thread-affine native handle. Any
+/// internal parallel work is destination-owned behavior scheduled through injected host services,
+/// not permission to move the session itself across threads.
 pub trait CommitSession {
     fn apply_migrations(&mut self) -> Result<()>;
 

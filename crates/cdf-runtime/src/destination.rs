@@ -176,6 +176,10 @@ impl<'a> DestinationPlanningContext<'a> {
     }
 }
 
+/// The one prepared ingress category exposed by a resolved destination runtime.
+///
+/// Generic orchestration selects this variant from declared capabilities, never destination
+/// identity. A capability/variant mismatch fails before mutation.
 pub enum DestinationIngress<'a> {
     FinalizedPackage(&'a mut dyn FinalizedPackageIngress),
     StagedSegments(&'a mut dyn StagedSegmentIngress),
@@ -190,6 +194,12 @@ impl DestinationIngress<'_> {
     }
 }
 
+/// Borrowed, serial ingress over a verified finalized package.
+///
+/// The returned [`CommitSession`] borrows its exclusively owned runtime and is intentionally not
+/// required to cross threads. An adapter may schedule bounded internal work only through injected
+/// execution services while keeping thread-affine native handles confined by the serial ingress
+/// protocol or their declared lane.
 pub trait FinalizedPackageIngress {
     fn prepare_package_commit(
         &mut self,
@@ -203,6 +213,12 @@ pub trait FinalizedPackageIngress {
     ) -> Result<Box<dyn CommitSession + '_>>;
 }
 
+/// Factory for owned staged-segment sessions.
+///
+/// The returned [`StagedIngressSession`] is `Send` because orchestration may move durable segment
+/// delivery between admitted tasks. That movement grants no private executor or unbounded
+/// concurrency: sheet declarations, memory authority, stage pressure, and injected host services
+/// remain controlling.
 pub trait StagedSegmentIngress {
     fn begin_staged_ingress(
         &mut self,
@@ -233,6 +249,14 @@ pub trait StagedSegmentIngress {
     }
 }
 
+/// Exclusively owned destination state for one logical run.
+///
+/// A runtime is deliberately not required to be `Send` or `Sync`; it may own thread-affine native
+/// handles when its ingress protocol or declared blocking lane confines them safely. It exposes
+/// exactly one ingress category matching [`DestinationRuntimeCapabilities::ingress_mode`] and
+/// receives concurrency, cancellation, memory, spill, and timing authority through injected
+/// execution services. Host thread safety does not make a native handle movable, and the runtime
+/// must not create a competing async runtime or unaccounted worker pool.
 pub trait DestinationRuntime {
     fn protocol(&self) -> &dyn DestinationProtocol;
 
