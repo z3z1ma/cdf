@@ -986,7 +986,7 @@ impl TransactionalMirrorBackend for PostgresMirrorBackend<'_> {
         insert_segment_mirror(self.client, mutation)
     }
 
-    fn read_segment(
+    fn read_mirror_segment(
         &mut self,
         mutation: &SegmentMirrorMutation,
     ) -> Result<Option<SegmentMirrorRow>> {

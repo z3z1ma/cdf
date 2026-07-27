@@ -965,7 +965,7 @@ impl TransactionalMirrorBackend for PostgresCorrectionMirrorBackend<'_> {
         ))
     }
 
-    fn read_segment(
+    fn read_mirror_segment(
         &mut self,
         _mutation: &SegmentMirrorMutation,
     ) -> Result<Option<SegmentMirrorRow>> {

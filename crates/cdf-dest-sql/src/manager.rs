@@ -29,7 +29,7 @@ pub trait TransactionalMirrorBackend {
         &mut self,
         mutation: &SegmentMirrorMutation,
     ) -> Result<MirrorInsertOutcome<SegmentMirrorRow>>;
-    fn read_segment(
+    fn read_mirror_segment(
         &mut self,
         mutation: &SegmentMirrorMutation,
     ) -> Result<Option<SegmentMirrorRow>>;
@@ -404,7 +404,7 @@ mod tests {
             )))
         }
 
-        fn read_segment(
+        fn read_mirror_segment(
             &mut self,
             mutation: &SegmentMirrorMutation,
         ) -> Result<Option<SegmentMirrorRow>> {

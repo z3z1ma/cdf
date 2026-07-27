@@ -160,16 +160,16 @@ impl TransactionalMirrorBackend for DuckDbMirrorBackend<'_> {
         mutation: &SegmentMirrorMutation,
     ) -> Result<MirrorInsertOutcome<SegmentMirrorRow>> {
         insert_segment(self.conn, mutation)?;
-        read_segment(self.conn, mutation)?
+        read_mirror_segment(self.conn, mutation)?
             .map(MirrorInsertOutcome::Inserted)
             .ok_or_else(|| CdfError::destination("DuckDB segment mirror is absent after insertion"))
     }
 
-    fn read_segment(
+    fn read_mirror_segment(
         &mut self,
         mutation: &SegmentMirrorMutation,
     ) -> Result<Option<SegmentMirrorRow>> {
-        read_segment(self.conn, mutation)
+        read_mirror_segment(self.conn, mutation)
     }
 
     fn insert_quarantine(
@@ -484,7 +484,7 @@ fn insert_segment(conn: &Connection, mutation: &SegmentMirrorMutation) -> Result
     Ok(())
 }
 
-fn read_segment(
+fn read_mirror_segment(
     conn: &Connection,
     mutation: &SegmentMirrorMutation,
 ) -> Result<Option<SegmentMirrorRow>> {
