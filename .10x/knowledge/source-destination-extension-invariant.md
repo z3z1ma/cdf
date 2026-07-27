@@ -104,6 +104,15 @@ reconstructs authority and calls the owning driver; a direct registry-helper uni
 prove an isolated host did not bypass that validation. A serializable plan whose driver retains
 the default validator must fail before isolated execution.
 
+Module boundaries must be compiler-visible. Splitting a monolith into sibling files while the
+parent glob-imports every sibling and each child glob-imports the parent preserves the monolith's
+dependency graph and is not modularization. Extract shared value/authority models as leaf-owned
+types, keep orchestration in an explicit upper composition layer, orient production imports into
+an acyclic graph, and make public facades enumerate their exports. Line counts and file counts are
+diagnostics only; an adversarial review must be able to trace every cross-module edge from an
+explicit import. White-box test modules may aggregate internal surfaces, but that convenience
+must not leak into production ownership.
+
 The operational consequences are expanded in:
 
 - `.10x/knowledge/runtime-performance-authorities.md`

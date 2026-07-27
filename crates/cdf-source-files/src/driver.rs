@@ -28,8 +28,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     FILE_SOURCE_ADVERTISED_PARALLELISM, FileCompressionDeclaration, FileFormatDeclaration,
     FileResource, FileResourceDefinition, FileResourcePlan, FileRuntimeDependencies,
-    PlannedFileInventory, SchemaDiscoveryRequest, discover_local_binary_schema,
-    discover_transport_binary_schema, file_source_blocking_lane,
+    SchemaDiscoveryRequest, discover_local_binary_schema, discover_transport_binary_schema,
+    file_source_blocking_lane, runtime::task::PlannedFileInventory,
 };
 
 type RuntimeFactory = dyn Fn(
@@ -42,6 +42,11 @@ type RuntimeFactory = dyn Fn(
     + 'static;
 
 #[derive(Clone)]
+/// First-party file source composed from an explicit format registry and runtime factory.
+///
+/// The registry fixes which codecs the embedding exposes. The factory binds execution-scoped
+/// transport, memory, spill, cache, and task-store services without moving that composition into
+/// the neutral runtime.
 pub struct FileSourceDriver {
     descriptor: SourceDriverDescriptor,
     option_schema: serde_json::Value,
@@ -59,6 +64,11 @@ impl std::fmt::Debug for FileSourceDriver {
 }
 
 impl FileSourceDriver {
+    /// Constructs the file source from the embedding's codec catalog and runtime dependency
+    /// factory.
+    ///
+    /// Construction is contact-free: the factory is retained and invoked only when a discovery
+    /// or execution session binds its execution services and egress scope.
     pub fn new<F>(formats: Arc<FormatRegistry>, runtime_factory: F) -> Result<Self>
     where
         F: Fn(
