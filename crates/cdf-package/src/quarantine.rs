@@ -8,7 +8,7 @@ use cdf_package_contract::{QuarantineObservedValue, QuarantineRecord};
 
 use crate::{
     json::canonical_json_bytes,
-    storage::{normalize_artifact_path, package_path},
+    storage::{normalize_artifact_path, package_path, package_reader_error},
 };
 
 pub fn for_each_quarantine_record_in_parquet_file(
@@ -16,21 +16,23 @@ pub fn for_each_quarantine_record_in_parquet_file(
     visitor: &mut dyn FnMut(QuarantineRecord) -> Result<()>,
 ) -> Result<()> {
     let path = path.as_ref();
-    let file = File::open(path)
-        .map_err(|error| crate::storage::io_error(format!("open {}", path.display()), error))?;
+    let file = File::open(path).map_err(|error| {
+        crate::storage::artifact_read_io_error(format!("open {}", path.display()), error)
+    })?;
     let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-        .map_err(|error| CdfError::data(format!("read quarantine parquet metadata: {error}")))?
+        .map_err(|error| package_reader_error("read quarantine Parquet metadata", &error))?
         .build()
-        .map_err(|error| CdfError::data(format!("create quarantine parquet reader: {error}")))?;
+        .map_err(|error| package_reader_error("create quarantine Parquet reader", &error))?;
     visit_quarantine_batches(reader, visitor)
 }
 
 pub fn quarantine_record_count_in_parquet_file(path: impl AsRef<Path>) -> Result<u64> {
     let path = path.as_ref();
-    let file = File::open(path)
-        .map_err(|error| crate::storage::io_error(format!("open {}", path.display()), error))?;
+    let file = File::open(path).map_err(|error| {
+        crate::storage::artifact_read_io_error(format!("open {}", path.display()), error)
+    })?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
-        .map_err(|error| CdfError::data(format!("read quarantine parquet metadata: {error}")))?;
+        .map_err(|error| package_reader_error("read quarantine Parquet metadata", &error))?;
     u64::try_from(builder.metadata().file_metadata().num_rows())
         .map_err(|_| CdfError::data("quarantine parquet row count cannot be negative"))
 }
@@ -160,11 +162,11 @@ fn visit_quarantine_batches<I, E>(
 ) -> Result<()>
 where
     I: IntoIterator<Item = std::result::Result<RecordBatch, E>>,
-    E: std::fmt::Display,
+    E: std::error::Error + 'static,
 {
     for batch in batches {
         visit_records_from_batch(
-            &batch.map_err(|error| CdfError::data(error.to_string()))?,
+            &batch.map_err(|error| package_reader_error("read quarantine Parquet rows", &error))?,
             visitor,
         )?;
     }

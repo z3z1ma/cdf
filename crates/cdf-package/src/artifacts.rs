@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use crate::{
     json::json_error,
-    storage::{io_error, package_path},
+    storage::{artifact_read_io_error, package_path},
 };
 
 pub(crate) fn read_json_artifact<T: for<'de> Deserialize<'de>>(
@@ -13,8 +13,8 @@ pub(crate) fn read_json_artifact<T: for<'de> Deserialize<'de>>(
     relative_path: &str,
 ) -> Result<T> {
     let path = package_path(package_dir, relative_path);
-    let file =
-        File::open(&path).map_err(|error| io_error(format!("open {}", path.display()), error))?;
+    let file = File::open(&path)
+        .map_err(|error| artifact_read_io_error(format!("open {}", path.display()), error))?;
     serde_json::from_reader(BufReader::new(file)).map_err(json_error)
 }
 
@@ -28,6 +28,9 @@ pub(crate) fn read_optional_json_artifact<T: for<'de> Deserialize<'de>>(
             .map(Some)
             .map_err(json_error),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(io_error(format!("open {}", path.display()), error)),
+        Err(error) => Err(artifact_read_io_error(
+            format!("open {}", path.display()),
+            error,
+        )),
     }
 }

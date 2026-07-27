@@ -18,7 +18,10 @@ use parquet::{
     file::properties::WriterProperties,
 };
 
-use crate::{PackageBuilder, PackageReader, StreamingIdentityArtifact, VerifiedPackage};
+use crate::{
+    PackageBuilder, PackageReader, StreamingIdentityArtifact, VerifiedPackage,
+    storage::package_reader_error,
+};
 
 pub const STATISTICS_PROFILE_FILE: &str = "stats/profile.parquet";
 const STATISTICS_PROFILE_ARTIFACT_VERSION: u16 = 2;
@@ -117,7 +120,10 @@ impl PackageBuilder {
             .build();
         let writer = ArrowWriter::try_new(artifact, statistics_profile_schema(), Some(properties))
             .map_err(|error| {
-                CdfError::data(format!("create statistics profile Parquet writer: {error}"))
+                crate::storage::package_writer_error(
+                    "create statistics profile Parquet writer",
+                    &error,
+                )
             })?;
         Ok(StatisticsProfileWriter {
             writer,
@@ -141,7 +147,7 @@ impl StatisticsProfileWriter {
             return Ok(());
         }
         self.writer.write(&batch).map_err(|error| {
-            CdfError::data(format!("write statistics profile Parquet batch: {error}"))
+            crate::storage::package_writer_error("write statistics profile Parquet batch", &error)
         })?;
         self.row_count = self
             .row_count
@@ -154,10 +160,11 @@ impl StatisticsProfileWriter {
     }
 
     pub fn finish(self) -> Result<FileEntry> {
-        let artifact = self.writer.into_inner().map_err(|error| {
-            CdfError::data(format!("finish statistics profile Parquet writer: {error}"))
+        let mut writer = self.writer;
+        writer.finish().map_err(|error| {
+            crate::storage::package_writer_error("finish statistics profile Parquet writer", &error)
         })?;
-        artifact.finish()
+        writer.inner_mut().finish_in_place()
     }
 }
 
@@ -218,18 +225,16 @@ impl PackageReader {
             self.verified_identity_object(Arc::new(verified.clone()), STATISTICS_PROFILE_FILE)?;
         let mut reader = ParquetRecordBatchReaderBuilder::try_new(object.open_verified_file()?)
             .map_err(|error| {
-                CdfError::data(format!("open verified statistics profile Parquet: {error}"))
+                package_reader_error("open verified statistics profile Parquet", &error)
             })?
             .build()
             .map_err(|error| {
-                CdfError::data(format!("build verified statistics profile reader: {error}"))
+                package_reader_error("build verified statistics profile reader", &error)
             })?;
         let mut validator = StatisticsProfileValidator::new(self, verified)?;
         for batch in &mut reader {
             let batch = batch.map_err(|error| {
-                CdfError::data(format!(
-                    "read verified statistics profile row group: {error}"
-                ))
+                package_reader_error("read verified statistics profile row group", &error)
             })?;
             visit_statistics_profile_rows(&batch, &mut |row| {
                 validator.accept(&row)?;
@@ -274,11 +279,11 @@ impl PackageReader {
             self.verified_identity_object(Arc::new(verified.clone()), STATISTICS_PROFILE_FILE)?;
         let mut reader = ParquetRecordBatchReaderBuilder::try_new(object.open_verified_file()?)
             .map_err(|error| {
-                CdfError::data(format!("open verified statistics profile Parquet: {error}"))
+                package_reader_error("open verified statistics profile Parquet", &error)
             })?
             .build()
             .map_err(|error| {
-                CdfError::data(format!("build verified statistics profile reader: {error}"))
+                package_reader_error("build verified statistics profile reader", &error)
             })?;
 
         let mut rows = Vec::new();
@@ -288,9 +293,7 @@ impl PackageReader {
         let mut window_count = 0_u64;
         for batch in &mut reader {
             let batch = batch.map_err(|error| {
-                CdfError::data(format!(
-                    "read verified statistics profile row group: {error}"
-                ))
+                package_reader_error("read verified statistics profile row group", &error)
             })?;
             visit_statistics_profile_rows(&batch, &mut |row| {
                 let key = (row.grain, row.container_ordinal);

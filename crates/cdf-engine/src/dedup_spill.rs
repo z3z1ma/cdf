@@ -115,7 +115,7 @@ impl DedupPayloadSpool {
             .as_mut()
             .ok_or_else(|| CdfError::internal("dedup payload writer was not initialized"))?
             .write(batch)
-            .map_err(CdfError::from)?;
+            .map_err(|error| scratch_arrow_error("write dedup payload", error))?;
         let mut metadata = serde_json::to_vec(&PayloadMetadata {
             partition_ordinal,
             output_position,
@@ -126,7 +126,7 @@ impl DedupPayloadSpool {
         metadata.push(b'\n');
         self.metadata
             .write_all(&metadata)
-            .map_err(|error| CdfError::data(format!("write dedup payload metadata: {error}")))?;
+            .map_err(|error| io_error("write dedup payload metadata", &self.owner.root, error))?;
         self.input_bytes = self
             .input_bytes
             .saturating_add(batch.get_array_memory_size() as u64);
@@ -137,25 +137,26 @@ impl DedupPayloadSpool {
         let Some(mut writer) = self.writer.take() else {
             return Ok(None);
         };
-        writer.finish().map_err(CdfError::from)?;
+        writer
+            .finish()
+            .map_err(|error| scratch_arrow_error("finish dedup payload", error))?;
         drop(writer);
         self.metadata
             .flush()
-            .map_err(|error| CdfError::data(format!("flush dedup payload metadata: {error}")))?;
+            .map_err(|error| io_error("flush dedup payload metadata", &self.owner.root, error))?;
         Ok(Some(DedupPayloadReader {
             _owner: Arc::clone(&self.owner),
             _reservation: Arc::clone(&self.reservation),
             reader: arrow_ipc::reader::StreamReader::try_new(
-                BufReader::new(
-                    File::open(self.owner.root.join("payload.arrow"))
-                        .map_err(|error| io_error("open dedup payload", &self.owner.root, error))?,
-                ),
+                BufReader::new(File::open(self.owner.root.join("payload.arrow")).map_err(
+                    |error| scratch_read_io_error("open dedup payload", &self.owner.root, error),
+                )?),
                 None,
             )
-            .map_err(CdfError::from)?,
+            .map_err(|error| scratch_arrow_error("open dedup payload stream", error))?,
             metadata: BufReader::new(
                 File::open(self.owner.root.join("payload-metadata.jsonl")).map_err(|error| {
-                    io_error("open dedup payload metadata", &self.owner.root, error)
+                    scratch_read_io_error("open dedup payload metadata", &self.owner.root, error)
                 })?,
             ),
         }))
@@ -164,16 +165,21 @@ impl DedupPayloadSpool {
 
 impl DedupPayloadReader {
     pub fn next(&mut self) -> Result<Option<DedupPayload>> {
-        let Some(batch) = self.reader.next().transpose().map_err(CdfError::from)? else {
+        let Some(batch) = self
+            .reader
+            .next()
+            .transpose()
+            .map_err(|error| scratch_arrow_error("read dedup payload stream", error))?
+        else {
             let mut trailing = String::new();
             if self
                 .metadata
                 .read_line(&mut trailing)
-                .map_err(|error| CdfError::data(format!("read dedup metadata tail: {error}")))?
+                .map_err(|error| scratch_stream_io_error("read dedup metadata tail", error))?
                 != 0
             {
-                return Err(CdfError::data(
-                    "dedup payload metadata contains more records than the Arrow spool",
+                return Err(CdfError::internal(
+                    "CDF-managed dedup metadata contains more records than its Arrow spool",
                 ));
             }
             return Ok(None);
@@ -182,21 +188,28 @@ impl DedupPayloadReader {
         if self
             .metadata
             .read_line(&mut line)
-            .map_err(|error| CdfError::data(format!("read dedup payload metadata: {error}")))?
+            .map_err(|error| scratch_stream_io_error("read dedup payload metadata", error))?
             == 0
         {
-            return Err(CdfError::data(
-                "dedup Arrow payload contains more batches than its metadata spool",
+            return Err(CdfError::internal(
+                "CDF-managed dedup Arrow spool contains more batches than its metadata",
             ));
         }
-        let metadata: PayloadMetadata = serde_json::from_str(&line)
-            .map_err(|error| CdfError::data(format!("decode dedup payload metadata: {error}")))?;
+        let metadata = decode_payload_metadata(&line)?;
         Ok(Some(DedupPayload {
             partition_ordinal: metadata.partition_ordinal,
             output_position: metadata.output_position,
             batch,
         }))
     }
+}
+
+fn decode_payload_metadata(line: &str) -> Result<PayloadMetadata> {
+    serde_json::from_str(line).map_err(|error| {
+        CdfError::internal(format!(
+            "decode CDF-managed dedup payload metadata: {error}"
+        ))
+    })
 }
 
 struct ScratchOwner {
@@ -838,26 +851,27 @@ struct KeyReader(BufReader<File>);
 
 impl KeyReader {
     fn open(path: &Path) -> Result<Self> {
-        Ok(Self(BufReader::new(
-            File::open(path).map_err(|error| io_error("open key run", path, error))?,
-        )))
+        Ok(Self(BufReader::new(File::open(path).map_err(|error| {
+            scratch_read_io_error("open key run", path, error)
+        })?)))
     }
 
     fn next(&mut self) -> Result<Option<KeyRecord>> {
         let Some(length) = read_u32_or_eof(&mut self.0)? else {
             return Ok(None);
         };
-        let length = usize::try_from(length)
-            .map_err(|_| CdfError::data("dedup key length exceeds platform usize"))?;
+        let length = usize::try_from(length).map_err(|_| {
+            CdfError::internal("CDF-managed dedup key length exceeds platform usize")
+        })?;
         if length > MAX_KEY_BYTES {
-            return Err(CdfError::data(format!(
-                "dedup encoded key length {length} exceeds {MAX_KEY_BYTES}-byte safety bound"
+            return Err(CdfError::internal(format!(
+                "CDF-managed dedup key length {length} exceeds {MAX_KEY_BYTES}-byte safety bound"
             )));
         }
         let mut key = vec![0; length];
         self.0
             .read_exact(&mut key)
-            .map_err(|error| CdfError::data(format!("read dedup key bytes: {error}")))?;
+            .map_err(|error| scratch_stream_io_error("read dedup key bytes", error))?;
         let ordinal = read_u64(&mut self.0)?;
         Ok(Some(KeyRecord { key, ordinal }))
     }
@@ -868,7 +882,7 @@ struct DecisionReader(BufReader<File>);
 impl DecisionReader {
     fn open(path: &Path) -> Result<Self> {
         Ok(Self(BufReader::new(File::open(path).map_err(|error| {
-            io_error("open decision run", path, error)
+            scratch_read_io_error("open decision run", path, error)
         })?)))
     }
 
@@ -890,36 +904,48 @@ fn write_key_record(writer: &mut impl Write, record: &KeyRecord) -> Result<()> {
         .write_all(&length.to_le_bytes())
         .and_then(|_| writer.write_all(&record.key))
         .and_then(|_| writer.write_all(&record.ordinal.to_le_bytes()))
-        .map_err(|error| CdfError::data(format!("write dedup key record: {error}")))
+        .map_err(|error| scratch_io_error("write dedup key record", error))
 }
 
 fn write_decision(writer: &mut impl Write, decision: DedupDecision) -> Result<()> {
     writer
         .write_all(&decision.ordinal.to_le_bytes())
         .and_then(|_| writer.write_all(&decision.kept_ordinal.to_le_bytes()))
-        .map_err(|error| CdfError::data(format!("write dedup decision: {error}")))
+        .map_err(|error| scratch_io_error("write dedup decision", error))
 }
 
 fn read_u32_or_eof(reader: &mut impl Read) -> Result<Option<u32>> {
-    let mut bytes = [0; 4];
-    match reader.read_exact(&mut bytes) {
-        Ok(()) => Ok(Some(u32::from_le_bytes(bytes))),
-        Err(error) if error.kind() == ErrorKind::UnexpectedEof => Ok(None),
-        Err(error) => Err(CdfError::data(format!("read dedup u32: {error}"))),
-    }
+    read_scratch_bytes_or_eof(reader, "read dedup u32").map(|bytes| bytes.map(u32::from_le_bytes))
 }
 
 fn read_u64_or_eof(reader: &mut impl Read) -> Result<Option<u64>> {
-    let mut bytes = [0; 8];
-    match reader.read_exact(&mut bytes) {
-        Ok(()) => Ok(Some(u64::from_le_bytes(bytes))),
-        Err(error) if error.kind() == ErrorKind::UnexpectedEof => Ok(None),
-        Err(error) => Err(CdfError::data(format!("read dedup u64: {error}"))),
+    read_scratch_bytes_or_eof(reader, "read dedup u64").map(|bytes| bytes.map(u64::from_le_bytes))
+}
+
+fn read_scratch_bytes_or_eof<const N: usize>(
+    reader: &mut impl Read,
+    action: &str,
+) -> Result<Option<[u8; N]>> {
+    let mut bytes = [0; N];
+    let read = reader
+        .read(&mut bytes)
+        .map_err(|error| scratch_io_error(action, error))?;
+    if read == 0 {
+        return Ok(None);
     }
+    reader.read_exact(&mut bytes[read..]).map_err(|error| {
+        if error.kind() == ErrorKind::UnexpectedEof {
+            CdfError::internal(format!("{action}: CDF-managed scratch record is truncated"))
+        } else {
+            scratch_io_error(action, error)
+        }
+    })?;
+    Ok(Some(bytes))
 }
 
 fn read_u64(reader: &mut impl Read) -> Result<u64> {
-    read_u64_or_eof(reader)?.ok_or_else(|| CdfError::data("dedup record is truncated"))
+    read_u64_or_eof(reader)?
+        .ok_or_else(|| CdfError::internal("CDF-managed dedup record is truncated"))
 }
 
 pub(crate) struct BudgetedSpillFile {
@@ -948,12 +974,11 @@ impl Write for BudgetedSpillFile {
         let mut reservation = self.reservation.lock_fail_stop();
         if !reservation
             .try_grow(additional)
-            .map_err(|error| std::io::Error::other(error.to_string()))?
+            .map_err(std::io::Error::other)?
         {
-            return Err(std::io::Error::new(
-                ErrorKind::StorageFull,
-                "shared spill budget exhausted before write",
-            ));
+            return Err(std::io::Error::other(CdfError::data(
+                "shared spill budget exhausted before dedup scratch write",
+            )));
         }
         let result = self.file.write(buffer);
         match result {
@@ -987,7 +1012,87 @@ fn set_owner_only(path: &Path) -> Result<()> {
 }
 
 fn io_error(action: &str, path: &Path, error: std::io::Error) -> CdfError {
-    CdfError::data(format!("{action} {}: {error}", path.display()))
+    if let Some(error) = embedded_cdf_error(&error) {
+        return error;
+    }
+    CdfError::environment(format!(
+        "{action} {}: {error}; check scratch storage, permissions, free space, and process file limits before retrying",
+        path.display()
+    ))
+}
+
+fn scratch_io_error(action: &str, error: std::io::Error) -> CdfError {
+    if let Some(error) = embedded_cdf_error(&error) {
+        return error;
+    }
+    if matches!(
+        error.kind(),
+        ErrorKind::UnexpectedEof
+            | ErrorKind::InvalidData
+            | ErrorKind::NotADirectory
+            | ErrorKind::IsADirectory
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::internal(format!("{action}: invalid CDF-managed scratch: {error}"))
+    } else {
+        CdfError::environment(format!(
+            "{action}: {error}; check scratch storage and retry"
+        ))
+    }
+}
+
+fn scratch_read_io_error(action: &str, path: &Path, error: std::io::Error) -> CdfError {
+    if matches!(
+        error.kind(),
+        ErrorKind::NotFound
+            | ErrorKind::UnexpectedEof
+            | ErrorKind::InvalidData
+            | ErrorKind::NotADirectory
+            | ErrorKind::IsADirectory
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::internal(format!(
+            "{action} {}: invalid CDF-managed scratch: {error}",
+            path.display()
+        ))
+    } else {
+        io_error(action, path, error)
+    }
+}
+
+fn scratch_stream_io_error(action: &str, error: std::io::Error) -> CdfError {
+    if let Some(error) = embedded_cdf_error(&error) {
+        return error;
+    }
+    if matches!(
+        error.kind(),
+        ErrorKind::NotFound
+            | ErrorKind::UnexpectedEof
+            | ErrorKind::InvalidData
+            | ErrorKind::NotADirectory
+            | ErrorKind::IsADirectory
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::internal(format!("{action}: invalid CDF-managed scratch: {error}"))
+    } else {
+        CdfError::environment(format!(
+            "{action}: {error}; check scratch storage and retry"
+        ))
+    }
+}
+
+fn embedded_cdf_error(error: &std::io::Error) -> Option<CdfError> {
+    error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<CdfError>())
+        .cloned()
+}
+
+fn scratch_arrow_error(action: &str, error: arrow_schema::ArrowError) -> CdfError {
+    match error {
+        arrow_schema::ArrowError::IoError(_, io_error) => scratch_io_error(action, io_error),
+        error => CdfError::internal(format!("{action} in CDF-managed scratch: {error}")),
+    }
 }
 
 #[cfg(test)]
@@ -996,6 +1101,41 @@ mod tests {
     use std::{collections::HashMap, time::Instant};
 
     use arrow_array::{ArrayRef, BinaryArray, RecordBatch};
+
+    #[test]
+    fn corrupt_private_scratch_is_internal_while_clean_eof_is_empty() {
+        let error = read_u32_or_eof(&mut std::io::Cursor::new(vec![1_u8, 2]))
+            .expect_err("partial private framing must fail");
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
+        assert!(error.message.contains("truncated"));
+        assert_eq!(
+            read_u32_or_eof(&mut std::io::Cursor::new(Vec::<u8>::new())).unwrap(),
+            None
+        );
+
+        let error = decode_payload_metadata("{not-json").unwrap_err();
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
+        assert!(error.message.contains("CDF-managed"));
+
+        let root = tempfile::tempdir().unwrap();
+        let missing = match KeyReader::open(&root.path().join("missing.keys")) {
+            Ok(_) => panic!("missing private run must fail"),
+            Err(error) => error,
+        };
+        assert_eq!(missing.kind, cdf_kernel::ErrorKind::Internal);
+
+        let invalid_utf8 = scratch_stream_io_error(
+            "read dedup payload metadata",
+            std::io::Error::new(ErrorKind::InvalidData, "invalid utf-8"),
+        );
+        assert_eq!(invalid_utf8.kind, cdf_kernel::ErrorKind::Internal);
+
+        let directory = scratch_stream_io_error(
+            "read dedup payload metadata",
+            std::io::Error::new(ErrorKind::IsADirectory, "is a directory"),
+        );
+        assert_eq!(directory.kind, cdf_kernel::ErrorKind::Internal);
+    }
 
     fn decisions(keep: DedupKeepProgram) -> (Vec<DedupDecision>, DedupIndexSummary) {
         let temp = tempfile::tempdir().unwrap();
@@ -1068,7 +1208,7 @@ mod tests {
     }
 
     #[test]
-    fn disk_exhaustion_is_clean_and_scratch_cleanup_is_idempotent() {
+    fn configured_spill_exhaustion_is_data_and_cleanup_is_idempotent() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("spill");
         let budget: Arc<dyn SpillBudgetCoordinator> =
@@ -1076,7 +1216,12 @@ mod tests {
         let mut index =
             ExternalDedupIndex::create_with_sort_memory(&root, budget, None, 16).unwrap();
         index.push_keys(&[vec![7; 64]]).unwrap();
-        assert!(index.finish(DedupKeepProgram::First).is_err());
+        let error = match index.finish(DedupKeepProgram::First) {
+            Ok(_) => panic!("configured spill exhaustion must fail"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+        assert!(error.message.contains("spill budget"));
         assert!(!root.exists());
     }
 

@@ -610,6 +610,7 @@ fn error_kind_name(kind: &cdf_kernel::ErrorKind) -> &'static str {
         cdf_kernel::ErrorKind::Contract => "contract",
         cdf_kernel::ErrorKind::Data => "data",
         cdf_kernel::ErrorKind::Destination => "destination",
+        cdf_kernel::ErrorKind::Environment => "environment",
         cdf_kernel::ErrorKind::Internal => "internal",
     }
 }

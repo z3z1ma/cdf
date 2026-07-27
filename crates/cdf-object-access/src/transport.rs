@@ -1563,24 +1563,16 @@ fn validate_identity_text(
 }
 
 fn local_metadata(path: &Path) -> Result<FileIdentityMetadata> {
-    let metadata = fs::metadata(path).map_err(|error| {
-        CdfError::data(format!(
-            "stat local file source {}: {error}",
-            path.display()
-        ))
-    })?;
+    let metadata = fs::metadata(path)
+        .map_err(|error| local_transport_io(&format!("stat {}", path.display()), error))?;
     if !metadata.is_file() {
         return Err(CdfError::data(format!(
             "local file transport path {} is not a regular file",
             path.display()
         )));
     }
-    let canonical = fs::canonicalize(path).map_err(|error| {
-        CdfError::data(format!(
-            "canonicalize local file source {}: {error}",
-            path.display()
-        ))
-    })?;
+    let canonical = fs::canonicalize(path)
+        .map_err(|error| local_transport_io(&format!("canonicalize {}", path.display()), error))?;
     Ok(FileIdentityMetadata {
         location: path_to_lossless_string(&canonical),
         size_bytes: Some(metadata.len()),
@@ -1594,6 +1586,24 @@ fn local_metadata(path: &Path) -> Result<FileIdentityMetadata> {
             .map(|duration| format!("unix_ms:{}", duration.as_millis())),
         exact_ranges: true,
     })
+}
+
+fn local_transport_io(action: &str, error: std::io::Error) -> CdfError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::data(format!("{action}: {error}"))
+    } else {
+        CdfError::environment(format!(
+            "{action}: {error}; check the local path, permissions, device health, and process file limits before retrying"
+        ))
+    }
 }
 
 pub(crate) fn object_identity(
@@ -1897,6 +1907,27 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[test]
+    fn local_transport_separates_missing_data_from_host_failure() {
+        let missing = local_transport_io(
+            "stat local source",
+            std::io::Error::new(std::io::ErrorKind::NotFound, "missing"),
+        );
+        assert_eq!(missing.kind, ErrorKind::Data);
+
+        let directory = local_transport_io(
+            "read local source",
+            std::io::Error::new(std::io::ErrorKind::IsADirectory, "is a directory"),
+        );
+        assert_eq!(directory.kind, ErrorKind::Data);
+
+        let host = local_transport_io(
+            "stat local source",
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+        );
+        assert_eq!(host.kind, ErrorKind::Environment);
+    }
 
     #[test]
     fn http_rate_limit_preserves_retry_after_for_scheduler_policy() {

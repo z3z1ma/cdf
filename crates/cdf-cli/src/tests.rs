@@ -49,6 +49,23 @@ use cdf_project::{
     execute_schema_promotion, load_schema_promotion_recovery_status, parse_lock,
     replay_package_from_artifacts,
 };
+
+#[test]
+fn missing_current_directory_maps_through_the_cli_environment_boundary() {
+    let error = super::context::project_location_with_current_dir(None, || {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "current directory was removed",
+        ))
+    })
+    .unwrap_err();
+
+    assert_eq!(error.kind, cdf_kernel::ErrorKind::Environment);
+    let mapped = cdf_cli_core::output::CliError::from(error);
+    assert_eq!(mapped.code, "CDF-ENV-HOST");
+    assert_eq!(mapped.exit_code, 70);
+    assert!(mapped.message.contains("absolute --project"));
+}
 use cdf_state_sqlite::{
     RunEventAppend, RunEventDetails, RunEventKind, RunEventValue, SecretReference,
     SqliteCheckpointStore, SqlitePromotionSettlementStore, SqliteRunLedger,

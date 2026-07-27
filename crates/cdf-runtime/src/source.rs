@@ -1039,6 +1039,7 @@ fn retry_error_rank(kind: &ErrorKind) -> u8 {
         | ErrorKind::Contract
         | ErrorKind::Data
         | ErrorKind::Destination
+        | ErrorKind::Environment
         | ErrorKind::Internal => u8::MAX,
     }
 }
@@ -1985,6 +1986,7 @@ fn error_kind_code(kind: &ErrorKind) -> &'static str {
         ErrorKind::Contract => "contract",
         ErrorKind::Data => "data",
         ErrorKind::Destination => "destination",
+        ErrorKind::Environment => "environment",
         ErrorKind::Internal => "internal",
     }
 }

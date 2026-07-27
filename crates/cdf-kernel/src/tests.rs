@@ -1442,10 +1442,30 @@ fn error_taxonomy_contains_required_categories() {
         ErrorKind::Contract,
         ErrorKind::Data,
         ErrorKind::Destination,
+        ErrorKind::Environment,
         ErrorKind::Internal,
     ];
 
-    assert_eq!(kinds.len(), 7);
+    assert_eq!(kinds.len(), 8);
+    assert_eq!(
+        CdfError::environment("current directory is unavailable").kind,
+        ErrorKind::Environment
+    );
+    assert_eq!(
+        serde_json::to_string(&ErrorKind::Environment).unwrap(),
+        "\"environment\""
+    );
+    assert_eq!(
+        serde_json::from_str::<ErrorKind>("\"environment\"").unwrap(),
+        ErrorKind::Environment
+    );
+    assert_eq!(
+        CdfError::environment(
+            "required executable `cdf-missing-test` was not found; install it or configure an absolute executable path"
+        )
+        .kind,
+        ErrorKind::Environment
+    );
     assert_eq!(
         CdfError::rate_limited("slow down", Some(100)).kind,
         ErrorKind::RateLimited

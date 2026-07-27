@@ -6,6 +6,7 @@ use crate::progress::ProgressSnapshot;
 use crate::render::{
     RenderConfig, RenderDocument,
     primitives::{ErrorBlock, RenderPrimitive},
+    redaction::{is_sensitive_key, redact_uri_userinfo, redacted},
 };
 use crate::terminal::{OutputChannel, TerminalPolicy};
 
@@ -71,9 +72,10 @@ impl CliError {
         not_supported: bool,
         mapping: error_catalog::ErrorMapping,
     ) -> Self {
+        let message = redact_uri_userinfo(message.into());
         Self {
             kind,
-            message: message.into(),
+            message,
             exit_code: mapping.exit_code,
             not_supported,
             code: mapping.code.to_owned(),
@@ -138,12 +140,16 @@ impl CliError {
     }
 
     pub fn with_suggestions(mut self, suggestions: Vec<String>) -> Self {
-        self.suggestions = suggestions.into_boxed_slice();
+        self.suggestions = suggestions
+            .into_iter()
+            .map(redact_uri_userinfo)
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
         self
     }
 
     pub fn with_details(mut self, details: serde_json::Value) -> Self {
-        self.details = Some(Box::new(details));
+        self.details = Some(Box::new(redact_json_value(details)));
         self
     }
 
@@ -155,13 +161,24 @@ impl CliError {
     fn body(&self) -> ErrorBody {
         ErrorBody {
             kind: self.kind.clone(),
-            message: self.message.clone(),
+            message: redact_uri_userinfo(&self.message),
             exit_code: self.exit_code,
             not_supported: self.not_supported,
             code: self.code.clone(),
-            details: self.details.as_deref().cloned(),
-            remediation: self.remediation.as_deref().cloned(),
-            suggestions: self.suggestions.to_vec(),
+            details: self.details.as_deref().cloned().map(redact_json_value),
+            remediation: self
+                .remediation
+                .as_deref()
+                .cloned()
+                .map(|remediation| ErrorRemediation {
+                    summary: redact_uri_userinfo(remediation.summary),
+                    steps: remediation
+                        .steps
+                        .into_iter()
+                        .map(redact_uri_userinfo)
+                        .collect(),
+                }),
+            suggestions: self.suggestions.iter().map(redact_uri_userinfo).collect(),
         }
     }
 }
@@ -350,10 +367,11 @@ impl InvocationResult {
         render_config: &RenderConfig,
         error: CliError,
     ) -> Self {
+        let body = error.body();
         if json_mode {
             let envelope = ErrorEnvelope {
                 ok: false,
-                error: error.body(),
+                error: body,
             };
             Self {
                 exit_code: error.exit_code,
@@ -378,8 +396,8 @@ impl InvocationResult {
                     stderr.push('\n');
                 }
             }
-            let mut error_block = ErrorBlock::new(error.code, error.message);
-            if let Some(details) = error.details {
+            let mut error_block = ErrorBlock::new(body.code, body.message);
+            if let Some(details) = body.details {
                 if let Some(object) = details.as_object() {
                     for (key, value) in object {
                         error_block = error_block.detail(key, display_json_value(value));
@@ -388,13 +406,13 @@ impl InvocationResult {
                     error_block = error_block.detail("details", details.to_string());
                 }
             }
-            if let Some(remediation) = error.remediation {
+            if let Some(remediation) = body.remediation {
                 error_block = error_block.help(remediation.summary);
                 for step in remediation.steps {
                     error_block = error_block.help(step);
                 }
             }
-            for suggestion in error.suggestions {
+            for suggestion in body.suggestions {
                 error_block = error_block.suggestion(suggestion);
             }
             stderr.push_str(&error_block.render(render_config));
@@ -419,5 +437,133 @@ fn display_json_value(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::String(value) => value.clone(),
         _ => value.to_string(),
+    }
+}
+
+fn redact_json_value(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(value) => serde_json::Value::String(redact_uri_userinfo(value)),
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.into_iter().map(redact_json_value).collect())
+        }
+        serde_json::Value::Object(values) => serde_json::Value::Object(
+            values
+                .into_iter()
+                .map(|(key, value)| {
+                    let value = if is_sensitive_key(&key) {
+                        serde_json::Value::String(redacted())
+                    } else {
+                        redact_json_value(value)
+                    };
+                    (redact_uri_userinfo(key), value)
+                })
+                .collect(),
+        ),
+        value => value,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::config::{DisplayMode, RenderEnv};
+
+    fn tty_config() -> RenderConfig {
+        RenderConfig::new(
+            DisplayMode::Tty,
+            80,
+            RenderEnv {
+                no_color: true,
+                clicolor_force: false,
+                unicode_supported: true,
+            },
+            TerminalPolicy {
+                color: crate::terminal::PolicyMode::Never,
+                ..TerminalPolicy::default()
+            },
+        )
+    }
+
+    #[test]
+    fn environment_error_is_stable_in_json_headless_and_tty_output() {
+        let lower = CdfError::environment(
+            "required executable `cdf-helper` for postgres://user:secret@example/db and mysql://other:second@elsewhere/db was not found; install it or configure an absolute executable path",
+        );
+        let decorate = |error: CdfError| {
+            CliError::from(error)
+                .with_details(serde_json::json!({
+                    "dsn": "postgres://detail:third@example/db",
+                    "private_key": "-----BEGIN PRIVATE KEY-----sentinel",
+                    "nested": ["mysql://nested:fourth@example/db"]
+                }))
+                .with_suggestions(vec![
+                    "retry sqlite://suggestion:fifth@example/db".to_owned(),
+                ])
+        };
+        let mapped = decorate(lower.clone());
+        assert_eq!(mapped.kind, ErrorKind::Environment);
+        assert_eq!(mapped.code, "CDF-ENV-HOST");
+        assert_eq!(mapped.exit_code, 70);
+
+        let json = InvocationResult::from_error_with_config(
+            true,
+            &RenderConfig::headless_for_width(80),
+            decorate(lower.clone()),
+        );
+        let envelope: serde_json::Value = serde_json::from_str(&json.stderr).unwrap();
+        assert_eq!(envelope["error"]["kind"], "environment");
+        assert_eq!(envelope["error"]["code"], "CDF-ENV-HOST");
+        assert_eq!(envelope["error"]["exit_code"], 70);
+        assert!(!json.stderr.contains("user:secret"));
+        for secret in [
+            "other:second",
+            "detail:third",
+            "PRIVATE KEY",
+            "nested:fourth",
+            "suggestion:fifth",
+        ] {
+            assert!(!json.stderr.contains(secret));
+        }
+        assert!(json.stderr.contains("postgres://[redacted]@example/db"));
+        assert!(json.stderr.contains("mysql://[redacted]@elsewhere/db"));
+        assert!(
+            envelope["error"]["remediation"]["summary"]
+                .as_str()
+                .unwrap()
+                .contains("host or process")
+        );
+
+        let headless = InvocationResult::from_error_with_config(
+            false,
+            &RenderConfig::headless_for_width(80),
+            decorate(lower.clone()),
+        );
+        let tty = InvocationResult::from_error_with_config(false, &tty_config(), decorate(lower));
+        for rendered in [&headless.stderr, &tty.stderr] {
+            assert!(rendered.contains("CDF-ENV-HOST"));
+            assert!(rendered.contains("cdf-helper"));
+            assert!(!rendered.contains("user:secret"));
+            for secret in [
+                "other:second",
+                "detail:third",
+                "PRIVATE KEY",
+                "nested:fourth",
+                "suggestion:fifth",
+            ] {
+                assert!(!rendered.contains(secret));
+            }
+            assert!(rendered.contains("postgres://[redacted]@example/db"));
+            assert!(rendered.contains("mysql://[redacted]@elsewhere/db"));
+            assert!(rendered.contains("Restore the required host or process facility"));
+            assert!(!rendered.contains("\u{1b}["));
+        }
+    }
+
+    #[test]
+    fn invariant_error_retains_internal_mapping() {
+        let mapped = CliError::from(CdfError::internal("poisoned ownership invariant"));
+        assert_eq!(mapped.kind, ErrorKind::Internal);
+        assert_eq!(mapped.code, "CDF-INTERNAL-UNEXPECTED");
+        assert_eq!(mapped.exit_code, 70);
     }
 }

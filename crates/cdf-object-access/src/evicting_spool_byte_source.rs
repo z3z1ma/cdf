@@ -105,10 +105,10 @@ fn start_evicting_spool_with_capacity(
         return Ok(None);
     };
     let file = tempfile::NamedTempFile::new()
-        .map_err(|error| CdfError::data(format!("create evicting file spool: {error}")))?;
+        .map_err(|error| spool_io_error("create evicting file spool", error))?;
     file.as_file()
         .set_len(capacity)
-        .map_err(|error| CdfError::data(format!("size evicting file spool: {error}")))?;
+        .map_err(|error| spool_io_error("size evicting file spool", error))?;
     let storage = Arc::new(EvictingSpoolStorage {
         file,
         io: tokio::sync::RwLock::new(()),
@@ -194,7 +194,7 @@ async fn download_into_evicting_spool(
         .write(true)
         .open(storage.path())
         .await
-        .map_err(|error| CdfError::data(format!("open evicting file spool: {error}")))?;
+        .map_err(|error| spool_io_error("open evicting file spool", error))?;
     let chunk_bytes = DEFAULT_TRANSFER_CHUNK_BYTES.clamp(
         upstream.capabilities().minimum_chunk_bytes,
         upstream.capabilities().maximum_chunk_bytes,
@@ -230,15 +230,11 @@ async fn download_into_evicting_spool(
                 output
                     .seek(SeekFrom::Start(transferred % storage.capacity))
                     .await
-                    .map_err(|error| {
-                        CdfError::data(format!("seek evicting file spool: {error}"))
-                    })?;
+                    .map_err(|error| spool_io_error("seek evicting file spool", error))?;
                 output
                     .write_all(&chunk.payload()[cursor..cursor + length])
                     .await
-                    .map_err(|error| {
-                        CdfError::data(format!("write evicting file spool: {error}"))
-                    })?;
+                    .map_err(|error| spool_io_error("write evicting file spool", error))?;
             }
             cursor += length;
             transferred = transferred
@@ -255,7 +251,7 @@ async fn download_into_evicting_spool(
     output
         .flush()
         .await
-        .map_err(|error| CdfError::data(format!("flush evicting file spool: {error}")))?;
+        .map_err(|error| spool_io_error("flush evicting file spool", error))?;
     if transferred != size_bytes {
         return Err(CdfError::data(format!(
             "evicting spool transferred {transferred} bytes for a planned {size_bytes}-byte generation"
@@ -598,7 +594,7 @@ impl EvictingSpoolByteSource {
         }
         let mut file = tokio::fs::File::open(self.storage.path())
             .await
-            .map_err(|error| CdfError::data(format!("open evicting spool range: {error}")))?;
+            .map_err(|error| spool_read_io_error("open evicting spool range", error))?;
         let length = usize::try_from(extent.length)
             .map_err(|_| CdfError::data("evicting spool range length exceeds usize"))?;
         let first_length = usize::try_from(
@@ -610,22 +606,42 @@ impl EvictingSpoolByteSource {
         let mut payload = vec![0_u8; length];
         file.seek(SeekFrom::Start(extent.start % self.storage.capacity))
             .await
-            .map_err(|error| CdfError::data(format!("seek evicting spool range: {error}")))?;
+            .map_err(|error| spool_read_io_error("seek evicting spool range", error))?;
         file.read_exact(&mut payload[..first_length])
             .await
-            .map_err(|error| CdfError::data(format!("read evicting spool range: {error}")))?;
+            .map_err(|error| spool_read_io_error("read evicting spool range", error))?;
         if first_length < length {
-            file.seek(SeekFrom::Start(0)).await.map_err(|error| {
-                CdfError::data(format!("seek wrapped evicting spool range: {error}"))
-            })?;
+            file.seek(SeekFrom::Start(0))
+                .await
+                .map_err(|error| spool_read_io_error("seek wrapped evicting spool range", error))?;
             file.read_exact(&mut payload[first_length..])
                 .await
-                .map_err(|error| {
-                    CdfError::data(format!("read wrapped evicting spool range: {error}"))
-                })?;
+                .map_err(|error| spool_read_io_error("read wrapped evicting spool range", error))?;
         }
         cancellation.check()?;
         AccountedBytes::new(Bytes::from(payload), lease)
+    }
+}
+
+fn spool_io_error(action: &str, error: std::io::Error) -> CdfError {
+    CdfError::environment(format!(
+        "{action}: {error}; check the temporary directory, local permissions, free space, and process file limits before retrying"
+    ))
+}
+
+fn spool_read_io_error(action: &str, error: std::io::Error) -> CdfError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::internal(format!("{action}: invalid CDF-managed spool: {error}"))
+    } else {
+        spool_io_error(action, error)
     }
 }
 
@@ -637,6 +653,27 @@ mod tests {
     use cdf_runtime::FixedSpillBudget;
 
     use super::*;
+
+    #[test]
+    fn truncated_private_spool_is_internal_but_host_io_is_environment() {
+        let truncated = spool_read_io_error(
+            "read evicting spool range",
+            std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "truncated"),
+        );
+        assert_eq!(truncated.kind, cdf_kernel::ErrorKind::Internal);
+
+        let directory = spool_read_io_error(
+            "read evicting spool range",
+            std::io::Error::new(std::io::ErrorKind::IsADirectory, "is a directory"),
+        );
+        assert_eq!(directory.kind, cdf_kernel::ErrorKind::Internal);
+
+        let host = spool_read_io_error(
+            "read evicting spool range",
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+        );
+        assert_eq!(host.kind, cdf_kernel::ErrorKind::Environment);
+    }
 
     struct MemoryStrongSource {
         identity: ContentIdentity,

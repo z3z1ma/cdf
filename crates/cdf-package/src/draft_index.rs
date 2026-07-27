@@ -11,6 +11,16 @@ use rusqlite::{Connection, ErrorCode, OptionalExtension, params, types::ValueRef
 use crate::json::canonical_json_bytes;
 
 const SQLITE_PAGE_BYTES: u64 = 4096;
+const SQLITE_INDEX_MAX_LOCAL_PAYLOAD_BYTES: u64 = 1002;
+// The schema has one SQLite schema page plus roots for the WITHOUT ROWID table and identity index.
+const SQLITE_PACKAGE_SCHEMA_PAGES: u64 = 3;
+// SQLite balancing replaces at most three old sibling pages with five new pages, and therefore
+// allocates at most two structural pages per active B-tree level. Package records update both the
+// WITHOUT ROWID table and its identity index.
+const SQLITE_BTREE_MAX_DEPTH: u64 = 20;
+const SQLITE_BALANCE_NEW_PAGES_PER_LEVEL: u64 = 2;
+const SQLITE_INSERT_GUARD_PAGES: u64 = 8;
+const SQLITE_PACKAGE_BTREE_COUNT: u64 = 2;
 const FILE_RECORD_KIND: i64 = 1;
 const SEGMENT_RECORD_KIND: i64 = 2;
 
@@ -142,6 +152,7 @@ pub(crate) struct PackageDraftIndex {
     connection: Connection,
     file_count: u64,
     segment_count: u64,
+    poisoned: bool,
     _memory_lease: MemoryLease,
     _workspace: tempfile::TempDir,
 }
@@ -167,11 +178,11 @@ impl PackageDraftIndex {
             )?,
         )?;
         let available = available_spill_bytes(spill.as_ref());
-        let initial = limits.spill_growth_bytes.min(available);
-        if initial < SQLITE_PAGE_BYTES * 2 {
+        let schema_bytes = SQLITE_PACKAGE_SCHEMA_PAGES * SQLITE_PAGE_BYTES;
+        let initial = limits.spill_growth_bytes.max(schema_bytes).min(available);
+        if initial < schema_bytes {
             return Err(CdfError::data(format!(
-                "package finalization requires at least {} free spill bytes but only {available} are available; raise the run spill budget or reduce concurrent package construction",
-                SQLITE_PAGE_BYTES * 2
+                "package finalization requires at least {schema_bytes} free spill bytes for its SQLite schema but only {available} are available; raise the run spill budget or reduce concurrent package construction"
             )));
         }
         let spill_reservation = spill.try_reserve(initial)?.ok_or_else(|| {
@@ -180,7 +191,11 @@ impl PackageDraftIndex {
         let workspace = tempfile::Builder::new()
             .prefix(".package-draft-")
             .tempdir_in(package_dir)
-            .map_err(|error| CdfError::data(format!("create package draft workspace: {error}")))?;
+            .map_err(|error| {
+                CdfError::environment(format!(
+                    "create package draft workspace: {error}; check package-directory permissions, free space, and process file limits before retrying"
+                ))
+            })?;
         let connection = Connection::open(workspace.path().join("index.sqlite"))
             .map_err(|error| sqlite_error("open package draft index", error))?;
         configure_index(&connection, limits.index_cache_bytes)?;
@@ -204,6 +219,7 @@ impl PackageDraftIndex {
             connection,
             file_count: 0,
             segment_count: 0,
+            poisoned: false,
             _memory_lease: memory_lease,
             _workspace: workspace,
         })
@@ -247,6 +263,7 @@ impl PackageDraftIndex {
     }
 
     pub(crate) fn file(&self, path: &str) -> Result<Option<FileEntry>> {
+        self.ensure_healthy()?;
         let key = portable_path_key(path, self.limits.maximum_path_bytes)?;
         self.connection
             .query_row(
@@ -270,6 +287,7 @@ impl PackageDraftIndex {
         &self,
         visitor: &mut dyn FnMut(FileEntry) -> Result<()>,
     ) -> Result<()> {
+        self.ensure_healthy()?;
         visit_kind(
             &self.connection,
             FILE_RECORD_KIND,
@@ -283,6 +301,7 @@ impl PackageDraftIndex {
         &self,
         visitor: &mut dyn FnMut(SegmentEntry) -> Result<()>,
     ) -> Result<()> {
+        self.ensure_healthy()?;
         visit_kind(
             &self.connection,
             SEGMENT_RECORD_KIND,
@@ -300,17 +319,39 @@ impl PackageDraftIndex {
         payload: &[u8],
         label: &str,
     ) -> Result<()> {
-        loop {
-            match self.connection.execute(
-                "INSERT INTO records (kind, sort_key, identity_key, payload) VALUES (?1, ?2, ?3, ?4)",
-                params![kind, key, identity_key, payload],
-            ) {
-                Ok(_) => return Ok(()),
-                Err(error) if is_sqlite_full(&error) => self.grow_spill()?,
-                Err(error) if is_sqlite_constraint(&error) => {
-                    return Err(CdfError::data(format!("package draft repeats one {label}")));
+        if self.poisoned {
+            return Err(CdfError::internal(
+                "package draft index cannot continue after an unexpected partial insertion",
+            ));
+        }
+        self.ensure_insert_capacity(key.len(), identity_key.len(), payload.len())?;
+        match self.connection.execute(
+            "INSERT INTO records (kind, sort_key, identity_key, payload) VALUES (?1, ?2, ?3, ?4)",
+            params![kind, key, identity_key, payload],
+        ) {
+            Ok(_) => Ok(()),
+            Err(error) if is_sqlite_constraint(&error) => {
+                Err(CdfError::data(format!("package draft repeats one {label}")))
+            }
+            Err(error) if is_sqlite_full(&error) => {
+                self.poisoned = true;
+                let admitted_pages = self.spill_reservation.bytes() / SQLITE_PAGE_BYTES;
+                if sqlite_page_count(&self.connection)
+                    .is_ok_and(|page_count| page_count >= admitted_pages)
+                {
+                    Err(CdfError::internal(format!(
+                        "package draft insertion reached its pre-admitted SQLite page ceiling: {error}"
+                    )))
+                } else {
+                    Err(sqlite_error("insert package draft record", error))
                 }
-                Err(error) => return Err(sqlite_error("insert package draft record", error)),
+            }
+            // Capacity was proven in the current leaf or admitted for complete record/tree growth
+            // before this journal-free mutation. Any failure poisons the scratch index because
+            // journal_mode=OFF cannot guarantee statement rollback.
+            Err(error) => {
+                self.poisoned = true;
+                Err(sqlite_error("insert package draft record", error))
             }
         }
     }
@@ -324,6 +365,73 @@ impl PackageDraftIndex {
             ));
         }
         set_page_ceiling(&self.connection, self.spill_reservation.bytes())
+    }
+
+    fn ensure_healthy(&self) -> Result<()> {
+        if self.poisoned {
+            Err(CdfError::internal(
+                "package draft index cannot continue after an unexpected partial insertion",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn ensure_insert_capacity(
+        &mut self,
+        sort_key_bytes: usize,
+        identity_key_bytes: usize,
+        payload_bytes: usize,
+    ) -> Result<()> {
+        let sort_key_bytes = u64::try_from(sort_key_bytes)
+            .map_err(|_| CdfError::data("package draft sort-key size exceeds u64"))?;
+        let identity_key_bytes = u64::try_from(identity_key_bytes)
+            .map_err(|_| CdfError::data("package draft identity-key size exceeds u64"))?;
+        let payload_bytes = u64::try_from(payload_bytes)
+            .map_err(|_| CdfError::data("package draft payload size exceeds u64"))?;
+        let table_record_bytes = payload_bytes
+            .checked_add(sort_key_bytes)
+            .and_then(|bytes| bytes.checked_add(identity_key_bytes))
+            .and_then(|bytes| bytes.checked_add(128))
+            .ok_or_else(|| CdfError::data("package draft index record size overflowed u64"))?;
+        let identity_record_bytes = sort_key_bytes
+            .checked_add(identity_key_bytes)
+            .and_then(|bytes| bytes.checked_add(128))
+            .ok_or_else(|| CdfError::data("package identity index record size overflowed u64"))?;
+        if sqlite_single_leaf_fits(&self.connection, "records", table_record_bytes)?
+            && sqlite_single_leaf_fits(
+                &self.connection,
+                "sqlite_autoindex_records_2",
+                identity_record_bytes,
+            )?
+        {
+            return Ok(());
+        }
+        let record_bytes = table_record_bytes
+            .checked_add(identity_record_bytes)
+            .ok_or_else(|| CdfError::data("package draft index record size overflowed u64"))?;
+        let record_pages = record_bytes
+            .div_ceil(SQLITE_PAGE_BYTES.saturating_sub(4))
+            .saturating_add(SQLITE_PACKAGE_BTREE_COUNT);
+        let structural_pages = SQLITE_BTREE_MAX_DEPTH
+            .saturating_mul(SQLITE_BALANCE_NEW_PAGES_PER_LEVEL)
+            .saturating_mul(SQLITE_PACKAGE_BTREE_COUNT)
+            .saturating_add(SQLITE_INSERT_GUARD_PAGES.saturating_mul(SQLITE_PACKAGE_BTREE_COUNT));
+        let current_pages = sqlite_page_count(&self.connection)?;
+        let required_pages = current_pages
+            .checked_add(record_pages)
+            .and_then(|pages| pages.checked_add(structural_pages))
+            .ok_or_else(|| CdfError::data("package draft index capacity overflowed u64"))?;
+        let required_bytes = required_pages
+            .checked_mul(SQLITE_PAGE_BYTES)
+            .ok_or_else(|| CdfError::data("package draft index capacity overflowed u64"))?;
+        if self.spill_reservation.bytes() >= required_bytes {
+            return Ok(());
+        }
+        while self.spill_reservation.bytes() < required_bytes {
+            self.grow_spill()?;
+        }
+        Ok(())
     }
 }
 
@@ -447,11 +555,16 @@ fn configure_index(connection: &Connection, cache_bytes: u64) -> Result<()> {
         .map_err(|error| sqlite_error("configure package draft index cache", error))
 }
 
+fn available_spill_bytes(spill: &dyn SpillBudgetCoordinator) -> u64 {
+    let snapshot = spill.snapshot();
+    snapshot.budget_bytes.saturating_sub(snapshot.current_bytes)
+}
+
 fn set_page_ceiling(connection: &Connection, reserved_bytes: u64) -> Result<()> {
     let pages = reserved_bytes / SQLITE_PAGE_BYTES;
-    if pages < 2 {
+    if pages < SQLITE_PACKAGE_SCHEMA_PAGES {
         return Err(CdfError::data(
-            "package draft spill reservation cannot hold two SQLite pages",
+            "package draft spill reservation cannot hold its SQLite schema",
         ));
     }
     connection
@@ -463,19 +576,6 @@ fn set_page_ceiling(connection: &Connection, reserved_bytes: u64) -> Result<()> 
         .map_err(|error| sqlite_error("raise package draft page ceiling", error))
 }
 
-fn available_spill_bytes(spill: &dyn SpillBudgetCoordinator) -> u64 {
-    let snapshot = spill.snapshot();
-    snapshot.budget_bytes.saturating_sub(snapshot.current_bytes)
-}
-
-fn is_sqlite_full(error: &rusqlite::Error) -> bool {
-    matches!(
-        error,
-        rusqlite::Error::SqliteFailure(failure, _)
-            if failure.code == ErrorCode::DiskFull
-    )
-}
-
 fn is_sqlite_constraint(error: &rusqlite::Error) -> bool {
     matches!(
         error,
@@ -484,8 +584,86 @@ fn is_sqlite_constraint(error: &rusqlite::Error) -> bool {
     )
 }
 
+fn sqlite_page_count(connection: &Connection) -> Result<u64> {
+    let page_count: i64 = connection
+        .query_row("PRAGMA page_count", [], |row| row.get(0))
+        .map_err(|error| sqlite_error("inspect package draft page count", error))?;
+    u64::try_from(page_count)
+        .map_err(|_| CdfError::internal("package draft SQLite page count is negative"))
+}
+
+fn sqlite_single_leaf_fits(
+    connection: &Connection,
+    tree_name: &str,
+    required_bytes: u64,
+) -> Result<bool> {
+    if required_bytes > SQLITE_INDEX_MAX_LOCAL_PAYLOAD_BYTES {
+        return Ok(false);
+    }
+    let mut statement = connection
+        .prepare("SELECT pagetype, unused FROM dbstat WHERE name = ?1 LIMIT 2")
+        .map_err(|error| sqlite_error("prepare package draft leaf inspection", error))?;
+    let mut rows = statement
+        .query(params![tree_name])
+        .map_err(|error| sqlite_error("inspect package draft leaf capacity", error))?;
+    let Some(row) = rows
+        .next()
+        .map_err(|error| sqlite_error("read package draft leaf capacity", error))?
+    else {
+        return Err(CdfError::internal(format!(
+            "package draft SQLite tree `{tree_name}` has no root page"
+        )));
+    };
+    let page_type: String = row
+        .get(0)
+        .map_err(|error| sqlite_error("read package draft page type", error))?;
+    let unused_bytes: i64 = row
+        .get(1)
+        .map_err(|error| sqlite_error("read package draft unused bytes", error))?;
+    let unused_bytes = u64::try_from(unused_bytes)
+        .map_err(|_| CdfError::internal("package draft SQLite unused bytes are negative"))?;
+    let has_second_page = rows
+        .next()
+        .map_err(|error| sqlite_error("read package draft leaf count", error))?
+        .is_some();
+    Ok(page_type == "leaf" && !has_second_page && unused_bytes >= required_bytes)
+}
+
 fn sqlite_error(action: &str, error: rusqlite::Error) -> CdfError {
-    CdfError::data(format!("{action}: {error}"))
+    if sqlite_host_error(&error) {
+        CdfError::environment(format!(
+            "{action} in CDF-managed package scratch: {error}; check temporary storage, permissions, free space, memory, and process file limits before retrying"
+        ))
+    } else {
+        CdfError::internal(format!("{action} in CDF-managed package scratch: {error}"))
+    }
+}
+
+fn is_sqlite_full(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(failure, _) if failure.code == ErrorCode::DiskFull
+    )
+}
+
+fn sqlite_host_error(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(failure, _)
+            if matches!(
+                failure.code,
+                ErrorCode::PermissionDenied
+                    | ErrorCode::OutOfMemory
+                    | ErrorCode::ReadOnly
+                    | ErrorCode::SystemIoFailure
+                    | ErrorCode::NotFound
+                    | ErrorCode::DiskFull
+                    | ErrorCode::CannotOpen
+                    | ErrorCode::FileLockingProtocolFailed
+                    | ErrorCode::NoLargeFileSupport
+                    | ErrorCode::AuthorizationForStatementDenied
+            )
+    )
 }
 
 #[cfg(test)]
@@ -496,6 +674,22 @@ mod tests {
     use cdf_memory::{DeterministicMemoryCoordinator, FixedSpillBudget};
 
     use super::*;
+
+    #[test]
+    fn sqlite_host_failure_is_environment_but_scratch_invariant_is_internal() {
+        let host = sqlite_error(
+            "open package draft index",
+            rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+                None,
+            ),
+        );
+        assert_eq!(host.kind, cdf_kernel::ErrorKind::Environment);
+        assert!(host.message.contains("temporary storage"));
+
+        let invariant = sqlite_error("decode package draft row", rusqlite::Error::InvalidQuery);
+        assert_eq!(invariant.kind, cdf_kernel::ErrorKind::Internal);
+    }
 
     fn index(root: &Path) -> PackageDraftIndex {
         PackageDraftIndex::create(
@@ -573,5 +767,92 @@ mod tests {
                 .message
                 .contains("repeats one identity artifact path `data/segment.arrow`")
         );
+    }
+
+    #[test]
+    fn multi_page_insert_is_admitted_before_sqlite_mutation() {
+        let root = tempfile::tempdir().unwrap();
+        let mut index = PackageDraftIndex::create(
+            root.path(),
+            PackageDraftIndexLimits {
+                maximum_path_bytes: 64 * 1024,
+                maximum_record_bytes: 128 * 1024,
+                index_cache_bytes: 16 * 1024,
+                spill_growth_bytes: 16 * 1024,
+            },
+            Arc::new(DeterministicMemoryCoordinator::new(512 * 1024, BTreeMap::new()).unwrap()),
+            Arc::new(FixedSpillBudget::new(1024 * 1024).unwrap()),
+        )
+        .unwrap();
+        let initial_reservation = index.spill_reservation.bytes();
+        assert_eq!(initial_reservation, 16 * 1024);
+
+        index
+            .insert_file(&FileEntry {
+                path: format!("data/{}.arrow", "x".repeat(50 * 1024)),
+                byte_count: 1,
+                sha256: "00".repeat(32),
+            })
+            .unwrap();
+
+        assert!(index.spill_reservation.bytes() > initial_reservation);
+        assert_eq!(index.file_count(), 1);
+    }
+
+    #[test]
+    fn package_schema_uses_its_exact_three_page_admission_floor() {
+        let root = tempfile::tempdir().unwrap();
+        let mut index = PackageDraftIndex::create(
+            root.path(),
+            PackageDraftIndexLimits {
+                maximum_path_bytes: 2048,
+                maximum_record_bytes: 4096,
+                index_cache_bytes: 16 * 1024,
+                spill_growth_bytes: SQLITE_PAGE_BYTES * 2,
+            },
+            Arc::new(DeterministicMemoryCoordinator::new(64 * 1024, BTreeMap::new()).unwrap()),
+            Arc::new(FixedSpillBudget::new(SQLITE_PAGE_BYTES * 3).unwrap()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            index.spill_reservation.bytes(),
+            SQLITE_PACKAGE_SCHEMA_PAGES * SQLITE_PAGE_BYTES
+        );
+        index
+            .insert_file(&FileEntry {
+                path: "data/tiny.arrow".to_owned(),
+                byte_count: 1,
+                sha256: "00".repeat(32),
+            })
+            .unwrap();
+        let oversized_local = index
+            .insert_file(&FileEntry {
+                path: format!("data/{}.arrow", "x".repeat(1200)),
+                byte_count: 1,
+                sha256: "00".repeat(32),
+            })
+            .unwrap_err();
+        assert_eq!(oversized_local.kind, cdf_kernel::ErrorKind::Data);
+        assert!(oversized_local.message.contains("spill budget"));
+        assert_eq!(index.file_count(), 1);
+
+        let below_minimum = PackageDraftIndex::create(
+            root.path(),
+            PackageDraftIndexLimits {
+                maximum_path_bytes: 1024,
+                maximum_record_bytes: 4096,
+                index_cache_bytes: 16 * 1024,
+                spill_growth_bytes: SQLITE_PAGE_BYTES * 2,
+            },
+            Arc::new(DeterministicMemoryCoordinator::new(64 * 1024, BTreeMap::new()).unwrap()),
+            Arc::new(FixedSpillBudget::new(SQLITE_PAGE_BYTES * 2).unwrap()),
+        );
+        let error = match below_minimum {
+            Ok(_) => panic!("two pages cannot admit the package SQLite schema"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+        assert!(error.message.contains("SQLite schema"));
     }
 }

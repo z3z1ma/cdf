@@ -49,8 +49,8 @@ impl TestIoHost {
                 .enable_all()
                 .build()
                 .map_err(|error| {
-                    cdf_kernel::CdfError::internal(format!(
-                        "build object access test I/O runtime: {error}"
+                    cdf_kernel::CdfError::environment(format!(
+                        "build object access test I/O runtime: {error}; check process thread and file-descriptor limits"
                     ))
                 })?,
             memory: Arc::new(DeterministicMemoryCoordinator::new(

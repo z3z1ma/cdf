@@ -261,10 +261,9 @@ fn synthesize_adhoc_source(
     location: &str,
 ) -> Result<SynthesizedAdhoc, CliError> {
     let current_dir = std::env::current_dir().map_err(|error| {
-        CliError::mapped(
-            CdfError::internal(format!("read current directory: {error}")),
-            error_catalog::PROJECT_IO,
-        )
+        CliError::from(CdfError::environment(format!(
+            "read current directory: {error}; change to an accessible directory or pass an absolute source location"
+        )))
     })?;
     let is_remote = location.contains("://");
     let canonical_location = if is_remote {

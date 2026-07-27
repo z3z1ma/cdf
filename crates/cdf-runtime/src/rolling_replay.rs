@@ -137,15 +137,12 @@ impl RollingReplayStore {
     ) -> Result<Self> {
         expected_limits.validate()?;
         let root = root.as_ref().to_path_buf();
-        validate_private_directory(&root)?;
+        validate_private_directory(&root, true)?;
         remove_manifest_temp(&root)?;
         let manifest_path = root.join(MANIFEST_FILE);
         validate_regular_file(&manifest_path, "rolling replay manifest")?;
         let bytes = fs::read(&manifest_path).map_err(|error| {
-            CdfError::internal(format!(
-                "failed to read rolling replay manifest {}: {error}",
-                manifest_path.display()
-            ))
+            replay_artifact_read_error("read rolling replay manifest", &manifest_path, error)
         })?;
         let mut manifest: RollingReplayManifest =
             serde_json::from_slice(&bytes).map_err(|error| {
@@ -337,8 +334,8 @@ impl RollingReplayStore {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
-                return Err(CdfError::internal(format!(
-                    "failed to remove stale rolling replay manifest temporary file {}: {error}",
+                return Err(CdfError::environment(format!(
+                    "failed to remove stale rolling replay manifest temporary file {}: {error}; check local permissions and retry",
                     temp.display()
                 )));
             }
@@ -348,22 +345,30 @@ impl RollingReplayStore {
             .create_new(true)
             .open(&temp)
             .map_err(|error| {
-                CdfError::internal(format!(
-                    "failed to open rolling replay manifest temporary file {}: {error}",
+                CdfError::environment(format!(
+                    "failed to open rolling replay manifest temporary file {}: {error}; check temporary storage, permissions, free space, and process file limits",
                     temp.display()
                 ))
             })?;
-        serde_json::to_writer(&mut file, &state.manifest)
-            .map_err(|error| CdfError::internal(error.to_string()))?;
+        serde_json::to_writer(&mut file, &state.manifest).map_err(|error| {
+            if error.is_io() {
+                CdfError::environment(format!(
+                    "failed to write rolling replay manifest {}: {error}; check local storage, permissions, free space, and process file limits",
+                    temp.display()
+                ))
+            } else {
+                CdfError::internal(format!("serialize rolling replay manifest: {error}"))
+            }
+        })?;
         file.sync_all().map_err(|error| {
-            CdfError::internal(format!(
-                "failed to persist rolling replay manifest {}: {error}",
+            CdfError::environment(format!(
+                "failed to persist rolling replay manifest {}: {error}; check local storage and retry",
                 temp.display()
             ))
         })?;
         fs::rename(&temp, &final_path).map_err(|error| {
-            CdfError::internal(format!(
-                "failed to publish rolling replay manifest {}: {error}",
+            CdfError::environment(format!(
+                "failed to publish rolling replay manifest {}: {error}; check local filesystem permissions and retry",
                 final_path.display()
             ))
         })?;
@@ -549,7 +554,9 @@ fn current_unix_milliseconds() -> Result<u64> {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| {
-            CdfError::internal(format!("system clock precedes Unix epoch: {error}"))
+            CdfError::environment(format!(
+                "system clock precedes Unix epoch: {error}; correct the host clock before retrying"
+            ))
         })?;
     u64::try_from(duration.as_millis()).map_err(|error| CdfError::internal(error.to_string()))
 }
@@ -672,21 +679,20 @@ fn verify_manifest_entries(
         }
         validate_regular_file(&path, "rolling replay entry")?;
         let mut file = File::open(&path).map_err(|error| {
-            CdfError::internal(format!(
-                "failed to read rolling replay entry {}: {error}",
-                path.display()
-            ))
+            replay_artifact_read_error("open rolling replay entry", &path, error)
         })?;
         let byte_count = file
             .metadata()
-            .map_err(|error| CdfError::internal(error.to_string()))?
+            .map_err(|error| {
+                replay_artifact_read_error("inspect rolling replay entry", &path, error)
+            })?
             .len();
         let mut hasher = Sha256::new();
         let mut buffer = vec![0_u8; 64 * 1024];
         loop {
-            let read = file
-                .read(&mut buffer)
-                .map_err(|error| CdfError::internal(error.to_string()))?;
+            let read = file.read(&mut buffer).map_err(|error| {
+                replay_artifact_read_error("read rolling replay entry", &path, error)
+            })?;
             if read == 0 {
                 break;
             }
@@ -714,12 +720,17 @@ fn cleanup_unreferenced_entry_files(root: &Path, manifest: &RollingReplayManifes
         .map(|entry| entry.file_name.as_str())
         .collect::<std::collections::BTreeSet<_>>();
     for entry in fs::read_dir(root).map_err(|error| {
-        CdfError::internal(format!(
-            "failed to inspect rolling replay directory {}: {error}",
+        CdfError::environment(format!(
+            "failed to inspect rolling replay directory {}: {error}; check local permissions and retry",
             root.display()
         ))
     })? {
-        let entry = entry.map_err(|error| CdfError::internal(error.to_string()))?;
+        let entry = entry.map_err(|error| {
+            CdfError::environment(format!(
+                "failed to inspect an entry in rolling replay directory {}: {error}; check local permissions and retry",
+                root.display()
+            ))
+        })?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
         let orphan_payload = name.starts_with("entry-")
@@ -728,8 +739,8 @@ fn cleanup_unreferenced_entry_files(root: &Path, manifest: &RollingReplayManifes
         let interrupted_payload = name.starts_with(".entry-") && name.ends_with(".bin.tmp");
         if orphan_payload || interrupted_payload {
             fs::remove_file(entry.path()).map_err(|error| {
-                CdfError::internal(format!(
-                    "failed to remove orphan rolling replay entry {}: {error}",
+                CdfError::environment(format!(
+                    "failed to remove orphan rolling replay entry {}: {error}; check local permissions and retry",
                     entry.path().display()
                 ))
             })?;
@@ -764,24 +775,24 @@ fn write_atomic_payload(temp: &Path, final_path: &Path, payload: &[u8]) -> Resul
         .create_new(true)
         .open(temp)
         .map_err(|error| {
-            CdfError::internal(format!(
-                "failed to create rolling replay temporary payload {}: {error}",
+            CdfError::environment(format!(
+                "failed to create rolling replay temporary payload {}: {error}; check temporary storage, permissions, free space, and process file limits",
                 temp.display()
             ))
         })?;
     if let Err(error) = file.write_all(payload).and_then(|()| file.sync_all()) {
         drop(file);
         let _ = fs::remove_file(temp);
-        return Err(CdfError::internal(format!(
-            "failed to persist rolling replay payload {}: {error}",
+        return Err(CdfError::environment(format!(
+            "failed to persist rolling replay payload {}: {error}; check local storage and retry",
             temp.display()
         )));
     }
     drop(file);
     if let Err(error) = fs::rename(temp, final_path) {
         let _ = fs::remove_file(temp);
-        return Err(CdfError::internal(format!(
-            "failed to publish rolling replay payload {}: {error}",
+        return Err(CdfError::environment(format!(
+            "failed to publish rolling replay payload {}: {error}; check local filesystem permissions and retry",
             final_path.display()
         )));
     }
@@ -790,15 +801,20 @@ fn write_atomic_payload(temp: &Path, final_path: &Path, payload: &[u8]) -> Resul
 
 fn refuse_nonempty_uninitialized_directory(root: &Path) -> Result<()> {
     let mut entries = fs::read_dir(root).map_err(|error| {
-        CdfError::internal(format!(
-            "failed to inspect rolling replay directory {}: {error}",
+        CdfError::environment(format!(
+            "failed to inspect rolling replay directory {}: {error}; check local permissions and retry",
             root.display()
         ))
     })?;
     if entries
         .next()
         .transpose()
-        .map_err(|error| CdfError::internal(error.to_string()))?
+        .map_err(|error| {
+            CdfError::environment(format!(
+                "failed to inspect an entry in rolling replay directory {}: {error}; check local permissions and retry",
+                root.display()
+            ))
+        })?
         .is_some()
     {
         return Err(CdfError::contract(format!(
@@ -811,8 +827,8 @@ fn refuse_nonempty_uninitialized_directory(root: &Path) -> Result<()> {
 
 fn create_private_directory(root: &Path) -> Result<()> {
     fs::create_dir_all(root).map_err(|error| {
-        CdfError::internal(format!(
-            "failed to create rolling replay directory {}: {error}",
+        CdfError::environment(format!(
+            "failed to create rolling replay directory {}: {error}; check the local path, permissions, free space, and process file limits",
             root.display()
         ))
     })?;
@@ -820,21 +836,35 @@ fn create_private_directory(root: &Path) -> Result<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(root, fs::Permissions::from_mode(0o700)).map_err(|error| {
-            CdfError::internal(format!(
-                "failed to secure rolling replay directory {}: {error}",
+            CdfError::environment(format!(
+                "failed to secure rolling replay directory {}: {error}; check local ownership and permissions",
                 root.display()
             ))
         })?;
     }
-    validate_private_directory(root)
+    validate_private_directory(root, false)
 }
 
-fn validate_private_directory(root: &Path) -> Result<()> {
+fn validate_private_directory(root: &Path, recovery: bool) -> Result<()> {
     let metadata = fs::symlink_metadata(root).map_err(|error| {
-        CdfError::internal(format!(
-            "failed to inspect rolling replay directory {}: {error}",
-            root.display()
-        ))
+        if recovery
+            && (matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound
+                    | std::io::ErrorKind::NotADirectory
+                    | std::io::ErrorKind::IsADirectory
+            ) || cdf_kernel::is_filesystem_loop(&error))
+        {
+            CdfError::data(format!(
+                "rolling replay root {} is unavailable or malformed: {error}",
+                root.display()
+            ))
+        } else {
+            CdfError::environment(format!(
+                "failed to inspect rolling replay directory {}: {error}; check local permissions and retry",
+                root.display()
+            ))
+        }
     })?;
     if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
         return Err(CdfError::data(
@@ -854,12 +884,8 @@ fn validate_private_directory(root: &Path) -> Result<()> {
 }
 
 fn validate_regular_file(path: &Path, label: &str) -> Result<()> {
-    let metadata = fs::symlink_metadata(path).map_err(|error| {
-        CdfError::data(format!(
-            "{label} {} is unavailable: {error}",
-            path.display()
-        ))
-    })?;
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| regular_file_metadata_error(path, label, error))?;
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
         return Err(CdfError::data(format!(
             "{label} {} must be a regular file, not a symlink",
@@ -869,13 +895,54 @@ fn validate_regular_file(path: &Path, label: &str) -> Result<()> {
     Ok(())
 }
 
+fn regular_file_metadata_error(path: &Path, label: &str, error: std::io::Error) -> CdfError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::data(format!(
+            "{label} {} is unavailable: {error}",
+            path.display()
+        ))
+    } else {
+        CdfError::environment(format!(
+            "inspect {label} {}: {error}; check local storage, permissions, and process file limits before retrying",
+            path.display()
+        ))
+    }
+}
+
+fn replay_artifact_read_error(action: &str, path: &Path, error: std::io::Error) -> CdfError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::data(format!("{action} {}: {error}", path.display()))
+    } else {
+        CdfError::environment(format!(
+            "{action} {}: {error}; restore local filesystem access and retry",
+            path.display()
+        ))
+    }
+}
+
 fn remove_manifest_temp(root: &Path) -> Result<()> {
     let temp = root.join(MANIFEST_TEMP_FILE);
     match fs::remove_file(&temp) {
         Ok(()) => sync_directory(root),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(CdfError::internal(format!(
-            "failed to remove interrupted rolling replay manifest {}: {error}",
+        Err(error) => Err(CdfError::environment(format!(
+            "failed to remove interrupted rolling replay manifest {}: {error}; check local permissions and retry",
             temp.display()
         ))),
     }
@@ -885,8 +952,8 @@ fn sync_directory(path: &Path) -> Result<()> {
     File::open(path)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| {
-            CdfError::internal(format!(
-                "failed to sync rolling replay directory {}: {error}",
+            CdfError::environment(format!(
+                "failed to sync rolling replay directory {}: {error}; check local storage and retry",
                 path.display()
             ))
         })
@@ -896,6 +963,25 @@ fn sync_directory(path: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use cdf_kernel::{CursorPosition, CursorValue, SOURCE_POSITION_VERSION};
+
+    #[test]
+    fn replay_artifact_metadata_distinguishes_missing_data_from_host_failure() {
+        let path = Path::new("/tmp/replay-entry");
+        let missing = regular_file_metadata_error(
+            path,
+            "rolling replay entry",
+            std::io::Error::new(std::io::ErrorKind::NotFound, "missing"),
+        );
+        assert_eq!(missing.kind, cdf_kernel::ErrorKind::Data);
+
+        let host = regular_file_metadata_error(
+            path,
+            "rolling replay entry",
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+        );
+        assert_eq!(host.kind, cdf_kernel::ErrorKind::Environment);
+        assert!(host.message.contains("permissions"));
+    }
 
     fn position(value: i64) -> SourcePosition {
         SourcePosition::Cursor(CursorPosition {
@@ -1003,6 +1089,39 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.message.contains("checksum"));
+    }
+
+    #[test]
+    fn replay_artifact_disappearance_and_corruption_are_data_owned() {
+        let path = Path::new("/replay/entry.bin");
+        for kind in [
+            std::io::ErrorKind::NotFound,
+            std::io::ErrorKind::UnexpectedEof,
+            std::io::ErrorKind::InvalidData,
+        ] {
+            let error = replay_artifact_read_error(
+                "read rolling replay entry",
+                path,
+                std::io::Error::new(kind, "injected artifact failure"),
+            );
+            assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+            assert!(error.message.contains("/replay/entry.bin"));
+        }
+
+        let host = replay_artifact_read_error(
+            "read rolling replay entry",
+            path,
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied"),
+        );
+        assert_eq!(host.kind, cdf_kernel::ErrorKind::Environment);
+
+        let root = tempfile::tempdir().unwrap();
+        let missing = validate_private_directory(&root.path().join("missing"), true).unwrap_err();
+        assert_eq!(missing.kind, cdf_kernel::ErrorKind::Data);
+        let file = root.path().join("file");
+        fs::write(&file, b"not a directory").unwrap();
+        let malformed = validate_private_directory(&file.join("child"), true).unwrap_err();
+        assert_eq!(malformed.kind, cdf_kernel::ErrorKind::Data);
     }
 
     #[test]

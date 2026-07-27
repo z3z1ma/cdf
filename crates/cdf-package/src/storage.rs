@@ -81,10 +81,9 @@ impl<W: Write> Write for HashingWriter<W> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         let written = self.inner.write(bytes)?;
         self.hasher.update(&bytes[..written]);
-        self.byte_count = self
-            .byte_count
-            .checked_add(written as u64)
-            .ok_or_else(|| std::io::Error::other("artifact byte count overflow"))?;
+        self.byte_count = self.byte_count.checked_add(written as u64).ok_or_else(|| {
+            std::io::Error::other(CdfError::internal("artifact byte count overflow"))
+        })?;
         Ok(written)
     }
 
@@ -192,10 +191,13 @@ impl AtomicArtifactSink {
                 &self.temp_path
             };
             if let Err(cleanup_error) = remove_artifact_and_sync(cleanup_path) {
-                return Err(CdfError::internal(format!(
-                    "{error}; failed to clean unpublished artifact {}: {cleanup_error}",
-                    cleanup_path.display()
-                )));
+                return Err(CdfError::new(
+                    error.kind.clone(),
+                    format!(
+                        "{error}; failed to clean unpublished artifact {}: {cleanup_error}",
+                        cleanup_path.display()
+                    ),
+                ));
             }
             return Err(error);
         }
@@ -421,13 +423,17 @@ pub fn encode_canonical_segment_ipc(
 ) -> Result<()> {
     let options = IpcWriteOptions::default()
         .try_with_compression(Some(CompressionType::LZ4_FRAME))
-        .map_err(CdfError::from)?;
-    let mut writer =
-        FileWriter::try_new_with_options(sink, schema, options).map_err(CdfError::from)?;
+        .map_err(|error| package_writer_error("configure canonical Arrow IPC writer", &error))?;
+    let mut writer = FileWriter::try_new_with_options(sink, schema, options)
+        .map_err(|error| package_writer_error("create canonical Arrow IPC writer", &error))?;
     for batch in batches {
-        writer.write(batch).map_err(CdfError::from)?;
+        writer
+            .write(batch)
+            .map_err(|error| package_writer_error("write canonical Arrow IPC batch", &error))?;
     }
-    writer.finish().map_err(CdfError::from)
+    writer
+        .finish()
+        .map_err(|error| package_writer_error("finish canonical Arrow IPC writer", &error))
 }
 
 pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<WrittenArtifact> {
@@ -472,8 +478,8 @@ fn create_temp_sibling(path: &Path) -> Result<(PathBuf, File)> {
         }
     }
 
-    Err(CdfError::internal(format!(
-        "could not create temporary sibling for {}",
+    Err(CdfError::environment(format!(
+        "could not create temporary sibling for {} after 100 exclusive-name attempts; clear stale temporary files or choose an accessible directory",
         path.display()
     )))
 }
@@ -686,7 +692,111 @@ pub(crate) fn segment_relative_path(segment_id: &SegmentId) -> Result<String> {
 }
 
 pub(crate) fn io_error(context: impl Into<String>, error: std::io::Error) -> CdfError {
-    CdfError::internal(format!("{}: {error}", context.into()))
+    let context = context.into();
+    if let Some(mut classified) = cdf_kernel::embedded_cdf_error(&error) {
+        classified.message = format!("{context}: {}", classified.message);
+        return classified;
+    }
+    CdfError::environment(format!(
+        "{}: {error}; check the local path, permissions, free space, and process file limits before retrying",
+        context
+    ))
+}
+
+pub(crate) fn artifact_read_io_error(
+    context: impl Into<String>,
+    error: std::io::Error,
+) -> CdfError {
+    let context = context.into();
+    if let Some(mut classified) = cdf_kernel::embedded_cdf_error(&error) {
+        classified.message = format!("{context}: {}", classified.message);
+        return classified;
+    }
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::data(format!("{context}: {error}"))
+    } else {
+        CdfError::environment(format!(
+            "{context}: {error}; check the local path, permissions, device health, and process file limits before retrying"
+        ))
+    }
+}
+
+pub(crate) fn package_reader_error(
+    action: &str,
+    error: &(dyn std::error::Error + 'static),
+) -> CdfError {
+    let mut source = Some(error);
+    while let Some(current) = source {
+        if let Some(cdf_error) = current.downcast_ref::<CdfError>() {
+            let mut classified = cdf_error.clone();
+            classified.message = format!("{action}: {}", classified.message);
+            return classified;
+        }
+        if let Some(io_error) = current.downcast_ref::<std::io::Error>() {
+            if let Some(mut classified) = cdf_kernel::embedded_cdf_error(io_error) {
+                classified.message = format!("{action}: {}", classified.message);
+                return classified;
+            }
+            if matches!(
+                io_error.kind(),
+                std::io::ErrorKind::NotFound
+                    | std::io::ErrorKind::UnexpectedEof
+                    | std::io::ErrorKind::InvalidData
+                    | std::io::ErrorKind::NotADirectory
+                    | std::io::ErrorKind::IsADirectory
+            ) || cdf_kernel::is_filesystem_loop(io_error)
+            {
+                return CdfError::data(format!("{action}: {io_error}"));
+            }
+            return CdfError::environment(format!(
+                "{action}: {io_error}; check the local path, permissions, device health, and process file limits before retrying"
+            ));
+        }
+        source = current.source();
+    }
+    CdfError::data(format!("{action}: {error}"))
+}
+
+pub(crate) fn package_writer_error(
+    action: &str,
+    error: &(dyn std::error::Error + 'static),
+) -> CdfError {
+    let mut source = Some(error);
+    let mut io_message = None;
+    while let Some(current) = source {
+        if let Some(cdf_error) = current.downcast_ref::<CdfError>() {
+            let mut classified = cdf_error.clone();
+            classified.message = format!("{action}: {}", classified.message);
+            return classified;
+        }
+        if let Some(io_error) = current.downcast_ref::<std::io::Error>() {
+            if let Some(cdf_error) = io_error
+                .get_ref()
+                .and_then(|inner| inner.downcast_ref::<CdfError>())
+            {
+                let mut classified = cdf_error.clone();
+                classified.message = format!("{action}: {}", classified.message);
+                return classified;
+            }
+            io_message = Some(current.to_string());
+        }
+        source = current.source();
+    }
+    if let Some(io_message) = io_message {
+        CdfError::environment(format!(
+            "{action}: {io_message}; check the local path, permissions, free space, and process file limits before retrying"
+        ))
+    } else {
+        CdfError::data(format!("{action}: {error}"))
+    }
 }
 
 #[cfg(test)]
@@ -699,12 +809,102 @@ mod tests {
         writer::{FileWriter, IpcWriteOptions},
     };
     use arrow_schema::{DataType, Field, Schema};
+    use parquet::arrow::ArrowWriter;
     use sha2::{Digest, Sha256};
 
     use super::{
         ArtifactDurability, AtomicArtifactSink, HashingWriter, PublishBoundary, atomic_write,
-        create_temp_sibling, encode_canonical_segment_ipc, sync_directory, write_arrow_ipc_file,
+        create_temp_sibling, encode_canonical_segment_ipc, package_reader_error,
+        package_writer_error, sync_directory, write_arrow_ipc_file,
     };
+
+    struct FailingWriter(std::io::ErrorKind);
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _bytes: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(self.0, "injected writer failure"))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::new(self.0, "injected writer failure"))
+        }
+    }
+
+    struct TypedFailingWriter;
+
+    impl Write for TypedFailingWriter {
+        fn write(&mut self, _bytes: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other(cdf_kernel::CdfError::internal(
+                "typed sink invariant",
+            )))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::other(cdf_kernel::CdfError::internal(
+                "typed sink invariant",
+            )))
+        }
+    }
+
+    #[test]
+    fn canonical_writer_io_is_environment_and_preserves_typed_sink_errors() {
+        let schema = Schema::new(vec![Field::new("value", DataType::UInt64, false)]);
+        let batch = RecordBatch::try_new(
+            Arc::new(schema.clone()),
+            vec![Arc::new(UInt64Array::from(vec![1_u64]))],
+        )
+        .unwrap();
+        let error = encode_canonical_segment_ipc(
+            &mut FailingWriter(std::io::ErrorKind::PermissionDenied),
+            &schema,
+            &[batch],
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Environment);
+        assert!(error.message.contains("permissions"));
+
+        let mut host_writer = ArrowWriter::try_new(
+            FailingWriter(std::io::ErrorKind::PermissionDenied),
+            Arc::new(schema.clone()),
+            None,
+        )
+        .unwrap();
+        let host = host_writer.finish().unwrap_err();
+        let classified = package_writer_error("finish Parquet artifact", &host);
+        assert_eq!(classified.kind, cdf_kernel::ErrorKind::Environment);
+        assert!(classified.message.contains("permissions"));
+
+        let mut typed_writer =
+            ArrowWriter::try_new(TypedFailingWriter, Arc::new(schema), None).unwrap();
+        let typed = typed_writer.finish().unwrap_err();
+        let classified = package_writer_error("finish Parquet artifact", &typed);
+        assert_eq!(classified.kind, cdf_kernel::ErrorKind::Internal);
+        assert!(classified.message.contains("typed sink invariant"));
+    }
+
+    #[test]
+    fn package_reader_preserves_host_io_and_embedded_typed_errors() {
+        let host = arrow_schema::ArrowError::IoError(
+            "permission denied".to_owned(),
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied"),
+        );
+        let classified = package_reader_error("read package artifact", &host);
+        assert_eq!(classified.kind, cdf_kernel::ErrorKind::Environment);
+
+        let malformed = arrow_schema::ArrowError::IoError(
+            "truncated".to_owned(),
+            std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "truncated"),
+        );
+        let classified = package_reader_error("read package artifact", &malformed);
+        assert_eq!(classified.kind, cdf_kernel::ErrorKind::Data);
+
+        let typed = arrow_schema::ArrowError::IoError(
+            "typed".to_owned(),
+            std::io::Error::other(cdf_kernel::CdfError::internal("digest counter overflow")),
+        );
+        let classified = package_reader_error("read package artifact", &typed);
+        assert_eq!(classified.kind, cdf_kernel::ErrorKind::Internal);
+    }
 
     #[test]
     fn atomic_write_receipt_matches_published_bytes() {

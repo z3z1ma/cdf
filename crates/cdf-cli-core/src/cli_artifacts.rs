@@ -116,7 +116,7 @@ fn generate_error_docs(out_dir: &Path) -> Result<(), CliError> {
             "| `{}` | {} | {} | {} | {} | {} | `{}` |\n",
             mapping.code,
             error_area(mapping.code),
-            error_kind(mapping.exit_code),
+            error_kind(mapping.code, mapping.exit_code),
             mapping.exit_code,
             error_meaning(mapping.code),
             markdown_cell(&remediation),
@@ -130,7 +130,10 @@ fn error_area(code: &str) -> &str {
     code.split('-').nth(1).unwrap_or("INTERNAL")
 }
 
-fn error_kind(exit_code: i32) -> &'static str {
+fn error_kind(code: &str, exit_code: i32) -> &'static str {
+    if error_area(code) == "ENV" {
+        return "environment";
+    }
     match exit_code {
         4 => "auth",
         5 => "data",
@@ -155,6 +158,7 @@ fn representative_command(code: &str) -> &'static str {
         "CONTRACT" => "cdf contract show",
         "DEST" => "cdf plan",
         "DOCTOR" => "cdf doctor",
+        "ENV" => "cdf doctor",
         "PACKAGE" => "cdf package verify",
         "PROJECT" => "cdf validate",
         "RESOURCE" => "cdf inspect resources",
@@ -467,7 +471,13 @@ enum CompletionShell {
 mod tests {
     use std::fs;
 
-    use super::{check_cli_artifacts, default_artifact_dir};
+    use super::{check_cli_artifacts, default_artifact_dir, error_kind};
+
+    #[test]
+    fn environment_reference_kind_is_not_inferred_from_shared_exit_code() {
+        assert_eq!(error_kind("CDF-ENV-HOST", 70), "environment");
+        assert_eq!(error_kind("CDF-INTERNAL-UNEXPECTED", 70), "internal");
+    }
 
     #[test]
     fn cli_generated_artifacts_match_committed_snapshots() {

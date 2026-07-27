@@ -39,7 +39,10 @@ use crate::{
     quarantine::{
         for_each_quarantine_record_in_package_file, quarantine_record_count_in_package_file,
     },
-    storage::{io_error, normalize_artifact_path, package_path, sync_directory},
+    storage::{
+        artifact_read_io_error, io_error, normalize_artifact_path, package_path,
+        package_reader_error, sync_directory,
+    },
 };
 
 pub(crate) const SEGMENT_STREAM_MEMORY_CONSUMER: &str = "package-segment-stream";
@@ -237,7 +240,7 @@ impl DurableSegmentFile {
     pub fn open_file(&self) -> Result<std::fs::File> {
         let file = self.package_root.open_std_file(&self.entry.path)?;
         let metadata = file.metadata().map_err(|error| {
-            io_error(
+            artifact_read_io_error(
                 format!("inspect durable segment {}", self.entry.path),
                 error,
             )
@@ -284,10 +287,9 @@ impl<R: Read> Read for VerifiedIdentityDigestReader<R> {
                 return Ok(0);
             }
             self.hasher.update(extra);
-            self.byte_count = self
-                .byte_count
-                .checked_add(1)
-                .ok_or_else(|| io::Error::other("identity artifact byte count overflow"))?;
+            self.byte_count = self.byte_count.checked_add(1).ok_or_else(|| {
+                io::Error::other(CdfError::internal("identity artifact byte count overflow"))
+            })?;
             self.exceeded_expected_length = true;
             return Ok(0);
         }
@@ -299,8 +301,14 @@ impl<R: Read> Read for VerifiedIdentityDigestReader<R> {
         self.hasher.update(&buffer[..read]);
         self.byte_count = self
             .byte_count
-            .checked_add(u64::try_from(read).map_err(io::Error::other)?)
-            .ok_or_else(|| io::Error::other("identity artifact byte count overflow"))?;
+            .checked_add(u64::try_from(read).map_err(|_| {
+                io::Error::other(CdfError::internal(
+                    "identity artifact byte count exceeds u64",
+                ))
+            })?)
+            .ok_or_else(|| {
+                io::Error::other(CdfError::internal("identity artifact byte count overflow"))
+            })?;
         Ok(read)
     }
 }
@@ -318,7 +326,7 @@ impl<R: Read> VerifiedIdentityDigestReader<R> {
 
     fn finish(mut self, artifact: &VerifiedIdentityObject) -> Result<()> {
         io::copy(&mut self, &mut io::sink()).map_err(|error| {
-            io_error(
+            artifact_read_io_error(
                 format!("read verified identity artifact {}", artifact.relative_path),
                 error,
             )
@@ -369,7 +377,7 @@ impl VerifiedIdentityObject {
         let mut file = self.package_root.open_std_file(&self.relative_path)?;
         let mut hasher = Sha256::new();
         let byte_count = io::copy(&mut file, &mut hasher).map_err(|error| {
-            io_error(
+            artifact_read_io_error(
                 format!("hash verified identity artifact {}", self.relative_path),
                 error,
             )
@@ -382,7 +390,7 @@ impl VerifiedIdentityObject {
             )));
         }
         file.seek(SeekFrom::Start(0)).map_err(|error| {
-            io_error(
+            artifact_read_io_error(
                 format!("rewind verified identity artifact {}", self.relative_path),
                 error,
             )
@@ -1274,13 +1282,12 @@ impl PackageReader {
             let reader = ParquetRecordBatchReaderBuilder::try_new(
                 self.package_root.open_std_file(&entry.path)?,
             )
-            .map_err(|error| CdfError::data(format!("read dedup provenance metadata: {error}")))?
+            .map_err(|error| package_reader_error("read dedup provenance metadata", &error))?
             .build()
-            .map_err(|error| CdfError::data(format!("open dedup provenance rows: {error}")))?;
+            .map_err(|error| package_reader_error("open dedup provenance rows", &error))?;
             for batch in reader {
-                let batch = batch.map_err(|error| {
-                    CdfError::data(format!("read dedup provenance rows: {error}"))
-                })?;
+                let batch = batch
+                    .map_err(|error| package_reader_error("read dedup provenance rows", &error))?;
                 let dropped = dedup_u64_column(&batch, "package_row_ordinal")?;
                 let kept = dedup_u64_column(&batch, "kept_package_row_ordinal")?;
                 for row in 0..batch.num_rows() {

@@ -352,10 +352,9 @@ impl AddResourceRequest {
     ) -> Result<Self, CliError> {
         let (source, resource) = split_resource_id(&args.resource_id)?;
         let current_dir = env::current_dir().map_err(|error| {
-            CliError::mapped(
-                CdfError::internal(format!("read current directory: {error}")),
-                error_catalog::PROJECT_IO,
-            )
+            CliError::from(CdfError::environment(format!(
+                "read current directory: {error}; change to an accessible directory before retrying"
+            )))
         })?;
         let plan = registry
             .plan_add(

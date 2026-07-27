@@ -38,9 +38,8 @@ impl ResidualDecisionRuns {
         memory: Option<Arc<dyn MemoryCoordinator>>,
     ) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
-        fs::create_dir(&root).map_err(|error| {
-            CdfError::data(format!("create residual spill {}: {error}", root.display()))
-        })?;
+        fs::create_dir(&root)
+            .map_err(|error| residual_io("create residual spill", &root, error))?;
         let reservation = spill
             .try_reserve(1)?
             .ok_or_else(|| CdfError::data("residual decision spill budget is exhausted"))?;
@@ -79,14 +78,14 @@ impl ResidualDecisionRuns {
         )?);
         for decision in decisions {
             serde_json::to_writer(&mut writer, &decision)
-                .map_err(|error| CdfError::data(format!("write residual decision: {error}")))?;
+                .map_err(|error| residual_json_write("write residual decision", error))?;
             writer
                 .write_all(b"\n")
-                .map_err(|error| CdfError::data(format!("write residual decision: {error}")))?;
+                .map_err(|error| residual_io("write residual decision", &self.root, error))?;
         }
         writer
             .flush()
-            .map_err(|error| CdfError::data(format!("flush residual decision run: {error}")))?;
+            .map_err(|error| residual_io("flush residual decision run", &self.root, error))?;
         self.run_count += 1;
         Ok(())
     }
@@ -114,10 +113,10 @@ impl ResidualDecisionRuns {
             level += 1;
             count = next_count;
         }
-        let reader =
-            BufReader::new(File::open(self.run_path(level, 0)).map_err(|error| {
-                CdfError::data(format!("open residual decision result: {error}"))
-            })?);
+        let result_path = self.run_path(level, 0);
+        let reader = BufReader::new(File::open(&result_path).map_err(|error| {
+            residual_scratch_read("open residual decision result", &result_path, error)
+        })?);
         self.run_count = 1;
         Ok(Some(ResidualDecisionReader {
             _runs: self,
@@ -143,17 +142,18 @@ impl ResidualDecisionReader {
             return Ok(None);
         };
         let mut line = String::new();
-        if reader
-            .read_line(&mut line)
-            .map_err(|error| CdfError::data(format!("read residual decision: {error}")))?
-            == 0
+        if reader.read_line(&mut line).map_err(|error| {
+            residual_scratch_read("read residual decision", Path::new("<stream>"), error)
+        })? == 0
         {
             self.reader = None;
             return Ok(None);
         }
-        serde_json::from_str(&line)
-            .map(Some)
-            .map_err(|error| CdfError::data(format!("decode residual decision: {error}")))
+        serde_json::from_str(&line).map(Some).map_err(|error| {
+            CdfError::internal(format!(
+                "decode CDF-managed residual decision scratch: {error}"
+            ))
+        })
     }
 }
 
@@ -191,9 +191,9 @@ fn merge_runs(
     let mut readers = inputs
         .iter()
         .map(|path| {
-            File::open(path).map(BufReader::new).map_err(|error| {
-                CdfError::data(format!("open residual run {}: {error}", path.display()))
-            })
+            File::open(path)
+                .map(BufReader::new)
+                .map_err(|error| residual_scratch_read("open residual run", path, error))
         })
         .collect::<Result<Vec<_>>>()?;
     let mut heap = BinaryHeap::new();
@@ -202,13 +202,13 @@ fn merge_runs(
             heap.push(HeapItem { decision, reader });
         }
     }
-    let mut writer = BufWriter::new(BudgetedSpillFile::create(output, reservation)?);
+    let mut writer = BufWriter::new(BudgetedSpillFile::create(output.clone(), reservation)?);
     while let Some(item) = heap.pop() {
         serde_json::to_writer(&mut writer, &item.decision)
-            .map_err(|error| CdfError::data(format!("merge residual decision: {error}")))?;
+            .map_err(|error| residual_json_write("merge residual decision", error))?;
         writer
             .write_all(b"\n")
-            .map_err(|error| CdfError::data(format!("merge residual decision: {error}")))?;
+            .map_err(|error| residual_io("merge residual decision", &output, error))?;
         if let Some(decision) = read_decision(&mut readers[item.reader])? {
             heap.push(HeapItem {
                 decision,
@@ -218,19 +218,153 @@ fn merge_runs(
     }
     writer
         .flush()
-        .map_err(|error| CdfError::data(format!("flush residual merge: {error}")))
+        .map_err(|error| residual_io("flush residual merge", &output, error))
 }
 
 fn read_decision(reader: &mut BufReader<File>) -> Result<Option<ResidualDecisionArtifact>> {
     let mut line = String::new();
     if reader
         .read_line(&mut line)
-        .map_err(|error| CdfError::data(format!("read residual run: {error}")))?
+        .map_err(|error| residual_scratch_read("read residual run", Path::new("<stream>"), error))?
         == 0
     {
         return Ok(None);
     }
-    serde_json::from_str(&line)
-        .map(Some)
-        .map_err(|error| CdfError::data(format!("decode residual run: {error}")))
+    serde_json::from_str(&line).map(Some).map_err(|error| {
+        CdfError::internal(format!("decode CDF-managed residual decision run: {error}"))
+    })
+}
+
+fn residual_io(action: &str, path: &Path, error: std::io::Error) -> CdfError {
+    if let Some(error) = embedded_cdf_source(&error) {
+        return error;
+    }
+    CdfError::environment(format!(
+        "{action} {}: {error}; check scratch storage, local permissions, free space, and process file limits before retrying",
+        path.display()
+    ))
+}
+
+fn residual_scratch_read(action: &str, path: &Path, error: std::io::Error) -> CdfError {
+    if let Some(error) = embedded_cdf_source(&error) {
+        return error;
+    }
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::internal(format!(
+            "{action} {}: invalid CDF-managed scratch: {error}",
+            path.display()
+        ))
+    } else {
+        residual_io(action, path, error)
+    }
+}
+
+fn residual_json_write(action: &str, error: serde_json::Error) -> CdfError {
+    if let Some(error) = embedded_cdf_source(&error) {
+        return error;
+    }
+    if error.is_io() {
+        CdfError::environment(format!(
+            "{action}: {error}; check scratch storage, free space, and process file limits before retrying"
+        ))
+    } else {
+        CdfError::internal(format!("{action}: {error}"))
+    }
+}
+
+fn embedded_cdf_source(error: &(dyn std::error::Error + 'static)) -> Option<CdfError> {
+    let mut source = Some(error);
+    while let Some(current) = source {
+        if let Some(error) = current.downcast_ref::<CdfError>() {
+            return Some(error.clone());
+        }
+        if let Some(error) = current
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::get_ref)
+            .and_then(|error| error.downcast_ref::<CdfError>())
+        {
+            return Some(error.clone());
+        }
+        source = current.source();
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::variant_capture::{ResidualRuntimeVerdict, ResidualTypedProjection};
+    use cdf_contract::{CanonicalArrowType, RedactionDecision};
+    use cdf_kernel::BatchId;
+
+    fn decision() -> ResidualDecisionArtifact {
+        ResidualDecisionArtifact {
+            version: 1,
+            observation_id: None,
+            batch_id: BatchId::new("batch-1").unwrap(),
+            source_row_ordinal: 0,
+            source_path: vec!["value".to_owned()],
+            observed_physical_type: CanonicalArrowType::Boolean,
+            expected_effective_type: None,
+            verdict: ResidualRuntimeVerdict::Captured,
+            rule_id: "residual".to_owned(),
+            residual_encoding: "json-v1".to_owned(),
+            typed_projection: ResidualTypedProjection::Absent,
+            redaction: RedactionDecision::Preserve,
+        }
+    }
+
+    #[test]
+    fn governed_residual_spill_exhaustion_remains_data() {
+        let root = tempfile::tempdir().unwrap();
+        let spill: Arc<dyn SpillBudgetCoordinator> =
+            Arc::new(cdf_runtime::FixedSpillBudget::new(32).unwrap());
+        let mut runs = ResidualDecisionRuns::create(root.path().join("runs"), spill, None).unwrap();
+
+        let error = runs.push(vec![decision()]).unwrap_err();
+
+        assert_eq!(
+            error.kind,
+            cdf_kernel::ErrorKind::Data,
+            "unexpected residual spill error: {error:?}"
+        );
+        assert!(error.message.contains("spill budget"));
+    }
+
+    #[test]
+    fn missing_and_invalid_private_runs_are_internal() {
+        let root = tempfile::tempdir().unwrap();
+        let spill: Arc<dyn SpillBudgetCoordinator> =
+            Arc::new(cdf_runtime::FixedSpillBudget::new(1024 * 1024).unwrap());
+        let mut runs = ResidualDecisionRuns::create(root.path().join("runs"), spill, None).unwrap();
+        runs.push(vec![decision()]).unwrap();
+        fs::remove_file(runs.run_path(0, 0)).unwrap();
+        let error = match runs.finish() {
+            Ok(_) => panic!("missing private run must fail"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
+
+        let invalid = root.path().join("invalid.jsonl");
+        fs::write(&invalid, [0xff, b'\n']).unwrap();
+        let mut reader = BufReader::new(File::open(invalid).unwrap());
+        let error = read_decision(&mut reader).unwrap_err();
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
+        assert!(error.message.contains("CDF-managed scratch"));
+
+        let directory = residual_scratch_read(
+            "read residual run",
+            Path::new("<stream>"),
+            std::io::Error::new(std::io::ErrorKind::IsADirectory, "is a directory"),
+        );
+        assert_eq!(directory.kind, cdf_kernel::ErrorKind::Internal);
+    }
 }

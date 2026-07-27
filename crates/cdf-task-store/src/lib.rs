@@ -34,10 +34,9 @@ const AUTHORITY_TAG: u8 = 2;
 const FOOTER_TAG: u8 = u8::MAX;
 const FOOTER_BYTES: u64 = 1 + 8 + 8;
 const SQLITE_PAGE_BYTES: u64 = 4096;
-// These mirror the bundled SQLite B-tree implementation: BTCURSOR_MAX_DEPTH is 20, balancing
-// replaces at most three old sibling pages with five new pages, and therefore allocates at most
-// two structural pages per level. Eight extra pages cover the root, schema, and conservative
-// record-header slack. Capacity is admitted before journal-free mutation, never after SQLITE_FULL.
+const SQLITE_INDEX_MAX_LOCAL_PAYLOAD_BYTES: u64 = 1002;
+// These mirror bundled SQLite: BTCURSOR_MAX_DEPTH is 20 and balancing allocates at most two net
+// pages per level. Eight pages cover the root, schema, and conservative record-header slack.
 const SQLITE_BTREE_MAX_DEPTH: u64 = 20;
 const SQLITE_BALANCE_NEW_PAGES_PER_LEVEL: u64 = 2;
 const SQLITE_INSERT_GUARD_PAGES: u64 = 8;
@@ -338,7 +337,6 @@ impl ExternalTaskStore {
             spill,
             spill_reservation,
             connection,
-            database_path,
             payload: Vec::new(),
             task_count: 0,
             poisoned: false,
@@ -375,8 +373,8 @@ impl ExternalTaskStore {
             ));
         }
         let path = self.path_for_reference(&reference)?;
-        let file =
-            File::open(&path).map_err(|error| io_error("open task-set artifact", &path, error))?;
+        let file = File::open(&path)
+            .map_err(|error| artifact_io_error("open task-set artifact", &path, error))?;
         let mut cursor = ExternalTaskSetReadCursor {
             file,
             path,
@@ -416,12 +414,12 @@ impl ExternalTaskStore {
             .checked_sub(FOOTER_BYTES)
             .ok_or_else(|| CdfError::data("task-set artifact is shorter than its footer"))?;
         let mut tail = File::open(&cursor.path)
-            .map_err(|error| io_error("open task-set trailer", &cursor.path, error))?;
+            .map_err(|error| artifact_io_error("open task-set trailer", &cursor.path, error))?;
         tail.seek(SeekFrom::Start(footer_offset))
-            .map_err(|error| io_error("seek task-set footer", &cursor.path, error))?;
+            .map_err(|error| artifact_io_error("seek task-set footer", &cursor.path, error))?;
         let mut footer = [0_u8; FOOTER_BYTES as usize];
         tail.read_exact(&mut footer)
-            .map_err(|error| io_error("read task-set footer", &cursor.path, error))?;
+            .map_err(|error| artifact_io_error("read task-set footer", &cursor.path, error))?;
         if footer[0] != FOOTER_TAG {
             return Err(CdfError::data("task-set artifact has invalid footer tag"));
         }
@@ -447,10 +445,11 @@ impl ExternalTaskStore {
             ));
         }
         tail.seek(SeekFrom::Start(authority_offset))
-            .map_err(|error| io_error("seek task-set authority", &cursor.path, error))?;
+            .map_err(|error| artifact_io_error("seek task-set authority", &cursor.path, error))?;
         let mut authority_tag = [0_u8; 1];
-        tail.read_exact(&mut authority_tag)
-            .map_err(|error| io_error("read task-set authority tag", &cursor.path, error))?;
+        tail.read_exact(&mut authority_tag).map_err(|error| {
+            artifact_io_error("read task-set authority tag", &cursor.path, error)
+        })?;
         if authority_tag[0] != AUTHORITY_TAG {
             return Err(CdfError::data(
                 "task-set artifact has invalid authority tag",
@@ -458,7 +457,9 @@ impl ExternalTaskStore {
         }
         let mut authority_length_bytes = [0_u8; 8];
         tail.read_exact(&mut authority_length_bytes)
-            .map_err(|error| io_error("read task-set authority length", &cursor.path, error))?;
+            .map_err(|error| {
+                artifact_io_error("read task-set authority length", &cursor.path, error)
+            })?;
         let authority_length = u64::from_be_bytes(authority_length_bytes);
         if authority_length == 0 || authority_length > maximum_authority_bytes {
             return Err(CdfError::data(format!(
@@ -476,7 +477,9 @@ impl ExternalTaskStore {
         }
         let mut expected_authority_digest = [0_u8; 32];
         tail.read_exact(&mut expected_authority_digest)
-            .map_err(|error| io_error("read task-set authority digest", &cursor.path, error))?;
+            .map_err(|error| {
+                artifact_io_error("read task-set authority digest", &cursor.path, error)
+            })?;
         let authority_request = ReservationRequest::new(
             ConsumerKey::new("external-task-set-authority", MemoryClass::Control)?,
             authority_length,
@@ -489,7 +492,7 @@ impl ExternalTaskStore {
             })?
         ];
         tail.read_exact(&mut authority)
-            .map_err(|error| io_error("read task-set authority", &cursor.path, error))?;
+            .map_err(|error| artifact_io_error("read task-set authority", &cursor.path, error))?;
         let observed_authority_digest: [u8; 32] = Sha256::digest(&authority).into();
         if observed_authority_digest != expected_authority_digest {
             return Err(CdfError::data(
@@ -598,7 +601,6 @@ pub struct CanonicalTaskSetBuilder {
     spill: Arc<dyn SpillBudgetCoordinator>,
     spill_reservation: SpillReservation,
     connection: Connection,
-    database_path: PathBuf,
     payload: Vec<u8>,
     task_count: u64,
     poisoned: bool,
@@ -690,16 +692,22 @@ impl CanonicalTaskSetBuilder {
             params![sort_key, self.payload],
         ) {
             Ok(_) => {}
-            Err(error) if is_sqlite_full(&error) => {
-                self.poisoned = true;
-                return Err(CdfError::internal(
-                    "canonical task index exhausted its pre-admitted SQLite insertion capacity",
-                ));
-            }
             Err(error) if is_sqlite_constraint(&error) => {
                 return Err(CdfError::data(
                     "canonical task input repeats one ordering key with conflicting payloads",
                 ));
+            }
+            Err(error) if is_sqlite_full(&error) => {
+                self.poisoned = true;
+                let admitted_pages = self.spill_reservation.bytes() / SQLITE_PAGE_BYTES;
+                if sqlite_page_count(&self.connection)
+                    .is_ok_and(|page_count| page_count >= admitted_pages)
+                {
+                    return Err(CdfError::internal(format!(
+                        "canonical task insertion reached its pre-admitted SQLite page ceiling: {error}"
+                    )));
+                }
+                return Err(sqlite_error("insert canonical task", error));
             }
             Err(error) => {
                 self.poisoned = true;
@@ -861,21 +869,26 @@ impl CanonicalTaskSetBuilder {
             .checked_add(payload_bytes)
             .and_then(|bytes| bytes.checked_add(128))
             .ok_or_else(|| CdfError::data("canonical task index record size overflowed u64"))?;
+        if sqlite_single_leaf_fits(&self.connection, "tasks", record_bytes)? {
+            return Ok(());
+        }
         let record_pages = record_bytes
             .div_ceil(SQLITE_PAGE_BYTES.saturating_sub(4))
             .saturating_add(1);
+        let current_pages = sqlite_page_count(&self.connection)?;
         let structural_pages = SQLITE_BTREE_MAX_DEPTH
             .saturating_mul(SQLITE_BALANCE_NEW_PAGES_PER_LEVEL)
             .saturating_add(SQLITE_INSERT_GUARD_PAGES);
-        let current_pages = fs::metadata(&self.database_path)
-            .map_err(|error| io_error("measure canonical task index", &self.database_path, error))?
-            .len()
-            .div_ceil(SQLITE_PAGE_BYTES);
-        let required_bytes = current_pages
+        let required_pages = current_pages
             .checked_add(record_pages)
             .and_then(|pages| pages.checked_add(structural_pages))
-            .and_then(|pages| pages.checked_mul(SQLITE_PAGE_BYTES))
             .ok_or_else(|| CdfError::data("canonical task index capacity overflowed u64"))?;
+        let required_bytes = required_pages
+            .checked_mul(SQLITE_PAGE_BYTES)
+            .ok_or_else(|| CdfError::data("canonical task index capacity overflowed u64"))?;
+        if self.spill_reservation.bytes() >= required_bytes {
+            return Ok(());
+        }
         while self.spill_reservation.bytes() < required_bytes {
             self.grow_spill()?;
         }
@@ -1395,7 +1408,7 @@ impl ExternalTaskSetReader {
             Ok(0) => {}
             Ok(_) => return Err(CdfError::data("task-set artifact has trailing bytes")),
             Err(error) => {
-                return Err(io_error(
+                return Err(artifact_io_error(
                     "read task-set trailing byte",
                     &self.cursor.path,
                     error,
@@ -1928,7 +1941,7 @@ impl ExternalTaskSetReadCursor {
         let mut bytes = [0_u8; N];
         self.file
             .read_exact(&mut bytes)
-            .map_err(|error| io_error("read task-set artifact", &self.path, error))?;
+            .map_err(|error| artifact_io_error("read task-set artifact", &self.path, error))?;
         self.observe(&bytes)?;
         Ok(bytes)
     }
@@ -1937,7 +1950,7 @@ impl ExternalTaskSetReadCursor {
         let mut bytes = vec![0_u8; length];
         self.file
             .read_exact(&mut bytes)
-            .map_err(|error| io_error("read task-set artifact", &self.path, error))?;
+            .map_err(|error| artifact_io_error("read task-set artifact", &self.path, error))?;
         self.observe(&bytes)?;
         Ok(bytes)
     }
@@ -2047,8 +2060,10 @@ impl Write for HashingWriter {
         self.hasher.update(&bytes[..written]);
         self.bytes = self
             .bytes
-            .checked_add(u64::try_from(written).map_err(io::Error::other)?)
-            .ok_or_else(|| io::Error::other("task-set byte count overflow"))?;
+            .checked_add(u64::try_from(written).map_err(|_| {
+                io::Error::other(CdfError::internal("task-set byte count exceeds u64"))
+            })?)
+            .ok_or_else(|| io::Error::other(CdfError::internal("task-set byte count overflow")))?;
         Ok(written)
     }
 
@@ -2084,11 +2099,11 @@ fn install_content_addressed(
 }
 
 fn verify_file(path: &Path, expected_bytes: u64, expected_sha256: &str) -> Result<()> {
-    let mut file =
-        File::open(path).map_err(|error| io_error("verify task-set artifact", path, error))?;
+    let mut file = File::open(path)
+        .map_err(|error| artifact_io_error("verify task-set artifact", path, error))?;
     let mut hasher = Sha256::new();
     let bytes = io::copy(&mut file, &mut hasher)
-        .map_err(|error| io_error("hash task-set artifact", path, error))?;
+        .map_err(|error| artifact_io_error("hash task-set artifact", path, error))?;
     let digest = format!("sha256:{}", hex::encode(hasher.finalize()));
     if bytes != expected_bytes || digest != expected_sha256 {
         return Err(CdfError::contract(format!(
@@ -2134,6 +2149,11 @@ fn configure_canonical_index(connection: &Connection, cache_bytes: u64) -> Resul
         .map_err(|error| sqlite_error("configure canonical task index cache", error))
 }
 
+fn available_spill_bytes(spill: &dyn SpillBudgetCoordinator) -> u64 {
+    let snapshot = spill.snapshot();
+    snapshot.budget_bytes.saturating_sub(snapshot.current_bytes)
+}
+
 fn set_page_ceiling(connection: &Connection, reserved_bytes: u64) -> Result<()> {
     let pages = reserved_bytes / SQLITE_PAGE_BYTES;
     if pages < 2 {
@@ -2150,19 +2170,6 @@ fn set_page_ceiling(connection: &Connection, reserved_bytes: u64) -> Result<()> 
         .map_err(|error| sqlite_error("raise canonical task index page ceiling", error))
 }
 
-fn available_spill_bytes(spill: &dyn SpillBudgetCoordinator) -> u64 {
-    let snapshot = spill.snapshot();
-    snapshot.budget_bytes.saturating_sub(snapshot.current_bytes)
-}
-
-fn is_sqlite_full(error: &rusqlite::Error) -> bool {
-    matches!(
-        error,
-        rusqlite::Error::SqliteFailure(failure, _)
-            if failure.code == ErrorCode::DiskFull
-    )
-}
-
 fn is_sqlite_constraint(error: &rusqlite::Error) -> bool {
     matches!(
         error,
@@ -2171,8 +2178,86 @@ fn is_sqlite_constraint(error: &rusqlite::Error) -> bool {
     )
 }
 
+fn sqlite_page_count(connection: &Connection) -> Result<u64> {
+    let page_count: i64 = connection
+        .query_row("PRAGMA page_count", [], |row| row.get(0))
+        .map_err(|error| sqlite_error("inspect canonical task page count", error))?;
+    u64::try_from(page_count)
+        .map_err(|_| CdfError::internal("canonical task SQLite page count is negative"))
+}
+
+fn sqlite_single_leaf_fits(
+    connection: &Connection,
+    tree_name: &str,
+    required_bytes: u64,
+) -> Result<bool> {
+    if required_bytes > SQLITE_INDEX_MAX_LOCAL_PAYLOAD_BYTES {
+        return Ok(false);
+    }
+    let mut statement = connection
+        .prepare("SELECT pagetype, unused FROM dbstat WHERE name = ?1 LIMIT 2")
+        .map_err(|error| sqlite_error("prepare canonical task leaf inspection", error))?;
+    let mut rows = statement
+        .query(params![tree_name])
+        .map_err(|error| sqlite_error("inspect canonical task leaf capacity", error))?;
+    let Some(row) = rows
+        .next()
+        .map_err(|error| sqlite_error("read canonical task leaf capacity", error))?
+    else {
+        return Err(CdfError::internal(format!(
+            "canonical task SQLite tree `{tree_name}` has no root page"
+        )));
+    };
+    let page_type: String = row
+        .get(0)
+        .map_err(|error| sqlite_error("read canonical task page type", error))?;
+    let unused_bytes: i64 = row
+        .get(1)
+        .map_err(|error| sqlite_error("read canonical task unused bytes", error))?;
+    let unused_bytes = u64::try_from(unused_bytes)
+        .map_err(|_| CdfError::internal("canonical task SQLite unused bytes are negative"))?;
+    let has_second_page = rows
+        .next()
+        .map_err(|error| sqlite_error("read canonical task leaf count", error))?
+        .is_some();
+    Ok(page_type == "leaf" && !has_second_page && unused_bytes >= required_bytes)
+}
+
 fn sqlite_error(action: &str, error: rusqlite::Error) -> CdfError {
-    CdfError::data(format!("{action}: {error}"))
+    if sqlite_host_error(&error) {
+        CdfError::environment(format!(
+            "{action} in CDF-managed task scratch: {error}; check temporary storage, permissions, free space, memory, and process file limits before retrying"
+        ))
+    } else {
+        CdfError::internal(format!("{action} in CDF-managed task scratch: {error}"))
+    }
+}
+
+fn is_sqlite_full(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(failure, _) if failure.code == ErrorCode::DiskFull
+    )
+}
+
+fn sqlite_host_error(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(failure, _)
+            if matches!(
+                failure.code,
+                ErrorCode::PermissionDenied
+                    | ErrorCode::OutOfMemory
+                    | ErrorCode::ReadOnly
+                    | ErrorCode::SystemIoFailure
+                    | ErrorCode::NotFound
+                    | ErrorCode::DiskFull
+                    | ErrorCode::CannotOpen
+                    | ErrorCode::FileLockingProtocolFailed
+                    | ErrorCode::NoLargeFileSupport
+                    | ErrorCode::AuthorizationForStatementDenied
+            )
+    )
 }
 
 fn validate_relative_component(value: &str, label: &str) -> Result<()> {
@@ -2202,7 +2287,34 @@ fn require_token(label: &str, value: &str) -> Result<()> {
 }
 
 fn io_error(action: &str, path: &Path, error: io::Error) -> CdfError {
-    CdfError::data(format!("{action} {}: {error}", path.display()))
+    if let Some(mut classified) = cdf_kernel::embedded_cdf_error(&error) {
+        classified.message = format!("{action} {}: {}", path.display(), classified.message);
+        return classified;
+    }
+    CdfError::environment(format!(
+        "{action} {}: {error}; check the local path, permissions, temporary storage, and process file limits before retrying",
+        path.display()
+    ))
+}
+
+fn artifact_io_error(action: &str, path: &Path, error: io::Error) -> CdfError {
+    if let Some(mut classified) = cdf_kernel::embedded_cdf_error(&error) {
+        classified.message = format!("{action} {}: {}", path.display(), classified.message);
+        return classified;
+    }
+    if matches!(
+        error.kind(),
+        io::ErrorKind::NotFound
+            | io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::InvalidData
+            | io::ErrorKind::NotADirectory
+            | io::ErrorKind::IsADirectory
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::data(format!("{action} {}: {error}", path.display()))
+    } else {
+        io_error(action, path, error)
+    }
 }
 
 #[cfg(test)]
@@ -2215,6 +2327,47 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[test]
+    fn sqlite_host_failure_is_environment_but_scratch_invariant_is_internal() {
+        let host = sqlite_error(
+            "open canonical task index",
+            rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+                None,
+            ),
+        );
+        assert_eq!(host.kind, cdf_kernel::ErrorKind::Environment);
+        assert!(host.message.contains("temporary storage"));
+
+        let invariant = sqlite_error("decode canonical task row", rusqlite::Error::InvalidQuery);
+        assert_eq!(invariant.kind, cdf_kernel::ErrorKind::Internal);
+    }
+
+    #[test]
+    fn task_artifact_io_separates_missing_data_from_host_failure() {
+        let path = Path::new("tasks.cdf");
+        let missing = artifact_io_error(
+            "open task-set artifact",
+            path,
+            io::Error::new(io::ErrorKind::NotFound, "missing"),
+        );
+        assert_eq!(missing.kind, cdf_kernel::ErrorKind::Data);
+
+        let directory = artifact_io_error(
+            "read task-set artifact",
+            path,
+            io::Error::new(io::ErrorKind::IsADirectory, "is a directory"),
+        );
+        assert_eq!(directory.kind, cdf_kernel::ErrorKind::Data);
+
+        let host = artifact_io_error(
+            "open task-set artifact",
+            path,
+            io::Error::new(io::ErrorKind::PermissionDenied, "denied"),
+        );
+        assert_eq!(host.kind, cdf_kernel::ErrorKind::Environment);
+    }
 
     #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
     struct SyntheticTask {
@@ -2385,6 +2538,26 @@ mod tests {
             ContentStoreNamespace::new("planner-artifacts").unwrap(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn unavailable_temporary_directory_is_environment_owned() {
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join("planner-artifacts"), b"not a directory").unwrap();
+        let store = ExternalTaskStore::new(
+            root.path(),
+            ContentStoreNamespace::new("planner-artifacts").unwrap(),
+        )
+        .unwrap();
+
+        let error = match store.temporary_workspace("audit") {
+            Ok(_) => panic!("a file in place of the temporary root must fail"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Environment);
+        assert!(error.message.contains("temporary"));
+        assert!(error.message.contains("process file limits"));
     }
 
     fn limits() -> TaskSetLimits {
@@ -3144,7 +3317,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_builder_disk_exhaustion_discards_scratch_and_leases() {
+    fn canonical_builder_configured_spill_exhaustion_is_data_and_discards_scratch() {
         let root = TempDir::new().unwrap();
         let store = store(&root);
         let (memory, spill) = authorities(256 * 1024, 256 * 1024);
@@ -3184,6 +3357,7 @@ mod tests {
                     .err()
             })
             .expect("bounded spill must terminate canonical insertion");
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
         assert!(error.message.contains("spill"));
         assert!(
             !builder
@@ -3214,6 +3388,83 @@ mod tests {
         assert_eq!(spill.snapshot().current_bytes, 0);
         let scratch = root.path().join("planner-artifacts/scratch");
         assert_eq!(fs::read_dir(scratch).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn canonical_builder_admits_multi_page_insert_before_sqlite_mutation() {
+        let root = TempDir::new().unwrap();
+        let store = store(&root);
+        let (memory, spill) = authorities(512 * 1024, 1024 * 1024);
+        let spill: Arc<dyn SpillBudgetCoordinator> = Arc::new(spill);
+        let limits = CanonicalTaskSetLimits {
+            tasks: TaskSetLimits {
+                maximum_task_bytes: 64 * 1024,
+                maximum_authority_bytes: 4096,
+                writer_buffer_bytes: 8192,
+            },
+            ..canonical_limits()
+        };
+        let mut builder = store
+            .canonical_builder(
+                "multi-page-v1",
+                limits,
+                Arc::clone(&memory),
+                Arc::clone(&spill),
+            )
+            .unwrap();
+        let initial_reservation = builder.spill_reservation.bytes();
+        assert_eq!(initial_reservation, 16 * 1024);
+        let payload = vec![7_u8; 50 * 1024];
+
+        builder
+            .push_with(b"multi-page", |output| {
+                output
+                    .write_all(&payload)
+                    .map_err(|error| CdfError::data(format!("encode multi-page task: {error}")))
+            })
+            .unwrap();
+
+        assert!(builder.spill_reservation.bytes() > initial_reservation);
+        assert_eq!(builder.task_count(), 1);
+    }
+
+    #[test]
+    fn canonical_builder_two_page_minimum_accepts_a_tiny_insert() {
+        let root = TempDir::new().unwrap();
+        let store = store(&root);
+        let (memory, spill) = authorities(128 * 1024, SQLITE_PAGE_BYTES * 2);
+        let spill: Arc<dyn SpillBudgetCoordinator> = Arc::new(spill);
+        let limits = CanonicalTaskSetLimits {
+            spill_growth_bytes: SQLITE_PAGE_BYTES * 2,
+            minimum_initial_spill_bytes: SQLITE_PAGE_BYTES * 2,
+            ..canonical_limits()
+        };
+        let mut builder = store
+            .canonical_builder("tiny-v1", limits, Arc::clone(&memory), Arc::clone(&spill))
+            .unwrap();
+
+        builder
+            .push_with(b"k", |output| {
+                output
+                    .write_all(b"x")
+                    .map_err(|error| CdfError::data(format!("encode tiny task: {error}")))
+            })
+            .unwrap();
+
+        assert_eq!(builder.spill_reservation.bytes(), SQLITE_PAGE_BYTES * 2);
+        assert_eq!(builder.task_count(), 1);
+
+        let oversized_local = vec![7_u8; 1200];
+        let error = builder
+            .push_with(b"overflow", |output| {
+                output
+                    .write_all(&oversized_local)
+                    .map_err(|error| CdfError::data(format!("encode overflow task: {error}")))
+            })
+            .unwrap_err();
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+        assert!(error.message.contains("spill budget"));
+        assert_eq!(builder.task_count(), 1);
     }
 
     #[test]

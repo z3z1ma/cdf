@@ -110,8 +110,7 @@ pub(crate) fn rewrite_manifest_lifecycle(
         "package lifecycle status",
     )?;
     write_checked(writer, b"\"}", "package lifecycle")?;
-    std::io::copy(&mut reader, writer)
-        .map_err(|error| CdfError::internal(format!("copy package manifest suffix: {error}")))?;
+    copy_manifest_suffix(&mut reader, writer)?;
     Ok(())
 }
 
@@ -154,8 +153,7 @@ pub(crate) fn rewrite_manifest_archives(
     let first = read_non_whitespace_byte(&mut reader)?
         .ok_or_else(|| CdfError::data("package manifest identity ended before its object"))?;
     copy_balanced_object(&mut reader, writer, first, "identity")?;
-    std::io::copy(&mut reader, writer)
-        .map_err(|error| CdfError::internal(format!("copy package manifest suffix: {error}")))?;
+    copy_manifest_suffix(&mut reader, writer)?;
     Ok(())
 }
 
@@ -203,9 +201,28 @@ fn copy_balanced_object(
 }
 
 fn write_checked(writer: &mut impl Write, bytes: &[u8], label: &str) -> Result<()> {
-    writer
-        .write_all(bytes)
-        .map_err(|error| CdfError::internal(format!("write package manifest {label}: {error}")))
+    writer.write_all(bytes).map_err(|error| {
+        if let Some(mut classified) = cdf_kernel::embedded_cdf_error(&error) {
+            classified.message = format!("write package manifest {label}: {}", classified.message);
+            return classified;
+        }
+        CdfError::environment(format!(
+            "write package manifest {label}: {error}; check local storage, permissions, free space, and process file limits before retrying"
+        ))
+    })
+}
+
+fn copy_manifest_suffix(reader: &mut impl Read, writer: &mut impl Write) -> Result<()> {
+    let mut buffer = [0_u8; 16 * 1024];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|error| manifest_artifact_read_error("read package manifest suffix", error))?;
+        if read == 0 {
+            return Ok(());
+        }
+        write_checked(writer, &buffer[..read], "suffix")?;
+    }
 }
 
 fn read_top_level_key(reader: &mut impl Read) -> Result<String> {
@@ -877,15 +894,31 @@ fn read_byte(reader: &mut impl Read) -> Result<Option<u8>> {
         Ok(0) => Ok(None),
         Ok(1) => Ok(Some(byte[0])),
         Ok(_) => unreachable!("one-byte buffer cannot read more than one byte"),
-        Err(error) => Err(CdfError::internal(format!(
-            "read package manifest: {error}"
-        ))),
+        Err(error) => Err(manifest_artifact_read_error("read package manifest", error)),
+    }
+}
+
+fn manifest_artifact_read_error(action: &str, error: std::io::Error) -> CdfError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::data(format!("{action}: {error}"))
+    } else {
+        CdfError::environment(format!(
+            "{action}: {error}; check local storage, permissions, and process file limits before retrying"
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::io::{Cursor, ErrorKind};
 
     use cdf_kernel::SegmentId;
     use cdf_package_contract::{
@@ -895,6 +928,50 @@ mod tests {
 
     use super::*;
     use crate::json::{manifest_identity_hash, write_package_manifest_canonical};
+
+    struct FailingReader(ErrorKind);
+
+    impl Read for FailingReader {
+        fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(self.0, "injected manifest read"))
+        }
+    }
+
+    struct TypedFailingWriter;
+
+    impl Write for TypedFailingWriter {
+        fn write(&mut self, _bytes: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other(CdfError::internal(
+                "manifest writer counter overflow",
+            )))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn manifest_input_failures_are_artifact_owned_before_host_io() {
+        let data = read_byte(&mut FailingReader(ErrorKind::InvalidData)).unwrap_err();
+        assert_eq!(data.kind, cdf_kernel::ErrorKind::Data);
+
+        let missing = read_byte(&mut FailingReader(ErrorKind::NotFound)).unwrap_err();
+        assert_eq!(missing.kind, cdf_kernel::ErrorKind::Data);
+
+        let host = read_byte(&mut FailingReader(ErrorKind::PermissionDenied)).unwrap_err();
+        assert_eq!(host.kind, cdf_kernel::ErrorKind::Environment);
+        assert!(host.message.contains("permissions"));
+
+        let host = visit_package_manifest(
+            FailingReader(ErrorKind::PermissionDenied),
+            &mut |_| Ok(()),
+            &mut |_| Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(host.kind, cdf_kernel::ErrorKind::Environment);
+        assert!(host.message.contains("permissions"));
+    }
 
     fn fixture() -> PackageManifest {
         PackageManifest {
@@ -934,6 +1011,20 @@ mod tests {
             },
             archives: None,
         }
+    }
+
+    #[test]
+    fn manifest_rewriter_preserves_embedded_typed_failures() {
+        let mut bytes = Vec::new();
+        write_package_manifest_canonical(&fixture(), &mut bytes).unwrap();
+        let error = rewrite_manifest_lifecycle(
+            Cursor::new(bytes),
+            &mut TypedFailingWriter,
+            PackageStatus::Archived,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
+        assert!(error.message.contains("manifest writer counter overflow"));
     }
 
     #[test]

@@ -388,9 +388,10 @@ pub(crate) fn to_iceberg_error(error: CdfError) -> IcebergError {
         CdfErrorKind::Transient | CdfErrorKind::RateLimited
     );
     let kind = match error.kind {
-        CdfErrorKind::Transient | CdfErrorKind::RateLimited | CdfErrorKind::Internal => {
-            IcebergErrorKind::Unexpected
-        }
+        CdfErrorKind::Transient
+        | CdfErrorKind::RateLimited
+        | CdfErrorKind::Environment
+        | CdfErrorKind::Internal => IcebergErrorKind::Unexpected,
         CdfErrorKind::Auth | CdfErrorKind::Contract => IcebergErrorKind::PreconditionFailed,
         CdfErrorKind::Data | CdfErrorKind::Destination => IcebergErrorKind::DataInvalid,
     };

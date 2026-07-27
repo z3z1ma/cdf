@@ -371,9 +371,20 @@ pub fn require_lock(context: &ProjectContext) -> CdfResult<&CdfLock> {
 }
 
 pub fn project_location(project_arg: Option<&PathBuf>) -> CdfResult<(PathBuf, PathBuf)> {
+    project_location_with_current_dir(project_arg, std::env::current_dir)
+}
+
+pub(crate) fn project_location_with_current_dir(
+    project_arg: Option<&PathBuf>,
+    current_dir: impl FnOnce() -> std::io::Result<PathBuf>,
+) -> CdfResult<(PathBuf, PathBuf)> {
     let candidate = match project_arg {
         Some(path) => path.clone(),
-        None => std::env::current_dir().map_err(|error| CdfError::internal(error.to_string()))?,
+        None => current_dir().map_err(|error| {
+            CdfError::environment(format!(
+                "read current directory: {error}; change to an accessible directory or pass an absolute --project path"
+            ))
+        })?,
     };
     let path = if candidate.file_name().and_then(|name| name.to_str()) == Some(PROJECT_FILE_NAME) {
         candidate

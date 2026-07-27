@@ -165,22 +165,25 @@ impl QuarantineArtifactWriter {
     pub fn write_records(&mut self, records: &[QuarantineRecord]) -> Result<()> {
         let batch = quarantine_record_batch(records)?;
         self.writer.write(&batch).map_err(|error| {
-            CdfError::data(format!("write streaming quarantine Parquet batch: {error}"))
+            crate::storage::package_writer_error("write streaming quarantine Parquet batch", &error)
         })?;
         self.writer.flush().map_err(|error| {
-            CdfError::data(format!(
-                "flush streaming quarantine Parquet row group: {error}"
-            ))
+            crate::storage::package_writer_error(
+                "flush streaming quarantine Parquet row group",
+                &error,
+            )
         })
     }
 
     pub fn finish(self) -> Result<FileEntry> {
-        let artifact = self.writer.into_inner().map_err(|error| {
-            CdfError::data(format!(
-                "finish streaming quarantine Parquet writer: {error}"
-            ))
+        let mut writer = self.writer;
+        writer.finish().map_err(|error| {
+            crate::storage::package_writer_error(
+                "finish streaming quarantine Parquet writer",
+                &error,
+            )
         })?;
-        artifact.finish()
+        writer.inner_mut().finish_in_place()
     }
 }
 
@@ -199,13 +202,17 @@ impl StreamingIdentityArtifact {
     }
 
     pub fn finish(mut self) -> Result<FileEntry> {
+        self.finish_in_place()
+    }
+
+    pub(crate) fn finish_in_place(&mut self) -> Result<FileEntry> {
         let receipt = self
             .sink
             .take()
             .ok_or_else(|| CdfError::internal("streaming identity artifact is already finished"))?
             .finish()?;
         let entry = FileEntry {
-            path: self.relative_path,
+            path: self.relative_path.clone(),
             byte_count: receipt.byte_count,
             sha256: receipt.sha256,
         };
@@ -221,15 +228,19 @@ impl Write for StreamingIdentityArtifact {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         StreamingIdentityArtifact::write_all(self, bytes)
             .map(|()| bytes.len())
-            .map_err(|error| std::io::Error::other(error.to_string()))
+            .map_err(std::io::Error::other)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
         self.sink
             .as_mut()
-            .ok_or_else(|| std::io::Error::other("streaming identity artifact is finished"))?
+            .ok_or_else(|| {
+                std::io::Error::other(CdfError::internal(
+                    "streaming identity artifact is already finished",
+                ))
+            })?
             .writer_mut()
-            .map_err(|error| std::io::Error::other(error.to_string()))?
+            .map_err(std::io::Error::other)?
             .flush()
     }
 }
@@ -399,7 +410,12 @@ impl PackageBuilder {
         }
         let options = arrow_ipc::writer::IpcWriteOptions::default()
             .try_with_compression(Some(arrow_ipc::CompressionType::LZ4_FRAME))
-            .map_err(CdfError::from)?;
+            .map_err(|error| {
+                crate::storage::package_writer_error(
+                    "configure Arrow IPC identity artifact writer",
+                    &error,
+                )
+            })?;
         let mut artifact = self.begin_streaming_identity_artifact(relative_path)?;
         {
             let mut writer = arrow_ipc::writer::FileWriter::try_new_with_options(
@@ -407,11 +423,26 @@ impl PackageBuilder {
                 first.schema().as_ref(),
                 options,
             )
-            .map_err(CdfError::from)?;
+            .map_err(|error| {
+                crate::storage::package_writer_error(
+                    "create Arrow IPC identity artifact writer",
+                    &error,
+                )
+            })?;
             for batch in batches {
-                writer.write(batch).map_err(CdfError::from)?;
+                writer.write(batch).map_err(|error| {
+                    crate::storage::package_writer_error(
+                        "write Arrow IPC identity artifact batch",
+                        &error,
+                    )
+                })?;
             }
-            writer.finish().map_err(CdfError::from)?;
+            writer.finish().map_err(|error| {
+                crate::storage::package_writer_error(
+                    "finish Arrow IPC identity artifact writer",
+                    &error,
+                )
+            })?;
         }
         artifact.finish()
     }
@@ -520,9 +551,10 @@ impl PackageBuilder {
             .build();
         let writer = ArrowWriter::try_new(artifact, quarantine_schema(), Some(properties))
             .map_err(|error| {
-                CdfError::data(format!(
-                    "create streaming quarantine Parquet writer: {error}"
-                ))
+                crate::storage::package_writer_error(
+                    "create streaming quarantine Parquet writer",
+                    &error,
+                )
             })?;
         Ok(QuarantineArtifactWriter { writer })
     }
@@ -589,15 +621,24 @@ impl PackageBuilder {
         {
             let mut writer = ArrowWriter::try_new(&mut artifact, schema, Some(properties))
                 .map_err(|error| {
-                    CdfError::data(format!("create streaming Parquet identity writer: {error}"))
+                    crate::storage::package_writer_error(
+                        "create streaming Parquet identity writer",
+                        &error,
+                    )
                 })?;
             for batch in batches {
                 writer.write(batch).map_err(|error| {
-                    CdfError::data(format!("write streaming Parquet identity batch: {error}"))
+                    crate::storage::package_writer_error(
+                        "write streaming Parquet identity batch",
+                        &error,
+                    )
                 })?;
             }
             writer.close().map_err(|error| {
-                CdfError::data(format!("finish streaming Parquet identity writer: {error}"))
+                crate::storage::package_writer_error(
+                    "finish streaming Parquet identity writer",
+                    &error,
+                )
             })?;
         }
         artifact.finish()
@@ -672,9 +713,10 @@ impl PackageBuilder {
         {
             return match encoded.rollback_unpublished() {
                 Ok(()) => Err(error),
-                Err(cleanup_error) => Err(CdfError::internal(format!(
-                    "{error}; unpublished segment cleanup also failed: {cleanup_error}"
-                ))),
+                Err(cleanup_error) => Err(CdfError::new(
+                    error.kind.clone(),
+                    format!("{error}; unpublished segment cleanup also failed: {cleanup_error}"),
+                )),
             };
         }
         // The receipt journal is the durable ownership handoff. From this point onward a later

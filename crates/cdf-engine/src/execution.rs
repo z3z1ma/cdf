@@ -8201,7 +8201,11 @@ fn validate_effective_batch_schema_with_nullable_sources(
 fn current_observed_at_ms() -> Result<i64> {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|error| CdfError::internal(format!("system clock before Unix epoch: {error}")))?;
+        .map_err(|error| {
+            CdfError::environment(format!(
+                "system clock before Unix epoch: {error}; correct the host clock before retrying"
+            ))
+        })?;
     i64::try_from(duration.as_millis()).map_err(|_| {
         CdfError::internal("system time milliseconds do not fit in i64 evaluation context")
     })
@@ -8210,7 +8214,11 @@ fn current_observed_at_ms() -> Result<i64> {
 fn current_observed_at_u64_ms() -> Result<u64> {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|error| CdfError::internal(format!("system clock before Unix epoch: {error}")))?;
+        .map_err(|error| {
+            CdfError::environment(format!(
+                "system clock before Unix epoch: {error}; correct the host clock before retrying"
+            ))
+        })?;
     u64::try_from(duration.as_millis())
         .map_err(|_| CdfError::internal("system time milliseconds do not fit in u64"))
 }

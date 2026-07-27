@@ -14,7 +14,7 @@ type FileEntrySource<'a> = dyn FnMut(&mut FileEntrySink<'_>) -> Result<()> + 'a;
 type SegmentEntrySource<'a> = dyn FnMut(&mut SegmentEntrySink<'_>) -> Result<()> + 'a;
 
 pub fn canonical_json_bytes<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
-    let value = serde_json::to_value(value).map_err(json_error)?;
+    let value = serde_json::to_value(value).map_err(json_serialization_error)?;
     let mut output = Vec::new();
     write_canonical_value(&value, &mut output)?;
     Ok(output)
@@ -199,12 +199,11 @@ fn write_segment_entry<W: Write>(writer: &mut W, entry: &SegmentEntry) -> Result
 }
 
 fn write_json_string<W: Write>(writer: &mut W, value: &str) -> Result<()> {
-    serde_json::to_writer(writer, value).map_err(json_error)
+    serde_json::to_writer(writer, value).map_err(json_serialization_error)
 }
 
 fn write_display<W: Write>(writer: &mut W, value: impl std::fmt::Display) -> Result<()> {
-    write!(writer, "{value}")
-        .map_err(|error| CdfError::internal(format!("write canonical JSON: {error}")))
+    write!(writer, "{value}").map_err(canonical_json_io_error)
 }
 
 fn write_field_prefix<W: Write>(writer: &mut W, field: &str, wrote: &mut bool) -> Result<()> {
@@ -222,9 +221,7 @@ fn write_value<W: Write, T: Serialize + ?Sized>(writer: &mut W, value: &T) -> Re
 }
 
 fn write_bytes<W: Write>(writer: &mut W, bytes: &[u8]) -> Result<()> {
-    writer
-        .write_all(bytes)
-        .map_err(|error| CdfError::internal(format!("write canonical JSON: {error}")))
+    writer.write_all(bytes).map_err(canonical_json_io_error)
 }
 
 struct DigestWriter(Sha256);
@@ -274,13 +271,54 @@ fn write_canonical_value(value: &Value, output: &mut Vec<u8>) -> Result<()> {
 }
 
 fn write_canonical_string(value: &str, output: &mut Vec<u8>) -> Result<()> {
-    let escaped = serde_json::to_string(value).map_err(json_error)?;
+    let escaped = serde_json::to_string(value).map_err(json_serialization_error)?;
     output.extend_from_slice(escaped.as_bytes());
     Ok(())
 }
 
+fn json_serialization_error(error: serde_json::Error) -> CdfError {
+    if error.is_io() {
+        let mut source = std::error::Error::source(&error);
+        while let Some(current) = source {
+            if let Some(cdf_error) = current.downcast_ref::<CdfError>() {
+                let mut classified = cdf_error.clone();
+                classified.message = format!("write canonical JSON: {}", classified.message);
+                return classified;
+            }
+            source = current.source();
+        }
+        CdfError::environment(format!(
+            "write canonical JSON: {error}; check local storage, permissions, free space, and process file limits before retrying"
+        ))
+    } else {
+        CdfError::internal(format!("serialize canonical JSON: {error}"))
+    }
+}
+
+fn canonical_json_io_error(error: std::io::Error) -> CdfError {
+    if let Some(mut classified) = cdf_kernel::embedded_cdf_error(&error) {
+        classified.message = format!("write canonical JSON: {}", classified.message);
+        return classified;
+    }
+    CdfError::environment(format!(
+        "write canonical JSON: {error}; check local storage, permissions, free space, and process file limits before retrying"
+    ))
+}
+
 pub(crate) fn json_error(error: serde_json::Error) -> CdfError {
-    CdfError::data(error.to_string())
+    match error.io_error_kind() {
+        Some(
+            std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory,
+        )
+        | None => CdfError::data(error.to_string()),
+        Some(_) => CdfError::environment(format!(
+            "read package JSON: {error}; check local storage, permissions, device health, and process file limits before retrying"
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -288,6 +326,47 @@ mod tests {
     use super::*;
     use cdf_package_contract::{MANIFEST_VERSION, ManifestIdentity};
     use std::time::Instant;
+
+    struct TypedFailingWriter;
+
+    impl Write for TypedFailingWriter {
+        fn write(&mut self, _bytes: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other(CdfError::internal(
+                "canonical writer counter overflow",
+            )))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn canonical_json_writer_preserves_embedded_typed_failures() {
+        let manifest = PackageManifest {
+            manifest_version: MANIFEST_VERSION,
+            identity: ManifestIdentity {
+                manifest_version: MANIFEST_VERSION,
+                package_id: "typed-writer".to_owned(),
+                layout: Vec::new(),
+                files: Vec::new(),
+                segments: Vec::new(),
+            },
+            package_hash: "sha256:typed".to_owned(),
+            lifecycle: LifecycleState {
+                status: PackageStatus::Packaged,
+            },
+            signature: SignatureSlot {
+                signing_input: "sha256:typed".to_owned(),
+                value: None,
+            },
+            archives: None,
+        };
+        let error =
+            write_package_manifest_canonical(&manifest, &mut TypedFailingWriter).unwrap_err();
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
+        assert!(error.message.contains("canonical writer counter overflow"));
+    }
 
     #[test]
     #[ignore = "performance evidence; run explicitly in release mode"]

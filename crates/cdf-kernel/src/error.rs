@@ -13,6 +13,7 @@ pub enum ErrorKind {
     Contract,
     Data,
     Destination,
+    Environment,
     Internal,
 }
 
@@ -60,6 +61,10 @@ impl CdfError {
         Self::new(ErrorKind::Destination, message)
     }
 
+    pub fn environment(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Environment, message)
+    }
+
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::Internal, message)
     }
@@ -79,6 +84,34 @@ impl fmt::Display for CdfError {
 }
 
 impl StdError for CdfError {}
+
+/// Returns whether an I/O error reports an exhausted symbolic-link traversal.
+///
+/// `std::io::ErrorKind::FilesystemLoop` remains unstable on the supported Rust
+/// toolchain, so trust-boundary classifiers use the stable platform error code.
+pub fn is_filesystem_loop(error: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        error.raw_os_error() == Some(libc::ELOOP)
+    }
+    #[cfg(windows)]
+    {
+        // ERROR_TOO_MANY_LINKS and ERROR_CANT_RESOLVE_FILENAME.
+        matches!(error.raw_os_error(), Some(1142 | 1921))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = error;
+        false
+    }
+}
+
+pub fn embedded_cdf_error(error: &std::io::Error) -> Option<CdfError> {
+    error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<CdfError>())
+        .cloned()
+}
 
 impl From<ArrowError> for CdfError {
     fn from(error: ArrowError) -> Self {

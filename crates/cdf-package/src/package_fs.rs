@@ -43,13 +43,7 @@ pub(crate) enum PackageEntryKind {
 
 impl PackageRoot {
     pub(crate) fn open(package_dir: &Path) -> Result<Self> {
-        let absolute = if package_dir.is_absolute() {
-            package_dir.to_path_buf()
-        } else {
-            std::env::current_dir()
-                .map_err(|error| package_io_error("read current directory", error))?
-                .join(package_dir)
-        };
+        let absolute = resolve_package_path(package_dir, std::env::current_dir)?;
         let parent = absolute.parent().ok_or_else(|| {
             CdfError::data(format!(
                 "package directory has no parent: {}",
@@ -298,8 +292,39 @@ fn visit_directory(
     Ok(())
 }
 
+fn resolve_package_path(
+    package_dir: &Path,
+    current_dir: impl FnOnce() -> io::Result<PathBuf>,
+) -> Result<PathBuf> {
+    if package_dir.is_absolute() {
+        return Ok(package_dir.to_path_buf());
+    }
+    current_dir()
+        .map_err(|error| {
+            CdfError::environment(format!(
+                "read current directory: {error}; change to an accessible directory or pass an absolute package path"
+            ))
+        })
+        .map(|current| current.join(package_dir))
+}
+
 fn package_io_error(context: impl Into<String>, error: io::Error) -> CdfError {
-    CdfError::internal(format!("{}: {error}", context.into()))
+    let context = context.into();
+    if matches!(
+        error.kind(),
+        io::ErrorKind::NotFound
+            | io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::InvalidData
+            | io::ErrorKind::NotADirectory
+            | io::ErrorKind::IsADirectory
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::data(format!("{context}: {error}"))
+    } else {
+        CdfError::environment(format!(
+            "{context}: {error}; check the local path, permissions, device health, and process file limits before retrying"
+        ))
+    }
 }
 
 fn missing_or_nonregular(error: &io::Error) -> bool {
@@ -314,6 +339,54 @@ mod tests {
     use std::{fs, io};
 
     use super::*;
+
+    #[test]
+    fn missing_current_directory_is_an_environment_error_with_recovery() {
+        let error = resolve_package_path(Path::new("package"), || {
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "current directory was removed",
+            ))
+        })
+        .unwrap_err();
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Environment);
+        assert!(error.message.contains("current directory"));
+        assert!(error.message.contains("absolute package path"));
+    }
+
+    #[test]
+    fn local_file_descriptor_exhaustion_is_environment_owned() {
+        let error = package_io_error("open package directory", io::Error::from_raw_os_error(24));
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Environment);
+        assert!(error.message.contains("process file limits"));
+    }
+
+    #[test]
+    fn missing_package_artifact_remains_data_owned() {
+        let error = package_io_error(
+            "open package manifest",
+            io::Error::new(io::ErrorKind::NotFound, "missing"),
+        );
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+    }
+
+    #[test]
+    fn invalid_package_root_shape_is_data_owned() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("not-a-directory");
+        fs::write(&file, b"artifact").unwrap();
+
+        let error = match PackageRoot::open(&file.join("package")) {
+            Ok(_) => panic!("a file ancestor cannot be a package root"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+        assert!(error.message.contains("not a directory") || error.message.contains("package"));
+    }
 
     #[test]
     fn package_root_rejects_final_and_descendant_symlinks() {
@@ -333,9 +406,16 @@ mod tests {
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink("segment.arrow", package.join("data/link.arrow")).unwrap();
-            assert!(root.open_std_file("data/link.arrow").is_err());
+            assert_eq!(
+                root.open_std_file("data/link.arrow").unwrap_err().kind,
+                cdf_kernel::ErrorKind::Data
+            );
             std::os::unix::fs::symlink(&package, temp.path().join("package-link")).unwrap();
-            assert!(PackageRoot::open(&temp.path().join("package-link")).is_err());
+            let error = match PackageRoot::open(&temp.path().join("package-link")) {
+                Ok(_) => panic!("package-root symlink must fail"),
+                Err(error) => error,
+            };
+            assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
         }
     }
 

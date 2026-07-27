@@ -139,16 +139,15 @@ fn start_growing_spool_with_tail_bytes(
         match tempfile::NamedTempFile::new_in(staging_root) {
             Ok(file) => (file, true),
             Err(_) => (
-                tempfile::NamedTempFile::new().map_err(|error| {
-                    CdfError::data(format!("create growing file spool: {error}"))
-                })?,
+                tempfile::NamedTempFile::new()
+                    .map_err(|error| spool_io_error("create growing file spool", error))?,
                 false,
             ),
         }
     } else {
         (
             tempfile::NamedTempFile::new()
-                .map_err(|error| CdfError::data(format!("create growing file spool: {error}")))?,
+                .map_err(|error| spool_io_error("create growing file spool", error))?,
             false,
         )
     };
@@ -226,7 +225,7 @@ async fn download_into_growing_spool(
         .truncate(true)
         .open(storage.path())
         .await
-        .map_err(|error| CdfError::data(format!("open growing file spool: {error}")))?;
+        .map_err(|error| spool_io_error("open growing file spool", error))?;
     let chunk_bytes = DEFAULT_TRANSFER_CHUNK_BYTES.clamp(
         upstream.capabilities().minimum_chunk_bytes,
         upstream.capabilities().maximum_chunk_bytes,
@@ -255,7 +254,7 @@ async fn download_into_growing_spool(
         output
             .write_all(chunk.payload())
             .await
-            .map_err(|error| CdfError::data(format!("write growing file spool: {error}")))?;
+            .map_err(|error| spool_io_error("write growing file spool", error))?;
         if let Some(hasher) = &mut hasher {
             hasher.update(chunk.payload());
         }
@@ -264,7 +263,7 @@ async fn download_into_growing_spool(
     output
         .flush()
         .await
-        .map_err(|error| CdfError::data(format!("flush growing file spool: {error}")))?;
+        .map_err(|error| spool_io_error("flush growing file spool", error))?;
     if transferred != size_bytes {
         return Err(CdfError::data(format!(
             "growing spool wrote {transferred} bytes for a planned {size_bytes}-byte generation"
@@ -497,18 +496,40 @@ impl GrowingSpoolByteSource {
         .await?;
         let mut file = tokio::fs::File::open(self.storage.path())
             .await
-            .map_err(|error| CdfError::data(format!("open growing spool range: {error}")))?;
+            .map_err(|error| spool_read_io_error("open growing spool range", error))?;
         file.seek(SeekFrom::Start(extent.start))
             .await
-            .map_err(|error| CdfError::data(format!("seek growing spool range: {error}")))?;
+            .map_err(|error| spool_read_io_error("seek growing spool range", error))?;
         let length = usize::try_from(extent.length)
             .map_err(|_| CdfError::data("growing spool range length exceeds usize"))?;
         let mut payload = vec![0_u8; length];
         file.read_exact(&mut payload)
             .await
-            .map_err(|error| CdfError::data(format!("read growing spool range: {error}")))?;
+            .map_err(|error| spool_read_io_error("read growing spool range", error))?;
         cancellation.check()?;
         AccountedBytes::new(Bytes::from(payload), lease)
+    }
+}
+
+fn spool_io_error(action: &str, error: std::io::Error) -> CdfError {
+    CdfError::environment(format!(
+        "{action}: {error}; check the temporary directory, local permissions, free space, and process file limits before retrying"
+    ))
+}
+
+fn spool_read_io_error(action: &str, error: std::io::Error) -> CdfError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::internal(format!("{action}: invalid CDF-managed spool: {error}"))
+    } else {
+        spool_io_error(action, error)
     }
 }
 
@@ -527,6 +548,27 @@ mod tests {
     use cdf_runtime::FixedSpillBudget;
 
     use super::*;
+
+    #[test]
+    fn truncated_private_spool_is_internal_but_host_io_is_environment() {
+        let truncated = spool_read_io_error(
+            "read growing spool range",
+            std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "truncated"),
+        );
+        assert_eq!(truncated.kind, cdf_kernel::ErrorKind::Internal);
+
+        let directory = spool_read_io_error(
+            "read growing spool range",
+            std::io::Error::new(std::io::ErrorKind::IsADirectory, "is a directory"),
+        );
+        assert_eq!(directory.kind, cdf_kernel::ErrorKind::Internal);
+
+        let host = spool_read_io_error(
+            "read growing spool range",
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+        );
+        assert_eq!(host.kind, cdf_kernel::ErrorKind::Environment);
+    }
 
     struct GatedStrongSource {
         identity: ContentIdentity,

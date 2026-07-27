@@ -375,6 +375,10 @@ pub fn reference_entries() -> Vec<(&'static str, ErrorMapping)> {
             generic_lower_layer_mapping(&ErrorKind::Destination),
         ),
         (
+            "LOWER_ENVIRONMENT",
+            generic_lower_layer_mapping(&ErrorKind::Environment),
+        ),
+        (
             "LOWER_INTERNAL",
             generic_lower_layer_mapping(&ErrorKind::Internal),
         ),
@@ -438,6 +442,16 @@ pub fn generic_lower_layer_mapping(kind: &ErrorKind) -> ErrorMapping {
                 summary: "Inspect the destination URI, target, policy, and destination health.",
                 steps: &[
                     "Run `cdf doctor` for the selected project and environment when available.",
+                ],
+            }),
+        },
+        ErrorKind::Environment => ErrorMapping {
+            code: "CDF-ENV-HOST",
+            exit_code: 70,
+            remediation: Some(RemediationTemplate {
+                summary: "Restore the required host or process facility, then retry.",
+                steps: &[
+                    "Check the path, permissions, temporary directory, executable availability, and process resource limits named by the error.",
                 ],
             }),
         },

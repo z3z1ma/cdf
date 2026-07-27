@@ -57,10 +57,10 @@ impl LocalGeneration {
 impl LocalByteSource {
     pub fn open(path: impl AsRef<Path>, memory: Arc<dyn MemoryCoordinator>) -> Result<Self> {
         let path = std::fs::canonicalize(path.as_ref()).map_err(|error| {
-            CdfError::data(format!(
-                "canonicalize local byte source {}: {error}",
-                path.as_ref().display()
-            ))
+            local_source_io(
+                &format!("canonicalize local byte source {}", path.as_ref().display()),
+                error,
+            )
         })?;
         let generation = local_generation(&path)?;
         let stable_id = path
@@ -98,10 +98,10 @@ impl LocalByteSource {
 
     async fn open_attested(&self) -> Result<File> {
         let file = File::open(&self.path).await.map_err(|error| {
-            CdfError::data(format!(
-                "open local byte source {}: {error}",
-                self.path.display()
-            ))
+            local_source_io(
+                &format!("open local byte source {}", self.path.display()),
+                error,
+            )
         })?;
         attest_file(&file, &self.generation).await?;
         Ok(file)
@@ -234,7 +234,7 @@ impl ByteSource for LocalByteSource {
                     .file
                     .read_exact(&mut payload)
                     .await
-                    .map_err(|error| CdfError::data(format!("read local byte source: {error}")))?;
+                    .map_err(|error| local_source_io("read local byte source", error))?;
                 state.offset = state
                     .offset
                     .checked_add(bytes)
@@ -273,13 +273,13 @@ impl ByteSource for LocalByteSource {
             let mut file = self.open_attested().await?;
             file.seek(SeekFrom::Start(extent.start))
                 .await
-                .map_err(|error| CdfError::data(format!("seek local byte source: {error}")))?;
+                .map_err(|error| local_source_io("seek local byte source", error))?;
             let length = usize::try_from(extent.length)
                 .map_err(|_| CdfError::data("local byte range length exceeds usize"))?;
             let mut payload = vec![0_u8; length];
             file.read_exact(&mut payload)
                 .await
-                .map_err(|error| CdfError::data(format!("read local byte range: {error}")))?;
+                .map_err(|error| local_source_io("read local byte range", error))?;
             attest_file(&file, &self.generation).await?;
             cancellation.check()?;
             AccountedBytes::new(Bytes::from(payload), lease)
@@ -298,10 +298,7 @@ struct SequentialState {
 
 fn local_generation(path: &Path) -> Result<LocalGeneration> {
     let metadata = std::fs::metadata(path).map_err(|error| {
-        CdfError::data(format!(
-            "stat local byte source {}: {error}",
-            path.display()
-        ))
+        local_source_io(&format!("stat local byte source {}", path.display()), error)
     })?;
     if !metadata.is_file() {
         return Err(CdfError::data(format!(
@@ -315,10 +312,12 @@ fn local_generation(path: &Path) -> Result<LocalGeneration> {
 fn generation_from_metadata(metadata: &std::fs::Metadata) -> Result<LocalGeneration> {
     let modified_ns = metadata
         .modified()
-        .map_err(|error| CdfError::data(format!("read local modification time: {error}")))?
+        .map_err(|error| local_source_io("read local modification time", error))?
         .duration_since(UNIX_EPOCH)
         .map_err(|error| {
-            CdfError::data(format!("local modification time predates epoch: {error}"))
+            CdfError::data(format!(
+                "local byte source modification time predates Unix epoch: {error}"
+            ))
         })?
         .as_nanos();
     Ok(LocalGeneration {
@@ -362,7 +361,7 @@ async fn attest_file(file: &File, expected: &LocalGeneration) -> Result<()> {
     let metadata = file
         .metadata()
         .await
-        .map_err(|error| CdfError::data(format!("reattest local byte source: {error}")))?;
+        .map_err(|error| local_source_io("reattest local byte source", error))?;
     let observed = generation_from_metadata(&metadata)?;
     if &observed != expected {
         return Err(CdfError::data(format!(
@@ -370,6 +369,24 @@ async fn attest_file(file: &File, expected: &LocalGeneration) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+fn local_source_io(action: &str, error: std::io::Error) -> CdfError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::data(format!("{action}: {error}"))
+    } else {
+        CdfError::environment(format!(
+            "{action}: {error}; check the local path, permissions, device health, and process file limits before retrying"
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -380,6 +397,28 @@ mod tests {
     use futures_util::TryStreamExt;
 
     use super::*;
+
+    #[test]
+    fn local_io_separates_host_failure_from_source_truncation() {
+        let host = local_source_io(
+            "open local byte source",
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied"),
+        );
+        assert_eq!(host.kind, cdf_kernel::ErrorKind::Environment);
+        assert!(host.message.contains("process file limits"));
+
+        let truncated = local_source_io(
+            "read local byte source",
+            std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "truncated"),
+        );
+        assert_eq!(truncated.kind, cdf_kernel::ErrorKind::Data);
+
+        let directory = local_source_io(
+            "open local byte source",
+            std::io::Error::new(std::io::ErrorKind::IsADirectory, "is a directory"),
+        );
+        assert_eq!(directory.kind, cdf_kernel::ErrorKind::Data);
+    }
 
     #[test]
     fn streams_and_ranges_with_generation_and_memory_authority() {

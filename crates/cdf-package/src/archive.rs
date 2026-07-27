@@ -12,15 +12,15 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    json::canonical_json_bytes,
+    json::{canonical_json_bytes, json_error},
     manifest_stream::{ManifestSegmentStream, PackageManifestHeader, rewrite_manifest_archives},
     ops::{read_manifest_header, verify_package, verify_package_identity},
     package_fs::{PackageEntryKind, PackageRoot},
     parquet::transcode_record_batches_to_bounded_parquet_bytes,
     reader::PackageReader,
     storage::{
-        ArtifactDurability, AtomicArtifactSink, io_error, package_path, portable_path_cmp,
-        sync_directory, validate_canonical_relative_path,
+        ArtifactDurability, AtomicArtifactSink, artifact_read_io_error, io_error, package_path,
+        portable_path_cmp, sync_directory, validate_canonical_relative_path,
     },
 };
 
@@ -555,10 +555,10 @@ fn verify_archive_segment_index(
     let index_file = package_root
         .open_std_file(SEGMENT_INDEX_PATH)
         .map_err(|error| {
-            archive_verification_failure(format!(
-                "archive segment index {SEGMENT_INDEX_PATH} could not be read: {}",
-                error.message
-            ))
+            archive_error_context(
+                format!("archive segment index {SEGMENT_INDEX_PATH} could not be read"),
+                error,
+            )
         })?;
     let mut index = BufReader::new(DigestingReader::new(index_file));
     let mut segments = ManifestSegmentStream::new(package_root.open_std_file(MANIFEST_FILE)?);
@@ -676,10 +676,10 @@ fn verify_archive_segment_record(
             "missing archive sidecar {}",
             record.archive_path
         ))),
-        Err(error) => Err(archive_verification_failure(format!(
-            "archive sidecar {} could not be read: {}",
-            record.archive_path, error.message
-        ))),
+        Err(error) => Err(archive_error_context(
+            format!("archive sidecar {} could not be read", record.archive_path),
+            error,
+        )),
     }
 }
 
@@ -688,7 +688,7 @@ fn read_archive_index_record(reader: &mut impl BufRead) -> Result<Option<Archive
     let read = reader
         .take(MAX_ARCHIVE_INDEX_RECORD_BYTES + 1)
         .read_until(b'\n', &mut bytes)
-        .map_err(|error| io_error(format!("read {SEGMENT_INDEX_PATH}"), error))?;
+        .map_err(|error| artifact_read_io_error(format!("read {SEGMENT_INDEX_PATH}"), error))?;
     if read == 0 {
         return Ok(None);
     }
@@ -741,8 +741,12 @@ impl<R: Read> Read for DigestingReader<R> {
         self.hasher.update(&buffer[..read]);
         self.byte_count = self
             .byte_count
-            .checked_add(u64::try_from(read).map_err(std::io::Error::other)?)
-            .ok_or_else(|| std::io::Error::other("archive index byte count overflow"))?;
+            .checked_add(u64::try_from(read).map_err(|_| {
+                std::io::Error::other(CdfError::internal("archive index byte count exceeds u64"))
+            })?)
+            .ok_or_else(|| {
+                std::io::Error::other(CdfError::internal("archive index byte count overflow"))
+            })?;
         Ok(read)
     }
 }
@@ -762,19 +766,20 @@ fn verify_fidelity_report(
             )));
         }
         Err(error) => {
-            return Err(archive_verification_failure(format!(
-                "archive fidelity report {FIDELITY_REPORT_PATH} could not be read: {}",
-                error.message
-            )));
+            return Err(archive_error_context(
+                format!("archive fidelity report {FIDELITY_REPORT_PATH} could not be read"),
+                error,
+            ));
         }
     };
     let mut reader = ExactBytesReader::new(BufReader::new(file), &canonical);
     let actual: PackageArchiveFidelityReport = match serde_json::from_reader(&mut reader) {
         Ok(actual) => actual,
         Err(error) => {
-            return Err(archive_verification_failure(format!(
-                "archive fidelity report mismatch: {error}"
-            )));
+            return Err(archive_error_context(
+                "archive fidelity report mismatch",
+                json_error(error),
+            ));
         }
     };
     if actual != expected {
@@ -792,6 +797,14 @@ fn verify_fidelity_report(
 
 fn archive_verification_failure(message: impl std::fmt::Display) -> CdfError {
     CdfError::data(format!("package archive verification failed: {message}"))
+}
+
+fn archive_error_context(context: impl std::fmt::Display, mut error: CdfError) -> CdfError {
+    error.message = format!(
+        "package archive verification failed: {context}: {}",
+        error.message
+    );
+    error
 }
 
 fn has_parquet_archive_state(
@@ -865,8 +878,8 @@ fn create_archive_temp_dir(package_dir: &Path) -> Result<PathBuf> {
             Err(error) => return Err(io_error(format!("create {}", temp_dir.display()), error)),
         }
     }
-    Err(CdfError::internal(format!(
-        "could not create archive temporary directory under {}",
+    Err(CdfError::environment(format!(
+        "could not create archive temporary directory under {} after 100 exclusive-name attempts; clear stale temporary entries or choose an accessible package directory",
         tmp_root.display()
     )))
 }

@@ -599,8 +599,13 @@ pub(crate) fn read_segment_file_from_root(
     relative_path: &str,
 ) -> Result<Vec<RecordBatch>> {
     let file = root.open_regular_file(relative_path)?.into_std();
-    let reader = FileReader::try_new(file, None).map_err(CdfError::from)?;
+    let reader = FileReader::try_new(file, None)
+        .map_err(|error| crate::storage::package_reader_error("open package segment", &error))?;
     reader
-        .map(|batch| batch.map_err(CdfError::from))
+        .map(|batch| {
+            batch.map_err(|error| {
+                crate::storage::package_reader_error("read package segment batch", &error)
+            })
+        })
         .collect::<Result<Vec<_>>>()
 }

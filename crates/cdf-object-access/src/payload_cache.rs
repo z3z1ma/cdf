@@ -318,7 +318,7 @@ impl FilePayloadCache {
         cancellation.check()?;
         File::open(&source)
             .and_then(|file| file.sync_all())
-            .map_err(|error| CdfError::data(format!("sync payload cache staging file: {error}")))?;
+            .map_err(|error| payload_cache_io("sync payload cache staging file", error))?;
         let _root_lock = self.shared.lock_root(cancellation)?;
         let mut state = self.shared.lock_state()?;
         self.shared.synchronize_state_locked(&mut state)?;
@@ -391,9 +391,8 @@ impl FilePayloadCache {
         }
         set_private_file_permissions(&source)?;
         install_hard_link(&source, &self.shared.object_path(key))?;
-        fs::remove_file(&source).map_err(|error| {
-            CdfError::data(format!("retire payload cache staging link: {error}"))
-        })?;
+        fs::remove_file(&source)
+            .map_err(|error| payload_cache_io("retire payload cache staging link", error))?;
         manifest.storage_attestation =
             crate::local_byte_source::local_storage_attestation(&self.shared.object_path(key))?;
         manifest.validate(key)?;
@@ -470,14 +469,14 @@ impl CacheRoot {
             .read(true)
             .write(true)
             .open(self.lock_path())
-            .map_err(|error| CdfError::data(format!("open payload cache root lock: {error}")))?;
+            .map_err(|error| payload_cache_io("open payload cache root lock", error))?;
         loop {
             cancellation.check()?;
             match file.try_lock() {
                 Ok(()) => return Ok(file),
                 Err(TryLockError::WouldBlock) => std::thread::sleep(ROOT_LOCK_RETRY),
                 Err(TryLockError::Error(error)) => {
-                    return Err(CdfError::data(format!("lock payload cache root: {error}")));
+                    return Err(payload_cache_io("lock payload cache root", error));
                 }
             }
         }
@@ -497,7 +496,7 @@ impl CacheRoot {
         state.bytes = 0;
         let pinned = self.pinned_keys_locked()?;
         let entries = fs::read_dir(self.manifest_root())
-            .map_err(|error| CdfError::data(format!("read payload cache manifests: {error}")))?;
+            .map_err(|error| payload_cache_io("read payload cache manifests", error))?;
         for entry in entries.filter_map(|entry| entry.ok()) {
             let path = entry.path();
             let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
@@ -611,7 +610,7 @@ impl CacheRoot {
     fn prune_unreferenced_objects_locked(&self, state: &mut CacheState) -> Result<()> {
         let pinned = self.pinned_keys_locked()?;
         let objects = fs::read_dir(self.object_root())
-            .map_err(|error| CdfError::data(format!("read payload cache objects: {error}")))?;
+            .map_err(|error| payload_cache_io("read payload cache objects", error))?;
         for entry in objects.filter_map(|entry| entry.ok()) {
             let path = entry.path();
             let key = path
@@ -644,11 +643,11 @@ impl CacheRoot {
             .write(true)
             .create_new(true)
             .open(&marker_path)
-            .map_err(|error| CdfError::data(format!("create payload cache read lease: {error}")))?;
+            .map_err(|error| payload_cache_io("create payload cache read lease", error))?;
         set_private_mutable_file_permissions(&marker_path)?;
         marker
             .lock()
-            .map_err(|error| CdfError::data(format!("lock payload cache read lease: {error}")))?;
+            .map_err(|error| payload_cache_io("lock payload cache read lease", error))?;
         Ok(ActiveCacheLease {
             marker,
             marker_path,
@@ -658,7 +657,7 @@ impl CacheRoot {
     fn pinned_keys_locked(&self) -> Result<BTreeSet<FilePayloadCacheKey>> {
         let mut pinned = BTreeSet::new();
         let entries = fs::read_dir(self.active_root())
-            .map_err(|error| CdfError::data(format!("read payload cache leases: {error}")))?;
+            .map_err(|error| payload_cache_io("read payload cache leases", error))?;
         for entry in entries.filter_map(|entry| entry.ok()) {
             let path = entry.path();
             let key = path
@@ -696,12 +695,16 @@ fn prepare_cache_root(root: PathBuf) -> Result<PathBuf> {
         root
     } else {
         std::env::current_dir()
-            .map_err(|error| CdfError::data(format!("resolve payload cache root: {error}")))?
+            .map_err(|error| {
+                CdfError::environment(format!(
+                    "resolve payload cache root from the current directory: {error}; change to an accessible directory or configure an absolute cache path"
+                ))
+            })?
             .join(root)
     };
     let root = canonicalize_future_path(&absolute)?;
     fs::create_dir_all(&root)
-        .map_err(|error| CdfError::data(format!("create payload cache root: {error}")))?;
+        .map_err(|error| payload_cache_io("create payload cache root", error))?;
     reject_symlink_components(&root)?;
     set_private_directory_permissions(&root)?;
     let owner_uid = private_directory_owner(&root)?;
@@ -715,7 +718,7 @@ fn prepare_cache_root(root: PathBuf) -> Result<PathBuf> {
                     Err(error)
                 }
             })
-            .map_err(|error| CdfError::data(format!("create payload cache directory: {error}")))?;
+            .map_err(|error| payload_cache_io("create payload cache directory", error))?;
         reject_symlink_components(&path)?;
         set_private_directory_permissions(&path)?;
         if private_directory_owner(&path)? != owner_uid {
@@ -731,13 +734,10 @@ fn prepare_cache_root(root: PathBuf) -> Result<PathBuf> {
                 .write(true)
                 .create_new(true)
                 .open(&path)
-                .map_err(|error| {
-                    CdfError::data(format!("create payload cache control: {error}"))
-                })?;
+                .map_err(|error| payload_cache_io("create payload cache control", error))?;
             if file_name == "revision" {
-                file.write_all(b"0").map_err(|error| {
-                    CdfError::data(format!("write payload cache revision: {error}"))
-                })?;
+                file.write_all(b"0")
+                    .map_err(|error| payload_cache_io("write payload cache revision", error))?;
                 file.sync_all().ok();
             }
             set_private_mutable_file_permissions(&path)?;
@@ -756,7 +756,7 @@ pub fn resolve_project_cache_root(project_root: &Path, configured: &Path) -> Res
         return Ok(configured.to_path_buf());
     }
     let project_root = fs::canonicalize(project_root)
-        .map_err(|error| CdfError::data(format!("canonicalize project root: {error}")))?;
+        .map_err(|error| payload_cache_io("canonicalize project root", error))?;
     let resolved = canonicalize_future_path(&project_root.join(configured))?;
     if !resolved.starts_with(&project_root) {
         return Err(CdfError::contract(
@@ -789,7 +789,7 @@ fn canonicalize_future_path(path: &Path) -> Result<PathBuf> {
         ));
     }
     let mut resolved = fs::canonicalize(existing)
-        .map_err(|error| CdfError::data(format!("canonicalize payload cache root: {error}")))?;
+        .map_err(|error| payload_cache_io("canonicalize payload cache root", error))?;
     for component in missing.into_iter().rev() {
         resolved.push(component);
     }
@@ -804,10 +804,10 @@ fn reject_symlink_components(path: &Path) -> Result<()> {
             continue;
         }
         let metadata = fs::symlink_metadata(&current).map_err(|error| {
-            CdfError::data(format!(
-                "inspect payload cache path {}: {error}",
-                current.display()
-            ))
+            payload_cache_io(
+                &format!("inspect payload cache path {}", current.display()),
+                error,
+            )
         })?;
         if metadata.file_type().is_symlink() {
             return Err(CdfError::contract(format!(
@@ -823,7 +823,7 @@ fn reject_symlink_components(path: &Path) -> Result<()> {
 fn private_directory_owner(path: &Path) -> Result<u32> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let metadata = fs::symlink_metadata(path)
-        .map_err(|error| CdfError::data(format!("inspect payload cache directory: {error}")))?;
+        .map_err(|error| payload_cache_io("inspect payload cache directory", error))?;
     if !metadata.file_type().is_dir() || metadata.permissions().mode() & 0o077 != 0 {
         return Err(CdfError::auth(
             "payload cache directories must be owner-only and non-symlinked",
@@ -844,7 +844,7 @@ fn set_private_directory_permissions(path: &Path) -> Result<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-            .map_err(|error| CdfError::auth(format!("secure payload cache directory: {error}")))?;
+            .map_err(|error| payload_cache_io("secure payload cache directory", error))?;
         Ok(())
     }
     #[cfg(not(unix))]
@@ -861,7 +861,7 @@ fn set_private_file_permissions(path: &Path) -> Result<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o400))
-            .map_err(|error| CdfError::auth(format!("secure payload cache object: {error}")))?;
+            .map_err(|error| payload_cache_io("secure payload cache object", error))?;
         Ok(())
     }
     #[cfg(not(unix))]
@@ -878,7 +878,7 @@ fn set_private_mutable_file_permissions(path: &Path) -> Result<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-            .map_err(|error| CdfError::auth(format!("secure payload cache control: {error}")))?;
+            .map_err(|error| payload_cache_io("secure payload cache control", error))?;
         Ok(())
     }
     #[cfg(not(unix))]
@@ -952,15 +952,15 @@ fn read_manifest(path: &Path) -> std::io::Result<Option<FilePayloadCacheManifest
 
 #[cfg(all(test, unix))]
 fn hash_file_cancellable(path: &Path, cancellation: &RunCancellation) -> Result<String> {
-    let mut file = File::open(path)
-        .map_err(|error| CdfError::data(format!("open payload cache object: {error}")))?;
+    let mut file =
+        File::open(path).map_err(|error| payload_cache_io("open payload cache object", error))?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; HASH_BUFFER_BYTES];
     loop {
         cancellation.check()?;
         let read = file
             .read(&mut buffer)
-            .map_err(|error| CdfError::data(format!("read payload cache object: {error}")))?;
+            .map_err(|error| payload_cache_io("read payload cache object", error))?;
         if read == 0 {
             break;
         }
@@ -971,9 +971,8 @@ fn hash_file_cancellable(path: &Path, cancellation: &RunCancellation) -> Result<
 }
 
 fn install_hard_link(source: &Path, destination: &Path) -> Result<()> {
-    fs::hard_link(source, destination).map_err(|error| {
-        CdfError::data(format!("atomically install payload cache object: {error}"))
-    })
+    fs::hard_link(source, destination)
+        .map_err(|error| payload_cache_io("atomically install payload cache object", error))
 }
 
 fn install_bytes(destination: &Path, bytes: &[u8]) -> Result<()> {
@@ -983,16 +982,16 @@ fn install_bytes(destination: &Path, bytes: &[u8]) -> Result<()> {
         .write(true)
         .create_new(true)
         .open(&temporary)
-        .map_err(|error| CdfError::data(format!("create payload cache manifest: {error}")))?;
+        .map_err(|error| payload_cache_io("create payload cache manifest", error))?;
     output
         .write_all(bytes)
-        .map_err(|error| CdfError::data(format!("write payload cache manifest: {error}")))?;
+        .map_err(|error| payload_cache_io("write payload cache manifest", error))?;
     output
         .sync_all()
-        .map_err(|error| CdfError::data(format!("sync payload cache manifest: {error}")))?;
+        .map_err(|error| payload_cache_io("sync payload cache manifest", error))?;
     set_private_file_permissions(&temporary)?;
     fs::rename(&temporary, destination)
-        .map_err(|error| CdfError::data(format!("publish payload cache manifest: {error}")))?;
+        .map_err(|error| payload_cache_io("publish payload cache manifest", error))?;
     Ok(())
 }
 
@@ -1019,9 +1018,36 @@ fn now_ms() -> u64 {
         })
 }
 
+fn payload_cache_io(action: &str, error: std::io::Error) -> CdfError {
+    CdfError::environment(format!(
+        "{action}: {error}; check the local path, permissions, temporary storage, free space, and process file limits before retrying"
+    ))
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn payload_cache_filesystem_failures_are_environment_owned() {
+        for kind in [
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::StorageFull,
+        ] {
+            let error = payload_cache_io(
+                "publish payload cache manifest",
+                std::io::Error::new(kind, "injected"),
+            );
+            assert_eq!(error.kind, cdf_kernel::ErrorKind::Environment);
+            assert!(error.message.contains("process file limits"));
+        }
+
+        let error = payload_cache_io(
+            "inspect payload cache path /cache/intermediate",
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "injected"),
+        );
+        assert!(error.message.contains("/cache/intermediate"));
+    }
 
     fn identity(bytes: u64) -> ContentIdentity {
         ContentIdentity {

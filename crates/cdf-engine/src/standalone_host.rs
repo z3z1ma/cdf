@@ -377,7 +377,9 @@ impl FixedTaskPool {
                     .name(thread_name)
                     .spawn(move || worker_loop(state, slots))
                     .map_err(|error| {
-                        CdfError::internal(format!("task worker spawn failed: {error}"))
+                        CdfError::environment(format!(
+                            "task worker spawn failed: {error}; check process thread limits and available host resources before retrying"
+                        ))
                     })?,
             );
         }
@@ -705,7 +707,11 @@ impl StandaloneExecutionHost {
             .enable_all();
         let runtime = runtime_builder
             .build()
-            .map_err(|error| CdfError::internal(format!("I/O runtime creation failed: {error}")))?;
+            .map_err(|error| {
+                CdfError::environment(format!(
+                    "I/O runtime creation failed: {error}; check process thread and file-descriptor limits before retrying"
+                ))
+            })?;
         let slots = Arc::new(CpuSlots {
             capacity: capabilities.logical_cpu_slots,
             next_work_id: AtomicU64::new(0),

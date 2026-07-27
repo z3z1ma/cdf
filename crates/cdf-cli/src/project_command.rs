@@ -25,11 +25,10 @@ pub(crate) fn init(args: InitArgs) -> Result<CommandOutput, CliError> {
     let root = args
         .directory
         .unwrap_or(env::current_dir().map_err(|error| {
-            CliError::mapped(
-                CdfError::internal(format!("read current directory: {error}")),
-                error_catalog::PROJECT_IO,
-            )
-        })?);
+        CliError::from(CdfError::environment(format!(
+            "read current directory: {error}; change to an accessible directory or pass --directory"
+        )))
+    })?);
     let project_name = match args.name {
         Some(name) if name.trim().is_empty() => {
             return Err(CliError::usage_with(
