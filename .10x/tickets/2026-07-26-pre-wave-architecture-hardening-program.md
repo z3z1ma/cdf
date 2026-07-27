@@ -39,7 +39,7 @@ No universal catalog semantic model is introduced.
 
 1. `.10x/tickets/done/2026-07-26-prewave-c1-receipt-clock-authority.md`
 2. `.10x/tickets/done/2026-07-26-prewave-c2-sql-mirror-commons.md`
-3. `.10x/tickets/2026-07-27-prewave-c1b-promotion-receipt-clock-injection.md`
+3. `.10x/tickets/done/2026-07-27-prewave-c1b-promotion-receipt-clock-injection.md`
 
 C1 eliminates receipt assembly and process-wall-clock duplication. C2 centralizes typed SQL mirror
 lifecycle without erasing native transaction/dialect behavior.
@@ -164,6 +164,10 @@ program review.
 - 2026-07-27: D1's broader product gate exposed a direct schema-promotion path that bypasses C1's
   execution-service binding. The existing C1 semantics are unchanged; bounded follow-up C1b now
   owns the two reproducing crash/multi-target tests before aggregate closure.
+- 2026-07-27: C1b closed with one neutral destination bind boundary, post-bind capability/lane
+  validation, recoverable facade caching, actual spill-authority transfer for DuckDB, and direct
+  promotion binding for only selected targets. The full 272-test CLI gate, adapter/resource
+  regressions, strict lint/format gates, and two independent final delegated reviews pass.
 
 ## Blockers
 

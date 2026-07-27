@@ -66,7 +66,7 @@ without changing genuine invariant failures.
   userinfo occurrences, sensitive-key values, and private-key labels.
 - 2026-07-27: The broader CLI gate exposed a separate C1 receipt-clock binding regression in
   direct schema promotion. It is outside D1 and now owned by
-  `.10x/tickets/2026-07-27-prewave-c1b-promotion-receipt-clock-injection.md`.
+  `.10x/tickets/done/2026-07-27-prewave-c1b-promotion-receipt-clock-injection.md`.
 
 ## Blockers
 

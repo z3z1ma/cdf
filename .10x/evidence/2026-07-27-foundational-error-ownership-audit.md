@@ -36,7 +36,7 @@ Cell: local `aarch64-apple-darwin`, Rust `1.96.1`, 2026-07-27.
   current-directory boundary and 269 other tests passed. Two schema-promotion receipt-clock tests
   failed because their direct destination path lacks injected `ExecutionServices`; that
   independently reproduced C1 follow-up is owned by
-  `.10x/tickets/2026-07-27-prewave-c1b-promotion-receipt-clock-injection.md`.
+  `.10x/tickets/done/2026-07-27-prewave-c1b-promotion-receipt-clock-injection.md`.
 - `git diff --check` passed.
 - `graphify update .` failed with `command not found`; no graph refresh is claimed.
 
