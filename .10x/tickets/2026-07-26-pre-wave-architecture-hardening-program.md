@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-26
-Updated: 2026-07-26
+Updated: 2026-07-27
 
 # Pre-wave architecture hardening program
 
@@ -39,13 +39,14 @@ No universal catalog semantic model is introduced.
 
 1. `.10x/tickets/done/2026-07-26-prewave-c1-receipt-clock-authority.md`
 2. `.10x/tickets/done/2026-07-26-prewave-c2-sql-mirror-commons.md`
+3. `.10x/tickets/2026-07-27-prewave-c1b-promotion-receipt-clock-injection.md`
 
 C1 eliminates receipt assembly and process-wall-clock duplication. C2 centralizes typed SQL mirror
 lifecycle without erasing native transaction/dialect behavior.
 
 ### WS-D — CLI authority and experience
 
-1. `.10x/tickets/2026-07-26-prewave-d1-environment-error-taxonomy.md`
+1. `.10x/tickets/done/2026-07-26-prewave-d1-environment-error-taxonomy.md`
 2. `.10x/tickets/2026-07-26-prewave-d1b-adapter-error-audit.md`
 3. `.10x/tickets/2026-07-26-prewave-d1c-product-error-audit.md`
 4. `.10x/tickets/2026-07-26-prewave-d2-typed-cli-report-authority.md`
@@ -156,6 +157,13 @@ program review.
   migration authority leaks, historical acknowledgement ordering, zero-data validation, byte-count
   drift, and premature durable marker publication. Contract, runtime, adapter, replay/crash,
   strict-lint, formatting, and two independent final review gates pass.
+- 2026-07-27: D1 closed with an ownership-based `Environment` kind, stable CLI mapping and
+  recursive redaction, production host/data/private-scratch classifiers, safe journal-free SQLite
+  admission, typed codec/writer error preservation, generated reference freshness, foundational
+  tests/strict lints, durable knowledge, and two independent delegated review passes.
+- 2026-07-27: D1's broader product gate exposed a direct schema-promotion path that bypasses C1's
+  execution-service binding. The existing C1 semantics are unchanged; bounded follow-up C1b now
+  owns the two reproducing crash/multi-target tests before aggregate closure.
 
 ## Blockers
 

@@ -1,8 +1,8 @@
 Status: open
 Created: 2026-07-26
-Updated: 2026-07-26
+Updated: 2026-07-27
 Parent: `.10x/tickets/2026-07-26-pre-wave-architecture-hardening-program.md`
-Depends-On: `.10x/tickets/2026-07-26-prewave-d1-environment-error-taxonomy.md`
+Depends-On: `.10x/tickets/done/2026-07-26-prewave-d1-environment-error-taxonomy.md`
 
 # Audit adapter environment and internal errors
 
@@ -33,7 +33,7 @@ real CDF invariants as Internal.
 
 - `.10x/specs/cli-report-authority-and-environment-errors.md`
 - `.10x/specs/cli-error-experience-catalog.md`
-- `.10x/tickets/2026-07-26-prewave-d1-environment-error-taxonomy.md`
+- `.10x/tickets/done/2026-07-26-prewave-d1-environment-error-taxonomy.md`
 
 ## Assumptions
 

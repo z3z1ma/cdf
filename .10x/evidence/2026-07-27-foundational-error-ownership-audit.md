@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-27
 Updated: 2026-07-27
-Relates-To: `.10x/tickets/2026-07-26-prewave-d1-environment-error-taxonomy.md`
+Relates-To: `.10x/tickets/done/2026-07-26-prewave-d1-environment-error-taxonomy.md`
 
 # Foundational error ownership audit
 
