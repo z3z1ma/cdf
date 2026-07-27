@@ -246,7 +246,7 @@ fn workspace_safety_lint_policy_and_exception_set_are_closed() {
     let members = workspace["workspace"]["members"].as_array().unwrap();
     assert_eq!(
         members.len(),
-        51,
+        52,
         "update the closed workspace-member count"
     );
     for member in members {
@@ -1842,6 +1842,45 @@ fn schema_snapshot_artifact_uses_deterministic_hash_and_project_path() {
     assert!(error.contains("schema snapshot reference path"));
 }
 
+#[cfg(unix)]
+#[test]
+fn schema_snapshot_store_rejects_managed_ancestor_and_leaf_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let artifact = SchemaSnapshotArtifact::new(
+        &ResourceId::new("local.events").unwrap(),
+        &Schema::new(vec![Field::new("id", DataType::Int64, false)]),
+        BTreeMap::new(),
+    )
+    .unwrap();
+    let store = SchemaSnapshotStore::new(root.path());
+
+    fs::create_dir(root.path().join(".cdf")).unwrap();
+    symlink(outside.path(), root.path().join(".cdf/schemas")).unwrap();
+    let ancestor_error = store.write_if_changed(&artifact).unwrap_err();
+    assert_eq!(ancestor_error.kind, cdf_kernel::ErrorKind::Data);
+    assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
+
+    fs::remove_file(root.path().join(".cdf/schemas")).unwrap();
+    fs::create_dir(root.path().join(".cdf/schemas")).unwrap();
+    let snapshot_path = root.path().join(&artifact.path);
+    let outside_file = outside.path().join("outside.json");
+    fs::write(&outside_file, b"outside").unwrap();
+    symlink(&outside_file, &snapshot_path).unwrap();
+    let leaf_error = store.write_if_changed(&artifact).unwrap_err();
+    assert_eq!(leaf_error.kind, cdf_kernel::ErrorKind::Data);
+    assert_eq!(fs::read(&outside_file).unwrap(), b"outside");
+
+    fs::remove_file(&snapshot_path).unwrap();
+    let dangling_target = outside.path().join("missing.json");
+    symlink(&dangling_target, &snapshot_path).unwrap();
+    let dangling_error = store.write_if_changed(&artifact).unwrap_err();
+    assert_eq!(dangling_error.kind, cdf_kernel::ErrorKind::Data);
+    assert!(!dangling_target.exists());
+}
+
 #[test]
 fn discovery_executor_budget_defaults_and_rejects_invalid_shapes() {
     let budget = DiscoveryExecutorBudget::default();
@@ -1984,7 +2023,7 @@ fn discovery_manifest_is_canonical_content_addressed_and_fail_closed() {
             .read(&missing)
             .unwrap_err()
             .to_string()
-            .contains("read")
+            .contains("does not exist")
     );
 
     let wrong_hash = DiscoveryManifestReference {
@@ -2174,6 +2213,7 @@ fn schema_snapshot_current_version_covers_schema_and_manifest_and_rejects_old_ve
                 && error.contains(&SCHEMA_SNAPSHOT_ARTIFACT_VERSION.to_string())
         );
     }
+    std::fs::remove_file(temp.path().join(&linked.path)).unwrap();
     snapshot_store.write(&linked).unwrap();
 
     std::fs::remove_file(temp.path().join(&manifest.path)).unwrap();
@@ -2181,7 +2221,7 @@ fn schema_snapshot_current_version_covers_schema_and_manifest_and_rejects_old_ve
         .read(&linked.reference())
         .unwrap_err()
         .to_string();
-    assert!(error.contains("read") && error.contains("discovery"));
+    assert!(error.contains("does not exist") && error.contains("discovery"));
 }
 
 fn observed_discovery_candidate(
@@ -2584,6 +2624,7 @@ fn project_external_codec_discovers_pins_previews_and_runs_over_remote_provider(
             plan,
             package_root: temp.path().join(".cdf/packages"),
             state_store_path: temp.path().join(".cdf/state.db"),
+            state_store_path_ownership: crate::StateStorePathOwnership::Configured,
             pipeline_id: PipelineId::new("pipeline-project-external-remote").unwrap(),
             package_id: "pkg-project-external-remote".to_owned(),
             checkpoint_id: CheckpointId::new("checkpoint-project-external-remote").unwrap(),
@@ -3460,6 +3501,7 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
             plan,
             package_root: temp.path().join(".cdf/packages"),
             state_store_path: temp.path().join(".cdf/state.db"),
+            state_store_path_ownership: crate::StateStorePathOwnership::Configured,
             pipeline_id: PipelineId::new("pipeline-http").unwrap(),
             package_id: "pkg-http-parquet-runtime".to_owned(),
             checkpoint_id: CheckpointId::new("checkpoint-http-parquet-runtime").unwrap(),
@@ -3544,6 +3586,7 @@ fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
             plan: pinned_plan,
             package_root: temp.path().join(".cdf/packages"),
             state_store_path: temp.path().join(".cdf/state-pinned.db"),
+            state_store_path_ownership: crate::StateStorePathOwnership::Configured,
             pipeline_id: PipelineId::new("pipeline-http-pinned").unwrap(),
             package_id: "pkg-http-parquet-pinned-runtime".to_owned(),
             checkpoint_id: CheckpointId::new("checkpoint-http-parquet-pinned-runtime").unwrap(),
@@ -3646,6 +3689,7 @@ fn unversioned_http_parquet_runs_and_commits_terminal_content_identity() {
             plan,
             package_root: temp.path().join(".cdf/packages"),
             state_store_path: temp.path().join(".cdf/state.db"),
+            state_store_path_ownership: crate::StateStorePathOwnership::Configured,
             pipeline_id: PipelineId::new("pipeline-http-unversioned").unwrap(),
             package_id: "pkg-http-unversioned".to_owned(),
             checkpoint_id: CheckpointId::new("checkpoint-http-unversioned").unwrap(),

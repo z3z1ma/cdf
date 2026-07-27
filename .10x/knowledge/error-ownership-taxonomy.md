@@ -39,7 +39,21 @@ For private CDF scratch, missing/truncated/invalid/wrong-shape content after suc
 Decoder and writer adapters MUST walk error source chains. An embedded typed `CdfError` keeps its
 kind, retry delay, and primary message while the caller adds context. A codec/shape failure with no
 host source is `Data`; an underlying host I/O source is classified by the rules above. Never
-flatten a typed source into a string and reconstruct a new kind.
+flatten a typed source into a string and reconstruct a new kind. `std::io::Error::source()` alone
+is insufficient for every nested I/O wrapper: follow `std::io::Error::get_ref()` recursively before
+falling back to the generic source chain.
+
+Managed filesystem reads and immutable publication use the canonical real parent as authority,
+reject leaf symlinks without following them, and distinguish configured caller paths from
+CDF-owned default `.cdf` paths. A content-addressed write is temp-write, file-sync, no-clobber
+install, then directory-sync through the durable root. An identical retry must repeat the
+directory-sync chain so it can heal an earlier durability failure.
+
+Private SQLite schema admission is separate from whole-history semantic integrity. Ordinary store
+opens validate the component schema and path authority; typed reads validate every row they
+consume. Raw SQL diagnostics and recovery flows that bypass typed reads must call the explicit
+whole-store integrity validator. Do not put unbounded history scans on ordinary run startup, and
+do not hide corrupt rows behind a filtered raw query.
 
 ## Adapter boundaries
 

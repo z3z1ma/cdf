@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fs};
+use std::collections::BTreeMap;
 
 use cdf_contract::{
     ContractPolicy, IdentifierPolicy, ObservedSchema, compile_resource_validation_program,
@@ -131,7 +131,11 @@ pub(crate) fn plan_or_explain(
         .no_pin
         .then(|| tempfile::Builder::new().prefix("cdf-inspection-").tempdir())
         .transpose()
-        .map_err(|error| CdfError::internal(format!("create inspection artifact root: {error}")))?;
+        .map_err(|error| {
+            CdfError::environment(format!(
+                "create inspection artifact root in the host temporary directory: {error}; check temporary-directory access, free space, and process file limits before retrying"
+            ))
+        })?;
     let artifact_root = inspection_root
         .as_ref()
         .map_or(context.root.as_path(), tempfile::TempDir::path);
@@ -193,7 +197,11 @@ pub(crate) fn preview(
     let inspection_root = tempfile::Builder::new()
         .prefix("cdf-preview-")
         .tempdir()
-        .map_err(|error| CdfError::internal(format!("create preview artifact root: {error}")))?;
+        .map_err(|error| {
+            CdfError::environment(format!(
+                "create preview artifact root in the host temporary directory: {error}; check temporary-directory access, free space, and process file limits before retrying"
+            ))
+        })?;
     let prepared = prepare_runtime_resource_for_cli_with_artifact_root(
         destinations,
         &context,
@@ -345,7 +353,11 @@ pub(crate) fn prepare_resource_schema_for_cli(
             cdf_project::write_schema_discovery_artifacts(&context.root, &artifacts)?
                 .snapshot_written;
         let lock_path = context.root.join(cdf_project::LOCK_FILE_NAME);
-        let lockfile_written = fs::read_to_string(&lock_path).ok().as_deref() != Some(&encoded);
+        let lockfile_written = context
+            .lock_authority
+            .as_ref()
+            .map(|authority| authority.bytes.as_slice())
+            != Some(encoded.as_bytes());
         if lockfile_written {
             cdf_project::write_lock_file_guarded(
                 &lock_path,
@@ -415,25 +427,22 @@ pub(crate) fn planning_frontier(
     pipeline_id: &PipelineId,
 ) -> Result<Option<SourcePosition>, CliError> {
     let state_path = context.state_store_path()?;
-    if !state_path.try_exists().map_err(|error| {
-        CdfError::internal(format!(
-            "inspect checkpoint store {}: {error}",
-            state_path.display()
-        ))
-    })? {
+    let ownership = context.state_store_path_ownership();
+    if !cdf_state_sqlite::database_path_exists(&state_path, ownership)? {
         return Ok(None);
     }
-    let frontier = cdf_state_sqlite::SqliteCheckpointStore::open(state_path)?
-        .head(
-            pipeline_id,
-            &descriptor.resource_id,
-            &descriptor.state_scope,
-        )?
-        .map(|checkpoint| checkpoint.delta.source_resume_position().clone())
-        // File resources already compute a changed/unchanged summary while binding their
-        // manifest in project orchestration. Until that summary is compiled into ScanPlan,
-        // preserve its single existing binding point instead of filtering the task set twice.
-        .filter(|position| !matches!(position, SourcePosition::FileManifest(_)));
+    let frontier =
+        cdf_state_sqlite::SqliteCheckpointStore::open_with_path_ownership(state_path, ownership)?
+            .head(
+                pipeline_id,
+                &descriptor.resource_id,
+                &descriptor.state_scope,
+            )?
+            .map(|checkpoint| checkpoint.delta.source_resume_position().clone())
+            // File resources already compute a changed/unchanged summary while binding their
+            // manifest in project orchestration. Until that summary is compiled into ScanPlan,
+            // preserve its single existing binding point instead of filtering the task set twice.
+            .filter(|position| !matches!(position, SourcePosition::FileManifest(_)));
     Ok(frontier)
 }
 

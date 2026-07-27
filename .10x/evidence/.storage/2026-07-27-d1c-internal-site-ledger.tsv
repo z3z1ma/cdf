@@ -1,0 +1,405 @@
+constructor	retained_internal	crates/cdf-benchmarks/src/resource.rs:245:                .map_err(|_| CdfError::internal("fixture transport mutex poisoned"))?
+constructor	retained_internal	crates/cdf-benchmarks/src/resource.rs:247:                .ok_or_else(|| CdfError::internal("fixture transport exhausted responses"))?;
+constructor	retained_internal	crates/cdf-benchmarks/src/runners.rs:1816:            return Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-benchmarks/src/runners.rs:1825:                CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-benchmarks/src/runners.rs:1831:                return Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-benchmarks/src/runners.rs:1846:            return Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-builtin-drivers/src/lib.rs:162:        .map_err(|_| CdfError::internal("built-in driver catalog initialization lock poisoned"))?;
+constructor	retained_internal	crates/cdf-builtin-drivers/src/lib.rs:168:        .map_err(|_| CdfError::internal("built-in driver catalogs initialized concurrently"))?;
+constructor	retained_internal	crates/cdf-builtin-drivers/src/lib.rs:171:        .ok_or_else(|| CdfError::internal("initialize built-in driver catalogs"))
+constructor	retained_internal	crates/cdf-cli-core/src/cli_artifacts.rs:596:        CdfError::internal(message.into()),
+constructor	retained_internal	crates/cdf-cli-core/src/output.rs:299:                    CdfError::internal(error.to_string()),
+constructor	retained_internal	crates/cdf-cli-core/src/output.rs:564:        let mapped = CliError::from(CdfError::internal("poisoned ownership invariant"));
+constructor	retained_internal	crates/cdf-cli/src/add_command.rs:102:            CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-cli/src/add_command.rs:112:            CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-cli/src/add_command.rs:122:            CdfError::internal("generated resource compiled through a different source driver"),
+constructor	retained_internal	crates/cdf-cli/src/add_command.rs:633:            CdfError::internal(format!("serialize registered source add proposal: {error}")),
+constructor	retained_internal	crates/cdf-cli/src/commands.rs:146:        CdfError::internal(error.to_string()),
+constructor	retained_internal	crates/cdf-cli/src/context.rs:329:            CdfError::internal("schema source lost pinning support during lock hydration")
+constructor	retained_internal	crates/cdf-cli/src/context.rs:413:        .ok_or_else(|| CdfError::internal(format!("{} has no parent", path.display())))?
+constructor	retained_internal	crates/cdf-cli/src/destination_registry_test_support.rs:334:            return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-cli/src/doctor_drift.rs:335:        CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-cli/src/doctor_drift.rs:357:            return Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-cli/src/doctor_drift.rs:363:        CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-cli/src/doctor_drift.rs:369:        return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-cli/src/doctor_drift.rs:374:        return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-cli/src/doctor_drift.rs:390:        return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-cli/src/doctor_drift.rs:581:    private_state_from_sql(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-cli/src/doctor_drift.rs:640:        CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-cli/src/project_run_resource.rs:217:        cdf_kernel::CdfError::internal("runtime source resolution requires execution services")
+constructor	retained_internal	crates/cdf-cli/src/replay_command.rs:219:            .ok_or_else(|| CdfError::internal("replay destination was already consumed"))?
+constructor	retained_internal	crates/cdf-cli/src/replay_command.rs:233:            .ok_or_else(|| CdfError::internal("replay destination was already consumed"))?;
+constructor	retained_internal	crates/cdf-cli/src/replay_command.rs:267:            .ok_or_else(|| CdfError::internal("replay destination was already consumed"))?;
+constructor	retained_internal	crates/cdf-cli/src/replay_command.rs:374:    u64::try_from(value).map_err(|error| CdfError::internal(error.to_string()))
+constructor	retained_internal	crates/cdf-cli/src/replay_command.rs:676:        .ok_or_else(|| CdfError::internal("created replay run is absent from run ledger"))?;
+constructor	retained_internal	crates/cdf-cli/src/resume_command.rs:162:                CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-cli/src/resume_command/attempt.rs:188:                return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-cli/src/resume_command/attempt.rs:593:            .ok_or_else(|| CdfError::internal("resumed run disappeared from run ledger").into())
+constructor	retained_internal	crates/cdf-cli/src/resume_command/destination.rs:44:            .ok_or_else(|| CdfError::internal("resume destination was already consumed").into())
+constructor	retained_internal	crates/cdf-cli/src/run_command.rs:488:            CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-cli/src/run_command.rs:498:            CdfError::internal("generated ad-hoc resource id did not match its stable identity"),
+constructor	retained_internal	crates/cdf-cli/src/run_command.rs:564:            CliError::from(CdfError::internal(
+constructor	retained_internal	crates/cdf-cli/src/run_command.rs:581:            CdfError::internal("ad-hoc staged source path has no parent"),
+constructor	retained_internal	crates/cdf-cli/src/run_command.rs:626:            CdfError::internal("ad-hoc private path has no parent"),
+constructor	retained_internal	crates/cdf-cli/src/run_command.rs:654:            CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-cli/src/run_command.rs:716:                CdfError::internal("ad-hoc staged source path has no UTF-8 filename"),
+constructor	retained_internal	crates/cdf-cli/src/run_command.rs:872:            CdfError::internal(format!("{} has no parent directory", path.display())),
+constructor	retained_internal	crates/cdf-cli/src/run_command.rs:920:        CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-cli/src/scan_command.rs:1481:        return Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-cli/src/scan_command.rs:1489:        return Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-cli/src/scan_command.rs:287:                CdfError::internal("pinned schema source cannot be inspected unpinned")
+constructor	retained_internal	crates/cdf-cli/src/scan_command.rs:310:        .ok_or_else(|| CdfError::internal("source discovery requires execution services"))?;
+constructor	retained_internal	crates/cdf-cli/src/schema_command.rs:284:            CdfError::internal("unchanged schema pin lost its verified previous snapshot")
+constructor	retained_internal	crates/cdf-cli/src/status_freshness.rs:1067:        CdfError::internal(error.to_string()),
+constructor	retained_internal	crates/cdf-cli/src/status_freshness.rs:373:        return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-cli/src/status_freshness.rs:817:        return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-cli/src/status_freshness.rs:825:        return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-cli/src/status_freshness.rs:975:    CdfError::internal(format!("decode CDF-managed freshness row column: {error}"))
+constructor	retained_internal	crates/cdf-cli/src/status_freshness.rs:979:    CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-cli/src/system_sql.rs:597:                Err(CdfError::internal("mount package receipt failed"))
+constructor	retained_internal	crates/cdf-cli/src/tests.rs:14766:    let hook = |_receipt: &Receipt| Err(CdfError::internal("stop before resume checkpoint"));
+constructor	retained_internal	crates/cdf-cli/src/tests.rs:14825:        Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-conformance/src/destination_catalog.rs:881:                CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-conformance/src/destination_catalog/quasar.rs:164:            return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-conformance/src/lib.rs:42:        cdf_kernel::CdfError::internal(format!("{action}: {error}"))
+constructor	retained_internal	crates/cdf-conformance/src/live_run/mod.rs:231:        CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-conformance/src/live_run/tests.rs:164:    let hook = |_receipt: &Receipt| Err(CdfError::internal("injected live conformance failure"));
+constructor	retained_internal	crates/cdf-conformance/src/package_replay/mod.rs:254:            .ok_or_else(|| CdfError::internal("prepared replay plan is not inline"))?
+constructor	retained_internal	crates/cdf-conformance/src/package_replay/mod.rs:256:            .ok_or_else(|| CdfError::internal("prepared replay plan omitted its partition"))?,
+constructor	retained_internal	crates/cdf-conformance/src/package_replay/mod.rs:361:            Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-conformance/src/resource/execution.rs:670:            other => return Err(CdfError::internal(format!("unexpected partition {other}"))),
+constructor	retained_internal	crates/cdf-conformance/src/resource/mod.rs:933:                Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-conformance/src/run_matrix/data_onramp.rs:68:        cdf_kernel::CdfError::internal("scan omitted canonical partition authority")
+constructor	retained_internal	crates/cdf-conformance/src/run_matrix/external_mock_fixture.rs:219:                    cdf_kernel::CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-conformance/src/run_matrix/external_mock_fixture.rs:390:                        cdf_kernel::CdfError::internal(
+constructor	retained_internal	crates/cdf-conformance/src/run_matrix/external_mock_fixture.rs:398:                return Err(cdf_kernel::CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-conformance/src/run_matrix/external_mock_fixture.rs:446:                cdf_kernel::CdfError::internal(
+constructor	retained_internal	crates/cdf-conformance/src/run_matrix/local_postgres.rs:101:            .map_err(|_| CdfError::internal("local Postgres startup lock was poisoned"))?;
+constructor	retained_internal	crates/cdf-conformance/src/run_matrix/test_support.rs:56:                    CdfError::internal("run matrix REST transport exhausted responses")
+constructor	retained_internal	crates/cdf-contract/src/correction.rs:44:        return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-contract/src/dedup_key.rs:111:                .ok_or_else(|| CdfError::internal("list-view array/type mismatch"))?;
+constructor	retained_internal	crates/cdf-contract/src/dedup_key.rs:153:                .ok_or_else(|| CdfError::internal("large-list-view array/type mismatch"))?;
+constructor	retained_internal	crates/cdf-contract/src/dedup_key.rs:195:                .ok_or_else(|| CdfError::internal("fixed-size-list array/type mismatch"))?;
+constructor	retained_internal	crates/cdf-contract/src/dedup_key.rs:213:                .ok_or_else(|| CdfError::internal("struct array/type mismatch"))?;
+constructor	retained_internal	crates/cdf-contract/src/dedup_key.rs:232:                        .ok_or_else(|| CdfError::internal("dictionary array/type mismatch"))?;
+constructor	retained_internal	crates/cdf-contract/src/dedup_key.rs:254:                .ok_or_else(|| CdfError::internal("union array/type mismatch"))?;
+constructor	retained_internal	crates/cdf-contract/src/dedup_key.rs:360:        .ok_or_else(|| CdfError::internal("map array/type mismatch"))?;
+constructor	retained_internal	crates/cdf-contract/src/dedup_key.rs:362:        return Err(CdfError::internal("map array has non-map type"));
+constructor	retained_internal	crates/cdf-contract/src/dedup_key.rs:389:        .ok_or_else(|| CdfError::internal("map entries are not a struct array"))?;
+constructor	retained_internal	crates/cdf-contract/src/dedup_key.rs:437:        .ok_or_else(|| CdfError::internal("taken map entries are not a struct array"))?
+constructor	retained_internal	crates/cdf-contract/src/dedup_key.rs:69:                .ok_or_else(|| CdfError::internal("list array/type mismatch"))?;
+constructor	retained_internal	crates/cdf-contract/src/dedup_key.rs:90:                .ok_or_else(|| CdfError::internal("large-list array/type mismatch"))?;
+constructor	retained_internal	crates/cdf-contract/src/evaluator.rs:361:        _ => Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-contract/src/evaluator.rs:712:                .ok_or_else(|| CdfError::internal("Arrow Utf8 array downcast failed"))?
+constructor	retained_internal	crates/cdf-contract/src/evaluator.rs:720:                .ok_or_else(|| CdfError::internal("Arrow LargeUtf8 array downcast failed"))?
+constructor	retained_internal	crates/cdf-contract/src/evaluator.rs:740:                .ok_or_else(|| CdfError::internal("Arrow Utf8 array downcast failed"))?
+constructor	retained_internal	crates/cdf-contract/src/evaluator.rs:747:                .ok_or_else(|| CdfError::internal("Arrow LargeUtf8 array downcast failed"))?
+constructor	retained_internal	crates/cdf-contract/src/evaluator.rs:840:        .ok_or_else(|| CdfError::internal(format!("Arrow {label} array downcast failed")))
+constructor	retained_internal	crates/cdf-contract/src/evaluator.rs:883:        .ok_or_else(|| CdfError::internal(format!("Arrow {label} array downcast failed")))?
+constructor	retained_internal	crates/cdf-contract/src/expression.rs:250:            CdfError::internal(format!("serialize compiled expression plan: {error}"))
+constructor	retained_internal	crates/cdf-contract/src/reconciliation.rs:250:        CdfError::internal(format!("serialize schema coercion evidence: {error}"))
+constructor	retained_internal	crates/cdf-contract/src/reconciliation.rs:41:            (None, true) => Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-contract/src/reconciliation.rs:609:            CdfError::internal(format!("serialize schema coercion plan metadata: {error}"))
+constructor	retained_internal	crates/cdf-contract/src/vector.rs:1130:    CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-contract/src/vector.rs:70:            CdfError::internal(
+constructor	retained_internal	crates/cdf-declarative/src/declarations.rs:439:        .ok_or_else(|| CdfError::internal("declarative JSON Schema has no $defs object"))?;
+constructor	retained_internal	crates/cdf-declarative/src/declarations.rs:443:        .ok_or_else(|| CdfError::internal("declarative JSON Schema has no source definition"))?;
+constructor	retained_internal	crates/cdf-declarative/src/declarations.rs:447:        .ok_or_else(|| CdfError::internal("declarative JSON Schema has no resource definition"))?;
+constructor	retained_internal	crates/cdf-declarative/src/declarations.rs:456:            .ok_or_else(|| CdfError::internal("registered source has no option schema"))?;
+constructor	retained_internal	crates/cdf-declarative/src/declarations.rs:458:            CdfError::internal("registered source option schema has no source section")
+constructor	retained_internal	crates/cdf-declarative/src/declarations.rs:461:            CdfError::internal("registered source option schema has no resource section")
+constructor	retained_internal	crates/cdf-declarative/src/declarations.rs:496:        .ok_or_else(|| CdfError::internal("common declaration schema is not an object"))?;
+constructor	retained_internal	crates/cdf-declarative/src/declarations.rs:499:        .ok_or_else(|| CdfError::internal("source driver option schema is not an object"))?;
+constructor	retained_internal	crates/cdf-declarative/src/declarations.rs:503:        return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-declarative/src/declarations.rs:514:        .ok_or_else(|| CdfError::internal("common object schema properties are not an object"))?;
+constructor	retained_internal	crates/cdf-declarative/src/declarations.rs:522:            return Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-declarative/src/declarations.rs:534:            CdfError::internal("source driver required option name is not a string")
+constructor	retained_internal	crates/cdf-declarative/src/tests.rs:141:        Err(CdfError::internal("test driver is compile-only"))
+constructor	retained_internal	crates/cdf-declarative/src/tests.rs:149:        Err(CdfError::internal("test driver is compile-only"))
+constructor	retained_internal	crates/cdf-project/src/discovery_manifest.rs:1130:    let bytes = serde_json::to_vec(value).map_err(|error| CdfError::internal(error.to_string()))?;
+constructor	retained_internal	crates/cdf-project/src/discovery_manifest.rs:1136:    serde_json::to_vec_pretty(&value).map_err(|error| CdfError::internal(error.to_string()))
+constructor	retained_internal	crates/cdf-project/src/discovery_manifest.rs:1141:        serde_json::to_value(value).map_err(|error| CdfError::internal(error.to_string()))?;
+constructor	retained_internal	crates/cdf-project/src/discovery_manifest.rs:1184:        .ok_or_else(|| CdfError::internal(format!("invalid manifest path {}", path.display())))?;
+constructor	retained_internal	crates/cdf-project/src/discovery_manifest.rs:1186:        CdfError::internal(format!("manifest path {} has no parent", path.display()))
+constructor	retained_internal	crates/cdf-project/src/discovery_manifest.rs:1323:        CdfError::internal(format!("{action} {}: {error}", path.display()))
+constructor	retained_internal	crates/cdf-project/src/discovery_manifest.rs:338:                .ok_or_else(|| CdfError::internal("selector lost candidate identity"))?;
+constructor	retained_internal	crates/cdf-project/src/discovery_manifest.rs:619:                    CdfError::internal(format!("manifest path {} has no parent", path.display()))
+constructor	retained_internal	crates/cdf-project/src/discovery_manifest.rs:682:            CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/discovery_manifest.rs:689:            CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/discovery_manifest.rs:751:            CdfError::internal(format!("manifest path {} has no parent", path.display()))
+constructor	retained_internal	crates/cdf-project/src/internal.rs:262:    let bytes = serde_json::to_vec(value).map_err(|error| CdfError::internal(error.to_string()))?;
+constructor	retained_internal	crates/cdf-project/src/lock_cas.rs:101:        CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/lock_cas.rs:107:        CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/lock_cas.rs:119:                return Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/lock_cas.rs:132:                            return Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/lock_cas.rs:152:            Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/lock_cas.rs:512:    CdfError::internal(format!("injected cdf.lock publication crash {stage}"))
+constructor	retained_internal	crates/cdf-project/src/lock_cas.rs:552:        CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/lock_cas.rs:81:        CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/lockfile.rs:711:        serde_json::to_value(before).map_err(|error| CdfError::internal(error.to_string()))?;
+constructor	retained_internal	crates/cdf-project/src/lockfile.rs:713:        serde_json::to_value(after).map_err(|error| CdfError::internal(error.to_string()))?;
+constructor	retained_internal	crates/cdf-project/src/observation_cache.rs:175:            CdfError::internal(format!("encode observation cache key: {error}"))
+constructor	retained_internal	crates/cdf-project/src/observation_cache.rs:425:            CdfError::internal("observation cache key hash omitted sha256 prefix")
+constructor	retained_internal	crates/cdf-project/src/project_files.rs:252:                return Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/project_files.rs:411:            return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-project/src/project_files.rs:727:            CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/project_files.rs:762:        CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/project_files.rs:772:    CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/promotion.rs:1668:                        CdfError::internal("promotion inventory package digest was not initialized")
+constructor	retained_internal	crates/cdf-project/src/promotion.rs:2519:        .map_err(|error| CdfError::internal(format!("serialize promotion identity: {error}")))?;
+constructor	retained_internal	crates/cdf-project/src/promotion.rs:2521:        .map_err(|error| CdfError::internal(format!("encode promotion identity: {error}")))?;
+constructor	retained_internal	crates/cdf-project/src/runtime/artifacts.rs:290:            CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/runtime/artifacts.rs:296:            return Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/runtime/artifacts.rs:317:        return Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/runtime/ledger.rs:167:                CdfError::internal("source retry event requires its compiled partition schedule")
+constructor	retained_internal	crates/cdf-project/src/runtime/ledger.rs:360:            .map_err(|_| CdfError::internal("phase event counter lock poisoned"))?;
+constructor	retained_internal	crates/cdf-project/src/runtime/ledger.rs:387:            .map_err(|_| CdfError::internal("active phase lock poisoned"))?
+constructor	retained_internal	crates/cdf-project/src/runtime/ledger.rs:404:            .map_err(|_| CdfError::internal("active phase lock poisoned"))?
+constructor	retained_internal	crates/cdf-project/src/runtime/ledger.rs:430:            .map_err(|_| CdfError::internal("active phase lock poisoned"))?
+constructor	retained_internal	crates/cdf-project/src/runtime/ledger.rs:448:                .map_err(|_| CdfError::internal("active phase lock poisoned"))?,
+constructor	retained_internal	crates/cdf-project/src/runtime/ledger.rs:458:            CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/runtime/ledger.rs:492:                    CdfError::internal(format!("run elapsed time overflow: {error}"))
+constructor	retained_internal	crates/cdf-project/src/runtime/ledger.rs:636:            CdfError::internal(format!("phase duration does not fit in u64: {error}"))
+constructor	retained_internal	crates/cdf-project/src/runtime/ledger.rs:708:    u64::try_from(value).map_err(|error| CdfError::internal(error.to_string()))
+constructor	retained_internal	crates/cdf-project/src/runtime/orchestration.rs:1019:                CdfError::internal("drain settlement omitted its command clock authority")
+constructor	retained_internal	crates/cdf-project/src/runtime/orchestration.rs:1027:            return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-project/src/runtime/orchestration.rs:1032:            return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-project/src/runtime/orchestration.rs:1148:        CdfError::internal("inline file manifest planning lost inline partition authority")
+constructor	retained_internal	crates/cdf-project/src/runtime/orchestration.rs:328:                    .ok_or_else(|| CdfError::internal("drain run omitted its first run id"))?
+constructor	retained_internal	crates/cdf-project/src/runtime/orchestration.rs:380:                            CdfError::internal("drain run omitted its first run id")
+constructor	retained_internal	crates/cdf-project/src/runtime/orchestration.rs:395:            CdfError::internal(
+constructor	retained_internal	crates/cdf-project/src/runtime/orchestration.rs:444:                    .ok_or_else(|| CdfError::internal("drain run omitted its first run id"))?,
+constructor	retained_internal	crates/cdf-project/src/runtime/orchestration.rs:450:            return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-project/src/runtime/orchestration.rs:817:                        CdfError::internal("late-data carryover input was consumed twice")
+constructor	retained_internal	crates/cdf-project/src/runtime/orchestration.rs:831:                        CdfError::internal("late-data carryover input was consumed twice")
+constructor	retained_internal	crates/cdf-project/src/runtime/orchestration.rs:913:        return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-project/src/runtime/promotion.rs:1213:        .map_err(|error| cdf_kernel::CdfError::internal(error.to_string()))?;
+constructor	retained_internal	crates/cdf-project/src/runtime/promotion.rs:1790:                    .ok_or_else(|| cdf_kernel::CdfError::internal("new schema hash missing"))?,
+constructor	retained_internal	crates/cdf-project/src/runtime/promotion.rs:1813:                        || cdf_kernel::CdfError::internal("target receipt missing"),
+constructor	retained_internal	crates/cdf-project/src/runtime/promotion.rs:1816:                        || cdf_kernel::CdfError::internal("target checkpoint missing"),
+constructor	retained_internal	crates/cdf-project/src/runtime/promotion.rs:1954:        .map_err(|_| cdf_kernel::CdfError::internal("promotion target index exceeds u64"))?;
+constructor	retained_internal	crates/cdf-project/src/runtime/promotion.rs:1959:            cdf_kernel::CdfError::internal("promotion recovery journal sequence overflow")
+constructor	retained_internal	crates/cdf-project/src/runtime/promotion.rs:1962:        return Err(cdf_kernel::CdfError::internal(
+constructor	retained_internal	crates/cdf-project/src/runtime/promotion.rs:2311:        .map_err(|error| cdf_kernel::CdfError::internal(error.to_string()))?;
+constructor	retained_internal	crates/cdf-project/src/runtime/promotion.rs:2314:        .map_err(|error| cdf_kernel::CdfError::internal(error.to_string()))
+constructor	retained_internal	crates/cdf-project/src/runtime/promotion.rs:2420:        cdf_kernel::CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/runtime/promotion.rs:2427:        cdf_kernel::CdfError::internal("promotion artifact path has no project-relative parent")
+constructor	retained_internal	crates/cdf-project/src/runtime/promotion.rs:2432:            return Err(cdf_kernel::CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/runtime/promotion.rs:2485:        .ok_or_else(|| cdf_kernel::CdfError::internal("promotion artifact path has no parent"))?;
+constructor	retained_internal	crates/cdf-project/src/runtime/promotion.rs:2525:        cdf_kernel::CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/runtime/promotion.rs:2532:        cdf_kernel::CdfError::internal("promotion artifact path has no project-relative parent")
+constructor	retained_internal	crates/cdf-project/src/runtime/promotion.rs:2537:            return Err(cdf_kernel::CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/runtime/promotion.rs:2755:        Err(cdf_kernel::CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/runtime/replay.rs:1613:        .map_err(|error| CdfError::internal(format!("replay segment count overflow: {error}")))?;
+constructor	retained_internal	crates/cdf-project/src/runtime/replay.rs:1777:            CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/runtime/replay.rs:189:            .map_err(|_| CdfError::internal("staged byte budget lock is poisoned"))?;
+constructor	retained_internal	crates/cdf-project/src/runtime/replay.rs:1942:                .ok_or_else(|| CdfError::internal("verified staged segment object is absent"))?
+constructor	retained_internal	crates/cdf-project/src/runtime/replay.rs:202:                .map_err(|_| CdfError::internal("staged byte budget lock is poisoned"))?;
+constructor	retained_internal	crates/cdf-project/src/runtime/replay.rs:2195:            .ok_or_else(|| CdfError::internal("staged session is no longer active"))?
+constructor	retained_internal	crates/cdf-project/src/runtime/replay.rs:358:            .ok_or_else(|| CdfError::internal("staged blocking lane has no execution services"))?;
+constructor	retained_internal	crates/cdf-project/src/runtime/replay.rs:366:            .ok_or_else(|| CdfError::internal("staged session is absent before worker start"))?;
+constructor	retained_internal	crates/cdf-project/src/runtime/replay.rs:388:                        CdfError::internal("background staging completion lock is poisoned")
+constructor	retained_internal	crates/cdf-project/src/runtime/replay.rs:393:                        CdfError::internal("background staging session was already consumed")
+constructor	retained_internal	crates/cdf-project/src/runtime/replay.rs:426:                    CdfError::internal("background staging completion lock is poisoned")
+constructor	retained_internal	crates/cdf-project/src/runtime/replay.rs:450:                    CdfError::internal(
+constructor	retained_internal	crates/cdf-project/src/runtime/replay.rs:474:            .ok_or_else(|| CdfError::internal("staged ingress lease is absent"))?
+constructor	retained_internal	crates/cdf-project/src/runtime/replay.rs:515:                .ok_or_else(|| CdfError::internal("staged ingress worker is closed"))?
+constructor	retained_internal	crates/cdf-project/src/runtime/replay.rs:526:                        CdfError::internal("background staging completion lock is poisoned")
+constructor	retained_internal	crates/cdf-project/src/runtime/replay.rs:544:            .ok_or_else(|| CdfError::internal("staged session is no longer active"))?
+constructor	retained_internal	crates/cdf-project/src/runtime/replay.rs:561:            .ok_or_else(|| CdfError::internal("staged ingress lease is absent"))?
+constructor	retained_internal	crates/cdf-project/src/runtime/replay.rs:577:            .map_err(|_| CdfError::internal("background staging completion lock is poisoned"))?;
+constructor	retained_internal	crates/cdf-project/src/runtime/replay.rs:582:            return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-project/src/runtime/replay.rs:603:                CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/runtime/replay.rs:619:            .ok_or_else(|| CdfError::internal("staged ingress lease is absent"))?
+constructor	retained_internal	crates/cdf-project/src/runtime/replay.rs:624:            .ok_or_else(|| CdfError::internal("staged session is no longer active"))?;
+constructor	retained_internal	crates/cdf-project/src/runtime/replay.rs:628:                    CdfError::internal("staged final-binding lane has no execution services")
+constructor	retained_internal	crates/cdf-project/src/runtime/replay.rs:637:            .ok_or_else(|| CdfError::internal("staged ingress lease is absent"))?
+constructor	retained_internal	crates/cdf-project/src/runtime/replay.rs:657:                    CdfError::internal("background staging completion lock is poisoned"),
+constructor	retained_internal	crates/cdf-project/src/runtime/validation.rs:257:                    CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/runtime/validation.rs:286:            CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/runtime/validation.rs:314:                    CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/runtime/validation.rs:349:        CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/runtime/validation.rs:360:                return Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/runtime/validation.rs:372:                            return Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/runtime/validation.rs:398:        CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:10012:    let hook = |_receipt: &Receipt| Err(CdfError::internal("stop before zero checkpoint"));
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:10084:            return Err(CdfError::internal("stop after checkpoint proposal"));
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:10124:            return Err(CdfError::internal("stop after checkpoint commit"));
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:1522:            Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:159:            return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:2387:            Err(CdfError::internal("artifact fixture has no payload"))
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:3035:            return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:417:                CdfError::internal(
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:422:            return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:4379:                    .ok_or_else(|| CdfError::internal("test transport exhausted responses"))?
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:4811:    let hook = |_receipt: &Receipt| Err(CdfError::internal("injected live checkpoint failure"));
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:5042:    let hook = |_receipt: &Receipt| Err(CdfError::internal("injected checkpoint crash window"));
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:5681:        Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:605:                batches.push(Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:682:                return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:7583:    let hook = |_receipt: &Receipt| Err(CdfError::internal("stop before parquet checkpoint"));
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:7633:    let hook = |_receipt: &Receipt| Err(CdfError::internal("stop before parquet checkpoint"));
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:7705:    let hook = |_receipt: &Receipt| Err(CdfError::internal("stop before postgres checkpoint"));
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:7770:    let hook = |_receipt: &Receipt| Err(CdfError::internal("stop before postgres checkpoint"));
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:7851:    let hook = |_receipt: &Receipt| Err(CdfError::internal("stop before postgres checkpoint"));
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:8173:    let hook = |_receipt: &Receipt| Err(CdfError::internal("injected general failure"));
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:8261:    let hook = |_receipt: &Receipt| Err(CdfError::internal("stop before checkpoint"));
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:8823:        Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:8871:            return Err(CdfError::internal("injected checkpoint commit failure"));
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:8909:        Err(CdfError::internal("unexpected propose"))
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:8913:        Err(CdfError::internal("injected checkpoint commit failure"))
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:8917:        Err(CdfError::internal("unexpected abandon"))
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:8949:        Err(CdfError::internal("unexpected rewind"))
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:9406:            return Err(CdfError::internal("stop at generic destination write hook"));
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:9841:        Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-project/src/runtime_tests.rs:9964:    let hook = |_receipt: &Receipt| Err(CdfError::internal("stop before checkpoint commit"));
+constructor	retained_internal	crates/cdf-project/src/scaffold.rs:115:        serde_json::to_string(name).map_err(|error| CdfError::internal(error.to_string()))?;
+constructor	retained_internal	crates/cdf-project/src/schema_discovery.rs:1143:                        .map_err(|_| CdfError::internal("discovery result mutex was poisoned"))?
+constructor	retained_internal	crates/cdf-project/src/schema_discovery.rs:1151:                .map_err(|_| CdfError::internal("discovery probe worker panicked"))??;
+constructor	retained_internal	crates/cdf-project/src/schema_discovery.rs:1157:        .map_err(|_| CdfError::internal("discovery result mutex was poisoned"))?;
+constructor	retained_internal	crates/cdf-project/src/schema_discovery.rs:1524:    .map_err(|error| CdfError::internal(error.to_string()))?;
+constructor	retained_internal	crates/cdf-project/src/schema_discovery.rs:839:                    CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/schema_discovery.rs:849:                    CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/schema_discovery.rs:994:            CdfError::internal(
+constructor	retained_internal	crates/cdf-project/src/schema_snapshot.rs:1154:            CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/schema_snapshot.rs:1161:            return Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/schema_snapshot.rs:1232:            CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/schema_snapshot.rs:1255:                CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/schema_snapshot.rs:1273:            CdfError::internal(format!("invalid schema snapshot path {}", path.display()))
+constructor	retained_internal	crates/cdf-project/src/schema_snapshot.rs:1276:        CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/schema_snapshot.rs:1438:        CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-project/src/schema_snapshot.rs:1463:    let bytes = serde_json::to_vec(value).map_err(|error| CdfError::internal(error.to_string()))?;
+constructor	retained_internal	crates/cdf-project/src/schema_snapshot.rs:1469:    serde_json::to_vec_pretty(&value).map_err(|error| CdfError::internal(error.to_string()))
+constructor	retained_internal	crates/cdf-project/src/schema_snapshot.rs:1474:        serde_json::to_value(value).map_err(|error| CdfError::internal(error.to_string()))?;
+constructor	retained_internal	crates/cdf-project/src/tests.rs:5012:                    .ok_or_else(|| CdfError::internal("test transport exhausted responses"))?
+constructor	retained_internal	crates/cdf-project/src/tests.rs:672:        Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-project/src/tests.rs:682:        Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-project/src/tests.rs:709:        Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/content_reachability.rs:1029:        CdfError::internal("CDF-managed content reservation generation is negative")
+constructor	retained_internal	crates/cdf-state-sqlite/src/content_reachability.rs:1036:        return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/content_reachability.rs:1140:        .ok_or_else(|| CdfError::internal("content authority generation overflow"))
+constructor	retained_internal	crates/cdf-state-sqlite/src/content_reachability.rs:1145:        CdfError::internal("content authority generation exceeds SQLite integer range")
+constructor	retained_internal	crates/cdf-state-sqlite/src/content_reachability.rs:561:        Some(version) => Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-state-sqlite/src/content_reachability.rs:565:            Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-state-sqlite/src/content_reachability.rs:615:            CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/content_reachability.rs:626:            return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/content_reachability.rs:639:                return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/content_reachability.rs:806:            return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/content_reachability.rs:813:            return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/content_reachability.rs:929:        .map_err(|_| CdfError::internal("CDF-managed content claim generation is negative"))?;
+constructor	retained_internal	crates/cdf-state-sqlite/src/content_reachability.rs:936:        return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/content_reachability.rs:962:        .map_err(|_| CdfError::internal("CDF-managed content root generation is negative"))?;
+constructor	retained_internal	crates/cdf-state-sqlite/src/content_reachability.rs:967:        return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/content_reachability.rs:994:        return Err(private_content_from_sql(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/lease.rs:102:                .ok_or_else(|| CdfError::internal("scope lease fencing token overflow"))?,
+constructor	retained_internal	crates/cdf-state-sqlite/src/lease.rs:463:        Some(version) => Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-state-sqlite/src/lease.rs:466:        None if sqlite_table_exists(conn, "cdf_scope_leases")? => Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-state-sqlite/src/lease.rs:482:        .ok_or_else(|| CdfError::internal("scope lease authority domain is absent"))?;
+constructor	retained_internal	crates/cdf-state-sqlite/src/lease.rs:501:                CdfError::internal("CDF-managed scope lease fencing token is negative")
+constructor	retained_internal	crates/cdf-state-sqlite/src/lease.rs:506:                return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/lease.rs:560:        .ok_or_else(|| CdfError::internal("scope lease fencing token overflow"))?;
+constructor	retained_internal	crates/cdf-state-sqlite/src/lease.rs:590:        .map_err(|_| CdfError::internal("scope lease fencing token exceeds SQLite integer range"))
+constructor	retained_internal	crates/cdf-state-sqlite/src/run_ledger.rs:297:            return Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-state-sqlite/src/run_ledger.rs:413:        None => Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-state-sqlite/src/run_ledger.rs:454:    CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-state-sqlite/src/run_ledger.rs:544:    Err(CdfError::internal("failed to mint a unique run id"))
+constructor	retained_internal	crates/cdf-state-sqlite/src/run_ledger.rs:576:        .ok_or_else(|| CdfError::internal("CDF-managed run event sequence overflow"))?;
+constructor	retained_internal	crates/cdf-state-sqlite/src/run_ledger.rs:577:    u64::try_from(next).map_err(|error| CdfError::internal(error.to_string()))
+constructor	retained_internal	crates/cdf-state-sqlite/src/run_ledger.rs:592:            i64::try_from(sequence).map_err(|error| CdfError::internal(error.to_string()))?,
+constructor	retained_internal	crates/cdf-state-sqlite/src/run_ledger.rs:618:            i64::try_from(sequence).map_err(|error| CdfError::internal(error.to_string()))?,
+constructor	retained_internal	crates/cdf-state-sqlite/src/run_ledger.rs:637:                return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/run_ledger.rs:661:                return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/run_ledger.rs:667:                return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/run_ledger.rs:675:                    CdfError::internal(format!("decode CDF-managed run event scope JSON: {error}"))
+constructor	retained_internal	crates/cdf-state-sqlite/src/run_ledger.rs:680:                    CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-state-sqlite/src/run_ledger.rs:689:                    .map_err(|error| CdfError::internal(error.to_string()))?,
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:534:            return Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:593:        None => Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:615:    CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:679:                return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:719:                return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:729:                return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:734:                return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:745:                return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:755:                        return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:761:                    return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:766:                    return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:771:                    return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:776:                    return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:783:                return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:790:                    return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:795:                    return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/support.rs:134:        .map_err(|error| CdfError::internal(format!("encode CDF-managed state JSON: {error}")))
+constructor	retained_internal	crates/cdf-state-sqlite/src/support.rs:140:        .map_err(|error| CdfError::internal(format!("decode CDF-managed state JSON: {error}")))
+constructor	retained_internal	crates/cdf-state-sqlite/src/support.rs:235:            return Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-state-sqlite/src/support.rs:319:        _ => CdfError::internal(format!("{action}: {}", error.message)),
+constructor	retained_internal	crates/cdf-state-sqlite/src/support.rs:329:        CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-state-sqlite/src/support.rs:335:        CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-state-sqlite/src/support.rs:344:        return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/support.rs:397:        CdfError::internal(format!("{action}: {error}"))
+constructor	retained_internal	crates/cdf-state-sqlite/src/support.rs:590:        StateStorePathOwnership::CdfManaged => CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-state-sqlite/src/support.rs:633:        CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-state-sqlite/src/support.rs:649:                return Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-state-sqlite/src/support.rs:655:                return Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-state-sqlite/src/support.rs:665:                return Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-state-sqlite/src/support.rs:816:    CdfError::internal(error.to_string())
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-cli-core/src/cli_artifacts.rs:659:        assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-cli-core/src/error_catalog.rs:383:            generic_lower_layer_mapping(&ErrorKind::Internal),
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-cli-core/src/error_catalog.rs:458:        ErrorKind::Internal => ErrorMapping {
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-cli-core/src/output.rs:126:            ErrorKind::Internal,
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-cli-core/src/output.rs:565:        assert_eq!(mapped.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-cli/src/doctor_drift.rs:596:    if error.kind == cdf_kernel::ErrorKind::Internal {
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-cli/src/doctor_drift.rs:604:    if error.kind == cdf_kernel::ErrorKind::Internal {
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-cli/src/doctor_drift.rs:779:        assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-cli/src/run_command.rs:1031:        assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-cli/src/run_command.rs:982:        assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-cli/src/status_freshness.rs:1046:    if error.kind == cdf_kernel::ErrorKind::Internal {
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-cli/src/status_freshness.rs:1054:    if error.kind == cdf_kernel::ErrorKind::Internal {
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-cli/src/status_freshness.rs:1095:        assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-cli/src/status_freshness.rs:1105:        assert_eq!(wrong_shape.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-cli/src/status_freshness.rs:1175:        assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-cli/src/status_freshness.rs:1188:        assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-cli/src/status_freshness.rs:313:        Err(error) if error.kind == cdf_kernel::ErrorKind::Internal => {
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-cli/src/system_sql.rs:1011:    if error.kind == cdf_kernel::ErrorKind::Internal {
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-cli/src/system_sql.rs:1037:    if classified.kind != cdf_kernel::ErrorKind::Internal {
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-cli/src/system_sql.rs:1120:        assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-cli/src/system_sql.rs:1181:        assert_eq!(invariant.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-cli/src/system_sql.rs:268:        Err(error) if error.kind == cdf_kernel::ErrorKind::Internal => {
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-cli/src/system_sql.rs:979:    if error.kind == cdf_kernel::ErrorKind::Internal {
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-project/src/lock_cas.rs:626:        assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-project/src/lock_cas.rs:640:        assert_eq!(live_error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-project/src/lock_cas.rs:647:        assert_eq!(dangling_error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-project/src/lock_cas.rs:657:        assert_eq!(leaf_error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-project/src/project_files.rs:1038:        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-project/src/project_files.rs:900:        assert_eq!(combined.kind, cdf_kernel::ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-project/src/runtime/ledger.rs:614:        cdf_kernel::ErrorKind::Internal => "internal",
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-project/src/runtime/validation.rs:462:        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-project/src/runtime/validation.rs:550:        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-project/src/runtime/validation.rs:571:        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/content_reachability.rs:1366:        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/content_reachability.rs:1408:        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/lease.rs:638:        assert_eq!(classified.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/lease.rs:656:        assert_eq!(classified.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/run_ledger.rs:753:        assert_eq!(classified.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/support.rs:1034:        assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/support.rs:1041:        assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/support.rs:1053:        assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/support.rs:838:        assert_eq!(invariant.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/support.rs:852:            assert_eq!(shape_or_corruption.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/support.rs:860:            assert_eq!(sqlite_semantic.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/support.rs:891:        assert_eq!(classified.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/support.rs:907:        assert_eq!(classified.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/support.rs:924:        assert_eq!(classified.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/support.rs:956:        assert_eq!(classified.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:1493:    assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:1520:    assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:1543:    assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:1689:    assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:1722:        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:1886:    assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:205:    assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:2087:    assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:2272:    assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:2302:    assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:308:    assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:910:    assert_eq!(error.kind, ErrorKind::Internal);

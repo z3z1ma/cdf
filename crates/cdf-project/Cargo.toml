@@ -28,6 +28,9 @@ toml = "1.1.2"
 tracing = "0.1.44"
 futures-executor = "0.3.32"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.186"
+
 [dev-dependencies]
 arrow-array = "58.3.0"
 arrow-ipc = "58.3.0"

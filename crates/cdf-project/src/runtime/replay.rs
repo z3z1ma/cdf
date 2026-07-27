@@ -522,8 +522,11 @@ impl ActiveStagedIngress {
                 let error = background
                     .completed
                     .lock()
-                    .ok()
-                    .and_then(|output| output.error.clone())
+                    .map_err(|_| {
+                        CdfError::internal("background staging completion lock is poisoned")
+                    })?
+                    .error
+                    .clone()
                     .unwrap_or_else(|| CdfError::destination("staged ingress worker stopped"));
                 return Err(error);
             }
@@ -568,15 +571,18 @@ impl ActiveStagedIngress {
                 .expect("background staging scope is consumed exactly once")
                 .join(),
         )?;
-        if report.failed > 0 || report.cancelled > 0 {
-            return Err(CdfError::destination(
-                "background staged ingress did not complete cleanly",
-            ));
-        }
         let mut completed = background
             .completed
             .lock()
             .map_err(|_| CdfError::internal("background staging completion lock is poisoned"))?;
+        if let Some(error) = completed.error.take() {
+            return Err(error);
+        }
+        if report.failed > 0 || report.cancelled > 0 {
+            return Err(CdfError::internal(
+                "background staged ingress task failed or was cancelled without preserving its typed error",
+            ));
+        }
         self.session = completed.session.take();
         self.staged = std::mem::take(&mut completed.staged);
         self.ingress_duration = completed.ingress_duration;

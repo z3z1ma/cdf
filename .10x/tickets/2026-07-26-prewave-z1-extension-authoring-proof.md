@@ -33,6 +33,10 @@ running the focused product/performance/quality closure matrix.
   available, replay/verify, and Parquet destination paths pass.
 - Performance cells selected from P3 history stay within ordinary variance or improve; any
   surprising movement is investigated before closure.
+- Normal-run state-store opens remain independent of total historical checkpoint, run-event,
+  promotion, content-claim, and root-member populations. Explicit diagnostic/recovery integrity
+  scans are measured with representative bounded histories and must meet the closure budget or
+  receive a measured linear/bounded replacement before Z1 passes.
 - Fresh adversarial architecture, correctness, performance, and CLI reviews pass with no critical
   or significant finding.
 - Parent, children, roadmap, and coverage matrix return to a coherent zero-active-ticket state.
@@ -51,6 +55,11 @@ running the focused product/performance/quality closure matrix.
 ## Journal
 
 - 2026-07-26: Shaped as a falsification/closure child, not an implementation catch-all.
+- 2026-07-27: D1c adversarial review initially found full-history scans on ordinary store opens.
+  D1c repaired the default path: opens are schema-only, typed APIs validate consumed rows, and raw
+  diagnostic/recovery consumers invoke explicit whole-store integrity checks. Z1 must confirm the
+  normal-run bound and measure the remaining explicit diagnostic path, including large inline
+  content-root membership.
 
 ## Blockers
 

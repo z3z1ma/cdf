@@ -38,29 +38,37 @@ pub(super) fn verify_receipt(receipt: &Receipt) -> cdf_kernel::Result<ReceiptVer
 
 pub(super) fn payload(root: &Path) -> cdf_kernel::Result<Vec<LogicalRow>> {
     let commits = root.join("commits");
-    if !commits.exists() {
+    if local_destination_path_is_missing(&commits)? {
         return Ok(Vec::new());
     }
-    let mut paths = fs::read_dir(&commits)
-        .map_err(|error| CdfError::destination(format!("read {}: {error}", commits.display())))?
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<std::io::Result<Vec<_>>>()
-        .map_err(|error| {
-            CdfError::destination(format!("read entry in {}: {error}", commits.display()))
-        })?;
-    paths.sort();
+    let mut entries = fs::read_dir(&commits)
+        .map_err(|error| local_destination_io_error("read commit directory", &commits, error))?
+        .map(|entry| {
+            entry.map_err(|error| {
+                local_destination_io_error("read commit directory entry", &commits, error)
+            })
+        })
+        .collect::<cdf_kernel::Result<Vec<_>>>()?;
+    entries.sort_by_key(|entry| entry.path());
     let mut payload = Vec::new();
-    for path in paths {
-        if !path.is_dir() {
+    for entry in entries {
+        let path = entry.path();
+        if !entry
+            .file_type()
+            .map_err(|error| {
+                local_destination_io_error("inspect commit directory entry", &path, error)
+            })?
+            .is_dir()
+        {
             continue;
         }
         let payload_path = path.join(PAYLOAD_FILE_NAME);
         let file = fs::File::open(&payload_path).map_err(|error| {
-            CdfError::destination(format!("open {}: {error}", payload_path.display()))
+            local_destination_io_error("open commit payload", &payload_path, error)
         })?;
         for line in BufReader::new(file).lines() {
             let line = line.map_err(|error| {
-                CdfError::destination(format!("read {}: {error}", payload_path.display()))
+                local_destination_io_error("read commit payload", &payload_path, error)
             })?;
             payload.push(serde_json::from_str(&line).map_err(|error| {
                 CdfError::destination(format!("decode {}: {error}", payload_path.display()))
@@ -387,7 +395,7 @@ impl QuasarPayloadWriter {
     fn create(root: &Path, token: &str) -> cdf_kernel::Result<Self> {
         let commits = root.join("commits");
         fs::create_dir_all(&commits).map_err(|error| {
-            CdfError::destination(format!("create {}: {error}", commits.display()))
+            local_destination_io_error("create commit directory", &commits, error)
         })?;
         let encoded = encoded_token(token);
         let staging_id = NEXT_STAGING_ID.fetch_add(1, Ordering::Relaxed);
@@ -396,7 +404,7 @@ impl QuasarPayloadWriter {
             std::process::id()
         ));
         fs::create_dir(&staging_root).map_err(|error| {
-            CdfError::destination(format!("create {}: {error}", staging_root.display()))
+            local_destination_io_error("create commit staging directory", &staging_root, error)
         })?;
         let payload_path = staging_root.join(PAYLOAD_FILE_NAME);
         let file = OpenOptions::new()
@@ -404,7 +412,7 @@ impl QuasarPayloadWriter {
             .write(true)
             .open(&payload_path)
             .map_err(|error| {
-                CdfError::destination(format!("create {}: {error}", payload_path.display()))
+                local_destination_io_error("create commit payload", &payload_path, error)
             })?;
         Ok(Self {
             writer: Some(BufWriter::new(file)),
@@ -443,10 +451,12 @@ impl QuasarPayloadWriter {
                 .expect("quasar payload writer exists until publish");
             writer
                 .write_all(&cdf_package::canonical_json_bytes(&row)?)
-                .map_err(|error| CdfError::destination(format!("write quasar payload: {error}")))?;
-            writer
-                .write_all(b"\n")
-                .map_err(|error| CdfError::destination(format!("write quasar payload: {error}")))?;
+                .map_err(|error| {
+                    local_destination_io_error("write commit payload", &self.final_root, error)
+                })?;
+            writer.write_all(b"\n").map_err(|error| {
+                local_destination_io_error("write commit payload", &self.final_root, error)
+            })?;
         }
         Ok(())
     }
@@ -459,7 +469,9 @@ impl QuasarPayloadWriter {
         writer
             .flush()
             .and_then(|()| writer.get_ref().sync_all())
-            .map_err(|error| CdfError::destination(format!("sync quasar payload: {error}")))?;
+            .map_err(|error| {
+                local_destination_io_error("sync commit payload", &self.final_root, error)
+            })?;
         drop(writer);
         let staging_root = self
             .staging_root
@@ -467,11 +479,11 @@ impl QuasarPayloadWriter {
             .expect("quasar staging root exists until publish");
         write_record(&staging_root.join(RECEIPT_FILE_NAME), record)?;
         fs::rename(staging_root, &self.final_root).map_err(|error| {
-            CdfError::destination(format!(
-                "publish {} to {}: {error}",
-                staging_root.display(),
-                self.final_root.display()
-            ))
+            local_destination_io_error(
+                &format!("publish commit from {}", staging_root.display()),
+                &self.final_root,
+                error,
+            )
         })?;
         self.staging_root = None;
         Ok(())
@@ -556,13 +568,119 @@ fn encoded_token(token: &str) -> String {
         .collect()
 }
 
+fn local_destination_path_is_missing(path: &Path) -> cdf_kernel::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.file_type().is_symlink() => Ok(false),
+        Ok(_) => Err(CdfError::destination(format!(
+            "local destination artifact {} is a symlink",
+            path.display()
+        ))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            validate_missing_local_destination_ancestors(path)?;
+            Ok(true)
+        }
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotADirectory
+                || cdf_kernel::is_filesystem_loop(&error) =>
+        {
+            Err(CdfError::destination(format!(
+                "local destination artifact {} has an invalid filesystem shape: {error}",
+                path.display()
+            )))
+        }
+        Err(error) => Err(local_destination_io_error(
+            "inspect local destination artifact",
+            path,
+            error,
+        )),
+    }
+}
+
+fn validate_missing_local_destination_ancestors(path: &Path) -> cdf_kernel::Result<()> {
+    for ancestor in path.ancestors().skip(1) {
+        match fs::metadata(ancestor) {
+            Ok(metadata) if metadata.is_dir() => return Ok(()),
+            Ok(_) => {
+                return Err(CdfError::destination(format!(
+                    "local destination ancestor {} is not a directory",
+                    ancestor.display()
+                )));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match fs::symlink_metadata(ancestor) {
+                    Ok(_) => {
+                        return Err(CdfError::destination(format!(
+                            "local destination ancestor {} is a dangling symlink",
+                            ancestor.display()
+                        )));
+                    }
+                    Err(link_error) if link_error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(link_error)
+                        if link_error.kind() == std::io::ErrorKind::NotADirectory
+                            || cdf_kernel::is_filesystem_loop(&link_error) =>
+                    {
+                        return Err(CdfError::destination(format!(
+                            "local destination ancestor {} has an invalid filesystem shape: {link_error}",
+                            ancestor.display()
+                        )));
+                    }
+                    Err(link_error) => {
+                        return Err(local_destination_io_error(
+                            "inspect local destination ancestor",
+                            ancestor,
+                            link_error,
+                        ));
+                    }
+                }
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotADirectory
+                    || cdf_kernel::is_filesystem_loop(&error) =>
+            {
+                return Err(CdfError::destination(format!(
+                    "local destination ancestor {} has an invalid filesystem shape: {error}",
+                    ancestor.display()
+                )));
+            }
+            Err(error) => {
+                return Err(local_destination_io_error(
+                    "inspect local destination ancestor",
+                    ancestor,
+                    error,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn local_destination_io_error(action: &str, path: &Path, error: std::io::Error) -> CdfError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+            | std::io::ErrorKind::AlreadyExists
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::destination(format!("{action} {}: {error}", path.display()))
+    } else {
+        CdfError::environment(format!(
+            "{action} {}: {error}; check destination-path permissions, free space, device availability, and process file limits before retrying",
+            path.display()
+        ))
+    }
+}
+
 fn read_record(root: &Path, token: &str) -> cdf_kernel::Result<Option<QuasarCommitRecord>> {
     let path = record_path(root, token);
-    if !path.exists() {
+    if local_destination_path_is_missing(&path)? {
         return Ok(None);
     }
     let bytes = fs::read(&path)
-        .map_err(|error| CdfError::destination(format!("read {}: {error}", path.display())))?;
+        .map_err(|error| local_destination_io_error("read commit record", &path, error))?;
     serde_json::from_slice(&bytes)
         .map(Some)
         .map_err(|error| CdfError::destination(format!("decode {}: {error}", path.display())))
@@ -579,16 +697,17 @@ fn write_record(path: &Path, record: &QuasarCommitRecord) -> cdf_kernel::Result<
     let parent = path
         .parent()
         .ok_or_else(|| CdfError::destination("quasar commit path has no parent"))?;
-    fs::create_dir_all(parent)
-        .map_err(|error| CdfError::destination(format!("create {}: {error}", parent.display())))?;
+    fs::create_dir_all(parent).map_err(|error| {
+        local_destination_io_error("create commit record parent", parent, error)
+    })?;
     let mut file = OpenOptions::new()
         .create_new(true)
         .write(true)
         .open(path)
-        .map_err(|error| CdfError::destination(format!("create {}: {error}", path.display())))?;
+        .map_err(|error| local_destination_io_error("create commit record", path, error))?;
     file.write_all(&cdf_package::canonical_json_bytes(record)?)
         .and_then(|()| file.sync_all())
-        .map_err(|error| CdfError::destination(format!("write {}: {error}", path.display())))
+        .map_err(|error| local_destination_io_error("write commit record", path, error))
 }
 
 #[cfg(test)]

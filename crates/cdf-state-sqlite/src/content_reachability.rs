@@ -1,6 +1,7 @@
 use std::{
+    collections::{BTreeMap, BTreeSet},
     path::Path,
-    sync::{Mutex, MutexGuard},
+    sync::Mutex,
 };
 
 use cdf_kernel::{
@@ -14,8 +15,10 @@ use cdf_kernel::{
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::support::{
-    decode_json, encode_json, ensure_schema_version_table, lock_error,
-    read_component_schema_version, require_sqlite_tables, sqlite_error, sqlite_table_exists,
+    SqliteConnectionGuard, SqliteErrorContext, StateStorePathOwnership, decode_json, encode_json,
+    ensure_schema_version_table, lock_sqlite_connection, managed_sqlite_open_flags,
+    prepare_managed_database_path, private_state_decode, read_component_schema_version,
+    require_sqlite_tables, sqlite_error, sqlite_table_exists, with_sqlite_error_context,
     write_component_schema_version,
 };
 
@@ -24,27 +27,57 @@ const SCHEMA_VERSION: i64 = 1;
 
 pub struct SqliteContentReachabilityStore {
     conn: Mutex<Connection>,
+    error_context: SqliteErrorContext,
 }
 
 impl SqliteContentReachabilityStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let conn = Connection::open(path).map_err(sqlite_error)?;
-        initialize_schema(&conn)?;
+        Self::open_with_path_ownership(path, StateStorePathOwnership::CdfManaged)
+    }
+
+    pub fn open_with_path_ownership(
+        path: impl AsRef<Path>,
+        ownership: StateStorePathOwnership,
+    ) -> Result<Self> {
+        let path = path.as_ref();
+        let open_path = prepare_managed_database_path(path, ownership)?;
+        let error_context = SqliteErrorContext::ManagedState;
+        let conn = with_sqlite_error_context(error_context, || {
+            let conn = Connection::open_with_flags(&open_path, managed_sqlite_open_flags(false))
+                .map_err(sqlite_error)?;
+            initialize_schema(&conn)?;
+            Ok(conn)
+        })?;
         Ok(Self {
             conn: Mutex::new(conn),
+            error_context,
         })
     }
 
     pub fn open_in_memory() -> Result<Self> {
-        let conn = Connection::open_in_memory().map_err(sqlite_error)?;
-        initialize_schema(&conn)?;
+        let error_context = SqliteErrorContext::EphemeralWorkspace;
+        let conn = with_sqlite_error_context(error_context, || {
+            let conn = Connection::open_in_memory().map_err(sqlite_error)?;
+            initialize_schema(&conn)?;
+            Ok(conn)
+        })?;
         Ok(Self {
             conn: Mutex::new(conn),
+            error_context,
         })
     }
 
-    fn lock(&self) -> Result<MutexGuard<'_, Connection>> {
-        self.conn.lock().map_err(lock_error)
+    fn lock(&self) -> Result<SqliteConnectionGuard<'_>> {
+        lock_sqlite_connection(&self.conn, self.error_context)
+    }
+
+    /// Validates every CDF-owned content-reachability row and its cross-table indexes.
+    ///
+    /// Ordinary store opens intentionally validate only schema authority. Typed reads validate
+    /// each row they consume so run startup remains independent of total historical state.
+    pub fn validate_integrity(&self) -> Result<()> {
+        let conn = self.lock()?;
+        validate_private_content_tables(&conn)
     }
 }
 
@@ -443,17 +476,19 @@ impl ContentReachabilityStore for SqliteContentReachabilityStore {
         let conn = self.lock()?;
         let mut statement = conn
             .prepare(
-                "SELECT reservation_json FROM cdf_content_reclamation_reservations \
+                "SELECT store_namespace, object_key, reservation_id, reservation_generation, reservation_json \
+                 FROM cdf_content_reclamation_reservations \
                  WHERE store_namespace = ? ORDER BY object_key LIMIT ?",
             )
             .map_err(sqlite_error)?;
         let rows = statement
-            .query_map(params![store_namespace.as_str(), i64::from(limit)], |row| {
-                row.get::<_, String>(0)
-            })
+            .query_map(
+                params![store_namespace.as_str(), i64::from(limit)],
+                decode_private_reservation_row,
+            )
             .map_err(sqlite_error)?;
-        rows.map(|row| decode_json(&row.map_err(sqlite_error)?, 1))
-            .collect()
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(sqlite_error)
     }
 
     fn release_reclamation(&self, reservation: &ContentReclamationReservation) -> Result<()> {
@@ -535,31 +570,117 @@ fn validate_schema_version(conn: &Connection) -> Result<()> {
     }
 }
 
+fn validate_private_content_tables(conn: &Connection) -> Result<()> {
+    let mut claims = conn
+        .prepare(
+            "SELECT claim_id, store_namespace, object_key, claim_generation, state, claim_json \
+             FROM cdf_content_claims",
+        )
+        .map_err(sqlite_error)?;
+    let claim_rows = claims
+        .query_map([], decode_private_claim_row)
+        .map_err(sqlite_error)?;
+    for claim in claim_rows {
+        claim.map_err(sqlite_error)?;
+    }
+
+    let mut roots = conn
+        .prepare("SELECT root_id, root_generation, state, root_intent_json FROM cdf_content_roots")
+        .map_err(sqlite_error)?;
+    let root_rows = roots
+        .query_map([], decode_private_root_row)
+        .map_err(sqlite_error)?;
+    let mut roots_by_id = BTreeMap::new();
+    for intent in root_rows {
+        let intent = intent.map_err(sqlite_error)?;
+        roots_by_id.insert(intent.root.root_id.as_str().to_owned(), intent);
+    }
+
+    let mut members = conn
+        .prepare("SELECT root_id, store_namespace, object_key FROM cdf_content_root_members")
+        .map_err(sqlite_error)?;
+    let member_rows = members
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(sqlite_error)?;
+    let mut indexed_members = BTreeSet::new();
+    for member in member_rows {
+        let (root_id, store_namespace, object_key) = member.map_err(sqlite_error)?;
+        let intent = roots_by_id.get(&root_id).ok_or_else(|| {
+            CdfError::internal(
+                "content root member row references an absent CDF-managed root intent",
+            )
+        })?;
+        if !private_inline_members(&intent.root)?
+            .iter()
+            .any(|identity| {
+                identity.store_namespace.as_str() == store_namespace
+                    && identity.object_key.as_str() == object_key
+            })
+        {
+            return Err(CdfError::internal(
+                "content root member row does not match serialized root intent JSON",
+            ));
+        }
+        indexed_members.insert((root_id, store_namespace, object_key));
+    }
+    for (root_id, intent) in &roots_by_id {
+        for identity in private_inline_members(&intent.root)? {
+            if !indexed_members.contains(&(
+                root_id.clone(),
+                identity.store_namespace.as_str().to_owned(),
+                identity.object_key.as_str().to_owned(),
+            )) {
+                return Err(CdfError::internal(
+                    "serialized root intent member is absent from the CDF-managed content index",
+                ));
+            }
+        }
+    }
+
+    let mut reservations = conn
+        .prepare(
+            "SELECT store_namespace, object_key, reservation_id, reservation_generation, reservation_json \
+             FROM cdf_content_reclamation_reservations",
+        )
+        .map_err(sqlite_error)?;
+    let reservation_rows = reservations
+        .query_map([], decode_private_reservation_row)
+        .map_err(sqlite_error)?;
+    for reservation in reservation_rows {
+        reservation.map_err(sqlite_error)?;
+    }
+    Ok(())
+}
+
 fn claim_by_id(
     conn: &Connection,
     id: &ContentPublicationClaimId,
 ) -> Result<Option<ContentPublicationClaim>> {
     conn.query_row(
-        "SELECT claim_json FROM cdf_content_claims WHERE claim_id = ?",
+        "SELECT claim_id, store_namespace, object_key, claim_generation, state, claim_json \
+         FROM cdf_content_claims WHERE claim_id = ?",
         params![id.as_str()],
-        |row| row.get::<_, String>(0),
+        decode_private_claim_row,
     )
     .optional()
-    .map_err(sqlite_error)?
-    .map(|json| decode_json(&json, 1))
-    .transpose()
+    .map_err(sqlite_error)
 }
 
 fn root_by_id(conn: &Connection, id: &CommittedContentRootId) -> Result<Option<ContentRootIntent>> {
     conn.query_row(
-        "SELECT root_intent_json FROM cdf_content_roots WHERE root_id = ?",
+        "SELECT root_id, root_generation, state, root_intent_json \
+         FROM cdf_content_roots WHERE root_id = ?",
         params![id.as_str()],
-        |row| row.get::<_, String>(0),
+        decode_private_root_row,
     )
     .optional()
-    .map_err(sqlite_error)?
-    .map(|json| decode_json(&json, 1))
-    .transpose()
+    .map_err(sqlite_error)
 }
 
 fn update_claim(conn: &Connection, claim: &ContentPublicationClaim) -> Result<()> {
@@ -613,7 +734,8 @@ fn claims_for_identity(
 ) -> Result<Vec<ContentPublicationClaim>> {
     let mut statement = conn
         .prepare(
-            "SELECT claim_json FROM cdf_content_claims \
+            "SELECT claim_id, store_namespace, object_key, claim_generation, state, claim_json \
+             FROM cdf_content_claims \
              WHERE store_namespace = ? AND object_key = ? ORDER BY claim_id",
         )
         .map_err(sqlite_error)?;
@@ -623,11 +745,11 @@ fn claims_for_identity(
                 content.store_namespace.as_str(),
                 content.object_key.as_str()
             ],
-            |row| row.get::<_, String>(0),
+            decode_private_claim_row,
         )
         .map_err(sqlite_error)?;
-    rows.map(|row| decode_json(&row.map_err(sqlite_error)?, 1))
-        .collect()
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(sqlite_error)
 }
 
 fn root_checks_for_identity(
@@ -636,7 +758,9 @@ fn root_checks_for_identity(
 ) -> Result<Vec<CommittedContentRootCheck>> {
     let mut statement = conn
         .prepare(
-            "SELECT r.root_intent_json FROM cdf_content_roots r \
+            "SELECT r.root_id, r.root_generation, r.state, r.root_intent_json, \
+                    m.root_id, m.store_namespace, m.object_key \
+             FROM cdf_content_roots r \
              JOIN cdf_content_root_members m ON m.root_id = r.root_id \
              WHERE m.store_namespace = ? AND m.object_key = ? ORDER BY r.root_id",
         )
@@ -647,12 +771,12 @@ fn root_checks_for_identity(
                 content.store_namespace.as_str(),
                 content.object_key.as_str()
             ],
-            |row| row.get::<_, String>(0),
+            decode_private_root_member_row,
         )
         .map_err(sqlite_error)?;
     let mut checks = Vec::new();
     for row in rows {
-        let intent: ContentRootIntent = decode_json(&row.map_err(sqlite_error)?, 1)?;
+        let intent = row.map_err(sqlite_error)?;
         checks.push(CommittedContentRootCheck {
             root_id: intent.root.root_id,
             root_generation: intent.root.root_generation,
@@ -679,14 +803,14 @@ fn snapshot_for_identity(
     };
     for claim in &claims {
         if !claim.content.same_content_object(&content) {
-            return Err(CdfError::data(
+            return Err(CdfError::internal(
                 "content reachability index contains conflicting bytes for one immutable address",
             ));
         }
         if let Some(generation) = &claim.content.provider_generation
             && generation != &observed_provider_generation
         {
-            return Err(CdfError::data(
+            return Err(CdfError::internal(
                 "content reachability index contains conflicting provider generations for one immutable address",
             ));
         }
@@ -695,7 +819,10 @@ fn snapshot_for_identity(
     let candidate = ContentReclamationCandidate {
         content,
         observed_provider_generation,
-        candidate_source: ContentReclamationCandidateSource::new("sqlite-content-index-v1")?,
+        candidate_source: private_state_decode(
+            "construct CDF-managed content reclamation source",
+            ContentReclamationCandidateSource::new("sqlite-content-index-v1"),
+        )?,
         consulted_claims: claims.iter().map(|claim| claim.claim_id.clone()).collect(),
         consulted_roots: roots.iter().map(|root| root.root_id.clone()).collect(),
     };
@@ -704,7 +831,10 @@ fn snapshot_for_identity(
         same_content_claims: claims,
         checked_roots: roots,
     };
-    snapshot.validate()?;
+    private_state_decode(
+        "validate CDF-managed content reachability snapshot",
+        snapshot.validate(),
+    )?;
     Ok(Some(snapshot))
 }
 
@@ -735,13 +865,14 @@ fn candidate_snapshots(
         let (namespace, object_key) = row.map_err(sqlite_error)?;
         let claims = conn
             .query_row(
-                "SELECT claim_json FROM cdf_content_claims \
+                "SELECT claim_id, store_namespace, object_key, claim_generation, state, claim_json \
+                 FROM cdf_content_claims \
                  WHERE store_namespace = ? AND object_key = ? ORDER BY claim_id LIMIT 1",
                 params![namespace, object_key],
-                |row| row.get::<_, String>(0),
+                decode_private_claim_row,
             )
             .map_err(sqlite_error)?;
-        let claim: ContentPublicationClaim = decode_json(&claims, 1)?;
+        let claim = claims;
         if let Some(snapshot) = snapshot_for_identity(conn, &claim.content)? {
             snapshots.push(snapshot);
         }
@@ -754,18 +885,163 @@ fn reservation_for_identity(
     content: &ImmutableContentIdentity,
 ) -> Result<Option<ContentReclamationReservation>> {
     conn.query_row(
-        "SELECT reservation_json FROM cdf_content_reclamation_reservations \
+        "SELECT store_namespace, object_key, reservation_id, reservation_generation, reservation_json \
+         FROM cdf_content_reclamation_reservations \
          WHERE store_namespace = ? AND object_key = ?",
         params![
             content.store_namespace.as_str(),
             content.object_key.as_str()
         ],
-        |row| row.get::<_, String>(0),
+        decode_private_reservation_row,
     )
     .optional()
-    .map_err(sqlite_error)?
-    .map(|json| decode_json(&json, 1))
-    .transpose()
+    .map_err(sqlite_error)
+}
+
+fn decode_private_claim_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContentPublicationClaim> {
+    let values = (
+        row.get::<_, String>(0)?,
+        row.get::<_, String>(1)?,
+        row.get::<_, String>(2)?,
+        row.get::<_, i64>(3)?,
+        row.get::<_, String>(4)?,
+        row.get::<_, String>(5)?,
+    );
+    decode_private_claim_values(values).map_err(private_content_from_sql)
+}
+
+fn decode_private_claim_values(
+    (claim_id, store_namespace, object_key, generation, state, json): (
+        String,
+        String,
+        String,
+        i64,
+        String,
+        String,
+    ),
+) -> Result<ContentPublicationClaim> {
+    let claim: ContentPublicationClaim = decode_json(&json, 1)?;
+    private_state_decode(
+        "validate CDF-managed content publication claim",
+        claim.validate(),
+    )?;
+    let generation = u64::try_from(generation)
+        .map_err(|_| CdfError::internal("CDF-managed content claim generation is negative"))?;
+    if claim.claim_id.as_str() != claim_id
+        || claim.content.store_namespace.as_str() != store_namespace
+        || claim.content.object_key.as_str() != object_key
+        || claim.claim_generation != generation
+        || claim_state(claim.state) != state
+    {
+        return Err(CdfError::internal(
+            "content publication claim row columns do not match serialized claim JSON",
+        ));
+    }
+    Ok(claim)
+}
+
+fn decode_private_root_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContentRootIntent> {
+    let values = (
+        row.get::<_, String>(0)?,
+        row.get::<_, i64>(1)?,
+        row.get::<_, String>(2)?,
+        row.get::<_, String>(3)?,
+    );
+    decode_private_root_values(values).map_err(private_content_from_sql)
+}
+
+fn decode_private_root_values(
+    (root_id, generation, state, json): (String, i64, String, String),
+) -> Result<ContentRootIntent> {
+    let intent: ContentRootIntent = decode_json(&json, 1)?;
+    private_state_decode(
+        "validate CDF-managed committed content root",
+        intent.validate(),
+    )?;
+    let generation = u64::try_from(generation)
+        .map_err(|_| CdfError::internal("CDF-managed content root generation is negative"))?;
+    if intent.root.root_id.as_str() != root_id
+        || intent.root.root_generation != generation
+        || content_root_state(intent.state) != state
+    {
+        return Err(CdfError::internal(
+            "content root row columns do not match serialized root intent JSON",
+        ));
+    }
+    Ok(intent)
+}
+
+fn decode_private_root_member_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContentRootIntent> {
+    let intent = decode_private_root_values((
+        row.get::<_, String>(0)?,
+        row.get::<_, i64>(1)?,
+        row.get::<_, String>(2)?,
+        row.get::<_, String>(3)?,
+    ))
+    .map_err(private_content_from_sql)?;
+    let member_root_id = row.get::<_, String>(4)?;
+    let namespace = row.get::<_, String>(5)?;
+    let object_key = row.get::<_, String>(6)?;
+    if intent.root.root_id.as_str() != member_root_id
+        || !private_inline_members(&intent.root)
+            .map_err(private_content_from_sql)?
+            .iter()
+            .any(|identity| {
+                identity.store_namespace.as_str() == namespace
+                    && identity.object_key.as_str() == object_key
+            })
+    {
+        return Err(private_content_from_sql(CdfError::internal(
+            "content root member row does not match serialized root intent JSON",
+        )));
+    }
+    Ok(intent)
+}
+
+fn decode_private_reservation_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ContentReclamationReservation> {
+    let values = (
+        row.get::<_, String>(0)?,
+        row.get::<_, String>(1)?,
+        row.get::<_, String>(2)?,
+        row.get::<_, i64>(3)?,
+        row.get::<_, String>(4)?,
+    );
+    decode_private_reservation_values(values).map_err(private_content_from_sql)
+}
+
+fn decode_private_reservation_values(
+    (store_namespace, object_key, reservation_id, generation, json): (
+        String,
+        String,
+        String,
+        i64,
+        String,
+    ),
+) -> Result<ContentReclamationReservation> {
+    let reservation: ContentReclamationReservation = decode_json(&json, 1)?;
+    private_state_decode(
+        "validate CDF-managed content reclamation reservation",
+        reservation.validate(),
+    )?;
+    let generation = u64::try_from(generation).map_err(|_| {
+        CdfError::internal("CDF-managed content reservation generation is negative")
+    })?;
+    if reservation.proof.candidate.content.store_namespace.as_str() != store_namespace
+        || reservation.proof.candidate.content.object_key.as_str() != object_key
+        || reservation.reservation_id.as_str() != reservation_id
+        || reservation.reservation_generation != generation
+    {
+        return Err(CdfError::internal(
+            "content reclamation reservation row columns do not match serialized reservation JSON",
+        ));
+    }
+    Ok(reservation)
+}
+
+fn private_content_from_sql(error: CdfError) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
 }
 
 fn ensure_exact_reservation(
@@ -835,12 +1111,26 @@ fn inline_members(root: &CommittedContentRoot) -> Result<&[ImmutableContentIdent
     }
 }
 
+fn private_inline_members(root: &CommittedContentRoot) -> Result<&[ImmutableContentIdentity]> {
+    private_state_decode(
+        "validate CDF-managed content root membership",
+        inline_members(root),
+    )
+}
+
 fn claim_state(state: ContentPublicationClaimState) -> &'static str {
     match state {
         ContentPublicationClaimState::Planned => "planned",
         ContentPublicationClaimState::Published => "published",
         ContentPublicationClaimState::Settled => "settled",
         ContentPublicationClaimState::Released => "released",
+    }
+}
+
+fn content_root_state(state: ContentRootState) -> &'static str {
+    match state {
+        ContentRootState::Prepared => "prepared",
+        ContentRootState::Committed => "committed",
     }
 }
 
@@ -1050,5 +1340,72 @@ mod tests {
         );
         store.release_reclamation(&reservation).unwrap();
         store.install_claim(claim("racing")).unwrap();
+    }
+
+    #[test]
+    fn filtered_claim_lookup_rejects_hidden_private_row_corruption() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(".cdf").join("content.db");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let store = SqliteContentReachabilityStore::open(&path).unwrap();
+        let claim = store.install_claim(claim("hidden")).unwrap();
+        drop(store);
+        Connection::open(&path)
+            .unwrap()
+            .execute(
+                "UPDATE cdf_content_claims SET claim_id = ? WHERE claim_id = ?",
+                params!["claim-hidden-corrupt", claim.claim_id.as_str()],
+            )
+            .unwrap();
+
+        let store = SqliteContentReachabilityStore::open(&path).unwrap();
+        let error = store
+            .validate_integrity()
+            .expect_err("explicit integrity validation must reject hidden private corruption");
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
+        assert!(error.message.contains("serialized claim JSON"));
+    }
+
+    #[test]
+    fn missing_root_member_index_is_private_state_corruption() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(".cdf").join("content.db");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let store = SqliteContentReachabilityStore::open(&path).unwrap();
+        let claim = published(&store, "missing-member");
+        let root = CommittedContentRoot {
+            destination_id: DestinationId::new("parquet").unwrap(),
+            target: TargetName::new("events").unwrap(),
+            root_id: CommittedContentRootId::new("root-missing-member").unwrap(),
+            root_generation: 1,
+            retained_until_ms: None,
+            membership: CommittedContentMembership::Inline {
+                identities: vec![claim.content.clone()],
+            },
+        };
+        store
+            .prepare_root(ContentRootIntent {
+                root: root.clone(),
+                claim_ids: vec![claim.claim_id],
+                state: ContentRootState::Prepared,
+            })
+            .unwrap();
+        drop(store);
+        Connection::open(&path)
+            .unwrap()
+            .execute(
+                "DELETE FROM cdf_content_root_members WHERE root_id = ?",
+                params![root.root_id.as_str()],
+            )
+            .unwrap();
+
+        let store = SqliteContentReachabilityStore::open(&path).unwrap();
+        let error = store
+            .validate_integrity()
+            .expect_err("explicit integrity validation must reject a missing private index row");
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
+        assert!(error.message.contains("absent from"));
     }
 }

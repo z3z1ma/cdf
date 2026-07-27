@@ -626,8 +626,10 @@ pub(crate) fn replay_package(
     replay_destination.bind_execution_services(execution)?;
     let package_hash = package.inputs.state_delta.package_hash.clone();
     let state_store_path = package.project.state_store_path()?;
-    ensure_parent_directory(&state_store_path)?;
-    let run_ledger = SqliteRunLedger::open(&state_store_path)?;
+    let state_store_path_ownership = package.project.state_store_path_ownership();
+    ensure_parent_directory(&state_store_path, state_store_path_ownership)?;
+    let run_ledger =
+        SqliteRunLedger::open_with_path_ownership(&state_store_path, state_store_path_ownership)?;
     let run = run_ledger.create_run(None)?;
     let store = package.project.state_store()?;
     let progress = human_progress_sink(cli.json, &cli.terminal, progress_delivery);

@@ -227,8 +227,11 @@ fn live_run_expected_evidence_from_json(
     fixture_name: &str,
     json: &str,
 ) -> Result<LiveRunGoldenEvidence> {
-    serde_json::from_str(json)
-        .map_err(|error| CdfError::data(format!("read {fixture_name} expected evidence: {error}")))
+    serde_json::from_str(json).map_err(|error| {
+        CdfError::internal(format!(
+            "decode static {fixture_name} expected evidence: {error}"
+        ))
+    })
 }
 
 pub async fn run_live_local_file_fixture(
@@ -262,14 +265,15 @@ pub async fn run_live_local_file_fixture_with_destination(
 ) -> Result<ProjectRunReport> {
     write_live_fixture_files(&spec.project_root)?;
     fs::create_dir_all(&spec.package_root)
-        .map_err(|error| CdfError::data(format!("create package root: {error}")))?;
+        .map_err(|error| crate::conformance_private_io_error("create package root", error))?;
     if let Some(parent) = spec.destination_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| CdfError::data(format!("create destination parent: {error}")))?;
+        fs::create_dir_all(parent).map_err(|error| {
+            crate::conformance_private_io_error("create destination parent", error)
+        })?;
     }
     if let Some(parent) = spec.state_store_path.parent() {
         fs::create_dir_all(parent)
-            .map_err(|error| CdfError::data(format!("create state parent: {error}")))?;
+            .map_err(|error| crate::conformance_private_io_error("create state parent", error))?;
     }
 
     let config = parse_cdf_toml(CDF_PROJECT_TOML)?;
@@ -347,6 +351,7 @@ pub async fn run_live_local_file_fixture_with_destination(
             plan,
             package_root: spec.package_root,
             state_store_path: spec.state_store_path,
+            state_store_path_ownership: cdf_project::StateStorePathOwnership::Configured,
             pipeline_id: spec.pipeline_id,
             destination,
             package_id: spec.package_id,
@@ -531,18 +536,24 @@ pub fn read_single_live_receipt(package_dir: impl AsRef<Path>) -> Receipt {
 
 fn write_live_fixture_files(project_root: &Path) -> Result<()> {
     let data_dir = project_root.join("data");
-    fs::create_dir_all(&data_dir)
-        .map_err(|error| CdfError::data(format!("create live fixture data dir: {error}")))?;
+    fs::create_dir_all(&data_dir).map_err(|error| {
+        crate::conformance_private_io_error("create live fixture data dir", error)
+    })?;
     let path = data_dir.join("events.ndjson");
-    fs::write(&path, LIVE_SOURCE_CONTENTS)
-        .map_err(|error| CdfError::data(format!("write live fixture source file: {error}")))?;
+    fs::write(&path, LIVE_SOURCE_CONTENTS).map_err(|error| {
+        crate::conformance_private_io_error("write live fixture source file", error)
+    })?;
     let file = fs::OpenOptions::new()
         .write(true)
         .open(&path)
-        .map_err(|error| CdfError::data(format!("open live fixture source file: {error}")))?;
+        .map_err(|error| {
+            crate::conformance_private_io_error("open live fixture source file", error)
+        })?;
     let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(LIVE_SOURCE_MODIFIED_SECS);
     file.set_times(fs::FileTimes::new().set_modified(modified))
-        .map_err(|error| CdfError::data(format!("stabilize live fixture source time: {error}")))
+        .map_err(|error| {
+            crate::conformance_private_io_error("stabilize live fixture source time", error)
+        })
 }
 
 fn assert_source_position_matches_expected(delta: &StateDelta, expected: &LiveRunGoldenEvidence) {

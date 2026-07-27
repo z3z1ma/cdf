@@ -38,10 +38,12 @@ pub(crate) fn resource(
     disposition: MatrixDisposition,
 ) -> Result<CompiledResource> {
     let data_dir = project_root.join("data");
-    fs::create_dir_all(&data_dir)
-        .map_err(|error| CdfError::data(format!("create run matrix data dir: {error}")))?;
-    fs::write(project_root.join(SOURCE_PATH), SOURCE_CONTENTS)
-        .map_err(|error| CdfError::data(format!("write run matrix source file: {error}")))?;
+    fs::create_dir_all(&data_dir).map_err(|error| {
+        crate::conformance_private_io_error("create run matrix data dir", error)
+    })?;
+    fs::write(project_root.join(SOURCE_PATH), SOURCE_CONTENTS).map_err(|error| {
+        crate::conformance_private_io_error("write run matrix source file", error)
+    })?;
 
     compile_resource(project_root, disposition, "events.ndjson")
 }
@@ -51,18 +53,23 @@ pub(crate) fn multi_resource(
     disposition: MatrixDisposition,
 ) -> Result<CompiledResource> {
     let data_dir = project_root.join("data");
-    fs::create_dir_all(&data_dir)
-        .map_err(|error| CdfError::data(format!("create run matrix data dir: {error}")))?;
+    fs::create_dir_all(&data_dir).map_err(|error| {
+        crate::conformance_private_io_error("create run matrix data dir", error)
+    })?;
     fs::write(
         data_dir.join("part-01.ndjson"),
         "{\"id\":1,\"name\":\"ada\"}\n",
     )
-    .map_err(|error| CdfError::data(format!("write first run matrix source file: {error}")))?;
+    .map_err(|error| {
+        crate::conformance_private_io_error("write first run matrix source file", error)
+    })?;
     fs::write(
         data_dir.join("part-02.ndjson"),
         "{\"id\":2,\"name\":\"grace\"}\n",
     )
-    .map_err(|error| CdfError::data(format!("write second run matrix source file: {error}")))?;
+    .map_err(|error| {
+        crate::conformance_private_io_error("write second run matrix source file", error)
+    })?;
     compile_resource(project_root, disposition, "part-*.ndjson")
 }
 

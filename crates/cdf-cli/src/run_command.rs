@@ -1,7 +1,11 @@
 use std::{
-    fs,
+    fs::{self, File, OpenOptions},
+    io::{Read, Write},
     path::Path,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -10,8 +14,9 @@ use cdf_declarative::{
 };
 use cdf_kernel::{CdfError, CheckpointId, PipelineId, RunEventSink, TargetName};
 use cdf_project::{
-    LOCK_FILE_NAME, ProjectResourceOrigin, ProjectRunOutcome, ProjectRunRequest,
-    RunTelemetryConfig, SchemaSnapshotStore, run_project_with_scheduler_and_telemetry,
+    LOCK_FILE_NAME, ProjectFileExpectation, ProjectFileWrite, ProjectResourceOrigin,
+    ProjectRunOutcome, ProjectRunRequest, RunTelemetryConfig, SchemaSnapshotStore,
+    publish_project_files_transactionally, run_project_with_scheduler_and_telemetry,
 };
 use sha2::{Digest, Sha256};
 
@@ -36,6 +41,7 @@ use crate::{
 };
 
 pub(crate) const DEFAULT_RUN_PIPELINE_ID: &str = "cdf-run";
+static ADHOC_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn run(
     cli: &Cli,
@@ -62,7 +68,7 @@ pub(crate) fn run(
         ProjectContext::load_for_command("run", cli.project.as_ref(), cli.env.as_deref())?;
     let adhoc = if context.has_resource(&requested) {
         None
-    } else if looks_like_adhoc_location(&requested) {
+    } else if looks_like_adhoc_location(&requested)? {
         if args.destination_uri.is_none() {
             return Err(CliError::usage_with(
                 "cdf run ad-hoc mode requires an explicit `--to <destination>`",
@@ -144,6 +150,7 @@ pub(crate) fn run(
                 plan,
                 package_root: context.package_root(),
                 state_store_path,
+                state_store_path_ownership: context.state_store_path_ownership(),
                 pipeline_id: explicit.pipeline_id.clone(),
                 package_id: explicit.package_id.clone(),
                 checkpoint_id: explicit.checkpoint_id.clone(),
@@ -249,11 +256,37 @@ struct SynthesizedAdhoc {
     report: AdhocRunReport,
 }
 
-fn looks_like_adhoc_location(value: &str) -> bool {
-    value.contains("://")
+fn looks_like_adhoc_location(value: &str) -> Result<bool, CliError> {
+    if value.contains("://")
         || value.contains(std::path::MAIN_SEPARATOR)
         || value.to_ascii_lowercase().ends_with(".parquet")
-        || Path::new(value).is_file()
+    {
+        return Ok(true);
+    }
+    match fs::metadata(value) {
+        Ok(metadata) => Ok(metadata.is_file()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match fs::symlink_metadata(value) {
+                Ok(metadata) if metadata.file_type().is_symlink() => Ok(true),
+                Ok(_) => Ok(true),
+                Err(link_error) if link_error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                Err(link_error) => Err(adhoc_source_metadata_error(
+                    "inspect ad-hoc source candidate entry",
+                    link_error,
+                )),
+            }
+        }
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotADirectory
+                || cdf_kernel::is_filesystem_loop(&error) =>
+        {
+            Ok(true)
+        }
+        Err(error) => Err(adhoc_source_metadata_error(
+            "inspect ad-hoc source candidate",
+            error,
+        )),
+    }
 }
 
 fn synthesize_adhoc_source(
@@ -275,21 +308,65 @@ fn synthesize_adhoc_source(
         } else {
             vec![current_dir.join(input), context.root.join(input)]
         };
-        let source = candidates
-            .into_iter()
-            .find(|candidate| candidate.is_file())
-            .ok_or_else(|| {
-                CliError::usage_with(
+        let mut source = None;
+        let mut wrong_shape = None;
+        for candidate in candidates {
+            match fs::metadata(&candidate) {
+                Ok(metadata) if metadata.is_file() => {
+                    source = Some(candidate);
+                    break;
+                }
+                Ok(_) => wrong_shape = Some("expected a regular file".to_owned()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    match fs::symlink_metadata(&candidate) {
+                        Ok(metadata) if metadata.file_type().is_symlink() => {
+                            wrong_shape = Some("source is a dangling symlink".to_owned());
+                        }
+                        Ok(_) => {
+                            wrong_shape = Some(
+                                "source changed filesystem shape during inspection".to_owned(),
+                            );
+                        }
+                        Err(link_error) if link_error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(link_error) => {
+                            return Err(adhoc_source_metadata_error(
+                                "inspect ad-hoc source candidate entry",
+                                link_error,
+                            ));
+                        }
+                    }
+                }
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::NotADirectory
+                        || cdf_kernel::is_filesystem_loop(&error) =>
+                {
+                    wrong_shape = Some(error.to_string());
+                }
+                Err(error) => {
+                    return Err(adhoc_source_metadata_error(
+                        "inspect ad-hoc source candidate",
+                        error,
+                    ));
+                }
+            }
+        }
+        let source = match (source, wrong_shape) {
+            (Some(source), _) => source,
+            (None, Some(detail)) => {
+                return Err(CdfError::data(format!(
+                    "ad-hoc source `[redacted-local-source-path]` has an invalid filesystem shape: {detail}"
+                ))
+                .into());
+            }
+            (None, None) => {
+                return Err(CliError::usage_with(
                     "cdf run ad-hoc could not find local source `[redacted-local-source-path]`",
                     error_catalog::USAGE,
-                )
-            })?;
+                ));
+            }
+        };
         fs::canonicalize(source)
-            .map_err(|error| {
-                CdfError::data(format!(
-                    "canonicalize ad-hoc source `[redacted-local-source-path]`: {error}"
-                ))
-            })?
+            .map_err(adhoc_source_canonicalize_error)?
             .to_str()
             .ok_or_else(|| CdfError::data("ad-hoc source path must be valid UTF-8"))?
             .to_owned()
@@ -351,6 +428,7 @@ fn synthesize_adhoc_source(
             .ok_or_else(|| CdfError::data("ad-hoc source requires a UTF-8 file name"))?;
         let staged_path = format!(".cdf/adhoc/data/{resource_name}/{file_name}");
         persist_local_adhoc_source(
+            &context.root,
             Path::new(&canonical_location),
             &context.root.join(&staged_path),
         )?;
@@ -375,26 +453,31 @@ fn synthesize_adhoc_source(
         ));
     }
     let resource_toml = registered_source_resource_toml("adhoc", &resource_name, &add_plan)?;
-    let reused = fs::read_to_string(&config_path_abs).ok().as_deref() == Some(&resource_toml);
+    let reused = read_adhoc_private_text(&context.root, &config_path_abs)?
+        .is_some_and(|existing| existing == resource_toml);
     if !reused {
-        let parent = config_path_abs.parent().ok_or_else(|| {
-            CliError::mapped(
-                CdfError::internal("ad-hoc resource path has no parent"),
-                error_catalog::PROJECT_IO,
-            )
-        })?;
-        fs::create_dir_all(parent).map_err(|error| {
-            CliError::mapped(
-                CdfError::data(format!("create .cdf/adhoc resource directory: {error}")),
-                error_catalog::PROJECT_IO,
-            )
-        })?;
-        fs::write(&config_path_abs, &resource_toml).map_err(|error| {
-            CliError::mapped(
-                CdfError::data(format!("write ad-hoc resource config: {error}")),
-                error_catalog::PROJECT_IO,
-            )
-        })?;
+        let expectation = match fs::read(&config_path_abs) {
+            Ok(existing) => ProjectFileExpectation::Exact(existing),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                ProjectFileExpectation::Absent
+            }
+            Err(error) => {
+                return Err(adhoc_private_path_error(
+                    "read ad-hoc resource config before publication",
+                    &config_path_abs,
+                    error,
+                ));
+            }
+        };
+        publish_project_files_transactionally(
+            &context.root,
+            &config_path,
+            vec![ProjectFileWrite::new(
+                &config_path,
+                resource_toml.as_bytes().to_vec(),
+                expectation,
+            )],
+        )?;
     }
 
     let document = parse_declarative_toml(&resource_toml)?;
@@ -488,44 +571,232 @@ fn hydrate_adhoc_locked_snapshot(
     )
 }
 
-fn persist_local_adhoc_source(source: &Path, destination: &Path) -> Result<(), CliError> {
+fn persist_local_adhoc_source(
+    project_root: &Path,
+    source: &Path,
+    destination: &Path,
+) -> Result<(), CliError> {
     let parent = destination.parent().ok_or_else(|| {
         CliError::mapped(
             CdfError::internal("ad-hoc staged source path has no parent"),
             error_catalog::PROJECT_IO,
         )
     })?;
-    fs::create_dir_all(parent).map_err(|error| {
-        CliError::mapped(
-            CdfError::data(format!("create .cdf/adhoc staging directory: {error}")),
-            error_catalog::PROJECT_IO,
-        )
-    })?;
-    let temporary = destination.with_extension(format!("tmp-{}", std::process::id()));
-    let _ = fs::remove_file(&temporary);
+    ensure_adhoc_private_parent(project_root, parent)?;
+    let temporary = adhoc_temporary_path(parent, destination)?;
     if fs::hard_link(source, &temporary).is_err() {
-        fs::copy(source, &temporary).map_err(|error| {
-            CliError::mapped(
-                CdfError::data(format!("stage local ad-hoc source input: {error}")),
-                error_catalog::PROJECT_IO,
-            )
-        })?;
+        copy_local_adhoc_source(source, &temporary)?;
     }
-    if destination.exists() {
-        fs::remove_file(destination).map_err(|error| {
-            CliError::mapped(
-                CdfError::data(format!("refresh staged ad-hoc source input: {error}")),
-                error_catalog::PROJECT_IO,
-            )
-        })?;
+    let publish_result = (|| {
+        match fs::symlink_metadata(destination) {
+            Ok(metadata) if metadata.is_file() => {
+                fs::remove_file(destination).map_err(|error| {
+                    adhoc_private_path_error("refresh staged ad-hoc source", destination, error)
+                })?;
+            }
+            Ok(_) => {
+                return Err(adhoc_private_shape_error(
+                    "inspect staged ad-hoc source",
+                    destination,
+                    "expected a regular file",
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(adhoc_private_path_error(
+                    "inspect staged ad-hoc source",
+                    destination,
+                    error,
+                ));
+            }
+        }
+        fs::rename(&temporary, destination).map_err(|error| {
+            adhoc_private_path_error("publish staged ad-hoc source", destination, error)
+        })
+    })();
+    if publish_result.is_err() {
+        let _ = fs::remove_file(&temporary);
     }
-    fs::rename(&temporary, destination).map_err(|error| {
+    publish_result
+}
+
+fn read_adhoc_private_text(project_root: &Path, path: &Path) -> Result<Option<String>, CliError> {
+    let parent = path.parent().ok_or_else(|| {
         CliError::mapped(
-            CdfError::data(format!("publish staged ad-hoc source input: {error}")),
+            CdfError::internal("ad-hoc private path has no parent"),
             error_catalog::PROJECT_IO,
         )
     })?;
+    ensure_adhoc_private_parent(project_root, parent)?;
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+            fs::read_to_string(path).map(Some).map_err(|error| {
+                adhoc_private_path_error("read ad-hoc resource config", path, error)
+            })
+        }
+        Ok(_) => Err(adhoc_private_shape_error(
+            "inspect ad-hoc resource config",
+            path,
+            "expected a real regular file",
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(adhoc_private_path_error(
+            "inspect ad-hoc resource config",
+            path,
+            error,
+        )),
+    }
+}
+
+fn ensure_adhoc_private_parent(project_root: &Path, parent: &Path) -> Result<(), CliError> {
+    let relative = parent.strip_prefix(project_root).map_err(|_| {
+        CliError::mapped(
+            CdfError::internal(format!(
+                "CDF-managed ad-hoc parent {} escapes project root {}",
+                parent.display(),
+                project_root.display()
+            )),
+            error_catalog::PROJECT_IO,
+        )
+    })?;
+    let mut current = project_root.to_path_buf();
+    for component in relative.components() {
+        current.push(component.as_os_str());
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => {
+                return Err(adhoc_private_shape_error(
+                    "inspect ad-hoc parent",
+                    &current,
+                    "expected a real directory",
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match fs::create_dir(&current) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        let metadata = fs::symlink_metadata(&current).map_err(|error| {
+                            adhoc_private_path_error("revalidate ad-hoc parent", &current, error)
+                        })?;
+                        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                            return Err(adhoc_private_shape_error(
+                                "revalidate ad-hoc parent",
+                                &current,
+                                "concurrent non-directory or symlink",
+                            ));
+                        }
+                    }
+                    Err(error) => {
+                        return Err(adhoc_private_path_error(
+                            "create ad-hoc parent",
+                            &current,
+                            error,
+                        ));
+                    }
+                }
+            }
+            Err(error) => {
+                return Err(adhoc_private_path_error(
+                    "inspect ad-hoc parent",
+                    &current,
+                    error,
+                ));
+            }
+        }
+    }
     Ok(())
+}
+
+fn adhoc_temporary_path(parent: &Path, destination: &Path) -> Result<std::path::PathBuf, CliError> {
+    let name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            CliError::mapped(
+                CdfError::internal("ad-hoc staged source path has no UTF-8 filename"),
+                error_catalog::PROJECT_IO,
+            )
+        })?;
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| {
+            CdfError::environment(format!(
+                "read the host clock for an ad-hoc staging temporary: {error}; correct the system clock and retry"
+            ))
+        })?
+        .as_nanos();
+    let sequence = ADHOC_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    Ok(parent.join(format!(
+        ".{name}.{}.{}.{}.tmp",
+        std::process::id(),
+        nanos,
+        sequence
+    )))
+}
+
+fn copy_local_adhoc_source(source: &Path, temporary: &Path) -> Result<(), CliError> {
+    let result = (|| {
+        let mut input =
+            File::open(source).map_err(|error| adhoc_source_read_error(source, error))?;
+        let mut output = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(temporary)
+            .map_err(|error| {
+                adhoc_private_path_error("create ad-hoc staging temporary", temporary, error)
+            })?;
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let count = input
+                .read(&mut buffer)
+                .map_err(|error| adhoc_source_read_error(source, error))?;
+            if count == 0 {
+                break;
+            }
+            output.write_all(&buffer[..count]).map_err(|error| {
+                adhoc_private_path_error("write ad-hoc staging temporary", temporary, error)
+            })?;
+        }
+        output.sync_all().map_err(|error| {
+            adhoc_private_path_error("sync ad-hoc staging temporary", temporary, error)
+        })
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    result
+}
+
+fn adhoc_source_metadata_error(action: &str, error: std::io::Error) -> CliError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+            | std::io::ErrorKind::InvalidInput
+            | std::io::ErrorKind::InvalidData
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::data(format!(
+            "{action} `[redacted-local-source-path]` with invalid filesystem shape: {error}"
+        ))
+        .into()
+    } else {
+        CdfError::environment(format!(
+            "{action} `[redacted-local-source-path]`: {error}; check source-path permissions, device availability, memory, and process file limits before retrying"
+        ))
+        .into()
+    }
+}
+
+fn adhoc_source_canonicalize_error(error: std::io::Error) -> CliError {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        CdfError::data(format!(
+            "canonicalize ad-hoc source `[redacted-local-source-path]`: {error}"
+        ))
+        .into()
+    } else {
+        adhoc_source_metadata_error("canonicalize ad-hoc source", error)
+    }
 }
 
 fn stable_adhoc_digest(value: &str) -> String {
@@ -547,7 +818,7 @@ fn resolved_run_args(args: RunArgs) -> Result<ResolvedRunArgs, CliError> {
     let resource_id = args.resource_id.ok_or_else(|| {
         CliError::usage_with("run requires RESOURCE", error_catalog::RUN_ARGUMENT)
     })?;
-    let suffix = minted_run_suffix(&resource_id);
+    let suffix = minted_run_suffix(&resource_id)?;
     let package_id = format!("pkg-{suffix}");
     let checkpoint_id = format!("checkpoint-{suffix}");
     Ok(ResolvedRunArgs {
@@ -563,13 +834,21 @@ fn resolved_run_args(args: RunArgs) -> Result<ResolvedRunArgs, CliError> {
     })
 }
 
-fn minted_run_suffix(resource_id: &str) -> String {
+fn minted_run_suffix(resource_id: &str) -> Result<String, CliError> {
+    minted_run_suffix_at(resource_id, SystemTime::now())
+}
+
+fn minted_run_suffix_at(resource_id: &str, now: SystemTime) -> Result<String, CliError> {
     let resource = resource_id.replace(|character: char| !character.is_ascii_alphanumeric(), "-");
-    let nanos = SystemTime::now()
+    let nanos = now
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    format!("{resource}-{}-{nanos}", std::process::id())
+        .map_err(|error| {
+            CdfError::environment(format!(
+                "read the host clock for run identity generation: {error}; correct the system clock and retry"
+            ))
+        })?
+        .as_nanos();
+    Ok(format!("{resource}-{}-{nanos}", std::process::id()))
 }
 
 struct ResolvedRunArgs {
@@ -584,17 +863,172 @@ struct ResolvedRunArgs {
     segmentation: cdf_cli_core::args::SegmentationArgs,
 }
 
-pub(crate) fn ensure_parent_directory(path: &std::path::Path) -> Result<(), CliError> {
-    let Some(parent) = path.parent() else {
+pub(crate) fn ensure_parent_directory(
+    path: &std::path::Path,
+    ownership: cdf_project::StateStorePathOwnership,
+) -> Result<(), CliError> {
+    if path.parent().is_none() {
         return Err(CliError::mapped(
             CdfError::internal(format!("{} has no parent directory", path.display())),
             error_catalog::RUN_ARTIFACT_INTERNAL,
         ));
-    };
-    fs::create_dir_all(parent).map_err(|error| {
-        CliError::mapped(
-            CdfError::data(format!("create {}: {error}", parent.display())),
-            error_catalog::RUN_ARTIFACT_PATH,
+    }
+    cdf_project::ensure_state_parent_directory(path, ownership).map_err(CliError::from)
+}
+
+fn adhoc_source_read_error(_source: &Path, error: std::io::Error) -> CliError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
+            | std::io::ErrorKind::IsADirectory
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::data(format!(
+            "read local ad-hoc source `[redacted-local-source-path]`: {error}"
+        ))
+        .into()
+    } else {
+        CdfError::environment(format!(
+            "read local ad-hoc source `[redacted-local-source-path]`: {error}; check source-path permissions, device availability, memory, and process file limits before retrying"
+        ))
+        .into()
+    }
+}
+
+fn adhoc_private_path_error(action: &str, path: &Path, error: std::io::Error) -> CliError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+            | std::io::ErrorKind::AlreadyExists
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        adhoc_private_shape_error(action, path, &error.to_string())
+    } else {
+        project_path_environment(action, path, error)
+    }
+}
+
+fn adhoc_private_shape_error(action: &str, path: &Path, detail: &str) -> CliError {
+    CliError::mapped(
+        CdfError::internal(format!(
+            "{action} at CDF-managed ad-hoc path {}: {detail}",
+            path.display()
+        )),
+        error_catalog::PROJECT_IO,
+    )
+}
+
+fn project_path_environment(action: &str, path: &Path, error: std::io::Error) -> CliError {
+    CdfError::environment(format!(
+        "{action} {}: {error}; check project-path permissions, free space, device availability, and process file limits before retrying",
+        path.display()
+    ))
+    .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use cdf_kernel::ErrorKind;
+
+    use super::*;
+
+    #[test]
+    fn adhoc_source_with_regular_file_parent_is_data_owned() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("source-parent");
+        fs::write(&parent, b"not a directory").unwrap();
+        let source = parent.join("input.csv");
+        let destination = root.path().join("staged.csv");
+
+        let error = persist_local_adhoc_source(root.path(), &source, &destination).unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::Data);
+        assert!(error.message.contains("read local ad-hoc source"));
+        assert!(error.message.contains("[redacted-local-source-path]"));
+        assert!(!error.message.contains(&root.path().display().to_string()));
+    }
+
+    #[test]
+    fn adhoc_source_host_failure_redacts_the_local_path() {
+        let source = Path::new("/sensitive/local/customer/input.csv");
+        let error = adhoc_source_read_error(
+            source,
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+
+        assert_eq!(error.kind, ErrorKind::Environment);
+        assert!(error.message.contains("[redacted-local-source-path]"));
+        assert!(!error.message.contains(&source.display().to_string()));
+    }
+
+    #[test]
+    fn adhoc_private_staging_wrong_shape_is_internal() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source.csv");
+        fs::write(&source, b"value\n1\n").unwrap();
+        let parent = root.path().join("private-parent");
+        fs::write(&parent, b"not a directory").unwrap();
+
+        let error = persist_local_adhoc_source(root.path(), &source, &parent.join("staged.csv"))
+            .unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::Internal);
+        assert_eq!(error.code, error_catalog::PROJECT_IO.code);
+    }
+
+    #[test]
+    fn run_identity_clock_failure_is_environment_owned() {
+        let before_epoch = UNIX_EPOCH
+            .checked_sub(std::time::Duration::from_secs(1))
+            .unwrap();
+
+        let error = minted_run_suffix_at("resource", before_epoch).unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::Environment);
+        assert_eq!(error.code, "CDF-ENV-HOST");
+        assert!(error.message.contains("correct the system clock"));
+    }
+
+    #[test]
+    fn replay_configured_state_parent_wrong_shape_is_contract_owned() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("state");
+        fs::write(&parent, b"not a directory").unwrap();
+
+        let error = ensure_parent_directory(
+            &parent.join("state.db"),
+            cdf_project::StateStorePathOwnership::Configured,
         )
-    })
+        .unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::Contract);
+        assert!(error.message.contains("state-store parent"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replay_state_parent_rejects_symlink_ancestor_without_writing_outside() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let managed = root.path().join(".cdf");
+        symlink(outside.path(), &managed).unwrap();
+
+        let error = ensure_parent_directory(
+            &managed.join("state/state.db"),
+            cdf_project::StateStorePathOwnership::CdfManaged,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::Internal);
+        assert!(!outside.path().join("state").exists());
+    }
 }

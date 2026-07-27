@@ -12,6 +12,7 @@ mod tracing_bridge;
 mod types;
 mod validation;
 
+pub use cdf_state_sqlite::StateStorePathOwnership;
 pub use destinations::*;
 pub use hooks::{ReceiptVerifiedHook, RuntimeStage, RuntimeStageHook};
 #[cfg(test)]
@@ -28,6 +29,7 @@ pub use replay::{
 pub use resources::*;
 pub use tracing_bridge::TracingRunEventSink;
 pub use types::*;
+pub use validation::ensure_parent_directory as ensure_state_parent_directory;
 
 #[cfg(test)]
 pub(crate) use artifacts::{StateDeltaTestRequest, state_delta_from_run};
@@ -68,5 +70,7 @@ mod prelude {
         StateDeltaPreimage,
     };
     pub(super) use cdf_runtime::{ExecutionServices, SourceRetryEvidence};
-    pub(super) use cdf_state_sqlite::{RunLedgerSnapshot, SqliteCheckpointStore, SqliteRunLedger};
+    pub(super) use cdf_state_sqlite::{
+        RunLedgerSnapshot, SqliteCheckpointStore, SqliteRunLedger, StateStorePathOwnership,
+    };
 }

@@ -119,14 +119,15 @@ pub(super) fn run_scenario(
     assert_frozen_contract_program(&plan);
 
     fs::create_dir_all(&spec.package_root)
-        .map_err(|error| CdfError::data(format!("create package root: {error}")))?;
+        .map_err(|error| crate::conformance_private_io_error("create package root", error))?;
     if let Some(parent) = spec.destination_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| CdfError::data(format!("create destination parent: {error}")))?;
+        fs::create_dir_all(parent).map_err(|error| {
+            crate::conformance_private_io_error("create destination parent", error)
+        })?;
     }
     if let Some(parent) = spec.state_store_path.parent() {
         fs::create_dir_all(parent)
-            .map_err(|error| CdfError::data(format!("create state parent: {error}")))?;
+            .map_err(|error| crate::conformance_private_io_error("create state parent", error))?;
     }
 
     let gate_observed = Cell::new(false);
@@ -151,6 +152,7 @@ pub(super) fn run_scenario(
             plan,
             package_root: spec.package_root.clone(),
             state_store_path: spec.state_store_path.clone(),
+            state_store_path_ownership: cdf_project::StateStorePathOwnership::Configured,
             pipeline_id: spec.pipeline_id.clone(),
             destination,
             package_id,
@@ -172,10 +174,11 @@ pub(super) fn run_scenario(
 
 fn write_source(project_root: &Path, source: &str) -> Result<()> {
     let data_dir = project_root.join("data");
-    fs::create_dir_all(&data_dir)
-        .map_err(|error| CdfError::data(format!("create drift fixture data dir: {error}")))?;
+    fs::create_dir_all(&data_dir).map_err(|error| {
+        crate::conformance_private_io_error("create drift fixture data dir", error)
+    })?;
     fs::write(project_root.join(SOURCE_FILE), source)
-        .map_err(|error| CdfError::data(format!("write drift fixture source: {error}")))
+        .map_err(|error| crate::conformance_private_io_error("write drift fixture source", error))
 }
 
 fn compile_resource(project_root: &Path) -> Result<crate::source_fixture::ResolvedSourceFixture> {

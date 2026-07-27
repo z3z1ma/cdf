@@ -3,7 +3,10 @@ use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -38,6 +41,8 @@ use crate::{
     SchemaPromotionTargetReport, SchemaSnapshotStore, compare_and_swap_lock_file, lock_to_toml,
     parse_lock, read_lock_file_authority, validate_schema_promotion_plan_identity,
 };
+
+static PROMOTION_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 const PROMOTION_SEGMENT_SCAN_WINDOW_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -236,7 +241,7 @@ where
         .join(promotion_plan_relative_path(&PromotionId::new(
             request.dry_plan.promotion_id.clone(),
         )?));
-    let resumed = verify_input_authority(request)? || staged_path.exists();
+    let resumed = verify_input_authority(request)? || promotion_regular_file_exists(&staged_path)?;
     let staged = stage_execution_artifacts(request)?;
     write_recovery_status(
         request.project_root,
@@ -554,14 +559,20 @@ where
         .expect("validated executable plan has a snapshot")
         .artifact;
     write_create_or_verify(
+        request.project_root,
         &request.project_root.join(&snapshot.path),
         &canonical_json_bytes(snapshot)?,
     )?;
     let path = request
         .project_root
         .join(promotion_plan_relative_path(&promotion_id));
-    write_create_or_verify(&path, &canonical_json_bytes(&artifact)?)?;
-    let hydrated: SchemaPromotionExecutionPlanArtifact = read_json_file(&path)?;
+    write_create_or_verify(
+        request.project_root,
+        &path,
+        &canonical_json_bytes(&artifact)?,
+    )?;
+    let hydrated: SchemaPromotionExecutionPlanArtifact =
+        read_promotion_json_file(request.project_root, &path)?;
     hydrated.validate()?;
     if hydrated != artifact {
         return Err(cdf_kernel::CdfError::data(
@@ -642,9 +653,11 @@ where
                 &staged.promotion_id,
                 target,
             ));
-        let prepared = if package_dir.join(MANIFEST_FILE).exists() {
+        let manifest_path = package_dir.join(MANIFEST_FILE);
+        let package_exists = promotion_directory_exists(&package_dir)?;
+        let prepared = if package_exists && promotion_regular_file_exists(&manifest_path)? {
             let authority: SchemaPromotionCorrectionTargetAuthority =
-                read_json_file(&authority_path)?;
+                read_promotion_json_file(request.project_root, &authority_path)?;
             load_correction_package(CorrectionPackageLoadAuthority {
                 package_dir: &package_dir,
                 staged,
@@ -656,9 +669,14 @@ where
                 disposition: &request.resource.descriptor().write_disposition,
             })?
         } else {
-            if package_dir.exists() {
-                fs::remove_dir_all(&package_dir)
-                    .map_err(|error| cdf_kernel::CdfError::data(error.to_string()))?;
+            if package_exists {
+                fs::remove_dir_all(&package_dir).map_err(|error| {
+                    promotion_host_error(
+                        "remove incomplete correction package",
+                        &package_dir,
+                        error,
+                    )
+                })?;
             }
             if package_index.is_none() {
                 package_index = Some(source_package_index(
@@ -700,9 +718,13 @@ where
                 checkpoint_id,
                 chain_parent.clone(),
             )?;
-            write_create_or_verify(&authority_path, &canonical_json_bytes(&authority)?)?;
+            write_create_or_verify(
+                request.project_root,
+                &authority_path,
+                &canonical_json_bytes(&authority)?,
+            )?;
             let hydrated: SchemaPromotionCorrectionTargetAuthority =
-                read_json_file(&authority_path)?;
+                read_promotion_json_file(request.project_root, &authority_path)?;
             if hydrated != authority {
                 return Err(cdf_kernel::CdfError::data(
                     "persisted promotion correction target authority conflicts with built package",
@@ -1962,6 +1984,7 @@ fn write_recovery_status(
         recovery_command: execution_recovery_command(&staged.dry_plan),
     };
     write_create_or_verify(
+        project_root,
         &project_root.join(promotion_recovery_status_relative_path(
             &staged.promotion_id,
             sequence,
@@ -1975,21 +1998,46 @@ pub fn load_schema_promotion_recovery_status(
     promotion_id: &PromotionId,
 ) -> cdf_kernel::Result<Option<SchemaPromotionRecoveryStatus>> {
     let directory = project_root.join(promotion_recovery_status_directory(promotion_id));
-    let entries = match fs::read_dir(directory) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(cdf_kernel::CdfError::data(error.to_string())),
-    };
-    let mut paths = entries
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<std::io::Result<Vec<_>>>()
-        .map_err(|error| cdf_kernel::CdfError::data(error.to_string()))?;
-    paths.retain(|path| path.extension().and_then(|value| value.to_str()) == Some("json"));
+    if !promotion_directory_exists(&directory)? {
+        return Ok(None);
+    }
+    let entries = fs::read_dir(&directory).map_err(|error| {
+        promotion_artifact_enumeration_error(
+            "read promotion recovery status directory",
+            &directory,
+            error,
+        )
+    })?;
+    let mut paths = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            promotion_artifact_enumeration_error(
+                "read promotion recovery status entry",
+                &directory,
+                error,
+            )
+        })?;
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let file_type = entry.file_type().map_err(|error| {
+            promotion_artifact_enumeration_error(
+                "inspect promotion recovery status entry",
+                &path,
+                error,
+            )
+        })?;
+        if !file_type.is_file() {
+            return Err(content_addressed_conflict(&path));
+        }
+        paths.push(path);
+    }
     paths.sort();
     let Some(path) = paths.last() else {
         return Ok(None);
     };
-    let status: SchemaPromotionRecoveryStatus = read_json_file(path)?;
+    let status: SchemaPromotionRecoveryStatus = read_promotion_json_file(project_root, path)?;
     if status.version != SCHEMA_PROMOTION_RECOVERY_STATUS_VERSION
         || status.promotion_id != promotion_id.as_str()
     {
@@ -2010,34 +2058,41 @@ fn source_package_index(
 ) -> cdf_kernel::Result<BTreeMap<String, PathBuf>> {
     let mut index = BTreeMap::new();
     let mut directories = Vec::new();
-    for entry in
-        fs::read_dir(package_root).map_err(|error| cdf_kernel::CdfError::data(error.to_string()))?
-    {
-        let entry = entry.map_err(|error| cdf_kernel::CdfError::data(error.to_string()))?;
+    for entry in fs::read_dir(package_root).map_err(|error| {
+        package_inventory_io_error("read source package directory", package_root, error)
+    })? {
+        let entry = entry.map_err(|error| {
+            package_inventory_io_error("read source package entry", package_root, error)
+        })?;
+        let entry_path = entry.path();
         if !entry
             .file_type()
-            .map_err(|error| cdf_kernel::CdfError::data(error.to_string()))?
+            .map_err(|error| {
+                package_inventory_io_error("inspect source package entry", &entry_path, error)
+            })?
             .is_dir()
         {
             continue;
         }
-        if !excluded_correction_directories.contains(&entry.path()) {
-            directories.push(entry.path());
+        if !excluded_correction_directories.contains(&entry_path) {
+            directories.push(entry_path);
         }
     }
     directories.sort();
     for directory in directories {
         let reader = PackageReader::open(&directory).map_err(|error| {
-            cdf_kernel::CdfError::data(format!(
-                "malformed source package inventory entry {}: {error}",
-                directory.display()
-            ))
+            package_reader_error_context(
+                "malformed source package inventory entry",
+                &directory,
+                error,
+            )
         })?;
         reader.verify().map_err(|error| {
-            cdf_kernel::CdfError::data(format!(
-                "invalid source package inventory entry {}: {error}",
-                directory.display()
-            ))
+            package_reader_error_context(
+                "invalid source package inventory entry",
+                &directory,
+                error,
+            )
         })?;
         let package_hash = reader.manifest().package_hash.clone();
         if let Some(previous) = index.insert(package_hash.clone(), directory.clone()) {
@@ -2170,7 +2225,7 @@ pub fn load_resumable_schema_promotion(
     current_lock: &LockFileAuthority,
 ) -> cdf_kernel::Result<Option<SchemaPromotionExecutionPlanArtifact>> {
     let root = project_root.join(".cdf/promotions");
-    if !root.exists() {
+    if !promotion_directory_exists(&root)? {
         return Ok(None);
     }
     let current = parse_lock(
@@ -2178,15 +2233,32 @@ pub fn load_resumable_schema_promotion(
             .map_err(|error| cdf_kernel::CdfError::data(error.to_string()))?,
     )?;
     let mut matches = Vec::new();
-    for entry in
-        fs::read_dir(&root).map_err(|error| cdf_kernel::CdfError::data(error.to_string()))?
-    {
-        let entry = entry.map_err(|error| cdf_kernel::CdfError::data(error.to_string()))?;
-        let path = entry.path().join("plan.json");
-        if !path.is_file() {
+    for entry in fs::read_dir(&root).map_err(|error| {
+        promotion_artifact_enumeration_error("read staged promotion directory", &root, error)
+    })? {
+        let entry = entry.map_err(|error| {
+            promotion_artifact_enumeration_error("read staged promotion entry", &root, error)
+        })?;
+        let entry_path = entry.path();
+        if !entry
+            .file_type()
+            .map_err(|error| {
+                promotion_artifact_enumeration_error(
+                    "inspect staged promotion entry",
+                    &entry_path,
+                    error,
+                )
+            })?
+            .is_dir()
+        {
             continue;
         }
-        let artifact: SchemaPromotionExecutionPlanArtifact = read_json_file(&path)?;
+        let path = entry.path().join("plan.json");
+        if !promotion_regular_file_exists(&path)? {
+            continue;
+        }
+        let artifact: SchemaPromotionExecutionPlanArtifact =
+            read_promotion_json_file(project_root, &path)?;
         artifact.validate()?;
         if path != project_root.join(promotion_plan_relative_path(&artifact.promotion_id)) {
             return Err(cdf_kernel::CdfError::data(format!(
@@ -2242,54 +2314,243 @@ fn canonical_json_bytes(value: &impl Serialize) -> cdf_kernel::Result<Vec<u8>> {
         .map_err(|error| cdf_kernel::CdfError::internal(error.to_string()))
 }
 
-fn write_create_or_verify(path: &Path, bytes: &[u8]) -> cdf_kernel::Result<()> {
-    match fs::read(path) {
-        Ok(existing) if existing == bytes => return Ok(()),
-        Ok(_) => return Err(content_addressed_conflict(path)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => return Err(content_addressed_conflict(path)),
+fn write_create_or_verify(
+    project_root: &Path,
+    path: &Path,
+    bytes: &[u8],
+) -> cdf_kernel::Result<()> {
+    let parent = ensure_promotion_artifact_parent(project_root, path)?;
+    match read_promotion_artifact_leaf(path)? {
+        Some(existing) if existing == bytes => {
+            return sync_promotion_publication_directories(project_root, path);
+        }
+        Some(_) => return Err(content_addressed_conflict(path)),
+        None => {}
     }
-    let parent = path
-        .parent()
-        .ok_or_else(|| cdf_kernel::CdfError::internal("promotion artifact path has no parent"))?;
-    fs::create_dir_all(parent).map_err(|error| cdf_kernel::CdfError::data(error.to_string()))?;
-    let temporary = parent.join(format!(
-        ".{}.{}.{}.tmp",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("promotion"),
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| cdf_kernel::CdfError::internal(error.to_string()))?
-            .as_nanos()
-    ));
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&temporary)
-        .map_err(|error| cdf_kernel::CdfError::data(error.to_string()))?;
-    file.write_all(bytes)
-        .map_err(|error| cdf_kernel::CdfError::data(error.to_string()))?;
-    file.sync_all()
-        .map_err(|error| cdf_kernel::CdfError::data(error.to_string()))?;
+    let (temporary, mut file) = create_promotion_temporary(parent, path)?;
+    let write_result = (|| {
+        file.write_all(bytes).map_err(|error| {
+            promotion_host_error("write promotion temporary", &temporary, error)
+        })?;
+        file.sync_all()
+            .map_err(|error| promotion_host_error("sync promotion temporary", &temporary, error))
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
+    }
     match fs::hard_link(&temporary, path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            let _ = fs::remove_file(&temporary);
-            return match fs::read(path) {
-                Ok(existing) if existing == bytes => Ok(()),
-                Ok(_) | Err(_) => Err(content_addressed_conflict(path)),
+            fs::remove_file(&temporary).map_err(|error| {
+                promotion_host_error("remove promotion temporary", &temporary, error)
+            })?;
+            return match read_promotion_artifact_leaf(path)? {
+                Some(existing) if existing == bytes => {
+                    sync_promotion_publication_directories(project_root, path)
+                }
+                Some(_) | None => Err(content_addressed_conflict(path)),
             };
         }
         Err(error) => {
             let _ = fs::remove_file(&temporary);
-            return Err(cdf_kernel::CdfError::data(error.to_string()));
+            return Err(promotion_host_error(
+                "publish promotion artifact",
+                path,
+                error,
+            ));
         }
     }
-    fs::remove_file(&temporary).map_err(|error| cdf_kernel::CdfError::data(error.to_string()))?;
-    if let Ok(directory) = OpenOptions::new().read(true).open(parent) {
-        let _ = directory.sync_all();
+    fs::remove_file(&temporary)
+        .map_err(|error| promotion_host_error("remove promotion temporary", &temporary, error))?;
+    sync_promotion_publication_directories(project_root, path)
+}
+
+fn create_promotion_temporary(
+    parent: &Path,
+    path: &Path,
+) -> cdf_kernel::Result<(PathBuf, fs::File)> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| {
+            cdf_kernel::CdfError::environment(format!(
+                "read the host clock for a promotion temporary path: {error}; correct the system clock and retry"
+            ))
+        })?
+        .as_nanos();
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("promotion");
+    for _ in 0..100 {
+        let sequence = PROMOTION_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temporary = parent.join(format!(
+            ".{name}.{}.{}.{}.tmp",
+            std::process::id(),
+            nanos,
+            sequence
+        ));
+        match OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)
+        {
+            Ok(file) => return Ok((temporary, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(promotion_host_error(
+                    "create promotion temporary",
+                    &temporary,
+                    error,
+                ));
+            }
+        }
+    }
+    Err(cdf_kernel::CdfError::environment(format!(
+        "create a unique promotion temporary beside {}: exhausted 100 attempts; remove stale promotion temporaries and retry",
+        path.display()
+    )))
+}
+
+fn ensure_promotion_artifact_parent<'a>(
+    project_root: &Path,
+    path: &'a Path,
+) -> cdf_kernel::Result<&'a Path> {
+    let relative = path.strip_prefix(project_root).map_err(|_| {
+        cdf_kernel::CdfError::internal(format!(
+            "promotion artifact {} escapes project root {}",
+            path.display(),
+            project_root.display()
+        ))
+    })?;
+    let relative_parent = relative.parent().ok_or_else(|| {
+        cdf_kernel::CdfError::internal("promotion artifact path has no project-relative parent")
+    })?;
+    let mut current = project_root.to_path_buf();
+    for component in relative_parent.components() {
+        let std::path::Component::Normal(component) = component else {
+            return Err(cdf_kernel::CdfError::internal(format!(
+                "promotion artifact {} has a non-canonical project-relative path",
+                path.display()
+            )));
+        };
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => return Err(content_addressed_conflict(&current)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match fs::create_dir(&current) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        let metadata = fs::symlink_metadata(&current).map_err(|error| {
+                            promotion_artifact_enumeration_error(
+                                "inspect concurrently created promotion directory",
+                                &current,
+                                error,
+                            )
+                        })?;
+                        if !metadata.is_dir() {
+                            return Err(content_addressed_conflict(&current));
+                        }
+                    }
+                    Err(error) => {
+                        return Err(promotion_artifact_enumeration_error(
+                            "create promotion artifact directory",
+                            &current,
+                            error,
+                        ));
+                    }
+                }
+            }
+            Err(error) => {
+                return Err(promotion_artifact_enumeration_error(
+                    "inspect promotion artifact directory",
+                    &current,
+                    error,
+                ));
+            }
+        }
+    }
+    Ok(path
+        .parent()
+        .expect("project-relative parent was validated above"))
+}
+
+fn sync_promotion_publication_directories(
+    project_root: &Path,
+    path: &Path,
+) -> cdf_kernel::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| cdf_kernel::CdfError::internal("promotion artifact path has no parent"))?;
+    crate::project_files::sync_directory_ancestry_through_root(
+        parent,
+        project_root,
+        |directory, error| {
+            promotion_host_error(
+                "sync promotion artifact directory ancestry",
+                directory,
+                error,
+            )
+        },
+    )
+}
+
+fn read_promotion_artifact_leaf(path: &Path) -> cdf_kernel::Result<Option<Vec<u8>>> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() => fs::read(path)
+            .map(Some)
+            .map_err(|error| promotion_artifact_read_error(path, error)),
+        Ok(_) => Err(content_addressed_conflict(path)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(promotion_artifact_read_error(path, error)),
+    }
+}
+
+fn read_promotion_json_file<T: for<'de> Deserialize<'de>>(
+    project_root: &Path,
+    path: &Path,
+) -> cdf_kernel::Result<T> {
+    validate_existing_promotion_artifact_parent(project_root, path)?;
+    let bytes =
+        read_promotion_artifact_leaf(path)?.ok_or_else(|| content_addressed_conflict(path))?;
+    serde_json::from_slice(&bytes).map_err(|error| cdf_kernel::CdfError::data(error.to_string()))
+}
+
+fn validate_existing_promotion_artifact_parent(
+    project_root: &Path,
+    path: &Path,
+) -> cdf_kernel::Result<()> {
+    let relative = path.strip_prefix(project_root).map_err(|_| {
+        cdf_kernel::CdfError::internal(format!(
+            "promotion artifact {} escapes project root {}",
+            path.display(),
+            project_root.display()
+        ))
+    })?;
+    let relative_parent = relative.parent().ok_or_else(|| {
+        cdf_kernel::CdfError::internal("promotion artifact path has no project-relative parent")
+    })?;
+    let mut current = project_root.to_path_buf();
+    for component in relative_parent.components() {
+        let std::path::Component::Normal(component) = component else {
+            return Err(cdf_kernel::CdfError::internal(format!(
+                "promotion artifact {} has a non-canonical project-relative path",
+                path.display()
+            )));
+        };
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => return Err(content_addressed_conflict(&current)),
+            Err(error) => {
+                return Err(promotion_artifact_enumeration_error(
+                    "inspect promotion artifact directory",
+                    &current,
+                    error,
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -2303,7 +2564,7 @@ fn content_addressed_conflict(path: &Path) -> cdf_kernel::CdfError {
 
 fn read_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> cdf_kernel::Result<T> {
     serde_json::from_slice(
-        &fs::read(path).map_err(|error| cdf_kernel::CdfError::data(error.to_string()))?,
+        &fs::read(path).map_err(|error| promotion_artifact_read_error(path, error))?,
     )
     .map_err(|error| cdf_kernel::CdfError::data(error.to_string()))
 }
@@ -2311,9 +2572,179 @@ fn read_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> cdf_kernel::Resu
 fn now_ms() -> cdf_kernel::Result<i64> {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|error| cdf_kernel::CdfError::internal(error.to_string()))?
+        .map_err(|error| {
+            cdf_kernel::CdfError::environment(format!(
+                "read the host clock for promotion recovery: {error}; correct the system clock and retry"
+            ))
+        })?
         .as_millis();
-    i64::try_from(millis).map_err(|error| cdf_kernel::CdfError::internal(error.to_string()))
+    i64::try_from(millis).map_err(|error| {
+        cdf_kernel::CdfError::environment(format!(
+            "represent the host clock for promotion recovery: {error}; correct the system clock and retry"
+        ))
+    })
+}
+
+fn promotion_artifact_read_error(path: &Path, error: std::io::Error) -> cdf_kernel::CdfError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::InvalidData
+            | std::io::ErrorKind::IsADirectory
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        content_addressed_conflict(path)
+    } else if error.kind() == std::io::ErrorKind::NotFound {
+        cdf_kernel::CdfError::data(format!(
+            "read promotion artifact {}: {error}",
+            path.display()
+        ))
+    } else {
+        promotion_host_error("read promotion artifact", path, error)
+    }
+}
+
+fn promotion_artifact_enumeration_error(
+    action: &str,
+    path: &Path,
+    error: std::io::Error,
+) -> cdf_kernel::CdfError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
+            | std::io::ErrorKind::AlreadyExists
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        content_addressed_conflict(path)
+    } else {
+        promotion_host_error(action, path, error)
+    }
+}
+
+fn promotion_host_error(action: &str, path: &Path, error: std::io::Error) -> cdf_kernel::CdfError {
+    cdf_kernel::CdfError::environment(format!(
+        "{action} {}: {error}; check project-path permissions, free space, device availability, and process file limits before retrying",
+        path.display()
+    ))
+}
+
+fn package_reader_error_context(
+    action: &str,
+    path: &Path,
+    mut error: cdf_kernel::CdfError,
+) -> cdf_kernel::CdfError {
+    error.message = format!("{action} {}: {}", path.display(), error.message);
+    error
+}
+
+fn package_inventory_io_error(
+    action: &str,
+    path: &Path,
+    error: std::io::Error,
+) -> cdf_kernel::CdfError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        cdf_kernel::CdfError::data(format!("{action} {}: {error}", path.display()))
+    } else {
+        promotion_host_error(action, path, error)
+    }
+}
+
+fn promotion_regular_file_exists(path: &Path) -> cdf_kernel::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() => Ok(true),
+        Ok(_) => Err(content_addressed_conflict(path)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            validate_missing_promotion_ancestors(path)?;
+            Ok(false)
+        }
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotADirectory
+                || cdf_kernel::is_filesystem_loop(&error) =>
+        {
+            Err(content_addressed_conflict(path))
+        }
+        Err(error) => Err(promotion_host_error(
+            "inspect promotion artifact",
+            path,
+            error,
+        )),
+    }
+}
+
+fn promotion_directory_exists(path: &Path) -> cdf_kernel::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => Ok(true),
+        Ok(_) => Err(content_addressed_conflict(path)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            validate_missing_promotion_ancestors(path)?;
+            Ok(false)
+        }
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotADirectory
+                || cdf_kernel::is_filesystem_loop(&error) =>
+        {
+            Err(content_addressed_conflict(path))
+        }
+        Err(error) => Err(promotion_host_error(
+            "inspect promotion directory",
+            path,
+            error,
+        )),
+    }
+}
+
+fn validate_missing_promotion_ancestors(path: &Path) -> cdf_kernel::Result<()> {
+    let mut cursor = path.parent();
+    while let Some(parent) = cursor {
+        if parent.as_os_str().is_empty() {
+            return Ok(());
+        }
+        match fs::metadata(parent) {
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(content_addressed_conflict(parent));
+            }
+            Ok(_) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match fs::symlink_metadata(parent) {
+                    Ok(metadata) if metadata.file_type().is_symlink() => {
+                        return Err(content_addressed_conflict(parent));
+                    }
+                    Ok(_) => return Err(content_addressed_conflict(parent)),
+                    Err(link_error) if link_error.kind() == std::io::ErrorKind::NotFound => {
+                        cursor = parent.parent();
+                    }
+                    Err(link_error) => {
+                        return Err(promotion_artifact_enumeration_error(
+                            "inspect promotion artifact ancestor",
+                            parent,
+                            link_error,
+                        ));
+                    }
+                }
+            }
+            Err(error) => {
+                return Err(promotion_artifact_enumeration_error(
+                    "inspect promotion artifact ancestor",
+                    parent,
+                    error,
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn fail_if(
@@ -2343,6 +2774,8 @@ pub fn inspect_local_promotion_availability(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Barrier};
+
     use super::*;
 
     #[test]
@@ -2372,28 +2805,198 @@ mod tests {
     }
 
     #[test]
+    fn source_package_inventory_wrong_shape_is_data_owned() {
+        let temp = tempfile::tempdir().unwrap();
+        let package_root = temp.path().join("packages");
+        fs::write(&package_root, b"not a directory").unwrap();
+
+        let error = source_package_index(&package_root, &BTreeSet::new()).unwrap_err();
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+        assert!(error.message.contains("source package directory"));
+    }
+
+    #[test]
     fn content_addressed_promotion_artifacts_are_create_or_verify() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("artifact.json");
-        write_create_or_verify(&path, b"first").unwrap();
-        write_create_or_verify(&path, b"first").unwrap();
-        let error = write_create_or_verify(&path, b"second").unwrap_err();
+        write_create_or_verify(temp.path(), &path, b"first").unwrap();
+        write_create_or_verify(temp.path(), &path, b"first").unwrap();
+        let error = write_create_or_verify(temp.path(), &path, b"second").unwrap_err();
         assert!(error.message.contains("conflicts with an existing"));
         assert_eq!(fs::read(path).unwrap(), b"first");
     }
 
     #[test]
+    fn concurrent_identical_promotion_publishers_converge_without_temporaries() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Arc::new(temp.path().to_path_buf());
+        let path = Arc::new(root.join("artifact.json"));
+        let barrier = Arc::new(Barrier::new(8));
+        let handles = (0..8)
+            .map(|_| {
+                let root = Arc::clone(&root);
+                let path = Arc::clone(&path);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    write_create_or_verify(&root, &path, b"identical")
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+
+        assert_eq!(fs::read(path.as_ref()).unwrap(), b"identical");
+        assert_no_promotion_temporaries(root.as_ref());
+    }
+
+    #[test]
+    fn concurrent_conflicting_promotion_publishers_preserve_one_complete_winner() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Arc::new(temp.path().to_path_buf());
+        let path = Arc::new(root.join("artifact.json"));
+        let barrier = Arc::new(Barrier::new(2));
+        let handles = [b"first".as_slice(), b"second".as_slice()]
+            .into_iter()
+            .map(|bytes| {
+                let root = Arc::clone(&root);
+                let path = Arc::clone(&path);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    write_create_or_verify(&root, &path, bytes)
+                })
+            })
+            .collect::<Vec<_>>();
+        let results = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        let error = results.into_iter().find_map(Result::err).unwrap();
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+        assert!(matches!(
+            fs::read(path.as_ref()).unwrap().as_slice(),
+            b"first" | b"second"
+        ));
+        assert_no_promotion_temporaries(root.as_ref());
+    }
+    #[test]
     fn content_addressed_promotion_artifact_directory_conflict_is_bounded() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("artifact.json");
         fs::create_dir(&path).unwrap();
-        let error = write_create_or_verify(&path, b"first").unwrap_err();
+        let error = write_create_or_verify(temp.path(), &path, b"first").unwrap_err();
         assert!(
             error
                 .message
                 .contains("existing unreadable or different entry")
         );
         assert!(path.is_dir());
+    }
+
+    #[test]
+    fn promotion_artifact_with_regular_file_parent_is_data_owned() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("promotion");
+        fs::write(&parent, b"not a directory").unwrap();
+        let path = parent.join("artifact.json");
+
+        let error = write_create_or_verify(temp.path(), &path, b"first").unwrap_err();
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+        assert!(error.message.contains("conflicts"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn promotion_artifact_rejects_leaf_and_ancestor_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_leaf = outside.path().join("artifact.json");
+        fs::write(&outside_leaf, b"first").unwrap();
+        let leaf = root.path().join("leaf.json");
+        symlink(&outside_leaf, &leaf).unwrap();
+
+        let leaf_error = write_create_or_verify(root.path(), &leaf, b"first").unwrap_err();
+        assert_eq!(leaf_error.kind, cdf_kernel::ErrorKind::Data);
+
+        let managed = root.path().join(".cdf");
+        symlink(outside.path(), &managed).unwrap();
+        let escaped = managed.join("promotions/promotion/artifact.json");
+        let ancestor_error =
+            write_create_or_verify(root.path(), &escaped, b"outside-write").unwrap_err();
+        assert_eq!(ancestor_error.kind, cdf_kernel::ErrorKind::Data);
+        assert!(!outside.path().join("promotions").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn promotion_recovery_status_rejects_symlinked_json_authority() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        let promotion_id = PromotionId::new("promotion-001").unwrap();
+        let status_dir = root
+            .path()
+            .join(promotion_recovery_status_directory(&promotion_id));
+        fs::create_dir_all(&status_dir).unwrap();
+        symlink(outside.path(), status_dir.join("00000000000000000000.json")).unwrap();
+
+        let error = load_schema_promotion_recovery_status(root.path(), &promotion_id).unwrap_err();
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn promotion_json_reader_rejects_symlinked_authority() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        fs::write(outside.path(), b"{}").unwrap();
+        let authority_dir = root.path().join(".cdf/promotions/promotion/targets");
+        fs::create_dir_all(&authority_dir).unwrap();
+        let authority = authority_dir.join("target.json");
+        symlink(outside.path(), &authority).unwrap();
+
+        let error =
+            read_promotion_json_file::<serde_json::Value>(root.path(), &authority).unwrap_err();
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+    }
+
+    #[test]
+    fn source_package_reader_context_preserves_typed_ownership() {
+        let error = package_reader_error_context(
+            "open source package",
+            Path::new("package"),
+            cdf_kernel::CdfError::rate_limited("upstream owner", Some(125)),
+        );
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::RateLimited);
+        assert_eq!(error.retry_after_ms, Some(125));
+        assert!(error.message.contains("package"));
+        assert!(error.message.contains("upstream owner"));
+    }
+
+    #[test]
+    fn promotion_optional_metadata_rejects_wrong_shapes() {
+        let temp = tempfile::tempdir().unwrap();
+        let regular_file = temp.path().join("promotions");
+        fs::write(&regular_file, b"not a directory").unwrap();
+
+        let error = promotion_directory_exists(&regular_file).unwrap_err();
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
     }
 
     fn copy_directory(source: &Path, destination: &Path) {
@@ -2407,5 +3010,18 @@ mod tests {
                 fs::copy(entry.path(), target).unwrap();
             }
         }
+    }
+
+    fn assert_no_promotion_temporaries(directory: &Path) {
+        let names = fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        assert!(
+            names
+                .iter()
+                .all(|name| !name.to_string_lossy().ends_with(".tmp")),
+            "promotion temporary remained: {names:?}"
+        );
     }
 }

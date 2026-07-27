@@ -71,6 +71,24 @@ fn publish_project_files_inner(
     writes: Vec<ProjectFileWrite>,
     fail_after_install_count: Option<usize>,
 ) -> Result<ProjectFileTransactionReport> {
+    publish_project_files_inner_with_hook(
+        project_root,
+        commit_relative_path,
+        writes,
+        fail_after_install_count,
+        &mut |_| Ok(()),
+        &mut |_, _| Ok(()),
+    )
+}
+
+fn publish_project_files_inner_with_hook(
+    project_root: &Path,
+    commit_relative_path: &Path,
+    writes: Vec<ProjectFileWrite>,
+    fail_after_install_count: Option<usize>,
+    before_install: &mut dyn FnMut(&Path) -> Result<()>,
+    after_absent_install: &mut dyn FnMut(&Path, &Path) -> Result<()>,
+) -> Result<ProjectFileTransactionReport> {
     validate_relative_path(commit_relative_path)?;
     let Some(last) = writes.last() else {
         return Err(CdfError::contract(
@@ -95,14 +113,15 @@ fn publish_project_files_inner(
         }
     }
 
-    let commit_path = project_root.join(commit_relative_path);
-    let _guard = acquire_lock_file_mutation_guard(&commit_path)?;
+    let _guard = acquire_lock_file_mutation_guard(project_root.join("cdf.lock"))?;
     let mut created_directories = Vec::new();
     let result = publish_under_guard(
         project_root,
         writes,
         fail_after_install_count,
         &mut created_directories,
+        before_install,
+        after_absent_install,
     );
     if result.is_err() {
         remove_empty_directories(&created_directories);
@@ -115,10 +134,22 @@ fn publish_under_guard(
     writes: Vec<ProjectFileWrite>,
     fail_after_install_count: Option<usize>,
     created_directories: &mut Vec<PathBuf>,
+    before_install: &mut dyn FnMut(&Path) -> Result<()>,
+    after_absent_install: &mut dyn FnMut(&Path, &Path) -> Result<()>,
 ) -> Result<ProjectFileTransactionReport> {
     let states = writes
         .iter()
-        .map(|write| read_and_validate_prior(project_root, write))
+        .map(|write| {
+            let target = project_root.join(&write.relative_path);
+            let parent = target.parent().ok_or_else(|| {
+                CdfError::contract(format!(
+                    "project transaction target {} has no parent",
+                    target.display()
+                ))
+            })?;
+            ensure_safe_parent(project_root, parent, created_directories)?;
+            read_and_validate_prior(project_root, write)
+        })
         .collect::<Result<Vec<_>>>()?;
     let mut prepared = Vec::with_capacity(writes.len());
     let mut unchanged_paths = Vec::new();
@@ -126,6 +157,14 @@ fn publish_under_guard(
         for (write, state) in writes.into_iter().zip(states) {
             let target = project_root.join(&write.relative_path);
             if state.matches_bytes(&write.bytes) {
+                let parent = target.parent().ok_or_else(|| {
+                    CdfError::contract(format!(
+                        "project transaction target {} has no parent",
+                        target.display()
+                    ))
+                })?;
+                ensure_safe_parent(project_root, parent, created_directories)?;
+                revalidate_prior(&target, &state)?;
                 unchanged_paths.push(write.relative_path);
                 prepared.push(PreparedWrite::Unchanged);
                 continue;
@@ -172,35 +211,42 @@ fn publish_under_guard(
                 continue;
             };
             revalidate_prior(target, prior)?;
+            before_install(target)?;
+            revalidate_prior(target, prior)?;
             match prior {
                 PriorFile::Absent => {
                     fs::hard_link(&*temporary, &*target).map_err(|error| {
-                        CdfError::data(format!(
-                            "atomically create project file {}: {error}",
-                            target.display()
-                        ))
+                        if concurrent_project_file_error(&error) {
+                            concurrent_project_file_change(target, error)
+                        } else {
+                            project_file_host_error("atomically create project file", target, error)
+                        }
                     })?;
-                    if let Err(error) = fs::remove_file(&*temporary) {
-                        let cleanup = fs::remove_file(&*target);
-                        return Err(CdfError::data(format!(
-                            "remove project transaction temporary {} after atomic create: {error}; target cleanup status: {}",
-                            temporary.display(),
-                            cleanup
-                                .map(|()| "removed".to_owned())
-                                .unwrap_or_else(|cleanup_error| cleanup_error.to_string())
-                        )));
-                    }
+                    installed.push(relative_path.clone());
+                    after_absent_install(temporary, target)?;
+                    fs::remove_file(&*temporary).map_err(|error| {
+                        project_file_private_path_error(
+                            "remove project transaction temporary after atomic create",
+                            temporary,
+                            error,
+                        )
+                    })?;
                 }
                 PriorFile::Existing { .. } => {
                     fs::rename(&*temporary, &*target).map_err(|error| {
-                        CdfError::data(format!(
-                            "atomically replace project file {}: {error}",
-                            target.display()
-                        ))
+                        if concurrent_project_file_error(&error) {
+                            concurrent_project_file_change(target, error)
+                        } else {
+                            project_file_host_error(
+                                "atomically replace project file",
+                                target,
+                                error,
+                            )
+                        }
                     })?;
+                    installed.push(relative_path.clone());
                 }
             }
-            installed.push(relative_path.clone());
             install_count = install_count.saturating_add(1);
             if fail_after_install_count == Some(install_count) {
                 return Err(CdfError::internal(format!(
@@ -208,16 +254,21 @@ fn publish_under_guard(
                 )));
             }
         }
-        sync_installed_parent_directories(project_root, &installed)
+        sync_installed_parent_directories(project_root, &installed)?;
+        sync_created_directory_parents(created_directories, |parent, error| {
+            project_file_host_error(
+                "sync parent of newly created project transaction directory",
+                parent,
+                error,
+            )
+        })
     })();
 
     if let Err(error) = install_result {
         let rollback = rollback_installed(project_root, &prepared, &installed);
         cleanup_temporaries(&prepared);
         if let Err(rollback_error) = rollback {
-            return Err(CdfError::internal(format!(
-                "project file transaction failed ({error}) and rollback also failed ({rollback_error})"
-            )));
+            return Err(with_rollback_failure(error, rollback_error));
         }
         return Err(error);
     }
@@ -269,9 +320,7 @@ fn read_and_validate_prior(project_root: &Path, write: &ProjectFileWrite) -> Res
             )));
         }
         Ok(metadata) if metadata.is_file() => PriorFile::Existing {
-            bytes: fs::read(&path).map_err(|error| {
-                CdfError::data(format!("read project file {}: {error}", path.display()))
-            })?,
+            bytes: fs::read(&path).map_err(|error| project_prior_read_error(&path, error))?,
             permissions: metadata.permissions(),
         },
         Ok(_) => {
@@ -281,11 +330,15 @@ fn read_and_validate_prior(project_root: &Path, write: &ProjectFileWrite) -> Res
             )));
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => PriorFile::Absent,
+        Err(error) if concurrent_project_file_error(&error) => {
+            return Err(concurrent_project_file_change(&path, error));
+        }
         Err(error) => {
-            return Err(CdfError::data(format!(
-                "inspect project file {}: {error}",
-                path.display()
-            )));
+            return Err(project_file_host_error(
+                "inspect project file",
+                &path,
+                error,
+            ));
         }
     };
     match (&write.expectation, &prior) {
@@ -308,15 +361,41 @@ fn revalidate_prior(path: &Path, prior: &PriorFile) -> Result<()> {
     match (prior, fs::read(path)) {
         (PriorFile::Absent, Err(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         (PriorFile::Existing { bytes, .. }, Ok(current)) if *bytes == current => Ok(()),
-        (_, Ok(_)) | (PriorFile::Absent, Err(_)) => Err(CdfError::contract(format!(
+        (_, Ok(_)) => Err(CdfError::contract(format!(
             "project file transaction refused a concurrent change to {}",
             path.display()
         ))),
-        (PriorFile::Existing { .. }, Err(error)) => Err(CdfError::data(format!(
-            "re-read project file {} before publication: {error}",
-            path.display()
-        ))),
+        (_, Err(error)) if concurrent_project_file_error(&error) => {
+            Err(concurrent_project_file_change(path, error))
+        }
+        (PriorFile::Absent, Err(error)) => Err(project_file_host_error(
+            "re-inspect absent project file before publication",
+            path,
+            error,
+        )),
+        (PriorFile::Existing { .. }, Err(error)) => Err(project_file_host_error(
+            "re-read project file before publication",
+            path,
+            error,
+        )),
     }
+}
+
+fn concurrent_project_file_error(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+            | std::io::ErrorKind::AlreadyExists
+    ) || cdf_kernel::is_filesystem_loop(error)
+}
+
+fn concurrent_project_file_change(path: &Path, error: std::io::Error) -> CdfError {
+    CdfError::contract(format!(
+        "project file transaction refused a concurrent change to {}: {error}",
+        path.display()
+    ))
 }
 
 fn rollback_installed(
@@ -335,19 +414,13 @@ fn rollback_installed(
         };
         match prior {
             PriorFile::Absent => fs::remove_file(target).map_err(|error| {
-                CdfError::data(format!(
-                    "rollback newly created project file {}: {error}",
-                    target.display()
-                ))
+                project_file_host_error("rollback newly created project file", target, error)
             })?,
             PriorFile::Existing { bytes, permissions } => {
                 let temporary = temporary_path(target)?;
                 write_synced_file(&temporary, bytes, false, Some(permissions))?;
                 fs::rename(&temporary, target).map_err(|error| {
-                    CdfError::data(format!(
-                        "rollback replaced project file {}: {error}",
-                        target.display()
-                    ))
+                    project_file_host_error("rollback replaced project file", target, error)
                 })?;
             }
         }
@@ -399,23 +472,67 @@ fn ensure_safe_parent(
             }
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                fs::create_dir(&current).map_err(|error| {
-                    CdfError::data(format!(
-                        "create project transaction directory {}: {error}",
-                        current.display()
-                    ))
-                })?;
-                created_directories.push(current.clone());
+                match fs::create_dir(&current) {
+                    Ok(()) => created_directories.push(current.clone()),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        revalidate_concurrent_parent_directory(&current)?;
+                    }
+                    Err(error) => {
+                        return Err(if concurrent_project_file_error(&error) {
+                            concurrent_project_file_change(&current, error)
+                        } else {
+                            project_file_host_error(
+                                "create project transaction directory",
+                                &current,
+                                error,
+                            )
+                        });
+                    }
+                }
             }
             Err(error) => {
-                return Err(CdfError::data(format!(
-                    "inspect project transaction directory {}: {error}",
-                    current.display()
-                )));
+                return Err(if concurrent_project_file_error(&error) {
+                    concurrent_project_file_change(&current, error)
+                } else {
+                    project_file_host_error(
+                        "inspect project transaction directory",
+                        &current,
+                        error,
+                    )
+                });
             }
         }
     }
     Ok(())
+}
+
+fn revalidate_concurrent_parent_directory(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Ok(()),
+        Ok(_) => Err(CdfError::contract(format!(
+            "project transaction parent {} changed to a non-directory or symlink during creation",
+            path.display()
+        ))),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound
+                    | std::io::ErrorKind::NotADirectory
+                    | std::io::ErrorKind::IsADirectory
+                    | std::io::ErrorKind::AlreadyExists
+            ) || cdf_kernel::is_filesystem_loop(&error) =>
+        {
+            Err(CdfError::contract(format!(
+                "project transaction parent {} changed filesystem shape during creation: {error}",
+                path.display()
+            )))
+        }
+        Err(error) => Err(project_file_host_error(
+            "revalidate concurrently created project transaction directory",
+            path,
+            error,
+        )),
+    }
 }
 
 fn temporary_path(target: &Path) -> Result<PathBuf> {
@@ -453,33 +570,21 @@ fn write_synced_file(
         options.write(true).create_new(true);
         configure_create_permissions(&mut options, owner_only, permissions);
         let mut file = options.open(path).map_err(|error| {
-            CdfError::data(format!(
-                "create project transaction temporary {}: {error}",
-                path.display()
-            ))
+            project_file_private_path_error("create project transaction temporary", path, error)
         })?;
         file.write_all(bytes).map_err(|error| {
-            CdfError::data(format!(
-                "write project transaction temporary {}: {error}",
-                path.display()
-            ))
+            project_file_host_error("write project transaction temporary", path, error)
         })?;
         let desired_permissions = permissions
             .cloned()
             .or_else(|| owner_permissions(owner_only));
         if let Some(permissions) = desired_permissions {
             file.set_permissions(permissions).map_err(|error| {
-                CdfError::data(format!(
-                    "set project transaction permissions on {}: {error}",
-                    path.display()
-                ))
+                project_file_host_error("set project transaction permissions on", path, error)
             })?;
         }
         file.sync_all().map_err(|error| {
-            CdfError::data(format!(
-                "sync project transaction temporary {}: {error}",
-                path.display()
-            ))
+            project_file_host_error("sync project transaction temporary", path, error)
         })
     })();
     if result.is_err() {
@@ -547,13 +652,127 @@ fn sync_installed_parent_directories(project_root: &Path, installed: &[PathBuf])
         File::open(&parent)
             .and_then(|directory| directory.sync_all())
             .map_err(|error| {
-                CdfError::data(format!(
-                    "sync project transaction directory {}: {error}",
-                    parent.display()
-                ))
+                project_file_host_error("sync project transaction directory", &parent, error)
             })?;
     }
     Ok(())
+}
+
+#[cfg(unix)]
+pub(crate) fn sync_created_directory_parents(
+    created_directories: &[PathBuf],
+    mut classify: impl FnMut(&Path, std::io::Error) -> CdfError,
+) -> Result<()> {
+    for parent in created_directory_parent_sync_order(created_directories) {
+        File::open(&parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| classify(&parent, error))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn sync_created_directory_parents(
+    _created_directories: &[PathBuf],
+    _classify: impl FnMut(&Path, std::io::Error) -> CdfError,
+) -> Result<()> {
+    Ok(())
+}
+
+fn created_directory_parent_sync_order(created_directories: &[PathBuf]) -> Vec<PathBuf> {
+    let mut parents = Vec::new();
+    for directory in created_directories.iter().rev() {
+        let Some(parent) = directory.parent().map(Path::to_path_buf) else {
+            continue;
+        };
+        if !parents.contains(&parent) {
+            parents.push(parent);
+        }
+    }
+    parents
+}
+
+#[cfg(unix)]
+pub(crate) fn sync_directory_ancestry_through_root(
+    leaf_directory: &Path,
+    root: &Path,
+    mut classify: impl FnMut(&Path, std::io::Error) -> CdfError,
+) -> Result<()> {
+    for directory in directory_ancestry_sync_order(leaf_directory, root)? {
+        File::open(&directory)
+            .and_then(|handle| handle.sync_all())
+            .map_err(|error| classify(&directory, error))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn sync_directory_ancestry_through_root(
+    _leaf_directory: &Path,
+    _root: &Path,
+    _classify: impl FnMut(&Path, std::io::Error) -> CdfError,
+) -> Result<()> {
+    Ok(())
+}
+
+fn directory_ancestry_sync_order(leaf_directory: &Path, root: &Path) -> Result<Vec<PathBuf>> {
+    let mut directories = Vec::new();
+    let mut current = leaf_directory;
+    loop {
+        directories.push(current.to_path_buf());
+        if current == root {
+            return Ok(directories);
+        }
+        current = current.parent().ok_or_else(|| {
+            CdfError::internal(format!(
+                "directory {} is not beneath durability root {}",
+                leaf_directory.display(),
+                root.display()
+            ))
+        })?;
+    }
+}
+
+fn project_prior_read_error(path: &Path, error: std::io::Error) -> CdfError {
+    if concurrent_project_file_error(&error) {
+        concurrent_project_file_change(path, error)
+    } else {
+        project_file_host_error("read project file", path, error)
+    }
+}
+
+fn project_file_host_error(action: &str, path: &Path, error: std::io::Error) -> CdfError {
+    CdfError::environment(format!(
+        "{action} {}: {error}; check project-path permissions, free space, device availability, and process file limits before retrying",
+        path.display()
+    ))
+}
+
+fn project_file_private_path_error(action: &str, path: &Path, error: std::io::Error) -> CdfError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+            | std::io::ErrorKind::AlreadyExists
+            | std::io::ErrorKind::InvalidInput
+            | std::io::ErrorKind::InvalidData
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::internal(format!(
+            "{action} at CDF-managed scratch path {} with invalid filesystem shape: {error}",
+            path.display()
+        ))
+    } else {
+        project_file_host_error(action, path, error)
+    }
+}
+
+fn with_rollback_failure(primary: CdfError, rollback: CdfError) -> CdfError {
+    CdfError::internal(format!(
+        "project file transaction entered an unexpected partial-mutation state: primary failure kind {:?}, retry_after_ms {:?} ({}) and rollback also failed ({rollback})",
+        primary.kind, primary.retry_after_ms, primary.message
+    ))
 }
 
 #[cfg(not(unix))]
@@ -669,5 +888,217 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn rollback_failure_is_an_internal_partial_mutation_invariant() {
+        let primary = CdfError::rate_limited("primary destination failure", Some(250));
+        let rollback = CdfError::environment("rollback host failure");
+
+        let combined = with_rollback_failure(primary, rollback);
+
+        assert_eq!(combined.kind, cdf_kernel::ErrorKind::Internal);
+        assert_eq!(combined.retry_after_ms, None);
+        assert!(combined.message.contains("RateLimited"));
+        assert!(combined.message.contains("Some(250)"));
+        assert!(combined.message.contains("primary destination failure"));
+        assert!(combined.message.contains("rollback host failure"));
+    }
+
+    #[test]
+    fn created_directory_parent_sync_order_is_child_to_project_root() {
+        let root = Path::new("/project");
+        let created = vec![
+            root.join(".cdf"),
+            root.join(".cdf/secrets"),
+            root.join(".cdf/secrets/sources"),
+        ];
+
+        assert_eq!(
+            created_directory_parent_sync_order(&created),
+            vec![
+                root.join(".cdf/secrets"),
+                root.join(".cdf"),
+                root.to_path_buf(),
+            ]
+        );
+    }
+
+    #[test]
+    fn full_directory_ancestry_sync_order_retries_leaf_through_root() {
+        let root = Path::new("/project");
+        let leaf = root.join(".cdf/promotions/promotion/targets");
+
+        assert_eq!(
+            directory_ancestry_sync_order(&leaf, root).unwrap(),
+            vec![
+                root.join(".cdf/promotions/promotion/targets"),
+                root.join(".cdf/promotions/promotion"),
+                root.join(".cdf/promotions"),
+                root.join(".cdf"),
+                root.to_path_buf(),
+            ]
+        );
+    }
+
+    #[test]
+    fn project_transaction_host_failure_has_environment_remediation() {
+        let error = project_file_host_error(
+            "write project file",
+            Path::new("cdf.toml"),
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Environment);
+        assert!(error.message.contains("project-path permissions"));
+    }
+
+    #[test]
+    fn project_transaction_creation_race_is_contract_and_preserves_the_racer() {
+        let root = tempfile::tempdir().unwrap();
+        let writes = vec![ProjectFileWrite::new(
+            "cdf.lock",
+            b"ours".to_vec(),
+            ProjectFileExpectation::Absent,
+        )];
+        let target = root.path().join("cdf.lock");
+        let mut raced = false;
+
+        let error = publish_project_files_inner_with_hook(
+            root.path(),
+            Path::new("cdf.lock"),
+            writes,
+            None,
+            &mut |path| {
+                if !raced {
+                    fs::write(path, b"racer").unwrap();
+                    raced = true;
+                }
+                Ok(())
+            },
+            &mut |_, _| Ok(()),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Contract);
+        assert_eq!(fs::read(target).unwrap(), b"racer");
+    }
+
+    #[test]
+    fn project_transaction_replacement_race_is_contract_and_preserves_the_racer() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("cdf.lock");
+        fs::write(&target, b"observed").unwrap();
+        let writes = vec![ProjectFileWrite::new(
+            "cdf.lock",
+            b"ours".to_vec(),
+            ProjectFileExpectation::Exact(b"observed".to_vec()),
+        )];
+
+        let error = publish_project_files_inner_with_hook(
+            root.path(),
+            Path::new("cdf.lock"),
+            writes,
+            None,
+            &mut |path| {
+                fs::write(path, b"racer").unwrap();
+                Ok(())
+            },
+            &mut |_, _| Ok(()),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Contract);
+        assert_eq!(fs::read(target).unwrap(), b"racer");
+    }
+
+    #[test]
+    fn absent_install_cleanup_failure_rolls_back_the_published_target() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("cdf.lock");
+        let writes = vec![ProjectFileWrite::new(
+            "cdf.lock",
+            b"commit".to_vec(),
+            ProjectFileExpectation::Absent,
+        )];
+
+        let error = publish_project_files_inner_with_hook(
+            root.path(),
+            Path::new("cdf.lock"),
+            writes,
+            None,
+            &mut |_| Ok(()),
+            &mut |temporary, _target| {
+                fs::remove_file(temporary).unwrap();
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
+        assert!(error.message.contains("CDF-managed scratch path"));
+        assert!(
+            !target.exists(),
+            "failed transaction must roll back the already-published commit point"
+        );
+    }
+
+    #[test]
+    fn project_transaction_revalidation_shape_change_is_contract_owned() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("cdf.toml");
+        fs::write(&path, b"observed").unwrap();
+        let prior = PriorFile::Existing {
+            bytes: b"observed".to_vec(),
+            permissions: fs::metadata(&path).unwrap().permissions(),
+        };
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+
+        let error = revalidate_prior(&path, &prior).unwrap_err();
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Contract);
+        assert!(error.message.contains("concurrent change"));
+    }
+
+    #[test]
+    fn concurrent_parent_directory_revalidation_accepts_only_real_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("directory");
+        fs::create_dir(&directory).unwrap();
+        revalidate_concurrent_parent_directory(&directory).unwrap();
+
+        let file = root.path().join("file");
+        fs::write(&file, b"not a directory").unwrap();
+        let error = revalidate_concurrent_parent_directory(&file).unwrap_err();
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Contract);
+        assert!(error.message.contains("non-directory"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unchanged_project_file_rejects_symlinked_parent() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("config.toml"), b"same").unwrap();
+        symlink(outside.path(), root.path().join("linked")).unwrap();
+        let writes = vec![ProjectFileWrite::new(
+            "linked/config.toml",
+            b"same".to_vec(),
+            ProjectFileExpectation::Exact(b"same".to_vec()),
+        )];
+
+        let error =
+            publish_project_files_transactionally(root.path(), "linked/config.toml", writes)
+                .unwrap_err();
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Contract);
+        assert_eq!(
+            fs::read(outside.path().join("config.toml")).unwrap(),
+            b"same"
+        );
     }
 }

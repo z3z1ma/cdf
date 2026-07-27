@@ -1,7 +1,4 @@
-use std::{
-    path::Path,
-    sync::{Mutex, MutexGuard},
-};
+use std::{path::Path, sync::Mutex};
 
 use cdf_kernel::{
     CdfError, CheckpointId, DestinationId, PackageHash, PartitionId, PlanId, PromotionId,
@@ -9,14 +6,18 @@ use cdf_kernel::{
     RunEventDetails, RunEventKind, RunId, ScopeKey,
 };
 use rusqlite::{
-    Connection, ErrorCode, OpenFlags, OptionalExtension, Row, Transaction, TransactionBehavior,
-    params,
+    Connection, ErrorCode, OptionalExtension, Row, Transaction, TransactionBehavior, params,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::support::{
-    encode_json, ensure_schema_version_table, lock_error, now_ms, read_component_schema_version,
-    require_sqlite_tables, sqlite_error, sqlite_table_exists, write_component_schema_version,
+    SqliteConnectionGuard, SqliteErrorContext, StateStorePathOwnership, database_open_path,
+    database_path_exists, decode_private_promotion_publication_row, encode_json,
+    ensure_schema_version_table, lock_sqlite_connection, managed_sqlite_open_flags, now_ms,
+    prepare_managed_database_path, private_state_decode, read_component_schema_version,
+    require_sqlite_tables, sqlite_error, sqlite_table_exists,
+    validate_private_promotion_publications, with_sqlite_error_context,
+    write_component_schema_version,
 };
 
 pub(crate) const RUN_LEDGER_COMPONENT: &str = "run_ledger";
@@ -37,38 +38,72 @@ pub struct RunLedgerSnapshot {
 
 pub struct SqliteRunLedger {
     conn: Mutex<Connection>,
+    error_context: SqliteErrorContext,
 }
 
 impl SqliteRunLedger {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let conn = Connection::open(path.as_ref()).map_err(sqlite_error)?;
-        initialize_run_schema(&conn)?;
+        Self::open_with_path_ownership(path, StateStorePathOwnership::CdfManaged)
+    }
+
+    pub fn open_with_path_ownership(
+        path: impl AsRef<Path>,
+        ownership: StateStorePathOwnership,
+    ) -> Result<Self> {
+        let path = path.as_ref();
+        let open_path = prepare_managed_database_path(path, ownership)?;
+        let error_context = SqliteErrorContext::ManagedState;
+        let conn = with_sqlite_error_context(error_context, || {
+            let conn = Connection::open_with_flags(&open_path, managed_sqlite_open_flags(false))
+                .map_err(sqlite_error)?;
+            initialize_run_schema(&conn)?;
+            Ok(conn)
+        })?;
         Ok(Self {
             conn: Mutex::new(conn),
+            error_context,
         })
     }
 
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_read_only_with_path_ownership(path, StateStorePathOwnership::CdfManaged)
+    }
+
+    pub fn open_read_only_with_path_ownership(
+        path: impl AsRef<Path>,
+        ownership: StateStorePathOwnership,
+    ) -> Result<Self> {
         let path = path.as_ref();
-        if !path.exists() {
+        if !database_path_exists(path, ownership)? {
             return Err(CdfError::data(format!(
                 "run ledger state database {} is missing",
                 path.display()
             )));
         }
-        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(sqlite_error)?;
-        validate_run_schema_version(&conn)?;
+        let open_path = database_open_path(path, ownership)?;
+        let error_context = SqliteErrorContext::ManagedReadOnly;
+        let conn = with_sqlite_error_context(error_context, || {
+            let conn = Connection::open_with_flags(&open_path, managed_sqlite_open_flags(true))
+                .map_err(sqlite_error)?;
+            validate_run_schema_version(&conn)?;
+            Ok(conn)
+        })?;
         Ok(Self {
             conn: Mutex::new(conn),
+            error_context,
         })
     }
 
     pub fn open_in_memory() -> Result<Self> {
-        let conn = Connection::open_in_memory().map_err(sqlite_error)?;
-        initialize_run_schema(&conn)?;
+        let error_context = SqliteErrorContext::EphemeralWorkspace;
+        let conn = with_sqlite_error_context(error_context, || {
+            let conn = Connection::open_in_memory().map_err(sqlite_error)?;
+            initialize_run_schema(&conn)?;
+            Ok(conn)
+        })?;
         Ok(Self {
             conn: Mutex::new(conn),
+            error_context,
         })
     }
 
@@ -141,13 +176,21 @@ impl SqliteRunLedger {
     ) -> Result<Option<PromotionPublicationEvent>> {
         let conn = self.lock_conn()?;
         conn.query_row(
-            "SELECT event_json FROM cdf_promotion_publications WHERE promotion_id = ?",
+            "SELECT promotion_id, published_at_ms, event_json FROM cdf_promotion_publications WHERE promotion_id = ?",
             params![promotion_id.as_str()],
-            |row| row.get::<_, String>(0),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
         )
         .optional()
         .map_err(sqlite_error)?
-        .map(|json| serde_json::from_str(&json).map_err(|error| CdfError::data(error.to_string())))
+        .map(|(promotion_id, published_at_ms, json)| {
+            decode_private_promotion_publication_row(promotion_id, published_at_ms, json)
+        })
         .transpose()
     }
 
@@ -162,15 +205,20 @@ impl SqliteRunLedger {
             .map_err(sqlite_error)?;
         let existing = tx
             .query_row(
-                "SELECT event_json FROM cdf_promotion_publications WHERE promotion_id = ?",
+                "SELECT promotion_id, published_at_ms, event_json FROM cdf_promotion_publications WHERE promotion_id = ?",
                 params![event.promotion_id.as_str()],
-                |row| row.get::<_, String>(0),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
             )
             .optional()
             .map_err(sqlite_error)?
-            .map(|json| {
-                serde_json::from_str::<PromotionPublicationEvent>(&json)
-                    .map_err(|error| CdfError::data(error.to_string()))
+            .map(|(promotion_id, published_at_ms, json)| {
+                decode_private_promotion_publication_row(promotion_id, published_at_ms, json)
             })
             .transpose()?;
         if let Some(existing) = existing {
@@ -192,8 +240,18 @@ impl SqliteRunLedger {
         Ok(event)
     }
 
-    fn lock_conn(&self) -> Result<MutexGuard<'_, Connection>> {
-        self.conn.lock().map_err(lock_error)
+    fn lock_conn(&self) -> Result<SqliteConnectionGuard<'_>> {
+        lock_sqlite_connection(&self.conn, self.error_context)
+    }
+
+    /// Validates every CDF-owned run-ledger row before a raw or diagnostic reader bypasses the
+    /// typed ledger API.
+    ///
+    /// Ordinary store opens intentionally validate only schema authority. Typed reads validate
+    /// each row they consume so run startup remains independent of total historical state.
+    pub fn validate_integrity(&self) -> Result<()> {
+        let conn = self.lock_conn()?;
+        validate_private_run_ledger_rows(&conn)
     }
 }
 
@@ -366,6 +424,28 @@ fn validate_run_schema_structure(conn: &Connection) -> Result<()> {
     )
 }
 
+fn validate_private_run_ledger_rows(conn: &Connection) -> Result<()> {
+    let mut runs = conn
+        .prepare("SELECT run_id, created_at_ms FROM cdf_runs")
+        .map_err(sqlite_error)?;
+    let run_rows = runs
+        .query_map([], row_to_run_record)
+        .map_err(sqlite_error)?;
+    for run in run_rows {
+        run.map_err(sqlite_error)?;
+    }
+
+    let mut events = conn.prepare(RUN_EVENT_SELECT).map_err(sqlite_error)?;
+    let event_rows = events
+        .query_map([], row_to_run_event)
+        .map_err(sqlite_error)?;
+    for event in event_rows {
+        event.map_err(sqlite_error)?;
+    }
+
+    validate_private_promotion_publications(conn)
+}
+
 fn read_run_schema_version(conn: &Connection) -> Result<Option<i64>> {
     read_component_schema_version(conn, RUN_LEDGER_COMPONENT)
 }
@@ -490,7 +570,10 @@ fn next_sequence_tx(tx: &Transaction<'_>, run_id: &RunId) -> Result<u64> {
             |row| row.get(0),
         )
         .map_err(sqlite_error)?;
-    let next = current.unwrap_or(0) + 1;
+    let next = current
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or_else(|| CdfError::internal("CDF-managed run event sequence overflow"))?;
     u64::try_from(next).map_err(|error| CdfError::internal(error.to_string()))
 }
 
@@ -546,10 +629,21 @@ fn row_to_run_record(row: &Row<'_>) -> rusqlite::Result<RunRecord> {
 }
 
 fn row_to_run_record_result(row: &Row<'_>) -> Result<RunRecord> {
-    Ok(RunRecord {
-        run_id: RunId::new(row_get::<String>(row, "run_id")?)?,
-        created_at_ms: row_get(row, "created_at_ms")?,
-    })
+    private_state_decode(
+        "decode CDF-managed run ledger row",
+        (|| {
+            let created_at_ms = row_get(row, "created_at_ms")?;
+            if created_at_ms < 0 {
+                return Err(CdfError::internal(
+                    "CDF-managed run creation timestamp is negative",
+                ));
+            }
+            Ok(RunRecord {
+                run_id: RunId::new(row_get::<String>(row, "run_id")?)?,
+                created_at_ms,
+            })
+        })(),
+    )
 }
 
 fn row_to_run_event(row: &Row<'_>) -> rusqlite::Result<RunEvent> {
@@ -559,49 +653,70 @@ fn row_to_run_event(row: &Row<'_>) -> rusqlite::Result<RunEvent> {
 }
 
 fn row_to_run_event_result(row: &Row<'_>) -> Result<RunEvent> {
-    let sequence = row_get::<i64>(row, "sequence")?;
-    if sequence < 1 {
-        return Err(CdfError::data("run event sequence must be positive"));
-    }
-    let scope = row_get::<Option<String>>(row, "scope_json")?
-        .map(|json| serde_json::from_str::<ScopeKey>(&json))
-        .transpose()
-        .map_err(|error| CdfError::data(error.to_string()))?;
-    let details = serde_json::from_str::<RunEventDetails>(&row_get::<String>(row, "details_json")?)
-        .map_err(|error| CdfError::data(error.to_string()))?;
-    details.validate()?;
+    private_state_decode(
+        "decode CDF-managed run event row",
+        (|| {
+            let sequence = row_get::<i64>(row, "sequence")?;
+            if sequence < 1 {
+                return Err(CdfError::internal(
+                    "CDF-managed run event sequence is not positive",
+                ));
+            }
+            let timestamp_ms = row_get(row, "timestamp_ms")?;
+            if timestamp_ms < 0 {
+                return Err(CdfError::internal(
+                    "CDF-managed run event timestamp is negative",
+                ));
+            }
+            let scope = row_get::<Option<String>>(row, "scope_json")?
+                .map(|json| serde_json::from_str::<ScopeKey>(&json))
+                .transpose()
+                .map_err(|error| {
+                    CdfError::internal(format!("decode CDF-managed run event scope JSON: {error}"))
+                })?;
+            let details =
+                serde_json::from_str::<RunEventDetails>(&row_get::<String>(row, "details_json")?)
+                    .map_err(|error| {
+                    CdfError::internal(format!(
+                        "decode CDF-managed run event details JSON: {error}"
+                    ))
+                })?;
+            details.validate()?;
 
-    Ok(RunEvent {
-        run_id: RunId::new(row_get::<String>(row, "run_id")?)?,
-        sequence: u64::try_from(sequence).map_err(|error| CdfError::internal(error.to_string()))?,
-        timestamp_ms: row_get(row, "timestamp_ms")?,
-        kind: RunEventKind::parse(&row_get::<String>(row, "kind")?)?,
-        resource_id: row_get::<Option<String>>(row, "resource_id")?
-            .map(ResourceId::new)
-            .transpose()?,
-        scope,
-        partition_id: row_get::<Option<String>>(row, "partition_id")?
-            .map(PartitionId::new)
-            .transpose()?,
-        package_id: row_get(row, "package_id")?,
-        package_hash: row_get::<Option<String>>(row, "package_hash")?
-            .map(PackageHash::new)
-            .transpose()?,
-        package_path: row_get(row, "package_path")?,
-        checkpoint_id: row_get::<Option<String>>(row, "checkpoint_id")?
-            .map(CheckpointId::new)
-            .transpose()?,
-        receipt_id: row_get::<Option<String>>(row, "receipt_id")?
-            .map(ReceiptId::new)
-            .transpose()?,
-        destination_id: row_get::<Option<String>>(row, "destination_id")?
-            .map(DestinationId::new)
-            .transpose()?,
-        plan_id: row_get::<Option<String>>(row, "plan_id")?
-            .map(PlanId::new)
-            .transpose()?,
-        details,
-    })
+            Ok(RunEvent {
+                run_id: RunId::new(row_get::<String>(row, "run_id")?)?,
+                sequence: u64::try_from(sequence)
+                    .map_err(|error| CdfError::internal(error.to_string()))?,
+                timestamp_ms,
+                kind: RunEventKind::parse(&row_get::<String>(row, "kind")?)?,
+                resource_id: row_get::<Option<String>>(row, "resource_id")?
+                    .map(ResourceId::new)
+                    .transpose()?,
+                scope,
+                partition_id: row_get::<Option<String>>(row, "partition_id")?
+                    .map(PartitionId::new)
+                    .transpose()?,
+                package_id: row_get(row, "package_id")?,
+                package_hash: row_get::<Option<String>>(row, "package_hash")?
+                    .map(PackageHash::new)
+                    .transpose()?,
+                package_path: row_get(row, "package_path")?,
+                checkpoint_id: row_get::<Option<String>>(row, "checkpoint_id")?
+                    .map(CheckpointId::new)
+                    .transpose()?,
+                receipt_id: row_get::<Option<String>>(row, "receipt_id")?
+                    .map(ReceiptId::new)
+                    .transpose()?,
+                destination_id: row_get::<Option<String>>(row, "destination_id")?
+                    .map(DestinationId::new)
+                    .transpose()?,
+                plan_id: row_get::<Option<String>>(row, "plan_id")?
+                    .map(PlanId::new)
+                    .transpose()?,
+                details,
+            })
+        })(),
+    )
 }
 
 fn is_constraint_violation(error: &rusqlite::Error) -> bool {
@@ -614,4 +729,28 @@ fn is_constraint_violation(error: &rusqlite::Error) -> bool {
 
 fn row_get<T: rusqlite::types::FromSql>(row: &Row<'_>, column: &str) -> Result<T> {
     row.get(column).map_err(sqlite_error)
+}
+
+#[cfg(test)]
+mod private_row_tests {
+    use cdf_kernel::ErrorKind;
+
+    use super::*;
+
+    #[test]
+    fn malformed_private_run_identifier_is_internal() {
+        let conn = Connection::open_in_memory().unwrap();
+        let error = conn
+            .query_row(
+                "SELECT '' AS run_id, 1 AS created_at_ms",
+                [],
+                row_to_run_record,
+            )
+            .unwrap_err();
+
+        let classified = sqlite_error(error);
+
+        assert_eq!(classified.kind, ErrorKind::Internal);
+        assert!(classified.message.contains("run ledger row"));
+    }
 }

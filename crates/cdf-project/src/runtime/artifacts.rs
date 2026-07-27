@@ -1,4 +1,5 @@
 use super::prelude::*;
+use super::validation::package_directory_exists;
 use cdf_kernel::CapabilitySupport;
 use cdf_package_contract::{PROCESSED_OBSERVATIONS_FILE, ProcessedObservationEvidenceArtifact};
 
@@ -126,20 +127,23 @@ struct QuarantineArtifactSummary {
 
 fn quarantine_artifact_summary(package_dir: &Path) -> Result<Option<QuarantineArtifactSummary>> {
     let directory = package_dir.join("quarantine");
-    if !directory.exists() {
+    if !package_directory_exists(&directory)? {
         return Ok(None);
     }
     let mut part_count = 0_u64;
     let mut schema_observations_present = false;
-    for entry in fs::read_dir(&directory)
-        .map_err(|error| CdfError::data(format!("read {}: {error}", directory.display())))?
-    {
-        let entry = entry
-            .map_err(|error| CdfError::data(format!("read {}: {error}", directory.display())))?;
+    for entry in fs::read_dir(&directory).map_err(|error| {
+        quarantine_artifact_io_error("read quarantine directory", &directory, error)
+    })? {
+        let entry = entry.map_err(|error| {
+            quarantine_artifact_io_error("read quarantine directory entry", &directory, error)
+        })?;
         let path = entry.path();
         if !entry
             .file_type()
-            .map_err(|error| CdfError::data(format!("stat {}: {error}", path.display())))?
+            .map_err(|error| {
+                quarantine_artifact_io_error("inspect quarantine artifact", &path, error)
+            })?
             .is_file()
         {
             continue;
@@ -165,6 +169,25 @@ fn quarantine_artifact_summary(package_dir: &Path) -> Result<Option<QuarantineAr
         part_count,
         schema_observations_present,
     }))
+}
+
+fn quarantine_artifact_io_error(action: &str, path: &Path, error: std::io::Error) -> CdfError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::data(format!("{action} {}: {error}", path.display()))
+    } else {
+        CdfError::environment(format!(
+            "{action} {}: {error}; check package-path permissions, device availability, and process file limits before retrying",
+            path.display()
+        ))
+    }
 }
 
 fn capability_support_name(support: &CapabilitySupport) -> &'static str {

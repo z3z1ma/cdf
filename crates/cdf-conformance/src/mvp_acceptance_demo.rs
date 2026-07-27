@@ -130,6 +130,7 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
                 plan,
                 package_root: project.package_root(),
                 state_store_path: project.state_store_path(),
+                state_store_path_ownership: cdf_project::StateStorePathOwnership::Configured,
                 pipeline_id: PipelineId::new(PIPELINE_ID).unwrap(),
                 package_id: PACKAGE_ID.to_owned(),
                 checkpoint_id: CheckpointId::new(CHECKPOINT_ID).unwrap(),
@@ -463,16 +464,18 @@ impl DemoProject {
     }
 
     fn write_files(&self) -> Result<()> {
-        fs::create_dir_all(self.root.join("resources"))
-            .map_err(|error| CdfError::data(format!("create demo resources dir: {error}")))?;
+        fs::create_dir_all(self.root.join("resources")).map_err(|error| {
+            crate::conformance_private_io_error("create demo resources dir", error)
+        })?;
         fs::create_dir_all(self.root.join(".cdf"))
-            .map_err(|error| CdfError::data(format!("create demo .cdf dir: {error}")))?;
-        fs::write(self.root.join("github-token"), SECRET_VALUE)
-            .map_err(|error| CdfError::data(format!("write demo secret file: {error}")))?;
+            .map_err(|error| crate::conformance_private_io_error("create demo .cdf dir", error))?;
+        fs::write(self.root.join("github-token"), SECRET_VALUE).map_err(|error| {
+            crate::conformance_private_io_error("write demo secret file", error)
+        })?;
         fs::write(self.root.join("cdf.toml"), self.project_toml())
-            .map_err(|error| CdfError::data(format!("write demo cdf.toml: {error}")))?;
+            .map_err(|error| crate::conformance_private_io_error("write demo cdf.toml", error))?;
         fs::write(self.root.join("resources/github.toml"), GITHUB_ISSUES_TOML)
-            .map_err(|error| CdfError::data(format!("write demo resource TOML: {error}")))
+            .map_err(|error| crate::conformance_private_io_error("write demo resource TOML", error))
     }
 
     fn project_toml(&self) -> String {

@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fs, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 
 use cdf_declarative::CompiledResource;
 use cdf_kernel::{
@@ -196,7 +196,10 @@ fn execute_promotion(
     }
 
     let state_path = context.state_store_path()?;
-    let settlement_store = SqlitePromotionSettlementStore::open(&state_path)?;
+    let settlement_store = SqlitePromotionSettlementStore::open_with_path_ownership(
+        &state_path,
+        context.state_store_path_ownership(),
+    )?;
     let result = execute_schema_promotion(SchemaPromotionExecutionRequest {
         project_root: &context.root,
         package_root: &context.package_root(),
@@ -466,8 +469,8 @@ fn inspection_artifact_root(command: &str) -> Result<tempfile::TempDir, CliError
         .prefix(&format!("cdf-{command}-"))
         .tempdir()
         .map_err(|error| {
-            CdfError::internal(format!(
-                "create {command} inspection artifact root: {error}"
+            CdfError::environment(format!(
+                "create {command} inspection artifact root in the host temporary directory: {error}; check temporary-directory access, free space, and process file limits before retrying"
             ))
             .into()
         })
@@ -492,7 +495,11 @@ fn update_lockfile(
     )?;
     let encoded = lock_to_toml(&updated)?;
     let path = context.root.join(LOCK_FILE_NAME);
-    let written = fs::read_to_string(&path).ok().as_deref() != Some(&encoded);
+    let written = context
+        .lock_authority
+        .as_ref()
+        .map(|authority| authority.bytes.as_slice())
+        != Some(encoded.as_bytes());
     if written {
         cdf_project::write_lock_file_guarded(&path, context.lock_authority.as_ref(), encoded)?;
     }

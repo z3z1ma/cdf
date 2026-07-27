@@ -35,7 +35,7 @@ events.__cdf_write_disposition__ = "{}"
             disposition.as_str()
         ),
     )
-    .map_err(|error| cdf_kernel::CdfError::data(format!("write Python fixture: {error}")))?;
+    .map_err(|error| crate::conformance_private_io_error("write Python fixture", error))?;
     let interpreter = cdf_python::attached_interpreter_report()?.executable;
     let project_options = serde_json::json!({
         "interpreter": interpreter,

@@ -1,8 +1,13 @@
 use std::{
     collections::BTreeMap,
-    fs,
+    fs::{self, OpenOptions},
+    io::{Read, Write},
     path::{Component, Path, PathBuf},
-    sync::Arc,
+    process,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use arrow_schema::{
@@ -19,6 +24,8 @@ use sha2::{Digest, Sha256};
 pub const SCHEMA_SNAPSHOT_ARTIFACT_VERSION: u16 = 4;
 pub const SCHEMA_SNAPSHOT_PROMOTION_AUTHORITY_VERSION: u16 = 1;
 pub const SCHEMA_SNAPSHOT_DIR: &str = ".cdf/schemas";
+
+static SCHEMA_SNAPSHOT_TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SchemaSnapshotArtifact {
@@ -1022,12 +1029,9 @@ impl SchemaSnapshotStore {
         artifact.validate_hash_input()?;
         self.validate_discovery_manifest(artifact)?;
         let path = self.project_root.join(&artifact.path);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|error| CdfError::data(format!("create {}: {error}", parent.display())))?;
-        }
-        fs::write(&path, artifact.canonical_bytes()?)
-            .map_err(|error| CdfError::data(format!("write {}: {error}", path.display())))?;
+        self.ensure_managed_snapshot_parent(&path)?;
+        install_schema_snapshot(&path, &artifact.canonical_bytes()?)?;
+        self.sync_snapshot_directory_ancestry(&path)?;
         Ok(path)
     }
 
@@ -1036,22 +1040,18 @@ impl SchemaSnapshotStore {
         self.validate_discovery_manifest(artifact)?;
         let path = self.project_root.join(&artifact.path);
         let encoded = artifact.canonical_bytes()?;
-        if fs::read(&path).ok().as_deref() == Some(encoded.as_slice()) {
-            return Ok(false);
-        }
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|error| CdfError::data(format!("create {}: {error}", parent.display())))?;
-        }
-        fs::write(&path, encoded)
-            .map_err(|error| CdfError::data(format!("write {}: {error}", path.display())))?;
-        Ok(true)
+        self.ensure_managed_snapshot_parent(&path)?;
+        let installed = install_schema_snapshot(&path, &encoded)?;
+        self.sync_snapshot_directory_ancestry(&path)?;
+        Ok(installed)
     }
 
     pub fn read(&self, reference: &SchemaSnapshotReference) -> Result<SchemaSnapshotArtifact> {
         let path = self.artifact_path(reference)?;
-        let bytes = fs::read(&path)
-            .map_err(|error| CdfError::data(format!("read {}: {error}", path.display())))?;
+        self.validate_managed_snapshot_parent(&path)?;
+        let bytes = read_schema_snapshot(&path)?.ok_or_else(|| {
+            CdfError::data(format!("schema snapshot {} does not exist", path.display()))
+        })?;
         let artifact = serde_json::from_slice::<SchemaSnapshotArtifact>(&bytes)
             .map_err(|error| CdfError::data(format!("parse {}: {error}", path.display())))?;
         if artifact.version != SCHEMA_SNAPSHOT_ARTIFACT_VERSION {
@@ -1133,6 +1133,318 @@ impl SchemaSnapshotStore {
         }
         Ok(())
     }
+
+    fn ensure_managed_snapshot_parent(&self, path: &Path) -> Result<()> {
+        self.walk_managed_snapshot_parent(path, true).map(|_| ())
+    }
+
+    fn validate_managed_snapshot_parent(&self, path: &Path) -> Result<()> {
+        if self.walk_managed_snapshot_parent(path, false)? {
+            Ok(())
+        } else {
+            Err(CdfError::data(format!(
+                "schema snapshot parent for {} does not exist",
+                path.display()
+            )))
+        }
+    }
+
+    fn walk_managed_snapshot_parent(&self, path: &Path, create: bool) -> Result<bool> {
+        let relative = path.strip_prefix(&self.project_root).map_err(|_| {
+            CdfError::internal(format!(
+                "schema snapshot path {} escapes project root {}",
+                path.display(),
+                self.project_root.display()
+            ))
+        })?;
+        let Some(relative_parent) = relative.parent() else {
+            return Err(CdfError::internal(format!(
+                "schema snapshot path {} has no relative parent",
+                path.display()
+            )));
+        };
+        let mut current = self.project_root.clone();
+        for component in relative_parent.components() {
+            current.push(component.as_os_str());
+            match fs::symlink_metadata(&current) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+                Ok(_) => {
+                    return Err(CdfError::data(format!(
+                        "schema snapshot ancestor {} is not a real directory",
+                        current.display()
+                    )));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound && !create => {
+                    return Ok(false);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    match fs::create_dir(&current) {
+                        Ok(()) => {}
+                        Err(create_error)
+                            if create_error.kind() == std::io::ErrorKind::AlreadyExists =>
+                        {
+                            let metadata = fs::symlink_metadata(&current).map_err(|error| {
+                                schema_snapshot_io_error(
+                                    "revalidate schema snapshot ancestor",
+                                    &current,
+                                    error,
+                                )
+                            })?;
+                            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                                return Err(CdfError::data(format!(
+                                    "schema snapshot ancestor {} changed to a non-directory or symlink during creation",
+                                    current.display()
+                                )));
+                            }
+                        }
+                        Err(create_error) => {
+                            return Err(schema_snapshot_io_error(
+                                "create schema snapshot ancestor",
+                                &current,
+                                create_error,
+                            ));
+                        }
+                    }
+                }
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::NotADirectory
+                        || cdf_kernel::is_filesystem_loop(&error) =>
+                {
+                    return Err(CdfError::data(format!(
+                        "schema snapshot ancestor {} has an invalid filesystem shape: {error}",
+                        current.display()
+                    )));
+                }
+                Err(error) => {
+                    return Err(schema_snapshot_io_error(
+                        "inspect schema snapshot ancestor",
+                        &current,
+                        error,
+                    ));
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    fn sync_snapshot_directory_ancestry(&self, path: &Path) -> Result<()> {
+        let parent = path.parent().ok_or_else(|| {
+            CdfError::internal(format!(
+                "schema snapshot path {} has no parent",
+                path.display()
+            ))
+        })?;
+        crate::project_files::sync_directory_ancestry_through_root(
+            parent,
+            &self.project_root,
+            |directory, error| {
+                schema_snapshot_io_error(
+                    "sync schema snapshot directory ancestry",
+                    directory,
+                    error,
+                )
+            },
+        )
+    }
+}
+
+fn install_schema_snapshot(path: &Path, encoded: &[u8]) -> Result<bool> {
+    if let Some(existing) = read_schema_snapshot(path)? {
+        if existing == encoded {
+            let parent = path.parent().ok_or_else(|| {
+                CdfError::internal(format!(
+                    "schema snapshot path {} has no parent",
+                    path.display()
+                ))
+            })?;
+            sync_schema_snapshot_parent_directory(parent)?;
+            return Ok(false);
+        }
+        return Err(CdfError::data(format!(
+            "content-addressed schema snapshot {} already exists with different bytes",
+            path.display()
+        )));
+    }
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            CdfError::internal(format!("invalid schema snapshot path {}", path.display()))
+        })?;
+    let parent = path.parent().ok_or_else(|| {
+        CdfError::internal(format!(
+            "schema snapshot path {} has no parent",
+            path.display()
+        ))
+    })?;
+    let sequence = SCHEMA_SNAPSHOT_TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temporary = parent.join(format!(".{file_name}.{}.{}.tmp", process::id(), sequence));
+    let result = (|| {
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        configure_schema_snapshot_no_follow(&mut options);
+        let mut file = options.open(&temporary).map_err(|error| {
+            schema_snapshot_private_io_error(
+                "create schema snapshot temporary file",
+                &temporary,
+                error,
+            )
+        })?;
+        file.write_all(encoded).map_err(|error| {
+            schema_snapshot_private_io_error(
+                "write schema snapshot temporary file",
+                &temporary,
+                error,
+            )
+        })?;
+        file.sync_all().map_err(|error| {
+            schema_snapshot_private_io_error(
+                "sync schema snapshot temporary file",
+                &temporary,
+                error,
+            )
+        })?;
+        match fs::hard_link(&temporary, path) {
+            Ok(()) => {
+                fs::remove_file(&temporary).map_err(|error| {
+                    schema_snapshot_private_io_error(
+                        "remove schema snapshot temporary file",
+                        &temporary,
+                        error,
+                    )
+                })?;
+                sync_schema_snapshot_parent_directory(parent)?;
+                Ok(true)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                match read_schema_snapshot(path)? {
+                    Some(existing) if existing == encoded => {
+                        sync_schema_snapshot_parent_directory(parent)?;
+                        Ok(false)
+                    }
+                    Some(_) => Err(CdfError::data(format!(
+                        "content-addressed schema snapshot {} raced with different bytes",
+                        path.display()
+                    ))),
+                    None => Err(CdfError::data(format!(
+                        "content-addressed schema snapshot {} changed during publication",
+                        path.display()
+                    ))),
+                }
+            }
+            Err(error) => Err(schema_snapshot_io_error(
+                "atomically install schema snapshot without replacement",
+                path,
+                error,
+            )),
+        }
+    })();
+    let _ = fs::remove_file(&temporary);
+    result
+}
+
+#[cfg(unix)]
+fn sync_schema_snapshot_parent_directory(parent: &Path) -> Result<()> {
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| {
+            schema_snapshot_io_error("sync schema snapshot parent directory", parent, error)
+        })
+}
+
+#[cfg(not(unix))]
+fn sync_schema_snapshot_parent_directory(_parent: &Path) -> Result<()> {
+    // std does not expose portable directory handles. The temporary file is
+    // synced before publication, and hard-link creation remains no-clobber.
+    Ok(())
+}
+
+fn read_schema_snapshot(path: &Path) -> Result<Option<Vec<u8>>> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+            let mut options = OpenOptions::new();
+            options.read(true);
+            configure_schema_snapshot_no_follow(&mut options);
+            let mut file = options
+                .open(path)
+                .map_err(|error| schema_snapshot_io_error("open schema snapshot", path, error))?;
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)
+                .map_err(|error| schema_snapshot_io_error("read schema snapshot", path, error))?;
+            Ok(Some(bytes))
+        }
+        Ok(_) => Err(CdfError::data(format!(
+            "schema snapshot {} is not a real file",
+            path.display()
+        ))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotADirectory
+                || cdf_kernel::is_filesystem_loop(&error) =>
+        {
+            Err(CdfError::data(format!(
+                "schema snapshot {} has an invalid filesystem shape: {error}",
+                path.display()
+            )))
+        }
+        Err(error) => Err(schema_snapshot_io_error(
+            "inspect schema snapshot",
+            path,
+            error,
+        )),
+    }
+}
+
+#[cfg(unix)]
+fn configure_schema_snapshot_no_follow(options: &mut OpenOptions) {
+    use std::os::unix::fs::OpenOptionsExt;
+    options.custom_flags(libc::O_NOFOLLOW);
+}
+
+#[cfg(not(unix))]
+fn configure_schema_snapshot_no_follow(_options: &mut OpenOptions) {}
+
+fn schema_snapshot_io_error(action: &str, path: &Path, error: std::io::Error) -> CdfError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::data(format!("{action} {}: {error}", path.display()))
+    } else {
+        CdfError::environment(format!(
+            "{action} {}: {error}; check project-path permissions, free space, device availability, and process file limits before retrying",
+            path.display()
+        ))
+    }
+}
+
+fn schema_snapshot_private_io_error(action: &str, path: &Path, error: std::io::Error) -> CdfError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+            | std::io::ErrorKind::AlreadyExists
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::internal(format!(
+            "{action} at CDF-managed schema snapshot scratch path {}: {error}",
+            path.display()
+        ))
+    } else {
+        CdfError::environment(format!(
+            "{action} {}: {error}; check project-path permissions, free space, device availability, and process file limits before retrying",
+            path.display()
+        ))
+    }
 }
 
 pub fn schema_snapshot_relative_path(
@@ -1196,5 +1508,73 @@ fn validate_snapshot_reference_path(path: &str) -> Result<()> {
         _ => Err(CdfError::contract(format!(
             "schema snapshot reference path `{path}` must match {SCHEMA_SNAPSHOT_DIR}/<resource>@<hash>.json"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod atomic_install_tests {
+    use std::sync::{Arc, Barrier};
+
+    use super::*;
+
+    #[test]
+    fn concurrent_snapshot_install_is_atomic_no_clobber_and_cleans_temporaries() {
+        let temp = tempfile::tempdir().unwrap();
+        let identical_path = temp.path().join("identical.json");
+        let barrier = Arc::new(Barrier::new(3));
+        let handles = (0..2)
+            .map(|_| {
+                let path = identical_path.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    install_schema_snapshot(&path, b"identical")
+                })
+            })
+            .collect::<Vec<_>>();
+        barrier.wait();
+        let outcomes = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(outcomes.iter().filter(|installed| **installed).count(), 1);
+        assert_eq!(fs::read(&identical_path).unwrap(), b"identical");
+
+        let conflicting_path = temp.path().join("conflicting.json");
+        let barrier = Arc::new(Barrier::new(3));
+        let handles = [b"first".as_slice(), b"second".as_slice()]
+            .into_iter()
+            .map(|bytes| {
+                let path = conflicting_path.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    install_schema_snapshot(&path, bytes)
+                })
+            })
+            .collect::<Vec<_>>();
+        barrier.wait();
+        let results = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert!(
+            results
+                .iter()
+                .find_map(|result| result.as_ref().err())
+                .unwrap()
+                .message
+                .contains("raced with different bytes")
+        );
+        let installed = fs::read(&conflicting_path).unwrap();
+        assert!(installed == b"first" || installed == b"second");
+        assert!(fs::read_dir(temp.path()).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")
+        }));
     }
 }

@@ -156,6 +156,7 @@ impl BackfillSliceExecutor<'_> {
                     plan: engine_plan,
                     package_root: self.context.package_root(),
                     state_store_path: self.context.state_store_path()?,
+                    state_store_path_ownership: self.context.state_store_path_ownership(),
                     pipeline_id: self.pipeline_id.clone(),
                     package_id: slice.package_id.clone(),
                     checkpoint_id: slice.checkpoint_id()?,

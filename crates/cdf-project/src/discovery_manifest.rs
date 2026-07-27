@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::{Component, Path, PathBuf},
     process,
     sync::atomic::{AtomicU64, Ordering},
@@ -612,34 +612,30 @@ impl DiscoveryManifestStore {
         artifact.validate()?;
         let path = self.project_root.join(&artifact.path);
         let encoded = artifact.canonical_bytes()?;
-        match fs::read(&path) {
-            Ok(existing) if existing == encoded => return Ok(false),
-            Ok(_) => {
+        self.ensure_managed_manifest_parent(&path)?;
+        match read_discovery_manifest_file(&path)? {
+            Some(existing) if existing == encoded => {
+                let parent = path.parent().ok_or_else(|| {
+                    CdfError::internal(format!("manifest path {} has no parent", path.display()))
+                })?;
+                sync_parent_directory(parent)?;
+                self.sync_manifest_directory_ancestry(&path)?;
+                return Ok(false);
+            }
+            Some(_) => {
                 return Err(CdfError::data(format!(
                     "discovery manifest content-addressed path {} already contains different bytes",
                     path.display()
                 )));
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(CdfError::data(format!(
-                    "read {} before discovery manifest write: {error}",
-                    path.display()
-                )));
-            }
+            None => {}
         }
-        let parent = path.parent().ok_or_else(|| {
-            CdfError::internal(format!(
-                "discovery manifest path {} has no parent",
-                path.display()
-            ))
-        })?;
-        fs::create_dir_all(parent)
-            .map_err(|error| CdfError::data(format!("create {}: {error}", parent.display())))?;
-        Ok(matches!(
+        let installed = matches!(
             atomic_write_new(&path, &encoded)?,
             AtomicInstallOutcome::Installed
-        ))
+        );
+        self.sync_manifest_directory_ancestry(&path)?;
+        Ok(installed)
     }
 
     pub fn read(
@@ -647,8 +643,13 @@ impl DiscoveryManifestStore {
         reference: &DiscoveryManifestReference,
     ) -> Result<DiscoveryManifestArtifact> {
         let path = self.artifact_path(reference)?;
-        let bytes = fs::read(&path)
-            .map_err(|error| CdfError::data(format!("read {}: {error}", path.display())))?;
+        self.validate_managed_manifest_parent(&path)?;
+        let bytes = read_discovery_manifest_file(&path)?.ok_or_else(|| {
+            CdfError::data(format!(
+                "discovery manifest {} does not exist",
+                path.display()
+            ))
+        })?;
         let artifact = serde_json::from_slice::<DiscoveryManifestArtifact>(&bytes)
             .map_err(|error| CdfError::data(format!("parse {}: {error}", path.display())))?;
         artifact.validate()?;
@@ -659,6 +660,107 @@ impl DiscoveryManifestStore {
             )));
         }
         Ok(artifact)
+    }
+
+    fn ensure_managed_manifest_parent(&self, path: &Path) -> Result<()> {
+        self.walk_managed_manifest_parent(path, true).map(|_| ())
+    }
+
+    fn validate_managed_manifest_parent(&self, path: &Path) -> Result<()> {
+        if self.walk_managed_manifest_parent(path, false)? {
+            Ok(())
+        } else {
+            Err(CdfError::data(format!(
+                "discovery manifest parent for {} does not exist",
+                path.display()
+            )))
+        }
+    }
+
+    fn walk_managed_manifest_parent(&self, path: &Path, create: bool) -> Result<bool> {
+        let relative = path.strip_prefix(&self.project_root).map_err(|_| {
+            CdfError::internal(format!(
+                "discovery manifest path {} escapes project root {}",
+                path.display(),
+                self.project_root.display()
+            ))
+        })?;
+        let relative_parent = relative.parent().ok_or_else(|| {
+            CdfError::internal(format!(
+                "discovery manifest path {} has no relative parent",
+                path.display()
+            ))
+        })?;
+        let mut current = self.project_root.clone();
+        for component in relative_parent.components() {
+            current.push(component.as_os_str());
+            match fs::symlink_metadata(&current) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+                Ok(_) => {
+                    return Err(CdfError::data(format!(
+                        "discovery manifest ancestor {} is not a real directory",
+                        current.display()
+                    )));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound && !create => {
+                    return Ok(false);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    match fs::create_dir(&current) {
+                        Ok(()) => {}
+                        Err(create_error)
+                            if create_error.kind() == std::io::ErrorKind::AlreadyExists =>
+                        {
+                            let metadata = fs::symlink_metadata(&current).map_err(|error| {
+                                discovery_manifest_artifact_io_error(
+                                    "revalidate discovery manifest ancestor",
+                                    &current,
+                                    error,
+                                )
+                            })?;
+                            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                                return Err(CdfError::data(format!(
+                                    "discovery manifest ancestor {} changed to a non-directory or symlink during creation",
+                                    current.display()
+                                )));
+                            }
+                        }
+                        Err(create_error) => {
+                            return Err(discovery_manifest_artifact_io_error(
+                                "create discovery manifest ancestor",
+                                &current,
+                                create_error,
+                            ));
+                        }
+                    }
+                }
+                Err(error) => {
+                    return Err(discovery_manifest_artifact_io_error(
+                        "inspect discovery manifest ancestor",
+                        &current,
+                        error,
+                    ));
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    fn sync_manifest_directory_ancestry(&self, path: &Path) -> Result<()> {
+        let parent = path.parent().ok_or_else(|| {
+            CdfError::internal(format!("manifest path {} has no parent", path.display()))
+        })?;
+        crate::project_files::sync_directory_ancestry_through_root(
+            parent,
+            &self.project_root,
+            |directory, error| {
+                discovery_manifest_artifact_io_error(
+                    "sync discovery manifest directory ancestry",
+                    directory,
+                    error,
+                )
+            },
+        )
     }
 }
 
@@ -1047,6 +1149,34 @@ enum AtomicInstallOutcome {
     IdenticalExisting,
 }
 
+fn read_discovery_manifest_file(path: &Path) -> Result<Option<Vec<u8>>> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+            let mut options = OpenOptions::new();
+            options.read(true);
+            configure_discovery_manifest_no_follow(&mut options);
+            let mut file = options.open(path).map_err(|error| {
+                discovery_manifest_artifact_io_error("open discovery manifest", path, error)
+            })?;
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).map_err(|error| {
+                discovery_manifest_artifact_io_error("read discovery manifest", path, error)
+            })?;
+            Ok(Some(bytes))
+        }
+        Ok(_) => Err(CdfError::data(format!(
+            "discovery manifest {} is not a real file",
+            path.display()
+        ))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(discovery_manifest_artifact_io_error(
+            "inspect discovery manifest",
+            path,
+            error,
+        )),
+    }
+}
+
 fn atomic_write_new(path: &Path, bytes: &[u8]) -> Result<AtomicInstallOutcome> {
     let file_name = path
         .file_name()
@@ -1062,23 +1192,43 @@ fn atomic_write_new(path: &Path, bytes: &[u8]) -> Result<AtomicInstallOutcome> {
             .create_new(true)
             .write(true)
             .open(&temporary)
-            .map_err(|error| CdfError::data(format!("create {}: {error}", temporary.display())))?;
-        file.write_all(bytes)
-            .map_err(|error| CdfError::data(format!("write {}: {error}", temporary.display())))?;
-        file.sync_all()
-            .map_err(|error| CdfError::data(format!("sync {}: {error}", temporary.display())))?;
+            .map_err(|error| {
+                discovery_manifest_private_io_error(
+                    "create discovery manifest temporary file",
+                    &temporary,
+                    error,
+                )
+            })?;
+        file.write_all(bytes).map_err(|error| {
+            discovery_manifest_private_io_error(
+                "write discovery manifest temporary file",
+                &temporary,
+                error,
+            )
+        })?;
+        file.sync_all().map_err(|error| {
+            discovery_manifest_private_io_error(
+                "sync discovery manifest temporary file",
+                &temporary,
+                error,
+            )
+        })?;
         match fs::hard_link(&temporary, path) {
             Ok(()) => {
                 fs::remove_file(&temporary).map_err(|error| {
-                    CdfError::data(format!("remove {}: {error}", temporary.display()))
+                    discovery_manifest_private_io_error(
+                        "remove discovery manifest temporary file",
+                        &temporary,
+                        error,
+                    )
                 })?;
                 sync_parent_directory(parent)?;
                 Ok(AtomicInstallOutcome::Installed)
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let existing = fs::read(path).map_err(|read_error| {
+                let existing = read_discovery_manifest_file(path)?.ok_or_else(|| {
                     CdfError::data(format!(
-                        "read concurrently installed discovery manifest {}: {read_error}",
+                        "concurrently installed discovery manifest {} disappeared",
                         path.display()
                     ))
                 })?;
@@ -1088,12 +1238,14 @@ fn atomic_write_new(path: &Path, bytes: &[u8]) -> Result<AtomicInstallOutcome> {
                         path.display()
                     )));
                 }
+                sync_parent_directory(parent)?;
                 Ok(AtomicInstallOutcome::IdenticalExisting)
             }
-            Err(error) => Err(CdfError::data(format!(
-                "atomically install discovery manifest {} without replacement: {error}; the target filesystem must support same-directory hard links",
-                path.display()
-            ))),
+            Err(error) => Err(discovery_manifest_artifact_io_error(
+                "atomically install discovery manifest without replacement",
+                path,
+                error,
+            )),
         }
     })();
     let _ = fs::remove_file(&temporary);
@@ -1104,7 +1256,13 @@ fn atomic_write_new(path: &Path, bytes: &[u8]) -> Result<AtomicInstallOutcome> {
 fn sync_parent_directory(parent: &Path) -> Result<()> {
     fs::File::open(parent)
         .and_then(|directory| directory.sync_all())
-        .map_err(|error| CdfError::data(format!("sync {}: {error}", parent.display())))
+        .map_err(|error| {
+            discovery_manifest_artifact_io_error(
+                "sync discovery manifest parent directory",
+                parent,
+                error,
+            )
+        })
 }
 
 #[cfg(not(unix))]
@@ -1112,6 +1270,63 @@ fn sync_parent_directory(_parent: &Path) -> Result<()> {
     // std does not expose portable directory handles. The temporary file is
     // synced before publication, and hard-link creation remains no-clobber.
     Ok(())
+}
+
+#[cfg(unix)]
+fn configure_discovery_manifest_no_follow(options: &mut OpenOptions) {
+    use std::os::unix::fs::OpenOptionsExt;
+    options.custom_flags(libc::O_NOFOLLOW);
+}
+
+#[cfg(not(unix))]
+fn configure_discovery_manifest_no_follow(_options: &mut OpenOptions) {}
+
+fn discovery_manifest_artifact_io_error(
+    action: &str,
+    path: &Path,
+    error: std::io::Error,
+) -> CdfError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+            | std::io::ErrorKind::AlreadyExists
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::data(format!("{action} {}: {error}", path.display()))
+    } else {
+        CdfError::environment(format!(
+            "{action} {}: {error}; check project-path permissions, free space, device availability, and process file limits before retrying",
+            path.display()
+        ))
+    }
+}
+
+fn discovery_manifest_private_io_error(
+    action: &str,
+    path: &Path,
+    error: std::io::Error,
+) -> CdfError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+            | std::io::ErrorKind::AlreadyExists
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::internal(format!("{action} {}: {error}", path.display()))
+    } else {
+        CdfError::environment(format!(
+            "{action} {}: {error}; check project-path permissions, free space, device availability, and process file limits before retrying",
+            path.display()
+        ))
+    }
 }
 
 fn ensure_single_path_component(value: &str, label: &str) -> Result<()> {

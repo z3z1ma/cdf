@@ -42,7 +42,10 @@ pub(super) fn recover(
     )?;
     let destination_report = destination.report().clone();
     let state_store_path = package.project.state_store_path()?;
-    ensure_parent_directory(&state_store_path)?;
+    ensure_parent_directory(
+        &state_store_path,
+        package.project.state_store_path_ownership(),
+    )?;
     let store = package.project.state_store()?;
     let proposed_by_cli = ensure_recovery_checkpoint_proposed(&store, &package.inputs.state_delta)?;
     let report =

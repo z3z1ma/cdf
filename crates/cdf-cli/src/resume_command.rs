@@ -5,7 +5,7 @@ mod model;
 mod report;
 
 use cdf_kernel::{CdfError, RunEventSink, RunId};
-use cdf_state_sqlite::SqliteRunLedger;
+use cdf_state_sqlite::{SqliteErrorContext, SqliteRunLedger, classify_sqlite_error};
 use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 
@@ -32,7 +32,8 @@ pub(crate) fn resume(
 ) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
     let state_path = context.state_store_path()?;
-    if !state_path.exists() {
+    let state_path_ownership = context.state_store_path_ownership();
+    if !cdf_state_sqlite::database_path_exists(&state_path, state_path_ownership)? {
         return Err(CliError::mapped(
             CdfError::data(format!(
                 "run ledger state database {} is missing",
@@ -43,7 +44,7 @@ pub(crate) fn resume(
     }
     let run_id = match args.run_id {
         Some(run_id) => RunId::new(run_id)?,
-        None => match select_resume_run(&state_path)? {
+        None => match select_resume_run(&state_path, state_path_ownership)? {
             ResumeSelection::None => return no_interrupted_runs_report(),
             ResumeSelection::One(run_id) => run_id,
             ResumeSelection::Many(run_ids) => {
@@ -65,6 +66,7 @@ pub(crate) fn resume(
         destinations,
         &context,
         &state_path,
+        state_path_ownership,
         run_id,
         cli,
         &execution,
@@ -76,12 +78,13 @@ fn resume_run(
     destinations: &cdf_runtime::DestinationRegistry,
     context: &ProjectContext,
     state_path: &std::path::Path,
+    state_path_ownership: cdf_state_sqlite::StateStorePathOwnership,
     run_id: RunId,
     cli: &Cli,
     execution: &cdf_runtime::ExecutionServices,
     progress_delivery: ProgressDelivery,
 ) -> Result<CommandOutput, CliError> {
-    let run_ledger = SqliteRunLedger::open(state_path)?;
+    let run_ledger = SqliteRunLedger::open_with_path_ownership(state_path, state_path_ownership)?;
     let snapshot = run_ledger.snapshot(&run_id)?.ok_or_else(|| {
         CdfError::data(format!(
             "run {} is not present in the selected environment run ledger",
@@ -107,8 +110,8 @@ fn resume_run(
     match outcome {
         Ok(report) => finish_resume_report(report, progress.map(CliProgressSink::finish)),
         Err(error) => {
-            let report = attempt.fail_closed("recovery_failed", "fail_closed", error.message);
-            let _ = attempt.append_run_failed(&report);
+            let report = attempt.fail_closed("recovery_failed", "fail_closed", error.message)?;
+            attempt.append_run_failed(&report)?;
             finish_resume_report(report, progress.map(CliProgressSink::finish))
         }
     }
@@ -120,10 +123,18 @@ enum ResumeSelection {
     Many(Vec<String>),
 }
 
-fn select_resume_run(state_path: &std::path::Path) -> Result<ResumeSelection, CliError> {
-    let _ = SqliteRunLedger::open_read_only(state_path)?;
-    let conn = Connection::open_with_flags(state_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|error| CdfError::data(format!("open run ledger read-only: {error}")))?;
+fn select_resume_run(
+    state_path: &std::path::Path,
+    ownership: cdf_state_sqlite::StateStorePathOwnership,
+) -> Result<ResumeSelection, CliError> {
+    SqliteRunLedger::open_read_only_with_path_ownership(state_path, ownership)?
+        .validate_integrity()?;
+    let open_path = cdf_state_sqlite::database_open_path(state_path, ownership)?;
+    let conn = Connection::open_with_flags(
+        open_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+    .map_err(|error| resume_sqlite_error("open run ledger read-only", error))?;
     let mut stmt = conn
         .prepare(
             "
@@ -139,18 +150,39 @@ fn select_resume_run(state_path: &std::path::Path) -> Result<ResumeSelection, Cl
             ORDER BY r.created_at_ms, r.run_id
             ",
         )
-        .map_err(|error| CdfError::data(format!("prepare interrupted-run scan: {error}")))?;
+        .map_err(|error| resume_sqlite_error("prepare interrupted-run scan", error))?;
     let rows = stmt
         .query_map([], |row| row.get::<_, String>(0))
-        .map_err(|error| CdfError::data(format!("scan interrupted runs: {error}")))?;
-    let run_ids = rows
+        .map_err(|error| resume_sqlite_error("scan interrupted runs", error))?;
+    let raw_run_ids = rows
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| CdfError::data(format!("read interrupted run id: {error}")))?;
+        .map_err(|error| resume_sqlite_error("read interrupted run id", error))?;
+    let run_ids = raw_run_ids
+        .into_iter()
+        .map(|run_id| {
+            RunId::new(run_id).map_err(|error| {
+                CdfError::internal(format!(
+                    "decode CDF-managed interrupted run id: {}",
+                    error.message
+                ))
+                .into()
+            })
+        })
+        .collect::<Result<Vec<_>, CliError>>()?;
     match run_ids.as_slice() {
         [] => Ok(ResumeSelection::None),
-        [run_id] => Ok(ResumeSelection::One(RunId::new(run_id.clone())?)),
-        _ => Ok(ResumeSelection::Many(run_ids)),
+        [run_id] => Ok(ResumeSelection::One(run_id.clone())),
+        _ => Ok(ResumeSelection::Many(
+            run_ids
+                .into_iter()
+                .map(|run_id| run_id.to_string())
+                .collect(),
+        )),
     }
+}
+
+fn resume_sqlite_error(action: &str, error: rusqlite::Error) -> CliError {
+    classify_sqlite_error(SqliteErrorContext::ManagedState, action, error).into()
 }
 
 #[derive(Serialize)]

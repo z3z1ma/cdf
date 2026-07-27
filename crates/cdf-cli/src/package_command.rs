@@ -97,10 +97,11 @@ fn package_gc_plan(
 
 fn committed_package_hashes(context: &ProjectContext) -> Result<BTreeSet<PackageHash>, CliError> {
     let path = context.state_store_path()?;
-    if !path.exists() {
+    let ownership = context.state_store_path_ownership();
+    if !cdf_state_sqlite::database_path_exists(&path, ownership)? {
         return Ok(BTreeSet::new());
     }
-    SqliteCheckpointStore::open_read_only(path)?
+    SqliteCheckpointStore::open_read_only_with_path_ownership(path, ownership)?
         .committed_package_hashes()
         .map_err(CliError::from)
 }
@@ -111,13 +112,13 @@ fn plan_package_gc_artifacts(
 ) -> Result<Vec<PackageGcArtifact>, CliError> {
     let mut artifacts = Vec::new();
     let mut readable_hashes = BTreeSet::new();
-    if root.exists() {
+    if package_root_is_directory(root)? {
         for entry in sorted_child_entries(root)? {
             let path = entry.path();
-            if !path.is_dir() {
+            if !package_entry_is_directory(&entry)? {
                 continue;
             }
-            let artifact = classify_package_artifact(&path, protected_hashes);
+            let artifact = classify_package_artifact(&path, protected_hashes)?;
             if let Some(hash) = artifact.package_hash.as_deref() {
                 readable_hashes.insert(hash.to_owned());
             }
@@ -155,46 +156,79 @@ fn plan_package_gc_artifacts(
 fn classify_package_artifact(
     package_dir: &Path,
     protected_hashes: &BTreeSet<PackageHash>,
-) -> PackageGcArtifact {
+) -> Result<PackageGcArtifact, CliError> {
     let package_path = Some(package_dir.display().to_string());
-    if !package_dir.join(MANIFEST_FILE).exists() {
-        return PackageGcArtifact {
-            package_path,
-            package_hash: None,
-            classification: PackageGcClassification::Corrupt,
-            retention_reason: "manifest_missing",
-            planned_action: PackageGcPlannedAction::Retain,
-        };
-    }
-
-    let manifest = match cdf_package::read_manifest_header(package_dir) {
-        Ok(manifest) => manifest,
-        Err(_) => {
-            return PackageGcArtifact {
+    let manifest_path = package_dir.join(MANIFEST_FILE);
+    match fs::symlink_metadata(&manifest_path) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => {
+            return Ok(PackageGcArtifact {
                 package_path,
                 package_hash: None,
                 classification: PackageGcClassification::Corrupt,
                 retention_reason: "manifest_unreadable",
                 planned_action: PackageGcPlannedAction::Retain,
-            };
+            });
         }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(PackageGcArtifact {
+                package_path,
+                package_hash: None,
+                classification: PackageGcClassification::Corrupt,
+                retention_reason: "manifest_missing",
+                planned_action: PackageGcPlannedAction::Retain,
+            });
+        }
+        Err(error) if package_artifact_shape_error(&error) => {
+            return Ok(PackageGcArtifact {
+                package_path,
+                package_hash: None,
+                classification: PackageGcClassification::Corrupt,
+                retention_reason: "manifest_unreadable",
+                planned_action: PackageGcPlannedAction::Retain,
+            });
+        }
+        Err(error) => {
+            return Err(package_artifact_host_error(
+                "inspect package manifest",
+                &manifest_path,
+                error,
+            ));
+        }
+    }
+
+    let manifest = match cdf_package::read_manifest_header(package_dir) {
+        Ok(manifest) => manifest,
+        Err(error) if error.kind == cdf_kernel::ErrorKind::Data => {
+            return Ok(PackageGcArtifact {
+                package_path,
+                package_hash: None,
+                classification: PackageGcClassification::Corrupt,
+                retention_reason: "manifest_unreadable",
+                planned_action: PackageGcPlannedAction::Retain,
+            });
+        }
+        Err(error) => return Err(error.into()),
     };
     let package_hash = Some(manifest.package_hash.clone());
 
     if manifest.lifecycle.status == PackageStatus::Archived {
-        return PackageGcArtifact {
+        return Ok(PackageGcArtifact {
             package_path,
             package_hash,
             classification: PackageGcClassification::Protected,
             retention_reason: "retention_tombstone",
             planned_action: PackageGcPlannedAction::Retain,
-        };
+        });
     }
 
     let protected_by_checkpoint = PackageHash::new(manifest.package_hash.clone())
         .is_ok_and(|hash| protected_hashes.contains(&hash));
-    if cdf_package::verify_package(package_dir).is_err() {
-        return PackageGcArtifact {
+    if let Err(error) = cdf_package::verify_package(package_dir) {
+        if error.kind != cdf_kernel::ErrorKind::Data {
+            return Err(error.into());
+        }
+        return Ok(PackageGcArtifact {
             package_path,
             package_hash,
             classification: PackageGcClassification::Corrupt,
@@ -204,59 +238,60 @@ fn classify_package_artifact(
                 "verification_failed"
             },
             planned_action: PackageGcPlannedAction::Retain,
-        };
+        });
     }
 
     if protected_by_checkpoint {
-        return PackageGcArtifact {
+        return Ok(PackageGcArtifact {
             package_path,
             package_hash,
             classification: PackageGcClassification::Protected,
             retention_reason: "committed_checkpoint",
             planned_action: PackageGcPlannedAction::Retain,
-        };
+        });
     }
     match cdf_package::PackageReader::open(package_dir).and_then(|reader| reader.receipt_count()) {
         Ok(count) if count != 0 => {
-            return PackageGcArtifact {
+            return Ok(PackageGcArtifact {
                 package_path,
                 package_hash,
                 classification: PackageGcClassification::Protected,
                 retention_reason: "package_receipt",
                 planned_action: PackageGcPlannedAction::Retain,
-            };
+            });
         }
         Ok(_) => {}
-        Err(_) => {
-            return PackageGcArtifact {
+        Err(error) if error.kind == cdf_kernel::ErrorKind::Data => {
+            return Ok(PackageGcArtifact {
                 package_path,
                 package_hash,
                 classification: PackageGcClassification::Corrupt,
                 retention_reason: "receipt_unreadable",
                 planned_action: PackageGcPlannedAction::Retain,
-            };
+            });
         }
+        Err(error) => return Err(error.into()),
     }
 
     if matches!(
         manifest.lifecycle.status,
         PackageStatus::Planned | PackageStatus::Extracting | PackageStatus::Validated
     ) {
-        PackageGcArtifact {
+        Ok(PackageGcArtifact {
             package_path,
             package_hash,
             classification: PackageGcClassification::Collectible,
             retention_reason: "pre_packaged_artifact",
             planned_action: PackageGcPlannedAction::WouldCollect,
-        }
+        })
     } else {
-        PackageGcArtifact {
+        Ok(PackageGcArtifact {
             package_path,
             package_hash,
             classification: PackageGcClassification::Retained,
             retention_reason: "replay_or_recovery_artifact",
             planned_action: PackageGcPlannedAction::Retain,
-        }
+        })
     }
 }
 
@@ -285,50 +320,221 @@ fn package_archive(args: PackageArchiveArgs) -> Result<CommandOutput, CliError> 
 }
 
 fn list_packages(root: PathBuf) -> Result<Vec<PackageListEntry>, CliError> {
-    if !root.exists() {
+    if !package_root_is_directory(&root)? {
         return Ok(Vec::new());
     }
 
     let mut packages = Vec::new();
     for entry in sorted_child_entries(&root)? {
         let path = entry.path();
-        if path.join(MANIFEST_FILE).exists() {
-            let mut segments = 0_u64;
-            let manifest =
-                cdf_package::visit_manifest_entries(&path, &mut |_| Ok(()), &mut |_| {
-                    segments = segments
-                        .checked_add(1)
-                        .ok_or_else(|| CdfError::data("package segment count overflowed u64"))?;
-                    Ok(())
-                })?;
-            packages.push(PackageListEntry {
-                path: path.display().to_string(),
-                package_hash: manifest.package_hash,
-                status: manifest.lifecycle.status.as_str().to_owned(),
-                segments,
-            });
+        if !package_entry_is_directory(&entry)? {
+            continue;
+        }
+        let manifest_path = path.join(MANIFEST_FILE);
+        match fs::symlink_metadata(&manifest_path) {
+            Ok(metadata) if metadata.is_file() => {
+                let mut segments = 0_u64;
+                let manifest =
+                    cdf_package::visit_manifest_entries(&path, &mut |_| Ok(()), &mut |_| {
+                        segments = segments.checked_add(1).ok_or_else(|| {
+                            CdfError::data("package segment count overflowed u64")
+                        })?;
+                        Ok(())
+                    })?;
+                packages.push(PackageListEntry {
+                    path: path.display().to_string(),
+                    package_hash: manifest.package_hash,
+                    status: manifest.lifecycle.status.as_str().to_owned(),
+                    segments,
+                });
+            }
+            Ok(_) => {
+                return Err(CliError::mapped(
+                    CdfError::data(format!(
+                        "package manifest {} is not a real regular file",
+                        manifest_path.display()
+                    )),
+                    error_catalog::PACKAGE_ARTIFACT,
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) if package_artifact_shape_error(&error) => {
+                return Err(CliError::mapped(
+                    CdfError::data(format!(
+                        "package manifest {} has an invalid filesystem shape: {error}",
+                        manifest_path.display()
+                    )),
+                    error_catalog::PACKAGE_ARTIFACT,
+                ));
+            }
+            Err(error) => {
+                return Err(package_artifact_host_error(
+                    "inspect package manifest",
+                    &manifest_path,
+                    error,
+                ));
+            }
         }
     }
     Ok(packages)
 }
 
+fn package_root_is_directory(root: &Path) -> Result<bool, CliError> {
+    match fs::symlink_metadata(root) {
+        Ok(metadata) if metadata.is_dir() => Ok(true),
+        Ok(_) => Err(CliError::mapped(
+            CdfError::data(format!(
+                "package root {} is not a real directory",
+                root.display()
+            )),
+            error_catalog::PACKAGE_ARTIFACT,
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            validate_missing_package_root_ancestors(root)?;
+            Ok(false)
+        }
+        Err(error) if package_artifact_shape_error(&error) => Err(CliError::mapped(
+            CdfError::data(format!(
+                "package root {} has an invalid filesystem shape: {error}",
+                root.display()
+            )),
+            error_catalog::PACKAGE_ARTIFACT,
+        )),
+        Err(error) => Err(package_artifact_host_error(
+            "inspect package root",
+            root,
+            error,
+        )),
+    }
+}
+
+fn validate_missing_package_root_ancestors(root: &Path) -> Result<(), CliError> {
+    let mut cursor = root.parent();
+    while let Some(parent) = cursor {
+        if parent.as_os_str().is_empty() {
+            return Ok(());
+        }
+        match fs::metadata(parent) {
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(CliError::mapped(
+                    CdfError::data(format!(
+                        "package root ancestor {} is not a real directory",
+                        parent.display()
+                    )),
+                    error_catalog::PACKAGE_ARTIFACT,
+                ));
+            }
+            Ok(_) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match fs::symlink_metadata(parent) {
+                    Ok(metadata) if metadata.file_type().is_symlink() => {
+                        return Err(CliError::mapped(
+                            CdfError::data(format!(
+                                "package root ancestor {} is a dangling symlink",
+                                parent.display()
+                            )),
+                            error_catalog::PACKAGE_ARTIFACT,
+                        ));
+                    }
+                    Ok(_) => {
+                        return Err(CliError::mapped(
+                            CdfError::data(format!(
+                                "package root ancestor {} changed filesystem shape during inspection",
+                                parent.display()
+                            )),
+                            error_catalog::PACKAGE_ARTIFACT,
+                        ));
+                    }
+                    Err(link_error) if link_error.kind() == std::io::ErrorKind::NotFound => {
+                        cursor = parent.parent();
+                    }
+                    Err(link_error) => {
+                        return Err(package_artifact_host_error(
+                            "inspect package root ancestor",
+                            parent,
+                            link_error,
+                        ));
+                    }
+                }
+            }
+            Err(error) if package_artifact_shape_error(&error) => {
+                return Err(CliError::mapped(
+                    CdfError::data(format!(
+                        "package root ancestor {} has an invalid filesystem shape: {error}",
+                        parent.display()
+                    )),
+                    error_catalog::PACKAGE_ARTIFACT,
+                ));
+            }
+            Err(error) => {
+                return Err(package_artifact_host_error(
+                    "inspect package root ancestor",
+                    parent,
+                    error,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn package_entry_is_directory(entry: &fs::DirEntry) -> Result<bool, CliError> {
+    let kind = entry.file_type().map_err(|error| {
+        package_artifact_io_error("inspect package-root entry", &entry.path(), error)
+    })?;
+    if kind.is_symlink() {
+        return Err(CliError::mapped(
+            CdfError::data(format!(
+                "package-root entry {} is a symlink; package artifacts must be real directories beneath the configured package root",
+                entry.path().display()
+            )),
+            error_catalog::PACKAGE_ARTIFACT,
+        ));
+    }
+    Ok(kind.is_dir())
+}
+
 fn sorted_child_entries(root: &Path) -> Result<Vec<fs::DirEntry>, CliError> {
     let mut entries = fs::read_dir(root)
-        .map_err(|error| {
-            CliError::mapped(
-                CdfError::data(format!("read {}: {error}", root.display())),
-                error_catalog::PACKAGE_ARTIFACT,
-            )
-        })?
+        .map_err(|error| package_artifact_io_error("read package root", root, error))?
         .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|error| {
-            CliError::mapped(
-                CdfError::data(format!("read {}: {error}", root.display())),
-                error_catalog::PACKAGE_ARTIFACT,
-            )
-        })?;
+        .map_err(|error| package_artifact_io_error("read package-root entry", root, error))?;
     entries.sort_by_key(|entry| entry.path());
     Ok(entries)
+}
+
+fn package_artifact_shape_error(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidInput
+            | std::io::ErrorKind::InvalidData
+    ) || cdf_kernel::is_filesystem_loop(error)
+}
+
+fn package_artifact_io_error(action: &str, path: &Path, error: std::io::Error) -> CliError {
+    if package_artifact_shape_error(&error) {
+        CliError::mapped(
+            CdfError::data(format!(
+                "{action} {} with invalid filesystem shape: {error}",
+                path.display()
+            )),
+            error_catalog::PACKAGE_ARTIFACT,
+        )
+    } else {
+        package_artifact_host_error(action, path, error)
+    }
+}
+
+fn package_artifact_host_error(action: &str, path: &Path, error: std::io::Error) -> CliError {
+    CdfError::environment(format!(
+        "{action} {}: {error}; check package-path permissions, device availability, free space, and process file limits before retrying",
+        path.display()
+    ))
+    .into()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

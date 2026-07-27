@@ -354,18 +354,7 @@ fn inspect_destinations_document(
                     "environment",
                     redact_uri_userinfo(&context.environment.destination),
                 )
-                .row(
-                    "runtime",
-                    serde_json::to_value(runtime)
-                        .ok()
-                        .and_then(|value| {
-                            value
-                                .get("kind")
-                                .and_then(|kind| kind.as_str())
-                                .map(str::to_owned)
-                        })
-                        .unwrap_or_else(|| "unknown".to_owned()),
-                )
+                .row("runtime", runtime.kind.clone())
                 .row(
                     "locked",
                     context

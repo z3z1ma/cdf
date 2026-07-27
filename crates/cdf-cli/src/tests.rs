@@ -13079,6 +13079,33 @@ fn package_ls_json_remains_array_while_human_uses_renderer() {
     assert!(human.stdout.contains("Next: cdf package verify <package>"));
 }
 
+#[cfg(unix)]
+#[test]
+fn package_ls_rejects_symlink_entries_instead_of_following_or_skipping_them() {
+    use std::os::unix::fs::symlink;
+
+    let package_root = TempDir::new("cdf-cli-package-ls-symlink");
+    let outside = TempDir::new("cdf-cli-package-ls-outside");
+    build_archive_cli_package(outside.path(), "outside-package");
+    symlink(
+        outside.path().join("outside-package"),
+        package_root.path().join("linked-package"),
+    )
+    .unwrap();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "package",
+        "ls",
+        package_root.path().to_str().unwrap(),
+    ]);
+
+    assert_ne!(result.exit_code, 0);
+    assert!(result.stderr.contains("symlink"), "{}", result.stderr);
+    assert!(!result.stdout.contains("outside-package"));
+}
+
 #[test]
 fn package_gc_plans_retention_from_packages_and_checkpoint_history() {
     let project = TestProject::new();

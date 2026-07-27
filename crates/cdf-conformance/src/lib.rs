@@ -16,6 +16,35 @@ pub mod runtime_chaos;
 pub mod scope_lease;
 mod source_fixture;
 
+pub(crate) fn conformance_host_error(
+    action: &str,
+    error: impl std::fmt::Display,
+) -> cdf_kernel::CdfError {
+    cdf_kernel::CdfError::environment(format!(
+        "{action}: {error}; check host permissions, temporary storage, device availability, executable availability, and process resource limits before retrying"
+    ))
+}
+
+pub(crate) fn conformance_private_io_error(
+    action: &str,
+    error: std::io::Error,
+) -> cdf_kernel::CdfError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+            | std::io::ErrorKind::AlreadyExists
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        cdf_kernel::CdfError::internal(format!("{action}: {error}"))
+    } else {
+        conformance_host_error(action, error)
+    }
+}
+
 #[doc(hidden)]
 pub fn test_execution_services() -> cdf_runtime::ExecutionServices {
     static SERVICES: std::sync::OnceLock<cdf_runtime::ExecutionServices> =

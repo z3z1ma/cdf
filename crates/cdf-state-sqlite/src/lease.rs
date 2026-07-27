@@ -9,12 +9,14 @@ use cdf_kernel::{
     CdfError, ExpiredScopeLeaseProof, FencingToken, LeaseAuthorityDomainId, LeaseOwnerId, Result,
     ScopeKey, ScopeLease, ScopeLeaseClock, ScopeLeaseStore,
 };
-use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params};
+use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::support::{
-    decode_json, encode_json, ensure_schema_version_table, lock_error,
-    read_component_schema_version, require_sqlite_tables, sqlite_error, sqlite_table_exists,
-    write_component_schema_version,
+    SqliteConnectionGuard, SqliteErrorContext, StateStorePathOwnership, database_open_path,
+    database_path_exists, decode_json, encode_json, ensure_schema_version_table, lock_error,
+    lock_sqlite_connection, managed_sqlite_open_flags, prepare_managed_database_path,
+    private_state_decode, read_component_schema_version, require_sqlite_tables, sqlite_error,
+    sqlite_table_exists, with_sqlite_error_context, write_component_schema_version,
 };
 
 pub(crate) const SCOPE_LEASE_COMPONENT: &str = "scope_lease_store";
@@ -171,36 +173,84 @@ pub struct SqliteScopeLeaseStore {
     conn: Mutex<Connection>,
     clock: Arc<dyn ScopeLeaseClock>,
     authority_domain_id: LeaseAuthorityDomainId,
+    error_context: SqliteErrorContext,
 }
 
 impl SqliteScopeLeaseStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Self::open_with_clock(path, Arc::new(SystemScopeLeaseClock))
+        Self::open_with_clock_and_path_ownership(
+            path,
+            Arc::new(SystemScopeLeaseClock),
+            StateStorePathOwnership::CdfManaged,
+        )
+    }
+
+    pub fn open_with_path_ownership(
+        path: impl AsRef<Path>,
+        ownership: StateStorePathOwnership,
+    ) -> Result<Self> {
+        Self::open_with_clock_and_path_ownership(path, Arc::new(SystemScopeLeaseClock), ownership)
     }
 
     pub fn open_with_clock(
         path: impl AsRef<Path>,
         clock: Arc<dyn ScopeLeaseClock>,
     ) -> Result<Self> {
-        let conn = Connection::open(path.as_ref()).map_err(sqlite_error)?;
-        initialize_schema(&conn)?;
-        let authority_domain_id = read_authority_domain_id(&conn)?;
+        Self::open_with_clock_and_path_ownership(path, clock, StateStorePathOwnership::CdfManaged)
+    }
+
+    pub fn open_with_clock_and_path_ownership(
+        path: impl AsRef<Path>,
+        clock: Arc<dyn ScopeLeaseClock>,
+        ownership: StateStorePathOwnership,
+    ) -> Result<Self> {
+        let path = path.as_ref();
+        let open_path = prepare_managed_database_path(path, ownership)?;
+        let error_context = SqliteErrorContext::ManagedState;
+        let (conn, authority_domain_id) = with_sqlite_error_context(error_context, || {
+            let conn = Connection::open_with_flags(&open_path, managed_sqlite_open_flags(false))
+                .map_err(sqlite_error)?;
+            initialize_schema(&conn)?;
+            let authority_domain_id = read_authority_domain_id(&conn)?;
+            Ok((conn, authority_domain_id))
+        })?;
         Ok(Self {
             conn: Mutex::new(conn),
             clock,
             authority_domain_id,
+            error_context,
         })
     }
 
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
-        let conn = Connection::open_with_flags(path.as_ref(), OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(sqlite_error)?;
-        validate_schema_version(&conn)?;
-        let authority_domain_id = read_authority_domain_id(&conn)?;
+        Self::open_read_only_with_path_ownership(path, StateStorePathOwnership::CdfManaged)
+    }
+
+    pub fn open_read_only_with_path_ownership(
+        path: impl AsRef<Path>,
+        ownership: StateStorePathOwnership,
+    ) -> Result<Self> {
+        let path = path.as_ref();
+        if !database_path_exists(path, ownership)? {
+            return Err(CdfError::data(format!(
+                "scope lease state database {} is missing",
+                path.display()
+            )));
+        }
+        let open_path = database_open_path(path, ownership)?;
+        let error_context = SqliteErrorContext::ManagedReadOnly;
+        let (conn, authority_domain_id) = with_sqlite_error_context(error_context, || {
+            let conn = Connection::open_with_flags(&open_path, managed_sqlite_open_flags(true))
+                .map_err(sqlite_error)?;
+            validate_schema_version(&conn)?;
+            let authority_domain_id = read_authority_domain_id(&conn)?;
+            Ok((conn, authority_domain_id))
+        })?;
         Ok(Self {
             conn: Mutex::new(conn),
             clock: Arc::new(SystemScopeLeaseClock),
             authority_domain_id,
+            error_context,
         })
     }
 
@@ -209,18 +259,23 @@ impl SqliteScopeLeaseStore {
     }
 
     pub fn open_in_memory_with_clock(clock: Arc<dyn ScopeLeaseClock>) -> Result<Self> {
-        let conn = Connection::open_in_memory().map_err(sqlite_error)?;
-        initialize_schema(&conn)?;
-        let authority_domain_id = read_authority_domain_id(&conn)?;
+        let error_context = SqliteErrorContext::EphemeralWorkspace;
+        let (conn, authority_domain_id) = with_sqlite_error_context(error_context, || {
+            let conn = Connection::open_in_memory().map_err(sqlite_error)?;
+            initialize_schema(&conn)?;
+            let authority_domain_id = read_authority_domain_id(&conn)?;
+            Ok((conn, authority_domain_id))
+        })?;
         Ok(Self {
             conn: Mutex::new(conn),
             clock,
             authority_domain_id,
+            error_context,
         })
     }
 
-    fn lock(&self) -> Result<MutexGuard<'_, Connection>> {
-        self.conn.lock().map_err(lock_error)
+    fn lock(&self) -> Result<SqliteConnectionGuard<'_>> {
+        lock_sqlite_connection(&self.conn, self.error_context)
     }
 }
 
@@ -425,7 +480,10 @@ fn read_authority_domain_id(conn: &Connection) -> Result<LeaseAuthorityDomainId>
         .optional()
         .map_err(sqlite_error)?
         .ok_or_else(|| CdfError::internal("scope lease authority domain is absent"))?;
-    LeaseAuthorityDomainId::new(value)
+    private_state_decode(
+        "decode CDF-managed scope lease authority domain",
+        LeaseAuthorityDomainId::new(value),
+    )
 }
 
 fn row_to_lease(row: &Row<'_>) -> rusqlite::Result<ScopeLease> {
@@ -435,16 +493,29 @@ fn row_to_lease(row: &Row<'_>) -> rusqlite::Result<ScopeLease> {
 }
 
 fn row_to_lease_result(row: &Row<'_>) -> Result<ScopeLease> {
-    let token = row.get::<_, i64>(2).map_err(sqlite_error)?;
-    let token = u64::try_from(token)
-        .map_err(|_| CdfError::data("scope lease fencing token is not positive"))?;
-    Ok(ScopeLease {
-        scope: decode_json(&row.get::<_, String>(0).map_err(sqlite_error)?, 1)?,
-        owner: LeaseOwnerId::new(row.get::<_, String>(1).map_err(sqlite_error)?)?,
-        fencing_token: FencingToken::new(token)?,
-        acquired_at_ms: row.get(3).map_err(sqlite_error)?,
-        expires_at_ms: row.get(4).map_err(sqlite_error)?,
-    })
+    private_state_decode(
+        "decode CDF-managed scope lease row",
+        (|| {
+            let token = row.get::<_, i64>(2).map_err(sqlite_error)?;
+            let token = u64::try_from(token).map_err(|_| {
+                CdfError::internal("CDF-managed scope lease fencing token is negative")
+            })?;
+            let acquired_at_ms = row.get(3).map_err(sqlite_error)?;
+            let expires_at_ms = row.get(4).map_err(sqlite_error)?;
+            if acquired_at_ms < 0 || expires_at_ms <= acquired_at_ms {
+                return Err(CdfError::internal(
+                    "CDF-managed scope lease timestamps violate the lease lifetime invariant",
+                ));
+            }
+            Ok(ScopeLease {
+                scope: decode_json(&row.get::<_, String>(0).map_err(sqlite_error)?, 1)?,
+                owner: LeaseOwnerId::new(row.get::<_, String>(1).map_err(sqlite_error)?)?,
+                fencing_token: FencingToken::new(token)?,
+                acquired_at_ms,
+                expires_at_ms,
+            })
+        })(),
+    )
 }
 
 fn ensure_current(record: &LeaseRecord, lease: &ScopeLease, now_ms: i64) -> Result<()> {
@@ -536,9 +607,53 @@ impl ScopeLeaseClock for SystemScopeLeaseClock {
         let elapsed = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|error| {
-                CdfError::internal(format!("system clock precedes Unix epoch: {error}"))
+                CdfError::environment(format!(
+                    "read the host clock for scope leases: {error}; correct the system clock and retry"
+                ))
             })?;
-        i64::try_from(elapsed.as_millis())
-            .map_err(|_| CdfError::internal("system epoch milliseconds exceed i64"))
+        i64::try_from(elapsed.as_millis()).map_err(|_| {
+            CdfError::environment(
+                "represent the host clock for scope leases: epoch milliseconds exceed i64; correct the system clock and retry",
+            )
+        })
+    }
+}
+
+#[cfg(test)]
+mod private_row_tests {
+    use cdf_kernel::ErrorKind;
+
+    use super::*;
+
+    #[test]
+    fn malformed_private_lease_owner_is_internal() {
+        let conn = Connection::open_in_memory().unwrap();
+        let scope_json = serde_json::to_string(&ScopeKey::Resource).unwrap();
+        let error = conn
+            .query_row("SELECT ?1, '', 1, 0, 1", params![scope_json], row_to_lease)
+            .unwrap_err();
+
+        let classified = sqlite_error(error);
+
+        assert_eq!(classified.kind, ErrorKind::Internal);
+        assert!(classified.message.contains("scope lease row"));
+    }
+
+    #[test]
+    fn malformed_private_lease_lifetime_is_internal() {
+        let conn = Connection::open_in_memory().unwrap();
+        let scope_json = serde_json::to_string(&ScopeKey::Resource).unwrap();
+        let error = conn
+            .query_row(
+                "SELECT ?1, 'owner', 1, 10, 10",
+                params![scope_json],
+                row_to_lease,
+            )
+            .unwrap_err();
+
+        let classified = sqlite_error(error);
+
+        assert_eq!(classified.kind, ErrorKind::Internal);
+        assert!(classified.message.contains("lease lifetime"));
     }
 }

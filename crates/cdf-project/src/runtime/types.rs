@@ -81,6 +81,7 @@ pub struct ProjectRunRequest<'a> {
     pub plan: EnginePlan,
     pub package_root: PathBuf,
     pub state_store_path: PathBuf,
+    pub state_store_path_ownership: StateStorePathOwnership,
     pub pipeline_id: PipelineId,
     pub package_id: String,
     pub checkpoint_id: CheckpointId,

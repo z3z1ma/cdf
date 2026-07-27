@@ -69,9 +69,9 @@ fn execute_case(
     environment: &ConformanceEnvironment,
 ) -> Result<super::ExecutedChaosCase> {
     let temp = tempfile::tempdir()
-        .map_err(|error| cdf_kernel::CdfError::data(format!("create chaos tempdir: {error}")))?;
+        .map_err(|error| crate::conformance_host_error("create chaos tempdir", error))?;
     fs::create_dir_all(temp.path().join(".cdf")).map_err(|error| {
-        cdf_kernel::CdfError::data(format!("create runtime chaos .cdf dir: {error}"))
+        crate::conformance_private_io_error("create runtime chaos .cdf dir", error)
     })?;
     let sqlite_path = temp.path().join(".cdf/runtime-chaos-state.sqlite");
     let store = SqliteCheckpointStore::open(&sqlite_path)?;

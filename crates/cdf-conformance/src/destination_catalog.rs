@@ -509,7 +509,7 @@ impl DestinationFixture {
     pub(crate) fn footprint(&self) -> Result<DestinationFootprint> {
         match &self.state {
             DestinationFixtureState::DuckDb { database_path } => {
-                if !database_path.exists() {
+                if destination_artifact_is_missing(database_path)? {
                     return Ok(DestinationFootprint::DuckDb {
                         mirror: DuckDbMirrorSnapshot::default(),
                         payload_rows: Vec::new(),
@@ -537,13 +537,13 @@ impl DestinationFixture {
 
     pub(crate) fn payload_snapshot(&self) -> Result<DestinationPayload> {
         match &self.state {
-            DestinationFixtureState::DuckDb { database_path } => {
-                Ok(DestinationPayload(if database_path.exists() {
+            DestinationFixtureState::DuckDb { database_path } => Ok(DestinationPayload(
+                if !destination_artifact_is_missing(database_path)? {
                     duckdb_payload(database_path, self.execution.target.as_str())?
                 } else {
                     Vec::new()
-                }))
-            }
+                },
+            )),
             DestinationFixtureState::Parquet { root, .. } => {
                 Ok(DestinationPayload(parquet_payload(root)?))
             }
@@ -770,7 +770,7 @@ fn quasar_fixture(
 
 #[cfg(test)]
 fn list_relative_files(root: &Path) -> Result<Vec<FileFootprint>> {
-    if !root.exists() {
+    if destination_artifact_is_missing(root)? {
         return Ok(Vec::new());
     }
     let mut files = Vec::new();
@@ -780,31 +780,114 @@ fn list_relative_files(root: &Path) -> Result<Vec<FileFootprint>> {
 }
 
 #[cfg(test)]
+fn destination_artifact_is_missing(path: &Path) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.file_type().is_symlink() => Ok(false),
+        Ok(_) => Err(CdfError::destination(format!(
+            "destination artifact {} is a symlink",
+            path.display()
+        ))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            for ancestor in path.ancestors().skip(1) {
+                match fs::metadata(ancestor) {
+                    Ok(metadata) if metadata.is_dir() => return Ok(true),
+                    Ok(_) => {
+                        return Err(CdfError::destination(format!(
+                            "destination artifact ancestor {} is not a directory",
+                            ancestor.display()
+                        )));
+                    }
+                    Err(ancestor_error)
+                        if ancestor_error.kind() == std::io::ErrorKind::NotFound =>
+                    {
+                        match fs::symlink_metadata(ancestor) {
+                            Ok(_) => {
+                                return Err(CdfError::destination(format!(
+                                    "destination artifact ancestor {} is a dangling symlink",
+                                    ancestor.display()
+                                )));
+                            }
+                            Err(link_error)
+                                if link_error.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(link_error) => {
+                                return Err(conformance_destination_io_error(
+                                    "inspect destination artifact ancestor",
+                                    ancestor,
+                                    link_error,
+                                ));
+                            }
+                        }
+                    }
+                    Err(ancestor_error) => {
+                        return Err(conformance_destination_io_error(
+                            "inspect destination artifact ancestor",
+                            ancestor,
+                            ancestor_error,
+                        ));
+                    }
+                }
+            }
+            Ok(true)
+        }
+        Err(error) => Err(conformance_destination_io_error(
+            "inspect destination artifact",
+            path,
+            error,
+        )),
+    }
+}
+
+#[cfg(test)]
+fn conformance_destination_io_error(action: &str, path: &Path, error: std::io::Error) -> CdfError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+            | std::io::ErrorKind::AlreadyExists
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::destination(format!("{action} {}: {error}", path.display()))
+    } else {
+        CdfError::environment(format!(
+            "{action} {}: {error}; check destination-path permissions, device availability, and process file limits before retrying",
+            path.display()
+        ))
+    }
+}
+
+#[cfg(test)]
 fn collect_relative_files(
     root: &Path,
     current: &Path,
     files: &mut Vec<FileFootprint>,
 ) -> Result<()> {
-    for entry in fs::read_dir(current)
-        .map_err(|error| CdfError::data(format!("read {}: {error}", current.display())))?
-    {
+    for entry in fs::read_dir(current).map_err(|error| {
+        conformance_destination_io_error("read destination directory", current, error)
+    })? {
         let entry = entry.map_err(|error| {
-            CdfError::data(format!("read entry in {}: {error}", current.display()))
+            conformance_destination_io_error("read destination directory entry", current, error)
         })?;
         let path = entry.path();
         let file_type = entry.file_type().map_err(|error| {
-            CdfError::data(format!("read file type for {}: {error}", path.display()))
+            conformance_destination_io_error("inspect destination artifact", &path, error)
         })?;
         if file_type.is_dir() {
             collect_relative_files(root, &path, files)?;
         } else if file_type.is_file() {
             let relative = path.strip_prefix(root).map_err(|error| {
-                CdfError::data(format!("relativize {}: {error}", path.display()))
+                CdfError::internal(format!(
+                    "relativize destination {}: {error}",
+                    path.display()
+                ))
             })?;
             files.push(FileFootprint {
                 path: relative.display().to_string(),
-                bytes: fs::read(&path)
-                    .map_err(|error| CdfError::data(format!("read {}: {error}", path.display())))?,
+                bytes: fs::read(&path).map_err(|error| {
+                    conformance_destination_io_error("read destination artifact", &path, error)
+                })?,
             });
         }
     }
@@ -813,9 +896,18 @@ fn collect_relative_files(
 
 #[cfg(test)]
 fn duckdb_payload(database_path: &Path, target: &str) -> Result<Vec<LogicalRow>> {
-    let connection = duckdb::Connection::open(database_path).map_err(|error| {
-        CdfError::destination(format!("open DuckDB {}: {error}", database_path.display()))
+    fs::File::open(database_path).map_err(|error| {
+        conformance_destination_io_error("open DuckDB destination artifact", database_path, error)
     })?;
+    let config = duckdb::Config::default()
+        .access_mode(duckdb::AccessMode::ReadOnly)
+        .map_err(|error| {
+            CdfError::destination(format!("configure read-only DuckDB inspection: {error}"))
+        })?;
+    let connection =
+        duckdb::Connection::open_with_flags(database_path, config).map_err(|error| {
+            CdfError::destination(format!("open DuckDB {}: {error}", database_path.display()))
+        })?;
     let table = target.rsplit('.').next().unwrap_or(target);
     let exists: bool = connection
         .query_row(
@@ -863,20 +955,83 @@ fn parquet_payload(root: &Path) -> Result<Vec<LogicalRow>> {
     paths.sort();
     let mut rows = Vec::new();
     for path in paths {
-        let file = fs::File::open(&path)
-            .map_err(|error| CdfError::data(format!("open {}: {error}", path.display())))?;
+        let file = fs::File::open(&path).map_err(|error| {
+            conformance_destination_io_error("open Parquet destination artifact", &path, error)
+        })?;
         let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-            .map_err(|error| CdfError::data(format!("open Parquet {}: {error}", path.display())))?
+            .map_err(|error| {
+                conformance_destination_codec_error(
+                    "open Parquet destination artifact",
+                    &path,
+                    &error,
+                )
+            })?
             .build()
-            .map_err(|error| CdfError::data(format!("read Parquet {}: {error}", path.display())))?;
+            .map_err(|error| {
+                conformance_destination_codec_error(
+                    "read Parquet destination artifact",
+                    &path,
+                    &error,
+                )
+            })?;
         for batch in reader {
             let batch = batch.map_err(|error| {
-                CdfError::data(format!("decode Parquet {}: {error}", path.display()))
+                conformance_destination_codec_error(
+                    "decode Parquet destination artifact",
+                    &path,
+                    &error,
+                )
             })?;
             rows.extend(logical_rows_from_batch(&batch)?);
         }
     }
     Ok(rows)
+}
+
+#[cfg(test)]
+fn conformance_destination_codec_error(
+    action: &str,
+    path: &Path,
+    error: &(dyn std::error::Error + 'static),
+) -> CdfError {
+    let mut first_raw_io = None;
+    let mut current = Some(error);
+    while let Some(source) = current {
+        if let Some(classified) = source.downcast_ref::<CdfError>() {
+            let mut classified = classified.clone();
+            classified.message = format!("{action} {}: {}", path.display(), classified.message);
+            return classified;
+        }
+        if let Some(io_error) = source.downcast_ref::<std::io::Error>() {
+            if let Some(mut classified) = cdf_kernel::embedded_cdf_error(io_error) {
+                classified.message = format!("{action} {}: {}", path.display(), classified.message);
+                return classified;
+            }
+            first_raw_io.get_or_insert_with(|| (io_error.kind(), io_error.to_string()));
+        }
+        current = source.source();
+    }
+    if let Some((kind, message)) = first_raw_io {
+        return conformance_destination_io_error(action, path, std::io::Error::new(kind, message));
+    }
+    CdfError::destination(format!("{action} {}: {error}", path.display()))
+}
+
+#[test]
+fn destination_codec_error_preserves_deeply_embedded_cdf_ownership() {
+    let embedded = CdfError::rate_limited("deep destination owner", Some(625));
+    let nested = std::io::Error::other(std::io::Error::other(embedded.clone()));
+
+    let classified = conformance_destination_codec_error(
+        "decode destination artifact",
+        Path::new("output.parquet"),
+        &nested,
+    );
+
+    assert_eq!(classified.kind, embedded.kind);
+    assert_eq!(classified.retry_after_ms, embedded.retry_after_ms);
+    assert!(classified.message.contains("deep destination owner"));
+    assert!(classified.message.contains("output.parquet"));
 }
 
 #[cfg(test)]
@@ -886,18 +1041,18 @@ fn collect_files_with_extension(
     extension: &str,
     paths: &mut Vec<PathBuf>,
 ) -> Result<()> {
-    if !root.exists() {
+    if destination_artifact_is_missing(root)? {
         return Ok(());
     }
-    for entry in fs::read_dir(current)
-        .map_err(|error| CdfError::data(format!("read {}: {error}", current.display())))?
-    {
+    for entry in fs::read_dir(current).map_err(|error| {
+        conformance_destination_io_error("read destination directory", current, error)
+    })? {
         let entry = entry.map_err(|error| {
-            CdfError::data(format!("read entry in {}: {error}", current.display()))
+            conformance_destination_io_error("read destination directory entry", current, error)
         })?;
         let path = entry.path();
         let file_type = entry.file_type().map_err(|error| {
-            CdfError::data(format!("read file type for {}: {error}", path.display()))
+            conformance_destination_io_error("inspect destination artifact", &path, error)
         })?;
         if file_type.is_dir() {
             collect_files_with_extension(root, &path, extension, paths)?;

@@ -22,7 +22,7 @@ use super::{
     model::{
         CommonReplayReport, ResumePackageFacts, ResumeReplayReport, StatusRepairProof,
         checkpoint_status, package_path_from_events, prove_status_repair_head,
-        resolve_project_path, select_receipt,
+        recorded_package_path_is_missing, resolve_project_path, select_receipt,
     },
     report::{
         ResumeCheckpointPointer, ResumeDestinationPointer, ResumePackagePointer,
@@ -38,6 +38,7 @@ pub(super) struct ResumeAttempt<'a> {
     event_sink: Option<&'a dyn RunEventSink>,
     run_id: RunId,
     package_path: Option<PathBuf>,
+    package_missing: bool,
     package: Option<ResumePackageFacts>,
     package_error: Option<String>,
     store: SqliteCheckpointStore,
@@ -55,12 +56,16 @@ impl<'a> ResumeAttempt<'a> {
     ) -> Result<Self, CliError> {
         let package_path = package_path_from_events(&snapshot.events)
             .map(|path| resolve_project_path(&context.root, Path::new(&path)));
-        let (package, package_error) = match package_path.as_ref() {
-            Some(path) if path.exists() => match ResumePackageFacts::load(path) {
-                Ok(package) => (Some(package), None),
-                Err(error) => (None, Some(error.message)),
+        let (package_missing, package, package_error) = match package_path.as_ref() {
+            Some(path) if recorded_package_path_is_missing(path)? => (true, None, None),
+            Some(path) => match ResumePackageFacts::load(path) {
+                Ok(package) => (false, Some(package), None),
+                Err(error) if error.kind == cdf_kernel::ErrorKind::Data => {
+                    (false, None, Some(error.message))
+                }
+                Err(error) => return Err(error),
             },
-            Some(_) | None => (None, None),
+            None => (false, None, None),
         };
         let store = context.state_store()?;
         Ok(Self {
@@ -71,6 +76,7 @@ impl<'a> ResumeAttempt<'a> {
             event_sink,
             run_id: snapshot.run.run_id.clone(),
             package_path,
+            package_missing,
             package,
             package_error,
             store,
@@ -87,16 +93,16 @@ impl<'a> ResumeAttempt<'a> {
                 false,
                 "success",
                 "terminal successful run; no recovery action is required",
-            );
+            )?;
             self.append_run_resumed(&report)?;
             report.ledger_event_count_after = self.snapshot_after()?.events.len();
             return Ok(report);
         }
 
         let Some(package) = &self.package else {
-            return Ok(self.report_missing_package_facts());
+            return self.report_missing_package_facts();
         };
-        if !package.path.exists() {
+        if recorded_package_path_is_missing(&package.path)? {
             let report = self.fail_closed(
                 "missing_package_artifact",
                 "inspect_missing_artifacts",
@@ -104,14 +110,14 @@ impl<'a> ResumeAttempt<'a> {
                     "package path {} recorded for the run does not exist; restore the package artifact or rerun from the last committed checkpoint",
                     package.path.display()
                 ),
-            );
-            let _ = self.append_run_failed(&report);
+            )?;
+            self.append_run_failed(&report)?;
             return Ok(report);
         }
 
         let replay_inputs = match package.reader.replay_inputs() {
             Ok(inputs) => inputs,
-            Err(error) => {
+            Err(error) if error.kind == cdf_kernel::ErrorKind::Data => {
                 let report = self.fail_closed(
                     "inconsistent_package_artifact",
                     "inspect_missing_artifacts",
@@ -119,10 +125,11 @@ impl<'a> ResumeAttempt<'a> {
                         "package {} is not replayable from durable artifacts: {error}",
                         package.path.display()
                     ),
-                );
-                let _ = self.append_run_failed(&report);
+                )?;
+                self.append_run_failed(&report)?;
                 return Ok(report);
             }
+            Err(error) => return Err(error.into()),
         };
         let checkpoint_status = checkpoint_status(&self.store, &replay_inputs.state_delta)?;
         let receipt = select_receipt(package, &self.snapshot.events)?;
@@ -133,8 +140,8 @@ impl<'a> ResumeAttempt<'a> {
                     "committed_checkpoint_missing_receipt_artifact",
                     "inspect_missing_artifacts",
                     "checkpoint is committed but no durable package receipt is available; restore receipts.json before claiming recovery",
-                );
-                let _ = self.append_run_failed(&report);
+                )?;
+                self.append_run_failed(&report)?;
                 Ok(report)
             }
             (None, false) => self.replay_finalized_package(package, &replay_inputs),
@@ -147,8 +154,8 @@ impl<'a> ResumeAttempt<'a> {
                             "receipt {} is durable, but checkpoint {} is not proposed in the selected state store; restore checkpoint state before opening the commit gate",
                             receipt.receipt_id, replay_inputs.state_delta.checkpoint_id
                         ),
-                    );
-                    let _ = self.append_run_failed(&report);
+                    )?;
+                    self.append_run_failed(&report)?;
                     return Ok(report);
                 }
                 self.recover_durable_receipt(package, receipt)
@@ -164,7 +171,7 @@ impl<'a> ResumeAttempt<'a> {
                     false,
                     "success",
                     "checkpoint is committed and package status is terminal; no recovery mutation was required",
-                );
+                )?;
                 self.append_run_resumed(&report)?;
                 report.ledger_event_count_after = self.snapshot_after()?.events.len();
                 Ok(report)
@@ -175,10 +182,14 @@ impl<'a> ResumeAttempt<'a> {
         }
     }
 
-    fn report_missing_package_facts(&self) -> ResumeReport {
-        if let Some(path) = &self.package_path
-            && !path.exists()
-        {
+    fn report_missing_package_facts(&self) -> Result<ResumeReport, CliError> {
+        if self.package_missing {
+            let Some(path) = self.package_path.as_ref() else {
+                return Err(CdfError::internal(
+                    "resume package presence state is missing its recorded package path",
+                )
+                .into());
+            };
             let report = self.fail_closed(
                 "missing_package_artifact",
                 "inspect_missing_artifacts",
@@ -186,26 +197,26 @@ impl<'a> ResumeAttempt<'a> {
                     "package path {} recorded for the run does not exist; restore the package artifact or rerun from the last committed checkpoint",
                     path.display()
                 ),
-            );
-            let _ = self.append_run_failed(&report);
-            return report;
+            )?;
+            self.append_run_failed(&report)?;
+            return Ok(report);
         }
         if let Some(error) = &self.package_error {
             let report = self.fail_closed(
                 "inconsistent_package_artifact",
                 "inspect_missing_artifacts",
                 format!("package artifact recorded for the run is unreadable: {error}"),
-            );
-            let _ = self.append_run_failed(&report);
-            return report;
+            )?;
+            self.append_run_failed(&report)?;
+            return Ok(report);
         }
         let report = self.fail_closed(
             "no_finalized_package",
             "rerun_extraction_from_last_committed_checkpoint",
             "no finalized package path is recorded for this run; resume will not invent no-argument discovery or source rerun inputs",
-        );
-        let _ = self.append_run_failed(&report);
-        report
+        )?;
+        self.append_run_failed(&report)?;
+        Ok(report)
     }
 
     fn replay_finalized_package(
@@ -271,8 +282,8 @@ impl<'a> ResumeAttempt<'a> {
                     "unsupported_destination",
                     "inspect_destination",
                     error.message,
-                );
-                let _ = self.append_run_failed(&report);
+                )?;
+                self.append_run_failed(&report)?;
                 Ok(Err(report))
             }
             Err(error) => Err(error),
@@ -290,8 +301,8 @@ impl<'a> ResumeAttempt<'a> {
                 "checkpoint_committed_package_replay_inputs_missing",
                 "inspect_missing_artifacts",
                 "package status repair requires replay inputs before mutation; restore package state/destination preimages before updating status",
-            );
-            let _ = self.append_run_failed(&report);
+            )?;
+            self.append_run_failed(&report)?;
             return Ok(report);
         };
         if package_replay_inputs.state_delta != *delta {
@@ -299,8 +310,8 @@ impl<'a> ResumeAttempt<'a> {
                 "checkpoint_committed_package_delta_mismatch",
                 "inspect_missing_artifacts",
                 "package status repair requires package replay inputs to match the selected recovery delta exactly",
-            );
-            let _ = self.append_run_failed(&report);
+            )?;
+            self.append_run_failed(&report)?;
             return Ok(report);
         }
         let head = match prove_status_repair_head(&self.store, delta, &receipt)? {
@@ -310,8 +321,8 @@ impl<'a> ResumeAttempt<'a> {
                     "checkpoint_committed_head_missing",
                     "inspect_missing_artifacts",
                     "package status repair requires a committed current head for the package scope before mutation",
-                );
-                let _ = self.append_run_failed(&report);
+                )?;
+                self.append_run_failed(&report)?;
                 return Ok(report);
             }
             StatusRepairProof::NotExact => {
@@ -319,8 +330,8 @@ impl<'a> ResumeAttempt<'a> {
                     "checkpoint_committed_head_not_exact",
                     "inspect_missing_artifacts",
                     "package status repair requires the current committed head delta and receipt to exactly match the package replay delta and selected durable receipt",
-                );
-                let _ = self.append_run_failed(&report);
+                )?;
+                self.append_run_failed(&report)?;
                 return Ok(report);
             }
         };
@@ -338,7 +349,7 @@ impl<'a> ResumeAttempt<'a> {
             true,
             "success",
             "checkpoint was already committed; updated package status only",
-        );
+        )?;
         report.mutated = true;
         report.package.status = Some(status.as_str().to_owned());
         report.package.receipt_count = PackageReader::open(&package.path)?.receipt_count()?;
@@ -365,7 +376,7 @@ impl<'a> ResumeAttempt<'a> {
             true,
             "success",
             "replayed finalized package without contacting the source, then committed checkpoint",
-        );
+        )?;
         report.mutated = true;
         report.package.status = Some(common.package_status.as_str().to_owned());
         report.package.receipt_count = PackageReader::open(&package.path)?.receipt_count()?;
@@ -394,7 +405,7 @@ impl<'a> ResumeAttempt<'a> {
             true,
             "success",
             "verified durable receipt and committed checkpoint without contacting the source",
-        );
+        )?;
         report.mutated = true;
         report.package.status = Some(common.package_status.as_str().to_owned());
         report.package.receipt_count = PackageReader::open(&package.path)?.receipt_count()?;
@@ -416,7 +427,7 @@ impl<'a> ResumeAttempt<'a> {
         mutation_required: bool,
         result: impl Into<String>,
         guidance: impl Into<String>,
-    ) -> ResumeReport {
+    ) -> Result<ResumeReport, CliError> {
         let package = self
             .package
             .as_ref()
@@ -428,25 +439,21 @@ impl<'a> ResumeAttempt<'a> {
                     .map(|path| path.display().to_string()),
                 ..ResumePackagePointer::default()
             });
-        let checkpoint = self
+        let checkpoint = match self
             .package
             .as_ref()
             .and_then(|package| package.replay_inputs.as_ref())
-            .and_then(|inputs| checkpoint_status(&self.store, &inputs.state_delta).ok())
-            .map(|status| status.pointer)
-            .unwrap_or_default();
-        let receipt = self
-            .package
-            .as_ref()
-            .and_then(|package| {
-                select_receipt(package, &self.snapshot.events)
-                    .ok()
-                    .flatten()
-            })
-            .as_ref()
-            .map(|receipt| ResumeReceiptPointer::from_receipt(Some(receipt)))
-            .unwrap_or_default();
-        ResumeReport {
+        {
+            Some(inputs) => checkpoint_status(&self.store, &inputs.state_delta)?.pointer,
+            None => ResumeCheckpointPointer::default(),
+        };
+        let receipt = match self.package.as_ref() {
+            Some(package) => ResumeReceiptPointer::from_receipt(
+                select_receipt(package, &self.snapshot.events)?.as_ref(),
+            ),
+            None => ResumeReceiptPointer::default(),
+        };
+        Ok(ResumeReport {
             command: "resume",
             run_id: self.run_id.to_string(),
             state: state.into(),
@@ -464,7 +471,7 @@ impl<'a> ResumeAttempt<'a> {
             },
             ledger_event_count_before: self.snapshot.events.len(),
             ledger_event_count_after: self.snapshot.events.len(),
-        }
+        })
     }
 
     pub(super) fn fail_closed(
@@ -472,7 +479,7 @@ impl<'a> ResumeAttempt<'a> {
         state: impl Into<String>,
         action: impl Into<String>,
         guidance: impl Into<String>,
-    ) -> ResumeReport {
+    ) -> Result<ResumeReport, CliError> {
         self.report(state, action, false, false, "failed_closed", guidance)
     }
 

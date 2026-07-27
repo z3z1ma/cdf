@@ -5,6 +5,9 @@ use std::{
 
 use cdf_kernel::{CdfError, ScopeKey, TrustLevel};
 use cdf_package::PackageReader;
+use cdf_state_sqlite::{
+    SqliteCheckpointStore, SqliteErrorContext, SqliteRunLedger, classify_sqlite_error,
+};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params};
 use serde::Serialize;
 
@@ -159,7 +162,7 @@ pub(crate) fn evaluate(context: &ProjectContext) -> Result<StatusReport, CliErro
 
     let state_path = context.state_store_path()?;
     let now_ms = now_ms()?;
-    let ledger = LocalLedger::open(&state_path)?;
+    let ledger = LocalLedger::open(&state_path, context.state_store_path_ownership())?;
     let freshness_resources = resources
         .into_iter()
         .map(|resource| ledger.evaluate_resource(resource, &context.root, now_ms))
@@ -209,12 +212,19 @@ enum LocalLedger {
 }
 
 impl LocalLedger {
-    fn open(path: &Path) -> Result<Self, CliError> {
-        if !path.exists() {
+    fn open(
+        path: &Path,
+        ownership: cdf_state_sqlite::StateStorePathOwnership,
+    ) -> Result<Self, CliError> {
+        if !freshness_state_database_exists(path, ownership)? {
             return Ok(Self::MissingDatabase);
         }
-        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(sqlite_cli_error)?;
+        let open_path = cdf_state_sqlite::database_open_path(path, ownership)?;
+        let conn = Connection::open_with_flags(
+            open_path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .map_err(sqlite_cli_error)?;
         let has_checkpoints = conn
             .query_row(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cdf_checkpoints'",
@@ -224,6 +234,22 @@ impl LocalLedger {
             .optional()
             .map_err(sqlite_cli_error)?
             .is_some();
+        let checkpoint_footprint =
+            has_checkpoints || component_marker_exists(&conn, "checkpoint_store")?;
+        if checkpoint_footprint {
+            SqliteCheckpointStore::open_read_only_with_path_ownership(path, ownership)
+                .and_then(|store| store.validate_integrity())
+                .map_err(freshness_store_error)?;
+        }
+        let run_footprint = table_exists(&conn, "cdf_runs")?
+            || table_exists(&conn, "cdf_run_events")?
+            || table_exists(&conn, "cdf_promotion_publications")?
+            || component_marker_exists(&conn, "run_ledger")?;
+        if run_footprint {
+            SqliteRunLedger::open_read_only_with_path_ownership(path, ownership)
+                .and_then(|ledger| ledger.validate_integrity())
+                .map_err(freshness_store_error)?;
+        }
         if has_checkpoints {
             Ok(Self::Checkpoints(conn))
         } else {
@@ -278,6 +304,19 @@ impl LocalLedger {
     }
 }
 
+fn freshness_state_database_exists(
+    path: &Path,
+    ownership: cdf_state_sqlite::StateStorePathOwnership,
+) -> Result<bool, CliError> {
+    match cdf_state_sqlite::database_path_exists(path, ownership) {
+        Ok(exists) => Ok(exists),
+        Err(error) if error.kind == cdf_kernel::ErrorKind::Internal => {
+            Err(CliError::mapped(error, error_catalog::STATUS_FRESHNESS))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn committed_heads(
     conn: &Connection,
     resource_id: &str,
@@ -310,13 +349,38 @@ fn committed_heads(
 }
 
 fn observed_checkpoint(row: &Row<'_>) -> rusqlite::Result<ObservedCheckpoint> {
+    decode_observed_checkpoint(row).map_err(private_status_from_sql)
+}
+
+fn decode_observed_checkpoint(row: &Row<'_>) -> Result<ObservedCheckpoint, CdfError> {
+    let checkpoint_id: String = row.get("checkpoint_id").map_err(raw_status_row_error)?;
+    let pipeline_id: String = row.get("pipeline_id").map_err(raw_status_row_error)?;
+    let package_hash: String = row.get("package_hash").map_err(raw_status_row_error)?;
+    let schema_hash: String = row.get("schema_hash").map_err(raw_status_row_error)?;
+    let receipt_id: String = row.get("receipt_id").map_err(raw_status_row_error)?;
+    let committed_at_ms: i64 = row.get("committed_at_ms").map_err(raw_status_row_error)?;
+    cdf_kernel::CheckpointId::new(checkpoint_id.clone())
+        .map_err(|error| private_status_value_error("checkpoint id", error))?;
+    cdf_kernel::PipelineId::new(pipeline_id.clone())
+        .map_err(|error| private_status_value_error("pipeline id", error))?;
+    cdf_kernel::PackageHash::new(package_hash.clone())
+        .map_err(|error| private_status_value_error("package hash", error))?;
+    cdf_kernel::SchemaHash::new(schema_hash.clone())
+        .map_err(|error| private_status_value_error("schema hash", error))?;
+    cdf_kernel::ReceiptId::new(receipt_id.clone())
+        .map_err(|error| private_status_value_error("receipt id", error))?;
+    if committed_at_ms < 0 {
+        return Err(CdfError::internal(
+            "decode CDF-managed freshness checkpoint: committed timestamp cannot be negative",
+        ));
+    }
     Ok(ObservedCheckpoint {
-        checkpoint_id: row.get("checkpoint_id")?,
-        pipeline_id: row.get("pipeline_id")?,
-        package_hash: row.get("package_hash")?,
-        schema_hash: row.get("schema_hash")?,
-        receipt_id: row.get("receipt_id")?,
-        committed_at_ms: row.get("committed_at_ms")?,
+        checkpoint_id,
+        pipeline_id,
+        package_hash,
+        schema_hash,
+        receipt_id,
+        committed_at_ms,
     })
 }
 
@@ -372,7 +436,7 @@ fn receipt_only_resource(
         );
     }
 
-    match matching_package_receipt(&receipt_facts, project_root) {
+    match matching_package_receipt(&receipt_facts, project_root)? {
         PackageReceiptLookup::Found(receipt) => {
             let observed_at_ms = receipt.committed_at_ms;
             let receipt_freshness = Some(receipt_observation(
@@ -497,7 +561,7 @@ fn committed_head_receipt_freshness(
         )));
     }
 
-    match matching_package_receipt(&receipt_facts, project_root) {
+    match matching_package_receipt(&receipt_facts, project_root)? {
         PackageReceiptLookup::Found(receipt)
             if receipt.committed_at_ms == checkpoint.committed_at_ms =>
         {
@@ -703,14 +767,7 @@ fn matching_receipt_facts(
                 checkpoint.package_hash.as_str(),
                 checkpoint.receipt_id.as_str()
             ],
-            |row| {
-                Ok(RunReceiptFact {
-                    receipt_id: row.get("receipt_id")?,
-                    package_hash: row.get("package_hash")?,
-                    recorded_at_ms: row.get("timestamp_ms")?,
-                    package_path: row.get("package_path")?,
-                })
-            },
+            run_receipt_fact,
         )
         .map_err(sqlite_cli_error)?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -737,17 +794,44 @@ fn receipt_facts_for_resource(
         )
         .map_err(sqlite_cli_error)?;
     let rows = stmt
-        .query_map(params![resource_id, scope_json], |row| {
-            Ok(RunReceiptFact {
-                receipt_id: row.get("receipt_id")?,
-                package_hash: row.get("package_hash")?,
-                recorded_at_ms: row.get("timestamp_ms")?,
-                package_path: row.get("package_path")?,
-            })
-        })
+        .query_map(params![resource_id, scope_json], run_receipt_fact)
         .map_err(sqlite_cli_error)?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(sqlite_cli_error)
+}
+
+fn run_receipt_fact(row: &Row<'_>) -> rusqlite::Result<RunReceiptFact> {
+    decode_run_receipt_fact(row).map_err(private_status_from_sql)
+}
+
+fn decode_run_receipt_fact(row: &Row<'_>) -> Result<RunReceiptFact, CdfError> {
+    let receipt_id: String = row.get("receipt_id").map_err(raw_status_row_error)?;
+    let package_hash: String = row.get("package_hash").map_err(raw_status_row_error)?;
+    let recorded_at_ms: i64 = row.get("timestamp_ms").map_err(raw_status_row_error)?;
+    let package_path: Option<String> = row.get("package_path").map_err(raw_status_row_error)?;
+    cdf_kernel::ReceiptId::new(receipt_id.clone())
+        .map_err(|error| private_status_value_error("run receipt id", error))?;
+    cdf_kernel::PackageHash::new(package_hash.clone())
+        .map_err(|error| private_status_value_error("run package hash", error))?;
+    if recorded_at_ms < 0 {
+        return Err(CdfError::internal(
+            "decode CDF-managed freshness run receipt: recorded timestamp cannot be negative",
+        ));
+    }
+    if package_path
+        .as_deref()
+        .is_some_and(|path| path.trim().is_empty())
+    {
+        return Err(CdfError::internal(
+            "decode CDF-managed freshness run receipt: package path cannot be empty",
+        ));
+    }
+    Ok(RunReceiptFact {
+        receipt_id,
+        package_hash,
+        recorded_at_ms,
+        package_path,
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -759,6 +843,7 @@ struct PackageReceiptFact {
     package_path: String,
 }
 
+#[derive(Debug)]
 enum PackageReceiptLookup {
     Found(PackageReceiptFact),
     Missing(Option<RunReceiptFact>),
@@ -768,22 +853,19 @@ enum PackageReceiptLookup {
     },
 }
 
-fn matching_package_receipt(facts: &[RunReceiptFact], project_root: &Path) -> PackageReceiptLookup {
+fn matching_package_receipt(
+    facts: &[RunReceiptFact],
+    project_root: &Path,
+) -> Result<PackageReceiptLookup, CliError> {
     for fact in facts {
         let Some(package_path) = &fact.package_path else {
             continue;
         };
-        let package_dir = resolve_package_path(project_root, package_path);
+        let package_dir = resolve_package_path(project_root, package_path)?;
         let reader = match PackageReader::open(&package_dir) {
             Ok(reader) => reader,
             Err(error) => {
-                return PackageReceiptLookup::Corrupt {
-                    fact: fact.clone(),
-                    reason: format!(
-                        "read package receipts from {}: {error}",
-                        package_dir.display()
-                    ),
-                };
+                return package_receipt_lookup_error(fact, &package_dir, error);
             }
         };
         let mut matching = None;
@@ -795,25 +877,37 @@ fn matching_package_receipt(facts: &[RunReceiptFact], project_root: &Path) -> Pa
             }
             Ok(())
         }) {
-            return PackageReceiptLookup::Corrupt {
-                fact: fact.clone(),
-                reason: format!(
-                    "read package receipts from {}: {error}",
-                    package_dir.display()
-                ),
-            };
+            return package_receipt_lookup_error(fact, &package_dir, error);
         }
         if let Some(receipt) = matching {
-            return PackageReceiptLookup::Found(PackageReceiptFact {
+            return Ok(PackageReceiptLookup::Found(PackageReceiptFact {
                 receipt_id: fact.receipt_id.clone(),
                 package_hash: fact.package_hash.clone(),
                 committed_at_ms: receipt.committed_at_ms,
                 run_ledger_recorded_at_ms: fact.recorded_at_ms,
                 package_path: package_path.clone(),
-            });
+            }));
         }
     }
-    PackageReceiptLookup::Missing(facts.first().cloned())
+    Ok(PackageReceiptLookup::Missing(facts.first().cloned()))
+}
+
+fn package_receipt_lookup_error(
+    fact: &RunReceiptFact,
+    package_dir: &Path,
+    error: CdfError,
+) -> Result<PackageReceiptLookup, CliError> {
+    if error.kind == cdf_kernel::ErrorKind::Data {
+        Ok(PackageReceiptLookup::Corrupt {
+            fact: fact.clone(),
+            reason: format!(
+                "read package receipts from {}: {error}",
+                package_dir.display()
+            ),
+        })
+    } else {
+        Err(error.into())
+    }
 }
 
 fn table_exists(conn: &Connection, name: &str) -> Result<bool, CliError> {
@@ -827,13 +921,69 @@ fn table_exists(conn: &Connection, name: &str) -> Result<bool, CliError> {
     .map_err(sqlite_cli_error)
 }
 
-fn resolve_package_path(project_root: &Path, value: &str) -> PathBuf {
-    let path = PathBuf::from(value);
-    if path.is_absolute() || path.exists() {
-        path
-    } else {
-        project_root.join(path)
+fn component_marker_exists(conn: &Connection, component: &str) -> Result<bool, CliError> {
+    if !table_exists(conn, "cdf_sqlite_schema_versions")? {
+        return Ok(false);
     }
+    conn.query_row(
+        "SELECT 1 FROM cdf_sqlite_schema_versions WHERE component = ?",
+        params![component],
+        |_| Ok(()),
+    )
+    .optional()
+    .map(|value| value.is_some())
+    .map_err(sqlite_cli_error)
+}
+
+fn resolve_package_path(project_root: &Path, value: &str) -> Result<PathBuf, CliError> {
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    match std::fs::metadata(&path) {
+        Ok(_) => Ok(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match std::fs::symlink_metadata(&path) {
+                Ok(_) => Ok(path),
+                Err(link_error) if link_error.kind() == std::io::ErrorKind::NotFound => {
+                    Ok(project_root.join(path))
+                }
+                Err(link_error)
+                    if link_error.kind() == std::io::ErrorKind::NotADirectory
+                        || cdf_kernel::is_filesystem_loop(&link_error) =>
+                {
+                    Ok(path)
+                }
+                Err(link_error) => Err(status_environment(format!(
+                    "inspect CDF-managed freshness package path `{value}`: {link_error}; check package-path permissions, device availability, and process file limits before retrying"
+                ))),
+            }
+        }
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotADirectory
+                || cdf_kernel::is_filesystem_loop(&error) =>
+        {
+            Ok(path)
+        }
+        Err(error) => Err(status_environment(format!(
+            "inspect CDF-managed freshness package path `{value}`: {error}; check package-path permissions, device availability, and process file limits before retrying"
+        ))),
+    }
+}
+
+fn raw_status_row_error(error: rusqlite::Error) -> CdfError {
+    CdfError::internal(format!("decode CDF-managed freshness row column: {error}"))
+}
+
+fn private_status_value_error(field: &str, error: CdfError) -> CdfError {
+    CdfError::internal(format!(
+        "decode CDF-managed freshness {field}: {}",
+        error.message
+    ))
+}
+
+fn private_status_from_sql(error: CdfError) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
 }
 
 fn summarize(resources: &[StatusResource]) -> StatusSummary {
@@ -866,8 +1016,16 @@ fn age_ms(now_ms: i64, committed_at_ms: i64) -> u64 {
 fn now_ms() -> Result<i64, CliError> {
     let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(status_internal)?;
-    i64::try_from(elapsed.as_millis()).map_err(status_internal)
+        .map_err(|error| {
+            status_environment(format!(
+                "read the host clock for freshness evaluation: {error}; correct the system clock and retry"
+            ))
+        })?;
+    i64::try_from(elapsed.as_millis()).map_err(|error| {
+        status_environment(format!(
+            "represent the host clock for freshness evaluation: {error}; correct the system clock and retry"
+        ))
+    })
 }
 
 fn trust_level_name(trust_level: &TrustLevel) -> &'static str {
@@ -880,10 +1038,28 @@ fn trust_level_name(trust_level: &TrustLevel) -> &'static str {
 }
 
 fn sqlite_cli_error(error: rusqlite::Error) -> CliError {
-    CliError::mapped(
-        CdfError::internal(error.to_string()),
-        error_catalog::STATUS_FRESHNESS,
-    )
+    let error = classify_sqlite_error(
+        SqliteErrorContext::ManagedState,
+        "read the CDF freshness state store",
+        error,
+    );
+    if error.kind == cdf_kernel::ErrorKind::Internal {
+        CliError::mapped(error, error_catalog::STATUS_FRESHNESS)
+    } else {
+        error.into()
+    }
+}
+
+fn freshness_store_error(error: CdfError) -> CliError {
+    if error.kind == cdf_kernel::ErrorKind::Internal {
+        CliError::mapped(error, error_catalog::STATUS_FRESHNESS)
+    } else {
+        error.into()
+    }
+}
+
+fn status_environment(message: impl Into<String>) -> CliError {
+    CdfError::environment(message.into()).into()
 }
 
 fn status_internal(error: impl std::fmt::Display) -> CliError {
@@ -891,4 +1067,124 @@ fn status_internal(error: impl std::fmt::Display) -> CliError {
         CdfError::internal(error.to_string()),
         error_catalog::STATUS_FRESHNESS,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use cdf_kernel::ErrorKind;
+
+    use super::*;
+
+    #[test]
+    fn freshness_sqlite_host_failure_uses_environment_catalog_mapping() {
+        let error = sqlite_cli_error(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+            None,
+        ));
+
+        assert_eq!(error.kind, ErrorKind::Environment);
+        assert_eq!(error.code, "CDF-ENV-HOST");
+        assert!(error.message.contains("state path"));
+        assert!(error.remediation.is_some());
+    }
+
+    #[test]
+    fn freshness_sqlite_query_invariant_keeps_status_mapping() {
+        let error = sqlite_cli_error(rusqlite::Error::InvalidQuery);
+
+        assert_eq!(error.kind, ErrorKind::Internal);
+        assert_eq!(error.code, error_catalog::STATUS_FRESHNESS.code);
+    }
+
+    #[test]
+    fn freshness_sqlite_extended_shape_and_contention_keep_distinct_ownership() {
+        let wrong_shape = sqlite_cli_error(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN_ISDIR),
+            None,
+        ));
+        assert_eq!(wrong_shape.kind, ErrorKind::Internal);
+        assert_eq!(wrong_shape.code, error_catalog::STATUS_FRESHNESS.code);
+
+        let contention = sqlite_cli_error(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+            None,
+        ));
+        assert_eq!(contention.kind, ErrorKind::Transient);
+        assert_eq!(contention.code, "CDF-RUN-TRANSIENT");
+    }
+
+    #[test]
+    fn freshness_configured_state_parent_file_is_contract_owned() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("state-parent");
+        std::fs::write(&parent, b"not a directory").unwrap();
+
+        let error = freshness_state_database_exists(
+            &parent.join("state.db"),
+            cdf_state_sqlite::StateStorePathOwnership::Configured,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::Contract);
+    }
+
+    #[test]
+    fn package_receipt_host_failure_propagates_instead_of_becoming_corrupt_data() {
+        let fact = RunReceiptFact {
+            receipt_id: "receipt".to_owned(),
+            package_hash: "sha256:hash".to_owned(),
+            recorded_at_ms: 1,
+            package_path: Some("package".to_owned()),
+        };
+
+        let error = package_receipt_lookup_error(
+            &fact,
+            Path::new("package"),
+            CdfError::environment("permission denied"),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::Environment);
+    }
+
+    #[test]
+    fn freshness_rejects_incomplete_checkpoint_and_run_component_footprints() {
+        let root = tempfile::tempdir().unwrap();
+        let checkpoint_path = root.path().join(".cdf").join("checkpoint.db");
+        std::fs::create_dir_all(checkpoint_path.parent().unwrap()).unwrap();
+        let conn = Connection::open(&checkpoint_path).unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE cdf_sqlite_schema_versions (
+                component TEXT PRIMARY KEY,
+                version INTEGER NOT NULL,
+                recorded_at_ms INTEGER NOT NULL
+            );
+            INSERT INTO cdf_sqlite_schema_versions (component, version, recorded_at_ms)
+            VALUES ('checkpoint_store', 1, 1);
+            ",
+        )
+        .unwrap();
+        drop(conn);
+        let error = LocalLedger::open(
+            &checkpoint_path,
+            cdf_state_sqlite::StateStorePathOwnership::CdfManaged,
+        )
+        .err()
+        .expect("checkpoint marker without table must fail");
+        assert_eq!(error.kind, ErrorKind::Internal);
+
+        let run_path = root.path().join(".cdf").join("run.db");
+        let conn = Connection::open(&run_path).unwrap();
+        conn.execute_batch("CREATE TABLE cdf_run_events (sequence INTEGER)")
+            .unwrap();
+        drop(conn);
+        let error = LocalLedger::open(
+            &run_path,
+            cdf_state_sqlite::StateStorePathOwnership::CdfManaged,
+        )
+        .err()
+        .expect("orphan run-event table must fail");
+        assert_eq!(error.kind, ErrorKind::Internal);
+    }
 }

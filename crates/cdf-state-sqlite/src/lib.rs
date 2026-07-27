@@ -20,3 +20,7 @@ pub use lease::{InMemoryScopeLeaseStore, SqliteScopeLeaseStore};
 pub use run_ledger::{RunLedgerSnapshot, RunRecord, SqliteRunLedger};
 pub use settlement::SqlitePromotionSettlementStore;
 pub use sqlite::SqliteCheckpointStore;
+pub use support::{
+    SqliteErrorContext, StateStorePathOwnership, classify_sqlite_error, database_open_path,
+    database_path_exists, managed_database_open_path, managed_database_path_exists,
+};

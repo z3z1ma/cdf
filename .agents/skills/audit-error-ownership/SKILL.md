@@ -42,7 +42,8 @@ record those exact roots. The null-delimited manifest preserves spaces and makes
 share one frozen file set. Inspect direct `new`, struct literal, conversion, macro, helper-factory,
 test assertion, and enum mapping matches. Record total files, site-bearing files, site count, and
 the arithmetic remainder. A count delta is not a migration count when tests or invariant checks
-were added.
+were added. If review reopens a shared helper outside the frozen roots, name that supporting
+boundary separately and state whether it changes the audited constructor inventory.
 
 ### 2. Classify by owner, not keyword
 
@@ -72,9 +73,22 @@ Walk the complete source chain with this precedence:
 3. Raw I/O classification appropriate to that boundary.
 4. Coarse SDK/provider retry and kind fallback.
 
-Do not return on the first raw `std::io::Error` before checking deeper for typed CDF errors. Do not
-infer local host ownership merely because a remote provider's source chain contains
-`std::io::Error`; wrapper APIs must carry local-versus-provider provenance.
+Do not return on the first raw `std::io::Error` before checking deeper for typed CDF errors.
+Recursively inspect `std::io::Error::get_ref()` as well as the generic source chain; nested I/O
+wrappers do not reliably expose their payload through `source()` alone. Do not infer local host
+ownership merely because a remote provider's source chain contains `std::io::Error`; wrapper APIs
+must carry local-versus-provider provenance.
+
+For managed filesystem authority, canonicalize and validate the real parent, reject a symlink leaf
+without following it, and retain provenance for configured paths versus CDF-owned defaults.
+Immutable publication must sync the temp file, install without clobber, and sync directory
+ancestry through the durable root on both new and identical-retry success.
+
+For private SQLite, separate schema admission from semantic history validation. Ordinary opens
+must not scan unbounded retained history. Typed APIs validate rows as they decode them; raw
+diagnostic or recovery readers call an explicit integrity validator before bypassing typed access.
+Measure any remaining whole-store diagnostic scan and avoid per-row linear searches that make a
+single large logical object quadratic.
 
 ### 4. Test the matrix
 
@@ -94,9 +108,10 @@ lint, formatting, and diff checks.
 ### 5. Record and review
 
 Write durable evidence with the reproducible inventory, classification families, commands, results,
-and platform/fault-injection limits. Commission an independent read-only review that attempts to
-falsify source-chain precedence and boundary provenance. Update counts after review-driven tests;
-stale pre-repair counts are not closure evidence.
+and platform/fault-injection limits. Freeze code and records before closure review. Commission
+independent read-only reviewers against that same snapshot and request one severity-ranked,
+deduplicated batch; do not interleave partial review passes with ongoing repairs. Update counts
+after review-driven tests; stale pre-repair counts are not closure evidence.
 
 ## Validation
 

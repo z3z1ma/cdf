@@ -95,7 +95,7 @@ impl ProjectContext {
     pub fn load(project_arg: Option<&PathBuf>, env_arg: Option<&str>) -> CdfResult<Self> {
         let (root, project_file) = project_location(project_arg)?;
         let project_text = fs::read_to_string(&project_file).map_err(|error| {
-            CdfError::contract(format!("read {}: {error}", project_file.display()))
+            project_authority_read_error("read project configuration", &project_file, error)
         })?;
         let config = parse_cdf_toml(&project_text)?;
         let env_name = env_arg.unwrap_or(&config.project.default_environment);
@@ -189,8 +189,15 @@ impl ProjectContext {
         sqlite_uri_path(&self.root, &self.environment.state)
     }
 
+    pub fn state_store_path_ownership(&self) -> cdf_state_sqlite::StateStorePathOwnership {
+        state_store_path_ownership(&self.environment.state)
+    }
+
     pub fn state_store(&self) -> CdfResult<SqliteCheckpointStore> {
-        SqliteCheckpointStore::open(self.state_store_path()?)
+        SqliteCheckpointStore::open_with_path_ownership(
+            self.state_store_path()?,
+            self.state_store_path_ownership(),
+        )
     }
 
     pub fn execution_with_state_authorities(
@@ -198,14 +205,20 @@ impl ProjectContext {
         execution: &cdf_runtime::ExecutionServices,
     ) -> CdfResult<cdf_runtime::ExecutionServices> {
         let scopes: std::sync::Arc<dyn cdf_kernel::ScopeLeaseStore> = std::sync::Arc::new(
-            cdf_state_sqlite::SqliteScopeLeaseStore::open(self.state_store_path()?)?,
+            cdf_state_sqlite::SqliteScopeLeaseStore::open_with_path_ownership(
+                self.state_store_path()?,
+                self.state_store_path_ownership(),
+            )?,
         );
         let execution = execution.with_staging_lease_authority(std::sync::Arc::new(
             cdf_runtime::ScopeStagingLeaseAuthority::new(scopes),
         ))?;
         Ok(
             execution.with_content_reachability_store(std::sync::Arc::new(
-                cdf_state_sqlite::SqliteContentReachabilityStore::open(self.state_store_path()?)?,
+                cdf_state_sqlite::SqliteContentReachabilityStore::open_with_path_ownership(
+                    self.state_store_path()?,
+                    self.state_store_path_ownership(),
+                )?,
             )),
         )
     }
@@ -400,14 +413,107 @@ pub(crate) fn project_location_with_current_dir(
 
 fn load_lock(root: &Path) -> CdfResult<(Option<CdfLock>, Option<LockFileAuthority>)> {
     let path = root.join(LOCK_FILE_NAME);
-    if !path.exists() {
-        return Ok((None, None));
+    match std::fs::metadata(&path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match std::fs::symlink_metadata(&path) {
+                Err(link_error) if link_error.kind() == std::io::ErrorKind::NotFound => {
+                    validate_missing_lock_ancestors(&path)?;
+                    return Ok((None, None));
+                }
+                _ => {}
+            }
+        }
+        Err(_) => {}
     }
     let authority = read_lock_file_authority(&path)?;
     let text = std::str::from_utf8(&authority.bytes).map_err(|error| {
         CdfError::contract(format!("read {} as UTF-8: {error}", path.display()))
     })?;
     Ok((Some(parse_lock(text)?), Some(authority)))
+}
+
+fn validate_missing_lock_ancestors(path: &Path) -> CdfResult<()> {
+    let mut cursor = path.parent();
+    while let Some(parent) = cursor {
+        if parent.as_os_str().is_empty() {
+            return Ok(());
+        }
+        match fs::metadata(parent) {
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(CdfError::data(format!(
+                    "cdf.lock ancestor {} is not a real directory",
+                    parent.display()
+                )));
+            }
+            Ok(_) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match fs::symlink_metadata(parent) {
+                    Ok(metadata) if metadata.file_type().is_symlink() => {
+                        return Err(CdfError::data(format!(
+                            "cdf.lock ancestor {} is a dangling symlink",
+                            parent.display()
+                        )));
+                    }
+                    Ok(_) => {
+                        return Err(CdfError::data(format!(
+                            "cdf.lock ancestor {} changed filesystem shape during inspection",
+                            parent.display()
+                        )));
+                    }
+                    Err(link_error) if link_error.kind() == std::io::ErrorKind::NotFound => {
+                        cursor = parent.parent();
+                    }
+                    Err(link_error) => {
+                        return Err(project_authority_read_error(
+                            "inspect cdf.lock ancestor",
+                            parent,
+                            link_error,
+                        ));
+                    }
+                }
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotADirectory
+                    || cdf_kernel::is_filesystem_loop(&error) =>
+            {
+                return Err(CdfError::data(format!(
+                    "cdf.lock ancestor {} has an invalid filesystem shape: {error}",
+                    parent.display()
+                )));
+            }
+            Err(error) => {
+                return Err(CdfError::environment(format!(
+                    "inspect cdf.lock ancestor {}: {error}; check project-path permissions, device availability, and process file limits before retrying",
+                    parent.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn project_authority_read_error(
+    action: &str,
+    path: &Path,
+    error: std::io::Error,
+) -> CdfError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::contract(format!("{action} {}: {error}", path.display()))
+    } else {
+        CdfError::environment(format!(
+            "{action} {}: {error}; check project-path permissions, device availability, memory, and process file limits before retrying",
+            path.display()
+        ))
+    }
 }
 
 fn sqlite_uri_path(root: &Path, uri: &str) -> CdfResult<PathBuf> {
@@ -420,11 +526,66 @@ fn sqlite_uri_path(root: &Path, uri: &str) -> CdfResult<PathBuf> {
         })
 }
 
+fn state_store_path_ownership(uri: &str) -> cdf_state_sqlite::StateStorePathOwnership {
+    if uri == "sqlite://.cdf/state.db" {
+        cdf_state_sqlite::StateStorePathOwnership::CdfManaged
+    } else {
+        cdf_state_sqlite::StateStorePathOwnership::Configured
+    }
+}
+
 fn absolute_under_root(root: &Path, value: &str) -> PathBuf {
     let path = PathBuf::from(value);
     if path.is_absolute() {
         path
     } else {
         root.join(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cdf_kernel::ErrorKind;
+
+    use super::*;
+
+    #[test]
+    fn state_store_ownership_comes_from_the_selected_uri_not_path_components() {
+        assert_eq!(
+            state_store_path_ownership("sqlite://.cdf/state.db"),
+            cdf_state_sqlite::StateStorePathOwnership::CdfManaged
+        );
+        assert_eq!(
+            state_store_path_ownership("sqlite://custom/.cdf/state.db"),
+            cdf_state_sqlite::StateStorePathOwnership::Configured
+        );
+    }
+
+    #[test]
+    fn lock_authority_parent_shape_is_not_silently_treated_as_absent() {
+        let root = tempfile::tempdir().unwrap();
+        let project_root = root.path().join("project");
+        std::fs::write(&project_root, b"not a directory").unwrap();
+
+        let error = load_lock(&project_root).unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::Data);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_lock_symlink_is_not_silently_treated_as_absent() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        symlink(
+            root.path().join("missing.lock"),
+            root.path().join(LOCK_FILE_NAME),
+        )
+        .unwrap();
+
+        let error = load_lock(root.path()).unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::Data);
     }
 }

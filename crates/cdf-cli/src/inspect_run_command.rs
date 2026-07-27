@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use cdf_kernel::{CdfError, RunId, ScopeKey};
+use cdf_kernel::{CdfError, ErrorKind, RunId, ScopeKey};
 use cdf_package::PackageReader;
 use cdf_state_sqlite::{
     RunEvent, RunEventDetails, RunEventKind, RunEventValue, RunLedgerSnapshot, SqliteRunLedger,
@@ -20,7 +20,10 @@ use crate::{
 pub(crate) fn inspect_run(context: &ProjectContext, id: String) -> Result<CommandOutput, CliError> {
     let run_id = RunId::new(id)?;
     let state_path = context.state_store_path()?;
-    let ledger = SqliteRunLedger::open_read_only(&state_path)?;
+    let ledger = SqliteRunLedger::open_read_only_with_path_ownership(
+        &state_path,
+        context.state_store_path_ownership(),
+    )?;
     let snapshot = ledger.snapshot(&run_id)?.ok_or_else(|| {
         CdfError::data(format!(
             "run {} is not present in the selected environment run ledger",
@@ -52,7 +55,7 @@ impl InspectRunReport {
         snapshot: &RunLedgerSnapshot,
     ) -> Result<Self, CliError> {
         let pointers = RunPointerReport::from_events(&snapshot.events)?;
-        let packages = inspect_package_artifacts(context, &snapshot.events);
+        let packages = inspect_package_artifacts(context, &snapshot.events)?;
         let checkpoint = CheckpointAvailabilityReport::from_events(&snapshot.events);
         let receipt =
             ReceiptAvailabilityReport::from_pointers_and_packages(&pointers.receipt_ids, &packages);
@@ -361,10 +364,10 @@ struct PackageAvailabilityReport {
 }
 
 impl PackageAvailabilityReport {
-    fn inspect(context: &ProjectContext, pointer: PackagePointer) -> Self {
+    fn inspect(context: &ProjectContext, pointer: PackagePointer) -> Result<Self, CliError> {
         let resolved = resolve_project_path(&context.root, &pointer.path);
-        if !resolved.exists() {
-            return Self {
+        if package_path_is_missing(&resolved)? {
+            return Ok(Self {
                 path: pointer.path,
                 status: "missing".to_owned(),
                 ledger_package_id: pointer.package_id,
@@ -376,13 +379,13 @@ impl PackageAvailabilityReport {
                 receipt_artifact_status: "unavailable".to_owned(),
                 receipt_ids: Vec::new(),
                 reason: Some("package path recorded in the run ledger does not exist".to_owned()),
-            };
+            });
         }
 
         let reader = match PackageReader::open(&resolved) {
             Ok(reader) => reader,
-            Err(error) => {
-                return Self {
+            Err(error) if error.kind == ErrorKind::Data => {
+                return Ok(Self {
                     path: pointer.path,
                     status: "unavailable".to_owned(),
                     ledger_package_id: pointer.package_id,
@@ -394,8 +397,9 @@ impl PackageAvailabilityReport {
                     receipt_artifact_status: "unavailable".to_owned(),
                     receipt_ids: Vec::new(),
                     reason: Some(error.to_string()),
-                };
+                });
             }
+            Err(error) => return Err(error.into()),
         };
         let manifest = reader.manifest();
         let mut segment_count = 0_usize;
@@ -403,7 +407,10 @@ impl PackageAvailabilityReport {
             segment_count = segment_count.saturating_add(1);
             Ok(())
         }) {
-            return Self {
+            if error.kind != ErrorKind::Data {
+                return Err(error.into());
+            }
+            return Ok(Self {
                 path: pointer.path,
                 status: "unavailable".to_owned(),
                 ledger_package_id: pointer.package_id,
@@ -415,14 +422,14 @@ impl PackageAvailabilityReport {
                 receipt_artifact_status: "unavailable".to_owned(),
                 receipt_ids: Vec::new(),
                 reason: Some(error.to_string()),
-            };
+            });
         }
         let mut receipt_ids = Vec::new();
         match reader.for_each_receipt(&mut |receipt| {
             receipt_ids.push(receipt.receipt_id.to_string());
             Ok(())
         }) {
-            Ok(_) => Self {
+            Ok(_) => Ok(Self {
                 path: pointer.path,
                 status: "available".to_owned(),
                 ledger_package_id: pointer.package_id,
@@ -438,8 +445,8 @@ impl PackageAvailabilityReport {
                 },
                 receipt_ids,
                 reason: None,
-            },
-            Err(error) => Self {
+            }),
+            Err(error) if error.kind == ErrorKind::Data => Ok(Self {
                 path: pointer.path,
                 status: "available".to_owned(),
                 ledger_package_id: pointer.package_id,
@@ -451,7 +458,8 @@ impl PackageAvailabilityReport {
                 receipt_artifact_status: "unavailable".to_owned(),
                 receipt_ids: Vec::new(),
                 reason: Some(error.to_string()),
-            },
+            }),
+            Err(error) => Err(error.into()),
         }
     }
 }
@@ -708,11 +716,88 @@ struct PackagePointer {
 fn inspect_package_artifacts(
     context: &ProjectContext,
     events: &[RunEvent],
-) -> Vec<PackageAvailabilityReport> {
+) -> Result<Vec<PackageAvailabilityReport>, CliError> {
     package_pointers(events)
         .into_iter()
         .map(|pointer| PackageAvailabilityReport::inspect(context, pointer))
         .collect()
+}
+
+fn package_path_is_missing(path: &Path) -> Result<bool, CliError> {
+    match std::fs::metadata(path) {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match std::fs::symlink_metadata(path) {
+                Ok(_) => Ok(false),
+                Err(link_error)
+                    if link_error.kind() == std::io::ErrorKind::NotADirectory
+                        || cdf_kernel::is_filesystem_loop(&link_error) =>
+                {
+                    Ok(false)
+                }
+                Err(link_error) if link_error.kind() == std::io::ErrorKind::NotFound => {
+                    missing_package_path_has_real_ancestor(path)
+                }
+                Err(link_error) => Err(CdfError::environment(format!(
+                    "inspect run package path {}: {link_error}; check package-path permissions, device availability, and process file limits before retrying",
+                    path.display()
+                ))
+                .into()),
+            }
+        }
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotADirectory
+                || cdf_kernel::is_filesystem_loop(&error) =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(CdfError::environment(format!(
+            "inspect run package path {}: {error}; check package-path permissions, device availability, and process file limits before retrying",
+            path.display()
+        ))
+        .into()),
+    }
+}
+
+fn missing_package_path_has_real_ancestor(path: &Path) -> Result<bool, CliError> {
+    for ancestor in path.ancestors().skip(1) {
+        match std::fs::metadata(ancestor) {
+            Ok(metadata) => return Ok(metadata.is_dir()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match std::fs::symlink_metadata(ancestor) {
+                    Ok(_) => return Ok(false),
+                    Err(link_error) if link_error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(link_error)
+                        if link_error.kind() == std::io::ErrorKind::NotADirectory
+                            || cdf_kernel::is_filesystem_loop(&link_error) =>
+                    {
+                        return Ok(false);
+                    }
+                    Err(link_error) => {
+                        return Err(CdfError::environment(format!(
+                            "inspect run package ancestor {}: {link_error}; check package-path permissions, device availability, and process file limits before retrying",
+                            ancestor.display()
+                        ))
+                        .into());
+                    }
+                }
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotADirectory
+                    || cdf_kernel::is_filesystem_loop(&error) =>
+            {
+                return Ok(false);
+            }
+            Err(error) => {
+                return Err(CdfError::environment(format!(
+                    "inspect run package ancestor {}: {error}; check package-path permissions, device availability, and process file limits before retrying",
+                    ancestor.display()
+                ))
+                .into());
+            }
+        }
+    }
+    Ok(true)
 }
 
 fn package_pointers(events: &[RunEvent]) -> Vec<PackagePointer> {

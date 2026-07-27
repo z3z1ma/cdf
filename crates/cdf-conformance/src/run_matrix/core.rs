@@ -1,6 +1,6 @@
 use std::cell::Cell;
 
-use cdf_kernel::{CdfError, PipelineId, Result, RunId, SourcePosition};
+use cdf_kernel::{PipelineId, Result, RunId, SourcePosition};
 use cdf_package::PackageReader;
 use cdf_project::{ProjectRunReport, ProjectRunRequest, run_project};
 
@@ -22,7 +22,7 @@ pub(crate) fn execute_cell(
     environment: &ConformanceEnvironment,
 ) -> Result<ExecutedMatrixCell> {
     let temp = tempfile::tempdir()
-        .map_err(|error| CdfError::data(format!("create run matrix tempdir: {error}")))?;
+        .map_err(|error| crate::conformance_host_error("create run matrix tempdir", error))?;
     let package_id = format!(
         "run-matrix-{}-{}-{}",
         cell.source_archetype.as_str(),
@@ -60,6 +60,7 @@ pub(crate) fn execute_cell(
             plan,
             package_root,
             state_store_path: state_store_path.clone(),
+            state_store_path_ownership: cdf_project::StateStorePathOwnership::Configured,
             pipeline_id: pipeline_id.clone(),
             package_id: package_id.clone(),
             checkpoint_id: checkpoint_id.clone(),
@@ -111,7 +112,7 @@ pub(crate) fn sheet_exclusion_reason(
     environment: &ConformanceEnvironment,
 ) -> Result<Option<String>> {
     let temp = tempfile::tempdir()
-        .map_err(|error| CdfError::data(format!("create exclusion tempdir: {error}")))?;
+        .map_err(|error| crate::conformance_host_error("create exclusion tempdir", error))?;
     let destination = destination_for_cell(cell, temp.path(), environment)?;
     let supported = destination.supported_dispositions()?;
     if supported.contains(&cell.disposition.to_write_disposition()) {

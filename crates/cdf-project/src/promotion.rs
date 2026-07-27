@@ -365,23 +365,160 @@ impl PromotionEvidenceInventory for LocalPackagePromotionEvidenceInventory {
 pub fn inspect_local_package_promotion_availability(
     package_root: &Path,
 ) -> cdf_kernel::Result<Vec<LocalPackagePromotionAvailability>> {
-    if !package_root.exists() {
+    if !promotion_inventory_directory_exists(package_root)? {
         return Ok(Vec::new());
     }
-    let mut directories = fs::read_dir(package_root)
-        .map_err(|error| CdfError::data(format!("read {}: {error}", package_root.display())))?
-        .map(|entry| {
-            entry
-                .map_err(|error| CdfError::data(error.to_string()))
-                .map(|entry| entry.path())
-        })
-        .collect::<cdf_kernel::Result<Vec<_>>>()?;
-    directories.retain(|path| path.is_dir());
+    let mut directories = Vec::new();
+    for entry in fs::read_dir(package_root)
+        .map_err(|error| promotion_inventory_io_error("read package root", package_root, error))?
+    {
+        let entry = entry.map_err(|error| {
+            promotion_inventory_io_error("read package root entry", package_root, error)
+        })?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
+            promotion_inventory_io_error("inspect package root entry", &path, error)
+        })?;
+        if metadata.is_dir() || metadata.file_type().is_symlink() {
+            directories.push(path);
+        }
+    }
     directories.sort();
-    Ok(directories
+    directories
         .into_iter()
         .map(|directory| inspect_local_promotion_package(&directory))
-        .collect())
+        .collect()
+}
+
+fn promotion_inventory_directory_exists(path: &Path) -> cdf_kernel::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Ok(true),
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(CdfError::data(format!(
+            "promotion package root {} is a symlink; package evidence must remain beneath a real configured root",
+            path.display()
+        ))),
+        Ok(_) => Err(CdfError::data(format!(
+            "promotion package root {} is not a directory",
+            path.display()
+        ))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match fs::symlink_metadata(path) {
+                Ok(_) => Err(CdfError::data(format!(
+                    "promotion package root {} is a dangling symlink",
+                    path.display()
+                ))),
+                Err(link_error) if link_error.kind() == std::io::ErrorKind::NotFound => {
+                    validate_missing_promotion_inventory_ancestors(path)?;
+                    Ok(false)
+                }
+                Err(link_error)
+                    if link_error.kind() == std::io::ErrorKind::NotADirectory
+                        || cdf_kernel::is_filesystem_loop(&link_error) =>
+                {
+                    Err(CdfError::data(format!(
+                        "promotion package root {} has an invalid filesystem shape: {link_error}",
+                        path.display()
+                    )))
+                }
+                Err(link_error) => Err(promotion_inventory_io_error(
+                    "inspect promotion package root",
+                    path,
+                    link_error,
+                )),
+            }
+        }
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotADirectory
+                || cdf_kernel::is_filesystem_loop(&error) =>
+        {
+            Err(CdfError::data(format!(
+                "promotion package root {} has an invalid filesystem shape: {error}",
+                path.display()
+            )))
+        }
+        Err(error) => Err(promotion_inventory_io_error(
+            "inspect promotion package root",
+            path,
+            error,
+        )),
+    }
+}
+
+fn validate_missing_promotion_inventory_ancestors(path: &Path) -> cdf_kernel::Result<()> {
+    for ancestor in path.ancestors().skip(1) {
+        match fs::metadata(ancestor) {
+            Ok(metadata) if metadata.is_dir() => return Ok(()),
+            Ok(_) => {
+                return Err(CdfError::data(format!(
+                    "promotion package root ancestor {} is not a directory",
+                    ancestor.display()
+                )));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match fs::symlink_metadata(ancestor) {
+                    Ok(_) => {
+                        return Err(CdfError::data(format!(
+                            "promotion package root ancestor {} is a dangling symlink",
+                            ancestor.display()
+                        )));
+                    }
+                    Err(link_error) if link_error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(link_error)
+                        if link_error.kind() == std::io::ErrorKind::NotADirectory
+                            || cdf_kernel::is_filesystem_loop(&link_error) =>
+                    {
+                        return Err(CdfError::data(format!(
+                            "promotion package root ancestor {} has an invalid filesystem shape: {link_error}",
+                            ancestor.display()
+                        )));
+                    }
+                    Err(link_error) => {
+                        return Err(promotion_inventory_io_error(
+                            "inspect promotion package root ancestor",
+                            ancestor,
+                            link_error,
+                        ));
+                    }
+                }
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotADirectory
+                    || cdf_kernel::is_filesystem_loop(&error) =>
+            {
+                return Err(CdfError::data(format!(
+                    "promotion package root ancestor {} has an invalid filesystem shape: {error}",
+                    ancestor.display()
+                )));
+            }
+            Err(error) => {
+                return Err(promotion_inventory_io_error(
+                    "inspect promotion package root ancestor",
+                    ancestor,
+                    error,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn promotion_inventory_io_error(action: &str, path: &Path, error: std::io::Error) -> CdfError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::data(format!("{action} {}: {error}", path.display()))
+    } else {
+        CdfError::environment(format!(
+            "{action} {}: {error}; check package-path permissions, device availability, and process file limits before retrying",
+            path.display()
+        ))
+    }
 }
 
 pub fn assess_local_promotion_collection(
@@ -439,7 +576,9 @@ pub fn assess_local_promotion_collection(
     assessments
 }
 
-fn inspect_local_promotion_package(package_dir: &Path) -> LocalPackagePromotionAvailability {
+fn inspect_local_promotion_package(
+    package_dir: &Path,
+) -> cdf_kernel::Result<LocalPackagePromotionAvailability> {
     let mut availability = LocalPackagePromotionAvailability {
         artifact_location: package_dir.display().to_string(),
         package_hash: None,
@@ -454,53 +593,60 @@ fn inspect_local_promotion_package(package_dir: &Path) -> LocalPackagePromotionA
     };
     let reader = match PackageReader::open(package_dir) {
         Ok(reader) => reader,
-        Err(error) => {
+        Err(error) if error.kind == cdf_kernel::ErrorKind::Data => {
             availability.detail = Some(error.to_string());
-            return availability;
+            return Ok(availability);
         }
+        Err(error) => return Err(error),
     };
     availability.package_hash = Some(reader.manifest().package_hash.clone());
     let package_hash = match PackageHash::new(reader.manifest().package_hash.clone()) {
         Ok(package_hash) => package_hash,
         Err(error) => {
             availability.detail = Some(error.to_string());
-            return availability;
+            return Ok(availability);
         }
     };
     if reader.manifest().lifecycle.status == PackageStatus::Archived {
         availability.status = LocalPromotionAvailabilityStatus::TombstoneOnly;
-        return availability;
+        return Ok(availability);
     }
     let delta = match reader.state_delta_preimage() {
         Ok(delta) => delta,
-        Err(error) => {
+        Err(error) if error.kind == cdf_kernel::ErrorKind::Data => {
             availability.status = LocalPromotionAvailabilityStatus::InvalidStateAuthority;
             availability.detail = Some(error.to_string());
-            return availability;
+            return Ok(availability);
         }
+        Err(error) => return Err(error),
     };
     availability.resource_id = Some(delta.resource_id.to_string());
     if let Err(error) = reader.verify() {
+        if error.kind != cdf_kernel::ErrorKind::Data {
+            return Err(error);
+        }
         availability.detail = Some(error.to_string());
-        return availability;
+        return Ok(availability);
     }
     let scan = match scan_canonical_package_residuals(&reader, &package_hash, |_, _, _| Ok(())) {
         Ok(scan) => scan,
-        Err(error) => {
+        Err(error) if error.kind == cdf_kernel::ErrorKind::Data => {
             availability.status = LocalPromotionAvailabilityStatus::InvalidResidualEnvelope;
             availability.detail = Some(error.to_string());
-            return availability;
+            return Ok(availability);
         }
+        Err(error) => return Err(error),
     };
     availability.contains_local_residual_bytes = scan.byte_count > 0;
     availability.local_residual_bytes = scan.byte_count;
     let receipts = match structurally_verified_package_receipts(&reader, &delta, &package_hash) {
         Ok(receipts) => receipts,
-        Err(error) => {
+        Err(error) if error.kind == cdf_kernel::ErrorKind::Data => {
             availability.status = LocalPromotionAvailabilityStatus::InvalidReceiptAuthority;
             availability.detail = Some(error.to_string());
-            return availability;
+            return Ok(availability);
         }
+        Err(error) => return Err(error),
     };
     availability.receipt_targets = receipt_targets(&receipts);
     if scan.byte_count == 0 {
@@ -512,7 +658,7 @@ fn inspect_local_promotion_package(package_dir: &Path) -> LocalPackagePromotionA
         availability.locally_promotable = true;
         availability.promotable_residual_bytes = scan.byte_count;
     }
-    availability
+    Ok(availability)
 }
 
 fn receipt_targets(receipts: &[cdf_kernel::Receipt]) -> Vec<LocalPromotionReceiptTarget> {
@@ -1354,7 +1500,7 @@ fn inventory_local_packages(
     package_root: &Path,
     resource_id: &str,
 ) -> cdf_kernel::Result<SchemaPromotionEvidenceInventoryFacts> {
-    if !package_root.exists() {
+    if !promotion_inventory_directory_exists(package_root)? {
         return Ok(SchemaPromotionEvidenceInventoryFacts {
             paths: Vec::new(),
             evidence: vec![SchemaPromotionEvidenceReport {
@@ -1372,23 +1518,19 @@ fn inventory_local_packages(
     }
     let mut directories = Vec::new();
     for entry in fs::read_dir(package_root)
-        .map_err(|error| CdfError::data(format!("read {}: {error}", package_root.display())))?
+        .map_err(|error| promotion_inventory_io_error("read package root", package_root, error))?
     {
         let entry = entry.map_err(|error| {
-            CdfError::data(format!("enumerate {}: {error}", package_root.display()))
+            promotion_inventory_io_error("enumerate package root", package_root, error)
         })?;
         let file_type = entry.file_type().map_err(|error| {
-            CdfError::data(format!("inspect {}: {error}", entry.path().display()))
+            promotion_inventory_io_error("inspect package root entry", &entry.path(), error)
         })?;
-        if file_type.is_dir() {
+        if file_type.is_dir() || file_type.is_symlink() {
             directories.push(entry.path());
         }
     }
-    directories.sort_by_key(|path| {
-        PackageReader::open(path)
-            .map(|reader| reader.manifest().package_hash.clone())
-            .unwrap_or_else(|_| format!("~{}", path.display()))
-    });
+    directories.sort();
 
     let mut path_accumulators = BTreeMap::<String, ResidualPathAccumulator>::new();
     let mut evidence = Vec::new();
@@ -1406,16 +1548,20 @@ fn inventory_local_packages(
         };
         let reader = match PackageReader::open(&package_dir) {
             Ok(reader) => reader,
-            Err(error) => {
+            Err(error) if error.kind == cdf_kernel::ErrorKind::Data => {
                 coverage_complete = false;
                 report.detail = Some(error.to_string());
                 evidence.push(report);
                 continue;
             }
+            Err(error) => return Err(error),
         };
         report.package_hash = Some(reader.manifest().package_hash.clone());
         let archived = reader.manifest().lifecycle.status == PackageStatus::Archived;
         if !archived && let Err(error) = reader.verify() {
+            if error.kind != cdf_kernel::ErrorKind::Data {
+                return Err(error);
+            }
             coverage_complete = false;
             report.detail = Some(error.to_string());
             evidence.push(report);
@@ -1423,7 +1569,7 @@ fn inventory_local_packages(
         }
         let delta = match reader.state_delta_preimage() {
             Ok(delta) => delta,
-            Err(error) => {
+            Err(error) if error.kind == cdf_kernel::ErrorKind::Data => {
                 coverage_complete = false;
                 if archived {
                     report.availability = SchemaPromotionEvidenceAvailability::TombstoneOnly;
@@ -1432,6 +1578,7 @@ fn inventory_local_packages(
                 evidence.push(report);
                 continue;
             }
+            Err(error) => return Err(error),
         };
         if delta.resource_id.as_str() != resource_id {
             continue;
@@ -1441,12 +1588,13 @@ fn inventory_local_packages(
         let receipts = match structurally_verified_package_receipts(&reader, &delta, &package_hash)
         {
             Ok(receipts) => receipts,
-            Err(error) => {
+            Err(error) if error.kind == cdf_kernel::ErrorKind::Data => {
                 coverage_complete = false;
                 report.detail = Some(error.to_string());
                 evidence.push(report);
                 continue;
             }
+            Err(error) => return Err(error),
         };
         for receipt in receipts {
             report.recorded_receipts.push(SchemaPromotionReceiptReport {
@@ -1470,7 +1618,7 @@ fn inventory_local_packages(
         }
         report.availability = SchemaPromotionEvidenceAvailability::RetainedPackage;
         let mut report_paths = BTreeSet::new();
-        let scan = scan_canonical_package_residuals(
+        let scan = match scan_canonical_package_residuals(
             &reader,
             &package_hash,
             |field, address, residual_bytes| {
@@ -1516,11 +1664,22 @@ fn inventory_local_packages(
                 accumulator
                     .package_digests
                     .get_mut(package_hash.as_str())
-                    .expect("package digest was inserted")
+                    .ok_or_else(|| {
+                        CdfError::internal("promotion inventory package digest was not initialized")
+                    })?
                     .update(digest_item);
                 Ok(())
             },
-        )?;
+        ) {
+            Ok(scan) => scan,
+            Err(error) if error.kind == cdf_kernel::ErrorKind::Data => {
+                coverage_complete = false;
+                report.detail = Some(error.to_string());
+                evidence.push(report);
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         report.residual_rows = scan.row_count;
         report.residual_paths = report_paths.into_iter().collect();
         evidence.push(report);
@@ -2896,6 +3055,44 @@ mod tests {
             SchemaPromotionEvidenceAvailability::Missing
         );
         assert!(facts.evidence[0].detail.is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_inventory_reports_symlink_package_without_following_outside_root() {
+        use std::os::unix::fs::symlink;
+
+        let package_root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("marker"), b"outside").unwrap();
+        symlink(outside.path(), package_root.path().join("linked-package")).unwrap();
+
+        let availability =
+            inspect_local_package_promotion_availability(package_root.path()).unwrap();
+        assert_eq!(availability.len(), 1);
+        assert_eq!(
+            availability[0].status,
+            LocalPromotionAvailabilityStatus::InvalidPackage
+        );
+        assert!(
+            availability[0]
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("without following links"))
+        );
+
+        let facts = LocalPackagePromotionEvidenceInventory::new(package_root.path())
+            .inventory("source.resource")
+            .unwrap();
+        assert_eq!(facts.evidence.len(), 1);
+        assert!(!facts.coverage_complete);
+        assert!(
+            facts.evidence[0]
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("without following links"))
+        );
+        assert_eq!(fs::read(outside.path().join("marker")).unwrap(), b"outside");
     }
 
     #[test]

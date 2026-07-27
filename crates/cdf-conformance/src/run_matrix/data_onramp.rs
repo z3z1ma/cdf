@@ -236,7 +236,7 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
             "crates/cdf-contract/src/tests.rs::schema_reconciliation_preserves_constraint_names_and_classifies_extra_fields",
             "crates/cdf-contract/src/tests.rs::schema_reconciliation_rejects_lossy_casts_until_policy_allows_them",
             "crates/cdf-contract/src/tests.rs::reconciled_schema_metadata_preserves_extra_field_decisions_for_package_evidence",
-            "crates/cdf-source-files/src/runtime.rs::tests::local_parquet_uses_registered_native_driver_as_bounded_stream",
+            "crates/cdf-source-files/src/runtime/tests.rs::local_parquet_uses_registered_native_driver_as_bounded_stream",
         ],
         open_tickets: &[],
     },
@@ -263,7 +263,7 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
     P2FrictionRow {
         id: 8,
         closed_tests: &[
-            "crates/cdf-source-files/src/runtime.rs::tests::object_store_recursive_glob_resolves_stable_multi_file_partitions",
+            "crates/cdf-source-files/src/runtime/tests.rs::object_store_recursive_glob_resolves_stable_multi_file_partitions",
             "crates/cdf-project/src/runtime_tests.rs::general_project_run_commits_multi_file_resource_manifest_checkpoint",
             "crates/cdf-project/src/runtime_tests.rs::file_manifest_append_run_skips_unchanged_files_and_loads_only_changes",
         ],
@@ -330,7 +330,7 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
     P2FrictionRow {
         id: 16,
         closed_tests: &[
-            "crates/cdf-source-files/src/runtime.rs::tests::object_store_gzip_ndjson_streams_without_spill_and_preserves_remote_position",
+            "crates/cdf-source-files/src/runtime/tests.rs::object_store_gzip_ndjson_streams_without_spill_and_preserves_remote_position",
             "crates/cdf-project/src/tests.rs::http_gzip_ndjson_backpressures_and_cancels_before_download_completion",
             "crates/cdf-transform-gzip/src/lib.rs::tests::streams_concatenated_members_across_single_byte_input_chunks",
             "crates/cdf-transform-zstd/src/lib.rs::tests::streams_concatenated_frames_across_single_byte_input_chunks",
@@ -353,7 +353,7 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
     P2FrictionRow {
         id: 18,
         closed_tests: &[
-            "crates/cdf-source-files/src/runtime.rs::tests::local_parquet_uses_registered_native_driver_as_bounded_stream",
+            "crates/cdf-source-files/src/runtime/tests.rs::local_parquet_uses_registered_native_driver_as_bounded_stream",
             "crates/cdf-contract/src/tests.rs::schema_reconciliation_records_lossless_widenings_and_physical_type",
             "crates/cdf-cli/src/tests.rs::run_local_parquet_discover_autopins_and_commits_pinned_schema",
             "crates/cdf-project/src/tests.rs::http_parquet_auto_pin_plan_preview_and_run_use_file_runtime",
@@ -913,7 +913,7 @@ fn preview_fingerprint(
     environment: &ConformanceEnvironment,
 ) -> Result<PreviewFingerprint> {
     let temp = tempfile::tempdir().map_err(|error| {
-        cdf_kernel::CdfError::data(format!("create P2 parity preview tempdir: {error}"))
+        crate::conformance_host_error("create P2 parity preview tempdir", error)
     })?;
     let package_id = format!(
         "p2-preview-parity-{}-{}",

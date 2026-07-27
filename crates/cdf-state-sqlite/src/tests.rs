@@ -13,8 +13,8 @@ use cdf_conformance::scope_lease::{
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, Checkpoint, CheckpointId, CheckpointStatus, CheckpointStore,
     CommitCounts, CompositePosition, ContractRef, CursorPosition, CursorValue, DestinationId,
-    EventTimeDomain, FileManifest, FilePosition, ForeignState, IdempotencyToken, LeaseOwnerId,
-    LogPosition, MigrationRecord, PARTITION_WATERMARK_STATE_VERSION,
+    ErrorKind, EventTimeDomain, FileManifest, FilePosition, ForeignState, IdempotencyToken,
+    LeaseOwnerId, LogPosition, MigrationRecord, PARTITION_WATERMARK_STATE_VERSION,
     PROMOTION_PUBLICATION_EVENT_VERSION, PackageHash, PageToken, PartitionId,
     PartitionWatermarkState, PipelineId, PlanId, PromotionId, PromotionPublicationEvent,
     PromotionPublicationTarget, PromotionSettlementStore, Receipt, ReceiptId, ResourceId,
@@ -23,7 +23,7 @@ use cdf_kernel::{
     TableSnapshotSelector, TargetName, VerifyClause, WATERMARK_CLAIM_VERSION, WatermarkAuthority,
     WatermarkClaim, WatermarkObservationContext, WatermarkValue, WriteDisposition,
 };
-use rusqlite::params;
+use rusqlite::{Connection, params};
 use tempfile::tempdir;
 
 use crate::support::encode_json;
@@ -174,6 +174,44 @@ fn assert_plausible_created_at(checkpoint: &Checkpoint) {
 }
 
 #[test]
+fn sqlite_duplicate_caller_checkpoint_id_is_contract_owned() {
+    let store = SqliteCheckpointStore::open_in_memory().unwrap();
+    let original = delta(
+        "checkpoint-duplicate-id",
+        None,
+        partition_scope(),
+        cursor_position(1),
+        "package-duplicate-id",
+    );
+    store.propose(original.clone()).unwrap();
+
+    let error = store.propose(original).unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::Contract);
+    assert!(error.message.contains("already exists"));
+}
+
+#[test]
+fn in_memory_store_uses_ephemeral_sqlite_error_context() {
+    let store = SqliteCheckpointStore::open_in_memory().unwrap();
+    store
+        .execute_for_test("PRAGMA query_only = ON", [])
+        .unwrap();
+
+    let error = store
+        .execute_classified_for_test("CREATE TABLE forbidden(value INTEGER)", [])
+        .unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::Internal);
+    assert!(
+        error
+            .message
+            .contains("ephemeral in-memory SQLite workspace")
+    );
+    assert!(!error.message.contains("state path"));
+}
+
+#[test]
 fn committed_schema_streak_reads_only_the_bounded_newest_suffix() {
     let store = SqliteCheckpointStore::open_in_memory().unwrap();
     let scope = partition_scope();
@@ -231,6 +269,46 @@ fn committed_schema_streak_reads_only_the_bounded_newest_suffix() {
             )
             .unwrap(),
         0
+    );
+}
+
+#[test]
+fn committed_schema_streak_rejects_scalar_rows_that_disagree_with_private_authority() {
+    let store = SqliteCheckpointStore::open_in_memory().unwrap();
+    let scope = partition_scope();
+    let mut checkpoint = delta(
+        "streak-corrupt",
+        None,
+        scope.clone(),
+        cursor_position(1),
+        "package-streak-corrupt",
+    );
+    checkpoint.schema_hash = SchemaHash::new("schema-original").unwrap();
+    commit_delta(&store, checkpoint.clone());
+    store
+        .execute_for_test(
+            "UPDATE cdf_checkpoints SET schema_hash = ? WHERE checkpoint_id = ?",
+            params!["schema-forged", checkpoint.checkpoint_id.as_str(),],
+        )
+        .unwrap();
+
+    let error = store
+        .committed_schema_streak(
+            &checkpoint.pipeline_id,
+            &checkpoint.resource_id,
+            &scope,
+            &SchemaHash::new("schema-forged").unwrap(),
+            1,
+        )
+        .unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::Internal);
+    assert!(
+        error
+            .message
+            .contains("columns do not match serialized state delta"),
+        "{}",
+        error.message
     );
 }
 
@@ -823,6 +901,17 @@ fn sqlite_committed_package_hashes_reports_only_committed_history() {
         read_only.committed_package_hashes().unwrap(),
         BTreeSet::from([PackageHash::new("package-gc-committed").unwrap()])
     );
+    let error = read_only
+        .propose(delta(
+            "checkpoint-read-only-write",
+            Some(&committed.delta.checkpoint_id),
+            partition_scope(),
+            cursor_position(4),
+            "package-read-only-write",
+        ))
+        .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Internal);
+    assert!(error.message.contains("read-only"));
 }
 
 #[test]
@@ -1380,6 +1469,85 @@ fn sqlite_run_ledger_records_are_append_only_below_the_rust_api() {
 }
 
 #[test]
+fn sqlite_run_ledger_rejects_private_timestamp_corruption_and_sequence_overflow() {
+    let temp = tempdir().unwrap();
+    let run_path = temp.path().join(".cdf").join("negative-run.db");
+    std::fs::create_dir_all(run_path.parent().unwrap()).unwrap();
+    let ledger = SqliteRunLedger::open(&run_path).unwrap();
+    let run = ledger
+        .create_run(Some(RunId::new("negative-run").unwrap()))
+        .unwrap();
+    drop(ledger);
+    let connection = Connection::open(&run_path).unwrap();
+    connection
+        .execute_batch("DROP TRIGGER cdf_runs_no_update")
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE cdf_runs SET created_at_ms = -1 WHERE run_id = ?",
+            params![run.run_id.as_str()],
+        )
+        .unwrap();
+    drop(connection);
+    let ledger = SqliteRunLedger::open(&run_path).unwrap();
+    let error = ledger
+        .validate_integrity()
+        .expect_err("negative private run timestamp must fail integrity validation");
+    assert_eq!(error.kind, ErrorKind::Internal);
+    assert!(error.message.contains("creation timestamp"));
+
+    let event_path = temp.path().join(".cdf").join("negative-event.db");
+    let ledger = SqliteRunLedger::open(&event_path).unwrap();
+    let run = ledger
+        .create_run(Some(RunId::new("negative-event").unwrap()))
+        .unwrap();
+    ledger
+        .append_event(&run.run_id, RunEventAppend::new(RunEventKind::RunStarted))
+        .unwrap();
+    drop(ledger);
+    let connection = Connection::open(&event_path).unwrap();
+    connection
+        .execute_batch("DROP TRIGGER cdf_run_events_no_update")
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE cdf_run_events SET timestamp_ms = -1 WHERE run_id = ?",
+            params![run.run_id.as_str()],
+        )
+        .unwrap();
+    drop(connection);
+    let ledger = SqliteRunLedger::open(&event_path).unwrap();
+    let error = ledger
+        .validate_integrity()
+        .expect_err("negative private event timestamp must fail integrity validation");
+    assert_eq!(error.kind, ErrorKind::Internal);
+    assert!(error.message.contains("event timestamp"));
+
+    let overflow_path = temp.path().join(".cdf").join("overflow-event.db");
+    let ledger = SqliteRunLedger::open(&overflow_path).unwrap();
+    let run = ledger
+        .create_run(Some(RunId::new("overflow-event").unwrap()))
+        .unwrap();
+    ledger
+        .append_event(&run.run_id, RunEventAppend::new(RunEventKind::RunStarted))
+        .unwrap();
+    ledger
+        .execute_for_test("DROP TRIGGER cdf_run_events_no_update", [])
+        .unwrap();
+    ledger
+        .execute_for_test(
+            "UPDATE cdf_run_events SET sequence = ? WHERE run_id = ?",
+            params![i64::MAX, run.run_id.as_str()],
+        )
+        .unwrap();
+    let error = ledger
+        .append_event(&run.run_id, RunEventAppend::new(RunEventKind::RunSucceeded))
+        .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Internal);
+    assert!(error.message.contains("sequence overflow"));
+}
+
+#[test]
 fn sqlite_run_ledger_serializes_required_event_families_with_secret_refs_only() {
     let ledger = SqliteRunLedger::open_in_memory().unwrap();
     let run = ledger
@@ -1518,12 +1686,11 @@ fn sqlite_run_ledger_open_read_only_reads_without_initializing_missing_database(
     assert_eq!(snapshot.run.run_id, run.run_id);
     assert_eq!(snapshot.events.len(), 1);
     assert_eq!(snapshot.events[0].kind, RunEventKind::RunStarted);
-    assert!(
-        read_only
-            .create_run(Some(RunId::new("run-write").unwrap()))
-            .is_err(),
-        "read-only ledger handle must not allow writes"
-    );
+    let error = read_only
+        .create_run(Some(RunId::new("run-write").unwrap()))
+        .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Internal);
+    assert!(error.message.contains("read-only"));
 }
 
 #[test]
@@ -1675,6 +1842,52 @@ fn sqlite_promotion_publication_is_append_only_idempotent_authority() {
         reopened.promotion_publication(&promotion_id).unwrap(),
         Some(event)
     );
+}
+
+#[test]
+fn sqlite_promotion_lookup_rejects_hidden_private_row_corruption() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join(".cdf").join("promotion.db");
+    std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+    let ledger = SqliteRunLedger::open(&db_path).unwrap();
+    let promotion_id = PromotionId::new("promotion-hidden").unwrap();
+    let event = PromotionPublicationEvent {
+        version: PROMOTION_PUBLICATION_EVENT_VERSION,
+        promotion_id: promotion_id.clone(),
+        resource_id: resource_id(),
+        old_schema_hash: SchemaHash::new("sha256:old").unwrap(),
+        new_schema_hash: SchemaHash::new("sha256:new").unwrap(),
+        installed_lock_sha256: "sha256:lock".to_owned(),
+        targets: vec![PromotionPublicationTarget {
+            destination_id: DestinationId::new("duckdb").unwrap(),
+            target: TargetName::new("orders").unwrap(),
+            correction_package_hash: PackageHash::new("sha256:correction").unwrap(),
+            receipt_id: ReceiptId::new("receipt-correction").unwrap(),
+            checkpoint_id: CheckpointId::new("checkpoint-correction").unwrap(),
+        }],
+        published_at_ms: 10,
+    };
+    ledger.publish_promotion(event).unwrap();
+    drop(ledger);
+    let connection = Connection::open(&db_path).unwrap();
+    connection
+        .execute_batch("DROP TRIGGER cdf_promotion_publications_no_update")
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE cdf_promotion_publications SET promotion_id = ? WHERE promotion_id = ?",
+            params!["promotion-hidden-corrupt", promotion_id.as_str()],
+        )
+        .unwrap();
+    drop(connection);
+
+    let ledger = SqliteRunLedger::open(&db_path).unwrap();
+    let error = ledger
+        .validate_integrity()
+        .expect_err("hidden private corruption must fail explicit integrity validation");
+
+    assert_eq!(error.kind, ErrorKind::Internal);
+    assert!(error.message.contains("serialized event JSON"));
 }
 
 #[test]
@@ -1871,10 +2084,10 @@ where
         ),
     );
     let (pipeline_id, resource_id, scope) = mutate(&store, &committed.delta);
-    assert!(
-        store.head(&pipeline_id, &resource_id, &scope).is_err(),
-        "corrupt scalar checkpoint row should be rejected during read"
-    );
+    let error = store
+        .head(&pipeline_id, &resource_id, &scope)
+        .expect_err("corrupt scalar checkpoint row should be rejected during read");
+    assert_eq!(error.kind, ErrorKind::Internal);
 }
 
 #[test]
@@ -1883,7 +2096,7 @@ fn sqlite_rejects_rows_when_scalar_columns_disagree_with_delta_json() {
         store
             .execute_for_test(
                 "UPDATE cdf_checkpoints SET checkpoint_id = ? WHERE checkpoint_id = ?",
-                params!["checkpoint-corrupt-id-scalar", delta.checkpoint_id.as_str()],
+                params!["", delta.checkpoint_id.as_str()],
             )
             .unwrap();
         (
@@ -2026,6 +2239,71 @@ fn sqlite_rejects_rows_when_scalar_columns_disagree_with_delta_json() {
             delta.scope.clone(),
         )
     });
+}
+
+#[test]
+fn sqlite_checkpoint_integrity_rejects_private_sequence_and_head_lifecycle_corruption() {
+    let temp = tempdir().unwrap();
+    let sequence_path = temp.path().join(".cdf").join("sequence.db");
+    std::fs::create_dir_all(sequence_path.parent().unwrap()).unwrap();
+    let store = SqliteCheckpointStore::open(&sequence_path).unwrap();
+    let proposed = store
+        .propose(delta(
+            "checkpoint-corrupt-sequence",
+            None,
+            partition_scope(),
+            cursor_position(1),
+            "package-corrupt-sequence",
+        ))
+        .unwrap();
+    drop(store);
+    let connection = Connection::open(&sequence_path).unwrap();
+    connection
+        .execute_batch("PRAGMA ignore_check_constraints = ON")
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE cdf_checkpoints SET sequence = -1 WHERE checkpoint_id = ?",
+            params![proposed.delta.checkpoint_id.as_str()],
+        )
+        .unwrap();
+    drop(connection);
+    let store = SqliteCheckpointStore::open(&sequence_path).unwrap();
+    let error = store
+        .validate_integrity()
+        .expect_err("nonpositive private checkpoint sequence must fail integrity validation");
+    assert_eq!(error.kind, ErrorKind::Internal);
+    assert!(error.message.contains("sequence"));
+
+    let head_path = temp.path().join(".cdf").join("head.db");
+    let store = SqliteCheckpointStore::open(&head_path).unwrap();
+    let proposed = store
+        .propose(delta(
+            "checkpoint-corrupt-head",
+            None,
+            partition_scope(),
+            cursor_position(1),
+            "package-corrupt-head",
+        ))
+        .unwrap();
+    drop(store);
+    let connection = Connection::open(&head_path).unwrap();
+    connection
+        .execute_batch("PRAGMA ignore_check_constraints = ON")
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE cdf_checkpoints SET is_head = 1 WHERE checkpoint_id = ?",
+            params![proposed.delta.checkpoint_id.as_str()],
+        )
+        .unwrap();
+    drop(connection);
+    let store = SqliteCheckpointStore::open(&head_path).unwrap();
+    let error = store
+        .validate_integrity()
+        .expect_err("non-committed private checkpoint head must fail integrity validation");
+    assert_eq!(error.kind, ErrorKind::Internal);
+    assert!(error.message.contains("current head"));
 }
 
 #[test]

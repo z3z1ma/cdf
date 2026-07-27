@@ -107,14 +107,38 @@ pub fn is_filesystem_loop(error: &std::io::Error) -> bool {
 }
 
 pub fn embedded_cdf_error(error: &std::io::Error) -> Option<CdfError> {
-    error
+    let mut source: Option<&(dyn StdError + 'static)> = error
         .get_ref()
-        .and_then(|source| source.downcast_ref::<CdfError>())
-        .cloned()
+        .map(|source| source as &(dyn StdError + 'static));
+    while let Some(current) = source {
+        if let Some(error) = current.downcast_ref::<CdfError>() {
+            return Some(error.clone());
+        }
+        source = match current.downcast_ref::<std::io::Error>() {
+            Some(error) => error
+                .get_ref()
+                .map(|source| source as &(dyn StdError + 'static)),
+            None => current.source(),
+        };
+    }
+    None
 }
 
 impl From<ArrowError> for CdfError {
     fn from(error: ArrowError) -> Self {
         Self::data(error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_cdf_error_walks_nested_io_wrappers() {
+        let expected = CdfError::rate_limited("nested owner", Some(125));
+        let nested = std::io::Error::other(std::io::Error::other(expected.clone()));
+
+        assert_eq!(embedded_cdf_error(&nested), Some(expected));
     }
 }

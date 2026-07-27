@@ -14,12 +14,17 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use crate::{
     SqliteCheckpointStore, SqliteRunLedger, SqliteScopeLeaseStore,
     sqlite::{SqliteCheckpointStore as CheckpointSql, commit_checkpoint_tx},
-    support::{encode_json, sqlite_error},
+    support::{
+        StateStorePathOwnership, database_open_path, database_path_exists,
+        decode_private_promotion_publication_row, encode_json, managed_sqlite_open_flags,
+        sqlite_error,
+    },
 };
 
 /// One typed promotion settlement boundary over one SQLite consistency domain.
 pub struct SqlitePromotionSettlementStore {
     path: PathBuf,
+    path_ownership: StateStorePathOwnership,
     checkpoints: SqliteCheckpointStore,
     leases: SqliteScopeLeaseStore,
     ledger: SqliteRunLedger,
@@ -28,19 +33,48 @@ pub struct SqlitePromotionSettlementStore {
 
 impl SqlitePromotionSettlementStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Self::open_with_clock(path, Arc::new(crate::lease::SystemScopeLeaseClock))
+        Self::open_with_clock_and_path_ownership(
+            path,
+            Arc::new(crate::lease::SystemScopeLeaseClock),
+            StateStorePathOwnership::CdfManaged,
+        )
+    }
+
+    pub fn open_with_path_ownership(
+        path: impl AsRef<Path>,
+        ownership: StateStorePathOwnership,
+    ) -> Result<Self> {
+        Self::open_with_clock_and_path_ownership(
+            path,
+            Arc::new(crate::lease::SystemScopeLeaseClock),
+            ownership,
+        )
     }
 
     pub fn open_with_clock(
         path: impl AsRef<Path>,
         clock: Arc<dyn ScopeLeaseClock>,
     ) -> Result<Self> {
+        Self::open_with_clock_and_path_ownership(path, clock, StateStorePathOwnership::CdfManaged)
+    }
+
+    pub fn open_with_clock_and_path_ownership(
+        path: impl AsRef<Path>,
+        clock: Arc<dyn ScopeLeaseClock>,
+        ownership: StateStorePathOwnership,
+    ) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let checkpoints = SqliteCheckpointStore::open(&path)?;
-        let leases = SqliteScopeLeaseStore::open_with_clock(&path, Arc::clone(&clock))?;
-        let ledger = SqliteRunLedger::open(&path)?;
+        let checkpoints = SqliteCheckpointStore::open_with_path_ownership(&path, ownership)?;
+        let leases = SqliteScopeLeaseStore::open_with_clock_and_path_ownership(
+            &path,
+            Arc::clone(&clock),
+            ownership,
+        )?;
+        let ledger = SqliteRunLedger::open_with_path_ownership(&path, ownership)?;
+        let path = database_open_path(&path, ownership)?;
         Ok(Self {
             path,
+            path_ownership: ownership,
             checkpoints,
             leases,
             ledger,
@@ -49,7 +83,9 @@ impl SqlitePromotionSettlementStore {
     }
 
     fn connection(&self) -> Result<Connection> {
-        Connection::open(&self.path).map_err(sqlite_error)
+        database_path_exists(&self.path, self.path_ownership)?;
+        Connection::open_with_flags(&self.path, managed_sqlite_open_flags(false))
+            .map_err(sqlite_error)
     }
 }
 
@@ -256,14 +292,20 @@ fn publication_tx(
     promotion_id: &PromotionId,
 ) -> Result<Option<PromotionPublicationEvent>> {
     tx.query_row(
-        "SELECT event_json FROM cdf_promotion_publications WHERE promotion_id = ?",
+        "SELECT promotion_id, published_at_ms, event_json FROM cdf_promotion_publications WHERE promotion_id = ?",
         params![promotion_id.as_str()],
-        |row| row.get::<_, String>(0),
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        },
     )
     .optional()
     .map_err(sqlite_error)?
-    .map(|json| {
-        serde_json::from_str(&json).map_err(|error| cdf_kernel::CdfError::data(error.to_string()))
+    .map(|(promotion_id, published_at_ms, json)| {
+        decode_private_promotion_publication_row(promotion_id, published_at_ms, json)
     })
     .transpose()
 }

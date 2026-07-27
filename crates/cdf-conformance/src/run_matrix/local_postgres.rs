@@ -1,5 +1,5 @@
 use std::{
-    env,
+    env::{self, VarError},
     net::TcpListener,
     path::PathBuf,
     process::Command,
@@ -33,9 +33,12 @@ impl LivePostgres {
     pub(crate) fn start() -> Result<Self> {
         let (url, server) = match env::var("TEST_DATABASE_URL") {
             Ok(url) if !url.trim().is_empty() => (url, None),
-            _ => {
+            Ok(_) | Err(VarError::NotPresent) => {
                 let server = LocalPostgres::start()?;
                 (server.url(), Some(server))
+            }
+            Err(VarError::NotUnicode(_)) => {
+                return Err(CdfError::contract("TEST_DATABASE_URL is not valid Unicode"));
             }
         };
         let schema = format!(
@@ -62,7 +65,7 @@ impl LivePostgres {
     pub(crate) fn create_source_events_table(&self, table: &str) -> Result<String> {
         let qualified = qualified_name(&self.schema, table);
         Client::connect(&self.url, NoTls)
-            .map_err(|error| CdfError::destination(format!("connect to Postgres: {error}")))?
+            .map_err(|error| conformance_postgres_error("connect to Postgres", error))?
             .batch_execute(&format!(
                 "DROP TABLE IF EXISTS {qualified};
                  CREATE TABLE {qualified} (
@@ -74,7 +77,7 @@ impl LivePostgres {
                  VALUES (1, 'ada', 10), (2, 'grace', 20)"
             ))
             .map_err(|error| {
-                CdfError::destination(format!("create run matrix SQL source table: {error}"))
+                conformance_postgres_error("create run matrix SQL source table", error)
             })?;
         Ok(format!("{}.{}", self.schema, table))
     }
@@ -93,55 +96,44 @@ impl Drop for LivePostgres {
 
 impl LocalPostgres {
     fn start() -> Result<Self> {
-        let _guard = LOCAL_POSTGRES_START.lock().unwrap();
-        let initdb = find_binary("initdb").ok_or_else(|| {
-            CdfError::data("C2 run matrix requires initdb on PATH or TEST_DATABASE_URL")
-        })?;
-        let pg_ctl = find_binary("pg_ctl").ok_or_else(|| {
-            CdfError::data("C2 run matrix requires pg_ctl on PATH or TEST_DATABASE_URL")
-        })?;
+        let _guard = LOCAL_POSTGRES_START
+            .lock()
+            .map_err(|_| CdfError::internal("local Postgres startup lock was poisoned"))?;
+        let initdb = find_binary("initdb")?;
+        let pg_ctl = find_binary("pg_ctl")?;
         let data_dir = tempfile::tempdir()
-            .map_err(|error| CdfError::data(format!("create Postgres data dir: {error}")))?;
+            .map_err(|error| crate::conformance_host_error("create Postgres data dir", error))?;
         let socket_dir = tempfile::tempdir()
-            .map_err(|error| CdfError::data(format!("create Postgres socket dir: {error}")))?;
-        let port = free_port().ok_or_else(|| CdfError::data("allocate local Postgres port"))?;
-        let data_dir_str = data_dir.path().to_str().ok_or_else(|| {
-            CdfError::data(format!(
-                "local Postgres data dir is not UTF-8: {}",
-                data_dir.path().display()
-            ))
-        })?;
+            .map_err(|error| crate::conformance_host_error("create Postgres socket dir", error))?;
+        let port = free_port()?;
 
         let init_status = Command::new(&initdb)
-            .args(["-D", data_dir_str])
+            .arg("-D")
+            .arg(data_dir.path())
             .args(["-A", "trust"])
             .args(["-U", "cdf"])
             .arg("--no-sync")
             .status()
-            .map_err(|error| CdfError::destination(format!("run initdb: {error}")))?;
+            .map_err(|error| crate::conformance_host_error("run initdb", error))?;
         if !init_status.success() {
-            return Err(CdfError::destination(format!(
+            return Err(CdfError::environment(format!(
                 "initdb failed with status {init_status}"
             )));
         }
 
         let options = format!("-h 127.0.0.1 -p {port} -k {}", socket_dir.path().display());
         let log_path = data_dir.path().join("postgres.log");
-        let log_path_str = log_path.to_str().ok_or_else(|| {
-            CdfError::data(format!(
-                "local Postgres log path is not UTF-8: {}",
-                log_path.display()
-            ))
-        })?;
         let start_status = Command::new(&pg_ctl)
-            .args(["-D", data_dir_str])
-            .args(["-l", log_path_str])
+            .arg("-D")
+            .arg(data_dir.path())
+            .arg("-l")
+            .arg(&log_path)
             .args(["-o", &options])
             .args(["-w", "start"])
             .status()
-            .map_err(|error| CdfError::destination(format!("run pg_ctl start: {error}")))?;
+            .map_err(|error| crate::conformance_host_error("run pg_ctl start", error))?;
         if !start_status.success() {
-            return Err(CdfError::destination(format!(
+            return Err(CdfError::environment(format!(
                 "pg_ctl start failed with status {start_status}; log: {}",
                 log_path.display()
             )));
@@ -163,7 +155,8 @@ impl LocalPostgres {
 impl Drop for LocalPostgres {
     fn drop(&mut self) {
         let _ = Command::new(&self.pg_ctl)
-            .args(["-D", self.data_dir.path().to_str().unwrap()])
+            .arg("-D")
+            .arg(self.data_dir.path())
             .args(["-m", "fast"])
             .args(["-w", "stop"])
             .status();
@@ -172,12 +165,11 @@ impl Drop for LocalPostgres {
 
 pub(crate) fn reset_postgres_schema(database_url: &str, schema: &str) -> Result<()> {
     let schema = quote_identifier(schema);
-    Client::connect(database_url, NoTls)
-        .map_err(|error| CdfError::destination(format!("connect to Postgres: {error}")))?
+    connect_postgres("connect to Postgres", database_url)?
         .batch_execute(&format!(
             "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}"
         ))
-        .map_err(|error| CdfError::destination(format!("reset Postgres schema: {error}")))
+        .map_err(|error| conformance_postgres_error("reset Postgres schema", error))
 }
 
 pub(crate) fn qualified_name(schema: &str, table: &str) -> String {
@@ -185,28 +177,77 @@ pub(crate) fn qualified_name(schema: &str, table: &str) -> String {
 }
 
 fn create_postgres_schema(database_url: &str, schema: &str) -> Result<()> {
-    Client::connect(database_url, NoTls)
-        .map_err(|error| CdfError::destination(format!("connect to Postgres: {error}")))?
+    connect_postgres("connect to Postgres", database_url)?
         .batch_execute(&format!("CREATE SCHEMA {}", quote_identifier(schema)))
-        .map_err(|error| CdfError::destination(format!("create Postgres schema: {error}")))
+        .map_err(|error| conformance_postgres_error("create Postgres schema", error))
+}
+
+fn connect_postgres(action: &str, database_url: &str) -> Result<Client> {
+    let config = database_url.parse::<postgres::Config>().map_err(|error| {
+        CdfError::contract(format!(
+            "{action}: TEST_DATABASE_URL is not a valid Postgres connection string: {error}"
+        ))
+    })?;
+    config
+        .connect(NoTls)
+        .map_err(|error| conformance_postgres_error(action, error))
 }
 
 fn quote_identifier(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
 }
 
-fn find_binary(name: &str) -> Option<PathBuf> {
-    env::var_os("PATH").and_then(|paths| {
-        env::split_paths(&paths)
-            .map(|path| path.join(name))
-            .find(|candidate| candidate.is_file())
-    })
+fn conformance_postgres_error(action: &str, error: postgres::Error) -> CdfError {
+    if error
+        .as_db_error()
+        .is_some_and(|database_error| database_error.code().code().starts_with("28"))
+    {
+        CdfError::auth(format!("{action}: {error}"))
+    } else {
+        CdfError::destination(format!("{action}: {error}"))
+    }
 }
 
-fn free_port() -> Option<u16> {
-    TcpListener::bind("127.0.0.1:0")
-        .ok()?
+#[test]
+fn malformed_test_database_url_is_contract_owned_before_connection() {
+    let error = connect_postgres("connect to Postgres", "postgresql://[")
+        .err()
+        .expect("malformed Postgres URL must fail before connection");
+
+    assert_eq!(error.kind, cdf_kernel::ErrorKind::Contract);
+    assert!(error.message.contains("TEST_DATABASE_URL"));
+}
+
+fn find_binary(name: &str) -> Result<PathBuf> {
+    let paths = env::var_os("PATH").ok_or_else(|| {
+        CdfError::environment(format!(
+            "C2 run matrix requires {name} on PATH or TEST_DATABASE_URL, but PATH is unavailable"
+        ))
+    })?;
+    for path in env::split_paths(&paths) {
+        let candidate = path.join(name);
+        match std::fs::metadata(&candidate) {
+            Ok(metadata) if metadata.is_file() => return Ok(candidate),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(crate::conformance_host_error(
+                    &format!("inspect executable candidate {}", candidate.display()),
+                    error,
+                ));
+            }
+        }
+    }
+    Err(CdfError::environment(format!(
+        "C2 run matrix requires {name} on PATH or TEST_DATABASE_URL"
+    )))
+}
+
+fn free_port() -> Result<u16> {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .map_err(|error| crate::conformance_host_error("allocate local Postgres port", error))?;
+    listener
         .local_addr()
-        .ok()
-        .map(|addr| addr.port())
+        .map(|address| address.port())
+        .map_err(|error| crate::conformance_host_error("inspect local Postgres port", error))
 }

@@ -16,7 +16,7 @@ use serde::Serialize;
 
 use crate::{
     args::{AddArgs, Cli},
-    context::ProjectContext,
+    context::{ProjectContext, project_authority_read_error},
     error_catalog,
     output::{CliError, CommandOutput},
     render::{
@@ -51,7 +51,9 @@ pub(crate) fn add(
         })
         .transpose()
         .map_err(|error| {
-            CdfError::internal(format!("create add dry-run artifact root: {error}"))
+            CdfError::environment(format!(
+                "create add dry-run artifact root in the host temporary directory: {error}; check temporary-directory access, free space, and process file limits before retrying"
+            ))
         })?;
     let artifact_root = inspection_root
         .as_ref()
@@ -157,7 +159,7 @@ fn ensure_add_is_available(
             error_catalog::PROJECT_RESOURCE_MAPPING,
         ));
     }
-    if request.config_path_abs.exists() {
+    if add_target_exists(&request.config_path_abs)? {
         return Err(CliError::usage_with(
             format!(
                 "cdf add would overwrite {}; choose a different source id or edit that file explicitly",
@@ -167,7 +169,7 @@ fn ensure_add_is_available(
         ));
     }
     for private_file in &request.plan.proposal.private_files {
-        if context.root.join(&private_file.relative_path).exists() {
+        if add_target_exists(&context.root.join(&private_file.relative_path))? {
             return Err(CliError::usage_with(
                 format!(
                     "cdf add would overwrite private source state for source `{}`",
@@ -272,12 +274,7 @@ fn write_add_artifacts(
                 error_catalog::PROJECT_IO,
             ));
         }
-        (_, Err(error)) => {
-            return Err(CliError::mapped(
-                CdfError::contract(format!("read {LOCK_FILE_NAME}: {error}")),
-                error_catalog::PROJECT_IO,
-            ));
-        }
+        (_, Err(error)) => return Err(add_project_read_error("read cdf.lock", &lock_path, error)),
     };
     let mut resources = context.resources.clone();
     resources.push(pinned_resource.clone());
@@ -645,10 +642,7 @@ fn appended_project_mapping(
 ) -> Result<(Vec<u8>, String), CliError> {
     let project_path = context.root.join(PROJECT_FILE_NAME);
     let mut project = fs::read_to_string(&project_path).map_err(|error| {
-        CliError::mapped(
-            CdfError::contract(format!("read {}: {error}", project_path.display())),
-            error_catalog::PROJECT_IO,
-        )
+        add_project_read_error("read project configuration", &project_path, error)
     })?;
     let prior = project.as_bytes().to_vec();
     while project.ends_with(['\n', '\r']) {
@@ -660,6 +654,85 @@ fn appended_project_mapping(
         toml_string(&request.config_path_rel)?
     ));
     Ok((prior, project))
+}
+
+fn add_target_exists(path: &std::path::Path) -> Result<bool, CliError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            validate_missing_add_target_ancestors(path)?;
+            Ok(false)
+        }
+        Err(error) => Err(add_project_read_error("inspect add target", path, error)),
+    }
+}
+
+fn validate_missing_add_target_ancestors(path: &std::path::Path) -> Result<(), CliError> {
+    let mut cursor = path.parent();
+    while let Some(parent) = cursor {
+        if parent.as_os_str().is_empty() {
+            return Ok(());
+        }
+        match fs::metadata(parent) {
+            Ok(metadata) if metadata.is_dir() => return Ok(()),
+            Ok(_) => {
+                return Err(add_project_read_error(
+                    "inspect add target ancestor",
+                    parent,
+                    std::io::Error::from(std::io::ErrorKind::NotADirectory),
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match fs::symlink_metadata(parent) {
+                    Ok(metadata) if metadata.file_type().is_symlink() => {
+                        return Err(CliError::mapped(
+                            CdfError::contract(format!(
+                                "add target ancestor {} is a dangling symlink",
+                                parent.display()
+                            )),
+                            error_catalog::PROJECT_IO,
+                        ));
+                    }
+                    Ok(_) => {
+                        return Err(CliError::mapped(
+                            CdfError::contract(format!(
+                                "add target ancestor {} changed filesystem shape during inspection",
+                                parent.display()
+                            )),
+                            error_catalog::PROJECT_IO,
+                        ));
+                    }
+                    Err(link_error) if link_error.kind() == std::io::ErrorKind::NotFound => {
+                        cursor = parent.parent();
+                    }
+                    Err(link_error) => {
+                        return Err(add_project_read_error(
+                            "inspect add target ancestor",
+                            parent,
+                            link_error,
+                        ));
+                    }
+                }
+            }
+            Err(error) => {
+                return Err(add_project_read_error(
+                    "inspect add target ancestor",
+                    parent,
+                    error,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn add_project_read_error(action: &str, path: &std::path::Path, error: std::io::Error) -> CliError {
+    let error = project_authority_read_error(action, path, error);
+    if error.kind == cdf_kernel::ErrorKind::Contract {
+        CliError::mapped(error, error_catalog::PROJECT_IO)
+    } else {
+        error.into()
+    }
 }
 
 fn split_resource_id(id: &str) -> Result<(String, String), CliError> {

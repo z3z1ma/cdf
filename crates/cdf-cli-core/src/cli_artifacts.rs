@@ -46,8 +46,8 @@ pub fn generate_cli_artifacts(out_dir: &Path) -> Result<(), CliError> {
 pub fn check_cli_artifacts(out_dir: &Path) -> Result<(), CliError> {
     let temp_dir = unique_temp_dir()?;
     let result = (|| {
-        generate_cli_artifacts(&temp_dir)?;
-        let expected = read_tree(&temp_dir)?;
+        generate_cli_artifacts(&temp_dir).map_err(private_artifact_error)?;
+        let expected = read_tree(&temp_dir).map_err(private_artifact_error)?;
         let actual = read_tree(out_dir)?;
         compare_trees(&expected, &actual)
     })();
@@ -65,8 +65,8 @@ pub fn generate_reference_docs(docs_dir: &Path) -> Result<(), CliError> {
 pub fn check_reference_docs(docs_dir: &Path) -> Result<(), CliError> {
     let temp_dir = unique_temp_dir()?;
     let result = (|| {
-        generate_reference_docs(&temp_dir)?;
-        let expected = read_tree(&temp_dir)?;
+        generate_reference_docs(&temp_dir).map_err(private_artifact_error)?;
+        let expected = read_tree(&temp_dir).map_err(private_artifact_error)?;
         let actual = read_reference_tree(docs_dir)?;
         compare_reference_trees(&expected, &actual, docs_dir)
     })();
@@ -75,7 +75,7 @@ pub fn check_reference_docs(docs_dir: &Path) -> Result<(), CliError> {
 }
 
 fn generate_command_docs(out_dir: &Path) -> Result<(), CliError> {
-    fs::create_dir_all(out_dir).map_err(io_error("create command docs directory"))?;
+    fs::create_dir_all(out_dir).map_err(artifact_io_error("create command docs directory"))?;
     let paths = command_paths(&args::cli_command());
     let mut index = String::from(
         "# Command reference\n\nGenerated from the CLI's clap definitions. Do not edit these pages by hand.\n\n",
@@ -88,13 +88,14 @@ fn generate_command_docs(out_dir: &Path) -> Result<(), CliError> {
         let page = format!(
             "# `{title}`\n\nGenerated from the CLI's clap definitions.\n\n```text\n{help}```\n"
         );
-        fs::write(out_dir.join(file_name), page).map_err(io_error("write command doc"))?;
+        fs::write(out_dir.join(file_name), page).map_err(artifact_io_error("write command doc"))?;
     }
-    fs::write(out_dir.join("README.md"), index).map_err(io_error("write command docs index"))
+    fs::write(out_dir.join("README.md"), index)
+        .map_err(artifact_io_error("write command docs index"))
 }
 
 fn generate_error_docs(out_dir: &Path) -> Result<(), CliError> {
-    fs::create_dir_all(out_dir).map_err(io_error("create error docs directory"))?;
+    fs::create_dir_all(out_dir).map_err(artifact_io_error("create error docs directory"))?;
     let mut entries = error_catalog::reference_entries();
     entries.sort_by_key(|(_, mapping)| mapping.code);
     let mut page = String::from(
@@ -123,7 +124,7 @@ fn generate_error_docs(out_dir: &Path) -> Result<(), CliError> {
             representative_command(mapping.code),
         ));
     }
-    fs::write(out_dir.join("README.md"), page).map_err(io_error("write error reference"))
+    fs::write(out_dir.join("README.md"), page).map_err(artifact_io_error("write error reference"))
 }
 
 fn error_area(code: &str) -> &str {
@@ -175,7 +176,7 @@ fn markdown_cell(value: &str) -> String {
 }
 
 fn generate_completions(out_dir: &Path) -> Result<(), CliError> {
-    fs::create_dir_all(out_dir).map_err(io_error("create completion directory"))?;
+    fs::create_dir_all(out_dir).map_err(artifact_io_error("create completion directory"))?;
     for shell in [
         CompletionShell::Bash,
         CompletionShell::Zsh,
@@ -189,23 +190,23 @@ fn generate_completions(out_dir: &Path) -> Result<(), CliError> {
             CompletionShell::Fish => generate_to(Fish, &mut command, "cdf", out_dir),
             CompletionShell::PowerShell => generate_to(PowerShell, &mut command, "cdf", out_dir),
         }
-        .map_err(io_error("generate shell completion"))?;
+        .map_err(artifact_io_error("generate shell completion"))?;
     }
     Ok(())
 }
 
 fn generate_help_snapshots(out_dir: &Path) -> Result<(), CliError> {
-    fs::create_dir_all(out_dir).map_err(io_error("create help snapshot directory"))?;
+    fs::create_dir_all(out_dir).map_err(artifact_io_error("create help snapshot directory"))?;
     for path in command_paths(&args::cli_command()) {
         let text = normalize_generated_text(&args::render_help(&path)?);
         fs::write(out_dir.join(artifact_file_name(&path, "txt")), text)
-            .map_err(io_error("write help snapshot"))?;
+            .map_err(artifact_io_error("write help snapshot"))?;
     }
     Ok(())
 }
 
 fn generate_man_pages(out_dir: &Path) -> Result<(), CliError> {
-    fs::create_dir_all(out_dir).map_err(io_error("create man page directory"))?;
+    fs::create_dir_all(out_dir).map_err(artifact_io_error("create man page directory"))?;
     let mut root = args::cli_command();
     root.build();
     for path in command_paths(&root) {
@@ -219,14 +220,14 @@ fn generate_man_pages(out_dir: &Path) -> Result<(), CliError> {
         let mut page = Vec::new();
         Man::new(command)
             .render(&mut page)
-            .map_err(io_error("render man page"))?;
+            .map_err(|error| generator_io_error("render man page", error))?;
         let page = String::from_utf8(page)
             .map_err(|_| internal("generated man page must be valid UTF-8"))?;
         fs::write(
             out_dir.join(artifact_file_name(&path, "1")),
             normalize_generated_text(&page),
         )
-        .map_err(io_error("write man page"))?;
+        .map_err(artifact_io_error("write man page"))?;
     }
     Ok(())
 }
@@ -301,10 +302,22 @@ fn normalize_generated_text(text: &str) -> String {
 
 fn reset_child_dir(root: &Path, child: &str) -> Result<(), CliError> {
     let path = root.join(child);
-    if path.exists() {
-        fs::remove_dir_all(&path).map_err(io_error("remove generated artifact directory"))?;
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.is_dir() => {
+            fs::remove_dir_all(&path)
+                .map_err(artifact_io_error("remove generated artifact directory"))?;
+        }
+        Ok(_) => {
+            fs::remove_file(&path).map_err(artifact_io_error("remove generated artifact entry"))?;
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(artifact_io_error("inspect generated artifact directory")(
+                error,
+            ));
+        }
     }
-    fs::create_dir_all(path).map_err(io_error("create generated artifact directory"))
+    fs::create_dir_all(path).map_err(artifact_io_error("create generated artifact directory"))
 }
 
 fn read_tree(root: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>>, CliError> {
@@ -326,31 +339,80 @@ fn read_tree_inner(
     path: &Path,
     files: &mut BTreeMap<PathBuf, Vec<u8>>,
 ) -> Result<(), CliError> {
-    if !path.exists() {
-        return Err(CliError::usage_with(
-            format!(
-                "generated CLI artifact directory does not exist: {}",
-                path.display()
-            ),
-            error_catalog::CLI_ARTIFACTS_USAGE,
-        ));
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(missing_artifact_directory(path));
+        }
+        Err(error) => return Err(artifact_read_error("inspect", path, error)),
+    };
+    if !metadata.is_dir() {
+        return Err(artifact_shape_error(path, "expected a directory"));
     }
-    for entry in fs::read_dir(path).map_err(io_error("read generated artifact directory"))? {
-        let entry = entry.map_err(io_error("read generated artifact entry"))?;
+    for entry in
+        fs::read_dir(path).map_err(|error| artifact_read_error("read directory", path, error))?
+    {
+        let entry =
+            entry.map_err(|error| artifact_read_error("read directory entry", path, error))?;
         let path = entry.path();
-        if path.is_dir() {
+        let file_type = entry
+            .file_type()
+            .map_err(|error| artifact_read_error("inspect entry", &path, error))?;
+        if file_type.is_dir() {
             read_tree_inner(root, &path, files)?;
-        } else if path.is_file() {
+        } else if file_type.is_file() {
             let relative = path
                 .strip_prefix(root)
                 .map_err(|error| internal(format!("strip artifact prefix: {error}")))?;
             files.insert(
                 relative.to_path_buf(),
-                fs::read(&path).map_err(io_error("read generated artifact"))?,
+                fs::read(&path).map_err(|error| artifact_read_error("read file", &path, error))?,
             );
+        } else {
+            return Err(artifact_shape_error(
+                &path,
+                "symlinks and special filesystem entries are unsupported",
+            ));
         }
     }
     Ok(())
+}
+
+fn missing_artifact_directory(path: &Path) -> CliError {
+    CliError::usage_with(
+        format!(
+            "generated CLI artifact directory does not exist: {}",
+            path.display()
+        ),
+        error_catalog::CLI_ARTIFACTS_USAGE,
+    )
+}
+
+fn artifact_read_error(action: &str, path: &Path, error: io::Error) -> CliError {
+    if matches!(
+        error.kind(),
+        io::ErrorKind::NotFound
+            | io::ErrorKind::NotADirectory
+            | io::ErrorKind::IsADirectory
+            | io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::InvalidData
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        artifact_shape_error(path, &format!("{action} failed: {error}"))
+    } else {
+        environment(format!(
+            "{action} committed CLI artifact {}: {error}; check filesystem permissions, device availability, memory, and process file limits before retrying",
+            path.display()
+        ))
+    }
+}
+
+fn artifact_shape_error(path: &Path, detail: &str) -> CliError {
+    CdfError::data(format!(
+        "committed CLI artifact {} has an unsupported filesystem shape: {detail}",
+        path.display()
+    ))
+    .into()
 }
 
 fn compare_trees(
@@ -419,10 +481,16 @@ fn compare_reference_trees(
 fn unique_temp_dir() -> Result<PathBuf, CliError> {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|error| internal(format!("system clock before UNIX epoch: {error}")))?
+        .map_err(|error| {
+            environment(format!(
+                "read the host clock for a temporary CLI artifact directory: {error}; correct the system clock and retry"
+            ))
+        })?
         .as_nanos();
     let root = workspace_root().join("target").join("quality").join("tmp");
-    fs::create_dir_all(&root).map_err(io_error("create temporary artifact parent directory"))?;
+    fs::create_dir_all(&root).map_err(private_artifact_io_error(
+        "create temporary artifact parent directory",
+    ))?;
     for attempt in 0..100 {
         let path = root.join(format!(
             "cdf-cli-artifacts-{}-{nanos}-{attempt}",
@@ -432,14 +500,14 @@ fn unique_temp_dir() -> Result<PathBuf, CliError> {
             Ok(()) => return Ok(path),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => {
-                return Err(internal(format!(
-                    "create temporary artifact directory: {error}"
-                )));
+                return Err(private_artifact_io_error(
+                    "create temporary CLI artifact directory",
+                )(error));
             }
         }
     }
     Err(internal(
-        "create temporary artifact directory: exhausted unique path attempts",
+        "create temporary CLI artifact directory: exhausted 100 unique CDF-managed path attempts",
     ))
 }
 
@@ -450,7 +518,77 @@ fn workspace_root() -> PathBuf {
 }
 
 fn io_error(context: &'static str) -> impl Fn(io::Error) -> CliError {
-    move |error| internal(format!("{context}: {error}"))
+    move |error| {
+        environment(format!(
+            "{context}: {error}; check filesystem permissions, free space, device availability, and process file limits before retrying"
+        ))
+    }
+}
+
+fn artifact_io_error(context: &'static str) -> impl Fn(io::Error) -> CliError {
+    move |error| {
+        if matches!(
+            error.kind(),
+            io::ErrorKind::NotFound
+                | io::ErrorKind::NotADirectory
+                | io::ErrorKind::IsADirectory
+                | io::ErrorKind::AlreadyExists
+                | io::ErrorKind::UnexpectedEof
+                | io::ErrorKind::InvalidInput
+                | io::ErrorKind::InvalidData
+        ) || cdf_kernel::is_filesystem_loop(&error)
+        {
+            CliError::mapped(
+                CdfError::data(format!(
+                    "{context}: generated artifact path has an invalid filesystem shape: {error}"
+                )),
+                error_catalog::CLI_ARTIFACTS,
+            )
+        } else {
+            io_error(context)(error)
+        }
+    }
+}
+
+fn generator_io_error(context: &str, error: io::Error) -> CliError {
+    internal(format!("{context}: in-memory generator failed: {error}"))
+}
+
+fn private_artifact_io_error(context: &'static str) -> impl Fn(io::Error) -> CliError {
+    move |error| {
+        if matches!(
+            error.kind(),
+            io::ErrorKind::NotFound
+                | io::ErrorKind::NotADirectory
+                | io::ErrorKind::IsADirectory
+                | io::ErrorKind::AlreadyExists
+                | io::ErrorKind::UnexpectedEof
+                | io::ErrorKind::InvalidInput
+                | io::ErrorKind::InvalidData
+        ) || cdf_kernel::is_filesystem_loop(&error)
+        {
+            internal(format!(
+                "{context}: CDF-managed artifact scratch has an invalid filesystem shape: {error}"
+            ))
+        } else {
+            io_error(context)(error)
+        }
+    }
+}
+
+fn private_artifact_error(error: CliError) -> CliError {
+    if error.kind == cdf_kernel::ErrorKind::Data {
+        internal(format!(
+            "generate CDF-managed expected artifact tree: {}",
+            error.message
+        ))
+    } else {
+        error
+    }
+}
+
+fn environment(message: impl Into<String>) -> CliError {
+    CdfError::environment(message.into()).into()
 }
 
 fn internal(message: impl Into<String>) -> CliError {
@@ -471,7 +609,12 @@ enum CompletionShell {
 mod tests {
     use std::fs;
 
-    use super::{check_cli_artifacts, default_artifact_dir, error_kind};
+    use cdf_kernel::ErrorKind;
+
+    use super::{
+        check_cli_artifacts, default_artifact_dir, environment, error_kind, generate_cli_artifacts,
+        generator_io_error, io_error, read_tree, unique_temp_dir,
+    };
 
     #[test]
     fn environment_reference_kind_is_not_inferred_from_shared_exit_code() {
@@ -480,8 +623,75 @@ mod tests {
     }
 
     #[test]
+    fn artifact_host_failures_use_environment_mapping_and_remediation() {
+        let direct = environment("temporary artifact host failure");
+        assert_eq!(direct.kind, ErrorKind::Environment);
+        assert_eq!(direct.code, "CDF-ENV-HOST");
+        assert!(direct.remediation.is_some());
+
+        let io = io_error("write generated artifact")(std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied,
+        ));
+        assert_eq!(io.kind, ErrorKind::Environment);
+        assert!(io.message.contains("filesystem permissions"));
+    }
+
+    #[test]
+    fn public_artifact_generation_rejects_wrong_root_shape_as_data() {
+        let root = unique_temp_dir().unwrap();
+        let output = root.join("output");
+        fs::write(&output, b"not a directory").unwrap();
+
+        let error = generate_cli_artifacts(&output).unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::Data);
+        assert!(error.message.contains("invalid filesystem shape"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn in_memory_generator_io_is_internal() {
+        let error = generator_io_error(
+            "render man page",
+            std::io::Error::from(std::io::ErrorKind::Other),
+        );
+
+        assert_eq!(error.kind, ErrorKind::Internal);
+        assert!(error.message.contains("in-memory generator"));
+    }
+
+    #[test]
     fn cli_generated_artifacts_match_committed_snapshots() {
         check_cli_artifacts(&default_artifact_dir()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn committed_artifact_traversal_rejects_symlinks_instead_of_skipping_them() {
+        use std::os::unix::fs::symlink;
+
+        let root = unique_temp_dir().unwrap();
+        fs::write(root.join("target.txt"), b"target").unwrap();
+        symlink("target.txt", root.join("alias.txt")).unwrap();
+
+        let error = read_tree(&root).unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::Data);
+        assert!(error.message.contains("symlinks"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn committed_artifact_traversal_reports_parent_file_shape_as_data() {
+        let root = unique_temp_dir().unwrap();
+        let parent = root.join("parent");
+        fs::write(&parent, b"not a directory").unwrap();
+
+        let error = read_tree(&parent.join("child")).unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::Data);
+        assert!(error.message.contains("unsupported filesystem shape"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

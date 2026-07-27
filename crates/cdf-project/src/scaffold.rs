@@ -66,9 +66,8 @@ pub fn write_local_project_scaffold(
         Some(name) => name,
         None => default_project_name(&options.root),
     };
-    ensure_no_unforced_overwrites(&options.root, options.force)?;
-
     create_root_directory(&options.root)?;
+    ensure_no_unforced_overwrites(&options.root, options.force)?;
     let mut report = ProjectScaffoldReport {
         root: options.root.display().to_string(),
         project_name: project_name.clone(),
@@ -241,5 +240,58 @@ fn symlink_metadata(path: impl AsRef<Path>) -> Result<Option<fs::Metadata>> {
 }
 
 fn fs_error(action: &str, path: &Path, error: std::io::Error) -> CdfError {
-    CdfError::data(format!("{action} {}: {error}", path.display()))
+    if matches!(
+        error.kind(),
+        ErrorKind::NotFound
+            | ErrorKind::NotADirectory
+            | ErrorKind::IsADirectory
+            | ErrorKind::AlreadyExists
+            | ErrorKind::InvalidInput
+            | ErrorKind::InvalidData
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::contract(format!(
+            "{action} project scaffold path {}: {error}; correct the project path or rerun after the conflicting entry is removed",
+            path.display()
+        ))
+    } else {
+        CdfError::environment(format!(
+            "{action} project scaffold path {}: {error}; check path permissions, free space, device availability, and process file limits before retrying",
+            path.display()
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn regular_file_project_root_is_contract_with_or_without_force() {
+        for force in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let project = root.path().join("project");
+            fs::write(&project, b"not a directory").unwrap();
+
+            let error = write_local_project_scaffold(ProjectScaffoldOptions {
+                root: project,
+                project_name: None,
+                force,
+            })
+            .unwrap_err();
+
+            assert_eq!(error.kind, cdf_kernel::ErrorKind::Contract);
+        }
+    }
+
+    #[test]
+    fn scaffold_host_failure_is_environment_owned() {
+        let error = fs_error(
+            "write",
+            Path::new("cdf.toml"),
+            std::io::Error::from(ErrorKind::PermissionDenied),
+        );
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Environment);
+    }
 }

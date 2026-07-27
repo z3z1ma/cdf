@@ -14,8 +14,8 @@ use super::{
     resources::ProjectRunSource,
     types::*,
     validation::{
-        ensure_parent_directory, refuse_existing_package_dir, validate_explicit_package_id,
-        validate_project_run_request,
+        ensure_parent_directory, package_directory_exists, refuse_existing_package_dir,
+        validate_explicit_package_id, validate_project_run_request,
     },
 };
 use cdf_contract::{AnomalyFact, ValidationDepth, ValidationProgram, ValidationTransitionTrigger};
@@ -67,13 +67,17 @@ async fn run_project_with_context(
         .destination
         .output_schema(&request.plan)?
         .schema_hash;
-    ensure_parent_directory(&request.state_store_path)?;
+    ensure_parent_directory(
+        &request.state_store_path,
+        request.state_store_path_ownership,
+    )?;
 
     let ProjectRunRequest {
         resource,
         plan,
         package_root,
         state_store_path,
+        state_store_path_ownership,
         pipeline_id,
         package_id,
         checkpoint_id,
@@ -84,17 +88,27 @@ async fn run_project_with_context(
         ..
     } = request;
     let staging_scopes: Arc<dyn ScopeLeaseStore> = Arc::new(
-        cdf_state_sqlite::SqliteScopeLeaseStore::open(&state_store_path)?,
+        cdf_state_sqlite::SqliteScopeLeaseStore::open_with_path_ownership(
+            &state_store_path,
+            state_store_path_ownership,
+        )?,
     );
     let services = services.with_staging_lease_authority(Arc::new(
         cdf_runtime::ScopeStagingLeaseAuthority::new(staging_scopes),
     ))?;
     let services = services.with_content_reachability_store(Arc::new(
-        cdf_state_sqlite::SqliteContentReachabilityStore::open(&state_store_path)?,
+        cdf_state_sqlite::SqliteContentReachabilityStore::open_with_path_ownership(
+            &state_store_path,
+            state_store_path_ownership,
+        )?,
     ));
     destination.bind_execution_services(services.clone())?;
-    let run_ledger = SqliteRunLedger::open(&state_store_path)?;
-    let checkpoint_store = SqliteCheckpointStore::open(&state_store_path)?;
+    let run_ledger =
+        SqliteRunLedger::open_with_path_ownership(&state_store_path, state_store_path_ownership)?;
+    let checkpoint_store = SqliteCheckpointStore::open_with_path_ownership(
+        &state_store_path,
+        state_store_path_ownership,
+    )?;
     if matches!(
         plan.execution_extent,
         cdf_kernel::ExecutionExtent::Drain { .. }
@@ -457,7 +471,7 @@ where
     loop {
         let package_id = drain_epoch_string_id(context.base_package_id, ordinal);
         let package_dir = context.package_root.join(&package_id);
-        if !package_dir.exists() {
+        if !package_directory_exists(&package_dir)? {
             return Ok(ordinal);
         }
         let expected_checkpoint_id = CheckpointId::new(drain_epoch_string_id(

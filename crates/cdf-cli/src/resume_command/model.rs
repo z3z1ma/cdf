@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use cdf_kernel::{Checkpoint, CheckpointStatus, CheckpointStore, Receipt, StateDelta};
+use cdf_kernel::{
+    CdfError, Checkpoint, CheckpointStatus, CheckpointStore, ErrorKind, Receipt, StateDelta,
+};
 use cdf_package::PackageReader;
 use cdf_package_contract::{PackageReplayInputs, PackageStatus};
 use cdf_project::{PackageReplayReport, ProjectReceiptSource};
@@ -22,7 +24,11 @@ impl ResumePackageFacts {
     pub(super) fn load(path: &Path) -> Result<Self, CliError> {
         let reader = PackageReader::open(path)?;
         let status = reader.manifest().lifecycle.status.clone();
-        let replay_inputs = reader.replay_inputs().ok();
+        let replay_inputs = match reader.replay_inputs() {
+            Ok(inputs) => Some(inputs),
+            Err(error) if error.kind == ErrorKind::Data => None,
+            Err(error) => return Err(error.into()),
+        };
         let receipt_count = reader.receipt_count()?;
         Ok(Self {
             path: path.to_path_buf(),
@@ -155,4 +161,70 @@ pub(super) fn resolve_project_path(root: &Path, value: &Path) -> PathBuf {
     } else {
         root.join(value)
     }
+}
+
+pub(super) fn recorded_package_path_is_missing(path: &Path) -> Result<bool, CliError> {
+    match std::fs::metadata(path) {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match std::fs::symlink_metadata(path) {
+                Ok(_) => Ok(false),
+                Err(link_error)
+                    if link_error.kind() == std::io::ErrorKind::NotADirectory
+                        || cdf_kernel::is_filesystem_loop(&link_error) =>
+                {
+                    Ok(false)
+                }
+                Err(link_error) if link_error.kind() == std::io::ErrorKind::NotFound => {
+                    missing_path_has_real_ancestor(path)
+                }
+                Err(link_error) => Err(resume_package_environment(path, link_error).into()),
+            }
+        }
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotADirectory
+                || cdf_kernel::is_filesystem_loop(&error) =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(resume_package_environment(path, error).into()),
+    }
+}
+
+fn missing_path_has_real_ancestor(path: &Path) -> Result<bool, CliError> {
+    for ancestor in path.ancestors().skip(1) {
+        match std::fs::metadata(ancestor) {
+            Ok(metadata) => return Ok(metadata.is_dir()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match std::fs::symlink_metadata(ancestor) {
+                    Ok(_) => return Ok(false),
+                    Err(link_error) if link_error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(link_error)
+                        if link_error.kind() == std::io::ErrorKind::NotADirectory
+                            || cdf_kernel::is_filesystem_loop(&link_error) =>
+                    {
+                        return Ok(false);
+                    }
+                    Err(link_error) => {
+                        return Err(resume_package_environment(ancestor, link_error).into());
+                    }
+                }
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotADirectory
+                    || cdf_kernel::is_filesystem_loop(&error) =>
+            {
+                return Ok(false);
+            }
+            Err(error) => return Err(resume_package_environment(ancestor, error).into()),
+        }
+    }
+    Ok(true)
+}
+
+fn resume_package_environment(path: &Path, error: std::io::Error) -> CdfError {
+    CdfError::environment(format!(
+        "inspect resume package path {}: {error}; check package-path permissions, device availability, and process file limits before retrying",
+        path.display()
+    ))
 }

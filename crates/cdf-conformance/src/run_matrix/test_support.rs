@@ -100,31 +100,38 @@ pub(crate) fn json_response(body: &str) -> RecordingResponse {
 }
 
 pub(crate) fn copy_dir_all(source: &Path, destination: &Path) -> Result<()> {
-    fs::create_dir_all(destination)
-        .map_err(|error| CdfError::data(format!("create {}: {error}", destination.display())))?;
-    for entry in fs::read_dir(source)
-        .map_err(|error| CdfError::data(format!("read {}: {error}", source.display())))?
-    {
+    fs::create_dir_all(destination).map_err(|error| {
+        crate::conformance_private_io_error(&format!("create {}", destination.display()), error)
+    })?;
+    for entry in fs::read_dir(source).map_err(|error| {
+        crate::conformance_private_io_error(&format!("read {}", source.display()), error)
+    })? {
         let entry = entry.map_err(|error| {
-            CdfError::data(format!("read entry in {}: {error}", source.display()))
+            crate::conformance_private_io_error(
+                &format!("read entry in {}", source.display()),
+                error,
+            )
         })?;
         let source_path = entry.path();
         let destination_path = destination.join(entry.file_name());
         let file_type = entry.file_type().map_err(|error| {
-            CdfError::data(format!(
-                "read file type for {}: {error}",
-                source_path.display()
-            ))
+            crate::conformance_private_io_error(
+                &format!("read file type for {}", source_path.display()),
+                error,
+            )
         })?;
         if file_type.is_dir() {
             copy_dir_all(&source_path, &destination_path)?;
         } else if file_type.is_file() {
             fs::copy(&source_path, &destination_path).map_err(|error| {
-                CdfError::data(format!(
-                    "copy {} to {}: {error}",
-                    source_path.display(),
-                    destination_path.display()
-                ))
+                crate::conformance_private_io_error(
+                    &format!(
+                        "copy {} to {}",
+                        source_path.display(),
+                        destination_path.display()
+                    ),
+                    error,
+                )
             })?;
         }
     }

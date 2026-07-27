@@ -1,53 +1,93 @@
-use std::{
-    collections::BTreeSet,
-    path::Path,
-    sync::{Mutex, MutexGuard},
-};
+use std::{collections::BTreeSet, path::Path, sync::Mutex};
 
 use cdf_kernel::{
     CdfError, Checkpoint, CheckpointId, CheckpointStatus, CheckpointStore, PackageHash, PipelineId,
-    PromotionPublicationEvent, Receipt, ResourceId, Result, RewindReport, RewindRequest,
-    SchemaHash, ScopeKey, SourcePosition, StateDelta,
+    Receipt, ResourceId, Result, RewindReport, RewindRequest, SchemaHash, ScopeKey, SourcePosition,
+    StateDelta,
 };
-use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
 use crate::support::{
-    decode_json, encode_json, ensure_schema_version_table, lock_error, missing_checkpoint, now_ms,
-    packages_ahead_of_state, read_component_schema_version, require_sqlite_tables, rewind_marker,
+    SqliteConnectionGuard, SqliteErrorContext, StateStorePathOwnership, database_open_path,
+    database_path_exists, decode_json, decode_private_promotion_publication_row, encode_json,
+    ensure_schema_version_table, lock_sqlite_connection, managed_sqlite_open_flags,
+    missing_checkpoint, now_ms, packages_ahead_of_state, prepare_managed_database_path,
+    private_state_decode, read_component_schema_version, require_sqlite_tables, rewind_marker,
     same_tuple, sqlite_error, sqlite_table_exists, validate_state_version, verify_receipt,
-    write_component_schema_version,
+    with_sqlite_error_context, write_component_schema_version,
 };
 
 pub(crate) const CHECKPOINT_STORE_COMPONENT: &str = "checkpoint_store";
 pub(crate) const CHECKPOINT_STORE_SCHEMA_VERSION: i64 = 1;
-const CHECKPOINT_SELECT: &str = "SELECT checkpoint_id, pipeline_id, resource_id, scope_json, state_version, parent_checkpoint_id, input_position_json, output_position_json, package_hash, schema_hash, receipt_id, status, is_head, created_at_ms, committed_at_ms, delta_json, receipt_json, rewind_target_checkpoint_id FROM cdf_checkpoints";
+const CHECKPOINT_SELECT: &str = "SELECT sequence, checkpoint_id, pipeline_id, resource_id, scope_json, state_version, parent_checkpoint_id, input_position_json, output_position_json, package_hash, schema_hash, receipt_id, status, is_head, created_at_ms, committed_at_ms, delta_json, receipt_json, rewind_target_checkpoint_id FROM cdf_checkpoints";
 pub struct SqliteCheckpointStore {
     conn: Mutex<Connection>,
+    error_context: SqliteErrorContext,
 }
 
 impl SqliteCheckpointStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let conn = Connection::open(path.as_ref()).map_err(sqlite_error)?;
-        initialize_schema(&conn)?;
+        Self::open_with_path_ownership(path, StateStorePathOwnership::CdfManaged)
+    }
+
+    pub fn open_with_path_ownership(
+        path: impl AsRef<Path>,
+        ownership: StateStorePathOwnership,
+    ) -> Result<Self> {
+        let path = path.as_ref();
+        let open_path = prepare_managed_database_path(path, ownership)?;
+        let error_context = SqliteErrorContext::ManagedState;
+        let conn = with_sqlite_error_context(error_context, || {
+            let conn = Connection::open_with_flags(&open_path, managed_sqlite_open_flags(false))
+                .map_err(sqlite_error)?;
+            initialize_schema(&conn)?;
+            Ok(conn)
+        })?;
         Ok(Self {
             conn: Mutex::new(conn),
+            error_context,
         })
     }
 
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
-        let conn = Connection::open_with_flags(path.as_ref(), OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(sqlite_error)?;
-        validate_schema_version(&conn)?;
+        Self::open_read_only_with_path_ownership(path, StateStorePathOwnership::CdfManaged)
+    }
+
+    pub fn open_read_only_with_path_ownership(
+        path: impl AsRef<Path>,
+        ownership: StateStorePathOwnership,
+    ) -> Result<Self> {
+        let path = path.as_ref();
+        if !database_path_exists(path, ownership)? {
+            return Err(CdfError::data(format!(
+                "checkpoint state database {} is missing",
+                path.display()
+            )));
+        }
+        let open_path = database_open_path(path, ownership)?;
+        let error_context = SqliteErrorContext::ManagedReadOnly;
+        let conn = with_sqlite_error_context(error_context, || {
+            let conn = Connection::open_with_flags(&open_path, managed_sqlite_open_flags(true))
+                .map_err(sqlite_error)?;
+            validate_schema_version(&conn)?;
+            Ok(conn)
+        })?;
         Ok(Self {
             conn: Mutex::new(conn),
+            error_context,
         })
     }
 
     pub fn open_in_memory() -> Result<Self> {
-        let conn = Connection::open_in_memory().map_err(sqlite_error)?;
-        initialize_schema(&conn)?;
+        let error_context = SqliteErrorContext::EphemeralWorkspace;
+        let conn = with_sqlite_error_context(error_context, || {
+            let conn = Connection::open_in_memory().map_err(sqlite_error)?;
+            initialize_schema(&conn)?;
+            Ok(conn)
+        })?;
         Ok(Self {
             conn: Mutex::new(conn),
+            error_context,
         })
     }
 
@@ -62,12 +102,27 @@ impl SqliteCheckpointStore {
         let rows = stmt
             .query_map([], |row| row.get::<_, String>(0))
             .map_err(sqlite_error)?;
-        rows.map(|row| row.map_err(sqlite_error).and_then(PackageHash::new))
-            .collect()
+        rows.map(|row| {
+            private_state_decode(
+                "decode CDF-managed committed package hash",
+                row.map_err(sqlite_error).and_then(PackageHash::new),
+            )
+        })
+        .collect()
     }
 
-    fn lock_conn(&self) -> Result<MutexGuard<'_, Connection>> {
-        self.conn.lock().map_err(lock_error)
+    fn lock_conn(&self) -> Result<SqliteConnectionGuard<'_>> {
+        lock_sqlite_connection(&self.conn, self.error_context)
+    }
+
+    /// Validates every CDF-owned checkpoint row before a raw or diagnostic reader bypasses the
+    /// typed store API.
+    ///
+    /// Ordinary store opens intentionally validate only schema authority. Typed reads validate
+    /// each row they consume so run startup remains independent of total historical state.
+    pub fn validate_integrity(&self) -> Result<()> {
+        let conn = self.lock_conn()?;
+        validate_private_checkpoint_rows(&conn)
     }
 
     pub(crate) fn fetch_by_id_tx(
@@ -130,6 +185,14 @@ impl SqliteCheckpointStore {
         self.conn.lock().unwrap().execute(sql, params)
     }
 
+    pub(crate) fn execute_classified_for_test<P>(&self, sql: &str, params: P) -> Result<usize>
+    where
+        P: rusqlite::Params,
+    {
+        let conn = self.lock_conn()?;
+        conn.execute(sql, params).map_err(sqlite_error)
+    }
+
     pub(crate) fn query_row_for_test<T, P, F>(
         &self,
         sql: &str,
@@ -158,6 +221,12 @@ impl CheckpointStore for SqliteCheckpointStore {
         };
         let mut conn = self.lock_conn()?;
         let tx = conn.transaction().map_err(sqlite_error)?;
+        if Self::fetch_by_id_tx(&tx, &checkpoint.delta.checkpoint_id)?.is_some() {
+            return Err(CdfError::contract(format!(
+                "checkpoint {} already exists",
+                checkpoint.delta.checkpoint_id
+            )));
+        }
         if let Some(head) = Self::head_tx(
             &tx,
             &checkpoint.delta.pipeline_id,
@@ -257,14 +326,13 @@ impl CheckpointStore for SqliteCheckpointStore {
         }
         let conn = self.lock_conn()?;
         let scope_json = encode_json(scope)?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT schema_hash FROM cdf_checkpoints \
-                 WHERE pipeline_id = ? AND resource_id = ? AND scope_json = ? \
-                   AND status = 'committed' \
-                 ORDER BY sequence DESC LIMIT ?",
-            )
-            .map_err(sqlite_error)?;
+        let sql = format!(
+            "{CHECKPOINT_SELECT} \
+             WHERE pipeline_id = ? AND resource_id = ? AND scope_json = ? \
+               AND status = 'committed' \
+             ORDER BY sequence DESC LIMIT ?"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(sqlite_error)?;
         let rows = stmt
             .query_map(
                 params![
@@ -273,12 +341,12 @@ impl CheckpointStore for SqliteCheckpointStore {
                     scope_json,
                     i64::from(limit)
                 ],
-                |row| row.get::<_, String>(0),
+                row_to_checkpoint,
             )
             .map_err(sqlite_error)?;
         let mut count = 0_u32;
         for row in rows {
-            if row.map_err(sqlite_error)? != schema_hash.as_str() {
+            if row.map_err(sqlite_error)?.delta.schema_hash != *schema_hash {
                 break;
             }
             count = count.saturating_add(1);
@@ -429,18 +497,19 @@ fn verify_current_published_schema_tx(tx: &Transaction<'_>, delta: &StateDelta) 
     }
     let mut statement = tx
         .prepare(
-            "SELECT event_json FROM cdf_promotion_publications ORDER BY published_at_ms DESC, promotion_id DESC",
+            "SELECT promotion_id, published_at_ms, event_json FROM cdf_promotion_publications ORDER BY published_at_ms DESC, promotion_id DESC",
         )
         .map_err(sqlite_error)?;
     let mut rows = statement.query([]).map_err(sqlite_error)?;
     let mut publication = None;
     while let Some(row) = rows.next().map_err(sqlite_error)? {
-        let event: PromotionPublicationEvent =
-            serde_json::from_str(&row.get::<_, String>(0).map_err(sqlite_error)?)
-                .map_err(|error| CdfError::data(error.to_string()))?;
-        if event.resource_id == delta.resource_id {
+        let event = decode_private_promotion_publication_row(
+            row.get::<_, String>(0).map_err(sqlite_error)?,
+            row.get::<_, i64>(1).map_err(sqlite_error)?,
+            row.get::<_, String>(2).map_err(sqlite_error)?,
+        )?;
+        if event.resource_id == delta.resource_id && publication.is_none() {
             publication = Some(event);
-            break;
         }
     }
     let Some(event) = publication else {
@@ -529,6 +598,17 @@ fn validate_schema_structure(conn: &Connection) -> Result<()> {
     require_sqlite_tables(conn, "checkpoint store", &["cdf_checkpoints"])
 }
 
+fn validate_private_checkpoint_rows(conn: &Connection) -> Result<()> {
+    let mut statement = conn.prepare(CHECKPOINT_SELECT).map_err(sqlite_error)?;
+    let rows = statement
+        .query_map([], row_to_checkpoint)
+        .map_err(sqlite_error)?;
+    for checkpoint in rows {
+        checkpoint.map_err(sqlite_error)?;
+    }
+    Ok(())
+}
+
 fn unsupported_checkpoint_schema_version(version: i64) -> CdfError {
     CdfError::internal(format!(
         "unsupported checkpoint store SQLite schema version {version}"
@@ -589,89 +669,145 @@ fn row_to_checkpoint(row: &Row<'_>) -> rusqlite::Result<Checkpoint> {
 }
 
 fn row_to_checkpoint_result(row: &Row<'_>) -> Result<Checkpoint> {
-    let checkpoint_id = CheckpointId::new(row_get::<String>(row, "checkpoint_id")?)?;
-    let pipeline_id = PipelineId::new(row_get::<String>(row, "pipeline_id")?)?;
-    let resource_id = ResourceId::new(row_get::<String>(row, "resource_id")?)?;
-    let scope_json: String = row_get(row, "scope_json")?;
-    let state_version = row_get::<u16>(row, "state_version")?;
-    validate_state_version(state_version)?;
-    let parent_checkpoint_id = row_get::<Option<String>>(row, "parent_checkpoint_id")?
-        .map(CheckpointId::new)
-        .transpose()?;
-    let input_position = row_get::<Option<String>>(row, "input_position_json")?
-        .map(|json| decode_json::<SourcePosition>(&json, state_version))
-        .transpose()?;
-    let output_position = decode_json::<SourcePosition>(
-        &row_get::<String>(row, "output_position_json")?,
-        state_version,
-    )?;
-    let package_hash = PackageHash::new(row_get::<String>(row, "package_hash")?)?;
-    let schema_hash = cdf_kernel::SchemaHash::new(row_get::<String>(row, "schema_hash")?)?;
-    let status = CheckpointStatus::parse(&row_get::<String>(row, "status")?)?;
-    let delta = decode_json::<StateDelta>(&row_get::<String>(row, "delta_json")?, state_version)?;
-    delta.validate()?;
-    let receipt_id = row_get::<Option<String>>(row, "receipt_id")?
-        .map(cdf_kernel::ReceiptId::new)
-        .transpose()?;
-    if delta.checkpoint_id != checkpoint_id
-        || delta.pipeline_id != pipeline_id
-        || delta.resource_id != resource_id
-        || delta.scope != decode_json::<ScopeKey>(&scope_json, state_version)?
-        || delta.state_version != state_version
-        || delta.parent_checkpoint_id != parent_checkpoint_id
-        || delta.input_position != input_position
-        || delta.output_position != output_position
-        || delta.package_hash != package_hash
-        || delta.schema_hash != schema_hash
-    {
-        return Err(CdfError::data(
-            "checkpoint row columns do not match serialized state delta",
-        ));
-    }
+    private_state_decode(
+        "decode CDF-managed checkpoint row",
+        (|| {
+            let sequence = row_get::<i64>(row, "sequence")?;
+            if sequence < 1 {
+                return Err(CdfError::internal(
+                    "checkpoint row sequence must be a positive CDF-managed identifier",
+                ));
+            }
+            let checkpoint_id = CheckpointId::new(row_get::<String>(row, "checkpoint_id")?)?;
+            let pipeline_id = PipelineId::new(row_get::<String>(row, "pipeline_id")?)?;
+            let resource_id = ResourceId::new(row_get::<String>(row, "resource_id")?)?;
+            let scope_json: String = row_get(row, "scope_json")?;
+            let state_version = row_get::<u16>(row, "state_version")?;
+            validate_state_version(state_version)?;
+            let parent_checkpoint_id = row_get::<Option<String>>(row, "parent_checkpoint_id")?
+                .map(CheckpointId::new)
+                .transpose()?;
+            let input_position = row_get::<Option<String>>(row, "input_position_json")?
+                .map(|json| decode_json::<SourcePosition>(&json, state_version))
+                .transpose()?;
+            let output_position = decode_json::<SourcePosition>(
+                &row_get::<String>(row, "output_position_json")?,
+                state_version,
+            )?;
+            let package_hash = PackageHash::new(row_get::<String>(row, "package_hash")?)?;
+            let schema_hash = cdf_kernel::SchemaHash::new(row_get::<String>(row, "schema_hash")?)?;
+            let status = CheckpointStatus::parse(&row_get::<String>(row, "status")?)?;
+            let delta =
+                decode_json::<StateDelta>(&row_get::<String>(row, "delta_json")?, state_version)?;
+            delta.validate()?;
+            let receipt_id = row_get::<Option<String>>(row, "receipt_id")?
+                .map(cdf_kernel::ReceiptId::new)
+                .transpose()?;
+            if delta.checkpoint_id != checkpoint_id
+                || delta.pipeline_id != pipeline_id
+                || delta.resource_id != resource_id
+                || delta.scope != decode_json::<ScopeKey>(&scope_json, state_version)?
+                || delta.state_version != state_version
+                || delta.parent_checkpoint_id != parent_checkpoint_id
+                || delta.input_position != input_position
+                || delta.output_position != output_position
+                || delta.package_hash != package_hash
+                || delta.schema_hash != schema_hash
+            {
+                return Err(CdfError::internal(
+                    "checkpoint row columns do not match serialized state delta",
+                ));
+            }
 
-    let receipt = row_get::<Option<String>>(row, "receipt_json")?
-        .map(|json| decode_json::<Receipt>(&json, state_version))
-        .transpose()?;
-    match (&status, &receipt, &receipt_id) {
-        (CheckpointStatus::Committed, Some(receipt), Some(receipt_id))
-            if receipt.receipt_id == *receipt_id =>
-        {
-            verify_receipt(receipt, &delta)?;
-        }
-        (CheckpointStatus::Committed, Some(_), Some(_)) => {
-            return Err(CdfError::data(
-                "committed checkpoint row receipt id does not match receipt JSON",
-            ));
-        }
-        (CheckpointStatus::Committed, None, _) => {
-            return Err(CdfError::data(
-                "committed checkpoint row is missing receipt JSON",
-            ));
-        }
-        (CheckpointStatus::Committed, Some(_), None) => {
-            return Err(CdfError::data(
-                "committed checkpoint row is missing receipt id",
-            ));
-        }
-        (_, Some(_), _) | (_, _, Some(_)) => {
-            return Err(CdfError::data(
-                "non-committed checkpoint row unexpectedly has a receipt",
-            ));
-        }
-        (_, None, None) => {}
-    }
+            let receipt = row_get::<Option<String>>(row, "receipt_json")?
+                .map(|json| decode_json::<Receipt>(&json, state_version))
+                .transpose()?;
+            let is_head = row_get::<i64>(row, "is_head")?;
+            if !matches!(is_head, 0 | 1) {
+                return Err(CdfError::internal(
+                    "checkpoint row is_head must be encoded as 0 or 1",
+                ));
+            }
+            if is_head == 1 && status != CheckpointStatus::Committed {
+                return Err(CdfError::internal(
+                    "checkpoint row marks a non-committed checkpoint as the current head",
+                ));
+            }
+            let created_at_ms = row_get::<i64>(row, "created_at_ms")?;
+            let committed_at_ms = row_get::<Option<i64>>(row, "committed_at_ms")?;
+            let rewind_target_checkpoint_id =
+                row_get::<Option<String>>(row, "rewind_target_checkpoint_id")?
+                    .map(CheckpointId::new)
+                    .transpose()?;
+            if created_at_ms < 0 || committed_at_ms.is_some_and(|committed| committed < 0) {
+                return Err(CdfError::internal(
+                    "checkpoint row timestamps violate the private lifecycle invariant",
+                ));
+            }
+            match (&status, &receipt, &receipt_id) {
+                (CheckpointStatus::Committed, Some(receipt), Some(receipt_id))
+                    if receipt.receipt_id == *receipt_id =>
+                {
+                    verify_receipt(receipt, &delta)?;
+                    if committed_at_ms != Some(receipt.committed_at_ms) {
+                        return Err(CdfError::internal(
+                            "committed checkpoint timestamp does not match receipt JSON",
+                        ));
+                    }
+                }
+                (CheckpointStatus::Committed, Some(_), Some(_)) => {
+                    return Err(CdfError::internal(
+                        "committed checkpoint row receipt id does not match receipt JSON",
+                    ));
+                }
+                (CheckpointStatus::Committed, None, _) => {
+                    return Err(CdfError::internal(
+                        "committed checkpoint row is missing receipt JSON",
+                    ));
+                }
+                (CheckpointStatus::Committed, Some(_), None) => {
+                    return Err(CdfError::internal(
+                        "committed checkpoint row is missing receipt id",
+                    ));
+                }
+                (_, Some(_), _) | (_, _, Some(_)) => {
+                    return Err(CdfError::internal(
+                        "non-committed checkpoint row unexpectedly has a receipt",
+                    ));
+                }
+                (_, None, None) => {}
+            }
+            if status != CheckpointStatus::Committed && committed_at_ms.is_some() {
+                return Err(CdfError::internal(
+                    "non-committed checkpoint row unexpectedly has a committed timestamp",
+                ));
+            }
+            match (&status, &rewind_target_checkpoint_id) {
+                (CheckpointStatus::Rewound, Some(_)) => {}
+                (CheckpointStatus::Rewound, None) => {
+                    return Err(CdfError::internal(
+                        "rewound checkpoint row is missing its rewind target",
+                    ));
+                }
+                (_, Some(_)) => {
+                    return Err(CdfError::internal(
+                        "non-rewound checkpoint row unexpectedly has a rewind target",
+                    ));
+                }
+                (_, None) => {}
+            }
 
-    Ok(Checkpoint {
-        delta,
-        status,
-        receipt,
-        is_head: row_get::<i64>(row, "is_head")? == 1,
-        created_at_ms: row_get(row, "created_at_ms")?,
-        committed_at_ms: row_get(row, "committed_at_ms")?,
-        rewind_target_checkpoint_id: row_get::<Option<String>>(row, "rewind_target_checkpoint_id")?
-            .map(CheckpointId::new)
-            .transpose()?,
-    })
+            Ok(Checkpoint {
+                delta,
+                status,
+                receipt,
+                is_head: is_head == 1,
+                created_at_ms,
+                committed_at_ms,
+                rewind_target_checkpoint_id,
+            })
+        })(),
+    )
 }
 
 fn row_get<T: rusqlite::types::FromSql>(row: &Row<'_>, column: &str) -> Result<T> {
