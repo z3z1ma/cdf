@@ -12,7 +12,31 @@ use crate::{
     },
 };
 
-use super::model::ResumePackageFacts;
+use super::{BareResumeReport, model::ResumePackageFacts};
+
+pub(super) fn bare_resume_document(report: &BareResumeReport) -> RenderDocument {
+    RenderDocument::new()
+        .push(StatusLine::new(
+            StatusKind::Success,
+            "no interrupted runs found",
+        ))
+        .blank_line()
+        .push(
+            KeyValuePanel::new("Resume")
+                .row("state", report.state)
+                .row(
+                    "interrupted runs",
+                    report.interrupted_runs.len().to_string(),
+                )
+                .row("package written", "no")
+                .row("destination written", "no")
+                .row("checkpoint written", "no")
+                .row(
+                    "mutation performed",
+                    "none; no package, destination, checkpoint, or run-ledger writes",
+                ),
+        )
+}
 
 pub(super) fn finish_resume_report(
     report: ResumeReport,

@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-26
 Updated: 2026-07-26
 Parent: `.10x/tickets/2026-07-26-pre-wave-architecture-hardening-program.md`
@@ -42,6 +42,9 @@ superseded command-local layout helpers and plain compatibility surfaces.
 
 - 2026-07-26: Inventory found many typed reports and a closed plain-output gate, but layout
   methods/functions remain distributed through command modules.
+- 2026-07-27: Activated after D1c closure. Governing records preserve command behavior, JSON
+  fields, redaction, and the existing `CommandOutput::rendered` transport boundary; this ticket
+  moves only human layout construction and adds the migration fence.
 
 ## Blockers
 

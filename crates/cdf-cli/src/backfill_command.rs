@@ -14,12 +14,7 @@ use crate::{
     output::{CliError, CommandOutput},
     progress::{CliProgressSink, ProgressDelivery, ProgressSnapshot, human_progress_sink},
     project_run_resource::build_project_run_resource,
-    render::{
-        RenderDocument,
-        humanize::humanize_rows,
-        primitives::{KeyValuePanel, NextCommand, StatusKind, StatusLine, Table},
-        redaction::redact_uri_userinfo,
-    },
+    render::redaction::redact_uri_userinfo,
     reports::{RunDestinationReport, WriteEffects},
     scan_command::{default_target_for_resource, segmentation_policy_from_tuning},
 };
@@ -65,7 +60,7 @@ pub(crate) fn backfill(
 
     if !args.execute {
         let report = BackfillCliReport::planned(&plan, args.slice_size);
-        return CommandOutput::rendered("backfill", report.render_document(), report);
+        return CommandOutput::rendered("backfill", render::document(&report), report);
     }
 
     source.validate_supported().map_err(CliError::from)?;
@@ -99,11 +94,11 @@ pub(crate) fn backfill(
     match progress {
         Some(progress) => CommandOutput::rendered_with_progress(
             "backfill",
-            report.render_document(),
+            render::document(&report),
             report,
             progress.finish(),
         ),
-        None => CommandOutput::rendered("backfill", report.render_document(), report),
+        None => CommandOutput::rendered("backfill", render::document(&report), report),
     }
 }
 
@@ -298,109 +293,6 @@ impl BackfillCliReport {
             writes: WriteEffects::all(),
         }
     }
-
-    fn render_document(&self) -> RenderDocument {
-        let executed = self.mode == "execute";
-        let mut document = RenderDocument::new()
-            .push(StatusLine::new(
-                StatusKind::Success,
-                format!(
-                    "{} backfill {} -> {}",
-                    if executed { "executed" } else { "planned" },
-                    self.resource_id,
-                    self.target
-                ),
-            ))
-            .blank_line()
-            .push(
-                KeyValuePanel::new("Backfill")
-                    .row("mode", self.mode)
-                    .row("resource", self.resource_id.clone())
-                    .row("target", self.target.clone())
-                    .row("pipeline", self.pipeline_id.clone())
-                    .row("from", self.requested.from.clone())
-                    .row("to", self.requested.to.clone())
-                    .row("slice size", optional_u64(self.requested.slice_size))
-                    .row("slices", self.slices.len().to_string()),
-            )
-            .blank_line()
-            .push(
-                KeyValuePanel::new("Writes")
-                    .row("package", yes_no(executed))
-                    .row("destination", yes_no(executed))
-                    .row("checkpoint", yes_no(executed))
-                    .row(
-                        "mutation",
-                        if executed {
-                            "ran each slice through the run spine"
-                        } else {
-                            "dry plan only; no package, destination, checkpoint, or run-ledger writes"
-                        },
-                    ),
-            );
-
-        let table = self.slices.iter().fold(
-            Table::new(["slice", "window", "status", "rows"]),
-            |table, slice| {
-                table.row([
-                    slice.ordinal.to_string(),
-                    format!("{}..{}", slice.start, slice.end),
-                    slice.status.to_owned(),
-                    slice
-                        .executed
-                        .as_ref()
-                        .map(|executed| humanize_rows(executed.row_count))
-                        .unwrap_or_else(|| "-".to_owned()),
-                ])
-            },
-        );
-        document = document.blank_line().push(table);
-
-        if executed {
-            document = document.blank_line().push(
-                KeyValuePanel::new("Summary")
-                    .row(
-                        "slices succeeded",
-                        format!(
-                            "{}/{}",
-                            self.slices
-                                .iter()
-                                .filter(|slice| slice.status == "succeeded")
-                                .count(),
-                            self.slices.len()
-                        ),
-                    )
-                    .row("rows", humanize_rows(self.executed_row_count()))
-                    .row("segments", self.executed_segment_count().to_string()),
-            );
-            document = document
-                .blank_line()
-                .push(NextCommand::new("cdf state history <resource>"));
-        } else {
-            document = document.blank_line().push(NextCommand::new(format!(
-                "cdf backfill {} --from {} --to {} --target {} --execute",
-                self.resource_id, self.requested.from, self.requested.to, self.target
-            )));
-        }
-
-        document
-    }
-
-    fn executed_row_count(&self) -> u64 {
-        self.slices
-            .iter()
-            .filter_map(|slice| slice.executed.as_ref())
-            .map(|executed| executed.row_count)
-            .sum()
-    }
-
-    fn executed_segment_count(&self) -> u64 {
-        self.slices
-            .iter()
-            .filter_map(|slice| slice.executed.as_ref())
-            .map(|executed| executed.segment_count)
-            .sum()
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -475,16 +367,7 @@ struct BackfillSliceExecutionReport {
     destination: RunDestinationReport,
 }
 
-fn optional_u64(value: Option<u64>) -> String {
-    value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "none".to_owned())
-}
-
-fn yes_no(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
-}
-
 fn safe_display_value(value: &str) -> String {
     redact_uri_userinfo(value)
 }
+mod render;

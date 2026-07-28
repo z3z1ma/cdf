@@ -1,0 +1,268 @@
+use cdf_kernel::{SourcePosition, TableSnapshotSelector};
+use serde_json::Value;
+
+use super::*;
+use crate::render::{
+    RenderDocument,
+    primitives::{KeyValuePanel, NextCommand, StatusKind, StatusLine, Table},
+};
+
+pub(super) fn show_document(
+    args: &StateScopeArgs,
+    pipeline_id: &PipelineId,
+    scope: &ScopeKey,
+    head: Option<&cdf_kernel::Checkpoint>,
+) -> RenderDocument {
+    let mut document = RenderDocument::new()
+        .push(StatusLine::new(
+            if head.is_some() {
+                StatusKind::Success
+            } else {
+                StatusKind::Warning
+            },
+            if head.is_some() {
+                "state head found"
+            } else {
+                "no committed state head"
+            },
+        ))
+        .blank_line()
+        .push(scope_panel("Scope", args, pipeline_id, scope));
+
+    document = match head {
+        Some(head) => document.blank_line().push(checkpoint_panel("Head", head)),
+        None => document.blank_line().push(
+            KeyValuePanel::new("Head")
+                .row("checkpoint", "none")
+                .row("status", "missing")
+                .row("mutation performed", "none"),
+        ),
+    };
+
+    document
+        .blank_line()
+        .push(NextCommand::new(state_scope_command(
+            "cdf state history",
+            args,
+        )))
+}
+
+pub(super) fn history_document(
+    args: &StateScopeArgs,
+    pipeline_id: &PipelineId,
+    scope: &ScopeKey,
+    history: &[cdf_kernel::Checkpoint],
+) -> RenderDocument {
+    let table = history.iter().fold(
+        Table::new(["checkpoint", "status", "head", "package", "receipt"]),
+        |table, checkpoint| {
+            table.row([
+                checkpoint.delta.checkpoint_id.to_string(),
+                checkpoint.status.as_str().to_owned(),
+                yes_no(checkpoint.is_head).to_owned(),
+                checkpoint.delta.package_hash.to_string(),
+                checkpoint
+                    .receipt
+                    .as_ref()
+                    .map(|receipt| receipt.receipt_id.to_string())
+                    .unwrap_or_else(|| "none".to_owned()),
+            ])
+        },
+    );
+
+    RenderDocument::new()
+        .push(StatusLine::new(
+            StatusKind::Success,
+            format!("{} checkpoint(s)", history.len()),
+        ))
+        .blank_line()
+        .push(scope_panel("Scope", args, pipeline_id, scope))
+        .blank_line()
+        .push(history_panel(history))
+        .blank_line()
+        .push(table)
+        .blank_line()
+        .push(NextCommand::new(state_scope_command(
+            "cdf state show",
+            args,
+        )))
+}
+
+pub(super) fn rewind_document(
+    args: &StateScopeArgs,
+    report: &cdf_kernel::RewindReport,
+) -> RenderDocument {
+    let table = report
+        .packages_ahead
+        .iter()
+        .fold(Table::new(["package ahead of state"]), |table, package| {
+            table.row([package.to_string()])
+        });
+
+    RenderDocument::new()
+        .push(StatusLine::new(
+            StatusKind::Success,
+            format!("rewound to {}", report.head.delta.checkpoint_id),
+        ))
+        .blank_line()
+        .push(
+            KeyValuePanel::new("Rewind")
+                .row("marker", report.marker.delta.checkpoint_id.to_string())
+                .row(
+                    "target",
+                    report
+                        .marker
+                        .rewind_target_checkpoint_id
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| report.head.delta.checkpoint_id.to_string()),
+                )
+                .row("new head", report.head.delta.checkpoint_id.to_string())
+                .row("marker status", report.marker.status.as_str())
+                .row("head status", report.head.status.as_str())
+                .row("packages ahead", report.packages_ahead.len().to_string())
+                .row("mutation performed", "rewind marker checkpoint appended"),
+        )
+        .blank_line()
+        .push(table)
+        .blank_line()
+        .push(NextCommand::new(state_scope_command(
+            "cdf state show",
+            args,
+        )))
+}
+
+fn scope_panel(
+    title: &str,
+    args: &StateScopeArgs,
+    pipeline_id: &PipelineId,
+    scope: &ScopeKey,
+) -> KeyValuePanel {
+    KeyValuePanel::new(title)
+        .row("pipeline", pipeline_id.to_string())
+        .row("resource", args.resource_id.clone())
+        .row(
+            "scope",
+            serde_json::to_string(scope).unwrap_or_else(|_| "<unavailable>".to_owned()),
+        )
+}
+
+fn checkpoint_panel(title: &str, checkpoint: &cdf_kernel::Checkpoint) -> KeyValuePanel {
+    let mut panel = KeyValuePanel::new(title)
+        .row("checkpoint", checkpoint.delta.checkpoint_id.to_string())
+        .row("status", checkpoint.status.as_str())
+        .row("is head", yes_no(checkpoint.is_head))
+        .row("package", checkpoint.delta.package_hash.to_string())
+        .row(
+            "receipt",
+            checkpoint
+                .receipt
+                .as_ref()
+                .map(|receipt| receipt.receipt_id.to_string())
+                .unwrap_or_else(|| "none".to_owned()),
+        )
+        .row(
+            "source position",
+            checkpoint.delta.output_position.kind().as_str(),
+        );
+    if let SourcePosition::TableSnapshot(position) = &checkpoint.delta.output_position {
+        panel = panel
+            .row("table protocol", position.protocol.clone())
+            .row("catalog", position.catalog.clone())
+            .row(
+                "table",
+                format!("{}.{}", position.namespace.join("."), position.table),
+            )
+            .row("selector", table_selector_summary(&position.selector))
+            .row("snapshot", position.snapshot_id.to_string())
+            .row("sequence", position.sequence_number.to_string())
+            .row(
+                "parent snapshot",
+                position
+                    .parent_snapshot_id
+                    .map_or_else(|| "none".to_owned(), |value| value.to_string()),
+            )
+            .row("metadata generation", position.metadata_generation.clone());
+    }
+    panel
+}
+
+fn table_selector_summary(selector: &TableSnapshotSelector) -> String {
+    match selector {
+        TableSnapshotSelector::Current => "current".to_owned(),
+        TableSnapshotSelector::Branch { name } => format!("branch:{name}"),
+        TableSnapshotSelector::Tag { name } => format!("tag:{name}"),
+        TableSnapshotSelector::Snapshot { snapshot_id } => format!("snapshot:{snapshot_id}"),
+        TableSnapshotSelector::Timestamp { timestamp_ms } => format!("timestamp:{timestamp_ms}"),
+    }
+}
+
+fn history_panel(history: &[cdf_kernel::Checkpoint]) -> KeyValuePanel {
+    KeyValuePanel::new("History")
+        .row("checkpoints", history.len().to_string())
+        .row(
+            "oldest",
+            history
+                .first()
+                .map(|checkpoint| checkpoint.delta.checkpoint_id.to_string())
+                .unwrap_or_else(|| "none".to_owned()),
+        )
+        .row(
+            "newest",
+            history
+                .last()
+                .map(|checkpoint| checkpoint.delta.checkpoint_id.to_string())
+                .unwrap_or_else(|| "none".to_owned()),
+        )
+        .row(
+            "head",
+            history
+                .iter()
+                .find(|checkpoint| checkpoint.is_head)
+                .map(|checkpoint| checkpoint.delta.checkpoint_id.to_string())
+                .unwrap_or_else(|| "none".to_owned()),
+        )
+}
+
+fn state_scope_command(prefix: &str, args: &StateScopeArgs) -> String {
+    let mut command = format!("{prefix} {}", args.resource_id);
+    if let Some(pipeline_id) = &args.pipeline_id {
+        command.push_str(" --pipeline ");
+        command.push_str(pipeline_id);
+    }
+    if let Some(scope_json) = &args.scope_json {
+        append_scope_json_as_command_args(&mut command, scope_json);
+    }
+    for pair in &args.scope {
+        command.push_str(" --scope ");
+        command.push_str(pair);
+    }
+    command
+}
+
+fn append_scope_json_as_command_args(command: &mut String, scope_json: &str) {
+    let Ok(Value::Object(scope)) = serde_json::from_str::<Value>(scope_json) else {
+        command.push_str(" --scope-json ");
+        command.push_str(scope_json);
+        return;
+    };
+
+    let mut pairs = Vec::new();
+    for (key, value) in scope {
+        let Value::String(value) = value else {
+            command.push_str(" --scope-json ");
+            command.push_str(scope_json);
+            return;
+        };
+        pairs.push(format!("{key}={value}"));
+    }
+
+    for pair in pairs {
+        command.push_str(" --scope ");
+        command.push_str(&pair);
+    }
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}

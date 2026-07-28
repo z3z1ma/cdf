@@ -15,13 +15,12 @@ use crate::{
     error_catalog,
     output::{CliError, CommandOutput},
     progress::{CliProgressSink, ProgressDelivery, human_progress_sink},
-    render::{
-        RenderDocument,
-        primitives::{KeyValuePanel, StatusKind, StatusLine},
-    },
 };
 
-use self::{attempt::ResumeAttempt, report::finish_resume_report};
+use self::{
+    attempt::ResumeAttempt,
+    report::{bare_resume_document, finish_resume_report},
+};
 
 pub(crate) fn resume(
     cli: &Cli,
@@ -200,28 +199,4 @@ fn no_interrupted_runs_report() -> Result<CommandOutput, CliError> {
         writes: crate::reports::WriteEffects::none(),
     };
     CommandOutput::rendered("resume", bare_resume_document(&report), report)
-}
-
-fn bare_resume_document(report: &BareResumeReport) -> RenderDocument {
-    RenderDocument::new()
-        .push(StatusLine::new(
-            StatusKind::Success,
-            "no interrupted runs found",
-        ))
-        .blank_line()
-        .push(
-            KeyValuePanel::new("Resume")
-                .row("state", report.state)
-                .row(
-                    "interrupted runs",
-                    report.interrupted_runs.len().to_string(),
-                )
-                .row("package written", "no")
-                .row("destination written", "no")
-                .row("checkpoint written", "no")
-                .row(
-                    "mutation performed",
-                    "none; no package, destination, checkpoint, or run-ledger writes",
-                ),
-        )
 }
