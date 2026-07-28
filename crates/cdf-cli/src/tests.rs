@@ -380,13 +380,10 @@ fn renderer_migration_gate_rejects_raw_human_output_bypasses() {
             }
         }
         let relative_text = relative.to_string_lossy();
-        let is_command_execution = relative_text == "commands.rs"
-            || relative_text.ends_with("_command.rs")
-            || matches!(
-                relative_text.as_ref(),
-                "project_command/deep_validate.rs" | "state_command/recover.rs"
-            );
-        if is_command_execution {
+        let is_renderer_authority = relative_text == "reports.rs"
+            || relative_text == "resume_command/report.rs"
+            || relative_text.ends_with("/render.rs");
+        if !is_renderer_authority {
             for (pattern, reason) in [
                 (
                     "RenderDocument",
@@ -13119,6 +13116,35 @@ fn package_verify_uses_lower_package_reader() {
     );
     assert_eq!(json["result"]["checked_file_count"], 1);
     assert_eq!(json["result"]["checked_archive_count"], 0);
+}
+
+#[test]
+fn inspect_package_typed_report_preserves_manifest_json_shape() {
+    let temp = TempDir::new("cdf-cli-inspect-package");
+    let package_dir = temp.path().join("pkg");
+    let manifest = package_builder!(&package_dir, "pkg-inspect")
+        .unwrap()
+        .finish_with_status(PackageStatus::Packaged)
+        .unwrap();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "inspect",
+        "package",
+        package_dir.to_str().unwrap(),
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["command"], "inspect package");
+    assert_eq!(json["result"]["package_hash"], manifest.package_hash);
+    assert_eq!(
+        json["result"]["identity"]["package_id"],
+        manifest.identity.package_id
+    );
+    assert!(json["result"].get("manifest").is_none());
+    assert!(json["result"].get("path").is_none());
 }
 
 #[test]

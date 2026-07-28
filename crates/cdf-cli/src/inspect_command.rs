@@ -3,7 +3,7 @@ mod render;
 use std::{collections::BTreeMap, path::PathBuf};
 
 use cdf_project::{EffectiveEnvironment, LockedDestination, ProjectConfig};
-use serde::{Serialize, Serializer};
+use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
     args::{Cli, InspectArgs, InspectNoun},
@@ -27,11 +27,12 @@ pub(crate) fn inspect(
             )?;
             match noun {
                 InspectNoun::Project => {
+                    let resource_count = context.resources.len();
                     let report = InspectProjectReport {
                         root: context.root,
-                        config: context.config,
-                        environment: context.environment,
-                        resource_count: context.resources.len(),
+                        config: redact_typed(context.config)?,
+                        environment: redact_typed(context.environment)?,
+                        resource_count,
                     };
                     CommandOutput::rendered(
                         "inspect project",
@@ -56,17 +57,18 @@ pub(crate) fn inspect(
                     )
                 }
                 InspectNoun::Lock => {
-                    let report = InspectLockReport(require_lock(&context)?.clone());
+                    let report = InspectLockReport(redact_typed(require_lock(&context)?.clone())?);
                     CommandOutput::rendered("inspect lock", render::lock_document(&report), report)
                 }
                 InspectNoun::Destinations => {
-                    let runtime = context.destination_runtime(destinations);
+                    let runtime =
+                        redact_destination_runtime(context.destination_runtime(destinations));
                     let report = InspectDestinationsReport {
                         environment_destination: redact_uri_userinfo(
                             &context.environment.destination,
                         ),
                         runtime,
-                        locked: context.lock.map(|lock| lock.destinations),
+                        locked: redact_typed(context.lock.map(|lock| lock.destinations))?,
                     };
                     CommandOutput::rendered(
                         "inspect destinations",
@@ -94,7 +96,7 @@ fn inspect_command_name(noun: &InspectNoun) -> &'static str {
 }
 
 fn inspect_package(path: PathBuf) -> Result<CommandOutput, CliError> {
-    let manifest = cdf_package::read_manifest(&path)?;
+    let manifest = redact_typed(cdf_package::read_manifest(&path)?)?;
     let report = InspectPackageReport { path, manifest };
     CommandOutput::rendered("inspect package", render::package_document(&report), report)
 }
@@ -102,9 +104,7 @@ fn inspect_package(path: PathBuf) -> Result<CommandOutput, CliError> {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct InspectProjectReport {
     root: PathBuf,
-    #[serde(serialize_with = "serialize_redacted")]
     config: ProjectConfig,
-    #[serde(serialize_with = "serialize_redacted")]
     environment: EffectiveEnvironment,
     #[serde(skip)]
     resource_count: usize,
@@ -116,14 +116,12 @@ struct InspectResourcesReport(Vec<ResourceSummary>);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
-struct InspectLockReport(#[serde(serialize_with = "serialize_redacted")] cdf_project::CdfLock);
+struct InspectLockReport(cdf_project::CdfLock);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct InspectDestinationsReport {
     environment_destination: String,
-    #[serde(serialize_with = "serialize_redacted")]
     runtime: crate::context::DestinationRuntime,
-    #[serde(serialize_with = "serialize_redacted")]
     locked: Option<BTreeMap<String, LockedDestination>>,
 }
 
@@ -131,13 +129,12 @@ struct InspectDestinationsReport {
 struct InspectPackageReport {
     #[serde(skip)]
     path: PathBuf,
-    #[serde(flatten, serialize_with = "serialize_redacted")]
+    #[serde(flatten)]
     manifest: cdf_package_contract::PackageManifest,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct ResourceSummary {
-    #[serde(serialize_with = "serialize_redacted")]
     descriptor: cdf_kernel::ResourceDescriptor,
     source_name: String,
     resource_name: String,
@@ -171,13 +168,27 @@ impl ResourceSummary {
     }
 }
 
-fn serialize_redacted<T, S>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
+fn redact_typed<T>(value: T) -> Result<T, CliError>
 where
-    T: Serialize,
-    S: Serializer,
+    T: Serialize + DeserializeOwned,
 {
-    let value = serde_json::to_value(value).map_err(serde::ser::Error::custom)?;
-    redact_json_uri_userinfo(value).serialize(serializer)
+    let value = serde_json::to_value(value).map_err(crate::commands::json_cli_error)?;
+    serde_json::from_value(redact_json_uri_userinfo(value)).map_err(crate::commands::json_cli_error)
+}
+
+fn redact_destination_runtime(
+    mut runtime: crate::context::DestinationRuntime,
+) -> crate::context::DestinationRuntime {
+    runtime.label = runtime.label.map(|value| redact_uri_userinfo(&value));
+    runtime.error = runtime.error.map(|value| redact_uri_userinfo(&value));
+    for health in &mut runtime.health {
+        health.message = redact_uri_userinfo(&health.message);
+        health.details = std::mem::take(&mut health.details)
+            .into_iter()
+            .map(|(key, value)| (key, redact_json_uri_userinfo(value)))
+            .collect();
+    }
+    runtime
 }
 
 fn redact_json_uri_userinfo(value: serde_json::Value) -> serde_json::Value {

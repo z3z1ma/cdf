@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-26
 Updated: 2026-07-26
 Parent: `.10x/tickets/2026-07-26-pre-wave-architecture-hardening-program.md`
-Depends-On: `.10x/tickets/2026-07-26-prewave-d2-typed-cli-report-authority.md`
+Depends-On: `.10x/tickets/done/2026-07-26-prewave-d2-typed-cli-report-authority.md`
 
 # Deliver the holistic CLI experience
 

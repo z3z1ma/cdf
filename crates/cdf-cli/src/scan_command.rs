@@ -167,8 +167,13 @@ pub(crate) fn plan_or_explain(
         &context,
         &prepared.resource,
         &plan,
-        command,
-        args.destination_uri.clone(),
+        ScanReportPresentation {
+            command,
+            destination_uri: args
+                .destination_uri
+                .as_deref()
+                .map(crate::render::redaction::redact_uri_userinfo),
+        },
         resolved,
         execution,
         prepared.schema_snapshot,
@@ -512,8 +517,7 @@ fn scan_report(
     context: &ProjectContext,
     resource: &CliProjectRunSource,
     plan: &EnginePlan,
-    command: &'static str,
-    human_destination_uri: Option<String>,
+    presentation: ScanReportPresentation,
     resolved: EnvironmentDestination,
     execution: &cdf_runtime::ExecutionServices,
     schema_snapshot: Option<SchemaSnapshotActionReport>,
@@ -528,10 +532,11 @@ fn scan_report(
         None,
     )?);
     let queryable = resource.as_queryable();
-    let destination_plan = destination_plan_report(resolved, queryable, plan, command)?;
+    let destination_plan =
+        destination_plan_report(resolved, queryable, plan, presentation.command)?;
     Ok(ScanPlanReport {
-        human_command: command,
-        human_destination_uri,
+        human_command: presentation.command,
+        human_destination_uri: presentation.destination_uri,
         project: context.config.project.name.clone(),
         environment: context.environment.name.clone(),
         resource_id: plan.scan.request.resource_id.to_string(),
@@ -787,6 +792,11 @@ mod render_tests {
             "cdf plan requires a pinned schema hash"
         );
     }
+}
+
+struct ScanReportPresentation {
+    command: &'static str,
+    destination_uri: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
