@@ -1,6 +1,6 @@
-Status: open
+Status: active
 Created: 2026-07-26
-Updated: 2026-07-26
+Updated: 2026-07-27
 Parent: `.10x/tickets/2026-07-26-pre-wave-architecture-hardening-program.md`
 Depends-On: `.10x/tickets/done/2026-07-26-prewave-d2-typed-cli-report-authority.md`
 
@@ -49,6 +49,12 @@ system.
 
 - 2026-07-26: Sequenced after error/report authority so the visual pass edits renderer ownership
   once rather than reopening thirty command modules.
+- 2026-07-27: Activated after D2 closure. Reconciliation found the 2026-07-25 WS9 tranche already
+  implemented and evidenced the required outcome-first visual grammar, terminal policies,
+  nonblocking progress, hosted `<1%` overhead, and canonical public-HTTPS recordings. D3 therefore
+  preserves that authority and closes only current gaps: explicit shared section vocabulary,
+  all-family current-state conformance, and a large-static-report benchmark alongside the
+  existing million-event benchmark.
 
 ## Blockers
 

@@ -21,7 +21,7 @@ impl StateRecoverCliReport {
             ))
             .blank_line()
             .push(
-                KeyValuePanel::new("Recovery")
+                KeyValuePanel::recovery()
                     .row("package", self.package_id.clone())
                     .row("package dir", safe_display_value(&self.package_dir))
                     .row("package hash", self.package_hash.clone())
@@ -52,7 +52,7 @@ impl StateRecoverCliReport {
             )
             .blank_line()
             .push(
-                KeyValuePanel::new("Writes")
+                KeyValuePanel::effects()
                     .row("package status", yes_no(self.writes.package_status))
                     .row("destination rows", yes_no(self.writes.destination_rows))
                     .row("checkpoint", yes_no(self.writes.checkpoint))

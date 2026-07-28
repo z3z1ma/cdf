@@ -216,7 +216,7 @@ impl RunCliReport {
         });
         let byte_rate = (seconds > 0.0).then(|| humanize_rate(self.byte_count as f64 / seconds));
         let quarantine_count = self.terminal_schema_quarantines.len();
-        let mut summary = KeyValuePanel::new("Summary")
+        let mut summary = KeyValuePanel::summary()
             .row("resource", self.resource_id.clone())
             .row("destination", self.destination.summary())
             .row("rows", humanize_rows(self.row_count))
@@ -245,7 +245,7 @@ impl RunCliReport {
             .push(summary)
             .blank_line()
             .push(
-                KeyValuePanel::new("Proof")
+                KeyValuePanel::proof()
                     .row("package", self.package_id.clone())
                     .row("receipt", self.receipt_id.clone())
                     .row("checkpoint", self.checkpoint_id.clone())
@@ -517,7 +517,7 @@ impl RunNoOpCliReport {
             ))
             .blank_line()
             .push(
-                KeyValuePanel::new("Summary")
+                KeyValuePanel::summary()
                     .row("destination", self.destination.summary())
                     .row("outcome", "no-op")
                     .row("reason", self.reason),
@@ -559,7 +559,7 @@ impl RunNoOpCliReport {
         document
             .blank_line()
             .push_verbose(
-                KeyValuePanel::new("Effects")
+                KeyValuePanel::effects()
                     .row("package written", "no")
                     .row("destination written", "no")
                     .row("checkpoint written", "no")
@@ -771,7 +771,7 @@ impl ReplayPackageCliReport {
             ))
             .blank_line()
             .push(
-                KeyValuePanel::new("Summary")
+                KeyValuePanel::summary()
                     .row("outcome", outcome)
                     .row("destination", self.destination.summary())
                     .row("rows", humanize_rows(self.row_count))
@@ -780,7 +780,7 @@ impl ReplayPackageCliReport {
             )
             .blank_line()
             .push(
-                KeyValuePanel::new("Proof")
+                KeyValuePanel::proof()
                     .row("receipt", self.receipt_id.clone())
                     .row("checkpoint", self.checkpoint_id.clone())
                     .row(

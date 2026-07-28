@@ -2,7 +2,10 @@ use std::collections::BTreeMap;
 
 use cdf_cli_core::{
     progress::{CliProgressSink, DisplayVerbosity, ProgressConfig},
-    render::RenderConfig,
+    render::{
+        RenderConfig, RenderDocument,
+        primitives::{KeyValuePanel, NextCommand, StatusKind, StatusLine, Table},
+    },
 };
 use cdf_kernel::{
     PackageHash, PartitionId, ResourceId, RunEvent, RunEventDetails, RunEventKind, RunEventSink,
@@ -12,6 +15,7 @@ use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_mai
 
 const EVENT_COUNT: u64 = 1_000_000;
 const HIGH_PARTITION_COUNT: u64 = 10_000;
+const LARGE_REPORT_ROW_COUNT: u64 = 10_000;
 
 fn progress_event(sequence: u64) -> RunEvent {
     RunEvent {
@@ -35,6 +39,35 @@ fn progress_event(sequence: u64) -> RunEvent {
             attributes: BTreeMap::new(),
         },
     }
+}
+
+fn large_report_document() -> RenderDocument {
+    let mut resources = Table::new(["resource", "state", "rows", "bytes", "receipt"]);
+    for index in 1..=LARGE_REPORT_ROW_COUNT {
+        resources = resources.row([
+            format!("resource-{index:08}"),
+            "complete".to_owned(),
+            (index * 100).to_string(),
+            (index * 4_096).to_string(),
+            format!("receipt-{index:08}"),
+        ]);
+    }
+
+    RenderDocument::new()
+        .push(StatusLine::new(
+            StatusKind::Success,
+            "large report rendered",
+        ))
+        .blank_line()
+        .push(
+            KeyValuePanel::summary()
+                .row("resources", LARGE_REPORT_ROW_COUNT.to_string())
+                .row("state", "complete"),
+        )
+        .blank_line()
+        .push(resources)
+        .blank_line()
+        .push(NextCommand::new("cdf inspect run run-large-report"))
 }
 
 fn cli_renderer(c: &mut Criterion) {
@@ -90,6 +123,15 @@ fn cli_renderer(c: &mut Criterion) {
             }
             sink.finish()
         });
+    });
+    group.finish();
+
+    let large_report = large_report_document();
+    let large_report_config = RenderConfig::headless_for_width(160);
+    let mut group = c.benchmark_group("cli_renderer_large_report");
+    group.throughput(Throughput::Elements(LARGE_REPORT_ROW_COUNT));
+    group.bench_function("ten_thousand_row_headless_report", |bench| {
+        bench.iter(|| black_box(large_report.render(&large_report_config)));
     });
     group.finish();
 }

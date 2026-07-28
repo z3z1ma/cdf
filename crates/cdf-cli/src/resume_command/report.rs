@@ -100,7 +100,7 @@ impl ResumeReport {
             ))
             .blank_line()
             .push(
-                KeyValuePanel::new("Recovery")
+                KeyValuePanel::recovery()
                     .row("failed phase", self.state.clone())
                     .row("action", self.action.clone())
                     .row("result", self.recovery.result.clone())

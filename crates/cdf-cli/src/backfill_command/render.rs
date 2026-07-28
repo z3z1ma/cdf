@@ -31,7 +31,7 @@ pub(super) fn document(report: &BackfillCliReport) -> RenderDocument {
         )
         .blank_line()
         .push(
-            KeyValuePanel::new("Writes")
+            KeyValuePanel::effects()
                 .row("package", yes_no(executed))
                 .row("destination", yes_no(executed))
                 .row("checkpoint", yes_no(executed))
@@ -64,7 +64,7 @@ pub(super) fn document(report: &BackfillCliReport) -> RenderDocument {
 
     if executed {
         document = document.blank_line().push(
-            KeyValuePanel::new("Summary")
+            KeyValuePanel::summary()
                 .row(
                     "slices succeeded",
                     format!(

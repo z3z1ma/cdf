@@ -21,7 +21,7 @@ impl InspectRunReport {
             ))
             .blank_line()
             .push(
-                KeyValuePanel::new("Recovery")
+                KeyValuePanel::recovery()
                     .row("state", self.recovery.state.clone())
                     .row("action", self.recovery.action.clone())
                     .row("source contact", yes_no(self.recovery.source_contact))

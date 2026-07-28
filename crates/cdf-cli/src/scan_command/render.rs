@@ -68,7 +68,7 @@ pub(super) fn scan_report_document(report: &ScanPlanReport) -> RenderDocument {
         .push(summary);
     if inexact > 0 || unsupported > 0 {
         document = document.blank_line().push(
-            KeyValuePanel::new("Attention")
+            KeyValuePanel::attention()
                 .row("inexact pushdowns", inexact.to_string())
                 .row("unsupported pushdowns", unsupported.to_string())
                 .row(
@@ -299,7 +299,7 @@ pub(super) fn next_run_command(
 }
 
 pub(super) fn preview_document(report: &PreviewReport) -> RenderDocument {
-    let mut summary = KeyValuePanel::new("Summary")
+    let mut summary = KeyValuePanel::summary()
         .row("resource", report.resource.clone())
         .row("rows", humanize_rows(report.row_count))
         .row("data", humanize_bytes(report.byte_count))
@@ -413,7 +413,7 @@ pub(super) fn preview_document(report: &PreviewReport) -> RenderDocument {
     document
         .blank_line()
         .push_verbose(
-            KeyValuePanel::new("Writes")
+            KeyValuePanel::effects()
                 .row("package", yes_no(report.writes.package()))
                 .row("destination", yes_no(report.writes.destination()))
                 .row("checkpoint", yes_no(report.writes.checkpoint())),

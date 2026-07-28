@@ -2328,7 +2328,7 @@ fn backfill_dry_plan_splits_sql_cursor_windows_without_writes() {
     for expected in [
         "OK planned backfill warehouse.orders -> orders",
         "Backfill",
-        "Writes",
+        "Effects",
         "dry plan only; no package, destination, checkpoint, or run-ledger writes",
         "slice  window  status",
         "Next: cdf backfill warehouse.orders --from 0 --to 25 --target orders --execute",
@@ -2380,7 +2380,7 @@ fn backfill_human_rich_render_uses_plan_panels_and_slice_table() {
     for expected in [
         "planned backfill warehouse.orders -> orders",
         "Backfill",
-        "Writes",
+        "Effects",
         "dry plan only; no package, destination, checkpoint, or run-ledger writes",
         "slice  window  status",
         "cdf backfill warehouse.orders --from 0 --to 20 --target orders --execute",
@@ -4012,7 +4012,7 @@ fn schema_promote_plans_fresh_residual_correction_without_writes() {
     assert!(human.stdout.contains("retained_package"));
     assert!(human.stdout.contains("in_place_update"));
     assert!(human.stdout.contains("score"));
-    assert!(human.stdout.contains("Writes"));
+    assert!(human.stdout.contains("Effects"));
     assert!(human.stdout.contains("Fresh discovery identity"));
     assert!(human.stdout.contains("Target evidence"));
     assert!(human.stdout.contains("receipt verification"));
@@ -14093,7 +14093,7 @@ fn state_recover_human_headless_render_reports_receipt_checkpoint_and_limits() {
         &format!("OK recovered checkpoint {checkpoint_id}"),
         "Recovery",
         "Checkpoint",
-        "Writes",
+        "Effects",
         "destination rows  no",
         "verified receipt only; destination rows were not written",
         "evidence limit:",

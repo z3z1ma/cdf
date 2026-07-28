@@ -302,6 +302,26 @@ impl KeyValuePanel {
         }
     }
 
+    pub fn summary() -> Self {
+        Self::new("Summary")
+    }
+
+    pub fn proof() -> Self {
+        Self::new("Proof")
+    }
+
+    pub fn effects() -> Self {
+        Self::new("Effects")
+    }
+
+    pub fn recovery() -> Self {
+        Self::new("Recovery")
+    }
+
+    pub fn attention() -> Self {
+        Self::new("Attention")
+    }
+
     pub fn row(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.rows.push((key.into(), value.into()));
         self

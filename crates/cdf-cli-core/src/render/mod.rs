@@ -219,6 +219,82 @@ mod tests {
     }
 
     #[test]
+    fn report_family_matrix_preserves_shared_hierarchy_and_facts() {
+        for width in [40, 80, 160] {
+            for display_mode in [DisplayMode::Tty, DisplayMode::Headless] {
+                for unicode_supported in [false, true] {
+                    let config = RenderConfig::new(
+                        display_mode,
+                        width,
+                        RenderEnv {
+                            no_color: true,
+                            clicolor_force: false,
+                            unicode_supported,
+                        },
+                        TerminalPolicy {
+                            color: PolicyMode::Never,
+                            unicode: if unicode_supported {
+                                PolicyMode::Always
+                            } else {
+                                PolicyMode::Never
+                            },
+                            ..TerminalPolicy::default()
+                        },
+                    );
+
+                    for (family, document, facts) in report_family_documents() {
+                        let rendered = document.render(&config);
+                        assert!(
+                            rendered.starts_with("OK ")
+                                || rendered.starts_with("WARN ")
+                                || rendered.starts_with("ERR ")
+                                || rendered.starts_with('✓')
+                                || rendered.starts_with('!')
+                                || rendered.starts_with('✗')
+                                || rendered.starts_with("error["),
+                            "{family}/{display_mode:?}/{unicode_supported}/{width} lacked an outcome-first hierarchy:\n{rendered}"
+                        );
+                        for fact in facts {
+                            assert!(
+                                rendered.contains(fact),
+                                "{family}/{display_mode:?}/{unicode_supported}/{width} lost {fact:?}:\n{rendered}"
+                            );
+                        }
+                        assert!(
+                            !rendered.contains("\u{1b}["),
+                            "{family}/{display_mode:?}/{unicode_supported}/{width} ignored no-color"
+                        );
+                        assert!(
+                            rendered
+                                .lines()
+                                .all(|line| unicode_width::UnicodeWidthStr::width(line) <= width),
+                            "{family}/{display_mode:?}/{unicode_supported}/{width} exceeded width:\n{rendered}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn report_family_proof_is_progressively_disclosed() {
+        let normal = RenderConfig::headless_for_width(80);
+        let verbose = RenderConfig::new(
+            DisplayMode::Headless,
+            80,
+            RenderEnv::default(),
+            TerminalPolicy {
+                verbosity: crate::terminal::Verbosity::Verbose(1),
+                ..TerminalPolicy::default()
+            },
+        );
+        let execute = execute_report();
+
+        assert!(!execute.render(&normal).contains("receipt-execute"));
+        assert!(execute.render(&verbose).contains("receipt-execute"));
+    }
+
+    #[test]
     fn compact_primitives_wrap_without_losing_narrow_terminal_content() {
         let config = RenderConfig::headless_for_width(40);
         let document = RenderDocument::new()
@@ -290,7 +366,7 @@ mod tests {
     fn progressive_disclosure_keeps_proof_available_without_dominating_normal_output() {
         let document = RenderDocument::new()
             .push(StatusLine::new(StatusKind::Success, "loaded"))
-            .push_verbose(KeyValuePanel::new("Proof").row("hash", "sha256:abc"));
+            .push_verbose(KeyValuePanel::proof().row("hash", "sha256:abc"));
         let normal = document.render(&rich_config());
         let verbose = document.render(&RenderConfig::new(
             DisplayMode::Tty,
@@ -423,6 +499,137 @@ mod tests {
             .lines()
             .filter_map(|line| line.strip_prefix("  "))
             .collect()
+    }
+
+    fn report_family_documents() -> Vec<(&'static str, RenderDocument, Vec<&'static str>)> {
+        vec![
+            (
+                "inspect",
+                RenderDocument::new()
+                    .push(StatusLine::new(StatusKind::Success, "run inspected"))
+                    .blank_line()
+                    .push(KeyValuePanel::summary().row("run", "run-inspect"))
+                    .blank_line()
+                    .push(KeyValuePanel::proof().row("receipt", "receipt-inspect"))
+                    .blank_line()
+                    .push(NextCommand::new("cdf inspect package pkg-inspect")),
+                vec![
+                    "run inspected",
+                    "Summary",
+                    "run-inspect",
+                    "Proof",
+                    "receipt-inspect",
+                    "Next:",
+                ],
+            ),
+            (
+                "plan",
+                RenderDocument::new()
+                    .push(StatusLine::new(StatusKind::Success, "plan ready"))
+                    .blank_line()
+                    .push(KeyValuePanel::summary().row("resources", "2"))
+                    .blank_line()
+                    .push(NextCommand::new("cdf run plan-plan")),
+                vec!["plan ready", "Summary", "resources", "Next:"],
+            ),
+            (
+                "execute",
+                execute_report(),
+                vec!["run complete", "Summary", "Effects", "rows", "Next:"],
+            ),
+            (
+                "mutate",
+                RenderDocument::new()
+                    .push(StatusLine::new(StatusKind::Success, "schema promoted"))
+                    .blank_line()
+                    .push(KeyValuePanel::effects().row("schema", "v2"))
+                    .blank_line()
+                    .push(NextCommand::new("cdf schema show events")),
+                vec!["schema promoted", "Effects", "schema", "Next:"],
+            ),
+            (
+                "recover",
+                RenderDocument::new()
+                    .push(StatusLine::new(StatusKind::Success, "state recovered"))
+                    .blank_line()
+                    .push(KeyValuePanel::recovery().row("checkpoint", "checkpoint-recover"))
+                    .blank_line()
+                    .push(KeyValuePanel::proof().row("receipt", "receipt-recover"))
+                    .blank_line()
+                    .push(NextCommand::new("cdf inspect run run-recover")),
+                vec![
+                    "state recovered",
+                    "Recovery",
+                    "checkpoint-recover",
+                    "Proof",
+                    "Next:",
+                ],
+            ),
+            (
+                "list",
+                RenderDocument::new()
+                    .push(StatusLine::new(StatusKind::Success, "resources listed"))
+                    .blank_line()
+                    .push(KeyValuePanel::summary().row("resources", "1"))
+                    .blank_line()
+                    .push(Table::new(["resource", "state"]).row(["events", "ready"]))
+                    .blank_line()
+                    .push(NextCommand::new("cdf inspect resource events")),
+                vec!["resources listed", "Summary", "events", "ready", "Next:"],
+            ),
+            (
+                "no-op",
+                RenderDocument::new()
+                    .push(StatusLine::new(StatusKind::Success, "already current"))
+                    .blank_line()
+                    .push(KeyValuePanel::summary().row("resource", "events"))
+                    .blank_line()
+                    .push(KeyValuePanel::effects().row("writes", "none"))
+                    .blank_line()
+                    .push(NextCommand::new("cdf status")),
+                vec!["already current", "Summary", "Effects", "none", "Next:"],
+            ),
+            (
+                "warning",
+                RenderDocument::new()
+                    .push(StatusLine::new(StatusKind::Warning, "run needs attention"))
+                    .blank_line()
+                    .push(KeyValuePanel::attention().row("resource", "events"))
+                    .blank_line()
+                    .push(NextCommand::new("cdf doctor")),
+                vec!["run needs attention", "Attention", "events", "Next:"],
+            ),
+            (
+                "failure",
+                RenderDocument::new().push(
+                    ErrorBlock::new("E_CONFIG", "invalid config")
+                        .detail("path", "cdf.toml")
+                        .help("correct the invalid value")
+                        .suggestion("cdf validate"),
+                ),
+                vec![
+                    "error[E_CONFIG]",
+                    "invalid config",
+                    "path:",
+                    "help:",
+                    "try:",
+                    "cdf validate",
+                ],
+            ),
+        ]
+    }
+
+    fn execute_report() -> RenderDocument {
+        RenderDocument::new()
+            .push(StatusLine::new(StatusKind::Success, "run complete"))
+            .blank_line()
+            .push(KeyValuePanel::summary().row("rows", "100"))
+            .blank_line()
+            .push(KeyValuePanel::effects().row("packages", "1"))
+            .blank_line()
+            .push_verbose(KeyValuePanel::proof().row("receipt", "receipt-execute"))
+            .blank_line()
+            .push(NextCommand::new("cdf inspect run run-execute"))
     }
 
     fn representative_document() -> RenderDocument {

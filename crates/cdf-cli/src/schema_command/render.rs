@@ -159,7 +159,7 @@ pub(super) fn schema_diff_document(report: &SchemaDiffReport) -> RenderDocument 
         )
         .blank_line()
         .push(
-            KeyValuePanel::new("Summary")
+            KeyValuePanel::summary()
                 .row("added fields", report.summary.added_fields.to_string())
                 .row("removed fields", report.summary.removed_fields.to_string())
                 .row(
@@ -490,7 +490,7 @@ pub(super) fn schema_promote_document(
         document = document.blank_line().push(details_panel);
     }
     document = document.blank_line().push(
-        KeyValuePanel::new("Writes")
+        KeyValuePanel::effects()
             .row("snapshot", yes_no(report.writes.schema_snapshot))
             .row("lockfile", yes_no(report.writes.lockfile))
             .row("package", yes_no(report.writes.package))
@@ -661,7 +661,7 @@ fn key_value_table(title: &str, values: &BTreeMap<String, String>) -> KeyValuePa
 }
 
 fn writes_panel(writes: &SchemaWrites) -> KeyValuePanel {
-    KeyValuePanel::new("Writes")
+    KeyValuePanel::effects()
         .row("schema snapshot", yes_no(writes.schema_snapshot))
         .row("lockfile", yes_no(writes.lockfile))
         .row("package", yes_no(writes.package))
