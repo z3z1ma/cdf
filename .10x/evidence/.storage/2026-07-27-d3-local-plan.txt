@@ -1,0 +1,19 @@
+OK plan fineweb.documents -> documents
+
+Plan
+  resource       fineweb.documents
+  destination    parquet_object_store
+  target         documents
+  location       /private/tmp/cdf-d3-local.gb0XNy/.cdf/destination
+  execution      bounded
+  partitions     1
+  jobs           1
+  projection     all fields
+  filters        none
+  limit          none
+  disposition    append
+  guarantee      effectively_once_per_package
+  schema fields  9
+  migrations     0
+
+Next: cdf run fineweb.documents

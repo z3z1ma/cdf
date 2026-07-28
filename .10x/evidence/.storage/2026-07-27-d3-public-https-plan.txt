@@ -1,0 +1,19 @@
+OK plan github.userdata -> userdata
+
+Plan
+  resource       github.userdata
+  destination    duckdb
+  target         userdata
+  location       /Users/alexanderbut/code_projects/tmp/.cdf/dev.duckdb
+  execution      bounded
+  partitions     5
+  jobs           5
+  projection     all fields
+  filters        none
+  limit          none
+  disposition    replace
+  guarantee      effectively_once_per_target
+  schema fields  12
+  migrations     1
+
+Next: cdf run github.userdata

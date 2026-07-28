@@ -50,7 +50,7 @@ lifecycle without erasing native transaction/dialect behavior.
 2. `.10x/tickets/done/2026-07-26-prewave-d1b-adapter-error-audit.md`
 3. `.10x/tickets/done/2026-07-26-prewave-d1c-product-error-audit.md`
 4. `.10x/tickets/done/2026-07-26-prewave-d2-typed-cli-report-authority.md`
-5. `.10x/tickets/2026-07-26-prewave-d3-holistic-cli-experience.md`
+5. `.10x/tickets/done/2026-07-26-prewave-d3-holistic-cli-experience.md`
 
 The error taxonomy lands before the visual pass so the renderer does not polish incorrect
 diagnostics. Typed report authority lands before the holistic pass so one renderer-side change
@@ -184,6 +184,11 @@ program review.
   all-non-renderer static fence. The 297-test CLI suite, 53-test CLI-core suite, strict Clippy,
   80/84-package core graphs, focused parity repairs, and bounded OCR review pass. Report-authority
   knowledge plus a mirrored audit skill preserve the procedure for D3 and future commands.
+- 2026-07-27: D3 closed by reusing WS9's accepted renderer/hosted authority, centralizing five
+  cross-family headings, adding a nine-family terminal-policy matrix and complete 10,000-row
+  lifecycle benchmark, and recording fresh local/public-HTTPS product smokes. The bounded OCR
+  review produced no critical/high findings; one integration-matrix limit is explicitly accepted
+  and the benchmark blind spot was repaired once without another review cycle.
 
 ## Blockers
 

@@ -26,5 +26,18 @@ perform execution, resolve secrets, mutate durable state, or invent facts absent
 The static migration gate treats `commands.rs`, every `*_command.rs`, and nested command executors
 as the protected surface and rejects layout types there.
 
+Shared report vocabulary is code-owned rather than repeated string convention. Use
+`KeyValuePanel::summary()`, `proof()`, `effects()`, `recovery()`, and `attention()` for those
+cross-family sections. Specialized domain headings remain valid when they name a distinct
+operator concept. `Effects` names both committed writes and an explicit no-op (`writes: none`);
+`Proof` contains evidence rather than another outcome summary.
+
+Holistic CLI review is a conformance problem, not a command-by-command aesthetic rewrite. Pair
+exact primitive snapshots with a family matrix spanning inspect, plan, execute, mutate, recover,
+list, no-op, warning, and failure at 40/80/160 columns under TTY/headless, ASCII/Unicode, and
+no-color policies. Preserve JSON isolation and progressive disclosure separately. Measure both
+the million-event progress path and a representative large static report, then retain a real
+local and public-HTTPS product smoke for composition evidence.
+
 Use `.10x/skills/audit-cli-report-authority/SKILL.md` when adding a command, changing a success
 report, or auditing report/renderer ownership.

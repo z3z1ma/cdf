@@ -63,19 +63,30 @@ Maintain a static source gate over `commands.rs`, every `*_command.rs`, and nest
 executors. Reject `RenderDocument` and primitive layout construction there, plus legacy
 plain-string output shims.
 
+Use the shared panel constructors for `Summary`, `Proof`, `Effects`, `Recovery`, and `Attention`;
+do not reintroduce those headings as repeated strings. Extend the renderer family matrix when a
+new outcome category is introduced. The matrix must preserve outcome-first hierarchy, named
+facts, no-color behavior, and width at 40/80/160 columns across TTY/headless and ASCII/Unicode.
+Keep exact rich/headless primitive snapshots, JSON isolation, and progressive-disclosure tests as
+separate fences.
+
 Run:
 
 ```sh
 cargo fmt --all -- --check
 cargo test -p cdf-cli-core --all-features --locked
 cargo test -p cdf-cli --lib
+cargo check -p cdf-cli-benchmarks --benches --locked
+cargo bench -p cdf-cli-benchmarks --bench cli_renderer --locked
 cargo tree -p cdf-cli-core -e normal --prefix none --locked
 cargo tree -p cdf-cli-core --all-features -e normal --prefix none --locked
 git diff --check
 ```
 
 Use the repository's DuckDB library environment when product CLI tests require it. Record graph
-counts, forbidden-edge results, test totals, and limits rather than claiming global correctness.
+counts, forbidden-edge results, test totals, the million-event and large-static-report benchmark
+cells, and limits rather than claiming global correctness. For a coordinated experience change,
+retain one real local and one public-HTTPS product smoke without treating them as exhaustive.
 
 ## Validation
 
@@ -86,3 +97,5 @@ counts, forbidden-edge results, test totals, and limits rather than claiming glo
 - Headless/rich renderer tests and progress throughput floors pass.
 - `cdf-cli-core` stays below its package ceilings and contains no forbidden product edges.
 - The static migration gate, formatting, and diff checks pass.
+- Shared section headings come from the code-owned vocabulary constructors.
+- The family matrix, progress benchmark, large-report benchmark, and scoped product smokes pass.

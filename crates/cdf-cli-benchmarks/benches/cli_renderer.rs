@@ -128,10 +128,25 @@ fn cli_renderer(c: &mut Criterion) {
 
     let large_report = large_report_document();
     let large_report_config = RenderConfig::headless_for_width(160);
+    let large_report_output = large_report.render(&large_report_config);
+    assert_eq!(
+        large_report_output.matches("resource-").count(),
+        usize::try_from(LARGE_REPORT_ROW_COUNT).expect("benchmark row count fits usize"),
+        "large report benchmark fixture must render every row"
+    );
+    assert!(large_report_output.contains("resource-00000001"));
+    assert!(large_report_output.contains("resource-00010000"));
+
     let mut group = c.benchmark_group("cli_renderer_large_report");
     group.throughput(Throughput::Elements(LARGE_REPORT_ROW_COUNT));
-    group.bench_function("ten_thousand_row_headless_report", |bench| {
+    group.bench_function("ten_thousand_row_prebuilt_headless_report", |bench| {
         bench.iter(|| black_box(large_report.render(&large_report_config)));
+    });
+    group.bench_function("ten_thousand_row_build_and_render", |bench| {
+        bench.iter(|| {
+            let document = large_report_document();
+            black_box(document.render(&large_report_config))
+        });
     });
     group.finish();
 }

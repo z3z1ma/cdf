@@ -219,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn report_family_matrix_preserves_shared_hierarchy_and_facts() {
+    fn representative_report_family_matrix_preserves_shared_hierarchy_and_facts() {
         for width in [40, 80, 160] {
             for display_mode in [DisplayMode::Tty, DisplayMode::Headless] {
                 for unicode_supported in [false, true] {

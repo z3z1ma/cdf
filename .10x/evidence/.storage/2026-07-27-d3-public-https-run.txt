@@ -1,0 +1,29 @@
+1785207618884 [plan] running run started run=run-ee76cbfed32d2624422a925eaaa86348 resource=github.userdata scope=resource package=pkg-github-userdata-50904-1785207618170768000
+1785207618885 [extract] running package started run=run-ee76cbfed32d2624422a925eaaa86348 resource=github.userdata scope=resource package=pkg-github-userdata-50904-1785207618170768000
+1785207619753 [package] running phase measured run=run-ee76cbfed32d2624422a925eaaa86348 resource=github.userdata scope=resource package=pkg-github-userdata-50904-1785207618170768000 metric=source_read growing_spool Completed 349 KiB physical / 339 KiB useful / 9.9 KiB waste across 15 requests in 209ms
+1785207620019 [gate] running checkpoint proposed run=run-ee76cbfed32d2624422a925eaaa86348 resource=github.userdata scope=resource package=pkg-github-userdata-50904-1785207618170768000 checkpoint=checkpoint-github-userdata-50904-1785207618170768000 row_count=5k byte_count=560 KiB segment_count=5
+1785207620059 [commit] running destination commit started run=run-ee76cbfed32d2624422a925eaaa86348 resource=github.userdata scope=resource package=pkg-github-userdata-50904-1785207618170768000 segment_count=5
+1785207620154 [verify] running destination receipt recorded run=run-ee76cbfed32d2624422a925eaaa86348 resource=github.userdata scope=resource package=pkg-github-userdata-50904-1785207618170768000 receipt=duckdb:userdata:sha256:6a3b1fabaeb36c793b856665fa78c0d556ea34ae4bbda853fbdf80a732026533 rows_written=5k rows_inserted=5k rows_updated=0 rows_deleted=0 segment_ack_count=5 migration_count=1
+1785207620170 [gate] succeeded run succeeded run=run-ee76cbfed32d2624422a925eaaa86348 resource=github.userdata scope=resource package=pkg-github-userdata-50904-1785207618170768000
+OK Loaded 5k rows from github.userdata
+
+Summary
+  resource     github.userdata
+  destination
+    duckdb /Users/alexanderbut/code_projects/tmp/.cdf/dev.duckdb target userdata
+  rows         5k
+  data         560 KiB
+  segments     5
+  elapsed      1s
+  row rate     3.9k/s
+  byte rate    435 KiB/s
+
+Proof
+  package     pkg-github-userdata-50904-1785207618170768000
+  receipt
+    duckdb:userdata:sha256:6a3b1fabaeb36c793b856665fa78c0d556ea34ae4bbda853fbdf8
+    0a732026533
+  checkpoint  checkpoint-github-userdata-50904-1785207618170768000
+  gate        committed
+
+Next: cdf inspect run run-ee76cbfed32d2624422a925eaaa86348
