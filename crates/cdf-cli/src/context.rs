@@ -12,6 +12,7 @@ use cdf_project::{
     FileResourceSourceResolver, FileSecretProvider, LOCK_FILE_NAME, LockFileAuthority,
     PROJECT_FILE_NAME, ProjectConfig, ProjectResource, ProjectResourceOrigin, ResourceSourceKind,
     SchemaSnapshotStore, parse_cdf_toml, parse_lock, read_lock_file_authority,
+    recover_project_file_transaction,
 };
 use cdf_state_sqlite::SqliteCheckpointStore;
 use serde::Serialize;
@@ -94,28 +95,52 @@ impl ProjectContext {
 
     pub fn load(project_arg: Option<&PathBuf>, env_arg: Option<&str>) -> CdfResult<Self> {
         let (root, project_file) = project_location(project_arg)?;
-        let project_text = fs::read_to_string(&project_file).map_err(|error| {
-            project_authority_read_error("read project configuration", &project_file, error)
+        for attempt in 0..3 {
+            let generation_before = recover_project_file_transaction(&root)?;
+            let loaded = Self::load_observed_project(&root, &project_file, env_arg);
+            let generation_after = recover_project_file_transaction(&root)?;
+            if generation_before == generation_after {
+                return loaded;
+            }
+            if attempt == 2 {
+                return Err(CdfError::contract(format!(
+                    "project authority changed repeatedly while loading {}; retry after concurrent cdf add publication completes",
+                    project_file.display()
+                )));
+            }
+        }
+        Err(CdfError::internal(
+            "project load retry loop exited without a stable authority",
+        ))
+    }
+
+    fn load_observed_project(
+        root: &Path,
+        project_file: &Path,
+        env_arg: Option<&str>,
+    ) -> CdfResult<Self> {
+        let project_text = fs::read_to_string(project_file).map_err(|error| {
+            project_authority_read_error("read project configuration", project_file, error)
         })?;
         let config = parse_cdf_toml(&project_text)?;
         let env_name = env_arg.unwrap_or(&config.project.default_environment);
         let environment = config.effective_environment(env_name)?;
-        let resolver = FileResourceSourceResolver::new(&root);
+        let resolver = FileResourceSourceResolver::new(root);
         let source_registry = crate::source_registry::builtin_source_registry()?;
         let entries = cdf_project::compile_project_declarative_resource_entries_with_root(
             source_registry,
             &config,
             &resolver,
-            &root,
+            root,
         )?;
         let (resources, resource_origins) = entries
             .into_iter()
             .map(|entry| (entry.resource, entry.origin))
             .unzip();
-        let (lock, lock_authority) = load_lock(&root)?;
+        let (lock, lock_authority) = load_lock(root)?;
 
         Ok(Self {
-            root,
+            root: root.to_path_buf(),
             config,
             environment,
             resources,

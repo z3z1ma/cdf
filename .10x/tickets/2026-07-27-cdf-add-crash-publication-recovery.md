@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-27
 Updated: 2026-07-27
 
@@ -45,6 +45,15 @@ rolls back the transaction.
 - 2026-07-27: D1c review found the window and independently confirmed it predates D1c, including in
   current `HEAD`. The old SX1 no-action rationale overstates the final-lock fence, so this bounded
   ticket owns correction rather than expanding the error audit.
+- 2026-07-27: Activated after D3 closure because aggregate Z1 requires zero known correctness
+  windows. `graphify query` could not run because the executable remains unavailable; direct
+  source inspection confirmed that multi-file publication prepared and synced temporary files,
+  installed `cdf.toml` before `cdf.lock`, and had only in-process rollback.
+- 2026-07-27: Implemented a hash-only, owner-private, generation-stamped pending/committed marker.
+  Writers publish and sync the pending marker before installing any target; recovery completes
+  only prior-or-new paths under the existing mutation guard and refuses unrelated authority.
+  Project loading samples/reconciles the generation before and after compilation so a transaction
+  that starts, commits, or rolls back during the read forces a stable retry.
 
 ## Blockers
 

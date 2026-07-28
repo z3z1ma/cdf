@@ -1908,6 +1908,114 @@ fn contract_freeze_writes_lock_and_contract_test_passes() {
 }
 
 #[test]
+fn project_load_completes_pending_add_publication_before_new_resource_planning() {
+    let project = TestProject::new();
+    let initial_freeze = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "contract",
+        "freeze",
+    ]);
+    assert_eq!(
+        initial_freeze.exit_code, 0,
+        "stderr: {}",
+        initial_freeze.stderr
+    );
+    let old_project = fs::read(project.root.join("cdf.toml")).unwrap();
+    let old_lock = fs::read(project.root.join("cdf.lock")).unwrap();
+    let extra_resource = RESOURCE.replace("[source.local]", "[source.extra]");
+    let new_project = format!(
+        "{}\n[resources.\"extra.*\"]\nsource = \"resources/extra.toml\"\n",
+        String::from_utf8(old_project.clone()).unwrap()
+    )
+    .into_bytes();
+    fs::write(project.root.join("resources/extra.toml"), &extra_resource).unwrap();
+    fs::write(project.root.join("cdf.toml"), &new_project).unwrap();
+    let new_freeze = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "contract",
+        "freeze",
+    ]);
+    assert_eq!(new_freeze.exit_code, 0, "stderr: {}", new_freeze.stderr);
+    let new_lock = fs::read(project.root.join("cdf.lock")).unwrap();
+    assert_ne!(new_lock, old_lock);
+
+    fs::write(project.root.join("cdf.toml"), &old_project).unwrap();
+    fs::write(project.root.join("cdf.lock"), &old_lock).unwrap();
+    fs::remove_file(project.root.join("resources/extra.toml")).unwrap();
+
+    let lock_temporary = ".cdf.lock.999.3.project-txn.tmp";
+    fs::write(project.root.join(lock_temporary), &new_lock).unwrap();
+    fs::write(project.root.join("resources/extra.toml"), &extra_resource).unwrap();
+    fs::write(project.root.join("cdf.toml"), &new_project).unwrap();
+    let marker = json!({
+        "version": 1,
+        "generation": 1,
+        "state": "pending",
+        "commit_relative_path": "cdf.lock",
+        "entries": [
+            {
+                "relative_path": "resources/extra.toml",
+                "temporary_relative_path": "resources/.extra.toml.999.1.project-txn.tmp",
+                "prior": { "kind": "absent" },
+                "new_len": extra_resource.len(),
+                "new_sha256": format!("sha256:{:x}", Sha256::digest(extra_resource.as_bytes())),
+            },
+            {
+                "relative_path": "cdf.toml",
+                "temporary_relative_path": ".cdf.toml.999.2.project-txn.tmp",
+                "prior": {
+                    "kind": "existing",
+                    "len": old_project.len(),
+                    "sha256": format!("sha256:{:x}", Sha256::digest(&old_project)),
+                },
+                "new_len": new_project.len(),
+                "new_sha256": format!("sha256:{:x}", Sha256::digest(&new_project)),
+            },
+            {
+                "relative_path": "cdf.lock",
+                "temporary_relative_path": lock_temporary,
+                "prior": {
+                    "kind": "existing",
+                    "len": old_lock.len(),
+                    "sha256": format!("sha256:{:x}", Sha256::digest(&old_lock)),
+                },
+                "new_len": new_lock.len(),
+                "new_sha256": format!("sha256:{:x}", Sha256::digest(&new_lock)),
+            },
+        ],
+    });
+    fs::write(
+        project.root.join(".cdf/project-files.transaction.json"),
+        serde_json::to_vec_pretty(&marker).unwrap(),
+    )
+    .unwrap();
+
+    let plan = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "extra.events",
+    ]);
+
+    assert_eq!(plan.exit_code, 0, "stderr: {}", plan.stderr);
+    assert_eq!(fs::read(project.root.join("cdf.lock")).unwrap(), new_lock);
+    let committed: Value = serde_json::from_slice(
+        &fs::read(project.root.join(".cdf/project-files.transaction.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(committed["state"], "committed");
+    assert!(!project.root.join(lock_temporary).exists());
+}
+
+#[test]
 fn contract_test_fails_closed_when_lock_is_missing() {
     let project = TestProject::new();
     let result = run([
