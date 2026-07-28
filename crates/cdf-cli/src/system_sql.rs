@@ -1080,7 +1080,7 @@ mod tests {
         let error = mount_checkpoints(
             &workspace,
             state_path,
-            cdf_state_sqlite::StateStorePathOwnership::CdfManaged,
+            cdf_state_sqlite::StateStorePathOwnership::Configured,
         )
         .unwrap_err();
 

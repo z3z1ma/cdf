@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-26
 Updated: 2026-07-27
 Parent: `.10x/tickets/2026-07-26-pre-wave-architecture-hardening-program.md`
@@ -46,7 +46,7 @@ error catalog and prove no unaudited `CdfError::internal` owner remains.
 - 2026-07-27: Activated after D1b closure using the canonical
   `.10x/skills/audit-error-ownership/SKILL.md`. Froze a null-delimited 203-file manifest across
   the 16 remaining product/governance crate roots.
-- 2026-07-27: Final inventory is 344 `CdfError::internal` sites across 64 files and 59 direct
+- 2026-07-27: Final inventory is 345 `CdfError::internal` sites across 64 files and 60 direct
   `ErrorKind::Internal`/`Internal` matches. Nine roots contain Internal constructors and seven are
   explicit zero-site roots. Review also reopened the shared `cdf-kernel::embedded_cdf_error`
   helper outside the frozen roots; that supporting repair added no Internal site and now preserves
@@ -70,6 +70,14 @@ error catalog and prove no unaudited `CdfError::internal` owner remains.
   Repaired all three together by propagating explicit path ownership, decoding bounded streak rows
   through `row_to_checkpoint`, and adding a durable manifest and per-site ledger. The user
   requested an immediate quota-preserving checkpoint before the repair verification rerun.
+- 2026-07-27: Resumed the bounded repair verification. The state suite passes 67/67, the CLI suite
+  passes 297/297, configured `.cdf` provenance regressions pass at state/project/CLI layers, and
+  the final manifest/ledger reproduction yields 345 constructors in 64 files plus 60 direct-kind
+  supplements. No new exploratory review was opened.
+- 2026-07-27: Strict affected-root Clippy exposed only a redundant eighth resume-helper argument;
+  deriving the same ownership from its existing `ProjectContext` removed the warning, and all 17
+  resume tests plus strict Clippy pass. Both independent reviewers then marked each of the three
+  consolidated repair concerns fixed and returned PASS.
 
 ## Blockers
 
@@ -79,16 +87,15 @@ None.
 
 - `.10x/evidence/2026-07-27-product-error-ownership-audit.md` records the exact inventory,
   classifications, commands, results, and limits.
-- Complete-site ownership: the pre-repair baseline is 203 frozen files, 344 Internal constructors
-  in 64 files, and 59 inspected direct-kind matches. Durable storage is recorded in the evidence;
-  final post-repair counts remain to be refreshed.
+- Complete-site ownership: 203 frozen files, 345 Internal constructors in 64 files, and 60
+  inspected direct-kind matches. The durable manifest, per-site ledger, exact construction
+  procedure, and hashes are recorded in the evidence.
 - Project path/environment/state-store remediation: focused path, symlink, configured/default
-  state, private-row, duplicate-ID, read-only, and publication crash/race tests passed before the
-  final repair. The post-repair all-target state suite reached 66 passes and one stale assertion;
-  the assertion was corrected, and its rerun was interrupted for this immediate checkpoint.
+  state, private-row, duplicate-ID, read-only, and publication crash/race tests pass; the
+  post-repair all-target state suite passes 67/67.
 - Benchmark host/setup distinction: the benchmark library and fixture suites pass 27/27 and 7/7,
   including direct, nested-I/O, and raw-host wrapper ownership.
-- Kind authority and product snapshots: the CLI suite passes 296/296; focused conformance MVP,
+- Kind authority and product snapshots: the CLI suite passes 297/297; focused conformance MVP,
   REST, registry, and nested destination regressions pass; the generated command/error reference
   is fresh.
 - Quality: strict all-target/all-feature Clippy passes for every scoped root plus the supporting
@@ -99,9 +106,14 @@ None.
 
 ## Review
 
-The consolidated final frozen-snapshot review reported three significant concerns and no critical
-finding. Their repairs are present in this checkpoint. Bounded repair verification is still
-pending; no further exploratory review is authorized for D1c.
+The first frozen-snapshot reviewer returned PASS; the second returned CONCERNS with three
+significant findings and no critical/minor findings. After the one consolidated repair batch,
+Noether and Aristotle independently confirmed explicit configured/default ownership, bounded
+full-row streak validation, and durable inventory reproduction as FIXED and returned PASS. The
+remaining broad-suite timing/stall limits are recorded evidence limits, not introduced correctness
+failures. Residual risk: explicit diagnostic integrity scans remain proportional to retained
+history and are owned by Z1 measurement; the pre-existing add-publication crash window has the
+separate active owner `.10x/tickets/2026-07-27-cdf-add-crash-publication-recovery.md`.
 
 ## Retrospective
 
@@ -123,4 +135,5 @@ because implementation and review were interleaved; they were interleaved becaus
 too broad to reason about as one batch; it became broad because taxonomy sites concealed several
 independent trust boundaries; those boundaries should have been split before execution. The
 canonical audit skill now requires an explicit supporting-boundary ledger and a frozen,
-deduplicated closure review.
+deduplicated closure review. Updating that existing skill was sufficient; a second overlapping
+runbook would recreate the authority split this audit was meant to remove.

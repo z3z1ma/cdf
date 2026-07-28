@@ -48,7 +48,7 @@ lifecycle without erasing native transaction/dialect behavior.
 
 1. `.10x/tickets/done/2026-07-26-prewave-d1-environment-error-taxonomy.md`
 2. `.10x/tickets/done/2026-07-26-prewave-d1b-adapter-error-audit.md`
-3. `.10x/tickets/2026-07-26-prewave-d1c-product-error-audit.md`
+3. `.10x/tickets/done/2026-07-26-prewave-d1c-product-error-audit.md`
 4. `.10x/tickets/2026-07-26-prewave-d2-typed-cli-report-authority.md`
 5. `.10x/tickets/2026-07-26-prewave-d3-holistic-cli-experience.md`
 
@@ -174,6 +174,11 @@ program review.
   Iceberg wrappers. Review-driven source-chain and provenance repairs pass focused/full suites,
   strict lint, two independent final reviews, and are distilled into error-ownership knowledge plus
   the mirrored `audit-error-ownership` skill.
+- 2026-07-27: D1c closed with a durable 203-file/345-constructor product inventory, explicit
+  configured-versus-managed path provenance, typed private-state validation without unbounded
+  ordinary-open scans, no-follow immutable publication, nested typed-wrapper preservation, 67
+  state tests, 297 CLI tests, strict affected-root lint, and two bounded final reviewer PASS
+  verdicts. The audit skill now requires a durable per-site ledger and one frozen review batch.
 
 ## Blockers
 

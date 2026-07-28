@@ -45,15 +45,18 @@ falling back to the generic source chain.
 
 Managed filesystem reads and immutable publication use the canonical real parent as authority,
 reject leaf symlinks without following them, and distinguish configured caller paths from
-CDF-owned default `.cdf` paths. A content-addressed write is temp-write, file-sync, no-clobber
-install, then directory-sync through the durable root. An identical retry must repeat the
-directory-sync chain so it can heal an earlier durability failure.
+CDF-owned default `.cdf` paths. Carry that ownership explicitly from the selected configuration
+authority; a `.cdf` component inside an arbitrary configured path does not make it CDF-owned. A
+content-addressed write is temp-write, file-sync, no-clobber install, then directory-sync through
+the durable root. An identical retry must repeat the directory-sync chain so it can heal an
+earlier durability failure.
 
 Private SQLite schema admission is separate from whole-history semantic integrity. Ordinary store
 opens validate the component schema and path authority; typed reads validate every row they
 consume. Raw SQL diagnostics and recovery flows that bypass typed reads must call the explicit
-whole-store integrity validator. Do not put unbounded history scans on ordinary run startup, and
-do not hide corrupt rows behind a filtered raw query.
+whole-store integrity validator. Bounded aggregate/summary queries still decode each selected row
+through the full typed authority before using scalar columns. Do not put unbounded history scans
+on ordinary run startup, and do not hide corrupt rows behind a filtered raw query.
 
 ## Adapter boundaries
 

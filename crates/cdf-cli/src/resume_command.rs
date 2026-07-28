@@ -66,7 +66,6 @@ pub(crate) fn resume(
         destinations,
         &context,
         &state_path,
-        state_path_ownership,
         run_id,
         cli,
         &execution,
@@ -78,13 +77,15 @@ fn resume_run(
     destinations: &cdf_runtime::DestinationRegistry,
     context: &ProjectContext,
     state_path: &std::path::Path,
-    state_path_ownership: cdf_state_sqlite::StateStorePathOwnership,
     run_id: RunId,
     cli: &Cli,
     execution: &cdf_runtime::ExecutionServices,
     progress_delivery: ProgressDelivery,
 ) -> Result<CommandOutput, CliError> {
-    let run_ledger = SqliteRunLedger::open_with_path_ownership(state_path, state_path_ownership)?;
+    let run_ledger = SqliteRunLedger::open_with_path_ownership(
+        state_path,
+        context.state_store_path_ownership(),
+    )?;
     let snapshot = run_ledger.snapshot(&run_id)?.ok_or_else(|| {
         CdfError::data(format!(
             "run {} is not present in the selected environment run ledger",

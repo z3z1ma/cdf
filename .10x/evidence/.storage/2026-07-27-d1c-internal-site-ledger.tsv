@@ -15,8 +15,8 @@ constructor	retained_internal	crates/cdf-cli/src/add_command.rs:112:            
 constructor	retained_internal	crates/cdf-cli/src/add_command.rs:122:            CdfError::internal("generated resource compiled through a different source driver"),
 constructor	retained_internal	crates/cdf-cli/src/add_command.rs:633:            CdfError::internal(format!("serialize registered source add proposal: {error}")),
 constructor	retained_internal	crates/cdf-cli/src/commands.rs:146:        CdfError::internal(error.to_string()),
-constructor	retained_internal	crates/cdf-cli/src/context.rs:329:            CdfError::internal("schema source lost pinning support during lock hydration")
-constructor	retained_internal	crates/cdf-cli/src/context.rs:413:        .ok_or_else(|| CdfError::internal(format!("{} has no parent", path.display())))?
+constructor	retained_internal	crates/cdf-cli/src/context.rs:325:            CdfError::internal("schema source lost pinning support during lock hydration")
+constructor	retained_internal	crates/cdf-cli/src/context.rs:409:        .ok_or_else(|| CdfError::internal(format!("{} has no parent", path.display())))?
 constructor	retained_internal	crates/cdf-cli/src/destination_registry_test_support.rs:334:            return Err(CdfError::internal(
 constructor	retained_internal	crates/cdf-cli/src/doctor_drift.rs:335:        CdfError::internal(format!(
 constructor	retained_internal	crates/cdf-cli/src/doctor_drift.rs:357:            return Err(CdfError::internal(format!(
@@ -32,7 +32,7 @@ constructor	retained_internal	crates/cdf-cli/src/replay_command.rs:233:         
 constructor	retained_internal	crates/cdf-cli/src/replay_command.rs:267:            .ok_or_else(|| CdfError::internal("replay destination was already consumed"))?;
 constructor	retained_internal	crates/cdf-cli/src/replay_command.rs:374:    u64::try_from(value).map_err(|error| CdfError::internal(error.to_string()))
 constructor	retained_internal	crates/cdf-cli/src/replay_command.rs:676:        .ok_or_else(|| CdfError::internal("created replay run is absent from run ledger"))?;
-constructor	retained_internal	crates/cdf-cli/src/resume_command.rs:162:                CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-cli/src/resume_command.rs:165:                CdfError::internal(format!(
 constructor	retained_internal	crates/cdf-cli/src/resume_command/attempt.rs:188:                return Err(CdfError::internal(
 constructor	retained_internal	crates/cdf-cli/src/resume_command/attempt.rs:593:            .ok_or_else(|| CdfError::internal("resumed run disappeared from run ledger").into())
 constructor	retained_internal	crates/cdf-cli/src/resume_command/destination.rs:44:            .ok_or_else(|| CdfError::internal("resume destination was already consumed").into())
@@ -313,22 +313,22 @@ constructor	retained_internal	crates/cdf-state-sqlite/src/run_ledger.rs:667:    
 constructor	retained_internal	crates/cdf-state-sqlite/src/run_ledger.rs:675:                    CdfError::internal(format!("decode CDF-managed run event scope JSON: {error}"))
 constructor	retained_internal	crates/cdf-state-sqlite/src/run_ledger.rs:680:                    CdfError::internal(format!(
 constructor	retained_internal	crates/cdf-state-sqlite/src/run_ledger.rs:689:                    .map_err(|error| CdfError::internal(error.to_string()))?,
-constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:534:            return Err(CdfError::internal(format!(
-constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:593:        None => Err(CdfError::internal(format!(
-constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:615:    CdfError::internal(format!(
-constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:679:                return Err(CdfError::internal(
-constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:719:                return Err(CdfError::internal(
-constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:729:                return Err(CdfError::internal(
-constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:734:                return Err(CdfError::internal(
-constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:745:                return Err(CdfError::internal(
-constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:755:                        return Err(CdfError::internal(
-constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:761:                    return Err(CdfError::internal(
-constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:766:                    return Err(CdfError::internal(
-constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:771:                    return Err(CdfError::internal(
-constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:776:                    return Err(CdfError::internal(
-constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:783:                return Err(CdfError::internal(
-constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:790:                    return Err(CdfError::internal(
-constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:795:                    return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:532:            return Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:591:        None => Err(CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:613:    CdfError::internal(format!(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:677:                return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:717:                return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:727:                return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:732:                return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:743:                return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:753:                        return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:759:                    return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:764:                    return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:769:                    return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:774:                    return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:781:                return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:788:                    return Err(CdfError::internal(
+constructor	retained_internal	crates/cdf-state-sqlite/src/sqlite.rs:793:                    return Err(CdfError::internal(
 constructor	retained_internal	crates/cdf-state-sqlite/src/support.rs:134:        .map_err(|error| CdfError::internal(format!("encode CDF-managed state JSON: {error}")))
 constructor	retained_internal	crates/cdf-state-sqlite/src/support.rs:140:        .map_err(|error| CdfError::internal(format!("decode CDF-managed state JSON: {error}")))
 constructor	retained_internal	crates/cdf-state-sqlite/src/support.rs:235:            return Err(CdfError::internal(format!(
@@ -374,32 +374,32 @@ direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-project/src/projec
 direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-project/src/project_files.rs:900:        assert_eq!(combined.kind, cdf_kernel::ErrorKind::Internal);
 direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-project/src/runtime/ledger.rs:614:        cdf_kernel::ErrorKind::Internal => "internal",
 direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-project/src/runtime/validation.rs:462:        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
-direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-project/src/runtime/validation.rs:550:        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
-direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-project/src/runtime/validation.rs:571:        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-project/src/runtime/validation.rs:551:        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-project/src/runtime/validation.rs:572:        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
 direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/content_reachability.rs:1366:        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
 direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/content_reachability.rs:1408:        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
 direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/lease.rs:638:        assert_eq!(classified.kind, ErrorKind::Internal);
 direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/lease.rs:656:        assert_eq!(classified.kind, ErrorKind::Internal);
 direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/run_ledger.rs:753:        assert_eq!(classified.kind, ErrorKind::Internal);
-direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/support.rs:1034:        assert_eq!(error.kind, ErrorKind::Internal);
-direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/support.rs:1041:        assert_eq!(error.kind, ErrorKind::Internal);
-direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/support.rs:1053:        assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/support.rs:1049:        assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/support.rs:1056:        assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/support.rs:1068:        assert_eq!(error.kind, ErrorKind::Internal);
 direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/support.rs:838:        assert_eq!(invariant.kind, ErrorKind::Internal);
 direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/support.rs:852:            assert_eq!(shape_or_corruption.kind, ErrorKind::Internal);
 direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/support.rs:860:            assert_eq!(sqlite_semantic.kind, ErrorKind::Internal);
 direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/support.rs:891:        assert_eq!(classified.kind, ErrorKind::Internal);
 direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/support.rs:907:        assert_eq!(classified.kind, ErrorKind::Internal);
 direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/support.rs:924:        assert_eq!(classified.kind, ErrorKind::Internal);
-direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/support.rs:956:        assert_eq!(classified.kind, ErrorKind::Internal);
-direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:1493:    assert_eq!(error.kind, ErrorKind::Internal);
-direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:1520:    assert_eq!(error.kind, ErrorKind::Internal);
-direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:1543:    assert_eq!(error.kind, ErrorKind::Internal);
-direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:1689:    assert_eq!(error.kind, ErrorKind::Internal);
-direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:1722:        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
-direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:1886:    assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/support.rs:961:        assert_eq!(classified.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:1496:    assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:1523:    assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:1546:    assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:1692:    assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:1725:        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:1889:    assert_eq!(error.kind, ErrorKind::Internal);
 direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:205:    assert_eq!(error.kind, ErrorKind::Internal);
-direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:2087:    assert_eq!(error.kind, ErrorKind::Internal);
-direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:2272:    assert_eq!(error.kind, ErrorKind::Internal);
-direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:2302:    assert_eq!(error.kind, ErrorKind::Internal);
-direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:308:    assert_eq!(error.kind, ErrorKind::Internal);
-direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:910:    assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:2090:    assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:2275:    assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:2305:    assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:305:    assert_eq!(error.kind, ErrorKind::Internal);
+direct_kind_supplement	mapping_branch_or_assertion	crates/cdf-state-sqlite/src/tests.rs:913:    assert_eq!(error.kind, ErrorKind::Internal);

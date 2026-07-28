@@ -41,9 +41,12 @@ Replace the three example crate roots with the resolved audit scope before runni
 record those exact roots. The null-delimited manifest preserves spaces and makes subsequent scans
 share one frozen file set. Inspect direct `new`, struct literal, conversion, macro, helper-factory,
 test assertion, and enum mapping matches. Record total files, site-bearing files, site count, and
-the arithmetic remainder. A count delta is not a migration count when tests or invariant checks
-were added. If review reopens a shared helper outside the frozen roots, name that supporting
-boundary separately and state whether it changes the audited constructor inventory.
+the arithmetic remainder. Before closure, persist the exact file manifest and a per-site
+classification ledger under `.10x/evidence/.storage/`, and record a construction command that
+reproduces both without a temporary-file dependency. A count delta is not a migration count when
+tests or invariant checks were added. If review reopens a shared helper outside the frozen roots,
+name that supporting boundary separately and state whether it changes the audited constructor
+inventory.
 
 ### 2. Classify by owner, not keyword
 
@@ -117,6 +120,8 @@ after review-driven tests; stale pre-repair counts are not closure evidence.
 
 - Every scoped Internal construction is discoverable by the recorded search or explicitly covered
   by the direct-enum/helper supplement.
+- The durable file manifest and per-site ledger reproduce the reported final counts without
+  relying on `/tmp`.
 - Typed errors survive direct and nested wrapper paths with retry metadata intact.
 - Raw I/O produces different kinds where source, destination, private-scratch, local-host, and
   remote-provider ownership differs.
