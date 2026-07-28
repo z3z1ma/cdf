@@ -24,11 +24,9 @@ pub(super) fn init_document(report: &ProjectScaffoldReport) -> RenderDocument {
         .push(NextCommand::new("cdf validate"))
 }
 
-pub(super) fn validate_document(
-    context: &ProjectContext,
-    report: &ProjectValidationReport,
-) -> RenderDocument {
-    let secret_table = report.checked_secrets.iter().fold(
+pub(super) fn validate_document(report: &ProjectValidationCliReport) -> RenderDocument {
+    let validation = &report.validation;
+    let secret_table = validation.checked_secrets.iter().fold(
         Table::new(["secret reference", "status"]),
         |table, secret| {
             table.row([
@@ -41,25 +39,28 @@ pub(super) fn validate_document(
     let mut document = RenderDocument::new()
         .push(StatusLine::new(
             StatusKind::Success,
-            format!("validated project {}", context.config.project.name),
+            format!("validated project {}", report.project_name),
         ))
         .blank_line()
         .push(
             KeyValuePanel::new("Project")
-                .row("name", context.config.project.name.clone())
-                .row("environment", report.environment.name.clone())
+                .row("name", report.project_name.clone())
+                .row("environment", validation.environment.name.clone())
                 .row(
                     "declarative resources",
-                    report.declarative_resources.to_string(),
+                    validation.declarative_resources.to_string(),
                 )
-                .row("external resources", report.external_resources.to_string())
+                .row(
+                    "external resources",
+                    validation.external_resources.to_string(),
+                )
                 .row(
                     "secret references",
-                    report.checked_secrets.len().to_string(),
+                    validation.checked_secrets.len().to_string(),
                 ),
         );
 
-    if !report.checked_secrets.is_empty() {
+    if !validation.checked_secrets.is_empty() {
         document = document.blank_line().push(secret_table);
     }
 

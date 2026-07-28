@@ -190,7 +190,8 @@ pub(crate) fn run(
             if let Some(adhoc) = adhoc {
                 cli_report = cli_report.with_adhoc(adhoc);
             }
-            let document = cli_report.render_document(explain_memory);
+            cli_report = cli_report.with_explain_memory(explain_memory);
+            let document = cli_report.render_document();
             match progress {
                 Some(progress) => CommandOutput::rendered_with_progress(
                     "run",
@@ -213,7 +214,8 @@ pub(crate) fn run(
             if let Some(adhoc) = adhoc {
                 cli_report = cli_report.with_adhoc(adhoc);
             }
-            let document = cli_report.render_document(explain_memory);
+            cli_report = cli_report.with_explain_memory(explain_memory);
+            let document = cli_report.render_document();
             match progress {
                 Some(progress) => CommandOutput::rendered_with_progress(
                     "run",

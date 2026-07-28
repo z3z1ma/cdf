@@ -45,6 +45,13 @@ superseded command-local layout helpers and plain compatibility surfaces.
 - 2026-07-27: Activated after D1c closure. Governing records preserve command behavior, JSON
   fields, redaction, and the existing `CommandOutput::rendered` transport boundary; this ticket
   moves only human layout construction and adds the migration fence.
+- 2026-07-27: Moved command-family layout into report-owned renderer modules. Replaced the
+  remaining anonymous/mismatched success values with typed reports while preserving JSON shapes
+  through transparent/flattened serialization, and made report-only presentation inputs
+  (`--explain-memory`, plan command/URI, state scope context) explicit non-serialized fields.
+- 2026-07-27: Extended the static migration gate across every command execution module. A full
+  `cdf-cli` library run passed 297/297 after the authority migration; the focused inspect parity
+  test also proves URI userinfo is absent from both JSON and headless human rendering.
 
 ## Blockers
 

@@ -7,29 +7,29 @@ use crate::render::{
     primitives::{KeyValuePanel, NextCommand, StatusKind, StatusLine, Table},
 };
 
-pub(super) fn show_document(
-    args: &StateScopeArgs,
-    pipeline_id: &PipelineId,
-    scope: &ScopeKey,
-    head: Option<&cdf_kernel::Checkpoint>,
-) -> RenderDocument {
+pub(super) fn show_document(report: &StateShowReport) -> RenderDocument {
     let mut document = RenderDocument::new()
         .push(StatusLine::new(
-            if head.is_some() {
+            if report.head.is_some() {
                 StatusKind::Success
             } else {
                 StatusKind::Warning
             },
-            if head.is_some() {
+            if report.head.is_some() {
                 "state head found"
             } else {
                 "no committed state head"
             },
         ))
         .blank_line()
-        .push(scope_panel("Scope", args, pipeline_id, scope));
+        .push(scope_panel(
+            "Scope",
+            &report.args,
+            &report.pipeline_id,
+            &report.scope,
+        ));
 
-    document = match head {
+    document = match &report.head {
         Some(head) => document.blank_line().push(checkpoint_panel("Head", head)),
         None => document.blank_line().push(
             KeyValuePanel::new("Head")
@@ -43,17 +43,12 @@ pub(super) fn show_document(
         .blank_line()
         .push(NextCommand::new(state_scope_command(
             "cdf state history",
-            args,
+            &report.args,
         )))
 }
 
-pub(super) fn history_document(
-    args: &StateScopeArgs,
-    pipeline_id: &PipelineId,
-    scope: &ScopeKey,
-    history: &[cdf_kernel::Checkpoint],
-) -> RenderDocument {
-    let table = history.iter().fold(
+pub(super) fn history_document(report: &StateHistoryReport) -> RenderDocument {
+    let table = report.history.iter().fold(
         Table::new(["checkpoint", "status", "head", "package", "receipt"]),
         |table, checkpoint| {
             table.row([
@@ -73,26 +68,29 @@ pub(super) fn history_document(
     RenderDocument::new()
         .push(StatusLine::new(
             StatusKind::Success,
-            format!("{} checkpoint(s)", history.len()),
+            format!("{} checkpoint(s)", report.history.len()),
         ))
         .blank_line()
-        .push(scope_panel("Scope", args, pipeline_id, scope))
+        .push(scope_panel(
+            "Scope",
+            &report.args,
+            &report.pipeline_id,
+            &report.scope,
+        ))
         .blank_line()
-        .push(history_panel(history))
+        .push(history_panel(&report.history))
         .blank_line()
         .push(table)
         .blank_line()
         .push(NextCommand::new(state_scope_command(
             "cdf state show",
-            args,
+            &report.args,
         )))
 }
 
-pub(super) fn rewind_document(
-    args: &StateScopeArgs,
-    report: &cdf_kernel::RewindReport,
-) -> RenderDocument {
-    let table = report
+pub(super) fn rewind_document(report: &StateRewindReport) -> RenderDocument {
+    let outcome = &report.outcome;
+    let table = outcome
         .packages_ahead
         .iter()
         .fold(Table::new(["package ahead of state"]), |table, package| {
@@ -102,25 +100,25 @@ pub(super) fn rewind_document(
     RenderDocument::new()
         .push(StatusLine::new(
             StatusKind::Success,
-            format!("rewound to {}", report.head.delta.checkpoint_id),
+            format!("rewound to {}", outcome.head.delta.checkpoint_id),
         ))
         .blank_line()
         .push(
             KeyValuePanel::new("Rewind")
-                .row("marker", report.marker.delta.checkpoint_id.to_string())
+                .row("marker", outcome.marker.delta.checkpoint_id.to_string())
                 .row(
                     "target",
-                    report
+                    outcome
                         .marker
                         .rewind_target_checkpoint_id
                         .as_ref()
                         .map(ToString::to_string)
-                        .unwrap_or_else(|| report.head.delta.checkpoint_id.to_string()),
+                        .unwrap_or_else(|| outcome.head.delta.checkpoint_id.to_string()),
                 )
-                .row("new head", report.head.delta.checkpoint_id.to_string())
-                .row("marker status", report.marker.status.as_str())
-                .row("head status", report.head.status.as_str())
-                .row("packages ahead", report.packages_ahead.len().to_string())
+                .row("new head", outcome.head.delta.checkpoint_id.to_string())
+                .row("marker status", outcome.marker.status.as_str())
+                .row("head status", outcome.head.status.as_str())
+                .row("packages ahead", outcome.packages_ahead.len().to_string())
                 .row("mutation performed", "rewind marker checkpoint appended"),
         )
         .blank_line()
@@ -128,7 +126,7 @@ pub(super) fn rewind_document(
         .blank_line()
         .push(NextCommand::new(state_scope_command(
             "cdf state show",
-            args,
+            &report.args,
         )))
 }
 

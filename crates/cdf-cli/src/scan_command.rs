@@ -168,15 +168,12 @@ pub(crate) fn plan_or_explain(
         &prepared.resource,
         &plan,
         command,
+        args.destination_uri.clone(),
         resolved,
         execution,
         prepared.schema_snapshot,
     )?;
-    CommandOutput::rendered(
-        command,
-        render::scan_report_document(command, &report, args.destination_uri.as_deref()),
-        report,
-    )
+    CommandOutput::rendered(command, render::scan_report_document(&report), report)
 }
 
 pub(crate) fn preview(
@@ -516,6 +513,7 @@ fn scan_report(
     resource: &CliProjectRunSource,
     plan: &EnginePlan,
     command: &'static str,
+    human_destination_uri: Option<String>,
     resolved: EnvironmentDestination,
     execution: &cdf_runtime::ExecutionServices,
     schema_snapshot: Option<SchemaSnapshotActionReport>,
@@ -532,6 +530,8 @@ fn scan_report(
     let queryable = resource.as_queryable();
     let destination_plan = destination_plan_report(resolved, queryable, plan, command)?;
     Ok(ScanPlanReport {
+        human_command: command,
+        human_destination_uri,
         project: context.config.project.name.clone(),
         environment: context.environment.name.clone(),
         resource_id: plan.scan.request.resource_id.to_string(),
@@ -791,6 +791,10 @@ mod render_tests {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct ScanPlanReport {
+    #[serde(skip)]
+    human_command: &'static str,
+    #[serde(skip)]
+    human_destination_uri: Option<String>,
     project: String,
     environment: String,
     resource_id: String,

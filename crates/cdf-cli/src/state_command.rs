@@ -2,7 +2,8 @@ mod recover;
 mod render;
 
 use cdf_kernel::{CheckpointId, CheckpointStore, PipelineId, ResourceId, ScopeKey};
-use serde_json::{Map, Value, json};
+use serde::Serialize;
+use serde_json::{Map, Value};
 
 use crate::{
     args::{Cli, RewindArgs, StateCommand, StateScopeArgs},
@@ -35,12 +36,13 @@ fn show(cli: &Cli, args: StateScopeArgs) -> Result<CommandOutput, CliError> {
     let resource_id = ResourceId::new(args.resource_id.clone())?;
     let scope = scope_key(&args)?;
     let head = store.head(&pipeline_id, &resource_id, &scope)?;
-    let document = render::show_document(&args, &pipeline_id, &scope, head.as_ref());
-    CommandOutput::rendered(
-        "state show",
-        document,
-        json!({ "scope": scope, "head": head }),
-    )
+    let report = StateShowReport {
+        scope,
+        head,
+        args,
+        pipeline_id,
+    };
+    CommandOutput::rendered("state show", render::show_document(&report), report)
 }
 
 fn history(cli: &Cli, args: StateScopeArgs) -> Result<CommandOutput, CliError> {
@@ -50,26 +52,58 @@ fn history(cli: &Cli, args: StateScopeArgs) -> Result<CommandOutput, CliError> {
     let resource_id = ResourceId::new(args.resource_id.clone())?;
     let scope = scope_key(&args)?;
     let history = store.history(&pipeline_id, &resource_id, &scope)?;
-    let document = render::history_document(&args, &pipeline_id, &scope, &history);
-    CommandOutput::rendered(
-        "state history",
-        document,
-        json!({ "scope": scope, "history": history }),
-    )
+    let report = StateHistoryReport {
+        scope,
+        history,
+        args,
+        pipeline_id,
+    };
+    CommandOutput::rendered("state history", render::history_document(&report), report)
 }
 
 fn rewind(cli: &Cli, args: RewindArgs) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
     let store = context.state_store()?;
-    let report = store.rewind(cdf_kernel::RewindRequest {
+    let outcome = store.rewind(cdf_kernel::RewindRequest {
         marker_checkpoint_id: CheckpointId::new(args.marker_checkpoint_id)?,
         pipeline_id: state_pipeline_id(&args.scope)?,
         resource_id: ResourceId::new(args.scope.resource_id.clone())?,
         scope: scope_key(&args.scope)?,
         target_checkpoint_id: CheckpointId::new(args.target_checkpoint_id)?,
     })?;
-    let document = render::rewind_document(&args.scope, &report);
-    CommandOutput::rendered("state rewind", document, report)
+    let report = StateRewindReport {
+        outcome,
+        args: args.scope,
+    };
+    CommandOutput::rendered("state rewind", render::rewind_document(&report), report)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct StateShowReport {
+    scope: ScopeKey,
+    head: Option<cdf_kernel::Checkpoint>,
+    #[serde(skip)]
+    args: StateScopeArgs,
+    #[serde(skip)]
+    pipeline_id: PipelineId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct StateHistoryReport {
+    scope: ScopeKey,
+    history: Vec<cdf_kernel::Checkpoint>,
+    #[serde(skip)]
+    args: StateScopeArgs,
+    #[serde(skip)]
+    pipeline_id: PipelineId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct StateRewindReport {
+    #[serde(flatten)]
+    outcome: cdf_kernel::RewindReport,
+    #[serde(skip)]
+    args: StateScopeArgs,
 }
 
 fn state_pipeline_id(args: &StateScopeArgs) -> Result<PipelineId, CliError> {

@@ -9,11 +9,7 @@ use crate::{
     reports::discovery_coverage_panel,
 };
 
-pub(super) fn scan_report_document(
-    command: &str,
-    report: &ScanPlanReport,
-    destination_uri: Option<&str>,
-) -> RenderDocument {
+pub(super) fn scan_report_document(report: &ScanPlanReport) -> RenderDocument {
     let pushed = report.pushdown.pushed.len();
     let inexact = report.pushdown.inexact.len();
     let unsupported = report.pushdown.unsupported.len();
@@ -64,8 +60,8 @@ pub(super) fn scan_report_document(
         .push(StatusLine::new(
             StatusKind::Success,
             format!(
-                "{command} {} -> {}",
-                report.resource_id, report.destination.target
+                "{} {} -> {}",
+                report.human_command, report.resource_id, report.destination.target
             ),
         ))
         .blank_line()
@@ -234,7 +230,7 @@ pub(super) fn scan_report_document(
         .push(NextCommand::new(next_run_command(
             &report.resource_id,
             &report.destination.target,
-            destination_uri,
+            report.human_destination_uri.as_deref(),
         )))
 }
 

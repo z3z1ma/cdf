@@ -61,18 +61,18 @@ pub(crate) fn validate(
     let resolver = FileResourceSourceResolver::new(&context.root);
     let provider = context.secret_provider();
     let source_registry = crate::source_registry::builtin_source_registry()?;
-    let report = validate_project(
+    let validation = validate_project(
         source_registry,
         &context.config,
         Some(&context.environment.name),
         &resolver,
         &provider,
     )?;
-    CommandOutput::rendered(
-        "validate",
-        render::validate_document(&context, &report),
-        report,
-    )
+    let report = ProjectValidationCliReport {
+        validation,
+        project_name: context.config.project.name,
+    };
+    CommandOutput::rendered("validate", render::validate_document(&report), report)
 }
 
 pub(crate) fn diff_schema(cli: &Cli) -> Result<CommandOutput, CliError> {
@@ -93,6 +93,14 @@ pub(crate) fn diff_schema(cli: &Cli) -> Result<CommandOutput, CliError> {
     let diffs = cdf_project::diff_lockfiles(lock, &regenerated)?;
     let report = DiffSchemaCliReport { diffs };
     CommandOutput::rendered("diff schema", render::diff_schema_document(&report), report)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct ProjectValidationCliReport {
+    #[serde(flatten)]
+    validation: ProjectValidationReport,
+    #[serde(skip)]
+    project_name: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

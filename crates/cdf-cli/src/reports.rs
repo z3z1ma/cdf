@@ -127,6 +127,8 @@ pub(crate) struct RunCliReport {
     adhoc: Option<AdhocRunReport>,
     ledger_events: RunLedgerSummary,
     writes: WriteEffects,
+    #[serde(skip)]
+    explain_memory: bool,
 }
 
 impl RunCliReport {
@@ -189,6 +191,7 @@ impl RunCliReport {
             adhoc: None,
             ledger_events: RunLedgerSummary::from_snapshot(&report.ledger_snapshot),
             writes: run_write_effects(&report.receipt_source),
+            explain_memory: false,
         }
     }
 
@@ -197,7 +200,12 @@ impl RunCliReport {
         self
     }
 
-    pub(crate) fn render_document(&self, explain_memory: bool) -> RenderDocument {
+    pub(crate) fn with_explain_memory(mut self, explain_memory: bool) -> Self {
+        self.explain_memory = explain_memory;
+        self
+    }
+
+    pub(crate) fn render_document(&self) -> RenderDocument {
         let elapsed = std::time::Duration::from_millis(self.elapsed_ms);
         let seconds = elapsed.as_secs_f64();
         let row_rate = (seconds > 0.0).then(|| {
@@ -327,7 +335,7 @@ impl RunCliReport {
             );
             document.blank_line().push_verbose(panel)
         };
-        let document = if explain_memory {
+        let document = if self.explain_memory {
             document.blank_line().push(self.memory.panel())
         } else {
             document
@@ -448,6 +456,8 @@ pub(crate) struct RunNoOpCliReport {
     adhoc: Option<AdhocRunReport>,
     ledger_events: RunLedgerSummary,
     writes: WriteEffects,
+    #[serde(skip)]
+    explain_memory: bool,
 }
 
 impl RunNoOpCliReport {
@@ -485,6 +495,7 @@ impl RunNoOpCliReport {
             adhoc: None,
             ledger_events: RunLedgerSummary::from_snapshot(&report.ledger_snapshot),
             writes: WriteEffects::none(),
+            explain_memory: false,
         }
     }
 
@@ -493,7 +504,12 @@ impl RunNoOpCliReport {
         self
     }
 
-    pub(crate) fn render_document(&self, explain_memory: bool) -> RenderDocument {
+    pub(crate) fn with_explain_memory(mut self, explain_memory: bool) -> Self {
+        self.explain_memory = explain_memory;
+        self
+    }
+
+    pub(crate) fn render_document(&self) -> RenderDocument {
         let document = RenderDocument::new()
             .push(StatusLine::new(
                 StatusKind::Success,
@@ -530,7 +546,7 @@ impl RunNoOpCliReport {
         } else {
             document
         };
-        let document = if explain_memory {
+        let document = if self.explain_memory {
             document.blank_line().push(self.memory.panel())
         } else {
             document
@@ -1306,10 +1322,11 @@ mod tests {
             adhoc: None,
             ledger_events: RunLedgerSummary::default(),
             writes: WriteEffects::all(),
+            explain_memory: false,
         };
 
         let rendered = report
-            .render_document(false)
+            .render_document()
             .render(&cdf_cli_core::render::RenderConfig::headless_for_width(96));
 
         assert!(!rendered.contains("secret-value"));

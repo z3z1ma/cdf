@@ -334,10 +334,7 @@ fn renderer_migration_gate_rejects_raw_human_output_bypasses() {
     let mut violations = Vec::new();
     for file in files {
         let relative = file.strip_prefix(&src).unwrap();
-        if matches!(
-            relative.to_str(),
-            Some("commands.rs" | "output.rs" | "tests.rs")
-        ) {
+        if matches!(relative.to_str(), Some("output.rs" | "tests.rs")) {
             continue;
         }
         let text = fs::read_to_string(&file).unwrap();
@@ -380,6 +377,44 @@ fn renderer_migration_gate_rejects_raw_human_output_bypasses() {
                     "{} contains `{pattern}`: {reason}",
                     relative.display()
                 ));
+            }
+        }
+        let relative_text = relative.to_string_lossy();
+        let is_command_execution = relative_text == "commands.rs"
+            || relative_text.ends_with("_command.rs")
+            || matches!(
+                relative_text.as_ref(),
+                "project_command/deep_validate.rs" | "state_command/recover.rs"
+            );
+        if is_command_execution {
+            for (pattern, reason) in [
+                (
+                    "RenderDocument",
+                    "command execution modules must delegate layout to a report renderer",
+                ),
+                (
+                    "primitives::{",
+                    "command execution modules must not import renderer primitives",
+                ),
+                (
+                    "KeyValuePanel",
+                    "command execution modules must not assemble key-value panels",
+                ),
+                (
+                    "StatusLine",
+                    "command execution modules must not assemble status lines",
+                ),
+                (
+                    "Table::new(",
+                    "command execution modules must not assemble tables",
+                ),
+            ] {
+                if text.contains(pattern) {
+                    violations.push(format!(
+                        "{} contains `{pattern}`: {reason}",
+                        relative.display()
+                    ));
+                }
             }
         }
     }
@@ -614,6 +649,40 @@ fn inspect_human_outputs_use_renderer_for_project_inventory() {
             .contains("environment  duckdb://.cdf/dev.duckdb")
     );
     assert!(destinations.stdout.contains("Next: cdf plan"));
+}
+
+#[test]
+fn inspect_project_redacts_the_same_typed_report_for_json_and_human_output() {
+    let project = TestProject::new();
+    write_project_destination(
+        &project,
+        "postgres://user:inspect-project-secret@localhost/db",
+    );
+
+    let json_result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "inspect",
+        "project",
+    ]);
+    assert_eq!(json_result.exit_code, 0, "stderr: {}", json_result.stderr);
+    assert_secret_absent(&json_result, "inspect-project-secret");
+    assert!(
+        json_result
+            .stdout
+            .contains("postgres://[redacted]@localhost/db")
+    );
+
+    let human_result = run(["cdf", "--project", project.root_str(), "inspect", "project"]);
+    assert_eq!(human_result.exit_code, 0, "stderr: {}", human_result.stderr);
+    assert_secret_absent(&human_result, "inspect-project-secret");
+    assert!(
+        human_result
+            .stdout
+            .contains("postgres://[redacted]@localhost/db")
+    );
 }
 
 #[test]

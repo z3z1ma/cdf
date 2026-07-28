@@ -31,10 +31,8 @@ pub(crate) fn package(cli: &Cli, command: PackageCommand) -> Result<CommandOutpu
                 }
             };
             let packages = list_packages(root)?;
-            let report = PackageListReport {
-                packages: packages.clone(),
-            };
-            CommandOutput::rendered("package ls", report.render_document(), packages)
+            let report = PackageListReport { packages };
+            CommandOutput::rendered("package ls", report.render_document(), report)
         }
         PackageCommand::Gc { packages_dir } => {
             let report = package_gc_plan(cli, packages_dir)?;
@@ -532,6 +530,7 @@ fn package_artifact_host_error(action: &str, path: &Path, error: std::io::Error)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
 struct PackageListReport {
     packages: Vec<PackageListEntry>,
 }

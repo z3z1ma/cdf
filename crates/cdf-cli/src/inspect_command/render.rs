@@ -1,44 +1,39 @@
 use std::path::Path;
 
-use cdf_package_contract::PackageManifest;
-
 use super::*;
-use crate::{
-    context::DestinationRuntime,
-    render::{
-        RenderDocument,
-        primitives::{KeyValuePanel, NextCommand, StatusKind, StatusLine, Table},
-        redaction::redact_uri_userinfo,
-    },
+use crate::render::{
+    RenderDocument,
+    primitives::{KeyValuePanel, NextCommand, StatusKind, StatusLine, Table},
+    redaction::redact_uri_userinfo,
 };
 
-pub(super) fn project_document(context: &ProjectContext) -> RenderDocument {
+pub(super) fn project_document(report: &InspectProjectReport) -> RenderDocument {
     RenderDocument::new()
         .push(StatusLine::new(
             StatusKind::Success,
             format!(
                 "project {} env {}",
-                context.config.project.name, context.environment.name
+                report.config.project.name, report.environment.name
             ),
         ))
         .blank_line()
         .push(
             KeyValuePanel::new("Project")
-                .row("root", path_display(&context.root))
-                .row("name", context.config.project.name.clone())
-                .row("environment", context.environment.name.clone())
-                .row("resources", context.resources.len().to_string())
+                .row("root", path_display(&report.root))
+                .row("name", report.config.project.name.clone())
+                .row("environment", report.environment.name.clone())
+                .row("resources", report.resource_count.to_string())
                 .row(
                     "destination",
-                    redact_uri_userinfo(&context.environment.destination),
+                    redact_uri_userinfo(&report.environment.destination),
                 ),
         )
         .blank_line()
         .push(NextCommand::new("cdf inspect resources"))
 }
 
-pub(super) fn resources_document(resources: &[ResourceSummary]) -> RenderDocument {
-    let table = resources.iter().fold(
+pub(super) fn resources_document(report: &InspectResourcesReport) -> RenderDocument {
+    let table = report.0.iter().fold(
         Table::new([
             "compiled id",
             "source",
@@ -63,7 +58,7 @@ pub(super) fn resources_document(resources: &[ResourceSummary]) -> RenderDocumen
     RenderDocument::new()
         .push(StatusLine::new(
             StatusKind::Success,
-            format!("{} compiled resource(s)", resources.len()),
+            format!("{} compiled resource(s)", report.0.len()),
         ))
         .blank_line()
         .push(table)
@@ -133,7 +128,8 @@ fn mapping_display(resource: &ResourceSummary) -> String {
     }
 }
 
-pub(super) fn lock_document(lock: &cdf_project::CdfLock) -> RenderDocument {
+pub(super) fn lock_document(report: &InspectLockReport) -> RenderDocument {
+    let lock = &report.0;
     RenderDocument::new()
         .push(StatusLine::new(
             StatusKind::Success,
@@ -155,10 +151,7 @@ pub(super) fn lock_document(lock: &cdf_project::CdfLock) -> RenderDocument {
         .push(NextCommand::new("cdf validate"))
 }
 
-pub(super) fn destinations_document(
-    context: &ProjectContext,
-    runtime: &DestinationRuntime,
-) -> RenderDocument {
+pub(super) fn destinations_document(report: &InspectDestinationsReport) -> RenderDocument {
     let mut document = RenderDocument::new()
         .push(StatusLine::new(
             StatusKind::Success,
@@ -167,21 +160,18 @@ pub(super) fn destinations_document(
         .blank_line()
         .push(
             KeyValuePanel::new("Destination")
-                .row(
-                    "environment",
-                    redact_uri_userinfo(&context.environment.destination),
-                )
-                .row("runtime", runtime.kind.clone())
+                .row("environment", report.environment_destination.clone())
+                .row("runtime", report.runtime.kind.clone())
                 .row(
                     "locked",
-                    context
-                        .lock
+                    report
+                        .locked
                         .as_ref()
-                        .map(|lock| lock.destinations.len().to_string())
+                        .map(|locked| locked.len().to_string())
                         .unwrap_or_else(|| "none".to_owned()),
                 ),
         );
-    if let Some(capabilities) = &runtime.capabilities {
+    if let Some(capabilities) = &report.runtime.capabilities {
         let selected = capabilities.bulk_path.as_deref();
         let paths = capabilities.bulk_paths.iter().fold(
             Table::new(["path", "version", "selection", "fallback", "evidence"]),
@@ -206,7 +196,8 @@ pub(super) fn destinations_document(
     document.blank_line().push(NextCommand::new("cdf plan"))
 }
 
-pub(super) fn package_document(path: &Path, manifest: &PackageManifest) -> RenderDocument {
+pub(super) fn package_document(report: &InspectPackageReport) -> RenderDocument {
+    let manifest = &report.manifest;
     RenderDocument::new()
         .push(StatusLine::new(
             StatusKind::Success,
@@ -219,7 +210,7 @@ pub(super) fn package_document(path: &Path, manifest: &PackageManifest) -> Rende
         .blank_line()
         .push(
             KeyValuePanel::new("Package")
-                .row("path", path_display(path))
+                .row("path", path_display(&report.path))
                 .row("package", manifest.identity.package_id.to_string())
                 .row("hash", manifest.package_hash.to_string())
                 .row("status", manifest.lifecycle.status.as_str().to_owned())

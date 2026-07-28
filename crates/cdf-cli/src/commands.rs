@@ -1,12 +1,14 @@
+mod render;
+
 use cdf_kernel::CdfError;
-use serde_json::json;
+use serde::Serialize;
 
 use crate::{
     args::{Cli, Command},
     error_catalog,
     output::{CliError, CommandOutput, InvocationResult},
     progress::ProgressDelivery,
-    render::{RenderConfig, RenderDocument},
+    render::RenderConfig,
     terminal::OutputChannel,
 };
 
@@ -38,16 +40,14 @@ fn dispatch(
 ) -> Result<CommandOutput, CliError> {
     let command = cli.command.clone();
     match command {
-        Command::Help(help_text) => CommandOutput::rendered(
-            "help",
-            RenderDocument::text(help_text.clone()),
-            json!({ "help": help_text }),
-        ),
-        Command::Version => CommandOutput::rendered(
-            "version",
-            RenderDocument::text(format!("cdf {VERSION}")),
-            json!({ "version": VERSION }),
-        ),
+        Command::Help(help) => {
+            let report = HelpReport { help };
+            CommandOutput::rendered("help", render::help_document(&report), report)
+        }
+        Command::Version => {
+            let report = VersionReport { version: VERSION };
+            CommandOutput::rendered("version", render::version_document(&report), report)
+        }
         Command::Init(args) => crate::project_command::init(args),
         Command::Add(args) => {
             let (_, services) = default_services(&cli)?;
@@ -125,6 +125,16 @@ fn dispatch(
         }
         Command::Status => crate::status_command::status(&cli),
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct HelpReport {
+    help: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct VersionReport {
+    version: &'static str,
 }
 
 fn default_services(
