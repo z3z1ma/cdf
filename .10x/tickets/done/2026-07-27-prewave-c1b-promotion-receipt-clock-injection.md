@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-27
 Updated: 2026-07-27
-Parent: `.10x/tickets/2026-07-26-pre-wave-architecture-hardening-program.md`
+Parent: `.10x/tickets/done/2026-07-26-pre-wave-architecture-hardening-program.md`
 Depends-On: `.10x/tickets/done/2026-07-26-prewave-c1-receipt-clock-authority.md`
 
 # Bind receipt clock authority in schema promotion

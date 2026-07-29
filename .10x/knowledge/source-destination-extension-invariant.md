@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-10
-Updated: 2026-07-27
+Updated: 2026-07-28
 
 # Source and destination extension invariant
 
@@ -125,6 +125,15 @@ an acyclic graph, and make public facades enumerate their exports. Line counts a
 diagnostics only; an adversarial review must be able to trace every cross-module edge from an
 explicit import. White-box test modules may aggregate internal surfaces, but that convenience
 must not leak into production ownership.
+
+The final third-source proof adds one further accounting fence: a typed task reader is not enough
+if `open_executable` deep-clones the decoded model and drops its `RetainedExternalTask` before the
+async operation runs. The future or session MUST own the retained wrapper for the entire decoded
+model lifetime and borrow through it; admission MUST use the injected run cancellation rather
+than a fresh token. Nebula falsified and repaired this exact boundary without changing generic
+runtime/project/CLI command code. High-cardinality ordering remains owned by the shared B1/B2
+task-store laws; an extension proof may stay one provider task when its purpose is third-source
+reuse, but it must not relabel that as independent multi-task coverage.
 
 The operational consequences are expanded in:
 

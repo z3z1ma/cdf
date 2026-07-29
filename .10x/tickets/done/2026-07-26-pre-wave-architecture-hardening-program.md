@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-26
 Updated: 2026-07-28
 
@@ -58,7 +58,7 @@ governs every command rather than reopening command execution modules.
 
 ### WS-Z — Extension proof and aggregate closure
 
-1. `.10x/tickets/2026-07-26-prewave-z1-extension-authoring-proof.md`
+1. `.10x/tickets/done/2026-07-26-prewave-z1-extension-authoring-proof.md`
 
 The final child performs the source/destination authoring exercise, build-graph/unsafe scans,
 focused product smoke, performance regression check, record/reference audit, and adversarial
@@ -195,6 +195,12 @@ program review.
   mutation, a real add explicitly recovers, unrelated authority is preserved, and private
   recovery corruption has correct ownership. One bounded delegated review batch drove the direct
   state-machine repair; 18 project tests, all 300 CLI tests, and strict affected-root lint pass.
+- 2026-07-28: Z1 closed the program with a third synthetic catalog-task source, current
+  staged/finalized and Quasar destination laws, exact extension touch-surface proof, bounded
+  state-history diagnostics, local/HTTPS/multi-file/replay/Parquet product evidence, and one
+  frozen two-reviewer OCR batch. Review found and repaired one retained-task accounting defect
+  plus its cancellation coupling; the B2 debug-proxy slowdown is now characterized honestly.
+  Every child is terminal and the active ticket graph is zero.
 
 ## Blockers
 
@@ -202,12 +208,68 @@ None.
 
 ## Evidence
 
-Pending child execution.
+- Aggregate closure: `.10x/evidence/2026-07-28-prewave-architecture-hardening-closure.md`.
+- WS-A: A1's one process catalog, A2's compiler-enforced unsafe/panic wall, and A3's executable
+  driver/session concurrency canon are terminal with mapped tests, strict lint, and review.
+- WS-B: B1/B2 share typed task retention, identity verification, spill planning, publication, and
+  cleanup while Iceberg/Glue retain source semantics; B3 replaces the file-source monolith with a
+  compiler-visible DAG. Their focused suites and measured proxy/release cells are recorded.
+- WS-C: C1/C1b centralize typed receipt/clock/binding authority; C2 centralizes typed SQL mirror
+  choreography without erasing native transactions. Destination/replay/crash/clock evidence is
+  terminal.
+- WS-D: D1/D1b/D1c complete the ownership-based Environment/Data/Internal audit; D2/D3 make typed
+  reports and shared report vocabulary authoritative. The final state includes 300 CLI tests, 55
+  CLI-core tests, strict lint, hosted progress evidence, renderer benchmarks, and public HTTPS
+  product smoke.
+- Crash follow-up: `.10x/tickets/done/2026-07-27-cdf-add-crash-publication-recovery.md` and
+  `.10x/evidence/2026-07-28-project-publication-crash-recovery.md`.
+- Z1: `.10x/tickets/done/2026-07-26-prewave-z1-extension-authoring-proof.md` maps the synthetic
+  source/destination, graph, state, product, performance, reference, and review closure criteria.
 
 ## Review
 
-Pending aggregate closure.
+Every executable child records its own delegated adversarial review. Z1 used OCR deterministic
+preview/rule resolution over the frozen final code range and two independent reviewers.
+
+The aggregate batch found one high retained-memory-accounting defect in the Nebula fixture and
+medium concerns for run cancellation, repeated multi-task coverage, and B2 performance wording.
+Commit `79cc13a7` repairs accounting/cancellation; the closure evidence corrects the B2
+characterization. The multi-task repetition concern is durably accepted: B1/B2 already own
+multi-record/high-cardinality falsification, while Z1 owns the spec's narrower third-source reuse
+proof and may not edit generic conformance merely to duplicate it. Focused tests and strict lint
+pass after repair. No critical/high finding remains open, and no serial re-review was commissioned.
+
+Residual limits are explicit: no credentialed Iceberg/Glue cell was available; repeat-heavy full
+conformance invocations were stopped without a pass claim; `graphify` remained unavailable; B2's
+consistent `+7.2%` debug proxy slowdown is not used as product no-regression evidence.
 
 ## Retrospective
 
-Pending aggregate closure.
+- What broke: most difficult failures were not in the advertised refactors but at authority
+  handoffs—poisoned locks, task parse leases, destination binding, typed error provenance,
+  renderer ownership, and multi-file publication after process loss.
+- Why issues surfaced piecemeal: early reviews were scoped to implementation slices while hidden
+  invariants crossed those slices; repair changed adjacent authority and invited another narrow
+  review. The resulting telephone game was expensive. The final protocol was better: freeze one
+  bounded diff, give two reviewers the whole claim and governing records, reconcile all findings
+  once, and re-review only an unresolved critical correctness risk.
+- What worked: compiler walls and data-driven catalogs replaced review memory; typed codecs,
+  receipts, reports, errors, and recovery markers made authority inspectable; exact product and
+  performance cells prevented crate-local success from becoming an aggregate claim.
+- Dead ends: lexical module splitting preserved a monolith until imports were made acyclic;
+  mechanical poisoned-lock recovery weakened fail-stop semantics; rollback after durable pending
+  publication could destroy recovery authority; repeat-heavy conformance runs were poor
+  last-mile reassurance under a bounded session.
+- Five whys: architecture friction recurred because implicit lifecycle policy lived in concrete
+  adapters; duplication made each repair local; local repair hid cross-adapter drift; review had
+  to rediscover the same invariant; therefore the program moved shared mechanics into typed lower
+  owners and compounded review lessons into executable walls, focused knowledge, and three
+  runbooks.
+- Distillation:
+  - knowledge: source/destination extension, error ownership, report authority, Rust safety,
+    project publication recovery, roadmap, coverage, and cold-start records;
+  - skills: validated canonical/mirrored `audit-error-ownership`,
+    `audit-cli-report-authority`, and `audit-project-file-publication`;
+  - evidence: one dated aggregate closure record with exact limits rather than a global green
+    claim;
+  - backlog: none. Parked product capabilities remain demand-activated in the roadmap.

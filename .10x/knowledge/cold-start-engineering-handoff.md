@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-26
-Updated: 2026-07-26
+Updated: 2026-07-28
 
 # Cold-start engineering handoff
 
@@ -64,30 +64,34 @@ Canonical executable runbooks:
 | `run-cdf-ec2-benchmarks` | Provision, reuse, measure, fetch, or tear down the governed benchmark host |
 | `build-and-install-cdf` | Build locally, refresh a binary, or validate static release packaging |
 | `investigate-cdf-performance-regressions` | Throughput, CPU, memory, I/O, build, or latency unexpectedly worsens |
+| `audit-error-ownership` | Audit or reclassify error constructors and provenance-flattening boundaries |
+| `audit-cli-report-authority` | Add/change CLI success reports or audit JSON/human/redaction parity |
+| `audit-project-file-publication` | Change multi-file project publication or crash recovery |
 
-Skills live canonically under `.10x/skills/` and are mirrored under `.claude/skills/`. Change the
-canonical copy first; the mirror has no independent procedure.
+Skills live canonically under `.10x/skills/` and are mirrored into the active host skill directory
+(`.claude/skills/` for the original operational runbooks and `.agents/skills/` for the audit
+runbooks). Change the canonical copy first; mirrors have no independent procedure.
 
 ## Current program state
 
-The stabilization and CPU-saturation programs are terminal. The active program is:
+The stabilization, CPU-saturation, and pre-wave architecture hardening programs are terminal:
 
-- `.10x/tickets/2026-07-26-pre-wave-architecture-hardening-program.md`
+- `.10x/tickets/done/2026-07-26-pre-wave-architecture-hardening-program.md`
 
-Its bounded children are the entire active graph. The intended sequence starts with the composition
-root and compiler-enforced walls, then catalog-task source commons, destination common services,
-typed CLI reports/error taxonomy, holistic CLI work, and a final extension-authoring proof.
+The active executable ticket graph is zero. There is no default next program; activate parked
+scope only from an explicit current product need and user priority.
 
-Before taking a ticket:
+Before starting new work:
 
 ```bash
 git status --short
 find .10x/tickets -maxdepth 1 -type f -print | sort
-sed -n '1,260p' .10x/tickets/2026-07-26-pre-wave-architecture-hardening-program.md
+sed -n '1,260p' .10x/knowledge/active-backlog-and-future-roadmap.md
 ```
 
-Read the child completely and every referenced record before editing. Other workers may share the
-checkout. A dirty worktree is not authority to discard, reset, reformat, or absorb unrelated work.
+If an executable ticket is later activated, read it completely and every referenced record before
+editing. Other workers may share the checkout. A dirty worktree is not authority to discard,
+reset, reformat, or absorb unrelated work.
 
 The longer product roadmap is deliberately parked, not forgotten:
 

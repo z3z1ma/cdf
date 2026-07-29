@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-26
 Updated: 2026-07-27
-Parent: `.10x/tickets/2026-07-26-pre-wave-architecture-hardening-program.md`
+Parent: `.10x/tickets/done/2026-07-26-pre-wave-architecture-hardening-program.md`
 Depends-On: `.10x/tickets/done/2026-07-26-prewave-d1b-adapter-error-audit.md`
 
 # Audit product and governance environment errors

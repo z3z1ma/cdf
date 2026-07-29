@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-25
-Updated: 2026-07-26
+Updated: 2026-07-28
 
 # Active backlog and future roadmap
 
@@ -28,16 +28,20 @@ no longer caps run-wide jobs, Parquet object groups encode independently, and th
 one-TiB acceptance improved from 44:54.863 to 8:19.07 at 2.222 GB/s with constant memory and
 verified identity.
 
-The active successor is the pre-wave architecture hardening program at
-`.10x/tickets/2026-07-26-pre-wave-architecture-hardening-program.md`. It contains fourteen bounded
-executable children across product-boundary enforcement, catalog-task source commons,
-destination common services, typed CLI/error authority, holistic CLI experience, and final
-extension-authoring proof. This program must return the active graph to zero before the next
-connector wave. Parked capabilities below remain demand-activated rather than silently reopened.
+The pre-wave architecture hardening successor is terminal at
+`.10x/tickets/done/2026-07-26-pre-wave-architecture-hardening-program.md`. Its product-boundary
+enforcement, catalog-task source commons, destination common services, typed CLI/error authority,
+holistic CLI experience, crash-publication follow-up, and final extension-authoring proof are
+closed. The active executable ticket graph is zero.
+
+There is no active successor program. Parked capabilities below remain demand-activated rather
+than silently reopened; the next feature wave requires explicit user priority and the activation
+rule at the end of this record.
 
 A cold-start engineer begins with `.10x/knowledge/cold-start-engineering-handoff.md`. It indexes
-the current program, operational runbooks, present performance floors, known generated-evidence
-lag, and the architectural invariants that are otherwise distributed across the project memory.
+the terminal current cut, operational runbooks, present performance floors, known
+generated-evidence lag, and the architectural invariants that are otherwise distributed across
+the project memory.
 
 ## Parked future programs
 
