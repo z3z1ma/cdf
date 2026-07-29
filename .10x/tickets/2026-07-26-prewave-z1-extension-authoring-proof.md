@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-26
 Updated: 2026-07-27
 Parent: `.10x/tickets/2026-07-26-pre-wave-architecture-hardening-program.md`
@@ -60,6 +60,19 @@ running the focused product/performance/quality closure matrix.
   diagnostic/recovery consumers invoke explicit whole-store integrity checks. Z1 must confirm the
   normal-run bound and measure the remaining explicit diagnostic path, including large inline
   content-root membership.
+- 2026-07-28: Activated after every implementation child and the project-publication crash
+  follow-up closed. Static inspection confirmed ordinary checkpoint, run-event, promotion,
+  content-claim, and root-member store opens initialize/validate schema only. The explicit content
+  integrity path still compared each indexed member against the complete inline member vector,
+  making one large root quadratic. Replaced that diagnostic-only comparison with one expected-key
+  hash set that is consumed while rows stream, preserving missing/extra/absent-root diagnostics
+  with bounded linear expected work. Added a 10,000-member measurement covering ordinary open and
+  the explicit diagnostic.
+- 2026-07-28: The 10,000-member cell measured a 709-microsecond ordinary open and a
+  44,254-microsecond explicit full integrity diagnostic in an unoptimized test build. All 68
+  state-store tests and strict all-feature/all-target state-store Clippy pass. The first invocation
+  omitted the repository's local DuckDB link environment and failed only at link time; the exact
+  rerun with the established environment passed and is the evidence-bearing observation.
 
 ## Blockers
 

@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, HashSet},
     path::Path,
     sync::Mutex,
 };
@@ -595,6 +595,20 @@ fn validate_private_content_tables(conn: &Connection) -> Result<()> {
         let intent = intent.map_err(sqlite_error)?;
         roots_by_id.insert(intent.root.root_id.as_str().to_owned(), intent);
     }
+    let mut expected_members = HashSet::new();
+    for (root_id, intent) in &roots_by_id {
+        for identity in private_inline_members(&intent.root)? {
+            if !expected_members.insert((
+                root_id.clone(),
+                identity.store_namespace.as_str().to_owned(),
+                identity.object_key.as_str().to_owned(),
+            )) {
+                return Err(CdfError::internal(
+                    "serialized root intent repeats a CDF-managed content index key",
+                ));
+            }
+        }
+    }
 
     let mut members = conn
         .prepare("SELECT root_id, store_namespace, object_key FROM cdf_content_root_members")
@@ -608,39 +622,23 @@ fn validate_private_content_tables(conn: &Connection) -> Result<()> {
             ))
         })
         .map_err(sqlite_error)?;
-    let mut indexed_members = BTreeSet::new();
     for member in member_rows {
         let (root_id, store_namespace, object_key) = member.map_err(sqlite_error)?;
-        let intent = roots_by_id.get(&root_id).ok_or_else(|| {
-            CdfError::internal(
+        if !roots_by_id.contains_key(&root_id) {
+            return Err(CdfError::internal(
                 "content root member row references an absent CDF-managed root intent",
-            )
-        })?;
-        if !private_inline_members(&intent.root)?
-            .iter()
-            .any(|identity| {
-                identity.store_namespace.as_str() == store_namespace
-                    && identity.object_key.as_str() == object_key
-            })
-        {
+            ));
+        }
+        if !expected_members.remove(&(root_id, store_namespace, object_key)) {
             return Err(CdfError::internal(
                 "content root member row does not match serialized root intent JSON",
             ));
         }
-        indexed_members.insert((root_id, store_namespace, object_key));
     }
-    for (root_id, intent) in &roots_by_id {
-        for identity in private_inline_members(&intent.root)? {
-            if !indexed_members.contains(&(
-                root_id.clone(),
-                identity.store_namespace.as_str().to_owned(),
-                identity.object_key.as_str().to_owned(),
-            )) {
-                return Err(CdfError::internal(
-                    "serialized root intent member is absent from the CDF-managed content index",
-                ));
-            }
-        }
+    if !expected_members.is_empty() {
+        return Err(CdfError::internal(
+            "serialized root intent member is absent from the CDF-managed content index",
+        ));
     }
 
     let mut reservations = conn
@@ -1180,6 +1178,21 @@ mod tests {
         .unwrap()
     }
 
+    fn indexed_identity(index: usize) -> ImmutableContentIdentity {
+        ImmutableContentIdentity::new(
+            ContentStoreNamespace::new("store").unwrap(),
+            ContentObjectKey::new(format!("objects/{index:08}")).unwrap(),
+            42,
+            ContentDigest::new(
+                ContentDigestAlgorithm::new("sha256").unwrap(),
+                ContentDigestValue::new(format!("{index:064x}")).unwrap(),
+            )
+            .unwrap(),
+            None,
+        )
+        .unwrap()
+    }
+
     fn claim(name: &str) -> ContentPublicationClaim {
         ContentPublicationClaim::new(
             DestinationId::new("parquet").unwrap(),
@@ -1407,5 +1420,83 @@ mod tests {
 
         assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
         assert!(error.message.contains("absent from"));
+    }
+
+    #[test]
+    fn explicit_integrity_validation_is_bounded_for_a_large_inline_root() {
+        const MEMBER_COUNT: usize = 10_000;
+        const OPEN_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+        const DIAGNOSTIC_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(".cdf").join("content.db");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let store = SqliteContentReachabilityStore::open(&path).unwrap();
+        let identities = (0..MEMBER_COUNT).map(indexed_identity).collect::<Vec<_>>();
+        let intent = ContentRootIntent {
+            root: CommittedContentRoot {
+                destination_id: DestinationId::new("parquet").unwrap(),
+                target: TargetName::new("events").unwrap(),
+                root_id: CommittedContentRootId::new("root-large-inline").unwrap(),
+                root_generation: 1,
+                retained_until_ms: None,
+                membership: CommittedContentMembership::Inline {
+                    identities: identities.clone(),
+                },
+            },
+            claim_ids: Vec::new(),
+            state: ContentRootState::Prepared,
+        };
+        intent.validate().unwrap();
+        {
+            let mut conn = store.lock().unwrap();
+            let tx = conn.transaction().unwrap();
+            tx.execute(
+                "INSERT INTO cdf_content_roots \
+                 (root_id, root_generation, state, root_intent_json) VALUES (?, 1, 'prepared', ?)",
+                params![intent.root.root_id.as_str(), encode_json(&intent).unwrap()],
+            )
+            .unwrap();
+            {
+                let mut insert = tx
+                    .prepare(
+                        "INSERT INTO cdf_content_root_members \
+                         (root_id, store_namespace, object_key) VALUES (?, ?, ?)",
+                    )
+                    .unwrap();
+                for identity in &identities {
+                    insert
+                        .execute(params![
+                            intent.root.root_id.as_str(),
+                            identity.store_namespace.as_str(),
+                            identity.object_key.as_str(),
+                        ])
+                        .unwrap();
+                }
+            }
+            tx.commit().unwrap();
+        }
+        drop(store);
+
+        let open_started = std::time::Instant::now();
+        let reopened = SqliteContentReachabilityStore::open(&path).unwrap();
+        let open_elapsed = open_started.elapsed();
+        let diagnostic_started = std::time::Instant::now();
+        reopened.validate_integrity().unwrap();
+        let diagnostic_elapsed = diagnostic_started.elapsed();
+        eprintln!(
+            "z1_content_integrity member_count={MEMBER_COUNT} open_us={} diagnostic_us={}",
+            open_elapsed.as_micros(),
+            diagnostic_elapsed.as_micros()
+        );
+
+        assert!(
+            open_elapsed < OPEN_BUDGET,
+            "ordinary open must remain independent of retained member history: {open_elapsed:?}"
+        );
+        assert!(
+            diagnostic_elapsed < DIAGNOSTIC_BUDGET,
+            "explicit bounded-history diagnostic exceeded its closure guard: {diagnostic_elapsed:?}"
+        );
     }
 }
