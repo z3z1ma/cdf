@@ -676,7 +676,7 @@ impl ResourceStream for NebulaResource {
         let execution = self.execution.clone();
         let execution_capabilities = self.execution_capabilities.clone();
         let physical_plan = self.physical_plan.clone();
-        let task = executable.retained.task().clone();
+        let cancellation = self.cancellation.clone();
         cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move {
             execution.admit_source_operation(
                 execution_capabilities
@@ -688,8 +688,9 @@ impl ResourceStream for NebulaResource {
                         )
                     })?,
                 execution_capabilities.rate_limit,
-                cdf_runtime::RunCancellation::default(),
+                cancellation,
             )?;
+            let task = executable.retained.task();
             if physical_plan.rows != 2 {
                 return Err(cdf_kernel::CdfError::internal(format!(
                     "Nebula source conformance physical plan requires 2 rows, received {}",
