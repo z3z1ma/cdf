@@ -27,8 +27,15 @@ pub(crate) fn add(
     execution: &cdf_runtime::ExecutionServices,
     destinations: &cdf_runtime::DestinationRegistry,
 ) -> Result<CommandOutput, CliError> {
-    let context =
-        ProjectContext::load_for_command("add", cli.project.as_ref(), cli.env.as_deref())?;
+    let context = if args.dry_run {
+        ProjectContext::load_for_command("add", cli.project.as_ref(), cli.env.as_deref())?
+    } else {
+        ProjectContext::load_for_command_with_recovery(
+            "add",
+            cli.project.as_ref(),
+            cli.env.as_deref(),
+        )?
+    };
     let registry = crate::source_registry::builtin_source_registry()?;
     let request = AddResourceRequest::from_args(&context, registry, &args)?;
     let proposed = build_proposed_resource(&context, registry, &request)?;

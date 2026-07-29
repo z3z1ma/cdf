@@ -1908,7 +1908,7 @@ fn contract_freeze_writes_lock_and_contract_test_passes() {
 }
 
 #[test]
-fn project_load_completes_pending_add_publication_before_new_resource_planning() {
+fn read_only_load_fails_closed_and_real_add_completes_pending_publication() {
     let project = TestProject::new();
     let initial_freeze = run([
         "cdf",
@@ -1995,6 +1995,7 @@ fn project_load_completes_pending_add_publication_before_new_resource_planning()
         serde_json::to_vec_pretty(&marker).unwrap(),
     )
     .unwrap();
+    let pending_tree = project_tree_snapshot(&project.root);
 
     let plan = run([
         "cdf",
@@ -2005,8 +2006,53 @@ fn project_load_completes_pending_add_publication_before_new_resource_planning()
         "extra.events",
     ]);
 
-    assert_eq!(plan.exit_code, 0, "stderr: {}", plan.stderr);
-    assert_eq!(fs::read(project.root.join("cdf.lock")).unwrap(), new_lock);
+    assert_ne!(plan.exit_code, 0);
+    assert!(
+        format!("{}{}", plan.stdout, plan.stderr).contains("project publication is incomplete")
+    );
+    assert_project_tree_unchanged(&project.root, &pending_tree);
+
+    let preview = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "extra.events",
+    ]);
+
+    assert_ne!(preview.exit_code, 0);
+    assert!(
+        format!("{}{}", preview.stdout, preview.stderr)
+            .contains("project publication is incomplete")
+    );
+    assert_project_tree_unchanged(&project.root, &pending_tree);
+
+    write_vendor_parquet(&project.root.join("data/yellow.parquet"));
+    let add = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "add",
+        "tlc.yellow",
+        project.root.join("data/yellow.parquet").to_str().unwrap(),
+    ]);
+
+    assert_eq!(add.exit_code, 0, "stderr: {}", add.stderr);
+    let recovered_plan = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "extra.events",
+    ]);
+    assert_eq!(
+        recovered_plan.exit_code, 0,
+        "stderr: {}",
+        recovered_plan.stderr
+    );
     let committed: Value = serde_json::from_slice(
         &fs::read(project.root.join(".cdf/project-files.transaction.json")).unwrap(),
     )

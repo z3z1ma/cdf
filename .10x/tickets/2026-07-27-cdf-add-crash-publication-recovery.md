@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-27
-Updated: 2026-07-27
+Updated: 2026-07-28
 
 # Make cdf add publication recoverable across process loss
 
@@ -54,6 +54,15 @@ rolls back the transaction.
   only prior-or-new paths under the existing mutation guard and refuses unrelated authority.
   Project loading samples/reconciles the generation before and after compilation so a transaction
   that starts, commits, or rolls back during the read forces a stable retry.
+- 2026-07-28: The single bounded delegated OCR pass found two material design errors in the first
+  checkpoint: automatic load recovery violated plan/preview no-write contracts, and destructive
+  rollback after the durable pending marker could strand recovery or overwrite a non-cooperating
+  editor. Repaired both at the state-machine boundary. Ordinary loads now observe a stable
+  committed generation and fail closed without mutation; only a real, non-dry-run `cdf add`
+  explicitly completes recovery. Once pending is durable, publication has one forward-recovery
+  decision and never destructively rolls targets back. Private marker/temporary corruption is
+  `Internal`, host failures remain `Environment`, and unrelated target authority remains
+  `Contract`.
 
 ## Blockers
 

@@ -11,8 +11,8 @@ use cdf_project::{
     CdfLock, DefaultSecretProvider, EffectiveEnvironment, EnvSecretProvider,
     FileResourceSourceResolver, FileSecretProvider, LOCK_FILE_NAME, LockFileAuthority,
     PROJECT_FILE_NAME, ProjectConfig, ProjectResource, ProjectResourceOrigin, ResourceSourceKind,
-    SchemaSnapshotStore, parse_cdf_toml, parse_lock, read_lock_file_authority,
-    recover_project_file_transaction,
+    SchemaSnapshotStore, parse_cdf_toml, parse_lock, project_file_transaction_generation,
+    read_lock_file_authority, recover_project_file_transaction,
 };
 use cdf_state_sqlite::SqliteCheckpointStore;
 use serde::Serialize;
@@ -42,6 +42,12 @@ pub struct DestinationRuntime {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Copy)]
+enum ProjectPublicationRecovery {
+    FailClosed,
+    Complete,
+}
+
 impl ProjectContext {
     pub fn load_for_command(
         command: &str,
@@ -57,7 +63,37 @@ impl ProjectContext {
         env_arg: Option<&str>,
         hydrate_locked_snapshots: bool,
     ) -> StdResult<Self, CliError> {
-        Self::load(project_arg, env_arg)
+        Self::load_for_command_with_policy(
+            command,
+            project_arg,
+            env_arg,
+            hydrate_locked_snapshots,
+            ProjectPublicationRecovery::FailClosed,
+        )
+    }
+
+    pub fn load_for_command_with_recovery(
+        command: &str,
+        project_arg: Option<&PathBuf>,
+        env_arg: Option<&str>,
+    ) -> StdResult<Self, CliError> {
+        Self::load_for_command_with_policy(
+            command,
+            project_arg,
+            env_arg,
+            true,
+            ProjectPublicationRecovery::Complete,
+        )
+    }
+
+    fn load_for_command_with_policy(
+        command: &str,
+        project_arg: Option<&PathBuf>,
+        env_arg: Option<&str>,
+        hydrate_locked_snapshots: bool,
+        recovery: ProjectPublicationRecovery,
+    ) -> StdResult<Self, CliError> {
+        Self::load_with_policy(project_arg, env_arg, recovery)
             .and_then(|mut context| {
                 if hydrate_locked_snapshots
                     && matches!(
@@ -94,11 +130,29 @@ impl ProjectContext {
     }
 
     pub fn load(project_arg: Option<&PathBuf>, env_arg: Option<&str>) -> CdfResult<Self> {
+        Self::load_with_policy(project_arg, env_arg, ProjectPublicationRecovery::FailClosed)
+    }
+
+    fn load_with_policy(
+        project_arg: Option<&PathBuf>,
+        env_arg: Option<&str>,
+        recovery: ProjectPublicationRecovery,
+    ) -> CdfResult<Self> {
         let (root, project_file) = project_location(project_arg)?;
         for attempt in 0..3 {
-            let generation_before = recover_project_file_transaction(&root)?;
+            let generation_before = match recovery {
+                ProjectPublicationRecovery::FailClosed => {
+                    project_file_transaction_generation(&root)?
+                }
+                ProjectPublicationRecovery::Complete => recover_project_file_transaction(&root)?,
+            };
             let loaded = Self::load_observed_project(&root, &project_file, env_arg);
-            let generation_after = recover_project_file_transaction(&root)?;
+            let generation_after = match recovery {
+                ProjectPublicationRecovery::FailClosed => {
+                    project_file_transaction_generation(&root)?
+                }
+                ProjectPublicationRecovery::Complete => recover_project_file_transaction(&root)?,
+            };
             if generation_before == generation_after {
                 return loaded;
             }

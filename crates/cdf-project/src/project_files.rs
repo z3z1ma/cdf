@@ -118,6 +118,18 @@ pub fn recover_project_file_transaction(project_root: impl AsRef<Path>) -> Resul
     .generation())
 }
 
+pub fn project_file_transaction_generation(project_root: impl AsRef<Path>) -> Result<u64> {
+    let project_root = project_root.as_ref();
+    let observed = read_project_file_transaction_marker(project_root)?;
+    if observed.is_pending() {
+        return Err(CdfError::contract(format!(
+            "project publication is incomplete at {}; retry the interrupted cdf add without --dry-run before using this project",
+            project_root.join(PROJECT_FILE_TRANSACTION_MARKER).display()
+        )));
+    }
+    Ok(observed.generation())
+}
+
 pub fn publish_project_files_transactionally(
     project_root: impl AsRef<Path>,
     commit_relative_path: impl AsRef<Path>,
@@ -382,20 +394,10 @@ fn publish_under_guard(
         })
     })();
 
-    if let Err(error) = install_result {
-        let rollback = rollback_installed(project_root, &prepared, &installed);
-        cleanup_temporaries(&prepared);
-        if let Err(rollback_error) = rollback {
-            return Err(with_rollback_failure(error, rollback_error));
-        }
-        if let Some(pending_marker) = pending_marker.as_ref()
-            && let Err(marker_error) =
-                commit_project_file_transaction_marker(project_root, pending_marker)
-        {
-            return Err(with_rollback_failure(error, marker_error));
-        }
-        return Err(error);
-    }
+    // Once the pending marker is durable, forward recovery is the only safe terminal decision.
+    // Destructive rollback could consume the prepared new bytes or overwrite a non-cooperating
+    // editor, leaving the durable journal unable to converge after another process loss.
+    install_result?;
     if let Some(pending_marker) = pending_marker.as_ref() {
         commit_project_file_transaction_marker(project_root, pending_marker)?;
     }
@@ -579,23 +581,25 @@ fn recover_project_file_transaction_entry(
     verify_existing_safe_parent(
         project_root,
         target.parent().ok_or_else(|| {
-            CdfError::data(format!(
+            CdfError::contract(format!(
                 "project transaction recovery target {} has no parent",
                 target.display()
             ))
         })?,
+        false,
     )?;
     verify_existing_safe_parent(
         project_root,
         temporary.parent().ok_or_else(|| {
-            CdfError::data(format!(
+            CdfError::internal(format!(
                 "project transaction recovery temporary {} has no parent",
                 temporary.display()
             ))
         })?,
+        true,
     )?;
 
-    let current = read_recovery_file(&target)?;
+    let current = read_recovery_file(&target, false)?;
     if file_bytes_match(current.as_deref(), entry.new_len, entry.new_sha256.as_str()) {
         cleanup_recovery_temporary(&temporary, entry)?;
         return Ok(());
@@ -607,8 +611,8 @@ fn recover_project_file_transaction_entry(
             project_root.join(PROJECT_FILE_TRANSACTION_MARKER).display()
         )));
     }
-    let temporary_bytes = read_recovery_file(&temporary)?.ok_or_else(|| {
-        CdfError::data(format!(
+    let temporary_bytes = read_recovery_file(&temporary, true)?.ok_or_else(|| {
+        CdfError::internal(format!(
             "project transaction recovery is missing prepared temporary {}",
             temporary.display()
         ))
@@ -618,13 +622,13 @@ fn recover_project_file_transaction_entry(
         entry.new_len,
         entry.new_sha256.as_str(),
     ) {
-        return Err(CdfError::data(format!(
+        return Err(CdfError::internal(format!(
             "project transaction recovery temporary {} does not match its journaled content",
             temporary.display()
         )));
     }
 
-    let current = read_recovery_file(&target)?;
+    let current = read_recovery_file(&target, false)?;
     if !prior_file_matches(current.as_deref(), &entry.prior) {
         return Err(CdfError::contract(format!(
             "project transaction recovery refused a concurrent change to {}",
@@ -666,11 +670,11 @@ fn recover_project_file_transaction_entry(
 }
 
 fn cleanup_recovery_temporary(temporary: &Path, entry: &ProjectFileTransactionEntry) -> Result<()> {
-    let Some(bytes) = read_recovery_file(temporary)? else {
+    let Some(bytes) = read_recovery_file(temporary, true)? else {
         return Ok(());
     };
     if !file_bytes_match(Some(&bytes), entry.new_len, entry.new_sha256.as_str()) {
-        return Err(CdfError::data(format!(
+        return Err(CdfError::internal(format!(
             "project transaction recovery found unrelated content at managed temporary {}",
             temporary.display()
         )));
@@ -684,17 +688,30 @@ fn cleanup_recovery_temporary(temporary: &Path, entry: &ProjectFileTransactionEn
     })
 }
 
-fn read_recovery_file(path: &Path) -> Result<Option<Vec<u8>>> {
+fn read_recovery_file(path: &Path, private: bool) -> Result<Option<Vec<u8>>> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-            Err(CdfError::data(format!(
+            let message = format!(
                 "project transaction recovery path {} is not a real regular file",
                 path.display()
-            )))
+            );
+            Err(if private {
+                CdfError::internal(message)
+            } else {
+                CdfError::contract(message)
+            })
         }
-        Ok(_) => fs::read(path)
-            .map(Some)
-            .map_err(|error| project_prior_read_error(path, error)),
+        Ok(_) => fs::read(path).map(Some).map_err(|error| {
+            if private {
+                project_file_private_path_error(
+                    "read project transaction recovery temporary",
+                    path,
+                    error,
+                )
+            } else {
+                project_prior_read_error(path, error)
+            }
+        }),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(project_file_host_error(
             "inspect project transaction recovery path",
@@ -731,7 +748,7 @@ fn read_project_file_transaction_marker(
     };
     let marker =
         serde_json::from_slice::<ProjectFileTransactionMarker>(&bytes).map_err(|error| {
-            CdfError::data(format!(
+            CdfError::internal(format!(
                 "parse project transaction marker {}: {error}",
                 project_root.join(PROJECT_FILE_TRANSACTION_MARKER).display()
             ))
@@ -747,13 +764,13 @@ fn read_project_file_transaction_marker_bytes(project_root: &Path) -> Result<Opt
     let path = project_root.join(PROJECT_FILE_TRANSACTION_MARKER);
     match fs::symlink_metadata(&path) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-            Err(CdfError::data(format!(
+            Err(CdfError::internal(format!(
                 "project transaction marker {} is not a real regular file",
                 path.display()
             )))
         }
         Ok(metadata) if metadata.len() > MAX_PROJECT_FILE_TRANSACTION_MARKER_BYTES => {
-            Err(CdfError::data(format!(
+            Err(CdfError::internal(format!(
                 "project transaction marker {} exceeds the {}-byte limit",
                 path.display(),
                 MAX_PROJECT_FILE_TRANSACTION_MARKER_BYTES
@@ -772,6 +789,17 @@ fn read_project_file_transaction_marker_bytes(project_root: &Path) -> Result<Opt
 }
 
 fn validate_project_file_transaction_marker(marker: &ProjectFileTransactionMarker) -> Result<()> {
+    validate_project_file_transaction_marker_inner(marker).map_err(|error| {
+        CdfError::internal(format!(
+            "invalid CDF-managed project transaction marker: {}",
+            error.message
+        ))
+    })
+}
+
+fn validate_project_file_transaction_marker_inner(
+    marker: &ProjectFileTransactionMarker,
+) -> Result<()> {
     if marker.version != PROJECT_FILE_TRANSACTION_MARKER_VERSION || marker.generation == 0 {
         return Err(CdfError::data(format!(
             "project transaction marker has unsupported version {} or invalid generation {}",
@@ -975,9 +1003,16 @@ fn sync_project_file_transaction_marker_parent(_project_root: &Path, _path: &Pat
     Ok(())
 }
 
-fn verify_existing_safe_parent(project_root: &Path, parent: &Path) -> Result<()> {
+fn verify_existing_safe_parent(project_root: &Path, parent: &Path, private: bool) -> Result<()> {
+    let invalid_shape = |message: String| {
+        if private {
+            CdfError::internal(message)
+        } else {
+            CdfError::contract(message)
+        }
+    };
     let relative = parent.strip_prefix(project_root).map_err(|_| {
-        CdfError::data(format!(
+        invalid_shape(format!(
             "project transaction recovery parent {} escapes project root {}",
             parent.display(),
             project_root.display()
@@ -989,13 +1024,13 @@ fn verify_existing_safe_parent(project_root: &Path, parent: &Path) -> Result<()>
         match fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
             Ok(_) => {
-                return Err(CdfError::data(format!(
+                return Err(invalid_shape(format!(
                     "project transaction recovery parent {} is not a real directory",
                     current.display()
                 )));
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(CdfError::data(format!(
+                return Err(invalid_shape(format!(
                     "project transaction recovery parent {} is missing",
                     current.display()
                 )));
@@ -1102,36 +1137,6 @@ fn concurrent_project_file_change(path: &Path, error: std::io::Error) -> CdfErro
         "project file transaction refused a concurrent change to {}: {error}",
         path.display()
     ))
-}
-
-fn rollback_installed(
-    project_root: &Path,
-    prepared: &[PreparedWrite],
-    installed: &[PathBuf],
-) -> Result<()> {
-    for relative_path in installed.iter().rev() {
-        let entry = prepared.iter().find(|entry| {
-            matches!(entry, PreparedWrite::Install { relative_path: candidate, .. } if candidate == relative_path)
-        });
-        let Some(PreparedWrite::Install { target, prior, .. }) = entry else {
-            return Err(CdfError::internal(
-                "project transaction rollback lost an installed path",
-            ));
-        };
-        match prior {
-            PriorFile::Absent => fs::remove_file(target).map_err(|error| {
-                project_file_host_error("rollback newly created project file", target, error)
-            })?,
-            PriorFile::Existing { bytes, permissions } => {
-                let temporary = temporary_path(target)?;
-                write_synced_file(&temporary, bytes, false, Some(permissions))?;
-                fs::rename(&temporary, target).map_err(|error| {
-                    project_file_host_error("rollback replaced project file", target, error)
-                })?;
-            }
-        }
-    }
-    sync_installed_parent_directories(project_root, installed)
 }
 
 fn validate_relative_path(path: &Path) -> Result<()> {
@@ -1474,13 +1479,6 @@ fn project_file_private_path_error(action: &str, path: &Path, error: std::io::Er
     }
 }
 
-fn with_rollback_failure(primary: CdfError, rollback: CdfError) -> CdfError {
-    CdfError::internal(format!(
-        "project file transaction entered an unexpected partial-mutation state: primary failure kind {:?}, retry_after_ms {:?} ({}) and rollback also failed ({rollback})",
-        primary.kind, primary.retry_after_ms, primary.message
-    ))
-}
-
 #[cfg(not(unix))]
 fn sync_installed_parent_directories(_project_root: &Path, _installed: &[PathBuf]) -> Result<()> {
     Ok(())
@@ -1494,7 +1492,7 @@ mod tests {
     const PROCESS_CRASH_EXIT_CODE: i32 = 86;
 
     #[test]
-    fn transaction_rolls_back_every_prior_install_on_failure() {
+    fn transaction_failure_after_pending_marker_recovers_forward() {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join("cdf.toml"), b"before-project").unwrap();
         let writes = vec![
@@ -1522,12 +1520,28 @@ mod tests {
         assert!(error.message.contains("injected"));
         assert_eq!(
             fs::read(root.path().join("cdf.toml")).unwrap(),
-            b"before-project"
+            b"after-project"
         );
-        assert!(!root.path().join("resources/events.toml").exists());
-        assert!(!root.path().join("resources").exists());
+        assert_eq!(
+            fs::read(root.path().join("resources/events.toml")).unwrap(),
+            b"resource"
+        );
+        assert!(!root.path().join("cdf.lock").exists());
+        assert!(
+            read_project_file_transaction_marker(root.path())
+                .unwrap()
+                .is_pending()
+        );
+        let marker_before = fs::read(root.path().join(PROJECT_FILE_TRANSACTION_MARKER)).unwrap();
+        let error = project_file_transaction_generation(root.path()).unwrap_err();
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Contract);
+        assert_eq!(
+            fs::read(root.path().join(PROJECT_FILE_TRANSACTION_MARKER),).unwrap(),
+            marker_before
+        );
         assert!(!root.path().join("cdf.lock").exists());
         assert_eq!(recover_project_file_transaction(root.path()).unwrap(), 1);
+        assert_eq!(fs::read(root.path().join("cdf.lock")).unwrap(), b"commit");
     }
 
     #[test]
@@ -1598,21 +1612,6 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600);
-    }
-
-    #[test]
-    fn rollback_failure_is_an_internal_partial_mutation_invariant() {
-        let primary = CdfError::rate_limited("primary destination failure", Some(250));
-        let rollback = CdfError::environment("rollback host failure");
-
-        let combined = with_rollback_failure(primary, rollback);
-
-        assert_eq!(combined.kind, cdf_kernel::ErrorKind::Internal);
-        assert_eq!(combined.retry_after_ms, None);
-        assert!(combined.message.contains("RateLimited"));
-        assert!(combined.message.contains("Some(250)"));
-        assert!(combined.message.contains("primary destination failure"));
-        assert!(combined.message.contains("rollback host failure"));
     }
 
     #[test]
@@ -1725,7 +1724,55 @@ mod tests {
     }
 
     #[test]
-    fn absent_install_cleanup_failure_rolls_back_the_published_target() {
+    fn post_install_racer_is_preserved_by_forward_recovery() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("cdf.toml");
+        fs::write(&target, b"observed").unwrap();
+        let writes = vec![
+            ProjectFileWrite::new(
+                "cdf.toml",
+                b"ours".to_vec(),
+                ProjectFileExpectation::Exact(b"observed".to_vec()),
+            ),
+            ProjectFileWrite::new(
+                "cdf.lock",
+                b"commit".to_vec(),
+                ProjectFileExpectation::Absent,
+            ),
+        ];
+        let installed_first = std::cell::Cell::new(false);
+
+        let error = publish_project_files_inner_with_hook(
+            root.path(),
+            Path::new("cdf.lock"),
+            writes,
+            None,
+            &mut |path| {
+                if installed_first.get() && path.ends_with("cdf.lock") {
+                    return Err(CdfError::environment("injected later install failure"));
+                }
+                Ok(())
+            },
+            &mut |_, _| Ok(()),
+            &mut |path| {
+                if path.ends_with("cdf.toml") {
+                    fs::write(path, b"racer").unwrap();
+                    installed_first.set(true);
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Environment);
+        assert_eq!(fs::read(&target).unwrap(), b"racer");
+        let recovery_error = recover_project_file_transaction(root.path()).unwrap_err();
+        assert_eq!(recovery_error.kind, cdf_kernel::ErrorKind::Contract);
+        assert_eq!(fs::read(&target).unwrap(), b"racer");
+    }
+
+    #[test]
+    fn absent_install_cleanup_failure_remains_forward_recoverable() {
         let root = tempfile::tempdir().unwrap();
         let target = root.path().join("cdf.lock");
         let writes = vec![ProjectFileWrite::new(
@@ -1750,10 +1797,14 @@ mod tests {
 
         assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
         assert!(error.message.contains("CDF-managed scratch path"));
+        assert_eq!(fs::read(&target).unwrap(), b"commit");
         assert!(
-            !target.exists(),
-            "failed transaction must roll back the already-published commit point"
+            read_project_file_transaction_marker(root.path())
+                .unwrap()
+                .is_pending()
         );
+        assert_eq!(recover_project_file_transaction(root.path()).unwrap(), 1);
+        assert_eq!(fs::read(&target).unwrap(), b"commit");
     }
 
     #[test]
@@ -1919,6 +1970,45 @@ mod tests {
                 .unwrap()
                 .is_pending()
         );
+    }
+
+    #[test]
+    fn malformed_private_transaction_marker_is_internal() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join(".cdf")).unwrap();
+        fs::write(
+            root.path().join(PROJECT_FILE_TRANSACTION_MARKER),
+            b"{not-json",
+        )
+        .unwrap();
+
+        let error = recover_project_file_transaction(root.path()).unwrap_err();
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
+        assert!(error.message.contains("parse project transaction marker"));
+    }
+
+    #[test]
+    fn missing_private_recovery_temporary_is_internal() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("cdf.toml"), b"project-before\n").unwrap();
+        let output = spawn_project_transaction_crash(root.path());
+        assert_eq!(output.status.code(), Some(PROCESS_CRASH_EXIT_CODE));
+        let authority = read_project_file_transaction_marker(root.path()).unwrap();
+        let marker = authority.marker.unwrap();
+        let ProjectFileTransactionState::Pending { entries, .. } = marker.state else {
+            panic!("crash helper must leave a pending marker");
+        };
+        let lock_entry = entries
+            .into_iter()
+            .find(|entry| entry.relative_path == Path::new("cdf.lock"))
+            .unwrap();
+        fs::remove_file(root.path().join(lock_entry.temporary_relative_path)).unwrap();
+
+        let error = recover_project_file_transaction(root.path()).unwrap_err();
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
+        assert!(error.message.contains("missing prepared temporary"));
     }
 
     fn crash_transaction_writes() -> Vec<ProjectFileWrite> {
