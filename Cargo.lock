@@ -1152,6 +1152,7 @@ dependencies = [
  "cdf-source-rest",
  "cdf-state-sqlite",
  "cdf-subprocess",
+ "cdf-task-store",
  "duckdb",
  "futures-executor",
  "futures-util",

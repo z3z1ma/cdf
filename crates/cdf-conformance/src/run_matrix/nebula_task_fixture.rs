@@ -3,12 +3,14 @@ use std::{collections::BTreeMap, path::Path, sync::Arc};
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::Schema;
 use cdf_kernel::{
-    BackpressureSupport, Batch, BatchId, BatchStream, CapabilitySupport, CursorPosition,
-    CursorValue, DeliveryGuarantee, ErrorKind, EstimateSupport, FilterCapabilities,
-    IncrementalShape, PartitionAttestation, PartitionAttestationAttempt, PartitionId,
-    PartitionPlan, PartitionRetrySafety, PartitioningCapabilities, PayloadRetention, PlanId,
-    QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceStream,
-    Result, ScanPlan, ScanRequest, SourcePosition, TypePolicyAllowances,
+    BackpressureSupport, Batch, BatchId, BatchStream, CapabilitySupport, CompiledScanIntent,
+    CursorPosition, CursorValue, DeliveryGuarantee, ErrorKind, EstimateSupport,
+    ExecutablePartition, FilterCapabilities, IncrementalShape, PartitionAttestation,
+    PartitionAttestationAttempt, PartitionId, PartitionPlan, PartitionRetrySafety,
+    PartitioningCapabilities, PayloadRetention, PlanId, PlannedPartitionReader,
+    PlannedTaskSetReference, QueryableResource, ReplaySupport, ResourceCapabilities,
+    ResourceDescriptor, ResourceStream, Result, ScanPlan, ScanRequest, ScopeKey, SourcePosition,
+    TypePolicyAllowances,
 };
 use cdf_memory::{ConsumerKey, MemoryClass, ReservationRequest};
 use cdf_project::ProjectRunReport;
@@ -21,12 +23,20 @@ use cdf_runtime::{
     SourceHealthStatus, SourceResolutionContext, SourceRetryGranularity, SourceSchemaObservation,
     artifact_hash,
 };
+use cdf_task_store::{
+    CanonicalTaskSetLimits, ExternalTaskParseMemory, ExternalTaskPlanningCodec,
+    ExternalTaskSetCodec, ExternalTaskStore, RetainedExternalTask, TaskSetLimits,
+    TypedCanonicalTaskSetBuilder, TypedExternalTaskSetReader, TypedExternalTaskSetReaderConfig,
+};
 use futures_util::stream;
 use serde::{Deserialize, Serialize};
 
 use super::MatrixDisposition;
 
-const DRIVER_ID: &str = "external_mock";
+const DRIVER_ID: &str = "nebula";
+const TASK_SET_TYPE: &str = "nebula-catalog-task-v1";
+const TASK_AUTHORITY_VERSION: u16 = 1;
+const TASK_VERSION: u16 = 1;
 const UPDATED_AT: i64 = 20;
 
 pub(crate) fn resource(
@@ -34,12 +44,12 @@ pub(crate) fn resource(
     disposition: MatrixDisposition,
 ) -> Result<crate::source_fixture::ResolvedSourceFixture> {
     let mut registry = cdf_runtime::SourceRegistry::new();
-    registry.register(ExternalMockSourceDriver::new()?)?;
+    registry.register(NebulaSourceDriver::new()?)?;
     let document = cdf_declarative::parse_toml(&resource_toml(disposition))?;
     let mut resources = cdf_declarative::compile_document(&registry, &document)?;
     if resources.len() != 1 {
         return Err(cdf_kernel::CdfError::contract(format!(
-            "external source fixture expected one resource, found {}",
+            "Nebula source fixture expected one resource, found {}",
             resources.len()
         )));
     }
@@ -56,7 +66,7 @@ pub(crate) fn resource(
 
 pub(crate) fn assert_source_position(report: &ProjectRunReport) {
     let SourcePosition::Cursor(cursor) = &report.checkpoint.delta.output_position else {
-        panic!("external source must checkpoint a cursor position");
+        panic!("Nebula source must checkpoint a cursor position");
     };
     assert_eq!(cursor.version, 1);
     assert_eq!(cursor.field, "updated_at");
@@ -67,8 +77,8 @@ fn resource_toml(disposition: MatrixDisposition) -> String {
     let keys = merge_keys(disposition);
     format!(
         r#"
-[source.external]
-kind = "external_mock"
+[source.nebula]
+kind = "nebula"
 seed = 7
 
 [resource.events]
@@ -95,7 +105,7 @@ fn merge_keys(disposition: MatrixDisposition) -> &'static str {
     }
 }
 
-struct ExternalMockSourceDriver {
+struct NebulaSourceDriver {
     descriptor: SourceDriverDescriptor,
     option_schema: serde_json::Value,
 }
@@ -119,7 +129,7 @@ struct ExternalPhysicalPlan {
     rows: u64,
 }
 
-impl ExternalMockSourceDriver {
+impl NebulaSourceDriver {
     fn new() -> Result<Self> {
         let option_schema = serde_json::json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -142,14 +152,14 @@ impl ExternalMockSourceDriver {
                 driver_version: "1.0.0".to_owned(),
                 option_schema_hash: artifact_hash(&option_schema)?,
                 kinds: vec![DRIVER_ID.to_owned()],
-                schemes: vec!["external-mock".to_owned()],
+                schemes: vec!["nebula".to_owned()],
             },
             option_schema,
         })
     }
 }
 
-impl SourceDriver for ExternalMockSourceDriver {
+impl SourceDriver for NebulaSourceDriver {
     fn descriptor(&self) -> &SourceDriverDescriptor {
         &self.descriptor
     }
@@ -172,7 +182,7 @@ impl SourceDriver for ExternalMockSourceDriver {
         output.emit(SourceHealthResult {
             probe_id: "health".to_owned(),
             status: SourceHealthStatus::Passed,
-            message: "external source conformance probe passed".to_owned(),
+            message: "Nebula source conformance probe passed".to_owned(),
             details: serde_json::json!({
                 "compiled_resources": request.compiled_plans.len(),
             }),
@@ -186,7 +196,7 @@ impl SourceDriver for ExternalMockSourceDriver {
         ))
         .map_err(|error| {
             cdf_kernel::CdfError::contract(format!(
-                "decode external source conformance options: {error}"
+                "decode Nebula source conformance options: {error}"
             ))
         })?;
         let resource: ExternalResourceOptions = serde_json::from_value(serde_json::Value::Object(
@@ -194,7 +204,7 @@ impl SourceDriver for ExternalMockSourceDriver {
         ))
         .map_err(|error| {
             cdf_kernel::CdfError::contract(format!(
-                "decode external resource conformance options: {error}"
+                "decode Nebula resource conformance options: {error}"
             ))
         })?;
         let physical_plan = ExternalPhysicalPlan {
@@ -217,7 +227,7 @@ impl SourceDriver for ExternalMockSourceDriver {
                 }),
                 physical_plan: serde_json::to_value(physical_plan).map_err(|error| {
                     cdf_kernel::CdfError::internal(format!(
-                        "encode external source conformance physical plan: {error}"
+                        "encode Nebula source conformance physical plan: {error}"
                     ))
                 })?,
             },
@@ -242,10 +252,14 @@ impl SourceDriver for ExternalMockSourceDriver {
         let physical_plan: ExternalPhysicalPlan =
             serde_json::from_value(plan.physical_plan.clone()).map_err(|error| {
                 cdf_kernel::CdfError::contract(format!(
-                    "decode external source conformance physical plan: {error}"
+                    "decode Nebula source conformance physical plan: {error}"
                 ))
             })?;
-        Ok(Arc::new(ExternalMockResource {
+        let task_store = ExternalTaskStore::new(
+            context.artifact_root().join(".cdf"),
+            cdf_kernel::ContentStoreNamespace::new("nebula-conformance")?,
+        )?;
+        Ok(Arc::new(NebulaResource {
             descriptor: plan.descriptor.clone(),
             schema: Arc::new(plan.schema.clone()),
             capabilities: plan.resource_capabilities.clone(),
@@ -256,14 +270,16 @@ impl SourceDriver for ExternalMockSourceDriver {
             execution: context.execution().clone(),
             execution_capabilities: plan.execution_capabilities.clone(),
             physical_plan,
+            task_store,
+            cancellation: context.cancellation(),
         }))
     }
 }
 
-impl SourceAddPlanner for ExternalMockSourceDriver {
+impl SourceAddPlanner for NebulaSourceDriver {
     fn propose_add(&self, request: &SourceAddRequest) -> Result<Option<SourceAddProposal>> {
         request.validate()?;
-        if !request.location.starts_with("external-mock://") {
+        if !request.location.starts_with("nebula://") {
             return Ok(None);
         }
         Ok(Some(SourceAddProposal {
@@ -289,7 +305,7 @@ impl SourceDiscoverySession for ExternalDiscoverySession {
 
     fn candidates(&self) -> Result<Vec<SourceDiscoveryCandidate>> {
         Ok(vec![SourceDiscoveryCandidate::new(
-            "external-mock://events",
+            "nebula://events",
             Some(2),
             None,
             BTreeMap::from([("snapshot".to_owned(), "fixture-v1".to_owned())]),
@@ -312,7 +328,266 @@ impl SourceDiscoverySession for ExternalDiscoverySession {
     }
 }
 
-struct ExternalMockResource {
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct NebulaTaskAuthority {
+    version: u16,
+    snapshot: String,
+    scope: ScopeKey,
+    scan_intent: CompiledScanIntent,
+}
+
+impl NebulaTaskAuthority {
+    fn validate(&self) -> Result<()> {
+        if self.version != TASK_AUTHORITY_VERSION {
+            return Err(cdf_kernel::CdfError::contract(format!(
+                "Nebula task authority version {} is unsupported; expected {TASK_AUTHORITY_VERSION}",
+                self.version
+            )));
+        }
+        if self.snapshot.is_empty() || self.snapshot.chars().any(char::is_control) {
+            return Err(cdf_kernel::CdfError::contract(
+                "Nebula task authority snapshot must be nonempty and control-free",
+            ));
+        }
+        self.scan_intent.validate()
+    }
+
+    fn content_sha256(&self) -> Result<String> {
+        self.validate()?;
+        artifact_hash(self)
+    }
+
+    fn encode_to(&self, output: &mut dyn std::io::Write) -> Result<()> {
+        self.validate()?;
+        serde_json::to_writer(output, self).map_err(|error| {
+            cdf_kernel::CdfError::data(format!("encode Nebula task authority: {error}"))
+        })
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct NebulaRow {
+    id: i64,
+    name: String,
+    updated_at: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct NebulaCatalogTask {
+    version: u16,
+    canonical_ordinal: u64,
+    sort_key: String,
+    rows: Vec<NebulaRow>,
+}
+
+impl NebulaCatalogTask {
+    fn events() -> Self {
+        Self {
+            version: TASK_VERSION,
+            canonical_ordinal: u64::MAX,
+            sort_key: "events".to_owned(),
+            rows: vec![
+                NebulaRow {
+                    id: 1,
+                    name: "ada".to_owned(),
+                    updated_at: 10,
+                },
+                NebulaRow {
+                    id: 2,
+                    name: "grace".to_owned(),
+                    updated_at: UPDATED_AT,
+                },
+            ],
+        }
+    }
+
+    fn validate_against(&self, authority: &NebulaTaskAuthority) -> Result<()> {
+        authority.validate()?;
+        if self.version != TASK_VERSION {
+            return Err(cdf_kernel::CdfError::contract(format!(
+                "Nebula task version {} is unsupported; expected {TASK_VERSION}",
+                self.version
+            )));
+        }
+        if self.sort_key != "events" {
+            return Err(cdf_kernel::CdfError::data(
+                "Nebula task sort key does not match its catalog selection",
+            ));
+        }
+        if self.rows.is_empty()
+            || self
+                .rows
+                .iter()
+                .any(|row| row.name.is_empty() || row.name.chars().any(char::is_control))
+        {
+            return Err(cdf_kernel::CdfError::data(
+                "Nebula task rows and names must be nonempty and control-free",
+            ));
+        }
+        Ok(())
+    }
+
+    fn encode_to(&self, output: &mut dyn std::io::Write) -> Result<()> {
+        serde_json::to_writer(output, self)
+            .map_err(|error| cdf_kernel::CdfError::data(format!("encode Nebula task: {error}")))
+    }
+}
+
+struct NebulaTaskCodec;
+
+impl ExternalTaskSetCodec for NebulaTaskCodec {
+    type Authority = NebulaTaskAuthority;
+    type Task = NebulaCatalogTask;
+
+    fn decode_authority(&self, payload: &[u8]) -> Result<Self::Authority> {
+        let authority: NebulaTaskAuthority = serde_json::from_slice(payload).map_err(|error| {
+            cdf_kernel::CdfError::data(format!("decode Nebula task authority: {error}"))
+        })?;
+        authority.validate()?;
+        Ok(authority)
+    }
+
+    fn authority_content_sha256(&self, authority: &Self::Authority) -> Result<String> {
+        authority.content_sha256()
+    }
+
+    fn decode_task(&self, payload: &[u8], authority: &Self::Authority) -> Result<Self::Task> {
+        let task: NebulaCatalogTask = serde_json::from_slice(payload).map_err(|error| {
+            cdf_kernel::CdfError::data(format!("decode Nebula catalog task: {error}"))
+        })?;
+        task.validate_against(authority)?;
+        Ok(task)
+    }
+
+    fn task_canonical_ordinal(&self, task: &Self::Task) -> u64 {
+        task.canonical_ordinal
+    }
+
+    fn encode_task(&self, task: &Self::Task, output: &mut dyn std::io::Write) -> Result<()> {
+        task.encode_to(output)
+    }
+}
+
+impl ExternalTaskPlanningCodec for NebulaTaskCodec {
+    fn set_task_canonical_ordinal(&self, task: &mut Self::Task, ordinal: u64) {
+        task.canonical_ordinal = ordinal;
+    }
+
+    fn encode_authority(
+        &self,
+        authority: &Self::Authority,
+        output: &mut dyn std::io::Write,
+    ) -> Result<()> {
+        authority.encode_to(output)
+    }
+}
+
+#[derive(Clone)]
+struct NebulaExecutableTask {
+    retained: RetainedExternalTask<NebulaTaskAuthority, NebulaCatalogTask>,
+}
+
+struct NebulaPlannedPartitionReader {
+    reader: TypedExternalTaskSetReader<NebulaTaskCodec>,
+    descriptor_resource_id: String,
+    effective_schema_runtime: Option<cdf_kernel::EffectiveSchemaRuntime>,
+}
+
+impl NebulaPlannedPartitionReader {
+    fn open(
+        store: &ExternalTaskStore,
+        reference: PlannedTaskSetReference,
+        memory: Arc<dyn cdf_memory::MemoryCoordinator>,
+        cancellation: cdf_runtime::RunCancellation,
+        descriptor_resource_id: String,
+        effective_schema_runtime: Option<cdf_kernel::EffectiveSchemaRuntime>,
+    ) -> Result<Self> {
+        let authority_parse = ExternalTaskParseMemory::blocking(
+            "nebula-task-authority-parse",
+            MemoryClass::Control,
+            40_000,
+            4096,
+        )?;
+        let task_parse = ExternalTaskParseMemory::blocking(
+            "nebula-task-record-parse",
+            MemoryClass::Control,
+            40_000,
+            4096,
+        )?;
+        let config = TypedExternalTaskSetReaderConfig::new(
+            TASK_SET_TYPE,
+            4096,
+            4096,
+            authority_parse,
+            task_parse,
+        )?;
+        Ok(Self {
+            reader: TypedExternalTaskSetReader::open(
+                store,
+                reference,
+                memory,
+                cancellation,
+                config,
+                NebulaTaskCodec,
+            )?,
+            descriptor_resource_id,
+            effective_schema_runtime,
+        })
+    }
+}
+
+impl PlannedPartitionReader for NebulaPlannedPartitionReader {
+    fn next_partition(&mut self, expected_ordinal: u64) -> Result<Option<ExecutablePartition>> {
+        let Some(retained) = self.reader.next_task(expected_ordinal)? else {
+            return Ok(None);
+        };
+        let task = retained.task();
+        let authority = retained.authority();
+        let updated_at = task
+            .rows
+            .iter()
+            .map(|row| row.updated_at)
+            .max()
+            .ok_or_else(|| cdf_kernel::CdfError::data("Nebula task omitted catalog rows"))?;
+        let position = SourcePosition::Cursor(CursorPosition {
+            version: 1,
+            field: "updated_at".to_owned(),
+            value: CursorValue::I64(updated_at),
+        });
+        let mut plan = PartitionPlan {
+            partition_id: PartitionId::new(format!(
+                "nebula-task-{:020}",
+                retained.canonical_ordinal()
+            ))?,
+            scope: authority.scope.clone(),
+            planned_position: Some(position),
+            start_position: None,
+            scan_intent: authority.scan_intent.clone(),
+            retry_safety: PartitionRetrySafety::ImmutableContent,
+            metadata: BTreeMap::from([(
+                "cdf:external_task_sha256".to_owned(),
+                retained.content_sha256().to_owned(),
+            )]),
+        };
+        if let Some(runtime) = &self.effective_schema_runtime {
+            cdf_kernel::bind_partition_schema_observation(
+                &mut plan,
+                runtime,
+                &self.descriptor_resource_id,
+            )?;
+        }
+        let retained_bytes = retained.retained_bytes();
+        Ok(Some(ExecutablePartition::retained(
+            plan,
+            PayloadRetention::new(Arc::new(NebulaExecutableTask { retained }), retained_bytes)?,
+        )))
+    }
+}
+
+struct NebulaResource {
     descriptor: ResourceDescriptor,
     schema: Arc<Schema>,
     capabilities: ResourceCapabilities,
@@ -323,9 +598,11 @@ struct ExternalMockResource {
     execution: cdf_runtime::ExecutionServices,
     execution_capabilities: SourceExecutionCapabilities,
     physical_plan: ExternalPhysicalPlan,
+    task_store: ExternalTaskStore,
+    cancellation: cdf_runtime::RunCancellation,
 }
 
-impl ResourceStream for ExternalMockResource {
+impl ResourceStream for NebulaResource {
     fn descriptor(&self) -> &ResourceDescriptor {
         &self.descriptor
     }
@@ -350,37 +627,56 @@ impl ResourceStream for ExternalMockResource {
         self.type_policy_allowances
     }
 
-    fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
-        let position = SourcePosition::Cursor(CursorPosition {
-            version: 1,
-            field: "updated_at".to_owned(),
-            value: CursorValue::I64(UPDATED_AT),
-        });
-        let mut partition = PartitionPlan {
-            partition_id: PartitionId::new("external-mock-000000")?,
-            scope: request.scope.clone(),
-            planned_position: Some(position),
-            start_position: None,
-            scan_intent: cdf_kernel::CompiledScanIntent::full_scan(),
-            retry_safety: PartitionRetrySafety::ImmutableContent,
-            metadata: BTreeMap::new(),
-        };
-        if let Some(runtime) = &self.effective_schema_runtime {
-            cdf_kernel::bind_partition_schema_observation(
-                &mut partition,
-                runtime,
-                self.descriptor.resource_id.as_str(),
-            )?;
-        }
-        Ok(vec![partition])
+    fn plan_partitions(&self, _request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
+        Err(cdf_kernel::CdfError::contract(
+            "Nebula uses external canonical catalog tasks and must be planned through negotiate",
+        ))
     }
 
-    fn open(&self, partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
+    fn planned_partition_reader(
+        &self,
+        reference: &PlannedTaskSetReference,
+    ) -> Result<Box<dyn PlannedPartitionReader>> {
+        Ok(Box::new(NebulaPlannedPartitionReader::open(
+            &self.task_store,
+            reference.clone(),
+            self.execution.memory(),
+            self.cancellation.clone(),
+            self.descriptor.resource_id.as_str().to_owned(),
+            self.effective_schema_runtime.clone(),
+        )?))
+    }
+
+    fn open(&self, _partition: PartitionPlan) -> cdf_kernel::PartitionOpenAttempt<'_> {
+        cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async {
+            Err(cdf_kernel::CdfError::contract(
+                "Nebula executes retained external catalog tasks; open an executable partition",
+            ))
+        }))
+    }
+
+    fn open_executable(
+        &self,
+        partition: ExecutablePartition,
+    ) -> cdf_kernel::PartitionOpenAttempt<'_> {
+        let retained = partition
+            .retention()
+            .and_then(PayloadRetention::downcast_ref::<NebulaExecutableTask>)
+            .cloned();
+        let Some(executable) = retained else {
+            return cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async {
+                Err(cdf_kernel::CdfError::contract(
+                    "Nebula executable partition omitted its retained canonical task",
+                ))
+            }));
+        };
+        let partition = partition.into_plan();
         let resource_id = self.descriptor.resource_id.clone();
         let schema = Arc::clone(&self.schema);
         let execution = self.execution.clone();
         let execution_capabilities = self.execution_capabilities.clone();
         let physical_plan = self.physical_plan.clone();
+        let task = executable.retained.task().clone();
         cdf_kernel::PartitionOpenAttempt::materialized(Box::pin(async move {
             execution.admit_source_operation(
                 execution_capabilities
@@ -388,7 +684,7 @@ impl ResourceStream for ExternalMockResource {
                     .as_deref()
                     .ok_or_else(|| {
                         cdf_kernel::CdfError::internal(
-                            "external source conformance omitted its quota authority",
+                            "Nebula source conformance omitted its quota authority",
                         )
                     })?,
                 execution_capabilities.rate_limit,
@@ -396,32 +692,53 @@ impl ResourceStream for ExternalMockResource {
             )?;
             if physical_plan.rows != 2 {
                 return Err(cdf_kernel::CdfError::internal(format!(
-                    "external source conformance physical plan requires 2 rows, received {}",
+                    "Nebula source conformance physical plan requires 2 rows, received {}",
                     physical_plan.rows
                 )));
             }
+            let task_updated_at = task
+                .rows
+                .iter()
+                .map(|row| row.updated_at)
+                .max()
+                .ok_or_else(|| cdf_kernel::CdfError::data("Nebula task omitted catalog rows"))?;
             let record_batch = RecordBatch::try_new(
                 schema.clone(),
                 vec![
-                    Arc::new(Int64Array::from(vec![1, 2])),
-                    Arc::new(StringArray::from(vec!["ada", "grace"])),
-                    Arc::new(Int64Array::from(vec![10, UPDATED_AT])),
+                    Arc::new(Int64Array::from(
+                        task.rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+                    )),
+                    Arc::new(StringArray::from(
+                        task.rows
+                            .iter()
+                            .map(|row| row.name.as_str())
+                            .collect::<Vec<_>>(),
+                    )),
+                    Arc::new(Int64Array::from(
+                        task.rows
+                            .iter()
+                            .map(|row| row.updated_at)
+                            .collect::<Vec<_>>(),
+                    )),
                 ],
             )
             .map_err(|error| {
-                cdf_kernel::CdfError::data(format!("build external source batch: {error}"))
+                cdf_kernel::CdfError::data(format!("build Nebula source batch: {error}"))
             })?;
             let retained_bytes = cdf_memory::record_batch_retained_bytes(&record_batch)?;
             let lease = cdf_memory::reserve(
                 execution.memory(),
                 ReservationRequest::new(
-                    ConsumerKey::new("external-mock-batch", MemoryClass::Source)?,
+                    ConsumerKey::new("nebula-task-batch", MemoryClass::Source)?,
                     retained_bytes,
                 )?,
             )
             .await?;
             let mut batch = Batch::from_record_batch(
-                BatchId::new(format!("external-mock-batch-{:06}", physical_plan.seed))?,
+                BatchId::new(format!(
+                    "nebula-task-batch-{:06}-{:020}",
+                    physical_plan.seed, task.canonical_ordinal
+                ))?,
                 resource_id,
                 partition.partition_id,
                 cdf_kernel::canonical_arrow_schema_hash(schema.as_ref())?,
@@ -431,7 +748,7 @@ impl ResourceStream for ExternalMockResource {
             batch.header.source_position = Some(SourcePosition::Cursor(CursorPosition {
                 version: 1,
                 field: "updated_at".to_owned(),
-                value: CursorValue::I64(UPDATED_AT),
+                value: CursorValue::I64(task_updated_at),
             }));
             let stream = Box::pin(stream::iter([Ok(batch)])) as BatchStream;
             Ok(cdf_kernel::PartitionStreamPayload::batches(stream))
@@ -444,7 +761,7 @@ impl ResourceStream for ExternalMockResource {
         PartitionAttestationAttempt::materialized(Box::pin(async move {
             let position = position.ok_or_else(|| {
                 cdf_kernel::CdfError::internal(
-                    "external source conformance partition omitted its planned position",
+                    "Nebula source conformance partition omitted its planned position",
                 )
             })?;
             Ok(Some(PartitionAttestation::new(
@@ -455,16 +772,58 @@ impl ResourceStream for ExternalMockResource {
     }
 }
 
-impl QueryableResource for ExternalMockResource {
+impl QueryableResource for NebulaResource {
     fn capabilities(&self) -> &ResourceCapabilities {
         &self.capabilities
     }
 
     fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
+        if self.physical_plan.rows != 2 {
+            return Err(cdf_kernel::CdfError::internal(format!(
+                "Nebula source conformance physical plan requires 2 rows, received {}",
+                self.physical_plan.rows
+            )));
+        }
+        let mut builder = TypedCanonicalTaskSetBuilder::new(
+            &self.task_store,
+            TASK_SET_TYPE,
+            CanonicalTaskSetLimits {
+                tasks: TaskSetLimits {
+                    maximum_task_bytes: 4096,
+                    maximum_authority_bytes: 4096,
+                    writer_buffer_bytes: 8192,
+                },
+                maximum_sort_key_bytes: 64,
+                index_cache_bytes: 64 * 1024,
+                spill_growth_bytes: 1024 * 1024,
+                minimum_initial_spill_bytes: 1024 * 1024,
+            },
+            self.execution.memory(),
+            self.execution.spill(),
+            self.cancellation.clone(),
+            NebulaTaskCodec,
+        )?;
+        // The shared canonical planner owns spill admission, duplicate handling, ordering, and
+        // ordinal assignment; the source owns only its typed task and catalog selection key.
+        let task = NebulaCatalogTask::events();
+        if !builder.push_idempotent_by(task.clone(), |task| task.sort_key.as_bytes())?
+            || builder.push_idempotent_by(task, |task| task.sort_key.as_bytes())?
+        {
+            return Err(cdf_kernel::CdfError::internal(
+                "Nebula canonical planner did not suppress an identical catalog task",
+            ));
+        }
+        let authority = NebulaTaskAuthority {
+            version: TASK_AUTHORITY_VERSION,
+            snapshot: "fixture-v1".to_owned(),
+            scope: request.scope.clone(),
+            scan_intent: CompiledScanIntent::full_scan(),
+        };
+        let artifact = builder.finalize(&authority)?;
         Ok(ScanPlan::from_partition_authority(
-            PlanId::new("external-mock-plan")?,
+            PlanId::new("nebula-catalog-task-plan")?,
             request.clone(),
-            cdf_kernel::PartitionAuthority::Inline(self.plan_partitions(request)?),
+            cdf_kernel::PartitionAuthority::External(artifact.reference),
             Vec::new(),
             request.filters.clone(),
             Some(2),
@@ -514,7 +873,7 @@ fn execution_capabilities() -> SourceExecutionCapabilities {
             operations: 100,
             interval_ms: 1_000,
         }),
-        quota_authority: Some("external-mock-fixture".to_owned()),
+        quota_authority: Some("nebula-conformance-fixture".to_owned()),
         canonical_order: true,
         bounded: true,
         batch_memory: SourceBatchMemoryContract::Preaccounted,
@@ -527,14 +886,14 @@ struct NoSecrets;
 impl cdf_http::SecretProvider for NoSecrets {
     fn resolve(&self, uri: &cdf_http::SecretUri) -> Result<cdf_http::SecretValue> {
         Err(cdf_kernel::CdfError::auth(format!(
-            "external source fixture has no secret for {uri}"
+            "Nebula source fixture has no secret for {uri}"
         )))
     }
 }
 
 #[test]
-fn external_source_inherits_registry_schema_add_discovery_and_doctor_laws() {
-    let driver = ExternalMockSourceDriver::new().unwrap();
+fn nebula_source_inherits_registry_schema_add_discovery_and_doctor_laws() {
+    let driver = NebulaSourceDriver::new().unwrap();
     let mut registry = cdf_runtime::SourceRegistry::new();
     registry.register(driver).unwrap();
     assert!(registry.option_schemas().contains_key(DRIVER_ID));
@@ -542,9 +901,9 @@ fn external_source_inherits_registry_schema_add_discovery_and_doctor_laws() {
     let add = registry
         .plan_add(
             SourceAddRequest {
-                source_name: "external".to_owned(),
+                source_name: "nebula".to_owned(),
                 resource_name: "events".to_owned(),
-                location: "external-mock://events".to_owned(),
+                location: "nebula://events".to_owned(),
                 project_root: Path::new(".").to_path_buf(),
                 current_dir: Path::new(".").to_path_buf(),
                 options: BTreeMap::new(),
@@ -577,7 +936,7 @@ fn external_source_inherits_registry_schema_add_discovery_and_doctor_laws() {
     )
     .unwrap();
     let invalid_error = cdf_declarative::compile_document(&registry, &invalid_document)
-        .expect_err("registry option schema must reject invalid external resource options");
+        .expect_err("registry option schema must reject invalid Nebula resource options");
     assert!(invalid_error.to_string().contains("rows"));
     let execution = crate::test_execution_services();
     let context = SourceResolutionContext::new(
@@ -609,7 +968,7 @@ fn external_source_inherits_registry_schema_add_discovery_and_doctor_laws() {
 }
 
 #[test]
-fn external_source_inherits_generic_plan_run_receipt_checkpoint_and_replay_laws() {
+fn nebula_source_inherits_generic_plan_run_receipt_checkpoint_and_replay_laws() {
     let admitted_before = crate::test_execution_services()
         .scheduler_report()
         .unwrap()
@@ -618,7 +977,7 @@ fn external_source_inherits_generic_plan_run_receipt_checkpoint_and_replay_laws(
     let environment = crate::destination_catalog::ConformanceEnvironment::local_only();
     let executed = super::core::execute_cell(
         super::RunMatrixCell::new(
-            super::SourceArchetype::external_mock(),
+            super::SourceArchetype::nebula(),
             super::MatrixDestination::new("duckdb").unwrap(),
             MatrixDisposition::Append,
         ),
@@ -633,7 +992,7 @@ fn external_source_inherits_generic_plan_run_receipt_checkpoint_and_replay_laws(
     assert!(executed.artifact_replay_identity_asserted);
     assert!(
         executed.runtime_scheduler.source_rate_admission.authorities >= 1,
-        "the process-shared conformance host must retain the external source authority"
+        "the process-shared conformance host must retain the Nebula source authority"
     );
     assert!(
         executed
@@ -641,6 +1000,6 @@ fn external_source_inherits_generic_plan_run_receipt_checkpoint_and_replay_laws(
             .source_rate_admission
             .admitted_operations
             > admitted_before,
-        "the external source run must add an admitted operation to the process-shared report"
+        "the Nebula source run must add an admitted operation to the process-shared report"
     );
 }

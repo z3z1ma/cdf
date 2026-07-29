@@ -47,8 +47,8 @@ impl SourceArchetype {
         Self::fixture("sql")
     }
 
-    pub fn external_mock() -> Self {
-        Self::fixture("external_mock")
+    pub fn nebula() -> Self {
+        Self::fixture("nebula")
     }
 }
 
@@ -212,11 +212,11 @@ mod data_onramp;
 #[cfg(test)]
 mod destinations;
 #[cfg(test)]
-mod external_mock_fixture;
-#[cfg(test)]
 mod file_fixture;
 #[cfg(test)]
 pub(crate) mod local_postgres;
+#[cfg(test)]
+mod nebula_task_fixture;
 #[cfg(test)]
 mod plan_json;
 #[cfg(test)]

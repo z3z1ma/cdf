@@ -73,6 +73,20 @@ running the focused product/performance/quality closure matrix.
   state-store tests and strict all-feature/all-target state-store Clippy pass. The first invocation
   omitted the repository's local DuckDB link environment and failed only at link time; the exact
   rerun with the established environment passed and is the evidence-bearing observation.
+- 2026-07-28: Recast the existing generic external-source fixture as the named synthetic Nebula
+  catalog source. Its provider-owned typed catalog task crosses the shared spill-backed canonical
+  planner, external task artifact, typed reader, retained executable-partition, scheduler,
+  package, receipt, checkpoint, and replay paths. The changed-file topology is exactly the renamed
+  conformance leaf, the data-driven source catalog row, the conformance archetype/module
+  declaration, and the test-only `cdf-task-store` dependency plus lock edge; runtime, project, and
+  CLI command code are untouched.
+- 2026-07-28: The first Nebula end-to-end run used two catalog tasks and correctly surfaced the
+  existing run-matrix law that this two-row fixture produces one canonical segment. The fixture now
+  models the catalog selection as one typed task containing its two rows while still exercising
+  canonical spill admission, identical-provider-task suppression, ordinal assignment, publication,
+  typed reading, and retained execution. Both Nebula laws pass, including generic plan/run,
+  destination receipt, checkpoint gate, duplicate replay, and artifact replay; strict
+  all-feature/all-target conformance Clippy also passes.
 
 ## Blockers
 

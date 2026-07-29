@@ -4,7 +4,7 @@ use cdf_kernel::{CdfError, QueryableResource, Result};
 use cdf_project::{ProjectRunReport, ProjectRunSource};
 
 use super::{
-    MatrixDisposition, RunMatrixCell, SourceArchetype, external_mock_fixture, file_fixture,
+    MatrixDisposition, RunMatrixCell, SourceArchetype, file_fixture, nebula_task_fixture,
     plan_json, python_fixture, rest_fixture, sql_fixture,
 };
 use crate::destination_catalog::ConformanceEnvironment;
@@ -86,8 +86,8 @@ const FIXTURES: &[SourceFixture] = &[
         prepare: prepare_sql,
     },
     SourceFixture {
-        archetype: "external_mock",
-        prepare: prepare_external_mock,
+        archetype: "nebula",
+        prepare: prepare_nebula,
     },
 ];
 
@@ -168,13 +168,13 @@ fn prepare_sql(
     ))
 }
 
-fn prepare_external_mock(
+fn prepare_nebula(
     cell: &RunMatrixCell,
     project_root: &Path,
     _environment: &ConformanceEnvironment,
 ) -> Result<PreparedMatrixSource> {
     Ok(PreparedMatrixSource::new(
-        external_mock_fixture::resource(project_root, cell.disposition)?,
-        external_mock_fixture::assert_source_position,
+        nebula_task_fixture::resource(project_root, cell.disposition)?,
+        nebula_task_fixture::assert_source_position,
     ))
 }
