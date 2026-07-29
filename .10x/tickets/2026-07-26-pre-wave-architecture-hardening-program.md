@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-26
-Updated: 2026-07-27
+Updated: 2026-07-28
 
 # Pre-wave architecture hardening program
 
@@ -189,6 +189,12 @@ program review.
   lifecycle benchmark, and recording fresh local/public-HTTPS product smokes. The bounded OCR
   review produced no critical/high findings; one integration-matrix limit is explicitly accepted
   and the benchmark blind spot was repaired once without another review cycle.
+- 2026-07-28: Closed the D1c-discovered project-publication crash window before aggregate review.
+  A process-exit failpoint reproduces loss after `cdf.toml` and before `cdf.lock`; a durable
+  generation marker now supports forward-only recovery, read-only loads fail closed without
+  mutation, a real add explicitly recovers, unrelated authority is preserved, and private
+  recovery corruption has correct ownership. One bounded delegated review batch drove the direct
+  state-machine repair; 18 project tests, all 300 CLI tests, and strict affected-root lint pass.
 
 ## Blockers
 

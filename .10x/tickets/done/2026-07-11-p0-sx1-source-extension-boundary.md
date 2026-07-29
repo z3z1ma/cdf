@@ -135,3 +135,12 @@ Closure verdict (2026-07-16): **done with explicitly accepted residual risk**. T
 ## Retrospective
 
 The extension boundary became sound when lifecycle behavior moved behind required driver capabilities and the registry became the validator/admission owner. The expensive failure mode was repeatedly treating every newly observed cross-cutting performance or conformance concern as another reason not to close the boundary ticket. That obscured the distinction between establishing an architecture seam and exhaustively optimizing every implementation behind it. Future closure reviews must return one complete severity-ranked set, critical findings must be repaired, and noncritical cross-program work must move immediately to its natural performance/conformance owner instead of recursively expanding the structural ticket.
+
+## Terminal correction — 2026-07-28
+
+The earlier final-lock no-action rationale was incomplete: process loss could expose a replaced
+`cdf.toml` before `cdf.lock`, and not every load path required the lock before compiling the new
+resource. Terminal history above is preserved. The correcting implementation, process-exit
+reproduction, no-write load policy, and forward-recovery evidence are owned by
+`.10x/tickets/done/2026-07-27-cdf-add-crash-publication-recovery.md` and
+`.10x/evidence/2026-07-28-project-publication-crash-recovery.md`.

@@ -63,7 +63,7 @@ error catalog and prove no unaudited `CdfError::internal` owner remains.
   synced temporary files, no-clobber installation, and directory synchronization through the
   durable root, including identical retries. A pre-existing process-loss window between
   `cdf.toml` and final `cdf.lock` publication is outside this error audit and is owned by
-  `.10x/tickets/2026-07-27-cdf-add-crash-publication-recovery.md`.
+  `.10x/tickets/done/2026-07-27-cdf-add-crash-publication-recovery.md`.
 - 2026-07-27: The consolidated frozen-snapshot review returned three significant findings:
   configured/default state ownership was inferred from path components, the bounded schema-streak
   query did not decode full checkpoint authority, and the exact inventory was only temporary.
@@ -113,7 +113,7 @@ full-row streak validation, and durable inventory reproduction as FIXED and retu
 remaining broad-suite timing/stall limits are recorded evidence limits, not introduced correctness
 failures. Residual risk: explicit diagnostic integrity scans remain proportional to retained
 history and are owned by Z1 measurement; the pre-existing add-publication crash window has the
-separate active owner `.10x/tickets/2026-07-27-cdf-add-crash-publication-recovery.md`.
+separate owner `.10x/tickets/done/2026-07-27-cdf-add-crash-publication-recovery.md`.
 
 ## Retrospective
 

@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-27
 Updated: 2026-07-28
 
@@ -70,12 +70,33 @@ None.
 
 ## Evidence
 
-Pending.
+- `.10x/evidence/2026-07-28-project-publication-crash-recovery.md` maps the process-exit
+  reproduction, read-only no-write behavior, explicit add recovery, concurrent-authority
+  preservation, private-state error ownership, 18 focused project tests, 300 CLI tests, and strict
+  affected-root lint.
+- The broad `cdf-project` limit is explicit: one pre-existing nondeterministic scheduler-overlap
+  assertion reproduced independently, and no clean full-project claim is made.
 
 ## Review
 
-Pending.
+The single frozen delegated OCR batch returned two high-severity design findings and one medium
+error-ownership finding. The highs shared one root: destructive rollback after a durable pending
+marker was not a crash-safe terminal decision, and automatic load recovery violated read-only
+command contracts. Commit `03f3f359` replaced rollback with forward-only recovery, added explicit
+real-add recovery, made ordinary loads fail closed without mutation, and corrected private-state
+ownership. Permanent regressions falsify both reviewer scenarios. No critical or significant
+residual remains; physical power-loss and non-cooperating-actor CAS remain documented platform
+limits rather than waived correctness claims.
 
 ## Retrospective
 
-Pending.
+The first implementation optimized for preserving the old in-process rollback behavior after
+introducing a durable journal. Five whys reduced both high findings to that mixed terminal model:
+rollback consumed the new material, a second crash could preserve only the pending decision, and a
+non-cooperating editor was outside the rollback's authority. The smallest complete repair was not
+more rollback machinery; it was one durable decision after pending: forward recovery.
+
+The second lesson is that project loading is not semantically read-only when it performs recovery.
+Recovery policy must be explicit at the command boundary. Those lessons are distilled into
+`.10x/knowledge/project-file-publication-recovery.md` and the canonical/mirrored
+`audit-project-file-publication` skill.
