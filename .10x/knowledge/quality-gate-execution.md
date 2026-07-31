@@ -24,6 +24,32 @@ This local `cargo-mutants` version does not accept Cargo flags such as `--locked
 
 Do not place generated quality reports or CodeQL databases in tracked source. Prefer ignored build output or `/tmp` for transient reports, and record summarized results in `.10x/evidence/`.
 
+## Hosted deep-gate triage
+
+Scheduled deep quality MUST keep independent compile, test/conformance, generated/API,
+metrics, supply-chain, and static-security jobs so one failure exposes a complete attributable
+frontier instead of hiding every later gate. On the first failing dispatch, collect every completed
+job and shard result before repairing. Classify the frontier once into product correctness,
+test-fixture isolation, generated-artifact drift, tool invocation/configuration, accepted policy
+exceptions, and unrelated inventory. Apply one bounded corrective tranche and dispatch one clean
+run at its exact commit; do not turn each surfaced line into a separate serial review cycle.
+
+Scanner exit status is not itself policy. Preserve the full Semgrep registry inventory as an
+artifact, but block on its warning/error severities rather than treating informational uses of
+`unsafe`, process arguments, temporary directories, and current-executable discovery as 100+
+indistinguishable failures. OSV output MUST be parsed and may admit only exact active advisory
+exceptions; a scanner runtime/configuration failure or any additional advisory remains blocking.
+Existing dependency-hygiene inventories without a ratified zero baseline MAY be nonblocking only
+when the step remains visibly yellow and its complete output is uploaded for a separately owned
+cleanup decision.
+
+GitHub's CodeQL Rust extractor uses `build-mode: none`; it rejects manual build mode. In hosted
+Actions, use the official init/analyze pair so the action-owned CLI and database lifecycle stay
+coherent. `tools/codeql-rust-quality.sh` remains the local cached-CLI path and assumes `codeql` is
+on `PATH`; do not compose that local script with an Actions init step that keeps its CLI private.
+Validate workflow/tool contracts on the hosted runner because local macOS checks cannot prove
+Linux-only compilation or runner-owned action behavior.
+
 Historical Gitleaks scans have two known false-positive `generic-api-key` findings in removed Python-era Harness SDK-key field declarations. See `.10x/knowledge/historical-gitleaks-findings.md` for exact fingerprints and limits. Treat only those exact fingerprints as documented historical scanner noise; any new history finding, and any finding from a current-tree or staged-diff scan selected by `QUALITY.md`, remains a hard failure until triaged.
 
 ## Product lifecycle gate

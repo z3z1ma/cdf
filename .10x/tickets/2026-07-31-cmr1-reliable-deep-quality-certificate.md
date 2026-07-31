@@ -127,4 +127,18 @@ Pending program review.
 
 ## Retrospective
 
-Pending execution.
+The earlier monolithic workflow made failures appear piecemeal because compile stopped the only
+job before generated, security, supply-chain, and metrics tools ran. The parallel redesign exposed
+the whole dormant frontier in one dispatch: most findings were stale tool contracts or generated
+inputs, while only Linux test visibility, a new soundness advisory, and Postgres chaos isolation
+needed correctness-oriented repair. Classifying those categories before editing prevented the
+106 informational Semgrep results and pre-existing cargo-machete inventory from expanding into
+unbounded product work.
+
+The first Postgres isolation repair branched on the destination name. The existing generic-engine
+law immediately rejected it, and uniformly resetting the unused conformance schema before every
+case preserved connector agnosticism while isolating the SQL mirror. That negative self-test was
+more valuable than another broad review pass. The recurring friction is now captured in
+`.10x/knowledge/quality-gate-execution.md`: deep jobs remain independent, the first failing run is
+triaged as one frontier, scanner severities and exact exceptions are explicit, hosted CodeQL uses
+its supported buildless lifecycle, and local platform success is never treated as Linux proof.
