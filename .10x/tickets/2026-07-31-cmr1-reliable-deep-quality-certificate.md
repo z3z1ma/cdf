@@ -97,6 +97,11 @@ cells without weakening its shared assertions or catalog coverage.
   only `libduckdb-sys` when the native link input is absent. The earlier diagnostic run's Parquet
   cell markers remain an observation to re-evaluate after a clean link; they are not yet classified
   as a runtime defect.
+- 2026-07-31: The cached-link corrective run advanced the supply-chain job far enough to expose two
+  stale version contracts: the `event-listener` exemption still named 5.4.1 after the lockfile moved
+  to audited 5.4.2, and pinned OSV Scanner 1.9.2 accepts `scan --output` rather than the v2
+  `scan source --output-file` shape. Updated both definitions to match the exact pinned inputs;
+  local OSV 1.9.2 validation reports only the ratified paste advisory.
 
 ## Blockers
 
@@ -126,6 +131,10 @@ None.
   reported only ratified `RUSTSEC-2024-0436`; the warning/error Semgrep tier scanned 754 tracked
   files with zero findings/errors; and rust-code-analysis successfully emitted 479 per-file
   reports to a pre-created output directory.
+- `go run github.com/google/osv-scanner/cmd/osv-scanner@v1.9.2 scan --lockfile Cargo.lock
+  --format json --output /tmp/cdf-osv-v1.json` produced valid JSON over 648 packages and reported
+  only `RUSTSEC-2024-0436`, proving the workflow syntax against the pinned scanner rather than a
+  locally installed v2 binary.
 
 ## Review
 

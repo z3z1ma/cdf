@@ -427,11 +427,10 @@ jobs:
         if: always()
         run: |
           set +e
-          osv-scanner scan source \
+          osv-scanner scan \
             --lockfile Cargo.lock \
             --format json \
-            --output-file target/quality/reports/osv-slow.json \
-            .
+            --output target/quality/reports/osv-slow.json
           osv_status=$?
           set -e
           jq -e '
