@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-25
-Updated: 2026-07-28
+Updated: 2026-07-31
 
 # Active backlog and future roadmap
 
@@ -34,9 +34,15 @@ enforcement, catalog-task source commons, destination common services, typed CLI
 holistic CLI experience, crash-publication follow-up, and final extension-authoring proof are
 closed. The active executable ticket graph is zero.
 
-There is no active successor program. Parked capabilities below remain demand-activated rather
-than silently reopened; the next feature wave requires explicit user priority and the activation
-rule at the end of this record.
+The finite connector-mode readiness successor is active at
+`.10x/tickets/2026-07-31-connector-mode-readiness-program.md`. It owns three bounded workstreams:
+reliable/observable deep quality, model-based deterministic-package and settlement falsifiers,
+and one connector certification entry point with an explicit core-change budget. It adds no
+connector or product behavior. After it closes, the core returns to demand-driven maintenance and
+the user-ratified connector wave becomes the active focus.
+
+Parked capabilities below remain demand-activated rather than silently reopened; the next feature
+wave still requires the activation rule at the end of this record.
 
 A cold-start engineer begins with `.10x/knowledge/cold-start-engineering-handoff.md`. It indexes
 the terminal current cut, operational runbooks, present performance floors, known
