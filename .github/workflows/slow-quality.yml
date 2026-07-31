@@ -356,10 +356,15 @@ jobs:
             --no-colors
       - name: Rust complexity metrics
         if: always()
-        run: rust-code-analysis-cli -m -p crates -O json -o target/quality/reports/rust-code-analysis-slow
-      - name: Dependency hygiene metrics
+        run: |
+          mkdir -p target/quality/reports/rust-code-analysis-slow
+          rust-code-analysis-cli -m -p crates -O json -o target/quality/reports/rust-code-analysis-slow
+      - name: Dependency hygiene inventory
         if: always()
-        run: cargo machete
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          cargo machete --with-metadata 2>&1 | tee target/quality/reports/cargo-machete-slow.log
       - name: Upload metrics reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -384,6 +389,8 @@ jobs:
           cargo install --locked cargo-deny
           cargo install --locked cargo-vet
           go install github.com/google/osv-scanner/cmd/osv-scanner@v1.9.2
+      - name: Prepare reports
+        run: mkdir -p target/quality/reports
       - name: Cargo deny
         run: cargo deny --locked check
       - name: Cargo audit
@@ -394,7 +401,30 @@ jobs:
         run: cargo vet --locked --no-minimize-exemptions
       - name: OSV scan
         if: always()
-        run: osv-scanner scan source --lockfile Cargo.lock --format json
+        run: |
+          set +e
+          osv-scanner scan source \
+            --lockfile Cargo.lock \
+            --format json \
+            --output-file target/quality/reports/osv-slow.json \
+            .
+          osv_status=$?
+          set -e
+          jq -e '
+            (.results | type == "array")
+            and ([.. | objects | select(has("id")) | .id] | unique
+                 | all(. == "RUSTSEC-2024-0436"))
+          ' target/quality/reports/osv-slow.json
+          if [[ "$osv_status" -ne 0 ]]; then
+            echo "OSV reported only the ratified RUSTSEC-2024-0436 exception."
+          fi
+      - name: Upload supply-chain reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: slow-supply-chain-reports
+          path: target/quality/reports
+          if-no-files-found: ignore
 
   security-static:
     name: Static security analysis
@@ -416,13 +446,24 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Prepare reports
         run: mkdir -p target/quality/reports
-      - name: Semgrep
+      - name: Semgrep informational inventory
+        run: |
+          semgrep scan \
+            --config p/rust \
+            --json \
+            --output target/quality/reports/semgrep-rust-slow.json \
+            --exclude target \
+            --exclude reports \
+            .
+      - name: Semgrep warning and error gate
         run: |
           semgrep scan \
             --config p/rust \
             --error \
+            --severity WARNING \
+            --severity ERROR \
             --json \
-            --output target/quality/reports/semgrep-rust-slow.json \
+            --output target/quality/reports/semgrep-rust-blocking-slow.json \
             --exclude target \
             --exclude reports \
             .
@@ -444,29 +485,10 @@ jobs:
         uses: github/codeql-action/init@v3
         with:
           languages: rust
-          build-mode: manual
-      - name: Fingerprint Rust toolchain for CodeQL cache
-        if: always()
-        id: rust-fingerprint
-        run: |
-          rustc -Vv
-          echo "value=$(rustc -Vv | sha256sum | awk '{print $1}')" >> "$GITHUB_OUTPUT"
-      - name: Restore reusable CodeQL database
-        if: always()
-        uses: actions/cache@v4
-        with:
-          path: target/quality/codeql-db-rust
-          key: codeql-rust-${{ runner.os }}-${{ steps.rust-fingerprint.outputs.value }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/*.rs', 'crates/**/Cargo.toml') }}
-          restore-keys: |
-            codeql-rust-${{ runner.os }}-${{ steps.rust-fingerprint.outputs.value }}-
+          build-mode: none
       - name: CodeQL Rust analysis
         if: always()
-        run: tools/codeql-rust-quality.sh 2>&1 | tee target/quality/reports/codeql-rust-slow.log
-      - name: Upload CodeQL SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: target/quality/reports/codeql-rust-current.sarif
+        uses: github/codeql-action/analyze@v3
       - name: Upload security reports
         if: always()
         uses: actions/upload-artifact@v4

@@ -81,6 +81,11 @@ impl ConformanceEnvironment {
             .ok_or_else(|| CdfError::contract("conformance environment does not provide Postgres"))
     }
 
+    pub(crate) fn reset_postgres_schema(&self) -> Result<()> {
+        let postgres = self.postgres()?;
+        reset_postgres_schema(postgres.url(), postgres.schema())
+    }
+
     pub(crate) fn assert_redacted(&self, text: &str) {
         if let Some(postgres) = &self.postgres {
             assert!(!text.contains(postgres.url()));

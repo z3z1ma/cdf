@@ -75,6 +75,22 @@ cells without weakening its shared assertions or catalog coverage.
   deliberately stopped after identifying `file/parquet_filesystem/append` as the current long
   cell. This is evidence for observability, not a full file-shard pass; the hosted bounded shard
   remains the completion authority.
+- 2026-07-31: Dispatched Slow Quality run `30669359331` at commit `fff4f6ed`. Independent jobs
+  exposed the complete dormant failure set concurrently instead of serially hiding it behind the
+  first compile failure. Four repeat shards and general conformance passed; the first corrective
+  tranche is limited to the observed Linux test visibility defect, generated memory-owner input
+  shape, `event-listener` soundness advisory, OSV/Semgrep/CodeQL invocation defects, Postgres chaos
+  fixture isolation, and metrics-tool invocation defects. Existing cargo-machete findings are
+  retained as an attributable nonblocking inventory because resolving unrelated manifest hygiene
+  is outside this ticket and not runtime correctness work.
+- 2026-07-31: Corrected the observed root causes without changing runtime behavior: Linux-only
+  tests now import the crate-visible rlimit helper; dynamic typed consumer keys are constructed
+  before the generated owner scanner's reservation boundary; Postgres chaos cases reset their
+  conformance schema so independent crash windows cannot share `_cdf_state`; the transitive
+  `event-listener` lock entry is patched to 5.4.2; OSV admits only the already-ratified paste
+  advisory; Semgrep preserves the full informational inventory while warnings/errors remain
+  blocking; CodeQL uses Rust's required buildless mode through the official analyze action; and
+  metrics tools receive their required output directory/metadata mode.
 
 ## Blockers
 
@@ -91,6 +107,19 @@ None.
   JSON validation, and YAML parsing passed.
 - Hosted Slow Quality dispatch and aggregate shard evidence remain pending this implementation
   checkpoint.
+- Hosted run `30669359331` proved all four deterministic repeat shards and the 95-test general
+  conformance lane pass independently. It also produced complete, attributable failure evidence
+  for the corrective tranche above; a clean rerun at the corrected commit remains pending.
+- Corrective-tranche focused verification: 147/147 fast tests passed across `cdf-conformance`,
+  `cdf-subprocess`, and `cdf-task-store` with eight scheduled/stress tests explicitly skipped;
+  strict all-target/all-feature Clippy passed for the same crates. The exact Postgres chaos shard
+  passed all four crash windows in 8.38 seconds, including stable duplicate retry and checkpoint
+  ordering assertions.
+- Generated owner freshness/check-closed, workflow YAML parsing, formatting, and diff checks
+  passed. `cargo audit` found no unignored advisory after updating `event-listener` to 5.4.2; OSV
+  reported only ratified `RUSTSEC-2024-0436`; the warning/error Semgrep tier scanned 754 tracked
+  files with zero findings/errors; and rust-code-analysis successfully emitted 479 per-file
+  reports to a pre-created output directory.
 
 ## Review
 

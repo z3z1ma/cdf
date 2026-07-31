@@ -70,6 +70,7 @@ fn registered_destination_shard_runtime_stage_chaos_persists_output() {
         .into_iter()
         .filter(|(candidate, _)| candidate == &destination)
     {
+        environment.reset_postgres_schema().unwrap();
         let case_id = format!("{}/{}", destination.as_str(), window.as_str());
         println!("CDF_RUNTIME_CHAOS_CASE_START={case_id}");
         output

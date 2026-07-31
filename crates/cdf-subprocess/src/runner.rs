@@ -260,7 +260,7 @@ fn install_child_address_space_limit(process: &mut Command, maximum_bytes: Optio
 }
 
 #[cfg(target_os = "linux")]
-fn effective_child_address_space_limit(configured: u64, inherited: Rlimit) -> u64 {
+pub(crate) fn effective_child_address_space_limit(configured: u64, inherited: Rlimit) -> u64 {
     inherited
         .current
         .into_iter()

@@ -3,18 +3,18 @@
 
 This matrix separates every `ReservationRequest::new` site discovered in production Rust source from allocations that require an explicit native, child-process, metadata, or external-storage authority. `Inherited` means the reservation receives an already-validated typed `ConsumerKey`; the row still records the concrete byte-bound expression at the allocation site.
 
-Managed reservation declarations: **77** grouped rows across **87** production call sites.
+Managed reservation declarations: **76** grouped rows across **87** production call sites.
 
 ## Managed ledger owners
 
 | Crate | Owner | Class | Bound authority | Production path(s) | Sites |
 |---|---|---|---|---|---:|
 | cdf-aws | aws-control-request-body | Control | request_body_bytes | crates/cdf-aws/src/lib.rs | 1 |
-| cdf-conformance | external-mock-batch | Source | retained_bytes | crates/cdf-conformance/src/run_matrix/external_mock_fixture.rs | 1 |
+| cdf-conformance | nebula-task-batch | Source | retained_bytes | crates/cdf-conformance/src/run_matrix/nebula_task_fixture.rs | 1 |
 | cdf-dest-parquet | parquet-atomic-object-put | Destination | byte_count.max(1) | crates/cdf-dest-parquet/src/store.rs | 1 |
 | cdf-dest-parquet | parquet-object-verification | Destination | reserved_bytes | crates/cdf-dest-parquet/src/store.rs | 1 |
 | cdf-dest-parquet | parquet-row-group-writer | Destination | writer_bytes | crates/cdf-dest-parquet/src/package.rs | 1 |
-| cdf-dest-parquet | parquet-staged-writer-window | Destination | writer_memory_bytes | crates/cdf-dest-parquet/src/staging.rs | 1 |
+| cdf-dest-parquet | parquet-staged-writer-window | Destination | bytes | crates/cdf-dest-parquet/src/staging.rs | 1 |
 | cdf-engine | late-data-carryover | Decode | decode_window | crates/cdf-engine/src/execution.rs | 1 |
 | cdf-engine | canonical-segment-concat | Package | bytes | crates/cdf-engine/src/execution.rs | 1 |
 | cdf-engine | isolated-canonical-segment-output | Package | working_set | crates/cdf-engine/src/worker_task.rs | 1 |
@@ -58,24 +58,23 @@ Managed reservation declarations: **77** grouped rows across **87** production c
 | cdf-runtime | `consumer` | Inherited | maximum_batch_bytes | crates/cdf-runtime/src/source_frontier.rs | 1 |
 | cdf-runtime | `consumer_name` | Queue | bytes | crates/cdf-runtime/src/graph.rs | 1 |
 | cdf-runtime | bounded-format-input | Source | size_bytes | crates/cdf-runtime/src/bounded_format.rs | 1 |
-| cdf-source-files | `consumer` | Control | bytes | crates/cdf-source-files/src/runtime.rs | 1 |
+| cdf-source-files | `consumer` | Control | bytes | crates/cdf-source-files/src/runtime/task.rs | 1 |
 | cdf-source-files | prepared-file-inventory | Discovery | encoded_bytes | crates/cdf-source-files/src/driver.rs | 1 |
-| cdf-source-glue | `consumer` | Control | bytes | crates/cdf-source-glue/src/task_reader.rs | 1 |
 | cdf-source-glue | glue-partition-page | Control | page_model_bytes | crates/cdf-source-glue/src/planner.rs | 1 |
 | cdf-source-glue | glue-table-metadata | Control | retained_model_bytes | crates/cdf-source-glue/src/driver.rs | 1 |
 | cdf-source-glue | glue-materialized-partition-values | Source | retained.max(1) | crates/cdf-source-glue/src/execution.rs | 1 |
-| cdf-source-iceberg | iceberg-planning-index | Control | memory_bytes | crates/cdf-source-iceberg/src/planning_index.rs | 1 |
 | cdf-source-iceberg | `consumer` | Discovery | bytes | crates/cdf-source-iceberg/src/catalog.rs | 1 |
 | cdf-source-iceberg | iceberg-parquet-decode | Source | source.decode_reservation_bytes | crates/cdf-source-iceberg/src/execution.rs | 1 |
 | cdf-source-iceberg | iceberg-parquet-null-canonicalization | Source | retained_bytes | crates/cdf-source-iceberg/src/execution.rs | 1 |
 | cdf-source-postgres | postgres-source-batch | Source | POSTGRES_MAXIMUM_BATCH_BYTES | crates/cdf-source-postgres/src/source.rs | 1 |
 | cdf-subprocess | `consumer` | Source | accounted_bytes; bytes.max(1) | crates/cdf-subprocess/src/protocol_stream.rs<br>crates/cdf-subprocess/src/runner.rs | 2 |
 | cdf-subprocess | subprocess-stdout-chunk | Source | bytes.max(1) | crates/cdf-subprocess/src/runner.rs | 1 |
-| cdf-task-store | canonical-task-set-index | Control | scratch_memory | crates/cdf-task-store/src/lib.rs | 1 |
+| cdf-task-store | canonical-task-set-index | Control | combined_memory | crates/cdf-task-store/src/lib.rs | 1 |
 | cdf-task-store | external-task-set-authority | Control | authority_length | crates/cdf-task-store/src/lib.rs | 1 |
 | cdf-task-store | external-task-set-header | Control | u64::try_from(task_type_length) .map_err(\|_\| CdfError::data("task-set type length exceeds u64"))? | crates/cdf-task-store/src/lib.rs | 1 |
 | cdf-task-store | external-task-set-record | Control | payload_length | crates/cdf-task-store/src/lib.rs | 1 |
 | cdf-task-store | external-task-set-writer | Control | reserved_memory | crates/cdf-task-store/src/lib.rs | 1 |
+| cdf-task-store | `consumer` | Inherited | limits.resident_bytes; self.reservation_bytes(encoded_bytes)? | crates/cdf-task-store/src/lib.rs | 2 |
 | cdf-transform-brotli | `self.request.consumer.clone()` | Inherited | STANDARD_WINDOW_AND_TABLES_BYTES; u64::try_from(self.output_chunk_bytes) .map_err(\|_\| CdfError::data("Brotli output chunk exceeds u64"))? | crates/cdf-transform-brotli/src/lib.rs | 2 |
 | cdf-transform-bzip2 | `self.request.consumer.clone()` | Inherited | DECODER_WORKING_SET_BYTES; u64::try_from(self.output_chunk_bytes) .map_err(\|_\| CdfError::data("bzip2 output chunk exceeds u64"))? | crates/cdf-transform-bzip2/src/lib.rs | 2 |
 | cdf-transform-character | `self.request.consumer.clone()` | Inherited | u64::try_from(self.output_chunk_bytes) .map_err(\|_\| CdfError::data("character output chunk exceeds u64"))? | crates/cdf-transform-character/src/lib.rs | 1 |

@@ -545,12 +545,10 @@ impl ExternalTaskStore {
         memory: Arc<dyn MemoryCoordinator>,
         spill: Arc<dyn SpillBudgetCoordinator>,
     ) -> Result<AccountedExternalTaskWorkspace> {
+        let consumer = ConsumerKey::new(&limits.consumer, limits.memory_class)?;
         let memory_lease = reserve_blocking(
             memory,
-            &ReservationRequest::new(
-                ConsumerKey::new(&limits.consumer, limits.memory_class)?,
-                limits.resident_bytes,
-            )?,
+            &ReservationRequest::new(consumer, limits.resident_bytes)?,
         )?;
         let available = available_spill_bytes(spill.as_ref());
         let initial = limits.spill_growth_bytes.min(available);
@@ -1708,10 +1706,8 @@ impl ExternalTaskParseMemory {
         memory: Arc<dyn MemoryCoordinator>,
         encoded_bytes: u64,
     ) -> Result<MemoryLease> {
-        let request = ReservationRequest::new(
-            ConsumerKey::new(&self.consumer, self.class)?,
-            self.reservation_bytes(encoded_bytes)?,
-        )?;
+        let consumer = ConsumerKey::new(&self.consumer, self.class)?;
+        let request = ReservationRequest::new(consumer, self.reservation_bytes(encoded_bytes)?)?;
         match self.admission {
             ExternalTaskParseAdmission::FailFast => {
                 memory.try_reserve(&request)?.ok_or_else(|| {

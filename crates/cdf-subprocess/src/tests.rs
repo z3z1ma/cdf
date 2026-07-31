@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(target_os = "linux")]
+use crate::runner::effective_child_address_space_limit;
+
 use std::{
     collections::BTreeMap,
     fs::{self, File},
