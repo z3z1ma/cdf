@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-06
-Updated: 2026-07-26
+Updated: 2026-07-31
 
 # Quality gate execution
 
@@ -49,6 +49,12 @@ coherent. `tools/codeql-rust-quality.sh` remains the local cached-CLI path and a
 on `PATH`; do not compose that local script with an Actions init step that keeps its CLI private.
 Validate workflow/tool contracts on the hosted runner because local macOS checks cannot prove
 Linux-only compilation or runner-owned action behavior.
+
+Rust build caches are incomplete when a build script downloads an untracked native link input.
+For `DUCKDB_DOWNLOAD_LIB=1`, cache `target/duckdb-download` explicitly and validate that a
+platform `libduckdb` file exists after restoring Cargo artifacts. If it is absent, invalidate only
+`libduckdb-sys` so Cargo reruns the authoritative build script; a restored Rust fingerprint is not
+proof that its external native library still exists.
 
 Historical Gitleaks scans have two known false-positive `generic-api-key` findings in removed Python-era Harness SDK-key field declarations. See `.10x/knowledge/historical-gitleaks-findings.md` for exact fingerprints and limits. Treat only those exact fingerprints as documented historical scanner noise; any new history finding, and any finding from a current-tree or staged-diff scan selected by `QUALITY.md`, remains a hard failure until triaged.
 

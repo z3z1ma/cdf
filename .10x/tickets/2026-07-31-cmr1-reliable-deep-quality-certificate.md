@@ -91,6 +91,12 @@ cells without weakening its shared assertions or catalog coverage.
   advisory; Semgrep preserves the full informational inventory while warnings/errors remain
   blocking; CodeQL uses Rust's required buildless mode through the official analyze action; and
   metrics tools receive their required output directory/metadata mode.
+- 2026-07-31: The first corrective hosted run restored cached Rust link artifacts without the
+  downloaded native DuckDB library, causing every conformance link to fail with `-lduckdb` before
+  tests ran. Added an explicit cached-directory declaration plus a pre-link fence that invalidates
+  only `libduckdb-sys` when the native link input is absent. The earlier diagnostic run's Parquet
+  cell markers remain an observation to re-evaluate after a clean link; they are not yet classified
+  as a runtime defect.
 
 ## Blockers
 

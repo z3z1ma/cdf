@@ -30,6 +30,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: slow-compile
+          cache-directories: target/duckdb-download
+      - name: Validate cached DuckDB link input
+        run: bash .github/scripts/ensure-duckdb-link-input.sh
       - name: Prepare reports
         run: mkdir -p target/quality/reports
       - name: Dependency metadata sanity
@@ -82,6 +85,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: slow-tests
+          cache-directories: target/duckdb-download
+      - name: Validate cached DuckDB link input
+        run: bash .github/scripts/ensure-duckdb-link-input.sh
       - name: Install nextest
         run: cargo install --locked cargo-nextest
       - name: Workspace tests excluding dedicated conformance shards
@@ -117,6 +123,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: slow-conformance
+          cache-directories: target/duckdb-download
+      - name: Validate cached DuckDB link input
+        run: bash .github/scripts/ensure-duckdb-link-input.sh
       - name: Install nextest
         run: cargo install --locked cargo-nextest
       - name: General conformance laws
@@ -169,6 +178,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: slow-conformance
+          cache-directories: target/duckdb-download
+      - name: Validate cached DuckDB link input
+        run: bash .github/scripts/ensure-duckdb-link-input.sh
       - name: Prepare reports
         run: mkdir -p target/quality/reports
       - name: Run source shard
@@ -225,6 +237,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: slow-conformance
+          cache-directories: target/duckdb-download
+      - name: Validate cached DuckDB link input
+        run: bash .github/scripts/ensure-duckdb-link-input.sh
       - name: Prepare reports
         run: mkdir -p target/quality/reports
       - name: Run repeat law
@@ -277,6 +292,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: slow-conformance
+          cache-directories: target/duckdb-download
+      - name: Validate cached DuckDB link input
+        run: bash .github/scripts/ensure-duckdb-link-input.sh
       - name: Prepare reports
         run: mkdir -p target/quality/reports
       - name: Run destination chaos shard
@@ -307,6 +325,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: slow-generated-api
+          cache-directories: target/duckdb-download
+      - name: Validate cached DuckDB link input
+        run: bash .github/scripts/ensure-duckdb-link-input.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
@@ -331,6 +352,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: slow-metrics
+          cache-directories: target/duckdb-download
+      - name: Validate cached DuckDB link input
+        run: bash .github/scripts/ensure-duckdb-link-input.sh
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
