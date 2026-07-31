@@ -102,6 +102,13 @@ cells without weakening its shared assertions or catalog coverage.
   to audited 5.4.2, and pinned OSV Scanner 1.9.2 accepts `scan --output` rather than the v2
   `scan source --output-file` shape. Updated both definitions to match the exact pinned inputs;
   local OSV 1.9.2 validation reports only the ratified paste advisory.
+- 2026-07-31: Every hosted source shard consistently stopped inside its first Parquet cell while
+  the 100-run live Parquet law passed. An exact local reproduction plus a process stack sample
+  located the wait in duplicate artifact replay: the finalized-package path selected its live
+  reader, reserved the Parquet writer/input authority, then blocked trying to reserve the same
+  managed-memory budget to decode canonical IPC. Finalized replay now consumes its already-verified
+  durable IPC file directly; only planned live streams with known one-object bounds retain the
+  zero-copy live-reader path.
 
 ## Blockers
 
@@ -135,6 +142,17 @@ None.
   --format json --output /tmp/cdf-osv-v1.json` produced valid JSON over 648 packages and reported
   only `RUSTSEC-2024-0436`, proving the workflow syntax against the pinned scanner rather than a
   locally installed v2 binary.
+- Before the Parquet replay correction, the exact file-source shard passed all three DuckDB cells
+  and then remained blocked in `assert_duplicate_replay_noop`. A macOS `sample` stack showed the
+  Parquet encoder in `PackageStagedSegmentReader::next_batch -> load_verified_segment ->
+  reserve_blocking` while its caller waited in `complete_oldest`, establishing a closed
+  same-budget wait rather than a CI timeout or CPU-capacity issue.
+- After the correction, the exact file-source shard completed all 12 declared cells in 13.59
+  seconds: nine executed cells passed, including Parquet append/replace plus duplicate and artifact
+  replay identity, and the three sheet-unsupported cells were explicitly excluded. The exact
+  Parquet runtime-chaos shard then passed all four crash/recovery windows in 5.99 seconds, including
+  pre-write replay, durable-receipt recovery, checkpoint ordering, and no-second-write duplicate
+  retry.
 
 ## Review
 

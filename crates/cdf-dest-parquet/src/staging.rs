@@ -151,13 +151,11 @@ impl ParquetPhysicalWritePlan {
                 *partition_count <= u64::from(object_layout.max_segments)
                     && *planned_source_bytes <= object_layout.target_package_bytes
             }
-            cdf_runtime::StagedIngressWorkload::FinalizedPackage {
-                segment_count,
-                package_bytes,
-            } => {
-                *segment_count <= u64::from(object_layout.max_segments)
-                    && *package_bytes <= object_layout.target_package_bytes
-            }
+            // Finalized-package replay has durable IPC authority, not already-accounted live
+            // batches. Decoding it through the live reader after reserving the Parquet writer
+            // can wait forever for the same managed-memory budget. Consume the durable file
+            // directly; the staged worker authority already accounts that input working set.
+            cdf_runtime::StagedIngressWorkload::FinalizedPackage { .. } => false,
             cdf_runtime::StagedIngressWorkload::PlannedStream {
                 planned_source_bytes: None,
                 ..

@@ -56,6 +56,14 @@ platform `libduckdb` file exists after restoring Cargo artifacts. If it is absen
 `libduckdb-sys` so Cargo reruns the authoritative build script; a restored Rust fingerprint is not
 proof that its external native library still exists.
 
+For staged destination replay, a prepared writer/input memory lease is authority to consume a
+durable canonical segment directly; it is not spare capacity for decoding the same segment through
+a second live-batch reservation. A finalized package with verified durable-file authority SHOULD
+transfer that authority into the destination worker. Selecting a live reader after reserving the
+worker budget can turn a tiny duplicate replay into an unbounded `reserve_blocking` wait. When a
+deep shard stalls but the corresponding live-repeat law passes, capture one process stack and
+compare live versus finalized-package input ownership before changing timeouts or concurrency.
+
 Historical Gitleaks scans have two known false-positive `generic-api-key` findings in removed Python-era Harness SDK-key field declarations. See `.10x/knowledge/historical-gitleaks-findings.md` for exact fingerprints and limits. Treat only those exact fingerprints as documented historical scanner noise; any new history finding, and any finding from a current-tree or staged-diff scan selected by `QUALITY.md`, remains a hard failure until triaged.
 
 ## Product lifecycle gate
