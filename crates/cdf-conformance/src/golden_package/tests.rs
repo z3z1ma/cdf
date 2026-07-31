@@ -3,6 +3,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use super::*;
 
 #[test]
+#[ignore = "scheduled 100-rebuild determinism shard"]
 fn prepared_orders_v1_matches_committed_golden_across_100_rebuilds() {
     let expected = prepared_orders_v1_expected_evidence().unwrap();
 

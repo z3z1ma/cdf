@@ -17,31 +17,74 @@ use super::{
     helper::spawn_stage_helper_crash,
 };
 
+const RUNTIME_CHAOS_DESTINATION_ENV: &str = "CDF_RUNTIME_CHAOS_DESTINATION";
+const RUNTIME_CHAOS_SHARDS_JSON: &str = include_str!("../../runtime-chaos-shards.json");
+
 #[test]
-fn cross_destination_generic_runtime_stage_chaos_persists_output() {
+fn registered_runtime_chaos_shards_cover_destination_catalog() {
+    let shards = declared_shards();
+    let catalog = crate::destination_catalog::conformance_destinations()
+        .into_iter()
+        .map(|destination| ChaosDestination::new(destination.as_str()).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        shards, catalog,
+        "runtime-chaos shards must cover the destination catalog exactly"
+    );
+    assert_eq!(
+        shards
+            .iter()
+            .map(|destination| {
+                cross_destination_chaos_cases()
+                    .into_iter()
+                    .filter(|(candidate, _)| candidate == destination)
+                    .count()
+            })
+            .sum::<usize>(),
+        cross_destination_chaos_cases().len(),
+        "sharded and aggregate runtime-chaos coverage must contain the same cases"
+    );
+}
+
+#[test]
+#[ignore = "scheduled destination shard; set CDF_RUNTIME_CHAOS_DESTINATION and run this test explicitly"]
+fn registered_destination_shard_runtime_stage_chaos_persists_output() {
+    let destination = ChaosDestination::new(
+        std::env::var(RUNTIME_CHAOS_DESTINATION_ENV).unwrap_or_else(|_| {
+            panic!("{RUNTIME_CHAOS_DESTINATION_ENV} must name a declared shard")
+        }),
+    )
+    .expect("runtime-chaos destination shard must be valid");
+    assert!(
+        declared_shards().contains(&destination),
+        "runtime-chaos destination shard `{}` is not declared in runtime-chaos-shards.json",
+        destination.as_str()
+    );
+
     let environment = ConformanceEnvironment::start().expect(
         "C3 runtime chaos requires Postgres coverage; set TEST_DATABASE_URL or install initdb/pg_ctl",
     );
     let mut output = RuntimeChaosOutput::default();
 
-    for (destination, window) in cross_destination_chaos_cases() {
+    for (destination, window) in cross_destination_chaos_cases()
+        .into_iter()
+        .filter(|(candidate, _)| candidate == &destination)
+    {
+        let case_id = format!("{}/{}", destination.as_str(), window.as_str());
+        println!("CDF_RUNTIME_CHAOS_CASE_START={case_id}");
         output
             .executed_cases
             .push(execute_case(destination, window, &environment).unwrap());
+        println!("CDF_RUNTIME_CHAOS_CASE_PASS={case_id}");
     }
 
-    let destinations = crate::destination_catalog::conformance_destinations();
-    assert_eq!(output.executed_cases.len(), destinations.len() * 4);
-    for destination in destinations {
-        assert_eq!(
-            output
-                .executed_cases
-                .iter()
-                .filter(|case| case.destination.as_str() == destination.as_str())
-                .count(),
-            4
-        );
-    }
+    assert_eq!(output.executed_cases.len(), 4);
+    assert!(
+        output
+            .executed_cases
+            .iter()
+            .all(|case| case.destination == destination)
+    );
     for window in [
         ChaosCrashWindow::PackageReplayVerifiedBeforeDestinationWrite,
         ChaosCrashWindow::CheckpointProposedBeforeDestinationWrite,
@@ -54,13 +97,24 @@ fn cross_destination_generic_runtime_stage_chaos_persists_output() {
                 .iter()
                 .filter(|case| case.crash_window == window)
                 .count(),
-            crate::destination_catalog::conformance_destinations().len()
+            1
         );
     }
 
-    let serialized = serde_json::to_string_pretty(&output).unwrap();
+    let serialized = serde_json::to_string(&output).unwrap();
     environment.assert_redacted(&serialized);
     println!("CDF_RUNTIME_CHAOS_OUTPUT={serialized}");
+}
+
+fn declared_shards() -> Vec<ChaosDestination> {
+    serde_json::from_str::<Vec<String>>(RUNTIME_CHAOS_SHARDS_JSON)
+        .expect("runtime-chaos-shards.json must be a string array")
+        .into_iter()
+        .map(|destination| {
+            ChaosDestination::new(destination)
+                .expect("declared runtime-chaos destination must be valid")
+        })
+        .collect()
 }
 
 fn execute_case(

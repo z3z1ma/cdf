@@ -54,6 +54,27 @@ cells without weakening its shared assertions or catalog coverage.
 - 2026-07-31: Activated as the first readiness workstream. Existing matrix assertions and catalog
   discovery remain authority; this ticket changes execution granularity and evidence visibility,
   not the set of required cells.
+- 2026-07-31: Added checked source and chaos shard manifests whose fast catalog-coverage tests
+  fail if enrollment and scheduled execution drift. The expensive matrix and cross-destination
+  chaos entry points now select one declared source/destination, print a start/pass marker for
+  every cell/window, and emit compact JSON. The four deterministic repeat laws are explicitly
+  scheduled/ignored rather than silently consumed by ordinary workspace testing.
+- 2026-07-31: Split Slow Quality into independent compile/lint, workspace-test,
+  general-conformance, source-matrix, destination-chaos, repeat, generated/API, metrics,
+  supply-chain, and static-security jobs. Matrix/chaos/repeat processes have a command timeout
+  shorter than the job timeout so their logs can upload after failure. Developer-quality jobs now
+  use the documented DuckDB download linkage; the prior monolithic workflow omitted it and the
+  last hosted run failed during compile before later gates executed.
+- 2026-07-31: A plain parallel `cargo test` run reported package-replay/Nebula interference while
+  a remaining cross-destination chaos test stayed active. Every reported failure passed when
+  isolated; switching the ordinary conformance lane to nextest gave each test a process boundary.
+  After moving chaos to its own shards, the exact general lane completed 95/95 in 13.450 seconds
+  with six scheduled tests skipped. The Quasar chaos shard passed all four crash windows in 6.97
+  seconds and emitted per-window markers plus compact JSON.
+- 2026-07-31: The first file-source matrix probe passed all three DuckDB dispositions, then was
+  deliberately stopped after identifying `file/parquet_filesystem/append` as the current long
+  cell. This is evidence for observability, not a full file-shard pass; the hosted bounded shard
+  remains the completion authority.
 
 ## Blockers
 
@@ -61,7 +82,15 @@ None.
 
 ## Evidence
 
-Pending execution.
+- `DUCKDB_DOWNLOAD_LIB=1 CARGO_BUILD_JOBS=12 cargo nextest run -p cdf-conformance --locked -j 12`:
+  95 passed, 6 scheduled tests skipped, 13.450 seconds.
+- Both checked shard-to-catalog coverage tests passed exactly.
+- The Quasar destination-chaos shard passed four of four crash windows in 6.97 seconds with
+  durable JSON output and per-window markers.
+- Strict all-feature/all-target `cdf-conformance` Clippy passed. Formatting, `git diff --check`,
+  JSON validation, and YAML parsing passed.
+- Hosted Slow Quality dispatch and aggregate shard evidence remain pending this implementation
+  checkpoint.
 
 ## Review
 

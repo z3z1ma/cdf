@@ -20,6 +20,7 @@ use crate::run_matrix::local_postgres::LivePostgres;
 const POSTGRES_REPEAT_COUNT: usize = 10;
 
 #[test]
+#[ignore = "scheduled 100-run DuckDB determinism shard"]
 fn live_local_file_duckdb_v1_matches_committed_golden_across_100_runs() {
     let expected = live_local_file_v1_expected_evidence().unwrap();
 
@@ -48,6 +49,7 @@ fn live_local_file_duckdb_v1_matches_committed_golden_across_100_runs() {
 }
 
 #[test]
+#[ignore = "scheduled 100-run Parquet determinism shard"]
 fn live_local_file_parquet_v1_matches_committed_golden_across_100_runs() {
     let expected = live_local_file_parquet_v1_expected_evidence().unwrap();
 
@@ -76,6 +78,7 @@ fn live_local_file_parquet_v1_matches_committed_golden_across_100_runs() {
 }
 
 #[test]
+#[ignore = "scheduled bounded Postgres determinism shard"]
 fn live_local_file_postgres_v1_matches_committed_golden_across_bounded_repeats() {
     let expected = live_local_file_postgres_v1_expected_evidence().unwrap();
     let postgres = LivePostgres::start().expect(

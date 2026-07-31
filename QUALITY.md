@@ -388,6 +388,38 @@ Use profilers after benchmark or production evidence identifies a hotspot.
 
 Use for release candidates, large integrations, broad refactors, scheduled validation, or change sets that touch multiple high-risk vectors.
 
+### Bounded conformance shards
+
+The ordinary `cdf-conformance` nextest lane excludes the explicitly ignored repeat, run-matrix,
+and cross-destination chaos laws. Slow Quality expands those laws into independent jobs with
+command-level timeouts and always-uploaded logs. The checked shard manifests are:
+
+- `crates/cdf-conformance/run-matrix-shards.json`
+- `crates/cdf-conformance/runtime-chaos-shards.json`
+
+Run one source-matrix shard locally with:
+
+```bash
+CDF_RUN_MATRIX_SOURCE=file cargo test -p cdf-conformance \
+  run_matrix::tests::registered_source_shard_cells_persist_output \
+  --locked -- --ignored --exact --nocapture --test-threads=1
+```
+
+Run one destination-chaos shard with:
+
+```bash
+CDF_RUNTIME_CHAOS_DESTINATION=duckdb cargo test -p cdf-conformance \
+  runtime_chaos::tests::registered_destination_shard_runtime_stage_chaos_persists_output \
+  --locked -- --ignored --exact --nocapture --test-threads=1
+```
+
+The four repeat laws are also individually ignored and selected by exact test name in
+`.github/workflows/slow-quality.yml`. A normal `cargo test` or `cargo nextest run` success does not
+prove these six scheduled families; use the workflow run and its per-shard artifacts for the
+aggregate claim. Keep `DUCKDB_DOWNLOAD_LIB=1` on developer/quality builds that include DuckDB, as
+governed by `.10x/knowledge/developer-build-duckdb-linkage.md`; published release artifacts remain
+statically linked and must not use that setting.
+
 ### Core-tranche product smoke barrier
 
 Every tranche that changes source planning, execution, package/receipt/checkpoint settlement,
