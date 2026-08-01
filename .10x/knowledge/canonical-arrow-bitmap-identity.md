@@ -20,13 +20,17 @@ CDF canonical microbatching therefore treats these representations as copy-requi
 
 The copy is part of the memory construction plan; it must make the zero-copy predicate false so
 the caller reserves the replacement working set. Concatenated fragments already allocate a
-canonical replacement. Exact unsliced batches with canonical padding retain the zero-copy path.
+canonical replacement at the outer row level. Nested identity-bearing arrays must still be
+inspected and normalized recursively: Arrow dictionary take rebuilds keys but retains dictionary
+values, so a `Dictionary<Boolean>` can otherwise preserve dirty value padding after the outer
+copy. Exact unsliced batches with canonical padding retain the zero-copy path.
 
 Regression evidence must compare serialized IPC bytes against a freshly constructed logical
-equivalent, not only decoded arrays. The fixed-seed execution-shape property additionally compares
-decoded segment batches, package hash, segment entries, lineage, execution profile, positions, and
-terminal quarantine authority. A deliberately faulty identity snapshot proves that surface is
-actually observed.
+equivalent, not only decoded arrays, and must include a nested dictionary value case as well as
+top-level Boolean and validity buffers. The fixed-seed execution-shape property additionally
+compares decoded segment batches, package hash, segment entries, lineage, execution profile,
+positions, and terminal quarantine authority. A deliberately faulty identity snapshot proves that
+surface is actually observed.
 
 This is an identity boundary, not an Arrow-format rewrite. Do not normalize every nullable batch
 speculatively; preserve exact zero-copy inputs and copy only representations whose bitmap storage

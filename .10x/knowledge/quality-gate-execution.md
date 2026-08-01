@@ -83,16 +83,19 @@ evidence.
 ## Connector admission
 
 Use `tools/certify-connector.py` for a source or destination admission claim. It is orchestration,
-not a second semantic harness: it selects identity-named fixture laws, ordinary conformance, the
-registered matrix slice, and the applicable graph/product/chaos laws. Child output goes to stderr;
-stdout and `--report` contain one machine-readable result with the merge base, complete changed
-file set, selected profile, exact commands, timeouts, durations, and statuses.
+not a second semantic harness: it selects connector-leaf laws, exact built-in catalog integrity,
+ordinary conformance, the registered matrix slice, and the applicable graph/product/chaos laws.
+Child output goes to stderr; stdout and `--report` contain one machine-readable result with the
+fixed integration base, merge base, exact HEAD, changed-file content digest, selected profile,
+exact commands, timeouts, durations, and statuses. Synthetic Nebula/Quasar gate checks require
+`--fixture` and emit `admissible: false`.
 
 The classifier reads committed, staged, unstaged, deleted, and untracked files directly from Git.
-Do not add a manual changed-file override: that would let CI certify a subset while omitting a
-core edit. Generic ownership without acknowledgement fails before expensive checks. With
-`--core-impact`, run every connector law first and then the broader core regression and strict
-workspace all-feature Clippy profile.
+Do not add a baseline or changed-file override: either would let a report omit a committed core
+edit. Root manifests, the lockfile, dependency policy, workflows, and tools are shared ownership,
+not connector-only files. Generic ownership without acknowledgement fails before expensive
+checks. With `--core-impact`, run every connector law first and then workspace nextest and strict
+workspace all-feature Clippy.
 
 ## Build and performance runbooks
 

@@ -50,12 +50,16 @@ same construction table that installs destinations, so a test cannot silently om
 enrolled driver.
 
 Every connector change is admitted through `tools/certify-connector.py`. Its connector-only Git
-budget accepts the adapter leaf, explicit catalog and matching fixture rows, manifests, and
-execution documentation/evidence. Any other changed file is generic core impact. `--core-impact`
-is an acknowledgement, not an exception: it preserves the selected connector laws and adds the
-broader engine/runtime/project/CLI regression and strict workspace Clippy profile. The report is
-versioned JSON, binds the merge base and complete working change set, and has no caller-supplied
-file-list override. The shortest authoring path and exact accepted surfaces live in
+budget accepts the adapter leaf, explicit catalog and matching fixture rows, catalog/conformance
+manifests, and execution documentation/evidence. Root manifests, lockfile, policy, automation,
+tools, and every other file are generic core impact. `--core-impact` is an acknowledgement, not an
+exception: it preserves the selected connector laws and adds workspace nextest plus strict
+workspace Clippy. Admissible reports use the fixed `origin/main` integration base, record the exact
+HEAD, and hash the complete current changed-file contents; neither the baseline nor file list is
+caller-selectable. They require the identity in the shipped catalog fixture, the connector leaf
+laws, and the exact built-in catalog integrity law. Nebula and Quasar use explicit `--fixture`
+mode, which reports `admissible: false`; their synthetic proof cannot masquerade as product
+enrollment. The shortest authoring path and exact accepted surfaces live in
 `docs/connector-authoring.md`.
 
 Driver concurrency follows `.10x/decisions/driver-session-concurrency-canon.md`: drivers are

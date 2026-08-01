@@ -68,6 +68,10 @@ reference models and the current production authorities.
   proposal, commit, crash/reopen, duplicate replay, stale/tampered authority, and convergence
   against durable SQLite state. A deliberately unrecorded conflicting commit is rejected by the
   model self-test.
+- 2026-07-31: The frozen delegated review found one high nested-identity gap: outer
+  `take_record_batch` repairs row-level bitmaps, but Arrow dictionary take retains its values.
+  Canonicalization now recursively rebuilds dirty nested children after the outer take/concat, and
+  a `Dictionary<Boolean>` regression compares IPC bytes against a fresh logical equivalent.
 
 ## Blockers
 
@@ -80,7 +84,8 @@ None.
 - `cargo test -p cdf-engine core_identity_snapshot_detects_a_faulty_package_identity`: the faulty
   package-hash control was detected.
 - `cargo test -p cdf-engine canonical_microbatch_rebases_sliced_and_dirty_bitmap_padding`: direct
-  canonical-vs-fresh Arrow IPC bytes matched for dirty Boolean and validity prefixes.
+  canonical-vs-fresh Arrow IPC bytes matched for dirty Boolean, validity, and nested dictionary
+  value prefixes after the review repair.
 - With the documented local DuckDB link environment,
   `cargo test -p cdf-project model_based_receipt_gated_settlement_converges_across_recovery_sequences`
   passed the fixed 24-case action-sequence domain in 1.80 seconds, and
@@ -90,7 +95,12 @@ None.
 
 ## Review
 
-Pending program review.
+The frozen independent review reported one high finding: recursive detection was followed by an
+outer-only repair, leaving dirty dictionary values unchanged. The single authorized repair pass
+normalizes flagged child `ArrayData` recursively and added a reproducing dictionary IPC law. The
+focused regression and strict all-target/all-feature `cdf-engine` Clippy pass. Closure verdict:
+pass. Residual risk is bounded to Arrow nested encodings outside the fixed generated/bitmap domain;
+no other critical/high finding was reported.
 
 ## Retrospective
 

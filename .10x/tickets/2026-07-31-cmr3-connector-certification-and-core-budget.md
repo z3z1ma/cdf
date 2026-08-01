@@ -72,6 +72,17 @@ quality profile rather than silently normalizing the change.
   source and Quasar destination. Reports under ignored `target/quality/` bind both claims to the
   exact `origin/main` merge base and show an empty working change set, connector-only profile, all
   selected commands, fixed timeouts, durations, and a pass verdict.
+- 2026-07-31: The frozen delegated review falsified the initial gate through five high paths:
+  caller-selectable baselines, blanket shared-manifest allowance, substring test filters,
+  incomplete core-impact regression scope, and synthetic fixtures masquerading as shipped catalog
+  enrollment. One repair pass removed the baseline override, bound version-2 reports to exact HEAD
+  and a content digest, made root/lock/policy files shared ownership, selected exact fixed-count
+  fixture laws or whole connector leaves, expanded core impact to workspace nextest, and separated
+  non-admissible `--fixture` proof from built-in catalog admission.
+- 2026-07-31: From clean pushed repair commit `4b141496`, Nebula fixture proof passed five of five
+  checks and Quasar fixture proof passed six of six. Both reports say `admissible: false`, carry the
+  exact HEAD and changed-content digest, and show an empty working change set. Running Quasar
+  without `--fixture` fails before Cargo because it is absent from the shipped built-in catalog.
 
 ## Blockers
 
@@ -79,9 +90,10 @@ None.
 
 ## Evidence
 
-- Seven standard-library unit laws passed for source and destination allowed surfaces, generic
-  core rejection, underscore-to-crate-name mapping, direction-specific check selection, and the
-  non-bypass core-impact profile.
+- Ten standard-library unit laws passed for source/destination allowed surfaces, shared root and
+  policy rejection, underscore-to-crate-name mapping, direction-specific fixed-count fixture laws,
+  workspace-wide core-impact selection, report content/HEAD binding, and built-in catalog
+  preflight.
 - The registered source-shard/catalog coverage law passed after adding the destination selector,
   proving the existing scheduled source matrix remained unchanged.
 - The selected Quasar destination matrix completed all 15 catalog-derived cells in 10.30 seconds:
@@ -90,18 +102,29 @@ None.
   Every executed cell asserted plan honesty, package verification, durable receipt verification,
   checkpoint-after-receipt gating, artifact replay identity, and no-op duplicate behavior.
 - Strict all-target/all-feature `cdf-conformance` Clippy, formatting, and diff checks passed.
-- `python3 tools/certify-connector.py --kind source --id nebula`: five of five checks passed.
+- `python3 tools/certify-connector.py --kind source --id nebula --fixture`: five of five checks
+  passed in an explicitly non-admissible fixture report.
   Identity-specific registry/schema/add/discovery/doctor and product laws passed; ordinary
   conformance passed 95/95; the 12-cell source matrix executed nine supported cells and recorded
   three sheet exclusions; the generic source compiler graph fence passed.
-- `python3 tools/certify-connector.py --kind destination --id quasar`: seven of seven checks
-  passed. Ordinary conformance passed 95/95; the 15-cell destination matrix executed five append
-  cells and recorded ten sheet exclusions; all four crash windows passed; three CLI
-  lock/plan/run/replay/resume/doctor/inspect laws passed; and static destination boundaries passed.
+- `python3 tools/certify-connector.py --kind destination --id quasar --fixture`: six of six checks
+  passed in an explicitly non-admissible fixture report. Ordinary conformance passed 95/95; the
+  15-cell destination matrix executed five append cells and recorded ten sheet exclusions; all
+  four crash windows passed; the exact three CLI lock/plan/run/replay/resume/doctor/inspect laws
+  passed; and static destination boundaries passed.
+- Running the same Quasar command without `--fixture` returned exit 2 and a version-2 JSON report
+  stating that the identity is absent from the shipped catalog, proving synthetic enrollment fails
+  closed.
 
 ## Review
 
-Pending program review.
+The frozen independent review verdict was fail with the five high false-green paths recorded in
+the journal. All five were closed in the single authorized repair pass and directly exercised by
+the ten unit laws plus clean pushed Nebula/Quasar fixture reports; the catalog preflight negative
+law proves the key admission distinction. Closure verdict: pass. Residual risk remains
+file-granular inside the explicitly allowed catalog files, so hashed catalog integrity, selected
+lifecycle laws, and the broader core profile remain required rather than treating classification
+as semantic proof.
 
 ## Retrospective
 

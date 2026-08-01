@@ -83,6 +83,10 @@ and prevents connector work from silently expanding the generic core.
   found and repaired Arrow bitmap-padding identity drift; the connector certificate passed from
   clean HEAD for both Nebula and Quasar. Remaining closure is bounded to hosted run `30675543293`,
   one frozen delegated review, record/status reconciliation, and final push.
+- 2026-07-31: The one frozen delegated batch is complete. Quality automation passed; core identity
+  and connector admission reported six total high findings, all resolved in one repair commit
+  `4b141496`. Revised synthetic reports pass while explicitly non-admissible, and final hosted run
+  `30676262226` at that exact code commit is the only remaining technical closure gate.
 
 ## Blockers
 

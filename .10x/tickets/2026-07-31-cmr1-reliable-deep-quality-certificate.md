@@ -120,6 +120,10 @@ cells without weakening its shared assertions or catalog coverage.
 - 2026-07-31: Dispatched the clean aggregate certificate as hosted Slow Quality run `30675543293`
   at pushed commit `db306682`. Shard resolution passed and independent jobs began normally; final
   aggregate conclusion remains the only CMR1 closure gate still in progress.
+- 2026-07-31: Run `30675543293` passed every completed correctness shard but reported a workspace
+  test failure while two jobs were still active. Because the bounded review required a subsequent
+  identity/admission repair commit, dispatched final Slow Quality run `30676262226` at exact pushed
+  code commit `4b141496`; that run supersedes the earlier aggregate for closure.
 
 ## Blockers
 
