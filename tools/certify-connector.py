@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,9 +17,12 @@ import time
 from dataclasses import dataclass, field
 
 
-REPORT_VERSION = 1
-IDENTIFIER = re.compile(r"^[a-z][a-z0-9_-]*$")
+REPORT_VERSION = 2
+INTEGRATION_BASE = "origin/main"
+IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]*$")
 TESTS_PASSED = re.compile(r"test result: ok\. [1-9][0-9]* passed;")
+TWO_TESTS_PASSED = re.compile(r"test result: ok\. 2 passed;")
+THREE_TESTS_PASSED = re.compile(r"test result: ok\. 3 passed;")
 
 
 @dataclass(frozen=True)
@@ -37,9 +41,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kind", choices=("source", "destination"), required=True)
     parser.add_argument("--id", required=True, help="conformance catalog identity")
     parser.add_argument(
-        "--base",
-        default=os.environ.get("CDF_CONNECTOR_BASE", "origin/main"),
-        help="Git revision used to classify the complete change set (default: origin/main)",
+        "--fixture",
+        action="store_true",
+        help="exercise Nebula/Quasar synthetic laws and emit a non-admissible proof report",
     )
     parser.add_argument(
         "--core-impact",
@@ -68,9 +72,37 @@ def git(root: Path, *arguments: str) -> str:
     return result.stdout.strip()
 
 
-def changed_files(root: Path, base: str) -> tuple[str, list[str]]:
-    git(root, "rev-parse", "--verify", f"{base}^{{commit}}")
-    merge_base = git(root, "merge-base", base, "HEAD")
+def change_set_sha256(root: Path, merge_base: str, head: str, paths: list[str]) -> str:
+    digest = hashlib.sha256()
+    for label, value in (("merge_base", merge_base), ("head", head)):
+        digest.update(label.encode())
+        digest.update(b"\0")
+        digest.update(value.encode())
+        digest.update(b"\0")
+    for path in paths:
+        digest.update(path.encode())
+        digest.update(b"\0")
+        candidate = root / path
+        if candidate.is_symlink():
+            digest.update(b"symlink\0")
+            digest.update(os.readlink(candidate).encode())
+        elif candidate.is_file():
+            digest.update(b"file\0")
+            digest.update(str(candidate.stat().st_mode & 0o7777).encode())
+            digest.update(b"\0")
+            with candidate.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        else:
+            digest.update(b"deleted\0")
+        digest.update(b"\0")
+    return f"sha256:{digest.hexdigest()}"
+
+
+def changed_files(root: Path) -> tuple[str, str, list[str], str]:
+    git(root, "rev-parse", "--verify", f"{INTEGRATION_BASE}^{{commit}}")
+    head = git(root, "rev-parse", "HEAD")
+    merge_base = git(root, "merge-base", INTEGRATION_BASE, "HEAD")
     commands = (
         ("diff", "--name-only", "--diff-filter=ACMRD", f"{merge_base}...HEAD"),
         ("diff", "--name-only", "--diff-filter=ACMRD"),
@@ -80,7 +112,10 @@ def changed_files(root: Path, base: str) -> tuple[str, list[str]]:
     paths: set[str] = set()
     for command in commands:
         paths.update(line for line in git(root, *command).splitlines() if line)
-    return merge_base, sorted(paths)
+    sorted_paths = sorted(paths)
+    return merge_base, head, sorted_paths, change_set_sha256(
+        root, merge_base, head, sorted_paths
+    )
 
 
 def classify_path(kind: str, connector_id: str, path: str) -> str | None:
@@ -89,8 +124,6 @@ def classify_path(kind: str, connector_id: str, path: str) -> str | None:
     connector_root = f"crates/cdf-{crate_role}-{crate_id}/"
     if path.startswith(connector_root):
         return "connector_leaf"
-    if path in {"Cargo.toml", "Cargo.lock", "deny.toml"}:
-        return "manifest"
     if path.startswith("docs/"):
         return "documentation"
     if path.startswith((".10x/tickets/", ".10x/evidence/")):
@@ -141,21 +174,69 @@ def classify_changes(
     return accepted, core_paths
 
 
-def connector_checks(kind: str, connector_id: str) -> list[Check]:
-    checks = [
-        Check("format", ("cargo", "fmt", "--all", "--", "--check"), 300),
-        Check(
-            "identity-specific-laws",
-            ("cargo", "test", "-p", "cdf-conformance", "--locked", connector_id),
-            1800,
-            required_output=TESTS_PASSED,
-        ),
+def connector_checks(kind: str, connector_id: str, fixture: bool) -> list[Check]:
+    checks = [Check("format", ("cargo", "fmt", "--all", "--", "--check"), 300)]
+    if fixture:
+        fixture_filter = (
+            "nebula_source_inherits_"
+            if kind == "source"
+            else "injected_quasar_destination_"
+        )
+        checks.append(
+            Check(
+                "fixture-identity-laws",
+                (
+                    "cargo",
+                    "test",
+                    "-p",
+                    "cdf-conformance" if kind == "source" else "cdf-cli",
+                    "--locked",
+                    fixture_filter,
+                ),
+                1800 if kind == "source" else 3600,
+                required_output=TWO_TESTS_PASSED if kind == "source" else THREE_TESTS_PASSED,
+            )
+        )
+    else:
+        crate_role = "source" if kind == "source" else "dest"
+        checks.extend(
+            [
+                Check(
+                    "connector-leaf-laws",
+                    (
+                        "cargo",
+                        "test",
+                        "-p",
+                        f"cdf-{crate_role}-{connector_id.replace('_', '-')}",
+                        "--locked",
+                    ),
+                    3600,
+                    required_output=TESTS_PASSED,
+                ),
+                Check(
+                    "builtin-catalog-integrity",
+                    (
+                        "cargo",
+                        "test",
+                        "-p",
+                        "cdf-builtin-drivers",
+                        "--locked",
+                        "tests::catalog_matches_the_data_driven_first_party_fixture",
+                        "--",
+                        "--exact",
+                    ),
+                    1800,
+                    required_output=TESTS_PASSED,
+                ),
+            ]
+        )
+    checks.append(
         Check(
             "general-conformance",
             ("cargo", "nextest", "run", "-p", "cdf-conformance", "--locked"),
             7200,
-        ),
-    ]
+        )
+    )
     if kind == "source":
         checks.extend(
             [
@@ -195,8 +276,7 @@ def connector_checks(kind: str, connector_id: str) -> list[Check]:
             ]
         )
     else:
-        checks.extend(
-            [
+        destination_checks = [
                 Check(
                     "selected-destination-matrix",
                     (
@@ -234,24 +314,29 @@ def connector_checks(kind: str, connector_id: str) -> list[Check]:
                     {"CDF_RUNTIME_CHAOS_DESTINATION": connector_id},
                 ),
                 Check(
-                    "destination-product-laws",
-                    ("cargo", "test", "-p", "cdf-cli", "--locked", connector_id),
-                    3600,
-                    required_output=TESTS_PASSED,
-                ),
-                Check(
                     "destination-extension-boundaries",
                     ("cargo", "test", "-p", "cdf-conformance", "--locked", "generic_"),
                     1200,
                     required_output=TESTS_PASSED,
                 ),
             ]
-        )
+        if not fixture:
+            destination_checks.insert(
+                2,
+                Check(
+                    "destination-product-laws",
+                    ("cargo", "nextest", "run", "-p", "cdf-cli", "--locked"),
+                    7200,
+                ),
+            )
+        checks.extend(destination_checks)
     return checks
 
 
-def certification_checks(kind: str, connector_id: str, core_impact: bool) -> list[Check]:
-    checks = connector_checks(kind, connector_id)
+def certification_checks(
+    kind: str, connector_id: str, core_impact: bool, fixture: bool = False
+) -> list[Check]:
+    checks = connector_checks(kind, connector_id, fixture)
     if core_impact:
         checks.extend(
             [
@@ -261,14 +346,7 @@ def certification_checks(kind: str, connector_id: str, core_impact: bool) -> lis
                         "cargo",
                         "nextest",
                         "run",
-                        "-p",
-                        "cdf-engine",
-                        "-p",
-                        "cdf-runtime",
-                        "-p",
-                        "cdf-project",
-                        "-p",
-                        "cdf-cli",
+                        "--workspace",
                         "--locked",
                     ),
                     7200,
@@ -291,6 +369,17 @@ def certification_checks(kind: str, connector_id: str, core_impact: bool) -> lis
             ]
         )
     return checks
+
+
+def catalog_enrollment_error(root: Path, kind: str, connector_id: str) -> str | None:
+    catalog = json.loads(
+        (root / "crates/cdf-builtin-drivers/fixtures/catalog.json").read_text(encoding="utf-8")
+    )
+    section = "sources" if kind == "source" else "destinations"
+    identities = {entry["id"] for entry in catalog[section]}
+    if connector_id not in identities:
+        return f"{kind} `{connector_id}` is absent from the shipped built-in catalog fixture"
+    return None
 
 
 def command_environment(root: Path) -> dict[str, str]:
@@ -388,11 +477,17 @@ def emit_report(report: dict[str, object], path: Path | None) -> None:
 def main() -> int:
     args = parse_args()
     if not IDENTIFIER.fullmatch(args.id):
-        raise SystemExit("--id must be a lowercase ASCII connector identifier")
+        raise SystemExit("--id must use lowercase ASCII letters, digits, and underscores")
+    expected_fixture = ("source", "nebula") if args.kind == "source" else (
+        "destination",
+        "quasar",
+    )
+    if args.fixture and (args.kind, args.id) != expected_fixture:
+        raise SystemExit("--fixture is limited to source nebula or destination quasar")
     root = repository_root()
     started_at = utc_now()
     try:
-        merge_base, paths = changed_files(root, args.base)
+        merge_base, head, paths, change_digest = changed_files(root)
     except RuntimeError as error:
         report = {
             "version": REPORT_VERSION,
@@ -412,9 +507,13 @@ def main() -> int:
         "version": REPORT_VERSION,
         "started_at": started_at,
         "connector": {"kind": args.kind, "id": args.id},
+        "admissible": not args.fixture,
+        "fixture_proof": args.fixture,
         "change_surface": {
-            "requested_base": args.base,
+            "integration_base": INTEGRATION_BASE,
             "merge_base": merge_base,
+            "head": head,
+            "change_set_sha256": change_digest,
             "changed_files": paths,
             "accepted_files": accepted,
             "generic_core_files": core_paths,
@@ -423,6 +522,17 @@ def main() -> int:
         "profile": profile,
         "checks": [],
     }
+    enrollment_error = None if args.fixture else catalog_enrollment_error(root, args.kind, args.id)
+    if enrollment_error is not None:
+        report.update(
+            {
+                "finished_at": utc_now(),
+                "verdict": "failed",
+                "error": enrollment_error,
+            }
+        )
+        emit_report(report, args.report)
+        return 2
     if core_paths and not args.core_impact:
         report.update(
             {
@@ -437,7 +547,7 @@ def main() -> int:
         emit_report(report, args.report)
         return 2
 
-    checks = certification_checks(args.kind, args.id, args.core_impact)
+    checks = certification_checks(args.kind, args.id, args.core_impact, args.fixture)
     environment = command_environment(root)
     check_reports: list[dict[str, object]] = []
     for check in checks:

@@ -2,14 +2,14 @@ use std::collections::BTreeMap;
 
 use arrow_array::{
     Array, BinaryViewArray, DictionaryArray, FixedSizeListArray, LargeListArray,
-    LargeListViewArray, ListArray, ListViewArray, MapArray, RecordBatch, StringViewArray,
-    StructArray, UInt32Array, UnionArray,
+    LargeListViewArray, ListArray, ListViewArray, MapArray, RecordBatch, RecordBatchOptions,
+    StringViewArray, StructArray, UInt32Array, UnionArray, make_array,
     types::{
         ArrowDictionaryKeyType, Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type,
         UInt32Type, UInt64Type,
     },
 };
-use arrow_select::take::take_record_batch;
+use arrow_select::take::{take, take_record_batch};
 use cdf_kernel::{
     CdfError, CompositePosition, CursorPosition, CursorValue, FileManifest, FilePosition, Result,
     SegmentId, SourcePosition, merge_file_position_evidence,
@@ -474,7 +474,7 @@ pub(crate) fn canonicalization_is_zero_copy(
 }
 
 fn finish_canonical_batch(mut fragments: Vec<RecordBatch>) -> Result<RecordBatch> {
-    if fragments.len() == 1 {
+    let batch = if fragments.len() == 1 {
         let batch = fragments
             .pop()
             .ok_or_else(|| CdfError::internal("canonical fragment disappeared"))?;
@@ -484,13 +484,56 @@ fn finish_canonical_batch(mut fragments: Vec<RecordBatch>) -> Result<RecordBatch
         let row_count = u32::try_from(batch.num_rows())
             .map_err(|_| CdfError::data("canonical microbatch rows exceed u32"))?;
         let indices = UInt32Array::from_iter_values(0..row_count);
-        return take_record_batch(&batch, &indices).map_err(CdfError::from);
+        take_record_batch(&batch, &indices).map_err(CdfError::from)?
+    } else {
+        let schema = fragments
+            .first()
+            .ok_or_else(|| CdfError::internal("canonical microbatch has no fragments"))?
+            .schema();
+        arrow_select::concat::concat_batches(&schema, &fragments).map_err(CdfError::from)?
+    };
+    normalize_nested_bitmaps(batch)
+}
+
+fn normalize_nested_bitmaps(batch: RecordBatch) -> Result<RecordBatch> {
+    if !batch_requires_bit_rebase(&batch) {
+        return Ok(batch);
     }
-    let schema = fragments
-        .first()
-        .ok_or_else(|| CdfError::internal("canonical microbatch has no fragments"))?
-        .schema();
-    arrow_select::concat::concat_batches(&schema, &fragments).map_err(CdfError::from)
+    let row_count = batch.num_rows();
+    let columns = batch
+        .columns()
+        .iter()
+        .map(|column| normalize_array_bitmaps(column.clone()))
+        .collect::<Result<Vec<_>>>()?;
+    RecordBatch::try_new_with_options(
+        batch.schema(),
+        columns,
+        &RecordBatchOptions::new().with_row_count(Some(row_count)),
+    )
+    .map_err(CdfError::from)
+}
+
+fn normalize_array_bitmaps(array: arrow_array::ArrayRef) -> Result<arrow_array::ArrayRef> {
+    if !array_data_requires_bit_rebase(&array.to_data()) {
+        return Ok(array);
+    }
+    let row_count = u32::try_from(array.len())
+        .map_err(|_| CdfError::data("canonical nested array rows exceed u32"))?;
+    let indices = UInt32Array::from_iter_values(0..row_count);
+    let taken = take(array.as_ref(), &indices, None).map_err(CdfError::from)?;
+    let data = taken.to_data();
+    let children = data
+        .child_data()
+        .iter()
+        .map(|child| {
+            normalize_array_bitmaps(make_array(child.clone())).map(|array| array.to_data())
+        })
+        .collect::<Result<Vec<_>>>()?;
+    data.into_builder()
+        .child_data(children)
+        .build()
+        .map(make_array)
+        .map_err(CdfError::from)
 }
 
 fn batch_requires_bit_rebase(batch: &RecordBatch) -> bool {
@@ -994,7 +1037,7 @@ fn join_cursors(left: &CursorPosition, right: &CursorPosition) -> Result<Option<
 mod tests {
     use super::*;
     use arrow_array::{
-        Array, BooleanArray, Int64Array, StringArray, StringViewArray,
+        Array, BooleanArray, Int8Array, Int64Array, StringArray, StringViewArray,
         builder::{
             Int64Builder, ListBuilder, ListViewBuilder, StringDictionaryBuilder, UnionBuilder,
         },
@@ -1593,6 +1636,36 @@ mod tests {
         assert_eq!(
             ipc_stream_bytes(&canonical_validity),
             ipc_stream_bytes(&fresh_validity)
+        );
+
+        let dirty_dictionary_values =
+            std::sync::Arc::new(BooleanArray::from(vec![false, true]).slice(0, 1));
+        let dirty_dictionary = RecordBatch::try_from_iter([(
+            "value",
+            std::sync::Arc::new(DictionaryArray::<Int8Type>::new(
+                Int8Array::from(vec![0_i8]),
+                dirty_dictionary_values,
+            )) as arrow_array::ArrayRef,
+        )])
+        .unwrap();
+        assert!(
+            batch_requires_bit_rebase(&dirty_dictionary),
+            "dictionary value padding participates in canonical IPC identity"
+        );
+        let canonical_dictionary = canonicalize_batches(vec![dirty_dictionary], 1, 1024)
+            .unwrap()
+            .remove(0);
+        let fresh_dictionary = RecordBatch::try_from_iter([(
+            "value",
+            std::sync::Arc::new(DictionaryArray::<Int8Type>::new(
+                Int8Array::from(vec![0_i8]),
+                std::sync::Arc::new(BooleanArray::from(vec![false])),
+            )) as arrow_array::ArrayRef,
+        )])
+        .unwrap();
+        assert_eq!(
+            ipc_stream_bytes(&canonical_dictionary),
+            ipc_stream_bytes(&fresh_dictionary)
         );
     }
 

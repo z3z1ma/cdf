@@ -96,9 +96,11 @@ python3 tools/certify-connector.py --kind destination --id <id> \
 ```
 
 The connector-only changed-file budget is documented in `docs/connector-authoring.md`. Generic
-core ownership fails closed. A justified core repair uses `--core-impact`, which retains all
-connector checks and activates the broader core regression and workspace Clippy profile; it is
-never a bypass.
+core ownership fails closed. Admissible reports require enrollment in the shipped built-in catalog
+and use a fixed `origin/main` baseline; the synthetic Nebula/Quasar proofs require `--fixture` and
+emit `admissible: false`. Root manifests, the lockfile, policy, workflows, and tools require
+`--core-impact`, which retains all connector checks and activates workspace nextest plus strict
+workspace Clippy; it is never a bypass.
 
 ---
 
