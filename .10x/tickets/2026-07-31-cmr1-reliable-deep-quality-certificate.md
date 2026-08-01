@@ -124,6 +124,14 @@ cells without weakening its shared assertions or catalog coverage.
   test failure while two jobs were still active. Because the bounded review required a subsequent
   identity/admission repair commit, dispatched final Slow Quality run `30676262226` at exact pushed
   code commit `4b141496`; that run supersedes the earlier aggregate for closure.
+- 2026-07-31: Once the superseded run's logs became available, its workspace failure proved to be
+  an overconstrained Parquet same-token concurrency law. The test required both racers to return
+  commit-bound verification, although the valid schedule where one observes the winner's verified
+  manifest intentionally returns an independently verified duplicate. The law now requires at
+  least one commit-verified winner, exact receipt identity, explicit duplicate reporting for any
+  independent loser, and external readback. It passed 50/50 nextest stress iterations and strict
+  all-target/all-feature `cdf-dest-parquet` Clippy. Final hosted run `30676480811` targets pushed
+  commit `4dfca286`; the superseded `30676262226` was cancelled.
 
 ## Blockers
 
@@ -173,6 +181,10 @@ None.
   all-target/all-feature Clippy for `cdf-engine`, `cdf-project`, `cdf-benchmarks`, and `cdf-cli`,
   `cargo machete --with-metadata` with zero unused dependencies, registry JSON parsing, formatting,
   and diff checks. A clean aggregate hosted rerun remains the certificate authority.
+- `cargo nextest run -p cdf-dest-parquet -E
+  'test(concurrent_same_token_publication_is_immutable_and_independently_verifiable)'
+  --stress-count 50 --locked`: 50/50 scheduling iterations passed after expressing both permitted
+  winner/duplicate outcomes. Strict all-target/all-feature `cdf-dest-parquet` Clippy passed.
 
 ## Review
 

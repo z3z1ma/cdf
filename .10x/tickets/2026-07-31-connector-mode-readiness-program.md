@@ -87,6 +87,10 @@ and prevents connector work from silently expanding the generic core.
   and connector admission reported six total high findings, all resolved in one repair commit
   `4b141496`. Revised synthetic reports pass while explicitly non-admissible, and final hosted run
   `30676262226` at that exact code commit is the only remaining technical closure gate.
+- 2026-07-31: The superseded hosted run exposed one overconstrained concurrent-publication test,
+  not a production invariant failure. Commit `4dfca286` expresses both permitted winner/duplicate
+  schedules and passed 50/50 stress iterations. Final hosted run `30676480811` at that exact code
+  commit is now the only remaining technical closure gate.
 
 ## Blockers
 

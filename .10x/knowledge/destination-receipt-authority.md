@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-26
-Updated: 2026-07-27
+Updated: 2026-07-31
 
 # Destination receipt authority
 
@@ -69,3 +69,14 @@ When migrating or adding a destination:
    scan all destination modules for reads of displaced string authority.
 7. Run destination receipt/correction/duplicate/rollback tests plus generic
    committed-before-checkpointed and duplicate-replay gates.
+
+## Concurrent same-token outcomes
+
+Two same-token publishers may both pass their initial absence check. At least one must win the
+immutable publication and return commit-bound verification. A slower racer may instead observe
+the winner's already-verified manifest and take the ordinary duplicate path, whose outcome remains
+`Independent` until orchestration verifies the returned receipt. Tests must accept both valid
+schedules while requiring identical receipts, immutable manifest bytes, explicit duplicate
+reporting for every independent loser, and successful independent readback. Requiring every racer
+to report `VerifiedAtCommit` overconstrains scheduling and turns a correct duplicate observation
+into a flaky failure.
