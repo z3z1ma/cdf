@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-31
 Updated: 2026-07-31
 Parent: `.10x/tickets/2026-07-31-connector-mode-readiness-program.md`
@@ -49,6 +49,24 @@ reference models and the current production authorities.
 
 - 2026-07-31: Shaped as two narrow falsifiers around CDF's most consequential invariants, not a
   request to model the whole runtime.
+- 2026-07-31: Activated after CMR1 reached a pushed corrective head and its aggregate hosted run
+  began. Work in progress adds fixed-seed, bounded reference-model tests for execution-shape
+  identity and receipt-gated settlement; validation and any falsified production fences remain
+  part of this ticket before handoff.
+- 2026-07-31: Added a 12-case execution-shape property varying logical input, source rechunking,
+  completion schedule, and jobs 1-8. It compares decoded segment rows plus package hash, segment
+  catalog, lineage, execution profile, segment positions, and terminal quarantine authority. Its
+  deliberate faulty snapshot control proves that the asserted identity surface is live.
+- 2026-07-31: The execution falsifier found a real canonical-identity defect: byte-aligned Arrow
+  Boolean and validity slices could retain logically out-of-range bits, which Arrow IPC then wrote
+  as padding. Canonical microbatching now copies only slices whose bit offset, all-valid retained
+  null mask, or dirty trailing padding requires normalization; direct IPC-byte regressions cover
+  both Boolean values and validity masks.
+- 2026-07-31: Added a 24-case explicit settlement model over absent/primary/alternate receipts and
+  missing/proposed/committed checkpoints. Generated action sequences exercise receipt recording,
+  proposal, commit, crash/reopen, duplicate replay, stale/tampered authority, and convergence
+  against durable SQLite state. A deliberately unrecorded conflicting commit is rejected by the
+  model self-test.
 
 ## Blockers
 
@@ -56,7 +74,18 @@ None.
 
 ## Evidence
 
-Pending execution.
+- `cargo test -p cdf-engine model_based_execution_shapes_preserve_canonical_identity`: 1 passed
+  across the fixed 12-case domain in 24.49 seconds.
+- `cargo test -p cdf-engine core_identity_snapshot_detects_a_faulty_package_identity`: the faulty
+  package-hash control was detected.
+- `cargo test -p cdf-engine canonical_microbatch_rebases_sliced_and_dirty_bitmap_padding`: direct
+  canonical-vs-fresh Arrow IPC bytes matched for dirty Boolean and validity prefixes.
+- With the documented local DuckDB link environment,
+  `cargo test -p cdf-project model_based_receipt_gated_settlement_converges_across_recovery_sequences`
+  passed the fixed 24-case action-sequence domain in 1.80 seconds, and
+  `settlement_model_detects_a_faulty_unrecorded_commit` rejected its injected invalid state.
+- Strict all-target/all-feature Clippy passed for the four touched root packages; formatting and
+  diff checks passed.
 
 ## Review
 
@@ -64,4 +93,13 @@ Pending program review.
 
 ## Retrospective
 
-Pending execution.
+The small reference models paid for themselves immediately: equality of decoded rows had hidden
+that canonical package identity also depends on unused bits in Arrow's byte containers. Comparing
+the complete identity snapshot and serialized artifacts, rather than only logical values, exposed
+the defect. Fixed seeds, small generated domains, and explicit faulty controls kept the result
+reproducible and bounded instead of turning this ticket into an open-ended fuzz campaign.
+
+The settlement model stayed useful because it models authority, not production implementation
+details. Three receipt states and three checkpoint states were enough to cover the core fence:
+committed checkpoint authority must already exist as the exact durable receipt, conflicts never
+collapse into idempotence, and reopening does not change the result.

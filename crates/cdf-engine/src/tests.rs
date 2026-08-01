@@ -54,6 +54,10 @@ use datafusion::{
 };
 use futures_executor::block_on;
 use futures_util::{StreamExt, stream};
+use proptest::{
+    prelude::*,
+    test_runner::{Config as ProptestConfig, RngAlgorithm, RngSeed, TestCaseError, TestRunner},
+};
 use tempfile::TempDir;
 use tracing::{
     Event, Id, Metadata, Subscriber,
@@ -6661,24 +6665,43 @@ fn skewed_resource(
     seed: usize,
     terminal_failure_partitions: impl IntoIterator<Item = usize>,
 ) -> SkewedMockResource {
+    skewed_resource_with_shape(seed, seed, terminal_failure_partitions, usize::MAX)
+}
+
+fn skewed_resource_with_shape(
+    logical_seed: usize,
+    schedule_seed: usize,
+    terminal_failure_partitions: impl IntoIterator<Item = usize>,
+    rows_per_batch: usize,
+) -> SkewedMockResource {
     let partition_count = 8;
     let batches = (0..partition_count)
-        .map(|ordinal| {
-            let row_count = 1 + ((seed * 17 + ordinal * 5) % 7);
-            let first_id = i32::try_from(seed * 10_000 + ordinal * 100).unwrap();
-            let mut batch = batch_for_partition(
-                &format!("skew-{seed}-{ordinal}"),
-                &format!("part-{ordinal}"),
-                (0..row_count)
-                    .map(|row| first_id + i32::try_from(row).unwrap())
-                    .collect(),
-                vec!["skew-value"; row_count],
-                (0..row_count)
-                    .map(|row| !(seed + ordinal + row).is_multiple_of(3))
-                    .collect(),
-            );
-            batch.header.source_position = Some(terminal_file_position());
-            batch
+        .flat_map(|ordinal| {
+            let row_count = 1 + ((logical_seed * 17 + ordinal * 5) % 7);
+            let first_id = i32::try_from(logical_seed * 10_000 + ordinal * 100).unwrap();
+            let ids = (0..row_count)
+                .map(|row| first_id + i32::try_from(row).unwrap())
+                .collect::<Vec<_>>();
+            let active = (0..row_count)
+                .map(|row| !(logical_seed + ordinal + row).is_multiple_of(3))
+                .collect::<Vec<_>>();
+            let rows_per_batch = rows_per_batch.max(1);
+            (0..row_count)
+                .step_by(rows_per_batch)
+                .enumerate()
+                .map(move |(batch_ordinal, start)| {
+                    let end = start.saturating_add(rows_per_batch).min(row_count);
+                    let mut batch = batch_for_partition(
+                        &format!("skew-{logical_seed}-{ordinal}-{batch_ordinal}"),
+                        &format!("part-{ordinal}"),
+                        ids[start..end].to_vec(),
+                        vec!["skew-value"; end - start],
+                        active[start..end].to_vec(),
+                    );
+                    batch.header.source_position = Some(terminal_file_position());
+                    batch
+                })
+                .collect::<Vec<_>>()
         })
         .collect();
     let inner = MockResource::tier_b(batches).with_partition_count(partition_count);
@@ -6686,7 +6709,7 @@ fn skewed_resource(
         inner,
         poll_delays: Arc::new(
             (0..partition_count)
-                .map(|ordinal| (seed * 29 + ordinal * 11) % 9)
+                .map(|ordinal| (schedule_seed * 29 + ordinal * 11) % 9)
                 .collect(),
         ),
         terminal_failure_partitions: terminal_failure_partitions.into_iter().collect(),
@@ -6706,17 +6729,31 @@ fn skewed_plan(
     let projection = seed
         .is_multiple_of(3)
         .then(|| vec!["id".to_owned(), "name".to_owned()]);
-    let mut plan = Planner::new()
-        .plan_tier_b(
-            resource,
-            plan_input(
-                filters,
-                projection,
-                limits[seed % limits.len()],
-                ExecutionExtent::bounded(),
-            ),
-        )
-        .unwrap();
+    bind_skewed_plan(
+        resource,
+        plan_input(
+            filters,
+            projection,
+            limits[seed % limits.len()],
+            ExecutionExtent::bounded(),
+        ),
+    )
+}
+
+fn skewed_identity_plan(
+    resource: &SkewedMockResource,
+) -> (EnginePlan, cdf_runtime::CompiledSourcePlan) {
+    bind_skewed_plan(
+        resource,
+        plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
+    )
+}
+
+fn bind_skewed_plan(
+    resource: &SkewedMockResource,
+    input: EnginePlanInput,
+) -> (EnginePlan, cdf_runtime::CompiledSourcePlan) {
+    let mut plan = Planner::new().plan_tier_b(resource, input).unwrap();
     for operator in &mut plan.operator_chain {
         if let OperatorNode::PackageSink { segmentation, .. } = operator {
             segmentation.target_rows = 1;
@@ -6741,6 +6778,27 @@ fn skewed_plan(
 struct RetainedEngineRun {
     run: EngineRunOutputWithSegmentPositions,
     _package: TempDir,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CoreIdentitySnapshot {
+    package_hash: String,
+    segments: Vec<SegmentEntry>,
+    lineage: LineageSummary,
+    profile: ExecutionProfile,
+    segment_positions: Vec<EngineSegmentPosition>,
+    terminal_schema_quarantines: Vec<TerminalSchemaObservationQuarantine>,
+}
+
+fn core_identity_snapshot(run: &RetainedEngineRun) -> CoreIdentitySnapshot {
+    CoreIdentitySnapshot {
+        package_hash: run.output.manifest.package_hash.clone(),
+        segments: run.output.identity_segments(),
+        lineage: run.output.lineage.clone(),
+        profile: run.output.profile.clone(),
+        segment_positions: run.segment_positions.clone(),
+        terminal_schema_quarantines: run.output.terminal_schema_quarantines.clone(),
+    }
 }
 
 impl std::ops::Deref for RetainedEngineRun {
@@ -6815,6 +6873,79 @@ fn randomized_skew_limit_projection_and_filter_matrix_is_jobs_invariant() {
             );
         }
     }
+}
+
+#[test]
+fn model_based_execution_shapes_preserve_canonical_identity() {
+    let mut runner = TestRunner::new(ProptestConfig {
+        cases: 12,
+        max_shrink_iters: 128,
+        failure_persistence: None,
+        rng_algorithm: RngAlgorithm::ChaCha,
+        rng_seed: RngSeed::Fixed(0xcdf2_0260_7310_0001),
+        ..ProptestConfig::default()
+    });
+    let shapes = (0_usize..96, 0_usize..512, 1_usize..=7, 1_u16..=8);
+
+    runner
+        .run(
+            &shapes,
+            |(logical_seed, schedule_seed, rows_per_batch, jobs)| {
+                let baseline_resource =
+                    skewed_resource_with_shape(logical_seed, 0, std::iter::empty(), usize::MAX);
+                let varied_resource = skewed_resource_with_shape(
+                    logical_seed,
+                    schedule_seed,
+                    std::iter::empty(),
+                    rows_per_batch,
+                );
+                let (baseline_plan, baseline_source) = skewed_identity_plan(&baseline_resource);
+                let (varied_plan, varied_source) = skewed_identity_plan(&varied_resource);
+                prop_assert_eq!(&baseline_plan, &varied_plan);
+
+                let baseline =
+                    run_skewed_jobs(&baseline_resource, &baseline_plan, &baseline_source, 1)
+                        .map_err(|error| TestCaseError::fail(error.to_string()))?;
+                let varied = run_skewed_jobs(&varied_resource, &varied_plan, &varied_source, jobs)
+                    .map_err(|error| TestCaseError::fail(error.to_string()))?;
+
+                let baseline_reader = cdf_package::PackageReader::open(baseline._package.path())
+                    .map_err(|error| TestCaseError::fail(error.to_string()))?;
+                let varied_reader = cdf_package::PackageReader::open(varied._package.path())
+                    .map_err(|error| TestCaseError::fail(error.to_string()))?;
+                let baseline_segments = baseline.output.identity_segments();
+                let varied_segments = varied.output.identity_segments();
+                prop_assert_eq!(baseline_segments.len(), varied_segments.len());
+                for (baseline_segment, varied_segment) in
+                    baseline_segments.iter().zip(&varied_segments)
+                {
+                    prop_assert_eq!(&baseline_segment.segment_id, &varied_segment.segment_id);
+                    prop_assert_eq!(
+                        read_package_segment(&baseline_reader, &baseline_segment.segment_id),
+                        read_package_segment(&varied_reader, &varied_segment.segment_id)
+                    );
+                }
+
+                prop_assert_eq!(
+                    core_identity_snapshot(&baseline),
+                    core_identity_snapshot(&varied)
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn core_identity_snapshot_detects_a_faulty_package_identity() {
+    let resource = skewed_resource_with_shape(3, 0, std::iter::empty(), usize::MAX);
+    let (plan, source) = skewed_plan(&resource, 3);
+    let run = run_skewed_jobs(&resource, &plan, &source, 1).unwrap();
+    let expected = core_identity_snapshot(&run);
+    let mut faulty = expected.clone();
+    faulty.package_hash.push_str("-fault-injected");
+
+    assert_ne!(expected, faulty);
 }
 
 #[test]

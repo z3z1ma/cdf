@@ -109,6 +109,14 @@ cells without weakening its shared assertions or catalog coverage.
   managed-memory budget to decode canonical IPC. Finalized replay now consumes its already-verified
   durable IPC file directly; only planned live streams with known one-object bounds retain the
   zero-copy live-reader path.
+- 2026-07-31: Hosted run `30672720211` advanced past the replay deadlock and passed the source
+  matrix, destination chaos, repeat, general conformance, generated/API, security, and
+  supply-chain correctness lanes. Its remaining frontier was four bounded gate-maintenance
+  defects: one Rust 1.97 Clippy expression, a jobs-invariance fixture whose 512 MiB budget
+  correctly admitted only one stream, a stale single-codec Parquet registry projection, and
+  attributable unused-manifest findings. The fixture now supplies 2 GiB so it genuinely exercises
+  jobs=4, the registry and generated documents represent all four evidenced Parquet codec paths,
+  and cargo-machete is clean without suppressing any real dependency finding.
 
 ## Blockers
 
@@ -153,6 +161,11 @@ None.
   Parquet runtime-chaos shard then passed all four crash/recovery windows in 5.99 seconds, including
   pre-write replay, durable-receipt recovery, checkpoint ordering, and no-second-write duplicate
   retry.
+- In hosted run `30672720211`, every runtime/conformance correctness shard passed. Local correction
+  evidence then passed the exact jobs-invariance test, 8/8 active lab-policy tests, strict
+  all-target/all-feature Clippy for `cdf-engine`, `cdf-project`, `cdf-benchmarks`, and `cdf-cli`,
+  `cargo machete --with-metadata` with zero unused dependencies, registry JSON parsing, formatting,
+  and diff checks. A clean aggregate hosted rerun remains the certificate authority.
 
 ## Review
 
@@ -175,3 +188,9 @@ more valuable than another broad review pass. The recurring friction is now capt
 `.10x/knowledge/quality-gate-execution.md`: deep jobs remain independent, the first failing run is
 triaged as one frontier, scanner severities and exact exceptions are explicit, hosted CodeQL uses
 its supported buildless lifecycle, and local platform success is never treated as Linux proof.
+
+The final tail reinforced that a concurrency invariant must assert the scheduler authority it
+actually obtained, not merely the jobs value it requested. The 512 MiB fixture was not flaky
+scheduling: admission correctly serialized a source/segment/encoder frontier that could not fit.
+Raising only that test's budget made the intended overlap observable while preserving the
+production memory law.

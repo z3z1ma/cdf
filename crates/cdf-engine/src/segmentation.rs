@@ -3,12 +3,13 @@ use std::collections::BTreeMap;
 use arrow_array::{
     Array, BinaryViewArray, DictionaryArray, FixedSizeListArray, LargeListArray,
     LargeListViewArray, ListArray, ListViewArray, MapArray, RecordBatch, StringViewArray,
-    StructArray, UnionArray,
+    StructArray, UInt32Array, UnionArray,
     types::{
         ArrowDictionaryKeyType, Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type,
         UInt32Type, UInt64Type,
     },
 };
+use arrow_select::take::take_record_batch;
 use cdf_kernel::{
     CdfError, CompositePosition, CursorPosition, CursorValue, FileManifest, FilePosition, Result,
     SegmentId, SourcePosition, merge_file_position_evidence,
@@ -434,6 +435,9 @@ pub(crate) fn canonicalization_is_zero_copy(
     maximum_rows: u32,
     maximum_bytes: u64,
 ) -> Result<bool> {
+    if batches.iter().any(batch_requires_bit_rebase) {
+        return Ok(false);
+    }
     let maximum_rows = usize::try_from(maximum_rows)
         .map_err(|_| CdfError::data("canonical microbatch rows exceed usize"))?;
     let mut rows = 0_usize;
@@ -471,15 +475,72 @@ pub(crate) fn canonicalization_is_zero_copy(
 
 fn finish_canonical_batch(mut fragments: Vec<RecordBatch>) -> Result<RecordBatch> {
     if fragments.len() == 1 {
-        return fragments
+        let batch = fragments
             .pop()
-            .ok_or_else(|| CdfError::internal("canonical fragment disappeared"));
+            .ok_or_else(|| CdfError::internal("canonical fragment disappeared"))?;
+        if !batch_requires_bit_rebase(&batch) {
+            return Ok(batch);
+        }
+        let row_count = u32::try_from(batch.num_rows())
+            .map_err(|_| CdfError::data("canonical microbatch rows exceed u32"))?;
+        let indices = UInt32Array::from_iter_values(0..row_count);
+        return take_record_batch(&batch, &indices).map_err(CdfError::from);
     }
     let schema = fragments
         .first()
         .ok_or_else(|| CdfError::internal("canonical microbatch has no fragments"))?
         .schema();
     arrow_select::concat::concat_batches(&schema, &fragments).map_err(CdfError::from)
+}
+
+fn batch_requires_bit_rebase(batch: &RecordBatch) -> bool {
+    batch.columns().iter().any(|column| {
+        column.nulls().is_some_and(|nulls| {
+            null_buffer_requires_rebase(
+                nulls.inner().values(),
+                nulls.offset(),
+                nulls.len(),
+                nulls.null_count(),
+            )
+        }) || array_data_requires_bit_rebase(&column.to_data())
+    })
+}
+
+fn array_data_requires_bit_rebase(data: &arrow_data::ArrayData) -> bool {
+    (matches!(data.data_type(), arrow_schema::DataType::Boolean)
+        && (data.offset() != 0
+            || data.buffers().first().is_some_and(|values| {
+                bit_buffer_has_noncanonical_padding(values.as_slice(), data.offset(), data.len())
+            })))
+        || data.nulls().is_some_and(|nulls| {
+            null_buffer_requires_rebase(
+                nulls.inner().values(),
+                nulls.offset(),
+                nulls.len(),
+                nulls.null_count(),
+            )
+        })
+        || data.child_data().iter().any(array_data_requires_bit_rebase)
+}
+
+fn null_buffer_requires_rebase(
+    values: &[u8],
+    offset: usize,
+    len: usize,
+    null_count: usize,
+) -> bool {
+    offset != 0 || null_count == 0 || bit_buffer_has_noncanonical_padding(values, offset, len)
+}
+
+fn bit_buffer_has_noncanonical_padding(values: &[u8], offset: usize, len: usize) -> bool {
+    if len == 0 || !offset.is_multiple_of(8) || len.is_multiple_of(8) {
+        return false;
+    }
+    let final_byte = (offset + len) / 8;
+    let unused_mask = u8::MAX << (len % 8);
+    values
+        .get(final_byte)
+        .is_some_and(|value| value & unused_mask != 0)
 }
 
 fn logical_batch_bytes(batch: &RecordBatch) -> Result<u64> {
@@ -933,12 +994,22 @@ fn join_cursors(left: &CursorPosition, right: &CursorPosition) -> Result<Option<
 mod tests {
     use super::*;
     use arrow_array::{
-        Array, Int64Array, StringArray, StringViewArray,
+        Array, BooleanArray, Int64Array, StringArray, StringViewArray,
         builder::{
             Int64Builder, ListBuilder, ListViewBuilder, StringDictionaryBuilder, UnionBuilder,
         },
     };
     use cdf_kernel::{CursorPosition, FileManifest};
+
+    fn ipc_stream_bytes(batch: &RecordBatch) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut bytes, &batch.schema())
+            .expect("IPC stream writer");
+        writer.write(batch).expect("IPC record batch");
+        writer.finish().expect("IPC stream finish");
+        drop(writer);
+        bytes
+    }
 
     #[test]
     fn ids_depend_only_on_partition_and_segment_ordinals() {
@@ -1434,6 +1505,94 @@ mod tests {
                 .unwrap()
                 .values(),
             &[1, 2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn canonical_microbatch_rebases_sliced_and_dirty_bitmap_padding() {
+        let nullable = RecordBatch::try_from_iter([(
+            "value",
+            std::sync::Arc::new(Int64Array::from(vec![Some(1), None])) as arrow_array::ArrayRef,
+        )])
+        .unwrap();
+        assert!(
+            canonicalization_is_zero_copy(std::slice::from_ref(&nullable), 2, 1024).unwrap(),
+            "an aligned nullable batch must retain the zero-copy path"
+        );
+
+        let booleans = RecordBatch::try_from_iter([(
+            "value",
+            std::sync::Arc::new(BooleanArray::from(vec![false, true, false]))
+                as arrow_array::ArrayRef,
+        )])
+        .unwrap();
+        let sliced = booleans.slice(1, 2);
+        assert!(!canonicalization_is_zero_copy(std::slice::from_ref(&sliced), 2, 1024).unwrap());
+
+        let canonical = canonicalize_batches(vec![sliced], 2, 1024).unwrap();
+        assert_eq!(canonical.len(), 1);
+        assert_eq!(canonical[0].column(0).offset(), 0);
+        assert_eq!(
+            canonical[0]
+                .column(0)
+                .as_any()
+                .downcast_ref::<BooleanArray>()
+                .unwrap(),
+            &BooleanArray::from(vec![true, false])
+        );
+
+        let dirty_boolean_source = RecordBatch::try_from_iter([(
+            "value",
+            std::sync::Arc::new(BooleanArray::from(vec![false, true])) as arrow_array::ArrayRef,
+        )])
+        .unwrap();
+        let dirty_boolean_prefix = dirty_boolean_source.slice(0, 1);
+        assert!(
+            batch_requires_bit_rebase(&dirty_boolean_prefix),
+            "an aligned Boolean prefix must not serialize following values as padding"
+        );
+        let canonical_boolean = canonicalize_batches(vec![dirty_boolean_prefix], 1, 1024)
+            .unwrap()
+            .remove(0);
+        let fresh_boolean = RecordBatch::try_from_iter([(
+            "value",
+            std::sync::Arc::new(BooleanArray::from(vec![false])) as arrow_array::ArrayRef,
+        )])
+        .unwrap();
+        assert_eq!(
+            ipc_stream_bytes(&canonical_boolean),
+            ipc_stream_bytes(&fresh_boolean)
+        );
+
+        let dirty_validity_source = RecordBatch::try_from_iter([(
+            "value",
+            std::sync::Arc::new(Int64Array::from(vec![Some(1), Some(2), None]))
+                as arrow_array::ArrayRef,
+        )])
+        .unwrap();
+        let dirty_validity_prefix = dirty_validity_source.slice(0, 1);
+        assert_eq!(
+            dirty_validity_prefix
+                .column(0)
+                .nulls()
+                .unwrap()
+                .null_count(),
+            0,
+            "the prefix retains an explicit all-valid slice of the source bitmap"
+        );
+        assert!(batch_requires_bit_rebase(&dirty_validity_prefix));
+        let canonical_validity = canonicalize_batches(vec![dirty_validity_prefix], 1, 1024)
+            .unwrap()
+            .remove(0);
+        assert!(canonical_validity.column(0).nulls().is_none());
+        let fresh_validity = RecordBatch::try_new(
+            canonical_validity.schema(),
+            vec![std::sync::Arc::new(Int64Array::from(vec![1]))],
+        )
+        .unwrap();
+        assert_eq!(
+            ipc_stream_bytes(&canonical_validity),
+            ipc_stream_bytes(&fresh_validity)
         );
     }
 

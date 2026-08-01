@@ -280,6 +280,47 @@ fn generated_closeout_envelope_matches_committed_golden() {
 }
 
 #[test]
+#[ignore = "maintenance helper for committed generated performance documents"]
+fn regenerate_committed_performance_documents() {
+    let report: BenchmarkReport = serde_json::from_str(include_str!(
+        "../../../.10x/evidence/.storage/p3-baseline-macos-ef3d84f6.json"
+    ))
+    .unwrap();
+    let spec: EnvelopeSpec =
+        serde_json::from_str(include_str!("../fixtures/p3-envelope-spec.json")).unwrap();
+    let destination_report: BenchmarkReport = serde_json::from_str(include_str!(
+        "../../../.10x/evidence/.storage/p3-destination-matrix-ec2-current.json"
+    ))
+    .unwrap();
+    fs::write(
+        workspace_root().join("docs/performance-baseline.md"),
+        generate_envelope(
+            &report,
+            &spec,
+            &first_party_destination_catalog(),
+            &destination_report,
+            workspace_root(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    let envelope: CloseoutEnvelope =
+        serde_json::from_str(include_str!("../fixtures/p3-closeout-envelope.json")).unwrap();
+    fs::write(
+        workspace_root().join("docs/performance-envelope.md"),
+        generate_closeout_envelope(
+            &envelope,
+            &first_party_destination_catalog(),
+            &destination_report,
+            workspace_root(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
 fn closeout_envelope_fails_closed_on_missing_sources_and_unaccepted_residuals() {
     let original: CloseoutEnvelope =
         serde_json::from_str(include_str!("../fixtures/p3-closeout-envelope.json")).unwrap();

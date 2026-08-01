@@ -25,5 +25,8 @@ cdf-memory = { path = "../cdf-memory" }
 futures-executor = "0.3.32"
 tempfile = "3.27.0"
 
+[package.metadata.cargo-machete]
+ignored = ["tempfile"]
+
 [lints]
 workspace = true

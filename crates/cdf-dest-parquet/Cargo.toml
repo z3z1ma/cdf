@@ -16,7 +16,6 @@ cdf-memory = { path = "../cdf-memory" }
 cdf-package = { path = "../cdf-package" }
 cdf-package-contract = { path = "../cdf-package-contract" }
 cdf-runtime = { path = "../cdf-runtime" }
-bytes = "1.11.1"
 hex = "0.4.3"
 object_store = { git = "https://github.com/apache/arrow-rs-object-store.git", rev = "c7316d29face118e7409eead0cda098f38589428" }
 futures-util = "0.3.32"

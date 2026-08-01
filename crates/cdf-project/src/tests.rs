@@ -3199,7 +3199,9 @@ schema = { fields = [
     let resource = compile_single_project_resource(temp.path());
 
     let run = |jobs: u16| {
-        let execution = test_execution_services_with_slots(4, 512 * 1024 * 1024)
+        // Cover the declared source and segment working sets so this test exercises the jobs-4
+        // topology instead of the intentionally serial low-memory fallback.
+        let execution = test_execution_services_with_slots(4, 2 * 1024 * 1024 * 1024)
             .with_run_job_ceiling(jobs)
             .unwrap();
         let transport = RecordingHttpFileTransport::new(encoded.clone());
@@ -3252,7 +3254,11 @@ schema = { fields = [
     let (serial, serial_progress) = run(1);
     let (parallel, parallel_progress) = run(4);
     assert_eq!(serial_progress.peak_active_streams, 1);
-    assert!(parallel_progress.peak_active_streams >= 2);
+    assert!(
+        parallel_progress.peak_active_streams >= 2,
+        "progress={parallel_progress:?}, frontier={:?}",
+        parallel.source_frontier
+    );
     assert_eq!(
         parallel.output.profile.output_rows,
         u64::try_from(4 * rows_per_file).unwrap()

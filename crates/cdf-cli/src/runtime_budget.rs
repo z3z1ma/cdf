@@ -127,10 +127,7 @@ fn env_byte_size(name: &str) -> Result<Option<u64>, CliError> {
 fn detect_memory_authority() -> MemoryAuthorityReport {
     #[cfg(target_os = "linux")]
     {
-        return memory_authority_from_current_cgroup(
-            Path::new(CGROUP_ROOT),
-            Path::new(PROC_SELF_CGROUP),
-        );
+        memory_authority_from_current_cgroup(Path::new(CGROUP_ROOT), Path::new(PROC_SELF_CGROUP))
     }
     #[cfg(not(target_os = "linux"))]
     {

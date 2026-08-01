@@ -2705,6 +2705,9 @@ fn validate_package_segments_match_delta(
 }
 
 #[cfg(test)]
+mod model_tests;
+
+#[cfg(test)]
 mod stream_admission_replay_tests {
     use std::{
         collections::BTreeMap,

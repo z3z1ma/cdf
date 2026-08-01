@@ -18,7 +18,6 @@ cdf-package = { path = "../cdf-package" }
 cdf-package-contract = { path = "../cdf-package-contract" }
 cdf-postgres = { path = "../cdf-postgres" }
 cdf-runtime = { path = "../cdf-runtime" }
-futures-util = "0.3.32"
 hex = "0.4.3"
 postgres = "0.19"
 serde = { version = "1.0.228", features = ["derive"] }
