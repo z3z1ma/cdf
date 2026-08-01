@@ -91,6 +91,10 @@ and prevents connector work from silently expanding the generic core.
   not a production invariant failure. Commit `4dfca286` expresses both permitted winner/duplicate
   schedules and passed 50/50 stress iterations. Final hosted run `30676480811` at that exact code
   commit is now the only remaining technical closure gate.
+- 2026-07-31: Run `30676480811` then passed 19 jobs and exposed one metrics-only environment gap:
+  llvm-cov executes Postgres-required conformance tests but its job lacked the established service.
+  Commit `41421d93` supplies that authority. Final hosted run `30677283399` at that exact commit is
+  the only remaining technical closure gate.
 
 ## Blockers
 

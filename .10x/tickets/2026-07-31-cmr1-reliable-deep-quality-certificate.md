@@ -132,6 +132,13 @@ cells without weakening its shared assertions or catalog coverage.
   independent loser, and external readback. It passed 50/50 nextest stress iterations and strict
   all-target/all-feature `cdf-dest-parquet` Clippy. Final hosted run `30676480811` targets pushed
   commit `4dfca286`; the superseded `30676262226` was cancelled.
+- 2026-07-31: Run `30676480811` passed 19 independent jobs, including workspace tests/docs and
+  every completed correctness/security/supply-chain lane, before coverage failed. Its coverage
+  command runs all-feature workspace tests but the metrics job alone lacked the Postgres service;
+  92 conformance and all 300 CLI tests passed there, while exactly three Postgres-required tests
+  failed with the explicit missing-`TEST_DATABASE_URL` environment error. Added the same
+  Postgres-16 health fence and URL used by every conformance lane. Final hosted run `30677283399`
+  targets pushed workflow/code commit `41421d93`; `30676480811` was then cancelled as superseded.
 
 ## Blockers
 
@@ -185,6 +192,10 @@ None.
   'test(concurrent_same_token_publication_is_immutable_and_independently_verifiable)'
   --stress-count 50 --locked`: 50/50 scheduling iterations passed after expressing both permitted
   winner/duplicate outcomes. Strict all-target/all-feature `cdf-dest-parquet` Clippy passed.
+- Hosted coverage diagnosis from job `91304961892`: 92/95 active conformance tests and 300/300 CLI
+  tests passed under llvm-cov; the three failures all named the absent Postgres environment
+  authority. YAML parsing and `git diff --check` passed after adding the established service block
+  to the metrics job.
 
 ## Review
 

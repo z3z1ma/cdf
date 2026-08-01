@@ -34,6 +34,10 @@ test-fixture isolation, generated-artifact drift, tool invocation/configuration,
 exceptions, and unrelated inventory. Apply one bounded corrective tranche and dispatch one clean
 run at its exact commit; do not turn each surfaced line into a separate serial review cycle.
 
+Any coverage job that runs the all-feature workspace tests is also a conformance execution lane:
+it must provision the same Postgres service and `TEST_DATABASE_URL` as ordinary conformance.
+Coverage instrumentation does not make live-provider requirements optional.
+
 Scanner exit status is not itself policy. Preserve the full Semgrep registry inventory as an
 artifact, but block on its warning/error severities rather than treating informational uses of
 `unsafe`, process arguments, temporary directories, and current-executable discovery as 100+
