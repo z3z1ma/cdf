@@ -1,8 +1,8 @@
-Status: active
+Status: done
 Created: 2026-07-31
 Updated: 2026-07-31
-Parent: `.10x/tickets/2026-07-31-connector-mode-readiness-program.md`
-Depends-On: `.10x/tickets/2026-07-31-cmr2-model-based-core-falsifiers.md`
+Parent: `.10x/tickets/done/2026-07-31-connector-mode-readiness-program.md`
+Depends-On: `.10x/tickets/done/2026-07-31-cmr2-model-based-core-falsifiers.md`
 
 # Add connector certification and a core-change budget
 
@@ -38,7 +38,7 @@ quality profile rather than silently normalizing the change.
 
 ## References
 
-- `.10x/tickets/2026-07-31-connector-mode-readiness-program.md`
+- `.10x/tickets/done/2026-07-31-connector-mode-readiness-program.md`
 - `.10x/knowledge/source-destination-extension-invariant.md`
 - `.10x/specs/source-extension-runtime-contract.md`
 - `.10x/specs/destination-extension-runtime-contract.md`

@@ -34,12 +34,13 @@ enforcement, catalog-task source commons, destination common services, typed CLI
 holistic CLI experience, crash-publication follow-up, and final extension-authoring proof are
 closed. The active executable ticket graph is zero.
 
-The finite connector-mode readiness successor is active at
-`.10x/tickets/2026-07-31-connector-mode-readiness-program.md`. It owns three bounded workstreams:
-reliable/observable deep quality, model-based deterministic-package and settlement falsifiers,
-and one connector certification entry point with an explicit core-change budget. It adds no
-connector or product behavior. After it closes, the core returns to demand-driven maintenance and
-the user-ratified connector wave becomes the active focus.
+The finite connector-mode readiness successor is terminal at
+`.10x/tickets/done/2026-07-31-connector-mode-readiness-program.md`. Its independently observable
+deep certificate, model-based deterministic-package and settlement falsifiers, and connector
+admission command with explicit core-change budget are closed. Final Slow Quality passed 21/21
+jobs, and `.10x/evidence/2026-07-31-connector-mode-readiness-closure.md` records the aggregate
+limits. The active executable ticket graph is zero; the core returns to demand-driven maintenance
+and the user-ratified connector wave is now the active focus.
 
 Parked capabilities below remain demand-activated rather than silently reopened; the next feature
 wave still requires the activation rule at the end of this record.

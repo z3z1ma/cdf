@@ -1,8 +1,8 @@
-Status: active
+Status: done
 Created: 2026-07-31
 Updated: 2026-07-31
-Parent: `.10x/tickets/2026-07-31-connector-mode-readiness-program.md`
-Depends-On: `.10x/tickets/2026-07-31-cmr1-reliable-deep-quality-certificate.md`
+Parent: `.10x/tickets/done/2026-07-31-connector-mode-readiness-program.md`
+Depends-On: `.10x/tickets/done/2026-07-31-cmr1-reliable-deep-quality-certificate.md`
 
 # Add model-based core falsifiers
 
@@ -32,7 +32,7 @@ reference models and the current production authorities.
 
 ## References
 
-- `.10x/tickets/2026-07-31-connector-mode-readiness-program.md`
+- `.10x/tickets/done/2026-07-31-connector-mode-readiness-program.md`
 - `.10x/specs/checkpoint-state-commit-gate.md`
 - `.10x/specs/deterministic-parallel-scheduler.md`
 - `.10x/knowledge/product-integration-and-closure-gate.md`

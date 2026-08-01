@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-31
 Updated: 2026-07-31
 
@@ -16,9 +16,9 @@ This is a parent plan and prioritization authority, not an executable implementa
 
 ## Workstreams and sequence
 
-1. `.10x/tickets/2026-07-31-cmr1-reliable-deep-quality-certificate.md`
-2. `.10x/tickets/2026-07-31-cmr2-model-based-core-falsifiers.md`
-3. `.10x/tickets/2026-07-31-cmr3-connector-certification-and-core-budget.md`
+1. `.10x/tickets/done/2026-07-31-cmr1-reliable-deep-quality-certificate.md`
+2. `.10x/tickets/done/2026-07-31-cmr2-model-based-core-falsifiers.md`
+3. `.10x/tickets/done/2026-07-31-cmr3-connector-certification-and-core-budget.md`
 
 CMR1 establishes a trustworthy current-HEAD certificate and bounded conformance execution.
 CMR2 adds high-value generative evidence for deterministic packaging and receipt-gated
@@ -106,12 +106,28 @@ None.
 
 ## Evidence
 
-Pending child execution.
+All child acceptance criteria map to their journaled evidence. Aggregate closure is recorded at
+`.10x/evidence/2026-07-31-connector-mode-readiness-closure.md`; final hosted run `30678125873`
+passed 21/21 jobs at exact code commit `161d10ff`.
 
 ## Review
 
-Pending aggregate closure.
+One frozen OCR-selected delegated batch reviewed the complete program range. Quality automation
+passed; identity and admission reported six high findings. The single repair tranche closed all
+six with reproducing laws and focused verification. No critical/high issue remains. Aggregate
+verdict: pass. Residual limits are recorded in the closure evidence rather than reopened as review.
 
 ## Retrospective
 
-Pending closure.
+The original piecemeal failure pattern came from one serial workflow hiding independent dormant
+gate defects. Splitting the certificate exposed the full frontier concurrently, but closure still
+needed discipline: each later failure was inspected once and classified as runtime correctness,
+overconstrained test semantics, or missing gate authority. The only mission-critical runtime stall
+was a truthful-memory problem: REST's declared minimum did not cover its irreducible decode
+reservation after the destination's resident lease. Making that bound explicit and failing before
+work removed the closed wait without raising production budgets.
+
+The program compounded into focused knowledge on Arrow bitmap identity, concurrent receipt
+outcomes, hosted gate execution, and connector admission. No new procedural skill was warranted:
+the recurring connector workflow is already executable in `tools/certify-connector.py`, while the
+hosted fixes belong in workflow/knowledge authority rather than a duplicate runbook.
