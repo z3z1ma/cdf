@@ -68,6 +68,10 @@ quality profile rather than silently normalizing the change.
   `--core-impact` retains the connector checks and adds the engine/runtime/project/CLI regression
   suite plus strict workspace all-feature Clippy. Child logs stay on stderr while stdout and the
   optional report path receive one versioned JSON result.
+- 2026-07-31: From clean pushed commit `db306682`, the documented command passed for the Nebula
+  source and Quasar destination. Reports under ignored `target/quality/` bind both claims to the
+  exact `origin/main` merge base and show an empty working change set, connector-only profile, all
+  selected commands, fixed timeouts, durations, and a pass verdict.
 
 ## Blockers
 
@@ -86,6 +90,14 @@ None.
   Every executed cell asserted plan honesty, package verification, durable receipt verification,
   checkpoint-after-receipt gating, artifact replay identity, and no-op duplicate behavior.
 - Strict all-target/all-feature `cdf-conformance` Clippy, formatting, and diff checks passed.
+- `python3 tools/certify-connector.py --kind source --id nebula`: five of five checks passed.
+  Identity-specific registry/schema/add/discovery/doctor and product laws passed; ordinary
+  conformance passed 95/95; the 12-cell source matrix executed nine supported cells and recorded
+  three sheet exclusions; the generic source compiler graph fence passed.
+- `python3 tools/certify-connector.py --kind destination --id quasar`: seven of seven checks
+  passed. Ordinary conformance passed 95/95; the 15-cell destination matrix executed five append
+  cells and recorded ten sheet exclusions; all four crash windows passed; three CLI
+  lock/plan/run/replay/resume/doctor/inspect laws passed; and static destination boundaries passed.
 
 ## Review
 
@@ -93,4 +105,18 @@ Pending program review.
 
 ## Retrospective
 
-Pending execution.
+Reusing the registered matrix in its opposite orientation was the key simplification. Source
+shards remain the scheduled aggregate authority; the destination selector only filters the same
+cells for connector admission, so it cannot drift into a competing assertion engine. Keeping the
+outer entry point in the Python standard library avoided another Rust build graph solely for
+process orchestration.
+
+The change budget is intentionally file-granular. It cannot prove that an edit inside a catalog
+file changed only one construction row, so catalog hashes, identity-named laws, generic static
+fences, full ordinary conformance, and the selected lifecycle slices remain necessary. Conversely,
+a `--core-impact` flag that merely waived the file check would reward boundary leakage; retaining
+all connector laws before adding the core profile makes the acknowledgement evidence-bearing.
+
+No new 10x skill was created. The recurring procedure is already executable in
+`tools/certify-connector.py` and documented for humans in `docs/connector-authoring.md`; a second
+skill copy would create another command/profile authority rather than remove toil.

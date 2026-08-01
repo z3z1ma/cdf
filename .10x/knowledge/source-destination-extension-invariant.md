@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-10
-Updated: 2026-07-28
+Updated: 2026-07-31
 
 # Source and destination extension invariant
 
@@ -48,6 +48,15 @@ dependencies cannot evade the boundary. Data-driven catalog fixtures hash comple
 source option schemas, and destination inspection artifacts; their inspection rows come from the
 same construction table that installs destinations, so a test cannot silently omit a newly
 enrolled driver.
+
+Every connector change is admitted through `tools/certify-connector.py`. Its connector-only Git
+budget accepts the adapter leaf, explicit catalog and matching fixture rows, manifests, and
+execution documentation/evidence. Any other changed file is generic core impact. `--core-impact`
+is an acknowledgement, not an exception: it preserves the selected connector laws and adds the
+broader engine/runtime/project/CLI regression and strict workspace Clippy profile. The report is
+versioned JSON, binds the merge base and complete working change set, and has no caller-supplied
+file-list override. The shortest authoring path and exact accepted surfaces live in
+`docs/connector-authoring.md`.
 
 Driver concurrency follows `.10x/decisions/driver-session-concurrency-canon.md`: drivers are
 thread-safe factories, resolved runtimes are run-owned, finalized sessions may borrow

@@ -79,6 +79,10 @@ and prevents connector work from silently expanding the generic core.
   recommendation. The program is deliberately limited to three bounded workstreams and one final
   review batch; live provider breadth moves into connector certification rather than extending
   this core program indefinitely.
+- 2026-07-31: All three implementation workstreams reached pushed commits. The model falsifier
+  found and repaired Arrow bitmap-padding identity drift; the connector certificate passed from
+  clean HEAD for both Nebula and Quasar. Remaining closure is bounded to hosted run `30675543293`,
+  one frozen delegated review, record/status reconciliation, and final push.
 
 ## Blockers
 

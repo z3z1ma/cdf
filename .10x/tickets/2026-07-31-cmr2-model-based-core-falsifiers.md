@@ -37,6 +37,7 @@ reference models and the current production authorities.
 - `.10x/specs/deterministic-parallel-scheduler.md`
 - `.10x/knowledge/product-integration-and-closure-gate.md`
 - `.10x/knowledge/quality-gate-execution.md`
+- `.10x/knowledge/canonical-arrow-bitmap-identity.md`
 
 ## Assumptions
 

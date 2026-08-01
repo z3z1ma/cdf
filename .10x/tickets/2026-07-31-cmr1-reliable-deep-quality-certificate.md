@@ -117,6 +117,9 @@ cells without weakening its shared assertions or catalog coverage.
   attributable unused-manifest findings. The fixture now supplies 2 GiB so it genuinely exercises
   jobs=4, the registry and generated documents represent all four evidenced Parquet codec paths,
   and cargo-machete is clean without suppressing any real dependency finding.
+- 2026-07-31: Dispatched the clean aggregate certificate as hosted Slow Quality run `30675543293`
+  at pushed commit `db306682`. Shard resolution passed and independent jobs began normally; final
+  aggregate conclusion remains the only CMR1 closure gate still in progress.
 
 ## Blockers
 

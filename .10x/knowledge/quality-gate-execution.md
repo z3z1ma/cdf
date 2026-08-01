@@ -80,6 +80,20 @@ route failures to the authoring lane. Do not run several contending copies of th
 Each lane remains responsible for focused tests, formatting its owned paths, and journaled
 evidence.
 
+## Connector admission
+
+Use `tools/certify-connector.py` for a source or destination admission claim. It is orchestration,
+not a second semantic harness: it selects identity-named fixture laws, ordinary conformance, the
+registered matrix slice, and the applicable graph/product/chaos laws. Child output goes to stderr;
+stdout and `--report` contain one machine-readable result with the merge base, complete changed
+file set, selected profile, exact commands, timeouts, durations, and statuses.
+
+The classifier reads committed, staged, unstaged, deleted, and untracked files directly from Git.
+Do not add a manual changed-file override: that would let CI certify a subset while omitting a
+core edit. Generic ownership without acknowledgement fails before expensive checks. With
+`--core-impact`, run every connector law first and then the broader core regression and strict
+workspace all-feature Clippy profile.
+
 ## Build and performance runbooks
 
 Routine local and EC2 builds that include DuckDB SHOULD follow
