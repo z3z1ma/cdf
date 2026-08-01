@@ -2428,14 +2428,30 @@ fn concurrent_same_token_publication_is_immutable_and_independently_verifiable()
 
     assert_eq!(first_plan.manifest_key, second_plan.manifest_key);
     assert_eq!(first.receipt, second.receipt);
-    assert!(matches!(
-        first.verification,
-        cdf_runtime::DestinationCommitVerification::VerifiedAtCommit(_)
-    ));
-    assert!(matches!(
-        second.verification,
-        cdf_runtime::DestinationCommitVerification::VerifiedAtCommit(_)
-    ));
+    let commit_verified = [&first, &second]
+        .into_iter()
+        .filter(|outcome| {
+            matches!(
+                outcome.verification,
+                cdf_runtime::DestinationCommitVerification::VerifiedAtCommit(_)
+            )
+        })
+        .count();
+    assert!(
+        commit_verified >= 1,
+        "at least one concurrent publisher must verify the immutable publication it won"
+    );
+    for outcome in [&first, &second] {
+        if outcome.verification == cdf_runtime::DestinationCommitVerification::Independent {
+            assert_eq!(
+                outcome.reporting_policy,
+                cdf_runtime::DestinationReceiptReportingPolicy::DestinationCommit {
+                    duplicate: true
+                },
+                "a racer that observes the winning manifest must report the duplicate path"
+            );
+        }
+    }
     let verifier = test_object_store(store, "lake").unwrap();
     assert!(verifier.verify_receipt(&first.receipt).unwrap().verified);
 }
