@@ -2270,6 +2270,18 @@ fn resolve_pipeline_concurrency(
             segment_encode_jobs: 0,
         });
     }
+    let admission = &plan
+        .partition_schedule
+        .as_ref()
+        .ok_or_else(|| {
+            CdfError::contract("pipeline admission requires a compiled partition schedule")
+        })?
+        .admission;
+    let source_minimum_working_set_bytes = admission.minimum_working_set_bytes;
+    let source_working_set_bytes = admission.maximum_working_set_bytes;
+    let snapshot = services.memory().snapshot();
+    let available_bytes = snapshot.budget_bytes.saturating_sub(snapshot.current_bytes);
+    require_source_minimum_headroom(available_bytes, source_minimum_working_set_bytes)?;
     let requested_encode_jobs =
         usize::from(services.capabilities().logical_cpu_slots.saturating_sub(1));
     if requested_encode_jobs == 0 {
@@ -2278,19 +2290,9 @@ fn resolve_pipeline_concurrency(
             segment_encode_jobs: 0,
         });
     }
-    let source_working_set_bytes = plan
-        .partition_schedule
-        .as_ref()
-        .ok_or_else(|| {
-            CdfError::contract("pipeline admission requires a compiled partition schedule")
-        })?
-        .admission
-        .maximum_working_set_bytes;
     let compiled_source = plan.compiled_source_execution.as_ref().ok_or_else(|| {
         CdfError::contract("pipeline admission requires a compiled source execution plan")
     })?;
-    let snapshot = services.memory().snapshot();
-    let available_bytes = snapshot.budget_bytes.saturating_sub(snapshot.current_bytes);
     let staged_handoff_bytes = if staged_handoff {
         plan.operator_graph
             .as_ref()
@@ -2346,16 +2348,35 @@ fn resolve_pipeline_concurrency(
         requested_source_jobs,
         requested_encode_jobs,
         available_bytes,
+        source_minimum_working_set_bytes,
         source_working_set_bytes,
         maximum_segment_bytes,
         staged_handoff_bytes,
     )
 }
 
+fn require_source_minimum_headroom(
+    available_bytes: u64,
+    source_minimum_working_set_bytes: u64,
+) -> Result<()> {
+    if source_minimum_working_set_bytes == 0 {
+        return Err(CdfError::contract(
+            "pipeline admission requires a nonzero source minimum working-set bound",
+        ));
+    }
+    if available_bytes < source_minimum_working_set_bytes {
+        return Err(CdfError::data(format!(
+            "source execution requires at least {source_minimum_working_set_bytes} managed bytes after resident destination working sets, but only {available_bytes} bytes are free",
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn resolve_pipeline_concurrency_from_bounds(
     requested_source_jobs: usize,
     requested_encode_jobs: usize,
     available_bytes: u64,
+    source_minimum_working_set_bytes: u64,
     source_working_set_bytes: u64,
     segment_admission_bytes: u64,
     staged_handoff_bytes: u64,
@@ -2366,6 +2387,7 @@ pub(crate) fn resolve_pipeline_concurrency_from_bounds(
             segment_encode_jobs: 0,
         });
     }
+    require_source_minimum_headroom(available_bytes, source_minimum_working_set_bytes)?;
     if source_working_set_bytes == 0 || segment_admission_bytes == 0 {
         return Err(CdfError::contract(
             "pipeline admission requires nonzero source and segment working-set bounds",

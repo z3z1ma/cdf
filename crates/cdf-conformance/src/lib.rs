@@ -51,7 +51,7 @@ pub fn test_execution_services() -> cdf_runtime::ExecutionServices {
         std::sync::OnceLock::new();
     SERVICES
         .get_or_init(|| {
-            cdf_engine::StandaloneExecutionHost::default_services(128 * 1024 * 1024)
+            cdf_engine::StandaloneExecutionHost::default_services(512 * 1024 * 1024)
                 .expect("conformance execution host")
                 .1
                 .with_content_reachability_store(std::sync::Arc::new(

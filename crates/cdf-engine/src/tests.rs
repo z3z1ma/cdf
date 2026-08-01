@@ -6581,6 +6581,7 @@ fn pipeline_concurrency_joins_source_segment_and_encode_bounds() {
         15,
         1_504 * MIB,
         64 * MIB,
+        64 * MIB,
         256 * MIB,
         0,
     )
@@ -6592,6 +6593,7 @@ fn pipeline_concurrency_joins_source_segment_and_encode_bounds() {
         16,
         15,
         16 * 1024 * MIB,
+        64 * MIB,
         64 * MIB,
         256 * MIB,
         0,
@@ -6610,6 +6612,7 @@ fn pipeline_concurrency_falls_back_to_safe_inline_encoding() {
         15,
         900 * MIB,
         64 * MIB,
+        64 * MIB,
         256 * MIB,
         0,
     )
@@ -6621,6 +6624,7 @@ fn pipeline_concurrency_falls_back_to_safe_inline_encoding() {
         1,
         15,
         700 * MIB,
+        64 * MIB,
         64 * MIB,
         256 * MIB,
         0,
@@ -6641,6 +6645,7 @@ fn pipeline_concurrency_reserves_the_staged_handoff_window() {
         15,
         1_504 * MIB,
         64 * MIB,
+        64 * MIB,
         256 * MIB,
         512 * MIB,
     )
@@ -6653,12 +6658,33 @@ fn pipeline_concurrency_reserves_the_staged_handoff_window() {
         15,
         16 * 1024 * MIB,
         64 * MIB,
+        64 * MIB,
         256 * MIB,
         512 * MIB,
     )
     .unwrap();
     assert_eq!(roomy.source_jobs, 16);
     assert_eq!(roomy.segment_encode_jobs, 15);
+}
+
+#[test]
+fn pipeline_concurrency_rejects_an_unavailable_source_minimum() {
+    const MIB: u64 = 1024 * 1024;
+
+    let error = crate::execution::resolve_pipeline_concurrency_from_bounds(
+        1,
+        0,
+        96 * MIB,
+        96 * MIB + 8 * 1024,
+        160 * MIB,
+        256 * MIB,
+        0,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+    assert!(error.message.contains("resident destination working sets"));
+    assert!(error.message.contains("only 100663296 bytes are free"));
 }
 
 fn skewed_resource(

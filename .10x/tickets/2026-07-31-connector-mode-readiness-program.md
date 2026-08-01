@@ -95,6 +95,10 @@ and prevents connector work from silently expanding the generic core.
   llvm-cov executes Postgres-required conformance tests but its job lacked the established service.
   Commit `41421d93` supplies that authority. Final hosted run `30677283399` at that exact commit is
   the only remaining technical closure gate.
+- 2026-07-31: Before accepting that run, an exact local REST-shard reproduction converted its
+  Parquet stall into a bounded core correction: truthful REST minimum-memory admission plus a
+  generic fail-before-source fence. The formerly hanging shard now completes in 13.43 seconds;
+  the pushed correction and one replacement hosted certificate are the remaining closure steps.
 
 ## Blockers
 

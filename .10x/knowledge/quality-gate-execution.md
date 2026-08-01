@@ -68,6 +68,15 @@ worker budget can turn a tiny duplicate replay into an unbounded `reserve_blocki
 deep shard stalls but the corresponding live-repeat law passes, capture one process stack and
 compare live versus finalized-package input ownership before changing timeouts or concurrency.
 
+For live staged ingress, evaluate source minimum working-set admission after the destination has
+reserved its resident writer leases. Maximum source bounds choose safe fan-out; the minimum is the
+irreducible fail-before-work boundary. If the remaining managed budget cannot satisfy that minimum,
+return a typed data error before opening the source. Never fall back to serial execution merely
+because the input may be small when a decoder or discovery path unconditionally reserves its full
+minimum: a staged writer holding one lease while the source awaits another is a cyclic wait. Keep
+full connector-matrix harnesses large enough for every supported topology and prove low-budget
+behavior in a focused fail-fast regression.
+
 Historical Gitleaks scans have two known false-positive `generic-api-key` findings in removed Python-era Harness SDK-key field declarations. See `.10x/knowledge/historical-gitleaks-findings.md` for exact fingerprints and limits. Treat only those exact fingerprints as documented historical scanner noise; any new history finding, and any finding from a current-tree or staged-diff scan selected by `QUALITY.md`, remains a hard failure until triaged.
 
 ## Product lifecycle gate

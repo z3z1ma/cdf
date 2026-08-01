@@ -139,6 +139,14 @@ cells without weakening its shared assertions or catalog coverage.
   failed with the explicit missing-`TEST_DATABASE_URL` environment error. Added the same
   Postgres-16 health fence and URL used by every conformance lane. Final hosted run `30677283399`
   targets pushed workflow/code commit `41421d93`; `30676480811` was then cancelled as superseded.
+- 2026-07-31: Exact local reproduction of the remaining REST shard stall found a second closed
+  memory wait at REST-to-Parquet startup. Parquet truthfully reserved its 32 MiB writer before
+  extraction, but REST advertised an 8 KiB decode minimum even though absent physical evidence
+  requires a 96 MiB full-content JSON discovery reservation. REST now declares that irreducible
+  minimum, generic pipeline admission fails before source execution when resident destination
+  leases leave too little headroom, and the broad cross-product harness uses 512 MiB rather than
+  accidentally testing an impossible topology. The exact REST shard now completes in 13.43
+  seconds.
 
 ## Blockers
 
@@ -196,6 +204,15 @@ None.
   tests passed under llvm-cov; the three failures all named the absent Postgres environment
   authority. YAML parsing and `git diff --check` passed after adding the established service block
   to the metrics job.
+- `cargo test -p cdf-engine pipeline_concurrency_ --locked -- --nocapture`: all four admission
+  laws passed, including a 96 MiB-free/96 MiB-plus-8-KiB-minimum case that returns typed `Data`
+  instead of entering execution. `cargo test -p cdf-source-rest --lib --locked` passed 8/8 active
+  tests. Strict all-target/all-feature Clippy passed for `cdf-engine`, `cdf-source-rest`, and
+  `cdf-conformance`; formatting and diff checks passed.
+- The exact REST registered-source shard completed all 12 declared cells in 13.43 seconds: nine
+  executed cells passed, including Parquet append/replace, Postgres append/replace/merge, duplicate
+  no-op, artifact replay identity, receipt verification, and checkpoint ordering; three
+  sheet-unsupported cells were explicitly excluded.
 
 ## Review
 
@@ -224,3 +241,9 @@ actually obtained, not merely the jobs value it requested. The 512 MiB fixture w
 scheduling: admission correctly serialized a source/segment/encoder frontier that could not fit.
 Raising only that test's budget made the intended overlap observable while preserving the
 production memory law.
+
+The REST-to-Parquet stall exposed the complementary admission rule: maximum bounds decide safe
+fan-out, but a declared minimum is the fail-before-work boundary after resident destination leases
+are counted. A full connector cross-product harness should carry enough memory for every supported
+topology; constrained-memory behavior belongs in a focused law that proves a typed error, never in
+a broad matrix where an impossible topology looks like connector flakiness.

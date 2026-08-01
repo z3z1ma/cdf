@@ -12,6 +12,8 @@ pub(crate) const REST_MAXIMUM_RESPONSE_BYTES: u64 = 32 * 1024 * 1024;
 // Paginated execution double-buffers bounded response pages so network I/O for N+1 can overlap
 // Arrow decode for N. The source scheduler admits both buffers before opening the partition.
 pub(crate) const REST_MAXIMUM_POLL_BYTES: u64 = REST_MAXIMUM_RESPONSE_BYTES * 2;
+// Full-content JSON discovery reserves this entire working set before consuming a response body.
+pub(crate) const REST_MINIMUM_DECODE_BYTES: u64 = 96 * 1024 * 1024;
 // The JSON driver's compiled decode working set. Together with the two admitted response pages,
 // this is a truthful 160 MiB maximum per active REST partition without double-counting.
 pub(crate) const REST_MAXIMUM_DECODE_BYTES: u64 = 96 * 1024 * 1024;
