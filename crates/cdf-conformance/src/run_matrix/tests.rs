@@ -1,9 +1,10 @@
 use super::{
-    ExcludedMatrixCell, RunMatrixOutput, SourceArchetype, core,
-    destinations::ConformanceEnvironment, run_spine_matrix_cells, source_catalog,
-    source_matrix_cells,
+    ExcludedMatrixCell, MatrixDestination, RunMatrixCell, RunMatrixOutput, SourceArchetype, core,
+    destination_matrix_cells, destinations::ConformanceEnvironment, run_spine_matrix_cells,
+    source_catalog, source_matrix_cells,
 };
 
+const RUN_MATRIX_DESTINATION_ENV: &str = "CDF_RUN_MATRIX_DESTINATION";
 const RUN_MATRIX_SOURCE_ENV: &str = "CDF_RUN_MATRIX_SOURCE";
 const RUN_MATRIX_SHARDS_JSON: &str = include_str!("../../run-matrix-shards.json");
 
@@ -41,9 +42,55 @@ fn registered_source_shard_cells_persist_output() {
     let environment = ConformanceEnvironment::start().expect(
         "C2 run matrix requires Postgres coverage; set TEST_DATABASE_URL or install initdb/pg_ctl",
     );
-    let mut output = RunMatrixOutput::default();
+    let cells = source_matrix_cells(source.clone());
+    let output = execute_cells(cells.clone(), &environment);
 
-    for cell in source_matrix_cells(source.clone()) {
+    assert_source_counts(&output, &source);
+    assert_required_cells(&output, &cells);
+
+    let serialized = serde_json::to_string(&output).unwrap();
+    assert!(!serialized.contains("run-matrix-token"));
+    environment.assert_redacted(&serialized);
+    println!("CDF_RUN_MATRIX_OUTPUT={serialized}");
+}
+
+#[test]
+#[ignore = "connector certification destination slice; set CDF_RUN_MATRIX_DESTINATION"]
+fn registered_destination_shard_cells_persist_output() {
+    let destination = MatrixDestination::new(
+        std::env::var(RUN_MATRIX_DESTINATION_ENV)
+            .unwrap_or_else(|_| panic!("{RUN_MATRIX_DESTINATION_ENV} must name a destination")),
+    )
+    .expect("run-matrix destination must be a valid identifier");
+    assert!(
+        crate::destination_catalog::conformance_destinations().contains(&destination),
+        "run-matrix destination `{}` is absent from the conformance catalog",
+        destination.as_str()
+    );
+
+    let environment = ConformanceEnvironment::start().expect(
+        "connector certification requires Postgres coverage; set TEST_DATABASE_URL or install initdb/pg_ctl",
+    );
+    let cells = destination_matrix_cells(&destination);
+    let output = execute_cells(cells.clone(), &environment);
+    assert_eq!(
+        output.executed_cells.len() + output.excluded_cells.len(),
+        cells.len()
+    );
+    assert_required_cells(&output, &cells);
+
+    let serialized = serde_json::to_string(&output).unwrap();
+    assert!(!serialized.contains("run-matrix-token"));
+    environment.assert_redacted(&serialized);
+    println!("CDF_RUN_MATRIX_OUTPUT={serialized}");
+}
+
+fn execute_cells(
+    cells: Vec<RunMatrixCell>,
+    environment: &ConformanceEnvironment,
+) -> RunMatrixOutput {
+    let mut output = RunMatrixOutput::default();
+    for cell in cells {
         let cell_id = format!(
             "{}/{}/{}",
             cell.source_archetype,
@@ -51,7 +98,7 @@ fn registered_source_shard_cells_persist_output() {
             cell.disposition.as_str()
         );
         println!("CDF_RUN_MATRIX_CELL_START={cell_id}");
-        if let Some(reason) = core::sheet_exclusion_reason(&cell, &environment).unwrap() {
+        if let Some(reason) = core::sheet_exclusion_reason(&cell, environment).unwrap() {
             println!("CDF_RUN_MATRIX_CELL_EXCLUDED={cell_id}");
             output
                 .excluded_cells
@@ -59,7 +106,7 @@ fn registered_source_shard_cells_persist_output() {
             continue;
         }
 
-        let executed = core::execute_cell(cell.clone(), &environment).unwrap_or_else(|error| {
+        let executed = core::execute_cell(cell.clone(), environment).unwrap_or_else(|error| {
             panic!(
                 "run-matrix cell {}/{}/{} failed: {error}",
                 cell.source_archetype,
@@ -70,14 +117,7 @@ fn registered_source_shard_cells_persist_output() {
         output.executed_cells.push(executed);
         println!("CDF_RUN_MATRIX_CELL_PASS={cell_id}");
     }
-
-    assert_source_counts(&output, &source);
-    assert_required_cells(&output, &source);
-
-    let serialized = serde_json::to_string(&output).unwrap();
-    assert!(!serialized.contains("run-matrix-token"));
-    environment.assert_redacted(&serialized);
-    println!("CDF_RUN_MATRIX_OUTPUT={serialized}");
+    output
 }
 
 fn declared_shards() -> Vec<SourceArchetype> {
@@ -99,14 +139,14 @@ fn assert_source_counts(output: &RunMatrixOutput, source: &SourceArchetype) {
     );
 }
 
-fn assert_required_cells(output: &RunMatrixOutput, source: &SourceArchetype) {
-    for cell in source_matrix_cells(source.clone()) {
+fn assert_required_cells(output: &RunMatrixOutput, cells: &[RunMatrixCell]) {
+    for cell in cells {
         let executed = output
             .executed_cells
             .iter()
-            .any(|executed| executed.cell == cell);
+            .any(|executed| &executed.cell == cell);
         let excluded = output.excluded_cells.iter().any(|excluded| {
-            excluded.cell == cell && excluded.reason.contains("supported_dispositions=")
+            &excluded.cell == cell && excluded.reason.contains("supported_dispositions=")
         });
         assert_ne!(
             executed, excluded,

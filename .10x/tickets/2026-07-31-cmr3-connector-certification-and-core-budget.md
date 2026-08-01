@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-31
 Updated: 2026-07-31
 Parent: `.10x/tickets/2026-07-31-connector-mode-readiness-program.md`
@@ -58,6 +58,16 @@ quality profile rather than silently normalizing the change.
 
 - 2026-07-31: Shaped after the quality and model workstreams so certification can consume a
   reliable bounded gate rather than introduce a second test authority.
+- 2026-07-31: Activated after the model falsifiers reached a pushed, focused green checkpoint.
+  The selected implementation is a standard-library Python entry point around existing Cargo
+  laws. The only conformance addition is a destination-oriented selector over the same registered
+  source-by-destination matrix cells already used by scheduled source shards.
+- 2026-07-31: Implemented a Git merge-base classifier with no caller-supplied changed-file
+  override. Connector leaf, catalog, matching fixture, manifest, docs, ticket, and evidence paths
+  remain in the connector-only profile; every other file is listed as generic core. Explicit
+  `--core-impact` retains the connector checks and adds the engine/runtime/project/CLI regression
+  suite plus strict workspace all-feature Clippy. Child logs stay on stderr while stdout and the
+  optional report path receive one versioned JSON result.
 
 ## Blockers
 
@@ -65,7 +75,17 @@ None.
 
 ## Evidence
 
-Pending execution.
+- Seven standard-library unit laws passed for source and destination allowed surfaces, generic
+  core rejection, underscore-to-crate-name mapping, direction-specific check selection, and the
+  non-bypass core-impact profile.
+- The registered source-shard/catalog coverage law passed after adding the destination selector,
+  proving the existing scheduled source matrix remained unchanged.
+- The selected Quasar destination matrix completed all 15 catalog-derived cells in 10.30 seconds:
+  append executed and passed for file, Python, REST, SQL, and Nebula; replace and merge were
+  explicitly excluded for each source by Quasar's declared `supported_dispositions=[Append]`.
+  Every executed cell asserted plan honesty, package verification, durable receipt verification,
+  checkpoint-after-receipt gating, artifact replay identity, and no-op duplicate behavior.
+- Strict all-target/all-feature `cdf-conformance` Clippy, formatting, and diff checks passed.
 
 ## Review
 

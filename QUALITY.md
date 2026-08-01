@@ -82,6 +82,24 @@ Escalate when the change set touches higher-risk vectors.
 | Hot paths, allocation pressure, binary size, benchmarks                     | Performance/Size Loop    |
 | Release candidate, large integration, scheduled validation                  | Deep Loop                |
 
+## Connector Certification
+
+For a new or changed source/destination adapter, use the repository-owned connector certificate
+after focused leaf tests. It selects the existing catalog, conformance, product, replay, chaos,
+and static extension laws and writes a machine-readable report:
+
+```bash
+python3 tools/certify-connector.py --kind source --id <id> \
+  --report target/quality/connector-<id>.json
+python3 tools/certify-connector.py --kind destination --id <id> \
+  --report target/quality/connector-<id>.json
+```
+
+The connector-only changed-file budget is documented in `docs/connector-authoring.md`. Generic
+core ownership fails closed. A justified core repair uses `--core-impact`, which retains all
+connector checks and activates the broader core regression and workspace Clippy profile; it is
+never a bypass.
+
 ---
 
 ## Micro Loop

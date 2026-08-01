@@ -204,6 +204,14 @@ pub fn source_matrix_cells(source_archetype: SourceArchetype) -> Vec<RunMatrixCe
 }
 
 #[cfg(test)]
+fn destination_matrix_cells(destination: &MatrixDestination) -> Vec<RunMatrixCell> {
+    run_spine_matrix_cells()
+        .into_iter()
+        .filter(|cell| &cell.destination == destination)
+        .collect()
+}
+
+#[cfg(test)]
 mod assertions;
 #[cfg(test)]
 mod core;
