@@ -14,6 +14,7 @@ cdf-aws = { path = "../cdf-aws" }
 cdf-dest-duckdb = { path = "../cdf-dest-duckdb" }
 cdf-dest-parquet = { path = "../cdf-dest-parquet" }
 cdf-dest-postgres = { path = "../cdf-dest-postgres" }
+cdf-dest-sqlite = { path = "../cdf-dest-sqlite" }
 cdf-format-arrow-ipc = { path = "../cdf-format-arrow-ipc" }
 cdf-format-delimited = { path = "../cdf-format-delimited" }
 cdf-format-json = { path = "../cdf-format-json" }

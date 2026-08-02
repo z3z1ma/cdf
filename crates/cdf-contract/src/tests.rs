@@ -633,6 +633,26 @@ fn destination_identifier_policy_preserves_postgres_max_length() {
 }
 
 #[test]
+fn destination_identifier_policy_adapts_sqlite_quoted_live_columns() {
+    let policy = IdentifierPolicy::from_destination_rules(&IdentifierRules {
+        normalizer: "namecase-v1/sqlite-quoted-v1".to_owned(),
+        max_length: Some(255),
+        allowed_pattern: Some(
+            "quoted UTF-8 identifier without NUL; cdf reserves _cdf_*".to_owned(),
+        ),
+    })
+    .unwrap();
+
+    assert_eq!(policy.version, NORMALIZER_NAMECASE_V1);
+    assert_eq!(policy.max_length, Some(255));
+    assert_eq!(policy.allowed_pattern, None);
+    assert_eq!(
+        normalize_identifier("Customer Event ID", &policy).unwrap(),
+        "customer_event_id"
+    );
+}
+
+#[test]
 fn destination_identifier_policy_rejects_duckdb_pattern_miss() {
     let policy = identifier_policy_from_destination_rules(&IdentifierRules {
         normalizer: "namecase-v1".to_owned(),

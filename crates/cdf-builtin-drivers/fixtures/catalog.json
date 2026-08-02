@@ -79,6 +79,11 @@
       "id": "postgres",
       "schemes": ["postgres", "postgresql"],
       "inspection_sha256": "sha256:baa1932bfbbbef85b31bfbc92ace3dc6245b024322b7201bb612cef9394f2b3c"
+    },
+    {
+      "id": "sqlite",
+      "schemes": ["sqlite"],
+      "inspection_sha256": "sha256:1c61a59ab6759c477623db5cbddcb2ee3bdeda19855601b39106db771a93bcd8"
     }
   ]
 }

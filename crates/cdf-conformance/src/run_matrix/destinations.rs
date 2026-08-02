@@ -21,9 +21,9 @@ pub(crate) fn destination_for_cell(
     )
 }
 
-fn target_table_for_cell(cell: &RunMatrixCell) -> String {
+pub(crate) fn target_table_for_cell(cell: &RunMatrixCell) -> String {
     format!(
-        "{}_events_{}",
+        "cdf_{}_events_{}",
         cell.source_archetype.as_str(),
         cell.disposition.as_str()
     )

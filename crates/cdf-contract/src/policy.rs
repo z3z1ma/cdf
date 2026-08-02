@@ -20,8 +20,11 @@ pub fn is_framework_variant_field(field: &Field) -> bool {
 }
 
 const NORMALIZER_POSTGRES_QUOTED_V1: &str = "namecase-v1/postgres-quoted-v1";
+const NORMALIZER_SQLITE_QUOTED_V1: &str = "namecase-v1/sqlite-quoted-v1";
 const DUCKDB_NAMECASE_ALLOWED_PATTERN: &str = "^[a-z_][a-z0-9_]*$";
 const POSTGRES_QUOTED_ALLOWED_PATTERN: &str =
+    "quoted UTF-8 identifier without NUL; cdf reserves _cdf_*";
+const SQLITE_QUOTED_ALLOWED_PATTERN: &str =
     "quoted UTF-8 identifier without NUL; cdf reserves _cdf_*";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -420,6 +423,13 @@ fn destination_allowed_pattern(rules: &IdentifierRules) -> Result<Option<String>
         },
         NORMALIZER_POSTGRES_QUOTED_V1 => match rules.allowed_pattern.as_deref() {
             None | Some(POSTGRES_QUOTED_ALLOWED_PATTERN) => Ok(None),
+            Some(pattern) => Err(destination_rule_adapter_error(
+                rules.normalizer.as_str(),
+                Some(pattern),
+            )),
+        },
+        NORMALIZER_SQLITE_QUOTED_V1 => match rules.allowed_pattern.as_deref() {
+            None | Some(SQLITE_QUOTED_ALLOWED_PATTERN) => Ok(None),
             Some(pattern) => Err(destination_rule_adapter_error(
                 rules.normalizer.as_str(),
                 Some(pattern),

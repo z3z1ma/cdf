@@ -5,6 +5,7 @@ current conformance proof.
 
 - [Recovery](recovery.md)
 - [Replay](replay.md)
+- [SQLite destination](sqlite-destination.md)
 - [Backfill](backfill.md)
 - [Doctor and Status in Cron](doctor-status-cron.md)
 - [Release and Install](release-install.md)

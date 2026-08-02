@@ -13,6 +13,9 @@ contributors.
 - [SQLite table source](sqlite.md) documents portable local configuration, discovery, snapshot
   isolation, stable cursors, explicit temporal encodings, failure ownership, and the measured
   direct-library roofline.
+- [SQLite destination](operators/sqlite-destination.md) documents local-file configuration,
+  append/replace/merge semantics, durability preservation, receipt recovery, failure ownership,
+  and the direct-library destination roofline.
 - [Performance envelope](performance-envelope.md) is generated from the P3
   host-labelled reconciliation manifest and exact destination-path report. It
   is the only authority for performance claims and keeps partial, accepted,
@@ -22,7 +25,8 @@ contributors.
 - [Foreign source boundaries](interop-boundaries.md) documents Python and
   subprocess transfer, copy, memory, and host-labelled performance evidence.
 - [Operators](operators/README.md) contains scoped operational guides for
-  recovery, replay, backfill, doctor/status, installation, and troubleshooting.
+  recovery, replay, SQLite destination operation, backfill, doctor/status,
+  installation, and troubleshooting.
 - [Commands](commands/README.md) is reserved for generated command reference
   output owned by
   [WS6B](../.10x/tickets/done/2026-07-08-p1-product-ws6b-generated-reference-freshness.md).

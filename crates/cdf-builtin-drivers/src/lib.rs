@@ -6,6 +6,7 @@ use cdf_aws::AwsControlClient;
 use cdf_dest_duckdb::DuckDbRuntimeDriver;
 use cdf_dest_parquet::ParquetRuntimeDriver;
 use cdf_dest_postgres::PostgresRuntimeDriver;
+use cdf_dest_sqlite::SqliteRuntimeDriver;
 use cdf_kernel::{CdfError, Result};
 use cdf_object_access::{FileTransportFacade, ObjectStoreClientPool};
 use cdf_python::PythonSourceDriver;
@@ -69,6 +70,15 @@ const BUILTIN_DESTINATIONS: &[BuiltinDestinationEntry] = &[
         #[cfg(test)]
         inspection_uri: "postgres://localhost/cdf_builtin_catalog",
         install: |registry| registry.register(PostgresRuntimeDriver),
+    },
+    BuiltinDestinationEntry {
+        #[cfg(test)]
+        destination_id: "sqlite",
+        #[cfg(test)]
+        schemes: &["sqlite"],
+        #[cfg(test)]
+        inspection_uri: "sqlite:///tmp/cdf-builtin-catalog.sqlite",
+        install: |registry| registry.register(SqliteRuntimeDriver),
     },
 ];
 

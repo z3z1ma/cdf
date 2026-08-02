@@ -20,12 +20,14 @@ run-owned `rusqlite` connection on one declared blocking lane. Its sheet MUST ad
 atomic package transactions, package-token idempotency, migration support, and append/replace/merge.
 
 One explicit transaction MUST cover target DDL/DML, compact lossless row provenance, `_cdf_loads`,
-`_cdf_state`, `_cdf_segments`, and quarantine/mirror mutations. The adapter MUST implement the
+mutable `_cdf_state`, immutable `_cdf_state_history`, `_cdf_segments`, `_cdf_commit_evidence`, and
+quarantine/mirror mutations. The adapter MUST implement the
 typed `cdf-dest-sql` mirror backend instead of reconstructing the lifecycle. A duplicate verified
 package token returns the same logical receipt without rewriting rows.
 
 Append inserts every package row. Replace deletes and inserts inside the same transaction and is
-therefore invisible until commit. Merge requires nonempty normalized merge keys, performs
+therefore invisible until commit; a zero-row replacement MUST atomically empty an existing target.
+Merge requires nonempty normalized merge keys, performs
 deterministic package dedup before mutation, and updates/inserts by those keys. There is no
 delete-then-insert period visible outside the transaction.
 
@@ -41,9 +43,9 @@ Arrow arrays without intermediate row maps or JSON objects.
 
 The sheet MUST declare at least these lossless representations: booleans and signed integers as
 INTEGER; `UInt8`/`UInt16`/`UInt32` as widening INTEGER; `UInt64` and decimals as canonical decimal
-TEXT; floating values as REAL; UTF-8 as TEXT; binary as BLOB; dates, times, durations, intervals,
+TEXT; Float16/32/64 as canonical big-endian IEEE-754 bit-pattern BLOBs; UTF-8 as TEXT; binary as BLOB; dates, times, durations, intervals,
 and timestamps as canonical integer units with the pinned Arrow unit/timezone retained in CDF
-schema evidence. Float16 widens to REAL. Nested, union, dictionary, run-end encoded, and values
+schema evidence. Nested, union, dictionary, run-end encoded, and values
 whose domain cannot be represented exactly MUST fail planning unless the existing contract grants
 a declared lossy/canonical-JSON mapping. There is no silent stringification.
 
@@ -55,8 +57,15 @@ fail with field-level remediation.
 
 The package hash is the idempotency token. Receipt transaction metadata MUST identify the SQLite
 transaction/connection evidence available without exposing paths. Independent verification MUST
-read the load, segment, state, schema, count, and provenance mirror facts from a fresh connection.
+read the exact load receipt, full segment JSON and scalar ranges, typed state history, schema,
+unique partial provenance-index facts, and a collision-resistant order-independent quarantine
+multiset commitment from a fresh connection. Historical receipt verification MUST use immutable
+commit evidence rather than require superseded rows/state to remain current.
 Only generic orchestration appends the receipt to the package and advances the checkpoint.
+
+Injected run cancellation MUST be observed by session, payload, merge, mirror, and verifier work.
+Long-running SQLite VM work MUST be interruptible through the connection progress hook and roll
+back the open transaction.
 
 ## Scenarios and acceptance criteria
 

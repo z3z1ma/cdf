@@ -46,6 +46,7 @@ members = [
     "crates/cdf-dest-duckdb",
     "crates/cdf-dest-parquet",
     "crates/cdf-dest-postgres",
+    "crates/cdf-dest-sqlite",
     "crates/cdf-project",
     "crates/cdf-cli",
     "crates/cdf-cli-benchmarks",

@@ -4,8 +4,10 @@ use cdf_kernel::{CdfError, IdentifierRules, Result};
 
 const NAMECASE_V1: &str = "namecase-v1";
 const POSTGRES_QUOTED_V1: &str = "namecase-v1/postgres-quoted-v1";
+const SQLITE_QUOTED_V1: &str = "namecase-v1/sqlite-quoted-v1";
 const DUCKDB_ALLOWED_PATTERN: &str = "^[a-z_][a-z0-9_]*$";
 const POSTGRES_ALLOWED_PATTERN: &str = "quoted UTF-8 identifier without NUL; cdf reserves _cdf_*";
+const SQLITE_ALLOWED_PATTERN: &str = "quoted UTF-8 identifier without NUL; cdf reserves _cdf_*";
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ValidatedSqlIdentifier(String);
@@ -16,6 +18,7 @@ impl ValidatedSqlIdentifier {
         match rules.normalizer.as_str() {
             NAMECASE_V1 => validate_namecase(rules, value)?,
             POSTGRES_QUOTED_V1 => validate_postgres_quoted(rules, value, false)?,
+            SQLITE_QUOTED_V1 => validate_sqlite_quoted(rules, value, false)?,
             other => {
                 return Err(CdfError::contract(format!(
                     "SQL destination identifier normalizer {other:?} is not supported"
@@ -30,6 +33,7 @@ impl ValidatedSqlIdentifier {
         match rules.normalizer.as_str() {
             NAMECASE_V1 => validate_namecase(rules, value)?,
             POSTGRES_QUOTED_V1 => validate_postgres_quoted(rules, value, true)?,
+            SQLITE_QUOTED_V1 => validate_sqlite_quoted(rules, value, true)?,
             other => {
                 return Err(CdfError::contract(format!(
                     "SQL destination identifier normalizer {other:?} is not supported"
@@ -129,6 +133,28 @@ fn validate_postgres_quoted(
     Ok(())
 }
 
+fn validate_sqlite_quoted(
+    rules: &IdentifierRules,
+    value: &str,
+    allow_system_prefix: bool,
+) -> Result<()> {
+    if !matches!(
+        rules.allowed_pattern.as_deref(),
+        None | Some(SQLITE_ALLOWED_PATTERN)
+    ) {
+        return Err(CdfError::contract(format!(
+            "sqlite-quoted-v1 SQL destination rules declare unsupported allowed pattern {:?}",
+            rules.allowed_pattern
+        )));
+    }
+    if !allow_system_prefix && value.starts_with("_cdf_") {
+        return Err(CdfError::contract(format!(
+            "SQL destination identifier {value:?} uses reserved _cdf_ prefix"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,6 +175,14 @@ mod tests {
         }
     }
 
+    fn sqlite_rules() -> IdentifierRules {
+        IdentifierRules {
+            normalizer: SQLITE_QUOTED_V1.to_owned(),
+            max_length: Some(255),
+            allowed_pattern: Some(SQLITE_ALLOWED_PATTERN.to_owned()),
+        }
+    }
+
     #[test]
     fn namecase_rules_reject_unquoted_interpolation_inputs() {
         assert!(ValidatedSqlIdentifier::user(&duckdb_rules(), "orders_2026").is_ok());
@@ -164,5 +198,10 @@ mod tests {
         assert!(ValidatedSqlIdentifier::user(&postgres_rules(), "_cdf_loads").is_err());
         assert!(ValidatedSqlIdentifier::system(&postgres_rules(), "_cdf_loads").is_ok());
         assert!(ValidatedSqlIdentifier::user(&postgres_rules(), "x\0y").is_err());
+
+        let sqlite = ValidatedSqlIdentifier::user(&sqlite_rules(), "Résumé \"2026\"").unwrap();
+        assert_eq!(sqlite.as_str(), "Résumé \"2026\"");
+        assert!(ValidatedSqlIdentifier::user(&sqlite_rules(), "_cdf_loads").is_err());
+        assert!(ValidatedSqlIdentifier::system(&sqlite_rules(), "_cdf_loads").is_ok());
     }
 }

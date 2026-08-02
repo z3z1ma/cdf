@@ -6,7 +6,9 @@ use std::{fs, path::PathBuf};
 use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
 
 #[cfg(test)]
-use cdf_kernel::{CdfError, DestinationProtocol, IdempotencySupport, Receipt, WriteDisposition};
+use cdf_kernel::{
+    CdfError, DestinationProtocol, IdempotencySupport, IdentifierRules, Receipt, WriteDisposition,
+};
 use cdf_kernel::{Result, TargetName};
 #[cfg(test)]
 use cdf_project::ProjectReceiptSource;
@@ -24,6 +26,8 @@ use cdf_dest_duckdb::{DuckDbDestination, DuckDbMirrorSnapshot};
 use cdf_dest_parquet::ParquetDestination;
 #[cfg(test)]
 use cdf_dest_postgres::{PostgresDestination, PostgresTarget};
+#[cfg(test)]
+use cdf_dest_sqlite::SqliteDestination;
 #[cfg(test)]
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 #[cfg(test)]
@@ -130,6 +134,18 @@ const DESTINATIONS: &[DestinationCatalogEntry] = &[
         #[cfg(test)]
         fixture: postgres_fixture,
     },
+    DestinationCatalogEntry {
+        id: "sqlite",
+        #[cfg(test)]
+        runtime_destination_id: "sqlite",
+        #[cfg(test)]
+        expects_row_provenance: true,
+        fixture_driver: None,
+        #[cfg(test)]
+        inspection_uri: |root| local_uri("sqlite", &root.join("conformance.sqlite")),
+        #[cfg(test)]
+        fixture: sqlite_fixture,
+    },
     #[cfg(test)]
     DestinationCatalogEntry {
         id: "quasar",
@@ -146,6 +162,27 @@ pub(crate) fn conformance_destinations() -> Vec<MatrixDestination> {
         .iter()
         .map(|entry| MatrixDestination::new(entry.id).expect("catalog id is valid"))
         .collect()
+}
+
+#[cfg(test)]
+pub(crate) fn destination_identifier_rules(
+    destination: &MatrixDestination,
+    root: &Path,
+) -> Result<IdentifierRules> {
+    let entry = DESTINATIONS
+        .iter()
+        .find(|entry| entry.id == destination.as_str())
+        .ok_or_else(|| {
+            CdfError::contract(format!(
+                "destination {} is not enrolled in conformance",
+                destination.as_str()
+            ))
+        })?;
+    let inspection = registry()?.inspect(
+        &(entry.inspection_uri)(root),
+        &DestinationResolutionContext::for_project_inspection(root),
+    )?;
+    Ok(inspection.sheet_artifact.sheet.identifier_rules)
 }
 
 pub(crate) fn registry() -> Result<DestinationRegistry> {
@@ -179,14 +216,27 @@ pub(crate) fn local_uri(scheme: &str, path: &Path) -> String {
 fn catalog_is_the_single_first_party_destination_enrollment_point() {
     assert_eq!(
         registry().unwrap().registered_schemes(),
-        ["duckdb", "parquet", "postgres", "postgresql", "quasar"]
+        [
+            "duckdb",
+            "parquet",
+            "postgres",
+            "postgresql",
+            "quasar",
+            "sqlite"
+        ]
     );
     assert_eq!(
         conformance_destinations()
             .into_iter()
             .map(|destination| destination.as_str().to_owned())
             .collect::<Vec<_>>(),
-        ["duckdb", "parquet_filesystem", "postgres", "quasar"]
+        [
+            "duckdb",
+            "parquet_filesystem",
+            "postgres",
+            "sqlite",
+            "quasar"
+        ]
     );
 }
 
@@ -370,6 +420,9 @@ enum DestinationFixtureState {
         schema: String,
         table: String,
     },
+    Sqlite {
+        database_path: PathBuf,
+    },
     Quasar {
         root: PathBuf,
     },
@@ -386,6 +439,11 @@ pub(crate) enum DestinationFootprint {
         files: Vec<FileFootprint>,
     },
     Postgres {
+        payload_rows: Vec<LogicalRow>,
+        loads_rows: i64,
+        state_rows: i64,
+    },
+    Sqlite {
         payload_rows: Vec<LogicalRow>,
         loads_rows: i64,
         state_rows: i64,
@@ -497,6 +555,9 @@ impl DestinationFixture {
             DestinationFixtureState::Postgres { database_url, .. } => {
                 PostgresDestination::connect(database_url.clone())?.verify(receipt)?
             }
+            DestinationFixtureState::Sqlite { database_path } => {
+                SqliteDestination::connect(database_path)?.verify(receipt)?
+            }
             DestinationFixtureState::Quasar { .. } => quasar::verify_receipt(receipt)?,
         };
         if !verification.verified {
@@ -534,6 +595,9 @@ impl DestinationFixture {
                 schema,
                 table,
             } => postgres_footprint(database_url, schema, table, self.execution.target.as_str()),
+            DestinationFixtureState::Sqlite { database_path } => {
+                sqlite_footprint(database_path, self.execution.target.as_str())
+            }
             DestinationFixtureState::Quasar { root } => Ok(DestinationFootprint::Quasar {
                 files: list_relative_files(root)?,
             }),
@@ -561,6 +625,9 @@ impl DestinationFixture {
                 schema,
                 table,
             )?)),
+            DestinationFixtureState::Sqlite { database_path } => Ok(DestinationPayload(
+                sqlite_payload(database_path, self.execution.target.as_str())?,
+            )),
             DestinationFixtureState::Quasar { root } => {
                 Ok(DestinationPayload(quasar::payload(root)?))
             }
@@ -615,6 +682,19 @@ impl DestinationFixture {
                     },
                 })
             }
+            DestinationFixtureState::Sqlite { .. } => {
+                let database_path = root.join(".cdf/replay.sqlite");
+                Ok(Self {
+                    destination: self.destination.clone(),
+                    runtime_destination_id: self.runtime_destination_id,
+                    execution: DestinationExecutionSpec {
+                        uri: local_uri("sqlite", &database_path),
+                        project_root: root.to_path_buf(),
+                        target: self.execution.target.clone(),
+                    },
+                    state: DestinationFixtureState::Sqlite { database_path },
+                })
+            }
             DestinationFixtureState::Quasar { .. } => {
                 let replay_root = root.join(".cdf/replay-quasar");
                 Ok(Self {
@@ -661,6 +741,11 @@ impl DestinationFootprint {
             }
             Self::Parquet { files } => !files.is_empty(),
             Self::Postgres {
+                payload_rows,
+                loads_rows,
+                ..
+            } => !payload_rows.is_empty() || *loads_rows > 0,
+            Self::Sqlite {
                 payload_rows,
                 loads_rows,
                 ..
@@ -751,6 +836,25 @@ fn postgres_fixture(
             schema: postgres.schema().to_owned(),
             table: table.to_owned(),
         },
+    })
+}
+
+#[cfg(test)]
+fn sqlite_fixture(
+    root: &Path,
+    table: &str,
+    _environment: &ConformanceEnvironment,
+) -> Result<DestinationFixture> {
+    let database_path = root.join(".cdf/run-matrix.sqlite");
+    Ok(DestinationFixture {
+        destination: MatrixDestination::new("sqlite")?,
+        runtime_destination_id: "sqlite",
+        execution: DestinationExecutionSpec {
+            uri: local_uri("sqlite", &database_path),
+            project_root: root.to_path_buf(),
+            target: TargetName::new(table)?,
+        },
+        state: DestinationFixtureState::Sqlite { database_path },
     })
 }
 
@@ -951,6 +1055,107 @@ fn duckdb_payload(database_path: &Path, target: &str) -> Result<Vec<LogicalRow>>
         })
     })
     .collect()
+}
+
+#[cfg(test)]
+fn sqlite_footprint(database_path: &Path, target: &str) -> Result<DestinationFootprint> {
+    if destination_artifact_is_missing(database_path)? {
+        return Ok(DestinationFootprint::Sqlite {
+            payload_rows: Vec::new(),
+            loads_rows: 0,
+            state_rows: 0,
+        });
+    }
+    let connection = rusqlite::Connection::open_with_flags(
+        database_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|error| {
+        CdfError::destination(format!(
+            "open SQLite destination {}: {error}",
+            database_path.display()
+        ))
+    })?;
+    Ok(DestinationFootprint::Sqlite {
+        payload_rows: query_sqlite_payload(&connection, target)?,
+        loads_rows: query_sqlite_count_if_exists(&connection, "_cdf_loads")?,
+        state_rows: query_sqlite_count_if_exists(&connection, "_cdf_state")?,
+    })
+}
+
+#[cfg(test)]
+fn sqlite_payload(database_path: &Path, target: &str) -> Result<Vec<LogicalRow>> {
+    if destination_artifact_is_missing(database_path)? {
+        return Ok(Vec::new());
+    }
+    let connection = rusqlite::Connection::open_with_flags(
+        database_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|error| {
+        CdfError::destination(format!(
+            "open SQLite destination {}: {error}",
+            database_path.display()
+        ))
+    })?;
+    query_sqlite_payload(&connection, target)
+}
+
+#[cfg(test)]
+fn query_sqlite_payload(
+    connection: &rusqlite::Connection,
+    target: &str,
+) -> Result<Vec<LogicalRow>> {
+    let exists: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1)",
+            [target],
+            |row| row.get(0),
+        )
+        .map_err(|error| CdfError::destination(format!("inspect SQLite target: {error}")))?;
+    if !exists {
+        return Ok(Vec::new());
+    }
+    let sql = format!(
+        "SELECT \"id\", \"name\" FROM {} ORDER BY \"_cdf_row_key\"",
+        quote_qualified_identifier(target)
+    );
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(|error| CdfError::destination(format!("prepare SQLite payload query: {error}")))?;
+    statement
+        .query_map([], |row| {
+            Ok(LogicalRow {
+                id: row.get(0)?,
+                name: row.get(1)?,
+            })
+        })
+        .map_err(|error| CdfError::destination(format!("query SQLite payload: {error}")))?
+        .map(|row| {
+            row.map_err(|error| CdfError::destination(format!("decode SQLite payload: {error}")))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+fn query_sqlite_count_if_exists(connection: &rusqlite::Connection, table: &str) -> Result<i64> {
+    let exists: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1)",
+            [table],
+            |row| row.get(0),
+        )
+        .map_err(|error| CdfError::destination(format!("inspect SQLite table: {error}")))?;
+    if !exists {
+        return Ok(0);
+    }
+    connection
+        .query_row(
+            &format!("SELECT COUNT(*) FROM {}", quote_qualified_identifier(table)),
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| CdfError::destination(format!("count SQLite table: {error}")))
 }
 
 #[cfg(test)]

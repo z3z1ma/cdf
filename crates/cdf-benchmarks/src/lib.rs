@@ -18,6 +18,7 @@ mod profiling;
 mod references;
 mod resource;
 mod runners;
+mod sqlite_destination_roofline;
 mod sqlite_source_roofline;
 mod stress;
 
@@ -80,6 +81,10 @@ pub use runners::{
     PreparedIcebergPackageWorkload, PreparedSourceIoStage, PreparedSourcePackageRun,
     StartupControlWorkload, run_case, run_prepared_file_to_destination,
     run_prepared_file_to_package, run_prepared_iceberg_to_package, run_startup_control_workload,
+};
+pub use sqlite_destination_roofline::{
+    SqliteDestinationRooflineReport, run_sqlite_destination_roofline,
+    run_sqlite_destination_roofline_worker,
 };
 pub use sqlite_source_roofline::{
     SqliteSourceRooflineReport, run_sqlite_source_roofline, run_sqlite_source_roofline_worker,

@@ -12,7 +12,8 @@ The short version is in this page; the durable design is the book in
 - Engine: planning and execution over Arrow batches, with DataFusion at the query
   boundary.
 - Package, state, and destination crates: artifact persistence, SQLite state,
-  DuckDB/Parquet/Postgres commit protocols, receipt verification, and replay.
+  DuckDB/Parquet/Postgres/SQLite commit protocols, receipt verification, and
+  replay.
 - Project and CLI crates: `cdf.toml`, resource compilation, environment
   resolution, command execution, rendering, and operator workflows.
 

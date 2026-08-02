@@ -719,6 +719,7 @@ impl ExecutionTaskScope for ReportingTaskScope {
 #[derive(Clone)]
 pub struct ExecutionServices {
     host: Arc<dyn ExecutionHost>,
+    run_cancellation: RunCancellation,
     memory_budget_resolution: Option<Arc<MemoryBudgetResolution>>,
     run_work: Option<Arc<RunWorkAdmission>>,
     staging_leases: Option<Arc<crate::StagingLeaseSupervisor>>,
@@ -1102,6 +1103,7 @@ impl ExecutionServices {
         host.capabilities().validate()?;
         Ok(Self {
             host,
+            run_cancellation: RunCancellation::default(),
             memory_budget_resolution: None,
             run_work: None,
             staging_leases: None,
@@ -1120,6 +1122,7 @@ impl ExecutionServices {
         }
         Ok(Self {
             host: Arc::clone(&self.host),
+            run_cancellation: self.run_cancellation.clone(),
             memory_budget_resolution: self.memory_budget_resolution.clone(),
             run_work: Some(Arc::new(RunWorkAdmission {
                 state: Mutex::new(RunWorkAdmissionState {
@@ -1146,6 +1149,7 @@ impl ExecutionServices {
     ) -> Result<Self> {
         Ok(Self {
             host: Arc::clone(&self.host),
+            run_cancellation: self.run_cancellation.clone(),
             memory_budget_resolution: self.memory_budget_resolution.clone(),
             run_work: self.run_work.clone(),
             staging_leases: Some(crate::StagingLeaseSupervisor::new(
@@ -1165,6 +1169,7 @@ impl ExecutionServices {
     ) -> Self {
         Self {
             host: Arc::clone(&self.host),
+            run_cancellation: self.run_cancellation.clone(),
             memory_budget_resolution: self.memory_budget_resolution.clone(),
             run_work: self.run_work.clone(),
             staging_leases: self.staging_leases.clone(),
@@ -1183,6 +1188,18 @@ impl ExecutionServices {
                 "immutable content publication requires an injected reachability store",
             )
         })
+    }
+
+    /// Returns invocation-local services carrying the cancellation authority for this run.
+    pub fn with_run_cancellation(&self, cancellation: RunCancellation) -> Self {
+        let mut services = self.clone();
+        services.run_cancellation = cancellation;
+        services
+    }
+
+    /// Returns the cancellation authority injected for this invocation.
+    pub fn run_cancellation(&self) -> RunCancellation {
+        self.run_cancellation.clone()
     }
 
     pub fn with_memory_budget_resolution(
@@ -1312,6 +1329,7 @@ impl ExecutionServices {
     /// clone while still accepting a genuinely different execution context.
     pub fn shares_runtime_authorities_with(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.host, &other.host)
+            && Arc::ptr_eq(&self.run_cancellation.0, &other.run_cancellation.0)
             && option_arc_ptr_eq(
                 &self.memory_budget_resolution,
                 &other.memory_budget_resolution,
@@ -1565,6 +1583,7 @@ impl ExecutionServices {
         }
         Ok(Self {
             host: Arc::clone(&self.host),
+            run_cancellation: self.run_cancellation.clone(),
             memory_budget_resolution: self.memory_budget_resolution.clone(),
             run_work: self.run_work.clone(),
             staging_leases: self.staging_leases.clone(),
@@ -2134,6 +2153,7 @@ mod tests {
             });
             let services = ExecutionServices {
                 host: Arc::new(TestHost),
+                run_cancellation: RunCancellation::default(),
                 memory_budget_resolution: None,
                 run_work: Some(Arc::clone(&admission)),
                 staging_leases: None,

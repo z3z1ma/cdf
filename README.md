@@ -179,6 +179,7 @@ crates/
   cdf-dest-duckdb/     DuckDB destination
   cdf-dest-parquet/    Parquet and object-store destination
   cdf-dest-postgres/   Postgres destination
+  cdf-dest-sqlite/     SQLite destination
   cdf-project/         project files, lockfile, secrets, local runtime
   cdf-cli/             the `cdf` command
   cdf-conformance/     resource, destination, chaos, and golden-package suites

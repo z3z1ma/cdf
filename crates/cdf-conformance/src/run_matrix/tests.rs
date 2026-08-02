@@ -1,12 +1,46 @@
 use super::{
     ExcludedMatrixCell, MatrixDestination, RunMatrixCell, RunMatrixOutput, SourceArchetype, core,
-    destination_matrix_cells, destinations::ConformanceEnvironment, run_spine_matrix_cells,
-    source_catalog, source_matrix_cells,
+    destination_matrix_cells,
+    destinations::{ConformanceEnvironment, target_table_for_cell},
+    run_spine_matrix_cells, source_catalog, source_matrix_cells,
 };
 
 const RUN_MATRIX_DESTINATION_ENV: &str = "CDF_RUN_MATRIX_DESTINATION";
 const RUN_MATRIX_SOURCE_ENV: &str = "CDF_RUN_MATRIX_SOURCE";
 const RUN_MATRIX_SHARDS_JSON: &str = include_str!("../../run-matrix-shards.json");
+
+#[test]
+fn generated_target_names_are_stable_and_valid_for_every_catalog_destination() {
+    let temp = tempfile::tempdir().unwrap();
+    for cell in run_spine_matrix_cells() {
+        let target = target_table_for_cell(&cell);
+        assert_eq!(
+            target,
+            format!(
+                "cdf_{}_events_{}",
+                cell.source_archetype.as_str(),
+                cell.disposition.as_str()
+            )
+        );
+        assert!(target.starts_with("cdf_"));
+        assert!(!target.starts_with("_cdf_"));
+        assert!(!target.starts_with("sqlite_"));
+        cdf_kernel::TargetName::new(&target).unwrap();
+
+        let rules = crate::destination_catalog::destination_identifier_rules(
+            &cell.destination,
+            temp.path(),
+        )
+        .unwrap();
+        let policy = cdf_contract::identifier_policy_from_destination_rules(&rules).unwrap();
+        assert_eq!(
+            cdf_contract::normalize_identifier(&target, &policy).unwrap(),
+            target,
+            "generated target must satisfy the published rules for {}",
+            cell.destination.as_str()
+        );
+    }
+}
 
 #[test]
 fn registered_run_matrix_shards_cover_source_catalog() {

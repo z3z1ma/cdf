@@ -991,6 +991,7 @@ dependencies = [
  "cdf-dest-duckdb",
  "cdf-dest-parquet",
  "cdf-dest-postgres",
+ "cdf-dest-sqlite",
  "cdf-engine",
  "cdf-foreign-stream",
  "cdf-http",
@@ -1032,6 +1033,7 @@ dependencies = [
  "cdf-dest-duckdb",
  "cdf-dest-parquet",
  "cdf-dest-postgres",
+ "cdf-dest-sqlite",
  "cdf-format-arrow-ipc",
  "cdf-format-delimited",
  "cdf-format-json",
@@ -1136,6 +1138,7 @@ dependencies = [
  "cdf-dest-duckdb",
  "cdf-dest-parquet",
  "cdf-dest-postgres",
+ "cdf-dest-sqlite",
  "cdf-engine",
  "cdf-format-json",
  "cdf-format-parquet",
@@ -1287,6 +1290,27 @@ dependencies = [
  "cdf-kernel",
  "cdf-package-contract",
  "serde",
+]
+
+[[package]]
+name = "cdf-dest-sqlite"
+version = "0.2.0-alpha.1"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-schema",
+ "cdf-contract",
+ "cdf-dest-sql",
+ "cdf-engine",
+ "cdf-kernel",
+ "cdf-package-contract",
+ "cdf-runtime",
+ "half",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]

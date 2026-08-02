@@ -1,0 +1,274 @@
+{
+  "schema_version": 1,
+  "status": "inconclusive",
+  "reason": "one or both comparable cells were not observed",
+  "host": {
+    "schema_version": 1,
+    "architecture": "aarch64",
+    "cpu_label": "aarch64-cpu-class",
+    "advertised_logical_cores": 18,
+    "advertised_physical_cores": {
+      "status": "unavailable",
+      "reason": "physical core count unavailable",
+      "method": "os-cpu-topology",
+      "provider_version": "system-host-v1"
+    },
+    "advertised_memory_bytes": {
+      "status": "unavailable",
+      "reason": "host memory unavailable",
+      "method": "os-memory-authority",
+      "provider_version": "system-host-v1"
+    },
+    "effective_cpu": {
+      "status": "supported",
+      "value": {
+        "logical_cores": 18,
+        "quota_millicores": null,
+        "affinity_cores": 18
+      },
+      "method": "process-available-parallelism",
+      "provider_version": "system-host-v1"
+    },
+    "effective_memory_bytes": {
+      "status": "unavailable",
+      "reason": "no container memory overlay on this platform",
+      "method": "container-memory-overlay",
+      "provider_version": "system-host-v1"
+    },
+    "storage": {
+      "status": "unavailable",
+      "reason": "target filesystem class is unavailable",
+      "method": "filesystem-target-probe",
+      "provider_version": "system-host-v1"
+    },
+    "os": {
+      "family": "macos",
+      "version": "26.5.2",
+      "kernel": "25.5.0"
+    },
+    "rust_version": "rustc 1.96.1 (31fca3adb 2026-06-26)",
+    "cdf_version": "0.2.0-alpha.1",
+    "dependency_versions": {
+      "rusqlite": "0.40.1",
+      "sqlite": "3.53.2"
+    },
+    "benchmark_profile": "release-sqlite-destination-roofline"
+  },
+  "comparability": {
+    "dataset_id": "sqlite-destination-strict-i64x3-1000000",
+    "workload_id": "sqlite-destination-append-commit-fresh-verify",
+    "timed_region_version": 1,
+    "cdf_revision": "c3d1da6d1d2ec053e9e605d967da4426066173aa",
+    "dependency_tuple": "rusqlite=0.40.1;sqlite=3.53.2",
+    "host_class": "host-class-393dd47ececa7ccc",
+    "os_toolchain": "macos-26.5.2;rustc 1.96.1 (31fca3adb 2026-06-26)",
+    "io_mode": "warm"
+  },
+  "measurement_provider": {
+    "method": "sqlite-destination-worker-monotonic-with-rusage-self",
+    "version": "sqlite-destination-roofline-observer-v1",
+    "observes_cpu_time": true,
+    "observes_peak_rss": true
+  },
+  "settings": {
+    "journal_mode": "delete",
+    "durability": "synchronous=full; explicit BEGIN IMMEDIATE and durable COMMIT",
+    "schema": [
+      "id:int64",
+      "metric:int64",
+      "updated_at:int64"
+    ],
+    "arrow_batch_rows": 32768,
+    "connection_count": 1,
+    "writer_count": 1,
+    "useful_bytes_per_row": 24,
+    "physical_io_bytes_observed": false,
+    "physical_io_bytes_reason": "portable per-process physical write-byte counters are unavailable; samples record zero and make no physical-throughput claim",
+    "workspace_content_sha256": "sha256:90cfdf670978819afdeaed5a030e08cd65ba26aa4763d8e49ab41a0bd4f164a7",
+    "workspace_content_inputs": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "crates/cdf-benchmarks/Cargo.toml",
+      "crates/cdf-benchmarks/src/bin/sqlite-destination-roofline.rs",
+      "crates/cdf-benchmarks/src/sqlite_destination_roofline.rs",
+      "crates/cdf-dest-sqlite/Cargo.toml",
+      "crates/cdf-dest-sqlite/src/error.rs",
+      "crates/cdf-dest-sqlite/src/identifier.rs",
+      "crates/cdf-dest-sqlite/src/lib.rs",
+      "crates/cdf-dest-sqlite/src/mapping.rs",
+      "crates/cdf-dest-sqlite/src/mirrors.rs",
+      "crates/cdf-dest-sqlite/src/models.rs",
+      "crates/cdf-dest-sqlite/src/package.rs",
+      "crates/cdf-dest-sqlite/src/plan.rs",
+      "crates/cdf-dest-sqlite/src/receipts.rs",
+      "crates/cdf-dest-sqlite/src/runtime.rs",
+      "crates/cdf-dest-sqlite/src/sheet.rs",
+      "crates/cdf-dest-sqlite/src/transaction.rs"
+    ],
+    "executable_sha256": "sha256:21bf19b64ff0cff7ef7b8b58b6620ce46e48e6ef4c2791ebdc7066c32d268d78",
+    "sqlite_version": "3.53.2",
+    "rusqlite_version": "0.40.1",
+    "semantic_bias": [
+      "both cells build identical Arrow batches and create their schemas outside the timed region",
+      "timing starts immediately before the first row/segment is offered and ends after fresh read-only verification",
+      "direct rusqlite is intentionally favorable because it omits package and typed mirror validation",
+      "CPU time and peak RSS include untimed worker setup; wall time covers only delivery, commit, and verification"
+    ]
+  },
+  "cdf": {
+    "comparability": {
+      "dataset_id": "sqlite-destination-strict-i64x3-1000000",
+      "workload_id": "sqlite-destination-append-commit-fresh-verify",
+      "timed_region_version": 1,
+      "cdf_revision": "c3d1da6d1d2ec053e9e605d967da4426066173aa",
+      "dependency_tuple": "rusqlite=0.40.1;sqlite=3.53.2",
+      "host_class": "host-class-393dd47ececa7ccc",
+      "os_toolchain": "macos-26.5.2;rustc 1.96.1 (31fca3adb 2026-06-26)",
+      "io_mode": "warm"
+    },
+    "status": {
+      "kind": "inconclusive",
+      "reason": "host fingerprint changed from the requested comparability class"
+    },
+    "samples": [],
+    "summary": null,
+    "reference": {
+      "kind": "direct_library",
+      "name": "rusqlite",
+      "version": "0.40.1",
+      "semantic_work": "one explicit transaction, prepared row binds from identical Arrow batches, representative receipt/state/segment mirrors, durable commit, and fresh read-only verification"
+    },
+    "bias": [
+      {
+        "code": "cdf-governance-overhead",
+        "description": "CDF additionally validates finalized-package identity, schema, segment ordering, mirror readback, quarantine evidence, and execution-lane admission"
+      },
+      {
+        "code": "direct-mirror-simplification",
+        "description": "the direct cell writes representative fixed mirror JSON while CDF serializes and verifies the full typed receipt and state records"
+      }
+    ],
+    "measurement_provider": {
+      "method": "sqlite-destination-worker-monotonic-with-rusage-self",
+      "version": "sqlite-destination-roofline-observer-v1",
+      "observes_cpu_time": true,
+      "observes_peak_rss": true
+    }
+  },
+  "direct_rusqlite": {
+    "comparability": {
+      "dataset_id": "sqlite-destination-strict-i64x3-1000000",
+      "workload_id": "sqlite-destination-append-commit-fresh-verify",
+      "timed_region_version": 1,
+      "cdf_revision": "c3d1da6d1d2ec053e9e605d967da4426066173aa",
+      "dependency_tuple": "rusqlite=0.40.1;sqlite=3.53.2",
+      "host_class": "host-class-393dd47ececa7ccc",
+      "os_toolchain": "macos-26.5.2;rustc 1.96.1 (31fca3adb 2026-06-26)",
+      "io_mode": "warm"
+    },
+    "status": {
+      "kind": "observed"
+    },
+    "samples": [
+      {
+        "wall_time_ns": 284687708,
+        "cpu_time_ns": 290143000,
+        "rows": 1000000,
+        "logical_bytes": 24000000,
+        "physical_bytes": 0,
+        "peak_rss_bytes": 41467904,
+        "spill_bytes": 0,
+        "phases": [
+          {
+            "phase": "package_delivery_commit_and_fresh_verification",
+            "duration_ns": 284687708,
+            "bytes": 24000000
+          }
+        ]
+      },
+      {
+        "wall_time_ns": 296665417,
+        "cpu_time_ns": 303222000,
+        "rows": 1000000,
+        "logical_bytes": 24000000,
+        "physical_bytes": 0,
+        "peak_rss_bytes": 41451520,
+        "spill_bytes": 0,
+        "phases": [
+          {
+            "phase": "package_delivery_commit_and_fresh_verification",
+            "duration_ns": 296665417,
+            "bytes": 24000000
+          }
+        ]
+      },
+      {
+        "wall_time_ns": 286797459,
+        "cpu_time_ns": 293212000,
+        "rows": 1000000,
+        "logical_bytes": 24000000,
+        "physical_bytes": 0,
+        "peak_rss_bytes": 41517056,
+        "spill_bytes": 0,
+        "phases": [
+          {
+            "phase": "package_delivery_commit_and_fresh_verification",
+            "duration_ns": 286797459,
+            "bytes": 24000000
+          }
+        ]
+      },
+      {
+        "wall_time_ns": 286501625,
+        "cpu_time_ns": 293575000,
+        "rows": 1000000,
+        "logical_bytes": 24000000,
+        "physical_bytes": 0,
+        "peak_rss_bytes": 41451520,
+        "spill_bytes": 0,
+        "phases": [
+          {
+            "phase": "package_delivery_commit_and_fresh_verification",
+            "duration_ns": 286501625,
+            "bytes": 24000000
+          }
+        ]
+      },
+      {
+        "wall_time_ns": 283122542,
+        "cpu_time_ns": 289219000,
+        "rows": 1000000,
+        "logical_bytes": 24000000,
+        "physical_bytes": 0,
+        "peak_rss_bytes": 41484288,
+        "spill_bytes": 0,
+        "phases": [
+          {
+            "phase": "package_delivery_commit_and_fresh_verification",
+            "duration_ns": 283122542,
+            "bytes": 24000000
+          }
+        ]
+      }
+    ],
+    "summary": {
+      "sample_count": 5,
+      "median_wall_time_ns": 286501625,
+      "median_absolute_deviation_ns": 1813917,
+      "median_rows_per_second": 3490381,
+      "median_logical_bytes_per_second": 83769158,
+      "median_physical_bytes_per_second": 0,
+      "peak_rss_bytes": 41517056,
+      "spill_bytes": 0
+    },
+    "reference": null,
+    "bias": [],
+    "measurement_provider": {
+      "method": "sqlite-destination-worker-monotonic-with-rusage-self",
+      "version": "sqlite-destination-roofline-observer-v1",
+      "observes_cpu_time": true,
+      "observes_peak_rss": true
+    }
+  },
+  "roofline_ratio_ppm": 0
+}

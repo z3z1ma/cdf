@@ -19,6 +19,7 @@ cdf-builtin-drivers = { path = "../cdf-builtin-drivers" }
 cdf-contract = { path = "../cdf-contract" }
 cdf-declarative = { path = "../cdf-declarative" }
 cdf-dest-postgres = { path = "../cdf-dest-postgres" }
+cdf-dest-sqlite = { path = "../cdf-dest-sqlite" }
 cdf-dest-duckdb = { path = "../cdf-dest-duckdb" }
 cdf-dest-parquet = { path = "../cdf-dest-parquet" }
 cdf-engine = { path = "../cdf-engine" }

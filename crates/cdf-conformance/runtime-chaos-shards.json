@@ -2,5 +2,6 @@
   "duckdb",
   "parquet_filesystem",
   "postgres",
+  "sqlite",
   "quasar"
 ]
