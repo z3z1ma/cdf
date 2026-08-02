@@ -1,0 +1,3 @@
+crates/cdf-source-iceberg/src/catalog/mod.rs
+crates/cdf-source-iceberg/src/catalog/rest.rs
+crates/cdf-source-iceberg/src/catalog/glue.rs

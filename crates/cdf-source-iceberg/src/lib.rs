@@ -8,7 +8,6 @@ mod catalog;
 mod config;
 mod driver;
 mod execution;
-mod glue;
 mod planner;
 mod planning_index;
 mod scan_task;
@@ -16,9 +15,10 @@ mod storage;
 mod task_reader;
 
 pub use catalog::{
-    GlueCatalogClient, GlueGetTableRequest, GlueTablePointer, IcebergCatalogBinding,
-    IcebergCatalogContext, IcebergCatalogLoadRequest, IcebergCatalogRegistry, LoadedIcebergTable,
-    SelectedIcebergSnapshot, UnsupportedGlueCatalogClient,
+    AwsIcebergGlueCatalogClient, GlueCatalogClient, GlueGetTableRequest, GlueTablePointer,
+    IcebergCatalogBinding, IcebergCatalogContext, IcebergCatalogLoadRequest,
+    IcebergCatalogRegistry, LoadedIcebergTable, SelectedIcebergSnapshot,
+    UnsupportedGlueCatalogClient,
 };
 pub use config::{
     DEFAULT_DECODE_RESERVATION_BYTES, DEFAULT_MAXIMUM_CONCURRENCY,
@@ -37,7 +37,6 @@ pub use driver::{
     ICEBERG_SOURCE_BLOCKING_LANE_ID, IcebergRuntimeDependencies, IcebergSourceDriver,
     iceberg_source_blocking_lane,
 };
-pub use glue::AwsGlueCatalogClient;
 pub use scan_task::{
     ICEBERG_SCAN_TASK_VERSION, ICEBERG_TASK_SET_AUTHORITY_VERSION, ICEBERG_TASK_SET_TYPE,
     IcebergDataFile, IcebergDeleteContent, IcebergDeleteFile, IcebergFileFormat,

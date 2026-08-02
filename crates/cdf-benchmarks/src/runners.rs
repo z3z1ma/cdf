@@ -39,7 +39,7 @@ use cdf_runtime::{
 };
 use cdf_source_files::{FileRuntimeDependencies, FileSourceDriver, file_source_blocking_lane};
 use cdf_source_iceberg::{
-    AwsGlueCatalogClient, IcebergRuntimeDependencies, IcebergSourceDriver,
+    AwsIcebergGlueCatalogClient, IcebergRuntimeDependencies, IcebergSourceDriver,
     UnsupportedGlueCatalogClient,
 };
 use cdf_state_sqlite::InMemoryCheckpointStore;
@@ -915,7 +915,7 @@ fn prepared_iceberg_registry(catalog: &PreparedIcebergCatalog) -> BenchResult<So
                                 .with_local_listing_lane(local_listing_lane)?,
                         ),
                         Arc::clone(&rest_http),
-                        Arc::new(AwsGlueCatalogClient::new(
+                        Arc::new(AwsIcebergGlueCatalogClient::new(
                             rest_http, secrets, execution, egress,
                         )),
                     ))

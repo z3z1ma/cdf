@@ -15,7 +15,9 @@ use cdf_source_glue::{
     AwsGlueCatalogClient as AwsGlueExternalCatalogClient, AwsLakeFormationClient,
     GlueRuntimeDependencies, GlueSourceDriver,
 };
-use cdf_source_iceberg::{AwsGlueCatalogClient, IcebergRuntimeDependencies, IcebergSourceDriver};
+use cdf_source_iceberg::{
+    AwsIcebergGlueCatalogClient, IcebergRuntimeDependencies, IcebergSourceDriver,
+};
 use cdf_source_postgres::PostgresSourceDriver;
 use cdf_source_rest::RestSourceDriver;
 use cdf_transport_http::ReqwestHttpProvider;
@@ -214,7 +216,7 @@ fn build_source_registry(
                         .with_local_listing_lane(local_listing_lane)?,
                 ),
                 Arc::clone(&rest_http),
-                Arc::new(AwsGlueCatalogClient::new(
+                Arc::new(AwsIcebergGlueCatalogClient::new(
                     rest_http, secrets, execution, egress,
                 )),
             ))

@@ -1,11 +1,16 @@
+mod glue;
+mod rest;
+
+pub use glue::{
+    AwsIcebergGlueCatalogClient, GlueCatalogClient, GlueGetTableRequest, GlueTablePointer,
+    UnsupportedGlueCatalogClient,
+};
+
 use std::{collections::BTreeMap, io::Read, sync::Arc};
 
 use arrow_schema::{DataType, FieldRef, Schema};
-use cdf_http::{
-    EgressAllowlist, HttpMethod, HttpRequest, HttpResponseBudget, HttpTransport, SecretProvider,
-    SecretUri,
-};
-use cdf_kernel::{BoxFuture, CdfError, Result, SOURCE_POSITION_VERSION, TableSnapshotPosition};
+use cdf_http::{EgressAllowlist, HttpTransport, SecretProvider, SecretUri};
+use cdf_kernel::{CdfError, Result, SOURCE_POSITION_VERSION, TableSnapshotPosition};
 use cdf_memory::{
     AccountedBytes, ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest,
 };
@@ -170,46 +175,6 @@ impl RetainedMetadata {
     }
 }
 
-pub trait GlueCatalogClient: Send + Sync {
-    fn get_table(&self, request: GlueGetTableRequest) -> BoxFuture<'_, Result<GlueTablePointer>>;
-}
-
-#[derive(Clone, Debug)]
-pub struct GlueGetTableRequest {
-    pub region: String,
-    pub catalog_id: Option<String>,
-    pub database: String,
-    pub table: String,
-    pub endpoint: Option<String>,
-    pub credentials: Option<SecretUri>,
-    pub maximum_response_bytes: u64,
-    pub cancellation: RunCancellation,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GlueTablePointer {
-    pub metadata_location: String,
-    pub catalog_generation: Option<String>,
-    /// Actual response-body bytes transferred from the Glue metadata plane.
-    pub bytes_read: u64,
-    /// Retained response bytes reported by the host adapter. The catalog layer charges these
-    /// against the shared discovery ledger before retaining the pointer.
-    pub retained_bytes: u64,
-}
-
-#[derive(Debug, Default)]
-pub struct UnsupportedGlueCatalogClient;
-
-impl GlueCatalogClient for UnsupportedGlueCatalogClient {
-    fn get_table(&self, _request: GlueGetTableRequest) -> BoxFuture<'_, Result<GlueTablePointer>> {
-        Box::pin(async {
-            Err(CdfError::contract(
-                "AWS Glue catalog support is not installed in this host registry",
-            ))
-        })
-    }
-}
-
 #[derive(Default)]
 pub struct IcebergCatalogRegistry {
     bindings: BTreeMap<&'static str, Arc<dyn IcebergCatalogBinding>>,
@@ -219,8 +184,8 @@ impl IcebergCatalogRegistry {
     pub fn standard() -> Result<Self> {
         let mut registry = Self::default();
         registry.register(Arc::new(FilesystemCatalogBinding))?;
-        registry.register(Arc::new(RestCatalogBinding))?;
-        registry.register(Arc::new(GlueCatalogBinding))?;
+        registry.register(Arc::new(rest::RestCatalogBinding))?;
+        registry.register(Arc::new(glue::GlueCatalogBinding))?;
         Ok(registry)
     }
 
@@ -356,257 +321,6 @@ impl IcebergCatalogBinding for FilesystemCatalogBinding {
                 objects_read: 1_u64.saturating_add(hint_objects),
             },
         )
-    }
-}
-
-struct RestCatalogBinding;
-
-impl IcebergCatalogBinding for RestCatalogBinding {
-    fn kind(&self) -> &'static str {
-        "rest"
-    }
-
-    fn load_table(
-        &self,
-        request: &IcebergCatalogLoadRequest,
-        context: &IcebergCatalogContext,
-    ) -> Result<LoadedIcebergTable> {
-        let IcebergCatalogOptions::Rest {
-            uri,
-            warehouse,
-            credentials,
-        } = &request.source.catalog
-        else {
-            return Err(CdfError::internal(
-                "REST binding received another catalog kind",
-            ));
-        };
-        let authorization = credentials
-            .as_ref()
-            .map(|reference| {
-                context
-                    .secrets
-                    .resolve(&SecretUri::new(reference.clone())?)?
-                    .as_str()
-                    .map(|token| format!("Bearer {token}"))
-            })
-            .transpose()?;
-        let allowlist = allowlist(&request.source);
-        let config_endpoint = rest_config_endpoint(uri, warehouse.as_deref())?;
-        context.egress.authorize(&config_endpoint)?;
-        let config_payload = send_rest_request(
-            context,
-            &allowlist,
-            config_endpoint,
-            authorization.as_deref(),
-            request.source.maximum_metadata_bytes,
-            request.cancellation.clone(),
-        )?;
-        let config_bytes = u64::try_from(config_payload.payload().len())
-            .map_err(|_| CdfError::data("Iceberg REST config length exceeds u64"))?;
-        let config_parse_lease = reserve_parse_memory(
-            context.execution.memory(),
-            config_bytes,
-            request.source.metadata_parse_amplification_bps,
-            "iceberg-rest-config-parse",
-        )?;
-        let catalog_config: RestCatalogConfigResponse =
-            serde_json::from_slice(config_payload.payload()).map_err(|error| {
-                CdfError::data(format!("decode Iceberg REST catalog config: {error}"))
-            })?;
-        let routing = RestCatalogRouting::negotiate(uri, catalog_config)?;
-        drop(config_parse_lease);
-        drop(config_payload);
-        let endpoint =
-            rest_table_endpoint(&routing.uri, routing.prefix.as_deref(), &request.resource)?;
-        context.egress.authorize(&endpoint)?;
-        let payload = send_rest_request(
-            context,
-            &allowlist,
-            endpoint,
-            authorization.as_deref(),
-            request.source.maximum_metadata_bytes,
-            request.cancellation.clone(),
-        )?;
-        let response_bytes = u64::try_from(payload.payload().len())
-            .map_err(|_| CdfError::data("Iceberg REST response length exceeds u64"))?;
-        let envelope: RestLoadTableResponse =
-            serde_json::from_slice(payload.payload()).map_err(|error| {
-                CdfError::data(format!("decode Iceberg REST table response: {error}"))
-            })?;
-        let metadata_location = envelope.metadata_location.ok_or_else(|| {
-            CdfError::data("Iceberg REST table response omitted metadata-location")
-        })?;
-        build_loaded_table(
-            request,
-            context,
-            CatalogObservation {
-                metadata_location,
-                catalog_generation: None,
-                metadata_payload: payload,
-                embedded_metadata: Some(envelope.metadata),
-                bytes_read: config_bytes.saturating_add(response_bytes),
-                objects_read: 2,
-            },
-        )
-    }
-}
-
-fn send_rest_request(
-    context: &IcebergCatalogContext,
-    allowlist: &EgressAllowlist,
-    endpoint: String,
-    authorization: Option<&str>,
-    maximum_bytes: u64,
-    cancellation: RunCancellation,
-) -> Result<AccountedBytes> {
-    let mut request = HttpRequest::new(HttpMethod::Get, endpoint);
-    if let Some(authorization) = authorization {
-        request = request.with_header("authorization", authorization);
-    }
-    let budget = HttpResponseBudget::new(
-        maximum_bytes,
-        context.execution.memory(),
-        Arc::new(move || cancellation.check()),
-    )?;
-    let rest_http = Arc::clone(&context.rest_http);
-    let allowlist = allowlist.clone();
-    let response = context.execution.run_io(async move {
-        cdf_http::send_with_policy(rest_http.as_ref(), &allowlist, request, budget).await
-    })?;
-    if response.status != 200 {
-        return Err(http_catalog_error(response.status));
-    }
-    response
-        .accounted_body()
-        .cloned()
-        .ok_or_else(|| CdfError::data("Iceberg REST response omitted its JSON body"))
-}
-
-struct GlueCatalogBinding;
-
-impl IcebergCatalogBinding for GlueCatalogBinding {
-    fn kind(&self) -> &'static str {
-        "glue"
-    }
-
-    fn load_table(
-        &self,
-        request: &IcebergCatalogLoadRequest,
-        context: &IcebergCatalogContext,
-    ) -> Result<LoadedIcebergTable> {
-        let IcebergCatalogOptions::Glue {
-            region,
-            catalog_id,
-            endpoint,
-            credentials,
-            ..
-        } = &request.source.catalog
-        else {
-            return Err(CdfError::internal(
-                "Glue binding received another catalog kind",
-            ));
-        };
-        if request.resource.namespace.len() != 1 {
-            return Err(CdfError::contract(
-                "AWS Glue maps an Iceberg table to exactly one database namespace component",
-            ));
-        }
-        let credentials = credentials
-            .as_ref()
-            .map(|value| SecretUri::new(value.clone()))
-            .transpose()?;
-        if let Some(endpoint) = endpoint {
-            context.egress.authorize(endpoint)?;
-        }
-        let glue = Arc::clone(&context.glue);
-        let glue_request = GlueGetTableRequest {
-            region: region.clone(),
-            catalog_id: catalog_id.clone(),
-            database: request.resource.namespace[0].clone(),
-            table: request.resource.table.clone(),
-            endpoint: endpoint.clone(),
-            credentials,
-            maximum_response_bytes: request.source.maximum_metadata_bytes,
-            cancellation: request.cancellation.clone(),
-        };
-        let pointer = context
-            .execution
-            .run_io(async move { glue.get_table(glue_request).await })?;
-        request.cancellation.check()?;
-        let _pointer_lease = reserve_discovery_memory(
-            context.execution.memory(),
-            pointer.retained_bytes.max(1),
-            "iceberg-glue-pointer",
-        )?;
-        let access = transport_resource(&pointer.metadata_location, &request.source, None)?;
-        let control = FileTransportControl::new(request.cancellation.clone(), None);
-        let metadata = context
-            .object_access
-            .metadata(&context.egress, &access, &control)?;
-        let access = metadata.access_resource(&access);
-        let identity = metadata.into_identity();
-        let payload = read_metadata_object(
-            context,
-            &access,
-            &identity,
-            request.source.maximum_metadata_bytes,
-            request.cancellation.clone(),
-        )?;
-        build_loaded_table(
-            request,
-            context,
-            CatalogObservation {
-                metadata_location: pointer.metadata_location.clone(),
-                catalog_generation: pointer.catalog_generation,
-                metadata_payload: payload,
-                embedded_metadata: None,
-                bytes_read: pointer
-                    .bytes_read
-                    .saturating_add(identity.size_bytes.unwrap_or(0)),
-                objects_read: 2,
-            },
-        )
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "kebab-case")]
-struct RestLoadTableResponse {
-    metadata_location: Option<String>,
-    metadata: Box<RawValue>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RestCatalogConfigResponse {
-    #[serde(default)]
-    defaults: BTreeMap<String, String>,
-    #[serde(default)]
-    overrides: BTreeMap<String, String>,
-    #[serde(default)]
-    endpoints: Option<Vec<String>>,
-}
-
-struct RestCatalogRouting {
-    uri: String,
-    prefix: Option<String>,
-}
-
-impl RestCatalogRouting {
-    fn negotiate(configured_uri: &str, response: RestCatalogConfigResponse) -> Result<Self> {
-        let _advertised_endpoints = response.endpoints;
-        let mut properties = response.defaults;
-        properties.extend(response.overrides);
-        let uri = properties
-            .remove("uri")
-            .unwrap_or_else(|| configured_uri.to_owned());
-        validate_rest_uri("negotiated Iceberg REST catalog URI", &uri)?;
-        let prefix = properties.remove("prefix");
-        if let Some(prefix) = &prefix {
-            validate_rest_prefix(prefix)?;
-        }
-        Ok(Self { uri, prefix })
     }
 }
 
@@ -1333,94 +1047,6 @@ fn join_location<'a>(root: &str, parts: impl IntoIterator<Item = &'a str>) -> Re
     Ok(joined)
 }
 
-fn rest_config_endpoint(root: &str, warehouse: Option<&str>) -> Result<String> {
-    let mut url = url::Url::parse(root)
-        .map_err(|error| CdfError::contract(format!("invalid Iceberg REST URI: {error}")))?;
-    {
-        let mut path = url.path_segments_mut().map_err(|_| {
-            CdfError::contract("Iceberg REST URI cannot be used as a hierarchical URL")
-        })?;
-        path.pop_if_empty().push("v1").push("config");
-    }
-    if let Some(warehouse) = warehouse {
-        url.query_pairs_mut().append_pair("warehouse", warehouse);
-    }
-    Ok(url.to_string())
-}
-
-fn rest_table_endpoint(
-    root: &str,
-    prefix: Option<&str>,
-    resource: &IcebergResourceOptions,
-) -> Result<String> {
-    let mut url = url::Url::parse(root)
-        .map_err(|error| CdfError::contract(format!("invalid Iceberg REST URI: {error}")))?;
-    {
-        let mut path = url.path_segments_mut().map_err(|_| {
-            CdfError::contract("Iceberg REST URI cannot be used as a hierarchical URL")
-        })?;
-        path.pop_if_empty().push("v1");
-        if let Some(prefix) = prefix {
-            for component in prefix.split('/') {
-                path.push(component);
-            }
-        }
-        path.push("namespaces")
-            .push(&resource.namespace.join("\u{001f}"))
-            .push("tables")
-            .push(&resource.table);
-    }
-    Ok(url.to_string())
-}
-
-fn validate_rest_uri(label: &str, value: &str) -> Result<()> {
-    let parsed = url::Url::parse(value)
-        .map_err(|error| CdfError::data(format!("{label} is invalid: {error}")))?;
-    if !matches!(parsed.scheme(), "http" | "https")
-        || parsed.host_str().is_none()
-        || !parsed.username().is_empty()
-        || parsed.password().is_some()
-        || parsed.query().is_some()
-        || parsed.fragment().is_some()
-    {
-        return Err(CdfError::data(format!(
-            "{label} requires an HTTP(S) URL without userinfo, query, or fragment"
-        )));
-    }
-    Ok(())
-}
-
-fn validate_rest_prefix(prefix: &str) -> Result<()> {
-    if prefix.is_empty()
-        || prefix.starts_with('/')
-        || prefix.ends_with('/')
-        || prefix
-            .split('/')
-            .any(|component| component.is_empty() || matches!(component, "." | ".."))
-        || prefix.chars().any(char::is_control)
-    {
-        return Err(CdfError::data(
-            "Iceberg REST catalog returned an invalid routing prefix",
-        ));
-    }
-    Ok(())
-}
-
-fn http_catalog_error(status: u16) -> CdfError {
-    match status {
-        401 | 403 => CdfError::auth(format!(
-            "Iceberg REST catalog rejected table access with HTTP {status}"
-        )),
-        404 => CdfError::data("Iceberg REST catalog table was not found"),
-        408 | 425 | 429 | 500..=599 => CdfError::transient(format!(
-            "Iceberg REST catalog returned retryable HTTP {status}"
-        )),
-        _ => CdfError::data(format!(
-            "Iceberg REST catalog returned unsupported HTTP {status}"
-        )),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::io::Write;
@@ -1433,62 +1059,6 @@ mod tests {
         let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
         encoder.write_all(payload).unwrap();
         encoder.finish().unwrap()
-    }
-
-    #[test]
-    fn rest_endpoint_uses_iceberg_namespace_encoding() {
-        let endpoint = rest_table_endpoint(
-            "https://catalog.example.test",
-            None,
-            &IcebergResourceOptions {
-                namespace: vec!["org".to_owned(), "analytics".to_owned()],
-                table: "events".to_owned(),
-                selector: IcebergSnapshotSelector::Current,
-                mode: crate::IcebergScanMode::Snapshot,
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            endpoint,
-            "https://catalog.example.test/v1/namespaces/org%1Fanalytics/tables/events"
-        );
-    }
-
-    #[test]
-    fn rest_negotiation_keeps_warehouse_in_config_query_and_prefixes_table_route() {
-        let config =
-            rest_config_endpoint("https://catalog.example.test/api", Some("prod/main")).unwrap();
-        assert_eq!(
-            config,
-            "https://catalog.example.test/api/v1/config?warehouse=prod%2Fmain"
-        );
-        let routing = RestCatalogRouting::negotiate(
-            "https://catalog.example.test/api",
-            RestCatalogConfigResponse {
-                defaults: BTreeMap::from([("prefix".to_owned(), "ice/prod".to_owned())]),
-                overrides: BTreeMap::from([(
-                    "uri".to_owned(),
-                    "https://routed.example.test/catalog".to_owned(),
-                )]),
-                endpoints: None,
-            },
-        )
-        .unwrap();
-        let endpoint = rest_table_endpoint(
-            &routing.uri,
-            routing.prefix.as_deref(),
-            &IcebergResourceOptions {
-                namespace: vec!["analytics".to_owned()],
-                table: "events".to_owned(),
-                selector: IcebergSnapshotSelector::Current,
-                mode: crate::IcebergScanMode::Snapshot,
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            endpoint,
-            "https://routed.example.test/catalog/v1/ice/prod/namespaces/analytics/tables/events"
-        );
     }
 
     #[test]

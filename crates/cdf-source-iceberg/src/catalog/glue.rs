@@ -2,25 +2,157 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use cdf_aws::{AwsControlClient, AwsControlRequest, AwsControlTarget};
-use cdf_http::{HttpTransport, SecretProvider};
+use cdf_http::{HttpTransport, SecretProvider, SecretUri};
 use cdf_kernel::{BoxFuture, CdfError, Result};
+use cdf_object_access::FileTransportControl;
 use cdf_runtime::{ExecutionServices, SourceEgressScope};
 use serde::{Deserialize, Serialize};
 
-use crate::{GlueCatalogClient, GlueGetTableRequest, GlueTablePointer};
+use super::{
+    CatalogObservation, IcebergCatalogBinding, IcebergCatalogContext, IcebergCatalogLoadRequest,
+    LoadedIcebergTable, build_loaded_table, reserve_discovery_memory, transport_resource,
+};
+use crate::IcebergCatalogOptions;
 
 const GLUE_TARGET: &str = "AWSGlue.GetTable";
+
+pub trait GlueCatalogClient: Send + Sync {
+    fn get_table(&self, request: GlueGetTableRequest) -> BoxFuture<'_, Result<GlueTablePointer>>;
+}
+
+#[derive(Clone, Debug)]
+pub struct GlueGetTableRequest {
+    pub region: String,
+    pub catalog_id: Option<String>,
+    pub database: String,
+    pub table: String,
+    pub endpoint: Option<String>,
+    pub credentials: Option<SecretUri>,
+    pub maximum_response_bytes: u64,
+    pub cancellation: cdf_runtime::RunCancellation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GlueTablePointer {
+    pub metadata_location: String,
+    pub catalog_generation: Option<String>,
+    /// Actual response-body bytes transferred from the Glue metadata plane.
+    pub bytes_read: u64,
+    /// Retained response bytes reported by the host adapter. The catalog layer charges these
+    /// against the shared discovery ledger before retaining the pointer.
+    pub retained_bytes: u64,
+}
+
+#[derive(Debug, Default)]
+pub struct UnsupportedGlueCatalogClient;
+
+impl GlueCatalogClient for UnsupportedGlueCatalogClient {
+    fn get_table(&self, _request: GlueGetTableRequest) -> BoxFuture<'_, Result<GlueTablePointer>> {
+        Box::pin(async {
+            Err(CdfError::contract(
+                "AWS Glue catalog support is not installed in this host registry",
+            ))
+        })
+    }
+}
+
+pub(super) struct GlueCatalogBinding;
+
+impl IcebergCatalogBinding for GlueCatalogBinding {
+    fn kind(&self) -> &'static str {
+        "glue"
+    }
+
+    fn load_table(
+        &self,
+        request: &IcebergCatalogLoadRequest,
+        context: &IcebergCatalogContext,
+    ) -> Result<LoadedIcebergTable> {
+        let IcebergCatalogOptions::Glue {
+            region,
+            catalog_id,
+            endpoint,
+            credentials,
+            ..
+        } = &request.source.catalog
+        else {
+            return Err(CdfError::internal(
+                "Glue binding received another catalog kind",
+            ));
+        };
+        if request.resource.namespace.len() != 1 {
+            return Err(CdfError::contract(
+                "AWS Glue maps an Iceberg table to exactly one database namespace component",
+            ));
+        }
+        let credentials = credentials
+            .as_ref()
+            .map(|value| SecretUri::new(value.clone()))
+            .transpose()?;
+        if let Some(endpoint) = endpoint {
+            context.egress.authorize(endpoint)?;
+        }
+        let glue = Arc::clone(&context.glue);
+        let glue_request = GlueGetTableRequest {
+            region: region.clone(),
+            catalog_id: catalog_id.clone(),
+            database: request.resource.namespace[0].clone(),
+            table: request.resource.table.clone(),
+            endpoint: endpoint.clone(),
+            credentials,
+            maximum_response_bytes: request.source.maximum_metadata_bytes,
+            cancellation: request.cancellation.clone(),
+        };
+        let pointer = context
+            .execution
+            .run_io(async move { glue.get_table(glue_request).await })?;
+        request.cancellation.check()?;
+        let _pointer_lease = reserve_discovery_memory(
+            context.execution.memory(),
+            pointer.retained_bytes.max(1),
+            "iceberg-glue-pointer",
+        )?;
+        let access = transport_resource(&pointer.metadata_location, &request.source, None)?;
+        let control = FileTransportControl::new(request.cancellation.clone(), None);
+        let metadata = context
+            .object_access
+            .metadata(&context.egress, &access, &control)?;
+        let access = metadata.access_resource(&access);
+        let identity = metadata.into_identity();
+        let payload = super::read_metadata_object(
+            context,
+            &access,
+            &identity,
+            request.source.maximum_metadata_bytes,
+            request.cancellation.clone(),
+        )?;
+        build_loaded_table(
+            request,
+            context,
+            CatalogObservation {
+                metadata_location: pointer.metadata_location.clone(),
+                catalog_generation: pointer.catalog_generation,
+                metadata_payload: payload,
+                embedded_metadata: None,
+                bytes_read: pointer
+                    .bytes_read
+                    .saturating_add(identity.size_bytes.unwrap_or(0)),
+                objects_read: 2,
+            },
+        )
+    }
+}
 
 /// AWS Glue's read-only Iceberg pointer binding over the shared injected AWS JSON authority.
 ///
 /// Iceberg owns only `GetTable` request/response semantics. SigV4, credentials, egress, bounded
 /// response memory, HTTP pooling, and cancellation are neutral AWS infrastructure.
 #[derive(Clone, Debug)]
-pub struct AwsGlueCatalogClient {
+pub struct AwsIcebergGlueCatalogClient {
     aws: Arc<AwsControlClient>,
 }
 
-impl AwsGlueCatalogClient {
+impl AwsIcebergGlueCatalogClient {
     pub fn new(
         http: Arc<dyn HttpTransport>,
         secrets: Arc<dyn SecretProvider + Send + Sync>,
@@ -67,7 +199,7 @@ impl AwsGlueCatalogClient {
     }
 }
 
-impl GlueCatalogClient for AwsGlueCatalogClient {
+impl GlueCatalogClient for AwsIcebergGlueCatalogClient {
     fn get_table(&self, request: GlueGetTableRequest) -> BoxFuture<'_, Result<GlueTablePointer>> {
         Box::pin(async move { self.request_table(request).await })
     }
