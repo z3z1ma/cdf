@@ -10,13 +10,16 @@ use arrow_array::{
     UInt16Array, UInt32Array, UInt64Array,
 };
 use arrow_schema::{DataType, TimeUnit};
-
-use crate::{commit::io_error, *};
+use cdf_kernel::{CdfError, Result};
 
 const HEADER: &[u8] = b"PGCOPY\n\xFF\r\n\0";
 pub(crate) const BINARY_COPY_BUFFER_BYTES: usize = 1024 * 1024;
 const POSTGRES_EPOCH_DAYS: i32 = 10_957;
 const POSTGRES_EPOCH_MICROS: i64 = 946_684_800_000_000;
+
+fn io_error(context: impl Into<String>, error: std::io::Error) -> CdfError {
+    CdfError::destination(format!("{}: {}", context.into(), error))
+}
 
 enum BinaryColumn<'a> {
     Boolean(&'a BooleanArray),

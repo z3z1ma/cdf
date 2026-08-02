@@ -92,7 +92,7 @@ const P2_SCENARIOS: &[P2Scenario] = &[
         status: CoverageStatus::Covered,
         rationale: "deterministic HTTP Parquet conformance runs cdf add, pins the ranged-footer schema, plans, and commits through the ordinary package/receipt/checkpoint path with zero typed fields; public TLC remains separately recorded live evidence",
         tests: &[
-            "crates/cdf-cli/src/tests.rs::p2_s1_add_http_parquet_pins_and_runs_with_zero_typed_fields",
+            "crates/cdf-cli/src/tests/add.rs::p2_s1_add_http_parquet_pins_and_runs_with_zero_typed_fields",
         ],
         tickets: &[],
     },
@@ -102,7 +102,7 @@ const P2_SCENARIOS: &[P2Scenario] = &[
         status: CoverageStatus::Covered,
         rationale: "deterministic production HTTP conformance expands the canonical year-month glob, skips typed 404 absences, previews the exact partition set, loads present months, performs a no-change no-op, and loads only a newly present month",
         tests: &[
-            "crates/cdf-cli/src/tests.rs::p2_s2_http_month_glob_is_incremental_and_no_change_is_a_noop",
+            "crates/cdf-cli/src/tests/add.rs::p2_s2_http_month_glob_is_incremental_and_no_change_is_a_noop",
         ],
         tickets: &[],
     },
@@ -112,9 +112,9 @@ const P2_SCENARIOS: &[P2Scenario] = &[
         status: CoverageStatus::Covered,
         rationale: "the object-store fixture recursively resolves, bounded-discovers, pins, previews, streams gzip NDJSON, preserves remote FileManifest identity, and executes 10,000 rows; recorded HTTP fixtures additionally prove bounded transform/decode backpressure, cancellation before download completion, and jobs-invariant multi-file packages; drift quarantine remains covered by the shared file-contract conformance",
         tests: &[
-            "crates/cdf-project/src/tests.rs::object_store_gzip_ndjson_discovers_pins_and_executes_through_one_transport",
-            "crates/cdf-project/src/tests.rs::http_gzip_ndjson_backpressures_and_cancels_before_download_completion",
-            "crates/cdf-project/src/tests.rs::recorded_http_multifile_packages_are_jobs_invariant",
+            "crates/cdf-project/src/tests/discovery_schema.rs::object_store_gzip_ndjson_discovers_pins_and_executes_through_one_transport",
+            "crates/cdf-project/src/tests/discovery_schema.rs::http_gzip_ndjson_backpressures_and_cancels_before_download_completion",
+            "crates/cdf-project/src/tests/discovery_schema.rs::recorded_http_multifile_packages_are_jobs_invariant",
             "crates/cdf-conformance/src/live_run/drift_quarantine/mod.rs::drift_quarantine_duckdb_conformance_asserts_unsupported_mirror_exclusion",
         ],
         tickets: &[],
@@ -125,7 +125,7 @@ const P2_SCENARIOS: &[P2Scenario] = &[
         status: CoverageStatus::Covered,
         rationale: "standalone local-Postgres conformance runs cdf add from a direct table DSN, persists only a private secret reference, pins catalog discovery, reports cursor suggestions without selecting one, then plans, previews, and runs after explicit cursor selection",
         tests: &[
-            "crates/cdf-cli/src/tests.rs::p2_s4_postgres_add_pins_private_secret_and_runs_discovered_table",
+            "crates/cdf-cli/src/tests/source_planning.rs::p2_s4_postgres_add_pins_private_secret_and_runs_discovered_table",
         ],
         tickets: &[],
     },
@@ -147,9 +147,9 @@ const P2_SCENARIOS: &[P2Scenario] = &[
         tests: &[
             "crates/cdf-conformance/src/live_run/drift_quarantine/mod.rs::drift_quarantine_duckdb_conformance_asserts_unsupported_mirror_exclusion",
             "crates/cdf-conformance/src/live_run/drift_quarantine/mod.rs::drift_quarantine_postgres_conformance_asserts_supported_mirror",
-            "crates/cdf-cli/src/tests.rs::sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_quarantine",
-            "crates/cdf-cli/src/tests.rs::financial_freeze_quarantines_deviating_file_and_commits_mixed_processed_manifest",
-            "crates/cdf-cli/src/tests.rs::governed_evolve_quarantines_incompatible_file_with_exact_arrow_field_evidence",
+            "crates/cdf-cli/src/tests/source_planning.rs::sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_quarantine",
+            "crates/cdf-cli/src/tests/run_adapters.rs::financial_freeze_quarantines_deviating_file_and_commits_mixed_processed_manifest",
+            "crates/cdf-cli/src/tests/run_adapters.rs::governed_evolve_quarantines_incompatible_file_with_exact_arrow_field_evidence",
         ],
         tickets: &[],
     },
@@ -171,13 +171,13 @@ const P2_SCENARIOS: &[P2Scenario] = &[
         tests: &[
             "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_preview_run_parity_law_covers_supported_archetypes",
             "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_s8_multifile_preview_traverses_the_same_planned_partitions_as_run",
-            "crates/cdf-cli/src/tests.rs::pinned_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_in_stream",
-            "crates/cdf-cli/src/tests.rs::sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_quarantine",
-            "crates/cdf-cli/src/tests.rs::sampled_pin_captures_unseen_field_then_fresh_discovery_promotes_without_source_replay",
+            "crates/cdf-cli/src/tests/run_adapters.rs::pinned_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_in_stream",
+            "crates/cdf-cli/src/tests/source_planning.rs::sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_quarantine",
+            "crates/cdf-cli/src/tests/schema_promotion.rs::sampled_pin_captures_unseen_field_then_fresh_discovery_promotes_without_source_replay",
             "crates/cdf-project/src/discovery_manifest.rs::stratified_hash_selector_large_set_is_executor_budget_independent",
-            "crates/cdf-project/src/tests.rs::sampled_probe_budget_failure_does_not_substitute_an_unselected_candidate",
-            "crates/cdf-cli/src/tests.rs::p2_s2_http_month_glob_is_incremental_and_no_change_is_a_noop",
-            "crates/cdf-project/src/tests.rs::object_store_gzip_ndjson_discovers_pins_and_executes_through_one_transport",
+            "crates/cdf-project/src/tests/discovery_schema.rs::sampled_probe_budget_failure_does_not_substitute_an_unselected_candidate",
+            "crates/cdf-cli/src/tests/add.rs::p2_s2_http_month_glob_is_incremental_and_no_change_is_a_noop",
+            "crates/cdf-project/src/tests/discovery_schema.rs::object_store_gzip_ndjson_discovers_pins_and_executes_through_one_transport",
         ],
         tickets: &[],
     },
@@ -196,21 +196,21 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
     P2FrictionRow {
         id: 1,
         closed_tests: &[
-            "crates/cdf-cli/src/tests.rs::schema_discover_local_parquet_reports_schema_without_project_writes",
-            "crates/cdf-cli/src/tests.rs::run_local_parquet_discover_autopins_and_commits_pinned_schema",
-            "crates/cdf-project/src/tests.rs::http_parquet_schema_discovery_uses_bounded_ranges_without_artifacts",
-            "crates/cdf-project/src/tests.rs::http_parquet_auto_pin_plan_preview_and_run_use_file_runtime",
+            "crates/cdf-cli/src/tests/schema_discovery.rs::schema_discover_local_parquet_reports_schema_without_project_writes",
+            "crates/cdf-cli/src/tests/run_adapters.rs::run_local_parquet_discover_autopins_and_commits_pinned_schema",
+            "crates/cdf-project/src/tests/discovery_schema.rs::http_parquet_schema_discovery_uses_bounded_ranges_without_artifacts",
+            "crates/cdf-project/src/tests/discovery_schema.rs::http_parquet_auto_pin_plan_preview_and_run_use_file_runtime",
         ],
         open_tickets: &[],
     },
     P2FrictionRow {
         id: 2,
         closed_tests: &[
-            "crates/cdf-cli/src/tests.rs::schema_discover_local_parquet_reports_schema_without_project_writes",
-            "crates/cdf-cli/src/tests.rs::schema_discover_rest_reports_sample_schema_without_project_writes_or_secret_leak",
-            "crates/cdf-cli/src/tests.rs::schema_discover_postgres_catalog_uses_project_secret_without_writes_or_secret_leak",
-            "crates/cdf-cli/src/tests.rs::schema_pin_show_and_diff_local_parquet_snapshot_with_lockfile_reference",
-            "crates/cdf-cli/src/tests.rs::add_local_parquet_pins_schema_and_writes_resource_config",
+            "crates/cdf-cli/src/tests/schema_discovery.rs::schema_discover_local_parquet_reports_schema_without_project_writes",
+            "crates/cdf-cli/src/tests/schema_discovery.rs::schema_discover_rest_reports_sample_schema_without_project_writes_or_secret_leak",
+            "crates/cdf-cli/src/tests/schema_discovery.rs::schema_discover_postgres_catalog_uses_project_secret_without_writes_or_secret_leak",
+            "crates/cdf-cli/src/tests/schema_discovery.rs::schema_pin_show_and_diff_local_parquet_snapshot_with_lockfile_reference",
+            "crates/cdf-cli/src/tests/add.rs::add_local_parquet_pins_schema_and_writes_resource_config",
         ],
         open_tickets: &[],
     },
@@ -245,9 +245,9 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
         closed_tests: &[
             "crates/cdf-declarative/src/tests.rs::declared_schema_is_normalized_and_preserves_source_identity",
             "crates/cdf-contract/src/tests.rs::destination_identifier_policy_preserves_postgres_max_length",
-            "crates/cdf-cli/src/tests.rs::duckdb_destination_policy_normalizes_plan_preview_package_and_commit",
-            "crates/cdf-cli/src/tests.rs::destination_normalization_collision_fails_before_writes",
-            "crates/cdf-project/src/runtime_tests.rs::postgres_destination_policy_truncates_package_and_committed_column_identically",
+            "crates/cdf-cli/src/tests/run_adapters.rs::duckdb_destination_policy_normalizes_plan_preview_package_and_commit",
+            "crates/cdf-cli/src/tests/run_adapters.rs::destination_normalization_collision_fails_before_writes",
+            "crates/cdf-project/src/runtime_tests/live_adapters.rs::postgres_destination_policy_truncates_package_and_committed_column_identically",
         ],
         open_tickets: &[],
     },
@@ -255,8 +255,8 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
         id: 7,
         closed_tests: &[
             "crates/cdf-declarative/src/tests.rs::declared_schema_is_normalized_and_preserves_source_identity",
-            "crates/cdf-cli/src/tests.rs::duckdb_destination_policy_normalizes_plan_preview_package_and_commit",
-            "crates/cdf-project/src/runtime_tests.rs::postgres_destination_policy_truncates_package_and_committed_column_identically",
+            "crates/cdf-cli/src/tests/run_adapters.rs::duckdb_destination_policy_normalizes_plan_preview_package_and_commit",
+            "crates/cdf-project/src/runtime_tests/live_adapters.rs::postgres_destination_policy_truncates_package_and_committed_column_identically",
         ],
         open_tickets: &[],
     },
@@ -264,8 +264,8 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
         id: 8,
         closed_tests: &[
             "crates/cdf-source-files/src/runtime/tests.rs::object_store_recursive_glob_resolves_stable_multi_file_partitions",
-            "crates/cdf-project/src/runtime_tests.rs::general_project_run_commits_multi_file_resource_manifest_checkpoint",
-            "crates/cdf-project/src/runtime_tests.rs::file_manifest_append_run_skips_unchanged_files_and_loads_only_changes",
+            "crates/cdf-project/src/runtime_tests/orchestration.rs::general_project_run_commits_multi_file_resource_manifest_checkpoint",
+            "crates/cdf-project/src/runtime_tests/orchestration.rs::file_manifest_append_run_skips_unchanged_files_and_loads_only_changes",
         ],
         open_tickets: &[],
     },
@@ -274,8 +274,8 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
         closed_tests: &[
             "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_preview_run_parity_law_covers_supported_archetypes",
             "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_s8_multifile_preview_traverses_the_same_planned_partitions_as_run",
-            "crates/cdf-cli/src/tests.rs::pinned_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_in_stream",
-            "crates/cdf-cli/src/tests.rs::sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_quarantine",
+            "crates/cdf-cli/src/tests/run_adapters.rs::pinned_multi_file_parquet_keeps_fixed_schema_and_admits_new_physical_schemas_in_stream",
+            "crates/cdf-cli/src/tests/source_planning.rs::sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_quarantine",
         ],
         open_tickets: &[],
     },
@@ -283,37 +283,37 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
         id: 10,
         closed_tests: &[
             "crates/cdf-declarative/src/tests.rs::registry_compilation_produces_one_compiled_source_plan_and_canonical_id",
-            "crates/cdf-project/src/tests.rs::declarative_resource_mapping_pattern_must_match_compiled_id",
-            "crates/cdf-cli/src/tests.rs::resource_mapping_pattern_mismatch_reports_validate_and_plan_commands",
+            "crates/cdf-project/src/tests/project_files.rs::declarative_resource_mapping_pattern_must_match_compiled_id",
+            "crates/cdf-cli/src/tests/surface.rs::resource_mapping_pattern_mismatch_reports_validate_and_plan_commands",
         ],
         open_tickets: &[],
     },
     P2FrictionRow {
         id: 11,
         closed_tests: &[
-            "crates/cdf-cli/src/tests.rs::resource_not_compiled_error_names_compiled_ids_origins_and_fix",
+            "crates/cdf-cli/src/tests/init_validate.rs::resource_not_compiled_error_names_compiled_ids_origins_and_fix",
         ],
         open_tickets: &[],
     },
     P2FrictionRow {
         id: 12,
         closed_tests: &[
-            "crates/cdf-cli/src/scan_command.rs::tests::plan_error_wording_uses_plan_command_name",
-            "crates/cdf-cli/src/tests.rs::resource_mapping_pattern_mismatch_reports_validate_and_plan_commands",
+            "crates/cdf-cli/src/scan_command.rs::render_tests::plan_error_wording_uses_plan_command_name",
+            "crates/cdf-cli/src/tests/surface.rs::resource_mapping_pattern_mismatch_reports_validate_and_plan_commands",
         ],
         open_tickets: &[],
     },
     P2FrictionRow {
         id: 13,
         closed_tests: &[
-            "crates/cdf-cli/src/tests.rs::resource_not_compiled_error_names_compiled_ids_origins_and_fix",
+            "crates/cdf-cli/src/tests/init_validate.rs::resource_not_compiled_error_names_compiled_ids_origins_and_fix",
         ],
         open_tickets: &[],
     },
     P2FrictionRow {
         id: 14,
         closed_tests: &[
-            "crates/cdf-cli/src/tests.rs::validate_deep_reports_source_front_end_checks_without_writes",
+            "crates/cdf-cli/src/tests/init_validate.rs::validate_deep_reports_source_front_end_checks_without_writes",
         ],
         open_tickets: &[],
     },
@@ -322,8 +322,8 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
         closed_tests: &[
             "crates/cdf-object-access/src/transport.rs::tests::file_transport_http_metadata_uses_headers_only_client",
             "crates/cdf-object-access/src/transport.rs::tests::file_transport_http_metadata_falls_back_from_head_errors_and_keeps_access_ephemeral",
-            "crates/cdf-project/src/tests.rs::http_parquet_schema_discovery_uses_bounded_ranges_without_artifacts",
-            "crates/cdf-project/src/tests.rs::http_parquet_auto_pin_plan_preview_and_run_use_file_runtime",
+            "crates/cdf-project/src/tests/discovery_schema.rs::http_parquet_schema_discovery_uses_bounded_ranges_without_artifacts",
+            "crates/cdf-project/src/tests/discovery_schema.rs::http_parquet_auto_pin_plan_preview_and_run_use_file_runtime",
         ],
         open_tickets: &[],
     },
@@ -331,7 +331,7 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
         id: 16,
         closed_tests: &[
             "crates/cdf-source-files/src/runtime/tests.rs::object_store_gzip_ndjson_streams_without_spill_and_preserves_remote_position",
-            "crates/cdf-project/src/tests.rs::http_gzip_ndjson_backpressures_and_cancels_before_download_completion",
+            "crates/cdf-project/src/tests/discovery_schema.rs::http_gzip_ndjson_backpressures_and_cancels_before_download_completion",
             "crates/cdf-transform-gzip/src/lib.rs::tests::streams_concatenated_members_across_single_byte_input_chunks",
             "crates/cdf-transform-zstd/src/lib.rs::tests::streams_concatenated_frames_across_single_byte_input_chunks",
         ],
@@ -342,10 +342,10 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
         closed_tests: &[
             "crates/cdf-declarative/src/tests.rs::append_is_keyless_by_default_and_merge_names_both_fixes",
             "crates/cdf-declarative/src/tests.rs::merge_and_exact_row_dedup_compile_only_for_their_valid_dispositions",
-            "crates/cdf-project/src/tests.rs::local_project_scaffold_writes_valid_project_without_runtime_artifacts",
-            "crates/cdf-cli/src/tests.rs::keyless_append_file_validate_plan_preview_run_has_no_key_nudge",
-            "crates/cdf-cli/src/tests.rs::keyless_append_rest_validate_plan_preview_run_has_no_key_nudge",
-            "crates/cdf-cli/src/tests.rs::merge_without_key_fails_all_entry_commands_before_contact_or_writes",
+            "crates/cdf-project/src/tests/project_files.rs::local_project_scaffold_writes_valid_project_without_runtime_artifacts",
+            "crates/cdf-cli/src/tests/source_planning.rs::keyless_append_file_validate_plan_preview_run_has_no_key_nudge",
+            "crates/cdf-cli/src/tests/source_planning.rs::keyless_append_rest_validate_plan_preview_run_has_no_key_nudge",
+            "crates/cdf-cli/src/tests/source_planning.rs::merge_without_key_fails_all_entry_commands_before_contact_or_writes",
             "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_s7_keyless_append_and_precontact_merge_failure_conformance",
         ],
         open_tickets: &[],
@@ -355,9 +355,9 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
         closed_tests: &[
             "crates/cdf-source-files/src/runtime/tests.rs::local_parquet_uses_registered_native_driver_as_bounded_stream",
             "crates/cdf-contract/src/tests.rs::schema_reconciliation_records_lossless_widenings_and_physical_type",
-            "crates/cdf-cli/src/tests.rs::run_local_parquet_discover_autopins_and_commits_pinned_schema",
-            "crates/cdf-project/src/tests.rs::http_parquet_auto_pin_plan_preview_and_run_use_file_runtime",
-            "crates/cdf-cli/src/tests.rs::p2_s1_add_http_parquet_pins_and_runs_with_zero_typed_fields",
+            "crates/cdf-cli/src/tests/run_adapters.rs::run_local_parquet_discover_autopins_and_commits_pinned_schema",
+            "crates/cdf-project/src/tests/discovery_schema.rs::http_parquet_auto_pin_plan_preview_and_run_use_file_runtime",
+            "crates/cdf-cli/src/tests/add.rs::p2_s1_add_http_parquet_pins_and_runs_with_zero_typed_fields",
         ],
         open_tickets: &[],
     },
@@ -705,6 +705,48 @@ fn p2_registry_named_tests_resolve_to_test_functions() {
 }
 
 #[test]
+fn p2_registry_test_parser_rejects_decoys_non_tests_and_duplicates() {
+    let decoys = r##"
+        // #[test] fn registry_target() {}
+        const DECOY: &str = "#[test] fn registry_target() {}";
+        fn registry_target() {}
+    "##;
+    assert_eq!(
+        actual_test_function_count(decoys, &[], "registry_target"),
+        0
+    );
+
+    let one_test = r#"
+        // fn registry_target() {}
+        const DECOY: &str = "fn registry_target() {}";
+        fn same_named_non_test() {}
+        mod nested {
+            #[test]
+            fn registry_target() {}
+        }
+    "#;
+    assert_eq!(
+        actual_test_function_count(one_test, &[], "registry_target"),
+        1
+    );
+    assert_eq!(
+        actual_test_function_count(one_test, &["nested"], "registry_target"),
+        1
+    );
+
+    let duplicate_tests = r#"
+        #[test]
+        fn registry_target() {}
+        #[test]
+        fn registry_target() {}
+    "#;
+    assert_eq!(
+        actual_test_function_count(duplicate_tests, &[], "registry_target"),
+        2
+    );
+}
+
+#[test]
 fn p2_closed_registry_has_no_open_owners_and_rejects_terminal_ones_as_active() {
     assert!(
         P2_FRICTIONS.iter().all(|row| row.open_tickets.is_empty()),
@@ -886,19 +928,124 @@ fn ticket_owner_status(ticket: &str) -> std::result::Result<String, String> {
 }
 
 fn assert_named_test_exists(label: &str, test: &str) {
-    let (path, _) = test
+    let (path, qualified_function) = test
         .split_once("::")
         .unwrap_or_else(|| panic!("{label} test must name a source path and function: {test}"));
-    let function = test
-        .rsplit("::")
-        .next()
+    let mut function_path = qualified_function.split("::").collect::<Vec<_>>();
+    let function = function_path
+        .pop()
         .unwrap_or_else(|| panic!("{label} test must name a function: {test}"));
     let contents = fs::read_to_string(workspace_root().join(path))
         .unwrap_or_else(|error| panic!("{label} test source `{path}` cannot be read: {error}"));
-    assert!(
-        contents.contains(&format!("fn {function}(")),
-        "{label} names missing test function `{function}` in `{path}`"
+    assert_eq!(
+        actual_test_function_count(&contents, &function_path, function),
+        1,
+        "{label} must name exactly one actual `#[test]` function `{function}` in `{path}`"
     );
+
+    if path.starts_with("crates/cdf-cli/src/tests/") {
+        let cli_tests_dir = workspace_root().join("crates/cdf-cli/src/tests");
+        let mut matching_sources = fs::read_dir(&cli_tests_dir)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{label} cannot enumerate CLI test sources in `{}`: {error}",
+                    cli_tests_dir.display()
+                )
+            })
+            .map(|entry| {
+                entry
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "{label} cannot read a CLI test source entry in `{}`: {error}",
+                            cli_tests_dir.display()
+                        )
+                    })
+                    .path()
+            })
+            .filter(|candidate| {
+                candidate
+                    .extension()
+                    .is_some_and(|extension| extension == "rs")
+            })
+            .filter(|candidate| {
+                let source = fs::read_to_string(candidate).unwrap_or_else(|error| {
+                    panic!(
+                        "{label} CLI test source `{}` cannot be read: {error}",
+                        candidate.display()
+                    )
+                });
+                actual_test_function_count(&source, &[], function) > 0
+            })
+            .collect::<Vec<_>>();
+        matching_sources.sort();
+        assert_eq!(
+            matching_sources,
+            vec![workspace_root().join(path)],
+            "{label} must resolve CLI test function `{function}` uniquely to `{path}`"
+        );
+    }
+}
+
+fn actual_test_function_count(source: &str, module_path: &[&str], function: &str) -> usize {
+    let syntax = syn::parse_file(source)
+        .unwrap_or_else(|error| panic!("cannot parse registry test source as Rust: {error}"));
+    if module_path.is_empty() {
+        actual_test_function_count_anywhere_in_items(&syntax.items, function)
+    } else {
+        actual_test_function_count_in_items(&syntax.items, module_path, function)
+    }
+}
+
+fn actual_test_function_count_in_items(
+    items: &[syn::Item],
+    module_path: &[&str],
+    function: &str,
+) -> usize {
+    if let Some((module, remaining_path)) = module_path.split_first() {
+        return items
+            .iter()
+            .filter_map(|item| match item {
+                syn::Item::Mod(item) if item.ident == module => item.content.as_ref(),
+                _ => None,
+            })
+            .map(|(_, items)| actual_test_function_count_in_items(items, remaining_path, function))
+            .sum();
+    }
+
+    items
+        .iter()
+        .filter(|item| match item {
+            syn::Item::Fn(item) => {
+                item.sig.ident == function
+                    && item
+                        .attrs
+                        .iter()
+                        .any(|attribute| attribute.path().is_ident("test"))
+            }
+            _ => false,
+        })
+        .count()
+}
+
+fn actual_test_function_count_anywhere_in_items(items: &[syn::Item], function: &str) -> usize {
+    items
+        .iter()
+        .map(|item| match item {
+            syn::Item::Fn(item)
+                if item.sig.ident == function
+                    && item
+                        .attrs
+                        .iter()
+                        .any(|attribute| attribute.path().is_ident("test")) =>
+            {
+                1
+            }
+            syn::Item::Mod(item) => item.content.as_ref().map_or(0, |(_, items)| {
+                actual_test_function_count_anywhere_in_items(items, function)
+            }),
+            _ => 0,
+        })
+        .sum()
 }
 
 fn workspace_root() -> &'static Path {

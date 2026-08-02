@@ -1,6 +1,15 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::Path};
 
-use crate::*;
+use cdf_kernel::{
+    BatchId, CdfError, ResourceDescriptor, ResourceId, Result, SchemaHash, SchemaSnapshotReference,
+    SchemaSource, ScopeKey, TrustLevel, WriteDisposition,
+};
+use pyo3::{
+    Bound, PyAny, PyErr, Python,
+    types::{PyAnyMethods, PyDict, PyDictMethods, PyModule, PyStringMethods, PyTypeMethods},
+};
+
+use crate::{arrow_capsule, bridge_types::PythonBridgeOptions};
 
 pub(crate) fn import_arrow_stream(
     object: &Bound<'_, PyAny>,
@@ -64,19 +73,6 @@ pub(crate) fn same_path(expected: &Path, actual: &Path) -> Result<bool> {
         CdfError::contract(format!("attached Python interpreter path error: {error}"))
     })?;
     Ok(expected == actual)
-}
-
-pub(crate) fn sanitize_id_part(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
-                character
-            } else {
-                '-'
-            }
-        })
-        .collect()
 }
 
 pub(crate) fn py_error(error: PyErr) -> CdfError {

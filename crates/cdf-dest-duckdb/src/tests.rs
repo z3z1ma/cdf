@@ -1,5 +1,7 @@
 use super::*;
 use crate::{
+    api::{DuckDbCommitPlan, validate_empty_commit_plan},
+    models::duckdb_config_options,
     sql::parse_target,
     table::{existing_columns, require_targetable_provenance},
 };

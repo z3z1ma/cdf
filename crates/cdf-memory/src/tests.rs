@@ -10,6 +10,7 @@ use std::{
 };
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
+use cdf_kernel::Result;
 use futures_executor::block_on;
 
 use super::*;
@@ -36,15 +37,7 @@ fn shared_payload_clones_release_exactly_once() {
 #[test]
 fn poisoned_lease_state_fails_reconcile_without_reusing_stale_accounting() {
     let lease = MemoryLease::from_account(8, Arc::new(NoopLeaseAccount)).unwrap();
-    let inner = Arc::clone(&lease.inner);
-    assert!(
-        std::thread::spawn(move || {
-            let _state = inner.state.lock().unwrap();
-            panic!("poison lease state");
-        })
-        .join()
-        .is_err()
-    );
+    lease.poison_state_for_test();
 
     let error = lease.reconcile(16).unwrap_err();
     assert!(
@@ -52,7 +45,7 @@ fn poisoned_lease_state_fails_reconcile_without_reusing_stale_accounting() {
             .to_string()
             .contains("memory lease state lock is poisoned")
     );
-    lease.inner.state.clear_poison();
+    lease.clear_state_poison_for_test();
     assert_eq!(lease.bytes(), 8);
 }
 

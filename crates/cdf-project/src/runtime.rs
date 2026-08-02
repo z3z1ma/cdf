@@ -5,6 +5,7 @@ mod ledger;
 mod orchestration;
 mod planning;
 mod promotion;
+mod receipt_source;
 mod receipts;
 mod replay;
 mod resources;
@@ -13,22 +14,44 @@ mod types;
 mod validation;
 
 pub use cdf_state_sqlite::StateStorePathOwnership;
-pub use destinations::*;
+pub use destinations::{
+    DestinationCommitPlanningInputs, DestinationCommitPlanningOutcome, DestinationPlanningContext,
+    DestinationReceiptReportingPolicy, PreparedDestinationCommit, ProjectDestinationDescription,
+    ProjectDestinationDriver, ProjectDestinationRegistry, ProjectDestinationRuntime,
+    ProjectResolutionContext, ResolvedProjectDestination, absolute_under_root, commit_request,
+    local_uri_path, resolve_project_run_destination,
+};
 pub use hooks::{ReceiptVerifiedHook, RuntimeStage, RuntimeStageHook};
 #[cfg(test)]
 pub(crate) use orchestration::load_late_data_carryover;
 pub use orchestration::{
     run_project, run_project_with_scheduler_and_telemetry, run_project_with_telemetry,
 };
-pub use planning::*;
-pub use promotion::*;
+pub use planning::{ProjectDestinationCommitPlan, ProjectDestinationSyntheticInput};
+pub use promotion::{
+    DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS, SCHEMA_PROMOTION_CORRECTION_PACKAGE_VERSION,
+    SCHEMA_PROMOTION_CORRECTION_TARGET_AUTHORITY_VERSION,
+    SCHEMA_PROMOTION_EXECUTION_ARTIFACT_VERSION, SCHEMA_PROMOTION_RECOVERY_STATUS_VERSION,
+    SchemaPromotionCorrectionPackageArtifact, SchemaPromotionExecutionFailpoint,
+    SchemaPromotionExecutionPhase, SchemaPromotionExecutionPlanArtifact,
+    SchemaPromotionExecutionReport, SchemaPromotionExecutionRequest,
+    SchemaPromotionExecutionTargetReport, SchemaPromotionRecoveryStatus, execute_schema_promotion,
+    inspect_local_promotion_availability, load_resumable_schema_promotion,
+    load_schema_promotion_recovery_status, promotion_plan_relative_path,
+};
+pub use receipt_source::ProjectReceiptSource;
 pub use replay::{
     recover_package_from_artifacts, replay_package_from_artifacts,
     replay_package_from_artifacts_with_stage_hook,
 };
-pub use resources::*;
+pub use resources::{ProjectRunSource, WindowScopedResource};
 pub use tracing_bridge::TracingRunEventSink;
-pub use types::*;
+pub use types::{
+    FileManifestRunSummary, PackageArtifactRecoveryRequest, PackageArtifactReplayRequest,
+    PackageReplayReport, ProjectDrainEpochReport, ProjectDrainRunReport, ProjectRunNoOpReason,
+    ProjectRunNoOpReport, ProjectRunOutcome, ProjectRunReport, ProjectRunRequest,
+    RunTelemetryConfig,
+};
 pub use validation::ensure_parent_directory as ensure_state_parent_directory;
 
 #[cfg(test)]
@@ -39,6 +62,11 @@ pub(crate) use replay::{
     replay_package_with_runtime,
 };
 
+#[cfg(test)]
+#[allow(
+    unused_imports,
+    reason = "white-box runtime tests intentionally aggregate internal orchestration contracts"
+)]
 mod prelude {
     pub(super) use std::{
         collections::{BTreeMap, BTreeSet},

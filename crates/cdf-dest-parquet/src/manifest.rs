@@ -1,4 +1,9 @@
-use crate::*;
+use cdf_kernel::{
+    CdfError, DestinationCorrectionOperation, PromotionId, Result, SchemaHash, SegmentAck,
+    WriteDisposition,
+};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParquetObjectManifest {

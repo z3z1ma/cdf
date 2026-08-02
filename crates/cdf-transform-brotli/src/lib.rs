@@ -1,3 +1,5 @@
+#![doc = "Native streaming Brotli decompression for CDF. This crate owns decoder working-set and expansion limits, not source transport or record decoding."]
+
 use std::sync::Arc;
 
 use brotli::{BrotliDecompressStream, BrotliResult, BrotliState, HeapAlloc, HuffmanCode};

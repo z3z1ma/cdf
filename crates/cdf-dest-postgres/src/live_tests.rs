@@ -37,6 +37,7 @@ use postgres::{Client, NoTls};
 use tempfile::TempDir;
 
 use super::*;
+use crate::{api::PostgresCommitRequest, models::PostgresCorrectionCommitRequest};
 use crate::{
     commit::validate_session_begin_inputs, ddl::target_migrations,
     identifiers::quote_identifier_unchecked,

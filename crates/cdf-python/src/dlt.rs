@@ -1,12 +1,19 @@
 use std::collections::BTreeMap;
 
-use crate::internal::*;
-use crate::*;
 use cdf_kernel::{
-    CheckpointStore, CompositePosition, ContractRef, CursorOrderingClaim, CursorPosition,
-    CursorSpec, CursorValue, ForeignState, PipelineId,
+    CdfError, CheckpointStore, CompositePosition, ContractRef, CursorOrderingClaim, CursorPosition,
+    CursorSpec, CursorValue, ForeignState, PipelineId, ResourceDescriptor, ResourceId, Result,
+    ScopeKey, SourcePosition, TrustLevel, WriteDisposition,
 };
+use pyo3::{Bound, PyAny, types::PyAnyMethods};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+
+use crate::{
+    bridge_types::{PythonStreamSummary, sanitize_id_part},
+    internal::{json_error, py_error, python_dict_to_json},
+};
 
 pub const DLT_METADATA_ATTR: &str = "__cdf_dlt_metadata__";
 

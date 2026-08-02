@@ -1,3 +1,5 @@
+#![doc = "Native streaming Snappy framed decompression for CDF. This crate owns framed-chunk and checksum validation plus bounded expansion, not source transport or record decoding."]
+
 use std::sync::Arc;
 
 use bytes::Bytes;

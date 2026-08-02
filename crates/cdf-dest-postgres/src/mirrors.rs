@@ -1,4 +1,66 @@
-use crate::*;
+use std::collections::BTreeMap;
+
+use cdf_dest_sql::LoadMirrorRow;
+use cdf_kernel::{
+    CdfError, IdempotencyToken, MigrationRecord, PackageHash, Receipt, Result, SchemaHash,
+    StateSegment, TargetName, VerifyClause,
+};
+use cdf_postgres::PostgresIdentifier;
+use postgres::Row;
+
+use crate::{
+    CDF_LOADS_TABLE, CDF_QUARANTINE_TABLE, CDF_STATE_TABLE, POSTGRES_DESTINATION_ID,
+    identifiers::quote_identifier_unchecked,
+    plan::{PostgresDriftHooks, PostgresLoadPlanInput, PostgresStatement, StatementExpectation},
+    validate::disposition_name,
+};
+
+pub(crate) fn decode_postgres_load_row(row: Row) -> Result<LoadMirrorRow> {
+    let receipt_json: String = row.get(0);
+    let receipt: Receipt =
+        serde_json::from_str(&receipt_json).map_err(|error| CdfError::data(error.to_string()))?;
+    let rows_written = load_count(row.get(8), "load rows_written")?;
+    let rows_inserted = row
+        .get::<_, Option<i64>>(9)
+        .map(|value| load_count(value, "load rows_inserted"))
+        .transpose()?;
+    let rows_updated = row
+        .get::<_, Option<i64>>(10)
+        .map(|value| load_count(value, "load rows_updated"))
+        .transpose()?;
+    let rows_deleted = row
+        .get::<_, Option<i64>>(11)
+        .map(|value| load_count(value, "load rows_deleted"))
+        .transpose()?;
+    let segment_count = load_count(row.get(12), "load segment_count")?;
+    let migrations_json: String = row.get(13);
+    let migrations: Vec<MigrationRecord> = serde_json::from_str(&migrations_json)
+        .map_err(|error| CdfError::data(error.to_string()))?;
+    if receipt.receipt_id.as_str() != row.get::<_, String>(1)
+        || receipt.destination.as_str() != row.get::<_, String>(2)
+        || receipt.target.as_str() != row.get::<_, String>(3)
+        || receipt.package_hash.as_str() != row.get::<_, String>(4)
+        || receipt.idempotency_token.as_str() != row.get::<_, String>(5)
+        || disposition_name(&receipt.disposition) != row.get::<_, String>(6)
+        || receipt.schema_hash.as_str() != row.get::<_, String>(7)
+        || receipt.counts.rows_written != rows_written
+        || receipt.counts.rows_inserted != rows_inserted
+        || receipt.counts.rows_updated != rows_updated
+        || receipt.counts.rows_deleted != rows_deleted
+        || receipt.segment_acks.len() as u64 != segment_count
+        || receipt.migrations != migrations
+        || receipt.committed_at_ms != row.get::<_, i64>(14)
+    {
+        return Err(CdfError::data(
+            "Postgres receipt JSON differs from independently stored load evidence",
+        ));
+    }
+    Ok(LoadMirrorRow { receipt })
+}
+
+fn load_count(value: i64, name: &str) -> Result<u64> {
+    u64::try_from(value).map_err(|_| CdfError::data(format!("{name} is negative")))
+}
 
 pub(crate) fn mirror_statements(
     input: &PostgresLoadPlanInput,

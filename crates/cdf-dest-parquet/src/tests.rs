@@ -1,4 +1,5 @@
 use super::*;
+use crate::models::{ParquetCommitPlan, ParquetCommitRequest};
 
 use std::{collections::VecDeque, io::Write};
 
@@ -2275,7 +2276,7 @@ fn object_groups_use_prepared_parallelism_and_one_writer_remains_serial() {
         .collect::<Vec<_>>();
     let built = build_package(&package_dir, "pkg-parallel-groups", segments);
 
-    let parallel_probe = Arc::new(crate::staging::ParquetEncodeConcurrencyProbe::new(2));
+    let parallel_probe = Arc::new(crate::models::ParquetEncodeConcurrencyProbe::new(2));
     let mut parallel = test_filesystem(temp.path().join("parallel")).unwrap();
     parallel.set_encode_probe(Arc::clone(&parallel_probe));
     let mut staged = stage_through_ingress(
@@ -2291,7 +2292,7 @@ fn object_groups_use_prepared_parallelism_and_one_writer_remains_serial() {
     staged.session.abort().unwrap();
     staged.managed_lease.take().unwrap().finish().unwrap();
 
-    let serial_probe = Arc::new(crate::staging::ParquetEncodeConcurrencyProbe::new(1));
+    let serial_probe = Arc::new(crate::models::ParquetEncodeConcurrencyProbe::new(1));
     let serial_execution = test_execution().with_run_job_ceiling(1).unwrap();
     let mut serial =
         ParquetDestination::new_filesystem(temp.path().join("serial"), serial_execution).unwrap();

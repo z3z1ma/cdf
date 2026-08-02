@@ -1,3 +1,5 @@
+#![doc = "Native streaming zstd decompression for CDF. This crate owns frame decoding and bounded decoder windows and expansion, not source transport or record decoding."]
+
 use std::sync::Arc;
 
 use bytes::Bytes;

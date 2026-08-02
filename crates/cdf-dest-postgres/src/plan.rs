@@ -1,4 +1,11 @@
-use crate::*;
+use cdf_kernel::{
+    CommitCounts, CommitPlan, IdempotencyToken, PackageHash, ReceiptId, ResourceId, SchemaHash,
+    StateDelta, StateSegment, VerifyClause, WriteDisposition,
+};
+use cdf_postgres::{PostgresIdentifier, PostgresTarget};
+use serde::{Deserialize, Serialize};
+
+use crate::identifiers::{PostgresColumn, PostgresExistingTable};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PostgresLoadPlanInput {

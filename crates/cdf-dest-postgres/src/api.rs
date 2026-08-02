@@ -1,5 +1,31 @@
-use crate::*;
-use crate::{ddl::*, dml::*, mirrors::*, validate::*};
+use std::collections::BTreeMap;
+
+use cdf_kernel::{
+    CdfError, CommitPlan, DestinationCommitRequest, DestinationId, MigrationRecord, Receipt,
+    ReceiptId, Result, TransactionMetadata, WriteDisposition,
+};
+use cdf_package_contract::{ReceiptDraft, ReceiptEvidence};
+
+use crate::{
+    CDF_LOADS_TABLE, CDF_QUARANTINE_TABLE, CDF_STATE_TABLE, POSTGRES_DESTINATION_ID,
+    POSTGRES_XID_SQL,
+    ddl::{
+        idempotency_check_statement, idempotency_lock_statement, provenance_unique_index_statement,
+        system_table_ddl, system_table_migrations, target_migrations,
+    },
+    dml::write_statements,
+    identifiers::postgres_identifier_rules,
+    mirrors::{add_segments_to_verify_parameters, drift_hooks, mirror_statements, verify_clause},
+    models::PostgresDestinationSheet,
+    plan::{
+        PostgresLoadPlan, PostgresLoadPlanInput, PostgresReceiptInput, PostgresStatement,
+        StatementExpectation,
+    },
+    validate::{
+        delivery_guarantee, ensure_supported_disposition, plan_id, plan_segment_acks,
+        plan_segments_in_receipt_order, stage_table_name, validate_columns, validate_merge_shape,
+    },
+};
 
 pub fn plan_postgres_load(
     input: PostgresLoadPlanInput,

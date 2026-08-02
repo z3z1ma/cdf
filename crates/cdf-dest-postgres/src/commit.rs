@@ -8,11 +8,33 @@ use cdf_dest_sql::{
     SegmentMirrorPolicy, SegmentMirrorRow, SegmentRowRange, StateMirrorKey, StateMirrorMutation,
     StateMirrorRow, TransactionalMirrorBackend, TransactionalMirrorManager,
 };
-use cdf_kernel::CheckpointId;
+use cdf_kernel::{
+    CdfError, CheckpointId, CommitCounts, CommitPlan, CommitSegment, CommitSession,
+    DestinationCommitRequest, IdempotencyToken, PackageHash, Receipt, ReceiptId, ResourceId,
+    Result, SchemaHash, SegmentAck, SegmentId, WriteDisposition,
+};
+use cdf_postgres::{PostgresIdentifier, PostgresTarget, quote_identifier};
 
 use crate::{
-    binary_copy::BinaryCopyEncoder, dml::*, package::*, rows::validate_schema_matches_plan,
-    validate::*, *,
+    CDF_LOADED_AT_COLUMN, CDF_QUARANTINE_TABLE, CDF_ROW_KEY_ALLOCATOR_TABLE, CDF_ROW_KEY_COLUMN,
+    CDF_SEGMENTS_TABLE, CDF_STATE_TABLE,
+    api::{PostgresCommitRequest, PostgresReceiptVerification, build_receipt},
+    binary_copy::BinaryCopyEncoder,
+    dml::{order_expression, stage_select_list},
+    identifiers::{
+        quote_identifier_unchecked, quote_system_identifier, quote_user_identifier,
+        validated_target_sql,
+    },
+    mirrors::decode_postgres_load_row,
+    models::PostgresDestination,
+    package::PostgresExpectedSegment,
+    plan::{
+        MergeDedupPolicy, PostgresLoadPlan, PostgresReceiptInput, PostgresStatement,
+        StatementExpectation,
+    },
+    rows::validate_schema_matches_plan,
+    sheet::postgres_destination_sheet,
+    validate::{disposition_name, plan_segment_acks, token_suffix},
 };
 
 impl PostgresDestination {
@@ -1008,48 +1030,6 @@ impl TransactionalMirrorBackend for PostgresMirrorBackend<'_> {
     }
 }
 
-pub(crate) fn decode_postgres_load_row(row: Row) -> Result<LoadMirrorRow> {
-    let receipt_json: String = row.get(0);
-    let receipt: Receipt = serde_json::from_str(&receipt_json).map_err(json_error)?;
-    let rows_written = from_i64(row.get(8), "load rows_written")?;
-    let rows_inserted = row
-        .get::<_, Option<i64>>(9)
-        .map(|value| from_i64(value, "load rows_inserted"))
-        .transpose()?;
-    let rows_updated = row
-        .get::<_, Option<i64>>(10)
-        .map(|value| from_i64(value, "load rows_updated"))
-        .transpose()?;
-    let rows_deleted = row
-        .get::<_, Option<i64>>(11)
-        .map(|value| from_i64(value, "load rows_deleted"))
-        .transpose()?;
-    let segment_count = from_i64(row.get(12), "load segment_count")?;
-    let migrations_json: String = row.get(13);
-    let migrations: Vec<MigrationRecord> =
-        serde_json::from_str(&migrations_json).map_err(json_error)?;
-    if receipt.receipt_id.as_str() != row.get::<_, String>(1)
-        || receipt.destination.as_str() != row.get::<_, String>(2)
-        || receipt.target.as_str() != row.get::<_, String>(3)
-        || receipt.package_hash.as_str() != row.get::<_, String>(4)
-        || receipt.idempotency_token.as_str() != row.get::<_, String>(5)
-        || disposition_name(&receipt.disposition) != row.get::<_, String>(6)
-        || receipt.schema_hash.as_str() != row.get::<_, String>(7)
-        || receipt.counts.rows_written != rows_written
-        || receipt.counts.rows_inserted != rows_inserted
-        || receipt.counts.rows_updated != rows_updated
-        || receipt.counts.rows_deleted != rows_deleted
-        || receipt.segment_acks.len() as u64 != segment_count
-        || receipt.migrations != migrations
-        || receipt.committed_at_ms != row.get::<_, i64>(14)
-    {
-        return Err(CdfError::data(
-            "Postgres receipt JSON differs from independently stored load evidence",
-        ));
-    }
-    Ok(LoadMirrorRow { receipt })
-}
-
 fn insert_load_mirror(
     client: &mut Client,
     plan: &PostgresLoadPlan,
@@ -1509,10 +1489,6 @@ fn now_ms(execution: &cdf_runtime::ExecutionServices) -> Result<i64> {
 }
 
 fn postgres_error(context: impl Into<String>, error: postgres::Error) -> CdfError {
-    CdfError::destination(format!("{}: {}", context.into(), error))
-}
-
-pub(crate) fn io_error(context: impl Into<String>, error: std::io::Error) -> CdfError {
     CdfError::destination(format!("{}: {}", context.into(), error))
 }
 

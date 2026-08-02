@@ -12,6 +12,11 @@ mod identifier;
 mod manager;
 mod model;
 
-pub use identifier::*;
-pub use manager::*;
-pub use model::*;
+pub use identifier::ValidatedSqlIdentifier;
+pub use manager::{MirrorApplyOutcome, TransactionalMirrorBackend, TransactionalMirrorManager};
+pub use model::{
+    LoadMirrorKey, LoadMirrorMutation, LoadMirrorRow, MirrorCommit, MirrorInsertOutcome,
+    MirrorReadIntent, QuarantineMirrorKey, QuarantineMirrorMutation, QuarantineMirrorRow,
+    SegmentMirrorMutation, SegmentMirrorPolicy, SegmentMirrorRow, SegmentRowRange, StateMirrorKey,
+    StateMirrorMutation, StateMirrorRow,
+};

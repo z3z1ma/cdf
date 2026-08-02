@@ -1,3 +1,5 @@
+#![doc = "Native streaming bzip2 decompression for CDF. This crate owns stream validation, decoder working-set, and expansion limits, not source transport or record decoding."]
+
 use std::sync::Arc;
 
 use bytes::Bytes;

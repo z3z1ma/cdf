@@ -1,3 +1,5 @@
+#![doc = "Native streaming gzip decompression for CDF. This crate owns gzip member framing, checksum validation, and bounded expansion, not source transport or record decoding."]
+
 use std::sync::Arc;
 
 use bytes::Bytes;

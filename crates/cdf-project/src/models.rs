@@ -1,5 +1,7 @@
-use crate::internal::*;
-use crate::*;
+use std::{collections::BTreeMap, fmt};
+
+use cdf_kernel::{CdfError, Result};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectConfig {
@@ -295,4 +297,81 @@ impl<'de> Deserialize<'de> for DurationSpec {
         let value = String::deserialize(deserializer)?;
         parse_duration_spec(&value).map_err(de::Error::custom)
     }
+}
+
+fn required_env_field(env_name: &str, field: &str, value: Option<String>) -> Result<String> {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            CdfError::contract(format!(
+                "environment `{env_name}` must resolve `{field}` from itself or the default environment"
+            ))
+        })
+}
+
+fn merge_retention(
+    base: Option<RetentionPolicy>,
+    override_policy: Option<RetentionPolicy>,
+) -> Option<RetentionPolicy> {
+    match (base, override_policy) {
+        (Some(base), Some(override_policy)) => Some(base.overlay(override_policy)),
+        (Some(base), None) => Some(base),
+        (None, Some(override_policy)) => Some(override_policy),
+        (None, None) => None,
+    }
+}
+
+fn parse_retention_rule(value: &str) -> Result<RetentionRule> {
+    let value = value.trim();
+    let Some((amount, unit)) = value.split_once(' ') else {
+        return parse_duration_spec(value).map(RetentionRule::Duration);
+    };
+    let amount = amount.parse::<u32>().map_err(|error| {
+        CdfError::contract(format!(
+            "retention rule `{value}` has invalid run count: {error}"
+        ))
+    })?;
+    match unit.trim() {
+        "run" | "runs" => Ok(RetentionRule::Runs(amount)),
+        _ => Err(CdfError::contract(format!(
+            "retention rule `{value}` must use `runs` or a duration unit"
+        ))),
+    }
+}
+
+fn parse_duration_spec(value: &str) -> Result<DurationSpec> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(CdfError::contract("duration cannot be empty"));
+    }
+    let digit_len = value
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .map(char::len_utf8)
+        .sum::<usize>();
+    if digit_len == 0 {
+        return Err(CdfError::contract(format!(
+            "duration `{value}` must start with a number"
+        )));
+    }
+    let amount = value[..digit_len].parse::<u64>().map_err(|error| {
+        CdfError::contract(format!("duration `{value}` has invalid number: {error}"))
+    })?;
+    let unit = &value[digit_len..];
+    let multiplier = match unit {
+        "ms" => 1,
+        "s" => 1_000,
+        "m" => 60_000,
+        "h" => 3_600_000,
+        "d" => 86_400_000,
+        _ => {
+            return Err(CdfError::contract(format!(
+                "duration `{value}` has unsupported unit `{unit}`"
+            )));
+        }
+    };
+    amount
+        .checked_mul(multiplier)
+        .map(DurationSpec::from_millis)
+        .ok_or_else(|| CdfError::contract(format!("duration `{value}` is too large")))
 }

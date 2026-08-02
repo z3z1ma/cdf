@@ -1145,15 +1145,574 @@ impl ExecutionTaskScope for StandaloneTaskScope {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::mpsc;
+    use std::{
+        collections::BTreeSet,
+        path::{Path, PathBuf},
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            mpsc,
+        },
+    };
 
     use cdf_memory::{DeterministicMemoryCoordinator, MemoryClass, ReservationRequest};
     use cdf_runtime::{ExecutionHost, ExecutionServices, InterruptionSafety, LaneAffinity};
     use futures_util::TryStreamExt;
+    use proc_macro2::{Delimiter, TokenStream, TokenTree};
+    use syn::{Attribute, Item, ItemMod, Meta, spanned::Spanned};
 
     use super::*;
+
+    const FORBIDDEN_RUNTIME_OWNERSHIP_PATTERNS: [&str; 9] = [
+        "tokio::runtime::Builder",
+        "RuntimeBuilder::new_",
+        "futures_executor::block_on",
+        ".block_on(",
+        "OnceLock<tokio::runtime::Runtime",
+        "std::thread::spawn",
+        "thread::spawn",
+        "rayon::ThreadPoolBuilder",
+        "rayon::ThreadPool",
+    ];
+
+    #[derive(Debug)]
+    struct ExternalModuleResolution {
+        file: PathBuf,
+        child_tree: PathBuf,
+        locally_test_owned: bool,
+    }
+
+    #[derive(Debug)]
+    struct RustSourceAnalysis {
+        path: PathBuf,
+        production: String,
+        external_modules: Vec<ExternalModuleResolution>,
+    }
+
+    #[derive(Clone, Debug)]
+    struct ModuleResolutionContext {
+        ordinary_base: PathBuf,
+        path_attribute_base: PathBuf,
+    }
+
+    fn item_attributes(item: &Item) -> &[Attribute] {
+        match item {
+            Item::Const(item) => &item.attrs,
+            Item::Enum(item) => &item.attrs,
+            Item::ExternCrate(item) => &item.attrs,
+            Item::Fn(item) => &item.attrs,
+            Item::ForeignMod(item) => &item.attrs,
+            Item::Impl(item) => &item.attrs,
+            Item::Macro(item) => &item.attrs,
+            Item::Mod(item) => &item.attrs,
+            Item::Static(item) => &item.attrs,
+            Item::Struct(item) => &item.attrs,
+            Item::Trait(item) => &item.attrs,
+            Item::TraitAlias(item) => &item.attrs,
+            Item::Type(item) => &item.attrs,
+            Item::Union(item) => &item.attrs,
+            Item::Use(item) => &item.attrs,
+            Item::Verbatim(_) => &[],
+            _ => &[],
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct TruthPossibilities {
+        can_be_true: bool,
+        can_be_false: bool,
+    }
+
+    impl TruthPossibilities {
+        const TRUE: Self = Self {
+            can_be_true: true,
+            can_be_false: false,
+        };
+        const FALSE: Self = Self {
+            can_be_true: false,
+            can_be_false: true,
+        };
+        const UNKNOWN: Self = Self {
+            can_be_true: true,
+            can_be_false: true,
+        };
+
+        fn not(self) -> Self {
+            Self {
+                can_be_true: self.can_be_false,
+                can_be_false: self.can_be_true,
+            }
+        }
+
+        fn all(possibilities: impl IntoIterator<Item = Self>) -> Self {
+            possibilities
+                .into_iter()
+                .fold(Self::TRUE, |all, next| Self {
+                    can_be_true: all.can_be_true && next.can_be_true,
+                    can_be_false: all.can_be_false || next.can_be_false,
+                })
+        }
+
+        fn any(possibilities: impl IntoIterator<Item = Self>) -> Self {
+            possibilities
+                .into_iter()
+                .fold(Self::FALSE, |any, next| Self {
+                    can_be_true: any.can_be_true || next.can_be_true,
+                    can_be_false: any.can_be_false && next.can_be_false,
+                })
+        }
+    }
+
+    fn comma_separated_tokens(tokens: TokenStream) -> Vec<TokenStream> {
+        let mut separated = vec![TokenStream::new()];
+        for token in tokens {
+            if matches!(&token, TokenTree::Punct(punctuation) if punctuation.as_char() == ',') {
+                separated.push(TokenStream::new());
+            } else {
+                separated.last_mut().unwrap().extend([token]);
+            }
+        }
+        separated.retain(|tokens| !tokens.is_empty());
+        separated
+    }
+
+    fn ident_and_parenthesized_tokens(tokens: TokenStream) -> Option<(String, TokenStream)> {
+        let mut tokens = tokens.into_iter();
+        let TokenTree::Ident(identifier) = tokens.next()? else {
+            return None;
+        };
+        let TokenTree::Group(arguments) = tokens.next()? else {
+            return None;
+        };
+        if arguments.delimiter() != Delimiter::Parenthesis || tokens.next().is_some() {
+            return None;
+        }
+        Some((identifier.to_string(), arguments.stream()))
+    }
+
+    fn cfg_predicate_possibilities(tokens: TokenStream) -> TruthPossibilities {
+        let token_trees = tokens.clone().into_iter().collect::<Vec<_>>();
+        if let [TokenTree::Ident(identifier)] = token_trees.as_slice() {
+            return if identifier == "test" {
+                TruthPossibilities::FALSE
+            } else {
+                TruthPossibilities::UNKNOWN
+            };
+        }
+
+        let Some((operator, arguments)) = ident_and_parenthesized_tokens(tokens) else {
+            return TruthPossibilities::UNKNOWN;
+        };
+        let arguments = comma_separated_tokens(arguments);
+        match operator.as_str() {
+            "all" => {
+                TruthPossibilities::all(arguments.into_iter().map(cfg_predicate_possibilities))
+            }
+            "any" => {
+                TruthPossibilities::any(arguments.into_iter().map(cfg_predicate_possibilities))
+            }
+            "not" if arguments.len() == 1 => {
+                cfg_predicate_possibilities(arguments.into_iter().next().unwrap()).not()
+            }
+            _ => TruthPossibilities::UNKNOWN,
+        }
+    }
+
+    fn cfg_attr_possibilities(tokens: TokenStream) -> TruthPossibilities {
+        let mut arguments = comma_separated_tokens(tokens).into_iter();
+        let Some(condition) = arguments.next() else {
+            return TruthPossibilities::UNKNOWN;
+        };
+        let condition = cfg_predicate_possibilities(condition);
+        let effects = TruthPossibilities::all(arguments.map(cfg_attr_effect_possibilities));
+        TruthPossibilities::any([condition.not(), effects])
+    }
+
+    fn cfg_attr_effect_possibilities(tokens: TokenStream) -> TruthPossibilities {
+        let Some((attribute, arguments)) = ident_and_parenthesized_tokens(tokens) else {
+            return TruthPossibilities::TRUE;
+        };
+        match attribute.as_str() {
+            "cfg" => cfg_predicate_possibilities(arguments),
+            "cfg_attr" => cfg_attr_possibilities(arguments),
+            _ => TruthPossibilities::TRUE,
+        }
+    }
+
+    fn attribute_possibilities(attribute: &Attribute) -> TruthPossibilities {
+        let Meta::List(meta) = &attribute.meta else {
+            return TruthPossibilities::TRUE;
+        };
+        if meta.path.is_ident("cfg") {
+            cfg_predicate_possibilities(meta.tokens.clone())
+        } else if meta.path.is_ident("cfg_attr") {
+            cfg_attr_possibilities(meta.tokens.clone())
+        } else {
+            TruthPossibilities::TRUE
+        }
+    }
+
+    fn is_test_only(attributes: &[Attribute]) -> bool {
+        !TruthPossibilities::all(attributes.iter().map(attribute_possibilities)).can_be_true
+    }
+
+    fn module_path_attribute(module: &ItemMod) -> Option<PathBuf> {
+        module.attrs.iter().find_map(|attribute| {
+            let Meta::NameValue(meta) = &attribute.meta else {
+                return None;
+            };
+            if !meta.path.is_ident("path") {
+                return None;
+            }
+            let syn::Expr::Lit(expression) = &meta.value else {
+                return None;
+            };
+            let syn::Lit::Str(path) = &expression.lit else {
+                return None;
+            };
+            Some(PathBuf::from(path.value()))
+        })
+    }
+
+    fn normalize_path(path: PathBuf) -> PathBuf {
+        let mut normalized = PathBuf::new();
+        for component in path.components() {
+            match component {
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    normalized.pop();
+                }
+                _ => normalized.push(component.as_os_str()),
+            }
+        }
+        normalized
+    }
+
+    fn child_module_directory(source_path: &Path) -> PathBuf {
+        let parent = source_path.parent().unwrap();
+        match source_path.file_name().and_then(|name| name.to_str()) {
+            Some("lib.rs" | "main.rs" | "mod.rs") => parent.to_owned(),
+            _ => parent.join(source_path.file_stem().unwrap()),
+        }
+    }
+
+    fn source_offsets(source: &str) -> Vec<usize> {
+        let mut offsets = vec![0];
+        offsets.extend(
+            source
+                .match_indices('\n')
+                .map(|(offset, character)| offset + character.len()),
+        );
+        offsets
+    }
+
+    fn source_offset(offsets: &[usize], location: proc_macro2::LineColumn) -> usize {
+        offsets[location.line - 1] + location.column
+    }
+
+    fn push_test_range(
+        span: proc_macro2::Span,
+        offsets: &[usize],
+        test_ranges: &mut Vec<std::ops::Range<usize>>,
+    ) {
+        test_ranges.push(source_offset(offsets, span.start())..source_offset(offsets, span.end()));
+    }
+
+    fn collect_test_only_fields(
+        fields: &syn::Fields,
+        offsets: &[usize],
+        test_ranges: &mut Vec<std::ops::Range<usize>>,
+    ) {
+        for field in fields {
+            if is_test_only(&field.attrs) {
+                push_test_range(field.span(), offsets, test_ranges);
+            }
+        }
+    }
+
+    fn collect_test_only_members(
+        item: &Item,
+        offsets: &[usize],
+        test_ranges: &mut Vec<std::ops::Range<usize>>,
+    ) {
+        match item {
+            Item::Enum(item) => {
+                for variant in &item.variants {
+                    if is_test_only(&variant.attrs) {
+                        push_test_range(variant.span(), offsets, test_ranges);
+                    } else {
+                        collect_test_only_fields(&variant.fields, offsets, test_ranges);
+                    }
+                }
+            }
+            Item::ForeignMod(item) => {
+                for member in &item.items {
+                    let attributes = match member {
+                        syn::ForeignItem::Fn(member) => &member.attrs,
+                        syn::ForeignItem::Macro(member) => &member.attrs,
+                        syn::ForeignItem::Static(member) => &member.attrs,
+                        syn::ForeignItem::Type(member) => &member.attrs,
+                        syn::ForeignItem::Verbatim(_) => continue,
+                        _ => continue,
+                    };
+                    if is_test_only(attributes) {
+                        push_test_range(member.span(), offsets, test_ranges);
+                    }
+                }
+            }
+            Item::Impl(item) => {
+                for member in &item.items {
+                    let attributes = match member {
+                        syn::ImplItem::Const(member) => &member.attrs,
+                        syn::ImplItem::Fn(member) => &member.attrs,
+                        syn::ImplItem::Macro(member) => &member.attrs,
+                        syn::ImplItem::Type(member) => &member.attrs,
+                        syn::ImplItem::Verbatim(_) => continue,
+                        _ => continue,
+                    };
+                    if is_test_only(attributes) {
+                        push_test_range(member.span(), offsets, test_ranges);
+                    }
+                }
+            }
+            Item::Trait(item) => {
+                for member in &item.items {
+                    let attributes = match member {
+                        syn::TraitItem::Const(member) => &member.attrs,
+                        syn::TraitItem::Fn(member) => &member.attrs,
+                        syn::TraitItem::Macro(member) => &member.attrs,
+                        syn::TraitItem::Type(member) => &member.attrs,
+                        syn::TraitItem::Verbatim(_) => continue,
+                        _ => continue,
+                    };
+                    if is_test_only(attributes) {
+                        push_test_range(member.span(), offsets, test_ranges);
+                    }
+                }
+            }
+            Item::Struct(item) => {
+                collect_test_only_fields(&item.fields, offsets, test_ranges);
+            }
+            _ => {}
+        }
+    }
+
+    fn walk_module_items(
+        items: &[Item],
+        context: &ModuleResolutionContext,
+        inherited_test_ownership: bool,
+        offsets: &[usize],
+        test_ranges: &mut Vec<std::ops::Range<usize>>,
+        external_modules: &mut Vec<ExternalModuleResolution>,
+    ) {
+        for item in items {
+            let locally_test_owned =
+                inherited_test_ownership || is_test_only(item_attributes(item));
+            if locally_test_owned {
+                push_test_range(item.span(), offsets, test_ranges);
+            } else {
+                collect_test_only_members(item, offsets, test_ranges);
+            }
+
+            let Item::Mod(module) = item else {
+                continue;
+            };
+            let module_name = module.ident.to_string();
+            let explicit_path = module_path_attribute(module);
+            if let Some((_, nested_items)) = &module.content {
+                let child_directory = explicit_path.map_or_else(
+                    || normalize_path(context.ordinary_base.join(&module_name)),
+                    |path| normalize_path(context.path_attribute_base.join(path)),
+                );
+                walk_module_items(
+                    nested_items,
+                    &ModuleResolutionContext {
+                        ordinary_base: child_directory.clone(),
+                        path_attribute_base: child_directory,
+                    },
+                    locally_test_owned,
+                    offsets,
+                    test_ranges,
+                    external_modules,
+                );
+                continue;
+            }
+
+            let (file, child_tree) = explicit_path.map_or_else(
+                || {
+                    (
+                        normalize_path(context.ordinary_base.join(format!("{module_name}.rs"))),
+                        normalize_path(context.ordinary_base.join(&module_name)),
+                    )
+                },
+                |path| {
+                    let file = normalize_path(context.path_attribute_base.join(path));
+                    let child_tree = child_module_directory(&file);
+                    (file, child_tree)
+                },
+            );
+            external_modules.push(ExternalModuleResolution {
+                file,
+                child_tree,
+                locally_test_owned,
+            });
+        }
+    }
+
+    fn analyze_rust_source(path: PathBuf, source: &str) -> RustSourceAnalysis {
+        let syntax = syn::parse_file(source).unwrap_or_else(|error| {
+            panic!("parse {} for runtime ownership: {error}", path.display())
+        });
+        let offsets = source_offsets(source);
+        let root_context = ModuleResolutionContext {
+            ordinary_base: child_module_directory(&path),
+            path_attribute_base: path.parent().unwrap().to_owned(),
+        };
+        let mut test_ranges = Vec::new();
+        let mut external_modules = Vec::new();
+        walk_module_items(
+            &syntax.items,
+            &root_context,
+            false,
+            &offsets,
+            &mut test_ranges,
+            &mut external_modules,
+        );
+
+        let mut production = source.as_bytes().to_vec();
+        for range in test_ranges {
+            for byte in &mut production[range] {
+                if *byte != b'\n' {
+                    *byte = b' ';
+                }
+            }
+        }
+        RustSourceAnalysis {
+            path,
+            production: String::from_utf8(production).unwrap(),
+            external_modules,
+        }
+    }
+
+    fn collect_rust_sources(
+        directory: &Path,
+        excluded_roots: &BTreeSet<PathBuf>,
+        sources: &mut Vec<PathBuf>,
+        test_owned: &mut BTreeSet<PathBuf>,
+    ) {
+        if excluded_roots.contains(directory) {
+            return;
+        }
+        if directory.join("Cargo.toml").is_file() {
+            test_owned.insert(directory.join("tests"));
+        }
+        let mut entries = std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .collect::<Vec<_>>();
+        entries.sort_by_key(std::fs::DirEntry::path);
+        for entry in entries {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_rust_sources(&path, excluded_roots, sources, test_owned);
+            } else if path.extension().and_then(|value| value.to_str()) == Some("rs") {
+                sources.push(path);
+            }
+        }
+    }
+
+    fn closest_ownership_root(path: &Path, roots: &BTreeSet<PathBuf>) -> Option<usize> {
+        path.ancestors()
+            .filter(|ancestor| roots.contains(*ancestor))
+            .map(Path::components)
+            .map(Iterator::count)
+            .max()
+    }
+
+    fn is_test_owned(
+        path: &Path,
+        test_roots: &BTreeSet<PathBuf>,
+        production_roots: &BTreeSet<PathBuf>,
+    ) -> bool {
+        match (
+            closest_ownership_root(path, test_roots),
+            closest_ownership_root(path, production_roots),
+        ) {
+            (Some(test), Some(production)) => test > production,
+            (Some(_), None) => true,
+            _ => false,
+        }
+    }
+
+    fn resolved_module_ownership(
+        analyses: &[RustSourceAnalysis],
+        integration_test_roots: &BTreeSet<PathBuf>,
+    ) -> (BTreeSet<PathBuf>, BTreeSet<PathBuf>) {
+        let mut test_roots = integration_test_roots.clone();
+        let mut production_roots = BTreeSet::new();
+        loop {
+            let mut next_test_roots = integration_test_roots.clone();
+            let mut next_production_roots = BTreeSet::new();
+            for analysis in analyses {
+                let source_is_test_owned =
+                    is_test_owned(&analysis.path, &test_roots, &production_roots);
+                for module in &analysis.external_modules {
+                    let roots = if source_is_test_owned || module.locally_test_owned {
+                        &mut next_test_roots
+                    } else {
+                        &mut next_production_roots
+                    };
+                    roots.insert(module.file.clone());
+                    roots.insert(module.child_tree.clone());
+                }
+            }
+            if next_test_roots == test_roots && next_production_roots == production_roots {
+                return (test_roots, production_roots);
+            }
+            test_roots = next_test_roots;
+            production_roots = next_production_roots;
+        }
+    }
+
+    fn runtime_ownership_violations(
+        root: &Path,
+        excluded_roots: &BTreeSet<PathBuf>,
+        runtime_owner: Option<&Path>,
+    ) -> Vec<String> {
+        let mut sources = Vec::new();
+        let mut integration_test_roots = BTreeSet::new();
+        collect_rust_sources(
+            root,
+            excluded_roots,
+            &mut sources,
+            &mut integration_test_roots,
+        );
+        let analyses = sources
+            .into_iter()
+            .map(|path| {
+                let source = std::fs::read_to_string(&path).unwrap();
+                analyze_rust_source(path, &source)
+            })
+            .collect::<Vec<_>>();
+        let (test_roots, production_roots) =
+            resolved_module_ownership(&analyses, &integration_test_roots);
+
+        let mut violations = Vec::new();
+        for analysis in analyses {
+            let path = analysis.path;
+            if runtime_owner.is_some_and(|owner| path == owner)
+                || is_test_owned(&path, &test_roots, &production_roots)
+            {
+                continue;
+            }
+            for forbidden in FORBIDDEN_RUNTIME_OWNERSHIP_PATTERNS {
+                if analysis.production.contains(forbidden) {
+                    violations.push(format!("{} contains {forbidden}", path.display()));
+                }
+            }
+        }
+        violations.sort();
+        violations
+    }
 
     fn host() -> StandaloneExecutionHost {
         let memory: Arc<dyn MemoryCoordinator> =
@@ -2030,102 +2589,316 @@ mod tests {
 
     #[test]
     fn production_runtime_ownership_is_centralized() {
-        fn production_source(source: &str) -> String {
-            let mut production = String::with_capacity(source.len());
-            let mut remaining = source;
-            while let Some(test_attribute) = remaining.find("#[cfg(test)]") {
-                production.push_str(&remaining[..test_attribute]);
-                let test_item = &remaining[test_attribute + "#[cfg(test)]".len()..];
-                if test_item.trim_start().starts_with("mod tests") {
-                    remaining = "";
-                    break;
-                }
-                let mut braces = 0_usize;
-                let mut entered_body = false;
-                let mut item_end = test_item.len();
-                for (offset, character) in test_item.char_indices() {
-                    match character {
-                        '{' => {
-                            entered_body = true;
-                            braces += 1;
-                        }
-                        '}' if entered_body => {
-                            braces = braces.saturating_sub(1);
-                            if braces == 0 {
-                                item_end = offset + character.len_utf8();
-                                break;
-                            }
-                        }
-                        ';' if !entered_body => {
-                            item_end = offset + character.len_utf8();
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-                remaining = &test_item[item_end..];
-            }
-            production.push_str(remaining);
-            production
-        }
-
-        fn visit(directory: &Path, violations: &mut Vec<String>) {
-            for entry in std::fs::read_dir(directory).unwrap() {
-                let entry = entry.unwrap();
-                let path = entry.path();
-                if path.is_dir() {
-                    if !matches!(
-                        path.file_name().and_then(|name| name.to_str()),
-                        Some(
-                            "cdf-bench-core"
-                                | "cdf-bench-measure"
-                                | "cdf-benchmarks"
-                                | "cdf-conformance"
-                        )
-                    ) {
-                        visit(&path, violations);
-                    }
-                    continue;
-                }
-                let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-                    continue;
-                };
-                if path.extension().and_then(|value| value.to_str()) != Some("rs")
-                    || name.contains("test")
-                    || path.ends_with("cdf-engine/src/standalone_host.rs")
-                {
-                    continue;
-                }
-                let source = std::fs::read_to_string(&path).unwrap();
-                let production = production_source(&source);
-                for forbidden in [
-                    "tokio::runtime::Builder",
-                    "RuntimeBuilder::new_",
-                    "futures_executor::block_on",
-                    ".block_on(",
-                    "OnceLock<tokio::runtime::Runtime",
-                    "std::thread::spawn",
-                    "thread::spawn",
-                    "rayon::ThreadPoolBuilder",
-                    "rayon::ThreadPool",
-                ] {
-                    if production.contains(forbidden) {
-                        violations.push(format!("{} contains {forbidden}", path.display()));
-                    }
-                }
-            }
-        }
-
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .and_then(Path::parent)
             .unwrap();
-        let mut violations = Vec::new();
-        visit(&workspace.join("crates"), &mut violations);
+        let crates = workspace.join("crates");
+        let excluded_roots = [
+            "cdf-bench-core",
+            "cdf-bench-measure",
+            "cdf-benchmarks",
+            "cdf-conformance",
+        ]
+        .into_iter()
+        .map(|crate_name| crates.join(crate_name))
+        .collect();
+        let runtime_owner = crates.join("cdf-engine/src/standalone_host.rs");
+        let violations =
+            runtime_ownership_violations(&crates, &excluded_roots, Some(&runtime_owner));
         assert!(
             violations.is_empty(),
             "production runtimes, pools, and blocking executors must be owned by the standalone host:\n{}",
             violations.join("\n")
+        );
+    }
+
+    #[test]
+    fn runtime_ownership_guard_resolves_nested_and_explicit_test_modules() {
+        let temporary = tempfile::tempdir().unwrap();
+        let crate_root = temporary.path().join("arbitrary-crate");
+        let source_root = crate_root.join("src");
+        for directory in [
+            "outer/quality_gate",
+            "custom",
+            "nested/redirected",
+            "inherited",
+        ] {
+            std::fs::create_dir_all(source_root.join(directory)).unwrap();
+        }
+        std::fs::write(
+            crate_root.join("Cargo.toml"),
+            "[package]\nname = \"arbitrary\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source_root.join("lib.rs"),
+            r#"
+mod outer {
+    #[cfg(test)]
+    mod quality_gate;
+}
+mod quality_gate;
+
+#[cfg(test)]
+#[path = "custom/outside_test.rs"]
+mod outside_alias;
+#[cfg(not(test))]
+mod outside_alias;
+
+mod nested {
+    #[cfg(test)]
+    #[path = "redirected/inside_test.rs"]
+    mod inner_alias;
+    #[cfg(not(test))]
+    mod inner_alias;
+}
+
+#[cfg(test)]
+mod inherited {
+    #[path = "escaped.rs"]
+    mod escaped;
+}
+
+#[cfg(test)]
+#[path = "shared.rs"]
+mod shared;
+#[cfg(not(test))]
+#[path = "shared.rs"]
+mod shared;
+"#,
+        )
+        .unwrap();
+        let test_owned_paths = [
+            "outer/quality_gate.rs",
+            "outer/quality_gate/nested.rs",
+            "custom/outside_test.rs",
+            "nested/redirected/inside_test.rs",
+            "inherited/escaped.rs",
+        ];
+        for relative in test_owned_paths {
+            std::fs::write(
+                source_root.join(relative),
+                "fn test_only() { futures_executor::block_on(async {}); }\n",
+            )
+            .unwrap();
+        }
+        let production_paths = [
+            source_root.join("quality_gate.rs"),
+            source_root.join("outside_alias.rs"),
+            source_root.join("nested/inner_alias.rs"),
+            source_root.join("shared.rs"),
+        ];
+        for path in &production_paths {
+            std::fs::write(
+                path,
+                "fn production() { futures_executor::block_on(async {}); }\n",
+            )
+            .unwrap();
+        }
+
+        let violations = runtime_ownership_violations(temporary.path(), &BTreeSet::new(), None);
+        let mut expected = production_paths
+            .iter()
+            .map(|path| format!("{} contains futures_executor::block_on", path.display()))
+            .collect::<Vec<_>>();
+        expected.sort();
+        assert_eq!(violations, expected);
+    }
+
+    #[test]
+    fn runtime_ownership_guard_ignores_cfg_test_text_in_comments_and_strings() {
+        let temporary = tempfile::tempdir().unwrap();
+        let crate_root = temporary.path().join("syntax-crate");
+        let source_root = crate_root.join("src");
+        std::fs::create_dir_all(&source_root).unwrap();
+        std::fs::write(
+            crate_root.join("Cargo.toml"),
+            "[package]\nname = \"syntax\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source_root.join("lib.rs"),
+            r##"
+// #[cfg(test)]
+mod comment_target;
+const FAKE_DECLARATION: &str = "#[cfg(test)] mod string_target;";
+mod string_target;
+"##,
+        )
+        .unwrap();
+        let production_paths = [
+            source_root.join("comment_target.rs"),
+            source_root.join("string_target.rs"),
+        ];
+        for path in &production_paths {
+            std::fs::write(
+                path,
+                "fn production() { futures_executor::block_on(async {}); }\n",
+            )
+            .unwrap();
+        }
+
+        let violations = runtime_ownership_violations(temporary.path(), &BTreeSet::new(), None);
+        let mut expected = production_paths
+            .iter()
+            .map(|path| format!("{} contains futures_executor::block_on", path.display()))
+            .collect::<Vec<_>>();
+        expected.sort();
+        assert_eq!(violations, expected);
+    }
+
+    #[test]
+    fn runtime_ownership_guard_models_effective_cfg_availability() {
+        let temporary = tempfile::tempdir().unwrap();
+        let crate_root = temporary.path().join("cfg-crate");
+        let source_root = crate_root.join("src");
+        std::fs::create_dir_all(&source_root).unwrap();
+        std::fs::write(
+            crate_root.join("Cargo.toml"),
+            "[package]\nname = \"cfg_availability\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source_root.join("lib.rs"),
+            r#"
+#[cfg(all(test, feature = "extra"))]
+mod conjunctive_test_only;
+#[cfg(any(test, feature = "extra"))]
+mod any_production_capable;
+#[cfg(not(test))]
+mod not_test_production;
+
+#[cfg_attr(not(test), cfg(test))]
+mod cfg_attr_test_only;
+#[cfg_attr(feature = "extra", cfg(test))]
+mod cfg_attr_production_capable;
+#[cfg_attr(not(test), cfg_attr(all(), cfg(test)))]
+mod nested_cfg_attr_test_only;
+#[cfg_attr(all(), cfg(any(test, feature = "extra")))]
+mod nested_cfg_attr_production_capable;
+
+#[cfg(feature = "extra")]
+#[cfg(all(test, target_os = "linux"))]
+mod multiple_cfg_test_only;
+#[cfg(any())]
+mod empty_any_unavailable;
+#[cfg(all())]
+mod empty_all_production_capable;
+"#,
+        )
+        .unwrap();
+        let test_only = [
+            "conjunctive_test_only",
+            "cfg_attr_test_only",
+            "nested_cfg_attr_test_only",
+            "multiple_cfg_test_only",
+            "empty_any_unavailable",
+        ];
+        let production_capable = [
+            "any_production_capable",
+            "not_test_production",
+            "cfg_attr_production_capable",
+            "nested_cfg_attr_production_capable",
+            "empty_all_production_capable",
+        ];
+        for module in test_only.into_iter().chain(production_capable) {
+            std::fs::write(
+                source_root.join(format!("{module}.rs")),
+                "fn runtime_owner() { futures_executor::block_on(async {}); }\n",
+            )
+            .unwrap();
+        }
+
+        let violations = runtime_ownership_violations(temporary.path(), &BTreeSet::new(), None);
+        let mut expected = production_capable
+            .iter()
+            .map(|module| {
+                format!(
+                    "{} contains futures_executor::block_on",
+                    source_root.join(format!("{module}.rs")).display()
+                )
+            })
+            .collect::<Vec<_>>();
+        expected.sort();
+        assert_eq!(violations, expected);
+    }
+
+    #[test]
+    fn runtime_ownership_guard_masks_only_test_only_fields_and_variants() {
+        let source = r#"
+struct FieldCases {
+    #[cfg(all(test, feature = "extra"))]
+    conjunctive_field: futures_executor::block_on,
+    #[cfg_attr(not(test), cfg(test))]
+    cfg_attr_field: futures_executor::block_on,
+    #[cfg(any(test, feature = "extra"))]
+    any_field: futures_executor::block_on,
+    #[cfg(not(test))]
+    not_field: futures_executor::block_on,
+    #[cfg_attr(feature = "extra", cfg(test))]
+    cfg_attr_production_field: futures_executor::block_on,
+}
+
+enum VariantCases {
+    #[cfg(all(test, feature = "extra"))]
+    ConjunctiveVariant(futures_executor::block_on),
+    #[cfg_attr(not(test), cfg(test))]
+    CfgAttrVariant { value: futures_executor::block_on },
+    #[cfg(any(test, feature = "extra"))]
+    AnyVariant(futures_executor::block_on),
+    #[cfg(not(test))]
+    NotVariant(futures_executor::block_on),
+    #[cfg_attr(feature = "extra", cfg(test))]
+    CfgAttrProductionVariant(futures_executor::block_on),
+    ProductionVariant {
+        #[cfg(all(test, feature = "extra"))]
+        conjunctive_variant_field: futures_executor::block_on,
+        #[cfg_attr(not(test), cfg(test))]
+        cfg_attr_variant_field: futures_executor::block_on,
+        #[cfg(any(test, feature = "extra"))]
+        any_variant_field: futures_executor::block_on,
+        #[cfg(not(test))]
+        not_variant_field: futures_executor::block_on,
+    },
+}
+"#;
+        let analysis = analyze_rust_source(PathBuf::from("/synthetic/src/lib.rs"), source);
+
+        for masked in [
+            "conjunctive_field",
+            "cfg_attr_field",
+            "ConjunctiveVariant",
+            "CfgAttrVariant",
+            "conjunctive_variant_field",
+            "cfg_attr_variant_field",
+        ] {
+            assert!(
+                !analysis.production.contains(masked),
+                "test-only member {masked} remained in the production source"
+            );
+        }
+        for production_capable in [
+            "any_field",
+            "not_field",
+            "cfg_attr_production_field",
+            "AnyVariant",
+            "NotVariant",
+            "CfgAttrProductionVariant",
+            "any_variant_field",
+            "not_variant_field",
+        ] {
+            assert!(
+                analysis.production.contains(production_capable),
+                "production-capable member {production_capable} was masked"
+            );
+        }
+        assert_eq!(
+            analysis
+                .production
+                .match_indices("futures_executor::block_on")
+                .count(),
+            8
         );
     }
 

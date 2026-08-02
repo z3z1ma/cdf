@@ -6,8 +6,9 @@ use cdf_kernel::{
 use std::collections::BTreeSet;
 
 use crate::{
-    ExecutionServices, LoadAttemptId, ManagedExpiredStagingLeaseProof, StagingLease,
-    StagingLeaseIdentity,
+    execution_host::ExecutionServices,
+    staging_identity::LoadAttemptId,
+    staging_lease::{ManagedExpiredStagingLeaseProof, StagingLease, StagingLeaseIdentity},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

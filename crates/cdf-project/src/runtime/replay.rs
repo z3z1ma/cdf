@@ -3,15 +3,25 @@ use super::{
         DestinationPlanningContext, ProjectDestinationRuntime, ResolvedProjectDestination,
     },
     hooks::{ReceiptVerifiedHook, RuntimeStage, RuntimeStageHook},
-    prelude::*,
+    receipt_source::ProjectReceiptSource,
     receipts::validate_destination_receipt_before_checkpoint,
-    types::*,
+    types::{PackageArtifactRecoveryRequest, PackageArtifactReplayRequest, PackageReplayReport},
 };
+use std::collections::BTreeMap;
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use cdf_kernel::PushdownFidelity;
+use arrow_schema::Schema;
+use cdf_kernel::{
+    CdfError, Checkpoint, CheckpointId, CheckpointStatus, CheckpointStore,
+    DestinationCommitRequest, DestinationId, PackageHash, PlanId, PushdownFidelity, Receipt,
+    Result, RunPhase, RunPhaseMetric, RunPhaseStatus, SchemaHash, SegmentAck, SegmentId,
+    StateDelta, TargetName, WriteDisposition,
+};
 use cdf_memory::{DEFAULT_PROCESS_BUDGET_BYTES, DeterministicMemoryCoordinator, MemoryCoordinator};
+use cdf_package::{PackageReader, VerifiedPackage, VerifiedPackageReader};
+use cdf_package_contract::{PackageReplayInputs, PackageStatus, SegmentEntry};
+use cdf_runtime::ExecutionServices;
 use sha2::{Digest, Sha256};
 
 type DestinationReplayStageHook<'a> = RuntimeStageHook<'a>;

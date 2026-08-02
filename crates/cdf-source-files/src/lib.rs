@@ -170,7 +170,12 @@ impl FileResourcePlan {
 }
 
 pub use driver::{FileSourceDriver, compile_file_resource_plan};
-pub use runtime::*;
+pub(crate) use runtime::file_resource_capabilities;
+pub use runtime::{
+    BinarySchemaProbe, FileResource, FileResourceDefinition, FileRuntimeDependencies,
+    FileTaskStoreOptions, SchemaDiscoveryRequest, discover_local_binary_schema,
+    discover_transport_binary_schema,
+};
 
 #[cfg(test)]
 pub(crate) fn test_execution_services() -> cdf_runtime::ExecutionServices {

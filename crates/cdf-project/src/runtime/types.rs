@@ -1,8 +1,16 @@
 use super::{
-    destinations::ResolvedProjectDestination, hooks::ReceiptVerifiedHook, prelude::*,
-    resources::ProjectRunSource,
+    destinations::ResolvedProjectDestination, hooks::ReceiptVerifiedHook,
+    receipt_source::ProjectReceiptSource, resources::ProjectRunSource,
 };
+use cdf_engine::EnginePlan;
 use cdf_kernel::TerminalSchemaObservationQuarantine;
+use cdf_kernel::{
+    CdfError, Checkpoint, CheckpointId, CheckpointStore, PackageHash, PipelineId, Receipt, Result,
+    RunEventSink, RunId,
+};
+use cdf_package_contract::PackageStatus;
+use cdf_state_sqlite::{RunLedgerSnapshot, StateStorePathOwnership};
+use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RunTelemetryConfig {
@@ -62,18 +70,6 @@ pub struct PackageReplayReport {
     pub receipt_source: ProjectReceiptSource,
     pub package_status: PackageStatus,
     pub phase_metrics: Vec<cdf_kernel::RunPhaseMetric>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ProjectReceiptSource {
-    DestinationCommit {
-        duplicate: bool,
-        package_receipt_recorded: bool,
-    },
-    DestinationCommitReceiptOnly {
-        package_receipt_recorded: bool,
-    },
-    SuppliedDurableReceipt,
 }
 
 pub struct ProjectRunRequest<'a> {

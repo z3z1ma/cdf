@@ -26,7 +26,7 @@ use pyo3::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{PythonBridgeOptions, PythonResourceBridge, internal::py_error};
+use crate::{bridge::PythonResourceBridge, bridge_types::PythonBridgeOptions, internal::py_error};
 use cdf_foreign_stream::{
     ForeignBackpressure, ForeignCancellation, ForeignCancellationContract, ForeignExecutionLane,
     ForeignLaneCapabilities, ForeignMemoryContract, ForeignProducer, ForeignProducerDescriptor,

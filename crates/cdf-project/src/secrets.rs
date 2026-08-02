@@ -1,5 +1,12 @@
-use crate::internal::*;
-use crate::*;
+use std::{
+    collections::BTreeMap,
+    env, fmt, fs,
+    path::{Path, PathBuf},
+};
+
+use cdf_http::{SecretProvider, SecretUri, SecretValue};
+use cdf_kernel::{CdfError, Result};
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
@@ -179,4 +186,21 @@ impl SecretProvider for DefaultSecretProvider {
             ))),
         }
     }
+}
+
+fn split_secret_uri(uri: &SecretUri) -> Result<(&str, &str)> {
+    split_secret_parts(uri.as_str())
+}
+
+fn split_secret_parts(value: &str) -> Result<(&str, &str)> {
+    let rest = value
+        .strip_prefix("secret://")
+        .ok_or_else(|| CdfError::contract("secret reference must use the secret:// scheme"))?;
+    let (provider, key) = rest
+        .split_once('/')
+        .ok_or_else(|| CdfError::contract("secret reference must use secret://provider/key"))?;
+    if provider.trim().is_empty() {
+        return Err(CdfError::contract("secret provider cannot be empty"));
+    }
+    Ok((provider, key))
 }

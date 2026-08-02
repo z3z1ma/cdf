@@ -12,8 +12,10 @@ use cdf_kernel::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::LoadAttemptId;
-use crate::{ExecutionHost, RunCancellation};
+use crate::{
+    execution_host::{ExecutionHost, RunCancellation},
+    staging_identity::LoadAttemptId,
+};
 
 const DEFAULT_LEASE_DURATION: Duration = Duration::from_secs(120);
 const DEFAULT_RENEW_INTERVAL: Duration = Duration::from_secs(30);

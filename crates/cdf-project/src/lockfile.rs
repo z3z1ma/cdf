@@ -1,11 +1,26 @@
-use crate::internal::*;
-use crate::*;
+use std::{collections::BTreeMap, env, path::Path};
+
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_resource_validation_program};
+use cdf_declarative::{CompiledResource, compile_document, compile_document_with_project_root};
+use cdf_http::SecretProvider;
 use cdf_kernel::{
-    DestinationProtocolCapabilities, DestinationSheetArtifact, ExecutionExtent,
-    SchemaSnapshotReference,
+    CdfError, DestinationProtocolCapabilities, DestinationSheet, DestinationSheetArtifact,
+    ExecutionExtent, ResourceCapabilities, ResourceDescriptor, Result, SchemaSnapshotReference,
 };
-use cdf_runtime::CompiledStreamPolicy;
+use cdf_runtime::{CompiledStreamPolicy, SourceRegistry};
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    LOCK_FILE_NAME, LOCKFILE_VERSION,
+    internal::{
+        collect_secret_refs_from_declarative, collect_secret_refs_from_environment,
+        dedupe_secret_refs, parse_resolved_declarative_source, schema_hash_from_source,
+        semantic_hash, validate_environment_uri_fields, validate_project_shape,
+    },
+    models::{EffectiveEnvironment, ProjectConfig, ResourceSourceKind},
+    secrets::SecretRef,
+    sources::ResourceSourceResolver,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectValidationReport {
@@ -714,6 +729,58 @@ pub fn diff_lockfiles(before: &CdfLock, after: &CdfLock) -> Result<Vec<LockDiff>
     let mut diffs = Vec::new();
     diff_json_values("$", Some(&before), Some(&after), &mut diffs);
     Ok(diffs)
+}
+
+fn diff_json_values(
+    path: &str,
+    before: Option<&serde_json::Value>,
+    after: Option<&serde_json::Value>,
+    diffs: &mut Vec<LockDiff>,
+) {
+    match (before, after) {
+        (Some(serde_json::Value::Object(before)), Some(serde_json::Value::Object(after))) => {
+            let keys = before
+                .keys()
+                .chain(after.keys())
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>();
+            for key in keys {
+                diff_json_values(
+                    &format!("{path}.{key}"),
+                    before.get(&key),
+                    after.get(&key),
+                    diffs,
+                );
+            }
+        }
+        (Some(before), Some(after)) if before == after => {}
+        (Some(before), Some(after)) => diffs.push(LockDiff {
+            kind: LockDiffKind::Changed,
+            path: path.to_owned(),
+            before: Some(render_diff_value(before)),
+            after: Some(render_diff_value(after)),
+        }),
+        (Some(before), None) => diffs.push(LockDiff {
+            kind: LockDiffKind::Removed,
+            path: path.to_owned(),
+            before: Some(render_diff_value(before)),
+            after: None,
+        }),
+        (None, Some(after)) => diffs.push(LockDiff {
+            kind: LockDiffKind::Added,
+            path: path.to_owned(),
+            before: None,
+            after: Some(render_diff_value(after)),
+        }),
+        (None, None) => {}
+    }
+}
+
+fn render_diff_value(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(value) => value.clone(),
+        _ => value.to_string(),
+    }
 }
 
 fn current_dependency_tuple() -> DependencyTuple {

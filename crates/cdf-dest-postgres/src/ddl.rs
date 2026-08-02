@@ -1,5 +1,17 @@
-use crate::*;
+use cdf_kernel::{CdfError, MigrationRecord, Result, WriteDisposition};
+use cdf_postgres::{PostgresIdentifier, PostgresTarget};
 use sha2::{Digest, Sha256};
+
+use crate::{
+    CDF_LOADED_AT_COLUMN, CDF_LOADS_TABLE, CDF_QUARANTINE_TABLE, CDF_ROW_KEY_ALLOCATOR_TABLE,
+    CDF_ROW_KEY_COLUMN, CDF_SEGMENTS_TABLE, CDF_STATE_TABLE,
+    identifiers::{
+        PostgresColumn, quote_identifier_unchecked, quote_system_identifier, quote_user_identifier,
+        validated_column_definition, validated_system_column_definition, validated_target_sql,
+        validated_user_column_definition,
+    },
+    plan::{PostgresLoadPlanInput, PostgresStatement, StatementExpectation},
+};
 
 pub(crate) fn system_table_migrations() -> Vec<MigrationRecord> {
     system_table_ddl()

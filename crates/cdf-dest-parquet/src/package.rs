@@ -4,6 +4,9 @@ use std::{
 };
 
 use arrow_ipc::reader::FileReader;
+use cdf_kernel::{CdfError, Result};
+#[cfg(test)]
+use cdf_kernel::{CommitSegment, StateSegment};
 use cdf_memory::MemoryCoordinator;
 use cdf_runtime::{SpillBudgetCoordinator, SpillReservation};
 use parquet::{
@@ -13,7 +16,7 @@ use parquet::{
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
-use crate::*;
+use crate::compression::ParquetCompression;
 
 const SPILL_GROWTH_BYTES: u64 = 8 * 1024 * 1024;
 const OUTPUT_BUFFER_BYTES: usize = 1024 * 1024;
@@ -22,7 +25,7 @@ const OUTPUT_BUFFER_BYTES: usize = 1024 * 1024;
 pub(crate) struct ParquetWriterSettings {
     pub(crate) rows_per_batch: u64,
     pub(crate) bytes_per_batch: u64,
-    pub(crate) compression: crate::compression::ParquetCompression,
+    pub(crate) compression: ParquetCompression,
 }
 
 impl ParquetWriterSettings {

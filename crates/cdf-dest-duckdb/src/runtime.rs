@@ -12,7 +12,7 @@ use cdf_runtime::{
 
 use crate::{
     DUCKDB_BULK_PATH_SEGMENT_SCAN, DUCKDB_FINAL_BINDING_LANE, DUCKDB_STAGED_INGRESS_LANE,
-    DuckDbDestination,
+    models::DuckDbDestination,
     package::{field_plan, validate_user_schema_fields},
 };
 

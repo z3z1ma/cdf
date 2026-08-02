@@ -18,7 +18,7 @@ mod task_reader;
 pub use catalog::{
     GlueCatalogClient, GlueGetTableRequest, GlueTablePointer, IcebergCatalogBinding,
     IcebergCatalogContext, IcebergCatalogLoadRequest, IcebergCatalogRegistry, LoadedIcebergTable,
-    SelectedIcebergSnapshot, UnsupportedGlueCatalogClient, annotated_arrow_schema,
+    SelectedIcebergSnapshot, UnsupportedGlueCatalogClient,
 };
 pub use config::{
     DEFAULT_DECODE_RESERVATION_BYTES, DEFAULT_MAXIMUM_CONCURRENCY,
@@ -42,7 +42,7 @@ pub use scan_task::{
     ICEBERG_SCAN_TASK_VERSION, ICEBERG_TASK_SET_AUTHORITY_VERSION, ICEBERG_TASK_SET_TYPE,
     IcebergDataFile, IcebergDeleteContent, IcebergDeleteFile, IcebergFileFormat,
     IcebergJsonAuthority, IcebergReaderRequirements, IcebergScanTask, IcebergTableIdentity,
-    IcebergTaskSetAuthority, ValidatedIcebergTaskSetAuthority,
+    IcebergTaskSetAuthority,
 };
 
 pub const ICEBERG_SOURCE_DRIVER_VERSION: &str = "1.2.0";

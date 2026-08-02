@@ -1,4 +1,11 @@
-use crate::*;
+use cdf_kernel::{
+    CapabilitySupport, ConcurrencyLimit, CorrectionStrategy, CorrectionStrategyCapability,
+    DestinationId, DestinationSheet, IdempotencySupport, IdentifierRules, Result,
+    RowProvenanceCapabilities, TransactionSupport, TypeMapping, TypeMappingFidelity,
+    WriteDisposition,
+};
+
+use crate::DESTINATION_ID;
 
 pub(crate) fn duckdb_identifier_rules() -> IdentifierRules {
     IdentifierRules {

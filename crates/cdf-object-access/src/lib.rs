@@ -25,7 +25,13 @@ pub use payload_cache::{
     FilePayloadCache, FilePayloadCacheHit, FilePayloadCacheKey, FilePayloadCacheLookup,
     FilePayloadCachePolicy, FilePayloadCachePromotion, resolve_project_cache_root,
 };
-pub use transport::*;
+pub use transport::{
+    AccountedFileIdentity, FILE_IDENTITY_MEMORY_ENVELOPE_BYTES, FileChecksum, FileIdentityMetadata,
+    FileIdentityStream, FileMetadataObservation, FileTransport, FileTransportControl,
+    FileTransportFacade, FileTransportLocation, FileTransportResource, HttpFileRequest,
+    HttpFileResponse, HttpFileTransport, ObjectStoreClientPool, ResolvedHttpAuth,
+    RuntimeAwsCredentials, file_url_path,
+};
 
 #[cfg(test)]
 mod test_support;

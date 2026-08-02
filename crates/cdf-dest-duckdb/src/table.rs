@@ -1,5 +1,13 @@
-use crate::*;
-use crate::{api::*, sql::*};
+use std::collections::BTreeMap;
+
+use cdf_kernel::{CdfError, Result, WriteDisposition};
+use duckdb::{Connection, params};
+
+use crate::{
+    CDF_ROW_KEY_COLUMN, MAIN_SCHEMA,
+    models::{ExistingColumn, FieldPlan, TablePlan, TargetRef},
+    sql::{duckdb_error, framework_ident, quote_ident},
+};
 
 pub(crate) fn plan_table(
     conn: &Connection,

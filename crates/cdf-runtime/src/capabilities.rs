@@ -1,5 +1,12 @@
-use crate::BlockingLaneSpec;
-use crate::prelude::*;
+use cdf_kernel::{CdfError, DestinationId, DestinationSheetArtifact, Result};
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    bulk::{BulkPathDescriptor, BulkPathPreparation, PreparedBulkPath},
+    capability_types::{DestinationIngressMode, DestinationWriterModel},
+    execution_host::BlockingLaneSpec,
+    staging::StagedIngressCapabilities,
+};
 
 use std::collections::BTreeMap;
 
@@ -64,20 +71,6 @@ fn validate_product_identifier(kind: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DestinationIngressMode {
-    FinalizedPackageOnly,
-    StagedDurableSegments,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DestinationWriterModel {
-    SingleWriter,
-    ConcurrentSegments,
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DestinationCommitPayloadMode {
@@ -101,7 +94,7 @@ pub struct DestinationRuntimeCapabilities {
     pub max_in_flight_segments: Option<u16>,
     pub max_in_flight_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub bulk_paths: Vec<crate::BulkPathDescriptor>,
+    pub bulk_paths: Vec<BulkPathDescriptor>,
     pub bulk_path: Option<String>,
     pub bulk_evidence_version: Option<String>,
     pub replay_requires_explicit_target: bool,
@@ -257,7 +250,7 @@ impl DestinationRuntimeCapabilities {
         Ok(())
     }
 
-    pub fn validate_prepared_bulk_path(&self, prepared: &crate::PreparedBulkPath) -> Result<()> {
+    pub fn validate_prepared_bulk_path(&self, prepared: &PreparedBulkPath) -> Result<()> {
         self.validate()?;
         prepared.validate()?;
         let declared = self
@@ -277,6 +270,52 @@ impl DestinationRuntimeCapabilities {
             )));
         }
         Ok(())
+    }
+}
+
+impl BulkPathPreparation {
+    pub fn from_capabilities(capabilities: &DestinationRuntimeCapabilities) -> Result<Self> {
+        capabilities.validate()?;
+        let selected_path_id = capabilities
+            .bulk_path
+            .clone()
+            .ok_or_else(|| CdfError::contract("destination has no selected bulk path"))?;
+        let eligible = capabilities
+            .bulk_paths
+            .iter()
+            .cloned()
+            .map(|descriptor| PreparedBulkPath {
+                rows_per_batch: descriptor.rows.preferred,
+                bytes_per_batch: descriptor.bytes.preferred,
+                writers: 1,
+                descriptor,
+            })
+            .collect();
+        let preparation = Self {
+            selected_path_id,
+            eligible,
+            rejected: Vec::new(),
+        };
+        preparation.validate()?;
+        Ok(preparation)
+    }
+
+    pub fn into_selected(
+        self,
+        capabilities: &DestinationRuntimeCapabilities,
+    ) -> Result<PreparedBulkPath> {
+        self.validate()?;
+        for path in &self.eligible {
+            capabilities.validate_prepared_bulk_path(path)?;
+        }
+        let selected = self
+            .eligible
+            .into_iter()
+            .find(|path| path.descriptor.path_id == self.selected_path_id)
+            .ok_or_else(|| {
+                CdfError::internal("validated destination bulk path selection disappeared")
+            })?;
+        Ok(selected)
     }
 }
 

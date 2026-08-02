@@ -1,4 +1,6 @@
-use crate::*;
+use std::{collections::BTreeMap, fs, path::PathBuf};
+
+use cdf_kernel::{CdfError, Result};
 
 pub trait ResourceSourceResolver {
     fn resolve(&self, source: &str) -> Result<ResolvedResourceSource>;

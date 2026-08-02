@@ -8,7 +8,7 @@ use arrow_array::{
 use arrow_avro::{
     compression::CompressionCodec,
     reader::read_header_info,
-    schema::{AvroSchema, FingerprintStrategy, SCHEMA_METADATA_KEY},
+    schema::{AvroSchema, FingerprintAlgorithm, FingerprintStrategy, SCHEMA_METADATA_KEY},
     writer::{
         AvroWriter, WriterBuilder,
         format::{AvroOcfFormat, AvroSoeFormat},
@@ -16,16 +16,23 @@ use arrow_avro::{
 };
 use arrow_buffer::Buffer;
 use arrow_schema::{DataType, Field, Schema, TimeUnit, UnionFields, UnionMode};
-use cdf_kernel::{PartitionId, ResourceId};
+use cdf_kernel::{CdfError, PartitionId, ResourceId, Result};
 use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
 use cdf_runtime::{
-    ByteSource, DecodePlanningRequest, DecodeSchemaPlan, FormatDiscoveryKind,
-    FormatDiscoveryRequest, FormatDriver, FormatProbe, MemoryByteSource, PhysicalDecodeRequest,
-    RunCancellation,
+    AccountedPhysicalBatch, ByteSource, DecodePlanningRequest, DecodeSchemaPlan,
+    FormatDetectionConfidence, FormatDiscoveryKind, FormatDiscoveryRequest, FormatDriver,
+    FormatProbe, MemoryByteSource, PhysicalDecodeRequest, RunCancellation,
 };
 use futures_util::TryStreamExt;
 
-use super::*;
+use crate::errors::{avro_arrow_error, avro_error, cdf_to_avro};
+use crate::options::{
+    DEFAULT_MAXIMUM_BLOCK_BYTES, DEFAULT_MAXIMUM_BLOCK_RECORDS, DEFAULT_MAXIMUM_BLOCKS,
+    DEFAULT_MAXIMUM_DECODED_BLOCK_BYTES, DEFAULT_MAXIMUM_HEADER_BYTES, OCF_MAGIC,
+    OCF_SYNC_MARKER_BYTES, SOE_MAGIC,
+};
+use crate::planning::decode_avro_long;
+use crate::{AvroOcfFormatDriver, AvroSingleObjectFormatDriver};
 
 fn schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![

@@ -186,7 +186,7 @@ impl IcebergTaskSetAuthority {
     /// Artifact decoding, hashing, and schema validation are deliberately absent from the task
     /// hot path. A task-set reader constructs exactly one validated authority and shares it across
     /// every retained task and retry.
-    pub fn into_validated(self) -> Result<ValidatedIcebergTaskSetAuthority> {
+    pub(crate) fn into_validated(self) -> Result<ValidatedIcebergTaskSetAuthority> {
         self.validate()?;
         let content_sha256 = artifact_hash(&self)?;
         let output_schema = Arc::new(decode_schema(
@@ -233,7 +233,7 @@ impl IcebergTaskSetAuthority {
 /// authorities required by this exact task set are retained. Typed schemas are decoded lazily and
 /// cached by id; partition specs and name mapping are small and eagerly cached.
 #[derive(Debug)]
-pub struct ValidatedIcebergTaskSetAuthority {
+pub(crate) struct ValidatedIcebergTaskSetAuthority {
     model: IcebergTaskSetAuthority,
     content_sha256: String,
     schemas: Mutex<BTreeMap<i32, Arc<iceberg::spec::Schema>>>,
@@ -242,15 +242,16 @@ pub struct ValidatedIcebergTaskSetAuthority {
 }
 
 impl ValidatedIcebergTaskSetAuthority {
-    pub fn model(&self) -> &IcebergTaskSetAuthority {
+    #[cfg(test)]
+    fn model(&self) -> &IcebergTaskSetAuthority {
         &self.model
     }
 
-    pub fn content_sha256(&self) -> &str {
+    pub(crate) fn content_sha256(&self) -> &str {
         &self.content_sha256
     }
 
-    pub fn encode_to(&self, output: &mut dyn Write) -> Result<()> {
+    pub(crate) fn encode_to(&self, output: &mut dyn Write) -> Result<()> {
         serde_json::to_writer(output, &self.model).map_err(|error| {
             CdfError::data(format!(
                 "encode validated canonical Iceberg task-set authority: {error}"
@@ -258,7 +259,7 @@ impl ValidatedIcebergTaskSetAuthority {
         })
     }
 
-    pub fn schema(&self, schema_id: i32) -> Result<Arc<iceberg::spec::Schema>> {
+    pub(crate) fn schema(&self, schema_id: i32) -> Result<Arc<iceberg::spec::Schema>> {
         let mut schemas = self
             .schemas
             .lock()
@@ -276,7 +277,7 @@ impl ValidatedIcebergTaskSetAuthority {
         Ok(schema)
     }
 
-    pub fn partition_spec(&self, spec_id: i32) -> Result<Arc<iceberg::spec::PartitionSpec>> {
+    pub(crate) fn partition_spec(&self, spec_id: i32) -> Result<Arc<iceberg::spec::PartitionSpec>> {
         self.partition_specs.get(&spec_id).cloned().ok_or_else(|| {
             CdfError::contract(format!(
                 "Iceberg partition spec id {spec_id} is absent from validated task-set authority"
@@ -284,7 +285,7 @@ impl ValidatedIcebergTaskSetAuthority {
         })
     }
 
-    pub fn name_mapping(&self) -> Option<Arc<iceberg::spec::NameMapping>> {
+    pub(crate) fn name_mapping(&self) -> Option<Arc<iceberg::spec::NameMapping>> {
         self.name_mapping.clone()
     }
 }
@@ -351,7 +352,10 @@ impl IcebergScanTask {
         Ok(())
     }
 
-    pub fn validate_against(&self, authority: &ValidatedIcebergTaskSetAuthority) -> Result<()> {
+    pub(crate) fn validate_against(
+        &self,
+        authority: &ValidatedIcebergTaskSetAuthority,
+    ) -> Result<()> {
         self.validate()?;
         if authority.snapshot.is_none() {
             return Err(CdfError::contract(

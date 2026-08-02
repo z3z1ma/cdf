@@ -1,5 +1,13 @@
-use crate::*;
-use std::{fs, io::ErrorKind, path::Path};
+use std::{
+    fs,
+    io::ErrorKind,
+    path::{Path, PathBuf},
+};
+
+use cdf_kernel::{CdfError, Result};
+use serde::Serialize;
+
+use crate::PROJECT_FILE_NAME;
 
 const RESOURCES_DIR: &str = "resources";
 const README_FILE: &str = "README.md";

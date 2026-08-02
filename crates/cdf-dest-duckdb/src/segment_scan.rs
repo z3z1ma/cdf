@@ -20,15 +20,31 @@ use arrow_array::{Array, StructArray, ffi::FFI_ArrowArray};
 use arrow_ipc::reader::FileReader as IpcFileReader;
 use arrow_schema::{DataType, Schema, SchemaRef, TimeUnit, ffi::FFI_ArrowSchema};
 use cdf_kernel::{BatchStats, CdfError, Result, StatisticsArrowType, StatisticsCompleteness};
+use duckdb::Connection;
 
 use crate::{
-    CDF_ROW_KEY_COLUMN, CDF_STAGE_ORDER_COLUMN, DuckDbCommitWriter, DuckDbNativeResources,
+    CDF_ROW_KEY_COLUMN, CDF_STAGE_ORDER_COLUMN,
+    models::{DuckDbNativeResources, FieldPlan, TargetRef, duckdb_config_options},
     package::duckdb_type,
     sql::{DuckDbFailure, framework_ident, quote_ident},
     table::existing_columns,
 };
 
 pub(crate) const SEGMENT_SCAN_FUNCTION: &str = "__cdf_canonical_segments";
+
+#[derive(Debug)]
+pub(crate) struct DuckDbCommitWriter {
+    pub(crate) conn: Connection,
+    pub(crate) segment_scan: DuckDbSegmentScanRuntime,
+    pub(crate) target: TargetRef,
+    pub(crate) write_target: TargetRef,
+    pub(crate) first_row_key: Option<u64>,
+    pub(crate) persisted_fields: Vec<FieldPlan>,
+    pub(crate) user_field_count: usize,
+    pub(crate) omitted_user_fields: Vec<bool>,
+    pub(crate) rows_received: u64,
+    pub(crate) duckdb_version: String,
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct DuckDbSegmentProjection {
@@ -272,7 +288,7 @@ impl DuckDbSegmentScanRuntime {
                     "create bounded DuckDB segment-scan configuration",
                 ));
             }
-            for (name, value) in crate::api::duckdb_config_options(resources) {
+            for (name, value) in duckdb_config_options(resources) {
                 let name = cstring(&name)?;
                 let value = cstring(&value)?;
                 if duckdb::ffi::duckdb_set_config(config, name.as_ptr(), value.as_ptr())
@@ -500,7 +516,22 @@ struct LogicalType {
 impl LogicalType {
     fn from_arrow(data_type: &DataType) -> Result<Self> {
         duckdb_type(data_type)?;
-        use duckdb::ffi::*;
+        use duckdb::ffi::{
+            DUCKDB_TYPE_DUCKDB_TYPE_BIGINT, DUCKDB_TYPE_DUCKDB_TYPE_BLOB,
+            DUCKDB_TYPE_DUCKDB_TYPE_BOOLEAN, DUCKDB_TYPE_DUCKDB_TYPE_DATE,
+            DUCKDB_TYPE_DUCKDB_TYPE_DOUBLE, DUCKDB_TYPE_DUCKDB_TYPE_FLOAT,
+            DUCKDB_TYPE_DUCKDB_TYPE_INTEGER, DUCKDB_TYPE_DUCKDB_TYPE_INTERVAL,
+            DUCKDB_TYPE_DUCKDB_TYPE_SMALLINT, DUCKDB_TYPE_DUCKDB_TYPE_SQLNULL,
+            DUCKDB_TYPE_DUCKDB_TYPE_TIME, DUCKDB_TYPE_DUCKDB_TYPE_TIME_NS,
+            DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP, DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_MS,
+            DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_NS, DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_S,
+            DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_TZ, DUCKDB_TYPE_DUCKDB_TYPE_TINYINT,
+            DUCKDB_TYPE_DUCKDB_TYPE_UBIGINT, DUCKDB_TYPE_DUCKDB_TYPE_UINTEGER,
+            DUCKDB_TYPE_DUCKDB_TYPE_USMALLINT, DUCKDB_TYPE_DUCKDB_TYPE_UTINYINT,
+            DUCKDB_TYPE_DUCKDB_TYPE_VARCHAR, duckdb_create_array_type, duckdb_create_decimal_type,
+            duckdb_create_list_type, duckdb_create_logical_type, duckdb_create_map_type,
+            duckdb_create_struct_type, duckdb_create_union_type,
+        };
         let primitive = match data_type {
             DataType::Null => Some(DUCKDB_TYPE_DUCKDB_TYPE_SQLNULL),
             DataType::Boolean => Some(DUCKDB_TYPE_DUCKDB_TYPE_BOOLEAN),

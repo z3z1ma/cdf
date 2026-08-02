@@ -6,7 +6,9 @@ use std::{
 
 use duckdb::Connection;
 
-use crate::{CdfError, Result, sql::duckdb_error};
+use cdf_kernel::{CdfError, Result};
+
+use crate::sql::duckdb_error;
 
 pub(crate) struct DuckDbProfileCapture {
     output_path: PathBuf,

@@ -1,3 +1,5 @@
+#![doc = "Native streaming character-to-UTF-8 transforms for CDF. This crate owns encoding and BOM handling plus bounded expansion, but does not parse records."]
+
 use std::sync::Arc;
 
 use bytes::Bytes;

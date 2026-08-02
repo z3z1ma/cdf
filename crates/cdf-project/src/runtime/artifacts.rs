@@ -1,7 +1,21 @@
-use super::prelude::*;
 use super::validation::package_directory_exists;
-use cdf_kernel::CapabilitySupport;
-use cdf_package_contract::{PROCESSED_OBSERVATIONS_FILE, ProcessedObservationEvidenceArtifact};
+use std::{fs, path::Path};
+
+use arrow_schema::Schema;
+use cdf_engine::EnginePackageDraft;
+#[cfg(test)]
+use cdf_engine::EngineRunOutputWithSegmentPositions;
+use cdf_kernel::{
+    CHECKPOINT_STATE_VERSION, CapabilitySupport, CdfError, Checkpoint, CheckpointId, DestinationId,
+    PipelineId, ResourceDescriptor, Result, SchemaHash, ScopeKey, SourcePosition, StateSegment,
+    TargetName,
+};
+#[cfg(test)]
+use cdf_kernel::{PackageHash, QueryableResource, StateDelta};
+use cdf_package_contract::{
+    DestinationCommitPlanPreimage, PROCESSED_OBSERVATIONS_FILE,
+    ProcessedObservationEvidenceArtifact, SegmentEntry, StateDeltaPreimage,
+};
 
 const QUARANTINE_MIRROR_OUTCOME_FILE: &str = "destination/quarantine-mirror.json";
 const QUARANTINE_MIRROR_OUTCOME_VERSION: u16 = 1;

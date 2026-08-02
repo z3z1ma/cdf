@@ -1,5 +1,10 @@
-use crate::validate::validate_type_fragment;
-use crate::*;
+use std::collections::BTreeMap;
+
+use cdf_kernel::{CdfError, IdentifierRules, Result};
+use cdf_postgres::{PostgresIdentifier, PostgresTarget};
+use serde::{Deserialize, Serialize};
+
+use crate::{CDF_LOADED_AT_COLUMN, CDF_ROW_KEY_COLUMN};
 
 pub(crate) fn postgres_identifier_rules() -> IdentifierRules {
     IdentifierRules {
@@ -9,6 +14,23 @@ pub(crate) fn postgres_identifier_rules() -> IdentifierRules {
             "quoted UTF-8 identifier without NUL; cdf reserves _cdf_*".to_owned(),
         ),
     }
+}
+
+fn validate_type_fragment(data_type: &str) -> Result<()> {
+    let trimmed = data_type.trim();
+    if trimmed.is_empty()
+        || trimmed.contains(';')
+        || trimmed.contains("--")
+        || trimmed.contains("/*")
+        || trimmed.contains("*/")
+        || trimmed.contains('"')
+        || trimmed.contains('\'')
+    {
+        return Err(CdfError::contract(format!(
+            "Postgres type fragment {data_type:?} is not allowed"
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_user_identifier(

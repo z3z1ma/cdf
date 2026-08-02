@@ -1,4 +1,19 @@
-use crate::*;
+use std::collections::BTreeSet;
+
+use cdf_contract::NORMALIZER_NAMECASE_V1;
+use cdf_declarative::{
+    CompiledResource, DeclarativeDocument, parse_toml as parse_declarative_toml,
+    parse_yaml as parse_declarative_yaml,
+};
+use cdf_kernel::{CdfError, Result, SchemaSource};
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+
+use crate::{
+    models::{EffectiveEnvironment, ProjectConfig},
+    secrets::SecretRef,
+    sources::ResolvedResourceSource,
+};
 
 pub(crate) fn validate_project_shape(config: &ProjectConfig) -> Result<()> {
     if config.project.name.trim().is_empty() {
@@ -35,104 +50,6 @@ pub(crate) fn validate_project_shape(config: &ProjectConfig) -> Result<()> {
         ));
     }
     Ok(())
-}
-
-pub(crate) fn required_env_field(
-    env_name: &str,
-    field: &str,
-    value: Option<String>,
-) -> Result<String> {
-    value
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            CdfError::contract(format!(
-            "environment `{env_name}` must resolve `{field}` from itself or the default environment"
-        ))
-        })
-}
-
-pub(crate) fn merge_retention(
-    base: Option<RetentionPolicy>,
-    override_policy: Option<RetentionPolicy>,
-) -> Option<RetentionPolicy> {
-    match (base, override_policy) {
-        (Some(base), Some(override_policy)) => Some(base.overlay(override_policy)),
-        (Some(base), None) => Some(base),
-        (None, Some(override_policy)) => Some(override_policy),
-        (None, None) => None,
-    }
-}
-
-pub(crate) fn parse_retention_rule(value: &str) -> Result<RetentionRule> {
-    let value = value.trim();
-    let Some((amount, unit)) = value.split_once(' ') else {
-        return parse_duration_spec(value).map(RetentionRule::Duration);
-    };
-    let amount = amount.parse::<u32>().map_err(|error| {
-        CdfError::contract(format!(
-            "retention rule `{value}` has invalid run count: {error}"
-        ))
-    })?;
-    match unit.trim() {
-        "run" | "runs" => Ok(RetentionRule::Runs(amount)),
-        _ => Err(CdfError::contract(format!(
-            "retention rule `{value}` must use `runs` or a duration unit"
-        ))),
-    }
-}
-
-pub(crate) fn parse_duration_spec(value: &str) -> Result<DurationSpec> {
-    let value = value.trim();
-    if value.is_empty() {
-        return Err(CdfError::contract("duration cannot be empty"));
-    }
-    let digit_len = value
-        .chars()
-        .take_while(|character| character.is_ascii_digit())
-        .map(char::len_utf8)
-        .sum::<usize>();
-    if digit_len == 0 {
-        return Err(CdfError::contract(format!(
-            "duration `{value}` must start with a number"
-        )));
-    }
-    let amount = value[..digit_len].parse::<u64>().map_err(|error| {
-        CdfError::contract(format!("duration `{value}` has invalid number: {error}"))
-    })?;
-    let unit = &value[digit_len..];
-    let multiplier = match unit {
-        "ms" => 1,
-        "s" => 1_000,
-        "m" => 60_000,
-        "h" => 3_600_000,
-        "d" => 86_400_000,
-        _ => {
-            return Err(CdfError::contract(format!(
-                "duration `{value}` has unsupported unit `{unit}`"
-            )));
-        }
-    };
-    amount
-        .checked_mul(multiplier)
-        .map(DurationSpec::from_millis)
-        .ok_or_else(|| CdfError::contract(format!("duration `{value}` is too large")))
-}
-
-pub(crate) fn split_secret_uri(uri: &SecretUri) -> Result<(&str, &str)> {
-    split_secret_parts(uri.as_str())
-}
-
-pub(crate) fn split_secret_parts(value: &str) -> Result<(&str, &str)> {
-    let rest = value
-        .strip_prefix("secret://")
-        .ok_or_else(|| CdfError::contract("secret reference must use the secret:// scheme"))?;
-    let (provider, key) = rest
-        .split_once('/')
-        .ok_or_else(|| CdfError::contract("secret reference must use secret://provider/key"))?;
-    if provider.trim().is_empty() {
-        return Err(CdfError::contract("secret provider cannot be empty"));
-    }
-    Ok((provider, key))
 }
 
 pub(crate) fn parse_resolved_declarative_source(
@@ -261,56 +178,4 @@ pub(crate) fn schema_hash_from_source(schema_source: &SchemaSource) -> Option<St
 pub(crate) fn semantic_hash(value: &impl Serialize) -> Result<String> {
     let bytes = serde_json::to_vec(value).map_err(|error| CdfError::internal(error.to_string()))?;
     Ok(format!("sha256:{}", hex::encode(Sha256::digest(bytes))))
-}
-
-pub(crate) fn diff_json_values(
-    path: &str,
-    before: Option<&serde_json::Value>,
-    after: Option<&serde_json::Value>,
-    diffs: &mut Vec<LockDiff>,
-) {
-    match (before, after) {
-        (Some(serde_json::Value::Object(before)), Some(serde_json::Value::Object(after))) => {
-            let keys = before
-                .keys()
-                .chain(after.keys())
-                .cloned()
-                .collect::<BTreeSet<_>>();
-            for key in keys {
-                diff_json_values(
-                    &format!("{path}.{key}"),
-                    before.get(&key),
-                    after.get(&key),
-                    diffs,
-                );
-            }
-        }
-        (Some(before), Some(after)) if before == after => {}
-        (Some(before), Some(after)) => diffs.push(LockDiff {
-            kind: LockDiffKind::Changed,
-            path: path.to_owned(),
-            before: Some(render_diff_value(before)),
-            after: Some(render_diff_value(after)),
-        }),
-        (Some(before), None) => diffs.push(LockDiff {
-            kind: LockDiffKind::Removed,
-            path: path.to_owned(),
-            before: Some(render_diff_value(before)),
-            after: None,
-        }),
-        (None, Some(after)) => diffs.push(LockDiff {
-            kind: LockDiffKind::Added,
-            path: path.to_owned(),
-            before: None,
-            after: Some(render_diff_value(after)),
-        }),
-        (None, None) => {}
-    }
-}
-
-pub(crate) fn render_diff_value(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::String(value) => value.clone(),
-        _ => value.to_string(),
-    }
 }

@@ -1,0 +1,4477 @@
+use super::{
+    AccountedByteStream, AccountedBytes, Arc, ArrayRef, BTreeMap, BTreeSet, BoxFuture, ByteExtent,
+    ByteSource, ByteSourceCapabilities, Bytes, CdfError, CheckpointId, Compression, ConsumerKey,
+    ContentIdentity, ContractPolicy, DataType, Digest, DiscoveryBoundedIdentity,
+    DiscoveryCandidateEvidence, DiscoveryExecutorBudget, DiscoveryFileCoverage,
+    DiscoveryIdentityStrength, DiscoveryManifestArtifact, DiscoveryManifestHash,
+    DiscoveryManifestInput, DiscoveryManifestReference, DiscoveryManifestStore,
+    DiscoveryMetadataScope, DiscoveryMetadataVariance, DiscoveryParticipation,
+    DiscoverySchemaVerdict, DiscoverySchemaVerdictKind, DiscoverySelectorCandidate,
+    DiscoveryWithinFileCoverage, Duration, EnginePlan, EnginePlanInput, EnvSecretProvider,
+    ExecutionExtent, Field, Fields, FileIdentityMetadata, FileResourceSourceResolver,
+    FileRuntimeDependencies, FileSourceDriver, FileTransportFacade, FileTransportLocation,
+    FileTransportResource, FileWriter, GenerationStrength, GzEncoder, HashMap, HttpFileRequest,
+    HttpFileResponse, HttpFileTransport, HttpMethod, HttpResponse, InMemory,
+    InMemoryResourceSourceResolver, Int32Array, Int64Array, IntervalUnit, MemoryClass,
+    MemoryCoordinator, Mutex, NORMALIZER_NAMECASE_V1, ObjectPath, ObjectStoreExt,
+    ObservationCacheStore, ObservedSchema, Path, PipelineId, Planner, ProjectRunRequest,
+    ProjectRunSource, PutPayload, QueryableResource, RecordBatch, ReservationRequest, ResourceId,
+    ResourceSchemaDiscovery, ResourceSchemaDiscoveryArtifacts, Result, RunCancellation, RunId,
+    SCHEMA_SNAPSHOT_ARTIFACT_VERSION, STRATIFIED_HASH_SELECTOR_V1, ScanRequest, Schema,
+    SchemaDiscoveryExecutionOptions, SchemaHash, SchemaSnapshotArtifact, SchemaSnapshotSchema,
+    SchemaSnapshotStore, SchemaSource, SecretProvider, SecretUri, SecretValue,
+    SequentialReadRequest, Sha256, SourcePosition, StringArray, TargetName, TimeUnit, UnionFields,
+    UnionMode, apply_discovered_schema, compile_discovered_schema_artifacts,
+    compile_project_declarative_resources, compile_project_declarative_resources_with_root,
+    compile_validation_program, discover_resource_schema_with_source_registry, fs, mpsc,
+    parse_cdf_toml, plan_discovery_selection, prepare_pinned_resource_schema,
+    prepare_pinned_resource_schema_artifacts, reserve, run_project, source_name, stream,
+    support::{
+        RecordingResponse, RecordingTransport, test_execution_services, test_format_registry,
+        test_source_registry,
+    },
+    thread, write_schema_discovery_artifacts,
+};
+
+pub(super) fn json_response(body: &str) -> RecordingResponse {
+    RecordingResponse {
+        response: HttpResponse::new(200),
+        body: body.as_bytes().to_vec(),
+    }
+}
+
+pub(super) fn executable_partition_for_test(
+    resource: &dyn QueryableResource,
+    scan: &cdf_kernel::ScanPlan,
+    ordinal: u64,
+) -> cdf_kernel::ExecutablePartition {
+    if let Some(partition) = scan
+        .inline_partitions()
+        .and_then(|partitions| partitions.get(usize::try_from(ordinal).unwrap()))
+    {
+        return cdf_kernel::ExecutablePartition::inline(partition.clone());
+    }
+    let mut reader = resource
+        .planned_partition_reader(scan.external_task_set().unwrap())
+        .unwrap();
+    let mut selected = None;
+    for current in 0..=ordinal {
+        selected = reader.next_partition(current).unwrap();
+    }
+    selected.unwrap()
+}
+
+pub(super) fn planned_partitions_for_test(
+    resource: &dyn QueryableResource,
+    request: &ScanRequest,
+) -> Vec<cdf_kernel::PartitionPlan> {
+    let scan = resource.negotiate(request).unwrap();
+    (0..scan.partition_count().unwrap())
+        .map(|ordinal| {
+            executable_partition_for_test(resource, &scan, ordinal)
+                .plan()
+                .clone()
+        })
+        .collect()
+}
+
+pub(super) fn package_identity_file_paths(reader: &cdf_package::PackageReader) -> BTreeSet<String> {
+    let mut paths = BTreeSet::new();
+    reader
+        .for_each_identity_file(&mut |entry| {
+            paths.insert(entry.path);
+            Ok(())
+        })
+        .unwrap();
+    paths
+}
+
+pub(super) fn engine_identity_segments(
+    output: &cdf_engine::EngineRunOutput,
+) -> Vec<cdf_package_contract::SegmentEntry> {
+    let mut segments = Vec::new();
+    output
+        .for_each_identity_segment(&mut |segment| {
+            segments.push(segment);
+            Ok(())
+        })
+        .unwrap();
+    segments
+}
+
+pub(super) fn test_execution_services_with_slots(
+    logical_cpu_slots: u16,
+    memory_budget_bytes: u64,
+) -> cdf_runtime::ExecutionServices {
+    let memory: Arc<dyn MemoryCoordinator> = Arc::new(
+        cdf_memory::DeterministicMemoryCoordinator::new(memory_budget_bytes, BTreeMap::new())
+            .unwrap(),
+    );
+    let host = Arc::new(
+        cdf_engine::StandaloneExecutionHost::new(
+            cdf_runtime::ExecutionHostCapabilities {
+                logical_cpu_slots,
+                io_workers: logical_cpu_slots.min(4),
+                blocking_lanes: Vec::new(),
+            },
+            memory,
+        )
+        .unwrap(),
+    );
+    cdf_runtime::ExecutionServices::new(host).unwrap()
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct PreparedDiscoveredResource {
+    pub(super) resource: cdf_declarative::CompiledResource,
+    pub(super) discovery: Option<ResourceSchemaDiscovery>,
+}
+
+#[derive(Debug)]
+pub(super) struct ProjectExternalMockFormat {
+    pub(super) descriptor: cdf_runtime::FormatDriverDescriptor,
+}
+
+impl ProjectExternalMockFormat {
+    pub(super) fn new() -> Self {
+        Self {
+            descriptor: cdf_runtime::FormatDriverDescriptor {
+                format_id: cdf_runtime::FormatId::new("project_external_mock").unwrap(),
+                semantic_version: "1.0.0".to_owned(),
+                aliases: Vec::new(),
+                extensions: vec!["mock".to_owned()],
+                mime_types: Vec::new(),
+                magic: Vec::new(),
+                detection_probe: cdf_runtime::FormatDetectionProbe {
+                    prefix_bytes: 4,
+                    suffix_bytes: 0,
+                },
+                option_schema: serde_json::json!({
+                    "type": "object",
+                    "additionalProperties": false
+                }),
+                projection_pushdown: cdf_kernel::PushdownFidelity::Unsupported,
+                predicate_pushdown: cdf_kernel::PushdownFidelity::Unsupported,
+                predicate_operators: Vec::new(),
+                source_access: cdf_runtime::FormatSourceAccess::Sequential,
+                discovery: cdf_runtime::FormatDiscoveryCapabilities::only(
+                    cdf_runtime::FormatDiscoveryKind::BoundedContent,
+                ),
+                decode_unit_policy: "whole_mock_file".to_owned(),
+                error_isolation: cdf_runtime::FormatErrorIsolation::DecodeUnit,
+                decode_cpu: cdf_runtime::CpuTaskSpec {
+                    task_kind: "format.project_external_mock.decode".to_owned(),
+                    cpu_slot_cost: 1,
+                    native_internal_parallelism: 1,
+                },
+                minimum_working_set_bytes: 64,
+                maximum_working_set_bytes: 1024 * 1024,
+            },
+        }
+    }
+
+    pub(super) fn schema() -> Arc<Schema> {
+        Arc::new(Schema::new(vec![Field::new(
+            "value",
+            DataType::Int64,
+            false,
+        )]))
+    }
+}
+
+impl cdf_runtime::FormatDriver for ProjectExternalMockFormat {
+    fn descriptor(&self) -> &cdf_runtime::FormatDriverDescriptor {
+        &self.descriptor
+    }
+
+    fn canonical_options(&self, options: serde_json::Value) -> Result<serde_json::Value> {
+        if options.as_object().is_some_and(serde_json::Map::is_empty) {
+            Ok(options)
+        } else {
+            Err(CdfError::contract(
+                "project external mock options must be empty",
+            ))
+        }
+    }
+
+    fn detect(&self, probe: &cdf_runtime::FormatProbe) -> Result<cdf_runtime::FormatDetection> {
+        Ok(cdf_runtime::FormatDetection {
+            confidence: if probe.prefix.starts_with(b"MOCK") {
+                cdf_runtime::FormatDetectionConfidence::Strong
+            } else {
+                cdf_runtime::FormatDetectionConfidence::None
+            },
+            reason: "project external mock framing".to_owned(),
+        })
+    }
+
+    fn discover(
+        &self,
+        source: Arc<dyn ByteSource>,
+        request: cdf_runtime::FormatDiscoveryRequest,
+    ) -> BoxFuture<'_, Result<cdf_runtime::PhysicalSchemaObservation>> {
+        Box::pin(async move {
+            let input = source
+                .open_sequential(SequentialReadRequest {
+                    preferred_chunk_bytes: 5,
+                    cancellation: request.cancellation,
+                })
+                .await?;
+            let mut cursor = cdf_runtime::AccountedByteCursor::new(input);
+            if cursor
+                .read_exact(5, "project external mock discovery")
+                .await?
+                != b"MOCK\n"
+            {
+                return Err(CdfError::data("project external mock framing mismatch"));
+            }
+            Ok(cdf_runtime::PhysicalSchemaObservation {
+                identity: source.identity().clone(),
+                arrow_schema: Self::schema(),
+                sampled_bytes: 5,
+                sampled_records: 1,
+                evidence: BTreeMap::from([(
+                    "external_driver".to_owned(),
+                    "project_fixture".to_owned(),
+                )]),
+            })
+        })
+    }
+
+    fn prepare_decode(
+        &self,
+        source: Arc<dyn ByteSource>,
+        request: cdf_runtime::DecodePlanningRequest,
+    ) -> BoxFuture<'_, Result<Arc<dyn cdf_runtime::FormatDecodeSession>>> {
+        Box::pin(async move {
+            request.cancellation.check()?;
+            Ok(Arc::new(ProjectExternalMockSession {
+                source,
+                units: vec![cdf_runtime::DecodeUnitPlan {
+                    unit_id: "mock-file".to_owned(),
+                    ordinal: 0,
+                    extent: None,
+                    estimated_working_set_bytes: 64,
+                    independently_retryable: true,
+                }],
+            }) as Arc<dyn cdf_runtime::FormatDecodeSession>)
+        })
+    }
+}
+
+pub(super) struct ProjectExternalMockSession {
+    pub(super) source: Arc<dyn ByteSource>,
+    pub(super) units: Vec<cdf_runtime::DecodeUnitPlan>,
+}
+
+impl cdf_runtime::FormatDecodeSession for ProjectExternalMockSession {
+    fn units(&self) -> &[cdf_runtime::DecodeUnitPlan] {
+        &self.units
+    }
+
+    fn decode(
+        &self,
+        request: cdf_runtime::PhysicalDecodeRequest,
+    ) -> BoxFuture<'_, Result<cdf_runtime::PhysicalDecodeStream>> {
+        Box::pin(async move {
+            self.validate_unit(&request.unit)?;
+            let input = self
+                .source
+                .open_sequential(SequentialReadRequest {
+                    preferred_chunk_bytes: 5,
+                    cancellation: request.cancellation,
+                })
+                .await?;
+            let mut cursor = cdf_runtime::AccountedByteCursor::new(input);
+            if cursor.read_exact(5, "project external mock decode").await? != b"MOCK\n" {
+                return Err(CdfError::data("project external mock framing mismatch"));
+            }
+            let record_batch = RecordBatch::try_new(
+                ProjectExternalMockFormat::schema(),
+                vec![Arc::new(Int64Array::from(vec![42]))],
+            )?;
+            let retained = cdf_memory::record_batch_retained_bytes(&record_batch)?;
+            let lease = reserve(
+                Arc::clone(&request.memory),
+                ReservationRequest::new(
+                    ConsumerKey::new("project-external-mock", MemoryClass::Decode)?,
+                    retained,
+                )?,
+            )
+            .await?;
+            let mut batch = cdf_kernel::Batch::from_record_batch(
+                cdf_kernel::BatchId::new(format!(
+                    "{}-u{:08}-b00000000",
+                    request.batch_id_prefix, request.unit.ordinal
+                ))?,
+                request.resource_id,
+                request.partition_id,
+                cdf_kernel::canonical_arrow_schema_hash(
+                    ProjectExternalMockFormat::schema().as_ref(),
+                )?,
+                record_batch,
+            )?;
+            batch.header.source_position = request.source_position;
+            let physical = cdf_runtime::AccountedPhysicalBatch::new(batch, lease)?;
+            Ok(
+                Box::pin(futures_util::stream::once(async move { Ok(physical) }))
+                    as cdf_runtime::PhysicalDecodeStream,
+            )
+        })
+    }
+}
+
+pub(super) fn file_dependencies(transport: FileTransportFacade) -> FileRuntimeDependencies {
+    file_dependencies_with_execution(transport, test_execution_services())
+}
+
+pub(super) fn file_dependencies_with_execution(
+    transport: FileTransportFacade,
+    execution: cdf_runtime::ExecutionServices,
+) -> FileRuntimeDependencies {
+    let transforms = cdf_builtin_drivers::new_builtin_transform_registry().unwrap();
+    FileRuntimeDependencies::new(
+        transport.with_execution_services(execution.clone()),
+        execution,
+        test_format_registry(),
+        Arc::new(transforms),
+        cdf_runtime::SourceEgressScope::new(
+            cdf_runtime::SourceDriverId::new("files").unwrap(),
+            Arc::new(cdf_http::EgressAllowlist::allow_any()),
+        ),
+    )
+}
+
+pub(super) fn resolve_file_resource_for_test(
+    resource: &cdf_declarative::CompiledResource,
+    dependencies: FileRuntimeDependencies,
+) -> Arc<dyn QueryableResource> {
+    let formats = Arc::clone(dependencies.formats());
+    let installed = dependencies.clone();
+    let prepared_payloads = dependencies.prepared_payloads().clone();
+    let mut registry = cdf_runtime::SourceRegistry::new();
+    registry
+        .register(
+            FileSourceDriver::new(formats, move |_secrets, _execution, _egress| {
+                Ok(installed.clone())
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    let execution = test_execution_services();
+    let project_root = resource.project_root().unwrap_or_else(|| Path::new("."));
+    let resolution = cdf_runtime::SourceResolutionContext::new(
+        project_root,
+        Arc::new(EnvSecretProvider::from_map(
+            std::iter::empty::<(&str, &str)>(),
+        )),
+        &execution,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
+    )
+    .with_prepared_payloads(prepared_payloads);
+    registry
+        .resolve(resource.source_plan(), &resolution)
+        .unwrap()
+}
+
+pub(super) fn external_mock_source_registry(
+    transport: RecordingHttpFileTransport,
+) -> cdf_runtime::SourceRegistry {
+    let mut formats = cdf_runtime::FormatRegistry::default();
+    formats
+        .register(Arc::new(ProjectExternalMockFormat::new()))
+        .unwrap();
+    let formats = Arc::new(formats);
+    let runtime_formats = Arc::clone(&formats);
+    let mut registry = cdf_runtime::SourceRegistry::new();
+    registry
+        .register(
+            FileSourceDriver::new(formats, move |secrets, execution, egress| {
+                Ok(FileRuntimeDependencies::new(
+                    FileTransportFacade::new()
+                        .with_http_transport(transport.clone())
+                        .with_shared_secret_provider(secrets)
+                        .with_execution_services(execution.clone()),
+                    execution,
+                    Arc::clone(&runtime_formats),
+                    Arc::new(cdf_runtime::ByteTransformRegistry::default()),
+                    egress,
+                ))
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    registry
+}
+
+pub(super) fn discover_file_schema_artifacts_for_test(
+    resource: &cdf_declarative::CompiledResource,
+    _secret_provider: &dyn SecretProvider,
+    dependencies: FileRuntimeDependencies,
+    options: SchemaDiscoveryExecutionOptions,
+) -> Result<ResourceSchemaDiscoveryArtifacts> {
+    let formats = Arc::clone(dependencies.formats());
+    let installed_dependencies = dependencies.clone();
+    let mut registry = cdf_runtime::SourceRegistry::new();
+    registry.register(
+        FileSourceDriver::new(formats, move |_secrets, _execution, _egress| {
+            Ok(installed_dependencies.clone())
+        })
+        .unwrap(),
+    )?;
+    let project_root = resource
+        .project_root()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| Path::new(".").to_path_buf());
+    let plan = resource.source_plan().clone();
+    let execution = test_execution_services();
+    let prepared_payloads = dependencies.prepared_payloads().clone();
+    let resolution = cdf_runtime::SourceResolutionContext::new(
+        &project_root,
+        Arc::new(EnvSecretProvider::from_map(
+            std::iter::empty::<(&str, &str)>(),
+        )),
+        &execution,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
+    )
+    .with_prepared_payloads(prepared_payloads);
+    super::discover_resource_schema_with_source_registry(
+        resource,
+        &registry,
+        &plan,
+        &resolution,
+        options,
+    )
+}
+
+pub(super) fn discover_default_file_schema_artifacts_for_test(
+    resource: &cdf_declarative::CompiledResource,
+    secret_provider: &dyn SecretProvider,
+    options: SchemaDiscoveryExecutionOptions,
+) -> Result<ResourceSchemaDiscoveryArtifacts> {
+    discover_file_schema_artifacts_for_test(
+        resource,
+        secret_provider,
+        file_dependencies(FileTransportFacade::new()),
+        options,
+    )
+}
+
+pub(super) fn discover_file_schema_for_test(
+    resource: &cdf_declarative::CompiledResource,
+    secret_provider: &dyn SecretProvider,
+    dependencies: FileRuntimeDependencies,
+) -> Result<ResourceSchemaDiscovery> {
+    Ok(discover_file_schema_artifacts_for_test(
+        resource,
+        secret_provider,
+        dependencies,
+        Default::default(),
+    )?
+    .discovery)
+}
+
+pub(super) fn prepare_file_discover_resource(
+    project_root: &Path,
+    resource: &cdf_declarative::CompiledResource,
+    _secret_provider: &dyn SecretProvider,
+) -> Result<PreparedDiscoveredResource> {
+    prepare_file_discover_resource_with_dependencies_for_test(
+        project_root,
+        resource,
+        _secret_provider,
+        file_dependencies(FileTransportFacade::new()),
+    )
+}
+
+pub(super) fn prepare_file_discover_resource_with_dependencies_for_test(
+    project_root: &Path,
+    resource: &cdf_declarative::CompiledResource,
+    secret_provider: &dyn SecretProvider,
+    dependencies: FileRuntimeDependencies,
+) -> Result<PreparedDiscoveredResource> {
+    if !matches!(
+        resource.descriptor().schema_source,
+        SchemaSource::Discover | SchemaSource::Hints { snapshot: None, .. }
+    ) {
+        return Ok(PreparedDiscoveredResource {
+            resource: resource.clone(),
+            discovery: None,
+        });
+    }
+    let mut artifacts = discover_file_schema_artifacts_for_test(
+        resource,
+        secret_provider,
+        dependencies,
+        SchemaDiscoveryExecutionOptions::new()
+            .with_observation_cache(ObservationCacheStore::new(project_root)),
+    )?;
+    let prepared = compile_discovered_schema_artifacts(resource, &mut artifacts)?;
+    let discovery = artifacts.discovery.clone();
+    write_schema_discovery_artifacts(project_root, &artifacts)?;
+    Ok(PreparedDiscoveredResource {
+        resource: prepared,
+        discovery: Some(discovery),
+    })
+}
+
+pub(super) fn discover_rest_schema_artifacts_for_test(
+    project_root: &Path,
+    resource: &cdf_declarative::CompiledResource,
+    transport: RecordingTransport,
+    secret_provider: Arc<dyn SecretProvider + Send + Sync>,
+    prepared_payloads: cdf_runtime::PreparedSourcePayloads,
+) -> Result<ResourceSchemaDiscoveryArtifacts> {
+    let mut registry = cdf_runtime::SourceRegistry::new();
+    registry.register(cdf_source_rest::RestSourceDriver::new(move || {
+        Ok(Box::new(transport.clone()))
+    })?)?;
+    let plan = resource.source_plan().clone();
+    let execution = test_execution_services();
+    let resolution = cdf_runtime::SourceResolutionContext::new(
+        project_root,
+        secret_provider,
+        &execution,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
+    )
+    .with_prepared_payloads(prepared_payloads);
+    discover_resource_schema_with_source_registry(
+        resource,
+        &registry,
+        &plan,
+        &resolution,
+        SchemaDiscoveryExecutionOptions::default(),
+    )
+}
+pub(super) fn observed_discovery_candidate(
+    location: &str,
+    physical_schema_seed: &str,
+    probe_bytes: u64,
+) -> DiscoveryCandidateEvidence {
+    let physical_schema = Schema::new(vec![Field::new(physical_schema_seed, DataType::Utf8, true)]);
+    let physical_schema_hash = cdf_kernel::canonical_arrow_schema_hash(&physical_schema).unwrap();
+    DiscoveryCandidateEvidence {
+        transport: "file".to_owned(),
+        canonical_location: location.to_owned(),
+        identity: DiscoveryBoundedIdentity {
+            size_bytes: Some(1024),
+            modified_at_ms: Some(1_700_000_000_000),
+            value: Some(format!("bounded:{location}")),
+            strength: DiscoveryIdentityStrength::BoundedObservation,
+        },
+        participation: DiscoveryParticipation::Observed,
+        metadata_variance: Vec::new(),
+        physical_schema_hash: Some(physical_schema_hash),
+        physical_schema: Some(
+            cdf_kernel::CanonicalArrowSchema::from_arrow(&physical_schema).unwrap(),
+        ),
+        probe_bytes: Some(probe_bytes),
+        probe_records: Some(0),
+        schema_verdict: Some(DiscoverySchemaVerdict {
+            kind: DiscoverySchemaVerdictKind::Admitted,
+            rule: "schema-join-v1".to_owned(),
+            details: BTreeMap::new(),
+        }),
+    }
+}
+
+pub(super) fn unobserved_discovery_candidate(
+    location: &str,
+    identity: &str,
+) -> DiscoveryCandidateEvidence {
+    DiscoveryCandidateEvidence {
+        transport: "file".to_owned(),
+        canonical_location: location.to_owned(),
+        identity: DiscoveryBoundedIdentity {
+            size_bytes: Some(2048),
+            modified_at_ms: None,
+            value: Some(identity.to_owned()),
+            strength: DiscoveryIdentityStrength::WeakEtag,
+        },
+        participation: DiscoveryParticipation::Unobserved,
+        metadata_variance: Vec::new(),
+        physical_schema_hash: None,
+        physical_schema: None,
+        probe_bytes: None,
+        probe_records: None,
+        schema_verdict: None,
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct RecordingHttpFileTransport {
+    pub(super) state: Arc<Mutex<RecordingHttpFileTransportState>>,
+}
+
+pub(super) struct RecordingHttpFileTransportState {
+    pub(super) requests: Vec<HttpFileRequest>,
+    pub(super) body: Arc<Vec<u8>>,
+    pub(super) etag: Option<String>,
+    pub(super) missing: BTreeSet<String>,
+    pub(super) sequential_chunks_emitted: u64,
+    pub(super) sequential_bytes_emitted: u64,
+    pub(super) sequential_streams_active: u16,
+    pub(super) sequential_streams_peak: u16,
+    pub(super) sequential_streams_closed: u64,
+    pub(super) sequential_streams_completed: u64,
+    pub(super) memory: Option<Arc<dyn MemoryCoordinator>>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct RecordingSequentialProgress {
+    pub(super) chunks_emitted: u64,
+    pub(super) bytes_emitted: u64,
+    pub(super) active_streams: u16,
+    pub(super) peak_active_streams: u16,
+    pub(super) streams_closed: u64,
+    pub(super) streams_completed: u64,
+}
+
+pub(super) struct RecordingHttpByteSource {
+    pub(super) state: Arc<Mutex<RecordingHttpFileTransportState>>,
+    pub(super) url: String,
+    pub(super) etag: Option<String>,
+    pub(super) identity: ContentIdentity,
+    pub(super) capabilities: ByteSourceCapabilities,
+    pub(super) memory: Arc<dyn MemoryCoordinator>,
+}
+
+impl RecordingHttpByteSource {
+    pub(super) fn new(
+        state: Arc<Mutex<RecordingHttpFileTransportState>>,
+        resource: &FileTransportResource,
+        expected: &FileIdentityMetadata,
+        memory: Arc<dyn MemoryCoordinator>,
+    ) -> Result<Self> {
+        let FileTransportLocation::HttpUrl { url } = &resource.location else {
+            return Err(CdfError::contract(
+                "recording HTTP byte source requires an HTTP(S) resource",
+            ));
+        };
+        let strong = expected.etag.is_some();
+        let identity = ContentIdentity {
+            stable_id: url.clone(),
+            size_bytes: expected.size_bytes,
+            generation: expected.etag.clone().or_else(|| {
+                expected
+                    .size_bytes
+                    .map(|size| format!("unversioned-size:{size}"))
+            }),
+            checksum: expected.sha256().map(str::to_owned),
+            strength: if expected.sha256().is_some() {
+                GenerationStrength::ContentAddressed
+            } else if strong {
+                GenerationStrength::Strong
+            } else {
+                GenerationStrength::Weak
+            },
+        };
+        identity.validate()?;
+        let capabilities = ByteSourceCapabilities {
+            known_length: true,
+            reopenable: true,
+            seekable: strong,
+            exact_ranges: strong,
+            useful_range_concurrency: if strong { 4 } else { 0 },
+            minimum_chunk_bytes: 1,
+            maximum_chunk_bytes: 32 * 1024 * 1024,
+        };
+        capabilities.validate()?;
+        state.lock().unwrap().memory = Some(Arc::clone(&memory));
+        Ok(Self {
+            state,
+            url: url.clone(),
+            etag: expected.etag.clone(),
+            identity,
+            capabilities,
+            memory,
+        })
+    }
+}
+
+impl ByteSource for RecordingHttpByteSource {
+    fn identity(&self) -> &ContentIdentity {
+        &self.identity
+    }
+
+    fn capabilities(&self) -> &ByteSourceCapabilities {
+        &self.capabilities
+    }
+
+    fn open_sequential(
+        &self,
+        request: SequentialReadRequest,
+    ) -> BoxFuture<'_, Result<AccountedByteStream>> {
+        Box::pin(async move {
+            request.cancellation.check()?;
+            if request.preferred_chunk_bytes < self.capabilities.minimum_chunk_bytes
+                || request.preferred_chunk_bytes > self.capabilities.maximum_chunk_bytes
+            {
+                return Err(CdfError::contract(
+                    "recording HTTP sequential chunk target is outside source capabilities",
+                ));
+            }
+            let body = {
+                let mut state = self.state.lock().unwrap();
+                let mut request = HttpFileRequest::new(HttpMethod::Get, self.url.clone());
+                if let Some(etag) = &self.etag {
+                    request.headers.insert("if-match".to_owned(), etag.clone());
+                }
+                state.requests.push(request);
+                state.sequential_streams_active += 1;
+                state.sequential_streams_peak = state
+                    .sequential_streams_peak
+                    .max(state.sequential_streams_active);
+                Arc::clone(&state.body)
+            };
+            let state = RecordingSequentialState {
+                body,
+                offset: 0,
+                chunk_bytes: usize::try_from(request.preferred_chunk_bytes)
+                    .map_err(|_| CdfError::data("test chunk size exceeds usize"))?,
+                memory: Arc::clone(&self.memory),
+                cancellation: request.cancellation,
+                transport_state: Arc::clone(&self.state),
+            };
+            Ok(Box::pin(stream::try_unfold(state, |mut state| async move {
+                state.cancellation.check()?;
+                if state.offset == state.body.len() {
+                    state
+                        .transport_state
+                        .lock()
+                        .unwrap()
+                        .sequential_streams_completed += 1;
+                    return Ok(None);
+                }
+                let end = state
+                    .offset
+                    .saturating_add(state.chunk_bytes)
+                    .min(state.body.len());
+                let byte_count = u64::try_from(end.saturating_sub(state.offset))
+                    .map_err(|_| CdfError::data("test byte length exceeds u64"))?;
+                let reservation = ReservationRequest::new(
+                    ConsumerKey::new("project-http-fixture", MemoryClass::Source)?,
+                    byte_count,
+                )?;
+                let lease = reserve(Arc::clone(&state.memory), reservation).await?;
+                let bytes = Bytes::copy_from_slice(&state.body[state.offset..end]);
+                state.offset = end;
+                {
+                    let mut transport = state.transport_state.lock().unwrap();
+                    transport.sequential_chunks_emitted += 1;
+                    transport.sequential_bytes_emitted += byte_count;
+                }
+                Ok(Some((AccountedBytes::new(bytes, lease)?, state)))
+            })) as AccountedByteStream)
+        })
+    }
+
+    fn read_exact_range(
+        &self,
+        extent: ByteExtent,
+        cancellation: RunCancellation,
+    ) -> BoxFuture<'_, Result<AccountedBytes>> {
+        Box::pin(async move {
+            cancellation.check()?;
+            let end = extent
+                .start
+                .checked_add(extent.length)
+                .ok_or_else(|| CdfError::data("test byte range overflow"))?;
+            let start = usize::try_from(extent.start)
+                .map_err(|_| CdfError::data("test byte range start exceeds usize"))?;
+            let end = usize::try_from(end)
+                .map_err(|_| CdfError::data("test byte range end exceeds usize"))?;
+            let bytes = {
+                let mut state = self.state.lock().unwrap();
+                if end > state.body.len() {
+                    return Err(CdfError::data("test byte range exceeds fixture"));
+                }
+                let mut request = HttpFileRequest::new(HttpMethod::Get, self.url.clone());
+                request.headers.insert(
+                    "range".to_owned(),
+                    format!("bytes={}-{}", extent.start, end.saturating_sub(1)),
+                );
+                if let Some(etag) = &self.etag {
+                    request.headers.insert("if-match".to_owned(), etag.clone());
+                }
+                state.requests.push(request);
+                Bytes::copy_from_slice(&state.body[start..end])
+            };
+            let reservation = ReservationRequest::new(
+                ConsumerKey::new("project-http-fixture-range", MemoryClass::Source)?,
+                extent.length,
+            )?;
+            let lease = reserve(Arc::clone(&self.memory), reservation).await?;
+            AccountedBytes::new(bytes, lease)
+        })
+    }
+}
+
+pub(super) struct RecordingSequentialState {
+    pub(super) body: Arc<Vec<u8>>,
+    pub(super) offset: usize,
+    pub(super) chunk_bytes: usize,
+    pub(super) memory: Arc<dyn MemoryCoordinator>,
+    pub(super) cancellation: RunCancellation,
+    pub(super) transport_state: Arc<Mutex<RecordingHttpFileTransportState>>,
+}
+
+impl Drop for RecordingSequentialState {
+    fn drop(&mut self) {
+        let mut state = self.transport_state.lock().unwrap();
+        state.sequential_streams_active -= 1;
+        state.sequential_streams_closed += 1;
+    }
+}
+
+impl RecordingHttpFileTransport {
+    pub(super) fn new(body: Vec<u8>) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(RecordingHttpFileTransportState {
+                requests: Vec::new(),
+                body: Arc::new(body),
+                etag: Some("\"fixture-etag\"".to_owned()),
+                missing: BTreeSet::new(),
+                sequential_chunks_emitted: 0,
+                sequential_bytes_emitted: 0,
+                sequential_streams_active: 0,
+                sequential_streams_peak: 0,
+                sequential_streams_closed: 0,
+                sequential_streams_completed: 0,
+                memory: None,
+            })),
+        }
+    }
+
+    pub(super) fn with_missing(body: Vec<u8>, missing: impl IntoIterator<Item = String>) -> Self {
+        let transport = Self::new(body);
+        transport.state.lock().unwrap().missing.extend(missing);
+        transport
+    }
+
+    pub(super) fn requests(&self) -> Vec<HttpFileRequest> {
+        self.state.lock().unwrap().requests.clone()
+    }
+
+    pub(super) fn set_etag(&self, etag: &str) {
+        self.state.lock().unwrap().etag = Some(etag.to_owned());
+    }
+
+    pub(super) fn clear_etag(&self) {
+        self.state.lock().unwrap().etag = None;
+    }
+
+    pub(super) fn sequential_progress(&self) -> RecordingSequentialProgress {
+        let state = self.state.lock().unwrap();
+        RecordingSequentialProgress {
+            chunks_emitted: state.sequential_chunks_emitted,
+            bytes_emitted: state.sequential_bytes_emitted,
+            active_streams: state.sequential_streams_active,
+            peak_active_streams: state.sequential_streams_peak,
+            streams_closed: state.sequential_streams_closed,
+            streams_completed: state.sequential_streams_completed,
+        }
+    }
+
+    pub(super) fn current_memory_bytes(&self) -> u64 {
+        self.state
+            .lock()
+            .unwrap()
+            .memory
+            .as_ref()
+            .map_or(0, |memory| memory.snapshot().current_bytes)
+    }
+}
+
+impl HttpFileTransport for RecordingHttpFileTransport {
+    fn send_headers(
+        &self,
+        request: HttpFileRequest,
+    ) -> BoxFuture<'static, Result<HttpFileResponse>> {
+        let state = Arc::clone(&self.state);
+        Box::pin(async move {
+            let mut state = state.lock().unwrap();
+            state.requests.push(request.clone());
+            match request.method {
+                HttpMethod::Head if state.missing.contains(&request.url) => {
+                    Ok(HttpFileResponse::new(404))
+                }
+                HttpMethod::Head => {
+                    let mut response = HttpFileResponse::new(200)
+                        .with_header("Content-Length", state.body.len().to_string());
+                    if let Some(etag) = &state.etag {
+                        response = response.with_header("ETag", etag.clone());
+                    }
+                    Ok(response)
+                }
+                HttpMethod::Get => {
+                    let range = request.headers.get("range").ok_or_else(|| {
+                        CdfError::data("test HTTP file transport requires ranged GET")
+                    })?;
+                    let (start, end) = parse_http_fixture_range(range, state.body.len())?;
+                    Ok(HttpFileResponse::new(206).with_header(
+                        "Content-Range",
+                        format!("bytes {start}-{end}/{}", state.body.len()),
+                    ))
+                }
+                _ => Ok(HttpFileResponse::new(405)),
+            }
+        })
+    }
+
+    fn open_byte_source(
+        &self,
+        resource: &FileTransportResource,
+        expected: &FileIdentityMetadata,
+        _auth: Option<cdf_object_access::ResolvedHttpAuth>,
+        memory: Arc<dyn MemoryCoordinator>,
+    ) -> Result<Arc<dyn ByteSource>> {
+        Ok(Arc::new(RecordingHttpByteSource::new(
+            Arc::clone(&self.state),
+            resource,
+            expected,
+            memory,
+        )?))
+    }
+}
+
+pub(super) fn parse_http_fixture_range(range: &str, len: usize) -> Result<(usize, usize)> {
+    let raw = range
+        .strip_prefix("bytes=")
+        .ok_or_else(|| CdfError::data(format!("invalid test range header `{range}`")))?;
+    let (start, end) = raw
+        .split_once('-')
+        .ok_or_else(|| CdfError::data(format!("invalid test range header `{range}`")))?;
+    let start = start
+        .parse::<usize>()
+        .map_err(|error| CdfError::data(format!("invalid range start: {error}")))?;
+    let end = end
+        .parse::<usize>()
+        .map_err(|error| CdfError::data(format!("invalid range end: {error}")))?;
+    if start > end || end >= len {
+        return Err(CdfError::data(format!(
+            "test range {start}-{end} exceeds fixture length {len}"
+        )));
+    }
+    Ok((start, end))
+}
+
+pub(super) fn vendor_parquet_bytes() -> Vec<u8> {
+    vendor_parquet_bytes_with_rows(2)
+}
+
+pub(super) fn vendor_parquet_bytes_with_rows(row_count: i32) -> Vec<u8> {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "VendorID",
+        DataType::Int32,
+        false,
+    )]));
+    let values = (0..row_count).collect::<Vec<_>>();
+    let batch = RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(values))]).unwrap();
+    cdf_package::transcode_record_batches_to_parquet_bytes(&[batch]).unwrap()
+}
+
+pub(super) fn write_http_discover_project(root: &Path, source_extra: &str) {
+    fs::create_dir_all(root.join("resources")).unwrap();
+    fs::write(
+        root.join("cdf.toml"),
+        r#"
+[project]
+name = "http_files"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.db"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/dev.duckdb"
+
+[resources."remote.*"]
+source = "resources/files.toml"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("resources/files.toml"),
+        format!(
+            r#"
+[source.remote]
+kind = "files"
+root = "https://data.example.test/trip-data"
+{source_extra}
+
+[resource.events]
+glob = "vendors.parquet"
+format = "parquet"
+write_disposition = "append"
+trust = "governed"
+"#
+        ),
+    )
+    .unwrap();
+}
+
+pub(super) fn write_http_external_mock_project(root: &Path) {
+    fs::create_dir_all(root.join("resources")).unwrap();
+    fs::write(
+        root.join("cdf.toml"),
+        r#"
+[project]
+name = "external_remote"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.db"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/dev.duckdb"
+
+[resources."external.*"]
+source = "resources/files.toml"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("resources/files.toml"),
+        r#"
+[source.external]
+kind = "files"
+root = "https://data.example.test/custom"
+
+[resource.events]
+glob = "events.mock"
+format = "project_external_mock"
+write_disposition = "append"
+trust = "governed"
+"#,
+    )
+    .unwrap();
+}
+
+pub(super) fn write_object_store_discover_project(root: &Path) {
+    fs::create_dir_all(root.join("resources")).unwrap();
+    fs::write(
+        root.join("cdf.toml"),
+        r#"
+[project]
+name = "cloud_files"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.db"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/dev.duckdb"
+
+[resources."remote.*"]
+source = "resources/files.toml"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("resources/files.toml"),
+        r#"
+[source.remote]
+kind = "files"
+root = "s3://tlc/trip-data"
+
+[resource.events]
+glob = "2024/**/*.parquet"
+format = "parquet"
+write_disposition = "append"
+trust = "governed"
+"#,
+    )
+    .unwrap();
+}
+
+pub(super) fn write_object_store_ndjson_discover_project(root: &Path) {
+    fs::create_dir_all(root.join("resources")).unwrap();
+    fs::write(
+        root.join("cdf.toml"),
+        r#"
+[project]
+name = "cloud_events"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.db"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/dev.duckdb"
+
+[resources."events.*"]
+source = "resources/files.toml"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("resources/files.toml"),
+        r#"
+[source.events]
+kind = "files"
+root = "s3://acme-events/prod"
+
+[resource.raw]
+glob = "2026/**/*.ndjson.gz"
+format = "ndjson"
+write_disposition = "append"
+trust = "governed"
+"#,
+    )
+    .unwrap();
+}
+
+pub(super) fn http_file_dependencies(
+    transport: RecordingHttpFileTransport,
+) -> FileRuntimeDependencies {
+    file_dependencies(FileTransportFacade::new().with_http_transport(transport))
+}
+
+pub(super) fn live_plan_for_stream(
+    resource: &dyn QueryableResource,
+    source_plan: &cdf_runtime::CompiledSourcePlan,
+    package_id: &str,
+) -> EnginePlan {
+    let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
+    let destination = crate::test_destinations::duckdb(
+        "/tmp/cdf-project-plan-policy-only.duckdb",
+        TargetName::new("events").unwrap(),
+    )
+    .unwrap();
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    policy.normalization.identifier = destination.column_identifier_policy().unwrap().unwrap();
+    let validation_program = compile_validation_program(&policy, &observed_schema).unwrap();
+    Planner::new()
+        .plan_tier_b(
+            resource,
+            EnginePlanInput {
+                request: ScanRequest {
+                    resource_id: resource.descriptor().resource_id.clone(),
+                    projection: None,
+                    filters: Vec::new(),
+                    limit: None,
+                    order_by: Vec::new(),
+                    scope: resource.descriptor().state_scope.clone(),
+                },
+                validation_program,
+                execution_extent: ExecutionExtent::bounded(),
+                segmentation: cdf_engine::CanonicalSegmentationPolicy::performance_default(),
+                package_id: package_id.to_owned(),
+                committed_frontier: None,
+            },
+        )
+        .unwrap()
+        .bind_compiled_source(source_plan)
+        .unwrap()
+}
+
+pub(super) fn assert_only_bounded_http_file_gets(requests: &[HttpFileRequest]) {
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.method == HttpMethod::Head),
+        "expected an HTTP HEAD metadata request, got {requests:?}"
+    );
+    let get_requests = requests
+        .iter()
+        .filter(|request| request.method == HttpMethod::Get)
+        .collect::<Vec<_>>();
+    assert!(
+        !get_requests.is_empty(),
+        "expected bounded HTTP GET requests, got {requests:?}"
+    );
+    for request in get_requests {
+        let range = request
+            .headers
+            .get("range")
+            .expect("HTTP file GET should carry Range header");
+        assert!(
+            range.starts_with("bytes="),
+            "HTTP file GET should use byte range, got {range}"
+        );
+    }
+}
+
+pub(super) fn assert_http_file_gets_download_less_than_fixture(
+    requests: &[HttpFileRequest],
+    fixture_len: usize,
+) {
+    let downloaded = requests
+        .iter()
+        .filter(|request| request.method == HttpMethod::Get)
+        .map(|request| {
+            let range = request
+                .headers
+                .get("range")
+                .expect("HTTP file GET should carry Range header");
+            let (start, end) = parse_http_fixture_range(range, fixture_len).unwrap();
+            end - start + 1
+        })
+        .sum::<usize>();
+    assert!(
+        downloaded < fixture_len,
+        "expected discovery to use partial ranged reads, downloaded {downloaded} of {fixture_len} bytes"
+    );
+}
+
+pub(super) struct StaticSecretProvider {
+    pub(super) values: BTreeMap<String, String>,
+}
+
+impl StaticSecretProvider {
+    pub(super) fn new<I, K, V>(values: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        Self {
+            values: values
+                .into_iter()
+                .map(|(key, value)| (key.into(), value.into()))
+                .collect(),
+        }
+    }
+}
+
+impl SecretProvider for StaticSecretProvider {
+    fn resolve(&self, uri: &SecretUri) -> Result<SecretValue> {
+        self.values
+            .get(uri.as_str())
+            .map(|value| SecretValue::new(value.clone()))
+            .ok_or_else(|| CdfError::auth(format!("missing test secret `{uri}`")))
+    }
+}
+
+pub(super) fn write_discover_project(root: &Path, format: &str, glob: &str) {
+    fs::create_dir_all(root.join("resources")).unwrap();
+    fs::create_dir_all(root.join("data")).unwrap();
+    fs::write(
+        root.join("cdf.toml"),
+        r#"
+[project]
+name = "files"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.db"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/dev.duckdb"
+
+[resources."local.*"]
+source = "resources/files.toml"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("resources/files.toml"),
+        format!(
+            r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+glob = "{glob}"
+format = "{format}"
+write_disposition = "append"
+trust = "governed"
+"#
+        ),
+    )
+    .unwrap();
+}
+
+pub(super) fn write_sampled_discover_project(
+    root: &Path,
+    format: &str,
+    glob: &str,
+    sample_files: u64,
+) {
+    write_discover_project(root, format, glob);
+    let path = root.join("resources/files.toml");
+    let input = fs::read_to_string(&path).unwrap();
+    fs::write(
+        path,
+        input.replace(
+            &format!("glob = \"{glob}\""),
+            &format!("glob = \"{glob}\"\nsample_files = {sample_files}"),
+        ),
+    )
+    .unwrap();
+}
+
+pub(super) fn compile_single_project_resource(root: &Path) -> cdf_declarative::CompiledResource {
+    let config = parse_cdf_toml(&fs::read_to_string(root.join("cdf.toml")).unwrap()).unwrap();
+    let resolver = FileResourceSourceResolver::new(root);
+    let mut resources = compile_project_declarative_resources_with_root(
+        &test_source_registry(),
+        &config,
+        &resolver,
+        root,
+    )
+    .unwrap();
+    assert_eq!(resources.len(), 1);
+    resources.remove(0)
+}
+
+pub(super) fn write_vendor_parquet(path: &Path) {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "VendorID",
+        DataType::Int32,
+        false,
+    )]));
+    let batch =
+        RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1_i32, 2_i32]))]).unwrap();
+    let bytes = cdf_package::transcode_record_batches_to_parquet_bytes(&[batch]).unwrap();
+    fs::write(path, bytes).unwrap();
+}
+
+pub(super) fn write_parquet_fixture(path: &Path, fields: Vec<Field>, columns: Vec<ArrayRef>) {
+    let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
+    let bytes = cdf_package::transcode_record_batches_to_parquet_bytes(&[batch]).unwrap();
+    fs::write(path, bytes).unwrap();
+}
+
+pub(super) fn write_arrow_ipc_fixture(path: &Path, fields: Vec<Field>, columns: Vec<ArrayRef>) {
+    let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
+    let file = fs::File::create(path).unwrap();
+    let mut writer = FileWriter::try_new(file, batch.schema().as_ref()).unwrap();
+    writer.write(&batch).unwrap();
+    writer.finish().unwrap();
+}
+
+#[test]
+fn schema_snapshot_artifact_uses_deterministic_hash_and_project_path() {
+    let resource_id = ResourceId::new("github.issues").unwrap();
+    let schema = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new(
+            "updated_at",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            true,
+        ),
+        Field::new(
+            "payload",
+            DataType::Struct(Fields::from(vec![Field::new(
+                "source",
+                DataType::Utf8,
+                true,
+            )])),
+            true,
+        ),
+    ]);
+    let metadata = BTreeMap::from([
+        (
+            "cdf:normalizer".to_owned(),
+            NORMALIZER_NAMECASE_V1.to_owned(),
+        ),
+        ("probe".to_owned(), "parquet-footer".to_owned()),
+    ]);
+
+    let artifact = SchemaSnapshotArtifact::new(&resource_id, &schema, metadata.clone()).unwrap();
+    let repeated = SchemaSnapshotArtifact::new(&resource_id, &schema, metadata).unwrap();
+
+    assert_eq!(artifact.schema_hash, repeated.schema_hash);
+    assert_eq!(artifact.schema.to_arrow().unwrap(), schema);
+    assert_eq!(
+        artifact.path,
+        format!(".cdf/schemas/github.issues@{}.json", artifact.schema_hash)
+    );
+    assert_eq!(artifact.hash_input["resource_id"], "github.issues");
+    assert_eq!(artifact.hash_input["metadata"]["probe"], "parquet-footer");
+    assert_eq!(
+        artifact.hash_input["schema"]["fields"][2]["data_type"]["kind"],
+        "struct"
+    );
+    assert_eq!(
+        artifact.hash_input["schema"]["fields"][2]["data_type"]["fields"][0]["name"],
+        "source"
+    );
+
+    let temp = tempfile::tempdir().unwrap();
+    let store = SchemaSnapshotStore::new(temp.path());
+    let path = store.write(&artifact).unwrap();
+    assert_eq!(path, temp.path().join(&artifact.path));
+    assert_eq!(store.read(&artifact.reference()).unwrap(), artifact);
+
+    let mut tampered = artifact.clone();
+    tampered
+        .metadata
+        .insert("probe".to_owned(), "changed".to_owned());
+    assert!(tampered.validate_hash_input().is_err());
+
+    let mut escaped = artifact.reference();
+    escaped.path = "../outside.json".to_owned();
+    let error = store.read(&escaped).unwrap_err().to_string();
+    assert!(error.contains("schema snapshot reference path"));
+}
+
+#[cfg(unix)]
+#[test]
+fn schema_snapshot_store_rejects_managed_ancestor_and_leaf_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let artifact = SchemaSnapshotArtifact::new(
+        &ResourceId::new("local.events").unwrap(),
+        &Schema::new(vec![Field::new("id", DataType::Int64, false)]),
+        BTreeMap::new(),
+    )
+    .unwrap();
+    let store = SchemaSnapshotStore::new(root.path());
+
+    fs::create_dir(root.path().join(".cdf")).unwrap();
+    symlink(outside.path(), root.path().join(".cdf/schemas")).unwrap();
+    let ancestor_error = store.write_if_changed(&artifact).unwrap_err();
+    assert_eq!(ancestor_error.kind, cdf_kernel::ErrorKind::Data);
+    assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
+
+    fs::remove_file(root.path().join(".cdf/schemas")).unwrap();
+    fs::create_dir(root.path().join(".cdf/schemas")).unwrap();
+    let snapshot_path = root.path().join(&artifact.path);
+    let outside_file = outside.path().join("outside.json");
+    fs::write(&outside_file, b"outside").unwrap();
+    symlink(&outside_file, &snapshot_path).unwrap();
+    let leaf_error = store.write_if_changed(&artifact).unwrap_err();
+    assert_eq!(leaf_error.kind, cdf_kernel::ErrorKind::Data);
+    assert_eq!(fs::read(&outside_file).unwrap(), b"outside");
+
+    fs::remove_file(&snapshot_path).unwrap();
+    let dangling_target = outside.path().join("missing.json");
+    symlink(&dangling_target, &snapshot_path).unwrap();
+    let dangling_error = store.write_if_changed(&artifact).unwrap_err();
+    assert_eq!(dangling_error.kind, cdf_kernel::ErrorKind::Data);
+    assert!(!dangling_target.exists());
+}
+
+#[test]
+fn discovery_executor_budget_defaults_and_rejects_invalid_shapes() {
+    let budget = DiscoveryExecutorBudget::default();
+    assert_eq!(budget.max_bytes_per_file(), 64 * 1024 * 1024);
+    assert_eq!(budget.max_records_per_file(), 1_000);
+    assert_eq!(budget.max_total_in_flight_bytes(), 128 * 1024 * 1024);
+    assert_eq!(budget.max_concurrent_probes(), 8);
+    let options = SchemaDiscoveryExecutionOptions::new();
+    assert_eq!(options.budget(), &budget);
+
+    for (bytes_per_file, records_per_file, total, probes, expected) in [
+        (0, 1, 1, 1, "max_bytes_per_file"),
+        (1, 0, 1, 1, "max_records_per_file"),
+        (1, 1, 0, 1, "max_total_in_flight_bytes"),
+        (1, 1, 1, 0, "max_concurrent_probes"),
+        (2, 1, 1, 1, "cannot exceed"),
+        (u64::MAX / 2 + 1, 1, u64::MAX, 2, "overflows"),
+    ] {
+        let error = DiscoveryExecutorBudget::new(bytes_per_file, records_per_file, total, probes)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(expected), "unexpected error: {error}");
+    }
+
+    let invalid_json = r#"{
+        "max_bytes_per_file": 0,
+        "max_records_per_file": 1,
+        "max_total_in_flight_bytes": 1,
+        "max_concurrent_probes": 1
+    }"#;
+    assert!(serde_json::from_str::<DiscoveryExecutorBudget>(invalid_json).is_err());
+}
+
+#[test]
+fn discovery_manifest_is_canonical_content_addressed_and_fail_closed() {
+    let resource_id = ResourceId::new("events.raw").unwrap();
+    // Metadata authorities such as SQL catalogs can observe a complete schema
+    // without transferring source payload bytes.
+    let mut first = observed_discovery_candidate("catalog://warehouse/a", "sha256:a", 0);
+    first.identity.size_bytes = None;
+    let mut second = observed_discovery_candidate("file:///data/b.parquet", "sha256:b", 64);
+    second.metadata_variance = vec![DiscoveryMetadataVariance {
+        scope: DiscoveryMetadataScope::Field,
+        path: "amount".to_owned(),
+        key: "source.logical_type".to_owned(),
+        observed_values: vec!["utf8".to_owned(), "decimal".to_owned(), "utf8".to_owned()],
+    }];
+    let input = DiscoveryManifestInput {
+        resource_id: resource_id.as_str().to_owned(),
+        baseline_schema_hash: Some(SchemaHash::new("sha256:baseline").unwrap()),
+        effective_schema_hash: Some(SchemaHash::new("sha256:effective").unwrap()),
+        file_coverage: DiscoveryFileCoverage::AllFiles,
+        within_file_coverage: DiscoveryWithinFileCoverage::FormatMetadata,
+        selector: None,
+        budget: DiscoveryExecutorBudget::default(),
+        normalizer_version: "namecase-v1".to_owned(),
+        policy_version: "evolve-v1".to_owned(),
+        candidates: vec![second, first],
+    };
+    let artifact = DiscoveryManifestArtifact::new(input.clone()).unwrap();
+    let repeated = DiscoveryManifestArtifact::new(input).unwrap();
+
+    assert_eq!(artifact, repeated);
+    let same_observation_new_baseline = DiscoveryManifestArtifact::new(DiscoveryManifestInput {
+        resource_id: artifact.resource_id.clone(),
+        baseline_schema_hash: Some(SchemaHash::new("sha256:next-baseline").unwrap()),
+        effective_schema_hash: artifact.effective_schema_hash.clone(),
+        file_coverage: artifact.file_coverage.clone(),
+        within_file_coverage: artifact.within_file_coverage,
+        selector: artifact.selector.clone(),
+        budget: artifact.budget.clone(),
+        normalizer_version: artifact.normalizer_version.clone(),
+        policy_version: artifact.policy_version.clone(),
+        candidates: artifact.candidates.clone(),
+    })
+    .unwrap();
+    assert_ne!(
+        artifact.manifest_hash,
+        same_observation_new_baseline.manifest_hash
+    );
+    assert!(artifact.has_same_observation(&same_observation_new_baseline));
+    assert_eq!(
+        artifact
+            .candidates
+            .iter()
+            .map(|candidate| candidate.canonical_location.as_str())
+            .collect::<Vec<_>>(),
+        vec!["catalog://warehouse/a", "file:///data/b.parquet"]
+    );
+    assert_eq!(artifact.candidates[0].probe_bytes, Some(0));
+    assert_eq!(artifact.candidates[0].identity.size_bytes, None);
+    assert_eq!(
+        artifact.candidates[1].metadata_variance[0].observed_values,
+        vec!["decimal", "utf8"]
+    );
+    assert_eq!(artifact.hash_input["file_coverage"], "all_files");
+    assert_eq!(
+        artifact.hash_input["within_file_coverage"],
+        "format_metadata"
+    );
+    assert_eq!(
+        artifact.path,
+        format!(
+            ".cdf/schemas/events.raw@{}.discovery.json",
+            artifact.manifest_hash
+        )
+    );
+
+    let temp = tempfile::tempdir().unwrap();
+    let store = DiscoveryManifestStore::new(temp.path());
+    assert!(store.write_if_changed(&artifact).unwrap());
+    assert!(!store.write_if_changed(&artifact).unwrap());
+    assert_eq!(store.read(&artifact.reference()).unwrap(), artifact);
+    let schema_dir_entries = std::fs::read_dir(temp.path().join(".cdf/schemas"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        schema_dir_entries
+            .iter()
+            .all(|name| !name.ends_with(".tmp"))
+    );
+
+    let mut unsafe_reference = artifact.reference();
+    unsafe_reference.path = "../manifest.json".to_owned();
+    assert!(
+        store
+            .read(&unsafe_reference)
+            .unwrap_err()
+            .to_string()
+            .contains("reference path")
+    );
+
+    let missing = DiscoveryManifestReference {
+        manifest_hash: DiscoveryManifestHash::new("sha256:missing").unwrap(),
+        path: ".cdf/schemas/events.raw@sha256:missing.discovery.json".to_owned(),
+    };
+    assert!(
+        store
+            .read(&missing)
+            .unwrap_err()
+            .to_string()
+            .contains("does not exist")
+    );
+
+    let wrong_hash = DiscoveryManifestReference {
+        manifest_hash: DiscoveryManifestHash::new("sha256:wrong").unwrap(),
+        path: artifact.path.clone(),
+    };
+    assert!(
+        store
+            .read(&wrong_hash)
+            .unwrap_err()
+            .to_string()
+            .contains("does not match its hash/path reference")
+    );
+
+    let path = temp.path().join(&artifact.path);
+    let mut tampered = artifact.clone();
+    tampered.policy_version = "freeze-v1".to_owned();
+    std::fs::write(&path, serde_json::to_vec_pretty(&tampered).unwrap()).unwrap();
+    assert!(
+        store
+            .read(&artifact.reference())
+            .unwrap_err()
+            .to_string()
+            .contains("hash_input")
+    );
+}
+
+#[test]
+fn sampled_discovery_manifest_enforces_truthful_participation() {
+    let first = observed_discovery_candidate("file:///data/00.parquet", "sha256:00", 32);
+    let middle = unobserved_discovery_candidate("file:///data/01.parquet", "etag:01");
+    let last = observed_discovery_candidate("file:///data/02.parquet", "sha256:02", 40);
+    let selector_candidates = [&first, &middle, &last]
+        .into_iter()
+        .map(|candidate| DiscoverySelectorCandidate {
+            canonical_location: candidate.canonical_location.clone(),
+            identity: candidate.identity.clone(),
+        })
+        .collect::<Vec<_>>();
+    let selector = plan_discovery_selection(
+        &ResourceId::new("events.sampled").unwrap(),
+        Some(2),
+        &selector_candidates,
+    )
+    .unwrap()
+    .selector
+    .unwrap();
+    let input = DiscoveryManifestInput {
+        resource_id: "events.sampled".to_owned(),
+        baseline_schema_hash: None,
+        effective_schema_hash: Some(SchemaHash::new("sha256:sampled").unwrap()),
+        file_coverage: DiscoveryFileCoverage::SampledFiles,
+        within_file_coverage: DiscoveryWithinFileCoverage::FormatMetadata,
+        selector: Some(selector),
+        budget: DiscoveryExecutorBudget::default(),
+        normalizer_version: "namecase-v1".to_owned(),
+        policy_version: "evolve-v1".to_owned(),
+        candidates: vec![last, middle.clone(), first],
+    };
+    let artifact = DiscoveryManifestArtifact::new(input.clone()).unwrap();
+    assert_eq!(artifact.file_coverage, DiscoveryFileCoverage::SampledFiles);
+    assert_eq!(
+        artifact.candidates[1].participation,
+        DiscoveryParticipation::Unobserved
+    );
+    assert!(artifact.candidates[1].physical_schema_hash.is_none());
+    assert!(artifact.candidates[1].probe_bytes.is_none());
+    assert!(artifact.candidates[1].schema_verdict.is_none());
+
+    let mut false_score = input.clone();
+    false_score.selector.as_mut().unwrap().selected[0].score_sha256 = "0".repeat(64);
+    let error = DiscoveryManifestArtifact::new(false_score)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("canonical membership, scores, or strata"));
+
+    let mut false_unobserved = input;
+    false_unobserved.candidates[1].physical_schema_hash =
+        Some(SchemaHash::new("sha256:invented").unwrap());
+    let error = DiscoveryManifestArtifact::new(false_unobserved)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("unobserved") && error.contains("forbids"));
+
+    let mut false_observed = middle;
+    false_observed.participation = DiscoveryParticipation::Observed;
+    let error = DiscoveryManifestArtifact::new(DiscoveryManifestInput {
+        resource_id: "events.false-observed".to_owned(),
+        baseline_schema_hash: None,
+        effective_schema_hash: None,
+        file_coverage: DiscoveryFileCoverage::AllFiles,
+        within_file_coverage: DiscoveryWithinFileCoverage::FormatMetadata,
+        selector: None,
+        budget: DiscoveryExecutorBudget::default(),
+        normalizer_version: "namecase-v1".to_owned(),
+        policy_version: "evolve-v1".to_owned(),
+        candidates: vec![false_observed],
+    })
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("observed") && error.contains("requires"));
+}
+
+#[test]
+fn schema_snapshot_current_version_covers_schema_and_manifest_and_rejects_old_versions() {
+    let resource = ResourceId::new("current.resource").unwrap();
+    let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+    let schema_only = SchemaSnapshotArtifact::new(&resource, &schema, BTreeMap::new()).unwrap();
+    assert_eq!(schema_only.version, SCHEMA_SNAPSHOT_ARTIFACT_VERSION);
+    assert_eq!(
+        schema_only.schema_hash.as_str(),
+        "sha256:7080613cfd096dd56f3081f8867c226ffdbf950890b3c9e034f604e58810c617"
+    );
+    assert!(
+        serde_json::to_value(&schema_only)
+            .unwrap()
+            .get("discovery_manifest")
+            .is_none()
+    );
+    assert!(
+        serde_json::to_value(schema_only.reference())
+            .unwrap()
+            .get("discovery_manifest")
+            .is_none()
+    );
+
+    let manifest = DiscoveryManifestArtifact::new(DiscoveryManifestInput {
+        resource_id: resource.as_str().to_owned(),
+        baseline_schema_hash: None,
+        effective_schema_hash: None,
+        file_coverage: DiscoveryFileCoverage::AllFiles,
+        within_file_coverage: DiscoveryWithinFileCoverage::FormatMetadata,
+        selector: None,
+        budget: DiscoveryExecutorBudget::default(),
+        normalizer_version: "namecase-v1".to_owned(),
+        policy_version: "evolve-v1".to_owned(),
+        candidates: vec![observed_discovery_candidate(
+            "file:///data/current.parquet",
+            "sha256:current",
+            24,
+        )],
+    })
+    .unwrap();
+    let linked = SchemaSnapshotArtifact::new_with_discovery_manifest(
+        &resource,
+        &schema,
+        BTreeMap::new(),
+        manifest.reference(),
+    )
+    .unwrap();
+    assert_eq!(linked.version, SCHEMA_SNAPSHOT_ARTIFACT_VERSION);
+    assert_ne!(linked.schema_hash, schema_only.schema_hash);
+    assert_eq!(
+        linked.discovery_manifest_reference().unwrap(),
+        Some(manifest.reference())
+    );
+    assert_eq!(
+        linked.reference().discovery_manifest().unwrap(),
+        Some(manifest.reference())
+    );
+    assert_eq!(
+        linked.hash_input["discovery_manifest"]["manifest_hash"],
+        manifest.manifest_hash.as_str()
+    );
+
+    let temp = tempfile::tempdir().unwrap();
+    let manifest_store = DiscoveryManifestStore::new(temp.path());
+    manifest_store.write(&manifest).unwrap();
+    let snapshot_store = SchemaSnapshotStore::new(temp.path());
+    snapshot_store.write(&linked).unwrap();
+    assert_eq!(snapshot_store.read(&linked.reference()).unwrap(), linked);
+
+    for old_version in 1..SCHEMA_SNAPSHOT_ARTIFACT_VERSION {
+        let mut old = linked.clone();
+        old.version = old_version;
+        std::fs::write(
+            temp.path().join(&old.path),
+            serde_json::to_vec(&old).unwrap(),
+        )
+        .unwrap();
+        let error = snapshot_store
+            .read(&linked.reference())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("unsupported artifact version")
+                && error.contains(&SCHEMA_SNAPSHOT_ARTIFACT_VERSION.to_string())
+        );
+    }
+    std::fs::remove_file(temp.path().join(&linked.path)).unwrap();
+    snapshot_store.write(&linked).unwrap();
+
+    std::fs::remove_file(temp.path().join(&manifest.path)).unwrap();
+    let error = snapshot_store
+        .read(&linked.reference())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("does not exist") && error.contains("discovery"));
+}
+
+#[test]
+fn schema_snapshot_arrow_round_trip_covers_closed_type_vocabulary() {
+    let union = UnionFields::try_new(
+        [1, 3],
+        [
+            Field::new("integer", DataType::Int32, false),
+            Field::new("text", DataType::Utf8, true),
+        ],
+    )
+    .unwrap();
+    let fields = vec![
+        Field::new("decimal", DataType::Decimal256(76, 9), true),
+        Field::new(
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+            true,
+        ),
+        Field::new(
+            "interval",
+            DataType::Interval(IntervalUnit::MonthDayNano),
+            true,
+        ),
+        Field::new("binary_view", DataType::BinaryView, true),
+        Field::new("utf8_view", DataType::Utf8View, true),
+        Field::new(
+            "large_list_view",
+            DataType::LargeListView(Field::new("item", DataType::UInt16, true).into()),
+            true,
+        ),
+        Field::new(
+            "map",
+            DataType::Map(
+                Field::new(
+                    "entries",
+                    DataType::Struct(Fields::from(vec![
+                        Field::new("key", DataType::Utf8, false),
+                        Field::new("value", DataType::Float32, true),
+                    ])),
+                    false,
+                )
+                .into(),
+                false,
+            ),
+            true,
+        ),
+        Field::new("union", DataType::Union(union, UnionMode::Dense), true),
+        Field::new(
+            "dictionary",
+            DataType::Dictionary(Box::new(DataType::Int16), Box::new(DataType::LargeUtf8)),
+            true,
+        ),
+        Field::new(
+            "run_end_encoded",
+            DataType::RunEndEncoded(
+                Field::new("run_ends", DataType::Int32, false).into(),
+                Field::new("values", DataType::Utf8, true).into(),
+            ),
+            true,
+        ),
+    ];
+    let schema = Schema::new(fields);
+
+    assert_eq!(
+        SchemaSnapshotSchema::from_arrow(&schema)
+            .to_arrow()
+            .unwrap(),
+        schema
+    );
+}
+
+#[test]
+fn generic_discovery_builds_deterministic_snapshot_without_transport_identity() {
+    let resource_id = ResourceId::new("tlc.yellow").unwrap();
+    let schema = Schema::new(vec![
+        Field::new("VendorID", DataType::Int32, true),
+        Field::new(
+            "tpep_pickup_datetime",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            true,
+        ),
+    ]);
+    let source_identity = BTreeMap::from([
+        ("footer_sha256".to_owned(), "sha256:footer".to_owned()),
+        ("size_bytes".to_owned(), "123".to_owned()),
+        (
+            "local_path".to_owned(),
+            "/tmp/private/orders.parquet".to_owned(),
+        ),
+    ]);
+
+    let metadata = BTreeMap::from([
+        ("driver".to_owned(), "external_table".to_owned()),
+        ("probe".to_owned(), "bounded_metadata".to_owned()),
+    ]);
+    let artifact = SchemaSnapshotArtifact::new(&resource_id, &schema, metadata.clone()).unwrap();
+    let repeated = SchemaSnapshotArtifact::new(&resource_id, &schema, metadata).unwrap();
+
+    assert_eq!(artifact, repeated);
+    assert_eq!(artifact.reference(), repeated.reference());
+    assert_eq!(artifact.metadata["driver"], "external_table");
+    assert_eq!(
+        artifact.path,
+        format!(".cdf/schemas/tlc.yellow@{}.json", artifact.schema_hash)
+    );
+    assert_eq!(artifact.hash_input["metadata"]["driver"], "external_table");
+
+    let hash_input = serde_json::to_string(&artifact.hash_input).unwrap();
+    assert!(!hash_input.contains("/tmp/private/orders.parquet"));
+    assert_eq!(source_identity["local_path"], "/tmp/private/orders.parquet");
+    assert!(!hash_input.contains("sha256:footer"));
+
+    let temp = tempfile::tempdir().unwrap();
+    let store = SchemaSnapshotStore::new(temp.path());
+    store.write(&artifact).unwrap();
+    assert_eq!(store.read(&artifact.reference()).unwrap(), artifact);
+}
+
+#[test]
+fn local_parquet_discover_autopin_writes_normalized_snapshot_and_pins_clone() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "parquet", "*.parquet");
+    write_vendor_parquet(&temp.path().join("data/vendors.parquet"));
+    let resource = compile_single_project_resource(temp.path());
+
+    let secrets = EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>());
+    let prepared = prepare_file_discover_resource(temp.path(), &resource, &secrets).unwrap();
+    let discovery = prepared.discovery.as_ref().unwrap();
+    let snapshot_path = temp.path().join(&discovery.snapshot.artifact.path);
+
+    assert!(matches!(
+        resource.descriptor().schema_source,
+        SchemaSource::Discover
+    ));
+    assert!(snapshot_path.is_file());
+    assert_eq!(
+        discovery.snapshot.artifact.metadata["cdf:normalizer"],
+        NORMALIZER_NAMECASE_V1
+    );
+    assert_eq!(
+        discovery.snapshot.artifact.schema.fields[0].name,
+        "vendor_id"
+    );
+    assert_eq!(
+        discovery.snapshot.artifact.schema.fields[0].metadata["cdf:source_name"],
+        "VendorID"
+    );
+    let SchemaSource::Discovered { snapshot } = &prepared.resource.descriptor().schema_source
+    else {
+        panic!("expected auto-pinned discovered schema source");
+    };
+    assert_eq!(
+        snapshot.schema_hash,
+        discovery.snapshot.artifact.schema_hash
+    );
+    assert_eq!(snapshot.path, discovery.snapshot.artifact.path);
+    let schema = prepared.resource.schema();
+    let vendor = schema.field_with_name("vendor_id").unwrap();
+    assert_eq!(source_name(vendor), Some("VendorID"));
+
+    let repeated = prepare_file_discover_resource(temp.path(), &resource, &secrets).unwrap();
+    assert_eq!(
+        repeated
+            .discovery
+            .as_ref()
+            .unwrap()
+            .snapshot
+            .artifact
+            .schema_hash,
+        discovery.snapshot.artifact.schema_hash
+    );
+}
+
+#[test]
+fn generic_schema_discovery_dispatch_preserves_local_parquet_behavior_without_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "parquet", "*.parquet");
+    write_vendor_parquet(&temp.path().join("data/vendors.parquet"));
+    let resource = compile_single_project_resource(temp.path());
+
+    let discovery = discover_file_schema_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        file_dependencies(FileTransportFacade::new()),
+    )
+    .unwrap();
+
+    assert!(!temp.path().join(".cdf/schemas").exists());
+    assert_eq!(
+        discovery.snapshot.artifact.metadata["probe"],
+        "registered-source-discovery"
+    );
+    assert_eq!(
+        discovery.snapshot.source_identity["driver.format"],
+        "parquet"
+    );
+    assert_eq!(
+        discovery.snapshot.artifact.metadata["cdf:normalizer"],
+        NORMALIZER_NAMECASE_V1
+    );
+    assert_eq!(
+        discovery.snapshot.artifact.schema.fields[0].name,
+        "vendor_id"
+    );
+    assert_eq!(
+        discovery.snapshot.artifact.schema.fields[0].metadata["cdf:source_name"],
+        "VendorID"
+    );
+    assert_eq!(
+        discovery.snapshot.source_identity["path"],
+        "vendors.parquet"
+    );
+    assert!(
+        discovery
+            .snapshot
+            .source_identity
+            .contains_key("driver.footer_sha256")
+    );
+}
+
+#[test]
+fn generic_discover_prepare_preserves_local_parquet_autopin_behavior() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "parquet", "*.parquet");
+    write_vendor_parquet(&temp.path().join("data/vendors.parquet"));
+    let resource = compile_single_project_resource(temp.path());
+    let secret_provider = EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>());
+
+    let prepared =
+        prepare_file_discover_resource(temp.path(), &resource, &secret_provider).unwrap();
+    let discovery = prepared.discovery.as_ref().unwrap();
+    let snapshot_path = temp.path().join(&discovery.snapshot.artifact.path);
+
+    assert!(snapshot_path.is_file());
+    assert_eq!(
+        discovery.snapshot.artifact.metadata["probe"],
+        "registered-source-discovery"
+    );
+    assert_eq!(
+        discovery.snapshot.artifact.schema.fields[0].name,
+        "vendor_id"
+    );
+    assert_eq!(
+        discovery.snapshot.artifact.schema.fields[0].metadata["cdf:source_name"],
+        "VendorID"
+    );
+    let SchemaSource::Discovered { snapshot } = &prepared.resource.descriptor().schema_source
+    else {
+        panic!("expected generic auto-pin to set discovered schema source");
+    };
+    assert_eq!(
+        snapshot.schema_hash,
+        discovery.snapshot.artifact.schema_hash
+    );
+}
+
+#[test]
+fn project_external_codec_discovers_pins_previews_and_runs_over_remote_provider() {
+    let temp = tempfile::tempdir().unwrap();
+    write_http_external_mock_project(temp.path());
+    let transport = RecordingHttpFileTransport::new(b"MOCK\n".to_vec());
+    let registry = external_mock_source_registry(transport.clone());
+    let config =
+        parse_cdf_toml(&fs::read_to_string(temp.path().join("cdf.toml")).unwrap()).unwrap();
+    let resolver = FileResourceSourceResolver::new(temp.path());
+    let resource =
+        compile_project_declarative_resources_with_root(&registry, &config, &resolver, temp.path())
+            .unwrap()
+            .remove(0);
+    let execution = test_execution_services();
+    let secrets = Arc::new(EnvSecretProvider::from_map(
+        std::iter::empty::<(&str, &str)>(),
+    ));
+    let resolution = cdf_runtime::SourceResolutionContext::new(
+        temp.path(),
+        secrets,
+        &execution,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
+    );
+    let source_plan = resource.source_plan().clone();
+    let mut artifacts = discover_resource_schema_with_source_registry(
+        &resource,
+        &registry,
+        &source_plan,
+        &resolution,
+        SchemaDiscoveryExecutionOptions::new()
+            .with_observation_cache(ObservationCacheStore::new(temp.path())),
+    )
+    .unwrap();
+    let prepared_resource = compile_discovered_schema_artifacts(&resource, &mut artifacts).unwrap();
+    write_schema_discovery_artifacts(temp.path(), &artifacts).unwrap();
+    let discovery = &artifacts.discovery;
+    assert_eq!(
+        discovery.snapshot.artifact.metadata["source_driver"],
+        "files"
+    );
+    assert_eq!(
+        discovery.snapshot.source_identity["driver.external_driver"],
+        "project_fixture"
+    );
+    assert_eq!(discovery.snapshot.artifact.schema.fields[0].name, "value");
+    assert!(
+        temp.path()
+            .join(&discovery.snapshot.artifact.path)
+            .is_file()
+    );
+    let SchemaSource::Discovered { snapshot } = &prepared_resource.descriptor().schema_source
+    else {
+        panic!("external codec cold discovery must pin its schema");
+    };
+    assert_eq!(
+        snapshot.schema_hash,
+        discovery.snapshot.artifact.schema_hash
+    );
+
+    let source_plan = source_plan
+        .bind_schema_authority(
+            prepared_resource.descriptor(),
+            prepared_resource.schema().as_ref(),
+            prepared_resource.effective_schema_runtime().cloned(),
+            prepared_resource
+                .baseline_observation_schema_catalog()
+                .to_vec(),
+        )
+        .unwrap();
+    let runtime = registry.resolve(&source_plan, &resolution).unwrap();
+    let plan = live_plan_for_stream(
+        runtime.as_ref(),
+        &source_plan,
+        "pkg-project-external-remote",
+    );
+    assert_eq!(plan.scan.partition_count().unwrap(), 1);
+    let executable = executable_partition_for_test(runtime.as_ref(), &plan.scan, 0);
+    assert_eq!(
+        executable.plan().metadata["format"],
+        "project_external_mock"
+    );
+    let preview = futures_executor::block_on(runtime.open_executable(executable)).unwrap();
+    let preview_rows = futures_executor::block_on_stream(preview)
+        .map(|batch| batch.unwrap().header.row_count)
+        .sum::<u64>();
+    assert_eq!(preview_rows, 1);
+
+    let report = futures_executor::block_on(run_project(
+        ProjectRunRequest {
+            resource: ProjectRunSource::new(runtime.as_ref()),
+            plan,
+            package_root: temp.path().join(".cdf/packages"),
+            state_store_path: temp.path().join(".cdf/state.db"),
+            state_store_path_ownership: crate::StateStorePathOwnership::Configured,
+            pipeline_id: PipelineId::new("pipeline-project-external-remote").unwrap(),
+            package_id: "pkg-project-external-remote".to_owned(),
+            checkpoint_id: CheckpointId::new("checkpoint-project-external-remote").unwrap(),
+            destination: crate::test_destinations::duckdb(
+                temp.path().join(".cdf/dev.duckdb"),
+                TargetName::new("external_events").unwrap(),
+            )
+            .unwrap(),
+            run_id: Some(RunId::new("run-project-external-remote").unwrap()),
+            event_sink: None,
+            after_receipt_verified: None,
+        },
+        &execution,
+    ))
+    .unwrap()
+    .into_committed()
+    .unwrap();
+    assert_eq!(report.row_count, 1);
+    assert_eq!(report.segment_count, 1);
+    assert!(transport.requests().iter().any(|request| {
+        request.method == HttpMethod::Get && !request.headers.contains_key("range")
+    }));
+}
+
+#[test]
+fn http_parquet_schema_discovery_uses_bounded_ranges_without_artifacts() {
+    let temp = tempfile::tempdir().unwrap();
+    let parquet = vendor_parquet_bytes_with_rows(10_000);
+    assert!(parquet.len() > 16 * 1024);
+    write_http_discover_project(temp.path(), "");
+    let resource = compile_single_project_resource(temp.path());
+    let transport = RecordingHttpFileTransport::new(parquet.clone());
+    let dependencies = http_file_dependencies(transport.clone());
+
+    let discovery = discover_file_schema_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        dependencies.clone(),
+    )
+    .unwrap();
+
+    assert!(!temp.path().join(".cdf/schemas").exists());
+    assert!(!temp.path().join(".cdf/packages").exists());
+    assert!(!temp.path().join(".cdf/state.db").exists());
+    assert_eq!(
+        discovery.snapshot.artifact.metadata["probe"],
+        "registered-source-discovery"
+    );
+    assert_eq!(
+        discovery.snapshot.artifact.metadata["source_driver"],
+        "files"
+    );
+    assert_eq!(
+        discovery.snapshot.artifact.schema.fields[0].name,
+        "vendor_id"
+    );
+    assert_eq!(
+        discovery.snapshot.artifact.schema.fields[0].metadata["cdf:source_name"],
+        "VendorID"
+    );
+    assert_eq!(
+        discovery.snapshot.source_identity["path"],
+        "https://data.example.test/trip-data/vendors.parquet"
+    );
+    assert_eq!(
+        discovery.snapshot.source_identity["driver.size_bytes"],
+        parquet.len().to_string()
+    );
+    assert_eq!(
+        discovery.snapshot.source_identity["driver.etag"],
+        "\"fixture-etag\""
+    );
+    assert_eq!(
+        discovery.snapshot.source_identity["driver.row_count"],
+        "10000"
+    );
+    assert!(discovery.snapshot.source_identity["driver.footer_sha256"].starts_with("sha256:"));
+    let requests = transport.requests();
+    assert_only_bounded_http_file_gets(&requests);
+    assert_http_file_gets_download_less_than_fixture(&requests, parquet.len());
+}
+
+#[test]
+fn remote_observation_cache_exact_hit_avoids_schema_io_and_generation_change_misses() {
+    let temp = tempfile::tempdir().unwrap();
+    let parquet = vendor_parquet_bytes_with_rows(10_000);
+    write_http_discover_project(temp.path(), "");
+    let resource = compile_single_project_resource(temp.path());
+    let transport = RecordingHttpFileTransport::new(parquet);
+    let dependencies = http_file_dependencies(transport.clone());
+    let secret_provider = EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>());
+    let cache = ObservationCacheStore::new(temp.path());
+
+    let first = discover_file_schema_artifacts_for_test(
+        &resource,
+        &secret_provider,
+        dependencies
+            .clone()
+            .with_prepared_payloads(cdf_runtime::PreparedSourcePayloads::default()),
+        SchemaDiscoveryExecutionOptions::new().with_observation_cache(cache.clone()),
+    )
+    .unwrap();
+    assert_eq!(
+        first.discovery.snapshot.source_identity["observation_cache_hits"],
+        "0"
+    );
+    assert_eq!(
+        first.discovery.snapshot.source_identity["observation_cache_misses"],
+        "1"
+    );
+    let first_request_count = transport.requests().len();
+
+    let second = discover_file_schema_artifacts_for_test(
+        &resource,
+        &secret_provider,
+        dependencies
+            .clone()
+            .with_prepared_payloads(cdf_runtime::PreparedSourcePayloads::default()),
+        SchemaDiscoveryExecutionOptions::new().with_observation_cache(cache.clone()),
+    )
+    .unwrap();
+    let hit_requests = transport
+        .requests()
+        .into_iter()
+        .skip(first_request_count)
+        .collect::<Vec<_>>();
+    assert!(
+        hit_requests
+            .iter()
+            .all(|request| request.method != HttpMethod::Get)
+    );
+    assert_eq!(
+        second.discovery.snapshot.source_identity["observation_cache_hits"],
+        "1"
+    );
+    assert_eq!(
+        second.discovery.snapshot.source_identity["discovery_source_bytes_read"],
+        "0"
+    );
+    assert_eq!(
+        second.discovery.snapshot.artifact.schema_hash,
+        first.discovery.snapshot.artifact.schema_hash
+    );
+    assert_eq!(
+        second.discovery_manifest.as_ref().unwrap().manifest_hash,
+        first.discovery_manifest.as_ref().unwrap().manifest_hash
+    );
+
+    transport.set_etag("\"fixture-etag-v2\"");
+    let request_count_before_generation_change = transport.requests().len();
+    let changed = discover_file_schema_artifacts_for_test(
+        &resource,
+        &secret_provider,
+        dependencies.with_prepared_payloads(cdf_runtime::PreparedSourcePayloads::default()),
+        SchemaDiscoveryExecutionOptions::new().with_observation_cache(cache),
+    )
+    .unwrap();
+    let changed_requests = transport
+        .requests()
+        .into_iter()
+        .skip(request_count_before_generation_change)
+        .collect::<Vec<_>>();
+    assert!(
+        changed_requests
+            .iter()
+            .any(|request| request.method == HttpMethod::Get)
+    );
+    assert_eq!(
+        changed.discovery.snapshot.source_identity["observation_cache_hits"],
+        "0"
+    );
+    assert_eq!(
+        changed.discovery.snapshot.source_identity["observation_cache_misses"],
+        "1"
+    );
+}
+
+#[test]
+fn object_store_multi_file_parquet_discovery_pins_one_reconciled_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    write_object_store_discover_project(temp.path());
+    let store = Arc::new(InMemory::new());
+    let first = vendor_parquet_bytes();
+    let second_schema = Arc::new(Schema::new(vec![
+        Field::new("VendorID", DataType::Int32, false),
+        Field::new("fare_amount", DataType::Int64, true),
+    ]));
+    let second_batch = RecordBatch::try_new(
+        second_schema,
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![Some(10), None])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let second = cdf_package::transcode_record_batches_to_parquet_bytes(&[second_batch]).unwrap();
+    for (path, bytes) in [
+        ("trip-data/2024/01.parquet", first),
+        ("trip-data/2024/02.parquet", second),
+    ] {
+        futures_executor::block_on(store.put(&ObjectPath::from(path), PutPayload::from(bytes)))
+            .unwrap();
+    }
+    let dependencies = file_dependencies(
+        FileTransportFacade::new()
+            .with_object_store("s3://tlc", store)
+            .with_execution_services(test_execution_services()),
+    );
+    let resource = compile_single_project_resource(temp.path());
+
+    let artifacts = discover_file_schema_artifacts_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        dependencies.clone(),
+        SchemaDiscoveryExecutionOptions::default(),
+    )
+    .unwrap();
+
+    let field_names = artifacts
+        .discovery
+        .normalized_schema
+        .fields()
+        .iter()
+        .map(|field| field.name().as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(field_names, vec!["vendor_id", "fare_amount"]);
+    assert_eq!(
+        artifacts.discovery.snapshot.source_identity["transport"],
+        "files"
+    );
+    assert_eq!(
+        artifacts.discovery.snapshot.source_identity["matched_files"],
+        "2"
+    );
+    let manifest = artifacts.discovery_manifest.as_ref().unwrap();
+    assert_eq!(manifest.candidates.len(), 2);
+    assert!(manifest.candidates.iter().all(|candidate| {
+        candidate.participation == DiscoveryParticipation::Observed
+            && candidate
+                .canonical_location
+                .starts_with("s3://tlc/trip-data/2024/")
+    }));
+
+    write_schema_discovery_artifacts(temp.path(), &artifacts).unwrap();
+    let pinned = apply_discovered_schema(&resource, artifacts.discovery.clone());
+    let prepared = prepare_pinned_resource_schema_artifacts(temp.path(), &pinned).unwrap();
+    assert_eq!(prepared.discovery_manifest().unwrap().candidates.len(), 2);
+    assert!(prepared.resource().effective_schema_runtime().is_none());
+    assert_eq!(prepared.resource().schema(), pinned.schema());
+}
+
+#[test]
+fn declared_multi_file_parquet_defers_physical_admission_to_the_stream() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "parquet", "*.parquet");
+    fs::write(
+        temp.path().join("resources/files.toml"),
+        r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+glob = "*.parquet"
+format = "parquet"
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "VendorID", type = "int64", nullable = false },
+] }
+"#,
+    )
+    .unwrap();
+    write_vendor_parquet(&temp.path().join("data/01.parquet"));
+    write_vendor_parquet(&temp.path().join("data/02.parquet"));
+    let resource = compile_single_project_resource(temp.path());
+    let dependencies = file_dependencies(FileTransportFacade::new());
+
+    assert!(resource.effective_schema_runtime().is_none());
+    let runtime = resolve_file_resource_for_test(&resource, dependencies);
+    let plan = live_plan_for_stream(
+        runtime.as_ref(),
+        resource.source_plan(),
+        "pkg-declared-multi-file",
+    );
+    assert_eq!(plan.scan.partition_count().unwrap(), 2);
+    assert!(plan.effective_schema_evidence().is_none());
+    assert!(!temp.path().join(".cdf/schemas").exists());
+    assert!(!temp.path().join(".cdf/packages").exists());
+}
+
+#[test]
+fn object_store_gzip_ndjson_discovers_pins_and_executes_through_one_transport() {
+    let temp = tempfile::tempdir().unwrap();
+    write_object_store_ndjson_discover_project(temp.path());
+    let mut source = Vec::new();
+    for id in 0..10_000_u64 {
+        source.extend_from_slice(format!("{{\"id\":{id},\"kind\":\"k{id}\"}}\n").as_bytes());
+    }
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    std::io::Write::write_all(&mut encoder, &source).unwrap();
+    let encoded = encoder.finish().unwrap();
+    let store = Arc::new(InMemory::new());
+    futures_executor::block_on(store.put(
+        &ObjectPath::from("prod/2026/07/events.ndjson.gz"),
+        PutPayload::from(encoded.clone()),
+    ))
+    .unwrap();
+    let dependencies = file_dependencies(
+        FileTransportFacade::new()
+            .with_object_store("s3://acme-events", store)
+            .with_execution_services(test_execution_services()),
+    );
+    let resource = compile_single_project_resource(temp.path());
+
+    let artifacts = discover_file_schema_artifacts_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        dependencies.clone(),
+        SchemaDiscoveryExecutionOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        artifacts
+            .discovery
+            .normalized_schema
+            .fields()
+            .iter()
+            .map(|field| field.name().as_str())
+            .collect::<Vec<_>>(),
+        vec!["id", "kind"]
+    );
+    let manifest = artifacts.discovery_manifest.as_ref().unwrap();
+    assert_eq!(manifest.candidates.len(), 1);
+    assert_eq!(
+        manifest.candidates[0].participation,
+        DiscoveryParticipation::Observed
+    );
+    assert!(manifest.candidates[0].probe_bytes.unwrap() <= 8 * 1024 * 1024);
+
+    let prepared = apply_discovered_schema(&resource, artifacts.discovery.clone());
+    let runtime = resolve_file_resource_for_test(&prepared, dependencies);
+    let plan = live_plan_for_stream(runtime.as_ref(), prepared.source_plan(), "pkg-cloud-ndjson");
+    assert_eq!(plan.scan.partition_count().unwrap(), 1);
+    let preview = futures_executor::block_on(cdf_engine::preview_resource(
+        &plan,
+        runtime.as_ref(),
+        cdf_engine::EnginePreviewLimits::default(),
+    ))
+    .unwrap();
+    assert_eq!(preview.row_count, 500);
+    assert_eq!(preview.fields, vec!["id", "kind", "_cdf_variant"]);
+    assert_eq!(preview.planned_partition_count, 1);
+    assert_eq!(preview.payload_opened_partition_count, 1);
+    let executable = executable_partition_for_test(runtime.as_ref(), &plan.scan, 0);
+    let stream = futures_executor::block_on(runtime.open_executable(executable)).unwrap();
+    let batches = futures_executor::block_on_stream(stream)
+        .collect::<Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(
+        batches
+            .iter()
+            .map(|batch| batch.header.row_count)
+            .sum::<u64>(),
+        10_000
+    );
+    let SourcePosition::FileManifest(position) =
+        batches[0].header.source_position.as_ref().unwrap()
+    else {
+        panic!("expected cloud file manifest position")
+    };
+    assert_eq!(
+        position.files[0].path,
+        "s3://acme-events/prod/2026/07/events.ndjson.gz"
+    );
+}
+
+#[test]
+fn http_gzip_ndjson_backpressures_and_cancels_before_download_completion() {
+    let temp = tempfile::tempdir().unwrap();
+    write_http_discover_project(temp.path(), "");
+    fs::write(
+        temp.path().join("resources/files.toml"),
+        r#"
+[source.remote]
+kind = "files"
+root = "https://data.example.test/events"
+
+[resource.events]
+glob = "events.ndjson.gz"
+format = "ndjson"
+compression = "gzip"
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "id", type = "int64", nullable = false },
+  { name = "payload", type = "utf8", nullable = false },
+] }
+"#,
+    )
+    .unwrap();
+
+    // Sixteen native batches exceed every bounded frontier between transport and this consumer.
+    // Compression level zero keeps the fixture cheap while still exercising the production gzip
+    // transform and leaving enough source bytes to observe two distinct backpressure plateaus.
+    let row_count = 16 * cdf_runtime::DEFAULT_FORMAT_BATCH_ROWS + 128;
+    let mut source = Vec::with_capacity(row_count * 48);
+    for id in 0..row_count {
+        source
+            .extend_from_slice(format!(r#"{{"id":{id},"payload":"payload-{id:08x}"}}"#).as_bytes());
+        source.push(b'\n');
+    }
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::none());
+    std::io::Write::write_all(&mut encoder, &source).unwrap();
+    let encoded = encoder.finish().unwrap();
+    assert!(encoded.len() > 4 * 1024 * 1024);
+    let encoded_bytes = u64::try_from(encoded.len()).unwrap();
+
+    let transport = RecordingHttpFileTransport::new(encoded.clone());
+    let execution = cdf_engine::StandaloneExecutionHost::default_services(512 * 1024 * 1024)
+        .unwrap()
+        .1;
+    let dependencies = file_dependencies_with_execution(
+        FileTransportFacade::new().with_http_transport(transport.clone()),
+        execution,
+    );
+    let resource = compile_single_project_resource(temp.path());
+    let runtime = resolve_file_resource_for_test(&resource, dependencies.clone());
+    let plan = live_plan_for_stream(runtime.as_ref(), resource.source_plan(), "pkg-http-gzip");
+    let executable = executable_partition_for_test(runtime.as_ref(), &plan.scan, 0);
+    let mut opened = futures_executor::block_on(runtime.open_executable(executable))
+        .expect("open recorded HTTP gzip partition");
+    let first = futures_executor::block_on(futures_util::StreamExt::next(&mut opened))
+        .expect("first bounded batch")
+        .expect("decode first bounded batch");
+    assert_eq!(
+        first.header.row_count,
+        u64::try_from(cdf_runtime::DEFAULT_FORMAT_BATCH_ROWS).unwrap()
+    );
+
+    let wait_for_stable_partial_progress = |minimum_bytes: u64| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut stable_observations = 0;
+        let mut previous = transport.sequential_progress();
+        loop {
+            thread::sleep(Duration::from_millis(20));
+            let current = transport.sequential_progress();
+            if current == previous
+                && current.bytes_emitted > minimum_bytes
+                && current.bytes_emitted < encoded_bytes
+            {
+                stable_observations += 1;
+                if stable_observations == 5 {
+                    break current;
+                }
+            } else {
+                stable_observations = 0;
+            }
+            previous = current;
+            assert!(
+                std::time::Instant::now() < deadline,
+                "recorded HTTP source did not reach a stable partial-transfer plateau: {current:?}"
+            );
+        }
+    };
+    let stalled = wait_for_stable_partial_progress(encoded_bytes / 4);
+    assert_eq!(stalled.streams_closed, 0);
+    assert_eq!(stalled.streams_completed, 0);
+
+    // Drain only the already-bounded output frontier until demand propagates through every nested
+    // stage and resumes the transport. A stable plateau followed by progress caused only by
+    // downstream polls distinguishes backpressure from an incidental decode pause.
+    let mut resumed_batches = Vec::new();
+    let mut resumed = None;
+    for _ in 0..8 {
+        resumed_batches.push(
+            futures_executor::block_on(futures_util::StreamExt::next(&mut opened))
+                .expect("bounded batch after transport plateau")
+                .expect("decode bounded batch after transport plateau"),
+        );
+        let poll_deadline = std::time::Instant::now() + Duration::from_millis(250);
+        loop {
+            let progress = transport.sequential_progress();
+            if progress.bytes_emitted > stalled.bytes_emitted {
+                resumed = Some(progress);
+                break;
+            }
+            if std::time::Instant::now() >= poll_deadline {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        if resumed.is_some() {
+            break;
+        }
+    }
+    let resumed = resumed.expect(
+        "bounded downstream demand did not propagate through the source frontier to the transport",
+    );
+    assert!(resumed.bytes_emitted < encoded_bytes);
+    let stalled_again = wait_for_stable_partial_progress(stalled.bytes_emitted);
+    assert!(stalled_again.bytes_emitted >= resumed.bytes_emitted);
+    assert_eq!(stalled_again.streams_closed, 0);
+    assert_eq!(stalled_again.streams_completed, 0);
+
+    let (termination_tx, termination_rx) = mpsc::sync_channel(1);
+    let termination = thread::spawn(move || {
+        let result = futures_executor::block_on(opened.terminate_and_join());
+        termination_tx.send(result).unwrap();
+    });
+    termination_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("blocked source invocation must cancel and join within one second")
+        .expect("blocked source invocation must cancel and join cleanly");
+    termination.join().unwrap();
+    drop((first, resumed_batches));
+    let cleanup_deadline = std::time::Instant::now() + Duration::from_secs(1);
+    let stopped = loop {
+        let progress = transport.sequential_progress();
+        assert_eq!(progress.bytes_emitted, stalled_again.bytes_emitted);
+        if progress.streams_closed == 1 && transport.current_memory_bytes() == 0 {
+            break progress;
+        }
+        assert!(
+            std::time::Instant::now() < cleanup_deadline,
+            "cancelled stream did not drop its transport state: {progress:?}; memory={} bytes",
+            transport.current_memory_bytes()
+        );
+        thread::sleep(Duration::from_millis(5));
+    };
+    assert_eq!(stopped.streams_completed, 0);
+}
+
+#[test]
+fn http_numeric_template_discovers_and_plans_every_file() {
+    let temp = tempfile::tempdir().unwrap();
+    write_http_discover_project(temp.path(), "");
+    let resource_path = temp.path().join("resources/files.toml");
+    let resource_toml = fs::read_to_string(&resource_path)
+        .unwrap()
+        .replace("vendors.parquet", "yellow_tripdata_2024-{01..03}.parquet");
+    fs::write(resource_path, resource_toml).unwrap();
+    let parquet = vendor_parquet_bytes();
+    let transport = RecordingHttpFileTransport::new(parquet);
+    let dependencies = http_file_dependencies(transport.clone());
+    let resource = compile_single_project_resource(temp.path());
+
+    let artifacts = discover_file_schema_artifacts_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        dependencies.clone(),
+        SchemaDiscoveryExecutionOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(artifacts.discovery_manifest.unwrap().candidates.len(), 3);
+
+    let runtime = resolve_file_resource_for_test(&resource, dependencies);
+    let partitions = planned_partitions_for_test(
+        runtime.as_ref(),
+        &ScanRequest {
+            resource_id: resource.descriptor().resource_id.clone(),
+            projection: None,
+            filters: Vec::new(),
+            limit: None,
+            order_by: Vec::new(),
+            scope: resource.descriptor().state_scope.clone(),
+        },
+    );
+    assert_eq!(partitions.len(), 3);
+    assert_eq!(
+        partitions
+            .iter()
+            .map(|partition| { partition.planned_file().unwrap().unwrap().path.as_str() })
+            .collect::<Vec<_>>(),
+        vec![
+            "https://data.example.test/trip-data/yellow_tripdata_2024-01.parquet",
+            "https://data.example.test/trip-data/yellow_tripdata_2024-02.parquet",
+            "https://data.example.test/trip-data/yellow_tripdata_2024-03.parquet",
+        ]
+    );
+    assert_eq!(
+        transport
+            .requests()
+            .iter()
+            .filter(|request| request.method == HttpMethod::Head)
+            .count(),
+        6,
+        "cold discovery and runtime planning each inventory once; negotiation must not add a third traversal"
+    );
+}
+
+#[test]
+fn http_year_month_glob_skips_absent_candidates_without_hiding_other_failures() {
+    let temp = tempfile::tempdir().unwrap();
+    write_http_discover_project(temp.path(), "");
+    let resource_path = temp.path().join("resources/files.toml");
+    let resource_toml = fs::read_to_string(&resource_path)
+        .unwrap()
+        .replace("vendors.parquet", "yellow_tripdata_2024-*.parquet");
+    fs::write(resource_path, resource_toml).unwrap();
+    let missing = (3..=12).map(|month| {
+        format!("https://data.example.test/trip-data/yellow_tripdata_2024-{month:02}.parquet")
+    });
+    let transport = RecordingHttpFileTransport::with_missing(vendor_parquet_bytes(), missing);
+    let dependencies = http_file_dependencies(transport.clone());
+    let resource = compile_single_project_resource(temp.path());
+
+    let artifacts = discover_file_schema_artifacts_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        dependencies.clone(),
+        SchemaDiscoveryExecutionOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(artifacts.discovery_manifest.unwrap().candidates.len(), 2);
+    let runtime = resolve_file_resource_for_test(&resource, dependencies);
+    let partitions = planned_partitions_for_test(
+        runtime.as_ref(),
+        &ScanRequest {
+            resource_id: resource.descriptor().resource_id.clone(),
+            projection: None,
+            filters: Vec::new(),
+            limit: None,
+            order_by: Vec::new(),
+            scope: resource.descriptor().state_scope.clone(),
+        },
+    );
+    assert_eq!(partitions.len(), 2);
+    assert!(
+        partitions[0]
+            .planned_file()
+            .unwrap()
+            .unwrap()
+            .path
+            .ends_with("2024-01.parquet")
+    );
+    assert!(
+        partitions[1]
+            .planned_file()
+            .unwrap()
+            .unwrap()
+            .path
+            .ends_with("2024-02.parquet")
+    );
+}
+
+#[test]
+fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
+    let temp = tempfile::tempdir().unwrap();
+    let parquet = vendor_parquet_bytes();
+    write_http_discover_project(temp.path(), "");
+    let resource = compile_single_project_resource(temp.path());
+    let cold_discovery_binding = resource.source_plan().discovery_binding_hash().unwrap();
+    let cold_compiled_source = cdf_runtime::artifact_hash(resource.source_plan()).unwrap();
+    let reference_transport = RecordingHttpFileTransport::new(parquet.clone());
+    let reference_dependencies = http_file_dependencies(reference_transport.clone());
+    discover_file_schema_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        reference_dependencies,
+    )
+    .unwrap();
+    let expected_discovery_requests = reference_transport.requests();
+    let transport = RecordingHttpFileTransport::new(parquet.clone());
+    let dependencies = http_file_dependencies(transport.clone());
+    let secret_provider = EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>());
+
+    let prepared = prepare_file_discover_resource_with_dependencies_for_test(
+        temp.path(),
+        &resource,
+        &secret_provider,
+        dependencies.clone(),
+    )
+    .unwrap();
+    let discovery = prepared.discovery.as_ref().unwrap();
+    assert_eq!(
+        prepared
+            .resource
+            .source_plan()
+            .discovery_binding_hash()
+            .unwrap(),
+        cold_discovery_binding,
+        "pinning must preserve the inventory reuse identity"
+    );
+    assert_ne!(
+        cdf_runtime::artifact_hash(prepared.resource.source_plan()).unwrap(),
+        cold_compiled_source,
+        "the pinned execution plan must retain its distinct complete identity"
+    );
+    assert_eq!(
+        transport.requests(),
+        expected_discovery_requests,
+        "auto-pin must perform exactly one cold discovery lifecycle"
+    );
+    assert!(
+        temp.path()
+            .join(&discovery.snapshot.artifact.path)
+            .is_file()
+    );
+    let SchemaSource::Discovered { snapshot } = &prepared.resource.descriptor().schema_source
+    else {
+        panic!("expected HTTP Parquet auto-pin to set discovered schema source");
+    };
+    assert_eq!(
+        snapshot.schema_hash,
+        discovery.snapshot.artifact.schema_hash
+    );
+
+    let file_resource = resolve_file_resource_for_test(&prepared.resource, dependencies.clone());
+    let plan = live_plan_for_stream(
+        file_resource.as_ref(),
+        prepared.resource.source_plan(),
+        "pkg-http-parquet-runtime",
+    );
+    assert_eq!(
+        transport.requests(),
+        expected_discovery_requests,
+        "planning must consume the cold-discovery inventory without a second transport inventory"
+    );
+    assert_eq!(dependencies.prepared_payloads().pending_count().unwrap(), 0);
+    assert_eq!(plan.scan.partition_count().unwrap(), 1);
+    let task_reference = plan.scan.external_task_set().unwrap();
+    let mut task_reader = file_resource
+        .planned_partition_reader(task_reference)
+        .unwrap();
+    let executable = task_reader.next_partition(0).unwrap().unwrap();
+    let partition = executable.plan().clone();
+    assert!(task_reader.next_partition(1).unwrap().is_none());
+    let planned_file = partition.planned_file().unwrap().unwrap();
+    assert_eq!(
+        planned_file.path,
+        "https://data.example.test/trip-data/vendors.parquet"
+    );
+    assert_eq!(planned_file.size_bytes, parquet.len() as u64);
+    assert_eq!(planned_file.etag.as_deref(), Some("\"fixture-etag\""));
+    for legacy_key in [
+        "path",
+        "bytes",
+        "etag",
+        "version",
+        "sha256",
+        "source_generation",
+    ] {
+        assert!(!partition.metadata.contains_key(legacy_key));
+    }
+    assert!(!partition.metadata.contains_key("bytes_loaded"));
+
+    let preview_stream =
+        futures_executor::block_on(file_resource.as_ref().open_executable(executable)).unwrap();
+    let preview_rows = futures_executor::block_on_stream(preview_stream)
+        .map(|batch| batch.unwrap().header.row_count)
+        .sum::<u64>();
+    assert_eq!(preview_rows, 2);
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let report = futures_executor::block_on(run_project(
+        ProjectRunRequest {
+            resource: ProjectRunSource::new(file_resource.as_ref()),
+            plan,
+            package_root: temp.path().join(".cdf/packages"),
+            state_store_path: temp.path().join(".cdf/state.db"),
+            state_store_path_ownership: crate::StateStorePathOwnership::Configured,
+            pipeline_id: PipelineId::new("pipeline-http").unwrap(),
+            package_id: "pkg-http-parquet-runtime".to_owned(),
+            checkpoint_id: CheckpointId::new("checkpoint-http-parquet-runtime").unwrap(),
+            destination: crate::test_destinations::duckdb(
+                duckdb_path,
+                TargetName::new("events").unwrap(),
+            )
+            .unwrap(),
+            run_id: Some(RunId::new("run-http-parquet-runtime").unwrap()),
+            event_sink: None,
+            after_receipt_verified: None,
+        },
+        &test_execution_services(),
+    ))
+    .unwrap()
+    .into_committed()
+    .unwrap();
+
+    assert_eq!(report.row_count, 2);
+    assert_eq!(report.segment_count, 1);
+    let SourcePosition::FileManifest(manifest) = &report.checkpoint.delta.output_position else {
+        panic!("checkpoint output position should be a file manifest");
+    };
+    assert_eq!(manifest.files.len(), 1);
+    assert_eq!(
+        manifest.files[0].path,
+        "https://data.example.test/trip-data/vendors.parquet"
+    );
+    assert_eq!(manifest.files[0].size_bytes, parquet.len() as u64);
+    assert_eq!(manifest.files[0].etag.as_deref(), Some("\"fixture-etag\""));
+    assert_eq!(manifest.files[0].sha256, None);
+    let requests = transport.requests();
+    let sequential_gets = requests
+        .iter()
+        .filter(|request| {
+            request.method == HttpMethod::Get && !request.headers.contains_key("range")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sequential_gets.len(),
+        2,
+        "preview and run must each use one sequential HTTP GET: {requests:?}"
+    );
+    assert!(sequential_gets.iter().all(|request| {
+        request.headers.get("if-match").map(String::as_str) == Some("\"fixture-etag\"")
+    }));
+    let ranged_gets = requests
+        .iter()
+        .filter(|request| {
+            request.method == HttpMethod::Get && request.headers.contains_key("range")
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !ranged_gets.is_empty(),
+        "discovery must retain bounded Parquet range reads"
+    );
+
+    let request_count_before_pinned_prepare = requests.len();
+    let compiled_again = compile_single_project_resource(temp.path());
+    let pinned_compiled = compiled_again.with_schema_source_and_schema(
+        prepared.resource.descriptor().schema_source.clone(),
+        prepared.resource.schema(),
+    );
+    assert!(pinned_compiled.effective_schema_runtime().is_none());
+    let pinned = prepare_pinned_resource_schema_artifacts(temp.path(), &pinned_compiled).unwrap();
+    assert_eq!(
+        transport.requests().len(),
+        request_count_before_pinned_prepare,
+        "pinned preparation must not contact the source"
+    );
+    let (pinned_resource, _) = pinned.into_parts();
+    let pinned_file_resource =
+        resolve_file_resource_for_test(&pinned_resource, dependencies.clone());
+    let pinned_plan = live_plan_for_stream(
+        pinned_file_resource.as_ref(),
+        pinned_resource.source_plan(),
+        "pkg-http-parquet-pinned-runtime",
+    );
+    let pinned_report = futures_executor::block_on(run_project(
+        ProjectRunRequest {
+            resource: ProjectRunSource::new(pinned_file_resource.as_ref()),
+            plan: pinned_plan,
+            package_root: temp.path().join(".cdf/packages"),
+            state_store_path: temp.path().join(".cdf/state-pinned.db"),
+            state_store_path_ownership: crate::StateStorePathOwnership::Configured,
+            pipeline_id: PipelineId::new("pipeline-http-pinned").unwrap(),
+            package_id: "pkg-http-parquet-pinned-runtime".to_owned(),
+            checkpoint_id: CheckpointId::new("checkpoint-http-parquet-pinned-runtime").unwrap(),
+            destination: crate::test_destinations::duckdb(
+                temp.path().join(".cdf/dev-pinned.duckdb"),
+                TargetName::new("events_pinned").unwrap(),
+            )
+            .unwrap(),
+            run_id: Some(RunId::new("run-http-parquet-pinned-runtime").unwrap()),
+            event_sink: None,
+            after_receipt_verified: None,
+        },
+        &test_execution_services(),
+    ))
+    .unwrap()
+    .into_committed()
+    .unwrap();
+    assert_eq!(pinned_report.row_count, 2);
+    let pinned_package = cdf_package::PackageReader::open(&pinned_report.package_dir).unwrap();
+    assert!(package_identity_file_paths(&pinned_package).contains("plan/schema-admission.json"));
+    assert!(
+        package_identity_file_paths(&pinned_package)
+            .contains("schema/stream-admission-evidence.json")
+    );
+    let pinned_execution_requests = transport
+        .requests()
+        .into_iter()
+        .skip(request_count_before_pinned_prepare)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        pinned_execution_requests
+            .iter()
+            .filter(|request| request.method == HttpMethod::Get
+                && !request.headers.contains_key("range"))
+            .count(),
+        1,
+        "pinned execution must transfer the extraction payload once: {pinned_execution_requests:?}"
+    );
+    let pinned_ranges = pinned_execution_requests
+        .iter()
+        .filter(|request| {
+            request.method == HttpMethod::Get && request.headers.contains_key("range")
+        })
+        .collect::<Vec<_>>();
+    let expected_tail = format!("-{}", parquet.len().saturating_sub(1));
+    assert!(
+        pinned_ranges.iter().all(|request| {
+            request.headers.get("if-match").map(String::as_str) == Some("\"fixture-etag\"")
+                && request.headers["range"].ends_with(&expected_tail)
+        }),
+        "pinned extraction may overlap its sequential spool only with generation-bound Parquet tail reads: {pinned_execution_requests:?}"
+    );
+}
+
+#[test]
+fn unversioned_http_parquet_runs_and_commits_terminal_content_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let parquet = vendor_parquet_bytes();
+    write_http_discover_project(temp.path(), "");
+    let resource = compile_single_project_resource(temp.path());
+    let transport = RecordingHttpFileTransport::new(parquet.clone());
+    transport.clear_etag();
+    let dependencies = http_file_dependencies(transport.clone());
+    let prepared = prepare_file_discover_resource_with_dependencies_for_test(
+        temp.path(),
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        dependencies.clone(),
+    )
+    .unwrap();
+    let file_resource = resolve_file_resource_for_test(&prepared.resource, dependencies.clone());
+    let plan = live_plan_for_stream(
+        file_resource.as_ref(),
+        prepared.resource.source_plan(),
+        "pkg-http-unversioned",
+    );
+    let executable = executable_partition_for_test(file_resource.as_ref(), &plan.scan, 0);
+    let partition = executable.plan();
+    assert_eq!(partition.metadata["identity_strength"], "weak");
+    let planned_file = partition.planned_file().unwrap().unwrap();
+    assert_eq!(planned_file.etag, None);
+    assert_eq!(planned_file.source_generation, None);
+    assert_eq!(planned_file.sha256, None);
+    let request_count_before_run = transport.requests().len();
+    let discovery_payload_gets = transport
+        .requests()
+        .into_iter()
+        .filter(|request| {
+            request.method == HttpMethod::Get && !request.headers.contains_key("range")
+        })
+        .count();
+    assert_eq!(
+        discovery_payload_gets, 1,
+        "cold discovery must materialize the unversioned payload exactly once"
+    );
+    assert_eq!(dependencies.prepared_payloads().pending_count().unwrap(), 1);
+    let report = futures_executor::block_on(run_project(
+        ProjectRunRequest {
+            resource: ProjectRunSource::new(file_resource.as_ref()),
+            plan,
+            package_root: temp.path().join(".cdf/packages"),
+            state_store_path: temp.path().join(".cdf/state.db"),
+            state_store_path_ownership: crate::StateStorePathOwnership::Configured,
+            pipeline_id: PipelineId::new("pipeline-http-unversioned").unwrap(),
+            package_id: "pkg-http-unversioned".to_owned(),
+            checkpoint_id: CheckpointId::new("checkpoint-http-unversioned").unwrap(),
+            destination: crate::test_destinations::duckdb(
+                temp.path().join(".cdf/dev.duckdb"),
+                TargetName::new("events").unwrap(),
+            )
+            .unwrap(),
+            run_id: Some(RunId::new("run-http-unversioned").unwrap()),
+            event_sink: None,
+            after_receipt_verified: None,
+        },
+        &test_execution_services(),
+    ))
+    .unwrap()
+    .into_committed()
+    .unwrap();
+
+    assert_eq!(report.row_count, 2);
+    let expected_sha256 = format!("sha256:{}", hex::encode(Sha256::digest(&parquet)));
+    let SourcePosition::FileManifest(manifest) = &report.checkpoint.delta.output_position else {
+        panic!("unversioned HTTP checkpoint must commit a file manifest");
+    };
+    assert_eq!(manifest.files.len(), 1);
+    assert_eq!(
+        manifest.files[0].sha256.as_deref(),
+        Some(expected_sha256.as_str())
+    );
+    assert_eq!(manifest.files[0].etag, None);
+    assert_eq!(manifest.files[0].source_generation, None);
+    assert_eq!(report.checkpoint.delta.segments.len(), 1);
+    let SourcePosition::FileManifest(segment_manifest) =
+        &report.checkpoint.delta.segments[0].output_position
+    else {
+        panic!("unversioned HTTP segment must retain a file manifest");
+    };
+    assert_eq!(segment_manifest.files.len(), 1);
+    assert_eq!(
+        segment_manifest.files[0].sha256.as_deref(),
+        Some(expected_sha256.as_str())
+    );
+    let sequential_gets = transport
+        .requests()
+        .into_iter()
+        .skip(request_count_before_run)
+        .filter(|request| {
+            request.method == HttpMethod::Get && !request.headers.contains_key("range")
+        })
+        .count();
+    assert_eq!(
+        sequential_gets, 0,
+        "same-command execution must consume the retained discovery spool without another transfer"
+    );
+    assert_eq!(dependencies.prepared_payloads().pending_count().unwrap(), 0);
+    assert_eq!(
+        transport
+            .requests()
+            .iter()
+            .filter(|request| request.method == HttpMethod::Get
+                && !request.headers.contains_key("range"))
+            .count(),
+        1,
+        "cold discovery plus execution must transfer one unversioned payload generation once"
+    );
+}
+
+#[test]
+fn http_file_discovery_enforces_egress_and_applies_secret_auth_before_transport_use() {
+    let temp = tempfile::tempdir().unwrap();
+    let parquet = vendor_parquet_bytes();
+    write_http_discover_project(temp.path(), r#"egress_allowlist = ["other.example.test"]"#);
+    let resource = compile_single_project_resource(temp.path());
+    assert_eq!(
+        resource.source_plan().physical_plan["source"]["egress_allowlist"],
+        serde_json::json!(["other.example.test"]),
+        "the compiled source plan must retain the declarative egress authority"
+    );
+    let transport = RecordingHttpFileTransport::new(parquet.clone());
+    let dependencies = http_file_dependencies(transport.clone());
+
+    let error = discover_file_schema_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        dependencies,
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("egress"));
+    assert!(transport.requests().is_empty());
+
+    let auth_temp = tempfile::tempdir().unwrap();
+    write_http_discover_project(
+        auth_temp.path(),
+        r#"
+auth = { kind = "bearer", token = "secret://env/HTTP_TOKEN" }
+egress_allowlist = ["data.example.test"]
+"#,
+    );
+    let auth_resource = compile_single_project_resource(auth_temp.path());
+    let auth_transport = RecordingHttpFileTransport::new(parquet);
+    let auth_dependencies = file_dependencies(
+        FileTransportFacade::new()
+            .with_http_transport(auth_transport.clone())
+            .with_secret_provider(StaticSecretProvider::new([(
+                "secret://env/HTTP_TOKEN",
+                "super-secret-http-token",
+            )])),
+    );
+
+    let discovery = discover_file_schema_for_test(
+        &auth_resource,
+        &StaticSecretProvider::new([("secret://env/HTTP_TOKEN", "super-secret-http-token")]),
+        auth_dependencies,
+    )
+    .unwrap();
+    assert_eq!(discovery.normalized_schema.field(0).name(), "vendor_id");
+    let requests = auth_transport.requests();
+    assert!(!requests.is_empty());
+    assert_eq!(
+        requests[0].headers.get("authorization").map(String::as_str),
+        Some("Bearer super-secret-http-token")
+    );
+}
+
+#[test]
+fn local_parquet_discover_autopin_leaves_declared_resources_unobserved() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "parquet", "*.missing");
+    let declared = r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+glob = "*.missing"
+format = "parquet"
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "VendorID", type = "int32", nullable = false },
+] }
+"#;
+    fs::write(temp.path().join("resources/files.toml"), declared).unwrap();
+    let resource = compile_single_project_resource(temp.path());
+
+    let prepared = prepare_file_discover_resource(
+        temp.path(),
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+    )
+    .unwrap();
+
+    assert!(prepared.discovery.is_none());
+    assert!(matches!(
+        prepared.resource.descriptor().schema_source,
+        SchemaSource::Declared { .. }
+    ));
+    assert!(!temp.path().join(".cdf/schemas").exists());
+}
+
+#[test]
+fn local_ndjson_discovery_is_bounded_and_writes_nothing_until_pin() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "ndjson", "*.ndjson");
+    fs::write(
+        temp.path().join("data/events.ndjson"),
+        b"{\"VendorID\":1}\n{\"VendorID\":2}\n",
+    )
+    .unwrap();
+    let resource = compile_single_project_resource(temp.path());
+    let cache = ObservationCacheStore::new(temp.path());
+
+    let artifacts = discover_default_file_schema_artifacts_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        SchemaDiscoveryExecutionOptions::new().with_observation_cache(cache.clone()),
+    )
+    .unwrap();
+
+    assert_eq!(
+        artifacts.discovery.normalized_schema.field(0).name(),
+        "vendor_id"
+    );
+    assert_eq!(
+        artifacts.discovery.snapshot.source_identity["file_coverage"],
+        "all_files"
+    );
+    let manifest = artifacts.discovery_manifest.unwrap();
+    assert_eq!(
+        manifest.within_file_coverage,
+        DiscoveryWithinFileCoverage::BoundedContent
+    );
+    assert_eq!(manifest.candidates.len(), 1);
+    assert_eq!(manifest.candidates[0].probe_records, Some(2));
+    assert!(
+        manifest.candidates[0]
+            .probe_bytes
+            .is_some_and(|bytes| bytes > 0)
+    );
+    assert_eq!(
+        artifacts.discovery.snapshot.source_identity["observation_cache_bypasses"],
+        "1"
+    );
+    assert!(!cache.root().exists());
+    assert!(!temp.path().join(".cdf/schemas").exists());
+}
+
+#[test]
+fn local_csv_discovery_uses_the_registered_driver_manifest_path() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "csv", "*.csv");
+    fs::write(
+        temp.path().join("data/events.csv"),
+        b"VendorID,fare_amount\n1,10.5\n2,20.25\n",
+    )
+    .unwrap();
+    let resource = compile_single_project_resource(temp.path());
+
+    let artifacts = discover_default_file_schema_artifacts_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        SchemaDiscoveryExecutionOptions::default(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        artifacts
+            .discovery
+            .normalized_schema
+            .fields()
+            .iter()
+            .map(|field| field.name().as_str())
+            .collect::<Vec<_>>(),
+        vec!["vendor_id", "fare_amount"]
+    );
+    assert_eq!(
+        artifacts.discovery.snapshot.artifact.metadata["probe"],
+        "registered-source-discovery"
+    );
+    let manifest = artifacts.discovery_manifest.unwrap();
+    assert_eq!(
+        manifest.within_file_coverage,
+        DiscoveryWithinFileCoverage::BoundedContent
+    );
+    assert_eq!(manifest.candidates.len(), 1);
+    assert_eq!(manifest.candidates[0].probe_records, Some(2));
+}
+
+#[test]
+fn local_json_document_discovery_uses_the_registered_driver_manifest_path() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "json", "*.json");
+    fs::write(
+        temp.path().join("data/events.json"),
+        br#"[{"VendorID":1,"active":true},{"VendorID":2,"active":false}]"#,
+    )
+    .unwrap();
+    let resource = compile_single_project_resource(temp.path());
+
+    let artifacts = discover_default_file_schema_artifacts_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        SchemaDiscoveryExecutionOptions::default(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        artifacts
+            .discovery
+            .normalized_schema
+            .fields()
+            .iter()
+            .map(|field| field.name().as_str())
+            .collect::<Vec<_>>(),
+        vec!["vendor_id", "active"]
+    );
+    assert_eq!(
+        artifacts.discovery.snapshot.artifact.metadata["probe"],
+        "registered-source-discovery"
+    );
+    let manifest = artifacts.discovery_manifest.unwrap();
+    assert_eq!(
+        manifest.within_file_coverage,
+        DiscoveryWithinFileCoverage::BoundedContent
+    );
+    assert_eq!(manifest.candidates.len(), 1);
+    assert_eq!(manifest.candidates[0].probe_records, Some(2));
+}
+
+#[test]
+fn local_parquet_discover_autopin_persists_all_file_metadata_manifest() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "parquet", "*.parquet");
+    write_vendor_parquet(&temp.path().join("data/a.parquet"));
+    write_vendor_parquet(&temp.path().join("data/b.parquet"));
+    let resource = compile_single_project_resource(temp.path());
+
+    let prepared = prepare_file_discover_resource(
+        temp.path(),
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+    )
+    .unwrap();
+    let discovery = prepared.discovery.unwrap();
+    assert_eq!(
+        discovery.snapshot.source_identity["file_coverage"],
+        "all_files"
+    );
+    assert_eq!(
+        discovery.snapshot.source_identity["within_file_coverage"],
+        "format_metadata"
+    );
+    assert_eq!(discovery.snapshot.source_identity["matched_files"], "2");
+    assert_eq!(discovery.snapshot.source_identity["selected_files"], "2");
+    let reference = discovery
+        .snapshot
+        .reference
+        .discovery_manifest()
+        .unwrap()
+        .unwrap();
+    let manifest = DiscoveryManifestStore::new(temp.path())
+        .read(&reference)
+        .unwrap();
+    assert_eq!(manifest.file_coverage, DiscoveryFileCoverage::AllFiles);
+    assert_eq!(
+        manifest.within_file_coverage,
+        DiscoveryWithinFileCoverage::FormatMetadata
+    );
+    assert!(manifest.selector.is_none());
+    assert_eq!(manifest.budget.max_concurrent_probes(), 8);
+    assert_eq!(manifest.budget.max_bytes_per_file(), 64 * 1024 * 1024);
+    assert_eq!(manifest.budget.max_records_per_file(), 1_000);
+    assert_eq!(
+        manifest.budget.max_total_in_flight_bytes(),
+        128 * 1024 * 1024
+    );
+    assert_eq!(manifest.candidates.len(), 2);
+    assert!(manifest.candidates.iter().all(|candidate| {
+        candidate.participation == DiscoveryParticipation::Observed
+            && candidate.physical_schema_hash.is_some()
+            && candidate.probe_bytes.is_some()
+            && candidate.probe_records == Some(0)
+            && candidate.schema_verdict.is_some()
+    }));
+    assert_eq!(
+        manifest
+            .candidates
+            .iter()
+            .map(|candidate| candidate.canonical_location.as_str())
+            .collect::<Vec<_>>(),
+        vec!["a.parquet", "b.parquet"]
+    );
+    assert!(temp.path().join(discovery.snapshot.artifact.path).is_file());
+}
+
+#[test]
+fn explicit_sampled_parquet_pin_records_exact_participation_and_is_deterministic() {
+    let temp = tempfile::tempdir().unwrap();
+    write_sampled_discover_project(temp.path(), "parquet", "*.parquet", 3);
+    for index in 0..9 {
+        write_vendor_parquet(&temp.path().join(format!("data/{index:02}.parquet")));
+    }
+    let resource = compile_single_project_resource(temp.path());
+    let first = discover_default_file_schema_artifacts_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        Default::default(),
+    )
+    .unwrap();
+    let manifest = first.discovery_manifest.as_ref().unwrap();
+    assert_eq!(manifest.file_coverage, DiscoveryFileCoverage::SampledFiles);
+    let selector = manifest.selector.as_ref().unwrap();
+    assert_eq!(selector.selector, STRATIFIED_HASH_SELECTOR_V1);
+    assert_eq!(selector.sample_files, 3);
+    assert_eq!(selector.matched_count, 9);
+    assert_eq!(selector.selected.len(), 3);
+    assert_eq!(manifest.candidates.len(), 9);
+    assert_eq!(
+        manifest
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.participation == DiscoveryParticipation::Observed)
+            .count(),
+        3
+    );
+    assert_eq!(
+        manifest
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.participation == DiscoveryParticipation::Unobserved)
+            .count(),
+        6
+    );
+    assert!(manifest.candidates.iter().all(|candidate| {
+        candidate.participation == DiscoveryParticipation::Observed
+            || (candidate.physical_schema_hash.is_none()
+                && candidate.probe_bytes.is_none()
+                && candidate.schema_verdict.is_none())
+    }));
+    assert_eq!(
+        first.discovery.snapshot.source_identity["file_coverage"],
+        "sampled_files"
+    );
+    assert_eq!(
+        first.discovery.snapshot.source_identity["matched_files"],
+        "9"
+    );
+    assert_eq!(
+        first.discovery.snapshot.source_identity["selected_files"],
+        "3"
+    );
+    assert_eq!(
+        first.discovery.snapshot.source_identity["unobserved_files"],
+        "6"
+    );
+
+    let repeated = discover_default_file_schema_artifacts_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_vec(manifest).unwrap(),
+        serde_json::to_vec(repeated.discovery_manifest.as_ref().unwrap()).unwrap()
+    );
+}
+
+#[test]
+fn explicit_sample_larger_than_set_preserves_all_files_manifest_bytes() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "parquet", "*.parquet");
+    write_vendor_parquet(&temp.path().join("data/a.parquet"));
+    write_vendor_parquet(&temp.path().join("data/b.parquet"));
+    let all_files_resource = compile_single_project_resource(temp.path());
+    let all_files = discover_default_file_schema_artifacts_for_test(
+        &all_files_resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        Default::default(),
+    )
+    .unwrap();
+
+    write_sampled_discover_project(temp.path(), "parquet", "*.parquet", 2);
+    let configured_resource = compile_single_project_resource(temp.path());
+    let configured = discover_default_file_schema_artifacts_for_test(
+        &configured_resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        configured
+            .discovery_manifest
+            .as_ref()
+            .unwrap()
+            .file_coverage,
+        DiscoveryFileCoverage::AllFiles
+    );
+    assert_eq!(
+        serde_json::to_vec(all_files.discovery_manifest.as_ref().unwrap()).unwrap(),
+        serde_json::to_vec(configured.discovery_manifest.as_ref().unwrap()).unwrap()
+    );
+    assert_eq!(
+        all_files.discovery.snapshot.artifact,
+        configured.discovery.snapshot.artifact
+    );
+}
+
+#[test]
+fn explicit_sampled_arrow_ipc_uses_the_same_format_neutral_selector() {
+    let temp = tempfile::tempdir().unwrap();
+    write_sampled_discover_project(temp.path(), "arrow_ipc", "*.arrow", 2);
+    for index in 0..5 {
+        write_arrow_ipc_fixture(
+            &temp.path().join(format!("data/{index:02}.arrow")),
+            vec![Field::new("VendorID", DataType::Int32, false)],
+            vec![Arc::new(Int32Array::from(vec![index]))],
+        );
+    }
+    let resource = compile_single_project_resource(temp.path());
+    let artifacts = discover_default_file_schema_artifacts_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        Default::default(),
+    )
+    .unwrap();
+    let manifest = artifacts.discovery_manifest.unwrap();
+    assert_eq!(manifest.file_coverage, DiscoveryFileCoverage::SampledFiles);
+    assert_eq!(manifest.selector.unwrap().sample_files, 2);
+    assert_eq!(
+        manifest
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.participation == DiscoveryParticipation::Observed)
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn pinned_schema_preparation_reuses_snapshot_without_observing_runtime_files() {
+    let temp = tempfile::tempdir().unwrap();
+    write_sampled_discover_project(temp.path(), "parquet", "*.parquet", 2);
+    write_parquet_fixture(
+        &temp.path().join("data/a.parquet"),
+        vec![Field::new("value", DataType::Int64, false)],
+        vec![Arc::new(Int64Array::from(vec![1]))],
+    );
+    write_parquet_fixture(
+        &temp.path().join("data/middle.parquet"),
+        vec![Field::new("value", DataType::Utf8, false)],
+        vec![Arc::new(StringArray::from(vec!["drift"]))],
+    );
+    write_parquet_fixture(
+        &temp.path().join("data/z.parquet"),
+        vec![Field::new("value", DataType::Int64, false)],
+        vec![Arc::new(Int64Array::from(vec![2]))],
+    );
+    let resource = compile_single_project_resource(temp.path());
+    let initial = discover_default_file_schema_artifacts_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        Default::default(),
+    )
+    .unwrap();
+    let initial_manifest = initial.discovery_manifest.as_ref().unwrap();
+    assert_eq!(
+        initial_manifest.file_coverage,
+        DiscoveryFileCoverage::SampledFiles
+    );
+    assert_eq!(
+        initial_manifest.candidates[1].participation,
+        DiscoveryParticipation::Unobserved
+    );
+    write_schema_discovery_artifacts(temp.path(), &initial).unwrap();
+    let pinned = resource.with_schema_source_and_schema(
+        SchemaSource::Discovered {
+            snapshot: initial.discovery.snapshot.reference.clone(),
+        },
+        Arc::clone(&initial.discovery.normalized_schema),
+    );
+
+    fs::remove_dir_all(temp.path().join("data")).unwrap();
+    let prepared = prepare_pinned_resource_schema_artifacts(temp.path(), &pinned).unwrap();
+    assert_eq!(
+        prepared.discovery_manifest().unwrap().reference(),
+        initial_manifest.reference()
+    );
+    assert_eq!(prepared.resource().schema(), pinned.schema());
+    assert!(prepared.resource().effective_schema_runtime().is_none());
+    let expected_baseline_hashes = initial_manifest
+        .candidates
+        .iter()
+        .filter_map(|candidate| candidate.physical_schema_hash.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        prepared
+            .resource()
+            .baseline_observation_schema_catalog()
+            .iter()
+            .map(|entry| entry.physical_schema_hash.clone())
+            .collect::<BTreeSet<_>>(),
+        expected_baseline_hashes
+    );
+}
+
+#[test]
+fn sampled_probe_budget_failure_does_not_substitute_an_unselected_candidate() {
+    let temp = tempfile::tempdir().unwrap();
+    write_sampled_discover_project(temp.path(), "parquet", "*.parquet", 1);
+    for index in 0..5 {
+        write_vendor_parquet(&temp.path().join(format!("data/{index:02}.parquet")));
+    }
+    let resource = compile_single_project_resource(temp.path());
+    let error = discover_default_file_schema_artifacts_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        SchemaDiscoveryExecutionOptions::new()
+            .with_budget(DiscoveryExecutorBudget::new(8, 1_000, 8, 1).unwrap()),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("sampled_files + format_metadata files discovery failed"));
+    assert!(error.contains("without substitution"));
+    assert_eq!(error.matches(": failed:").count(), 1);
+    assert!(!temp.path().join(".cdf/schemas").exists());
+}
+
+#[test]
+fn sampled_initial_pin_reports_every_selected_incompatibility_without_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    write_sampled_discover_project(temp.path(), "parquet", "*.parquet", 2);
+    write_parquet_fixture(
+        &temp.path().join("data/a.parquet"),
+        vec![Field::new("value", DataType::Int64, false)],
+        vec![Arc::new(Int64Array::from(vec![1]))],
+    );
+    write_vendor_parquet(&temp.path().join("data/middle.parquet"));
+    write_parquet_fixture(
+        &temp.path().join("data/z.parquet"),
+        vec![Field::new("value", DataType::Utf8, false)],
+        vec![Arc::new(StringArray::from(vec!["incompatible"]))],
+    );
+    let resource = compile_single_project_resource(temp.path());
+    let error = discover_default_file_schema_artifacts_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        Default::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("initial sampled schema pin"));
+    assert!(error.contains("a.parquet"));
+    assert!(error.contains("z.parquet"));
+    assert!(error.contains("candidate verdicts"));
+    assert!(!temp.path().join(".cdf/schemas").exists());
+}
+
+#[test]
+fn all_files_discovery_uses_exact_verified_baseline_and_schema_only_effective_hash() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "parquet", "*.parquet");
+    write_vendor_parquet(&temp.path().join("data/a.parquet"));
+    let resource = compile_single_project_resource(temp.path());
+    let authority_temp = tempfile::tempdir().unwrap();
+    let baseline_artifact = SchemaSnapshotArtifact::new(
+        &resource.descriptor().resource_id,
+        resource.schema().as_ref(),
+        BTreeMap::new(),
+    )
+    .unwrap();
+    let baseline_store = SchemaSnapshotStore::new(authority_temp.path());
+    baseline_store.write(&baseline_artifact).unwrap();
+    let (_, verified_baseline) = baseline_store
+        .read_with_verified_baseline(&baseline_artifact.reference())
+        .unwrap();
+    assert_eq!(
+        verified_baseline.resource_id(),
+        &resource.descriptor().resource_id
+    );
+    let verified_baseline_hash = verified_baseline.schema_hash().clone();
+
+    let artifacts = discover_default_file_schema_artifacts_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        SchemaDiscoveryExecutionOptions::new().with_verified_baseline(verified_baseline),
+    )
+    .unwrap();
+    let manifest = artifacts.discovery_manifest.as_ref().unwrap();
+    assert_eq!(manifest.baseline_schema_hash, Some(verified_baseline_hash));
+
+    let mut schema_only_metadata = artifacts.discovery.snapshot.artifact.metadata.clone();
+    schema_only_metadata.remove("cdf:discovery_manifest_hash");
+    schema_only_metadata.remove("cdf:discovery_manifest_path");
+    let schema_only = SchemaSnapshotArtifact::new(
+        &resource.descriptor().resource_id,
+        artifacts.discovery.normalized_schema.as_ref(),
+        schema_only_metadata,
+    )
+    .unwrap();
+    assert_eq!(
+        manifest.effective_schema_hash.as_ref(),
+        Some(&schema_only.schema_hash)
+    );
+    assert_ne!(
+        manifest.effective_schema_hash.as_ref(),
+        Some(&artifacts.discovery.snapshot.artifact.schema_hash)
+    );
+
+    let other_resource_id = ResourceId::new("other.resource").unwrap();
+    let other_artifact = SchemaSnapshotArtifact::new(
+        &other_resource_id,
+        resource.schema().as_ref(),
+        BTreeMap::new(),
+    )
+    .unwrap();
+    baseline_store.write(&other_artifact).unwrap();
+    let (_, wrong_baseline) = baseline_store
+        .read_with_verified_baseline(&other_artifact.reference())
+        .unwrap();
+    let wrong_resource = discover_default_file_schema_artifacts_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        SchemaDiscoveryExecutionOptions::new().with_verified_baseline(wrong_baseline),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(wrong_resource.contains("belongs to resource `other.resource`"));
+    assert!(wrong_resource.contains("discovery is for `local.events`"));
+}
+
+#[test]
+fn all_files_local_parquet_discovery_aggregates_widening_missing_metadata_and_set_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "parquet", "*.parquet");
+    write_parquet_fixture(
+        &temp.path().join("data/a.parquet"),
+        vec![
+            Field::new("VendorID", DataType::Int32, false)
+                .with_metadata(HashMap::from([("source-tag".to_owned(), "a".to_owned())])),
+        ],
+        vec![Arc::new(Int32Array::from(vec![1_i32, 2_i32]))],
+    );
+    write_parquet_fixture(
+        &temp.path().join("data/b.parquet"),
+        vec![
+            Field::new("VendorID", DataType::Int64, false)
+                .with_metadata(HashMap::from([("source-tag".to_owned(), "b".to_owned())])),
+            Field::new("Note", DataType::Utf8, false),
+        ],
+        vec![
+            Arc::new(Int64Array::from(vec![3_i64, 4_i64])),
+            Arc::new(StringArray::from(vec!["x", "y"])),
+        ],
+    );
+    let resource = compile_single_project_resource(temp.path());
+    let options = SchemaDiscoveryExecutionOptions::new();
+    let first = discover_default_file_schema_artifacts_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        options.clone(),
+    )
+    .unwrap();
+    assert!(!temp.path().join(".cdf/schemas").exists());
+    assert_eq!(
+        first.discovery.normalized_schema.field(0).data_type(),
+        &DataType::Int64
+    );
+    assert_eq!(first.discovery.normalized_schema.field(1).name(), "note");
+    assert!(first.discovery.normalized_schema.field(1).is_nullable());
+    let first_manifest = first.discovery_manifest.as_ref().unwrap();
+    assert_eq!(first_manifest.candidates.len(), 2);
+    assert!(
+        first_manifest.candidates[0]
+            .metadata_variance
+            .iter()
+            .any(|variance| variance.key == "source-tag")
+    );
+    assert!(
+        first_manifest.candidates[0]
+            .schema_verdict
+            .as_ref()
+            .unwrap()
+            .details["field_verdicts"]
+            .contains("widened")
+    );
+    assert!(
+        first_manifest.candidates[0]
+            .schema_verdict
+            .as_ref()
+            .unwrap()
+            .details["field_verdicts"]
+            .contains("missing_null")
+    );
+    let repeated = discover_default_file_schema_artifacts_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        options.clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        repeated.discovery_manifest.as_ref().unwrap().manifest_hash,
+        first_manifest.manifest_hash
+    );
+
+    write_parquet_fixture(
+        &temp.path().join("data/c.parquet"),
+        vec![Field::new("VendorID", DataType::Int64, false)],
+        vec![Arc::new(Int64Array::from(vec![5_i64]))],
+    );
+    let added = discover_default_file_schema_artifacts_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        options.clone(),
+    )
+    .unwrap();
+    assert_ne!(
+        added.discovery_manifest.as_ref().unwrap().manifest_hash,
+        first_manifest.manifest_hash
+    );
+    fs::remove_file(temp.path().join("data/c.parquet")).unwrap();
+    fs::remove_file(temp.path().join("data/a.parquet")).unwrap();
+    let removed = discover_default_file_schema_artifacts_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        options.clone(),
+    )
+    .unwrap();
+    assert_ne!(
+        removed.discovery_manifest.as_ref().unwrap().manifest_hash,
+        first_manifest.manifest_hash
+    );
+    write_parquet_fixture(
+        &temp.path().join("data/a.parquet"),
+        vec![Field::new("VendorID", DataType::Int32, false)],
+        vec![Arc::new(Int32Array::from(vec![1_i32, 2_i32, 3_i32]))],
+    );
+    let changed = discover_default_file_schema_artifacts_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        options,
+    )
+    .unwrap();
+    assert_ne!(
+        changed.discovery_manifest.as_ref().unwrap().manifest_hash,
+        first_manifest.manifest_hash
+    );
+}
+
+#[test]
+fn all_files_gzip_parquet_discovery_joins_every_transformed_candidate() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "parquet", "*.parquet.gz");
+    for (name, field, values) in [
+        (
+            "a",
+            Field::new("VendorID", DataType::Int32, false),
+            Arc::new(Int32Array::from(vec![1_i32, 2_i32])) as ArrayRef,
+        ),
+        (
+            "b",
+            Field::new("VendorID", DataType::Int64, false),
+            Arc::new(Int64Array::from(vec![3_i64, 4_i64])) as ArrayRef,
+        ),
+    ] {
+        let raw = temp.path().join(format!("data/{name}.parquet"));
+        write_parquet_fixture(&raw, vec![field], vec![values]);
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        std::io::Write::write_all(&mut encoder, &fs::read(&raw).unwrap()).unwrap();
+        fs::write(
+            temp.path().join(format!("data/{name}.parquet.gz")),
+            encoder.finish().unwrap(),
+        )
+        .unwrap();
+        fs::remove_file(raw).unwrap();
+    }
+    let resource = compile_single_project_resource(temp.path());
+    let artifacts = discover_default_file_schema_artifacts_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        SchemaDiscoveryExecutionOptions::default(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        artifacts.discovery.normalized_schema.field(0).data_type(),
+        &DataType::Int64
+    );
+    let manifest = artifacts.discovery_manifest.unwrap();
+    assert_eq!(manifest.candidates.len(), 2);
+    assert!(manifest.candidates.iter().all(|candidate| {
+        candidate.participation == DiscoveryParticipation::Observed
+            && candidate.canonical_location.ends_with(".parquet.gz")
+    }));
+}
+
+#[test]
+fn all_files_local_parquet_discovery_budget_and_incompatibility_fail_without_artifacts() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "parquet", "*.parquet");
+    write_vendor_parquet(&temp.path().join("data/a.parquet"));
+    write_parquet_fixture(
+        &temp.path().join("data/b.parquet"),
+        vec![Field::new("VendorID", DataType::Utf8, false)],
+        vec![Arc::new(StringArray::from(vec!["one", "two"]))],
+    );
+    let resource = compile_single_project_resource(temp.path());
+    let incompatible = discover_default_file_schema_artifacts_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        Default::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(incompatible.contains("candidate verdicts"));
+    assert!(incompatible.contains("a.parquet"));
+    assert!(incompatible.contains("b.parquet"));
+    assert!(!temp.path().join(".cdf/schemas").exists());
+
+    write_vendor_parquet(&temp.path().join("data/b.parquet"));
+    let corrupt_path = temp.path().join("data/b.parquet");
+    let mut corrupt = fs::read(&corrupt_path).unwrap();
+    let footer_length = corrupt.len() - 8;
+    corrupt[footer_length..footer_length + 4].fill(0xff);
+    fs::write(&corrupt_path, corrupt).unwrap();
+    let malformed = discover_default_file_schema_artifacts_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        Default::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(malformed.contains("a.parquet: observed"));
+    assert!(malformed.contains("b.parquet: failed"));
+    assert!(!temp.path().join(".cdf/schemas").exists());
+
+    fs::remove_file(temp.path().join("data/b.parquet")).unwrap();
+    let budget_error = discover_default_file_schema_artifacts_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        SchemaDiscoveryExecutionOptions::new()
+            .with_budget(DiscoveryExecutorBudget::new(8, 1_000, 8, 1).unwrap()),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        budget_error.contains("format confirmation"),
+        "{budget_error}"
+    );
+    assert!(
+        budget_error.contains("requires 482 bytes"),
+        "{budget_error}"
+    );
+    assert!(
+        budget_error.contains("configured 8-byte discovery budget"),
+        "{budget_error}"
+    );
+    assert!(!temp.path().join(".cdf/schemas").exists());
+}
+
+#[test]
+fn all_files_local_binary_discovery_detects_normalizer_collision_before_artifacts() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "parquet", "*.parquet");
+    write_parquet_fixture(
+        &temp.path().join("data/a.parquet"),
+        vec![Field::new("VendorID", DataType::Int32, false)],
+        vec![Arc::new(Int32Array::from(vec![1_i32]))],
+    );
+    write_parquet_fixture(
+        &temp.path().join("data/b.parquet"),
+        vec![Field::new("vendor_id", DataType::Int32, false)],
+        vec![Arc::new(Int32Array::from(vec![2_i32]))],
+    );
+    let resource = compile_single_project_resource(temp.path());
+    let error = discover_default_file_schema_artifacts_for_test(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        Default::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("collision"));
+    assert!(!temp.path().join(".cdf/schemas").exists());
+}
+
+#[test]
+fn generic_schema_discovery_dispatch_samples_rest_without_snapshot_write() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = r#"
+[project]
+name = "api"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.db"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/dev.duckdb"
+
+[resources."api.*"]
+source = "resources/api.toml"
+"#;
+    let rest = r#"
+[source.api]
+kind = "rest"
+base_url = "https://api.example.test"
+auth = { kind = "bearer", token = "secret://env/API_TOKEN" }
+egress_allowlist = ["api.example.test"]
+
+[resource.items]
+path = "/items"
+records = "$.items"
+cursor = { field = "updated_at", param = "since", ordering = "exact", lag = "0ms" }
+write_disposition = "append"
+trust = "governed"
+"#;
+    let config = parse_cdf_toml(project).unwrap();
+    let resolver = InMemoryResourceSourceResolver::new().with_toml("resources/api.toml", rest);
+    let mut resources =
+        compile_project_declarative_resources(&test_source_registry(), &config, &resolver).unwrap();
+    let resource = resources.remove(0);
+    let transport = RecordingTransport::new([json_response(
+        r#"{ "items": [
+            { "VendorID": 1, "updated_at": 10, "active": true, "score": 4.5 },
+            { "VendorID": 2, "updated_at": 20, "active": false, "score": null },
+            { "VendorID": 3, "updated_at": 30, "active": true }
+        ] }"#,
+    )]);
+    let discovery = discover_rest_schema_artifacts_for_test(
+        temp.path(),
+        &resource,
+        transport.clone(),
+        Arc::new(StaticSecretProvider::new([(
+            "secret://env/API_TOKEN",
+            "rest-discover-secret",
+        )])),
+        cdf_runtime::PreparedSourcePayloads::default(),
+    )
+    .unwrap()
+    .discovery;
+
+    assert!(!temp.path().join(".cdf/schemas").exists());
+    assert_eq!(
+        discovery.snapshot.artifact.metadata["probe"],
+        "registered-source-discovery"
+    );
+    assert_eq!(
+        discovery.snapshot.artifact.metadata["source_driver"],
+        "rest"
+    );
+    assert_eq!(
+        discovery.snapshot.artifact.metadata["cdf:normalizer"],
+        NORMALIZER_NAMECASE_V1
+    );
+    assert!(
+        discovery
+            .snapshot
+            .artifact
+            .schema
+            .fields
+            .iter()
+            .any(|field| field.name == "active")
+    );
+    let score = discovery
+        .snapshot
+        .artifact
+        .schema
+        .fields
+        .iter()
+        .find(|field| field.name == "score")
+        .unwrap();
+    assert!(score.nullable);
+    assert!(
+        discovery
+            .snapshot
+            .artifact
+            .schema
+            .fields
+            .iter()
+            .any(|field| field.name == "updated_at")
+    );
+    let vendor = discovery
+        .snapshot
+        .artifact
+        .schema
+        .fields
+        .iter()
+        .find(|field| field.name == "vendor_id")
+        .unwrap();
+    assert_eq!(vendor.metadata["cdf:source_name"], "VendorID");
+    assert_eq!(
+        discovery.snapshot.source_identity["driver.source_kind"],
+        "rest"
+    );
+    assert_eq!(discovery.snapshot.source_identity["driver.path"], "/items");
+    assert_eq!(
+        discovery.snapshot.source_identity["driver.sample_pages"],
+        "1"
+    );
+    assert_eq!(
+        discovery.snapshot.source_identity["driver.sample_records"],
+        "3"
+    );
+
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url, "https://api.example.test/items");
+    assert_eq!(
+        requests[0].headers.get("authorization").map(String::as_str),
+        Some("Bearer rest-discover-secret")
+    );
+    let artifact_text = serde_json::to_string(&discovery.snapshot.artifact).unwrap();
+    assert!(!artifact_text.contains("rest-discover-secret"));
+}
+
+#[test]
+fn generic_discover_prepare_autopins_rest_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = r#"
+[project]
+name = "api"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.db"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/dev.duckdb"
+
+[resources."api.*"]
+source = "resources/api.toml"
+"#;
+    let rest = r#"
+[source.api]
+kind = "rest"
+base_url = "https://api.example.test"
+
+[resource.items]
+path = "/items"
+records = "$.items"
+cursor = { field = "updated_at", param = "since", ordering = "exact", lag = "0ms" }
+write_disposition = "append"
+trust = "governed"
+"#;
+    let config = parse_cdf_toml(project).unwrap();
+    let resolver = InMemoryResourceSourceResolver::new().with_toml("resources/api.toml", rest);
+    let mut resources =
+        compile_project_declarative_resources(&test_source_registry(), &config, &resolver).unwrap();
+    let resource = resources.remove(0);
+    let transport = RecordingTransport::new([json_response(
+        r#"{ "items": [
+            { "VendorID": 1, "updated_at": 10 },
+            { "VendorID": 2, "updated_at": 20 }
+        ] }"#,
+    )]);
+    let prepared_payloads = cdf_runtime::PreparedSourcePayloads::default();
+    let mut artifacts = discover_rest_schema_artifacts_for_test(
+        temp.path(),
+        &resource,
+        transport.clone(),
+        Arc::new(EnvSecretProvider::from_map(
+            std::iter::empty::<(&str, &str)>(),
+        )),
+        prepared_payloads.clone(),
+    )
+    .unwrap();
+    let prepared_resource = compile_discovered_schema_artifacts(&resource, &mut artifacts).unwrap();
+    write_schema_discovery_artifacts(temp.path(), &artifacts).unwrap();
+    let prepared = PreparedDiscoveredResource {
+        resource: prepared_resource,
+        discovery: Some(artifacts.discovery),
+    };
+
+    let discovery = prepared.discovery.as_ref().unwrap();
+    let snapshot_path = temp.path().join(&discovery.snapshot.artifact.path);
+    assert!(snapshot_path.is_file());
+    let SchemaSource::Discovered { snapshot } = &prepared.resource.descriptor().schema_source
+    else {
+        panic!("expected REST auto-pin to set discovered schema source");
+    };
+    assert_eq!(
+        snapshot.schema_hash,
+        discovery.snapshot.artifact.schema_hash
+    );
+    assert_eq!(
+        prepared
+            .resource
+            .schema()
+            .field_with_name("vendor_id")
+            .unwrap()
+            .metadata()["cdf:source_name"],
+        "VendorID"
+    );
+    assert_eq!(transport.requests().len(), 1);
+    assert_eq!(prepared_payloads.pending_count().unwrap(), 1);
+
+    let execution = test_execution_services();
+    let runtime_transport = transport.clone();
+    let mut registry = cdf_runtime::SourceRegistry::new();
+    registry
+        .register(
+            cdf_source_rest::RestSourceDriver::new(move || Ok(Box::new(runtime_transport.clone())))
+                .unwrap(),
+        )
+        .unwrap();
+    let source_plan = prepared.resource.source_plan().clone();
+    let resolution = cdf_runtime::SourceResolutionContext::new(
+        temp.path(),
+        Arc::new(EnvSecretProvider::from_map(
+            std::iter::empty::<(&str, &str)>(),
+        )),
+        &execution,
+        Arc::new(cdf_http::EgressAllowlist::allow_any()),
+    )
+    .with_prepared_payloads(prepared_payloads.clone());
+    let runtime = registry.resolve(&source_plan, &resolution).unwrap();
+    let plan = live_plan_for_stream(runtime.as_ref(), &source_plan, "pkg-rest-discovery-handoff");
+    let executable = executable_partition_for_test(runtime.as_ref(), &plan.scan, 0);
+    let stream = futures_executor::block_on(runtime.open_executable(executable)).unwrap();
+    let batches = futures_executor::block_on_stream(stream)
+        .collect::<Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(
+        batches
+            .iter()
+            .map(|batch| batch.header.row_count)
+            .sum::<u64>(),
+        2
+    );
+    assert_eq!(transport.requests().len(), 1);
+    assert_eq!(prepared_payloads.pending_count().unwrap(), 0);
+    drop(batches);
+    assert_eq!(execution.memory().snapshot().current_bytes, 0);
+}
+
+#[test]
+fn pinned_schema_preparation_requires_verified_snapshot_before_source_contact() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "json", "*.missing");
+    let resource = compile_single_project_resource(temp.path());
+    let snapshot = cdf_kernel::SchemaSnapshotReference {
+        schema_hash: SchemaHash::new(
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .unwrap(),
+        path: ".cdf/schemas/missing.json".to_owned(),
+        metadata: BTreeMap::new(),
+    };
+    let pinned = resource.with_schema_source_and_schema(
+        SchemaSource::Discovered {
+            snapshot: snapshot.clone(),
+        },
+        resource.schema(),
+    );
+
+    let error = prepare_pinned_resource_schema(temp.path(), &pinned).unwrap_err();
+
+    assert!(
+        error.message.contains(".cdf/schemas/missing.json"),
+        "{}",
+        error.message
+    );
+    assert!(!temp.path().join(".cdf").exists());
+}
+
+#[test]
+fn generic_schema_discovery_dispatch_fails_closed_for_non_postgres_sql_dialect() {
+    let project = r#"
+[project]
+name = "warehouse"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.db"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/dev.duckdb"
+
+[resources."warehouse.*"]
+source = "resources/sql.toml"
+"#;
+    let sql = r#"
+[source.warehouse]
+kind = "sql"
+connection = "secret://env/WAREHOUSE_URL"
+dialect = "mysql"
+
+[resource.orders]
+table = "orders"
+write_disposition = "append"
+trust = "governed"
+"#;
+    let config = parse_cdf_toml(project).unwrap();
+    let resolver = InMemoryResourceSourceResolver::new().with_toml("resources/sql.toml", sql);
+    let error = compile_project_declarative_resources(&test_source_registry(), &config, &resolver)
+        .unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("$.source.dialect"), "{message}");
+    assert!(
+        message.contains("declared constant `postgres`"),
+        "{message}"
+    );
+}
+
+#[test]
+fn recorded_http_multifile_packages_are_jobs_invariant() {
+    let temp = tempfile::tempdir().unwrap();
+    write_http_discover_project(temp.path(), "");
+    fs::write(
+        temp.path().join("resources/files.toml"),
+        r#"
+[source.remote]
+kind = "files"
+root = "https://data.example.test/events"
+
+[resource.events]
+glob = "part-{01..04}.ndjson.gz"
+format = "ndjson"
+compression = "gzip"
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "id", type = "int64", nullable = false },
+  { name = "payload", type = "utf8", nullable = false },
+] }
+"#,
+    )
+    .unwrap();
+    let rows_per_file = 8_192;
+    let mut source = Vec::with_capacity(rows_per_file * 80);
+    for id in 0..rows_per_file {
+        source.extend_from_slice(
+            format!(
+                r#"{{"id":{id},"payload":"payload-{id:08x}-0123456789abcdef0123456789abcdef"}}"#
+            )
+            .as_bytes(),
+        );
+        source.push(b'\n');
+    }
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::none());
+    std::io::Write::write_all(&mut encoder, &source).unwrap();
+    let encoded = encoder.finish().unwrap();
+    let resource = compile_single_project_resource(temp.path());
+
+    let run = |jobs: u16| {
+        // Cover the declared source and segment working sets so this test exercises the jobs-4
+        // topology instead of the intentionally serial low-memory fallback.
+        let execution = test_execution_services_with_slots(4, 2 * 1024 * 1024 * 1024)
+            .with_run_job_ceiling(jobs)
+            .unwrap();
+        let transport = RecordingHttpFileTransport::new(encoded.clone());
+        let dependencies = file_dependencies_with_execution(
+            FileTransportFacade::new().with_http_transport(transport.clone()),
+            execution.clone(),
+        );
+        let runtime = resolve_file_resource_for_test(&resource, dependencies);
+        let plan = live_plan_for_stream(runtime.as_ref(), resource.source_plan(), "pkg-http-jobs")
+            .bind_operator_graph(
+                resource.source_plan(),
+                &cdf_runtime::DestinationRuntimeCapabilities::default(),
+            )
+            .unwrap();
+        assert_eq!(plan.scan.partition_count().unwrap(), 4);
+        let source_execution = plan.compiled_source_execution.as_ref().unwrap();
+        let scheduler = cdf_runtime::resolve_runtime_scheduler(
+            plan.scan.partition_count().unwrap(),
+            source_execution.execution_capabilities(),
+            &cdf_runtime::DestinationRuntimeCapabilities::default(),
+            &execution,
+            Some(jobs),
+        )
+        .unwrap();
+        assert_eq!(scheduler.effective_jobs.jobs, jobs);
+        let run_root = temp.path().join(format!("jobs-{jobs}"));
+        let pre_finalize =
+            |_: &cdf_package::PackageBuilder, _: cdf_engine::EnginePackageDraft<'_>| Ok(());
+        let output = futures_executor::block_on(
+            cdf_engine::execute_to_package_with_segment_positions_and_pre_finalize(
+                &plan,
+                runtime.as_ref(),
+                run_root.join("package"),
+                &pre_finalize,
+                cdf_engine::EngineExecutionConfig::default()
+                    .with_execution_services(execution)
+                    .with_scheduler_resolution(scheduler)
+                    .new_invocation(),
+            ),
+        )
+        .unwrap();
+        let progress = transport.sequential_progress();
+        assert_eq!(progress.streams_completed, 4);
+        assert_eq!(progress.streams_closed, 4);
+        assert!(progress.peak_active_streams <= jobs);
+        assert_eq!(transport.current_memory_bytes(), 0);
+        (output, progress)
+    };
+
+    let (serial, serial_progress) = run(1);
+    let (parallel, parallel_progress) = run(4);
+    assert_eq!(serial_progress.peak_active_streams, 1);
+    assert!(
+        parallel_progress.peak_active_streams >= 2,
+        "progress={parallel_progress:?}, frontier={:?}",
+        parallel.source_frontier
+    );
+    assert_eq!(
+        parallel.output.profile.output_rows,
+        u64::try_from(4 * rows_per_file).unwrap()
+    );
+    assert_eq!(
+        parallel.output.manifest.package_hash,
+        serial.output.manifest.package_hash
+    );
+    assert_eq!(
+        engine_identity_segments(&parallel.output),
+        engine_identity_segments(&serial.output)
+    );
+    assert_eq!(parallel.output.profile, serial.output.profile);
+    assert_eq!(parallel.output.lineage, serial.output.lineage);
+    assert_eq!(parallel.segment_positions, serial.segment_positions);
+    assert_eq!(
+        parallel.output.terminal_schema_quarantines,
+        serial.output.terminal_schema_quarantines
+    );
+}

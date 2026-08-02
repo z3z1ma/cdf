@@ -1,5 +1,7 @@
-use crate::api::*;
-use crate::*;
+use cdf_kernel::{CdfError, Result, TargetName, WriteDisposition};
+use duckdb::Connection;
+
+use crate::{MAIN_SCHEMA, models::TargetRef};
 
 pub(crate) fn parse_target(target: &TargetName) -> Result<TargetRef> {
     let parts = target.as_str().split('.').collect::<Vec<_>>();
@@ -16,6 +18,16 @@ pub(crate) fn parse_target(target: &TargetName) -> Result<TargetRef> {
             "DuckDB target {} must be a namecase-v1 table or schema.table identifier",
             target.as_str()
         ))),
+    }
+}
+
+impl TargetRef {
+    pub(crate) fn sql_name(&self) -> String {
+        if self.schema.as_str() == MAIN_SCHEMA {
+            quote_ident(&self.table)
+        } else {
+            format!("{}.{}", quote_ident(&self.schema), quote_ident(&self.table))
+        }
     }
 }
 

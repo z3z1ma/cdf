@@ -1,7 +1,7 @@
 use arrow_schema::{DataType, Field, Schema, UnionMode};
 use cdf_kernel::{CdfError, Result};
 
-use crate::DuckDbNativeResources;
+use crate::models::DuckDbNativeResources;
 
 /// Destination-local admission for DuckDB's canonical scan/sink pipeline.
 ///
@@ -199,7 +199,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::DuckDbNativeResourceOverrides;
+    use crate::models::DuckDbNativeResourceOverrides;
     use arrow_schema::{DataType, Field, Schema};
 
     fn resources(memory: u64, threads: i64, scan_threads: Option<usize>) -> DuckDbNativeResources {

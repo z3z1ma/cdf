@@ -53,5 +53,31 @@ pub use statistics_pruning::{
     VerifiedPackageSegmentPruning, for_each_verified_package_segment_pruning,
 };
 pub use table_provider::{QueryableResourceTableProvider, queryable_resource_table_provider};
-pub use types::*;
-pub use worker_task::*;
+pub(crate) use types::CompiledSchemaAdmissionOutcome;
+pub use types::{
+    COMPILED_SCHEMA_ADMISSION_VERSION, CompiledArrowSchema, CompiledSchemaAdmissionPlan,
+    CompiledSchemaQuarantineEvidence, CompiledStreamAdmissionEvidence, DEFAULT_PREVIEW_MAX_BATCHES,
+    DEFAULT_PREVIEW_MAX_BYTES, DEFAULT_PREVIEW_MAX_ROWS, DrainPartitionResume,
+    ENGINE_EXECUTION_EVIDENCE_VERSION, ENGINE_PARTITION_EVIDENCE_VERSION,
+    EffectiveSchemaObservationCoercion, EffectiveSchemaPlanEvidence, EngineDrainEpoch,
+    EngineDrainEpochOutcome, EngineExecutionConfig, EngineExecutionEvidence,
+    EngineExecutionInvocation, EnginePackageDraft, EnginePartitionDrainEvidence,
+    EnginePartitionEvidence, EnginePlan, EnginePlanInput, EnginePreviewLimits, EnginePreviewOutput,
+    EnginePreviewSelectedPartition, EnginePreviewSelectionEvidence, EngineRunOutput,
+    EngineRunOutputWithSegmentPositions, EngineSchemaAuthority, EngineSegmentPosition,
+    EstimateExplain, ExecutionProfile, ExplainData, LineageInputObservation, LineageSummary,
+    OperatorNode, PREVIEW_POLICY_BALANCED_STRATIFIED_V1, PartitionExplain,
+    PhysicalObservationEvidence, PredicateExplain, SCHEMA_ADMISSION_CACHE_KEY_FIELDS,
+    SchemaQuarantineObservationEvidence, StreamAdmissionCompletion,
+    StreamAdmissionObservationEvidence,
+};
+pub use worker_task::{
+    AdmittedEnginePartitionEvidence, EngineIsolatedSegmentExecutor, EnginePartitionTaskInput,
+    EngineSegmentTaskInput, EngineWorkerAdmissionVerifier, EngineWorkerArtifactAuthority,
+    EngineWorkerOutputAuthority, ReconstructedEngineSegmentProgram,
+    ReconstructedEngineWorkerProgram, VerifiedCanonicalSegmentArtifact,
+    VerifiedEnginePartitionEvidenceArtifact, VerifiedPreparedSegmentArtifact,
+    VerifiedWorkerCompilerArtifact, WorkerCompilerArtifactWriter,
+    WorkerDecodeUnitAuthorityArtifact, WorkerNormalizationArtifact, WorkerSegmentAuthorityArtifact,
+    compile_engine_partition_task, compile_engine_segment_task,
+};

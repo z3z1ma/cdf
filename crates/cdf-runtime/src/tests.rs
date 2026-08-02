@@ -1,4 +1,5 @@
 use crate::prelude::*;
+use crate::staging_lease::combine_cleanup_release;
 use arrow_schema::{DataType, Field};
 use cdf_kernel::{
     BatchStream, CommitCounts, ConcurrencyLimit, DeliveryGuarantee, DestinationId,

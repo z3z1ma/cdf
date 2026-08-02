@@ -1,12 +1,18 @@
-use crate::api::*;
-use crate::*;
 use arrow_array::{
-    BinaryViewArray, Date64Array, Decimal32Array, Decimal64Array, Decimal128Array,
-    DurationMicrosecondArray, DurationMillisecondArray, DurationNanosecondArray,
-    DurationSecondArray, FixedSizeBinaryArray, IntervalDayTimeArray, IntervalMonthDayNanoArray,
-    IntervalYearMonthArray, StringViewArray,
+    Array, BinaryArray, BinaryViewArray, BooleanArray, Date32Array, Date64Array, Decimal32Array,
+    Decimal64Array, Decimal128Array, DurationMicrosecondArray, DurationMillisecondArray,
+    DurationNanosecondArray, DurationSecondArray, FixedSizeBinaryArray, Float32Array, Float64Array,
+    Int8Array, Int16Array, Int32Array, Int64Array, IntervalDayTimeArray, IntervalMonthDayNanoArray,
+    IntervalYearMonthArray, LargeBinaryArray, LargeStringArray, StringArray, StringViewArray,
+    Time32MillisecondArray, Time32SecondArray, Time64MicrosecondArray, Time64NanosecondArray,
+    TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
+    TimestampSecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
 };
-use arrow_schema::IntervalUnit;
+use arrow_schema::{DataType, IntervalUnit, TimeUnit};
+use cdf_kernel::{CdfError, Result};
+use duckdb::types::{TimeUnit as DuckTimeUnit, Value};
+
+use crate::models::CellValue;
 
 pub(crate) fn cell_value(array: &dyn Array, data_type: &DataType, row: usize) -> Result<CellValue> {
     if array.is_null(row) {

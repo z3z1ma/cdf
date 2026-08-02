@@ -1,3 +1,5 @@
+#![doc = "Shared benchmark measurement contracts, host probes, and child-workload runners for CDF. Benchmark suites and fixtures remain in `cdf-benchmarks`."]
+
 use std::{collections::BTreeMap, error::Error};
 
 use serde::{Deserialize, Serialize};

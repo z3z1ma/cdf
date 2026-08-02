@@ -13,7 +13,10 @@ use cdf_runtime::{
     absolute_under_root, artifact_hash,
 };
 
-use crate::{ParquetCompression, ParquetDestination, compression::PHYSICAL_PLAN_VERSION};
+use crate::{
+    compression::{PHYSICAL_PLAN_VERSION, ParquetCompression},
+    models::ParquetDestination,
+};
 
 pub struct ParquetRuntimeDriver;
 

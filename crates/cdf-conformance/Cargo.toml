@@ -47,6 +47,7 @@ futures-executor = "0.3.32"
 parquet = { version = "58.3.0", default-features = false, features = ["arrow"] }
 postgres = "0.19"
 proptest = "1.11.0"
+syn = { version = "2.0.117", features = ["full"] }
 tempfile = "3.27.0"
 
 [lints]

@@ -1,26 +1,24 @@
-use crate::*;
-use crate::{api::*, ddl::*, validate::*};
+use cdf_kernel::{
+    CapabilitySupport, CdfError, CommitPlan, ConcurrencyLimit, CorrectionCommitSession,
+    DestinationCommitRequest, DestinationCorrectionCommitPlan, DestinationCorrectionCommitRequest,
+    DestinationCorrectionReceiptEvidence, DestinationId, DestinationProtocol,
+    DestinationProtocolCapabilities, DestinationResidualReadback, DestinationSheet,
+    IdempotencySupport, IdentifierRules, Receipt, ReceiptVerification, Result,
+    RowProvenanceAddress, TargetName, TransactionSupport, WriteDisposition,
+};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PostgresDestination {
-    pub(crate) sheet: PostgresDestinationSheet,
-    #[serde(skip)]
-    pub(crate) database_url: Option<String>,
-    #[serde(skip)]
-    pub(crate) pending_correction: Option<PostgresCorrectionCommitRequest>,
-    #[serde(skip)]
-    pub(crate) execution: Option<cdf_runtime::ExecutionServices>,
-}
-
-impl PartialEq for PostgresDestination {
-    fn eq(&self, other: &Self) -> bool {
-        self.sheet == other.sheet
-            && self.database_url == other.database_url
-            && self.pending_correction == other.pending_correction
-    }
-}
-
-impl Eq for PostgresDestination {}
+use crate::{
+    POSTGRES_DESTINATION_ID,
+    api::plan_postgres_load,
+    corrections::{postgres_correction_capabilities, validate_postgres_correction_begin},
+    ddl::system_table_migrations,
+    models::{
+        PostgresCorrectionCommitRequest, PostgresDestination, PostgresDestinationSheet,
+        PostgresTypeFidelity, PostgresTypeMapping,
+    },
+    plan::{PostgresLoadPlan, PostgresLoadPlanInput},
+    validate::{delivery_guarantee, ensure_supported_disposition, plan_id},
+};
 
 impl Default for PostgresDestination {
     fn default() -> Self {
@@ -148,13 +146,6 @@ impl DestinationProtocol for PostgresDestination {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PostgresDestinationSheet {
-    pub kernel: DestinationSheet,
-    pub type_mappings: Vec<PostgresTypeMapping>,
-    pub migration_operations: Vec<String>,
-}
-
 pub fn postgres_destination_sheet() -> PostgresDestinationSheet {
     let type_mappings = postgres_type_mappings();
     let kernel = DestinationSheet {
@@ -192,70 +183,6 @@ pub fn postgres_destination_sheet() -> PostgresDestinationSheet {
             "add_nullable_column".to_owned(),
             "transactional_truncate_insert_replace".to_owned(),
         ],
-    }
-}
-
-pub fn postgres_correction_capabilities() -> DestinationCorrectionCapabilities {
-    DestinationCorrectionCapabilities::default()
-        .with_row_provenance(RowProvenanceCapabilities::new(
-            CapabilitySupport::Supported,
-            CapabilitySupport::Supported,
-        ))
-        .with_residual_readback(CapabilitySupport::Supported)
-        .with_strategy(CorrectionStrategyCapability::new(
-            CorrectionStrategy::InPlaceUpdate,
-            TransactionSupport::AtomicPackage,
-            IdempotencySupport::PackageToken,
-        ))
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PostgresTypeMapping {
-    pub arrow_type: String,
-    pub postgres_type: String,
-    pub fidelity: PostgresTypeFidelity,
-}
-
-impl PostgresTypeMapping {
-    pub fn new(
-        arrow_type: impl Into<String>,
-        postgres_type: impl Into<String>,
-        fidelity: PostgresTypeFidelity,
-    ) -> Self {
-        Self {
-            arrow_type: arrow_type.into(),
-            postgres_type: postgres_type.into(),
-            fidelity,
-        }
-    }
-
-    pub fn as_kernel_mapping(&self) -> TypeMapping {
-        TypeMapping {
-            arrow_type: self.arrow_type.clone(),
-            destination_type: self.postgres_type.clone(),
-            fidelity: self.fidelity.as_kernel_fidelity(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PostgresTypeFidelity {
-    Exact,
-    Widening,
-    LossyRequiresContractAllowance,
-    Unsupported,
-}
-
-impl PostgresTypeFidelity {
-    fn as_kernel_fidelity(&self) -> TypeMappingFidelity {
-        match self {
-            Self::Exact | Self::Widening => TypeMappingFidelity::Lossless,
-            Self::LossyRequiresContractAllowance => {
-                TypeMappingFidelity::LossyRequiresContractAllowance
-            }
-            Self::Unsupported => TypeMappingFidelity::Unsupported,
-        }
     }
 }
 

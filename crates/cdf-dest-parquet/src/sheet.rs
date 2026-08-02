@@ -1,4 +1,11 @@
-use crate::*;
+use cdf_kernel::{
+    CapabilitySupport, ConcurrencyLimit, CorrectionStrategy, CorrectionStrategyCapability,
+    DestinationId, DestinationSheet, IdempotencySupport, IdentifierRules, ObjectKeyRules, Result,
+    RowProvenanceCapabilities, TransactionSupport, TypeMapping, TypeMappingFidelity,
+    WriteDisposition,
+};
+
+use crate::DESTINATION_ID;
 
 pub(crate) fn parquet_sheet() -> Result<DestinationSheet> {
     Ok(DestinationSheet {

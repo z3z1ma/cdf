@@ -1,3 +1,5 @@
+#![doc = "Native Arrow IPC file and stream format drivers for CDF. This crate owns IPC detection, schema discovery, decode planning, and decoding, while transport and run scheduling remain runtime responsibilities."]
+
 mod stream_driver;
 
 pub use stream_driver::ArrowIpcStreamFormatDriver;

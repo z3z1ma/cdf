@@ -1,10 +1,12 @@
-use super::{
-    destinations::{
-        DestinationCommitPlanningInputs, ProjectDestinationDescription, ResolvedProjectDestination,
-    },
-    prelude::*,
+use super::destinations::{
+    DestinationCommitPlanningInputs, ProjectDestinationDescription, ResolvedProjectDestination,
 };
-use cdf_kernel::{CommitPlan, DestinationSheet, ForeignState};
+use cdf_engine::EnginePlan;
+use cdf_kernel::{
+    CHECKPOINT_STATE_VERSION, CdfError, CheckpointId, CommitPlan, DestinationCommitRequest,
+    DestinationSheet, ForeignState, IdempotencyToken, PackageHash, PipelineId, ResourceStream,
+    Result, SchemaHash, SegmentId, SourcePosition, StateDelta, StateSegment, TargetName,
+};
 
 const PLAN_PREVIEW_PACKAGE_HASH: &str = "sha256:plan-preview";
 const PLAN_PREVIEW_IDEMPOTENCY_TOKEN: &str = "sha256:plan-preview";

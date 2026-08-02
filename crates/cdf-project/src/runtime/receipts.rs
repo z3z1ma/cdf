@@ -1,5 +1,3 @@
-use super::prelude::*;
-
 pub(super) fn validate_destination_receipt_before_checkpoint(
     delta: &StateDelta,
     target: &TargetName,
@@ -92,3 +90,6 @@ fn validate_segment_acks(delta: &StateDelta, receipt: &Receipt) -> Result<()> {
 
     Ok(())
 }
+use std::collections::BTreeMap;
+
+use cdf_kernel::{CdfError, Receipt, Result, StateDelta, TargetName, WriteDisposition};

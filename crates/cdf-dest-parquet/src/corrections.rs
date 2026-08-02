@@ -1,30 +1,32 @@
-use crate::store::ObjectKeyEncoder;
-use crate::*;
+use std::collections::{BTreeMap, BTreeSet};
+
+use cdf_kernel::{
+    CapabilitySupport, CdfError, CommitCounts, CommitPlan, CorrectionCommitSession,
+    CorrectionStrategy, DESTINATION_CORRECTION_RECEIPT_EVIDENCE_KEY,
+    DESTINATION_CORRECTION_SIDECAR_RECEIPT_EVIDENCE_KEY, DeliveryGuarantee,
+    DestinationCorrectionCommitPlan, DestinationCorrectionCommitRequest,
+    DestinationCorrectionReceiptEvidence, DestinationCorrectionSidecarObjectEvidence,
+    DestinationCorrectionSidecarReceiptEvidence, DestinationId, DestinationProtocol,
+    IdempotencySupport, PackageHash, PlanId, PromotionId, Receipt, ReceiptId, Result, TargetName,
+    TransactionMetadata, VerifyClause,
+};
+use cdf_package_contract::{ReceiptDraft, ReceiptEvidence};
+use serde::{Deserialize, Serialize};
+
 use crate::{
+    CORRECTION_SIDECAR_MANIFEST_VERSION, CORRECTION_SIDECAR_VERSION, DESTINATION_ID,
     manifest::{
         ParquetCorrectionSidecar, ParquetCorrectionSidecarManifest, ParquetCorrectionSidecarObject,
         canonical_json_bytes, sha256_hex,
     },
+    models::{ParquetCorrectionContext, ParquetDestination, ReceiptVerification},
     sheet::parquet_correction_capabilities,
     store::{
-        CreateObjectOutcome, correction_receipt_key, correction_sidecar_manifest_key,
-        correction_sidecar_object_key, current_pointer_key, now_ms, version_manifest_key,
+        CreateObjectOutcome, ObjectKeyEncoder, correction_receipt_key,
+        correction_sidecar_manifest_key, correction_sidecar_object_key, current_pointer_key,
+        now_ms, version_manifest_key,
     },
 };
-use std::collections::BTreeSet;
-
-#[derive(Clone, Debug)]
-pub(crate) struct ParquetCorrectionContext {
-    pub(crate) request: DestinationCorrectionCommitRequest,
-    pub(crate) plan: DestinationCorrectionCommitPlan,
-    pub(crate) sidecar_bytes: Vec<u8>,
-    pub(crate) manifest: ParquetCorrectionSidecarManifest,
-    pub(crate) manifest_bytes: Vec<u8>,
-    pub(crate) manifest_key: String,
-    pub(crate) manifest_sha256: String,
-    pub(crate) receipt_key: String,
-    pub(crate) duplicate_receipt: Option<Receipt>,
-}
 
 struct ParquetCorrectionSession<'a> {
     destination: &'a ParquetDestination,

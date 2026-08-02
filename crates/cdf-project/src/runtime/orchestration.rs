@@ -6,21 +6,45 @@ use super::{
     destinations::ResolvedProjectDestination,
     hooks::{ReceiptVerifiedHook, RuntimeStage},
     ledger::{ProjectRunRecorder, ProjectRunRecorderContext, ValidationDepthTransitionRecord},
-    prelude::*,
     replay::{
         ActiveStagedIngress, PackageReplayHooks, PackageReplayStage, StagedIngressPlan,
         replay_package_with_runtime_and_staged, settle_existing_package_with_runtime,
     },
     resources::ProjectRunSource,
-    types::*,
+    types::{
+        FileManifestRunSummary, ProjectDrainEpochReport, ProjectDrainRunReport,
+        ProjectRunNoOpReason, ProjectRunNoOpReport, ProjectRunOutcome, ProjectRunReport,
+        ProjectRunRequest, RunTelemetryConfig,
+    },
     validation::{
         ensure_parent_directory, package_directory_exists, refuse_existing_package_dir,
         validate_explicit_package_id, validate_project_run_request,
     },
 };
 use cdf_contract::{AnomalyFact, ValidationDepth, ValidationProgram, ValidationTransitionTrigger};
-use cdf_kernel::ScopeLeaseStore;
-use std::{borrow::Cow, sync::Arc, time::Instant};
+use cdf_engine::{
+    EngineExecutionConfig, EnginePackageDraft, EnginePlan,
+    execute_to_package_with_segment_positions_and_pre_finalize,
+    execute_to_package_with_streaming_hooks,
+};
+use cdf_kernel::{
+    CdfError, Checkpoint, CheckpointId, CheckpointStore, DestinationId, FilePosition,
+    IncrementalShape, PartitionPlan, PipelineId, ResourceDescriptor, Result, RunEventSink, RunId,
+    RunPhase, SchemaHash, ScopeLeaseStore, SourcePosition, TargetName, WriteDisposition,
+};
+#[cfg(test)]
+use cdf_kernel::{PlanId, ResourceId, ScanRequest, ScopeKey};
+use cdf_package::PackageReader;
+use cdf_package_contract::{PackageStatus, SegmentEntry};
+use cdf_runtime::ExecutionServices;
+use cdf_state_sqlite::{SqliteCheckpointStore, SqliteRunLedger};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Instant,
+};
 
 pub async fn run_project(
     request: ProjectRunRequest<'_>,

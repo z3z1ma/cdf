@@ -1,3 +1,5 @@
+#![doc = "Native streaming LZ4 frame decompression for CDF. This crate owns frame and checksum validation plus bounded expansion, not source transport or record decoding."]
+
 use std::{hash::Hasher, sync::Arc};
 
 use bytes::Bytes;

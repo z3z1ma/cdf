@@ -1,24 +1,16 @@
 #![doc = "Optional Python authoring and interchange boundary for cdf."]
 
-use std::path::{Path, PathBuf};
-
+#[cfg(test)]
 use cdf_http::{HttpRequest, Redactor, SecretProvider, SecretUri, TraceEvent};
+#[cfg(test)]
 use cdf_kernel::{
-    Batch, BatchId, CdfError, PartitionId, ResourceDescriptor, ResourceId, Result, SchemaHash,
-    SchemaSnapshotReference, SchemaSource, ScopeKey, SourcePosition, TrustLevel, WriteDisposition,
+    Batch, CdfError, PartitionId, ResourceId, Result, ScopeKey, SourcePosition, TrustLevel,
+    WriteDisposition,
 };
-use pyo3::{
-    Bound, PyAny, Python,
-    prelude::*,
-    types::{PyDict, PyModule},
-};
-use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use pyo3::{Bound, PyAny, Python, prelude::*, types::PyModule};
+#[cfg(test)]
 use sha2::{Digest, Sha256};
-
-pub const ARROW_C_ARRAY_METHOD: &str = "__arrow_c_array__";
-pub const ARROW_C_STREAM_METHOD: &str = "__arrow_c_stream__";
-pub const DEFAULT_DICT_BATCH_ROWS: usize = 8 * 1024;
-pub const DEFAULT_MAX_BOUNDARY_BYTES: u64 = 64 * 1024 * 1024;
 
 #[allow(
     unsafe_code,
@@ -26,6 +18,7 @@ pub const DEFAULT_MAX_BOUNDARY_BYTES: u64 = 64 * 1024 * 1024;
 )]
 mod arrow_capsule;
 mod bridge;
+mod bridge_types;
 mod context;
 mod dlt;
 mod driver;
@@ -35,9 +28,24 @@ mod resource;
 #[cfg(test)]
 mod tests;
 
-pub use bridge::*;
-pub use context::*;
-pub use dlt::*;
-pub use driver::*;
-pub use interpreter::*;
-pub use resource::*;
+pub use bridge::{PythonResourceBridge, arrow_boundary_for};
+pub use bridge_types::{
+    ARROW_C_ARRAY_METHOD, ARROW_C_STREAM_METHOD, ArrowCapsuleBoundary, DEFAULT_DICT_BATCH_ROWS,
+    DEFAULT_MAX_BOUNDARY_BYTES, PythonBridgeOptions, PythonFirstObservation, PythonStreamSummary,
+    PythonYieldKind,
+};
+pub use context::{ContextLogEvent, PythonContext};
+pub use dlt::{
+    DLT_METADATA_ATTR, DltBridgeMappingEntry, DltBridgeMappingStatus, DltBridgeMappingTable,
+    DltBridgeMetadata, DltBridgeObjectKind, DltBridgeSummary, DltCurrentStateView,
+    DltIncrementalHint, DltSchemaContractHint, DltWriteDisposition, DltWriteDispositionHint,
+    composite_dlt_state, dlt_current_state_view, extract_dlt_metadata, fixture_dlt_foreign_state,
+    fixture_state_delta_position,
+};
+pub use driver::PythonSourceDriver;
+pub use interpreter::{
+    InterpreterReport, InterpreterRequirement, PythonConcurrencyMode, PythonExecutionSemantics,
+    attached_interpreter_report, execution_semantics, inspect_interpreter,
+    python_execution_lane_spec, validate_attached_interpreter,
+};
+pub use resource::PythonResource;

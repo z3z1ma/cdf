@@ -1,76 +1,57 @@
-use crate::*;
-use crate::{
-    commit::*, corrections::*, ingest_envelope::DuckDbIngestEnvelope, mirrors::*, package::*,
-    planning::*, receipts::*, segment_scan::*, sheet::*, sql::*, table::*,
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
-#[derive(Clone, Debug)]
-pub struct DuckDbDestination {
-    database_path: PathBuf,
-    sheet: DestinationSheet,
-    execution: Option<cdf_runtime::ExecutionServices>,
-    pub(crate) native_resources: DuckDbNativeResources,
-    pub(crate) pending_corrections: Arc<Mutex<BTreeMap<PlanId, DuckDbCorrectionContext>>>,
-}
+use arrow_schema::Schema;
+#[cfg(test)]
+use arrow_schema::{DataType, Field};
+use cdf_kernel::{
+    CdfError, CommitCounts, CommitPlan, CorrectionCommitSession, DeliveryGuarantee,
+    DestinationCommitRequest, DestinationCorrectionCommitPlan, DestinationCorrectionCommitRequest,
+    DestinationProtocol, DestinationResidualReadback, DestinationSheet, IdempotencySupport,
+    MigrationRecord, PlanId, Receipt, Result, RowProvenanceAddress, SegmentAck, TargetName,
+    WriteDisposition,
+};
+use duckdb::{AccessMode, Config, Connection, OptionalExt, params};
 
-#[derive(Clone)]
-pub(crate) struct DuckDbNativeResources {
-    pub(crate) memory_limit_bytes: u64,
-    pub(crate) maximum_temp_directory_bytes: u64,
-    pub(crate) internal_threads: i64,
-    pub(crate) scan_threads_override: Option<usize>,
-    pub(crate) max_in_flight_bytes: u64,
-    pub(crate) profiling_directory: Option<PathBuf>,
-    scratch_reservation: Option<Arc<cdf_runtime::SpillReservation>>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct DuckDbNativeResourceOverrides {
-    pub(crate) memory_limit_bytes: Option<u64>,
-    pub(crate) maximum_temp_directory_bytes: Option<u64>,
-    pub(crate) internal_threads: Option<i64>,
-    pub(crate) scan_threads: Option<usize>,
-    pub(crate) max_in_flight_bytes: Option<u64>,
-    pub(crate) profiling_directory: Option<PathBuf>,
-}
-
-impl std::fmt::Debug for DuckDbNativeResources {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("DuckDbNativeResources")
-            .field("memory_limit_bytes", &self.memory_limit_bytes)
-            .field(
-                "maximum_temp_directory_bytes",
-                &self.maximum_temp_directory_bytes,
-            )
-            .field("internal_threads", &self.internal_threads)
-            .field("scan_threads_override", &self.scan_threads_override)
-            .field("max_in_flight_bytes", &self.max_in_flight_bytes)
-            .field("profiling_directory", &self.profiling_directory)
-            .field(
-                "scratch_reserved_bytes",
-                &self
-                    .scratch_reservation
-                    .as_ref()
-                    .map(|reservation| reservation.bytes()),
-            )
-            .finish()
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct DuckDbCommitWriter {
-    pub(crate) conn: Connection,
-    pub(crate) segment_scan: DuckDbSegmentScanRuntime,
-    target: TargetRef,
-    pub(crate) write_target: TargetRef,
-    pub(crate) first_row_key: Option<u64>,
-    pub(crate) persisted_fields: Vec<FieldPlan>,
-    pub(crate) user_field_count: usize,
-    pub(crate) omitted_user_fields: Vec<bool>,
-    pub(crate) rows_received: u64,
-    duckdb_version: String,
-}
+use crate::{
+    CDF_STAGE_ORDER_COLUMN, DESTINATION_ID, DUCKDB_BULK_PATH_SEGMENT_SCAN,
+    DUCKDB_CONSERVATIVE_MEMORY_BYTES, DUCKDB_DEFAULT_INTERNAL_THREADS,
+    DUCKDB_DEFAULT_MAX_IN_FLIGHT_BYTES, DUCKDB_DEFAULT_NATIVE_MEMORY_LIMIT_CEILING_BYTES,
+    DUCKDB_DEFAULT_TEMP_DIRECTORY_BUDGET_CEILING_BYTES, DUCKDB_MAX_IN_FLIGHT_BYTES_ENV,
+    DUCKDB_MEMORY_LIMIT_ENV, DUCKDB_PROFILE_DIRECTORY_ENV, DUCKDB_SCAN_THREADS_ENV,
+    DUCKDB_TEMP_BUDGET_ENV, DUCKDB_THREADS_ENV, LOCK_SUFFIX, MAIN_SCHEMA,
+    commit::{apply_table_plan, finalize_merge, staging_table_name},
+    corrections::{
+        begin_correction_request, plan_correction_request, read_addressed_residual,
+        verify_correction_receipt,
+    },
+    ingest_envelope::DuckDbIngestEnvelope,
+    mirrors::{
+        advance_row_key_allocator, ensure_mirror_tables, find_duplicate_receipt, insert_mirrors,
+        next_row_key, read_mirror_snapshot,
+    },
+    models::{
+        DuckDbDestination, DuckDbMirrorSnapshot, DuckDbNativeResourceOverrides,
+        DuckDbNativeResources, FieldPlan, IcuProbe, ReceiptBuildContext, ReceiptVerification,
+        TargetRef, duckdb_config_options,
+    },
+    package::{field_plan, persistence_fields, validate_field_names, validate_user_schema_fields},
+    receipts::build_receipt,
+    segment_scan::{
+        DuckDbCommitWriter, DuckDbSegmentProjection, DuckDbSegmentScanRuntime,
+        ingest_canonical_segments,
+    },
+    sheet::{duckdb_correction_capabilities, duckdb_sheet},
+    sql::{
+        DuckDbExceptionType, DuckDbFailure, duckdb_error, duckdb_version, framework_ident,
+        json_error, parse_target, quote_ident, validate_system_ident,
+    },
+    table::{create_columns_sql, plan_absent_table, plan_table},
+    writer_lock::WriterLock,
+};
 
 #[derive(Debug)]
 struct DuckDbStagedIngressSession {
@@ -80,104 +61,11 @@ struct DuckDbStagedIngressSession {
     accepted: Vec<cdf_runtime::StagedSegmentIdentity>,
 }
 
-#[derive(Debug)]
-pub(crate) struct DuckDbCorrectionSession<'a> {
-    pub(crate) destination: &'a DuckDbDestination,
-    pub(crate) context: DuckDbCorrectionContext,
-    pub(crate) migrations_applied: bool,
-    pub(crate) corrections_applied: bool,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub(crate) struct DuckDbCommitPlan {
     pub(crate) kernel: CommitPlan,
     pub(crate) ddl: Vec<String>,
-}
-
-pub type ReceiptVerification = cdf_kernel::ReceiptVerification;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct IcuProbe {
-    pub available: bool,
-    pub statement: String,
-    pub error: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct DuckDbMirrorSnapshot {
-    pub loads_table_present: bool,
-    pub state_table_present: bool,
-    pub loads: Vec<DuckDbMirrorLoadRow>,
-    pub state: Vec<DuckDbMirrorStateRow>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DuckDbMirrorLoadRow {
-    pub target: String,
-    pub idempotency_token: String,
-    pub package_hash: String,
-    pub receipt_id: String,
-    pub receipt_json: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DuckDbMirrorStateRow {
-    pub target: String,
-    pub package_hash: String,
-    pub segment_id: String,
-    pub scope_json: Option<String>,
-    pub output_position_json: Option<String>,
-    pub row_count: u64,
-    pub byte_count: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct FieldPlan {
-    pub(crate) name: cdf_dest_sql::ValidatedSqlIdentifier,
-    pub(crate) sql_type: String,
-    pub(crate) nullable: bool,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct TablePlan {
-    pub(crate) target: TargetRef,
-    pub(crate) ddl: Vec<String>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ExistingColumn {
-    pub(crate) data_type: String,
-    pub(crate) nullable: bool,
-    pub(crate) default_expression: Option<String>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct TargetRef {
-    pub(crate) schema: cdf_dest_sql::ValidatedSqlIdentifier,
-    pub(crate) table: cdf_dest_sql::ValidatedSqlIdentifier,
-}
-
-pub(crate) struct ReceiptBuildContext<'a> {
-    pub(crate) committed_at_ms: i64,
-    pub(crate) duckdb_version: &'a str,
-    pub(crate) database_path: &'a Path,
-    pub(crate) lock_path: &'a Path,
-}
-
-impl TargetRef {
-    pub(crate) fn sql_name(&self) -> String {
-        if self.schema.as_str() == MAIN_SCHEMA {
-            quote_ident(&self.table)
-        } else {
-            format!("{}.{}", quote_ident(&self.schema), quote_ident(&self.table))
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct CellValue {
-    pub(crate) value: Value,
 }
 
 impl DuckDbDestination {
@@ -716,23 +604,6 @@ fn bounded_connection_config(resources: &DuckDbNativeResources, read_only: bool)
             .map_err(|error| duckdb_error("configure read-only DuckDB open", error))?;
     }
     Ok(config)
-}
-
-pub(crate) fn duckdb_config_options(resources: &DuckDbNativeResources) -> Vec<(String, String)> {
-    vec![
-        (
-            "memory_limit".to_owned(),
-            format!("{}B", resources.memory_limit_bytes),
-        ),
-        ("threads".to_owned(), resources.internal_threads.to_string()),
-        (
-            "max_temp_directory_size".to_owned(),
-            format!("{}B", resources.maximum_temp_directory_bytes),
-        ),
-        ("preserve_insertion_order".to_owned(), "false".to_owned()),
-        ("errors_as_json".to_owned(), "true".to_owned()),
-        ("duckdb_api".to_owned(), "rust".to_owned()),
-    ]
 }
 
 impl DuckDbStagedIngressSession {

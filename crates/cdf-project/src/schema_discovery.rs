@@ -8,14 +8,17 @@ use std::{
 };
 
 use crate::{
-    DiscoveryBoundedIdentity, DiscoveryCandidateEvidence, DiscoveryExecutorBudget,
-    DiscoveryFileCoverage, DiscoveryIdentityStrength, DiscoveryManifestArtifact,
-    DiscoveryManifestInput, DiscoveryManifestStore, DiscoveryMetadataScope,
-    DiscoveryMetadataVariance, DiscoveryParticipation, DiscoverySchemaVerdict,
-    DiscoverySchemaVerdictKind, DiscoverySelectorCandidate, DiscoveryWithinFileCoverage,
     ObservationCacheEntry, ObservationCacheKey, ObservationCacheLookup, ObservationCacheMissReason,
     ObservationCacheStore, ObservationCacheStoreOutcome, SchemaSnapshotArtifact,
-    SchemaSnapshotStore, StrongObservationSourceIdentity, plan_discovery_selection,
+    SchemaSnapshotStore, StrongObservationSourceIdentity,
+    discovery_manifest::{
+        DiscoveryBoundedIdentity, DiscoveryCandidateEvidence, DiscoveryExecutorBudget,
+        DiscoveryFileCoverage, DiscoveryIdentityStrength, DiscoveryManifestArtifact,
+        DiscoveryManifestInput, DiscoveryManifestStore, DiscoveryMetadataScope,
+        DiscoveryMetadataVariance, DiscoveryParticipation, DiscoverySchemaVerdict,
+        DiscoverySchemaVerdictKind, DiscoverySelectorCandidate, DiscoveryWithinFileCoverage,
+        plan_discovery_selection,
+    },
 };
 use cdf_contract::{
     AggregateFileSchemaVerdict, AggregateMetadataVariance, AggregateSchemaCandidate,

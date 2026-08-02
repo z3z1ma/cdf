@@ -63,7 +63,7 @@ pub struct LoadedIcebergTable {
     pub metadata_location: String,
     pub metadata_generation: String,
     pub catalog_generation: Option<String>,
-    pub metadata: Arc<TableMetadata>,
+    pub(crate) metadata: Arc<TableMetadata>,
     pub selected: Option<SelectedIcebergSnapshot>,
     pub arrow_schema: Arc<Schema>,
     pub bytes_read: u64,
@@ -984,7 +984,7 @@ fn validate_reference_kind(
     Ok(())
 }
 
-pub fn annotated_arrow_schema(schema: &iceberg::spec::Schema) -> Result<Schema> {
+pub(crate) fn annotated_arrow_schema(schema: &iceberg::spec::Schema) -> Result<Schema> {
     let arrow = iceberg::arrow::schema_to_arrow_schema(schema)
         .map_err(|error| CdfError::data(format!("convert Iceberg schema to Arrow: {error}")))?;
     let fields = arrow

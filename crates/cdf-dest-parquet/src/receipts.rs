@@ -1,8 +1,19 @@
+use std::collections::BTreeMap;
+
+use cdf_kernel::{
+    CdfError, CommitCounts, DestinationId, Receipt, ReceiptId, Result, SegmentAck,
+    TransactionMetadata, VerifyClause, WriteDisposition,
+};
+use cdf_package_contract::{ReceiptDraft, ReceiptEvidence};
+
 use crate::manifest::{
     ParquetObjectManifest, ParquetReplacePointerReceipt, ReplacePointer, canonical_json_bytes,
     sha256_hex,
 };
-use crate::*;
+use crate::{
+    DESTINATION_ID, MANIFEST_VERSION,
+    models::{ParquetCommitPlan, ParquetCommitRequest, ParquetDestination},
+};
 
 pub(crate) fn build_receipt(
     request: &ParquetCommitRequest,

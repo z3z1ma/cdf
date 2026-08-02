@@ -15,7 +15,8 @@ use cdf_memory::{
     ReservationRequest, reserve,
 };
 use cdf_runtime::{
-    BoundedFormatRequest, ByteSource, MemoryByteSource, ReadOptions, RunCancellation,
+    AccountedByteCursor, BoundedFormatRequest, ByteSource, FormatDiscoveryKind,
+    FormatDiscoveryRequest, FormatDriver, MemoryByteSource, ReadOptions, RunCancellation,
     SequentialReadRequest, decode_bounded_format,
 };
 use futures_executor::block_on;
@@ -27,7 +28,10 @@ use prost_types::{
     field_descriptor_proto::{Label, Type},
 };
 
-use super::*;
+use crate::ProtobufFormatDriver;
+use crate::framing::{BufferedMessage, read_length_prefix};
+use crate::materialize::build_record_batch;
+use crate::options::ProtobufOptions;
 
 fn field(name: &str, number: i32, label: Label, field_type: Type) -> FieldDescriptorProto {
     FieldDescriptorProto {

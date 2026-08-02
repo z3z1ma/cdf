@@ -1,5 +1,3 @@
-use super::prelude::*;
-
 #[derive(Clone, Copy)]
 pub struct ProjectRunSource<'a> {
     resource: &'a dyn QueryableResource,
@@ -251,3 +249,7 @@ impl QueryableResource for WindowScopedResource<'_> {
         self.map_scan_scope(plan, request.clone(), self.descriptor.state_scope.clone())
     }
 }
+use cdf_kernel::{
+    EffectiveSchemaRuntime, PartitionPlan, QueryableResource, ResourceCapabilities,
+    ResourceDescriptor, ResourceStream, Result, ScanPlan, ScanRequest, ScopeKey, SourcePosition,
+};

@@ -1,5 +1,12 @@
-use crate::api::*;
-use crate::*;
+use std::collections::BTreeMap;
+
+use cdf_kernel::{
+    CommitCounts, CommitPlan, DestinationCommitRequest, DestinationId, Receipt, ReceiptId, Result,
+    SchemaHash, SegmentAck, TransactionMetadata, VerifyClause,
+};
+use cdf_package_contract::{ReceiptDraft, ReceiptEvidence};
+
+use crate::{DESTINATION_ID, DUCKDB_BULK_PATH_SEGMENT_SCAN, models::ReceiptBuildContext};
 
 pub(crate) fn build_receipt(
     commit: &DestinationCommitRequest,

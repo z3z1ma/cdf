@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
+use cdf_kernel::{CdfError, DestinationCommitRequest, Result, SegmentAck, SegmentId, StateSegment};
 use cdf_package_contract::VerifiedPackageAccess;
 
-use crate::{validate::plan_segment_acks, *};
+use crate::{plan::PostgresLoadPlan, validate::plan_segment_acks};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PostgresSessionSegments {

@@ -1,42 +1,31 @@
 #![doc = "DuckDB destination boundary for cdf."]
 
+#[cfg(test)]
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, OpenOptions},
+    fs,
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::atomic::Ordering,
 };
 
 #[cfg(test)]
 use arrow_array::RecordBatch;
+#[cfg(test)]
 use arrow_array::{
-    Array, BinaryArray, BooleanArray, Date32Array, Float32Array, Float64Array, Int8Array,
-    Int16Array, Int32Array, Int64Array, LargeBinaryArray, LargeStringArray, StringArray,
-    Time32MillisecondArray, Time32SecondArray, Time64MicrosecondArray, Time64NanosecondArray,
-    TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
-    TimestampSecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
+    Time64NanosecondArray, TimestampMillisecondArray, TimestampSecondArray, UInt64Array,
 };
-use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use cdf_contract::is_framework_variant_field;
+#[cfg(test)]
 use cdf_kernel::{
-    CapabilitySupport, CdfError, CommitCounts, CommitPlan, ConcurrencyLimit,
-    CorrectionCommitSession, CorrectionStrategy, CorrectionStrategyCapability,
-    DESTINATION_CORRECTION_RECEIPT_EVIDENCE_KEY, DeliveryGuarantee, DestinationCommitRequest,
-    DestinationCorrectionCommitPlan, DestinationCorrectionCommitRequest,
-    DestinationCorrectionOperation, DestinationCorrectionReceiptEvidence, DestinationId,
-    DestinationProtocol, DestinationResidualReadback, DestinationSheet, IdempotencySupport,
-    IdentifierRules, MigrationRecord, PlanId, Receipt, ReceiptId, Result, RowProvenanceAddress,
-    RowProvenanceCapabilities, SchemaHash, SegmentAck, TargetName, TransactionMetadata,
-    TransactionSupport, TypeMapping, TypeMappingFidelity, VerifyClause, WriteDisposition,
+    CapabilitySupport, CdfError, CommitCounts, CommitPlan, DestinationCommitRequest,
+    DestinationProtocol, IdempotencySupport, MigrationRecord, Receipt, Result, SchemaHash,
+    TargetName, TransactionSupport, WriteDisposition,
 };
-use cdf_package_contract::{ReceiptDraft, ReceiptEvidence};
+#[cfg(test)]
 use duckdb::{
-    AccessMode, Config, Connection, OptionalExt, params, params_from_iter,
+    Connection, params,
     types::{TimeUnit as DuckTimeUnit, Value},
 };
+use std::sync::atomic::AtomicU64;
 const DESTINATION_ID: &str = "duckdb";
 const MAIN_SCHEMA: &str = "main";
 const LOCK_SUFFIX: &str = "cdf.lock";
@@ -64,8 +53,8 @@ mod commit;
 mod corrections;
 mod ingest_envelope;
 mod mirrors;
+mod models;
 mod package;
-mod planning;
 mod profiling;
 mod receipts;
 mod rows;
@@ -80,6 +69,10 @@ mod sql;
 mod table;
 #[cfg(test)]
 mod tests;
+mod writer_lock;
 
-pub use api::*;
+pub use models::{
+    DuckDbDestination, DuckDbMirrorLoadRow, DuckDbMirrorSnapshot, DuckDbMirrorStateRow, IcuProbe,
+    ReceiptVerification,
+};
 pub use runtime::DuckDbRuntimeDriver;

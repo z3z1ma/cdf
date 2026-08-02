@@ -1,4 +1,15 @@
-use crate::*;
+use std::collections::BTreeSet;
+
+use cdf_kernel::{
+    CdfError, DeliveryGuarantee, PackageHash, PlanId, Result, SegmentAck, StateSegment, TargetName,
+    WriteDisposition,
+};
+use cdf_postgres::PostgresIdentifier;
+
+use crate::{
+    identifiers::PostgresColumn,
+    plan::{PostgresLoadPlan, PostgresLoadPlanInput},
+};
 
 pub(crate) fn plan_segments_in_receipt_order(plan: &PostgresLoadPlan) -> Vec<StateSegment> {
     let mut segments = plan.segments.clone();
@@ -68,23 +79,6 @@ pub(crate) fn token_suffix(token: &str) -> String {
         suffix.push_str("token");
     }
     suffix
-}
-
-pub(crate) fn validate_type_fragment(data_type: &str) -> Result<()> {
-    let trimmed = data_type.trim();
-    if trimmed.is_empty()
-        || trimmed.contains(';')
-        || trimmed.contains("--")
-        || trimmed.contains("/*")
-        || trimmed.contains("*/")
-        || trimmed.contains('"')
-        || trimmed.contains('\'')
-    {
-        return Err(CdfError::contract(format!(
-            "Postgres type fragment {data_type:?} is not allowed"
-        )));
-    }
-    Ok(())
 }
 
 pub(crate) fn validate_columns(columns: &[PostgresColumn]) -> Result<()> {

@@ -17,7 +17,7 @@ use cdf_task_store::{
 
 use crate::{
     ICEBERG_TASK_SET_TYPE, IcebergScanTask, IcebergSourceOptions, IcebergTaskSetAuthority,
-    ValidatedIcebergTaskSetAuthority, catalog::reserve_parse_memory,
+    catalog::reserve_parse_memory, scan_task::ValidatedIcebergTaskSetAuthority,
 };
 
 const TASK_CONTENT_HASH_KEY: &str = "cdf:external_task_sha256";

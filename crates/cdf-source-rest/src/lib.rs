@@ -43,4 +43,8 @@ pub struct RestResourcePlan {
 }
 
 pub use driver::RestSourceDriver;
-pub use runtime::*;
+pub use runtime::{
+    RestDiscoveryDependencies, RestResource, RestRuntimeDependencies, RestSampleSchemaDiscovery,
+    cursor_pushdown_value, discover_rest_sample_schema, rest_partition, rest_resource_capabilities,
+    rest_schema_observation_binding,
+};

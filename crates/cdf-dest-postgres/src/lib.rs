@@ -1,22 +1,16 @@
 #![doc = "Postgres destination boundary for cdf."]
 
-use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
+use std::collections::BTreeMap;
 
+#[cfg(test)]
 use cdf_kernel::{
-    CapabilitySupport, CdfError, CommitCounts, CommitPlan, CommitSegment, CommitSession,
-    ConcurrencyLimit, CorrectionCommitSession, CorrectionStrategy, CorrectionStrategyCapability,
-    DESTINATION_CORRECTION_RECEIPT_EVIDENCE_KEY, DeliveryGuarantee, DestinationCommitRequest,
-    DestinationCorrectionCapabilities, DestinationCorrectionCommitPlan,
-    DestinationCorrectionCommitRequest, DestinationCorrectionReceiptEvidence, DestinationId,
-    DestinationProtocol, DestinationProtocolCapabilities, DestinationResidualReadback,
-    DestinationSheet, IdempotencySupport, IdempotencyToken, IdentifierRules, MigrationRecord,
-    PackageHash, PlanId, Receipt, ReceiptId, ReceiptVerification, ResourceId, Result,
-    RowProvenanceAddress, RowProvenanceCapabilities, SchemaHash, SegmentAck, SegmentId, StateDelta,
-    StateSegment, TargetName, TransactionMetadata, TransactionSupport, TypeMapping,
-    TypeMappingFidelity, VerifyClause, WriteDisposition,
+    CapabilitySupport, CdfError, CommitCounts, CommitSession, CorrectionStrategy,
+    CorrectionStrategyCapability, DeliveryGuarantee, DestinationCommitRequest,
+    DestinationCorrectionCommitRequest, DestinationProtocol, IdempotencySupport, IdempotencyToken,
+    PackageHash, Receipt, ReceiptId, Result, SchemaHash, StateDelta, StateSegment, TargetName,
+    TransactionSupport, WriteDisposition,
 };
-use cdf_package_contract::{ReceiptDraft, ReceiptEvidence};
-use serde::{Deserialize, Serialize};
 
 pub use cdf_postgres::{PostgresIdentifier, PostgresTarget, quote_identifier};
 
@@ -33,13 +27,14 @@ pub const POSTGRES_XID_SQL: &str = "SELECT txid_current()::text AS xid";
 mod api;
 mod binary_copy;
 mod commit;
-mod correction;
+mod corrections;
 mod ddl;
 mod dml;
 mod identifiers;
 #[cfg(test)]
 mod live_tests;
 mod mirrors;
+mod models;
 mod package;
 mod plan;
 mod rows;
@@ -49,10 +44,17 @@ mod sheet;
 mod tests;
 mod validate;
 
-pub use api::*;
-pub use correction::*;
-pub use identifiers::*;
-pub use plan::*;
+pub use api::{PostgresReceiptVerification, build_receipt, plan_postgres_load};
+pub use corrections::{plan_postgres_correction, postgres_correction_capabilities};
+pub use identifiers::{PostgresColumn, PostgresExistingColumn, PostgresExistingTable};
+pub use models::{
+    PostgresCorrectionFieldPlan, PostgresCorrectionPlan, PostgresCorrectionPlanInput,
+    PostgresDestination, PostgresDestinationSheet, PostgresTypeFidelity, PostgresTypeMapping,
+};
+pub use plan::{
+    MergeDedupPolicy, PostgresDriftHooks, PostgresLoadPlan, PostgresLoadPlanInput,
+    PostgresReceiptInput, PostgresStatement, StatementExpectation,
+};
 pub use rows::{postgres_columns_for_schema, postgres_type_for_arrow};
 pub use runtime::{PostgresRuntime, PostgresRuntimeDriver, validate_replay_target};
-pub use sheet::*;
+pub use sheet::{postgres_destination_sheet, postgres_type_mappings};

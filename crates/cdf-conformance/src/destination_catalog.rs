@@ -1228,10 +1228,55 @@ fn generic_project_and_cli_runtime_sources_do_not_import_destination_crates() {
     assert_no_concrete_destination_imports(
         &root.join("crates/cdf-project/src"),
         &["runtime_tests.rs", "test_destinations.rs", "tests.rs"],
+        &["runtime_tests", "tests"],
     );
     assert_no_concrete_destination_imports(
         &root.join("crates/cdf-cli/src"),
         &["destination_registry.rs", "doctor_drift.rs", "tests.rs"],
+        &["tests"],
+    );
+}
+
+#[test]
+fn destination_import_guard_allows_only_exact_files_and_test_roots() {
+    let temporary = tempfile::tempdir().unwrap();
+    let source_root = temporary.path().join("source");
+    for relative in [
+        "tests/nested",
+        "runtime_tests/nested",
+        "tests_production",
+        "runtime_tests_extra",
+        "nested",
+    ] {
+        std::fs::create_dir_all(source_root.join(relative)).unwrap();
+    }
+    for relative in [
+        "allowed.rs",
+        "tests/nested/allowed.rs",
+        "runtime_tests/nested/allowed.rs",
+        "tests_production/runtime.rs",
+        "runtime_tests_extra/runtime.rs",
+        "nested/allowed.rs",
+    ] {
+        std::fs::write(
+            source_root.join(relative),
+            "use cdf_dest_example::ConcreteDestination;\n",
+        )
+        .unwrap();
+    }
+
+    let imports = concrete_destination_imports(
+        &source_root.join("nested/../"),
+        &["allowed.rs"],
+        &["runtime_tests", "tests"],
+    );
+    assert_eq!(
+        imports,
+        [
+            PathBuf::from("nested/allowed.rs"),
+            PathBuf::from("runtime_tests_extra/runtime.rs"),
+            PathBuf::from("tests_production/runtime.rs"),
+        ]
     );
 }
 
@@ -1274,26 +1319,84 @@ fn generic_conformance_engines_do_not_branch_on_destination_identity() {
 }
 
 #[cfg(test)]
-fn assert_no_concrete_destination_imports(root: &Path, allowed_files: &[&str]) {
+fn normalized_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+#[cfg(test)]
+fn normalized_relative_path(root: &Path, path: &Path) -> PathBuf {
+    normalized_path(path)
+        .strip_prefix(normalized_path(root))
+        .unwrap_or_else(|_| {
+            panic!(
+                "{} is outside source root {}",
+                path.display(),
+                root.display()
+            )
+        })
+        .to_owned()
+}
+
+#[cfg(test)]
+fn concrete_destination_imports(
+    root: &Path,
+    allowed_files: &[&str],
+    allowed_test_roots: &[&str],
+) -> Vec<PathBuf> {
     let mut pending = vec![root.to_path_buf()];
+    let mut imports = Vec::new();
     while let Some(path) = pending.pop() {
         for entry in std::fs::read_dir(&path).unwrap() {
             let entry = entry.unwrap();
             let path = entry.path();
             if path.is_dir() {
-                pending.push(path);
+                let relative = normalized_relative_path(root, &path);
+                if !allowed_test_roots
+                    .iter()
+                    .any(|allowed| relative == Path::new(allowed))
+                {
+                    pending.push(path);
+                }
             } else if path.extension().and_then(|value| value.to_str()) == Some("rs") {
                 let source = std::fs::read_to_string(&path).unwrap();
-                let allowed = path
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .is_some_and(|name| allowed_files.contains(&name));
-                assert!(
-                    allowed || !source.contains("cdf_dest_"),
-                    "generic runtime source imports a concrete destination: {}",
-                    path.display()
-                );
+                let relative = normalized_relative_path(root, &path);
+                let allowed = allowed_files
+                    .iter()
+                    .any(|allowed| relative == Path::new(allowed));
+                if !allowed && source.contains("cdf_dest_") {
+                    imports.push(relative);
+                }
             }
         }
     }
+    imports.sort();
+    imports
+}
+
+#[cfg(test)]
+fn assert_no_concrete_destination_imports(
+    root: &Path,
+    allowed_files: &[&str],
+    allowed_test_roots: &[&str],
+) {
+    let imports = concrete_destination_imports(root, allowed_files, allowed_test_roots);
+    assert!(
+        imports.is_empty(),
+        "generic runtime sources import concrete destinations:\n{}",
+        imports
+            .iter()
+            .map(|relative| root.join(relative).display().to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
 }

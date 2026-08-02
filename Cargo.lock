@@ -1158,6 +1158,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "syn 2.0.119",
  "tempfile",
 ]
 
@@ -1304,10 +1305,12 @@ dependencies = [
  "futures-executor",
  "futures-util",
  "half",
+ "proc-macro2",
  "proptest",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "syn 2.0.119",
  "tempfile",
  "tokio",
  "tracing",

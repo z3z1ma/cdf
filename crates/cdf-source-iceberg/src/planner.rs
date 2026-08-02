@@ -23,11 +23,12 @@ use crate::{
     ICEBERG_TASK_SET_AUTHORITY_VERSION, ICEBERG_TASK_SET_TYPE, IcebergDataFile,
     IcebergDeleteContent, IcebergDeleteFile, IcebergFileFormat, IcebergJsonAuthority,
     IcebergReaderRequirements, IcebergScanTask, IcebergSourceOptions, IcebergTaskSetAuthority,
-    LoadedIcebergTable, ValidatedIcebergTaskSetAuthority,
+    LoadedIcebergTable,
     catalog::{load_catalog_object, reserve_parse_memory},
     planning_index::{
         IcebergPlanningIndex, IcebergPlanningManifest, IcebergPlanningManifestReader,
     },
+    scan_task::ValidatedIcebergTaskSetAuthority,
     task_reader::IcebergTaskCodec,
 };
 

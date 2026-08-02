@@ -1,19 +1,46 @@
-use crate::*;
-use crate::{api::*, mirrors::*, package::*, rows::*, sheet::*, sql::*, table::*};
 use cdf_dest_sql::LoadMirrorKey;
+use cdf_kernel::{
+    CdfError, CommitCounts, CommitPlan, CorrectionCommitSession, CorrectionStrategy,
+    DESTINATION_CORRECTION_RECEIPT_EVIDENCE_KEY, DeliveryGuarantee, DestinationCommitRequest,
+    DestinationCorrectionCommitPlan, DestinationCorrectionCommitRequest,
+    DestinationCorrectionOperation, DestinationCorrectionReceiptEvidence, DestinationId,
+    DestinationProtocol, DestinationResidualReadback, IdempotencySupport, MigrationRecord, PlanId,
+    Receipt, ReceiptId, Result, RowProvenanceAddress, TargetName, TransactionMetadata,
+    VerifyClause,
+};
+use cdf_package_contract::{ReceiptDraft, ReceiptEvidence};
+use duckdb::{Connection, OptionalExt, params, params_from_iter, types::Value};
+use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Clone, Debug)]
-pub(crate) struct DuckDbCorrectionContext {
-    pub(crate) request: DestinationCorrectionCommitRequest,
-    pub(crate) plan: DestinationCorrectionCommitPlan,
-    pub(crate) ddl: Vec<String>,
-}
+use crate::{
+    CDF_ROW_KEY_COLUMN, DESTINATION_ID,
+    mirrors::{ensure_mirror_tables, find_duplicate_receipt_with, insert_mirrors},
+    models::{
+        CellValue, DuckDbCorrectionContext, DuckDbDestination, FieldPlan, ReceiptVerification,
+        TargetRef,
+    },
+    package::field_plan,
+    rows::cell_value,
+    sheet::duckdb_correction_capabilities,
+    sql::{
+        duckdb_error, duckdb_version, framework_ident, parse_target, quote_ident, validate_ident,
+    },
+    table::{existing_columns, require_targetable_provenance, same_type},
+};
 
 #[derive(Clone, Debug)]
 struct PreparedCorrectionRow {
     address: RowProvenanceAddress,
     assignments: Vec<(cdf_dest_sql::ValidatedSqlIdentifier, CellValue)>,
     residual: Option<String>,
+}
+
+#[derive(Debug)]
+struct DuckDbCorrectionSession<'a> {
+    destination: &'a DuckDbDestination,
+    context: DuckDbCorrectionContext,
+    migrations_applied: bool,
+    corrections_applied: bool,
 }
 
 fn resolve_row_key(

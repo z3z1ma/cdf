@@ -1,5 +1,13 @@
-use crate::*;
-use crate::{api::*, sql::*};
+use std::sync::atomic::Ordering;
+
+use cdf_kernel::{CdfError, CommitCounts, Result, WriteDisposition};
+use duckdb::Connection;
+
+use crate::{
+    CDF_STAGE_ORDER_COLUMN, MAIN_SCHEMA, STAGING_COUNTER,
+    models::{FieldPlan, TablePlan, TargetRef},
+    sql::{duckdb_error, framework_ident, quote_ident, validate_ident, validate_system_ident},
+};
 
 pub(crate) fn apply_table_plan(
     conn: &Connection,

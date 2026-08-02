@@ -1,5 +1,14 @@
-use crate::*;
-use crate::{api::*, sql::*};
+use std::collections::BTreeSet;
+
+use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use cdf_contract::is_framework_variant_field;
+use cdf_kernel::{CdfError, Result};
+
+use crate::{
+    CDF_ROW_KEY_COLUMN,
+    models::FieldPlan,
+    sql::{framework_ident, quote_ident, validate_ident},
+};
 
 pub(crate) fn persistence_fields(user_fields: &[FieldPlan]) -> Vec<FieldPlan> {
     let mut fields = user_fields.to_vec();

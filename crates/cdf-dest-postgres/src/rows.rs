@@ -8,8 +8,9 @@ use arrow_array::{
     UInt16Array, UInt32Array, UInt64Array,
 };
 use arrow_schema::{DataType, Schema, TimeUnit};
+use cdf_kernel::{CdfError, Result};
 
-use crate::*;
+use crate::identifiers::PostgresColumn;
 
 pub(crate) fn validate_schema_matches_plan(
     schema: &Schema,

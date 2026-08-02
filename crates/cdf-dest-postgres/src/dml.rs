@@ -1,4 +1,19 @@
-use crate::{ddl::system_target_columns, *};
+use std::collections::BTreeSet;
+
+use cdf_kernel::{CdfError, Result, WriteDisposition};
+use cdf_postgres::PostgresIdentifier;
+
+use crate::{
+    CDF_LOADED_AT_COLUMN, CDF_ROW_KEY_COLUMN,
+    ddl::system_target_columns,
+    identifiers::{
+        PostgresColumn, postgres_identifier_rules, quote_column_identifier,
+        quote_identifier_unchecked, quote_system_identifier, quote_user_identifier,
+        quote_validated_identifier, validated_system_column_definition, validated_target_sql,
+        validated_user_column_definition,
+    },
+    plan::{MergeDedupPolicy, PostgresLoadPlanInput, PostgresStatement, StatementExpectation},
+};
 
 pub(crate) fn write_statements(
     input: &PostgresLoadPlanInput,

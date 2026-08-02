@@ -8,47 +8,52 @@ use cdf_dest_sql::{
     SegmentMirrorPolicy, SegmentMirrorRow, StateMirrorKey, StateMirrorMutation, StateMirrorRow,
     TransactionalMirrorBackend, TransactionalMirrorManager,
 };
+use cdf_kernel::{
+    CapabilitySupport, CdfError, CommitCounts, CommitPlan, CorrectionCommitSession,
+    CorrectionStrategy, CorrectionStrategyCapability, DESTINATION_CORRECTION_RECEIPT_EVIDENCE_KEY,
+    DeliveryGuarantee, DestinationCorrectionCapabilities, DestinationCorrectionCommitPlan,
+    DestinationCorrectionCommitRequest, DestinationCorrectionReceiptEvidence, DestinationId,
+    DestinationResidualReadback, IdempotencySupport, MigrationRecord, PackageHash, PlanId, Receipt,
+    ReceiptId, Result, RowProvenanceAddress, RowProvenanceCapabilities, TargetName,
+    TransactionMetadata, TransactionSupport,
+};
+use cdf_package_contract::{ReceiptDraft, ReceiptEvidence};
+use cdf_postgres::{PostgresIdentifier, PostgresTarget};
 
 use crate::{
-    commit::decode_postgres_load_row,
+    CDF_LOADS_TABLE, CDF_ROW_KEY_COLUMN, CDF_SEGMENTS_TABLE, POSTGRES_DESTINATION_ID,
+    POSTGRES_XID_SQL,
     ddl::{
         idempotency_check_statement, idempotency_lock_statement, provenance_unique_index_statement,
         system_table_ddl, system_table_migrations,
     },
     identifiers::{
-        postgres_identifier_rules, quote_column_identifier, quote_identifier_unchecked,
-        quote_system_identifier, quote_user_identifier, validated_target_sql,
-        validated_user_column_definition,
+        PostgresColumn, PostgresExistingColumn, PostgresExistingTable, postgres_identifier_rules,
+        quote_column_identifier, quote_identifier_unchecked, quote_system_identifier,
+        quote_user_identifier, validated_target_sql, validated_user_column_definition,
     },
-    mirrors::{record_load_sql, verify_clause},
+    mirrors::{decode_postgres_load_row, record_load_sql, verify_clause},
+    models::{
+        PostgresCorrectionCommitRequest, PostgresCorrectionFieldPlan, PostgresCorrectionPlan,
+        PostgresCorrectionPlanInput, PostgresDestination, PostgresDestinationSheet,
+    },
+    plan::{PostgresStatement, StatementExpectation},
     rows::{correction_cell_text, postgres_type_for_arrow},
     validate::{disposition_name, token_suffix},
-    *,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PostgresCorrectionPlanInput {
-    pub request: DestinationCorrectionCommitRequest,
-    pub existing_table: PostgresExistingTable,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PostgresCorrectionFieldPlan {
-    pub promoted_path: String,
-    pub column: PostgresColumn,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PostgresCorrectionPlan {
-    pub kernel: DestinationCorrectionCommitPlan,
-    pub target: PostgresTarget,
-    pub stage_table: PostgresIdentifier,
-    pub fields: Vec<PostgresCorrectionFieldPlan>,
-    pub system_ddl: Vec<PostgresStatement>,
-    pub target_ddl: Vec<PostgresStatement>,
-    pub create_stage: PostgresStatement,
-    pub update_sql: Vec<PostgresStatement>,
-    pub verify: VerifyClause,
+pub fn postgres_correction_capabilities() -> DestinationCorrectionCapabilities {
+    DestinationCorrectionCapabilities::default()
+        .with_row_provenance(RowProvenanceCapabilities::new(
+            CapabilitySupport::Supported,
+            CapabilitySupport::Supported,
+        ))
+        .with_residual_readback(CapabilitySupport::Supported)
+        .with_strategy(CorrectionStrategyCapability::new(
+            CorrectionStrategy::InPlaceUpdate,
+            TransactionSupport::AtomicPackage,
+            IdempotencySupport::PackageToken,
+        ))
 }
 
 impl PostgresCorrectionPlan {
@@ -70,12 +75,6 @@ impl PostgresCorrectionPlan {
         statements.push(PostgresStatement::execute("commit", "COMMIT"));
         statements
     }
-}
-
-#[derive(Clone)]
-pub(crate) struct PostgresCorrectionCommitRequest {
-    pub(crate) package: cdf_package_contract::SharedVerifiedPackageAccess,
-    pub(crate) plan: PostgresCorrectionPlan,
 }
 
 impl std::fmt::Debug for PostgresCorrectionCommitRequest {

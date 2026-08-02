@@ -26,7 +26,8 @@ use futures_util::StreamExt;
 use serde::Deserialize;
 
 use crate::{
-    PreparedPythonInvocation, PythonPhysicalPlan, PythonResource, validate_attached_interpreter,
+    resource::{PreparedPythonInvocation, PythonPhysicalPlan, PythonResource},
+    validate_attached_interpreter,
 };
 
 const DRIVER_ID: &str = "python";

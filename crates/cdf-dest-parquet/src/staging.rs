@@ -17,16 +17,23 @@ use cdf_runtime::{
 };
 use sha2::Digest;
 
+#[cfg(test)]
+use crate::models::ParquetEncodeConcurrencyProbe;
 use crate::{
-    ParquetCommitRequest, ParquetDestination,
-    api::{duplicate_parquet_receipt, finalize_parquet_objects},
     compression::{PHYSICAL_PLAN_VERSION, ParquetCompression},
     layout::{ParquetObjectLayoutPolicy, ParquetSegmentLayout},
     manifest::canonical_json_bytes,
     manifest::{ParquetObjectEntry, ParquetObjectSegmentEntry},
+    models::{
+        ParquetCommitRequest, ParquetDestination, PublicationAttemptMetadata,
+        StagingAttemptMetadata,
+    },
     package::{
         ParquetGroupCommand, ParquetWriterSettings, StagedParquetEncodeContext,
         StagedParquetSegment, parquet_worker_working_set_bytes, write_parquet_staged_group,
+    },
+    publication::{
+        duplicate_parquet_receipt, existing_verified_manifest, finalize_parquet_objects,
     },
     store::{
         ObjectKeyEncoder, StoredObject, data_object_key, now_ms, package_publication_metadata_key,
@@ -47,66 +54,6 @@ fn parquet_writer_memory_request(bytes: u64) -> Result<cdf_memory::ReservationRe
         bytes,
     )?
     .as_minimum_working_set())
-}
-
-#[cfg(test)]
-pub(crate) struct ParquetEncodeConcurrencyProbe {
-    expected: u16,
-    state: std::sync::Mutex<(u16, u16)>,
-    changed: std::sync::Condvar,
-}
-
-#[cfg(test)]
-impl ParquetEncodeConcurrencyProbe {
-    pub(crate) fn new(expected: u16) -> Self {
-        assert!(expected > 0);
-        Self {
-            expected,
-            state: std::sync::Mutex::new((0, 0)),
-            changed: std::sync::Condvar::new(),
-        }
-    }
-
-    fn enter(self: &std::sync::Arc<Self>) -> ParquetEncodeConcurrencyGuard {
-        let mut state = self.state.lock().unwrap();
-        state.0 += 1;
-        state.1 = state.1.max(state.0);
-        self.changed.notify_all();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-        while state.1 < self.expected {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-            let (next, timeout) = self.changed.wait_timeout(state, remaining).unwrap();
-            state = next;
-            if timeout.timed_out() {
-                break;
-            }
-        }
-        drop(state);
-        ParquetEncodeConcurrencyGuard {
-            probe: std::sync::Arc::clone(self),
-        }
-    }
-
-    pub(crate) fn peak(&self) -> u16 {
-        self.state.lock().unwrap().1
-    }
-}
-
-#[cfg(test)]
-struct ParquetEncodeConcurrencyGuard {
-    probe: std::sync::Arc<ParquetEncodeConcurrencyProbe>,
-}
-
-#[cfg(test)]
-impl Drop for ParquetEncodeConcurrencyGuard {
-    fn drop(&mut self) {
-        let mut state = self.probe.state.lock().unwrap();
-        state.0 = state.0.saturating_sub(1);
-        self.probe.changed.notify_all();
-    }
 }
 
 pub(crate) struct ParquetStagedIngressSession {
@@ -176,32 +123,6 @@ impl ParquetPhysicalWritePlan {
     fn content_key(&self, sha256: &str) -> String {
         data_object_key(self.encoder, &self.target, sha256)
     }
-}
-
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct StagingAttemptMetadata {
-    version: u16,
-    target: String,
-    attempt_id: String,
-    physical_plan_path: String,
-    physical_plan_version: u16,
-    object_publication_mode: String,
-    writers: u16,
-    rows_per_batch: u64,
-    bytes_per_batch: u64,
-    object_target_package_bytes: u64,
-    max_segments_per_object: u16,
-    started_at_ms: i64,
-    pub(crate) staging_lease: cdf_runtime::StagingLease,
-}
-
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct PublicationAttemptMetadata {
-    version: u16,
-    pub(crate) staging_lease: cdf_runtime::StagingLease,
-    pub(crate) root_id: CommittedContentRootId,
-    pub(crate) root_generation: u64,
-    pub(crate) manifest_key: String,
 }
 
 struct StagedParquetObject {
@@ -959,7 +880,8 @@ impl StagedIngressSession for ParquetStagedIngressSession {
             )?;
             self.request.mutation_guard().assert_current()?;
 
-            if let Some(existing) = self.destination.existing_verified_manifest(
+            if let Some(existing) = existing_verified_manifest(
+                &self.destination,
                 &request,
                 &plan,
                 self.request.mutation_guard(),
