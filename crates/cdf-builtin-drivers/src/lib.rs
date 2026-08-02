@@ -20,6 +20,7 @@ use cdf_source_iceberg::{
 };
 use cdf_source_postgres::PostgresSourceDriver;
 use cdf_source_rest::RestSourceDriver;
+use cdf_source_sqlite::SqliteSourceDriver;
 use cdf_transport_http::ReqwestHttpProvider;
 
 struct ProcessCatalogs {
@@ -191,6 +192,7 @@ fn build_source_registry(
     let mut registry = SourceRegistry::new();
     registry.register(PythonSourceDriver::new()?)?;
     registry.register(PostgresSourceDriver::new()?)?;
+    registry.register(SqliteSourceDriver::new()?)?;
     let http = ReqwestHttpProvider::new()?;
     let rest_http = http.clone();
     registry.register(RestSourceDriver::new(move || {

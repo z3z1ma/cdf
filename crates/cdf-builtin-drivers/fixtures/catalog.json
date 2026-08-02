@@ -17,7 +17,7 @@
     },
     {
       "id": "postgres",
-      "descriptor_sha256": "sha256:a10bbefa63f6c975162a9f7bc4944e050c0aafa711f813ae878d164ec8b91bc9",
+      "descriptor_sha256": "sha256:0bf6a1ff17888ef71e2520bea5c4bd446b287f93c9e182c9f1b81ef5b90e9d93",
       "option_schema_sha256": "sha256:744901b2ac372d3ec863c866613c69accdf2311020645b2e94ad5604ac719a84"
     },
     {
@@ -29,6 +29,11 @@
       "id": "rest",
       "descriptor_sha256": "sha256:5972c256582a27540dc3718e43fece0598f5521cbf0e457dd47fc25b051adbc5",
       "option_schema_sha256": "sha256:e5667b2a88ae75e32e44357454a429ef90cbd41ec62d34466b45a44acdfa7904"
+    },
+    {
+      "id": "sqlite",
+      "descriptor_sha256": "sha256:4e39fc31dddc237b32bd9f4d9df61136303d13433aa6d96e0bb4a63ba6955ff9",
+      "option_schema_sha256": "sha256:784a0be1e072bc511da5f76d0e82c8ddb2ebfcc80a91bb9217ad9f1ea8df571b"
     }
   ],
   "formats": [

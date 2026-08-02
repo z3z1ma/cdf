@@ -253,17 +253,17 @@ fn explain_human_headless_render_uses_operator_panels() {
 }
 
 #[test]
-fn backfill_dry_plan_splits_sql_cursor_windows_without_writes() {
+fn backfill_dry_plan_splits_postgres_cursor_windows_without_writes() {
     let project = TestProject::new();
     write_secret_project(
         &project,
         "duckdb://.cdf/dev.duckdb",
         None,
-        Some("secret://file/sql-dsn"),
+        Some("secret://file/postgres-dsn"),
     );
     fs::write(
-        project.root.join("resources/sql.toml"),
-        sql_resource_with_ordered_cursor("secret://file/sql-dsn", "orders"),
+        project.root.join("resources/postgres.toml"),
+        postgres_resource_with_ordered_cursor("secret://file/postgres-dsn", "orders"),
     )
     .unwrap();
 
@@ -358,11 +358,11 @@ fn backfill_human_rich_render_uses_plan_panels_and_slice_table() {
         &project,
         "duckdb://.cdf/dev.duckdb",
         None,
-        Some("secret://file/sql-dsn"),
+        Some("secret://file/postgres-dsn"),
     );
     fs::write(
-        project.root.join("resources/sql.toml"),
-        sql_resource_with_ordered_cursor("secret://file/sql-dsn", "orders"),
+        project.root.join("resources/postgres.toml"),
+        postgres_resource_with_ordered_cursor("secret://file/postgres-dsn", "orders"),
     )
     .unwrap();
 
@@ -461,7 +461,7 @@ fn backfill_rejects_file_resource_without_runtime_writes() {
 }
 
 #[test]
-fn backfill_execute_sql_cursor_window_commits_window_scope() {
+fn backfill_execute_postgres_cursor_window_commits_window_scope() {
     let Some(postgres) = LivePostgres::start() else {
         return;
     };
@@ -471,7 +471,7 @@ fn backfill_execute_sql_cursor_window_commits_window_scope() {
         "(1, 5), (2, 15), (3, 25)",
     );
     let project = TestProject::new();
-    let source_dsn = write_sql_project_with_secret(&project, &postgres, &table);
+    let source_dsn = write_postgres_project_with_secret(&project, &postgres, &table);
 
     let result = run([
         "cdf",
@@ -556,7 +556,7 @@ fn backfill_execute_human_progress_reports_each_slice_and_summary() {
         "(1, 5), (2, 15), (3, 25)",
     );
     let project = TestProject::new();
-    let source_dsn = write_sql_project_with_secret(&project, &postgres, &table);
+    let source_dsn = write_postgres_project_with_secret(&project, &postgres, &table);
 
     let result = run([
         "cdf",
@@ -613,7 +613,7 @@ fn backfill_execute_human_failure_reports_failed_slice_and_recovery_guidance() {
     };
     let table = seed_ordered_cursor_table(&postgres, "backfill_progress_failure_orders", "(1, 5)");
     let project = TestProject::new();
-    let source_dsn = write_sql_project_with_secret(&project, &postgres, &table);
+    let source_dsn = write_postgres_project_with_secret(&project, &postgres, &table);
 
     let args = || {
         vec![

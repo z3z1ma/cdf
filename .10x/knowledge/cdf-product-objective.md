@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-06
-Updated: 2026-07-19
+Updated: 2026-08-02
 
 # CDF Product Objective
 
@@ -33,7 +33,7 @@ The highest-leverage architectural decisions to front-load are:
 - Run model: run-id minting, run-ledger ownership, run-to-package/checkpoint mapping, resume/replay/duplicate semantics, and default id policy.
 - DataFusion depth: deepen to real `TableProvider` delegation for applicable resources or ratify the current thin boundary.
 - Distributed substrate: Ballista adopt/inspire/reject, shared store choice, and lease/fencing model.
-- Post-backlog connector order: the first source tranche is Iceberg and MongoDB, with Trino/Athena query sources and Glue catalog integration shaped by their actual protocol roles rather than treated as interchangeable connectors. Iceberg destination follows immediately; Snowflake and BigQuery destinations are the next warehouse tranche. Robust live AWS/GCP/Azure object-storage conformance is woven through these lanes rather than deferred to a separate compatibility story. This user-ratified order supersedes the earlier BigQuery-first recommendation.
+- Post-backlog connector order: after the completed Iceberg/Glue source work, the active first-party database tranche is SQLite source/destination, then ClickHouse source/destination, then MongoDB source/destination. Each source begins with finite snapshot plus numeric/timestamp/date cursor incrementality; MongoDB change streams remain a later CDC tranche. Trino/Athena query sources and subsequent lakehouse/warehouse destinations remain shaped by their actual protocol roles rather than treated as interchangeable connectors. Robust live object-storage and remote-service conformance is woven through those lanes rather than deferred. This 2026-08-02 user-ratified order supersedes the earlier Iceberg-then-MongoDB ordering.
 - Catalog strategy: Iceberg REST catalog as the neutral interface, with Glue, Polaris, and Unity as bindings rather than forks.
 - Registry trust model: signing, admission, revocation, and conformance requirements.
 - Versioning and LTS: artifact-spec versions, migration fixtures, pin-tuple cadence, and support windows.

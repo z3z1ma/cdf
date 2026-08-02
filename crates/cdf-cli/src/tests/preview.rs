@@ -148,7 +148,7 @@ fn preview_rest_resource_uses_local_http_runtime_without_writes() {
 }
 
 #[test]
-fn preview_sql_table_resource_uses_postgres_runtime_without_writes() {
+fn preview_postgres_table_resource_uses_postgres_runtime_without_writes() {
     let Some(postgres) = LivePostgres::start() else {
         return;
     };
@@ -168,19 +168,19 @@ fn preview_sql_table_resource_uses_postgres_runtime_without_writes() {
     let project = TestProject::new();
     let source_dsn = postgres.url.replacen(
         "postgresql://cdf@",
-        "postgresql://cdf:source-sql-preview-secret@",
+        "postgresql://cdf:source-postgres-preview-secret@",
         1,
     );
-    fs::write(project.root.join("sql-dsn"), format!("{source_dsn}\n")).unwrap();
+    fs::write(project.root.join("postgres-dsn"), format!("{source_dsn}\n")).unwrap();
     write_secret_project(
         &project,
         "duckdb://.cdf/dev.duckdb",
         None,
-        Some("secret://file/sql-dsn"),
+        Some("secret://file/postgres-dsn"),
     );
     fs::write(
-        project.root.join("resources/sql.toml"),
-        sql_resource_with_ordered_cursor("secret://file/sql-dsn", &table),
+        project.root.join("resources/postgres.toml"),
+        postgres_resource_with_ordered_cursor("secret://file/postgres-dsn", &table),
     )
     .unwrap();
 
@@ -199,7 +199,7 @@ fn preview_sql_table_resource_uses_postgres_runtime_without_writes() {
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     assert_secret_absent(&result, &source_dsn);
-    assert_secret_absent(&result, "source-sql-preview-secret");
+    assert_secret_absent(&result, "source-postgres-preview-secret");
     assert_no_preview_writes(&project);
     let json = stderr_or_stdout_json(&result.stdout);
     assert_eq!(json["result"]["resource"], "warehouse.orders");
@@ -208,20 +208,20 @@ fn preview_sql_table_resource_uses_postgres_runtime_without_writes() {
 }
 
 #[test]
-fn preview_sql_query_resource_fails_closed_without_writes() {
+fn preview_postgres_query_resource_fails_closed_without_writes() {
     let project = TestProject::new();
     write_secret_project(
         &project,
         "duckdb://.cdf/dev.duckdb",
         None,
-        Some("secret://file/sql-dsn"),
+        Some("secret://file/postgres-dsn"),
     );
     fs::write(
-        project.root.join("resources/sql.toml"),
+        project.root.join("resources/postgres.toml"),
         r#"
 [source.warehouse]
-kind = "sql"
-connection = "secret://file/sql-dsn"
+kind = "postgres"
+connection = "secret://file/postgres-dsn"
 dialect = "postgres"
 
 [resource.orders]

@@ -34,13 +34,16 @@ cdf-object-access = { path = "../cdf-object-access" }
 cdf-source-files = { path = "../cdf-source-files" }
 cdf-source-iceberg = { path = "../cdf-source-iceberg" }
 cdf-source-rest = { path = "../cdf-source-rest" }
+cdf-source-sqlite = { path = "../cdf-source-sqlite" }
 cdf-state-sqlite = { path = "../cdf-state-sqlite" }
 cdf-transport-http = { path = "../cdf-transport-http" }
 datafusion = { version = "54.0.0", default-features = false }
 duckdb = { workspace = true, features = ["appender-arrow"] }
 futures-executor = "0.3.32"
 futures-util = "0.3.32"
+nix = { version = "0.31.3", default-features = false, features = ["resource"] }
 parquet = { version = "58.3.0", default-features = false, features = ["arrow"] }
+rusqlite = { version = "0.40.1", default-features = false, features = ["bundled", "modern_sqlite"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 sha2 = "0.10.9"

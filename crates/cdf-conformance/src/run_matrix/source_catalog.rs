@@ -5,7 +5,7 @@ use cdf_project::{ProjectRunReport, ProjectRunSource};
 
 use super::{
     MatrixDisposition, RunMatrixCell, SourceArchetype, file_fixture, nebula_task_fixture,
-    plan_json, python_fixture, rest_fixture, sql_fixture,
+    plan_json, postgres_fixture, python_fixture, rest_fixture, sqlite_fixture,
 };
 use crate::destination_catalog::ConformanceEnvironment;
 
@@ -82,8 +82,12 @@ const FIXTURES: &[SourceFixture] = &[
         prepare: prepare_rest,
     },
     SourceFixture {
-        archetype: "sql",
-        prepare: prepare_sql,
+        archetype: "postgres",
+        prepare: prepare_postgres,
+    },
+    SourceFixture {
+        archetype: "sqlite",
+        prepare: prepare_sqlite,
     },
     SourceFixture {
         archetype: "nebula",
@@ -157,14 +161,25 @@ fn prepare_rest(
     }))
 }
 
-fn prepare_sql(
+fn prepare_postgres(
     cell: &RunMatrixCell,
     _project_root: &Path,
     environment: &ConformanceEnvironment,
 ) -> Result<PreparedMatrixSource> {
     Ok(PreparedMatrixSource::new(
-        sql_fixture::resource(cell.clone(), environment.postgres()?)?,
-        sql_fixture::assert_source_position,
+        postgres_fixture::resource(cell.clone(), environment.postgres()?)?,
+        postgres_fixture::assert_source_position,
+    ))
+}
+
+fn prepare_sqlite(
+    cell: &RunMatrixCell,
+    project_root: &Path,
+    _environment: &ConformanceEnvironment,
+) -> Result<PreparedMatrixSource> {
+    Ok(PreparedMatrixSource::new(
+        sqlite_fixture::resource(cell, project_root)?,
+        sqlite_fixture::assert_source_position,
     ))
 }
 

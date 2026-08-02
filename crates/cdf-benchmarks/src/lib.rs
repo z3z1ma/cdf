@@ -18,6 +18,7 @@ mod profiling;
 mod references;
 mod resource;
 mod runners;
+mod sqlite_source_roofline;
 mod stress;
 
 pub use baseline::{PreoptimizationBaselineConfig, run_preoptimization_baseline};
@@ -79,5 +80,8 @@ pub use runners::{
     PreparedIcebergPackageWorkload, PreparedSourceIoStage, PreparedSourcePackageRun,
     StartupControlWorkload, run_case, run_prepared_file_to_destination,
     run_prepared_file_to_package, run_prepared_iceberg_to_package, run_startup_control_workload,
+};
+pub use sqlite_source_roofline::{
+    SqliteSourceRooflineReport, run_sqlite_source_roofline, run_sqlite_source_roofline_worker,
 };
 pub use stress::{ConstantMemoryParquetRecipe, generate_constant_memory_parquet};

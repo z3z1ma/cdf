@@ -572,7 +572,7 @@ fn workspace_safety_lint_policy_and_exception_set_are_closed() {
     let members = workspace["workspace"]["members"].as_array().unwrap();
     assert_eq!(
         members.len(),
-        52,
+        53,
         "update the closed workspace-member count"
     );
     for member in members {
@@ -1281,14 +1281,14 @@ fn local_project_scaffold_writes_valid_project_without_runtime_artifacts() {
 }
 
 #[test]
-fn declarative_sql_secret_is_collected_for_validation() {
+fn declarative_postgres_secret_is_collected_for_validation() {
     let project = BOOK_PROJECT.replace(
         "[resources.\"github.*\"]\nsource = \"resources/github.toml\"",
-        "[resources.\"warehouse.*\"]\nsource = \"resources/sql.toml\"",
+        "[resources.\"warehouse.*\"]\nsource = \"resources/postgres.toml\"",
     );
-    let sql_resource = r#"
+    let postgres_resource = r#"
 [source.warehouse]
-kind = "sql"
+kind = "postgres"
 connection = "secret://env/POSTGRES_URL"
 
 [resource.orders]
@@ -1299,8 +1299,8 @@ write_disposition = "merge"
 trust = "governed"
 "#;
     let config = parse_cdf_toml(&project).unwrap();
-    let resolver =
-        InMemoryResourceSourceResolver::new().with_toml("resources/sql.toml", sql_resource);
+    let resolver = InMemoryResourceSourceResolver::new()
+        .with_toml("resources/postgres.toml", postgres_resource);
     let provider = EnvSecretProvider::from_map([
         ("POSTGRES_URL", "postgres-url-value"),
         ("PROD_DWH", "postgres-dsn-value"),

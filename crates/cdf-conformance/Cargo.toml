@@ -41,12 +41,14 @@ cdf-python = { path = "../cdf-python" }
 cdf-subprocess = { path = "../cdf-subprocess" }
 cdf-source-postgres = { path = "../cdf-source-postgres" }
 cdf-source-rest = { path = "../cdf-source-rest" }
+cdf-source-sqlite = { path = "../cdf-source-sqlite" }
 cdf-task-store = { path = "../cdf-task-store" }
 duckdb.workspace = true
 futures-executor = "0.3.32"
 parquet = { version = "58.3.0", default-features = false, features = ["arrow"] }
 postgres = "0.19"
 proptest = "1.11.0"
+rusqlite = { version = "0.40.1", default-features = false, features = ["bundled", "modern_sqlite"] }
 syn = { version = "2.0.117", features = ["full"] }
 tempfile = "3.27.0"
 

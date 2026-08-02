@@ -43,10 +43,6 @@ impl SourceArchetype {
         Self::fixture("rest")
     }
 
-    pub fn sql() -> Self {
-        Self::fixture("sql")
-    }
-
     pub fn nebula() -> Self {
         Self::fixture("nebula")
     }
@@ -139,10 +135,6 @@ impl RunMatrixCell {
     pub fn python(destination: MatrixDestination, disposition: MatrixDisposition) -> Self {
         Self::new(SourceArchetype::python(), destination, disposition)
     }
-
-    pub fn sql(destination: MatrixDestination, disposition: MatrixDisposition) -> Self {
-        Self::new(SourceArchetype::sql(), destination, disposition)
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -228,13 +220,15 @@ mod nebula_task_fixture;
 #[cfg(test)]
 mod plan_json;
 #[cfg(test)]
+mod postgres_fixture;
+#[cfg(test)]
 mod python_fixture;
 #[cfg(test)]
 mod rest_fixture;
 #[cfg(test)]
 mod source_catalog;
 #[cfg(test)]
-mod sql_fixture;
+mod sqlite_fixture;
 #[cfg(test)]
 pub(crate) mod test_support;
 #[cfg(test)]

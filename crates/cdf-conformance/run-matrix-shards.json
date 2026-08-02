@@ -2,6 +2,7 @@
   "file",
   "python",
   "rest",
-  "sql",
+  "postgres",
+  "sqlite",
   "nebula"
 ]

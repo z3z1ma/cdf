@@ -10,7 +10,11 @@ use serde_json::Value;
 #[test]
 fn doctor_resolves_child_process_env_secrets_without_leaking_values() {
     let project = TestProject::new();
-    fs::write(project.root.join("sql-dsn"), "resolved-file-sql-value\n").unwrap();
+    fs::write(
+        project.root.join("postgres-dsn"),
+        "resolved-file-postgres-value\n",
+    )
+    .unwrap();
     write_project(&project);
 
     let output = Command::new(env!("CARGO_BIN_EXE_cdf"))
@@ -33,7 +37,7 @@ fn doctor_resolves_child_process_env_secrets_without_leaking_values() {
     for secret in [
         "resolved-env-destination-value",
         "resolved-env-auth-token-value",
-        "resolved-file-sql-value",
+        "resolved-file-postgres-value",
     ] {
         assert!(!stdout.contains(secret), "stdout leaked {secret}");
         assert!(!stderr.contains(secret), "stderr leaked {secret}");
@@ -47,7 +51,7 @@ fn doctor_resolves_child_process_env_secrets_without_leaking_values() {
     for reference in [
         "secret://env/CDF_CLI_ENV_DESTINATION_DSN",
         "secret://env/CDF_CLI_ENV_AUTH_TOKEN",
-        "secret://file/sql-dsn",
+        "secret://file/postgres-dsn",
     ] {
         assert!(
             references.iter().any(|value| value == reference),
@@ -75,7 +79,7 @@ destination = "postgres://secret://env/CDF_CLI_ENV_DESTINATION_DSN"
 source = "resources/api.toml"
 
 [resources."warehouse.*"]
-source = "resources/sql.toml"
+source = "resources/postgres.toml"
 "#,
     )
     .unwrap();
@@ -100,11 +104,11 @@ schema = { fields = [
     )
     .unwrap();
     fs::write(
-        project.root.join("resources/sql.toml"),
+        project.root.join("resources/postgres.toml"),
         r#"
 [source.warehouse]
-kind = "sql"
-connection = "secret://file/sql-dsn"
+kind = "postgres"
+connection = "secret://file/postgres-dsn"
 
 [resource.orders]
 table = "orders"

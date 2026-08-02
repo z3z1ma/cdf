@@ -40,7 +40,7 @@ pub fn discover_postgres_table_catalog_schema(
     let columns = read_catalog_columns(&mut client, target)?;
     let schema = schema_from_catalog_columns(resource_id, columns)?;
     let source_identity = BTreeMap::from([
-        ("source_kind".to_owned(), "sql".to_owned()),
+        ("source_kind".to_owned(), "postgres".to_owned()),
         ("dialect".to_owned(), "postgres".to_owned()),
         ("table".to_owned(), target.display_name()),
     ]);

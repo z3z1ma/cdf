@@ -1,0 +1,11 @@
+crates/cdf-source-sqlite/src/catalog.rs
+crates/cdf-source-sqlite/src/driver.rs
+crates/cdf-source-sqlite/src/error.rs
+crates/cdf-source-sqlite/src/identifier.rs
+crates/cdf-source-sqlite/src/lib.rs
+crates/cdf-source-sqlite/src/source.rs
+crates/cdf-source-sqlite/src/source/execution.rs
+crates/cdf-source-sqlite/src/source/query.rs
+crates/cdf-source-sqlite/src/source/schema.rs
+crates/cdf-source-sqlite/src/source/temporal.rs
+crates/cdf-source-sqlite/src/source/tests.rs

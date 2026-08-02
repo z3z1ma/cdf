@@ -100,12 +100,16 @@ fn doctor_reports_resolved_secret_references_without_values() {
         "resolved-auth-token-value\n",
     )
     .unwrap();
-    fs::write(project.root.join("sql-dsn"), "resolved-file-secret-value\n").unwrap();
+    fs::write(
+        project.root.join("postgres-dsn"),
+        "resolved-file-secret-value\n",
+    )
+    .unwrap();
     write_secret_project(
         &project,
         "postgres://secret://file/destination-dsn",
         Some("secret://file/auth-token"),
-        Some("secret://file/sql-dsn"),
+        Some("secret://file/postgres-dsn"),
     );
 
     let result = run(["cdf", "--json", "--project", project.root_str(), "doctor"]);
@@ -126,7 +130,7 @@ fn doctor_reports_resolved_secret_references_without_values() {
     for reference in [
         "secret://file/destination-dsn".to_owned(),
         "secret://file/auth-token".to_owned(),
-        "secret://file/sql-dsn".to_owned(),
+        "secret://file/postgres-dsn".to_owned(),
     ] {
         assert!(
             references.iter().any(|value| value == &reference),

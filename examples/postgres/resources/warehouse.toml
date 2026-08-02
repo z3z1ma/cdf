@@ -1,5 +1,5 @@
 [source.warehouse]
-kind = "sql"
+kind = "postgres"
 connection = "secret://file/postgres-dsn"
 dialect = "postgres"
 

@@ -966,16 +966,16 @@ fn postgres_discover_mode_plan_preview_run_autopins_through_file_secret_without_
         "postgresql://cdf:source-discover-run-secret@",
         1,
     );
-    fs::write(project.root.join("sql-dsn"), format!("{source_dsn}\n")).unwrap();
+    fs::write(project.root.join("postgres-dsn"), format!("{source_dsn}\n")).unwrap();
     write_secret_project(
         &project,
         "duckdb://.cdf/dev.duckdb",
         None,
-        Some("secret://file/sql-dsn"),
+        Some("secret://file/postgres-dsn"),
     );
     fs::write(
-        project.root.join("resources/sql.toml"),
-        sql_discover_resource_with_vendor_cursor("secret://file/sql-dsn", &table),
+        project.root.join("resources/postgres.toml"),
+        postgres_discover_resource_with_vendor_cursor("secret://file/postgres-dsn", &table),
     )
     .unwrap();
 

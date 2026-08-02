@@ -1004,6 +1004,7 @@ dependencies = [
  "cdf-source-files",
  "cdf-source-iceberg",
  "cdf-source-rest",
+ "cdf-source-sqlite",
  "cdf-state-sqlite",
  "cdf-transport-http",
  "clap",
@@ -1012,8 +1013,10 @@ dependencies = [
  "duckdb",
  "futures-executor",
  "futures-util",
+ "nix",
  "parquet",
  "postgres",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1044,6 +1047,7 @@ dependencies = [
  "cdf-source-iceberg",
  "cdf-source-postgres",
  "cdf-source-rest",
+ "cdf-source-sqlite",
  "cdf-transform-brotli",
  "cdf-transform-bzip2",
  "cdf-transform-character",
@@ -1147,6 +1151,7 @@ dependencies = [
  "cdf-source-files",
  "cdf-source-postgres",
  "cdf-source-rest",
+ "cdf-source-sqlite",
  "cdf-state-sqlite",
  "cdf-subprocess",
  "cdf-task-store",
@@ -1156,6 +1161,7 @@ dependencies = [
  "parquet",
  "postgres",
  "proptest",
+ "rusqlite",
  "serde",
  "serde_json",
  "syn 2.0.119",
@@ -1791,6 +1797,24 @@ dependencies = [
  "serde",
  "serde_json",
  "url",
+]
+
+[[package]]
+name = "cdf-source-sqlite"
+version = "0.2.0-alpha.1"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "cdf-engine",
+ "cdf-kernel",
+ "cdf-memory",
+ "cdf-runtime",
+ "futures-executor",
+ "futures-util",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

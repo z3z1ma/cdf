@@ -405,15 +405,15 @@ schema = { fields = [
 }
 
 #[test]
-fn run_sql_resource_missing_secret_fails_before_package_or_destination_writes() {
+fn run_postgres_resource_missing_secret_fails_before_package_or_destination_writes() {
     let project = TestProject::new();
     write_secret_project(
         &project,
         "duckdb://.cdf/dev.duckdb",
         None,
-        Some("secret://env/CDF_CLI_SQL"),
+        Some("secret://env/CDF_CLI_POSTGRES"),
     );
-    let resource_path = project.root.join("resources/sql.toml");
+    let resource_path = project.root.join("resources/postgres.toml");
     let resource = fs::read_to_string(&resource_path).unwrap().replace(
         "primary_key = [\"id\"]",
         "primary_key = [\"id\"]\ncursor = { field = \"id\", ordering = \"exact\", lag = \"0ms\" }",
@@ -434,30 +434,30 @@ fn run_sql_resource_missing_secret_fails_before_package_or_destination_writes() 
         json["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("secret://env/CDF_CLI_SQL")
+            .contains("secret://env/CDF_CLI_POSTGRES")
     );
 }
 
 #[test]
-fn run_sql_resource_resolves_secret_without_leaking_before_cursor_blocker() {
+fn run_postgres_resource_resolves_secret_without_leaking_before_cursor_blocker() {
     let project = TestProject::new();
     fs::write(
-        project.root.join("sql-dsn"),
-        "postgres://user:sql-secret@localhost/db\n",
+        project.root.join("postgres-dsn"),
+        "postgres://user:postgres-secret@localhost/db\n",
     )
     .unwrap();
     write_secret_project(
         &project,
         "duckdb://.cdf/dev.duckdb",
         None,
-        Some("secret://file/sql-dsn"),
+        Some("secret://file/postgres-dsn"),
     );
 
     let result = run_valid_run_resource(&project, "warehouse.orders");
 
     assert_eq!(result.exit_code, 3);
     assert_no_run_writes(&project);
-    assert_secret_absent(&result, "sql-secret");
+    assert_secret_absent(&result, "postgres-secret");
     let json = stderr_or_stdout_json(&result.stderr);
     assert!(
         json["error"]["message"]
@@ -468,7 +468,7 @@ fn run_sql_resource_resolves_secret_without_leaking_before_cursor_blocker() {
 }
 
 #[test]
-fn run_sql_resource_with_ordered_cursor_commits_checkpoint() {
+fn run_postgres_resource_with_ordered_cursor_commits_checkpoint() {
     let Some(postgres) = LivePostgres::start() else {
         return;
     };
@@ -488,19 +488,19 @@ fn run_sql_resource_with_ordered_cursor_commits_checkpoint() {
     let project = TestProject::new();
     let source_dsn = postgres.url.replacen(
         "postgresql://cdf@",
-        "postgresql://cdf:source-sql-secret@",
+        "postgresql://cdf:source-postgres-secret@",
         1,
     );
-    fs::write(project.root.join("sql-dsn"), format!("{source_dsn}\n")).unwrap();
+    fs::write(project.root.join("postgres-dsn"), format!("{source_dsn}\n")).unwrap();
     write_secret_project(
         &project,
         "duckdb://.cdf/dev.duckdb",
         None,
-        Some("secret://file/sql-dsn"),
+        Some("secret://file/postgres-dsn"),
     );
     fs::write(
-        project.root.join("resources/sql.toml"),
-        sql_resource_with_ordered_cursor("secret://file/sql-dsn", &table),
+        project.root.join("resources/postgres.toml"),
+        postgres_resource_with_ordered_cursor("secret://file/postgres-dsn", &table),
     )
     .unwrap();
 
@@ -508,7 +508,7 @@ fn run_sql_resource_with_ordered_cursor_commits_checkpoint() {
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     assert_secret_absent(&result, &source_dsn);
-    assert_secret_absent(&result, "source-sql-secret");
+    assert_secret_absent(&result, "source-postgres-secret");
     let json = stderr_or_stdout_json(&result.stdout);
     let report = &json["result"];
     assert_eq!(report["resource_id"], "warehouse.orders");

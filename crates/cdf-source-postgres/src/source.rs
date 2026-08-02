@@ -31,7 +31,7 @@ use cdf_memory::{
     ConsumerKey, MemoryClass, MemoryCoordinator, ReservationRequest, reserve_blocking,
 };
 
-const POSTGRES_SQL_KIND: &str = "sql";
+const POSTGRES_PARTITION_KIND: &str = "sql";
 const POSTGRES_SQL_DIALECT: &str = "postgres";
 pub const POSTGRES_SOURCE_BLOCKING_LANE_ID: &str = "postgres-source.sync";
 const POSTGRES_FETCH_ROWS: usize = 8 * 1024;
@@ -523,7 +523,7 @@ pub fn plan_postgres_table_partition(
     scan_intent.validate()?;
     PostgresTableScan::from_intent(schema, &scan_intent)?;
     let mut metadata = BTreeMap::new();
-    metadata.insert("kind".to_owned(), POSTGRES_SQL_KIND.to_owned());
+    metadata.insert("kind".to_owned(), POSTGRES_PARTITION_KIND.to_owned());
     metadata.insert("dialect".to_owned(), POSTGRES_SQL_DIALECT.to_owned());
     metadata.insert("table".to_owned(), target.display_name());
     metadata.insert("resource_id".to_owned(), descriptor.resource_id.to_string());
@@ -654,7 +654,7 @@ fn scan_from_partition(
             descriptor.resource_id, partition.partition_id
         )));
     }
-    if partition.metadata.get("kind").map(String::as_str) != Some(POSTGRES_SQL_KIND) {
+    if partition.metadata.get("kind").map(String::as_str) != Some(POSTGRES_PARTITION_KIND) {
         return Err(CdfError::contract(format!(
             "Postgres table resource `{}` expected a SQL partition plan",
             descriptor.resource_id

@@ -18,7 +18,7 @@ pub(crate) fn resource(
     postgres: &LivePostgres,
 ) -> Result<crate::source_fixture::ResolvedSourceFixture> {
     let table = format!(
-        "sql_source_{}_{}",
+        "postgres_source_{}_{}",
         cell.destination.as_str(),
         cell.disposition.as_str()
     );
@@ -42,7 +42,7 @@ pub(crate) fn resource(
 
 pub(crate) fn assert_source_position(report: &ProjectRunReport) {
     let SourcePosition::Cursor(cursor) = &report.checkpoint.delta.output_position else {
-        panic!("run matrix SQL source must checkpoint a cursor position");
+        panic!("run matrix Postgres source must checkpoint a cursor position");
     };
     assert_eq!(cursor.version, 1);
     assert_eq!(cursor.field, "updated_at");
@@ -52,14 +52,14 @@ pub(crate) fn assert_source_position(report: &ProjectRunReport) {
 fn one_resource(mut resources: Vec<CompiledResource>) -> Result<CompiledResource> {
     if resources.len() != 1 {
         return Err(CdfError::contract(format!(
-            "run matrix expected one SQL resource, found {}",
+            "run matrix expected one Postgres resource, found {}",
             resources.len()
         )));
     }
     let resource = resources.remove(0);
     if resource.descriptor().resource_id.as_str() != RESOURCE_ID {
         return Err(CdfError::contract(format!(
-            "run matrix compiled unexpected SQL resource {}",
+            "run matrix compiled unexpected Postgres resource {}",
             resource.descriptor().resource_id
         )));
     }
@@ -71,7 +71,7 @@ fn resource_toml(disposition: MatrixDisposition, table: &str) -> String {
     format!(
         r#"
 [source.warehouse]
-kind = "sql"
+kind = "postgres"
 connection = "{SECRET_REF}"
 dialect = "postgres"
 

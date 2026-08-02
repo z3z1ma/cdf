@@ -29,6 +29,7 @@ cdf-source-glue = { path = "../cdf-source-glue" }
 cdf-source-iceberg = { path = "../cdf-source-iceberg" }
 cdf-source-postgres = { path = "../cdf-source-postgres" }
 cdf-source-rest = { path = "../cdf-source-rest" }
+cdf-source-sqlite = { path = "../cdf-source-sqlite" }
 cdf-transform-brotli = { path = "../cdf-transform-brotli" }
 cdf-transform-bzip2 = { path = "../cdf-transform-bzip2" }
 cdf-transform-character = { path = "../cdf-transform-character" }

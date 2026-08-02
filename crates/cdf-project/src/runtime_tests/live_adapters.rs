@@ -14,9 +14,10 @@ use super::{
         SIMPLE_FILE_RESOURCE_APPEND, StaticSecretProvider, compile_test_file_resource,
         compiled_test_source_plan, destination, live_plan, live_plan_with_exact_policy,
         live_plan_with_policy, package_id_name_rows, parquet_project_run_request,
-        postgres_project_run_request, project_run_request, resolve_postgres_resource,
-        resolve_rest_resource, resolved_duckdb_destination, rest_compile_registry, run_project,
-        run_project_fixture, simple_file_resource, sql_runtime_resource, test_execution_services,
+        postgres_project_run_request, postgres_runtime_resource, project_run_request,
+        resolve_postgres_resource, resolve_rest_resource, resolved_duckdb_destination,
+        rest_compile_registry, run_project, run_project_fixture, simple_file_resource,
+        test_execution_services,
     },
 };
 
@@ -248,7 +249,7 @@ pub(super) fn run_rest_project_with_jobs(
     (report, transport, effective_jobs)
 }
 
-pub(super) fn run_sql_project_with_jobs(
+pub(super) fn run_postgres_project_with_jobs(
     compiled: &cdf_declarative::CompiledResource,
     database_url: &str,
     root: &Path,
@@ -1261,12 +1262,12 @@ fn general_project_run_rejects_rest_without_cursor_before_writes() {
 }
 
 #[test]
-fn general_project_run_rejects_sql_empty_secret_inside_source_lifecycle_before_destination() {
+fn general_project_run_rejects_postgres_empty_secret_before_destination() {
     let temp = tempfile::tempdir().unwrap();
-    let compiled = sql_runtime_resource("public.orders");
+    let compiled = postgres_runtime_resource("public.orders");
     let services = test_execution_services();
     let resource = resolve_postgres_resource(&compiled, "", &services);
-    let package_id = "pkg-general-sql-empty-secret";
+    let package_id = "pkg-general-postgres-empty-secret";
     let package_root = temp.path().join(".cdf/packages");
     let duckdb_path = temp.path().join(".cdf/dev.duckdb");
     let state_path = temp.path().join(".cdf/state.db");
@@ -1280,13 +1281,13 @@ fn general_project_run_rejects_sql_empty_secret_inside_source_lifecycle_before_d
             state_store_path_ownership: crate::StateStorePathOwnership::Configured,
             pipeline_id: PipelineId::new("pipeline-live").unwrap(),
             package_id: package_id.to_owned(),
-            checkpoint_id: CheckpointId::new("checkpoint-general-sql-empty-secret").unwrap(),
+            checkpoint_id: CheckpointId::new("checkpoint-general-postgres-empty-secret").unwrap(),
             destination: crate::test_destinations::duckdb(
                 duckdb_path.clone(),
                 TargetName::new("orders").unwrap(),
             )
             .unwrap(),
-            run_id: Some(RunId::new("run-general-sql-empty-secret").unwrap()),
+            run_id: Some(RunId::new("run-general-postgres-empty-secret").unwrap()),
             event_sink: None,
             after_receipt_verified: None,
         },
@@ -1308,7 +1309,7 @@ fn general_project_run_rejects_sql_empty_secret_inside_source_lifecycle_before_d
 }
 
 #[test]
-fn general_project_run_executes_table_backed_postgres_sql_resource_stream() {
+fn general_project_run_executes_postgres_table_resource_stream() {
     let Some(postgres) = LivePostgres::start() else {
         return;
     };
@@ -1325,7 +1326,7 @@ fn general_project_run_executes_table_backed_postgres_sql_resource_stream() {
         ))
         .unwrap();
 
-    let compiled = sql_runtime_resource(&table);
+    let compiled = postgres_runtime_resource(&table);
     let mut roots = Vec::new();
     let mut runs = Vec::new();
     for (label, jobs) in [
@@ -1336,8 +1337,11 @@ fn general_project_run_executes_table_backed_postgres_sql_resource_stream() {
     ] {
         let root = tempfile::tempdir().unwrap();
         let (report, effective_jobs) =
-            run_sql_project_with_jobs(&compiled, &postgres.url, root.path(), jobs);
-        assert_eq!(effective_jobs, 1, "single SQL table partition at {label}");
+            run_postgres_project_with_jobs(&compiled, &postgres.url, root.path(), jobs);
+        assert_eq!(
+            effective_jobs, 1,
+            "single Postgres table partition at {label}"
+        );
         assert_eq!(report.row_count, 2);
         assert_eq!(report.segment_count, 1);
         assert_eq!(report.package_status, PackageStatus::Checkpointed);

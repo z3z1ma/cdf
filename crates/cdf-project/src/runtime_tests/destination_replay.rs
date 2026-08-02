@@ -29,9 +29,9 @@ use super::{
         compiled_test_source_plan, delta, destination, live_file_resource, live_plan,
         live_plan_for_queryable_with_exact_policy, live_plan_with_exact_policy, mock_bulk_path,
         multi_file_resource, package_receipts, package_status, parquet_project_run_request,
-        position, postgres_project_run_request, project_run_request, quote_identifier,
-        resolve_postgres_resource, resolved_duckdb_destination, run_project, run_project_fixture,
-        sample_batch, scope, simple_file_resource, sql_runtime_resource, test_execution_services,
+        position, postgres_project_run_request, postgres_runtime_resource, project_run_request,
+        quote_identifier, resolve_postgres_resource, resolved_duckdb_destination, run_project,
+        run_project_fixture, sample_batch, scope, simple_file_resource, test_execution_services,
         write_compiled_expression_artifacts, write_state_commit_artifacts,
     },
 };
@@ -1707,7 +1707,7 @@ source = "resources/mock.toml"
         cdf_runtime::DestinationHealthStatus::Passed
     );
     assert_eq!(destination.write_count(), 0, "health must not mutate");
-    let compiled = sql_runtime_resource("public.events");
+    let compiled = postgres_runtime_resource("public.events");
     let execution = test_execution_services();
     let resource = resolve_postgres_resource(
         &compiled,

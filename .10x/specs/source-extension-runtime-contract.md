@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-11
-Updated: 2026-07-26
+Updated: 2026-08-02
 
 # Source extension runtime contract
 
@@ -11,6 +11,12 @@ This specification governs source registry/config compilation, runtime resolutio
 ## Registry and configuration
 
 Registration MUST reject duplicate ids/schemes/kinds and noncanonical versions/schema hashes. Registry ordering cannot affect resolution, generated schemas, plans, or package identity.
+
+Kinds are concrete construction selectors, not broad protocol categories. First-party database
+sources MUST use their source-family/driver identity (`postgres`, `sqlite`, `clickhouse`,
+`mongodb`) as the kind; query-language or data-model capabilities such as `sql` and `document`
+belong in capability/descriptor metadata and MUST NOT be claimed as a unique registry kind. This
+rule is governed by `.10x/decisions/database-source-kind-identity.md`.
 
 The common config envelope MUST remain strongly typed. Driver options are raw only until the selected driver validates them against its versioned source/resource schema and compiles typed internal values. Unknown fields, type errors, secret values where references are required, common-field collisions, and unsupported source/resource combinations fail with exact location/remediation.
 

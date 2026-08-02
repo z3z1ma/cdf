@@ -1880,7 +1880,7 @@ fn write_secret_failure_project(project: &TestProject, case: SecretFailureCase) 
             project,
             "duckdb://.cdf/dev.duckdb",
             None,
-            Some("secret://file/missing-sql-dsn"),
+            Some("secret://file/missing-postgres-dsn"),
         ),
         SecretFailureCase::DeclarativeAuthToken => write_secret_project(
             project,
@@ -1914,7 +1914,7 @@ fn write_secret_project(
         resources.push_str("\n[resources.\"api.*\"]\nsource = \"resources/api.toml\"\n");
     }
     if sql_connection.is_some() {
-        resources.push_str("\n[resources.\"warehouse.*\"]\nsource = \"resources/sql.toml\"\n");
+        resources.push_str("\n[resources.\"warehouse.*\"]\nsource = \"resources/postgres.toml\"\n");
     }
     if rest_token.is_none() && sql_connection.is_none() {
         resources.push_str("\n[resources.\"local.*\"]\nsource = \"resources/files.toml\"\n");
@@ -1948,8 +1948,8 @@ destination = "{destination}"
     }
     if let Some(connection) = sql_connection {
         fs::write(
-            project.root.join("resources/sql.toml"),
-            sql_resource(connection),
+            project.root.join("resources/postgres.toml"),
+            postgres_resource(connection),
         )
         .unwrap();
     }
@@ -2240,11 +2240,11 @@ fn parse_range_header(line: &str) -> Option<(usize, usize)> {
     Some((start.parse().ok()?, end.parse().ok()?))
 }
 
-fn sql_resource(connection: &str) -> String {
+fn postgres_resource(connection: &str) -> String {
     format!(
         r#"
 [source.warehouse]
-kind = "sql"
+kind = "postgres"
 connection = "{connection}"
 
 [resource.orders]
@@ -2259,11 +2259,11 @@ schema = {{ fields = [
     )
 }
 
-fn sql_discover_resource(connection: &str, table: &str) -> String {
+fn postgres_discover_resource(connection: &str, table: &str) -> String {
     format!(
         r#"
 [source.warehouse]
-kind = "sql"
+kind = "postgres"
 connection = "{connection}"
 dialect = "postgres"
 
@@ -2275,11 +2275,11 @@ trust = "governed"
     )
 }
 
-fn sql_discover_resource_with_vendor_cursor(connection: &str, table: &str) -> String {
+fn postgres_discover_resource_with_vendor_cursor(connection: &str, table: &str) -> String {
     format!(
         r#"
 [source.warehouse]
-kind = "sql"
+kind = "postgres"
 connection = "{connection}"
 dialect = "postgres"
 
@@ -2292,11 +2292,11 @@ trust = "governed"
     )
 }
 
-fn sql_resource_with_ordered_cursor(connection: &str, table: &str) -> String {
+fn postgres_resource_with_ordered_cursor(connection: &str, table: &str) -> String {
     format!(
         r#"
 [source.warehouse]
-kind = "sql"
+kind = "postgres"
 connection = "{connection}"
 dialect = "postgres"
 
@@ -2330,7 +2330,7 @@ fn seed_ordered_cursor_table(postgres: &LivePostgres, table: &str, values: &str)
     table
 }
 
-fn write_sql_project_with_secret(
+fn write_postgres_project_with_secret(
     project: &TestProject,
     postgres: &LivePostgres,
     table: &str,
@@ -2345,16 +2345,16 @@ fn write_sql_project_with_secret(
         &format!("postgresql://cdf:{password}@"),
         1,
     );
-    fs::write(project.root.join("sql-dsn"), format!("{source_dsn}\n")).unwrap();
+    fs::write(project.root.join("postgres-dsn"), format!("{source_dsn}\n")).unwrap();
     write_secret_project(
         project,
         "duckdb://.cdf/dev.duckdb",
         None,
-        Some("secret://file/sql-dsn"),
+        Some("secret://file/postgres-dsn"),
     );
     fs::write(
-        project.root.join("resources/sql.toml"),
-        sql_resource_with_ordered_cursor("secret://file/sql-dsn", table),
+        project.root.join("resources/postgres.toml"),
+        postgres_resource_with_ordered_cursor("secret://file/postgres-dsn", table),
     )
     .unwrap();
     source_dsn

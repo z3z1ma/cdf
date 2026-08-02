@@ -4316,7 +4316,7 @@ fn pinned_schema_preparation_requires_verified_snapshot_before_source_contact() 
 }
 
 #[test]
-fn generic_schema_discovery_dispatch_fails_closed_for_non_postgres_sql_dialect() {
+fn postgres_schema_discovery_fails_closed_for_non_postgres_dialect() {
     let project = r#"
 [project]
 name = "warehouse"
@@ -4329,11 +4329,11 @@ packages = ".cdf/packages"
 destination = "duckdb://.cdf/dev.duckdb"
 
 [resources."warehouse.*"]
-source = "resources/sql.toml"
+source = "resources/postgres.toml"
 "#;
-    let sql = r#"
+    let postgres_toml = r#"
 [source.warehouse]
-kind = "sql"
+kind = "postgres"
 connection = "secret://env/WAREHOUSE_URL"
 dialect = "mysql"
 
@@ -4343,7 +4343,8 @@ write_disposition = "append"
 trust = "governed"
 "#;
     let config = parse_cdf_toml(project).unwrap();
-    let resolver = InMemoryResourceSourceResolver::new().with_toml("resources/sql.toml", sql);
+    let resolver =
+        InMemoryResourceSourceResolver::new().with_toml("resources/postgres.toml", postgres_toml);
     let error = compile_project_declarative_resources(&test_source_registry(), &config, &resolver)
         .unwrap_err();
     let message = error.to_string();

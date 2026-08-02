@@ -504,9 +504,9 @@ impl QueryableResource for BackfillMockResource {
     }
 }
 
-pub(super) const SQL_RUNTIME_RESOURCE: &str = r#"
+pub(super) const POSTGRES_RUNTIME_RESOURCE: &str = r#"
 [source.warehouse]
-kind = "sql"
+kind = "postgres"
 connection = "secret://env/POSTGRES_URL"
 dialect = "postgres"
 
@@ -1570,8 +1570,8 @@ pub(super) fn resolve_postgres_resource(
     }
 }
 
-pub(super) fn sql_runtime_resource(table: &str) -> cdf_declarative::CompiledResource {
-    let document = cdf_declarative::parse_toml(&SQL_RUNTIME_RESOURCE.replace(
+pub(super) fn postgres_runtime_resource(table: &str) -> cdf_declarative::CompiledResource {
+    let document = cdf_declarative::parse_toml(&POSTGRES_RUNTIME_RESOURCE.replace(
         r#"table = "public.orders""#,
         &format!(r#"table = "{table}""#),
     ))

@@ -51,7 +51,7 @@ impl PostgresSourceDriver {
                 driver_id: SourceDriverId::new("postgres")?,
                 driver_version: "1.0.0".to_owned(),
                 option_schema_hash: artifact_hash(&option_schema)?,
-                kinds: vec!["sql".to_owned()],
+                kinds: vec!["postgres".to_owned()],
                 schemes: vec!["postgres".to_owned(), "postgresql".to_owned()],
             },
             option_schema,
@@ -268,7 +268,7 @@ impl SourceAddPlanner for PostgresSourceDriver {
             request.source_name
         ))?;
         Ok(Some(SourceAddProposal {
-            source_kind: "sql".to_owned(),
+            source_kind: "postgres".to_owned(),
             source_options: BTreeMap::from([(
                 "connection".to_owned(),
                 serde_json::Value::String(reference.as_str().to_owned()),
@@ -308,7 +308,7 @@ impl SourceDiscoverySession for PostgresDiscoverySession {
             None,
             None,
             BTreeMap::from([
-                ("source_kind".to_owned(), "sql".to_owned()),
+                ("source_kind".to_owned(), "postgres".to_owned()),
                 ("dialect".to_owned(), "postgres".to_owned()),
             ]),
         )?])
@@ -445,7 +445,7 @@ mod tests {
         let driver = PostgresSourceDriver::new().unwrap();
         let plan = driver
             .compile(SourceCompileRequest {
-                source_kind: "sql".to_owned(),
+                source_kind: "postgres".to_owned(),
                 context: cdf_runtime::SourceCompileContext {
                     source_name: "warehouse".to_owned(),
                     project_root: None,
@@ -489,7 +489,7 @@ mod tests {
 
         let error = driver
             .compile(SourceCompileRequest {
-                source_kind: "sql".to_owned(),
+                source_kind: "postgres".to_owned(),
                 context: cdf_runtime::SourceCompileContext {
                     source_name: "warehouse".to_owned(),
                     project_root: None,

@@ -10,6 +10,9 @@ contributors.
   active specs for the full contract.
 - [Iceberg source](iceberg.md) documents catalog bindings, snapshot selectors,
   append-only incrementality, and the explicit capability boundary.
+- [SQLite table source](sqlite.md) documents portable local configuration, discovery, snapshot
+  isolation, stable cursors, explicit temporal encodings, failure ownership, and the measured
+  direct-library roofline.
 - [Performance envelope](performance-envelope.md) is generated from the P3
   host-labelled reconciliation manifest and exact destination-path report. It
   is the only authority for performance claims and keeps partial, accepted,

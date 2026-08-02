@@ -1,0 +1,26 @@
+[package]
+name = "cdf-source-sqlite"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "SQLite table source adapter for cdf."
+
+[dependencies]
+arrow-array = "58.3.0"
+arrow-schema = "58.3.0"
+cdf-kernel = { path = "../cdf-kernel" }
+cdf-memory = { path = "../cdf-memory" }
+cdf-runtime = { path = "../cdf-runtime" }
+rusqlite = { version = "0.40.1", default-features = false, features = ["bundled", "hooks", "modern_sqlite"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+
+[dev-dependencies]
+cdf-engine = { path = "../cdf-engine" }
+futures-executor = "0.3.32"
+futures-util = "0.3.32"
+tempfile = "3.27.0"
+
+[lints]
+workspace = true
