@@ -3,6 +3,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use cdf_aws::AwsControlClient;
+use cdf_dest_clickhouse::ClickHouseRuntimeDriver;
 use cdf_dest_duckdb::DuckDbRuntimeDriver;
 use cdf_dest_parquet::ParquetRuntimeDriver;
 use cdf_dest_postgres::PostgresRuntimeDriver;
@@ -45,6 +46,15 @@ struct BuiltinDestinationEntry {
 }
 
 const BUILTIN_DESTINATIONS: &[BuiltinDestinationEntry] = &[
+    BuiltinDestinationEntry {
+        #[cfg(test)]
+        destination_id: "clickhouse",
+        #[cfg(test)]
+        schemes: &["clickhouse", "clickhouses"],
+        #[cfg(test)]
+        inspection_uri: "clickhouse://localhost:8123/default",
+        install: |registry| registry.register(ClickHouseRuntimeDriver),
+    },
     BuiltinDestinationEntry {
         #[cfg(test)]
         destination_id: "duckdb",

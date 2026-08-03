@@ -1,0 +1,31 @@
+[package]
+name = "cdf-dest-clickhouse"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Verified ClickHouse destination adapter for cdf."
+
+[dependencies]
+arrow-array = "58.3.0"
+arrow-buffer = "58.3.0"
+arrow-schema = "58.3.0"
+cdf-contract = { path = "../cdf-contract" }
+cdf-http = { path = "../cdf-http" }
+cdf-kernel = { path = "../cdf-kernel" }
+cdf-memory = { path = "../cdf-memory" }
+cdf-package-contract = { path = "../cdf-package-contract" }
+cdf-runtime = { path = "../cdf-runtime" }
+clickhouse = { version = "=0.15.1", features = ["rustls-tls"] }
+clickhouse-ext-arrow = "=0.1.0"
+futures-util = "0.3.32"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+sha2 = "0.10.9"
+url = "2.5.8"
+
+[dev-dependencies]
+cdf-engine = { path = "../cdf-engine" }
+
+[lints]
+workspace = true

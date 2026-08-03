@@ -143,6 +143,13 @@ impl ResolvedProjectDestination {
         self.runtime.runtime_capabilities()
     }
 
+    pub(super) fn commit_policy(
+        &self,
+        disposition: &cdf_kernel::WriteDisposition,
+    ) -> std::collections::BTreeMap<String, String> {
+        self.runtime.commit_policy(disposition)
+    }
+
     pub(crate) fn runtime_mut(&mut self) -> &mut dyn ProjectDestinationRuntime {
         self.runtime.as_mut()
     }

@@ -3,7 +3,7 @@
 
 This matrix separates every `ReservationRequest::new` site discovered in production Rust source from allocations that require an explicit native, child-process, metadata, or external-storage authority. `Inherited` means the reservation receives an already-validated typed `ConsumerKey`; the row still records the concrete byte-bound expression at the allocation site.
 
-Managed reservation declarations: **82** grouped rows across **92** production call sites.
+Managed reservation declarations: **84** grouped rows across **94** production call sites.
 
 ## Managed ledger owners
 
@@ -11,6 +11,8 @@ Managed reservation declarations: **82** grouped rows across **92** production c
 |---|---|---|---|---|---:|
 | cdf-aws | aws-control-request-body | Control | request_body_bytes | crates/cdf-aws/src/lib.rs | 1 |
 | cdf-conformance | nebula-task-batch | Source | retained_bytes | crates/cdf-conformance/src/run_matrix/nebula_task_fixture.rs | 1 |
+| cdf-dest-clickhouse | clickhouse-arrowstream-writer | Destination | ARROW_WRITER_BYTES | crates/cdf-dest-clickhouse/src/session.rs | 1 |
+| cdf-dest-clickhouse | clickhouse-destination-http1 | Destination | HTTP_TRANSPORT_BYTES | crates/cdf-dest-clickhouse/src/client.rs | 1 |
 | cdf-dest-parquet | parquet-atomic-object-put | Destination | byte_count.max(1) | crates/cdf-dest-parquet/src/store.rs | 1 |
 | cdf-dest-parquet | parquet-object-verification | Destination | reserved_bytes | crates/cdf-dest-parquet/src/store.rs | 1 |
 | cdf-dest-parquet | parquet-row-group-writer | Destination | writer_bytes | crates/cdf-dest-parquet/src/package.rs | 1 |
@@ -107,6 +109,7 @@ Managed reservation declarations: **82** grouped rows across **92** production c
 | package control-artifact semantic models | metadata | cdf-package verified identity, contract-evolution, and archive-fidelity readers | streamed identity/control bytes plus current artifact-contract semantic records; measured through 1 TiB package verification and settlement | .10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md | measured |
 | state-delta and destination acknowledgement cardinality | metadata | package state preimage and destination receipt | one ordered artifact-contract record per canonical segment; measured through receipt and checkpoint settlement at the 1 TiB scale cell | .10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md | measured |
 | Arrow and Parquet encoder page/compression scratch | native | cdf-package and cdf-dest-parquet streaming writers | one admitted decoded/output window per writer plus measured arrow-rs Parquet scratch under the exact 1 TiB process envelope | .10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md | measured |
+| ClickHouse destination HTTP and ArrowStream client internals | native | cdf-dest-clickhouse one-session official client | one 64 KiB clickhouse-destination-http1 lease retained with the reusable client plus one 64 MiB clickhouse-arrowstream-writer lease covering one logical input batch and its streamed physical provenance view at a time; physical batches fail before allocation above 32 MiB, state evidence is capped at 2 MiB, and response queries use explicit 4 MiB response and 1 MiB chunk limits | .10x/tickets/done/2026-08-02-clickhouse-destination-connector.md | bounded |
 | ClickHouse source HTTP, compression, and ArrowStream client internals | native | cdf-source-clickhouse one-query official client session | 64 KiB clickhouse-http1-transport source lease retained with the reusable client/pool, one 32 MiB clickhouse-arrow-cursor-state decode lease retained for each live cursor, plus one 64 MiB clickhouse-arrow-decode lease per poll/producer/queued/consumer batch; patched official response and Arrow IPC paths enforce 1 MiB error, 64 KiB HTTP-frame, 2 MiB metadata, a 25 MiB record body and cumulative logical-buffer ceiling, rejection of inner-compressed/dictionary batches before retained allocation, a 1,000,000-row execution/16,384-row catalog record-batch guard, and pre-conversion schema ceilings of 4,096 nodes, 4,096 metadata entries, 4 MiB estimated ownership, and depth 64; the persistent cursor lease covers one retained 25 MiB response chunk plus bounded schema/message/decoder state; the poll decode envelope includes 32 MiB split-body allocator capacity and 4 MiB batch-container headroom; retained-batch overlap is stream_buffer_batches + 2 (maximum 66); 16 MiB discovery metadata is separately leased | .10x/tickets/2026-08-02-clickhouse-source-connector.md | measured |
 | DataFusion execution allocations | native | cdf-engine DataFusion MemoryPool bridge | cdf-memory QueryEngine reservations | .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md | bounded |
 | DuckDB transaction and execution engine | native | cdf-dest-duckdb execution-service binding | adapter memory_limit plus spill-reserved temp_directory ceiling | .10x/evidence/2026-07-14-p3-f2-duckdb-native-resource-envelope.md | measured |

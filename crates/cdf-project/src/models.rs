@@ -97,6 +97,8 @@ pub struct EffectiveEnvironment {
 pub struct DestinationPolicy {
     #[serde(default)]
     pub postgres: Option<PostgresDestinationPolicy>,
+    #[serde(default, flatten)]
+    pub adapters: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 impl DestinationPolicy {
@@ -106,19 +108,46 @@ impl DestinationPolicy {
                 .postgres
                 .clone()
                 .or_else(|| self.postgres.clone()),
+            adapters: overlay_destination_policy_maps(&self.adapters, &override_policy.adapters),
         }
     }
 }
 
 impl cdf_runtime::DestinationPolicyProvider for DestinationPolicy {
     fn value(&self, destination: &str, key: &str) -> Option<&str> {
-        match (destination, key, self.postgres.as_ref()) {
-            ("postgres", "merge_dedup", Some(policy)) => match policy.merge_dedup {
+        match (destination, key) {
+            ("postgres", "merge_dedup") => match self.postgres.as_ref()?.merge_dedup {
                 PostgresMergeDedupPolicy::Fail => Some("fail"),
             },
-            _ => None,
+            _ => self.adapters.get(destination)?.get(key).map(String::as_str),
         }
     }
+
+    fn entries<'a>(&'a self, destination: &str) -> Vec<(&'a str, &'a str)> {
+        self.adapters
+            .get(destination)
+            .map(|values| {
+                values
+                    .iter()
+                    .map(|(key, value)| (key.as_str(), value.as_str()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+fn overlay_destination_policy_maps(
+    base: &BTreeMap<String, BTreeMap<String, String>>,
+    overrides: &BTreeMap<String, BTreeMap<String, String>>,
+) -> BTreeMap<String, BTreeMap<String, String>> {
+    let mut merged = base.clone();
+    for (destination, values) in overrides {
+        merged
+            .entry(destination.clone())
+            .or_default()
+            .extend(values.clone());
+    }
+    merged
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

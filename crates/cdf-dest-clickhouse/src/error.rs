@@ -15,12 +15,14 @@ pub(crate) fn classify_clickhouse_error(action: &str, error: Error) -> CdfError 
             "transport failure",
         ),
         Error::TimedOut => (ErrorKind::Transient, "transport timeout"),
-        Error::Compression(_) | Error::Decompression(_) => {
-            (ErrorKind::Data, "invalid compressed source response")
-        }
+        Error::Compression(_) => (ErrorKind::Internal, "payload compression invariant failed"),
+        Error::Decompression(_) => (
+            ErrorKind::Destination,
+            "destination response compression was invalid",
+        ),
         Error::ResponseTooLarge { .. } => (
-            ErrorKind::Data,
-            "source response exceeded its admitted memory bound",
+            ErrorKind::Destination,
+            "server response exceeded its admitted memory bound",
         ),
         Error::BadResponse(message) => {
             let code = clickhouse_server_code(message);
@@ -28,25 +30,23 @@ pub(crate) fn classify_clickhouse_error(action: &str, error: Error) -> CdfError 
                 Some(192 | 193 | 194 | 516) => ErrorKind::Auth,
                 Some(202 | 203 | 204 | 241 | 242) => ErrorKind::RateLimited,
                 Some(159 | 209 | 210 | 279 | 319) => ErrorKind::Transient,
-                Some(47 | 50 | 60 | 62 | 81 | 117 | 122 | 386) | None => ErrorKind::Data,
-                Some(_) => ErrorKind::Data,
+                Some(62) => ErrorKind::Internal,
+                Some(50 | 117 | 386) => ErrorKind::Data,
+                _ => ErrorKind::Destination,
             };
             return CdfError::new(
                 kind,
                 code.map_or_else(
-                    || format!("{action}: ClickHouse server rejected the source request"),
+                    || format!("{action}: ClickHouse server rejected the destination request"),
                     |code| {
                         format!(
-                            "{action}: ClickHouse server rejected the source request (code {code})"
+                            "{action}: ClickHouse server rejected the destination request (code {code})"
                         )
                     },
                 ),
             );
         }
-        Error::InvalidParams(_) => (
-            ErrorKind::Internal,
-            "generated query parameters were invalid",
-        ),
+        Error::InvalidParams(_) => (ErrorKind::Internal, "generated request was invalid"),
         Error::Unsupported(_) => (
             ErrorKind::Environment,
             "client transport or TLS support is unavailable",
@@ -58,26 +58,25 @@ pub(crate) fn classify_clickhouse_error(action: &str, error: Error) -> CdfError 
         | Error::InvalidTagEncoding(_)
         | Error::VariantDiscriminatorIsOutOfBound(_)
         | Error::RowNotFound => (
-            ErrorKind::Data,
-            "source response contradicted its pinned schema",
+            ErrorKind::Destination,
+            "destination schema or response contradicted the plan",
         ),
         Error::SequenceMustHaveLength | Error::DeserializeAnyNotSupported | Error::Custom(_) => {
             (ErrorKind::Internal, "official client invariant failed")
         }
         Error::Other(_) => (
             nested_io_error(&error)
-                .map(classify_source_io_kind)
+                .map(classify_network_io_kind)
                 .unwrap_or(ErrorKind::Data),
-            "Arrow source response could not be decoded",
+            "Arrow destination request failed",
         ),
-        _ => (ErrorKind::Data, "source request failed"),
+        _ => (ErrorKind::Destination, "destination request failed"),
     };
     CdfError::new(kind, format!("{action}: {detail}"))
 }
 
 fn classify_network_io_kind(error: &std::io::Error) -> ErrorKind {
     use std::io::ErrorKind as Io;
-
     match error.kind() {
         Io::TimedOut
         | Io::WouldBlock
@@ -91,21 +90,12 @@ fn classify_network_io_kind(error: &std::io::Error) -> ErrorKind {
     }
 }
 
-fn classify_source_io_kind(error: &std::io::Error) -> ErrorKind {
-    use std::io::ErrorKind as Io;
-
-    match error.kind() {
-        Io::UnexpectedEof | Io::InvalidData => ErrorKind::Data,
-        _ => classify_network_io_kind(error),
-    }
-}
-
 fn nested_io_error<'a>(error: &'a (dyn StdError + 'static)) -> Option<&'a std::io::Error> {
     if let Some(error) = error.downcast_ref::<std::io::Error>() {
-        if let Some(nested) = error.get_ref().and_then(|source| nested_io_error(source)) {
-            return Some(nested);
-        }
-        return Some(error);
+        return error
+            .get_ref()
+            .and_then(|source| nested_io_error(source))
+            .or(Some(error));
     }
     if let Some(error) = error.downcast_ref::<Error>()
         && let Some(source) = clickhouse_boxed_source(error)
@@ -169,95 +159,116 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classifies_stable_server_codes_without_echoing_server_text() {
-        let secret = "password=hunter2";
-        let auth = classify_clickhouse_error(
-            "discover ClickHouse schema",
-            Error::BadResponse(format!("Code: 516. authentication failed; {secret}")),
+    fn typed_cdf_errors_survive_direct_and_nested_client_wrappers() {
+        let direct = classify_clickhouse_error(
+            "write segment",
+            Error::Other(Box::new(CdfError::auth("credential owner"))),
         );
-        assert_eq!(auth.kind, ErrorKind::Auth);
-        assert!(!auth.message.contains(secret));
+        assert_eq!(direct.kind, ErrorKind::Auth);
+        assert_eq!(direct.message, "write segment: credential owner");
 
-        let quota = classify_clickhouse_error(
-            "stream ClickHouse table",
-            Error::BadResponse("Code: 202. too many queries".to_owned()),
-        );
-        assert_eq!(quota.kind, ErrorKind::RateLimited);
+        let nested = std::io::Error::other(std::io::Error::other(CdfError::rate_limited(
+            "provider throttle",
+            Some(875),
+        )));
+        let nested = classify_clickhouse_error("flush segment", Error::Network(Box::new(nested)));
+        assert_eq!(nested.kind, ErrorKind::RateLimited);
+        assert_eq!(nested.retry_after_ms, Some(875));
+        assert_eq!(nested.message, "flush segment: provider throttle");
     }
 
     #[test]
-    fn preserves_nested_typed_error_provenance() {
-        let wrapped = Error::Other(Box::new(std::io::Error::other(CdfError::rate_limited(
-            "provider throttled",
-            Some(250),
-        ))));
-        let classified = classify_clickhouse_error("read Arrow stream", wrapped);
-        assert_eq!(classified.kind, ErrorKind::RateLimited);
-        assert_eq!(classified.retry_after_ms, Some(250));
-        assert!(classified.message.contains("provider throttled"));
-    }
-
-    #[test]
-    fn response_limits_are_data_failures_without_remote_detail() {
-        let classified = classify_clickhouse_error(
-            "read Arrow stream",
-            Error::ResponseTooLarge {
-                stage: "secret remote stage",
-                limit: 42,
-            },
+    fn transport_and_server_failures_keep_their_repair_owner() {
+        let permission = classify_clickhouse_error(
+            "connect",
+            Error::Network(Box::new(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "socket denied",
+            ))),
         );
-        assert_eq!(classified.kind, ErrorKind::Data);
-        assert_eq!(
-            classified.message,
-            "read Arrow stream: source response exceeded its admitted memory bound"
-        );
-    }
+        assert_eq!(permission.kind, ErrorKind::Environment);
 
-    #[test]
-    fn recursively_distinguishes_host_transport_and_malformed_io() {
-        let host = Error::Network(Box::new(std::io::Error::other(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "private host detail",
-        ))));
-        assert_eq!(
-            classify_clickhouse_error("connect", host).kind,
-            ErrorKind::Environment
+        let timeout = classify_clickhouse_error(
+            "connect",
+            Error::Network(Box::new(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "late",
+            ))),
         );
-
-        let timeout = Error::Network(Box::new(std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            "late",
-        )));
-        assert_eq!(
-            classify_clickhouse_error("connect", timeout).kind,
-            ErrorKind::Transient
-        );
-
-        let malformed = Error::Other(Box::new(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "bad Arrow",
-        )));
-        assert_eq!(
-            classify_clickhouse_error("decode", malformed).kind,
-            ErrorKind::Data
-        );
-
-        let malformed_tls = Error::Network(Box::new(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "invalid certificate",
-        )));
-        assert_eq!(
-            classify_clickhouse_error("construct TLS", malformed_tls).kind,
-            ErrorKind::Environment
-        );
-
+        assert_eq!(timeout.kind, ErrorKind::Transient);
         assert_eq!(
             classify_clickhouse_error(
-                "construct TLS",
-                Error::Unsupported("secret resolver detail".to_owned()),
+                "query",
+                Error::BadResponse("Code: 516. AUTH secret-password".to_owned())
             )
             .kind,
-            ErrorKind::Environment
+            ErrorKind::Auth
         );
+        assert_eq!(
+            classify_clickhouse_error(
+                "query",
+                Error::BadResponse("Code: 242. TOO_MANY_SIMULTANEOUS_QUERIES".to_owned())
+            )
+            .kind,
+            ErrorKind::RateLimited
+        );
+        assert_eq!(
+            classify_clickhouse_error(
+                "query",
+                Error::BadResponse("Code: 241. MEMORY_LIMIT_EXCEEDED".to_owned())
+            )
+            .kind,
+            ErrorKind::RateLimited
+        );
+        assert_eq!(
+            classify_clickhouse_error(
+                "query",
+                Error::BadResponse("Code: 209. SOCKET_TIMEOUT".to_owned())
+            )
+            .kind,
+            ErrorKind::Transient
+        );
+        let generated = classify_clickhouse_error(
+            "query",
+            Error::BadResponse("Code: 62. SYNTAX_ERROR secret-password".to_owned()),
+        );
+        assert_eq!(generated.kind, ErrorKind::Internal);
+        assert!(!generated.message.contains("secret-password"));
+        assert_eq!(
+            generated.message,
+            "query: ClickHouse server rejected the destination request (code 62)"
+        );
+        assert_eq!(
+            classify_clickhouse_error(
+                "query",
+                Error::BadResponse("Code: 60. UNKNOWN_TABLE secret-password".to_owned())
+            )
+            .kind,
+            ErrorKind::Destination
+        );
+        assert_eq!(
+            classify_clickhouse_error(
+                "query",
+                Error::BadResponse("unstructured secret-password".to_owned())
+            )
+            .kind,
+            ErrorKind::Destination
+        );
+    }
+
+    #[test]
+    fn generated_request_invariants_are_internal_unless_a_typed_owner_is_embedded() {
+        let internal = classify_clickhouse_error(
+            "bind query",
+            Error::InvalidParams(Box::new(std::fmt::Error)),
+        );
+        assert_eq!(internal.kind, ErrorKind::Internal);
+
+        let contract = classify_clickhouse_error(
+            "bind query",
+            Error::InvalidParams(Box::new(CdfError::contract("invalid caller bound"))),
+        );
+        assert_eq!(contract.kind, ErrorKind::Contract);
+        assert_eq!(contract.message, "bind query: invalid caller bound");
     }
 }

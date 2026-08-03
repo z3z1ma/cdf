@@ -54,6 +54,7 @@ proptest = "1.11.0"
 rusqlite = { version = "0.40.1", default-features = false, features = ["bundled", "modern_sqlite"] }
 syn = { version = "2.0.117", features = ["full"] }
 tempfile = "3.27.0"
+url = "2.5.8"
 
 [lints]
 workspace = true

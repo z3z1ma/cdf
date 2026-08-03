@@ -1,0 +1,629 @@
+{
+  "schema_version": 1,
+  "status": "pass",
+  "reason": null,
+  "host": {
+    "schema_version": 1,
+    "architecture": "aarch64",
+    "cpu_label": "Apple M5 Pro",
+    "advertised_logical_cores": 18,
+    "advertised_physical_cores": {
+      "status": "supported",
+      "value": 18,
+      "method": "os-cpu-topology",
+      "provider_version": "system-host-v1"
+    },
+    "advertised_memory_bytes": {
+      "status": "supported",
+      "value": 25769803776,
+      "method": "os-memory-authority",
+      "provider_version": "system-host-v1"
+    },
+    "effective_cpu": {
+      "status": "supported",
+      "value": {
+        "logical_cores": 18,
+        "quota_millicores": null,
+        "affinity_cores": 18
+      },
+      "method": "process-available-parallelism",
+      "provider_version": "system-host-v1"
+    },
+    "effective_memory_bytes": {
+      "status": "unavailable",
+      "reason": "no container memory overlay on this platform",
+      "method": "container-memory-overlay",
+      "provider_version": "system-host-v1"
+    },
+    "storage": {
+      "status": "unavailable",
+      "reason": "storage class requires an explicit benchmark target probe",
+      "method": "filesystem-target-probe",
+      "provider_version": "system-host-v1"
+    },
+    "os": {
+      "family": "macos",
+      "version": "26.5.2",
+      "kernel": "25.5.0"
+    },
+    "rust_version": "rustc 1.96.1 (31fca3adb 2026-06-26)",
+    "cdf_version": "0.2.0-alpha.1",
+    "dependency_versions": {
+      "clickhouse": "0.15.1",
+      "clickhouse-ext-arrow": "0.1.0",
+      "clickhouse-server": "25.8.28.1"
+    },
+    "benchmark_profile": "release-clickhouse-destination-roofline"
+  },
+  "measurement_provider": {
+    "method": "clickhouse-destination-worker-monotonic-with-rusage-self",
+    "version": "clickhouse-destination-roofline-observer-v1",
+    "observes_cpu_time": true,
+    "observes_peak_rss": true
+  },
+  "settings": {
+    "server_version": "25.8.28.1",
+    "clickhouse_crate_version": "0.15.1",
+    "clickhouse_ext_arrow_version": "0.1.0",
+    "compression": "lz4",
+    "acknowledgement": "async_insert=0;wait_for_async_insert=1",
+    "insert_deduplication_token": "one deterministic package/segment token",
+    "schema": [
+      "id:Int64",
+      "metric:Int64",
+      "updated_at:Int64",
+      "_cdf_package_hash:FixedString(32)",
+      "_cdf_package_row_ord:UInt64"
+    ],
+    "arrow_batch_rows": 65536,
+    "connection_count": 1,
+    "writer_count": 1,
+    "useful_bytes_per_row": 24,
+    "physical_io_bytes_observed": false,
+    "physical_io_bytes_reason": "the official HTTP client does not expose exact compressed request bytes; samples record zero and make no physical-throughput claim",
+    "workspace_content_sha256": "sha256:c33c637f39b0968d964a4d201ca470510faef411ddf08228580d720629601235",
+    "workspace_content_inputs": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "crates/cdf-benchmarks/Cargo.toml",
+      "crates/cdf-benchmarks/src/bin/clickhouse-destination-roofline.rs",
+      "crates/cdf-benchmarks/src/clickhouse_destination_roofline.rs",
+      "crates/cdf-dest-clickhouse/Cargo.toml",
+      "crates/cdf-dest-clickhouse/src/client.rs",
+      "crates/cdf-dest-clickhouse/src/error.rs",
+      "crates/cdf-dest-clickhouse/src/identifier.rs",
+      "crates/cdf-dest-clickhouse/src/lib.rs",
+      "crates/cdf-dest-clickhouse/src/mapping.rs",
+      "crates/cdf-dest-clickhouse/src/models.rs",
+      "crates/cdf-dest-clickhouse/src/package.rs",
+      "crates/cdf-dest-clickhouse/src/plan.rs",
+      "crates/cdf-dest-clickhouse/src/receipt.rs",
+      "crates/cdf-dest-clickhouse/src/runtime.rs",
+      "crates/cdf-dest-clickhouse/src/session.rs",
+      "crates/cdf-dest-clickhouse/src/sheet.rs",
+      "third-party/clickhouse-0.15.1-cdf/src/lib.rs",
+      "third-party/clickhouse-ext-arrow-0.1.0-cdf/src/lib.rs"
+    ],
+    "executable_sha256": "sha256:40acc340b0a0ea8c2e8449451873351821f7a4fc09ebd0a3594dcdecbf187f84",
+    "semantic_bias": [
+      "both cells build identical Arrow batches, reset and seed identical targets, and create the official client outside the timed region",
+      "timing starts immediately before the ArrowStream insert and ends after exact canonical package-ordinal verification; CDF also performs receipt settlement and fresh receipt verification",
+      "the direct cell omits CDF settlement mirrors and package-governance validation, making it a favorable roofline",
+      "CPU time and peak RSS include untimed worker setup; wall time covers only delivery, commit, and verification"
+    ]
+  },
+  "cells": [
+    {
+      "disposition": "append",
+      "comparability": {
+        "dataset_id": "clickhouse-destination-i64x3-750000",
+        "workload_id": "clickhouse-destination-append-commit-verify",
+        "timed_region_version": 1,
+        "cdf_revision": "8a6d13646e4b748c08d2c359948afe0f90da72e3",
+        "dependency_tuple": "clickhouse=0.15.1;clickhouse-ext-arrow=0.1.0;server=25.8.28.1",
+        "host_class": "host-class-8ede714ca80f1a5d",
+        "os_toolchain": "macos-26.5.2;rustc 1.96.1 (31fca3adb 2026-06-26)",
+        "io_mode": "warm"
+      },
+      "cdf": {
+        "comparability": {
+          "dataset_id": "clickhouse-destination-i64x3-750000",
+          "workload_id": "clickhouse-destination-append-commit-verify",
+          "timed_region_version": 1,
+          "cdf_revision": "8a6d13646e4b748c08d2c359948afe0f90da72e3",
+          "dependency_tuple": "clickhouse=0.15.1;clickhouse-ext-arrow=0.1.0;server=25.8.28.1",
+          "host_class": "host-class-8ede714ca80f1a5d",
+          "os_toolchain": "macos-26.5.2;rustc 1.96.1 (31fca3adb 2026-06-26)",
+          "io_mode": "warm"
+        },
+        "status": {
+          "kind": "observed"
+        },
+        "samples": [
+          {
+            "wall_time_ns": 112222958,
+            "cpu_time_ns": 60340000,
+            "rows": 750000,
+            "logical_bytes": 18000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 59047936,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "arrowstream_delivery_commit_and_verification",
+                "duration_ns": 112222958,
+                "bytes": 18000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 108420750,
+            "cpu_time_ns": 61446000,
+            "rows": 750000,
+            "logical_bytes": 18000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 59310080,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "arrowstream_delivery_commit_and_verification",
+                "duration_ns": 108420750,
+                "bytes": 18000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 116963125,
+            "cpu_time_ns": 60546000,
+            "rows": 750000,
+            "logical_bytes": 18000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 55410688,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "arrowstream_delivery_commit_and_verification",
+                "duration_ns": 116963125,
+                "bytes": 18000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 129736167,
+            "cpu_time_ns": 63454000,
+            "rows": 750000,
+            "logical_bytes": 18000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 59195392,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "arrowstream_delivery_commit_and_verification",
+                "duration_ns": 129736167,
+                "bytes": 18000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 105645292,
+            "cpu_time_ns": 64781000,
+            "rows": 750000,
+            "logical_bytes": 18000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 55492608,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "arrowstream_delivery_commit_and_verification",
+                "duration_ns": 105645292,
+                "bytes": 18000000
+              }
+            ]
+          }
+        ],
+        "summary": {
+          "sample_count": 5,
+          "median_wall_time_ns": 112222958,
+          "median_absolute_deviation_ns": 4740167,
+          "median_rows_per_second": 6683124,
+          "median_logical_bytes_per_second": 160394987,
+          "median_physical_bytes_per_second": 0,
+          "peak_rss_bytes": 59310080,
+          "spill_bytes": 0
+        },
+        "reference": {
+          "kind": "direct_library",
+          "name": "clickhouse plus clickhouse-ext-arrow",
+          "version": "0.15.1+0.1.0",
+          "semantic_work": "one LZ4 ArrowStream insert with synchronous acknowledgement and a deterministic deduplication token, followed by exact canonical package-ordinal verification"
+        },
+        "bias": [
+          {
+            "code": "cdf-governance-overhead",
+            "description": "CDF additionally validates package identity and schema, writes exact segment/state/receipt mirrors, and independently verifies the finalized receipt"
+          }
+        ],
+        "measurement_provider": {
+          "method": "clickhouse-destination-worker-monotonic-with-rusage-self",
+          "version": "clickhouse-destination-roofline-observer-v1",
+          "observes_cpu_time": true,
+          "observes_peak_rss": true
+        }
+      },
+      "direct_arrowstream": {
+        "comparability": {
+          "dataset_id": "clickhouse-destination-i64x3-750000",
+          "workload_id": "clickhouse-destination-append-commit-verify",
+          "timed_region_version": 1,
+          "cdf_revision": "8a6d13646e4b748c08d2c359948afe0f90da72e3",
+          "dependency_tuple": "clickhouse=0.15.1;clickhouse-ext-arrow=0.1.0;server=25.8.28.1",
+          "host_class": "host-class-8ede714ca80f1a5d",
+          "os_toolchain": "macos-26.5.2;rustc 1.96.1 (31fca3adb 2026-06-26)",
+          "io_mode": "warm"
+        },
+        "status": {
+          "kind": "observed"
+        },
+        "samples": [
+          {
+            "wall_time_ns": 101266750,
+            "cpu_time_ns": 61454000,
+            "rows": 750000,
+            "logical_bytes": 18000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 81625088,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "arrowstream_delivery_commit_and_verification",
+                "duration_ns": 101266750,
+                "bytes": 18000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 105901959,
+            "cpu_time_ns": 65472000,
+            "rows": 750000,
+            "logical_bytes": 18000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 81657856,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "arrowstream_delivery_commit_and_verification",
+                "duration_ns": 105901959,
+                "bytes": 18000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 96787583,
+            "cpu_time_ns": 57925000,
+            "rows": 750000,
+            "logical_bytes": 18000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 81723392,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "arrowstream_delivery_commit_and_verification",
+                "duration_ns": 96787583,
+                "bytes": 18000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 107299667,
+            "cpu_time_ns": 63218000,
+            "rows": 750000,
+            "logical_bytes": 18000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 81625088,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "arrowstream_delivery_commit_and_verification",
+                "duration_ns": 107299667,
+                "bytes": 18000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 96192209,
+            "cpu_time_ns": 59204000,
+            "rows": 750000,
+            "logical_bytes": 18000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 81641472,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "arrowstream_delivery_commit_and_verification",
+                "duration_ns": 96192209,
+                "bytes": 18000000
+              }
+            ]
+          }
+        ],
+        "summary": {
+          "sample_count": 5,
+          "median_wall_time_ns": 101266750,
+          "median_absolute_deviation_ns": 4635209,
+          "median_rows_per_second": 7406182,
+          "median_logical_bytes_per_second": 177748372,
+          "median_physical_bytes_per_second": 0,
+          "peak_rss_bytes": 81723392,
+          "spill_bytes": 0
+        },
+        "reference": null,
+        "bias": [],
+        "measurement_provider": {
+          "method": "clickhouse-destination-worker-monotonic-with-rusage-self",
+          "version": "clickhouse-destination-roofline-observer-v1",
+          "observes_cpu_time": true,
+          "observes_peak_rss": true
+        }
+      },
+      "roofline_ratio_ppm": 902371,
+      "status": "pass",
+      "reason": null
+    },
+    {
+      "disposition": "native_merge",
+      "comparability": {
+        "dataset_id": "clickhouse-destination-i64x3-750000",
+        "workload_id": "clickhouse-destination-native_merge-commit-verify",
+        "timed_region_version": 1,
+        "cdf_revision": "8a6d13646e4b748c08d2c359948afe0f90da72e3",
+        "dependency_tuple": "clickhouse=0.15.1;clickhouse-ext-arrow=0.1.0;server=25.8.28.1",
+        "host_class": "host-class-8ede714ca80f1a5d",
+        "os_toolchain": "macos-26.5.2;rustc 1.96.1 (31fca3adb 2026-06-26)",
+        "io_mode": "warm"
+      },
+      "cdf": {
+        "comparability": {
+          "dataset_id": "clickhouse-destination-i64x3-750000",
+          "workload_id": "clickhouse-destination-native_merge-commit-verify",
+          "timed_region_version": 1,
+          "cdf_revision": "8a6d13646e4b748c08d2c359948afe0f90da72e3",
+          "dependency_tuple": "clickhouse=0.15.1;clickhouse-ext-arrow=0.1.0;server=25.8.28.1",
+          "host_class": "host-class-8ede714ca80f1a5d",
+          "os_toolchain": "macos-26.5.2;rustc 1.96.1 (31fca3adb 2026-06-26)",
+          "io_mode": "warm"
+        },
+        "status": {
+          "kind": "observed"
+        },
+        "samples": [
+          {
+            "wall_time_ns": 145224875,
+            "cpu_time_ns": 63091000,
+            "rows": 750000,
+            "logical_bytes": 18000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 55459840,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "arrowstream_delivery_commit_and_verification",
+                "duration_ns": 145224875,
+                "bytes": 18000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 122723208,
+            "cpu_time_ns": 61524000,
+            "rows": 750000,
+            "logical_bytes": 18000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 55459840,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "arrowstream_delivery_commit_and_verification",
+                "duration_ns": 122723208,
+                "bytes": 18000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 126226209,
+            "cpu_time_ns": 63120000,
+            "rows": 750000,
+            "logical_bytes": 18000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 55443456,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "arrowstream_delivery_commit_and_verification",
+                "duration_ns": 126226209,
+                "bytes": 18000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 111938667,
+            "cpu_time_ns": 60386000,
+            "rows": 750000,
+            "logical_bytes": 18000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 55508992,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "arrowstream_delivery_commit_and_verification",
+                "duration_ns": 111938667,
+                "bytes": 18000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 106076708,
+            "cpu_time_ns": 63897000,
+            "rows": 750000,
+            "logical_bytes": 18000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 59506688,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "arrowstream_delivery_commit_and_verification",
+                "duration_ns": 106076708,
+                "bytes": 18000000
+              }
+            ]
+          }
+        ],
+        "summary": {
+          "sample_count": 5,
+          "median_wall_time_ns": 122723208,
+          "median_absolute_deviation_ns": 10784541,
+          "median_rows_per_second": 6111313,
+          "median_logical_bytes_per_second": 146671524,
+          "median_physical_bytes_per_second": 0,
+          "peak_rss_bytes": 59506688,
+          "spill_bytes": 0
+        },
+        "reference": {
+          "kind": "direct_library",
+          "name": "clickhouse plus clickhouse-ext-arrow",
+          "version": "0.15.1+0.1.0",
+          "semantic_work": "one LZ4 ArrowStream insert with synchronous acknowledgement and a deterministic deduplication token, followed by exact canonical package-ordinal verification"
+        },
+        "bias": [
+          {
+            "code": "cdf-governance-overhead",
+            "description": "CDF additionally validates package identity and schema, writes exact segment/state/receipt mirrors, and independently verifies the finalized receipt"
+          }
+        ],
+        "measurement_provider": {
+          "method": "clickhouse-destination-worker-monotonic-with-rusage-self",
+          "version": "clickhouse-destination-roofline-observer-v1",
+          "observes_cpu_time": true,
+          "observes_peak_rss": true
+        }
+      },
+      "direct_arrowstream": {
+        "comparability": {
+          "dataset_id": "clickhouse-destination-i64x3-750000",
+          "workload_id": "clickhouse-destination-native_merge-commit-verify",
+          "timed_region_version": 1,
+          "cdf_revision": "8a6d13646e4b748c08d2c359948afe0f90da72e3",
+          "dependency_tuple": "clickhouse=0.15.1;clickhouse-ext-arrow=0.1.0;server=25.8.28.1",
+          "host_class": "host-class-8ede714ca80f1a5d",
+          "os_toolchain": "macos-26.5.2;rustc 1.96.1 (31fca3adb 2026-06-26)",
+          "io_mode": "warm"
+        },
+        "status": {
+          "kind": "observed"
+        },
+        "samples": [
+          {
+            "wall_time_ns": 125894792,
+            "cpu_time_ns": 64011000,
+            "rows": 750000,
+            "logical_bytes": 18000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 81707008,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "arrowstream_delivery_commit_and_verification",
+                "duration_ns": 125894792,
+                "bytes": 18000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 115584375,
+            "cpu_time_ns": 64760000,
+            "rows": 750000,
+            "logical_bytes": 18000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 81657856,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "arrowstream_delivery_commit_and_verification",
+                "duration_ns": 115584375,
+                "bytes": 18000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 137663917,
+            "cpu_time_ns": 66028000,
+            "rows": 750000,
+            "logical_bytes": 18000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 81739776,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "arrowstream_delivery_commit_and_verification",
+                "duration_ns": 137663917,
+                "bytes": 18000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 120047750,
+            "cpu_time_ns": 67009000,
+            "rows": 750000,
+            "logical_bytes": 18000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 81641472,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "arrowstream_delivery_commit_and_verification",
+                "duration_ns": 120047750,
+                "bytes": 18000000
+              }
+            ]
+          },
+          {
+            "wall_time_ns": 124075375,
+            "cpu_time_ns": 63765000,
+            "rows": 750000,
+            "logical_bytes": 18000000,
+            "physical_bytes": 0,
+            "peak_rss_bytes": 81690624,
+            "spill_bytes": 0,
+            "phases": [
+              {
+                "phase": "arrowstream_delivery_commit_and_verification",
+                "duration_ns": 124075375,
+                "bytes": 18000000
+              }
+            ]
+          }
+        ],
+        "summary": {
+          "sample_count": 5,
+          "median_wall_time_ns": 124075375,
+          "median_absolute_deviation_ns": 4027625,
+          "median_rows_per_second": 6044712,
+          "median_logical_bytes_per_second": 145073105,
+          "median_physical_bytes_per_second": 0,
+          "peak_rss_bytes": 81739776,
+          "spill_bytes": 0
+        },
+        "reference": null,
+        "bias": [],
+        "measurement_provider": {
+          "method": "clickhouse-destination-worker-monotonic-with-rusage-self",
+          "version": "clickhouse-destination-roofline-observer-v1",
+          "observes_cpu_time": true,
+          "observes_peak_rss": true
+        }
+      },
+      "roofline_ratio_ppm": 1011018,
+      "status": "pass",
+      "reason": null
+    }
+  ]
+}

@@ -6,13 +6,14 @@ use cdf_kernel::{
     aggregate_processed_observation_positions,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use crate::model::SegmentEntry;
 
 pub const STATE_INPUT_CHECKPOINT_FILE: &str = "state/input_checkpoint.json";
 pub const STATE_PROPOSED_DELTA_FILE: &str = "state/proposed_delta.json";
 pub const DESTINATION_COMMIT_PLAN_FILE: &str = "destination/commit_plan.json";
-pub const DESTINATION_COMMIT_PLAN_VERSION: u16 = 1;
+pub const DESTINATION_COMMIT_PLAN_VERSION: u16 = 2;
 pub const SCAN_PLAN_FILE: &str = "plan/scan.json";
 pub const DEDUP_SUMMARY_FILE: &str = "stats/dedup-summary.json";
 pub const DEDUP_SUMMARY_VERSION: u16 = 3;
@@ -20,6 +21,63 @@ pub const DEDUP_PROVENANCE_VERSION: u16 = 1;
 pub const DEDUP_PROVENANCE_DIRECTORY: &str = "stats/dedup-dropped/";
 pub const PROCESSED_OBSERVATIONS_FILE: &str = "state/processed-observations.json";
 pub const PROCESSED_OBSERVATIONS_VERSION: u16 = 1;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PackageDedupKeep {
+    First,
+    Last,
+    Fail,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageDedupSummary {
+    pub version: u16,
+    pub rule_id: String,
+    pub keys: Vec<String>,
+    pub keep: PackageDedupKeep,
+    pub input_rows: u64,
+    pub output_rows: u64,
+    pub duplicate_key_count: u64,
+    pub dropped_row_count: u64,
+    pub provenance_format: String,
+    pub provenance_version: u16,
+    pub provenance_path: String,
+    pub provenance_shard_row_target: u64,
+    pub shard_count: u64,
+}
+
+impl PackageDedupSummary {
+    pub fn validate(&self) -> Result<()> {
+        if self.version != DEDUP_SUMMARY_VERSION
+            || self.rule_id.is_empty()
+            || self.keys.is_empty()
+            || self.provenance_format != "parquet"
+            || self.provenance_version != DEDUP_PROVENANCE_VERSION
+            || self.provenance_path != DEDUP_PROVENANCE_DIRECTORY
+            || self.provenance_shard_row_target == 0
+        {
+            return Err(CdfError::data(
+                "dedup summary does not contain current canonical package authority",
+            ));
+        }
+        let mut unique_keys = self.keys.clone();
+        unique_keys.sort();
+        unique_keys.dedup();
+        if unique_keys.len() != self.keys.len()
+            || self.output_rows > self.input_rows
+            || self.input_rows - self.output_rows != self.dropped_row_count
+            || (self.dropped_row_count == 0 && self.shard_count != 0)
+            || (self.dropped_row_count > 0 && self.shard_count == 0)
+        {
+            return Err(CdfError::data(
+                "dedup summary row or key authority is inconsistent",
+            ));
+        }
+        Ok(())
+    }
+}
 
 pub fn dedup_provenance_shard_path(shard_ordinal: u64) -> Result<String> {
     if shard_ordinal == 0 {
@@ -170,6 +228,8 @@ pub struct DestinationCommitPlanPreimage {
     pub disposition: WriteDisposition,
     pub merge_keys: Vec<String>,
     pub schema_hash: SchemaHash,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub destination_policy: BTreeMap<String, String>,
     pub idempotency_token_source: IdempotencyTokenSource,
 }
 
@@ -186,8 +246,14 @@ impl DestinationCommitPlanPreimage {
             disposition,
             merge_keys,
             schema_hash,
+            destination_policy: BTreeMap::new(),
             idempotency_token_source: IdempotencyTokenSource::PackageHash,
         }
+    }
+
+    pub fn with_destination_policy(mut self, destination_policy: BTreeMap<String, String>) -> Self {
+        self.destination_policy = destination_policy;
+        self
     }
 
     pub fn commit_request(
@@ -208,11 +274,16 @@ impl DestinationCommitPlanPreimage {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.version != DESTINATION_COMMIT_PLAN_VERSION {
+        if self.version != 1 && self.version != DESTINATION_COMMIT_PLAN_VERSION {
             return Err(CdfError::data(format!(
                 "unsupported destination commit plan version {}",
                 self.version
             )));
+        }
+        if self.version == 1 && !self.destination_policy.is_empty() {
+            return Err(CdfError::data(
+                "destination commit plan version 1 cannot carry destination policy authority",
+            ));
         }
         Ok(())
     }
@@ -231,6 +302,7 @@ pub struct PackageReplayInputs {
     pub destination_commit: DestinationCommitRequest,
     pub merge_keys: Vec<String>,
     pub schema_hash: SchemaHash,
+    pub destination_policy: BTreeMap<String, String>,
 }
 
 impl PackageReplayInputs {
@@ -292,6 +364,7 @@ impl PackageReplayInputs {
 
         let schema_hash = state_delta.schema_hash.clone();
         let merge_keys = commit_plan.merge_keys.clone();
+        let destination_policy = commit_plan.destination_policy.clone();
         let destination_commit =
             commit_plan.commit_request(package_hash.clone(), state_delta.segments.clone())?;
         let state_delta = state_delta.into_state_delta(package_hash);
@@ -301,6 +374,7 @@ impl PackageReplayInputs {
             destination_commit,
             merge_keys,
             schema_hash,
+            destination_policy,
         })
     }
 }
@@ -502,5 +576,32 @@ mod tests {
                 .message
                 .contains("unsupported destination commit plan version")
         );
+    }
+
+    #[test]
+    fn destination_policy_is_identity_bearing_and_v1_reads_fail_closed_empty() {
+        let plan = DestinationCommitPlanPreimage::package_hash_token(
+            TargetName::new("events").unwrap(),
+            WriteDisposition::Merge,
+            vec!["id".to_owned()],
+            SchemaHash::new("schema-v1").unwrap(),
+        )
+        .with_destination_policy(
+            [("merge_mode".to_owned(), "replacing_merge_tree".to_owned())]
+                .into_iter()
+                .collect(),
+        );
+        let encoded = serde_json::to_value(&plan).unwrap();
+        assert_eq!(
+            encoded["destination_policy"]["merge_mode"],
+            "replacing_merge_tree"
+        );
+
+        let mut legacy = encoded;
+        legacy["version"] = serde_json::json!(1);
+        legacy.as_object_mut().unwrap().remove("destination_policy");
+        let legacy: DestinationCommitPlanPreimage = serde_json::from_value(legacy).unwrap();
+        assert!(legacy.destination_policy.is_empty());
+        legacy.validate().unwrap();
     }
 }

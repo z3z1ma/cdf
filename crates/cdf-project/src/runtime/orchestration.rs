@@ -766,6 +766,9 @@ async fn run_project_inner(
     execution.recorder.append_package_started()?;
 
     let destination_capabilities = execution.destination.runtime_capabilities();
+    let destination_policy = execution
+        .destination
+        .commit_policy(&descriptor.write_disposition);
     if let Some(graph) = &manifest_plan.plan.operator_graph {
         graph.validate_destination_join(&destination_capabilities)?;
     }
@@ -781,6 +784,7 @@ async fn run_project_inner(
                     pipeline_id: execution.pipeline_id,
                     checkpoint_id: execution.checkpoint_id,
                     target: &execution.target,
+                    destination_policy: &destination_policy,
                 },
                 &execution.schema_hash,
                 &scope,

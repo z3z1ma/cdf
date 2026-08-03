@@ -2333,23 +2333,6 @@ pub(crate) fn resolve_pipeline_concurrency_from_bounds(
 
 const DEDUP_PROVENANCE_SHARD_ROWS: usize = 64 * 1024;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct DedupSummaryV3 {
-    version: u16,
-    rule_id: String,
-    keys: Vec<String>,
-    keep: cdf_contract::DedupKeepProgram,
-    input_rows: u64,
-    output_rows: u64,
-    duplicate_key_count: u64,
-    dropped_row_count: u64,
-    provenance_format: String,
-    provenance_version: u16,
-    provenance_path: String,
-    provenance_shard_row_target: u64,
-    shard_count: u64,
-}
-
 struct DedupProvenanceSink {
     rows: Vec<(u64, u64)>,
     shard_count: u64,
@@ -5662,11 +5645,16 @@ fn write_dedup_summary_v3(
     summary: cdf_contract::DedupSummary,
     shard_count: u64,
 ) -> Result<()> {
-    builder.write_dedup_summary(&DedupSummaryV3 {
+    let keep = match summary.keep {
+        cdf_contract::DedupKeepProgram::First => cdf_package_contract::PackageDedupKeep::First,
+        cdf_contract::DedupKeepProgram::Last => cdf_package_contract::PackageDedupKeep::Last,
+        cdf_contract::DedupKeepProgram::Fail => cdf_package_contract::PackageDedupKeep::Fail,
+    };
+    builder.write_dedup_summary(&cdf_package_contract::PackageDedupSummary {
         version: cdf_package_contract::DEDUP_SUMMARY_VERSION,
         rule_id: summary.rule_id,
         keys: summary.keys,
-        keep: summary.keep,
+        keep,
         input_rows: summary.input_rows,
         output_rows: summary.output_rows,
         duplicate_key_count: summary.duplicate_key_count,

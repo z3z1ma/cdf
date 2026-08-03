@@ -1,8 +1,71 @@
-# ClickHouse table source
+# ClickHouse source and destination
 
 CDF reads one finite ClickHouse table through the built-in `clickhouse` source and the official
 Rust client's ArrowStream extension. The connector does not accept arbitrary SQL, CDC streams, or
 native-protocol configuration.
+
+## Configure a destination
+
+The built-in destination accepts a credential-safe `clickhouse://host:port/database` URI for HTTP
+or `clickhouses://host:port/database` for HTTPS. Supply credentials through a `secret://` URI; URI
+query parameters are not a configuration surface. The target table must already exist because its
+engine, ordering, partitioning, codecs, projections, defaults, and operational tuning belong to
+the operator.
+
+CDF writes Arrow record batches directly through the official ArrowStream extension with LZ4,
+synchronous acknowledgement, deterministic insert tokens, and one bounded writer. Every target
+needs an explicit insert-deduplication window large enough for the package segment count and the
+two compact provenance columns shown below. Non-replicated tables use
+`non_replicated_deduplication_window`; replicated tables use
+`replicated_deduplication_window`. For the default keyed merge mode, the target
+must be an unversioned `ReplacingMergeTree` whose sorting key exactly equals the CDF merge key:
+
+```sql
+CREATE TABLE analytics.events
+(
+    id Int64,
+    name Nullable(String),
+    _cdf_package_hash FixedString(32),
+    _cdf_package_row_ord UInt64
+)
+ENGINE = ReplacingMergeTree
+ORDER BY id
+SETTINGS non_replicated_deduplication_window = 100000;
+```
+
+`replacing_merge_tree` is the default because it preserves ClickHouse's high-throughput write
+path. CDF package finalization fails duplicate merge keys unless an explicit deterministic keyed
+dedup rule selects the winner. Before settlement, CDF validates with `FINAL` that the package owns
+the complete unique canonical row-ordinal set. Ordinary readers can observe old and new physical
+versions until background merges finish. Consumers that require current keyed
+results immediately must query with `FINAL` (or an equivalent operator-owned view).
+
+When immediate physical uniqueness is more important than write amplification and latency, opt
+into the copy-on-write mode:
+
+```toml
+[environments.prod.destination_policy.clickhouse]
+merge_mode = "atomic_copy_on_write"
+```
+
+This mode validates incoming and existing key uniqueness, constructs the merged table with a
+server-side anti-join and bulk insert, verifies it, and publishes it with one `EXCHANGE TABLES`.
+It requires an `Atomic` database, a non-replicated row-preserving `MergeTree` target, and no dependent
+materialized views. It rewrites the complete target and therefore is intentionally not the
+throughput default. CDF declares one writer and serializes its own commits. Operators must also
+exclude out-of-band writes to the target while replace or copy-on-write merge is building its
+snapshot; ClickHouse has no non-Keeper compare-and-exchange primitive that could preserve an
+uncoordinated concurrent write.
+
+Append writes directly to a row-preserving `MergeTree` or `ReplicatedMergeTree` target. Replace
+builds a complete structurally fingerprinted stage and publishes it with `EXCHANGE TABLES`; it has the same `Atomic` database and
+non-replicated-target requirements as copy-on-write merge. CDF refuses nullable or missing merge
+keys, sorting/partition drift, versioned replacement-engine guessing, ambiguous existing keys,
+unsupported schemas, and targets whose dependent views would make replacement semantics false.
+Receipts record the selected merge mode and physical-visibility contract. The merge mode also
+participates in the finalized package identity, so policy drift fails before replay can mutate the
+destination. Historical replace/copy-on-write receipts remain verifiable from immutable settlement
+mirrors after a later valid CDF publication supersedes their target marker.
 
 ## Configure a source
 
@@ -166,9 +229,12 @@ Arrow extension disables redundant inner Arrow compression.
 ## Local live and roofline cells
 
 Focused live conformance uses ClickHouse LTS 25.8.28.1 pinned by immutable platform digest. The
-release roofline compares the CDF adapter against the same official bounded Arrow query with the
+source release roofline compares the CDF adapter against the same official bounded Arrow query with the
 same response/IPC ceilings, table, projection, ordering, no-compression setting, `max_threads`, and
 effective block-row bound. Its content identity covers the connector, benchmark, workspace lock,
 and all locally patched dependency sources. A report
 is passing only at a CDF/direct median throughput ratio of at least 0.90. Until a current report is
-recorded in the owning ticket, this document makes no passing performance claim.
+recorded in the owning ticket, this document makes no passing performance claim. The destination
+roofline separately measures the post-preflight delivery and settlement path against direct
+official-client ArrowStream insertion with the same synchronous acknowledgement, LZ4 compression,
+and insert-token settings for append and default native merge.

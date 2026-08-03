@@ -32,6 +32,8 @@ use cdf_dest_sqlite::SqliteDestination;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 #[cfg(test)]
 use postgres::{Client, NoTls};
+#[cfg(test)]
+use url::Url;
 
 #[cfg(test)]
 mod quasar;
@@ -42,6 +44,7 @@ impl DestinationPolicyProvider for ConformanceDestinationPolicy {
     fn value(&self, destination: &str, key: &str) -> Option<&str> {
         match (destination, key) {
             ("postgres", "merge_dedup") => Some("fail"),
+            ("clickhouse", "merge_mode") => Some("replacing_merge_tree"),
             _ => None,
         }
     }
@@ -65,6 +68,7 @@ struct DestinationCatalogEntry {
 #[cfg(test)]
 pub(crate) struct ConformanceEnvironment {
     postgres: Option<LivePostgres>,
+    clickhouse_endpoint: Option<String>,
 }
 
 #[cfg(test)]
@@ -72,11 +76,15 @@ impl ConformanceEnvironment {
     pub(crate) fn start() -> Result<Self> {
         Ok(Self {
             postgres: Some(LivePostgres::start()?),
+            clickhouse_endpoint: std::env::var("CDF_CLICKHOUSE_ENDPOINT").ok(),
         })
     }
 
     pub(crate) fn local_only() -> Self {
-        Self { postgres: None }
+        Self {
+            postgres: None,
+            clickhouse_endpoint: None,
+        }
     }
 
     pub(crate) fn postgres(&self) -> Result<&LivePostgres> {
@@ -90,14 +98,37 @@ impl ConformanceEnvironment {
         reset_postgres_schema(postgres.url(), postgres.schema())
     }
 
+    pub(crate) fn clickhouse_endpoint(&self) -> Result<&str> {
+        self.clickhouse_endpoint.as_deref().ok_or_else(|| {
+            CdfError::environment(
+                "ClickHouse destination conformance requires CDF_CLICKHOUSE_ENDPOINT=clickhouse://host:port",
+            )
+        })
+    }
+
     pub(crate) fn assert_redacted(&self, text: &str) {
         if let Some(postgres) = &self.postgres {
             assert!(!text.contains(postgres.url()));
+        }
+        if let Some(clickhouse) = &self.clickhouse_endpoint {
+            assert!(!text.contains(clickhouse));
         }
     }
 }
 
 const DESTINATIONS: &[DestinationCatalogEntry] = &[
+    DestinationCatalogEntry {
+        id: "clickhouse",
+        #[cfg(test)]
+        runtime_destination_id: "clickhouse",
+        #[cfg(test)]
+        expects_row_provenance: true,
+        fixture_driver: None,
+        #[cfg(test)]
+        inspection_uri: |_| "clickhouse://localhost:8123/default".to_owned(),
+        #[cfg(test)]
+        fixture: clickhouse_fixture,
+    },
     DestinationCatalogEntry {
         id: "duckdb",
         #[cfg(test)]
@@ -217,6 +248,8 @@ fn catalog_is_the_single_first_party_destination_enrollment_point() {
     assert_eq!(
         registry().unwrap().registered_schemes(),
         [
+            "clickhouse",
+            "clickhouses",
             "duckdb",
             "parquet",
             "postgres",
@@ -231,6 +264,7 @@ fn catalog_is_the_single_first_party_destination_enrollment_point() {
             .map(|destination| destination.as_str().to_owned())
             .collect::<Vec<_>>(),
         [
+            "clickhouse",
             "duckdb",
             "parquet_filesystem",
             "postgres",
@@ -408,6 +442,12 @@ pub(crate) struct DestinationFixture {
 #[cfg(test)]
 #[derive(Clone, Debug)]
 enum DestinationFixtureState {
+    ClickHouse {
+        uri: String,
+        endpoint: String,
+        database: String,
+        table: String,
+    },
     DuckDb {
         database_path: PathBuf,
     },
@@ -431,6 +471,11 @@ enum DestinationFixtureState {
 #[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum DestinationFootprint {
+    ClickHouse {
+        payload_rows: Vec<LogicalRow>,
+        loads_rows: u64,
+        state_rows: u64,
+    },
     DuckDb {
         mirror: DuckDbMirrorSnapshot,
         payload_rows: Vec<LogicalRow>,
@@ -545,6 +590,19 @@ impl DestinationFixture {
 
     pub(crate) fn verify_trait_receipt(&self, receipt: &Receipt) -> Result<()> {
         let verification = match &self.state {
+            DestinationFixtureState::ClickHouse { uri, .. } => {
+                let execution = crate::test_execution_services();
+                let context = DestinationResolutionContext::for_project_run(
+                    &self.execution.project_root,
+                    &self.execution.target,
+                )
+                .with_environment_name("conformance")
+                .with_destination_policy(&POLICY)
+                .with_execution_services(&execution);
+                let mut runtime = registry()?.resolve(uri, &context)?;
+                cdf_runtime::bind_destination_runtime(runtime.as_mut(), &execution)?;
+                runtime.verify_receipt(receipt)?
+            }
             DestinationFixtureState::DuckDb { database_path } => {
                 DuckDbDestination::new(database_path)?.verify(receipt)?
             }
@@ -574,6 +632,12 @@ impl DestinationFixture {
 
     pub(crate) fn footprint(&self) -> Result<DestinationFootprint> {
         match &self.state {
+            DestinationFixtureState::ClickHouse {
+                endpoint,
+                database,
+                table,
+                ..
+            } => clickhouse_footprint(endpoint, database, table),
             DestinationFixtureState::DuckDb { database_path } => {
                 if destination_artifact_is_missing(database_path)? {
                     return Ok(DestinationFootprint::DuckDb {
@@ -606,6 +670,14 @@ impl DestinationFixture {
 
     pub(crate) fn payload_snapshot(&self) -> Result<DestinationPayload> {
         match &self.state {
+            DestinationFixtureState::ClickHouse {
+                endpoint,
+                database,
+                table,
+                ..
+            } => Ok(DestinationPayload(clickhouse_payload(
+                endpoint, database, table,
+            )?)),
             DestinationFixtureState::DuckDb { database_path } => Ok(DestinationPayload(
                 if !destination_artifact_is_missing(database_path)? {
                     duckdb_payload(database_path, self.execution.target.as_str())?
@@ -636,6 +708,24 @@ impl DestinationFixture {
 
     pub(crate) fn fresh_artifact_replay_destination(&self, root: &Path) -> Result<Self> {
         match &self.state {
+            DestinationFixtureState::ClickHouse {
+                uri,
+                endpoint,
+                database,
+                table,
+            } => {
+                reset_clickhouse_database(endpoint, database, table)?;
+                Ok(Self {
+                    destination: self.destination.clone(),
+                    runtime_destination_id: self.runtime_destination_id,
+                    execution: DestinationExecutionSpec {
+                        uri: uri.clone(),
+                        project_root: root.to_path_buf(),
+                        target: self.execution.target.clone(),
+                    },
+                    state: self.state.clone(),
+                })
+            }
             DestinationFixtureState::DuckDb { .. } => {
                 let database_path = root.join(".cdf/replay.duckdb");
                 Ok(Self {
@@ -729,6 +819,11 @@ impl DestinationFixture {
 impl DestinationFootprint {
     pub(crate) fn has_destination_write(&self) -> bool {
         match self {
+            Self::ClickHouse {
+                payload_rows,
+                loads_rows,
+                state_rows,
+            } => !payload_rows.is_empty() || *loads_rows > 0 || *state_rows > 0,
             Self::DuckDb {
                 mirror,
                 payload_rows,
@@ -775,6 +870,33 @@ pub(crate) fn fixture(
 }
 
 #[cfg(test)]
+fn clickhouse_fixture(
+    root: &Path,
+    table: &str,
+    environment: &ConformanceEnvironment,
+) -> Result<DestinationFixture> {
+    let database = format!("cdf_conformance_{table}");
+    let (uri, endpoint) =
+        clickhouse_fixture_connection(environment.clickhouse_endpoint()?, &database)?;
+    reset_clickhouse_database(&endpoint, &database, table)?;
+    Ok(DestinationFixture {
+        destination: MatrixDestination::new("clickhouse")?,
+        runtime_destination_id: "clickhouse",
+        execution: DestinationExecutionSpec {
+            uri: uri.clone(),
+            project_root: root.to_path_buf(),
+            target: TargetName::new(table)?,
+        },
+        state: DestinationFixtureState::ClickHouse {
+            uri,
+            endpoint,
+            database,
+            table: table.to_owned(),
+        },
+    })
+}
+
+#[cfg(test)]
 fn duckdb_fixture(
     root: &Path,
     table: &str,
@@ -791,6 +913,86 @@ fn duckdb_fixture(
         },
         state: DestinationFixtureState::DuckDb { database_path },
     })
+}
+
+#[cfg(test)]
+fn clickhouse_fixture_connection(endpoint: &str, database: &str) -> Result<(String, String)> {
+    let parsed = Url::parse(endpoint).map_err(|error| {
+        CdfError::environment(format!("parse CDF_CLICKHOUSE_ENDPOINT: {error}"))
+    })?;
+    if !matches!(parsed.scheme(), "clickhouse" | "clickhouses")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || !matches!(parsed.path(), "" | "/")
+    {
+        return Err(CdfError::environment(
+            "CDF_CLICKHOUSE_ENDPOINT must be clickhouse://host:port with no credentials, path, query, or fragment",
+        ));
+    }
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| CdfError::internal("parsed ClickHouse endpoint lost its host"))?;
+    let authority_host = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_owned()
+    };
+    let authority = parsed.port().map_or(authority_host.clone(), |port| {
+        format!("{authority_host}:{port}")
+    });
+    let transport_scheme = if parsed.scheme() == "clickhouses" {
+        "https"
+    } else {
+        "http"
+    };
+    Ok((
+        format!("{}://{authority}/{database}", parsed.scheme()),
+        format!("{transport_scheme}://{authority}"),
+    ))
+}
+
+#[cfg(test)]
+fn reset_clickhouse_database(endpoint: &str, database: &str, table: &str) -> Result<()> {
+    let database_sql = quote_clickhouse_identifier(database)?;
+    let table_sql = quote_clickhouse_identifier(table)?;
+    let client = clickhouse::Client::default().with_url(endpoint);
+    let database_client = client.clone().with_database(database);
+    crate::test_execution_services().run_io(async move {
+        client
+            .query(&format!("DROP DATABASE IF EXISTS {database_sql} SYNC"))
+            .execute()
+            .await
+            .map_err(|error| clickhouse_conformance_error("reset destination database", error))?;
+        client
+            .query(&format!("CREATE DATABASE {database_sql} ENGINE = Atomic"))
+            .execute()
+            .await
+            .map_err(|error| clickhouse_conformance_error("create destination database", error))?;
+        database_client
+            .query(&format!(
+                "CREATE TABLE {table_sql} (id Int64, name Nullable(String), _cdf_package_hash FixedString(32), _cdf_package_row_ord UInt64) ENGINE = ReplacingMergeTree ORDER BY id SETTINGS non_replicated_deduplication_window = 100000"
+            ))
+            .execute()
+            .await
+            .map_err(|error| clickhouse_conformance_error("create destination target", error))
+    })
+}
+
+#[cfg(test)]
+fn quote_clickhouse_identifier(value: &str) -> Result<String> {
+    if value.is_empty()
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+    {
+        return Err(CdfError::internal(
+            "ClickHouse conformance identifier is outside its generated lowercase ASCII domain",
+        ));
+    }
+    Ok(format!("`{value}`"))
 }
 
 #[cfg(test)]
@@ -1001,6 +1203,123 @@ fn collect_relative_files(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[derive(Debug, serde::Deserialize, clickhouse::Row)]
+struct ClickHouseLogicalRow {
+    id: i64,
+    name: Option<String>,
+}
+
+#[cfg(test)]
+#[derive(Debug, serde::Deserialize, clickhouse::Row)]
+struct ClickHouseCountRow {
+    rows: u64,
+}
+
+#[cfg(test)]
+fn clickhouse_footprint(
+    endpoint: &str,
+    database: &str,
+    table: &str,
+) -> Result<DestinationFootprint> {
+    let (payload_rows, loads_rows, state_rows) = clickhouse_snapshot(endpoint, database, table)?;
+    Ok(DestinationFootprint::ClickHouse {
+        payload_rows,
+        loads_rows,
+        state_rows,
+    })
+}
+
+#[cfg(test)]
+fn clickhouse_payload(endpoint: &str, database: &str, table: &str) -> Result<Vec<LogicalRow>> {
+    clickhouse_snapshot(endpoint, database, table).map(|snapshot| snapshot.0)
+}
+
+#[cfg(test)]
+fn clickhouse_snapshot(
+    endpoint: &str,
+    database: &str,
+    table: &str,
+) -> Result<(Vec<LogicalRow>, u64, u64)> {
+    let database = database.to_owned();
+    let table = table.to_owned();
+    let client = clickhouse::Client::default().with_url(endpoint);
+    crate::test_execution_services().run_io(async move {
+        let exists = client
+            .query("SELECT count() AS rows FROM system.tables WHERE database = ? AND name = ?")
+            .bind(&database)
+            .bind(&table)
+            .fetch_one::<ClickHouseCountRow>()
+            .await
+            .map_err(|error| clickhouse_conformance_error("inspect destination target", error))?
+            .rows;
+        let database_client = client.with_database(&database);
+        let payload_rows = if exists == 0 {
+            Vec::new()
+        } else {
+            let table = quote_clickhouse_identifier(&table)?;
+            database_client
+                .query(&format!("SELECT id, name FROM {table} FINAL ORDER BY id"))
+                .fetch_all::<ClickHouseLogicalRow>()
+                .await
+                .map_err(|error| clickhouse_conformance_error("read destination target", error))?
+                .into_iter()
+                .map(|row| LogicalRow {
+                    id: row.id,
+                    name: row.name,
+                })
+                .collect()
+        };
+        let loads_rows = clickhouse_count_if_exists(&database_client, "_cdf_loads").await?;
+        let state_rows = clickhouse_count_if_exists(&database_client, "_cdf_state").await?;
+        Ok((payload_rows, loads_rows, state_rows))
+    })
+}
+
+#[cfg(test)]
+async fn clickhouse_count_if_exists(client: &clickhouse::Client, table: &str) -> Result<u64> {
+    let exists = client
+        .query("SELECT count() AS rows FROM system.tables WHERE database = currentDatabase() AND name = ?")
+        .bind(table)
+        .fetch_one::<ClickHouseCountRow>()
+        .await
+        .map_err(|error| clickhouse_conformance_error("inspect destination mirror", error))?
+        .rows;
+    if exists == 0 {
+        return Ok(0);
+    }
+    let table = quote_clickhouse_identifier(table)?;
+    client
+        .query(&format!("SELECT count() AS rows FROM {table}"))
+        .fetch_one::<ClickHouseCountRow>()
+        .await
+        .map(|row| row.rows)
+        .map_err(|error| clickhouse_conformance_error("count destination mirror", error))
+}
+
+#[cfg(test)]
+fn clickhouse_conformance_error(action: &str, error: clickhouse::error::Error) -> CdfError {
+    if let clickhouse::error::Error::BadResponse(message) = error {
+        let code = message.split_once("Code:").and_then(|(_, remainder)| {
+            let digits = remainder
+                .trim_start()
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>();
+            (!digits.is_empty())
+                .then(|| digits.parse::<u32>().ok())
+                .flatten()
+        });
+        return CdfError::destination(format!(
+            "ClickHouse conformance {action} was rejected{}",
+            code.map_or_else(String::new, |code| format!(" with server code {code}"))
+        ));
+    }
+    CdfError::environment(format!(
+        "ClickHouse conformance {action} failed before a stable server response"
+    ))
 }
 
 #[cfg(test)]

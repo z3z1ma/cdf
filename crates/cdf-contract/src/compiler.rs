@@ -171,6 +171,24 @@ pub fn bind_validation_program_to_resource(
             }
         }
     }
+    if descriptor.write_disposition == cdf_kernel::WriteDisposition::Merge
+        && !program.has_keyed_dedup_rule()
+    {
+        if descriptor.merge_key.is_empty() {
+            return Err(CdfError::contract(
+                "merge package deduplication requires at least one merge key",
+            ));
+        }
+        program.row_rules.push(RowRuleProgram {
+            rule_id: format!("row-rule-{:04}-merge-key-unique", program.row_rules.len()),
+            expression: dedup_expression(
+                "dedup",
+                descriptor.merge_key.clone(),
+                DedupKeepProgram::Fail,
+            ),
+            missing_column: MissingColumnBehavior::Error,
+        });
+    }
     let controls = descriptor
         .primary_key
         .iter()

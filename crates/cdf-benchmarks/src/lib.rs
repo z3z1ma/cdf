@@ -2,6 +2,7 @@
 
 mod baseline;
 mod catalog;
+mod clickhouse_destination_roofline;
 mod clickhouse_source_roofline;
 mod comparison;
 mod duckdb_profile;
@@ -35,6 +36,10 @@ pub use cdf_bench_core::{
     SystemHostProvider, ToolIdentity, WorkerMeasurement, bench_error, canonical_json_bytes,
     canonical_sha256, host_class, run_cdf_command_workload, run_macro_cell, summarize_samples,
     unavailable_reference_cell,
+};
+pub use clickhouse_destination_roofline::{
+    ClickHouseDestinationRooflineReport, run_clickhouse_destination_roofline,
+    run_clickhouse_destination_roofline_worker,
 };
 pub use clickhouse_source_roofline::{
     ClickHouseSourceRooflineReport, run_clickhouse_source_roofline,

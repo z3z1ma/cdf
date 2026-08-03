@@ -853,6 +853,25 @@ fn destination_policy_overlays_from_default_environment() {
 }
 
 #[test]
+fn clickhouse_merge_mode_policy_uses_the_ratified_environment_shape() {
+    let project = BOOK_PROJECT.replace(
+        "[environments.prod.destination_policy.postgres]\nmerge_dedup = \"fail\"\n\n",
+        "[environments.prod.destination_policy.clickhouse]\nmerge_mode = \"atomic_copy_on_write\"\n\n",
+    );
+    let config = parse_cdf_toml(&project).unwrap();
+    let prod = config.effective_environment("prod").unwrap();
+
+    assert_eq!(
+        cdf_runtime::DestinationPolicyProvider::value(
+            &prod.destination_policy,
+            "clickhouse",
+            "merge_mode"
+        ),
+        Some("atomic_copy_on_write")
+    );
+}
+
+#[test]
 fn validation_resolves_declarative_sources_and_redacts_secret_values() {
     let config = parse_cdf_toml(BOOK_PROJECT).unwrap();
     let resolver =

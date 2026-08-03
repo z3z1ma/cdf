@@ -883,6 +883,7 @@ fn replay_inputs(rows: u64) -> cdf_bench_core::BenchResult<(PackageReplayInputs,
             destination_commit,
             merge_keys: Vec::new(),
             schema_hash,
+            destination_policy: Default::default(),
         },
         state,
     ))

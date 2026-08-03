@@ -3,7 +3,7 @@ use std::sync::Arc;
 use arrow_schema::SchemaRef;
 use cdf_kernel::{BatchStats, Result, ScanPlan};
 
-use crate::{PackageReplayInputs, QuarantineRecord, SegmentEntry};
+use crate::{PackageDedupSummary, PackageReplayInputs, QuarantineRecord, SegmentEntry};
 
 /// Read-only access to facts from one package whose identity has already been
 /// verified by the package implementation.
@@ -23,6 +23,10 @@ pub trait VerifiedPackageAccess: Send + Sync {
     /// Returns complete package-grain statistics only when a manifest-bound profile artifact was
     /// emitted and fully verified. Absence is conservative: consumers must retain every field.
     fn verified_package_statistics(&self) -> Result<Option<BatchStats>> {
+        Ok(None)
+    }
+    /// Returns identity-bound package dedup authority when the engine emitted it.
+    fn verified_dedup_summary(&self) -> Result<Option<PackageDedupSummary>> {
         Ok(None)
     }
     fn for_each_quarantine_record(

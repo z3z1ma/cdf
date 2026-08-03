@@ -106,6 +106,11 @@ impl VerifiedPackageAccess for VerifiedPackageReader {
         self.reader.verified_package_statistics(&self.verified)
     }
 
+    fn verified_dedup_summary(&self) -> Result<Option<cdf_package_contract::PackageDedupSummary>> {
+        self.reader.require_verification(&self.verified)?;
+        self.reader.read_dedup_summary()
+    }
+
     fn for_each_quarantine_record(
         &self,
         visitor: &mut dyn FnMut(QuarantineRecord) -> Result<()>,
@@ -1231,6 +1236,16 @@ impl PackageReader {
 
     pub fn read_dedup_summary_json(&self) -> Result<Option<serde_json::Value>> {
         read_optional_json_artifact(&self.package_dir, DEDUP_SUMMARY_FILE)
+    }
+
+    pub fn read_dedup_summary(&self) -> Result<Option<cdf_package_contract::PackageDedupSummary>> {
+        let Some(value) = self.read_dedup_summary_json()? else {
+            return Ok(None);
+        };
+        let summary: cdf_package_contract::PackageDedupSummary = serde_json::from_value(value)
+            .map_err(|error| CdfError::data(format!("decode dedup summary: {error}")))?;
+        summary.validate()?;
+        Ok(Some(summary))
     }
 
     pub fn for_each_dedup_dropped_provenance(

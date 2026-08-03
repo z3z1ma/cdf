@@ -11,6 +11,7 @@ bundled-duckdb = ["cdf-dest-duckdb/bundled-duckdb"]
 
 [dependencies]
 cdf-aws = { path = "../cdf-aws" }
+cdf-dest-clickhouse = { path = "../cdf-dest-clickhouse" }
 cdf-dest-duckdb = { path = "../cdf-dest-duckdb" }
 cdf-dest-parquet = { path = "../cdf-dest-parquet" }
 cdf-dest-postgres = { path = "../cdf-dest-postgres" }

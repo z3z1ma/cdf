@@ -21,6 +21,22 @@ use super::support::{Result, TableProvider};
 use std::ops::Add;
 
 #[test]
+fn merge_planning_synthesizes_fail_closed_package_key_authority() {
+    let resource = MockResource::tier_a(sample_batches());
+    let plan = Planner::new()
+        .plan_tier_a(
+            &resource,
+            plan_input(Vec::new(), None, None, ExecutionExtent::bounded()),
+        )
+        .unwrap();
+    let rule = cdf_contract::package_dedup_rule(&plan.validation_program)
+        .unwrap()
+        .unwrap();
+    assert_eq!(rule.keys, ["id"]);
+    assert_eq!(rule.keep, cdf_contract::DedupKeepProgram::Fail);
+}
+
+#[test]
 fn tier_a_resource_runs_engine_projection_filter_limit_into_package() {
     let mut batches = sample_batches();
     for batch in &mut batches {

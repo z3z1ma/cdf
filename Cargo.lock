@@ -995,6 +995,7 @@ name = "cdf-benchmarks"
 version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
+ "arrow-buffer",
  "arrow-csv",
  "arrow-ipc",
  "arrow-json",
@@ -1004,6 +1005,7 @@ dependencies = [
  "cdf-builtin-drivers",
  "cdf-contract",
  "cdf-declarative",
+ "cdf-dest-clickhouse",
  "cdf-dest-duckdb",
  "cdf-dest-parquet",
  "cdf-dest-postgres",
@@ -1033,6 +1035,7 @@ dependencies = [
  "duckdb",
  "futures-executor",
  "futures-util",
+ "hex",
  "nix",
  "parquet",
  "postgres",
@@ -1050,6 +1053,7 @@ name = "cdf-builtin-drivers"
 version = "0.2.0-alpha.1"
 dependencies = [
  "cdf-aws",
+ "cdf-dest-clickhouse",
  "cdf-dest-duckdb",
  "cdf-dest-parquet",
  "cdf-dest-postgres",
@@ -1192,6 +1196,7 @@ dependencies = [
  "serde_json",
  "syn 2.0.119",
  "tempfile",
+ "url",
 ]
 
 [[package]]
@@ -1230,6 +1235,29 @@ dependencies = [
  "serde_yaml",
  "sha2 0.10.9",
  "toml",
+]
+
+[[package]]
+name = "cdf-dest-clickhouse"
+version = "0.2.0-alpha.1"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-schema",
+ "cdf-contract",
+ "cdf-engine",
+ "cdf-http",
+ "cdf-kernel",
+ "cdf-memory",
+ "cdf-package-contract",
+ "cdf-runtime",
+ "clickhouse",
+ "clickhouse-ext-arrow",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "url",
 ]
 
 [[package]]

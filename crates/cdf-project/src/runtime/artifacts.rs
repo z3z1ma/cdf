@@ -70,7 +70,8 @@ pub(super) fn write_run_state_commit_artifacts(
         context.descriptor.write_disposition.clone(),
         context.descriptor.merge_key.clone(),
         schema_hash.clone(),
-    );
+    )
+    .with_destination_policy(context.destination_policy.clone());
     builder.write_input_checkpoint_artifact(head)?;
     builder.write_state_delta_preimage_artifact(&state_delta)?;
     builder.write_commit_plan_preimage_artifact(&commit_plan)?;
@@ -114,6 +115,7 @@ pub(super) struct StateCommitArtifactContext<'a> {
     pub(super) pipeline_id: &'a PipelineId,
     pub(super) checkpoint_id: &'a CheckpointId,
     pub(super) target: &'a TargetName,
+    pub(super) destination_policy: &'a std::collections::BTreeMap<String, String>,
 }
 
 pub(super) struct QuarantineMirrorArtifactContext {
@@ -228,12 +230,14 @@ pub(crate) fn state_delta_from_run(
     head: Option<&Checkpoint>,
 ) -> Result<StateDelta> {
     let schema = request.resource.schema();
+    let destination_policy = Default::default();
     let context = StateCommitArtifactContext {
         descriptor: request.resource.descriptor(),
         schema: schema.as_ref(),
         pipeline_id: &request.pipeline_id,
         checkpoint_id: &request.checkpoint_id,
         target: &request.target,
+        destination_policy: &destination_policy,
     };
     let preimage = state_delta_preimage_from_run_draft(
         &context,

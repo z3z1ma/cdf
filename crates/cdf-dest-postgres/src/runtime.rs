@@ -206,6 +206,7 @@ impl DestinationRuntime for PostgresRuntime {
             destination_commit: commit,
             schema_hash: schema_hash.clone(),
             merge_keys: resource.descriptor().merge_key.clone(),
+            destination_policy: Default::default(),
         };
         let input = load_plan_input_from_artifacts(
             &inputs,
@@ -233,6 +234,7 @@ impl DestinationRuntime for PostgresRuntime {
             destination_commit: inputs.destination_commit.clone(),
             schema_hash: inputs.schema_hash.clone(),
             merge_keys: resource.descriptor().merge_key.clone(),
+            destination_policy: Default::default(),
         };
         let load_input = load_plan_input_from_artifacts(
             &replay_inputs,

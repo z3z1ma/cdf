@@ -1,4 +1,5 @@
 [
+  "clickhouse",
   "duckdb",
   "parquet_filesystem",
   "postgres",

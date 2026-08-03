@@ -165,6 +165,7 @@ impl DestinationRuntime for SqliteRuntime {
                 destination_commit: inputs.destination_commit.clone(),
                 schema_hash: inputs.schema_hash.clone(),
                 merge_keys: resource.descriptor().merge_key.clone(),
+                destination_policy: Default::default(),
             },
             &self.destination,
             columns_for_schema(output_schema)?,

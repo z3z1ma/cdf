@@ -1,4 +1,4 @@
-use std::any::Any;
+use std::{any::Any, collections::BTreeMap};
 
 use arrow_schema::Schema;
 use cdf_kernel::{
@@ -293,6 +293,11 @@ pub trait DestinationRuntime {
 
     fn runtime_capabilities(&self) -> DestinationRuntimeCapabilities {
         DestinationRuntimeCapabilities::default()
+    }
+
+    /// Adapter-owned semantic policy that must participate in finalized package identity.
+    fn commit_policy(&self, _disposition: &WriteDisposition) -> BTreeMap<String, String> {
+        BTreeMap::new()
     }
 
     fn prepare_bulk_paths(

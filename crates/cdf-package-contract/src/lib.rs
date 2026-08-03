@@ -22,10 +22,10 @@ pub use artifacts::{
     DEDUP_SUMMARY_VERSION, DESTINATION_COMMIT_PLAN_FILE, DESTINATION_COMMIT_PLAN_VERSION,
     DestinationCommitPlanPreimage, IdempotencyTokenSource,
     PARTITION_WATERMARK_STATE_ARTIFACT_VERSION, PARTITION_WATERMARK_STATE_FILE,
-    PROCESSED_OBSERVATIONS_FILE, PROCESSED_OBSERVATIONS_VERSION, PackageReplayInputs,
-    PartitionWatermarkStateArtifact, ProcessedObservationEvidenceArtifact, SCAN_PLAN_FILE,
-    STATE_INPUT_CHECKPOINT_FILE, STATE_PROPOSED_DELTA_FILE, StateDeltaPreimage,
-    dedup_provenance_shard_path,
+    PROCESSED_OBSERVATIONS_FILE, PROCESSED_OBSERVATIONS_VERSION, PackageDedupKeep,
+    PackageDedupSummary, PackageReplayInputs, PartitionWatermarkStateArtifact,
+    ProcessedObservationEvidenceArtifact, SCAN_PLAN_FILE, STATE_INPUT_CHECKPOINT_FILE,
+    STATE_PROPOSED_DELTA_FILE, StateDeltaPreimage, dedup_provenance_shard_path,
 };
 pub use late_data::{
     LATE_DATA_EVIDENCE_FILE, LATE_DATA_EVIDENCE_VERSION, LATE_DATA_PAYLOAD_CATALOG_FILE,

@@ -28,8 +28,9 @@ merge_mode = "atomic_copy_on_write"
 
 When omitted, `merge_mode` MUST resolve to `replacing_merge_tree`. The only admitted values are
 `replacing_merge_tree` and `atomic_copy_on_write`. The resolved value MUST participate in the
-prepared plan id and receipt transaction metadata. Changing it between a package's planning and
-replay MUST fail closed rather than reinterpret an existing settlement.
+identity-bearing destination commit preimage, prepared plan id, and receipt transaction metadata.
+Replay MUST compare that recorded adapter-owned policy with the resolved runtime before any
+destination mutation; legacy packages without this authority fail closed for merge.
 
 ## Shared destination and data-plane contract
 
@@ -45,10 +46,18 @@ provenance. Every payload insert uses synchronous acknowledgement (`async_insert
 mode, and canonical segment identity. Connector-owned typed load/segment/state mirrors are written
 with the receipt marker last. Their exact schemas are capability-validated before use.
 
-Existing schema, engine, sorting/partition keys, projections, dependent materialized views, and
-codecs MUST be inspected before mutation. The connector MUST NOT silently create a user target,
-replace its engine, or weaken its tuning. A dependent materialized view fails merge preflight
-because replacement semantics cannot truthfully retract its prior effects.
+Existing schema, engine, sorting/primary/partition/sampling keys, dependent materialized views, and
+deduplication-window capacity MUST be inspected before mutation. Payload inserts require an
+explicit engine-appropriate deduplication window at least as large as the bounded package segment
+count. The connector MUST NOT silently create a user target, replace its engine, or weaken its
+tuning. A dependent materialized view fails preflight because replay of its side effects is not
+proven.
+
+The destination declares one target writer. CDF MUST serialize its own commits to a target, and
+the operator MUST exclude concurrent out-of-band writes while a replace or atomic copy-on-write
+merge is building and publishing its stage. ClickHouse exposes no non-Keeper compare-and-exchange
+primitive that could safely merge an uncoordinated writer into that snapshot; this connector does
+not manufacture a hidden lease or overstate that unsupported concurrency.
 
 ## Default native merge
 
@@ -63,14 +72,18 @@ partition-key identifier vector MUST be a subset of the merge keys, proving equa
 land in different partitions. Expressions that prevent this proof fail preflight. Merge keys MUST
 exist in the mapped schema and MUST be non-nullable. Package-level deterministic dedup remains the
 semantic authority; destination preflight additionally rejects a package/schema that cannot prove
-one canonical row per merge key.
+one canonical row per merge key. The shared resource binder MUST synthesize a `fail` keyed-dedup
+rule from the merge key when no explicit keyed rule exists, so duplicate package keys fail before
+package finalization and every merge package carries identity-bound dedup evidence.
 
-The commit MUST synchronously acknowledge every inserted segment, then verify the package's
-logical winning rows with `FINAL` before settlement. A receipt may settle only after the logical
-`FINAL` snapshot contains exactly the package's expected winning keys and values. Historical merge
-receipt verification uses immutable exact settlement mirrors; it MUST NOT claim superseded package
-rows remain current after a later successful merge. Crash replay before settlement uses package
-provenance plus deterministic insert tokens to verify/redrive the same logical write.
+The commit MUST synchronously acknowledge every inserted segment, then verify with `FINAL` that the
+package hash owns the complete, unique, dense canonical row-ordinal set before settlement. Exact
+Arrow-to-ClickHouse mapping and the server's synchronous insert acknowledgement remain value
+delivery authority; settlement does not perform a throughput-destroying full value readback.
+Historical merge receipt verification uses immutable exact settlement mirrors; it MUST NOT claim
+superseded package rows remain current after a later successful merge. Crash replay before
+settlement uses package provenance plus deterministic insert tokens to verify/redrive the same
+logical write.
 
 Ordinary non-`FINAL` readers MAY observe multiple physical versions until ClickHouse background
 merges compact them. This latency/visibility tradeoff MUST be stated in planning, documentation,
@@ -86,7 +99,7 @@ unambiguity, builds a complete merged table with a server-side anti-join plus bu
 the result, and publishes it with one `EXCHANGE TABLES` operation. It MUST report exact inserted and
 updated counts.
 
-This mode requires an Atomic database, a non-replicated MergeTree-family target, no dependent
+This mode requires an Atomic database, a non-replicated row-preserving `MergeTree` target, no dependent
 materialized views, and capability-proven metadata exchange. It MUST preserve the target's engine,
 sorting/partition keys, projections, codecs, and schema. The target is fully copied, so this mode
 trades extreme write amplification and latency for immediate atomic visibility. Mutations,
@@ -102,8 +115,9 @@ Append requires a MergeTree-family target and capability-proven deterministic in
 deduplication. Replicated and non-replicated engines are admitted only within their proven token
 and acknowledgement behavior.
 
-Replace builds and fully verifies a target-compatible staging object, then performs one atomic
-metadata exchange. It requires an Atomic database and rejects replicated targets without a
+Replace builds and fully verifies a target-compatible staging object, including a normalized
+structural fingerprint that excludes only table identity and the CDF publication comment, then
+performs one atomic metadata exchange. It requires an Atomic database and rejects replicated targets without a
 cluster-wide exchange proof. The exchanged target carries an immutable package marker even for
 zero-row packages.
 
@@ -115,8 +129,10 @@ low-cardinality, enums, UUID, and IP types. Timezone and decimal scale are expli
 Unsupported Arrow unions, run-end encoding, and values outside native domains fail before mutation;
 there is no silent JSON/string fallback. `_cdf_*` identifiers are reserved for framework fields.
 
-Concurrency is injected and bounded. The connector MAY overlap independent encoding or server
-work only within its sheet, memory leases, and measured useful-writer limits and MUST join all work
+Concurrency is injected and bounded. A package contains at most 10,000 segments, state evidence is
+capped at 2 MiB, and each segment's physical Arrow batches are constructed and sent one at a time
+inside the 64 MiB writer lease rather than collected into a segment-sized vector. The connector
+MAY overlap independent encoding or server work only within its sheet, memory leases, and measured useful-writer limits and MUST join all work
 before settlement. Cancellation stops new writes while preserving deterministic verify/redrive
 evidence.
 

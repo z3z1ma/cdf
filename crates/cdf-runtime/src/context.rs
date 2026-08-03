@@ -6,6 +6,10 @@ use crate::{RuntimeSecretProvider, execution_host::ExecutionServices};
 
 pub trait DestinationPolicyProvider: std::panic::RefUnwindSafe {
     fn value(&self, destination: &str, key: &str) -> Option<&str>;
+
+    fn entries<'a>(&'a self, _destination: &str) -> Vec<(&'a str, &'a str)> {
+        Vec::new()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -86,13 +90,22 @@ impl<'a> DestinationResolutionContext<'a> {
     }
 
     pub fn policy_value(&self, destination: &str, key: &str) -> Result<&'a str> {
+        self.optional_policy_value(destination, key).ok_or_else(|| {
+            CdfError::contract(format!(
+                "project destination resolution requires `{destination}.{key}` policy"
+            ))
+        })
+    }
+
+    pub fn optional_policy_value(&self, destination: &str, key: &str) -> Option<&'a str> {
         self.destination_policy
             .and_then(|policy| policy.value(destination, key))
-            .ok_or_else(|| {
-                CdfError::contract(format!(
-                    "project destination resolution requires `{destination}.{key}` policy"
-                ))
-            })
+    }
+
+    pub fn policy_entries(&self, destination: &str) -> Vec<(&'a str, &'a str)> {
+        self.destination_policy
+            .map(|policy| policy.entries(destination))
+            .unwrap_or_default()
     }
 
     pub fn secret_provider(&self) -> Result<&'a RuntimeSecretProvider> {

@@ -73,6 +73,14 @@
       "status": "measured"
     },
     {
+      "owner": "ClickHouse destination HTTP and ArrowStream client internals",
+      "class": "native",
+      "boundary": "cdf-dest-clickhouse one-session official client",
+      "bound_authority": "one 64 KiB clickhouse-destination-http1 lease retained with the reusable client plus one 64 MiB clickhouse-arrowstream-writer lease covering one logical input batch and its streamed physical provenance view at a time; physical batches fail before allocation above 32 MiB, state evidence is capped at 2 MiB, and response queries use explicit 4 MiB response and 1 MiB chunk limits",
+      "evidence": ".10x/tickets/done/2026-08-02-clickhouse-destination-connector.md",
+      "status": "bounded"
+    },
+    {
       "owner": "subprocess and foreign worker process tree",
       "class": "child",
       "boundary": "cdf-subprocess admitted child execution",
