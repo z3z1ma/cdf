@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-08-02
-Updated: 2026-08-02
+Updated: 2026-08-03
 
 # MongoDB collection source
 
@@ -9,7 +9,8 @@ Updated: 2026-08-02
 This specification governs a first-party finite MongoDB collection source on MongoDB 8.0 or
 later. It is further governed by `.10x/specs/source-extension-runtime-contract.md`,
 `.10x/specs/resource-authoring-planning-batches.md`, and
-`.10x/decisions/non-file-window-close-checkpoint-semantics.md`.
+`.10x/decisions/non-file-window-close-checkpoint-semantics.md`. Exact numeric fallbacks are governed
+by `.10x/decisions/exact-value-text-fallbacks.md`.
 
 The user ratified finite snapshot/cursor extraction and deferred change streams to a separate CDC
 tranche on 2026-08-02.
@@ -55,12 +56,20 @@ one while claiming one server snapshot.
 ## BSON-to-Arrow mapping
 
 The source MUST map BSON exactly as follows where representable: bool; signed integers; double;
-Decimal128 to Arrow Decimal128; string; binary; DateTime to UTC millisecond timestamp; ObjectId to
-12-byte fixed-size binary with `cdf:semantic=mongodb_object_id`; arrays to lists; documents to
-structs/maps under the frozen schema; and BSON null to Arrow nullability. Regex, JavaScript,
+string; binary; DateTime to UTC millisecond timestamp; ObjectId to 12-byte fixed-size binary with
+`cdf:semantic=mongodb_object_id`; arrays to lists; documents to structs/maps under the frozen
+schema; and BSON null to Arrow nullability. Regex, JavaScript,
 DBPointer, MinKey/MaxKey, undefined, symbols, timestamps used as replication tokens, duplicate
 document keys, heterogeneous arrays, and values outside the pin MUST follow explicit variant or
 quarantine policy and otherwise fail. There is no silent Extended JSON stringification.
+
+BSON Decimal128 maps to Arrow Decimal128 only when validator or user-declared schema authority
+proves that the complete field domain fits one Arrow precision and scale. Schemaless observation
+alone cannot prove that bound. Otherwise it maps to canonical exact `Utf8`, including native
+special values, with `cdf:physical_type` retained and
+`cdf:semantic=mongodb_decimal128_value_text_v1`. This scalar spelling is the BSON Decimal128 value
+contract, not Extended JSON. Decimal128 never becomes floating point; a value outside a pinned Arrow
+decimal domain follows the explicit drift policy or fails before publishing a partial batch.
 
 Unknown fields and shape drift use the existing residual/schema policy. Original field names and
 BSON semantic annotations remain in Arrow metadata. Decimals never become floats and DateTime is
@@ -83,6 +92,8 @@ joins all admitted tasks. The direct-library roofline follows
   UTC DateTime adversarial cases.
 - Source add/discovery/plan/preview/run/replay/redaction/cancellation/jobs-invariance, live BSON
   mapping, and connector certification pass.
+- Decimal128 coverage proves schema-pinned Arrow decimals, schemaless tagged exact text, special
+  values, and out-of-pin failure without floating-point conversion.
 - The source macro cell meets the 0.90 official raw-BSON direct-library roofline.
 
 ## Explicit exclusions

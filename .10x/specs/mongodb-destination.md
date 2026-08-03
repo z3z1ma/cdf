@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-08-02
-Updated: 2026-08-02
+Updated: 2026-08-03
 
 # MongoDB destination
 
@@ -9,7 +9,8 @@ Updated: 2026-08-02
 This specification governs a first-party MongoDB 8.0+ destination with append, atomic replace,
 and merge. It is further governed by `.10x/specs/destination-extension-runtime-contract.md`,
 `.10x/specs/destination-receipts-guarantees.md`, and
-`.10x/specs/destination-bulk-path-runtime.md`.
+`.10x/specs/destination-bulk-path-runtime.md`. Exact numeric fallbacks are governed by
+`.10x/decisions/exact-value-text-fallbacks.md`.
 
 ## Destination contract
 
@@ -61,6 +62,12 @@ contract allowance selects an explicit lossless envelope or lossy mapping. Date-
 duration, interval, timezone, and source semantic annotations MUST remain in connector schema
 evidence; there is no silent local-time or Extended JSON conversion.
 
+An `Utf8` field carrying the exact `cdf:semantic=mongodb_decimal128_value_text_v1` tag MUST parse
+and reconstruct BSON Decimal128 exactly, including supported native special values. Ordinary
+`Utf8`, `cdf:physical_type` alone, and tags owned by another source remain BSON strings. Parse or
+range failure MUST stop planning or mutation without a partial package. Decimal256 is not
+implicitly narrowed; it remains unsupported unless a separately declared exact envelope applies.
+
 Normalized field names follow shared authority plus MongoDB field restrictions; `_cdf_*` and `_id`
 are reserved. Existing validators, unique indexes, shard keys, and target schema are inspected
 before mutation. Merge keys MUST be compatible with shard routing and existing uniqueness or fail
@@ -89,6 +96,8 @@ The direct-library roofline follows `.10x/specs/database-connector-roofline.md`.
 - Merge dedup and deterministic `_id` remain invariant across segmenting and jobs settings.
 - Nested BSON round trips preserve supported Arrow values and rejected/lossy mappings fail at plan
   time with field-level remediation.
+- Tagged BSON Decimal128 text round trips to the native value, while untagged or foreign-tagged text
+  remains a BSON string.
 - Destination inspection/planning/health, receipt/replay/crash, redaction, jobs invariance, live
   MongoDB 8.0+ conformance, and connector certification pass.
 - The destination macro cell meets the 0.90 official-driver direct-library roofline.

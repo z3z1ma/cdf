@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-08-02
-Updated: 2026-08-02
+Updated: 2026-08-03
 Parent: .10x/tickets/2026-08-02-sqlite-clickhouse-mongodb-connector-program.md
 Depends-On: .10x/tickets/done/2026-08-02-clickhouse-destination-connector.md
 
@@ -37,6 +37,7 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
 ## References
 
 - `.10x/specs/mongodb-collection-source.md`
+- `.10x/decisions/exact-value-text-fallbacks.md`
 - `.10x/specs/database-connector-roofline.md`
 - `.10x/specs/source-extension-runtime-contract.md`
 - `.10x/knowledge/source-destination-extension-invariant.md`
@@ -52,6 +53,8 @@ pipelines, map-reduce, or implicit Extended JSON coercion.
 ## Journal
 
 - 2026-08-02: Ticket opened; execution waits for complete ClickHouse tranche closure.
+- 2026-08-03: Exact-value audit corrected schemaless BSON Decimal128 to tagged canonical text;
+  schema-proven fixed domains remain Arrow Decimal128 and special values never become floats.
 
 ## Blockers
 

@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-08-02
-Updated: 2026-08-02
+Updated: 2026-08-03
 Parent: .10x/tickets/2026-08-02-sqlite-clickhouse-mongodb-connector-program.md
 Depends-On: .10x/tickets/2026-08-02-mongodb-source-connector.md
 
@@ -36,6 +36,7 @@ aggregation writes, unbounded transactions/concurrency, or Extended JSON fallbac
 ## References
 
 - `.10x/specs/mongodb-destination.md`
+- `.10x/decisions/exact-value-text-fallbacks.md`
 - `.10x/specs/database-connector-roofline.md`
 - `.10x/specs/destination-receipts-guarantees.md`
 - `.10x/specs/destination-bulk-path-runtime.md`
@@ -50,6 +51,8 @@ aggregation writes, unbounded transactions/concurrency, or Extended JSON fallbac
 ## Journal
 
 - 2026-08-02: Ticket opened; execution waits for MongoDB source closure.
+- 2026-08-03: Exact-value audit added native BSON Decimal128 reconstruction only for the exact
+  versioned MongoDB semantic tag; ordinary and foreign-tagged strings remain strings.
 
 ## Blockers
 
