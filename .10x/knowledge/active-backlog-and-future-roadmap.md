@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-25
-Updated: 2026-07-31
+Updated: 2026-08-03
 
 # Active backlog and future roadmap
 
@@ -32,15 +32,27 @@ The pre-wave architecture hardening successor is terminal at
 `.10x/tickets/done/2026-07-26-pre-wave-architecture-hardening-program.md`. Its product-boundary
 enforcement, catalog-task source commons, destination common services, typed CLI/error authority,
 holistic CLI experience, crash-publication follow-up, and final extension-authoring proof are
-closed. The active executable ticket graph is zero.
+closed. Its closure returned the executable graph to zero before connector work was activated.
 
 The finite connector-mode readiness successor is terminal at
 `.10x/tickets/done/2026-07-31-connector-mode-readiness-program.md`. Its independently observable
 deep certificate, model-based deterministic-package and settlement falsifiers, and connector
 admission command with explicit core-change budget are closed. Final Slow Quality passed 21/21
 jobs, and `.10x/evidence/2026-07-31-connector-mode-readiness-closure.md` records the aggregate
-limits. The active executable ticket graph is zero; the core returns to demand-driven maintenance
-and the user-ratified connector wave is now the active focus.
+limits.
+
+The user-ratified finite SQLite/ClickHouse/MongoDB connector wave is active at
+`.10x/tickets/2026-08-02-sqlite-clickhouse-mongodb-connector-program.md`. SQLite and ClickHouse
+implementation/review evidence is substantially developed; ClickHouse destination is terminal;
+MongoDB source/destination remain explicit finite-mode children. MongoDB change streams and
+`cdc_apply` remain outside that program.
+
+The CDC/semantic/SQL-project successor is active in **shaping only** at
+`.10x/tickets/2026-08-03-cdc-semantic-sql-project-foundation-program.md`. Its live-source audit and
+six draft contracts establish the dependency graph, but no architecture child is executable until
+the named artifact, CDC row-image, SQL grammar/profile, semantic-registry, and hook-runtime choices
+are ratified. The accepted-but-inert REST `records_transform` surface has a focused blocked
+correctness owner at `.10x/tickets/2026-08-03-rest-records-transform-contract-repair.md`.
 
 Parked capabilities below remain demand-activated rather than silently reopened; the next feature
 wave still requires the activation rule at the end of this record.
@@ -94,12 +106,71 @@ CDF does not impose one export-first strategy.
 
 ### Continuous execution and CDC
 
-Resident streaming supervision, CDC source archetypes, `cdc_apply`, package rotation, pause,
-drain, and resume remain future product work. They MUST reuse the existing finite drain-epoch,
-watermark, rolling-spool, checkpoint, receipt, and commit-gate semantics rather than create a
-parallel runtime. Historical owner:
+CDC foundation shaping is active. Live-source audit established that current `LogPosition` lacks
+transaction-boundary authority and advancing log aggregation, while the thin `CdcMetadata`/
+`cdc_apply` vocabulary has no first-party end-to-end implementation. The active draft requires a
+versioned position algebra, typed MongoDB resume-token position, transaction-aligned safe
+frontiers, canonical operation/key behavior, and one shared log-source lifecycle before any CDC
+adapter ships:
+
+- `.10x/research/2026-08-03-cdc-semantic-dsl-core-readiness-audit.md`
+- `.10x/specs/cdc-log-source-foundation.md`
+- `.10x/tickets/2026-08-03-cdc-semantic-sql-project-foundation-program.md`
+
+Finite CDC drain commands MUST reuse the existing drain-epoch, watermark, rolling-spool,
+checkpoint, receipt, and commit-gate semantics rather than create a parallel runtime. Resident
+streaming supervision, daemon scheduling, pause/resume operations, and long-lived ownership remain
+parked until at least one finite CDC source/destination proof closes. Historical monolithic owner:
 
 - `.10x/tickets/cancelled/2026-07-05-cdc-and-streaming-supervisor.md`
+
+### Relational source commons and MySQL
+
+Postgres, SQLite, and ClickHouse now provide three real query-shaped source implementations, but no
+source-side SQL commons exists. Before MySQL, extract source-neutral relational catalog/scan/
+projection/filter/cursor validation into `cdf-source-sql` while concrete adapters retain every
+dialect, catalog query, consistency protocol, client, decoder, and error. Remove the redundant
+Postgres `dialect=postgres` option as a bounded versioned cleanup; no database owns source kind
+`sql`.
+
+- `.10x/specs/sql-source-commons.md`
+- `.10x/tickets/2026-08-03-cdc-semantic-sql-project-foundation-program.md`
+
+Execution waits for stable closure of the overlapping active connector source work and fresh MySQL
+protocol/snapshot/type research.
+
+### Semantic registry and SQL project compiler
+
+First-class semantic types and SQL-like project authoring are active shaping directions. Semantic
+types remain versioned annotations over Arrow, not a second type lattice. The project compiler must
+publish a canonical secret-redacted manifest before `cdf sql` exposes it; `cdf.lock` remains pin
+authority. DataFusion may parse/analyze/lower SQL at compile time, but native CDF IR remains the
+serialized and runtime identity. The initial language is one explicit source resource with a
+bounded vectorized projection/filter/cast/scalar subset; joins, aggregation, scheduling, and
+runtime templates remain excluded.
+
+- `.10x/specs/semantic-type-registry.md`
+- `.10x/specs/project-compilation-manifest.md`
+- `.10x/specs/sql-project-authoring.md`
+
+SQL grammar/profile split, semantic namespace/project scope, and manifest path/publication behavior
+must be ratified before implementation. Existing declarative resources remain a coequal front-end
+during migration.
+
+### Plan-declared hooks
+
+Batch transform hooks are a desired but blocked future compiler/runtime capability. The retained
+shape is Arrow-batch-level, content- and environment-hashed, schema-effect-declared,
+side-effect-free, memory-accounted, and manifest-bound. Lifecycle notifications/actions are a
+separate high-impact contract. Python execution currently conflicts with D-23; WASM still requires
+a safe WIT/control projection or a proven narrower interface.
+
+- `.10x/specs/batch-transform-hooks.md`
+- `.10x/tickets/cancelled/2026-07-08-wasm-wit-interface-foundation.md`
+- `.10x/tickets/2026-08-03-rest-records-transform-contract-repair.md`
+
+General Jinja/runtime templating remains parked. Discovery and explicit generated SQL resources are
+preferred; any future macro system must render and pin deterministic outputs before compilation.
 
 ### Extreme metadata cardinality
 

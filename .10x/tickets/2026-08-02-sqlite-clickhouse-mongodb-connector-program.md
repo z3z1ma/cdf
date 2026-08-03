@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-08-02
-Updated: 2026-08-02
+Updated: 2026-08-03
 
 # SQLite, ClickHouse, and MongoDB connector program
 
@@ -33,6 +33,22 @@ may unblock its paired destination while parent-owned final validation remains p
 - Remote cloud benchmark writes without separate authorization.
 - Generic runtime branches for any concrete connector.
 
+## Architecture-successor boundary
+
+The 2026-08-03 CDC/semantic/SQL-project audit is owned separately by
+`.10x/tickets/2026-08-03-cdc-semantic-sql-project-foundation-program.md`. It does not expand or
+silently reorder this program:
+
+- finite MongoDB source MUST NOT add change streams or resume-token state;
+- finite destinations MUST NOT claim `cdc_apply`;
+- the future `cdf-source-sql` extraction waits for stable closure of this program's overlapping
+  database-source files;
+- the semantic registry is the default stop-line for the next connector program after this wave;
+  moving it before this program's remaining MongoDB destination requires an explicit user
+  reordering decision;
+- any future CDC source reuses the position/log-source foundation rather than modifying these
+  finite connector tickets in place.
+
 ## Acceptance Criteria
 
 - All six child implementations have focused acceptance evidence and pass review; child tickets
@@ -51,6 +67,8 @@ may unblock its paired destination while parent-owned final validation remains p
 - `.10x/research/2026-08-02-sqlite-clickhouse-mongodb-connector-shaping.md`
 - `.10x/specs/database-connector-roofline.md`
 - `.10x/knowledge/source-destination-extension-invariant.md`
+- `.10x/research/2026-08-03-cdc-semantic-dsl-core-readiness-audit.md`
+- `.10x/tickets/2026-08-03-cdc-semantic-sql-project-foundation-program.md`
 - `docs/connector-authoring.md`
 
 ## Assumptions
@@ -70,6 +88,10 @@ may unblock its paired destination while parent-owned final validation remains p
 - 2026-08-02: SQLite source implementation and both independent repair reviews are complete. Its
   current roofline remains a visible deferred parent gate; this does not block the paired SQLite
   destination from reusing the now-reviewed lower protocol boundary.
+- 2026-08-03: A separate architecture audit activated CDC, semantic-registry, SQL-project, and hook
+  shaping without changing this program's finite contracts. The successor records preserve MongoDB
+  change streams/`cdc_apply` as separate work and avoid extracting shared SQL-source mechanics from
+  files still stabilizing here.
 
 ## Blockers
 
