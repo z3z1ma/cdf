@@ -203,11 +203,13 @@ pub(crate) fn system_target_columns() -> Vec<PostgresColumn> {
             name: PostgresIdentifier::system(CDF_ROW_KEY_COLUMN).expect("static identifier"),
             data_type: "BIGINT".to_owned(),
             nullable: false,
+            semantic: None,
         },
         PostgresColumn {
             name: PostgresIdentifier::system(CDF_LOADED_AT_COLUMN).expect("static identifier"),
             data_type: "BIGINT".to_owned(),
             nullable: false,
+            semantic: None,
         },
     ]
 }

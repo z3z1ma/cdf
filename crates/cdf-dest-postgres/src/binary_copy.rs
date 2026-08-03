@@ -9,8 +9,10 @@ use arrow_array::{
     TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray, UInt8Array,
     UInt16Array, UInt32Array, UInt64Array,
 };
-use arrow_schema::{DataType, TimeUnit};
+use arrow_schema::{DataType, Field, TimeUnit};
 use cdf_kernel::{CdfError, Result};
+
+use crate::rows::{PostgresExactValueText, exact_value_text_kind};
 
 const HEADER: &[u8] = b"PGCOPY\n\xFF\r\n\0";
 pub(crate) const BINARY_COPY_BUFFER_BYTES: usize = 1024 * 1024;
@@ -18,7 +20,12 @@ const POSTGRES_EPOCH_DAYS: i32 = 10_957;
 const POSTGRES_EPOCH_MICROS: i64 = 946_684_800_000_000;
 
 fn io_error(context: impl Into<String>, error: std::io::Error) -> CdfError {
-    CdfError::destination(format!("{}: {}", context.into(), error))
+    let context = context.into();
+    if let Some(mut embedded) = cdf_kernel::embedded_cdf_error(&error) {
+        embedded.message = format!("{context}: {}", embedded.message);
+        return embedded;
+    }
+    CdfError::destination(format!("{context}: {error}"))
 }
 
 enum BinaryColumn<'a> {
@@ -39,6 +46,9 @@ enum BinaryColumn<'a> {
     Float32(&'a Float32Array),
     Float64(&'a Float64Array),
     Utf8(&'a StringArray),
+    JsonText(&'a StringArray),
+    JsonbText(&'a StringArray),
+    NumericText(&'a StringArray, &'a Field),
     LargeUtf8(&'a LargeStringArray),
     Utf8View(&'a StringViewArray),
     Binary(&'a BinaryArray),
@@ -59,7 +69,16 @@ enum BinaryColumn<'a> {
 }
 
 impl<'a> BinaryColumn<'a> {
-    fn new(array: &'a dyn Array, data_type: &DataType) -> Result<Self> {
+    fn new(array: &'a dyn Array, field: &'a Field) -> Result<Self> {
+        if let Some(exact) = exact_value_text_kind(field)? {
+            let array = typed::<StringArray>(array, field.data_type())?;
+            return Ok(match exact {
+                PostgresExactValueText::Json => Self::JsonText(array),
+                PostgresExactValueText::Jsonb => Self::JsonbText(array),
+                PostgresExactValueText::Numeric => Self::NumericText(array, field),
+            });
+        }
+        let data_type = field.data_type();
         Ok(match data_type {
             DataType::Boolean => Self::Boolean(typed(array, data_type)?),
             DataType::Int8 => Self::Int8(typed(array, data_type)?),
@@ -148,6 +167,9 @@ impl<'a> BinaryColumn<'a> {
             Self::Float32(array) => array.is_null(row),
             Self::Float64(array) => array.is_null(row),
             Self::Utf8(array) => array.is_null(row),
+            Self::JsonText(array) => array.is_null(row),
+            Self::JsonbText(array) => array.is_null(row),
+            Self::NumericText(array, _) => array.is_null(row),
             Self::LargeUtf8(array) => array.is_null(row),
             Self::Utf8View(array) => array.is_null(row),
             Self::Binary(array) => array.is_null(row),
@@ -202,11 +224,12 @@ impl<W: Write> BinaryCopyEncoder<W> {
     ) -> Result<()> {
         let package_row_ord = cdf_package_contract::package_row_ord_array(batch)?.clone();
         let logical_batch = cdf_package_contract::strip_package_row_ord(batch.clone())?;
+        let schema = logical_batch.schema();
         let columns = logical_batch
             .columns()
             .iter()
-            .zip(logical_batch.schema().fields())
-            .map(|(array, field)| BinaryColumn::new(array.as_ref(), field.data_type()))
+            .zip(schema.fields())
+            .map(|(array, field)| BinaryColumn::new(array.as_ref(), field))
             .collect::<Result<Vec<_>>>()?;
         for row in 0..logical_batch.num_rows() {
             self.writer
@@ -298,6 +321,23 @@ impl<W: Write> BinaryCopyEncoder<W> {
                 .extend_from_slice(&array.value(row).to_bits().to_be_bytes()),
             BinaryColumn::Utf8(array) => {
                 self.scratch.extend_from_slice(array.value(row).as_bytes())
+            }
+            BinaryColumn::JsonText(array) => {
+                self.scratch.extend_from_slice(array.value(row).as_bytes());
+            }
+            BinaryColumn::JsonbText(array) => {
+                self.scratch.push(1);
+                self.scratch.extend_from_slice(array.value(row).as_bytes());
+            }
+            BinaryColumn::NumericText(array, field) => {
+                encode_numeric_text(array.value(row), &mut self.scratch).map_err(|error| {
+                    CdfError::data(format!(
+                        "Postgres exact-value field `{}` tagged {:?} is not canonical NUMERIC text: {}; preserve the value as ordinary TEXT or repair the source value",
+                        field.name(),
+                        cdf_kernel::semantic(field),
+                        error.message
+                    ))
+                })?;
             }
             BinaryColumn::LargeUtf8(array) => {
                 self.scratch.extend_from_slice(array.value(row).as_bytes());
@@ -415,58 +455,93 @@ fn typed<'a, T: 'static>(array: &'a dyn Array, data_type: &DataType) -> Result<&
 }
 
 fn encode_numeric_text(value: &str, output: &mut Vec<u8>) -> Result<()> {
+    let special = match value {
+        "NaN" => Some(0xC000_u16),
+        "Infinity" => Some(0xD000_u16),
+        "-Infinity" => Some(0xF000_u16),
+        _ => None,
+    };
+    if let Some(sign) = special {
+        output.extend_from_slice(&0_i16.to_be_bytes());
+        output.extend_from_slice(&0_i16.to_be_bytes());
+        output.extend_from_slice(&sign.to_be_bytes());
+        output.extend_from_slice(&0_u16.to_be_bytes());
+        return Ok(());
+    }
+
     let (negative, value) = value
         .strip_prefix('-')
         .map_or((false, value), |v| (true, v));
-    let (integer, fraction) = value.split_once('.').unwrap_or((value, ""));
-    if !integer
-        .bytes()
-        .chain(fraction.bytes())
-        .all(|b| b.is_ascii_digit())
+    let (integer, fraction) = match value.split_once('.') {
+        Some((integer, fraction)) if !fraction.contains('.') => (integer, fraction),
+        Some(_) => return Err(CdfError::data("value has more than one decimal point")),
+        None => (value, ""),
+    };
+    if integer.is_empty()
+        || !integer.bytes().all(|byte| byte.is_ascii_digit())
+        || (!fraction.is_empty() && !fraction.bytes().all(|byte| byte.is_ascii_digit()))
+        || value.ends_with('.')
     {
-        return Err(CdfError::data("Arrow decimal produced non-numeric text"));
+        return Err(CdfError::data(
+            "value must use PostgreSQL's canonical [-]digits[.digits] spelling",
+        ));
     }
     let dscale = u16::try_from(fraction.len())
         .map_err(|_| CdfError::data("Postgres NUMERIC scale exceeds u16"))?;
-    let integer = integer.trim_start_matches('0');
+    if dscale > 16_383 {
+        return Err(CdfError::data(
+            "Postgres NUMERIC fractional precision exceeds 16383 digits",
+        ));
+    }
+
     let integer_groups = integer.len().div_ceil(4);
-    let mut digits = String::new();
-    digits.extend(std::iter::repeat_n('0', integer_groups * 4 - integer.len()));
-    digits.push_str(integer);
-    digits.push_str(fraction);
-    digits.extend(std::iter::repeat_n(
-        '0',
-        fraction.len().next_multiple_of(4) - fraction.len(),
-    ));
-    let mut groups = digits
-        .as_bytes()
-        .chunks_exact(4)
-        .map(|chunk| {
-            std::str::from_utf8(chunk)
-                .map_err(|_| CdfError::internal("numeric group is not UTF-8"))?
-                .parse::<u16>()
-                .map_err(|_| CdfError::data("numeric group is invalid"))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let mut weight = i16::try_from(integer_groups)
-        .map_err(|_| CdfError::data("Postgres NUMERIC weight exceeds i16"))?
-        - 1;
-    while groups.first() == Some(&0) {
-        groups.remove(0);
-        weight = weight.saturating_sub(1);
+    let fraction_groups = fraction.len().div_ceil(4);
+    let capacity = integer_groups
+        .checked_add(fraction_groups)
+        .ok_or_else(|| CdfError::data("Postgres NUMERIC digit count overflowed usize"))?;
+    let mut groups = Vec::with_capacity(capacity);
+    let first_integer_group = match integer.len() % 4 {
+        0 => 4,
+        remainder => remainder,
+    };
+    groups.push(numeric_group(&integer.as_bytes()[..first_integer_group]));
+    for chunk in integer.as_bytes()[first_integer_group..].chunks_exact(4) {
+        groups.push(numeric_group(chunk));
     }
-    while groups.last() == Some(&0) {
-        groups.pop();
+    for chunk in fraction.as_bytes().chunks(4) {
+        let mut group = numeric_group(chunk);
+        for _ in chunk.len()..4 {
+            group *= 10;
+        }
+        groups.push(group);
     }
-    if groups.is_empty() {
-        weight = 0;
-    }
-    let count = i16::try_from(groups.len())
+
+    let first_nonzero = groups
+        .iter()
+        .position(|group| *group != 0)
+        .unwrap_or(groups.len());
+    let end_nonzero = groups
+        .iter()
+        .rposition(|group| *group != 0)
+        .map_or(first_nonzero, |index| index + 1);
+    let significant = &groups[first_nonzero..end_nonzero];
+    let weight = if significant.is_empty() {
+        0
+    } else {
+        let untrimmed_weight = i32::try_from(integer_groups)
+            .map_err(|_| CdfError::data("Postgres NUMERIC weight exceeds i32"))?
+            - 1;
+        let trimmed = i32::try_from(first_nonzero)
+            .map_err(|_| CdfError::data("Postgres NUMERIC weight exceeds i32"))?;
+        i16::try_from(untrimmed_weight - trimmed)
+            .map_err(|_| CdfError::data("Postgres NUMERIC weight exceeds i16"))?
+    };
+    let count = i16::try_from(significant.len())
         .map_err(|_| CdfError::data("Postgres NUMERIC digit count exceeds i16"))?;
     output.extend_from_slice(&count.to_be_bytes());
     output.extend_from_slice(&weight.to_be_bytes());
     output.extend_from_slice(
-        &(if negative && !groups.is_empty() {
+        &(if negative && !significant.is_empty() {
             0x4000_u16
         } else {
             0
@@ -474,22 +549,64 @@ fn encode_numeric_text(value: &str, output: &mut Vec<u8>) -> Result<()> {
         .to_be_bytes(),
     );
     output.extend_from_slice(&dscale.to_be_bytes());
-    for group in groups {
+    for group in significant {
         output.extend_from_slice(&group.to_be_bytes());
     }
     Ok(())
 }
 
+fn numeric_group(digits: &[u8]) -> u16 {
+    digits
+        .iter()
+        .fold(0_u16, |value, digit| value * 10 + u16::from(*digit - b'0'))
+}
+
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Instant};
+    use std::{io, sync::Arc, time::Instant};
 
     use arrow_array::{
         Array, ArrayRef, Int64Array, StringArray, StructArray, TimestampMicrosecondArray,
     };
     use arrow_schema::{Field, Schema};
+    use cdf_kernel::{with_physical_type, with_semantic};
+    use cdf_postgres::{
+        POSTGRES_JSON_VALUE_TEXT_SEMANTIC, POSTGRES_JSONB_VALUE_TEXT_SEMANTIC,
+        POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC,
+    };
 
     use super::*;
+
+    struct EmbeddedFailureWriter;
+
+    impl Write for EmbeddedFailureWriter {
+        fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+            let typed = CdfError::rate_limited("destination backpressure", Some(250));
+            let nested = io::Error::other(typed);
+            Err(io::Error::other(nested))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn binary_copy_writer_preserves_nested_typed_error_provenance() {
+        let encoder = BinaryCopyEncoder::new(EmbeddedFailureWriter, 1).unwrap();
+        let error = match encoder.finish() {
+            Ok(_) => panic!("writer unexpectedly flushed the COPY payload"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::RateLimited);
+        assert_eq!(error.retry_after_ms, Some(250));
+        assert!(error.message.contains("aggregate buffer"), "{error}");
+        assert!(
+            error.message.contains("destination backpressure"),
+            "{error}"
+        );
+    }
 
     #[test]
     fn numeric_binary_uses_base_10000_weight_sign_and_scale() {
@@ -507,6 +624,98 @@ mod tests {
                 0x1a, 0x2c, // 6700
             ]
         );
+    }
+
+    #[test]
+    fn numeric_binary_encodes_postgres_special_values() {
+        for (value, sign) in [
+            ("NaN", 0xC000_u16),
+            ("Infinity", 0xD000_u16),
+            ("-Infinity", 0xF000_u16),
+        ] {
+            let mut encoded = Vec::new();
+            encode_numeric_text(value, &mut encoded).unwrap();
+            assert_eq!(encoded, [0, 0, 0, 0, (sign >> 8) as u8, sign as u8, 0, 0]);
+        }
+    }
+
+    #[test]
+    fn exact_text_binary_uses_native_json_jsonb_and_numeric_formats() {
+        let exact = |name, semantic, physical| {
+            with_semantic(
+                with_physical_type(Field::new(name, DataType::Utf8, false), physical),
+                semantic,
+            )
+        };
+        let json = r#"{"large":1e400,"duplicate":1,"duplicate":2}"#;
+        let jsonb = r#"{"b":2,"a":1}"#;
+        let numeric = "-12345.6700";
+        let logical = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                exact("document", POSTGRES_JSON_VALUE_TEXT_SEMANTIC, "json"),
+                exact("payload", POSTGRES_JSONB_VALUE_TEXT_SEMANTIC, "jsonb"),
+                exact("amount", POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC, "numeric"),
+            ])),
+            vec![
+                Arc::new(StringArray::from(vec![json])),
+                Arc::new(StringArray::from(vec![jsonb])),
+                Arc::new(StringArray::from(vec![numeric])),
+            ],
+        )
+        .unwrap();
+        let canonical = cdf_package_contract::append_package_row_ord(vec![logical], 0)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let mut encoder = BinaryCopyEncoder::new(Vec::new(), 3).unwrap();
+        encoder.write_batch(&canonical, 1, 1).unwrap();
+        let (bytes, rows) = encoder.finish().unwrap();
+        assert_eq!(rows, 1);
+
+        let mut offset = HEADER.len() + 8;
+        assert_eq!(
+            i16::from_be_bytes(bytes[offset..offset + 2].try_into().unwrap()),
+            5
+        );
+        offset += 2;
+        let mut field = || {
+            let length = usize::try_from(i32::from_be_bytes(
+                bytes[offset..offset + 4].try_into().unwrap(),
+            ))
+            .unwrap();
+            offset += 4;
+            let value = &bytes[offset..offset + length];
+            offset += length;
+            value
+        };
+        assert_eq!(field(), json.as_bytes());
+        assert_eq!(field(), [&[1_u8], jsonb.as_bytes()].concat());
+        let mut expected_numeric = Vec::new();
+        encode_numeric_text(numeric, &mut expected_numeric).unwrap();
+        assert_eq!(field(), expected_numeric);
+    }
+
+    #[test]
+    fn invalid_exact_numeric_text_is_field_owned_data() {
+        let field = with_semantic(
+            with_physical_type(Field::new("amount", DataType::Utf8, false), "numeric"),
+            POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC,
+        );
+        let logical = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![field])),
+            vec![Arc::new(StringArray::from(vec!["1e3"]))],
+        )
+        .unwrap();
+        let canonical = cdf_package_contract::append_package_row_ord(vec![logical], 0)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let mut encoder = BinaryCopyEncoder::new(Vec::new(), 1).unwrap();
+        let error = encoder.write_batch(&canonical, 1, 1).unwrap_err();
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+        assert!(error.message.contains("amount"), "{error}");
+        assert!(error.message.contains("ordinary TEXT"), "{error}");
     }
 
     #[test]

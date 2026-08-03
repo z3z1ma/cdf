@@ -714,7 +714,7 @@ fn prepare_and_copy_package_rows(
     let (writer, encoded_rows) = encoder.finish()?;
     let copied = writer
         .finish()
-        .map_err(|error| postgres_error(format!("finish Postgres {}", copy.name), error))?;
+        .map_err(|error| postgres_copy_error(format!("finish Postgres {}", copy.name), error))?;
     if copied != encoded_rows {
         return Err(CdfError::destination(format!(
             "Postgres binary COPY accepted {copied} rows but encoded {encoded_rows}"
@@ -1490,6 +1490,35 @@ fn now_ms(execution: &cdf_runtime::ExecutionServices) -> Result<i64> {
 
 fn postgres_error(context: impl Into<String>, error: postgres::Error) -> CdfError {
     CdfError::destination(format!("{}: {}", context.into(), error))
+}
+
+fn postgres_copy_error(context: impl Into<String>, error: postgres::Error) -> CdfError {
+    let context = context.into();
+    if error
+        .code()
+        .is_some_and(|code| code.code().starts_with("22"))
+    {
+        let (column, server_message, location) = error.as_db_error().map_or_else(
+            || (String::new(), error.to_string(), String::new()),
+            |db_error| {
+                (
+                    db_error
+                        .column()
+                        .map(|column| format!(" for column `{column}`"))
+                        .unwrap_or_default(),
+                    db_error.message().to_owned(),
+                    db_error
+                        .where_()
+                        .map(|location| format!(" ({location})"))
+                        .unwrap_or_default(),
+                )
+            },
+        );
+        return CdfError::data(format!(
+            "{context}: PostgreSQL rejected a package value{column}: {server_message}{location}; repair the source value or choose a target declaration that admits it"
+        ));
+    }
+    postgres_error(context, error)
 }
 
 fn json_error(error: serde_json::Error) -> CdfError {

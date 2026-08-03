@@ -112,6 +112,8 @@ pub struct PostgresColumn {
     pub name: PostgresIdentifier,
     pub data_type: String,
     pub nullable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic: Option<String>,
 }
 
 impl PostgresColumn {
@@ -129,7 +131,13 @@ impl PostgresColumn {
             name,
             data_type: data_type.to_owned(),
             nullable,
+            semantic: None,
         })
+    }
+
+    pub(crate) fn with_exact_value_text_semantic(mut self, semantic: &str) -> Self {
+        self.semantic = Some(semantic.to_owned());
+        self
     }
 }
 

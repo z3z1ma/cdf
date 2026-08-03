@@ -1,0 +1,25 @@
+site	classification	rationale
+crates/cdf-dest-postgres/src/binary_copy.rs:451	Internal	Arrow schema and concrete array disagreement is a CDF-owned decoder/encoder invariant.
+crates/cdf-dest-postgres/src/commit.rs:147	Internal	Managed session losing its owned inner session is an impossible CDF lifecycle transition.
+crates/cdf-dest-postgres/src/commit.rs:178	Internal	A finalized CDF session without its constructed receipt violates the session state machine.
+crates/cdf-dest-postgres/src/commit.rs:182	Internal	A written CDF session without its transaction violates the session state machine.
+crates/cdf-dest-postgres/src/commit.rs:218	Internal	An abortable CDF session without its transaction violates the session state machine.
+crates/cdf-dest-postgres/src/commit.rs:329	Internal	CDF must initialize its allocator result before payload writing.
+crates/cdf-dest-postgres/src/commit.rs:335	Internal	A migration-applied CDF session without its transaction violates the session state machine.
+crates/cdf-dest-postgres/src/commit.rs:381	Internal	Managed finalization losing its owned inner session is an impossible CDF lifecycle transition.
+crates/cdf-dest-postgres/src/commit.rs:390	Internal	Managed abort losing its owned inner session is an impossible CDF lifecycle transition.
+crates/cdf-dest-postgres/src/commit.rs:644	Internal	The closed statement-expectation enum produced an unsupported CDF-owned plan branch.
+crates/cdf-dest-postgres/src/commit.rs:680	Internal	CDF produced a data-bearing write plan without its required binary COPY statement.
+crates/cdf-dest-postgres/src/commit.rs:702	Internal	CDF's positive row-key allocator returned an impossible negative key.
+crates/cdf-dest-postgres/src/commit.rs:750	Internal	CDF produced a replace plan without its required target truncate statement.
+crates/cdf-dest-postgres/src/commit.rs:814	Internal	CDF's validated package-segment index disagreed with its own cardinality.
+crates/cdf-dest-postgres/src/commit.rs:852	Internal	PostgreSQL COUNT returned an impossible negative value through a CDF-owned count query.
+crates/cdf-dest-postgres/src/commit.rs:890	Internal	PostgreSQL COUNT returned an impossible negative value through a CDF-owned count query.
+crates/cdf-dest-postgres/src/commit.rs:914	Internal	CDF produced a merge plan without its required stage table.
+crates/cdf-dest-postgres/src/commit.rs:1043	Internal	CDF produced a plan without its required load-mirror statement.
+crates/cdf-dest-postgres/src/commit.rs:1050	Internal	CDF reached receipt publication without its transaction identifier evidence.
+crates/cdf-dest-postgres/src/commit.rs:1106	Internal	CDF produced a plan without its required state-mirror statement.
+crates/cdf-dest-postgres/src/commit.rs:1302	Internal	CDF produced a quarantine-bearing plan without its required mirror statement.
+crates/cdf-dest-postgres/src/commit.rs:1471	Internal	CDF's verify clause omitted a framework-owned required parameter.
+crates/cdf-dest-postgres/src/commit.rs:1475	Internal	CDF's framework-owned receipt/verify scalar exceeded its signed persistence model.
+crates/cdf-dest-postgres/src/commit.rs:1488	Internal	CDF's injected execution clock exceeded the framework's signed millisecond model.

@@ -942,6 +942,51 @@ fn decimal_batch(rows: &[(i64, Option<i128>)]) -> RecordBatch {
     RecordBatch::try_new(schema, vec![id, amount]).unwrap()
 }
 
+fn exact_value_batch(numeric_declaration: &str, rows: &[(i64, &str, &str, &str)]) -> RecordBatch {
+    let exact = |name, semantic, physical| {
+        cdf_kernel::with_semantic(
+            cdf_kernel::with_physical_type(Field::new(name, DataType::Utf8, false), physical),
+            semantic,
+        )
+    };
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        exact(
+            "document",
+            cdf_postgres::POSTGRES_JSON_VALUE_TEXT_SEMANTIC,
+            "json",
+        ),
+        exact(
+            "payload",
+            cdf_postgres::POSTGRES_JSONB_VALUE_TEXT_SEMANTIC,
+            "jsonb",
+        ),
+        exact(
+            "amount",
+            cdf_postgres::POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC,
+            numeric_declaration,
+        ),
+    ]));
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from_iter_values(
+                rows.iter().map(|(id, _, _, _)| *id),
+            )),
+            Arc::new(StringArray::from_iter_values(
+                rows.iter().map(|(_, document, _, _)| *document),
+            )),
+            Arc::new(StringArray::from_iter_values(
+                rows.iter().map(|(_, _, payload, _)| *payload),
+            )),
+            Arc::new(StringArray::from_iter_values(
+                rows.iter().map(|(_, _, _, amount)| *amount),
+            )),
+        ],
+    )
+    .unwrap()
+}
+
 fn state_segments(manifest: &PackageManifest) -> Vec<StateSegment> {
     manifest
         .identity
@@ -1673,6 +1718,242 @@ fn live_decimal128_values_preserve_exact_numeric_text() {
             (3, None),
         ]
     );
+}
+
+#[test]
+fn live_exact_value_text_round_trips_all_dispositions_and_rolls_back_rejections() {
+    let Some(env) = LivePostgres::start() else {
+        return;
+    };
+    let wide = "12345678901234567890123456789012345678901234567890123456789012345678901234567.8900";
+
+    let append_dir = tempfile::tempdir().unwrap();
+    let append_manifest = build_replay_package(
+        append_dir.path(),
+        "pkg-live-exact-append",
+        env.target("exact_values").target_name().unwrap(),
+        WriteDisposition::Append,
+        "chk-live-exact-append",
+        vec![(
+            "seg-000001",
+            exact_value_batch(
+                "numeric",
+                &[
+                    (
+                        1,
+                        r#"{"large":1e400,"duplicate":1,"duplicate":2}"#,
+                        r#"{"b":2,"a":1}"#,
+                        wide,
+                    ),
+                    (2, "null", r#"{"special":"positive"}"#, "Infinity"),
+                    (3, "true", r#"{"special":"nan"}"#, "NaN"),
+                ],
+            ),
+        )],
+    );
+    let append = try_session_commit(
+        &env,
+        append_dir.path(),
+        "exact_values",
+        MergeDedupPolicy::Last,
+    )
+    .unwrap();
+    assert_eq!(append.counts.rows_written, 3);
+    let replay = try_session_commit(
+        &env,
+        append_dir.path(),
+        "exact_values",
+        MergeDedupPolicy::Last,
+    )
+    .unwrap();
+    assert_eq!(replay.receipt_id, append.receipt_id);
+
+    let mut client = env.client();
+    let rows = client
+        .query(
+            &format!(
+                "SELECT \"id\", \"document\"::jsonb->>'large', \"document\"::jsonb->>'duplicate', \"payload\"::text, \"amount\"::text FROM {} ORDER BY \"id\"",
+                env.target("exact_values").sql()
+            ),
+            &[],
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].get::<_, i64>(0), 1);
+    assert_eq!(rows[0].get::<_, String>(1), format!("1{}", "0".repeat(400)));
+    assert_eq!(rows[0].get::<_, String>(2), "2");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&rows[0].get::<_, String>(3)).unwrap(),
+        serde_json::json!({"a": 1, "b": 2})
+    );
+    assert_eq!(rows[0].get::<_, String>(4), wide);
+    assert_eq!(rows[1].get::<_, String>(4), "Infinity");
+    assert_eq!(rows[2].get::<_, String>(4), "NaN");
+
+    let declarations = client
+        .query(
+            "SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'exact_values' AND column_name IN ('document', 'payload', 'amount') ORDER BY column_name",
+            &[&env.schema],
+        )
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.get::<_, String>(0), row.get::<_, String>(1)))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        declarations,
+        vec![
+            ("amount".to_owned(), "numeric".to_owned()),
+            ("document".to_owned(), "json".to_owned()),
+            ("payload".to_owned(), "jsonb".to_owned()),
+        ]
+    );
+
+    let replace_dir = tempfile::tempdir().unwrap();
+    build_replay_package_with_parent(
+        replace_dir.path(),
+        "pkg-live-exact-replace",
+        env.target("exact_values").target_name().unwrap(),
+        WriteDisposition::Replace,
+        "chk-live-exact-replace",
+        "chk-live-exact-append",
+        vec![(
+            "seg-000001",
+            exact_value_batch(
+                "numeric",
+                &[(4, r#"{"replace":true}"#, r#"{"replace":true}"#, "-Infinity")],
+            ),
+        )],
+    );
+    let replaced = try_session_commit(
+        &env,
+        replace_dir.path(),
+        "exact_values",
+        MergeDedupPolicy::Last,
+    )
+    .unwrap();
+    assert_eq!(replaced.counts.rows_written, 1);
+    assert_eq!(replaced.counts.rows_deleted, Some(3));
+    let replaced_row = client
+        .query_one(
+            &format!(
+                "SELECT \"id\", \"amount\"::text FROM {}",
+                env.target("exact_values").sql()
+            ),
+            &[],
+        )
+        .unwrap();
+    assert_eq!(replaced_row.get::<_, i64>(0), 4);
+    assert_eq!(replaced_row.get::<_, String>(1), "-Infinity");
+
+    let constrained =
+        "1234567890123456789012345678901234567890123456789012345678901234567890123456.7";
+    let merge_dir = tempfile::tempdir().unwrap();
+    build_replay_package_with_parent(
+        merge_dir.path(),
+        "pkg-live-exact-merge",
+        env.target("exact_merge").target_name().unwrap(),
+        WriteDisposition::Merge,
+        "chk-live-exact-merge",
+        "chk-live-exact-replace",
+        vec![(
+            "seg-000001",
+            exact_value_batch(
+                "numeric(77,1)",
+                &[
+                    (1, "1", "1", "1.0"),
+                    (2, "2", "2", constrained),
+                    (1, "3", "3", "2.0"),
+                ],
+            ),
+        )],
+    );
+    let merged = try_session_commit(
+        &env,
+        merge_dir.path(),
+        "exact_merge",
+        MergeDedupPolicy::Last,
+    )
+    .unwrap();
+    assert_eq!(merged.counts.rows_written, 2);
+    let merged_rows = client
+        .query(
+            &format!(
+                "SELECT \"id\", \"amount\"::text FROM {} ORDER BY \"id\"",
+                env.target("exact_merge").sql()
+            ),
+            &[],
+        )
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.get::<_, i64>(0), row.get::<_, String>(1)))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        merged_rows,
+        vec![(1, "2.0".to_owned()), (2, constrained.to_owned())]
+    );
+
+    for (package_id, table, numeric, document, expected_fragment) in [
+        (
+            "pkg-live-exact-invalid-json",
+            "exact_invalid_json",
+            "numeric",
+            "{",
+            "document",
+        ),
+        (
+            "pkg-live-exact-range",
+            "exact_range",
+            "numeric(3,0)",
+            "null",
+            "amount",
+        ),
+    ] {
+        let rejected_dir = tempfile::tempdir().unwrap();
+        build_replay_package(
+            rejected_dir.path(),
+            package_id,
+            env.target(table).target_name().unwrap(),
+            WriteDisposition::Append,
+            &format!("chk-{package_id}"),
+            vec![(
+                "seg-000001",
+                exact_value_batch(
+                    numeric,
+                    &[(
+                        1,
+                        document,
+                        "null",
+                        if table == "exact_range" { "1000" } else { "1" },
+                    )],
+                ),
+            )],
+        );
+        let error = try_session_commit(&env, rejected_dir.path(), table, MergeDedupPolicy::Last)
+            .unwrap_err();
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Data, "{error}");
+        assert!(error.message.contains(expected_fragment), "{error}");
+        let target_exists: bool = client
+            .query_one(
+                "SELECT to_regclass($1) IS NOT NULL",
+                &[&format!("{}.{}", env.schema, table)],
+            )
+            .unwrap()
+            .get(0);
+        assert!(!target_exists, "rejected target {table} survived rollback");
+        let receipt_count: i64 = client
+            .query_one(
+                &format!(
+                    "SELECT COUNT(*)::bigint FROM {} WHERE \"target\" = $1",
+                    quote_identifier_unchecked(CDF_LOADS_TABLE)
+                ),
+                &[&env.target(table).display_name()],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(receipt_count, 0);
+    }
+
+    assert_eq!(append_manifest.identity.segments[0].row_count, 3);
 }
 
 #[test]

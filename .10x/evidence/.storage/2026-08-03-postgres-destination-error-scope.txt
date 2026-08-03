@@ -1,0 +1,2 @@
+crates/cdf-dest-postgres/src/binary_copy.rs
+crates/cdf-dest-postgres/src/commit.rs

@@ -842,6 +842,41 @@ fn existing_table_migrations_add_only_safe_missing_columns() {
 }
 
 #[test]
+fn exact_value_plan_retains_semantic_and_rejects_existing_text_target() {
+    let field = cdf_kernel::with_semantic(
+        cdf_kernel::with_physical_type(Field::new("payload", DataType::Utf8, true), "jsonb"),
+        cdf_postgres::POSTGRES_JSONB_VALUE_TEXT_SEMANTIC,
+    );
+    let columns = postgres_columns_for_schema(&Schema::new(vec![field])).unwrap();
+    assert_eq!(columns[0].data_type, "JSONB");
+    assert_eq!(
+        columns[0].semantic.as_deref(),
+        Some(cdf_postgres::POSTGRES_JSONB_VALUE_TEXT_SEMANTIC)
+    );
+
+    let destination = PostgresDestination::new();
+    let mut compatible = input(WriteDisposition::Append, MergeDedupPolicy::Last);
+    compatible.columns = columns.clone();
+    let plan = destination.plan_load(compatible).unwrap();
+    let round_trip: PostgresLoadPlan =
+        serde_json::from_str(&serde_json::to_string(&plan).unwrap()).unwrap();
+    assert_eq!(round_trip.columns, columns);
+
+    let mut incompatible = input(WriteDisposition::Append, MergeDedupPolicy::Last);
+    incompatible.columns = columns;
+    incompatible.existing_table = Some(
+        PostgresExistingTable::new(
+            vec![PostgresExistingColumn::new("payload", "TEXT", true).unwrap()],
+            vec![],
+        )
+        .unwrap(),
+    );
+    let error = destination.plan_load(incompatible).unwrap_err();
+    assert!(error.message.contains("exists as TEXT"), "{error}");
+    assert!(error.message.contains("requires JSONB"), "{error}");
+}
+
+#[test]
 fn merge_requires_keys_and_rejects_existing_key_drift() {
     let destination = PostgresDestination::new();
     let mut no_keys = input(WriteDisposition::Merge, MergeDedupPolicy::Last);

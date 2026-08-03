@@ -7,10 +7,31 @@ use arrow_array::{
     TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray, UInt8Array,
     UInt16Array, UInt32Array, UInt64Array,
 };
-use arrow_schema::{DataType, Schema, TimeUnit};
-use cdf_kernel::{CdfError, Result};
+use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use cdf_kernel::{CdfError, Result, physical_type, semantic};
+use cdf_postgres::{
+    POSTGRES_JSON_VALUE_TEXT_SEMANTIC, POSTGRES_JSONB_VALUE_TEXT_SEMANTIC,
+    POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC,
+};
 
 use crate::identifiers::PostgresColumn;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PostgresExactValueText {
+    Json,
+    Jsonb,
+    Numeric,
+}
+
+impl PostgresExactValueText {
+    fn semantic(self) -> &'static str {
+        match self {
+            Self::Json => POSTGRES_JSON_VALUE_TEXT_SEMANTIC,
+            Self::Jsonb => POSTGRES_JSONB_VALUE_TEXT_SEMANTIC,
+            Self::Numeric => POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC,
+        }
+    }
+}
 
 pub(crate) fn validate_schema_matches_plan(
     schema: &Schema,
@@ -32,7 +53,7 @@ pub(crate) fn validate_schema_matches_plan(
                 field.name()
             )));
         }
-        let expected = postgres_type_for_arrow(field.data_type())?;
+        let (expected, expected_semantic) = postgres_mapping_for_field(field)?;
         if !expected.eq_ignore_ascii_case(&column.data_type) {
             return Err(CdfError::data(format!(
                 "Postgres plan column {} has type {} but package field {:?} maps to {}",
@@ -40,6 +61,14 @@ pub(crate) fn validate_schema_matches_plan(
                 column.data_type,
                 field.data_type(),
                 expected
+            )));
+        }
+        if column.semantic.as_deref() != expected_semantic {
+            return Err(CdfError::data(format!(
+                "Postgres plan column {} semantic {:?} does not match package field semantic {:?}",
+                column.name.as_str(),
+                column.semantic,
+                expected_semantic
             )));
         }
         if !column.nullable && field.is_nullable() {
@@ -58,14 +87,132 @@ pub fn postgres_columns_for_schema(schema: &Schema) -> Result<Vec<PostgresColumn
         .fields()
         .iter()
         .map(|field| {
-            let data_type = postgres_type_for_arrow(field.data_type())?;
-            if cdf_contract::is_framework_variant_field(field.as_ref()) {
+            let (data_type, exact_semantic) = postgres_mapping_for_field(field)?;
+            let column = if cdf_contract::is_framework_variant_field(field.as_ref()) {
                 PostgresColumn::system(field.name(), &data_type, field.is_nullable())
             } else {
                 PostgresColumn::new(field.name(), &data_type, field.is_nullable())
-            }
+            }?;
+            Ok(match exact_semantic {
+                Some(semantic) => column.with_exact_value_text_semantic(semantic),
+                None => column,
+            })
         })
         .collect()
+}
+
+pub fn postgres_type_for_field(field: &Field) -> Result<String> {
+    postgres_mapping_for_field(field).map(|(data_type, _)| data_type)
+}
+
+fn postgres_mapping_for_field(field: &Field) -> Result<(String, Option<&'static str>)> {
+    let Some(exact) = exact_value_text_kind(field)? else {
+        return Ok((postgres_type_for_arrow(field.data_type())?, None));
+    };
+    let data_type = match exact {
+        PostgresExactValueText::Json => "JSON".to_owned(),
+        PostgresExactValueText::Jsonb => "JSONB".to_owned(),
+        PostgresExactValueText::Numeric => resolve_numeric_target_declaration(field)?,
+    };
+    Ok((data_type, Some(exact.semantic())))
+}
+
+pub(crate) fn exact_value_text_kind(field: &Field) -> Result<Option<PostgresExactValueText>> {
+    let exact = match semantic(field) {
+        Some(POSTGRES_JSON_VALUE_TEXT_SEMANTIC) => PostgresExactValueText::Json,
+        Some(POSTGRES_JSONB_VALUE_TEXT_SEMANTIC) => PostgresExactValueText::Jsonb,
+        Some(POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC) => PostgresExactValueText::Numeric,
+        _ => return Ok(None),
+    };
+    if field.data_type() != &DataType::Utf8 {
+        return Err(exact_field_error(
+            field,
+            format!(
+                "requires Arrow Utf8, not {:?}; preserve the canonical value as Utf8 or remove the exact-value semantic tag",
+                field.data_type()
+            ),
+        ));
+    }
+    let physical = physical_type(field).ok_or_else(|| {
+        exact_field_error(
+            field,
+            "is missing cdf:physical_type; rediscover the PostgreSQL source schema before replay",
+        )
+    })?;
+    let compatible = match exact {
+        PostgresExactValueText::Json => physical.trim().eq_ignore_ascii_case("json"),
+        PostgresExactValueText::Jsonb => physical.trim().eq_ignore_ascii_case("jsonb"),
+        PostgresExactValueText::Numeric => is_numeric_declaration(physical),
+    };
+    if !compatible {
+        return Err(exact_field_error(
+            field,
+            format!(
+                "is incompatible with cdf:physical_type={physical:?}; rediscover the PostgreSQL source schema or remove the exact-value semantic tag"
+            ),
+        ));
+    }
+    Ok(Some(exact))
+}
+
+fn resolve_numeric_target_declaration(field: &Field) -> Result<String> {
+    let declaration = physical_type(field).expect("exact numeric field checked physical metadata");
+    let normalized = declaration.trim().to_ascii_lowercase();
+    if normalized == "numeric" {
+        return Ok("NUMERIC".to_owned());
+    }
+    let parameters = normalized
+        .strip_prefix("numeric(")
+        .and_then(|value| value.strip_suffix(')'))
+        .ok_or_else(|| exact_field_error(field, "has an invalid PostgreSQL NUMERIC declaration"))?;
+    let (precision, scale) = parameters
+        .split_once(',')
+        .ok_or_else(|| exact_field_error(field, "has an invalid PostgreSQL NUMERIC declaration"))?;
+    if scale.contains(',')
+        || precision.is_empty()
+        || !precision.bytes().all(|byte| byte.is_ascii_digit())
+        || scale.is_empty()
+        || !scale
+            .strip_prefix('-')
+            .unwrap_or(scale)
+            .bytes()
+            .all(|byte| byte.is_ascii_digit())
+    {
+        return Err(exact_field_error(
+            field,
+            "has an invalid PostgreSQL NUMERIC declaration",
+        ));
+    }
+    let precision = precision
+        .parse::<u16>()
+        .map_err(|_| exact_field_error(field, "has an invalid PostgreSQL NUMERIC precision"))?;
+    let scale = scale
+        .parse::<i16>()
+        .map_err(|_| exact_field_error(field, "has an invalid PostgreSQL NUMERIC scale"))?;
+    if !(1..=1_000).contains(&precision) || !(-1_000..=1_000).contains(&scale) {
+        return Err(exact_field_error(
+            field,
+            "exceeds PostgreSQL NUMERIC(precision,scale) declaration bounds",
+        ));
+    }
+    Ok(format!("NUMERIC({precision},{scale})"))
+}
+
+fn is_numeric_declaration(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    normalized == "numeric"
+        || normalized
+            .strip_prefix("numeric(")
+            .and_then(|value| value.strip_suffix(')'))
+            .is_some()
+}
+
+fn exact_field_error(field: &Field, detail: impl std::fmt::Display) -> CdfError {
+    CdfError::data(format!(
+        "Postgres exact-value field `{}` tagged {:?} {detail}",
+        field.name(),
+        semantic(field)
+    ))
 }
 
 pub(crate) fn correction_cell_text(
@@ -335,6 +482,7 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
 #[cfg(test)]
 mod tests {
     use arrow_schema::Field;
+    use cdf_kernel::{with_physical_type, with_semantic};
 
     use super::*;
 
@@ -350,5 +498,101 @@ mod tests {
         ];
 
         validate_schema_matches_plan(&schema, &columns).unwrap();
+    }
+
+    fn exact_field(name: &str, semantic: &str, physical: &str) -> Field {
+        with_semantic(
+            with_physical_type(Field::new(name, DataType::Utf8, true), physical),
+            semantic,
+        )
+    }
+
+    #[test]
+    fn exact_postgres_text_tags_resolve_native_target_declarations() {
+        let schema = Schema::new(vec![
+            exact_field("document", POSTGRES_JSON_VALUE_TEXT_SEMANTIC, "json"),
+            exact_field("payload", POSTGRES_JSONB_VALUE_TEXT_SEMANTIC, "jsonb"),
+            exact_field("unbounded", POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC, "numeric"),
+            exact_field(
+                "wide",
+                POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC,
+                "numeric(1000,-1000)",
+            ),
+        ]);
+
+        let columns = postgres_columns_for_schema(&schema).unwrap();
+        assert_eq!(
+            columns
+                .iter()
+                .map(|column| (
+                    column.data_type.as_str(),
+                    column.semantic.as_deref().unwrap()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("JSON", POSTGRES_JSON_VALUE_TEXT_SEMANTIC),
+                ("JSONB", POSTGRES_JSONB_VALUE_TEXT_SEMANTIC),
+                ("NUMERIC", POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC),
+                ("NUMERIC(1000,-1000)", POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC),
+            ]
+        );
+        validate_schema_matches_plan(&schema, &columns).unwrap();
+    }
+
+    #[test]
+    fn ordinary_physical_only_and_foreign_tagged_utf8_remain_text() {
+        let schema = Schema::new(vec![
+            Field::new("ordinary", DataType::Utf8, true),
+            with_physical_type(Field::new("physical", DataType::Utf8, true), "numeric"),
+            with_semantic(
+                with_physical_type(Field::new("foreign", DataType::Utf8, true), "numeric"),
+                "mongodb_decimal128_value_text_v1",
+            ),
+        ]);
+
+        let columns = postgres_columns_for_schema(&schema).unwrap();
+        assert!(columns.iter().all(|column| column.data_type == "TEXT"));
+        assert!(columns.iter().all(|column| column.semantic.is_none()));
+    }
+
+    #[test]
+    fn incomplete_or_incompatible_exact_fields_fail_preflight() {
+        let cases = [
+            with_semantic(
+                Field::new("missing", DataType::Utf8, true),
+                POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC,
+            ),
+            exact_field("wrong_physical", POSTGRES_JSONB_VALUE_TEXT_SEMANTIC, "json"),
+            exact_field(
+                "invalid_numeric",
+                POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC,
+                "numeric(1001,0)",
+            ),
+            with_semantic(
+                with_physical_type(Field::new("wrong_arrow", DataType::Int64, true), "numeric"),
+                POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC,
+            ),
+        ];
+
+        for field in cases {
+            let error = postgres_columns_for_schema(&Schema::new(vec![field.clone()])).unwrap_err();
+            assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+            assert!(error.message.contains(field.name()), "{error}");
+        }
+    }
+
+    #[test]
+    fn schema_validation_rejects_semantic_reinterpretation_even_when_sql_type_matches() {
+        let schema = Schema::new(vec![Field::new(
+            "payload",
+            DataType::Struct(vec![Field::new("code", DataType::Int64, true)].into()),
+            true,
+        )]);
+        let column = PostgresColumn::new("payload", "JSONB", true)
+            .unwrap()
+            .with_exact_value_text_semantic(POSTGRES_JSONB_VALUE_TEXT_SEMANTIC);
+
+        let error = validate_schema_matches_plan(&schema, &[column]).unwrap_err();
+        assert!(error.message.contains("semantic"), "{error}");
     }
 }
