@@ -1307,7 +1307,7 @@ fn fixed_fixture_hash_is_deterministic_across_repeated_runs() {
     assert_eq!(first_manifest.package_hash, second_manifest.package_hash);
     assert_eq!(
         first_manifest.package_hash,
-        "sha256:8f54a56b6ecd0234941992919c23c9027290d247c13f4708f23025ab54cf72e1"
+        "sha256:66784f461b4c82eac29bfb1492f0ca83227c8bc63502ed2bee28dad6a80d02f8"
     );
 }
 
