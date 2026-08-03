@@ -1,5 +1,6 @@
 #![doc = "Postgres source adapter for cdf."]
 
+mod binary_copy;
 mod catalog;
 mod driver;
 mod source;

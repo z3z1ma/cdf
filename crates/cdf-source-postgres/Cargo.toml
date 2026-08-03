@@ -8,6 +8,7 @@ description = "Postgres source adapter for cdf."
 
 [dependencies]
 arrow-array = "58.3.0"
+arrow-buffer = "58.3.0"
 arrow-schema = "58.3.0"
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-memory = { path = "../cdf-memory" }

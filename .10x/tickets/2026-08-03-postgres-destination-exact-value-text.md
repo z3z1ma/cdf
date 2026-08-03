@@ -2,7 +2,7 @@ Status: open
 Created: 2026-08-03
 Updated: 2026-08-03
 Parent: .10x/tickets/2026-08-03-postgres-binary-and-exact-value-program.md
-Depends-On: .10x/tickets/2026-08-03-postgres-source-binary-copy.md
+Depends-On: .10x/tickets/done/2026-08-03-postgres-source-binary-copy.md
 
 # PostgreSQL destination exact-value text
 

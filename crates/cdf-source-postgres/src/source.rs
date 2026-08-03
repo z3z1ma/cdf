@@ -5,7 +5,7 @@ use std::{
 };
 
 use arrow_array::{
-    ArrayRef, BooleanArray, Date32Array, Float64Array, Int64Array, RecordBatch, StringArray,
+    Array, ArrayRef, Date32Array, Float64Array, Int64Array, RecordBatch, StringArray,
     TimestampMicrosecondArray, TimestampMillisecondArray, UInt64Array,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
@@ -19,7 +19,7 @@ use cdf_kernel::{
     ResourceStream, Result, ScanPlan, ScanPredicate, ScanRequest, SchemaHash, SchemaSource,
     ScopeKind, SortDirection, SourcePosition, source_name,
 };
-use postgres::{Client, IsolationLevel, NoTls, Row, types::ToSql};
+use postgres::{Client, IsolationLevel, NoTls, Statement};
 
 use cdf_postgres::{PostgresIdentifier, PostgresTarget};
 use cdf_runtime::{
@@ -31,10 +31,14 @@ use cdf_memory::{
     ConsumerKey, MemoryClass, MemoryCoordinator, ReservationRequest, reserve_blocking,
 };
 
+use crate::{
+    binary_copy::{PostgresBinaryCopyDecoder, expected_postgres_type},
+    catalog::{PostgresCatalogColumn, read_catalog_columns},
+};
+
 const POSTGRES_PARTITION_KIND: &str = "sql";
 const POSTGRES_SQL_DIALECT: &str = "postgres";
 pub const POSTGRES_SOURCE_BLOCKING_LANE_ID: &str = "postgres-source.sync";
-const POSTGRES_FETCH_ROWS: usize = 8 * 1024;
 pub(crate) const POSTGRES_MAXIMUM_BATCH_BYTES: u64 = 32 * 1024 * 1024;
 
 pub fn postgres_source_blocking_lane() -> BlockingLaneSpec {
@@ -429,13 +433,28 @@ pub fn validate_postgres_table_resource_shape(
         PostgresIdentifier::user(field.name().as_str())?;
         source_column_identifier(field.as_ref())?;
     }
-    if let Some(cursor) = &descriptor.cursor
-        && field_by_name(schema, &cursor.field).is_none()
-    {
-        return Err(CdfError::data(format!(
-            "Postgres cursor field `{}` is missing from the declared schema",
-            cursor.field
-        )));
+    if let Some(cursor) = &descriptor.cursor {
+        let field = field_by_name(schema, &cursor.field).ok_or_else(|| {
+            CdfError::data(format!(
+                "Postgres cursor field `{}` is missing from the declared schema",
+                cursor.field
+            ))
+        })?;
+        if !matches!(
+            field.data_type(),
+            DataType::Utf8
+                | DataType::Int64
+                | DataType::UInt64
+                | DataType::Float64
+                | DataType::Date32
+                | DataType::Timestamp(TimeUnit::Millisecond | TimeUnit::Microsecond, _)
+        ) {
+            return Err(CdfError::contract(format!(
+                "Postgres cursor field `{}` has unsupported Arrow type {:?}",
+                cursor.field,
+                field.data_type()
+            )));
+        }
     }
     Ok(())
 }
@@ -568,15 +587,11 @@ fn execute_postgres_table(
     validate_postgres_table_resource_shape(&descriptor, &schema, &target)?;
     let scan = scan_from_partition(&descriptor, &schema, &target, &partition)?;
     let query = build_query(&schema, &target, &scan)?;
+    let output_schema = projected_schema(&schema, &scan)?;
 
     egress.authorize(&database_url)?;
     let mut client = Client::connect(&database_url, NoTls)
         .map_err(|error| CdfError::transient(format!("connect to Postgres source: {error}")))?;
-    let params = query
-        .params
-        .iter()
-        .map(SqlParam::as_to_sql)
-        .collect::<Vec<_>>();
     let mut transaction = client
         .build_transaction()
         .isolation_level(IsolationLevel::RepeatableRead)
@@ -586,9 +601,17 @@ fn execute_postgres_table(
     let statement = transaction
         .prepare(&query.sql)
         .map_err(|error| CdfError::data(format!("prepare Postgres source query: {error}")))?;
-    let portal = transaction
-        .bind(&statement, &params)
-        .map_err(|error| CdfError::data(format!("bind Postgres source query portal: {error}")))?;
+    validate_copy_descriptor(&statement, output_schema.as_ref())?;
+    validate_source_domains(&mut transaction, &target, output_schema.as_ref())?;
+    let copy_sql = format!("COPY ({}) TO STDOUT WITH (FORMAT BINARY)", query.sql);
+    let reader = transaction
+        .copy_out(&copy_sql)
+        .map_err(|error| CdfError::data(format!("start Postgres binary COPY OUT: {error}")))?;
+    let mut decoder = PostgresBinaryCopyDecoder::new(
+        reader,
+        Arc::clone(&output_schema),
+        POSTGRES_MAXIMUM_BATCH_BYTES,
+    )?;
     let mut batch_index = 0_usize;
     loop {
         cancellation.check()?;
@@ -599,17 +622,11 @@ fn execute_postgres_table(
                 POSTGRES_MAXIMUM_BATCH_BYTES,
             )?,
         )?;
-        let chunk = transaction
-            .query_portal(
-                &portal,
-                i32::try_from(POSTGRES_FETCH_ROWS).expect("Postgres source fetch rows fit i32"),
-            )
-            .map_err(|error| CdfError::data(format!("fetch Postgres source rows: {error}")))?;
-        if chunk.is_empty() {
+        let Some(record_batch) = decoder.next_batch()? else {
             return Ok(());
-        }
-        let (record_batch, source_position) =
-            rows_to_record_batch(&schema, &descriptor, &scan, &chunk)?;
+        };
+        cancellation.check()?;
+        let source_position = source_position_for_batch(&descriptor, &scan, &record_batch)?;
         let retained_bytes = cdf_memory::record_batch_retained_bytes(&record_batch)?;
         if retained_bytes > POSTGRES_MAXIMUM_BATCH_BYTES {
             return Err(CdfError::data(format!(
@@ -640,6 +657,132 @@ fn execute_postgres_table(
         sender.send(batch)?;
         cancellation.check()?;
     }
+}
+
+fn projected_schema(schema: &SchemaRef, scan: &PostgresTableScan) -> Result<SchemaRef> {
+    let fields = scan
+        .projection
+        .iter()
+        .map(|name| {
+            field_by_name(schema, name).cloned().ok_or_else(|| {
+                CdfError::contract(format!(
+                    "Postgres projection field `{name}` is not in the declared schema"
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+fn validate_copy_descriptor(statement: &Statement, schema: &Schema) -> Result<()> {
+    if statement.columns().len() != schema.fields().len() {
+        return Err(CdfError::data(format!(
+            "Postgres canonical query descriptor has {} columns, expected {}",
+            statement.columns().len(),
+            schema.fields().len()
+        )));
+    }
+    for (column, field) in statement.columns().iter().zip(schema.fields()) {
+        if column.name() != field.name() {
+            return Err(CdfError::data(format!(
+                "Postgres canonical query column `{}` does not match compiled field `{}`",
+                column.name(),
+                field.name()
+            )));
+        }
+        let expected = expected_postgres_type(field.data_type())?;
+        if column.type_() != &expected {
+            return Err(CdfError::data(format!(
+                "Postgres canonical query field `{}` has OID/type {} ({}), expected {} ({}) for Arrow {:?}",
+                field.name(),
+                column.type_().name(),
+                column.type_().oid(),
+                expected.name(),
+                expected.oid(),
+                field.data_type()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_source_domains(
+    client: &mut impl postgres::GenericClient,
+    target: &PostgresTarget,
+    schema: &Schema,
+) -> Result<()> {
+    let catalog = read_catalog_columns(client, target)?;
+    let catalog = catalog
+        .into_iter()
+        .map(|column| (column.name.clone(), column))
+        .collect::<BTreeMap<_, _>>();
+    for field in schema.fields() {
+        let source_name = source_name(field).unwrap_or_else(|| field.name().as_str());
+        let column = catalog.get(source_name).ok_or_else(|| {
+            CdfError::data(format!(
+                "Postgres field `{}` refers to missing source column `{source_name}`",
+                field.name()
+            ))
+        })?;
+        validate_source_column_domain(field, column)?;
+    }
+    Ok(())
+}
+
+fn validate_source_column_domain(field: &Field, column: &PostgresCatalogColumn) -> Result<()> {
+    let source_name = &column.name;
+    if !field.is_nullable() && column.nullable {
+        return Err(CdfError::data(format!(
+            "Postgres field `{}` is non-nullable, but source column `{source_name}` is nullable; declare the field nullable or enforce NOT NULL at the source",
+            field.name()
+        )));
+    }
+    if let DataType::Decimal128(target_precision, target_scale)
+    | DataType::Decimal256(target_precision, target_scale) = field.data_type()
+    {
+        validate_decimal_source_domain(field, column, *target_precision, *target_scale)?;
+    }
+    Ok(())
+}
+
+fn validate_decimal_source_domain(
+    field: &Field,
+    column: &PostgresCatalogColumn,
+    target_precision: u8,
+    target_scale: i8,
+) -> Result<()> {
+    if !column.is_numeric() {
+        return Err(CdfError::data(format!(
+            "Postgres field `{}` is declared as Arrow {:?}, but source column `{}` has physical type `{}`; Decimal fields require constrained NUMERIC and Utf8 is the lossless fallback",
+            field.name(),
+            field.data_type(),
+            column.name,
+            column.physical_type()
+        )));
+    }
+    let Some((source_precision, source_scale)) = column.arrow_decimal_precision_scale() else {
+        return Err(CdfError::data(format!(
+            "Postgres field `{}` is declared as Arrow {:?}, but source column `{}` is unconstrained or exceeds Arrow decimal bounds; declare this field as Utf8",
+            field.name(),
+            field.data_type(),
+            column.name
+        )));
+    };
+    let added_scale = i16::from(target_scale) - i16::from(source_scale);
+    if added_scale < 0 {
+        return Err(CdfError::data(format!(
+            "Postgres field `{}` Arrow scale {target_scale} cannot represent every value from NUMERIC({source_precision},{source_scale}) without discarded digits; declare this field as Utf8 or use scale at least {source_scale}",
+            field.name()
+        )));
+    }
+    let required_precision = i16::from(source_precision) + added_scale;
+    if required_precision > i16::from(target_precision) {
+        return Err(CdfError::data(format!(
+            "Postgres field `{}` Arrow precision/scale ({target_precision},{target_scale}) cannot represent the complete NUMERIC({source_precision},{source_scale}) domain; declare this field as Utf8 or widen its decimal precision",
+            field.name()
+        )));
+    }
+    Ok(())
 }
 
 fn scan_from_partition(
@@ -857,25 +1000,32 @@ impl PostgresPredicateOperator {
 
 struct PostgresQuery {
     sql: String,
-    params: Vec<SqlParam>,
 }
 
 #[derive(Clone, Debug)]
-enum SqlParam {
+enum SqlLiteral {
     String(String),
     I64(i64),
+    U64(u64),
     F64(f64),
     Bool(bool),
 }
 
-impl SqlParam {
-    fn as_to_sql(&self) -> &(dyn ToSql + Sync) {
-        match self {
-            Self::String(value) => value,
-            Self::I64(value) => value,
-            Self::F64(value) => value,
-            Self::Bool(value) => value,
-        }
+impl SqlLiteral {
+    fn sql(&self, postgres_type: &str) -> Result<String> {
+        let value = match self {
+            Self::String(value) => dollar_quoted_literal(value)?,
+            Self::I64(value) => value.to_string(),
+            Self::U64(value) => value.to_string(),
+            Self::F64(value) if value.is_finite() => value.to_string(),
+            Self::F64(_) => {
+                return Err(CdfError::contract(
+                    "Postgres source predicate cannot inline a non-finite float",
+                ));
+            }
+            Self::Bool(value) => value.to_string(),
+        };
+        Ok(format!("{value}::{postgres_type}"))
     }
 }
 
@@ -897,8 +1047,6 @@ fn build_query(
         })
         .collect::<Result<Vec<_>>>()?;
     let mut sql = format!("SELECT {} FROM {}", projection.join(", "), target.sql());
-    let mut params = Vec::new();
-
     if !scan.filters.is_empty() {
         let predicates = scan
             .filters
@@ -914,13 +1062,11 @@ fn build_query(
                     .ok_or_else(|| {
                         CdfError::contract("Postgres predicate metadata is not type-safe")
                     })?;
-                params.push(value.param);
                 Ok(format!(
-                    "{} {} ${}::{}",
-                    source_column_identifier(field)?.quoted(),
+                    "{} {} {}",
+                    predicate_source_expression(field)?,
                     predicate.operator.sql(),
-                    params.len(),
-                    value.postgres_type
+                    value.sql()?
                 ))
             })
             .collect::<Result<Vec<_>>>()?;
@@ -941,7 +1087,7 @@ fn build_query(
                 })?;
                 Ok(format!(
                     "{} {}",
-                    source_column_identifier(field)?.quoted(),
+                    canonical_source_expression(field)?,
                     order.direction.sql()
                 ))
             })
@@ -954,41 +1100,83 @@ fn build_query(
         let limit = i64::try_from(limit).map_err(|_| {
             CdfError::contract(format!("Postgres scan limit {limit} exceeds i64::MAX"))
         })?;
-        params.push(SqlParam::I64(limit));
-        sql.push_str(&format!(" LIMIT ${}", params.len()));
+        sql.push_str(&format!(" LIMIT {limit}"));
     }
 
-    Ok(PostgresQuery { sql, params })
+    Ok(PostgresQuery { sql })
 }
 
 fn select_expression(field: &Field) -> Result<String> {
-    let source = source_column_identifier(field)?.quoted();
     let output = PostgresIdentifier::user(field.name().as_str())?.quoted();
-    let expression = match field.data_type() {
-        DataType::Boolean => format!("{source}::boolean AS {output}"),
-        DataType::Int64 => format!("{source}::bigint AS {output}"),
-        DataType::UInt64 => format!("{source}::text AS {output}"),
-        DataType::Float64 => format!("{source}::double precision AS {output}"),
-        DataType::Utf8 => format!("{source}::text AS {output}"),
-        DataType::Date32 => format!("({source} - DATE '1970-01-01')::integer AS {output}"),
-        DataType::Timestamp(TimeUnit::Millisecond, _) => {
-            format!("floor(extract(epoch from {source}) * 1000)::bigint AS {output}")
+    Ok(format!(
+        "{} AS {output}",
+        canonical_source_expression(field)?
+    ))
+}
+
+fn canonical_source_expression(field: &Field) -> Result<String> {
+    let source = source_column_identifier(field)?.quoted();
+    match field.data_type() {
+        DataType::Boolean => Ok(format!("{source}::boolean")),
+        DataType::Int64 => Ok(format!("{source}::bigint")),
+        DataType::UInt64 | DataType::Utf8 => Ok(format!("{source}::text")),
+        DataType::Float64 => Ok(format!("{source}::double precision")),
+        DataType::Date32 => Ok(format!("({source} - DATE '1970-01-01')::integer")),
+        DataType::Timestamp(TimeUnit::Millisecond, _) => Ok(format!(
+            "floor(extract(epoch from {source}) * 1000)::bigint"
+        )),
+        DataType::Timestamp(TimeUnit::Microsecond, _) => Ok(format!(
+            "floor(extract(epoch from {source}) * 1000000)::bigint"
+        )),
+        DataType::Decimal128(_, _) | DataType::Decimal256(_, _) => Ok(format!("{source}::numeric")),
+        other => Err(CdfError::data(format!(
+            "Postgres table source does not support Arrow type {other:?}"
+        ))),
+    }
+}
+
+fn predicate_source_expression(field: &Field) -> Result<String> {
+    let source = source_column_identifier(field)?.quoted();
+    match field.data_type() {
+        DataType::Date32
+        | DataType::Timestamp(TimeUnit::Millisecond | TimeUnit::Microsecond, _) => Ok(source),
+        DataType::Boolean => Ok(format!("{source}::boolean")),
+        DataType::Int64 => Ok(format!("{source}::bigint")),
+        DataType::UInt64 => Ok(format!("{source}::numeric")),
+        DataType::Float64 => Ok(format!("{source}::double precision")),
+        DataType::Utf8 => Ok(format!("{source}::text")),
+        other => Err(CdfError::data(format!(
+            "Postgres predicate source does not support Arrow type {other:?}"
+        ))),
+    }
+}
+
+fn dollar_quoted_literal(value: &str) -> Result<String> {
+    if value.contains('\0') {
+        return Err(CdfError::contract(
+            "Postgres source predicate string cannot contain NUL",
+        ));
+    }
+    for index in 0..=value.len() {
+        let delimiter = format!("$cdf{index}$");
+        if !value.contains(&delimiter) {
+            return Ok(format!("{delimiter}{value}{delimiter}"));
         }
-        DataType::Timestamp(TimeUnit::Microsecond, _) => {
-            format!("floor(extract(epoch from {source}) * 1000000)::bigint AS {output}")
-        }
-        other => {
-            return Err(CdfError::data(format!(
-                "Postgres table source does not support Arrow type {other:?}"
-            )));
-        }
-    };
-    Ok(expression)
+    }
+    Err(CdfError::internal(
+        "could not construct a collision-free Postgres dollar-quote delimiter",
+    ))
 }
 
 struct TypedLiteral {
-    param: SqlParam,
+    literal: SqlLiteral,
     postgres_type: &'static str,
+}
+
+impl TypedLiteral {
+    fn sql(&self) -> Result<String> {
+        self.literal.sql(self.postgres_type)
+    }
 }
 
 fn parse_supported_predicate(
@@ -1047,15 +1235,15 @@ fn parse_literal_for_field(
 ) -> Option<TypedLiteral> {
     match field.data_type() {
         DataType::Utf8 => Some(TypedLiteral {
-            param: SqlParam::String(literal.to_owned()),
+            literal: SqlLiteral::String(literal.to_owned()),
             postgres_type: "text",
         }),
         DataType::Int64 => Some(TypedLiteral {
-            param: SqlParam::I64(literal.parse::<i64>().ok()?),
+            literal: SqlLiteral::I64(literal.parse::<i64>().ok()?),
             postgres_type: "bigint",
         }),
         DataType::UInt64 => Some(TypedLiteral {
-            param: SqlParam::String(literal.parse::<u64>().ok()?.to_string()),
+            literal: SqlLiteral::U64(literal.parse::<u64>().ok()?),
             postgres_type: "numeric",
         }),
         DataType::Float64 => {
@@ -1064,7 +1252,7 @@ fn parse_literal_for_field(
                 return None;
             }
             Some(TypedLiteral {
-                param: SqlParam::F64(value),
+                literal: SqlLiteral::F64(value),
                 postgres_type: "double precision",
             })
         }
@@ -1075,7 +1263,7 @@ fn parse_literal_for_field(
                 _ => return None,
             };
             Some(TypedLiteral {
-                param: SqlParam::Bool(value),
+                literal: SqlLiteral::Bool(value),
                 postgres_type: "boolean",
             })
         }
@@ -1083,14 +1271,14 @@ fn parse_literal_for_field(
         DataType::Date32 => {
             parse_date32(literal)?;
             Some(TypedLiteral {
-                param: SqlParam::String(literal.to_owned()),
+                literal: SqlLiteral::String(literal.to_owned()),
                 postgres_type: "date",
             })
         }
         DataType::Timestamp(TimeUnit::Millisecond | TimeUnit::Microsecond, timezone) => {
             parse_rfc3339_micros(literal)?;
             Some(TypedLiteral {
-                param: SqlParam::String(literal.to_owned()),
+                literal: SqlLiteral::String(literal.to_owned()),
                 postgres_type: if timezone.is_some() {
                     "timestamptz"
                 } else {
@@ -1102,188 +1290,37 @@ fn parse_literal_for_field(
     }
 }
 
-fn rows_to_record_batch(
-    schema: &SchemaRef,
+fn source_position_for_batch(
     descriptor: &ResourceDescriptor,
     scan: &PostgresTableScan,
-    rows: &[Row],
-) -> Result<(RecordBatch, Option<SourcePosition>)> {
-    let projected_fields = scan
+    batch: &RecordBatch,
+) -> Result<Option<SourcePosition>> {
+    let Some(cursor_spec) = &descriptor.cursor else {
+        return Ok(None);
+    };
+    let index = scan
         .projection
         .iter()
-        .map(|name| {
-            field_by_name(schema, name)
-                .ok_or_else(|| {
-                    CdfError::contract(format!(
-                        "Postgres projection field `{name}` is not in the declared schema"
-                    ))
-                })
-                .cloned()
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let output_schema = Arc::new(Schema::new(projected_fields.clone()));
-    let mut arrays = Vec::with_capacity(projected_fields.len());
-    let mut cursor = None;
-
-    for (index, field) in projected_fields.iter().enumerate() {
-        arrays.push(array_for_field(field, rows, index)?);
-        if descriptor
-            .cursor
-            .as_ref()
-            .is_some_and(|cursor| cursor.field == field.name().as_str())
-        {
-            cursor = Some(max_cursor_for_field(field, rows, index)?);
-        }
-    }
-
-    let record_batch = RecordBatch::try_new(output_schema, arrays).map_err(CdfError::from)?;
-    let source_position = match (&descriptor.cursor, cursor) {
-        (Some(cursor_spec), Some(value)) => Some(SourcePosition::Cursor(CursorPosition {
-            version: 1,
-            field: cursor_spec.field.clone(),
-            value: value.into_cursor_value(),
-        })),
-        (Some(cursor_spec), None) => {
-            return Err(CdfError::data(format!(
+        .position(|field| field == &cursor_spec.field)
+        .ok_or_else(|| {
+            CdfError::data(format!(
                 "Postgres cursor field `{}` is missing from emitted rows",
                 cursor_spec.field
-            )));
-        }
-        (None, _) => None,
-    };
-    Ok((record_batch, source_position))
+            ))
+        })?;
+    let field = batch.schema().field(index).clone();
+    let value = max_cursor_for_array(&field, batch.column(index))?;
+    Ok(Some(SourcePosition::Cursor(CursorPosition {
+        version: 1,
+        field: cursor_spec.field.clone(),
+        value: value.into_cursor_value(),
+    })))
 }
 
-fn array_for_field(field: &Field, rows: &[Row], index: usize) -> Result<ArrayRef> {
-    match field.data_type() {
-        DataType::Boolean => Ok(Arc::new(BooleanArray::from(
-            rows.iter()
-                .map(|row| checked_value(field, row, index, row_bool))
-                .collect::<Result<Vec<_>>>()?,
-        ))),
-        DataType::Int64 => Ok(Arc::new(Int64Array::from(
-            rows.iter()
-                .map(|row| checked_value(field, row, index, row_i64))
-                .collect::<Result<Vec<_>>>()?,
-        ))),
-        DataType::UInt64 => Ok(Arc::new(UInt64Array::from(
-            rows.iter()
-                .map(|row| checked_value(field, row, index, row_u64))
-                .collect::<Result<Vec<_>>>()?,
-        ))),
-        DataType::Float64 => Ok(Arc::new(Float64Array::from(
-            rows.iter()
-                .map(|row| checked_value(field, row, index, row_f64))
-                .collect::<Result<Vec<_>>>()?,
-        ))),
-        DataType::Utf8 => Ok(Arc::new(StringArray::from(
-            rows.iter()
-                .map(|row| checked_value(field, row, index, row_string))
-                .collect::<Result<Vec<_>>>()?,
-        ))),
-        DataType::Date32 => Ok(Arc::new(Date32Array::from(
-            rows.iter()
-                .map(|row| checked_value(field, row, index, row_date32))
-                .collect::<Result<Vec<_>>>()?,
-        ))),
-        DataType::Timestamp(TimeUnit::Millisecond, timezone) => {
-            let array = TimestampMillisecondArray::from(
-                rows.iter()
-                    .map(|row| checked_value(field, row, index, row_i64))
-                    .collect::<Result<Vec<_>>>()?,
-            )
-            .with_timezone_opt(timezone.clone());
-            Ok(Arc::new(array))
-        }
-        DataType::Timestamp(TimeUnit::Microsecond, timezone) => {
-            let array = TimestampMicrosecondArray::from(
-                rows.iter()
-                    .map(|row| checked_value(field, row, index, row_i64))
-                    .collect::<Result<Vec<_>>>()?,
-            )
-            .with_timezone_opt(timezone.clone());
-            Ok(Arc::new(array))
-        }
-        other => Err(CdfError::data(format!(
-            "Postgres table source does not support Arrow type {other:?}"
-        ))),
-    }
-}
-
-fn checked_value<T>(
-    field: &Field,
-    row: &Row,
-    index: usize,
-    read: fn(&Row, usize, &Field) -> Result<Option<T>>,
-) -> Result<Option<T>> {
-    let value = read(row, index, field)?;
-    if value.is_none() && !field.is_nullable() {
-        return Err(CdfError::data(format!(
-            "Postgres row has NULL for non-nullable field `{}`",
-            field.name()
-        )));
-    }
-    Ok(value)
-}
-
-fn row_bool(row: &Row, index: usize, field: &Field) -> Result<Option<bool>> {
-    row.try_get::<usize, Option<bool>>(index)
-        .map_err(|error| row_error(field, error))
-}
-
-fn row_i64(row: &Row, index: usize, field: &Field) -> Result<Option<i64>> {
-    row.try_get::<usize, Option<i64>>(index)
-        .map_err(|error| row_error(field, error))
-}
-
-fn row_f64(row: &Row, index: usize, field: &Field) -> Result<Option<f64>> {
-    let value = row
-        .try_get::<usize, Option<f64>>(index)
-        .map_err(|error| row_error(field, error))?;
-    if value.is_some_and(|value| !value.is_finite()) {
-        return Err(CdfError::data(format!(
-            "Postgres row field `{}` contains a non-finite float64",
-            field.name()
-        )));
-    }
-    Ok(value)
-}
-
-fn row_string(row: &Row, index: usize, field: &Field) -> Result<Option<String>> {
-    row.try_get::<usize, Option<String>>(index)
-        .map_err(|error| row_error(field, error))
-}
-
-fn row_u64(row: &Row, index: usize, field: &Field) -> Result<Option<u64>> {
-    row_string(row, index, field)?
-        .map(|value| {
-            value.parse::<u64>().map_err(|error| {
-                CdfError::data(format!(
-                    "Postgres row field `{}` cannot be parsed as uint64: {error}",
-                    field.name()
-                ))
-            })
-        })
-        .transpose()
-}
-
-fn row_date32(row: &Row, index: usize, field: &Field) -> Result<Option<i32>> {
-    row.try_get::<usize, Option<i32>>(index)
-        .map_err(|error| row_error(field, error))
-}
-
-fn row_error(field: &Field, error: postgres::Error) -> CdfError {
-    CdfError::data(format!(
-        "Postgres row field `{}` does not match declared Arrow type {:?}: {error}",
-        field.name(),
-        field.data_type()
-    ))
-}
-
-fn max_cursor_for_field(field: &Field, rows: &[Row], index: usize) -> Result<ObservedCursor> {
+fn max_cursor_for_array(field: &Field, array: &ArrayRef) -> Result<ObservedCursor> {
     let mut max_value = None;
-    for row in rows {
-        let value = cursor_value_for_field(field, row, index)?;
+    for row in 0..array.len() {
+        let value = cursor_value_for_array(field, array, row)?;
         if max_value
             .as_ref()
             .is_none_or(|current| value.greater_than(current))
@@ -1299,26 +1336,32 @@ fn max_cursor_for_field(field: &Field, rows: &[Row], index: usize) -> Result<Obs
     })
 }
 
-fn cursor_value_for_field(field: &Field, row: &Row, index: usize) -> Result<ObservedCursor> {
+fn cursor_value_for_array(field: &Field, array: &ArrayRef, row: usize) -> Result<ObservedCursor> {
+    if array.is_null(row) {
+        return Err(CdfError::data(format!(
+            "Postgres cursor field `{}` is NULL in an accepted row",
+            field.name()
+        )));
+    }
     Ok(match field.data_type() {
-        DataType::Utf8 => {
-            ObservedCursor::String(required_cursor(field, row_string(row, index, field)?)?)
-        }
-        DataType::Int64 => {
-            ObservedCursor::I64(required_cursor(field, row_i64(row, index, field)?)?)
-        }
+        DataType::Utf8 => ObservedCursor::String(
+            typed_array::<StringArray>(array, field)?
+                .value(row)
+                .to_owned(),
+        ),
+        DataType::Int64 => ObservedCursor::I64(typed_array::<Int64Array>(array, field)?.value(row)),
         DataType::UInt64 => {
-            ObservedCursor::U64(required_cursor(field, row_u64(row, index, field)?)?)
+            ObservedCursor::U64(typed_array::<UInt64Array>(array, field)?.value(row))
         }
         DataType::Float64 => {
-            ObservedCursor::F64(required_cursor(field, row_f64(row, index, field)?)?)
+            ObservedCursor::F64(typed_array::<Float64Array>(array, field)?.value(row))
         }
-        DataType::Date32 => ObservedCursor::I64(i64::from(required_cursor(
-            field,
-            row_date32(row, index, field)?,
-        )?)),
+        DataType::Date32 => ObservedCursor::I64(i64::from(
+            typed_array::<Date32Array>(array, field)?.value(row),
+        )),
         DataType::Timestamp(TimeUnit::Millisecond, timezone) => ObservedCursor::TimestampMicros {
-            micros: required_cursor(field, row_i64(row, index, field)?)?
+            micros: typed_array::<TimestampMillisecondArray>(array, field)?
+                .value(row)
                 .checked_mul(1_000)
                 .ok_or_else(|| {
                     CdfError::data(format!(
@@ -1329,7 +1372,7 @@ fn cursor_value_for_field(field: &Field, row: &Row, index: usize) -> Result<Obse
             timezone: timezone.as_ref().map(ToString::to_string),
         },
         DataType::Timestamp(TimeUnit::Microsecond, timezone) => ObservedCursor::TimestampMicros {
-            micros: required_cursor(field, row_i64(row, index, field)?)?,
+            micros: typed_array::<TimestampMicrosecondArray>(array, field)?.value(row),
             timezone: timezone.as_ref().map(ToString::to_string),
         },
         other => {
@@ -1341,11 +1384,12 @@ fn cursor_value_for_field(field: &Field, row: &Row, index: usize) -> Result<Obse
     })
 }
 
-fn required_cursor<T>(field: &Field, value: Option<T>) -> Result<T> {
-    value.ok_or_else(|| {
-        CdfError::data(format!(
-            "Postgres cursor field `{}` is NULL in an accepted row",
-            field.name()
+fn typed_array<'a, T: 'static>(array: &'a ArrayRef, field: &Field) -> Result<&'a T> {
+    array.as_any().downcast_ref::<T>().ok_or_else(|| {
+        CdfError::internal(format!(
+            "Postgres cursor field `{}` Arrow array does not match {:?}",
+            field.name(),
+            field.data_type()
         ))
     })
 }
@@ -1422,6 +1466,22 @@ fn validate_supported_field(field: &Field) -> Result<()> {
         | DataType::Utf8
         | DataType::Date32
         | DataType::Timestamp(TimeUnit::Millisecond | TimeUnit::Microsecond, _) => Ok(()),
+        DataType::Decimal128(precision, scale)
+            if *precision > 0
+                && *precision <= 38
+                && scale.unsigned_abs() <= 38
+                && (*scale <= 0 || scale.unsigned_abs() <= *precision) =>
+        {
+            Ok(())
+        }
+        DataType::Decimal256(precision, scale)
+            if *precision > 0
+                && *precision <= 76
+                && scale.unsigned_abs() <= 76
+                && (*scale <= 0 || scale.unsigned_abs() <= *precision) =>
+        {
+            Ok(())
+        }
         other => Err(CdfError::data(format!(
             "Postgres table source does not support Arrow type {other:?} for field `{}`",
             field.name()
@@ -1593,6 +1653,7 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow_array::{Decimal128Array, Decimal256Array};
     use arrow_schema::Field;
     use cdf_kernel::{
         ContractRef, CursorOrderingClaim, CursorSpec, ResourceId, ScopeKey, TrustLevel,
@@ -1699,6 +1760,35 @@ mod tests {
     }
 
     #[test]
+    fn source_domain_rejects_nullable_catalog_column_before_copy() {
+        let field = Field::new("id", DataType::Int64, false);
+        let column = PostgresCatalogColumn {
+            name: "id".to_owned(),
+            observed_type: "bigint".to_owned(),
+            numeric_precision: None,
+            numeric_scale: None,
+            nullable: true,
+        };
+        let error = validate_source_column_domain(&field, &column).unwrap_err();
+        assert!(error.to_string().contains("source column `id` is nullable"));
+        assert!(error.to_string().contains("enforce NOT NULL"));
+
+        let numeric = PostgresCatalogColumn {
+            name: "amount".to_owned(),
+            observed_type: "numeric".to_owned(),
+            numeric_precision: Some(12),
+            numeric_scale: Some(4),
+            nullable: false,
+        };
+        let narrowing_scale = Field::new("amount", DataType::Decimal128(12, 2), false);
+        let error = validate_source_column_domain(&narrowing_scale, &numeric).unwrap_err();
+        assert!(error.to_string().contains("without discarded digits"));
+        let narrowing_precision = Field::new("amount", DataType::Decimal128(10, 4), false);
+        let error = validate_source_column_domain(&narrowing_precision, &numeric).unwrap_err();
+        assert!(error.to_string().contains("complete NUMERIC(12,4) domain"));
+    }
+
+    #[test]
     fn source_shape_accepts_discovered_snapshot_and_rejects_unpinned_schema_modes() {
         let target = PostgresTarget::parse("raw.orders").unwrap();
         let mut discovered = descriptor(None);
@@ -1774,8 +1864,334 @@ mod tests {
 
         assert_eq!(
             query.sql,
-            "SELECT \"VendorID\"::bigint AS \"vendor_id\" FROM \"raw\".\"orders\" WHERE \"VendorID\" > $1::bigint ORDER BY \"VendorID\" DESC"
+            "SELECT \"VendorID\"::bigint AS \"vendor_id\" FROM \"raw\".\"orders\" WHERE \"VendorID\"::bigint > 1::bigint ORDER BY \"VendorID\"::bigint DESC"
         );
+    }
+
+    #[test]
+    fn copy_query_string_literals_are_collision_safe_and_cast_before_filtering() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "external_id",
+            DataType::Utf8,
+            false,
+        )]));
+        let target = PostgresTarget::parse("raw.orders").unwrap();
+        let scan = PostgresTableScan {
+            projection: vec!["external_id".to_owned()],
+            filters: vec![PostgresStoredPredicate {
+                field: "external_id".to_owned(),
+                operator: PostgresPredicateOperator::Eq,
+                literal: "a'$cdf0$\\b".to_owned(),
+            }],
+            order_by: Vec::new(),
+            limit: Some(5),
+        };
+
+        let query = build_query(&schema, &target, &scan).unwrap();
+        assert_eq!(
+            query.sql,
+            "SELECT \"external_id\"::text AS \"external_id\" FROM \"raw\".\"orders\" WHERE \"external_id\"::text = $cdf1$a'$cdf0$\\b$cdf1$::text LIMIT 5"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires TEST_DATABASE_URL for a live PostgreSQL server"]
+    fn live_binary_copy_preserves_json_uuid_and_exact_numeric_domains() {
+        let database_url = std::env::var("TEST_DATABASE_URL")
+            .expect("TEST_DATABASE_URL must name the live PostgreSQL database");
+        let table_name = format!("cdf_source_binary_copy_{}", std::process::id());
+        let target = PostgresTarget::parse(&table_name).unwrap();
+        let mut client = Client::connect(&database_url, NoTls).unwrap();
+        client
+            .batch_execute(&format!(
+                "DROP TABLE IF EXISTS {table};
+                 CREATE TABLE {table} (
+                    id BIGINT NOT NULL,
+                    external_id UUID NOT NULL,
+                    payload JSON NOT NULL,
+                    payload_b JSONB NOT NULL,
+                    amount NUMERIC(38,9) NOT NULL,
+                    wide NUMERIC(60,18) NOT NULL,
+                    rounded NUMERIC(10,-2) NOT NULL,
+                    tiny NUMERIC(3,5) NOT NULL,
+                    too_wide NUMERIC(77,1) NOT NULL,
+                    unbounded NUMERIC
+                 );
+                 INSERT INTO {table} VALUES (
+                    1,
+                    '123e4567-e89b-12d3-a456-426614174000',
+                    ' {{ \"z\" : 1, \"a\": 2 }} ',
+                    '{{ \"z\" : 1, \"a\": 2 }}',
+                    12345678901234567890123456789.123456789,
+                    123456789012345678901234567890123456789012.123456789012345678,
+                    12345,
+                    0.00123,
+                    123456789012345678901234567890123456789012345678901234567890123456789012.3,
+                    'Infinity'
+                 ), (
+                    2,
+                    '123e4567-e89b-12d3-a456-426614174001',
+                    'null',
+                    'null',
+                    2.000000001,
+                    2.000000000000000001,
+                    -12345,
+                    -0.00123,
+                    -123456789012345678901234567890123456789012345678901234567890123456789012.3,
+                    '-Infinity'
+                 ), (
+                    3,
+                    '123e4567-e89b-12d3-a456-426614174002',
+                    '[]',
+                    '[]',
+                    3.000000001,
+                    3.000000000000000001,
+                    0,
+                    0,
+                    0,
+                    NULL
+                 )",
+                table = target.sql()
+            ))
+            .unwrap();
+
+        let columns = read_catalog_columns(&mut client, &target).unwrap();
+        let schema = Arc::new(
+            crate::catalog::schema_from_catalog_columns(
+                &ResourceId::new("warehouse.orders").unwrap(),
+                columns,
+            )
+            .unwrap(),
+        );
+        assert_eq!(schema.field(4).data_type(), &DataType::Decimal128(38, 9));
+        assert_eq!(schema.field(5).data_type(), &DataType::Decimal256(60, 18));
+        assert_eq!(schema.field(6).data_type(), &DataType::Decimal128(10, -2));
+        assert_eq!(schema.field(7).data_type(), &DataType::Utf8);
+        assert_eq!(
+            schema.field(8).metadata()["cdf:semantic"],
+            cdf_postgres::POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC
+        );
+        assert_eq!(
+            schema.field(9).metadata()["cdf:semantic"],
+            cdf_postgres::POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC
+        );
+
+        let scan = PostgresTableScan {
+            projection: schema
+                .fields()
+                .iter()
+                .map(|field| field.name().to_owned())
+                .collect(),
+            filters: Vec::new(),
+            order_by: vec![PostgresStoredOrder {
+                field: "id".to_owned(),
+                direction: PostgresStoredDirection::Asc,
+            }],
+            limit: None,
+        };
+        let query = build_query(&schema, &target, &scan).unwrap();
+        let output_schema = projected_schema(&schema, &scan).unwrap();
+        let batch = {
+            let mut transaction = client
+                .build_transaction()
+                .isolation_level(IsolationLevel::RepeatableRead)
+                .read_only(true)
+                .start()
+                .unwrap();
+            let statement = transaction.prepare(&query.sql).unwrap();
+            validate_copy_descriptor(&statement, output_schema.as_ref()).unwrap();
+            validate_source_domains(&mut transaction, &target, output_schema.as_ref()).unwrap();
+            let reader = transaction
+                .copy_out(&format!(
+                    "COPY ({}) TO STDOUT WITH (FORMAT BINARY)",
+                    query.sql
+                ))
+                .unwrap();
+            let mut decoder =
+                PostgresBinaryCopyDecoder::new(reader, output_schema, POSTGRES_MAXIMUM_BATCH_BYTES)
+                    .unwrap();
+            let batch = decoder.next_batch().unwrap().unwrap();
+            assert!(decoder.next_batch().unwrap().is_none());
+            batch
+        };
+
+        assert_eq!(batch.num_rows(), 3);
+        assert_eq!(
+            batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(0),
+            "123e4567-e89b-12d3-a456-426614174000"
+        );
+        assert_eq!(
+            batch
+                .column(2)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(0),
+            " { \"z\" : 1, \"a\": 2 } "
+        );
+        assert_eq!(
+            batch
+                .column(3)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(0),
+            "{\"a\": 2, \"z\": 1}"
+        );
+        assert_eq!(
+            batch
+                .column(4)
+                .as_any()
+                .downcast_ref::<Decimal128Array>()
+                .unwrap()
+                .value_as_string(0),
+            "12345678901234567890123456789.123456789"
+        );
+        assert_eq!(
+            batch
+                .column(5)
+                .as_any()
+                .downcast_ref::<Decimal256Array>()
+                .unwrap()
+                .value_as_string(0),
+            "123456789012345678901234567890123456789012.123456789012345678"
+        );
+        assert_eq!(
+            batch
+                .column(6)
+                .as_any()
+                .downcast_ref::<Decimal128Array>()
+                .unwrap()
+                .value_as_string(0),
+            "12300"
+        );
+        assert_eq!(
+            batch
+                .column(7)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(0),
+            "0.00123"
+        );
+        assert_eq!(
+            batch
+                .column(8)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(0),
+            "123456789012345678901234567890123456789012345678901234567890123456789012.3"
+        );
+        let unbounded = batch
+            .column(9)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(unbounded.value(0), "Infinity");
+        assert_eq!(unbounded.value(1), "-Infinity");
+        assert!(unbounded.is_null(2));
+
+        client
+            .batch_execute(&format!(
+                "UPDATE {} SET amount = 'NaN' WHERE id = 1",
+                target.sql()
+            ))
+            .unwrap();
+        let decimal_only_scan = PostgresTableScan {
+            projection: vec!["amount".to_owned()],
+            filters: Vec::new(),
+            order_by: vec![PostgresStoredOrder {
+                field: "amount".to_owned(),
+                direction: PostgresStoredDirection::Asc,
+            }],
+            limit: None,
+        };
+        let decimal_query = build_query(&schema, &target, &decimal_only_scan).unwrap();
+        let decimal_output = projected_schema(&schema, &decimal_only_scan).unwrap();
+        let decimal_error = {
+            let mut transaction = client
+                .build_transaction()
+                .isolation_level(IsolationLevel::RepeatableRead)
+                .read_only(true)
+                .start()
+                .unwrap();
+            let statement = transaction.prepare(&decimal_query.sql).unwrap();
+            validate_copy_descriptor(&statement, decimal_output.as_ref()).unwrap();
+            validate_source_domains(&mut transaction, &target, decimal_output.as_ref()).unwrap();
+            let reader = transaction
+                .copy_out(&format!(
+                    "COPY ({}) TO STDOUT WITH (FORMAT BINARY)",
+                    decimal_query.sql
+                ))
+                .unwrap();
+            PostgresBinaryCopyDecoder::new(reader, decimal_output, POSTGRES_MAXIMUM_BATCH_BYTES)
+                .unwrap()
+                .next_batch()
+                .unwrap_err()
+        };
+        assert!(decimal_error.to_string().contains("NaN"));
+        assert!(
+            decimal_error
+                .to_string()
+                .contains("declare this field as Utf8")
+        );
+
+        let text_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("amount", DataType::Utf8, false),
+        ]));
+        let text_scan = PostgresTableScan {
+            projection: vec!["amount".to_owned()],
+            filters: Vec::new(),
+            order_by: vec![PostgresStoredOrder {
+                field: "id".to_owned(),
+                direction: PostgresStoredDirection::Asc,
+            }],
+            limit: Some(1),
+        };
+        let text_query = build_query(&text_schema, &target, &text_scan).unwrap();
+        let text_output = projected_schema(&text_schema, &text_scan).unwrap();
+        let text_batch = {
+            let mut transaction = client
+                .build_transaction()
+                .isolation_level(IsolationLevel::RepeatableRead)
+                .read_only(true)
+                .start()
+                .unwrap();
+            let statement = transaction.prepare(&text_query.sql).unwrap();
+            validate_copy_descriptor(&statement, text_output.as_ref()).unwrap();
+            let reader = transaction
+                .copy_out(&format!(
+                    "COPY ({}) TO STDOUT WITH (FORMAT BINARY)",
+                    text_query.sql
+                ))
+                .unwrap();
+            let mut decoder =
+                PostgresBinaryCopyDecoder::new(reader, text_output, POSTGRES_MAXIMUM_BATCH_BYTES)
+                    .unwrap();
+            let batch = decoder.next_batch().unwrap().unwrap();
+            assert!(decoder.next_batch().unwrap().is_none());
+            batch
+        };
+        assert_eq!(
+            text_batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(0),
+            "NaN"
+        );
+
+        client
+            .batch_execute(&format!("DROP TABLE {}", target.sql()))
+            .unwrap();
     }
 
     #[test]

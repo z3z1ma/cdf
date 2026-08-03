@@ -12,6 +12,7 @@ mod interop;
 mod lab;
 mod matrix;
 mod package_shape;
+mod postgres_source_roofline;
 mod profiling;
 #[allow(
     unsafe_code,
@@ -80,6 +81,7 @@ pub use matrix::{
 pub use package_shape::{
     PackageReadSummary, PackageShapeSummary, read_package_batches, summarize_package_shape,
 };
+pub use postgres_source_roofline::{PostgresSourceRooflineReport, run_postgres_source_roofline};
 pub use profiling::{ProfilePlan, ProfileTool, plan_profile};
 pub use references::{
     ExternalFileFormat, ReferenceWorkload, discover_polars, polars_scan_command, run_reference,

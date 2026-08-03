@@ -1023,6 +1023,7 @@ dependencies = [
  "cdf-source-clickhouse",
  "cdf-source-files",
  "cdf-source-iceberg",
+ "cdf-source-postgres",
  "cdf-source-rest",
  "cdf-source-sqlite",
  "cdf-state-sqlite",
@@ -1033,6 +1034,7 @@ dependencies = [
  "criterion",
  "datafusion",
  "duckdb",
+ "fallible-iterator 0.2.0",
  "futures-executor",
  "futures-util",
  "hex",
@@ -1865,6 +1867,7 @@ name = "cdf-source-postgres"
 version = "0.2.0-alpha.1"
 dependencies = [
  "arrow-array",
+ "arrow-buffer",
  "arrow-schema",
  "cdf-http",
  "cdf-kernel",

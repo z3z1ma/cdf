@@ -10,7 +10,7 @@ This is a parent planning ticket and is not executable implementation scope.
 
 Complete the user-ratified PostgreSQL throughput and exact-value tranche in this order:
 
-1. `.10x/tickets/2026-08-03-postgres-source-binary-copy.md`
+1. `.10x/tickets/done/2026-08-03-postgres-source-binary-copy.md`
 2. `.10x/tickets/2026-08-03-postgres-destination-exact-value-text.md`
 
 The source child owns canonical binary COPY OUT, JSON/JSONB, NUMERIC discovery and decoding, and
@@ -52,6 +52,10 @@ adapter refactors, and MySQL or MongoDB implementation.
 ## Journal
 
 - 2026-08-03: Program opened after the exact-value policy and PostgreSQL behavior were ratified.
+- 2026-08-03: Source child closed with canonical bounded binary COPY OUT, exact tagged
+  JSON/JSONB/NUMERIC mappings, Decimal128/256 decoding, focused live/project evidence, and passing
+  1.028x fixed-width plus 1.192x mixed-schema official-client roofline cells. Destination tagged
+  text reconstruction is the next executable child.
 
 ## Blockers
 
@@ -59,7 +63,9 @@ None.
 
 ## Evidence
 
-Pending child closure.
+- Source child: `.10x/tickets/done/2026-08-03-postgres-source-binary-copy.md`.
+- Source evidence: `.10x/evidence/2026-08-03-postgres-source-binary-copy.md`.
+- Destination and final integration evidence remain pending.
 
 ## Review
 

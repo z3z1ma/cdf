@@ -1,11 +1,14 @@
 use std::collections::BTreeMap;
 
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use cdf_kernel::{CdfError, ResourceId, Result, with_physical_type};
+use cdf_kernel::{CdfError, ResourceId, Result, with_physical_type, with_semantic};
 use cdf_runtime::SourceEgressScope;
-use postgres::{Client, NoTls, Row};
+use postgres::{Client, GenericClient, NoTls, Row};
 
-use cdf_postgres::PostgresTarget;
+use cdf_postgres::{
+    POSTGRES_JSON_VALUE_TEXT_SEMANTIC, POSTGRES_JSONB_VALUE_TEXT_SEMANTIC,
+    POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC, PostgresTarget,
+};
 
 pub const POSTGRES_CATALOG_DISCOVERY_PROBE: &str = "postgres-catalog";
 
@@ -19,6 +22,8 @@ pub struct PostgresCatalogDiscovery {
 pub(crate) struct PostgresCatalogColumn {
     pub name: String,
     pub observed_type: String,
+    pub numeric_precision: Option<i32>,
+    pub numeric_scale: Option<i32>,
     pub nullable: bool,
 }
 
@@ -63,14 +68,19 @@ pub(crate) fn schema_from_catalog_columns(
     let fields = columns
         .into_iter()
         .map(|column| {
-            let data_type =
-                arrow_type_for_catalog_type(&column.observed_type).ok_or_else(|| {
+            let (data_type, semantic) =
+                arrow_type_for_catalog_column(&column).ok_or_else(|| {
                     unsupported_catalog_type(resource_id, &column.name, &column.observed_type)
                 })?;
-            Ok(with_physical_type(
+            let physical_type = column.physical_type();
+            let field = with_physical_type(
                 Field::new(&column.name, data_type, column.nullable),
-                column.observed_type,
-            ))
+                physical_type,
+            );
+            Ok(match semantic {
+                Some(semantic) => with_semantic(field, semantic),
+                None => field,
+            })
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(Schema::new(fields))
@@ -78,6 +88,17 @@ pub(crate) fn schema_from_catalog_columns(
 
 pub(crate) fn arrow_type_for_catalog_type(observed_type: &str) -> Option<DataType> {
     let normalized = observed_type.trim().to_ascii_lowercase();
+    if normalized.starts_with("timestamp(") {
+        if normalized.ends_with(" without time zone") {
+            return Some(DataType::Timestamp(TimeUnit::Microsecond, None));
+        }
+        if normalized.ends_with(" with time zone") {
+            return Some(DataType::Timestamp(
+                TimeUnit::Microsecond,
+                Some("UTC".into()),
+            ));
+        }
+    }
     let base = normalized
         .split_once('(')
         .map(|(base, _)| base.trim())
@@ -88,9 +109,8 @@ pub(crate) fn arrow_type_for_catalog_type(observed_type: &str) -> Option<DataTyp
             Some(DataType::Int64)
         }
         "real" | "float4" | "double precision" | "float8" => Some(DataType::Float64),
-        "text" | "character varying" | "varchar" | "character" | "char" | "uuid" => {
-            Some(DataType::Utf8)
-        }
+        "text" | "character varying" | "varchar" | "character" | "char" | "uuid" | "json"
+        | "jsonb" => Some(DataType::Utf8),
         "date" => Some(DataType::Date32),
         "timestamp without time zone" | "timestamp" => {
             Some(DataType::Timestamp(TimeUnit::Microsecond, None))
@@ -103,8 +123,66 @@ pub(crate) fn arrow_type_for_catalog_type(observed_type: &str) -> Option<DataTyp
     }
 }
 
-fn read_catalog_columns(
-    client: &mut Client,
+fn arrow_type_for_catalog_column(
+    column: &PostgresCatalogColumn,
+) -> Option<(DataType, Option<&'static str>)> {
+    match catalog_base_type(&column.observed_type) {
+        "json" => Some((DataType::Utf8, Some(POSTGRES_JSON_VALUE_TEXT_SEMANTIC))),
+        "jsonb" => Some((DataType::Utf8, Some(POSTGRES_JSONB_VALUE_TEXT_SEMANTIC))),
+        "numeric" | "decimal" => {
+            let Some((precision, scale)) = column.arrow_decimal_precision_scale() else {
+                return Some((DataType::Utf8, Some(POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC)));
+            };
+            let data_type = if precision <= 38 && (-38..=38).contains(&scale) {
+                DataType::Decimal128(precision, scale)
+            } else if precision <= 76 && (-76..=76).contains(&scale) {
+                DataType::Decimal256(precision, scale)
+            } else {
+                return Some((DataType::Utf8, Some(POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC)));
+            };
+            Some((data_type, None))
+        }
+        _ => arrow_type_for_catalog_type(&column.observed_type).map(|data_type| (data_type, None)),
+    }
+}
+
+impl PostgresCatalogColumn {
+    pub(crate) fn is_numeric(&self) -> bool {
+        matches!(
+            catalog_base_type(&self.observed_type),
+            "numeric" | "decimal"
+        )
+    }
+
+    pub(crate) fn arrow_decimal_precision_scale(&self) -> Option<(u8, i8)> {
+        let precision = u8::try_from(self.numeric_precision?).ok()?;
+        let scale = i8::try_from(self.numeric_scale?).ok()?;
+        if precision == 0 || (scale > 0 && scale.unsigned_abs() > precision) {
+            return None;
+        }
+        Some((precision, scale))
+    }
+
+    pub(crate) fn physical_type(&self) -> String {
+        match (self.numeric_precision, self.numeric_scale) {
+            (Some(precision), Some(scale)) if self.is_numeric() => {
+                format!("numeric({precision},{scale})")
+            }
+            _ => self.observed_type.clone(),
+        }
+    }
+}
+
+fn catalog_base_type(observed_type: &str) -> &str {
+    observed_type
+        .trim()
+        .split_once('(')
+        .map(|(base, _)| base.trim())
+        .unwrap_or_else(|| observed_type.trim())
+}
+
+pub(crate) fn read_catalog_columns<C: GenericClient>(
+    client: &mut C,
     target: &PostgresTarget,
 ) -> Result<Vec<PostgresCatalogColumn>> {
     let schema = target
@@ -115,11 +193,21 @@ fn read_catalog_columns(
     let rows = client
         .query(
             concat!(
-                "SELECT column_name, is_nullable, data_type ",
-                "FROM information_schema.columns ",
-                "WHERE table_schema = COALESCE($1::text, current_schema()) ",
-                "AND table_name = $2::text ",
-                "ORDER BY ordinal_position"
+                "SELECT a.attname, NOT a.attnotnull, ",
+                "pg_catalog.format_type(a.atttypid, a.atttypmod), ",
+                "CASE WHEN t.typname = 'numeric' AND a.atttypmod >= 4 ",
+                "THEN (((a.atttypmod - 4) >> 16) & 65535)::integer END, ",
+                "CASE WHEN t.typname = 'numeric' AND a.atttypmod >= 4 THEN ",
+                "CASE WHEN ((a.atttypmod - 4) & 2047) > 1023 ",
+                "THEN (((a.atttypmod - 4) & 2047) - 2048)::integer ",
+                "ELSE ((a.atttypmod - 4) & 2047)::integer END END ",
+                "FROM pg_catalog.pg_attribute a ",
+                "JOIN pg_catalog.pg_class c ON c.oid = a.attrelid ",
+                "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace ",
+                "JOIN pg_catalog.pg_type t ON t.oid = a.atttypid ",
+                "WHERE n.nspname = COALESCE($1::text, current_schema()) ",
+                "AND c.relname = $2::text AND a.attnum > 0 AND NOT a.attisdropped ",
+                "ORDER BY a.attnum"
             ),
             &[&schema, &table],
         )
@@ -128,11 +216,12 @@ fn read_catalog_columns(
 }
 
 fn catalog_column_from_row(row: &Row) -> PostgresCatalogColumn {
-    let nullable: String = row.get(1);
     PostgresCatalogColumn {
         name: row.get(0),
         observed_type: row.get(2),
-        nullable: nullable.eq_ignore_ascii_case("YES"),
+        numeric_precision: row.get(3),
+        numeric_scale: row.get(4),
+        nullable: row.get(1),
     }
 }
 
@@ -160,36 +249,50 @@ mod tests {
                 PostgresCatalogColumn {
                     name: "VendorID".to_owned(),
                     observed_type: "integer".to_owned(),
+                    numeric_precision: None,
+                    numeric_scale: None,
                     nullable: false,
                 },
                 PostgresCatalogColumn {
                     name: "is_active".to_owned(),
                     observed_type: "boolean".to_owned(),
+                    numeric_precision: None,
+                    numeric_scale: None,
                     nullable: true,
                 },
                 PostgresCatalogColumn {
                     name: "ratio".to_owned(),
                     observed_type: "double precision".to_owned(),
+                    numeric_precision: None,
+                    numeric_scale: None,
                     nullable: false,
                 },
                 PostgresCatalogColumn {
                     name: "customer_uuid".to_owned(),
                     observed_type: "uuid".to_owned(),
+                    numeric_precision: None,
+                    numeric_scale: None,
                     nullable: true,
                 },
                 PostgresCatalogColumn {
                     name: "service_date".to_owned(),
                     observed_type: "date".to_owned(),
+                    numeric_precision: None,
+                    numeric_scale: None,
                     nullable: false,
                 },
                 PostgresCatalogColumn {
                     name: "created_at".to_owned(),
                     observed_type: "timestamp without time zone".to_owned(),
+                    numeric_precision: None,
+                    numeric_scale: None,
                     nullable: true,
                 },
                 PostgresCatalogColumn {
                     name: "updated_at".to_owned(),
-                    observed_type: "timestamp with time zone".to_owned(),
+                    observed_type: "timestamp(3) with time zone".to_owned(),
+                    numeric_precision: None,
+                    numeric_scale: None,
                     nullable: false,
                 },
             ],
@@ -216,12 +319,66 @@ mod tests {
     }
 
     #[test]
+    fn maps_json_and_numeric_without_losing_exact_values() {
+        let schema = schema_from_catalog_columns(
+            &ResourceId::new("warehouse.orders").unwrap(),
+            vec![
+                PostgresCatalogColumn {
+                    name: "payload".to_owned(),
+                    observed_type: "jsonb".to_owned(),
+                    numeric_precision: None,
+                    numeric_scale: None,
+                    nullable: false,
+                },
+                PostgresCatalogColumn {
+                    name: "amount".to_owned(),
+                    observed_type: "numeric".to_owned(),
+                    numeric_precision: Some(38),
+                    numeric_scale: Some(9),
+                    nullable: false,
+                },
+                PostgresCatalogColumn {
+                    name: "wide".to_owned(),
+                    observed_type: "numeric".to_owned(),
+                    numeric_precision: Some(60),
+                    numeric_scale: Some(18),
+                    nullable: true,
+                },
+                PostgresCatalogColumn {
+                    name: "unbounded".to_owned(),
+                    observed_type: "numeric".to_owned(),
+                    numeric_precision: None,
+                    numeric_scale: None,
+                    nullable: true,
+                },
+            ],
+        )
+        .unwrap();
+        let fields = schema.fields();
+        assert_eq!(fields[0].data_type(), &DataType::Utf8);
+        assert_eq!(
+            fields[0].metadata()["cdf:semantic"],
+            POSTGRES_JSONB_VALUE_TEXT_SEMANTIC
+        );
+        assert_eq!(fields[1].data_type(), &DataType::Decimal128(38, 9));
+        assert_eq!(fields[2].data_type(), &DataType::Decimal256(60, 18));
+        assert_eq!(fields[3].data_type(), &DataType::Utf8);
+        assert_eq!(
+            fields[3].metadata()["cdf:semantic"],
+            POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC
+        );
+        assert_eq!(fields[2].metadata()["cdf:physical_type"], "numeric(60,18)");
+    }
+
+    #[test]
     fn rejects_unsupported_type_with_resource_and_column() {
         let error = schema_from_catalog_columns(
             &ResourceId::new("warehouse.orders").unwrap(),
             vec![PostgresCatalogColumn {
-                name: "amount".to_owned(),
-                observed_type: "numeric".to_owned(),
+                name: "payload".to_owned(),
+                observed_type: "bytea".to_owned(),
+                numeric_precision: None,
+                numeric_scale: None,
                 nullable: true,
             }],
         )
@@ -229,8 +386,8 @@ mod tests {
 
         let message = error.to_string();
         assert!(message.contains("warehouse.orders"));
-        assert!(message.contains("amount"));
-        assert!(message.contains("numeric"));
+        assert!(message.contains("payload"));
+        assert!(message.contains("bytea"));
         assert!(message.contains("not yet supported by the Postgres discovery/execution slice"));
     }
 
