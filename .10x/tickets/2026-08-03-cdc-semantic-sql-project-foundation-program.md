@@ -359,18 +359,27 @@ deferred lanes are explicitly parked with owners. For a full close:
   `.10x/knowledge/project-file-publication-recovery.md`: staged targets first, durable pending
   marker, forward-only recovery, `cdf.lock` last, stable generation reads, and no read-only
   recovery.
+- 2026-08-03: A0 official protocol research completed in one batch and is recorded in
+  `.10x/research/2026-08-03-cdc-protocol-position-contract.md`. It resolves the position wire-shape
+  recommendations, selects MySQL ROW/FULL/GTID as the shortest complete-image first proof, records
+  PostgreSQL unchanged-TOAST reconstruction and MongoDB exact-post-image prerequisites, and names
+  the public Mongo change-stream transaction-boundary limitation. The CDC spec now contains an
+  exact ratification checkpoint rather than delegating field design to A1.
 
 ## Blockers
 
 The exact unratified choices listed above prevent opening A1/B1/C1/D1/D3/E1 as executable children.
-F0 may proceed independently once its reject/remove behavior is confirmed. Research and draft-spec
-refinement can continue without product-code mutation.
+F0 is closed at `3487de68`. Research and draft-spec refinement can continue without product-code
+mutation.
 
 ## Evidence
 
 - Audit evidence is recorded in
   `.10x/research/2026-08-03-cdc-semantic-dsl-core-readiness-audit.md` with source paths, observed
   structures, corrections, and limits.
+- Protocol A0 evidence is recorded in
+  `.10x/research/2026-08-03-cdc-protocol-position-contract.md` with official PostgreSQL, MySQL, and
+  MongoDB sources, exact proposed artifact fields/algebra, row-image consequences, and limits.
 - Implementation evidence pending ratification and child tickets.
 
 ## Review

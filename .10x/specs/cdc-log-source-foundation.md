@@ -6,11 +6,11 @@ Updated: 2026-08-03
 
 ## Status and ratification boundary
 
-This draft converts the 2026-08-03 core-readiness findings into a proposed shared CDC contract. It
-is not active implementation authority. The user has established CDC, PostgreSQL/MySQL log sources,
-and MongoDB change streams as product direction; exact position wire shapes, row-image semantics,
-and transaction limits below remain recommendations pending ratification and fresh protocol
-research.
+This draft converts the 2026-08-03 core-readiness findings and fresh official protocol research
+into a proposed shared CDC contract. It is not active implementation authority. The user has
+established CDC, PostgreSQL/MySQL log sources, and MongoDB change streams as product direction;
+the exact recommendations below are research-backed but remain pending the ratification checkpoint
+in `.10x/research/2026-08-03-cdc-protocol-position-contract.md`.
 
 ## Purpose
 
@@ -61,9 +61,9 @@ package, receipt, and checkpoint commit gate. It MUST NOT introduce a parallel s
 
 CDF MUST distinguish at least these first-party categories:
 
-1. **Ordered log commit position**: a coordinate in a linearly comparable source log that is legal
-   only after a complete transaction. PostgreSQL WAL/LSN and MySQL binlog/GTID use this category
-   after protocol-specific projection is defined.
+1. **Ordered log commit position**: a protocol-specific coordinate in a linearly comparable source
+   log that is constructible only after a complete transaction. PostgreSQL WAL/LSN and MySQL
+   binlog/GTID use separate typed variants in this category.
 2. **Opaque scoped resume token**: a source-issued token whose contents CDF preserves exactly but
    does not order numerically. MongoDB change streams use this category.
 
@@ -72,42 +72,54 @@ serialization and typed artifact validation.
 
 ### Ordered log position
 
-The replacement for the current `LogPosition` MUST encode, either directly or through a typed
-nested coordinate:
+The replacement for the current `LogPosition` MUST be a closed `CommittedLogPosition` enum with
+`PostgreSql(PostgresCommitPosition)` and `MySql(MySqlCommitPosition)` variants. It MUST NOT use a
+protocol string plus generic offset.
 
-- source protocol/version;
-- stable stream identity and scope;
-- a protocol-preserving coordinate capable of representing the full native range without signed
-  truncation;
-- committed transaction-boundary evidence;
-- an optional protocol transaction identity only when the source can provide a stable one;
-- sufficient information for protocol-specific equality, ordering, and resume.
+`PostgresCommitPosition` MUST contain version, typed scope, `commit_lsn: u64`, `end_lsn: u64`, and
+`xid: u32`. Its scope MUST bind cluster system identifier, database OID, logical slot, output
+plugin, and a canonical semantics hash over sorted publications and every behavior-changing
+`pgoutput` option. `end_lsn` is restart/order authority; commit LSN and XID corroborate the boundary.
+The first version MUST reject two-phase decoding and persist only normal/streamed commit messages.
+
+`MySqlCommitPosition` MUST contain version, typed scope, native binlog filename, parsed numeric file
+sequence, terminal commit-event `end_log_position: u64`, canonical executed GTID set, and the
+transaction GTID. Its scope MUST bind the CDF deployment, active server UUID, binlog basename, and
+a canonical capture-semantics hash. The first version MUST require ROW/FULL logging, GTID mode ON,
+and GTID consistency. Filename ordering is legal only inside one validated server/binlog lineage;
+cross-server failover is an explicit rebind until separately proven.
 
 The persisted form MUST represent only safe restart positions. A `mid_transaction` state MUST NOT
 be serializable as a checkpoint/output position. In-progress decoder state is invocation-local
 until a transaction commit is observed.
 
-The exact Rust field layout is deliberately not ratified by this draft. Fresh protocol research
-MUST determine whether one tagged coordinate enum can losslessly represent PostgreSQL and MySQL or
-whether protocol-specific typed variants are safer. The design MUST NOT force MongoDB resume tokens
-through numeric ordering.
+Persisted log variants represent a committed boundary by construction. A `tx_boundary: bool` MUST
+NOT be added because it would make an illegal false checkpoint serializable. In-progress decoder
+and transaction state remains invocation-local or in accounted replay storage until commit.
 
 ### MongoDB resume-token position
 
-A first-party MongoDB token position MUST include:
+A first-party `ResumeTokenPosition::MongoChangeStream` MUST include:
 
 - position artifact version;
-- an exact change-stream scope identity derived from deployment, database/collection scope,
-  pipeline/options, and any start-mode semantics that change token validity;
-- the source-issued resume token in an opaque byte representation with a canonical SHA-256;
-- token kind or invalidate/end semantics when required by the official protocol;
-- optional cluster/operation time only if official semantics establish it as restart or diagnostic
-  authority, never as a guessed total ordering.
+- typed scope containing the CDF deployment binding, watch level, namespace target when applicable,
+  canonical pipeline SHA-256, and semantics-changing options SHA-256;
+- the exact BSON token document bytes encoded as canonical base64 plus SHA-256;
+- `resume_mode: ResumeAfter | StartAfter`, because invalidate tokens cannot use `resumeAfter`;
+- `token_source: Event | PostBatch`, because post-batch tokens can advance the scanned prefix even
+  when no matching event is returned.
 
-CDF MUST validate token hash, scope, and protocol version without parsing undocumented token
-internals. Equality/reachability is exact token/scope equality unless official MongoDB semantics
-prove a stronger relation. `SourceFrontier` termination by arbitrary future resume token SHOULD be
-unsupported because CDF cannot truthfully prove numeric reachability.
+CDF MUST validate base64, token hash, scope, version, and mode without parsing undocumented token
+internals. Equality/reachability is exact token/scope/mode equality. `SourceFrontier` termination
+by arbitrary future resume token MUST be unsupported because CDF cannot truthfully prove numeric
+reachability. An adapter MAY publish an explicitly ordered terminal token from its own retained
+event prefix; generic set aggregation MUST NOT guess which opaque token is later.
+
+The public MongoDB change-stream contract identifies transaction events with `lsid` and
+`txnNumber` but does not expose a documented transaction-end marker. A Mongo resume token proves a
+safe event/scanned-prefix restart, not source-transaction package atomicity. The first Mongo CDC
+adapter MUST either advertise event-level at-least-once semantics or remain blocked until a
+documented transaction-group boundary is proven; it MUST NOT inspect undocumented token internals.
 
 ### Position algebra
 
@@ -156,10 +168,12 @@ may stream transaction rows into the existing rolling package workspace, but it 
 commit the destination before the transaction boundary.
 
 One transaction can exceed the configured package-rotation target. Rotation is therefore a soft
-target for CDC and the overshoot MUST be reported. A separate maximum admitted transaction byte/row
-policy is required before production CDC. Exceeding that maximum MUST fail closed without advancing
-state; silently splitting a transaction across committed checkpoints is forbidden. Whether the
-limit is a required authored value or a host policy is unratified.
+target for CDC and the overshoot MUST be reported. `maximum_transaction_bytes` MUST be a mandatory
+compiled CDC capability bounded by host spill/replay policy. A project/resource MAY lower it but
+MUST NOT raise it above host authority. Byte count is the hard resource limit; row count is
+telemetry. Exceeding the bound MUST fail closed without advancing state. The kernel MUST NOT invent
+a universal numeric default; the host profile supplies the concrete deterministic bound carried by
+the compiled plan.
 
 ## Canonical CDC row contract
 
@@ -203,8 +217,16 @@ Arrow nullability and complicate contracts, merge semantics, and destination ver
 that cannot obtain a complete after-image MUST fail planning or require an explicitly different
 future capability.
 
-This row-image recommendation is a semantic blocker and requires user ratification before an
-executable source/destination ticket.
+Protocol consequences are explicit:
+
+- MySQL MUST require ROW/FULL logging and is the recommended first end-to-end CDC proof.
+- PostgreSQL MUST use a consistent-snapshot-seeded row materializer to reconstruct unchanged
+  TOASTed values; post-commit lookups are not exact.
+- MongoDB MUST require server 6.0+, collection post-images, and
+  `fullDocument: "required"`; `updateLookup` is not exact.
+- MongoDB `replace` maps to update. Truncate/DDL and missing images/keys fail before checkpoint.
+
+This row-image recommendation remains a semantic blocker pending user ratification.
 
 ### Ordering and keys
 
@@ -290,7 +312,8 @@ positions. At minimum:
 - golden fixtures, examples, system-SQL decoding, inspect/status rendering, and conformance.
 
 Recommended pre-production policy: replace the current schema coherently, fail closed on old
-versions, and do not add legacy readers/migrations. This recommendation requires ratification.
+versions with direct remediation, update every fixture/renderer/hash, and add no legacy readers or
+migrations. A partial transition is forbidden. This recommendation requires ratification.
 
 ## Failure behavior
 
@@ -345,16 +368,18 @@ versions, and do not add legacy readers/migrations. This recommendation requires
 
 ## Open blockers
 
-1. Exact ordered-log coordinate/transaction Rust shape after PostgreSQL/MySQL protocol research.
-2. Exact MongoDB token encoding and scope fields after official-driver research.
-3. User ratification of complete after-image updates and key-only deletes.
-4. User ratification of current-schema replacement versus legacy artifact readers.
-5. Maximum transaction policy ownership and default.
-6. First destination(s) authorized to implement `cdc_apply`.
+1. User ratification of the typed position shapes and algebra from
+   `.10x/research/2026-08-03-cdc-protocol-position-contract.md`.
+2. User ratification of complete after-image updates/key-only deletes and MySQL-first proof, with
+   the stated PostgreSQL/MongoDB prerequisites.
+3. User ratification of host-bounded transaction bytes, clean current-schema artifact replacement,
+   and MongoDB event-level resume semantics unless a transaction boundary is later proven.
+4. First destination(s) authorized to implement `cdc_apply` after A1/A2.
 
 ## References
 
 - `.10x/research/2026-08-03-cdc-semantic-dsl-core-readiness-audit.md`
+- `.10x/research/2026-08-03-cdc-protocol-position-contract.md`
 - `.10x/specs/checkpoint-state-commit-gate.md`
 - `.10x/specs/stream-epochs-watermarks.md`
 - `.10x/decisions/kernel-owned-stream-epoch-policy.md`
