@@ -1,6 +1,11 @@
 {
   "sources": [
     {
+      "id": "clickhouse",
+      "descriptor_sha256": "sha256:4a6bae7d3a556bab7dc53dc6ccb391eb41aaa4a50f23fd0547bdbe5600d3efa9",
+      "option_schema_sha256": "sha256:8a1542ba5b9823f7d21d2a285e0d27d730e8731a533cf5fd20b4816cb6b1f5b3"
+    },
+    {
       "id": "files",
       "descriptor_sha256": "sha256:691ea492173fbd28df9a4492b7b2dcdaa763281f20cb91b3c44d33f14fd8656e",
       "option_schema_sha256": "sha256:ad00e76d3d7fcb02b2931a8bf83b336063c4fc884354c1a2aa93dad2441cd537"

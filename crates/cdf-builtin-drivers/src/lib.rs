@@ -11,6 +11,7 @@ use cdf_kernel::{CdfError, Result};
 use cdf_object_access::{FileTransportFacade, ObjectStoreClientPool};
 use cdf_python::PythonSourceDriver;
 use cdf_runtime::{ByteTransformRegistry, DestinationRegistry, FormatRegistry, SourceRegistry};
+use cdf_source_clickhouse::ClickHouseSourceDriver;
 use cdf_source_files::{FileRuntimeDependencies, FileSourceDriver, file_source_blocking_lane};
 use cdf_source_glue::{
     AwsGlueCatalogClient as AwsGlueExternalCatalogClient, AwsLakeFormationClient,
@@ -200,6 +201,7 @@ fn build_source_registry(
     transforms: Arc<ByteTransformRegistry>,
 ) -> Result<SourceRegistry> {
     let mut registry = SourceRegistry::new();
+    registry.register(ClickHouseSourceDriver::new()?)?;
     registry.register(PythonSourceDriver::new()?)?;
     registry.register(PostgresSourceDriver::new()?)?;
     registry.register(SqliteSourceDriver::new()?)?;

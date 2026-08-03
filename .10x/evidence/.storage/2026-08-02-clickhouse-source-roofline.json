@@ -1,0 +1,1194 @@
+{
+  "schema_version": 3,
+  "status": "pass",
+  "endpoint_authority": "clickhouse://127.0.0.1:18123",
+  "server_image": "clickhouse/clickhouse-server@sha256:2173163006e08f6b6670017deff19be554b9a05812d11f1c08b027ecf55d7a60",
+  "server_version": "25.8.28.1",
+  "client_version": "0.15.1",
+  "arrow_extension_version": "0.1.0",
+  "compression": "http=none; ArrowStream-inner=none; bounded-decode-safe",
+  "max_threads": 4,
+  "max_block_rows": 8192,
+  "stream_buffer_batches": 1,
+  "rows": 1000000,
+  "samples": 5,
+  "cdf_elapsed_ns": [
+    44669459,
+    47136041,
+    44090625,
+    44032375,
+    44840083
+  ],
+  "direct_elapsed_ns": [
+    45044750,
+    44320084,
+    45300084,
+    44641500,
+    45675833
+  ],
+  "cdf_median_ns": 44669459,
+  "direct_median_ns": 45044750,
+  "roofline_ratio_ppm": 1008401,
+  "host": {
+    "schema_version": 1,
+    "architecture": "aarch64",
+    "cpu_label": "Apple M5 Pro",
+    "advertised_logical_cores": 18,
+    "advertised_physical_cores": {
+      "status": "supported",
+      "value": 18,
+      "method": "os-cpu-topology",
+      "provider_version": "system-host-v1"
+    },
+    "advertised_memory_bytes": {
+      "status": "supported",
+      "value": 25769803776,
+      "method": "os-memory-authority",
+      "provider_version": "system-host-v1"
+    },
+    "effective_cpu": {
+      "status": "supported",
+      "value": {
+        "logical_cores": 18,
+        "quota_millicores": null,
+        "affinity_cores": 18
+      },
+      "method": "process-available-parallelism",
+      "provider_version": "system-host-v1"
+    },
+    "effective_memory_bytes": {
+      "status": "unavailable",
+      "reason": "no container memory overlay on this platform",
+      "method": "container-memory-overlay",
+      "provider_version": "system-host-v1"
+    },
+    "storage": {
+      "status": "supported",
+      "value": {
+        "medium": "unknown",
+        "filesystem": "apfs",
+        "label": "apfs-storage-class",
+        "free_bytes": null
+      },
+      "method": "filesystem-target-probe",
+      "provider_version": "system-host-v1"
+    },
+    "os": {
+      "family": "macos",
+      "version": "26.5.2",
+      "kernel": "25.5.0"
+    },
+    "rust_version": "rustc 1.96.1 (31fca3adb 2026-06-26)",
+    "cdf_version": "0.2.0-alpha.1",
+    "dependency_versions": {
+      "clickhouse": "0.15.1",
+      "clickhouse-ext-arrow": "0.1.0",
+      "clickhouse-server": "25.8.28.1"
+    },
+    "benchmark_profile": "release-clickhouse-source-roofline"
+  },
+  "comparability": {
+    "dataset_id": "clickhouse-source-roofline-1000000-rows-3xu64",
+    "workload_id": "clickhouse-arrowstream-t4-r8192-none-reuse-c1",
+    "timed_region_version": 1,
+    "cdf_revision": "57a412e6c95616c2707cf80ca9b95e217f74b1e1",
+    "dependency_tuple": "clickhouse=0.15.1+cdf-bounded-response-v1;arrow-ipc=58.3.0+cdf-bounded-stream-v2;clickhouse-ext-arrow=0.1.0+cdf-bounded-stream-v1;server=25.8.28.1;workspace=sha256:682058a35f397b5348ebbfe29d73b9490a91a99a0b2250b03203b9952c6e7337;executable=sha256:df6291747412a559856bfa9aec72c93f1c942be800b4857dcab0de7ab74a85b6",
+    "host_class": "host-class-cbcf96c8010a9c6f",
+    "os_toolchain": "macos-aarch64;rustc 1.96.1 (31fca3adb 2026-06-26)",
+    "io_mode": "warm"
+  },
+  "workspace_content_sha256": "sha256:682058a35f397b5348ebbfe29d73b9490a91a99a0b2250b03203b9952c6e7337",
+  "workspace_content_inputs": [
+    "Cargo.toml",
+    "Cargo.lock",
+    "crates/cdf-benchmarks/Cargo.toml",
+    "crates/cdf-benchmarks/src/bin/clickhouse-source-roofline.rs",
+    "crates/cdf-benchmarks/src/clickhouse_source_roofline.rs",
+    "crates/cdf-source-clickhouse/Cargo.toml",
+    "crates/cdf-source-clickhouse/src/catalog.rs",
+    "crates/cdf-source-clickhouse/src/client.rs",
+    "crates/cdf-source-clickhouse/src/driver.rs",
+    "crates/cdf-source-clickhouse/src/error.rs",
+    "crates/cdf-source-clickhouse/src/execution.rs",
+    "crates/cdf-source-clickhouse/src/identifier.rs",
+    "crates/cdf-source-clickhouse/src/lib.rs",
+    "crates/cdf-source-clickhouse/src/memory.rs",
+    "crates/cdf-source-clickhouse/src/query.rs",
+    "crates/cdf-source-clickhouse/src/resource.rs",
+    "crates/cdf-source-clickhouse/src/tests.rs",
+    "crates/cdf-source-clickhouse/src/types.rs",
+    "third-party/arrow-ipc-58.3.0-cdf/Cargo.toml",
+    "third-party/arrow-ipc-58.3.0-cdf/src/compression.rs",
+    "third-party/arrow-ipc-58.3.0-cdf/src/convert.rs",
+    "third-party/arrow-ipc-58.3.0-cdf/src/reader.rs",
+    "third-party/arrow-ipc-58.3.0-cdf/src/reader/stream.rs",
+    "third-party/clickhouse-0.15.1-cdf/Cargo.toml",
+    "third-party/clickhouse-0.15.1-cdf/src/compression/lz4.rs",
+    "third-party/clickhouse-0.15.1-cdf/src/compression/zstd.rs",
+    "third-party/clickhouse-0.15.1-cdf/src/error.rs",
+    "third-party/clickhouse-0.15.1-cdf/src/http_client.rs",
+    "third-party/clickhouse-0.15.1-cdf/src/insert_formatted.rs",
+    "third-party/clickhouse-0.15.1-cdf/src/lib.rs",
+    "third-party/clickhouse-0.15.1-cdf/src/query.rs",
+    "third-party/clickhouse-0.15.1-cdf/src/response.rs",
+    "third-party/clickhouse-ext-arrow-0.1.0-cdf/Cargo.toml",
+    "third-party/clickhouse-ext-arrow-0.1.0-cdf/src/lib.rs"
+  ],
+  "executable_sha256": "sha256:df6291747412a559856bfa9aec72c93f1c942be800b4857dcab0de7ab74a85b6",
+  "useful_arrow_bytes": 24000000,
+  "content_checksum": 14451934671319010625,
+  "physical_wire_bytes": null,
+  "physical_wire_bytes_reason": "clickhouse-ext-arrow ArrowCursor does not expose the underlying BytesCursor counters; no physical-wire estimate is substituted",
+  "in_flight_batch_bound": 3,
+  "connection_count": 1,
+  "client_concurrency": 1,
+  "semantic_bias": [
+    "direct runner omits CDF physical-schema binding, batch headers, memory leases, and stream completion governance and is therefore a favorable roofline",
+    "stream_buffer_batches=1 is queue capacity; the truthful retained-batch overlap is queue + producer + consumer = 3",
+    "the fixed-width 3x8-byte fixture makes useful_arrow_bytes exactly rows*24; maximum_batch_retained_bytes remains allocator-capacity evidence and is never substituted for useful payload",
+    "both timed paths validate every id, metric=id*17, and updated_at=id value and record the same deterministic content checksum; variable-width admission remains governed by the separate 16 MiB row and 25 MiB Arrow-body laws"
+  ],
+  "sweep": [
+    {
+      "max_threads": 1,
+      "max_block_rows": 8192,
+      "estimated_target_batch_bytes": 196608,
+      "compression": "none",
+      "connection_reuse": false,
+      "client_concurrency": 1,
+      "cdf_samples": [
+        {
+          "wall_time_ns": 45383458,
+          "cpu_time_ns": 24286000,
+          "peak_rss_bytes": 18038784,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 123,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 391496
+        },
+        {
+          "wall_time_ns": 47672875,
+          "cpu_time_ns": 24216000,
+          "peak_rss_bytes": 18284544,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 123,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 388936
+        },
+        {
+          "wall_time_ns": 45964250,
+          "cpu_time_ns": 24369000,
+          "peak_rss_bytes": 18333696,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 123,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 392008
+        },
+        {
+          "wall_time_ns": 45473583,
+          "cpu_time_ns": 23661000,
+          "peak_rss_bytes": 18350080,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 123,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 382024
+        },
+        {
+          "wall_time_ns": 44713291,
+          "cpu_time_ns": 23829000,
+          "peak_rss_bytes": 18382848,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 123,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 389960
+        }
+      ],
+      "direct_samples": [
+        {
+          "wall_time_ns": 51134291,
+          "cpu_time_ns": 25194000,
+          "peak_rss_bytes": 18219008,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 123,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 392520
+        },
+        {
+          "wall_time_ns": 47607709,
+          "cpu_time_ns": 22085000,
+          "peak_rss_bytes": 18284544,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 123,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 387144
+        },
+        {
+          "wall_time_ns": 45107375,
+          "cpu_time_ns": 22106000,
+          "peak_rss_bytes": 18333696,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 123,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 392520
+        },
+        {
+          "wall_time_ns": 45125625,
+          "cpu_time_ns": 21169000,
+          "peak_rss_bytes": 18333696,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 123,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 389192
+        },
+        {
+          "wall_time_ns": 46538250,
+          "cpu_time_ns": 21154000,
+          "peak_rss_bytes": 18382848,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 123,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 386376
+        }
+      ],
+      "cdf_median_ns": 45473583,
+      "direct_median_ns": 46538250,
+      "cdf_mad_ns": 490667,
+      "direct_mad_ns": 1412625,
+      "roofline_ratio_ppm": 1023412,
+      "status": "pass"
+    },
+    {
+      "max_threads": 1,
+      "max_block_rows": 65536,
+      "estimated_target_batch_bytes": 1572864,
+      "compression": "none",
+      "connection_reuse": false,
+      "client_concurrency": 1,
+      "cdf_samples": [
+        {
+          "wall_time_ns": 46154125,
+          "cpu_time_ns": 21177000,
+          "peak_rss_bytes": 26787840,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 16,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 2945352
+        },
+        {
+          "wall_time_ns": 48783959,
+          "cpu_time_ns": 22657000,
+          "peak_rss_bytes": 26804224,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 16,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3080520
+        },
+        {
+          "wall_time_ns": 44466042,
+          "cpu_time_ns": 20664000,
+          "peak_rss_bytes": 26853376,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 16,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3080520
+        },
+        {
+          "wall_time_ns": 45135167,
+          "cpu_time_ns": 20764000,
+          "peak_rss_bytes": 26886144,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 16,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 2978120
+        },
+        {
+          "wall_time_ns": 45256167,
+          "cpu_time_ns": 20961000,
+          "peak_rss_bytes": 26886144,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 16,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3025224
+        }
+      ],
+      "direct_samples": [
+        {
+          "wall_time_ns": 47540708,
+          "cpu_time_ns": 20312000,
+          "peak_rss_bytes": 26787840,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 16,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3103048
+        },
+        {
+          "wall_time_ns": 47027084,
+          "cpu_time_ns": 21525000,
+          "peak_rss_bytes": 26804224,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 16,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 2879816
+        },
+        {
+          "wall_time_ns": 45855709,
+          "cpu_time_ns": 20138000,
+          "peak_rss_bytes": 26853376,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 16,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 2961736
+        },
+        {
+          "wall_time_ns": 46722667,
+          "cpu_time_ns": 20437000,
+          "peak_rss_bytes": 26869760,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 16,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 2994504
+        },
+        {
+          "wall_time_ns": 45357917,
+          "cpu_time_ns": 20245000,
+          "peak_rss_bytes": 26886144,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 16,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3127624
+        }
+      ],
+      "cdf_median_ns": 45256167,
+      "direct_median_ns": 46722667,
+      "cdf_mad_ns": 790125,
+      "direct_mad_ns": 818041,
+      "roofline_ratio_ppm": 1032404,
+      "status": "pass"
+    },
+    {
+      "max_threads": 4,
+      "max_block_rows": 8192,
+      "estimated_target_batch_bytes": 196608,
+      "compression": "none",
+      "connection_reuse": false,
+      "client_concurrency": 1,
+      "cdf_samples": [
+        {
+          "wall_time_ns": 45530958,
+          "cpu_time_ns": 23683000,
+          "peak_rss_bytes": 26886144,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 121,
+          "maximum_batch_rows": 65409,
+          "maximum_batch_retained_bytes": 1615176
+        },
+        {
+          "wall_time_ns": 44624250,
+          "cpu_time_ns": 23465000,
+          "peak_rss_bytes": 26886144,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 125,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 392008
+        },
+        {
+          "wall_time_ns": 47008750,
+          "cpu_time_ns": 23303000,
+          "peak_rss_bytes": 26886144,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 125,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 392264
+        },
+        {
+          "wall_time_ns": 45186916,
+          "cpu_time_ns": 23328000,
+          "peak_rss_bytes": 26886144,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 125,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 389448
+        },
+        {
+          "wall_time_ns": 44817917,
+          "cpu_time_ns": 23547000,
+          "peak_rss_bytes": 26886144,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 125,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 390472
+        }
+      ],
+      "direct_samples": [
+        {
+          "wall_time_ns": 44846708,
+          "cpu_time_ns": 21029000,
+          "peak_rss_bytes": 26886144,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 125,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 386376
+        },
+        {
+          "wall_time_ns": 43771792,
+          "cpu_time_ns": 20775000,
+          "peak_rss_bytes": 26886144,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 125,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 357704
+        },
+        {
+          "wall_time_ns": 44900750,
+          "cpu_time_ns": 21610000,
+          "peak_rss_bytes": 26886144,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 127,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 393032
+        },
+        {
+          "wall_time_ns": 44792584,
+          "cpu_time_ns": 21258000,
+          "peak_rss_bytes": 26886144,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 126,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 393032
+        },
+        {
+          "wall_time_ns": 44001083,
+          "cpu_time_ns": 20885000,
+          "peak_rss_bytes": 26886144,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 126,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 392520
+        }
+      ],
+      "cdf_median_ns": 45186916,
+      "direct_median_ns": 44792584,
+      "cdf_mad_ns": 368999,
+      "direct_mad_ns": 108166,
+      "roofline_ratio_ppm": 991273,
+      "status": "pass"
+    },
+    {
+      "max_threads": 4,
+      "max_block_rows": 65536,
+      "estimated_target_batch_bytes": 1572864,
+      "compression": "none",
+      "connection_reuse": false,
+      "client_concurrency": 1,
+      "cdf_samples": [
+        {
+          "wall_time_ns": 44514000,
+          "cpu_time_ns": 21016000,
+          "peak_rss_bytes": 27754496,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 19,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3098952
+        },
+        {
+          "wall_time_ns": 45572375,
+          "cpu_time_ns": 21340000,
+          "peak_rss_bytes": 27754496,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 19,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 2978120
+        },
+        {
+          "wall_time_ns": 44241458,
+          "cpu_time_ns": 21523000,
+          "peak_rss_bytes": 27754496,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 18,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3057992
+        },
+        {
+          "wall_time_ns": 44846167,
+          "cpu_time_ns": 21546000,
+          "peak_rss_bytes": 27754496,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 18,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 2994504
+        },
+        {
+          "wall_time_ns": 45631083,
+          "cpu_time_ns": 22086000,
+          "peak_rss_bytes": 27754496,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 19,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 2961736
+        }
+      ],
+      "direct_samples": [
+        {
+          "wall_time_ns": 44812125,
+          "cpu_time_ns": 20362000,
+          "peak_rss_bytes": 27754496,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 19,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3066184
+        },
+        {
+          "wall_time_ns": 44295542,
+          "cpu_time_ns": 20072000,
+          "peak_rss_bytes": 27754496,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 18,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 2990408
+        },
+        {
+          "wall_time_ns": 44620667,
+          "cpu_time_ns": 20588000,
+          "peak_rss_bytes": 27754496,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 19,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3098952
+        },
+        {
+          "wall_time_ns": 44911459,
+          "cpu_time_ns": 20676000,
+          "peak_rss_bytes": 27754496,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 18,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 2982216
+        },
+        {
+          "wall_time_ns": 44280667,
+          "cpu_time_ns": 20408000,
+          "peak_rss_bytes": 27770880,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 19,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3098952
+        }
+      ],
+      "cdf_median_ns": 44846167,
+      "direct_median_ns": 44620667,
+      "cdf_mad_ns": 604709,
+      "direct_mad_ns": 290792,
+      "roofline_ratio_ppm": 994971,
+      "status": "pass"
+    },
+    {
+      "max_threads": 1,
+      "max_block_rows": 8192,
+      "estimated_target_batch_bytes": 196608,
+      "compression": "none",
+      "connection_reuse": true,
+      "client_concurrency": 1,
+      "cdf_samples": [
+        {
+          "wall_time_ns": 46303292,
+          "cpu_time_ns": 23432000,
+          "peak_rss_bytes": 27770880,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 123,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 393032
+        },
+        {
+          "wall_time_ns": 45060667,
+          "cpu_time_ns": 23713000,
+          "peak_rss_bytes": 27770880,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 123,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 392520
+        },
+        {
+          "wall_time_ns": 45677583,
+          "cpu_time_ns": 24249000,
+          "peak_rss_bytes": 27770880,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 123,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 390728
+        },
+        {
+          "wall_time_ns": 45277250,
+          "cpu_time_ns": 24176000,
+          "peak_rss_bytes": 27770880,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 123,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 392008
+        },
+        {
+          "wall_time_ns": 46399250,
+          "cpu_time_ns": 25245000,
+          "peak_rss_bytes": 27770880,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 123,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 392008
+        }
+      ],
+      "direct_samples": [
+        {
+          "wall_time_ns": 45417667,
+          "cpu_time_ns": 21381000,
+          "peak_rss_bytes": 27770880,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 123,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 391496
+        },
+        {
+          "wall_time_ns": 45692708,
+          "cpu_time_ns": 21469000,
+          "peak_rss_bytes": 27770880,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 123,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 391496
+        },
+        {
+          "wall_time_ns": 49057583,
+          "cpu_time_ns": 23435000,
+          "peak_rss_bytes": 27770880,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 123,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 389448
+        },
+        {
+          "wall_time_ns": 46189792,
+          "cpu_time_ns": 21845000,
+          "peak_rss_bytes": 27770880,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 123,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 391496
+        },
+        {
+          "wall_time_ns": 46520708,
+          "cpu_time_ns": 21774000,
+          "peak_rss_bytes": 27770880,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 123,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 387400
+        }
+      ],
+      "cdf_median_ns": 45677583,
+      "direct_median_ns": 46189792,
+      "cdf_mad_ns": 616916,
+      "direct_mad_ns": 497084,
+      "roofline_ratio_ppm": 1011213,
+      "status": "pass"
+    },
+    {
+      "max_threads": 1,
+      "max_block_rows": 65536,
+      "estimated_target_batch_bytes": 1572864,
+      "compression": "none",
+      "connection_reuse": true,
+      "client_concurrency": 1,
+      "cdf_samples": [
+        {
+          "wall_time_ns": 45065542,
+          "cpu_time_ns": 21139000,
+          "peak_rss_bytes": 27787264,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 16,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3066184
+        },
+        {
+          "wall_time_ns": 51928333,
+          "cpu_time_ns": 23029000,
+          "peak_rss_bytes": 27787264,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 16,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3090760
+        },
+        {
+          "wall_time_ns": 45446541,
+          "cpu_time_ns": 20692000,
+          "peak_rss_bytes": 27787264,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 16,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3098952
+        },
+        {
+          "wall_time_ns": 44887458,
+          "cpu_time_ns": 20653000,
+          "peak_rss_bytes": 27787264,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 16,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3000648
+        },
+        {
+          "wall_time_ns": 44914584,
+          "cpu_time_ns": 21671000,
+          "peak_rss_bytes": 27787264,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 16,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3080520
+        }
+      ],
+      "direct_samples": [
+        {
+          "wall_time_ns": 46383750,
+          "cpu_time_ns": 21165000,
+          "peak_rss_bytes": 27787264,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 16,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3098952
+        },
+        {
+          "wall_time_ns": 45278792,
+          "cpu_time_ns": 20966000,
+          "peak_rss_bytes": 27787264,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 16,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3092808
+        },
+        {
+          "wall_time_ns": 45428709,
+          "cpu_time_ns": 20631000,
+          "peak_rss_bytes": 27787264,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 16,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3090760
+        },
+        {
+          "wall_time_ns": 44859417,
+          "cpu_time_ns": 20804000,
+          "peak_rss_bytes": 27787264,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 16,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3098952
+        },
+        {
+          "wall_time_ns": 48479958,
+          "cpu_time_ns": 21443000,
+          "peak_rss_bytes": 27787264,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 16,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3082568
+        }
+      ],
+      "cdf_median_ns": 45065542,
+      "direct_median_ns": 45428709,
+      "cdf_mad_ns": 178084,
+      "direct_mad_ns": 569292,
+      "roofline_ratio_ppm": 1008058,
+      "status": "pass"
+    },
+    {
+      "max_threads": 4,
+      "max_block_rows": 8192,
+      "estimated_target_batch_bytes": 196608,
+      "compression": "none",
+      "connection_reuse": true,
+      "client_concurrency": 1,
+      "cdf_samples": [
+        {
+          "wall_time_ns": 44669459,
+          "cpu_time_ns": 24015000,
+          "peak_rss_bytes": 27787264,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 126,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 351304
+        },
+        {
+          "wall_time_ns": 47136041,
+          "cpu_time_ns": 24064000,
+          "peak_rss_bytes": 27787264,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 125,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 392520
+        },
+        {
+          "wall_time_ns": 44090625,
+          "cpu_time_ns": 23483000,
+          "peak_rss_bytes": 27787264,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 128,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 393032
+        },
+        {
+          "wall_time_ns": 44032375,
+          "cpu_time_ns": 24479000,
+          "peak_rss_bytes": 27787264,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 126,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 392008
+        },
+        {
+          "wall_time_ns": 44840083,
+          "cpu_time_ns": 25056000,
+          "peak_rss_bytes": 27787264,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 125,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 392776
+        }
+      ],
+      "direct_samples": [
+        {
+          "wall_time_ns": 45044750,
+          "cpu_time_ns": 21277000,
+          "peak_rss_bytes": 27787264,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 127,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 390728
+        },
+        {
+          "wall_time_ns": 44320084,
+          "cpu_time_ns": 21068000,
+          "peak_rss_bytes": 27787264,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 128,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 390728
+        },
+        {
+          "wall_time_ns": 45300084,
+          "cpu_time_ns": 21669000,
+          "peak_rss_bytes": 27787264,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 125,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 393032
+        },
+        {
+          "wall_time_ns": 44641500,
+          "cpu_time_ns": 22037000,
+          "peak_rss_bytes": 27787264,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 125,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 393288
+        },
+        {
+          "wall_time_ns": 45675833,
+          "cpu_time_ns": 22135000,
+          "peak_rss_bytes": 27787264,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 125,
+          "maximum_batch_rows": 8192,
+          "maximum_batch_retained_bytes": 393288
+        }
+      ],
+      "cdf_median_ns": 44669459,
+      "direct_median_ns": 45044750,
+      "cdf_mad_ns": 578834,
+      "direct_mad_ns": 403250,
+      "roofline_ratio_ppm": 1008401,
+      "status": "pass"
+    },
+    {
+      "max_threads": 4,
+      "max_block_rows": 65536,
+      "estimated_target_batch_bytes": 1572864,
+      "compression": "none",
+      "connection_reuse": true,
+      "client_concurrency": 1,
+      "cdf_samples": [
+        {
+          "wall_time_ns": 44905084,
+          "cpu_time_ns": 21773000,
+          "peak_rss_bytes": 27836416,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 19,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3098952
+        },
+        {
+          "wall_time_ns": 44997375,
+          "cpu_time_ns": 21530000,
+          "peak_rss_bytes": 27836416,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 18,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3045704
+        },
+        {
+          "wall_time_ns": 44480375,
+          "cpu_time_ns": 20729000,
+          "peak_rss_bytes": 27836416,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 19,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3074376
+        },
+        {
+          "wall_time_ns": 44445834,
+          "cpu_time_ns": 20869000,
+          "peak_rss_bytes": 27836416,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 19,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3037512
+        },
+        {
+          "wall_time_ns": 44996708,
+          "cpu_time_ns": 20829000,
+          "peak_rss_bytes": 27836416,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 18,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3082568
+        }
+      ],
+      "direct_samples": [
+        {
+          "wall_time_ns": 44117250,
+          "cpu_time_ns": 20638000,
+          "peak_rss_bytes": 27836416,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 19,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3082568
+        },
+        {
+          "wall_time_ns": 44448209,
+          "cpu_time_ns": 20524000,
+          "peak_rss_bytes": 27836416,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 18,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3098952
+        },
+        {
+          "wall_time_ns": 45397250,
+          "cpu_time_ns": 20532000,
+          "peak_rss_bytes": 27836416,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 18,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3090760
+        },
+        {
+          "wall_time_ns": 44490750,
+          "cpu_time_ns": 20867000,
+          "peak_rss_bytes": 27836416,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 18,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3098952
+        },
+        {
+          "wall_time_ns": 47369458,
+          "cpu_time_ns": 21168000,
+          "peak_rss_bytes": 27836416,
+          "rows": 1000000,
+          "useful_arrow_bytes": 24000000,
+          "content_checksum": 14451934671319010625,
+          "batch_count": 18,
+          "maximum_batch_rows": 65536,
+          "maximum_batch_retained_bytes": 3039560
+        }
+      ],
+      "cdf_median_ns": 44905084,
+      "direct_median_ns": 44490750,
+      "cdf_mad_ns": 92291,
+      "direct_mad_ns": 373500,
+      "roofline_ratio_ppm": 990773,
+      "status": "pass"
+    }
+  ],
+  "sweep_exclusions": [
+    {
+      "dimension": "compression",
+      "value": "lz4",
+      "reason": "production fixes HTTP and ArrowStream-inner compression to none, so an LZ4 cell would not measure the shipped connector contract; the locally patched official client still enforces declared compressed and decoded frame ceilings"
+    },
+    {
+      "dimension": "client_concurrency",
+      "value": "2+",
+      "reason": "compiled source capability maximum_concurrency=1; manufacturing parallel table snapshots would change semantics"
+    },
+    {
+      "dimension": "remote_cloud",
+      "value": "unavailable",
+      "reason": "no separately authorized ClickHouse Cloud credentials, external writes, or cost were supplied for this local closure run"
+    }
+  ]
+}

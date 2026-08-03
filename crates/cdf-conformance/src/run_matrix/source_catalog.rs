@@ -4,8 +4,8 @@ use cdf_kernel::{CdfError, QueryableResource, Result};
 use cdf_project::{ProjectRunReport, ProjectRunSource};
 
 use super::{
-    MatrixDisposition, RunMatrixCell, SourceArchetype, file_fixture, nebula_task_fixture,
-    plan_json, postgres_fixture, python_fixture, rest_fixture, sqlite_fixture,
+    MatrixDisposition, RunMatrixCell, SourceArchetype, clickhouse_fixture, file_fixture,
+    nebula_task_fixture, plan_json, postgres_fixture, python_fixture, rest_fixture, sqlite_fixture,
 };
 use crate::destination_catalog::ConformanceEnvironment;
 
@@ -84,6 +84,10 @@ const FIXTURES: &[SourceFixture] = &[
     SourceFixture {
         archetype: "postgres",
         prepare: prepare_postgres,
+    },
+    SourceFixture {
+        archetype: "clickhouse",
+        prepare: prepare_clickhouse,
     },
     SourceFixture {
         archetype: "sqlite",
@@ -169,6 +173,17 @@ fn prepare_postgres(
     Ok(PreparedMatrixSource::new(
         postgres_fixture::resource(cell.clone(), environment.postgres()?)?,
         postgres_fixture::assert_source_position,
+    ))
+}
+
+fn prepare_clickhouse(
+    cell: &RunMatrixCell,
+    _project_root: &Path,
+    _environment: &ConformanceEnvironment,
+) -> Result<PreparedMatrixSource> {
+    Ok(PreparedMatrixSource::new(
+        clickhouse_fixture::resource(cell)?,
+        clickhouse_fixture::assert_source_position,
     ))
 }
 

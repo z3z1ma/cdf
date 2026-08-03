@@ -323,8 +323,6 @@ dependencies = [
 [[package]]
 name = "arrow-ipc"
 version = "58.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "238438f0834483703d88896db6fe5a7138b2230debc31b34c0336c2996e3c64f"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -332,7 +330,7 @@ dependencies = [
  "arrow-schema",
  "arrow-select",
  "flatbuffers",
- "lz4_flex",
+ "lz4_flex 0.13.1",
  "zstd",
 ]
 
@@ -728,6 +726,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "bnum"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "119771309b95163ec7aaf79810da82f7cd0599c19722d48b9c03894dca833966"
+
+[[package]]
 name = "bon"
 version = "3.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -807,6 +811,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bstr"
+version = "1.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f7dc094d718f2e1c1559ad110e27eeaae14a5465d3d56dd6dbd793079fbd530"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -851,6 +864,9 @@ name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "bytes-utils"
@@ -1002,6 +1018,7 @@ dependencies = [
  "cdf-package-contract",
  "cdf-project",
  "cdf-runtime",
+ "cdf-source-clickhouse",
  "cdf-source-files",
  "cdf-source-iceberg",
  "cdf-source-rest",
@@ -1009,6 +1026,8 @@ dependencies = [
  "cdf-state-sqlite",
  "cdf-transport-http",
  "clap",
+ "clickhouse",
+ "clickhouse-ext-arrow",
  "criterion",
  "datafusion",
  "duckdb",
@@ -1023,6 +1042,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "tokio",
+ "url",
 ]
 
 [[package]]
@@ -1044,6 +1064,7 @@ dependencies = [
  "cdf-object-access",
  "cdf-python",
  "cdf-runtime",
+ "cdf-source-clickhouse",
  "cdf-source-files",
  "cdf-source-glue",
  "cdf-source-iceberg",
@@ -1151,6 +1172,7 @@ dependencies = [
  "cdf-project",
  "cdf-python",
  "cdf-runtime",
+ "cdf-source-clickhouse",
  "cdf-source-files",
  "cdf-source-postgres",
  "cdf-source-rest",
@@ -1158,6 +1180,7 @@ dependencies = [
  "cdf-state-sqlite",
  "cdf-subprocess",
  "cdf-task-store",
+ "clickhouse",
  "duckdb",
  "futures-executor",
  "futures-util",
@@ -1688,6 +1711,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdf-source-clickhouse"
+version = "0.2.0-alpha.1"
+dependencies = [
+ "arrow-array",
+ "arrow-cast",
+ "arrow-schema",
+ "cdf-engine",
+ "cdf-http",
+ "cdf-kernel",
+ "cdf-memory",
+ "cdf-runtime",
+ "clickhouse",
+ "clickhouse-ext-arrow",
+ "futures-executor",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "url",
+]
+
+[[package]]
 name = "cdf-source-files"
 version = "0.2.0-alpha.1"
 dependencies = [
@@ -1958,7 +2002,7 @@ dependencies = [
  "cdf-runtime",
  "futures-executor",
  "futures-util",
- "lz4_flex",
+ "lz4_flex 0.13.1",
  "twox-hash",
 ]
 
@@ -2107,6 +2151,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "cityhash-rs"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93a719913643003b84bd13022b4b7e703c09342cd03b679c4641c7d2e50dc34d"
+
+[[package]]
 name = "clap"
 version = "4.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2148,6 +2198,69 @@ checksum = "d82842b45bf9f6a3be090dd860095ac30728042c08e0d6261ca7259b5d850f07"
 dependencies = [
  "clap",
  "roff",
+]
+
+[[package]]
+name = "clickhouse"
+version = "0.15.1"
+dependencies = [
+ "bnum 0.13.0",
+ "bstr",
+ "bytes",
+ "cityhash-rs",
+ "clickhouse-macros",
+ "clickhouse-types",
+ "futures-channel",
+ "futures-util",
+ "http-body-util",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "lz4_flex 0.11.6",
+ "polonius-the-crab",
+ "rustls",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "clickhouse-ext-arrow"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-ipc",
+ "arrow-schema",
+ "arrow-select",
+ "clickhouse",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "clickhouse-macros"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff6669899e23cb87b43daf7996f0ea3b9c07d0fb933d745bb7b815b052515ae3"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_derive_internals",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "clickhouse-types"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "30a5efddc880ce9e2573bd867413d9056fa2bea0206af88dec21e72178b9dc74"
+dependencies = [
+ "bytes",
+ "thiserror",
 ]
 
 [[package]]
@@ -3292,7 +3405,7 @@ version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "020d1b59a944bc239d79903fbac2eda2365138b44890c27979562f6592059dcd"
 dependencies = [
- "bnum",
+ "bnum 0.12.1",
  "num-integer",
  "num-traits",
  "serde",
@@ -3654,6 +3767,17 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
+name = "higher-kinded-types"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e690f8474c6c5d8ff99656fcbc195a215acc3949481a8b0b3351c838972dc776"
+dependencies = [
+ "macro_rules_attribute",
+ "never-say-never",
+ "paste",
+]
 
 [[package]]
 name = "hmac"
@@ -4369,12 +4493,34 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "lz4_flex"
+version = "0.11.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "373f5eceeeab7925e0c1098212f2fbc4d416adec9d35051a6ab251e824c1854a"
+
+[[package]]
+name = "lz4_flex"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ef0d4ed8669f8f8826eb00dc878084aa8f253506c4fd5e8f58f5bce72ddb97e"
 dependencies = [
  "twox-hash",
 ]
+
+[[package]]
+name = "macro_rules_attribute"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b3ae8f6d608c795738406608304d30a2dfbdc8e58e44f7ba43236da5208ded3c"
+dependencies = [
+ "macro_rules_attribute-proc_macro",
+ "pastey",
+]
+
+[[package]]
+name = "macro_rules_attribute-proc_macro"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc04a4c58212d57930a24bf47d3fa87485264a3a054e9c10e042eb373573ad3c"
 
 [[package]]
 name = "maybe-owned"
@@ -4453,6 +4599,12 @@ name = "murmur3"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9252111cf132ba0929b6f8e030cac2a24b507f3a4d6db6fb2896f27b354c714b"
+
+[[package]]
+name = "never-say-never"
+version = "6.6.666"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf5a574dadd7941adeaa71823ecba5e28331b8313fb2e1c6a5c7e5981ea53ad6"
 
 [[package]]
 name = "nix"
@@ -4729,7 +4881,7 @@ dependencies = [
  "futures",
  "half",
  "hashbrown 0.17.1",
- "lz4_flex",
+ "lz4_flex 0.13.1",
  "num-bigint",
  "num-integer",
  "num-traits",
@@ -4749,6 +4901,12 @@ name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
+name = "pastey"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
 
 [[package]]
 name = "percent-encoding"
@@ -4869,6 +5027,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51bae2ac328883f7acdfea3d66a7c35751187f870bc81f94563733a154d7a670"
 dependencies = [
  "plotters-backend",
+]
+
+[[package]]
+name = "polonius-the-crab"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec242d7eccbb2fd8b3b5b6e3cf89f94a91a800f469005b44d154359609f8af72"
+dependencies = [
+ "higher-kinded-types",
+ "never-say-never",
 ]
 
 [[package]]

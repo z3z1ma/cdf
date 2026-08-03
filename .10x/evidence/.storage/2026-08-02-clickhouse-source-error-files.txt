@@ -1,0 +1,12 @@
+crates/cdf-source-clickhouse/src/catalog.rs
+crates/cdf-source-clickhouse/src/client.rs
+crates/cdf-source-clickhouse/src/driver.rs
+crates/cdf-source-clickhouse/src/error.rs
+crates/cdf-source-clickhouse/src/execution.rs
+crates/cdf-source-clickhouse/src/identifier.rs
+crates/cdf-source-clickhouse/src/lib.rs
+crates/cdf-source-clickhouse/src/memory.rs
+crates/cdf-source-clickhouse/src/query.rs
+crates/cdf-source-clickhouse/src/resource.rs
+crates/cdf-source-clickhouse/src/tests.rs
+crates/cdf-source-clickhouse/src/types.rs

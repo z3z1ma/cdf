@@ -43,6 +43,10 @@ impl SourceArchetype {
         Self::fixture("rest")
     }
 
+    pub fn clickhouse() -> Self {
+        Self::fixture("clickhouse")
+    }
+
     pub fn nebula() -> Self {
         Self::fixture("nebula")
     }
@@ -205,6 +209,8 @@ fn destination_matrix_cells(destination: &MatrixDestination) -> Vec<RunMatrixCel
 
 #[cfg(test)]
 mod assertions;
+#[cfg(test)]
+mod clickhouse_fixture;
 #[cfg(test)]
 mod core;
 #[cfg(test)]

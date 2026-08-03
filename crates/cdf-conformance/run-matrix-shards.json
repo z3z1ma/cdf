@@ -3,6 +3,7 @@
   "python",
   "rest",
   "postgres",
+  "clickhouse",
   "sqlite",
   "nebula"
 ]

@@ -65,6 +65,14 @@
       "status": "measured"
     },
     {
+      "owner": "ClickHouse source HTTP, compression, and ArrowStream client internals",
+      "class": "native",
+      "boundary": "cdf-source-clickhouse one-query official client session",
+      "bound_authority": "64 KiB clickhouse-http1-transport source lease retained with the reusable client/pool, one 32 MiB clickhouse-arrow-cursor-state decode lease retained for each live cursor, plus one 64 MiB clickhouse-arrow-decode lease per poll/producer/queued/consumer batch; patched official response and Arrow IPC paths enforce 1 MiB error, 64 KiB HTTP-frame, 2 MiB metadata, a 25 MiB record body and cumulative logical-buffer ceiling, rejection of inner-compressed/dictionary batches before retained allocation, a 1,000,000-row execution/16,384-row catalog record-batch guard, and pre-conversion schema ceilings of 4,096 nodes, 4,096 metadata entries, 4 MiB estimated ownership, and depth 64; the persistent cursor lease covers one retained 25 MiB response chunk plus bounded schema/message/decoder state; the poll decode envelope includes 32 MiB split-body allocator capacity and 4 MiB batch-container headroom; retained-batch overlap is stream_buffer_batches + 2 (maximum 66); 16 MiB discovery metadata is separately leased",
+      "evidence": ".10x/tickets/2026-08-02-clickhouse-source-connector.md",
+      "status": "measured"
+    },
+    {
       "owner": "subprocess and foreign worker process tree",
       "class": "child",
       "boundary": "cdf-subprocess admitted child execution",

@@ -13,6 +13,9 @@ contributors.
 - [SQLite table source](sqlite.md) documents portable local configuration, discovery, snapshot
   isolation, stable cursors, explicit temporal encodings, failure ownership, and the measured
   direct-library roofline.
+- [ClickHouse table source](clickhouse.md) documents credential-safe HTTP configuration, exact
+  ArrowStream schema and pushdown behavior, stable cursors, failure ownership, and the local
+  direct-ArrowStream roofline cell.
 - [SQLite destination](operators/sqlite-destination.md) documents local-file configuration,
   append/replace/merge semantics, durability preservation, receipt recovery, failure ownership,
   and the direct-library destination roofline.

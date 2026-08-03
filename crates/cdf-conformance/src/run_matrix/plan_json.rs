@@ -29,6 +29,18 @@ pub(crate) fn planned_engine_plan<R>(
 where
     R: QueryableResource + ?Sized,
 {
+    planned_engine_plan_with_limit(resource, package_id, identifier_policy, None)
+}
+
+pub(crate) fn planned_engine_plan_with_limit<R>(
+    resource: &R,
+    package_id: &str,
+    identifier_policy: Option<&IdentifierPolicy>,
+    limit: Option<u64>,
+) -> Result<EnginePlan>
+where
+    R: QueryableResource + ?Sized,
+{
     let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
     let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
     if let Some(identifier_policy) = identifier_policy {
@@ -42,7 +54,7 @@ where
                 resource_id: resource.descriptor().resource_id.clone(),
                 projection: None,
                 filters: Vec::new(),
-                limit: None,
+                limit,
                 order_by: Vec::new(),
                 scope: resource.descriptor().state_scope.clone(),
             },

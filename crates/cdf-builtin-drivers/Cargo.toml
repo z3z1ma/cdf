@@ -25,6 +25,7 @@ cdf-kernel = { path = "../cdf-kernel" }
 cdf-object-access = { path = "../cdf-object-access" }
 cdf-python = { path = "../cdf-python" }
 cdf-runtime = { path = "../cdf-runtime" }
+cdf-source-clickhouse = { path = "../cdf-source-clickhouse" }
 cdf-source-files = { path = "../cdf-source-files" }
 cdf-source-glue = { path = "../cdf-source-glue" }
 cdf-source-iceberg = { path = "../cdf-source-iceberg" }

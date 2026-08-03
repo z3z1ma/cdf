@@ -3,7 +3,7 @@
 
 This matrix separates every `ReservationRequest::new` site discovered in production Rust source from allocations that require an explicit native, child-process, metadata, or external-storage authority. `Inherited` means the reservation receives an already-validated typed `ConsumerKey`; the row still records the concrete byte-bound expression at the allocation site.
 
-Managed reservation declarations: **76** grouped rows across **87** production call sites.
+Managed reservation declarations: **82** grouped rows across **92** production call sites.
 
 ## Managed ledger owners
 
@@ -15,33 +15,33 @@ Managed reservation declarations: **76** grouped rows across **87** production c
 | cdf-dest-parquet | parquet-object-verification | Destination | reserved_bytes | crates/cdf-dest-parquet/src/store.rs | 1 |
 | cdf-dest-parquet | parquet-row-group-writer | Destination | writer_bytes | crates/cdf-dest-parquet/src/package.rs | 1 |
 | cdf-dest-parquet | parquet-staged-writer-window | Destination | bytes | crates/cdf-dest-parquet/src/staging.rs | 1 |
-| cdf-engine | late-data-carryover | Decode | decode_window | crates/cdf-engine/src/execution.rs | 1 |
-| cdf-engine | canonical-segment-concat | Package | bytes | crates/cdf-engine/src/execution.rs | 1 |
+| cdf-engine | late-data-carryover | Decode | decode_window | crates/cdf-engine/src/execution/orchestration.rs | 1 |
+| cdf-engine | canonical-segment-concat | Package | bytes | crates/cdf-engine/src/execution/orchestration.rs | 1 |
 | cdf-engine | isolated-canonical-segment-output | Package | working_set | crates/cdf-engine/src/worker_task.rs | 1 |
-| cdf-engine | profile-statistics | Package | statistics_reservation_bytes.max(1) | crates/cdf-engine/src/execution.rs | 1 |
-| cdf-engine | fused-transform | Transform | bytes | crates/cdf-engine/src/execution.rs | 1 |
-| cdf-engine | quarantine-evidence | Transform | 1 | crates/cdf-engine/src/execution.rs | 1 |
+| cdf-engine | profile-statistics | Package | statistics_reservation_bytes.max(1) | crates/cdf-engine/src/execution/orchestration.rs | 1 |
+| cdf-engine | fused-transform | Transform | bytes | crates/cdf-engine/src/execution/orchestration.rs | 1 |
+| cdf-engine | quarantine-evidence | Transform | 1 | crates/cdf-engine/src/execution/orchestration.rs | 1 |
 | cdf-engine | dedup-external-sort | Validation | bytes | crates/cdf-engine/src/dedup_spill.rs | 1 |
 | cdf-engine | dedup-in-memory-index | Validation | 1 | crates/cdf-engine/src/dedup_spill.rs | 1 |
 | cdf-engine | residual-decision-sort | Validation | MERGE_MEMORY_BYTES | crates/cdf-engine/src/residual_spill.rs | 1 |
 | cdf-format-arrow-ipc | arrow-ipc-physical-batch | Decode | block.total_bytes.max(state.request.target_batch_bytes); state.request.target_batch_bytes.max(1) | crates/cdf-format-arrow-ipc/src/lib.rs | 2 |
 | cdf-format-arrow-ipc | arrow-ipc-stream-output | Decode | bytes | crates/cdf-format-arrow-ipc/src/stream_driver.rs | 1 |
-| cdf-format-avro | `consumer` | Decode | authority_bytes.max(1) | crates/cdf-format-avro/src/lib.rs | 1 |
-| cdf-format-avro | avro-ocf-discovery | Decode | request.maximum_bytes | crates/cdf-format-avro/src/lib.rs | 1 |
-| cdf-format-avro | avro-ocf-working-set | Decode | working_set_bytes | crates/cdf-format-avro/src/lib.rs | 1 |
-| cdf-format-avro | avro-single-object-input | Decode | self.options.maximum_record_bytes | crates/cdf-format-avro/src/lib.rs | 1 |
+| cdf-format-avro | `consumer` | Decode | authority_bytes.max(1) | crates/cdf-format-avro/src/validation.rs | 1 |
+| cdf-format-avro | avro-ocf-discovery | Decode | request.maximum_bytes | crates/cdf-format-avro/src/driver.rs | 1 |
+| cdf-format-avro | avro-ocf-working-set | Decode | working_set_bytes | crates/cdf-format-avro/src/decode.rs | 1 |
+| cdf-format-avro | avro-single-object-input | Decode | self.options.maximum_record_bytes | crates/cdf-format-avro/src/decode.rs | 1 |
 | cdf-format-delimited | csv-output | Decode | request.target_batch_bytes.max(1024 * 1024) | crates/cdf-format-delimited/src/lib.rs | 1 |
 | cdf-format-delimited | fixed-width-output | Decode | retained | crates/cdf-format-delimited/src/fixed_width.rs | 1 |
 | cdf-format-delimited | fixed-width-parser | Decode | working_bytes | crates/cdf-format-delimited/src/fixed_width.rs | 1 |
-| cdf-format-json | ndjson-record-recovery | Decode | recovery_bytes | crates/cdf-format-json/src/lib.rs | 1 |
-| cdf-format-json | ndjson-tape-output | Decode | output_authority_bytes | crates/cdf-format-json/src/lib.rs | 1 |
-| cdf-format-json | json-full-content-inference | Discovery | working_set_bytes | crates/cdf-format-json/src/lib.rs | 1 |
-| cdf-format-json | json-document-framing | Transform | state.request.preferred_output_chunk_bytes | crates/cdf-format-json/src/lib.rs | 1 |
+| cdf-format-json | ndjson-record-recovery | Decode | recovery_bytes | crates/cdf-format-json/src/decode.rs | 1 |
+| cdf-format-json | ndjson-tape-output | Decode | output_authority_bytes | crates/cdf-format-json/src/decode.rs | 1 |
+| cdf-format-json | json-full-content-inference | Discovery | working_set_bytes | crates/cdf-format-json/src/discovery.rs | 1 |
+| cdf-format-json | json-document-framing | Transform | state.request.preferred_output_chunk_bytes | crates/cdf-format-json/src/framing.rs | 1 |
 | cdf-format-parquet | parquet-physical-batch | Decode | state.request.target_batch_bytes | crates/cdf-format-parquet/src/lib.rs | 1 |
-| cdf-format-protobuf | protobuf-arrow-output | Decode | output_authority | crates/cdf-format-protobuf/src/lib.rs | 1 |
-| cdf-format-protobuf | protobuf-framed-message | Decode | accounted | crates/cdf-format-protobuf/src/lib.rs | 1 |
+| cdf-format-protobuf | protobuf-arrow-output | Decode | output_authority | crates/cdf-format-protobuf/src/decode.rs | 1 |
+| cdf-format-protobuf | protobuf-framed-message | Decode | accounted | crates/cdf-format-protobuf/src/decode.rs | 1 |
 | cdf-http | http-response-body | Source | bytes | crates/cdf-http/src/message.rs | 1 |
-| cdf-memory | `consumer` | Inherited | self.maximum_operation_bytes | crates/cdf-memory/src/lib.rs | 1 |
+| cdf-memory | `consumer` | Inherited | self.maximum_operation_bytes | crates/cdf-memory/src/accounting.rs | 1 |
 | cdf-object-access | file-identity-metadata | Discovery | FILE_IDENTITY_MEMORY_ENVELOPE_BYTES | crates/cdf-object-access/src/transport.rs | 2 |
 | cdf-object-access | evicting-spool-range | Source | extent.length | crates/cdf-object-access/src/evicting_spool_byte_source.rs | 1 |
 | cdf-object-access | growing-spool-range | Source | extent.length | crates/cdf-object-access/src/growing_spool_byte_source.rs | 1 |
@@ -58,23 +58,29 @@ Managed reservation declarations: **76** grouped rows across **87** production c
 | cdf-runtime | `consumer` | Inherited | maximum_batch_bytes | crates/cdf-runtime/src/source_frontier.rs | 1 |
 | cdf-runtime | `consumer_name` | Queue | bytes | crates/cdf-runtime/src/graph.rs | 1 |
 | cdf-runtime | bounded-format-input | Source | size_bytes | crates/cdf-runtime/src/bounded_format.rs | 1 |
+| cdf-source-clickhouse | clickhouse-arrow-cursor-state | Decode | CLICKHOUSE_CURSOR_STATE_BYTES | crates/cdf-source-clickhouse/src/memory.rs | 1 |
+| cdf-source-clickhouse | clickhouse-arrow-decode | Decode | CLICKHOUSE_DECODE_LEASE_BYTES | crates/cdf-source-clickhouse/src/memory.rs | 1 |
+| cdf-source-clickhouse | clickhouse-catalog-metadata | Discovery | CLICKHOUSE_CATALOG_METADATA_BYTES | crates/cdf-source-clickhouse/src/memory.rs | 1 |
+| cdf-source-clickhouse | clickhouse-http1-transport | Source | CLICKHOUSE_HTTP1_TRANSPORT_BYTES | crates/cdf-source-clickhouse/src/memory.rs | 1 |
 | cdf-source-files | `consumer` | Control | bytes | crates/cdf-source-files/src/runtime/task.rs | 1 |
 | cdf-source-files | prepared-file-inventory | Discovery | encoded_bytes | crates/cdf-source-files/src/driver.rs | 1 |
 | cdf-source-glue | glue-partition-page | Control | page_model_bytes | crates/cdf-source-glue/src/planner.rs | 1 |
 | cdf-source-glue | glue-table-metadata | Control | retained_model_bytes | crates/cdf-source-glue/src/driver.rs | 1 |
 | cdf-source-glue | glue-materialized-partition-values | Source | retained.max(1) | crates/cdf-source-glue/src/execution.rs | 1 |
-| cdf-source-iceberg | `consumer` | Discovery | bytes | crates/cdf-source-iceberg/src/catalog.rs | 1 |
+| cdf-source-iceberg | `consumer` | Discovery | bytes | crates/cdf-source-iceberg/src/catalog/mod.rs | 1 |
 | cdf-source-iceberg | iceberg-parquet-decode | Source | source.decode_reservation_bytes | crates/cdf-source-iceberg/src/execution.rs | 1 |
 | cdf-source-iceberg | iceberg-parquet-null-canonicalization | Source | retained_bytes | crates/cdf-source-iceberg/src/execution.rs | 1 |
 | cdf-source-postgres | postgres-source-batch | Source | POSTGRES_MAXIMUM_BATCH_BYTES | crates/cdf-source-postgres/src/source.rs | 1 |
+| cdf-source-sqlite | sqlite-source-batch | Source | SQLITE_BUILDER_RESERVATION_BYTES | crates/cdf-source-sqlite/src/source/execution.rs | 1 |
 | cdf-subprocess | `consumer` | Source | accounted_bytes; bytes.max(1) | crates/cdf-subprocess/src/protocol_stream.rs<br>crates/cdf-subprocess/src/runner.rs | 2 |
 | cdf-subprocess | subprocess-stdout-chunk | Source | bytes.max(1) | crates/cdf-subprocess/src/runner.rs | 1 |
-| cdf-task-store | canonical-task-set-index | Control | combined_memory | crates/cdf-task-store/src/lib.rs | 1 |
-| cdf-task-store | external-task-set-authority | Control | authority_length | crates/cdf-task-store/src/lib.rs | 1 |
-| cdf-task-store | external-task-set-header | Control | u64::try_from(task_type_length) .map_err(\|_\| CdfError::data("task-set type length exceeds u64"))? | crates/cdf-task-store/src/lib.rs | 1 |
-| cdf-task-store | external-task-set-record | Control | payload_length | crates/cdf-task-store/src/lib.rs | 1 |
-| cdf-task-store | external-task-set-writer | Control | reserved_memory | crates/cdf-task-store/src/lib.rs | 1 |
-| cdf-task-store | `consumer` | Inherited | limits.resident_bytes; self.reservation_bytes(encoded_bytes)? | crates/cdf-task-store/src/lib.rs | 2 |
+| cdf-task-store | canonical-task-set-index | Control | combined_memory | crates/cdf-task-store/src/canonical.rs | 1 |
+| cdf-task-store | external-task-set-authority | Control | authority_length | crates/cdf-task-store/src/encoded.rs | 1 |
+| cdf-task-store | external-task-set-header | Control | u64::try_from(task_type_length) .map_err(\|_\| CdfError::data("task-set type length exceeds u64"))? | crates/cdf-task-store/src/encoded.rs | 1 |
+| cdf-task-store | external-task-set-record | Control | payload_length | crates/cdf-task-store/src/encoded.rs | 1 |
+| cdf-task-store | external-task-set-writer | Control | reserved_memory | crates/cdf-task-store/src/encoded.rs | 1 |
+| cdf-task-store | `consumer_key` | Inherited | resident_bytes | crates/cdf-task-store/src/store.rs | 1 |
+| cdf-task-store | `consumer` | Inherited | self.reservation_bytes(encoded_bytes)? | crates/cdf-task-store/src/typed.rs | 1 |
 | cdf-transform-brotli | `self.request.consumer.clone()` | Inherited | STANDARD_WINDOW_AND_TABLES_BYTES; u64::try_from(self.output_chunk_bytes) .map_err(\|_\| CdfError::data("Brotli output chunk exceeds u64"))? | crates/cdf-transform-brotli/src/lib.rs | 2 |
 | cdf-transform-bzip2 | `self.request.consumer.clone()` | Inherited | DECODER_WORKING_SET_BYTES; u64::try_from(self.output_chunk_bytes) .map_err(\|_\| CdfError::data("bzip2 output chunk exceeds u64"))? | crates/cdf-transform-bzip2/src/lib.rs | 2 |
 | cdf-transform-character | `self.request.consumer.clone()` | Inherited | u64::try_from(self.output_chunk_bytes) .map_err(\|_\| CdfError::data("character output chunk exceeds u64"))? | crates/cdf-transform-character/src/lib.rs | 1 |
@@ -83,8 +89,8 @@ Managed reservation declarations: **76** grouped rows across **87** production c
 | cdf-transform-snappy | `self.request.consumer.clone()` | Inherited | INTERNAL_WORKING_SET_BYTES; u64::try_from(bytes).map_err(\|_\| CdfError::data("Snappy output slice exceeds u64"))? | crates/cdf-transform-snappy/src/lib.rs | 2 |
 | cdf-transform-xz | `self.request.consumer.clone()` | Inherited | DECODER_MEMORY_LIMIT_BYTES; u64::try_from(self.output_chunk_bytes) .map_err(\|_\| CdfError::data("xz output chunk exceeds u64"))? | crates/cdf-transform-xz/src/lib.rs | 2 |
 | cdf-transform-zstd | `self.request.consumer.clone()` | Inherited | u64::try_from(self.output_chunk_bytes) .map_err(\|_\| CdfError::data("zstd output chunk exceeds u64"))?; working_set_bytes | crates/cdf-transform-zstd/src/lib.rs | 2 |
-| cdf-transport-http | http-byte-source-range | Source | extent.length | crates/cdf-transport-http/src/lib.rs | 1 |
-| cdf-transport-http | http-byte-source-sequential | Source | state.maximum_chunk_bytes | crates/cdf-transport-http/src/lib.rs | 1 |
+| cdf-transport-http | http-byte-source-range | Source | extent.length | crates/cdf-transport-http/src/byte_source.rs | 1 |
+| cdf-transport-http | http-byte-source-sequential | Source | state.maximum_chunk_bytes | crates/cdf-transport-http/src/byte_source.rs | 1 |
 
 ## Non-ledger and external owners
 
@@ -101,6 +107,7 @@ Managed reservation declarations: **76** grouped rows across **87** production c
 | package control-artifact semantic models | metadata | cdf-package verified identity, contract-evolution, and archive-fidelity readers | streamed identity/control bytes plus current artifact-contract semantic records; measured through 1 TiB package verification and settlement | .10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md | measured |
 | state-delta and destination acknowledgement cardinality | metadata | package state preimage and destination receipt | one ordered artifact-contract record per canonical segment; measured through receipt and checkpoint settlement at the 1 TiB scale cell | .10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md | measured |
 | Arrow and Parquet encoder page/compression scratch | native | cdf-package and cdf-dest-parquet streaming writers | one admitted decoded/output window per writer plus measured arrow-rs Parquet scratch under the exact 1 TiB process envelope | .10x/evidence/2026-07-25-p3-f4-one-tib-closeout.md | measured |
+| ClickHouse source HTTP, compression, and ArrowStream client internals | native | cdf-source-clickhouse one-query official client session | 64 KiB clickhouse-http1-transport source lease retained with the reusable client/pool, one 32 MiB clickhouse-arrow-cursor-state decode lease retained for each live cursor, plus one 64 MiB clickhouse-arrow-decode lease per poll/producer/queued/consumer batch; patched official response and Arrow IPC paths enforce 1 MiB error, 64 KiB HTTP-frame, 2 MiB metadata, a 25 MiB record body and cumulative logical-buffer ceiling, rejection of inner-compressed/dictionary batches before retained allocation, a 1,000,000-row execution/16,384-row catalog record-batch guard, and pre-conversion schema ceilings of 4,096 nodes, 4,096 metadata entries, 4 MiB estimated ownership, and depth 64; the persistent cursor lease covers one retained 25 MiB response chunk plus bounded schema/message/decoder state; the poll decode envelope includes 32 MiB split-body allocator capacity and 4 MiB batch-container headroom; retained-batch overlap is stream_buffer_batches + 2 (maximum 66); 16 MiB discovery metadata is separately leased | .10x/tickets/2026-08-02-clickhouse-source-connector.md | measured |
 | DataFusion execution allocations | native | cdf-engine DataFusion MemoryPool bridge | cdf-memory QueryEngine reservations | .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md | bounded |
 | DuckDB transaction and execution engine | native | cdf-dest-duckdb execution-service binding | adapter memory_limit plus spill-reserved temp_directory ceiling | .10x/evidence/2026-07-14-p3-f2-duckdb-native-resource-envelope.md | measured |
 | HTTP, TLS, and object-store client internals | native | cdf-object-access and transport adapters | one admitted response frame per request, bounded connection concurrency, and measured process native headroom | .10x/evidence/2026-07-14-p3-g2-fineweb-growing-spool-overlap.md | measured |

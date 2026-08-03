@@ -281,7 +281,8 @@ def owner_name(expression: str) -> str:
 def managed_rows() -> list[dict[str, object]]:
     groups: dict[tuple[str, str, str], dict[str, object]] = {}
     for path in sorted((ROOT / "crates").glob("*/src/**/*.rs")):
-        if path.name == "tests.rs":
+        relative_parts = path.relative_to(ROOT).parts
+        if path.name == "tests.rs" or "tests" in relative_parts[3:-1]:
             continue
         source = path.read_text(encoding="utf-8")
         product, masked = without_test_items(source)
