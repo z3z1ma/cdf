@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-08-03
 Updated: 2026-08-03
-Parent: .10x/tickets/2026-08-03-postgres-binary-and-exact-value-program.md
+Parent: .10x/tickets/done/2026-08-03-postgres-binary-and-exact-value-program.md
 
 # PostgreSQL source binary COPY
 
@@ -70,6 +70,11 @@ or speculative generic SQL-source abstraction.
 - 2026-08-03: Added the official-client binary COPY OUT roofline with identical queries, Arrow
   construction, EOF work, and per-value verification. The final PostgreSQL 17 release run passed
   at 1.028x for the fixed-width cell and 1.192x for mixed text/Decimal128/Decimal256.
+- 2026-08-03: The parent final red-team found UInt64 lexical ordering, eager builder allocation,
+  flattened PostgreSQL/I/O provenance, and unchecked NUMERIC display scale. The authorized closure
+  repair orders UInt64 numerically before text transfer, splits the 32 MiB memory authority into a
+  schema-sized decoder lease and allocation-safe batch lease, centralizes typed error ownership,
+  and validates canonical finite/special display scale including negative-scale columns.
 
 ## Blockers
 
@@ -91,13 +96,14 @@ None.
 - The existing focused project test passed four jobs settings through package publication,
   checkpoint commit, exact cursor position, and jobs-invariant identity.
 - Focused source/roofline Clippy with `-D warnings`, formatting, and `git diff --check` passed.
+- Parent closure evidence and the final 0.956x/1.228x roofline are recorded in
+  `.10x/evidence/2026-08-03-postgres-source-destination-integration.md`.
 
 ## Review
 
-Fresh closure review passed. It verified there is no remaining portal/`Row` extraction path, no
-floating-point NUMERIC conversion, no native JSONB decoder, no unchecked nullable-to-non-nullable
-boundary, and no benchmark-only production bypass. The program ticket still owns its single final
-independent source/destination red-team review after the destination child closes.
+The child closure review passed its original scope. The program-level final red-team later found
+four concrete source defects; all were repaired once under the parent and validated with focused
+unit/live/integration/roofline evidence. No second iterative review cycle was opened.
 
 ## Retrospective
 

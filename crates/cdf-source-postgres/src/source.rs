@@ -32,8 +32,11 @@ use cdf_memory::{
 };
 
 use crate::{
-    binary_copy::{PostgresBinaryCopyDecoder, expected_postgres_type},
+    binary_copy::{
+        PostgresBinaryCopyDecoder, decoder_structural_reservation_bytes, expected_postgres_type,
+    },
     catalog::{PostgresCatalogColumn, read_catalog_columns},
+    error::classify_postgres_error,
 };
 
 const POSTGRES_PARTITION_KIND: &str = "sql";
@@ -591,26 +594,38 @@ fn execute_postgres_table(
 
     egress.authorize(&database_url)?;
     let mut client = Client::connect(&database_url, NoTls)
-        .map_err(|error| CdfError::transient(format!("connect to Postgres source: {error}")))?;
+        .map_err(|error| classify_postgres_error("connect to Postgres source", error))?;
     let mut transaction = client
         .build_transaction()
         .isolation_level(IsolationLevel::RepeatableRead)
         .read_only(true)
         .start()
-        .map_err(|error| CdfError::data(format!("begin Postgres source snapshot: {error}")))?;
+        .map_err(|error| classify_postgres_error("begin Postgres source snapshot", error))?;
     let statement = transaction
         .prepare(&query.sql)
-        .map_err(|error| CdfError::data(format!("prepare Postgres source query: {error}")))?;
+        .map_err(|error| classify_postgres_error("prepare Postgres source query", error))?;
     validate_copy_descriptor(&statement, output_schema.as_ref())?;
     validate_source_domains(&mut transaction, &target, output_schema.as_ref())?;
     let copy_sql = format!("COPY ({}) TO STDOUT WITH (FORMAT BINARY)", query.sql);
     let reader = transaction
         .copy_out(&copy_sql)
-        .map_err(|error| CdfError::data(format!("start Postgres binary COPY OUT: {error}")))?;
+        .map_err(|error| classify_postgres_error("start Postgres binary COPY OUT", error))?;
+    let decoder_reservation_bytes =
+        decoder_structural_reservation_bytes(output_schema.as_ref(), POSTGRES_MAXIMUM_BATCH_BYTES)?;
+    let batch_reservation_bytes = POSTGRES_MAXIMUM_BATCH_BYTES
+        .checked_sub(decoder_reservation_bytes)
+        .ok_or_else(|| CdfError::internal("Postgres decoder reservation exceeds batch budget"))?;
+    let _decoder_lease = reserve_blocking(
+        Arc::clone(&memory),
+        &ReservationRequest::new(
+            ConsumerKey::new("postgres-source-decoder", MemoryClass::Source)?,
+            decoder_reservation_bytes,
+        )?,
+    )?;
     let mut decoder = PostgresBinaryCopyDecoder::new(
         reader,
         Arc::clone(&output_schema),
-        POSTGRES_MAXIMUM_BATCH_BYTES,
+        batch_reservation_bytes,
     )?;
     let mut batch_index = 0_usize;
     loop {
@@ -619,7 +634,7 @@ fn execute_postgres_table(
             Arc::clone(&memory),
             &ReservationRequest::new(
                 ConsumerKey::new("postgres-source-batch", MemoryClass::Source)?,
-                POSTGRES_MAXIMUM_BATCH_BYTES,
+                batch_reservation_bytes,
             )?,
         )?;
         let Some(record_batch) = decoder.next_batch()? else {
@@ -628,9 +643,9 @@ fn execute_postgres_table(
         cancellation.check()?;
         let source_position = source_position_for_batch(&descriptor, &scan, &record_batch)?;
         let retained_bytes = cdf_memory::record_batch_retained_bytes(&record_batch)?;
-        if retained_bytes > POSTGRES_MAXIMUM_BATCH_BYTES {
+        if retained_bytes > batch_reservation_bytes {
             return Err(CdfError::data(format!(
-                "Postgres source batch retains {retained_bytes} bytes above its compiled {POSTGRES_MAXIMUM_BATCH_BYTES}-byte limit; reduce source batch rows or project fewer columns"
+                "Postgres source batch retains {retained_bytes} bytes above its allocation-safe {batch_reservation_bytes}-byte lease within the compiled {POSTGRES_MAXIMUM_BATCH_BYTES}-byte source limit; reduce source batch rows or project fewer columns"
             )));
         }
         lease.reconcile(retained_bytes)?;
@@ -1087,7 +1102,7 @@ fn build_query(
                 })?;
                 Ok(format!(
                     "{} {}",
-                    canonical_source_expression(field)?,
+                    ordering_source_expression(field)?,
                     order.direction.sql()
                 ))
             })
@@ -1148,6 +1163,15 @@ fn predicate_source_expression(field: &Field) -> Result<String> {
         other => Err(CdfError::data(format!(
             "Postgres predicate source does not support Arrow type {other:?}"
         ))),
+    }
+}
+
+fn ordering_source_expression(field: &Field) -> Result<String> {
+    if field.data_type() == &DataType::UInt64 {
+        let source = source_column_identifier(field)?.quoted();
+        Ok(format!("{source}::numeric"))
+    } else {
+        canonical_source_expression(field)
     }
 }
 
@@ -1891,6 +1915,31 @@ mod tests {
         assert_eq!(
             query.sql,
             "SELECT \"external_id\"::text AS \"external_id\" FROM \"raw\".\"orders\" WHERE \"external_id\"::text = $cdf1$a'$cdf0$\\b$cdf1$::text LIMIT 5"
+        );
+    }
+
+    #[test]
+    fn uint64_projection_stays_text_but_order_and_limit_are_numeric() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "sequence",
+            DataType::UInt64,
+            false,
+        )]));
+        let target = PostgresTarget::parse("raw.orders").unwrap();
+        let scan = PostgresTableScan {
+            projection: vec!["sequence".to_owned()],
+            filters: Vec::new(),
+            order_by: vec![PostgresStoredOrder {
+                field: "sequence".to_owned(),
+                direction: PostgresStoredDirection::Asc,
+            }],
+            limit: Some(1),
+        };
+
+        let query = build_query(&schema, &target, &scan).unwrap();
+        assert_eq!(
+            query.sql,
+            "SELECT \"sequence\"::text AS \"sequence\" FROM \"raw\".\"orders\" ORDER BY \"sequence\"::numeric ASC LIMIT 1"
         );
     }
 

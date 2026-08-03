@@ -226,6 +226,8 @@ mod nebula_task_fixture;
 #[cfg(test)]
 mod plan_json;
 #[cfg(test)]
+mod postgres_exact;
+#[cfg(test)]
 mod postgres_fixture;
 #[cfg(test)]
 mod python_fixture;

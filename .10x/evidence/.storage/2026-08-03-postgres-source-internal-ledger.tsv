@@ -1,0 +1,9 @@
+site	classification	rationale
+crates/cdf-source-postgres/src/driver.rs:173	Internal	Serialization of CDF's validated compiled source plan is a CDF-owned invariant.
+crates/cdf-source-postgres/src/binary_copy.rs:468	Internal	Arrow's infallible string-builder formatting rejected a CDF-owned validated UTF-8 fragment.
+crates/cdf-source-postgres/src/binary_copy.rs:474	Internal	A UTF-8 prefix already identified as valid failed CDF's immediate revalidation.
+crates/cdf-source-postgres/src/binary_copy.rs:478	Internal	Arrow's infallible string-builder formatting rejected a CDF-owned validated UTF-8 prefix.
+crates/cdf-source-postgres/src/source.rs:367	Internal	PostgreSQL negotiation omitted the single inline partition CDF had just constructed.
+crates/cdf-source-postgres/src/source.rs:617	Internal	CDF's validated decoder reservation exceeded the same compiled budget it was checked against.
+crates/cdf-source-postgres/src/source.rs:1190	Internal	CDF exhausted every collision-free delimiter candidate despite the bounded input-length proof.
+crates/cdf-source-postgres/src/source.rs:1413	Internal	A CDF-owned Arrow schema and its concrete cursor array disagreed after batch construction.

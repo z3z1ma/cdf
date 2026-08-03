@@ -3,6 +3,7 @@
 mod binary_copy;
 mod catalog;
 mod driver;
+mod error;
 mod source;
 
 pub use catalog::{

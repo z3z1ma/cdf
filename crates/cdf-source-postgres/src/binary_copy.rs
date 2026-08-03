@@ -13,13 +13,18 @@ use arrow_array::{
     },
 };
 use arrow_buffer::i256;
-use arrow_schema::{DataType, Field, SchemaRef, TimeUnit};
+use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_kernel::{CdfError, Result};
 use postgres::types::Type;
+
+use crate::error::classify_postgres_io_error;
 
 const COPY_SIGNATURE: &[u8; 11] = b"PGCOPY\n\xff\r\n\0";
 const COPY_TARGET_ROWS: usize = 64 * 1024;
 const UTF8_SCRATCH_BYTES: usize = 32 * 1024;
+const DECODER_BASE_RESERVATION_BYTES: u64 = 64 * 1024;
+const DECODER_FIELD_RESERVATION_BYTES: u64 = 512;
+const BATCH_FIELD_OVERHEAD_BYTES: u64 = 512;
 const MAX_NUMERIC_BINARY_BYTES: usize = 8 + 2 * 20;
 const NUMERIC_POSITIVE: u16 = 0x0000;
 const NUMERIC_NEGATIVE: u16 = 0x4000;
@@ -33,6 +38,7 @@ pub(crate) struct PostgresBinaryCopyDecoder<R> {
     builders: Vec<ColumnBuilder>,
     rows: usize,
     estimated_bytes: u64,
+    baseline_estimated_bytes: u64,
     maximum_batch_bytes: u64,
     target_batch_bytes: u64,
     value_scratch: Vec<u8>,
@@ -52,12 +58,23 @@ impl<R: BufRead> PostgresBinaryCopyDecoder<R> {
             .iter()
             .map(|field| ColumnBuilder::new(field.as_ref()))
             .collect::<Result<Vec<_>>>()?;
+        let baseline_estimated_bytes = batch_field_overhead_bytes(schema.as_ref())?;
+        // Rust/Arrow builders may retain geometric capacity above their visible buffers. Admit at
+        // most one third of the batch lease as logical Arrow bytes, leaving the rest for capacity
+        // rounding, validity/offset buffers, and array containers before the retained-size check.
+        let maximum_batch_bytes = maximum_batch_bytes / 3;
+        if baseline_estimated_bytes >= maximum_batch_bytes {
+            return Err(CdfError::data(format!(
+                "Postgres projected schema requires {baseline_estimated_bytes} bytes of per-batch Arrow structure above its allocation-safe {maximum_batch_bytes}-byte admission; project fewer columns"
+            )));
+        }
         Ok(Self {
             reader,
             schema,
             builders,
             rows: 0,
-            estimated_bytes: 0,
+            estimated_bytes: baseline_estimated_bytes,
+            baseline_estimated_bytes,
             maximum_batch_bytes,
             target_batch_bytes: maximum_batch_bytes.saturating_mul(3) / 4,
             value_scratch: vec![0; UTF8_SCRATCH_BYTES + 4],
@@ -139,9 +156,34 @@ impl<R: BufRead> PostgresBinaryCopyDecoder<R> {
         let batch =
             RecordBatch::try_new(Arc::clone(&self.schema), arrays).map_err(CdfError::from)?;
         self.rows = 0;
-        self.estimated_bytes = 0;
+        self.estimated_bytes = self.baseline_estimated_bytes;
         Ok(Some(batch))
     }
+}
+
+pub(crate) fn decoder_structural_reservation_bytes(
+    schema: &Schema,
+    maximum_source_bytes: u64,
+) -> Result<u64> {
+    let fields = u64::try_from(schema.fields().len())
+        .map_err(|_| CdfError::data("Postgres projected field count exceeds u64"))?;
+    let bytes = fields
+        .checked_mul(DECODER_FIELD_RESERVATION_BYTES)
+        .and_then(|bytes| bytes.checked_add(DECODER_BASE_RESERVATION_BYTES))
+        .ok_or_else(|| CdfError::data("Postgres decoder structural reservation overflowed"))?;
+    if bytes >= maximum_source_bytes {
+        return Err(CdfError::data(format!(
+            "Postgres projected schema requires a {bytes}-byte decoder reservation above its compiled {maximum_source_bytes}-byte source limit; project fewer columns"
+        )));
+    }
+    Ok(bytes)
+}
+
+fn batch_field_overhead_bytes(schema: &Schema) -> Result<u64> {
+    u64::try_from(schema.fields().len())
+        .map_err(|_| CdfError::data("Postgres projected field count exceeds u64"))?
+        .checked_mul(BATCH_FIELD_OVERHEAD_BYTES)
+        .ok_or_else(|| CdfError::data("Postgres Arrow batch field overhead overflowed"))
 }
 
 pub(crate) fn expected_postgres_type(data_type: &DataType) -> Result<Type> {
@@ -175,13 +217,15 @@ enum ColumnBuilder {
 
 impl ColumnBuilder {
     fn new(field: &Field) -> Result<Self> {
-        let capacity = 8 * 1024;
+        // Payload capacity is grown only after the source owns its batch lease. Eager per-column
+        // capacity makes wide schemas allocate outside the compiled memory authority.
+        let capacity = 0;
         Ok(match field.data_type() {
             DataType::Boolean => Self::Boolean(BooleanBuilder::with_capacity(capacity)),
             DataType::Int64 => Self::Int64(Int64Builder::with_capacity(capacity)),
             DataType::UInt64 => Self::UInt64(UInt64Builder::with_capacity(capacity)),
             DataType::Float64 => Self::Float64(Float64Builder::with_capacity(capacity)),
-            DataType::Utf8 => Self::Utf8(StringBuilder::with_capacity(capacity, 128 * 1024)),
+            DataType::Utf8 => Self::Utf8(StringBuilder::with_capacity(capacity, 0)),
             DataType::Date32 => Self::Date32(Date32Builder::with_capacity(capacity)),
             DataType::Timestamp(TimeUnit::Millisecond, _) => Self::TimestampMilliseconds(
                 TimestampMillisecondBuilder::with_capacity(capacity)
@@ -373,9 +417,10 @@ fn ensure_copy_eof<R: BufRead>(reader: &mut R) -> Result<()> {
             }
             Err(error) if error.kind() == ErrorKind::Interrupted => {}
             Err(error) => {
-                return Err(CdfError::data(format!(
-                    "read Postgres binary COPY completion: {error}"
-                )));
+                return Err(classify_postgres_io_error(
+                    "read Postgres binary COPY completion",
+                    error,
+                ));
             }
         }
     }
@@ -394,7 +439,7 @@ fn append_utf8<R: BufRead>(
     }
     {
         let available = reader.fill_buf().map_err(|error| {
-            CdfError::data(format!("read Postgres binary COPY UTF-8 field: {error}"))
+            classify_postgres_io_error("read Postgres binary COPY UTF-8 field", error)
         })?;
         if available.len() >= length {
             let value = std::str::from_utf8(&available[..length])
@@ -482,7 +527,7 @@ fn read_numeric<R: BufRead>(
     debug_assert!(scratch.len() >= MAX_NUMERIC_BINARY_BYTES);
     {
         let available = reader.fill_buf().map_err(|error| {
-            CdfError::data(format!("read Postgres binary COPY numeric field: {error}"))
+            classify_postgres_io_error("read Postgres binary COPY numeric field", error)
         })?;
         if available.len() >= length {
             let value = decode_numeric(&available[..length], precision, scale, field)?;
@@ -507,7 +552,7 @@ fn decode_numeric(raw: &[u8], precision: u8, scale: i8, field: &Field) -> Result
         .map_err(|_| field_data_error(field, "numeric digit count is negative"))?;
     let weight = i16::from_be_bytes(raw[2..4].try_into().expect("numeric header length checked"));
     let sign = u16::from_be_bytes(raw[4..6].try_into().expect("numeric header length checked"));
-    let _display_scale =
+    let display_scale =
         u16::from_be_bytes(raw[6..8].try_into().expect("numeric header length checked"));
     let expected_length =
         8_usize
@@ -525,6 +570,12 @@ fn decode_numeric(raw: &[u8], precision: u8, scale: i8, field: &Field) -> Result
         sign,
         NUMERIC_NAN | NUMERIC_POSITIVE_INFINITY | NUMERIC_NEGATIVE_INFINITY
     ) {
+        if digits != 0 || weight != 0 || display_scale != 0 {
+            return Err(field_data_error(
+                field,
+                "numeric special value has a noncanonical digit, weight, or display-scale header",
+            ));
+        }
         let special = match sign {
             NUMERIC_NAN => "NaN",
             NUMERIC_POSITIVE_INFINITY => "Infinity",
@@ -542,6 +593,22 @@ fn decode_numeric(raw: &[u8], precision: u8, scale: i8, field: &Field) -> Result
         return Err(field_data_error(
             field,
             format!("numeric sign {sign:#06x} is invalid"),
+        ));
+    }
+    if display_scale > 16_383 {
+        return Err(field_data_error(
+            field,
+            format!("numeric display scale {display_scale} exceeds PostgreSQL's 16383 bound"),
+        ));
+    }
+    let expected_display_scale = u16::try_from(scale.max(0))
+        .map_err(|_| field_data_error(field, "numeric display scale is negative"))?;
+    if display_scale != expected_display_scale {
+        return Err(field_data_error(
+            field,
+            format!(
+                "numeric display scale {display_scale} does not match Arrow field scale {scale} (expected PostgreSQL display scale {expected_display_scale})"
+            ),
         ));
     }
 
@@ -734,9 +801,9 @@ fn discard_exact<R: Read>(reader: &mut R, mut length: usize, label: &str) -> Res
 }
 
 fn read_exact<R: Read>(reader: &mut R, bytes: &mut [u8], label: &str) -> Result<()> {
-    reader
-        .read_exact(bytes)
-        .map_err(|error| CdfError::data(format!("read Postgres binary COPY {label}: {error}")))
+    reader.read_exact(bytes).map_err(|error| {
+        classify_postgres_io_error(&format!("read Postgres binary COPY {label}"), error)
+    })
 }
 
 fn read_u8<R: Read>(reader: &mut R, label: &str) -> Result<u8> {
@@ -769,7 +836,7 @@ fn read_array<R: BufRead, const N: usize>(reader: &mut R, label: &str) -> Result
     let mut bytes = [0_u8; N];
     {
         let available = reader.fill_buf().map_err(|error| {
-            CdfError::data(format!("read Postgres binary COPY {label}: {error}"))
+            classify_postgres_io_error(&format!("read Postgres binary COPY {label}"), error)
         })?;
         if available.len() >= N {
             bytes.copy_from_slice(&available[..N]);
@@ -865,7 +932,7 @@ mod tests {
         push_field(&mut invalid_utf8, &[0xff]);
         push_i16(&mut invalid_utf8, -1);
         let mut decoder =
-            PostgresBinaryCopyDecoder::new(Cursor::new(invalid_utf8), schema, 64).unwrap();
+            PostgresBinaryCopyDecoder::new(Cursor::new(invalid_utf8), schema, 4096).unwrap();
         assert!(decoder.next_batch().is_err());
     }
 
@@ -876,7 +943,7 @@ mod tests {
         let error = decode_numeric(&special, 8, 2, &field).unwrap_err();
         assert!(error.to_string().contains("declare this field as Utf8"));
 
-        let fractional = numeric(&[1, 2345], 0, NUMERIC_POSITIVE, 4);
+        let fractional = numeric(&[1, 2345], 0, NUMERIC_POSITIVE, 2);
         let error = decode_numeric(&fractional, 8, 2, &field).unwrap_err();
         assert!(error.to_string().contains("nonzero digits"));
 
@@ -886,6 +953,33 @@ mod tests {
             error
                 .to_string()
                 .contains("exceeds Arrow decimal precision 8")
+        );
+    }
+
+    #[test]
+    fn numeric_display_scale_matches_postgres_and_arrow_domains() {
+        let field = Field::new("amount", DataType::Decimal128(8, 2), false);
+        let impossible = numeric(&[1234], 0, NUMERIC_POSITIVE, 16_384);
+        let error = decode_numeric(&impossible, 8, 2, &field).unwrap_err();
+        assert!(error.to_string().contains("16383 bound"), "{error}");
+
+        let mismatched = numeric(&[1234], 0, NUMERIC_POSITIVE, 3);
+        let error = decode_numeric(&mismatched, 8, 2, &field).unwrap_err();
+        assert!(error.to_string().contains("does not match"), "{error}");
+
+        let negative_scale_field = Field::new("rounded", DataType::Decimal128(8, -2), false);
+        let rounded = numeric(&[1200], 0, NUMERIC_POSITIVE, 0);
+        assert_eq!(
+            decode_numeric(&rounded, 8, -2, &negative_scale_field).unwrap(),
+            i256::from_i128(12)
+        );
+        let invalid_negative_scale = numeric(&[1200], 0, NUMERIC_POSITIVE, 2);
+        let error =
+            decode_numeric(&invalid_negative_scale, 8, -2, &negative_scale_field).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("expected PostgreSQL display scale 0")
         );
     }
 
@@ -927,15 +1021,77 @@ mod tests {
         push_i16(&mut bytes, -1);
         bytes.push(0);
         let mut decoder =
-            PostgresBinaryCopyDecoder::new(Cursor::new(bytes), Arc::clone(&schema), 64).unwrap();
+            PostgresBinaryCopyDecoder::new(Cursor::new(bytes), Arc::clone(&schema), 4096).unwrap();
         assert!(decoder.next_batch().is_err());
 
         let mut bytes = copy_header();
         push_i16(&mut bytes, 1);
-        push_field(&mut bytes, &[b'x'; 64]);
+        push_field(&mut bytes, &[b'x'; 4096]);
         push_i16(&mut bytes, -1);
-        let mut decoder = PostgresBinaryCopyDecoder::new(Cursor::new(bytes), schema, 32).unwrap();
+        let mut decoder = PostgresBinaryCopyDecoder::new(Cursor::new(bytes), schema, 4096).unwrap();
         assert!(decoder.next_batch().is_err());
+    }
+
+    #[test]
+    fn wide_schema_and_near_limit_value_stay_inside_preaccounted_allocation_envelope() {
+        let wide_schema = Arc::new(Schema::new(
+            (0..205)
+                .map(|index| Field::new(format!("text_{index}"), DataType::Utf8, false))
+                .collect::<Vec<_>>(),
+        ));
+        let structural =
+            decoder_structural_reservation_bytes(wide_schema.as_ref(), 32 * 1024 * 1024).unwrap();
+        assert!(structural < 1024 * 1024);
+        let mut empty = copy_header();
+        push_i16(&mut empty, 205);
+        for _ in 0..205 {
+            push_field(&mut empty, b"");
+        }
+        push_i16(&mut empty, -1);
+        let wide_batch_lease = 32 * 1024 * 1024 - structural;
+        let mut decoder =
+            PostgresBinaryCopyDecoder::new(Cursor::new(empty), wide_schema, wide_batch_lease)
+                .unwrap();
+        let batch = decoder.next_batch().unwrap().unwrap();
+        assert!(cdf_memory::record_batch_retained_bytes(&batch).unwrap() < wide_batch_lease);
+        assert!(decoder.next_batch().unwrap().is_none());
+
+        let schema = Arc::new(Schema::new(vec![Field::new("text", DataType::Utf8, false)]));
+        let batch_lease_bytes = 1024 * 1024;
+        let safe_value_bytes =
+            batch_lease_bytes / 3 - usize::try_from(BATCH_FIELD_OVERHEAD_BYTES).unwrap() - 16;
+        let mut safe = copy_header();
+        push_i16(&mut safe, 1);
+        push_field(&mut safe, &vec![b'x'; safe_value_bytes]);
+        push_i16(&mut safe, -1);
+        let reader = Fragmented {
+            inner: Cursor::new(safe),
+            maximum: UTF8_SCRATCH_BYTES,
+        };
+        let mut decoder = PostgresBinaryCopyDecoder::new(
+            reader,
+            Arc::clone(&schema),
+            u64::try_from(batch_lease_bytes).unwrap(),
+        )
+        .unwrap();
+        let batch = decoder.next_batch().unwrap().unwrap();
+        assert!(
+            cdf_memory::record_batch_retained_bytes(&batch).unwrap()
+                <= u64::try_from(batch_lease_bytes).unwrap()
+        );
+
+        let mut oversized = copy_header();
+        push_i16(&mut oversized, 1);
+        push_field(&mut oversized, &vec![b'x'; batch_lease_bytes / 3]);
+        push_i16(&mut oversized, -1);
+        let mut decoder = PostgresBinaryCopyDecoder::new(
+            Cursor::new(oversized),
+            schema,
+            u64::try_from(batch_lease_bytes).unwrap(),
+        )
+        .unwrap();
+        let error = decoder.next_batch().unwrap_err();
+        assert!(error.to_string().contains("admitted"), "{error}");
     }
 
     fn copy_header() -> Vec<u8> {

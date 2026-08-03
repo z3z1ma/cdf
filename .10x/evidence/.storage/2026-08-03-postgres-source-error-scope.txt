@@ -1,0 +1,6 @@
+crates/cdf-source-postgres/src/binary_copy.rs
+crates/cdf-source-postgres/src/catalog.rs
+crates/cdf-source-postgres/src/driver.rs
+crates/cdf-source-postgres/src/error.rs
+crates/cdf-source-postgres/src/lib.rs
+crates/cdf-source-postgres/src/source.rs

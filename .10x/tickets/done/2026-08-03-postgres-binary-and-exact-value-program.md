@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-08-03
 Updated: 2026-08-03
 
@@ -31,8 +31,8 @@ adapter refactors, and MySQL or MongoDB implementation.
 - The source reaches the ratified 0.90 same-semantics direct binary COPY OUT roofline.
 - The cross-adapter findings in
   `.10x/research/2026-08-03-exact-value-adapter-audit.md` remain resolved.
-- One final independent red-team review passes after closure repair, without an iterative review
-  loop.
+- One final independent red-team review completes after integration; all material findings are
+  repaired once with focused evidence, without an iterative review loop.
 
 ## References
 
@@ -60,6 +60,16 @@ adapter refactors, and MySQL or MongoDB implementation.
   JSON/JSONB/NUMERIC encoding, append/replace/merge/replay and rejection atomicity on PostgreSQL
   17, strict focused lint, and preserved ordinary Decimal/binary COPY behavior. The parent
   integration gate is next.
+- 2026-08-03: Added one production-path conformance law spanning live PostgreSQL discovery,
+  registered source compilation/resolution, binary COPY, generic engine/package publication,
+  native destination commit, package/receipt verification, target declaration inspection, and
+  exact source/target comparison. It covers JSON, JSONB, Decimal128/256, tagged wide/unbounded
+  NUMERIC, and numeric-looking ordinary TEXT.
+- 2026-08-03: The final independent red-team found no integration, destination, or abstraction
+  defect and returned four concrete source findings: UInt64 lexical ordering, eager allocation
+  outside memory authority, flattened PostgreSQL/I/O error ownership, and unchecked NUMERIC
+  display scale. All four were repaired in one closure pass. Focused unit/live/integration/strict
+  lint passed, and the final release roofline remained green at 0.956x narrow and 1.228x mixed.
 
 ## Blockers
 
@@ -71,12 +81,29 @@ None.
 - Source evidence: `.10x/evidence/2026-08-03-postgres-source-binary-copy.md`.
 - Destination child: `.10x/tickets/done/2026-08-03-postgres-destination-exact-value-text.md`.
 - Destination evidence: `.10x/evidence/2026-08-03-postgres-destination-exact-value-text.md`.
-- Final integration evidence remains pending.
+- Final integration and closure repair:
+  `.10x/evidence/2026-08-03-postgres-source-destination-integration.md`.
 
 ## Review
 
-Pending one final independent red-team review.
+The one independent final red-team review completed after integration. It found no critical issue
+and no integration, destination reconstruction, or abstraction-boundary defect. Its three
+significant source findings and one minor source finding were all repaired once and mapped to
+focused unit, PostgreSQL 17 live, strict Clippy, integration, and two-cell release roofline
+evidence. Closure judgment is pass; the user-requested no-iteration boundary is preserved.
+
+Residual risk is limited to the recorded PostgreSQL 17 loopback performance environment and the
+absence of an induced remote transport fault. Typed/nested I/O, SQLSTATE ownership, and safe
+transport redaction are covered deterministically.
 
 ## Retrospective
 
-Pending.
+The useful final gate was composition through compiler-owned source and partition-schedule
+authority, not a direct adapter-to-adapter shortcut. That law caught fixture omissions before any
+data mutation and now proves metadata and values survive every ordinary runtime boundary.
+
+The final memory finding also clarified that a retained-batch ceiling is not by itself an
+allocation ceiling. Decoder structure now has schema-sized authority, payload builders start at
+zero capacity under the batch lease, and conservative logical admission leaves capacity/container
+headroom without sacrificing the measured roofline. Centralizing source PostgreSQL error ownership
+keeps catalog, transaction setup, COPY start, and nested stream reads consistent.

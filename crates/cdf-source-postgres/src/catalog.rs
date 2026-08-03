@@ -10,6 +10,8 @@ use cdf_postgres::{
     POSTGRES_NUMERIC_VALUE_TEXT_SEMANTIC, PostgresTarget,
 };
 
+use crate::error::classify_postgres_error;
+
 pub const POSTGRES_CATALOG_DISCOVERY_PROBE: &str = "postgres-catalog";
 
 #[derive(Clone, Debug, PartialEq)]
@@ -40,8 +42,9 @@ pub fn discover_postgres_table_catalog_schema(
     }
 
     egress.authorize(database_url)?;
-    let mut client = Client::connect(database_url, NoTls)
-        .map_err(|_| CdfError::transient("connect to Postgres catalog for schema discovery"))?;
+    let mut client = Client::connect(database_url, NoTls).map_err(|error| {
+        classify_postgres_error("connect to Postgres catalog for schema discovery", error)
+    })?;
     let columns = read_catalog_columns(&mut client, target)?;
     let schema = schema_from_catalog_columns(resource_id, columns)?;
     let source_identity = BTreeMap::from([
@@ -211,7 +214,9 @@ pub(crate) fn read_catalog_columns<C: GenericClient>(
             ),
             &[&schema, &table],
         )
-        .map_err(|_| CdfError::data("query Postgres catalog columns for schema discovery"))?;
+        .map_err(|error| {
+            classify_postgres_error("query Postgres catalog columns for schema discovery", error)
+        })?;
     Ok(rows.iter().map(catalog_column_from_row).collect())
 }
 
