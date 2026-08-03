@@ -270,8 +270,9 @@ reader or migration. A partial version bump would be more dangerous than a clean
 4. PostgreSQL CDC needs stateful reconstruction for unchanged TOAST values if complete after-images
    are non-negotiable.
 5. MongoDB exact post-images are possible, but official change-stream APIs do not establish
-   source-transaction package boundaries. Event-level resume authority and transaction atomicity
-   must not be conflated.
+   source-transaction package boundaries. The ratified model intentionally accumulates ordered
+   events into CDF segments/packages and advances the terminal resume token only after receipt; it
+   does not group Mongo events by transaction.
 6. The current finite drain/package/receipt/checkpoint architecture remains suitable; the missing
    work is typed source authority and conformance, not a second streaming engine.
 
@@ -284,12 +285,18 @@ reader or migration. A partial version bump would be more dangerous than a clean
 - numeric host transaction limits remain a deployment/profile decision, not a protocol fact;
 - exact Rust naming may change during implementation if it preserves every field and law above.
 
-## Ratification checkpoint
+## Ratification outcome
 
-Before A1 becomes executable, the user must confirm or correct:
+On 2026-08-03 the user ratified:
 
 1. protocol-specific committed log variants plus a distinct opaque Mongo resume-token variant;
 2. complete after-images/key-only deletes and MySQL-first proof, accepting PostgreSQL stateful
    reconstruction and MongoDB 6.0+ required post-images;
-3. host-bounded mandatory transaction bytes, clean current-schema artifact replacement, and
-   MongoDB event-level resume semantics unless/until transaction grouping is officially provable.
+3. clean replacement of all pre-production artifacts with no compatibility readers or migrations,
+   because CDF is net-new and customer zero;
+4. MongoDB event-prefix processing: accumulate changes into segments/packages and advance the
+   terminal resume token only after the destination receipt, without transaction grouping.
+
+The only unresolved CDC runtime policy from the prior checkpoint is the hard resource behavior for
+one PostgreSQL/MySQL transaction that exceeds ordinary package rotation. It does not apply to
+MongoDB event segmentation.

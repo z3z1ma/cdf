@@ -66,6 +66,9 @@ Recommended integration rule:
   fixture, and conformance artifacts coherently;
 - no CDC adapter ships before A1 closes.
 
+Owner: `.10x/tickets/2026-08-03-cdc-source-position-artifact-transition.md`, governed by
+`.10x/specs/cdc-source-position-artifacts.md`.
+
 Depends-On: A0.
 
 **A2. Log-source runtime archetype and CDC batch contract**
@@ -140,7 +143,7 @@ chosen by actual shared dependency evidence.
 
 ### Foundation lane C — Semantic types
 
-**C0. Legacy semantic inventory and ratification**
+**C0. Existing semantic inventory and ratification**
 
 - enumerate every `cdf:semantic` producer/consumer and exact value;
 - ratify canonical namespace/version/parameter grammar, unknown-tag policy, project-defined type
@@ -149,7 +152,7 @@ chosen by actual shared dependency evidence.
 **C1. Built-in semantic registry and consumer migration**
 
 - activate `.10x/specs/semantic-type-registry.md`;
-- implement data-only definitions, exact resolution, legacy aliases, Arrow compatibility,
+- implement data-only definitions, exact resolution, direct producer migration, Arrow compatibility,
   compiled validation/redaction, and destination mapping refinement;
 - migrate PII, variant, and PostgreSQL exact-value semantics without behavioral drift;
 - bind reachable definitions into lock and manifest authorities.
@@ -320,6 +323,7 @@ deferred lanes are explicitly parked with owners. For a full close:
 - `.10x/tickets/2026-08-03-rest-records-transform-contract-repair.md`
 - `.10x/tickets/2026-08-02-sqlite-clickhouse-mongodb-connector-program.md`
 - `.10x/knowledge/active-backlog-and-future-roadmap.md`
+- `.10x/knowledge/net-new-no-compatibility-policy.md`
 
 ## Assumptions and provenance
 
@@ -332,6 +336,14 @@ deferred lanes are explicitly parked with owners. For a full close:
 - explicit resources are preferred over implicit templating.
 - correctness and throughput are non-negotiable; validation must also be economical.
 - implementation is owned by the primary agent; separate agents are reserved for red-team review.
+- source positions use protocol-specific PostgreSQL/MySQL committed variants and a distinct opaque
+  MongoDB resume-token variant.
+- CDC emits complete after-images for insert/update and destination keys for delete; MySQL
+  ROW/FULL/GTID is the first proof, with the documented PostgreSQL/MongoDB prerequisites.
+- CDF is net-new and customer zero: artifact schemas are replaced outright with no compatibility
+  readers, migrations, or transitional debt.
+- MongoDB accumulates ordered change events into segments/packages and advances the terminal resume
+  token only after the exact destination receipt; it does not group events by source transaction.
 
 ### Record-backed constraints
 
@@ -343,7 +355,7 @@ deferred lanes are explicitly parked with owners. For a full close:
 
 ### Unratified blockers
 
-- exact CDC position/row-image/transaction-limit behavior;
+- PostgreSQL/MySQL maximum single-transaction resource behavior;
 - exact SQL grammar/profile split;
 - semantic registry naming/project scope;
 - Python execution-substrate supersession and first hook runtime;
@@ -365,12 +377,16 @@ deferred lanes are explicitly parked with owners. For a full close:
   PostgreSQL unchanged-TOAST reconstruction and MongoDB exact-post-image prerequisites, and names
   the public Mongo change-stream transaction-boundary limitation. The CDC spec now contains an
   exact ratification checkpoint rather than delegating field design to A1.
+- 2026-08-03: The user ratified the recommended typed positions and row-image model, reiterated the
+  no-backward-compatibility/no-tech-debt policy for this net-new customer-zero codebase, and
+  clarified MongoDB as receipt-gated event-prefix segmentation rather than transaction grouping.
+  A1 position/artifact work is unblocked. Only the PostgreSQL/MySQL single-large-transaction resource
+  limit remains open for A2.
 
 ## Blockers
 
-The exact unratified choices listed above prevent opening A1/B1/C1/D1/D3/E1 as executable children.
-F0 is closed at `3487de68`. Research and draft-spec refinement can continue without product-code
-mutation.
+The exact unratified choices listed above still govern B1/C1/D1/D3/E1. CDC A1 is unblocked; the
+large-transaction policy must be settled before A2 closes. F0 is closed at `3487de68`.
 
 ## Evidence
 

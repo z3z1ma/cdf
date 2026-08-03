@@ -229,7 +229,7 @@ quarantine after successful output.
 - a hook language/runtime cannot be described as high-throughput without measured copy and
   serialization overhead.
 
-## `records_transform` compatibility
+## Retired `records_transform` field
 
 REST currently accepts `records_transform` but does not execute it. Until this spec is active and a
 runtime kind is implemented, CDF MUST fail configuration that supplies the option or remove the

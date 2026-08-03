@@ -179,9 +179,9 @@ driver id. The extraction ticket SHOULD remove it from:
 - partition metadata where it does not protect a distinct artifact version;
 - tests, examples, docs, and fixtures that represent the first-party Postgres driver.
 
-If existing serialized compiled source plans are an active compatibility surface at execution
-time, the ticket MUST establish whether removing the redundant metadata requires a driver/plan
-version change. It MUST NOT keep a public no-op option merely to avoid updating fixtures.
+CDF is net-new/customer zero. Removing the redundant metadata MUST replace the affected driver/plan
+artifact version and update every fixture directly. It MUST NOT retain a reader, alias, migration,
+or public no-op option.
 
 Generic synthetic test values named `sql` that genuinely test a category rather than Postgres
 identity must not be mechanically rewritten.
@@ -244,7 +244,7 @@ program's economical validation policy.
 ## Open blockers
 
 - exact module/crate split after a duplication map against the final stable connector sources;
-- compatibility/version effect of removing `dialect` from serialized source plans;
+- exact new driver/plan version required when removing `dialect`;
 - whether ClickHouse's query model shares enough exact renderer structure or should consume only
   the neutral intent/catalog validators;
 - fresh MySQL protocol and snapshot research.

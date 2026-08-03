@@ -275,8 +275,9 @@ logical type lattice or custom execution-kernel type system. SQL syntax such as 
 may eventually author a semantic annotation, but it must lower to an ordinary Arrow type plus a
 locked semantic definition and validation program.
 
-The registry should unify existing consumers only after migration aliases for current tags are
-specified. Retrofitting by simply changing free-form strings would alter schema/package identity.
+The registry should unify existing consumers only after an exact direct replacement map for current
+tags is specified. Producers, consumers, fixtures, and artifact versions must change coherently;
+no alias or compatibility resolution layer is warranted for this net-new customer-zero system.
 
 ### 8. The SQL project language is a new compiler front-end, not a config-file rewrite
 

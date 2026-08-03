@@ -14,7 +14,7 @@ active Arrow type invariant:
 > kernel type lattice.
 
 The registry is not executable until namespace/version syntax, project-defined type scope, and
-migration of existing free-form tags are ratified.
+direct replacement of existing free-form tags are ratified.
 
 ## Purpose
 
@@ -44,9 +44,9 @@ Current semantics are already identity- and correctness-bearing:
 - schema declarations and Arrow metadata preserve arbitrary semantic strings;
 - tests reject semantic reinterpretation even where destination SQL types match.
 
-The registry migration MUST inventory every emitted/consumed tag, assign a canonical definition or
-legacy alias, and explicitly account for schema/package/hash changes. Unknown legacy tags cannot be
-silently reinterpreted.
+The registry replacement MUST inventory every emitted/consumed tag, assign each retained behavior
+one canonical definition, update every producer/consumer/fixture directly, and explicitly account
+for schema/package/hash changes. No alias or compatibility resolution layer is permitted.
 
 ## Semantic reference
 
@@ -204,8 +204,9 @@ shared mapping model to distinguish:
 Resolution order SHOULD be most-specific valid semantic+Arrow+parameter mapping, then base Arrow
 mapping only when the semantic permits fallback. Equal-specificity matches are a contract error.
 
-An unknown semantic MUST NOT be ignored when it claims exact-value or control-critical meaning. For
-pure descriptive legacy tags, fallback behavior requires an explicit migrated definition.
+An unknown semantic MUST NOT be ignored when it claims exact-value or control-critical meaning.
+Descriptive tags retained by the new contract require a canonical definition; unneeded old tags are
+deleted rather than aliased.
 
 ## SQL authoring surface
 
@@ -265,8 +266,8 @@ physical representation.
    differ only according to their resolved definitions and both results are manifest-recorded.
 3. Given a semantic version changes validation or mapping, lock/manifest/contract/plan drift is
    visible even when the Arrow schema text is unchanged.
-4. Given an exact PostgreSQL JSONB text field, its legacy tag resolves to a canonical definition and
-   Postgres destination reconstruction remains lossless and rejects incompatible physical
+4. Given an exact PostgreSQL JSONB text field, its producer emits the canonical definition directly
+   and Postgres destination reconstruction remains lossless and rejects incompatible physical
    provenance.
 5. Given `pii:email`, migration preserves the current PII action while replacing prefix inference
    with registry classification.
@@ -282,8 +283,8 @@ physical representation.
 The executable program MUST first generate an inventory of all current semantic strings and
 consumers. It then MUST:
 
-1. define canonical built-ins and legacy aliases;
-2. add registry resolution without changing behavior;
+1. define canonical built-ins and update producers directly, with no aliases;
+2. add registry resolution while preserving the intended current behavior;
 3. migrate redaction and destination mapping consumers to resolved definitions;
 4. add lock/manifest identity;
 5. reject unknown required semantics;
@@ -296,9 +297,9 @@ redaction changes.
 
 - canonical id/version/parameter syntax;
 - first-slice project-defined type support;
-- exact legacy tag inventory and alias policy;
+- exact current tag inventory and direct replacement map;
 - whether descriptive unknown tags remain allowed and, if so, with what no-behavior contract;
-- destination-sheet selector schema and compatibility version;
+- destination-sheet selector schema and new artifact version;
 - lockfile versus manifest placement for the reachable registry snapshot.
 
 ## References

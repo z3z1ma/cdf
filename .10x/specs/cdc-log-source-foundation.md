@@ -7,17 +7,18 @@ Updated: 2026-08-03
 ## Status and ratification boundary
 
 This draft converts the 2026-08-03 core-readiness findings and fresh official protocol research
-into a proposed shared CDC contract. It is not active implementation authority. The user has
-established CDC, PostgreSQL/MySQL log sources, and MongoDB change streams as product direction;
-the exact recommendations below are research-backed but remain pending the ratification checkpoint
-in `.10x/research/2026-08-03-cdc-protocol-position-contract.md`.
+into a proposed shared CDC runtime contract. The position/artifact and row-image subsets were
+ratified on 2026-08-03 and are extracted into focused active authority. The remaining draft surface
+is the PostgreSQL/MySQL large-transaction resource policy and concrete `cdc_apply` destination
+selection. MongoDB event-prefix segmentation is ratified and is not transaction-grouped.
 
 ## Purpose
 
 Define the kernel/runtime foundation that every first-party CDC source MUST reuse so CDF can drain
-an ordered change log into immutable packages and advance a checkpoint only at a source-proven
-transaction boundary. The foundation extends the existing finite drain-epoch, rolling-spool,
-package, receipt, and checkpoint commit gate. It MUST NOT introduce a parallel streaming runtime.
+changes into immutable packages and advance a checkpoint only at a source-proven safe frontier:
+a committed transaction boundary for PostgreSQL/MySQL, or a receipt-covered event-prefix resume
+token for MongoDB. The foundation extends the existing finite drain-epoch, rolling-spool, package,
+receipt, and checkpoint commit gate. It MUST NOT introduce a parallel streaming runtime.
 
 ## Scope
 
@@ -37,8 +38,7 @@ package, receipt, and checkpoint commit gate. It MUST NOT introduce a parallel s
 - PostgreSQL slot/publication, MySQL binlog/GTID, or MongoDB change-stream protocol details;
 - a first-party `cdc_apply` destination implementation;
 - cross-database transaction coordination;
-- compatibility readers for pre-production position/checkpoint artifacts unless separately
-  ratified;
+- compatibility readers or migrations for pre-production position/checkpoint artifacts;
 - hiding first-party positions inside `ForeignState`;
 - emitting a checkpoint for a partially observed source transaction.
 
@@ -116,10 +116,11 @@ reachability. An adapter MAY publish an explicitly ordered terminal token from i
 event prefix; generic set aggregation MUST NOT guess which opaque token is later.
 
 The public MongoDB change-stream contract identifies transaction events with `lsid` and
-`txnNumber` but does not expose a documented transaction-end marker. A Mongo resume token proves a
-safe event/scanned-prefix restart, not source-transaction package atomicity. The first Mongo CDC
-adapter MUST either advertise event-level at-least-once semantics or remain blocked until a
-documented transaction-group boundary is proven; it MUST NOT inspect undocumented token internals.
+`txnNumber` but does not expose a documented transaction-end marker. Mongo CDC MUST therefore use
+event-prefix semantics: accumulate ordered changes into segments/packages, retain the terminal
+event/post-batch token as the proposed frontier, deliver the package, and advance that token only
+after the exact destination receipt is accepted. It MUST NOT group by source transaction or inspect
+undocumented token internals.
 
 ### Position algebra
 
@@ -142,7 +143,7 @@ without an exact terminal token, joining MUST fail before package/checkpoint pub
 
 ## Transaction-aligned epoch law
 
-The central invariant is:
+For PostgreSQL/MySQL ordered logs, the central invariant is:
 
 > A package/checkpoint epoch may close only at a source-proven complete transaction boundary, and
 > every row admitted before that boundary belongs to a transaction at or before that boundary.
@@ -226,7 +227,7 @@ Protocol consequences are explicit:
   `fullDocument: "required"`; `updateLookup` is not exact.
 - MongoDB `replace` maps to update. Truncate/DDL and missing images/keys fail before checkpoint.
 
-This row-image recommendation remains a semantic blocker pending user ratification.
+This row-image contract was user-ratified on 2026-08-03.
 
 ### Ordering and keys
 
@@ -292,7 +293,8 @@ Before any destination advertises `cdc_apply`, its sheet and implementation MUST
 - delete count and update/insert count receipt evidence where the backend can observe it;
 - independent receipt verification against destination state;
 - failure behavior for missing targets, schema drift, unsupported operations, and ambiguous commit;
-- no checkpoint advance until the destination receipt covers the exact transaction-aligned frontier.
+- no checkpoint advance until the destination receipt covers the exact committed-log or opaque
+  event-prefix frontier.
 
 `cdc_apply` is not equivalent to existing `merge`: it includes deletes and preserves ordered source
 change semantics. A destination MAY lower it to a maximally efficient native mutation/bulk protocol
@@ -311,9 +313,10 @@ positions. At minimum:
 - portable worker/task position encoding and hashes;
 - golden fixtures, examples, system-SQL decoding, inspect/status rendering, and conformance.
 
-Recommended pre-production policy: replace the current schema coherently, fail closed on old
-versions with direct remediation, update every fixture/renderer/hash, and add no legacy readers or
-migrations. A partial transition is forbidden. This recommendation requires ratification.
+Because CDF is net-new and customer zero, the artifact schemas MUST be replaced coherently, fail
+closed on old versions with direct remediation, update every fixture/renderer/hash, and add no
+legacy readers or migrations. A partial transition is forbidden. This policy was user-ratified on
+2026-08-03.
 
 ## Failure behavior
 
@@ -345,6 +348,8 @@ migrations. A partial transition is forbidden. This recommendation requires rati
    reachability fail before package finalization.
 6. **Opaque token:** Given a MongoDB token, CDF round-trips its bytes and scope exactly, detects
    tampering, and never claims numeric ordering from token internals.
+   Given accumulated Mongo changes are segmented and delivered, the terminal token advances only
+   after a receipt for the exact segment/package is accepted; no transaction grouping is required.
 7. **Control-field protection:** Given a projection, contract, or hook tries to remove or modify
    `_cdf_op` or a key field, planning/execution fails before package publication.
 8. **Large transaction:** Given a transaction crosses ordinary package rotation while within the
@@ -368,13 +373,8 @@ migrations. A partial transition is forbidden. This recommendation requires rati
 
 ## Open blockers
 
-1. User ratification of the typed position shapes and algebra from
-   `.10x/research/2026-08-03-cdc-protocol-position-contract.md`.
-2. User ratification of complete after-image updates/key-only deletes and MySQL-first proof, with
-   the stated PostgreSQL/MongoDB prerequisites.
-3. User ratification of host-bounded transaction bytes, clean current-schema artifact replacement,
-   and MongoDB event-level resume semantics unless a transaction boundary is later proven.
-4. First destination(s) authorized to implement `cdc_apply` after A1/A2.
+1. Exact PostgreSQL/MySQL large-transaction byte-bound ownership and behavior.
+2. First destination(s) authorized to implement `cdc_apply` after A1/A2.
 
 ## References
 

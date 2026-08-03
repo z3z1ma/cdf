@@ -160,7 +160,7 @@ type, byte count, hash, and required/optional semantics. A resident cache is nev
 - source (built-in, adapter, project);
 - normalized parameters actually used;
 - Arrow compatibility/validation/redaction/mapping profile hashes;
-- legacy alias resolution where applicable.
+- canonical semantic reference after direct producer migration; no alias resolution layer.
 
 ### Lineage
 
