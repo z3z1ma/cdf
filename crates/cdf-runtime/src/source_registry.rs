@@ -868,6 +868,7 @@ fn validate_driver_options(
     source: &BTreeMap<String, serde_json::Value>,
     resource: &BTreeMap<String, serde_json::Value>,
 ) -> Result<()> {
+    driver.validate_option_compatibility(source, resource)?;
     let schema = driver.option_schema();
     let source_schema = schema.get("source").ok_or_else(|| {
         CdfError::internal("registered source driver lost its source option schema")

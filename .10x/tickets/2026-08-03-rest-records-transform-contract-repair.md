@@ -1,4 +1,4 @@
-Status: blocked
+Status: done
 Created: 2026-08-03
 Updated: 2026-08-03
 
@@ -51,7 +51,7 @@ is active. Do not implement a REST-only Python loader or hook host.
   consumer at revision `b7b3eb72db88c19fcc65ca456c8e517201e794ae`.
 - Record-backed: no active user-facing hook contract exists; current project hooks are test/
   orchestration callbacks.
-- Recommended but unratified: fail/remove now rather than preserve an inert compatibility field.
+- User-ratified on 2026-08-03: fail/remove now rather than preserve an inert compatibility field.
 
 ## Journal
 
@@ -59,21 +59,55 @@ is active. Do not implement a REST-only Python loader or hook host.
   JSON schema, option decode, compiled-plan copy, and the runtime plan field. No execution read
   exists. Ticket created as a correctness owner rather than folding an ad hoc fix into the future
   hook program.
+- 2026-08-03: The user said “Proceed” after the record handoff and requested batched validation and
+  review. The recommended reject/remove behavior is activated. Execution will run one focused REST/
+  schema/doc validation batch and one consolidated review; no workspace-wide suite is authorized or
+  useful for this leaf repair.
+- 2026-08-03: Removed the option from the REST schema, decoded options, portable physical plan, and
+  runtime plan. Replaced the working VISION example with the governed future hook boundary.
+- 2026-08-03: The consolidated review correctly found that closed-schema validation precedes
+  adapter decoding. Added a registry-enforced compatibility preflight that can only narrow a
+  driver's closed schema, then moved the regression to `SourceRegistry::compile` and gave the
+  retired field a stable remove-it diagnostic. Corrected VISION from runtime to compiler rejection.
 
 ## Blockers
 
-- User must ratify the recommended compatibility behavior: reject/remove the currently inert
-  option until shared hooks exist. Implementing it now would require the unresolved Python/WASM
-  runtime, sandbox, schema, determinism, and authority decisions and is not a bounded repair.
+None.
 
 ## Evidence
 
-Pending execution after ratification.
+- Published schema and compile rejection: the focused REST regression asserts that
+  `records_transform` is absent from the registered driver schema and that
+  `SourceRegistry::compile` returns `ErrorKind::Contract` with the exact unsupported/remove-it
+  diagnostic. `cargo test -p cdf-source-rest` passed 9 tests, failed 0, and retained 1 explicitly
+  ignored release performance-envelope test.
+- Generated schema composition: `cargo test -p cdf-declarative
+  generated_schema_merges_common_and_driver_fields_into_closed_objects` passed 1 focused test with
+  21 filtered out. Combined with the registered REST schema assertion, this supports that generated
+  declarations cannot reintroduce a driver field absent from the closed schema; it does not claim a
+  byte-for-byte release artifact snapshot.
+- Plan/runtime removal and documentation inventory: repository search for `records_transform`
+  found only the compatibility rejection, its regression, and the VISION future-capability note;
+  no compiled-plan or runtime-plan field remains.
+- Formatting and patch hygiene: `cargo fmt --all` completed and `git diff --check` passed.
 
 ## Review
 
-Pending.
+- Consolidated independent red-team verdict before repair: **concerns**. One significant finding
+  identified the wrong tested boundary and missing remediation in the actual registry path; one
+  minor finding identified “runtime” instead of compile-time wording in VISION. The reviewer found
+  no remaining production consumer or adapter-specific hook host.
+- Reconciliation: both findings were repaired directly. The actual registry boundary now owns the
+  regression and stable Contract diagnostic, and VISION names compiler rejection. The compatibility
+  preflight cannot widen a schema because ordinary closed-schema validation always follows it.
+- Closure verdict: **pass**. Residual risk is limited to the generated-schema evidence being a
+  composition test rather than a release-artifact snapshot; the driver-schema assertion and absence
+  inventory directly cover the changed adapter surface.
 
 ## Retrospective
 
-Pending.
+The initial adapter-level decode test was insufficient because the composition root validates the
+closed schema first. Testing through the public registry boundary exposed the actual user-visible
+error and produced a small reusable compatibility seam without weakening schema closure or creating
+a transform abstraction. Future option removals should begin at the registry path, not the adapter's
+private decoder.

@@ -2437,6 +2437,18 @@ impl<'a> SourceResolutionContext<'a> {
 pub trait SourceDriver: Send + Sync {
     fn descriptor(&self) -> &SourceDriverDescriptor;
     fn option_schema(&self) -> &serde_json::Value;
+    /// Rejects retired or otherwise incompatible option spellings with driver-owned migration
+    /// guidance before the closed schema produces its generic unknown-field diagnostic.
+    ///
+    /// This hook may only narrow compatibility. The registry still validates every accepted
+    /// option against the published closed schema after this method returns successfully.
+    fn validate_option_compatibility(
+        &self,
+        _source: &BTreeMap<String, serde_json::Value>,
+        _resource: &BTreeMap<String, serde_json::Value>,
+    ) -> Result<()> {
+        Ok(())
+    }
     fn validate_project_options(&self, options: &serde_json::Value) -> Result<()> {
         match options.as_object() {
             Some(options) if options.is_empty() => Ok(()),

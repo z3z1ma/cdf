@@ -39,7 +39,6 @@ pub struct RestResourcePlan {
     pub allowlist: EgressAllowlist,
     pub cursor_param: Option<String>,
     pub cursor_filter_fidelity: PushdownFidelity,
-    pub records_transform: Option<String>,
 }
 
 pub use driver::RestSourceDriver;

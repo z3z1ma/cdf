@@ -2020,7 +2020,6 @@ mod tests {
             allowlist: cdf_http::EgressAllowlist::allow_any(),
             cursor_param: None,
             cursor_filter_fidelity: PushdownFidelity::Unsupported,
-            records_transform: None,
         };
         let mut auth_session = None;
         let execution = test_execution_services();
@@ -2111,7 +2110,6 @@ mod tests {
             allowlist: cdf_http::EgressAllowlist::allow_any(),
             cursor_param: Some("since".to_owned()),
             cursor_filter_fidelity: cdf_kernel::PushdownFidelity::Inexact,
-            records_transform: None,
         };
 
         assert_eq!(

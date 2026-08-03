@@ -547,13 +547,13 @@ partition = { by = "cursor_window", width = "7d" }
 
 `cdf-declarative` compiles this into real `QueryableResource` implementations backed by `cdf-http`, which is why declarative resources get pushdown (the `since` param *is* the cursor filter, fidelity `Inexact`), partitioning, retries, and rate limiting without their authors learning those words. `kind = "sql"` and `kind = "files"` receive equivalent treatment: a SQL resource's cursor column becomes a real `WHERE` pushdown at fidelity `Exact` when the dialect permits, and a files resource's prefix layout becomes partition pruning. The JSON Schema for the format ships with every release and registers with SchemaStore, so VS Code, JetBrains, Zed, and Neovim validate and complete it with zero setup; `cdf validate` runs the same schema plus semantic probes — does the cursor field exist in a sample response? does the paginator's shape match the API's? — in CI.
 
-The escape-hatch gradient matters as much as the format. A declarative resource can name a Python or Rust function for exactly the fragment that resists declaration —
-
-```toml
-records_transform = "python://./src/gh.py#flatten_reactions"
-```
-
-— so outgrowing Tier 0 costs one function, not a rewrite. The gradient is the tier system's whole theory of adoption: every step up the ladder is incremental, and no step abandons the artifacts below it.
+The escape-hatch gradient matters as much as the format. The planned hook tier will let a
+declarative resource name a content-pinned, batch-level transform for exactly the fragment that
+resists declaration, so outgrowing Tier 0 costs one function rather than a rewrite. The current
+compiler deliberately rejects `records_transform`: plan-declared Python/WASM hooks remain future
+work until their schema effects, determinism, sandbox, memory, and artifact identity are governed.
+The gradient is the tier system's whole theory of adoption: every step up the ladder is incremental,
+and no step abandons the artifacts below it.
 
 ### 9.3 Tier 1 — Rust
 

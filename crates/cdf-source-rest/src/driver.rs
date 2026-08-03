@@ -69,6 +69,19 @@ impl SourceDriver for RestSourceDriver {
         &self.option_schema
     }
 
+    fn validate_option_compatibility(
+        &self,
+        _source: &BTreeMap<String, serde_json::Value>,
+        resource: &BTreeMap<String, serde_json::Value>,
+    ) -> Result<()> {
+        if resource.contains_key("records_transform") {
+            return Err(CdfError::contract(
+                "REST resource option `records_transform` is not supported; remove it because previous releases accepted but did not execute it",
+            ));
+        }
+        Ok(())
+    }
+
     fn validate_portable_plan(&self, plan: &CompiledSourcePlan) -> Result<()> {
         plan.validate()?;
         let physical: RestPhysicalPlan = serde_json::from_value(plan.physical_plan.clone())
@@ -532,8 +545,7 @@ fn option_schema() -> serde_json::Value {
                 "path": {"type": "string"},
                 "params": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean"]}},
                 "paginate": pagination,
-                "records": {"type": "string", "minLength": 1},
-                "records_transform": {"type": "string", "minLength": 1}
+                "records": {"type": "string", "minLength": 1}
             }
         }
     })
@@ -560,8 +572,6 @@ struct RestResourceOptions {
     #[serde(default)]
     paginate: Option<PaginationOptions>,
     records: String,
-    #[serde(default)]
-    records_transform: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -698,7 +708,6 @@ impl RestPhysicalPlan {
             },
             cursor_param,
             cursor_filter_fidelity,
-            records_transform: self.resource.records_transform.clone(),
         })
     }
 }
@@ -973,6 +982,59 @@ mod tests {
         fn run_blocking_value(&self, _lane: &str, task: BlockingValueTask) -> Result<IoValue> {
             task()
         }
+    }
+
+    #[test]
+    fn records_transform_is_rejected_instead_of_silently_ignored() {
+        let driver =
+            RestSourceDriver::new(|| Err(CdfError::internal("compile-only transport"))).unwrap();
+        assert!(
+            driver.option_schema()["resource"]["properties"]
+                .get("records_transform")
+                .is_none()
+        );
+        let mut registry = SourceRegistry::new();
+        registry.register(driver).unwrap();
+        let error = registry
+            .compile(SourceCompileRequest {
+                source_kind: "rest".to_owned(),
+                context: SourceCompileContext {
+                    source_name: "api".to_owned(),
+                    project_root: None,
+                    cursor_pushdown: None,
+                },
+                source_options: BTreeMap::new(),
+                resource_options: BTreeMap::from([(
+                    "records_transform".to_owned(),
+                    serde_json::json!("python://./src/hooks.py#transform"),
+                )]),
+                descriptor: ResourceDescriptor {
+                    resource_id: ResourceId::new("api.items").unwrap(),
+                    schema_source: SchemaSource::Declared {
+                        schema_hash: SchemaHash::new("schema-rest-transform").unwrap(),
+                        source: "test".to_owned(),
+                    },
+                    primary_key: Vec::new(),
+                    merge_key: Vec::new(),
+                    cursor: None,
+                    write_disposition: WriteDisposition::Append,
+                    deduplication: None,
+                    contract: None,
+                    state_scope: ScopeKey::Resource,
+                    freshness: None,
+                    trust_level: TrustLevel::Governed,
+                },
+                schema: Schema::empty(),
+                type_policy_allowances: Default::default(),
+                effective_schema_runtime: None,
+                baseline_observation_schema_catalog: Vec::new(),
+            })
+            .unwrap_err();
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Contract);
+        assert_eq!(
+            error.message,
+            "REST resource option `records_transform` is not supported; remove it because previous releases accepted but did not execute it"
+        );
     }
 
     #[test]
