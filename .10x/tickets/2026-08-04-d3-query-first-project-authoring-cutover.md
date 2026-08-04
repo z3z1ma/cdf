@@ -208,6 +208,14 @@ retired public authority rather than wrapping them.
   result contains no DataFusion AST or plan. Focused negative tests cover executable arguments,
   missing/duplicate/computed source, positional/wrong-operator arguments, set operations,
   aggregation, CTEs, multiple statements, DDL/DML, and non-upstream relations.
+- 2026-08-04: Added the CDF-owned resource envelope parser in `cdf-project`, separate from
+  DataFusion query analysis. It admits bare SELECT as the normal form and the ordered no-identifier
+  `RESOURCE [TARGET] [DISPOSITION] [CURSOR] [TRUST] [SEMANTICS] [EXECUTION] AS SELECT` form,
+  retains one-based spans, parses intrinsic merge keys and semantic references, and lowers bounded
+  or complete drain syntax directly into the existing typed execution declarations. It rejects
+  identifiers after RESOURCE, retired CREATE RESOURCE, repeated/out-of-order clauses, empty or
+  duplicate merge/semantic bindings, zero drain limits, and incomplete drain policy with stable
+  `CDF-D3-RESOURCE-*` diagnostics.
 
 ## Blockers
 
@@ -233,6 +241,10 @@ evidence without reopening or re-verifying those tickets.
 - `cargo check -p cdf-project --tests --locked -j 12` passed. This proves all project-inventory
   fixtures and their affected dependency boundary compile, while deliberately avoiding another
   local DuckDB-linked test execution.
+- With the existing local DuckDB dylib made available only to the linker,
+  `cargo test -p cdf-project --lib resource_file --locked -j 12` passed 6 focused tests. This proves
+  bare/envelope parsing, canonical clause ordering, typed bounded/drain lowering, and the enumerated
+  envelope rejection cases without running unrelated project tests.
 
 ## Review
 

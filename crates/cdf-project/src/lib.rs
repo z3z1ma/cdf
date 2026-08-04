@@ -80,6 +80,7 @@ mod observation_cache;
 mod project_files;
 mod project_inputs;
 mod promotion;
+mod resource_sql;
 mod runtime;
 #[cfg(test)]
 mod runtime_tests;
@@ -185,6 +186,10 @@ pub use promotion::{
     inspect_local_package_promotion_availability, plan_schema_promotion,
     recompute_schema_promotion_id, select_correction_strategy,
     validate_schema_promotion_plan_identity,
+};
+pub use resource_sql::{
+    AuthoredDisposition, AuthoredResourceEnvelope, AuthoredResourceFile, AuthoredResourceForm,
+    AuthoredSemanticBinding, SpannedResourceValue, parse_resource_file,
 };
 pub use runtime::{
     DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS, DestinationCommitPlanningInputs,

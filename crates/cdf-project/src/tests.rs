@@ -64,4 +64,5 @@ mod project_files;
 mod project_inputs;
 mod promotion;
 mod publication_recovery;
+mod resource_sql;
 mod support;
