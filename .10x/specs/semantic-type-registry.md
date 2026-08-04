@@ -33,11 +33,11 @@ content-addressed compile authority shared by:
 One definition should explain what a semantic means everywhere instead of allowing contracts,
 destinations, and adapters to infer different behavior from the same string.
 
-## Existing behavior that must be preserved
+## Historical behavior whose meaning must be preserved
 
-Current semantics are already identity- and correctness-bearing:
+Before direct migration, semantics were already identity- and correctness-bearing:
 
-- `pii:*` selects PII redaction policy;
+- the former `pii:*` prefix selected PII redaction policy;
 - the framework variant column uses a fixed semantic tag;
 - PostgreSQL JSON, JSONB, and NUMERIC exact-value text tags combine with `cdf:physical_type` to
   permit lossless reconstruction in the Postgres destination;
@@ -157,9 +157,10 @@ CDF MUST ship this initial built-in registry:
 - `postgres.json_text@1`, `postgres.jsonb_text@1`, and `postgres.numeric_text@1` for exact
   PostgreSQL values with their existing UTF-8 and physical-provenance prerequisites.
 
-The current `json`, `package-row-ord-v1`, `pii:*`, and `postgres_*_value_text_v1` strings MUST be
-replaced directly. Descriptive `id` and other behavior-free tags MUST be removed rather than
-aliased. Approved future CDC control semantics may add separately versioned definitions.
+The former `json`, `package-row-ord-v1`, `pii:*`, and `postgres_*_value_text_v1` strings have been
+replaced directly and MUST NOT be accepted. Descriptive `id` and other behavior-free tags are
+removed rather than aliased. Approved future CDC control semantics may add separately versioned
+definitions.
 
 Built-ins are versioned with CDF and included in the dependency tuple/manifest snapshot.
 
@@ -288,8 +289,8 @@ physical representation.
 4. Given an exact PostgreSQL JSONB text field, its producer emits the canonical definition directly
    and Postgres destination reconstruction remains lossless and rejects incompatible physical
    provenance.
-5. Given `pii:email`, migration preserves the current PII action while replacing prefix inference
-   with registry classification.
+5. Given a historical `pii:email` field, direct migration preserves the PII action through
+   `cdf.pii@1(class="email")` while deleting prefix inference and rejecting the historical spelling.
 6. Given an unknown semantic, no adapter silently treats it as ordinary Utf8 when exact-value or
    privacy meaning may be lost.
 7. Given a project-defined semantic is not enabled in the first slice, the compiler emits an exact

@@ -6840,6 +6840,10 @@ fn apply_residual_verdicts(
     );
 
     for (row, row_candidates) in grouped {
+        let redactions = row_candidates
+            .iter()
+            .map(|candidate| residual_redaction(program, candidate))
+            .collect::<Result<Vec<_>>>()?;
         let mut quarantine_reason = None;
         for candidate in &row_candidates {
             let field = candidate
@@ -6877,10 +6881,6 @@ fn apply_residual_verdicts(
         }
 
         let encoded = if quarantine_reason.is_none() {
-            let redactions = row_candidates
-                .iter()
-                .map(|candidate| residual_redaction(program, candidate))
-                .collect::<Vec<_>>();
             let fields = row_candidates
                 .iter()
                 .zip(&redactions)
@@ -6911,13 +6911,13 @@ fn apply_residual_verdicts(
 
         if let Some((rule_id, error_code)) = quarantine_reason {
             accepted[row] = false;
-            for candidate in &row_candidates {
+            for (candidate, redaction) in row_candidates.iter().zip(&redactions) {
                 quarantine_sink(QuarantineRecord {
                     source_row_ordinal: candidate.source_row_ordinal(),
                     rule_id: rule_id.clone(),
                     error_code: error_code.clone(),
                     source_position: context.evaluation.source_position.clone(),
-                    observed_value_redacted: residual_observed_value(program, candidate),
+                    observed_value_redacted: residual_observed_value(candidate, redaction),
                 })?;
                 quarantine_candidate_count = quarantine_candidate_count
                     .checked_add(1)
@@ -6929,6 +6929,7 @@ fn apply_residual_verdicts(
                     context.observation_id,
                     ResidualRuntimeVerdict::Quarantined,
                     &rule_id,
+                    redaction.clone(),
                 )?);
             }
             let summary = rule_summaries
@@ -6943,7 +6944,7 @@ fn apply_residual_verdicts(
             summary.violation_count += 1;
         } else {
             variants[row] = encoded;
-            for candidate in &row_candidates {
+            for (candidate, redaction) in row_candidates.iter().zip(redactions) {
                 residual_decisions.push(residual_decision_artifact(
                     program,
                     candidate,
@@ -6951,6 +6952,7 @@ fn apply_residual_verdicts(
                     context.observation_id,
                     ResidualRuntimeVerdict::Captured,
                     "cdf.residual_capture",
+                    redaction,
                 )?);
             }
         }
@@ -7038,6 +7040,7 @@ fn residual_decision_artifact(
     observation_id: Option<&str>,
     verdict: ResidualRuntimeVerdict,
     rule_id: &str,
+    redaction: RedactionDecision,
 ) -> Result<ResidualDecisionArtifact> {
     Ok(ResidualDecisionArtifact {
         version: 1,
@@ -7065,7 +7068,7 @@ fn residual_decision_artifact(
         } else {
             ResidualTypedProjection::Absent
         },
-        redaction: residual_redaction(program, candidate),
+        redaction,
     })
 }
 
@@ -7129,13 +7132,12 @@ fn residual_path(candidate: &PreContractResidualCandidate) -> String {
 }
 
 fn residual_observed_value(
-    program: &ValidationProgram,
     candidate: &PreContractResidualCandidate,
+    decision: &RedactionDecision,
 ) -> QuarantineObservedValue {
     if candidate.value().is_null(candidate.value_index()) {
         return QuarantineObservedValue::Null;
     }
-    let decision = residual_redaction(program, candidate);
     let encoded = ResidualFieldRef::new(
         candidate.source_path().iter().map(String::as_str),
         candidate.value(),
@@ -7143,7 +7145,7 @@ fn residual_observed_value(
     )
     .and_then(|field| encode_residual_json_v1([field]))
     .ok();
-    match &decision {
+    match decision {
         RedactionDecision::Preserve => encoded
             .and_then(|bytes| String::from_utf8(bytes).ok())
             .map(|value| QuarantineObservedValue::Preserved { value })
@@ -7168,7 +7170,17 @@ fn residual_observed_value(
 fn residual_redaction(
     program: &ValidationProgram,
     candidate: &PreContractResidualCandidate,
-) -> RedactionDecision {
+) -> Result<RedactionDecision> {
+    let default_policy = cdf_contract::PiiRedactionPolicy::default();
+    let policy = program
+        .residual
+        .as_ref()
+        .map_or(&default_policy, |residual| &residual.pii_redaction);
+    let observed = cdf_contract::redaction_decision_for_field(
+        candidate.observed_field(),
+        policy,
+        cdf_semantic::SemanticAuthority::Observed,
+    )?;
     let field = candidate
         .source_path()
         .first()
@@ -7185,17 +7197,9 @@ fn residual_redaction(
         })
         .map(|field| field.redaction.clone())
     {
-        return decision;
+        return Ok(decision);
     }
-    program
-        .residual
-        .as_ref()
-        .map_or(RedactionDecision::Omit, |residual| {
-            cdf_contract::redaction_decision_for_field(
-                candidate.observed_field(),
-                &residual.pii_redaction,
-            )
-        })
+    Ok(observed)
 }
 
 fn collect_source_position_control_fields(
@@ -7793,7 +7797,7 @@ mod transform_kernel_tests {
         SchemaEvolutionMode, TransformDescription, VectorValidationEvaluator,
         compile_validation_program,
     };
-    use cdf_kernel::{BatchId, TrustLevel};
+    use cdf_kernel::{BatchId, ErrorKind, PreContractResidualCandidate, TrustLevel, with_semantic};
     use cdf_memory::{DeterministicMemoryCoordinator, MemoryCoordinator};
     use cdf_package::PackageBuilder;
     use cdf_package_contract::{QuarantineObservedValue, QuarantineRecord};
@@ -7801,8 +7805,32 @@ mod transform_kernel_tests {
     use super::{
         QuarantinePartAccumulator, ResidualBatchContext, TransformKernelMode, apply_contract_exec,
         apply_pre_contract_expressions, execute_batch, reserve_quarantine_evidence,
-        source_row_tracking_schema,
+        residual_redaction, source_row_tracking_schema,
     };
+
+    #[test]
+    fn residual_semantic_unknowns_retain_observed_data_ownership() {
+        let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+        let program = compile_validation_program(
+            &ContractPolicy::for_trust(TrustLevel::Governed),
+            &ObservedSchema::from_arrow(&schema),
+        )
+        .unwrap();
+        let unknown = "project.unknown@1".parse().unwrap();
+        let candidate = PreContractResidualCandidate::new(
+            0,
+            0,
+            vec!["new_value".to_owned()],
+            with_semantic(Field::new("new_value", DataType::Utf8, true), &unknown),
+            None,
+            Arc::new(StringArray::from(vec!["secret"])),
+            0,
+        )
+        .unwrap();
+
+        let error = residual_redaction(&program, &candidate).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Data);
+    }
 
     #[test]
     fn tracked_source_rows_do_not_shift_sequential_derive_filter_bindings() {

@@ -1,7 +1,7 @@
-Status: active
-Created: 2026-08-03
+Status: superseded
+Created: 2026-07-18
 Updated: 2026-08-03
-Supersedes: `.10x/decisions/superseded/canonical-package-row-ord-v1.md`
+Superseded-By: `.10x/decisions/canonical-package-row-ord.md`
 
 # Canonical package row ordinal
 
@@ -21,7 +21,7 @@ The field is storage/internal evidence, not part of the compiled destination-vis
 
 An unbounded source MUST roll finite package epochs according to its compiled checkpoint/flush policy. Segments persist and may enter staged destination ingress incrementally within the epoch; CDF does not retain the whole epoch in memory. Final binding closes the epoch, and the next package resets `_cdf_package_row_ord` to zero under a new package identity.
 
-The framework field has one exact classifier: reserved name, `UInt64`, non-null, `cdf:semantic=cdf.package_row_ordinal@1`, and `cdf:visibility=internal`. User fields cannot claim it. Memory accounting includes its value buffer, and performance evidence compares package construction and each first-party destination before and after the format change.
+The framework field has one exact classifier: reserved name, `UInt64`, non-null, `cdf:semantic=package-row-ord-v1`, and `cdf:visibility=internal`. User fields cannot claim it. Memory accounting includes its value buffer, and performance evidence compares package construction and each first-party destination before and after the format change.
 
 ## Alternatives considered
 
@@ -38,4 +38,4 @@ The framework field has one exact classifier: reserved name, `UInt64`, non-null,
 
 Canonical segment hashes and package manifests intentionally change once. DuckDB `read_arrow` can ingest all canonical files in one native scan and derive exact row keys without window functions, sequences, updates, or ordered-file assumptions. Postgres binary COPY and staged merge order consume the same ordinal. Replay verifies the field rather than reconstructing it. Streaming ingestion retains the same proof per finite commit epoch without an ever-growing counter or buffer. The added `UInt64` buffer is a named package overhead that must pass controlled EC2 package and end-to-end gates; failure to meet those gates blocks retention rather than creating an unmeasured default.
 
-This decision supersedes `.10x/decisions/superseded/canonical-package-row-ordinal.md`.
+This decision superseded `.10x/decisions/superseded/canonical-package-row-ordinal.md` while active.

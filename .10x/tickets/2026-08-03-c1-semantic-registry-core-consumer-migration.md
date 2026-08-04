@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-08-03
 Updated: 2026-08-03
 Parent: `.10x/tickets/2026-08-03-cdc-semantic-sql-project-foundation-program.md`
@@ -110,6 +110,26 @@ acceptable only if it preserves one resolver without moving project/driver code 
   package-row semantic identity change. Updated only that expected artifact identity; the test's
   first-vs-second build equality remained its independent determinism proof, and the isolated
   locked rerun passed 1/1.
+- 2026-08-03: The single independent red-team pass returned `fail` with four significant and no
+  critical findings: JSON-unaware reference delimiters/whitespace, permissive textual exact-Arrow
+  selectors plus lossy observed-type reconstruction, suppressed residual unknown-semantic errors,
+  and active records still mandating deleted spellings. The user had authorized closure repairs
+  and prohibited an infinite review cycle, so all four were repaired together and validated once.
+- 2026-08-03: Canonical references now rely on JSON parsing plus final render equality rather than
+  scanning inside JSON strings; spaces, parentheses, commas, and equals signs inside canonical JSON
+  strings round trip while syntactic whitespace still fails. Exact Arrow selectors now store
+  structured `CanonicalArrowType`, eliminating aliases/casing from definition identity.
+  `ObservedField` carries exact canonical Arrow authority in addition to its deliberately coarse
+  contract classification; missing, invalid, or contradictory authority fails `Data`, and an exact
+  UTF-8 semantic cannot validate `LargeUtf8`.
+- 2026-08-03: Residual candidates now resolve semantics exactly once under `Observed` authority
+  before capture/quarantine classification, reuse the resulting redaction decision for encoding,
+  evidence, and quarantine, and propagate unknown/malformed references as `Data`. This removes the
+  suppressed-error path without adding per-use registry work.
+- 2026-08-03: Updated all affected active specs and reissued the three accepted decisions whose
+  closed classifiers still named historical strings. Their prior text is preserved in
+  `.10x/decisions/superseded/`; active authority names only canonical semantic references, while the
+  registry spec labels old spellings as rejected migration history rather than current authority.
 
 ## Blockers
 
@@ -132,7 +152,7 @@ None.
 4. Error ownership: `.10x/evidence/2026-08-03-c1-semantic-error-ownership.md` freezes seven scoped
    behavior files, six justified `Internal` construction sites, and one test assertion. Authored
    unknowns are Contract, observed unknowns are Data, and compiled absence is Internal.
-5. Contract behavior: `cargo test -p cdf-contract` passed 95 tests with 2 deliberate performance
+5. Contract behavior: final `cargo test -p cdf-contract` passed 96 tests with 2 deliberate performance
    tests ignored. This includes registry-based PII redaction, exact framework variant recognition,
    recursive destination semantic preflight, and unchanged verdict actions.
 6. Package/engine ownership: `cargo test -p cdf-package-contract` passed 17 unit tests plus its
@@ -161,10 +181,36 @@ None.
     Postgres adapters, `cdf-engine`, SQLite/DuckDB destinations, `cdf-project`, `cdf-cli`, and
     `cdf-conformance`. The final kernel/semantic/contract strict-Clippy delta passed after the
     custom-definition closure. `cargo fmt --all -- --check` and `git diff --check` pass.
+11. Red-team repair validation: the kernel semantic selector passed with canonical JSON strings
+    containing spaces and delimiters; `cdf-semantic` passed 6/6 with exact structured Arrow
+    selectors; the new contract exact-Arrow test passed and the full contract crate remained green;
+    the engine unknown-residual ownership test and existing residual capture/redaction/control test
+    both passed; engine strict Clippy passed. The project lockfile semantic-diff test passed after
+    exposing the already-built local DuckDB dylib to the linker. No whole-workspace test ran.
 
 ## Review
 
-Pending one independent lane-boundary red-team review.
+One independent read-only red-team review inspected commit `17c74ffe`, the governing records, and
+actual source. Its pre-repair verdict was `fail`, with four significant findings and no critical
+findings:
+
+1. JSON string content was incorrectly treated as reference syntax. Resolved by removing global
+   whitespace/interior-parenthesis scans and retaining parser-level delimiter checks plus canonical
+   render equality; delimiter-bearing JSON strings now round trip in tests.
+2. Textual exact Arrow patterns admitted aliases into hashes, and `ObservedSchema` collapsed exact
+   UTF-8 variants. Resolved by replacing string selectors with structured `CanonicalArrowType` and
+   carrying/validating exact observed authority alongside coarse contract classification. Tests
+   prove `LargeUtf8` cannot satisfy exact `Utf8`.
+3. Residual redaction suppressed registry errors. Resolved by making the shared field helper typed
+   and fallible and resolving each residual once under `Observed`; the focused engine test proves
+   an unknown semantic exits as `Data`.
+4. Active specs/decisions conflicted with the direct migration. Resolved by updating active specs
+   and reissuing/superseding accepted decisions; old spellings remain only explicit rejected
+   migration examples, negative tests, or terminal history.
+
+Post-repair closure verdict: **pass**. Each finding maps to source change plus focused evidence; no
+finding is waived and no residual correctness risk is accepted. Per the user's explicit direction,
+there is no second review cycle.
 
 ## Retrospective
 
@@ -179,3 +225,10 @@ Pending one independent lane-boundary red-team review.
 - The local no-run Postgres link initially could not find `libduckdb`; using the already-built
   `target/debug/deps/libduckdb.dylib` through `LIBRARY_PATH`/`DYLD_LIBRARY_PATH` recovered the
   targeted validation without broad rebuilding or weakening tests.
+- Canonical syntax must distinguish grammar whitespace/delimiters from the contents of a parsed
+  scalar. Canonical render equality is both simpler and more correct than pre-scanning JSON text.
+- Definition identity should store typed authority, not a string accepted by a permissive parser.
+  Reusing `CanonicalArrowType` removed an alias-normalization problem and preserved the project's
+  single Arrow type system.
+- The residual repair improved correctness without trading throughput: semantic resolution moved
+  to one up-front pass per candidate and its redaction decision is reused across every artifact.

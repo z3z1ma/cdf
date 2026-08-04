@@ -838,7 +838,12 @@ fn pii_redaction_decision_is_available_from_semantic_metadata() {
         Field::new("email", DataType::Utf8, false),
         r#"cdf.pii@1(class="email")"#,
     );
-    let decision = redaction_decision_for_field(&field, &PiiRedactionPolicy::default());
+    let decision = redaction_decision_for_field(
+        &field,
+        &PiiRedactionPolicy::default(),
+        cdf_semantic::SemanticAuthority::Authored,
+    )
+    .unwrap();
 
     assert_eq!(
         decision,
@@ -846,6 +851,21 @@ fn pii_redaction_decision_is_available_from_semantic_metadata() {
             algorithm: "sha256".to_owned(),
         }
     );
+}
+
+#[test]
+fn observed_semantic_validation_preserves_exact_arrow_type() {
+    let schema = Schema::new(vec![semantic_field(
+        Field::new("variant", DataType::LargeUtf8, true),
+        CDF_VARIANT_SEMANTIC,
+    )]);
+    let error = compile_validation_program(
+        &ContractPolicy::for_trust(TrustLevel::Governed),
+        &ObservedSchema::from_arrow(&schema),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
 }
 
 #[test]

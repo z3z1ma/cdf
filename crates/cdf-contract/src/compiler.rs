@@ -1,6 +1,5 @@
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
-use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, IntervalUnit, Schema, TimeUnit, UnionMode};
 use cdf_kernel::{
@@ -312,13 +311,13 @@ fn residual_program(
 pub fn redaction_decision_for_field(
     field: &Field,
     policy: &PiiRedactionPolicy,
-) -> RedactionDecision {
-    let resolved = builtin_catalog()
-        .and_then(|catalog| catalog.resolve_field(field, SemanticAuthority::Compiled));
-    match resolved {
-        Ok(resolved) => redaction_decision_for_resolved_semantic(resolved.as_ref(), policy),
-        Err(_) => RedactionDecision::Omit,
-    }
+    authority: SemanticAuthority,
+) -> Result<RedactionDecision> {
+    let resolved = builtin_catalog()?.resolve_field(field, authority)?;
+    Ok(redaction_decision_for_resolved_semantic(
+        resolved.as_ref(),
+        policy,
+    ))
 }
 
 pub fn redaction_decision_for_resolved_semantic(
@@ -335,7 +334,28 @@ fn resolve_observed_semantic(
     catalog: &SemanticCatalog,
     field: &ObservedField,
 ) -> Result<Option<ResolvedSemantic>> {
-    let arrow_type = observed_arrow_data_type(&field.arrow_type);
+    let arrow_type = field
+        .canonical_arrow_type
+        .as_ref()
+        .ok_or_else(|| {
+            CdfError::data(format!(
+                "observed field {:?} is missing exact canonical Arrow type authority",
+                field.name
+            ))
+        })?
+        .to_arrow()
+        .map_err(|error| {
+            CdfError::data(format!(
+                "observed field {:?} has invalid exact canonical Arrow type authority: {}",
+                field.name, error.message
+            ))
+        })?;
+    if ArrowType::from(&arrow_type) != field.arrow_type {
+        return Err(CdfError::data(format!(
+            "observed field {:?} has contradictory Arrow type authorities",
+            field.name
+        )));
+    }
     let arrow_field = Field::new(&field.name, arrow_type, field.nullable).with_metadata(
         field
             .metadata
@@ -344,71 +364,6 @@ fn resolve_observed_semantic(
             .collect(),
     );
     catalog.resolve_field(&arrow_field, SemanticAuthority::Observed)
-}
-
-fn observed_arrow_data_type(arrow_type: &ArrowType) -> DataType {
-    match arrow_type {
-        ArrowType::Null => DataType::Null,
-        ArrowType::Boolean => DataType::Boolean,
-        ArrowType::Int { signed: true, bits } => match bits {
-            8 => DataType::Int8,
-            16 => DataType::Int16,
-            32 => DataType::Int32,
-            64 => DataType::Int64,
-            _ => DataType::Null,
-        },
-        ArrowType::Int {
-            signed: false,
-            bits,
-        } => match bits {
-            8 => DataType::UInt8,
-            16 => DataType::UInt16,
-            32 => DataType::UInt32,
-            64 => DataType::UInt64,
-            _ => DataType::Null,
-        },
-        ArrowType::Float { bits } => match bits {
-            16 => DataType::Float16,
-            32 => DataType::Float32,
-            64 => DataType::Float64,
-            _ => DataType::Null,
-        },
-        ArrowType::Decimal {
-            bits,
-            precision,
-            scale,
-        } => match bits {
-            32 => DataType::Decimal32(*precision, *scale),
-            64 => DataType::Decimal64(*precision, *scale),
-            128 => DataType::Decimal128(*precision, *scale),
-            256 => DataType::Decimal256(*precision, *scale),
-            _ => DataType::Null,
-        },
-        ArrowType::Timestamp { unit, timezone } => DataType::Timestamp(
-            match unit {
-                TimeUnitName::Second => TimeUnit::Second,
-                TimeUnitName::Millisecond => TimeUnit::Millisecond,
-                TimeUnitName::Microsecond => TimeUnit::Microsecond,
-                TimeUnitName::Nanosecond => TimeUnit::Nanosecond,
-            },
-            timezone.clone().map(Into::into),
-        ),
-        ArrowType::Utf8 => DataType::Utf8,
-        ArrowType::Binary => DataType::Binary,
-        ArrowType::Struct => DataType::Struct(Vec::<Field>::new().into()),
-        ArrowType::List => DataType::List(Arc::new(Field::new("item", DataType::Null, true))),
-        ArrowType::Map => DataType::Map(
-            Arc::new(Field::new(
-                "entries",
-                DataType::Struct(Vec::<Field>::new().into()),
-                false,
-            )),
-            false,
-        ),
-        ArrowType::Other { display } => {
-            cdf_kernel::parse_arrow_field_type(display).unwrap_or(DataType::Null)
-        }
-    }
 }
 
 pub fn validate_type_mapping(

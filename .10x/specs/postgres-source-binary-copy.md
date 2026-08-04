@@ -43,8 +43,8 @@ lossless with respect to the stored PostgreSQL JSON value: parsing the emitted t
 MUST compare equal to the source datum. It does not and cannot preserve whitespace, object-key
 order, duplicate keys, or escape spelling that PostgreSQL discarded when the value entered `jsonb`.
 Documentation and metadata MUST identify JSON as
-`cdf:semantic=postgres_json_value_text_v1` and JSONB as
-`cdf:semantic=postgres_jsonb_value_text_v1`, not claim lexical JSON preservation.
+`cdf:semantic=postgres.json_text@1` and JSONB as
+`cdf:semantic=postgres.jsonb_text@1`, not claim lexical JSON preservation.
 
 ## NUMERIC and DECIMAL
 
@@ -60,7 +60,7 @@ The user-ratified discovery policy is:
   `Decimal256(p,s)`.
 - Unconstrained numeric, precision above 76, or scale outside Arrow Decimal256 discovers as `Utf8`
   containing PostgreSQL's canonical exact numeric text, with the physical numeric declaration and
-  `cdf:semantic=postgres_numeric_value_text_v1` retained in metadata.
+  `cdf:semantic=postgres.numeric_text@1` retained in metadata.
 - `NaN` in a field compiled as Arrow Decimal is a typed Data failure with a remediation to declare
   that field as `Utf8`; `Infinity` and `-Infinity` are accepted by the unconstrained-text mapping.
 - A user-declared `Utf8` numeric field always uses `column::text` and preserves finite and special

@@ -177,13 +177,9 @@ impl FromStr for SemanticReference {
                 "reference exceeds {MAX_REFERENCE_BYTES} bytes"
             )));
         }
-        if input.chars().any(char::is_whitespace) {
-            return Err(reference_error("reference cannot contain whitespace"));
-        }
-
         let (identity, parameter_text) = match input.find('(') {
             Some(open) => {
-                if !input.ends_with(')') || input[open + 1..input.len() - 1].contains(['(', ')']) {
+                if !input.ends_with(')') {
                     return Err(reference_error(
                         "reference has malformed parameter delimiters",
                     ));
@@ -376,6 +372,8 @@ mod tests {
             "cdf.pii@1(class=\"email\")",
             "finance.money@7(currency=\"USD\",strict=true)",
             "measure.ratio@2(scale=1.25)",
+            "project.label@1(value=\"US Dollar\")",
+            "project.label@1(value=\"a(b),c=d\")",
         ] {
             let parsed = value.parse::<SemanticReference>().unwrap();
             assert_eq!(parsed.to_string(), value);

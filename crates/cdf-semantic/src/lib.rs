@@ -11,7 +11,8 @@ use std::{
 use arrow_schema::{DataType, Field};
 pub use cdf_kernel::CDF_PACKAGE_ROW_ORDINAL_SEMANTIC;
 use cdf_kernel::{
-    CdfError, Result, SemanticParameterValue, SemanticReference, TypeMappingFidelity,
+    CanonicalArrowType, CdfError, Result, SemanticParameterValue, SemanticReference,
+    TypeMappingFidelity,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -60,7 +61,7 @@ pub struct SemanticDefinition {
 pub enum ArrowPattern {
     Any,
     Family { family: ArrowTypeFamily },
-    Exact { arrow_type: String },
+    Exact { arrow_type: CanonicalArrowType },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,7 +91,8 @@ impl ArrowPattern {
         match self {
             Self::Any => true,
             Self::Family { family } => family.matches(data_type),
-            Self::Exact { arrow_type } => cdf_kernel::parse_arrow_field_type(arrow_type)
+            Self::Exact { arrow_type } => arrow_type
+                .to_arrow()
                 .is_ok_and(|expected| &expected == data_type),
         }
     }
@@ -573,7 +575,7 @@ fn validate_definition(definition: &SemanticDefinition) -> Result<()> {
 
 fn validate_arrow_pattern(identity: &SemanticReference, pattern: &ArrowPattern) -> Result<()> {
     if let ArrowPattern::Exact { arrow_type } = pattern {
-        cdf_kernel::parse_arrow_field_type(arrow_type).map_err(|error| {
+        arrow_type.to_arrow().map_err(|error| {
             CdfError::contract(format!(
                 "semantic definition {identity} has invalid exact Arrow pattern {arrow_type:?}: {}",
                 error.message
@@ -901,24 +903,35 @@ fn parameter_value_kind(value: &SemanticParameterValue) -> ParameterKind {
     }
 }
 
+fn exact_utf8_pattern() -> ArrowPattern {
+    ArrowPattern::Exact {
+        arrow_type: CanonicalArrowType::Utf8 { offset_width: 32 },
+    }
+}
+
+fn exact_uint64_pattern() -> ArrowPattern {
+    ArrowPattern::Exact {
+        arrow_type: CanonicalArrowType::Int {
+            signed: false,
+            bits: 64,
+        },
+    }
+}
+
 fn builtin_definitions() -> Vec<SemanticDefinition> {
     vec![
         definition(
             "cdf",
             "variant",
             "CDF framework residual capture column",
-            vec![ArrowPattern::Exact {
-                arrow_type: "utf8".to_owned(),
-            }],
+            vec![exact_utf8_pattern()],
             SemanticNullability::Nullable,
         ),
         definition(
             "cdf",
             "package_row_ordinal",
             "CDF internal package row ordinal",
-            vec![ArrowPattern::Exact {
-                arrow_type: "uint64".to_owned(),
-            }],
+            vec![exact_uint64_pattern()],
             SemanticNullability::NonNullable,
         ),
         SemanticDefinition {
@@ -1009,9 +1022,7 @@ fn postgres_exact_definition(
         required_metadata: vec![requirement.clone()],
         destination_mappings: vec![DestinationMapping {
             destination: "postgres".to_owned(),
-            arrow_pattern: ArrowPattern::Exact {
-                arrow_type: "utf8".to_owned(),
-            },
+            arrow_pattern: exact_utf8_pattern(),
             parameter_equals: BTreeMap::new(),
             required_metadata: vec![requirement],
             mapping_profile: mapping_profile.to_owned(),
@@ -1022,9 +1033,7 @@ fn postgres_exact_definition(
             "postgres",
             name,
             description,
-            vec![ArrowPattern::Exact {
-                arrow_type: "utf8".to_owned(),
-            }],
+            vec![exact_utf8_pattern()],
             SemanticNullability::Any,
         )
     }
@@ -1041,9 +1050,7 @@ fn postgres_numeric_definition() -> SemanticDefinition {
         required_metadata: vec![requirement.clone()],
         destination_mappings: vec![DestinationMapping {
             destination: "postgres".to_owned(),
-            arrow_pattern: ArrowPattern::Exact {
-                arrow_type: "utf8".to_owned(),
-            },
+            arrow_pattern: exact_utf8_pattern(),
             parameter_equals: BTreeMap::new(),
             required_metadata: vec![requirement],
             mapping_profile: POSTGRES_NUMERIC_TEXT_MAPPING_PROFILE.to_owned(),
@@ -1054,9 +1061,7 @@ fn postgres_numeric_definition() -> SemanticDefinition {
             "postgres",
             "numeric_text",
             "Exact PostgreSQL NUMERIC value represented as UTF-8 text",
-            vec![ArrowPattern::Exact {
-                arrow_type: "utf8".to_owned(),
-            }],
+            vec![exact_utf8_pattern()],
             SemanticNullability::Any,
         )
     }
@@ -1155,6 +1160,15 @@ mod tests {
         assert!(
             catalog
                 .apply_reference(
+                    Field::new("variant", DataType::LargeUtf8, true),
+                    CDF_VARIANT_SEMANTIC,
+                    SemanticAuthority::Authored,
+                )
+                .is_err()
+        );
+        assert!(
+            catalog
+                .apply_reference(
                     Field::new("payload", DataType::Utf8, true),
                     POSTGRES_JSONB_TEXT_SEMANTIC,
                     SemanticAuthority::Observed,
@@ -1179,17 +1193,13 @@ mod tests {
             "test",
             "value",
             "test semantic",
-            vec![ArrowPattern::Exact {
-                arrow_type: "utf8".to_owned(),
-            }],
+            vec![exact_utf8_pattern()],
             SemanticNullability::Any,
         );
         definition.base_arrow_fallback = false;
         let mapping = DestinationMapping {
             destination: "test".to_owned(),
-            arrow_pattern: ArrowPattern::Exact {
-                arrow_type: "utf8".to_owned(),
-            },
+            arrow_pattern: exact_utf8_pattern(),
             parameter_equals: BTreeMap::new(),
             required_metadata: Vec::new(),
             mapping_profile: "exact_v1".to_owned(),
@@ -1331,7 +1341,10 @@ mod tests {
             .push(DestinationMapping {
                 destination: "warehouse".to_owned(),
                 arrow_pattern: ArrowPattern::Exact {
-                    arrow_type: "not_an_arrow_type".to_owned(),
+                    arrow_type: CanonicalArrowType::Int {
+                        signed: true,
+                        bits: 7,
+                    },
                 },
                 parameter_equals: BTreeMap::from([(
                     "code".to_owned(),

@@ -1,7 +1,7 @@
-Status: active
-Created: 2026-08-03
+Status: superseded
+Created: 2026-07-08
 Updated: 2026-08-03
-Supersedes: `.10x/decisions/superseded/contract-live-verdict-execution-semantics-v1.md`
+Superseded-By: `.10x/decisions/contract-live-verdict-execution-semantics.md`
 
 # Contract live verdict execution semantics
 
@@ -30,11 +30,11 @@ Freshness compares the row timestamp value to `ContractEvaluationContext::observ
 
 Row verdicts use the compiled program's total lattice. A row with no rule violations is accepted. A violation follows the compiled row disposition: accept, quarantine, reject batch, or reject run. Reject-batch and reject-run dispositions abort before package finalization and before destination mutation.
 
-Quarantine is a framework side channel, not a DataFusion multi-output plan. Quarantine records MUST include, at minimum, source row ordinal, rule id, error code, source position, and redacted observed value. Values whose resolved semantic definition has a PII privacy classification MUST use the compiled redaction decision, with SHA-256 as the default hash action. Unknown or malformed observed semantics fail `Data`; absence from compiled semantic authority fails `Internal`. Quarantine artifacts are package identity evidence under `quarantine/`.
+Quarantine is a framework side channel, not a DataFusion multi-output plan. Quarantine records MUST include, at minimum, source row ordinal, rule id, error code, source position, and redacted observed value. Values with semantic tags beginning `pii:` MUST use the compiled redaction decision, with SHA-256 as the default hash action. Quarantine artifacts are package identity evidence under `quarantine/`.
 
 Dedup runs after row verdict filtering and before merge destination planning/commit. Package order is the order of accepted rows after extraction, residual filtering, limit/projection, and contract acceptance. `keep = first` keeps the first row in package order, `keep = last` keeps the last row in package order, and `keep = fail` aborts before destination mutation. Dedup decisions MUST be recorded in package evidence.
 
-Variant capture stores unknown or violating nested substructure in `_cdf_variant` with `cdf:semantic=cdf.variant@1`. Promoting a variant to typed columns is a contract-evolution event, not an implicit normalization side effect.
+Variant capture stores unknown or violating nested substructure in `_cdf_variant` with semantic tag `json`. Promoting a variant to typed columns is a contract-evolution event, not an implicit normalization side effect.
 
 Trust promotion and demotion are run-ledger events. Drift, anomaly, or quarantine events demote to full validation when the compiled promotion policy says so. Promotion requires the configured consecutive clean-run count against a stable schema hash.
 

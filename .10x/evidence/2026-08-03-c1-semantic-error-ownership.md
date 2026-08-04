@@ -43,7 +43,9 @@ appears in the scope.
 
 ## Limits
 
-The audit freezes the seven behavior-owning Rust files changed at the semantic boundary. It does
-not re-audit unrelated constructors in migrated fixtures, CLI tests, or unchanged adapter modules.
-Line numbers identify this checkpoint and may move in later commits; the frozen manifest and
-reproduction pattern remain authoritative.
+The audit freezes the seven constructor-owning Rust files changed at the semantic boundary. The
+engine residual consumer adds no semantic error constructor: it now propagates the registry's
+source-observed `Data` result instead of suppressing it. The audit does not reclassify unrelated
+constructors in that large orchestration module, migrated fixtures, CLI tests, or unchanged adapter
+modules. Line numbers identify this checkpoint and may move in later commits; the frozen manifest
+and reproduction pattern remain authoritative.

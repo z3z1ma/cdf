@@ -1,7 +1,7 @@
-Status: active
-Created: 2026-08-03
+Status: superseded
+Created: 2026-07-10
 Updated: 2026-08-03
-Supersedes: `.10x/decisions/superseded/compiled-output-schema-and-runtime-provenance-v1.md`
+Superseded-By: `.10x/decisions/compiled-output-schema-and-runtime-provenance.md`
 
 # Compiled output schema is distinct from contract and runtime provenance authority
 
@@ -22,7 +22,7 @@ Package-producing execution and destination preflight MUST require and recompute
 
 Readers preserve observed physical provenance through trusted batch metadata and exact coercion evidence. The engine validates that evidence before rebinding emitted arrays to the compiled output schema. Runtime-only physical metadata that cannot be stable across a multi-input resource does not become destination schema authority; its observed and constrained types remain in manifest-bound coercion artifacts.
 
-The framework residual field is system-owned only when one contract-level classifier verifies the exact closed shape: `_cdf_variant`, nullable UTF-8, `cdf:semantic=cdf.variant@1`, and `cdf:variant_encoding=residual-json-v1`. Destinations MUST consume that classifier rather than duplicating literals or granting the `_cdf_` namespace generally.
+The framework residual field is system-owned only when one contract-level classifier verifies the exact closed shape: `_cdf_variant`, nullable UTF-8, `cdf:semantic=json`, and `cdf:variant_encoding=residual-json-v1`. Destinations MUST consume that classifier rather than duplicating literals or granting the `_cdf_` namespace generally.
 
 Current conformance and live-run fixtures MUST obtain plans from the real planner. Hand-authored current-plan JSON is prohibited because it creates a second construction path that drifts whenever authority fields evolve.
 

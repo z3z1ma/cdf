@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use arrow_schema::{DataType, Schema, TimeUnit};
-use cdf_kernel::source_name;
+use cdf_kernel::{CanonicalArrowType, source_name};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,6 +37,7 @@ impl ObservedSchema {
                     name: field.name().clone(),
                     source_name: source,
                     arrow_type: ArrowType::from(field.data_type()),
+                    canonical_arrow_type: CanonicalArrowType::from_arrow(field.data_type()).ok(),
                     nullable: field.is_nullable(),
                     metadata,
                     source_type,
@@ -53,6 +54,7 @@ pub struct ObservedField {
     pub name: String,
     pub source_name: String,
     pub arrow_type: ArrowType,
+    pub canonical_arrow_type: Option<CanonicalArrowType>,
     pub nullable: bool,
     pub metadata: BTreeMap<String, String>,
     pub source_type: Option<SourceTypeClaim>,

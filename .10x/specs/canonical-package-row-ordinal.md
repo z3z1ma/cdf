@@ -19,7 +19,7 @@ name: _cdf_package_row_ord
 type: uint64
 nullable: false
 metadata:
-  cdf:semantic: package-row-ord-v1
+  cdf:semantic: cdf.package_row_ordinal@1
   cdf:visibility: internal
 ```
 

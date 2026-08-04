@@ -14,8 +14,8 @@ destination contract in `.10x/specs/destination-bulk-path-runtime.md`.
 ## Contract
 
 The PostgreSQL destination MUST reconstruct native JSON, JSONB, or NUMERIC only from the exact
-versioned PostgreSQL semantic tags `postgres_json_value_text_v1`,
-`postgres_jsonb_value_text_v1`, and `postgres_numeric_value_text_v1`, respectively. Ordinary
+versioned PostgreSQL semantic references `postgres.json_text@1`,
+`postgres.jsonb_text@1`, and `postgres.numeric_text@1`, respectively. Ordinary
 `Utf8`, `cdf:physical_type` alone, a field name, or a semantic tag owned by another source MUST
 remain PostgreSQL text.
 

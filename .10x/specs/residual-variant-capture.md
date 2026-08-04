@@ -28,7 +28,7 @@ For an isolated mismatch of an otherwise nullable typed field, the output typed 
 
 When residual capture is compiled, the normalized output schema MUST contain exactly one nullable UTF-8 `_cdf_variant` field as the final field, with:
 
-- `cdf:semantic = json`;
+- `cdf:semantic = cdf.variant@1`;
 - `cdf:variant_encoding = residual-json-v1`;
 - source-name and nullability provenance where applicable.
 

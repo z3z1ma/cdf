@@ -26,7 +26,7 @@ Destination type mapping MUST be declared data in destination sheets. Lossy mapp
 
 Source-original names MUST be preserved verbatim in schema metadata. Destination column identifiers MUST be derived by versioned normalizer `namecase-v1`: Unicode NFC, lower snake case, destination charset filter, and deterministic truncation/hash suffix for over-length names or collisions. Post-normalization collisions are plan-time hard errors. Parquet columns use `namecase-v1` with no destination-specific length cap; its storage object keys remain governed separately by `object-key-component-v1`.
 
-Arrow `Struct`, `List`, and `Map` values are first-class. The normalization policy MUST support keep-nested, deterministic child-table expansion, and variant capture into `_cdf_variant` tagged as `json`. Promoting a variant to typed columns is a contract-evolution event.
+Arrow `Struct`, `List`, and `Map` values are first-class. The normalization policy MUST support keep-nested, deterministic child-table expansion, and variant capture into `_cdf_variant` carrying `cdf:semantic=cdf.variant@1`. Promoting a variant to typed columns is a contract-evolution event.
 
 ## Contract compiler
 
@@ -70,7 +70,7 @@ cdf MAY perform only in-flight, per-batch, schema-stable transforms: rename, cas
 - Decimal and timestamp fidelity tests fail if silent float conversion or timezone assumption occurs.
 - Identifier collision fixtures fail at plan time with rename hints.
 - The contract compiler emits one serialized validation program used by explain, execution, and package evidence.
-- Quarantine artifacts redact `pii:*` values while preserving enough evidence to diagnose rule failure.
+- Quarantine artifacts redact fields whose resolved semantic definition has a PII privacy classification while preserving enough evidence to diagnose rule failure.
 
 ## Explicit exclusions
 
