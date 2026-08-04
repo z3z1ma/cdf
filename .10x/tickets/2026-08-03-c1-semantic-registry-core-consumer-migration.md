@@ -130,6 +130,9 @@ acceptable only if it preserves one resolver without moving project/driver code 
   closed classifiers still named historical strings. Their prior text is preserved in
   `.10x/decisions/superseded/`; active authority names only canonical semantic references, while the
   registry spec labels old spellings as rejected migration history rather than current authority.
+- 2026-08-03: Fast Quality run `30873179977` passed on final repair commit `781f04af`: locked
+  metadata, formatting, core Clippy, core library tests, CLI UX/generated-artifact tests, CLI
+  Clippy, and tracked-source secret scanning all completed successfully.
 
 ## Blockers
 
@@ -187,6 +190,9 @@ None.
     the engine unknown-residual ownership test and existing residual capture/redaction/control test
     both passed; engine strict Clippy passed. The project lockfile semantic-diff test passed after
     exposing the already-built local DuckDB dylib to the linker. No whole-workspace test ran.
+12. Final asynchronous CI: GitHub Fast Quality run `30873179977` completed successfully for
+    `781f04af`; all jobs and required steps passed. The only annotations were GitHub's external
+    Node.js 20 deprecation notices for `actions/checkout@v4`, not repository failures.
 
 ## Review
 
