@@ -359,6 +359,7 @@ compiler or reinterpret identity.
 - `.10x/specs/semantic-type-registry.md`
 - `.10x/specs/project-source-resource-layout.md`
 - `.10x/decisions/filesystem-source-resource-and-configuration-authority.md`
+- `.10x/decisions/project-path-tokens-and-upstream-relation-binding.md`
 - `.10x/knowledge/project-file-publication-recovery.md`
 - `.10x/knowledge/content-addressed-sidecar-publication.md`
 - `VISION.md` D-19

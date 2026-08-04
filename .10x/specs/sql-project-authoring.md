@@ -69,8 +69,7 @@ An explicit SQL resource defines:
 - one driver-owned upstream relation/selector in the first language version;
 - projection, aliases, deterministic scalar expressions, casts, and filters;
 - semantic annotations through the semantic registry;
-- resource contract/disposition/cursor/keys either in a typed CDF statement envelope or a typed
-  companion declaration;
+- resource contract/disposition/cursor/keys in the typed CDF statement envelope;
 - optional destination target binding where project policy permits it.
 
 The authoritative path supplies source name, resource name, and canonical resource id exactly as
@@ -85,11 +84,11 @@ The path declares canonical id `<source>.<resource>`; the statement cannot decla
 CDF parses the typed envelope and DataFusion parses/analyzes only the `SELECT` body.
 
 The prior example repeated `CREATE RESOURCE github.issues` and `FROM SOURCE github`. Both are
-retired. The envelope instead has this structural ownership:
+retired. There is no separate relation clause and no compiler-provided `source` or `input` table.
+The query contains exactly one driver-typed, path-bound `upstream(...)` base relation:
 
 ```sql
 CREATE RESOURCE
-<RELATION CLAUSE> public.issues
 TARGET warehouse.issues
 DISPOSITION MERGE
 MERGE KEY (id)
@@ -97,19 +96,28 @@ CURSOR updated_at
 TRUST GOVERNED
 AS
 SELECT id, state, updated_at
-FROM source
+FROM upstream(table => 'public.issues')
 WHERE state <> 'spam';
 ```
 
-`<RELATION CLAUSE>` is a grammar placeholder, not an accepted token. Its exact spelling, the
-compiler-provided query input name (`source` above), and remaining clause order are the next D3
-grammar checkpoint. That checkpoint may select syntax but cannot reintroduce source/id repetition
-or connection configuration.
+The path-bound source type selects the driver before relation analysis. That driver's closed
+`resource` option schema defines the `upstream(...)` signature. Top-level arguments MUST use
+`name => value`; positional, unknown, duplicate, missing, or source-level arguments fail at their
+exact source location. Argument order is nonsemantic, and arguments lower through the ordinary
+driver resource-option boundary. Their complete data-only structured-value grammar remains a D3
+checkpoint and must cover the selected driver's existing closed resource schema without becoming
+an arbitrary function/expression/secret surface.
 
-Typed clauses cover driver-owned relation selection, logical destination target, disposition,
-primary or merge keys, cursor, contract/trust, and execution extent. Unknown, repeated,
-contradictory, or out-of-order clauses fail with exact source location. Defaults may come only from
-the typed project model and are resolved into the manifest; no generic `WITH` map exists.
+The ratified core order is `TARGET`, `DISPOSITION`, conditional `MERGE KEY`, optional `CURSOR`,
+`TRUST`, then `AS <SELECT>`. `CREATE RESOURCE` carries no id. Exact placement/value grammar for
+additional policy clauses such as `PRIMARY KEY`, `CONTRACT`, and `EXECUTION`, plus semantic
+annotations, remains a D3 checkpoint; it cannot change the ratified path/relation authority.
+
+The typed `upstream(...)` relation and envelope clauses together cover driver-owned relation
+selection, logical destination target, disposition, primary or merge keys, cursor, contract/trust,
+and execution extent. Unknown, repeated, contradictory, or out-of-order clauses fail with exact
+source location. Defaults may come only from the typed project model and are resolved into the
+manifest; no generic `WITH` map exists.
 
 Named source configuration, driver options, policy, and secret references live once in `cdf.toml`
 and are validated by driver option schemas. SQL cannot contain a source name/type, connection URI,
@@ -127,23 +135,27 @@ The chosen form MUST prove:
 - canonical formatting/normalization for hashing without changing SQL semantics;
 - forward-compatible rejection of unknown CDF clauses.
 
-Exact syntax is a user-visible semantic blocker. No executable parser ticket may choose it by
-convention.
+This path/upstream/envelope syntax is ratified by
+`.10x/decisions/project-path-tokens-and-upstream-relation-binding.md`. The remaining D3 syntax
+blocker is limited to structured resource-argument values, semantic annotations, and the detailed
+value/placement grammar of focused policies such as drain execution; it cannot alter source,
+resource, or relation authority.
 
 ## Initial relational language
 
 The first active language SHOULD support only the surface that can lower completely into reviewed
 native CDF operators:
 
-- one upstream relation per resource, interpreted only by the path-bound source type;
+- exactly one `upstream(...)` base relation per resource, interpreted only by the path-bound source
+  type;
 - explicit `SELECT` projection and aliases;
 - deterministic literals and scalar expressions from a versioned allowlist;
 - explicit Arrow-compatible casts;
 - Boolean `WHERE` predicates with three-valued semantics;
 - semantic annotations resolved by exact registry version;
 - source pushdown negotiation with `Exact`/`Inexact`/`Unsupported` residual recording;
-- primary/merge key, cursor, disposition, contract, and execution metadata through the chosen typed
-  envelope/companion surface.
+- primary/merge key, cursor, disposition, contract, and execution metadata through the typed
+  envelope.
 
 The first language MUST reject rather than defer to runtime:
 
@@ -243,7 +255,6 @@ Initial SQL authoring has no general Jinja/template runtime.
 
 - Catalog discovery may enumerate upstream relations through existing source discovery authority.
 - `cdf add` or a future generate command materializes explicit resource files.
-- Wildcard mappings remain compile inputs only where their expansion is captured in the manifest.
 - Repeated explicit files are preferred until real duplication establishes a macro requirement.
 
 If macros are later activated, they MUST:
@@ -263,6 +274,9 @@ Runtime string templating is permanently excluded.
   fails Contract with remediation to the path-bound `[sources.<name>]` configuration.
 - Unknown configured source, relation, resource field, function, or semantic reference fails
   compilation before I/O.
+- Positional, repeated, missing, unknown, or source-level `upstream(...)` arguments fail at the
+  argument location before external I/O; admitted arguments are validated by the selected driver's
+  resource schema.
 - Ambiguous names require qualification; resolution cannot depend on map iteration order.
 - Parser/type/lowering errors retain file, line, column, construct, and stable error code.
 - Source/destination discovery and execution errors retain adapter provenance.
@@ -292,6 +306,11 @@ Runtime string templating is permanently excluded.
 9. Given an attempted transform of `_cdf_op` or a CDC key, compilation fails as control-critical.
 10. Given generated resources, every rendered output is explicit, hashed, diffable, and frozen
     before execution.
+11. Given equivalent `upstream(...)` named arguments in different authored order, their canonical
+    relation/resource-option identity is equal while authored SQL hashes remain distinct.
+12. Given a REST/files/Iceberg structured selector, the eventual ratified data-only structured
+    argument grammar lowers to the same typed resource options accepted by the ordinary source
+    driver without a generic top-level SQL option bag.
 
 ## Performance requirements
 
@@ -321,6 +340,7 @@ Runtime string templating is permanently excluded.
 - `.10x/specs/project-compilation-manifest.md`
 - `.10x/specs/project-source-resource-layout.md`
 - `.10x/decisions/filesystem-source-resource-and-configuration-authority.md`
+- `.10x/decisions/project-path-tokens-and-upstream-relation-binding.md`
 - `.10x/specs/semantic-type-registry.md`
 - `.10x/decisions/datafusion-analysis-scheduling-identity-boundary.md`
 - `.10x/decisions/compiled-fused-streaming-operator-graph.md`

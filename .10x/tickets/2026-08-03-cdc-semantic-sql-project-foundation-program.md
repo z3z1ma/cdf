@@ -236,14 +236,17 @@ Owners:
   repetition;
 - add typed `[sources.<source>]` base configurations plus selected-environment source option
   overlays, with immutable source type and schema-validated source/resource option separation;
-- update compiler input inventory, manifest/lock bindings, scaffold, add/generate, examples,
-  validation, and inspection atomically;
+- D1.5a establishes the typed filesystem/configuration compiler input inventory without exposing a
+  second project reader or changing runtime behavior;
+- the D3 current-authoring cutover consumes that inventory and updates manifest/lock bindings,
+  scaffold, add/generate, examples, validation, and inspection atomically while deleting the old
+  authoring surface;
 - reject the spike-era shape with no legacy reader, migration, dual authoring mode, or compatibility
   shim.
 
-Depends-On: D1. Governed by `.10x/specs/project-source-resource-layout.md`. An executable child is
-opened only after the remaining path-token, configured-source-without-directory, and resource-
-envelope grammar checkpoints are ratified.
+Depends-On: D1. Governed by `.10x/specs/project-source-resource-layout.md` and
+`.10x/decisions/project-path-tokens-and-upstream-relation-binding.md`. D1.5a owner:
+`.10x/tickets/2026-08-04-d1-5a-project-source-resource-input-authority.md`.
 
 **D2. Native scalar/relational IR expansion**
 
@@ -251,7 +254,8 @@ envelope grammar checkpoints are ratified.
 - prove DataFusion analysis-to-native lowering and vectorized execution equivalence;
 - no joins/aggregations/windows or runtime DataFusion plans in v1.
 
-Depends-On: D0 and D1.5; coordinates with C1 for semantic annotations.
+Depends-On: D0 and D1; coordinates with C1 for semantic annotations. It may land after D1.5a but
+does not depend on the final project-authoring cutover.
 
 **D3. SQL project front-end**
 
@@ -260,7 +264,9 @@ Depends-On: D0 and D1.5; coordinates with C1 for semantic annotations.
 - lower to native source/operator/contract/semantic/destination artifacts;
 - replace the retired project declarative front-end and publish the D1 manifest.
 
-Depends-On: D1, D1.5, D2, and C1 for first-class semantic syntax.
+Depends-On: D1, D1.5a, D2, and C1 for first-class semantic syntax. D3 is also the current-only
+project-authoring cutover: it deletes the retired resource map/declarative reader in the same
+tranche that makes the SQL resources executable.
 
 **D4. Explicit generation; templating remains parked**
 
@@ -378,6 +384,8 @@ deferred lanes are explicitly parked with owners. For a full close:
 - `.10x/specs/project-source-resource-layout.md`
 - `.10x/specs/sql-project-authoring.md`
 - `.10x/decisions/filesystem-source-resource-and-configuration-authority.md`
+- `.10x/decisions/project-path-tokens-and-upstream-relation-binding.md`
+- `.10x/tickets/2026-08-04-d1-5a-project-source-resource-input-authority.md`
 - `.10x/specs/batch-transform-hooks.md`
 - `.10x/tickets/2026-08-03-rest-records-transform-contract-repair.md`
 - `.10x/tickets/2026-08-02-sqlite-clickhouse-mongodb-connector-program.md`
@@ -407,6 +415,12 @@ deferred lanes are explicitly parked with owners. For a full close:
 - root wildcard resource maps, declarative `resources/<source>.toml`, explicit SQL resource ids,
   source sidecars, and arbitrary `${...}` interpolation are retired current-schema shapes with no
   compatibility path;
+- source/resource path tokens match `[a-z][a-z0-9_]{0,127}` exactly with no normalization;
+- every configured source owns at least one valid explicit resource and no inactive source state
+  exists;
+- the query contains exactly one path-bound, driver-typed `upstream(...)` base relation whose
+  named data-only arguments validate through the selected driver's closed resource schema; there
+  is no separate relation clause or compiler-provided input/source alias;
 - correctness and throughput are non-negotiable; validation must also be economical.
 - implementation is owned by the primary agent; separate agents are reserved for red-team review.
 - source positions use protocol-specific PostgreSQL/MySQL committed variants and a distinct opaque
@@ -436,11 +450,11 @@ deferred lanes are explicitly parked with owners. For a full close:
 ### Unratified blockers
 
 - PostgreSQL/MySQL maximum single-transaction resource behavior;
-- exact safe source-directory/resource-file token grammar, exact D3 relation/envelope clause
-  spellings, and blocking versus deliberately inactive treatment of a configured source without a
-  resource directory, within the ratified path/config authority;
 - exact D2 native scalar/cast allowlist and IR version;
 - exact D3 semantic-annotation tokens, which must reuse the canonical semantic reference grammar;
+- exact D3 data-only structured-value grammar for complex `upstream(...)` resource arguments;
+- detailed D3 focused-policy value grammar, including drain execution, without changing the
+  ratified core envelope order;
 - Python execution-substrate supersession and first hook runtime;
 - whether to reorder the remaining MongoDB destination around C1.
 
@@ -500,12 +514,21 @@ deferred lanes are explicitly parked with owners. For a full close:
   explicit hard/Boolean-soft/ignore application remains destination policy. The governing decision
   and active spec are `.10x/decisions/package-native-keyed-delete-effects.md` and
   `.10x/specs/package-keyed-delete-effects.md`.
+- 2026-08-04: The user ratified all remaining D1.5 path/config/relation recommendations. Project
+  source and resource tokens now match `[a-z][a-z0-9_]{0,127}` exactly with no normalization;
+  every configured source must own at least one valid resource and has no inactive state; and one
+  query-local `upstream(...)` table function carries closed named data-only resource arguments
+  validated by the already selected driver's resource schema. The core envelope spelling/order is
+  also recorded. Implementation is sequenced as additive internal D1.5a input authority, then D2,
+  then one D3/current-authoring cutover that deletes the old resource map/declarative reader. This
+  avoids pushing either a half-runnable replacement or a compatibility/dual-reader surface.
 
 ## Blockers
 
-The exact unratified choices listed above still govern D2/D3/E1. C1 and D0/D1 are executable in the
-recorded dependency order. CDC A1 is unblocked; the large-transaction policy must be settled before
-A2 closes. F0 is closed at `3487de68`.
+The exact unratified choices listed above still govern D2/D3/E1. D1.5a is executable; D2 requires
+its scalar/cast checkpoint; D3 then performs the single current-authoring cutover after D1.5a/D2.
+CDC A1 is closed; the large-transaction policy must be settled before A2 closes. F0 is closed at
+`3487de68`.
 
 ## Evidence
 

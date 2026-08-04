@@ -153,20 +153,25 @@ The project shape is now ratified: `sources/<source>/<resource>.cdf.sql` is the 
 source/resource identity, root `[sources.<source>]` holds one shared typed configuration, and the
 selected environment may sparsely override admitted source options but never source name/type.
 Path resolves configured source, source type resolves the internal driver, and only then does the
-driver resolve the upstream relation. Wildcard resource maps, declarative project resource files,
-source sidecars, explicit SQL ids/source names, and arbitrary environment interpolation are retired
-without compatibility readers.
+driver resolve the sole query relation `upstream(...)` through its closed resource option schema.
+Source/resource path tokens use exact lowercase ASCII snake-case grammar, and every configured
+source must own at least one valid resource; inactive/preconfigured sources do not exist. Wildcard
+resource maps, declarative project resource files, source sidecars, explicit SQL ids/source names,
+and arbitrary environment interpolation are retired without compatibility readers.
 
 - `.10x/specs/semantic-type-registry.md`
 - `.10x/specs/project-compilation-manifest.md`
 - `.10x/specs/project-source-resource-layout.md`
 - `.10x/specs/sql-project-authoring.md`
 - `.10x/decisions/filesystem-source-resource-and-configuration-authority.md`
+- `.10x/decisions/project-path-tokens-and-upstream-relation-binding.md`
 
 Manifest path/publication, source/resource layout, configuration ownership, and semantic registry
-authority are ratified. Remaining Foundation D shaping is the exact safe path-token grammar, exact
-resource/relation/semantic SQL tokens, and the bounded D2 scalar/cast allowlist. The old declarative
-project surface is implementation drift to replace, not a coequal front-end or migration authority.
+authority are ratified. Path-token, configured-source, `upstream(...)`, and envelope authority are
+also ratified. Remaining Foundation D shaping is the bounded D2 scalar/cast allowlist, semantic SQL
+annotation tokens, structured `upstream(...)` argument values, and detailed focused-policy values
+such as drain execution. The old declarative project surface is implementation drift to replace,
+not a coequal front-end or migration authority.
 
 ### Plan-declared hooks
 

@@ -44,6 +44,11 @@ or file grammar.
 
 ## Vocabulary and identity
 
+Project source-directory and resource-file-stem tokens MUST match
+`[a-z][a-z0-9_]{0,127}` exactly. They are preserved byte-for-byte; the compiler performs no case,
+Unicode, punctuation, or destination-name normalization. These filesystem identities are distinct
+from the broader kernel `ResourceId`, internal `SourceDriverId`, and destination identifier policy.
+
 ### Source type
 
 A source type is a canonical token resolved through the internal `SourceRegistry`, such as
@@ -120,16 +125,18 @@ The compiler MUST enumerate only regular `*.cdf.sql` files exactly two component
 - nested resource directories in v1;
 - files directly under `sources/`;
 - source directories with no matching source configuration;
-- source configurations with no matching source directory without emitting the still-to-be-ratified
-  blocking/inactive diagnostic;
+- source configurations with no matching source directory;
+- configured source directories containing no valid regular `<resource>.cdf.sql` file;
 - duplicate/colliding canonical identifiers;
 - invalid source directory or resource file-stem identifiers;
 - non-UTF-8 or otherwise unhashable authored input paths where the project path contract forbids
   them.
 
-Unrecognized files MAY be ignored only when their behavior is deterministic and documented;
-another `.cdf.sql` suffix or malformed near-match MUST produce a useful diagnostic rather than
-silently disappear.
+Every accepted source and resource token MUST satisfy the exact grammar in
+`.10x/decisions/project-path-tokens-and-upstream-relation-binding.md`. Invalid tokens fail rather
+than normalize. Unrecognized files MAY be ignored only when their behavior is deterministic and
+documented; another `.cdf.sql` suffix or malformed near-match MUST produce a useful diagnostic
+rather than silently disappear.
 
 Enumeration order MUST be canonical source name then canonical resource name. Filesystem directory
 iteration order is never semantic.
@@ -146,9 +153,12 @@ relational query body. It MUST NOT contain:
 - a generic option map or metadata header;
 - multiple resources, external DDL/DML, or runtime template expansion.
 
-The resource statement MUST declare its driver-owned upstream relation and all per-resource facts
-required by `.10x/specs/sql-project-authoring.md`. The compiler supplies the selected source and
-canonical resource id from the path before resolving that relation.
+The query body MUST contain exactly one base relation of the form `upstream(name => value, ...)`.
+There is no separate relation clause or compiler-provided `source`/`input` table. The selected
+driver's closed resource option schema defines the `upstream(...)` signature; arguments are
+resource-level typed configuration values, never source configuration or a generic option bag.
+The compiler supplies the selected source and canonical resource id from the path before resolving
+that relation, as specified by `.10x/specs/sql-project-authoring.md`.
 
 ## Compilation algorithm
 
@@ -161,7 +171,8 @@ For one selected environment, the compiler MUST:
 5. resolve source `type` through the internal driver registry;
 6. validate effective source options through that driver without external I/O;
 7. parse each resource envelope and relational body with exact source locations;
-8. validate the relation and resource-level options through the already selected driver;
+8. locate exactly one `upstream(...)`, validate its named typed arguments against the already
+   selected driver's resource schema, and lower its canonical values to ordinary resource options;
 9. lower to one ordinary `CompiledSourcePlan` and native CDF resource plan;
 10. validate lock expectations and publish one selected-environment manifest.
 
@@ -212,6 +223,8 @@ a `source`, call a driver a configured source, or describe `SourceRegistry` as a
   changes, and manifest/lock effects without writing.
 - File watchers and read-only commands MUST treat authored-input changes as stale manifest data;
   they do not silently compile or recover.
+- A project with no configured sources/resources MAY be empty. Once `[sources.<source>]` exists,
+  it MUST be published atomically with at least one valid resource; no inactive source state exists.
 
 ## Error behavior
 
@@ -236,9 +249,9 @@ a `source`, call a driver a configured source, or describe `SourceRegistry` as a
    `warehouse.orders`.
 4. Given a source directory has no `cdf.toml` entry, compilation fails before SQL lowering or
    external I/O and names `[sources.<name>]` as the fix.
-5. Given a source entry has no directory, compilation emits a deterministic diagnostic and never
-   silently drops it; D1.5 ratification decides whether the source must be removed or may be marked
-   deliberately inactive before execution.
+5. Given a source entry has no directory or valid resource file, compilation fails `Contract` and
+   requires removing the entry or atomically adding its first explicit resource; no inactive state
+   is accepted.
 6. Given SQL attempts to declare `warehouse.orders`, `SOURCE warehouse`, a DSN, or a generic source
    option, compilation fails at the exact syntax location.
 7. Given a resource file is renamed from `orders.cdf.sql` to `purchases.cdf.sql`, manifest diff
@@ -249,6 +262,13 @@ a `source`, call a driver a configured source, or describe `SourceRegistry` as a
 10. Given a spike-era `[resources."warehouse.*"]` mapping or `resources/warehouse.toml`, current
     project validation rejects the retired shape with regeneration guidance and no compatibility
     reader.
+11. Given `sources/Warehouse/orders.cdf.sql`, `sources/warehouse/order-items.cdf.sql`, or a token
+    longer than 128 bytes, compilation fails with the exact path and
+    `[a-z][a-z0-9_]{0,127}` requirement; it never normalizes the path.
+12. Given a path-bound Postgres resource uses
+    `FROM upstream(table => 'public.orders')`, the driver receives canonical resource option
+    `table = "public.orders"`; a positional, unknown, duplicate, or source-level argument fails at
+    its SQL location.
 
 ## Explicit exclusions
 
@@ -260,11 +280,14 @@ a `source`, call a driver a configured source, or describe `SourceRegistry` as a
 - nested or multi-source resources in v1;
 - runtime templating or implicit discovery expansion;
 - preserving spike-era project/declarative authoring compatibility;
-- defining the final SQL relation-clause spelling or D2 scalar/operator allowlist.
+- a disabled/inactive/preconfigured source state;
+- any relation form other than the single path-bound `upstream(...)` table function;
+- defining the D2 scalar/operator allowlist or semantic-annotation value grammar.
 
 ## References
 
 - `.10x/decisions/filesystem-source-resource-and-configuration-authority.md`
+- `.10x/decisions/project-path-tokens-and-upstream-relation-binding.md`
 - `.10x/specs/sql-project-authoring.md`
 - `.10x/specs/project-compilation-manifest.md`
 - `.10x/specs/project-cli-observability-security.md`

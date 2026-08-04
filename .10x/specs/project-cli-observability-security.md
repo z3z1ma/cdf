@@ -19,6 +19,12 @@ same-named `[sources.<source>]` entry as governed by
 but cannot change source name/type. Secrets MUST appear only as `secret://provider/key` URIs;
 arbitrary environment/string interpolation is forbidden.
 
+Source directory and resource stem tokens MUST match `[a-z][a-z0-9_]{0,127}` without
+normalization. Every configured source MUST own at least one valid resource; there is no inactive
+source state. Each resource query binds exactly one path-selected, driver-typed `upstream(...)`
+table function as governed by
+`.10x/decisions/project-path-tokens-and-upstream-relation-binding.md`.
+
 Environment destination URIs MUST use destination-specific schemes. `duckdb://<path>` names a local DuckDB database path. `parquet://<root>` names a filesystem Parquet destination root/prefix, not a single file; commits MAY create multiple Parquet files, manifests, pointers, and receipt-supporting objects below the root.
 
 Environment destination policy MAY declare destination-specific explicit semantic knobs. Keyed
