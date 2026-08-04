@@ -14,7 +14,7 @@ Final Postgres slice and closure audit for `.10x/tickets/done/2026-07-07-cli-rep
 
 No blocking findings.
 
-The implementation follows `.10x/decisions/destination-introspection-package-and-cli-policy.md`: Postgres replay does not infer write semantics from destination introspection. It requires `--target schema.table` and `--merge-dedup fail`, rejects missing or unsupported values as usage/contract errors, and validates the explicit target against the package destination-commit target before state or destination mutation.
+The implementation follows `.10x/decisions/superseded/destination-introspection-package-and-cli-policy.md`: Postgres replay does not infer write semantics from destination introspection. It requires `--target schema.table` and `--merge-dedup fail`, rejects missing or unsupported values as usage/contract errors, and validates the explicit target against the package destination-commit target before state or destination mutation.
 
 Secret-backed Postgres replay uses the existing project secret provider boundary and imports the `cdf_http::SecretProvider` trait explicitly. The redaction path is narrow: only secret-backed replay errors rewrite the resolved DSN, and tests cover target-mismatch errors that would otherwise carry the connection string.
 

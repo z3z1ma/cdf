@@ -1,6 +1,7 @@
-Status: active
+Status: superseded
 Created: 2026-07-13
-Updated: 2026-07-13
+Updated: 2026-08-03
+Superseded-By: `.10x/decisions/state-current-schema-and-effect-package-recovery.md`
 
 # State uses one current schema and package-receipt recovery
 

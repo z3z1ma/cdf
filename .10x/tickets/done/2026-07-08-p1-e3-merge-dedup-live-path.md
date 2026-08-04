@@ -24,7 +24,7 @@ Owns:
 - `.10x/specs/package-lifecycle-determinism.md`.
 - `.10x/specs/destination-receipts-guarantees.md`.
 - `.10x/specs/run-orchestration-ledger.md`.
-- `.10x/decisions/destination-introspection-package-and-cli-policy.md`.
+- `.10x/decisions/superseded/destination-introspection-package-and-cli-policy.md`.
 - `.10x/decisions/contract-live-verdict-execution-semantics.md`.
 - `.10x/knowledge/runtime-conformance-throughput-rule.md`.
 

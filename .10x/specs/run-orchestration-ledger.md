@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-07
-Updated: 2026-07-11
+Updated: 2026-08-03
 
 # Run orchestration and ledger
 
@@ -10,7 +10,9 @@ This specification governs the general run runtime, run ledger, run recovery, re
 
 It derives from `VISION.md` Chapters 4, 13, 14, 15, 16, 18, and 23, `.10x/decisions/run-ledger-commit-session-spine.md`, `.10x/specs/checkpoint-state-commit-gate.md`, `.10x/specs/destination-receipts-guarantees.md`, and `.10x/specs/package-lifecycle-determinism.md`.
 
-It is further constrained by `.10x/decisions/destination-introspection-package-and-cli-policy.md` for destination introspection, package scope, Parquet URI semantics, and CLI destination policy.
+It is further constrained by
+`.10x/decisions/destination-introspection-package-and-current-replay-policy.md` for destination
+introspection, package scope, Parquet URI semantics, and current replay policy.
 
 ## Run identity
 
@@ -82,7 +84,7 @@ The session API MUST preserve destination-specific receipt verification through 
 
 Destination sessions MUST support duplicate package-token behavior when declared by the destination sheet. Duplicate receipts MUST be recorded and inspected like non-duplicate receipts.
 
-Destination introspection is standard behavior wherever applicable. A destination session SHOULD introspect target state for safety checks, drift detection, planning, receipt verification, and actionable failure messages. Introspection MUST NOT infer missing write semantics such as target identity, write disposition, merge keys, merge-dedup policy, resource identity, or checkpoint semantics.
+Destination introspection is standard behavior wherever applicable. A destination session SHOULD introspect target state for safety checks, drift detection, planning, receipt verification, and actionable failure messages. Introspection MUST NOT infer missing write semantics such as target identity, write disposition, merge keys, package effect-reduction policy, delete-application policy, resource identity, or checkpoint semantics.
 
 ## Resume
 

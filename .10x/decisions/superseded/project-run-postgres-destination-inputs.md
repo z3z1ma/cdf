@@ -4,7 +4,7 @@ Updated: 2026-07-07
 
 # Project-Run Postgres Destination Inputs
 
-Superseded-By: .10x/decisions/destination-introspection-package-and-cli-policy.md
+Superseded-By: .10x/decisions/superseded/destination-introspection-package-and-cli-policy.md
 
 ## Context
 

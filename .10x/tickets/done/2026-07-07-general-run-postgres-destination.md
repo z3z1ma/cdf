@@ -27,7 +27,7 @@ Owns:
 
 ## Blockers
 
-None from user. `.10x/decisions/superseded/project-run-postgres-destination-inputs.md` ratified explicit destination/run configuration for `PostgresTarget`, existing-table policy, and merge dedup policy; package-schema-derived column mappings; descriptor-derived merge keys only when explicitly present; and no implicit destination-introspection semantics for this slice. This historical decision was later superseded by `.10x/decisions/destination-introspection-package-and-cli-policy.md`.
+None from user. `.10x/decisions/superseded/project-run-postgres-destination-inputs.md` ratified explicit destination/run configuration for `PostgresTarget`, existing-table policy, and merge dedup policy; package-schema-derived column mappings; descriptor-derived merge keys only when explicitly present; and no implicit destination-introspection semantics for this slice. This historical decision was later superseded by `.10x/decisions/superseded/destination-introspection-package-and-cli-policy.md`.
 
 ## Explicit exclusions
 

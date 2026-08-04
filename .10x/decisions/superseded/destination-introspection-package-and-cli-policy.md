@@ -1,6 +1,7 @@
-Status: active
+Status: superseded
 Created: 2026-07-07
-Updated: 2026-07-07
+Updated: 2026-08-03
+Superseded-By: `.10x/decisions/destination-introspection-package-and-current-replay-policy.md`
 
 # Destination introspection, package scope, and CLI destination policy
 

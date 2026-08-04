@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-26
+Updated: 2026-08-03
 
 # cdf glossary
 
@@ -16,7 +16,13 @@ Scan plan: a negotiated read plan containing projection, classified filters, lim
 
 Contract: a policy compiled into a validation program with a total verdict lattice.
 
-Package: hash-addressed evidence of one attempted state transition. Package data is canonical Arrow IPC; stats, quarantine, and lineage are Parquet; manifests and receipts are canonical JSON.
+Package: hash-addressed evidence of one attempted state transition. Package data is canonical Arrow IPC; stats, quarantine, and lineage are Parquet; manifests and receipts are canonical JSON. A package contains either ordinary rows or finalized keyed effects, never an optional mixture of both.
+
+Keyed effect: one final `upsert` or `delete` for an exact declared key. Upserts carry one complete output row; deletes carry only the mechanically derived key tuple. Package construction selects at most one effect per key before finalization.
+
+Delete capture: the source-side decision and coverage evidence describing whether native deletion facts are unsupported, optionally observed, or inherent in the selected stream.
+
+Delete application: the explicit destination-side `ignore`, `hard`, or Boolean-marker `soft` behavior applied to captured package deletes. Capture and application are independent authorities.
 
 Receipt: a destination's durable, independently verifiable acknowledgment that a package or segment set was committed.
 

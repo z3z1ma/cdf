@@ -14,7 +14,7 @@ Filesystem Parquet CLI destination slice in `crates/cdf-cli/src/commands.rs`, `c
 
 No blocking findings.
 
-The implementation follows `.10x/decisions/destination-introspection-package-and-cli-policy.md`: `parquet://<root>` is treated as a filesystem root/prefix, not a single file. Relative roots resolve under the project root, absolute roots are allowed, empty roots and nested URI values fail closed.
+The implementation follows `.10x/decisions/superseded/destination-introspection-package-and-cli-policy.md`: `parquet://<root>` is treated as a filesystem root/prefix, not a single file. Relative roots resolve under the project root, absolute roots are allowed, empty roots and nested URI values fail closed.
 
 Replay uses package artifacts and `replay_parquet_package_from_artifacts`; it does not re-run source extraction. The test fixture verifies checkpoint commit and package receipt append through the package artifact path.
 

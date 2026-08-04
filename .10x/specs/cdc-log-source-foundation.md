@@ -7,10 +7,11 @@ Updated: 2026-08-03
 ## Status and ratification boundary
 
 This draft converts the 2026-08-03 core-readiness findings and fresh official protocol research
-into a proposed shared CDC runtime contract. The position/artifact and row-image subsets were
-ratified on 2026-08-03 and are extracted into focused active authority. The remaining draft surface
-is the PostgreSQL/MySQL large-transaction resource policy and concrete `cdc_apply` destination
-selection. MongoDB event-prefix segmentation is ratified and is not transaction-grouped.
+into a proposed shared CDC runtime contract. The position/artifact, complete-image, and
+package-native keyed-effect subsets were ratified on 2026-08-03 and are extracted into focused
+active authority. The remaining draft surface is the PostgreSQL/MySQL large-transaction resource
+policy and concrete `cdc_apply` destination selection. MongoDB event-prefix segmentation is
+ratified and is not transaction-grouped.
 
 ## Purpose
 
@@ -26,7 +27,8 @@ receipt, and checkpoint commit gate. It MUST NOT introduce a parallel streaming 
 - a typed MongoDB resume-token position rather than `ForeignState`;
 - position validation, equivalence, reachability, aggregation, and checkpoint transition laws;
 - transaction-aligned source safe frontiers;
-- canonical CDC operation metadata and `_cdf_op` protection;
+- canonical CDC operation metadata, control protection, and lowering into package-native keyed
+  effects governed by `.10x/specs/package-keyed-delete-effects.md`;
 - a reusable log-source runtime/conformance archetype;
 - package/receipt/checkpoint behavior for finite CDC drain commands;
 - destination-facing `cdc_apply` input requirements, without implementing a concrete destination.
@@ -48,7 +50,8 @@ receipt, and checkpoint commit gate. It MUST NOT introduce a parallel streaming 
 - `DrainEpochController` remains the cadence/package-rotation/termination authority.
 - package finalization, destination receipts, and checkpoint commit remain the only durable advance
   gate.
-- `BatchHeader::cdc` and `CdcMetadata` are extended rather than replaced.
+- `BatchHeader::cdc` and `CdcMetadata` remain the source/runtime operation and position authority;
+  their exact current pre-production shape MAY be replaced to support typed keyed-effect lowering.
 - `WriteDisposition::CdcApply` remains the destination disposition.
 - Arrow remains the canonical data representation; source-specific log records are normalized
   before entering the engine.
@@ -176,14 +179,15 @@ telemetry. Exceeding the bound MUST fail closed without advancing state. The ker
 a universal numeric default; the host profile supplies the concrete deterministic bound carried by
 the compiled plan.
 
-## Canonical CDC row contract
+## Canonical CDC change contract
 
-### Operation field
+### Transient operation authority
 
-Every CDC batch MUST carry `CdcMetadata` and one canonical operation field. The default canonical
-name is `_cdf_op`; any alternate physical input name MUST be normalized before contract execution.
-The field is control-critical and MUST survive projection, schema reconciliation, transforms,
-contract evaluation, normalization, package encoding, and destination planning unchanged.
+Every CDC batch MUST carry `CdcMetadata` and one canonical row-level operation authority. A source
+physical field MAY be normalized to an internal `_cdf_op` representation, but the operation is
+runtime control rather than a field in the finalized logical destination row schema. It MUST
+survive projection, schema reconciliation, transforms, contract evaluation, and normalization
+unchanged until the package keyed-effect reduction consumes it.
 
 The first operation vocabulary SHOULD be a closed enum encoded as a dictionary or compact integer
 with canonical textual explain values:
@@ -195,23 +199,28 @@ with canonical textual explain values:
 Snapshot/read events and truncate/DDL/schema events MUST NOT be silently mapped to one of these
 three. They require explicit later semantics or a typed unsupported-event failure.
 
-`CdcMetadata` MUST validate that:
+The source/runtime authority MUST validate that:
 
-- the operation field exists exactly once in the materialized Arrow schema;
-- its physical encoding and values match the canonical vocabulary;
+- every admitted row has exactly one operation value in the canonical vocabulary;
+- its physical/internal encoding is typed and unambiguous;
 - its position uses an admitted CDC position kind;
 - its position is compatible with the batch/source position and transaction boundary;
 - contract/transforms cannot remove or rewrite the field.
 
-### Recommended row-image model
+Finalized package segments MUST NOT persist `_cdf_op` beside full destination rows. Package
+construction lowers insert/update into complete `upsert` effects and delete into key-only `delete`
+effects under `.10x/specs/package-keyed-delete-effects.md`.
+
+### Row-image input to keyed effects
 
 The recommended first contract is:
 
-- insert: complete after-image plus all destination key fields;
-- update: complete after-image plus all destination key fields;
-- delete: all destination key fields; non-key values are null/absent according to one canonical
-  schema rule;
-- every event uses the output resource schema, not an adapter-specific envelope.
+- insert: complete after-image plus all destination key fields, lowered to `upsert`;
+- update: complete after-image plus all destination key fields, lowered to `upsert`;
+- delete: all destination key fields, lowered to the mechanically derived key-only `delete`
+  schema without invented non-key values;
+- source-specific envelopes end at the adapter/runtime boundary and do not enter finalized package
+  or destination schemas.
 
 Sparse patch updates are excluded initially because they require a second presence lattice beyond
 Arrow nullability and complicate contracts, merge semantics, and destination verification. Sources
@@ -227,7 +236,8 @@ Protocol consequences are explicit:
   `fullDocument: "required"`; `updateLookup` is not exact.
 - MongoDB `replace` maps to update. Truncate/DDL and missing images/keys fail before checkpoint.
 
-This row-image contract was user-ratified on 2026-08-03.
+This complete-after-image/key-only-delete contract and its package-native lowering were
+user-ratified on 2026-08-03.
 
 ### Ordering and keys
 
@@ -238,6 +248,9 @@ This row-image contract was user-ratified on 2026-08-03.
   is checkpointed.
 - Multi-partition execution MUST NOT reorder events that share a destination key. Initial CDC SHOULD
   use one ordered source partition per log stream unless a protocol proves safe keyed partitioning.
+- Package finalization MUST reduce the ordered event sequence to one last effect per exact typed key
+  and retain identity-bearing input/reduction evidence; consumers that require intermediate events
+  use an ordinary append resource.
 
 ## Log-source archetype
 
@@ -277,7 +290,8 @@ committed checkpoint
 - connect/authenticate and verify deployment prerequisites;
 - create/use slots, publications, binlog settings, replica-set/shard streams, or resume tokens;
 - decode the native protocol and preserve native position precision;
-- map native row/change events and schema changes into the canonical row contract;
+- map native row/change events and schema changes into the canonical complete-image/key operation
+  contract;
 - define retryability and token/slot invalidation;
 - report topology/retention gaps that make resume impossible;
 - prove protocol-specific transaction-boundary evidence.
@@ -286,19 +300,23 @@ committed checkpoint
 
 Before any destination advertises `cdc_apply`, its sheet and implementation MUST prove:
 
-- ordered application of canonical operation rows;
+- exact application of the package's final keyed upsert/delete effects;
 - transactional or otherwise truthful package/transaction atomicity;
-- deterministic key validation and duplicate handling;
+- deterministic exact-key validation and proof that package construction selected at most one
+  effect per key;
 - package/segment token idempotency and replay behavior;
-- delete count and update/insert count receipt evidence where the backend can observe it;
+- exact package intent counts plus delete/update/insert outcome evidence where the backend can
+  observe it truthfully and economically;
 - independent receipt verification against destination state;
 - failure behavior for missing targets, schema drift, unsupported operations, and ambiguous commit;
 - no checkpoint advance until the destination receipt covers the exact committed-log or opaque
   event-prefix frontier.
 
-`cdc_apply` is not equivalent to existing `merge`: it includes deletes and preserves ordered source
-change semantics. A destination MAY lower it to a maximally efficient native mutation/bulk protocol
-only when the resulting receipt and replay guarantees remain truthful.
+`cdc_apply` and `merge` share the package-native keyed-effect handoff. CDC remains distinct because
+source protocol order mandates last-change-wins and its receipt gates a log/resume-token frontier;
+ordinary unordered merge duplicates fail unless an explicit authoritative winner rule exists. A
+destination MAY lower either to a maximally efficient native mutation/bulk protocol only when the
+resulting delete application, receipt, and replay guarantees remain truthful.
 
 ## Artifact version transition
 
@@ -350,8 +368,10 @@ legacy readers or migrations. A partial transition is forbidden. This policy was
    tampering, and never claims numeric ordering from token internals.
    Given accumulated Mongo changes are segmented and delivered, the terminal token advances only
    after a receipt for the exact segment/package is accepted; no transaction grouping is required.
-7. **Control-field protection:** Given a projection, contract, or hook tries to remove or modify
-   `_cdf_op` or a key field, planning/execution fails before package publication.
+7. **Control-field protection and lowering:** Given a projection, contract, or hook tries to remove
+   or modify the transient operation authority or a key field, planning/execution fails before
+   package publication. Given valid ordered changes, finalized package content contains typed
+   upsert/delete effects and no `_cdf_op` destination column.
 8. **Large transaction:** Given a transaction crosses ordinary package rotation while within the
    admitted maximum, memory stays bounded, closure waits for commit, and the package records
    overshoot. Given it crosses the maximum, the run fails with no state advance.

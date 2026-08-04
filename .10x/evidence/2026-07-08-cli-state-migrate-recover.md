@@ -56,7 +56,7 @@ Maintainability checks:
 
 ## Limits
 
-This evidence does not prove broad destination mirror scraping recovery; that behavior was explicitly excluded by `.10x/decisions/superseded/state-migrate-recover-package-receipt.md` and remains excluded by `.10x/decisions/state-current-schema-package-receipt-recovery.md`.
+This evidence does not prove broad destination mirror scraping recovery; that behavior was explicitly excluded by `.10x/decisions/superseded/state-migrate-recover-package-receipt.md` and remains excluded by `.10x/decisions/superseded/state-current-schema-package-receipt-recovery.md`.
 
 Record-graph cleanup was validated with `rg` for the old open-ticket path after moving the ticket to `done/`; no stale references remained.
 

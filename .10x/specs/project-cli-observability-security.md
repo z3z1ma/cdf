@@ -14,14 +14,12 @@ This specification governs the user-facing project format, lockfile, CLI command
 
 Environment destination URIs MUST use destination-specific schemes. `duckdb://<path>` names a local DuckDB database path. `parquet://<root>` names a filesystem Parquet destination root/prefix, not a single file; commits MAY create multiple Parquet files, manifests, pointers, and receipt-supporting objects below the root.
 
-Environment destination policy MAY declare destination-specific explicit semantic knobs. The first ratified Postgres destination policy shape is:
-
-```toml
-[environments.<name>.destination_policy.postgres]
-merge_dedup = "fail"
-```
-
-`merge_dedup` applies only to `merge` writes when an incoming package/stage contains duplicate merge keys. `fail` MUST abort before target-table mutation when duplicates are detected.
+Environment destination policy MAY declare destination-specific explicit semantic knobs. Keyed
+effect winner selection is not destination policy: it is resource/package authority governed by
+`.10x/specs/package-keyed-delete-effects.md`. Ordinary unordered merge duplicates default to
+`fail`; any explicit first/last rule must compile before package finalization from authoritative
+input order. Destinations reject duplicate finalized effect keys as corruption rather than choosing
+winners.
 
 `cdf.lock` MUST lock semantics, not just versions: dependency tuple, resource capability-sheet hashes, destination sheets including type mappings, contract snapshots, schema hashes, and normalizer version.
 
@@ -45,7 +43,11 @@ The required command surface includes `init`, `validate`, `plan`, `explain`, `ru
 
 `cdf replay package <pkg> --to <dest>` MUST create a new run, use package replay inputs, and record duplicate receipts as observable facts.
 
-`cdf replay package <pkg> --to postgres://...` MUST require explicit `--target` and `--merge-dedup` inputs. The supplied target MUST match the package destination-commit target. Replay MUST NOT infer target, disposition, merge keys, or merge-dedup policy from destination introspection.
+`cdf replay package <pkg> --to postgres://...` MUST require explicit `--target` where the command
+surface cannot otherwise bind it. The supplied target MUST match the package destination-commit
+target. Replay MUST consume the package's recorded disposition, keys, finalized effect reduction,
+and delete-application policy; it MUST NOT accept caller overrides or infer them from destination
+introspection.
 
 `cdf inspect run <id>` MUST assemble plan, verdict summaries, receipts, transitions, package/checkpoint pointers, duplicate status, and recovery guidance. It MUST show missing artifacts explicitly and MUST redact secrets.
 

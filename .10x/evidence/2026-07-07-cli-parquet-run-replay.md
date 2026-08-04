@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-07
 Updated: 2026-07-07
-Relates-To: .10x/tickets/done/2026-07-07-cli-run-general-runtime.md, .10x/tickets/done/2026-07-07-cli-replay-package-spine.md, .10x/decisions/destination-introspection-package-and-cli-policy.md, .10x/specs/project-cli-observability-security.md, .10x/specs/run-orchestration-ledger.md
+Relates-To: .10x/tickets/done/2026-07-07-cli-run-general-runtime.md, .10x/tickets/done/2026-07-07-cli-replay-package-spine.md, .10x/decisions/superseded/destination-introspection-package-and-cli-policy.md, .10x/specs/project-cli-observability-security.md, .10x/specs/run-orchestration-ledger.md
 
 # CLI filesystem Parquet run and replay
 

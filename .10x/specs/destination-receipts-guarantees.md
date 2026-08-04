@@ -46,15 +46,23 @@ MVP dispositions are `append`, `replace`, and `merge`.
 
 `replace` MUST be atomic where supported and MUST NOT degrade into delete-then-insert without explicit unsupported/error behavior.
 
-`merge` MUST use primary or merge keys and deterministic batch deduplication before commit.
+`merge` MUST use primary or merge keys and package-global deterministic keyed-effect reduction
+before commit. It MAY carry package-native deletes only under
+`.10x/specs/package-keyed-delete-effects.md`.
 
-`cdc_apply` arrives with log CDC and MUST apply `_cdf_op` operations ordered by source position.
+`cdc_apply` arrives with log CDC and MUST apply the package's final keyed upsert/delete effects. CDC
+source order remains winner authority during package reduction; `_cdf_op` is not a finalized
+destination-row field.
 
 `scd2` and `snapshot` are excluded from loader dispositions.
 
 ## Receipts
 
-A receipt MUST include receipt id, destination, target, package hash, segment acks, disposition, idempotency token, transaction or object-store commit metadata where applicable, counts, schema hash, migrations, commit time, and an independently executable verify clause.
+A receipt MUST include receipt id, destination, target, package hash, typed segment acks,
+disposition, idempotency token, transaction or object-store commit metadata where applicable,
+counts, schema/key authority, migrations, commit time, and an independently executable verify
+clause. Keyed-change receipts MUST distinguish exact package upsert/delete intent from optional
+destination-proven outcome counts as governed by `.10x/specs/package-keyed-delete-effects.md`.
 
 Crash recovery in the committed-before-checkpointed window MUST verify the receipt against the destination before committing the checkpoint.
 

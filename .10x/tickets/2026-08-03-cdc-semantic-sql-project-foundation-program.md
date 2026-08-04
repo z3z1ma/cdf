@@ -56,7 +56,8 @@ Recommended integration rule:
 - fresh official-source research for PostgreSQL logical replication positions/transactions,
   MySQL binlog/GTID positions/transactions, and MongoDB change-stream resume/invalidate semantics;
 - ratify ordered-log coordinate shape, typed resume-token scope, complete-after-image/key-only-delete
-  row model, maximum transaction policy, and pre-production artifact replacement.
+  row model, package-native keyed delete effects, maximum transaction policy, and pre-production
+  artifact replacement.
 
 **A1. Source-position algebra and artifact version transition**
 
@@ -71,14 +72,31 @@ Owner: `.10x/tickets/2026-08-03-cdc-source-position-artifact-transition.md`, gov
 
 Depends-On: A0.
 
+**A1.5. Package-native keyed effects and delete application**
+
+- replace the homogeneous package segment model with closed rows/keyed-changes content;
+- derive complete upsert and key-only delete schemas under one exact-key reduction authority;
+- separate source deletion capture from explicit `ignore`/`hard`/Boolean-`soft` destination
+  application;
+- replace manifest/state/staging/commit/receipt/replay identities coherently with no compatibility
+  shape;
+- provide merge/CDC conformance before either ingress mode adds streaming/partial availability.
+
+Governing authority: `.10x/decisions/package-native-keyed-delete-effects.md` and
+`.10x/specs/package-keyed-delete-effects.md`. Executable child intentionally pending a later turn.
+
+Depends-On: A0. It may execute independently of A1 but must close before A2 keyed-effect package
+integration and A3 destination proof.
+
 **A2. Log-source runtime archetype and CDC batch contract**
 
-- implement transaction-aligned safe-frontier publication and `_cdf_op`/`CdcMetadata` validation;
+- implement transaction-aligned safe-frontier publication, typed transient operation validation,
+  and lowering into the A1.5 package-native keyed-effect contract;
 - synthetic deterministic log source and model/crash conformance;
 - bounded large-transaction/overshoot behavior;
 - finite drain commands only.
 
-Depends-On: A1.
+Depends-On: A1 and A1.5.
 
 **A3. First end-to-end CDC source/destination proof**
 
@@ -340,6 +358,13 @@ deferred lanes are explicitly parked with owners. For a full close:
   MongoDB resume-token variant.
 - CDC emits complete after-images for insert/update and destination keys for delete; MySQL
   ROW/FULL/GTID is the first proof, with the documented PostgreSQL/MongoDB prerequisites.
+- Packages represent deletes as first-class exact-key effects shared by `merge` and `cdc_apply`;
+  package construction selects at most one final effect per key, while event-history consumers use
+  append resources.
+- Source deletion capture is distinct from destination application. Captured deletes remain in the
+  package, and every delete-capable merge/CDC binding explicitly selects `ignore`, `hard`, or
+  Boolean-marker `soft` with no default. Soft delete preserves existing values, inserts no missing
+  tombstone, and later complete upsert clears the marker.
 - CDF is net-new and customer zero: artifact schemas are replaced outright with no compatibility
   readers, migrations, or transitional debt.
 - MongoDB accumulates ordered change events into segments/packages and advances the terminal resume
@@ -382,6 +407,14 @@ deferred lanes are explicitly parked with owners. For a full close:
   clarified MongoDB as receipt-gated event-prefix segmentation rather than transaction grouping.
   A1 position/artifact work is unblocked. Only the PostgreSQL/MySQL single-large-transaction resource
   limit remains open for A2.
+- 2026-08-03: The user ratified package-native keyed delete effects as a general continuous-data
+  handoff beyond CDC, including future SaaS deletion feeds. Equality-by-declared-key is the only
+  delete shape; merge and `cdc_apply` are the only admitted dispositions; packages retain captured
+  deletes even when application is `ignore`; ordinary unordered merge duplicates remain fail-fast;
+  CDC uses protocol-ordered last-change-wins; missing target deletes are idempotent no-ops; and
+  explicit hard/Boolean-soft/ignore application remains destination policy. The governing decision
+  and active spec are `.10x/decisions/package-native-keyed-delete-effects.md` and
+  `.10x/specs/package-keyed-delete-effects.md`.
 
 ## Blockers
 
