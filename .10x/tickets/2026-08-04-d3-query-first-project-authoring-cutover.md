@@ -195,6 +195,19 @@ retired public authority rather than wrapping them.
   orchestration promise of `pipelines/`. The root is excluded from identity; namespace, resource,
   explicit configured source, and logical target remain independent. Superseded the never-released
   `resources/` decision directly; no compatibility root or reader was admitted.
+- 2026-08-04: Replaced the D1.5a source-bound inventory with stable, path-fenced enumeration of
+  `cdf/<namespace>/<resource>.cdf.sql`. The inventory now derives only namespace, canonical resource
+  id, and default target; validates configured sources independently; and rejects existing
+  `sources/`, `resources/`, and `pipelines/` roots rather than admitting fallback readers. Updated
+  focused inventory fixtures to prove namespace/source independence and retired-root rejection.
+- 2026-08-04: Added the first D3 compiler boundary in `cdf-engine`: DataFusion's pinned SQL parser
+  admits one bare `SELECT`, extracts exactly one `upstream(source => 'configured_source', ...)`,
+  lowers recursive data-only relation options to canonical structured values, records exact SQL
+  span and authored AST identity, rewrites the relation only in transient analysis, and converts the
+  resolved projection/filter graph through D2 into native `RelationalExpressionPlan`. The public
+  result contains no DataFusion AST or plan. Focused negative tests cover executable arguments,
+  missing/duplicate/computed source, positional/wrong-operator arguments, set operations,
+  aggregation, CTEs, multiple statements, DDL/DML, and non-upstream relations.
 
 ## Blockers
 
@@ -203,9 +216,23 @@ evidence without reopening or re-verifying those tickets.
 
 ## Evidence
 
-Pending execution. Every acceptance checkbox must map to contemporaneous focused command output,
-fixture observation, generated-artifact diff, CI run, or review finding in this ticket. Repeated
-whole-suite runs are not required evidence.
+- `cargo check -p cdf-project --lib --locked -j 12` passed after the inventory cutover. This proves
+  the new public inventory types and production crate compile; it does not execute fixtures.
+- `cargo test -p cdf-project --lib project_input_inventory --locked -j 12` compiled the focused
+  target but the final local link failed because the environment could not resolve `-lduckdb`.
+  No project-input assertion ran, so this is compile evidence only and is not represented as a test
+  pass.
+- `cargo check -p cdf-engine --lib --locked -j 12` passed after enabling the explicit DataFusion
+  SQL feature and adding D3 analysis. This proves the native parser/analysis boundary type-checks.
+- `cargo test -p cdf-engine --lib sql_analysis --locked -j 12` passed 6 focused tests. This proves
+  recursive option parsing, order-independent canonical argument identity, authored AST identity,
+  DataFusion-to-D2 native lowering, and the enumerated rejection cases; it does not yet prove the
+  RESOURCE envelope, driver-schema resolution, defaults, manifest integration, or CLI cutover.
+- `cargo clippy -p cdf-engine --lib --locked -j 12 -- -D warnings` passed. This is strict lint
+  evidence for the new SQL-analysis production boundary only.
+- `cargo check -p cdf-project --tests --locked -j 12` passed. This proves all project-inventory
+  fixtures and their affected dependency boundary compile, while deliberately avoiding another
+  local DuckDB-linked test execution.
 
 ## Review
 

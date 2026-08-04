@@ -4,7 +4,8 @@ use cdf_kernel::ErrorKind;
 
 use super::support::test_source_registry;
 use crate::{
-    ProjectConfig, ProjectResourceName, ProjectSourceName, inventory_project_source_resources,
+    ProjectConfig, ProjectResourceName, ProjectResourceNamespace, ProjectSourceName,
+    inventory_project_resources,
 };
 
 fn project_config(body: &str) -> ProjectConfig {
@@ -23,8 +24,8 @@ normalizer = "namecase-v1"
     .unwrap()
 }
 
-fn write_resource(root: &std::path::Path, source: &str, resource: &str, sql: &str) {
-    let directory = root.join("sources").join(source);
+fn write_resource(root: &std::path::Path, namespace: &str, resource: &str, sql: &str) {
+    let directory = root.join("cdf").join(namespace);
     fs::create_dir_all(&directory).unwrap();
     fs::write(directory.join(format!("{resource}.cdf.sql")), sql).unwrap();
 }
@@ -32,9 +33,9 @@ fn write_resource(root: &std::path::Path, source: &str, resource: &str, sql: &st
 #[test]
 fn project_input_inventory_binds_paths_overlays_drivers_and_hashes_canonically() {
     let root = tempfile::tempdir().unwrap();
-    write_resource(root.path(), "warehouse", "orders", "SELECT 2\n");
-    write_resource(root.path(), "warehouse", "customers", "SELECT 1\n");
-    fs::write(root.path().join("sources/warehouse/README.md"), "notes").unwrap();
+    write_resource(root.path(), "analytics", "orders", "SELECT 2\n");
+    write_resource(root.path(), "analytics", "customers", "SELECT 1\n");
+    fs::write(root.path().join("cdf/analytics/README.md"), "notes").unwrap();
     let config = project_config(
         r#"
 [sources.warehouse]
@@ -49,8 +50,7 @@ connection = "secret://vault/prod/warehouse"
     );
 
     let inventory =
-        inventory_project_source_resources(root.path(), &config, "prod", &test_source_registry())
-            .unwrap();
+        inventory_project_resources(root.path(), &config, "prod", &test_source_registry()).unwrap();
 
     assert_eq!(inventory.environment, "prod");
     assert_eq!(inventory.sources.len(), 1);
@@ -60,7 +60,7 @@ connection = "secret://vault/prod/warehouse"
             .iter()
             .map(|resource| resource.resource_id.as_str())
             .collect::<Vec<_>>(),
-        vec!["warehouse.customers", "warehouse.orders"]
+        vec!["analytics.customers", "analytics.orders"]
     );
     assert_eq!(
         inventory
@@ -69,10 +69,14 @@ connection = "secret://vault/prod/warehouse"
             .map(|resource| resource.relative_path.as_str())
             .collect::<Vec<_>>(),
         vec![
-            "sources/warehouse/customers.cdf.sql",
-            "sources/warehouse/orders.cdf.sql"
+            "cdf/analytics/customers.cdf.sql",
+            "cdf/analytics/orders.cdf.sql"
         ]
     );
+    assert!(inventory.resources.iter().all(|resource| {
+        resource.namespace.as_str() == "analytics"
+            && resource.default_target.as_str() == resource.resource_id.as_str()
+    }));
     let source = inventory
         .sources
         .get(&ProjectSourceName::new("warehouse", "test").unwrap())
@@ -113,8 +117,7 @@ connection = "secret://env/WAREHOUSE_DSN"
     );
 
     let inventory =
-        inventory_project_source_resources(root.path(), &config, "dev", &test_source_registry())
-            .unwrap();
+        inventory_project_resources(root.path(), &config, "dev", &test_source_registry()).unwrap();
     assert_eq!(inventory.resources[0].sql, "not parsed in D1.5a");
 
     let invalid = project_config(
@@ -125,9 +128,8 @@ connection = "secret://env/WAREHOUSE_DSN"
 invented = true
 "#,
     );
-    let error =
-        inventory_project_source_resources(root.path(), &invalid, "dev", &test_source_registry())
-            .unwrap_err();
+    let error = inventory_project_resources(root.path(), &invalid, "dev", &test_source_registry())
+        .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Contract);
     assert!(error.message.contains("$.source"));
     assert!(error.message.contains("invented"));
@@ -146,6 +148,7 @@ fn project_path_tokens_enforce_the_exact_dedicated_grammar() {
         longest
     );
     assert!(ProjectResourceName::new("a", "resource").is_ok());
+    assert!(ProjectResourceNamespace::new("analytics", "cdf/analytics").is_ok());
     for invalid in [
         "",
         "Warehouse",
@@ -163,18 +166,21 @@ fn project_path_tokens_enforce_the_exact_dedicated_grammar() {
 }
 
 #[test]
-fn project_input_inventory_rejects_orphan_missing_and_empty_sources() {
-    let orphan_root = tempfile::tempdir().unwrap();
-    write_resource(orphan_root.path(), "warehouse", "orders", "SELECT 1");
-    let error = inventory_project_source_resources(
-        orphan_root.path(),
+fn project_input_inventory_keeps_resource_namespaces_independent_and_rejects_missing_or_empty_root()
+{
+    let independent_root = tempfile::tempdir().unwrap();
+    write_resource(independent_root.path(), "analytics", "orders", "SELECT 1");
+    let inventory = inventory_project_resources(
+        independent_root.path(),
         &project_config(""),
         "dev",
         &test_source_registry(),
     )
-    .unwrap_err();
-    assert_eq!(error.kind, ErrorKind::Contract);
-    assert!(error.message.contains("[sources.warehouse]"));
+    .unwrap();
+    assert_eq!(
+        inventory.resources[0].resource_id.as_str(),
+        "analytics.orders"
+    );
 
     let configured = project_config(
         r#"
@@ -184,7 +190,7 @@ connection = "secret://env/WAREHOUSE_DSN"
 "#,
     );
     let missing_root = tempfile::tempdir().unwrap();
-    let error = inventory_project_source_resources(
+    let error = inventory_project_resources(
         missing_root.path(),
         &configured,
         "dev",
@@ -192,11 +198,11 @@ connection = "secret://env/WAREHOUSE_DSN"
     )
     .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Contract);
-    assert!(error.message.contains("sources"));
+    assert!(error.message.contains("cdf/<namespace>/<resource>.cdf.sql"));
 
     let empty_root = tempfile::tempdir().unwrap();
-    fs::create_dir_all(empty_root.path().join("sources/warehouse")).unwrap();
-    let error = inventory_project_source_resources(
+    fs::create_dir_all(empty_root.path().join("cdf/analytics")).unwrap();
+    let error = inventory_project_resources(
         empty_root.path(),
         &configured,
         "dev",
@@ -221,13 +227,9 @@ connection = "secret://env/WAREHOUSE_DSN"
 type = "postgres"
 "#,
     );
-    let error = inventory_project_source_resources(
-        root.path(),
-        &type_override,
-        "dev",
-        &test_source_registry(),
-    )
-    .unwrap_err();
+    let error =
+        inventory_project_resources(root.path(), &type_override, "dev", &test_source_registry())
+            .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Contract);
     assert!(
         error
@@ -245,13 +247,9 @@ connection = "secret://env/WAREHOUSE_DSN"
 connection = "secret://env/ARCHIVE_DSN"
 "#,
     );
-    let error = inventory_project_source_resources(
-        root.path(),
-        &added_source,
-        "dev",
-        &test_source_registry(),
-    )
-    .unwrap_err();
+    let error =
+        inventory_project_resources(root.path(), &added_source, "dev", &test_source_registry())
+            .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Contract);
     assert!(error.message.contains("may not add a source"));
 }
@@ -266,27 +264,21 @@ connection = "secret://env/WAREHOUSE_DSN"
 "#,
     );
     let nested_root = tempfile::tempdir().unwrap();
-    fs::create_dir_all(nested_root.path().join("sources/warehouse/nested")).unwrap();
-    let error = inventory_project_source_resources(
-        nested_root.path(),
-        &config,
-        "dev",
-        &test_source_registry(),
-    )
-    .unwrap_err();
+    fs::create_dir_all(nested_root.path().join("cdf/analytics/nested")).unwrap();
+    let error =
+        inventory_project_resources(nested_root.path(), &config, "dev", &test_source_registry())
+            .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Contract);
     assert!(error.message.contains("unsupported filesystem shape"));
 
     let malformed_root = tempfile::tempdir().unwrap();
-    fs::create_dir_all(malformed_root.path().join("sources/warehouse")).unwrap();
+    fs::create_dir_all(malformed_root.path().join("cdf/analytics")).unwrap();
     fs::write(
-        malformed_root
-            .path()
-            .join("sources/warehouse/orders.CDF.SQL"),
+        malformed_root.path().join("cdf/analytics/orders.CDF.SQL"),
         "SELECT 1",
     )
     .unwrap();
-    let error = inventory_project_source_resources(
+    let error = inventory_project_resources(
         malformed_root.path(),
         &config,
         "dev",
@@ -302,7 +294,7 @@ connection = "secret://env/WAREHOUSE_DSN"
 type = "not_registered"
 "#,
     );
-    let error = inventory_project_source_resources(
+    let error = inventory_project_resources(
         malformed_root.path(),
         &invalid_driver,
         "dev",
@@ -314,12 +306,12 @@ type = "not_registered"
 }
 
 #[test]
-fn project_input_inventory_rejects_files_directly_under_sources() {
+fn project_input_inventory_rejects_files_directly_under_cdf() {
     let root = tempfile::tempdir().unwrap();
-    fs::create_dir_all(root.path().join("sources")).unwrap();
-    fs::write(root.path().join("sources/orders"), "SELECT 1").unwrap();
+    fs::create_dir_all(root.path().join("cdf")).unwrap();
+    fs::write(root.path().join("cdf/orders.cdf.sql"), "SELECT 1").unwrap();
 
-    let error = inventory_project_source_resources(
+    let error = inventory_project_resources(
         root.path(),
         &project_config(""),
         "dev",
@@ -337,8 +329,8 @@ fn project_input_inventory_rejects_symlinked_authority() {
 
     let root = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
-    fs::create_dir_all(root.path().join("sources")).unwrap();
-    symlink(outside.path(), root.path().join("sources/warehouse")).unwrap();
+    fs::create_dir_all(root.path().join("cdf")).unwrap();
+    symlink(outside.path(), root.path().join("cdf/analytics")).unwrap();
     let config = project_config(
         r#"
 [sources.warehouse]
@@ -347,9 +339,8 @@ connection = "secret://env/WAREHOUSE_DSN"
 "#,
     );
 
-    let error =
-        inventory_project_source_resources(root.path(), &config, "dev", &test_source_registry())
-            .unwrap_err();
+    let error = inventory_project_resources(root.path(), &config, "dev", &test_source_registry())
+        .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Contract);
     assert!(error.message.contains("may not be a symlink"));
 }
@@ -357,7 +348,7 @@ connection = "secret://env/WAREHOUSE_DSN"
 #[test]
 fn project_input_inventory_allows_a_completely_empty_project() {
     let root = tempfile::tempdir().unwrap();
-    let inventory = inventory_project_source_resources(
+    let inventory = inventory_project_resources(
         root.path(),
         &project_config(""),
         "dev",
@@ -367,4 +358,27 @@ fn project_input_inventory_allows_a_completely_empty_project() {
     assert!(inventory.sources.is_empty());
     assert!(inventory.resources.is_empty());
     assert_eq!(inventory.total_authored_bytes, 0);
+}
+
+#[test]
+fn project_input_inventory_rejects_every_non_current_resource_root_without_scanning_it() {
+    for retired in ["sources", "resources", "pipelines"] {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join(retired).join("analytics")).unwrap();
+        fs::write(
+            root.path().join(retired).join("analytics/orders.cdf.sql"),
+            "SELECT 1",
+        )
+        .unwrap();
+        let error = inventory_project_resources(
+            root.path(),
+            &project_config(""),
+            "dev",
+            &test_source_registry(),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Contract);
+        assert!(error.message.contains("is not a current CDF resource root"));
+        assert!(error.message.contains("cdf/<namespace>/<resource>.cdf.sql"));
+    }
 }

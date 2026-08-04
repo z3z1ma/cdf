@@ -79,5 +79,6 @@ mod planning;
 mod retry_drain;
 mod schema_admission;
 mod segmentation;
+mod sql_analysis;
 mod support;
 mod workers;

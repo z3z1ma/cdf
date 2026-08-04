@@ -2790,6 +2790,7 @@ dependencies = [
  "log",
  "object_store 0.13.2",
  "parking_lot",
+ "sqlparser",
  "tempfile",
  "tokio",
  "url",

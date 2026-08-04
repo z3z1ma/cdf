@@ -165,8 +165,9 @@ pub use project_files::{
     publish_project_files_transactionally_without_recovery, recover_project_file_transaction,
 };
 pub use project_inputs::{
-    ProjectResourceName, ProjectSourceBinding, ProjectSourceConfigurationHash, ProjectSourceName,
-    ProjectSourceResourceInput, ProjectSourceResourceInventory, inventory_project_source_resources,
+    ProjectResourceInput, ProjectResourceInventory, ProjectResourceName, ProjectResourceNamespace,
+    ProjectSourceBinding, ProjectSourceConfigurationHash, ProjectSourceName,
+    inventory_project_resources,
 };
 pub use promotion::{
     CorrectionStrategySelection, CorrectionStrategySelectionRule,

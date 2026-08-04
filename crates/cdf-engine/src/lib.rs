@@ -20,6 +20,7 @@ mod output_schema;
 mod planning;
 mod residual_spill;
 mod segmentation;
+mod sql_analysis;
 mod standalone_host;
 mod statistics_pruning;
 mod table_provider;
@@ -56,6 +57,10 @@ pub use planning::{
 pub use segmentation::{
     AdaptiveMicrobatchController, CanonicalSegment, CanonicalSegmentAssembler,
     CanonicalSegmentationPolicy, PositionJoin, join_positions,
+};
+pub use sql_analysis::{
+    AnalyzedProjectQuery, ParsedProjectQuery, ParsedUpstreamRelation, ProjectSqlSpan,
+    analyze_project_query, parse_project_query,
 };
 pub use standalone_host::StandaloneExecutionHost;
 pub use statistics_pruning::{

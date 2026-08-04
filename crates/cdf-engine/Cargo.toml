@@ -20,6 +20,7 @@ datafusion = { version = "54.0.0", default-features = false, features = [
     "math_expressions",
     "nested_expressions",
     "regex_expressions",
+    "sql",
     "string_expressions",
     "unicode_expressions",
 ] }

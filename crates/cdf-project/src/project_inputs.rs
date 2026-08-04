@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use cdf_kernel::{CdfError, ResourceId, Result};
+use cdf_kernel::{CdfError, ResourceId, Result, TargetName};
 use cdf_runtime::{SourceDriverDescriptor, SourceRegistry, artifact_hash};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -15,7 +15,8 @@ use crate::{
     ProjectSourceConfig, manifest::PROJECT_MANIFEST_MAX_INPUTS,
 };
 
-const SOURCES_DIRECTORY: &str = "sources";
+const CDF_DIRECTORY: &str = "cdf";
+const REJECTED_RESOURCE_DIRECTORIES: [&str; 3] = ["sources", "resources", "pipelines"];
 const RESOURCE_SUFFIX: &str = ".cdf.sql";
 const PROJECT_TOKEN_GRAMMAR: &str = "[a-z][a-z0-9_]{0,127}";
 
@@ -39,6 +40,20 @@ pub struct ProjectResourceName(String);
 impl ProjectResourceName {
     pub fn new(value: &str, authority_path: &str) -> Result<Self> {
         validate_project_token("resource", value, authority_path)?;
+        Ok(Self(value.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ProjectResourceNamespace(String);
+
+impl ProjectResourceNamespace {
+    pub fn new(value: &str, authority_path: &str) -> Result<Self> {
+        validate_project_token("resource namespace", value, authority_path)?;
         Ok(Self(value.to_owned()))
     }
 
@@ -71,20 +86,21 @@ pub struct ProjectSourceBinding {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProjectSourceResourceInput {
+pub struct ProjectResourceInput {
     pub relative_path: String,
     pub content_hash: ManifestInputContentHash,
-    pub source_name: ProjectSourceName,
+    pub namespace: ProjectResourceNamespace,
     pub resource_name: ProjectResourceName,
     pub resource_id: ResourceId,
+    pub default_target: TargetName,
     pub sql: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProjectSourceResourceInventory {
+pub struct ProjectResourceInventory {
     pub environment: String,
     pub sources: BTreeMap<ProjectSourceName, ProjectSourceBinding>,
-    pub resources: Vec<ProjectSourceResourceInput>,
+    pub resources: Vec<ProjectResourceInput>,
     pub total_authored_bytes: usize,
 }
 
@@ -97,27 +113,28 @@ struct SourceConfigurationHashInput<'a> {
     options: &'a BTreeMap<String, serde_json::Value>,
 }
 
-/// Builds the bounded, path-derived input authority consumed by project SQL lowering.
+/// Builds the bounded, path-derived input authority consumed by query-first project lowering.
 ///
-/// Regular files inside a configured source directory are ignored only when their names contain
+/// Regular files inside a resource namespace are ignored only when their names contain
 /// neither `.cdf` nor `.sql` (case-insensitively). This permits deterministic colocated prose such
 /// as `README.md` while treating every SQL-like near match as a blocking authoring error.
-pub fn inventory_project_source_resources(
+pub fn inventory_project_resources(
     project_root: &Path,
     config: &ProjectConfig,
     environment: &str,
     registry: &SourceRegistry,
-) -> Result<ProjectSourceResourceInventory> {
+) -> Result<ProjectResourceInventory> {
     let selected_environment = config.environments.get(environment).ok_or_else(|| {
         CdfError::contract(format!("environment `{environment}` is not declared"))
     })?;
     let configured_sources = validate_source_configuration_shape(config)?;
     let canonical_root = canonical_project_root(project_root)?;
-    let sources_path = canonical_root.join(SOURCES_DIRECTORY);
+    reject_non_current_resource_roots(&canonical_root)?;
+    let cdf_path = canonical_root.join(CDF_DIRECTORY);
 
-    let Some(sources_metadata) = optional_symlink_metadata(&sources_path)? else {
+    let Some(cdf_metadata) = optional_symlink_metadata(&cdf_path)? else {
         if configured_sources.is_empty() {
-            return Ok(ProjectSourceResourceInventory {
+            return Ok(ProjectResourceInventory {
                 environment: environment.to_owned(),
                 sources: BTreeMap::new(),
                 resources: Vec::new(),
@@ -125,85 +142,66 @@ pub fn inventory_project_source_resources(
             });
         }
         return Err(CdfError::contract(format!(
-            "{} configures sources but {} is missing; create one directory and at least one <resource>.cdf.sql file for every configured source",
+            "{} configures sources but {} is missing; create at least one cdf/<namespace>/<resource>.cdf.sql file that explicitly references each configured source",
             PROJECT_FILE_NAME,
-            sources_path.display()
+            cdf_path.display()
         )));
     };
-    require_real_directory(&sources_path, &sources_metadata, "project sources root")?;
-    ensure_inside_project_root(&canonical_root, &sources_path)?;
-    let sources_before = sources_metadata;
+    require_real_directory(&cdf_path, &cdf_metadata, "CDF resource root")?;
+    ensure_inside_project_root(&canonical_root, &cdf_path)?;
+    let cdf_before = cdf_metadata;
 
-    let mut source_directories = BTreeMap::new();
-    for entry in read_directory(&sources_path, "enumerate project sources")? {
+    let mut namespace_directories = BTreeMap::new();
+    for entry in read_directory(&cdf_path, "enumerate CDF resource namespaces")? {
         let entry = entry.map_err(|error| {
-            project_input_io_error("enumerate project sources", &sources_path, error)
+            project_input_io_error("enumerate CDF resource namespaces", &cdf_path, error)
         })?;
         let entry_path = entry.path();
-        let name = utf8_file_name(&entry_path, "source directory")?;
-        let source_name = ProjectSourceName::new(&name, &entry_path.display().to_string())?;
+        let name = utf8_file_name(&entry_path, "resource namespace directory")?;
+        let namespace = ProjectResourceNamespace::new(&name, &entry_path.display().to_string())?;
         let metadata = fs::symlink_metadata(&entry_path).map_err(|error| {
-            project_input_io_error("inspect project source", &entry_path, error)
+            project_input_io_error("inspect CDF resource namespace", &entry_path, error)
         })?;
-        require_real_directory(&entry_path, &metadata, "project source")?;
+        require_real_directory(&entry_path, &metadata, "CDF resource namespace")?;
         ensure_inside_project_root(&canonical_root, &entry_path)?;
-        if source_directories.len() == PROJECT_MANIFEST_MAX_INPUTS {
+        if namespace_directories.len() == PROJECT_MANIFEST_MAX_INPUTS {
             return Err(CdfError::contract(format!(
-                "project sources exceed the {PROJECT_MANIFEST_MAX_INPUTS}-input bound"
+                "CDF resource namespaces exceed the {PROJECT_MANIFEST_MAX_INPUTS}-input bound"
             )));
         }
-        if source_directories.insert(source_name, entry_path).is_some() {
+        if namespace_directories
+            .insert(namespace, entry_path)
+            .is_some()
+        {
             return Err(CdfError::contract(format!(
-                "duplicate project source identity `{name}` under {}",
-                sources_path.display()
-            )));
-        }
-    }
-    ensure_metadata_stable(&sources_path, &sources_before, "project sources root")?;
-
-    for source_name in source_directories.keys() {
-        if !configured_sources.contains_key(source_name) {
-            return Err(CdfError::contract(format!(
-                "{} has no matching [sources.{}] configuration in {}",
-                source_directories[source_name].display(),
-                source_name.as_str(),
-                PROJECT_FILE_NAME
+                "duplicate CDF resource namespace `{name}` under {}",
+                cdf_path.display()
             )));
         }
     }
-    for source_name in configured_sources.keys() {
-        if !source_directories.contains_key(source_name) {
-            return Err(CdfError::contract(format!(
-                "[sources.{}] in {} has no matching {}/{} directory with at least one valid resource",
-                source_name.as_str(),
-                PROJECT_FILE_NAME,
-                SOURCES_DIRECTORY,
-                source_name.as_str()
-            )));
-        }
-    }
+    ensure_metadata_stable(&cdf_path, &cdf_before, "CDF resource root")?;
 
     let mut total_authored_bytes = 0usize;
     let mut resources = Vec::new();
     let mut resource_ids = BTreeSet::new();
     let mut discovered_resource_count = 0usize;
-    for (source_name, source_path) in source_directories {
-        let source_before = fs::symlink_metadata(&source_path).map_err(|error| {
-            project_input_io_error("inspect project source", &source_path, error)
+    for (namespace, namespace_path) in namespace_directories {
+        let namespace_before = fs::symlink_metadata(&namespace_path).map_err(|error| {
+            project_input_io_error("inspect CDF resource namespace", &namespace_path, error)
         })?;
-        let mut source_resources = Vec::new();
-        for entry in read_directory(&source_path, "enumerate project source resources")? {
+        let mut namespace_resources = Vec::new();
+        for entry in read_directory(&namespace_path, "enumerate CDF namespace resources")? {
             let entry = entry.map_err(|error| {
-                project_input_io_error("enumerate project source resources", &source_path, error)
+                project_input_io_error("enumerate CDF namespace resources", &namespace_path, error)
             })?;
             let resource_path = entry.path();
             let metadata = fs::symlink_metadata(&resource_path).map_err(|error| {
-                project_input_io_error("inspect project source resource", &resource_path, error)
+                project_input_io_error("inspect CDF resource", &resource_path, error)
             })?;
             if metadata.file_type().is_symlink() || metadata.is_dir() || !metadata.is_file() {
                 return Err(CdfError::contract(format!(
                     "{} must contain only regular <resource>.cdf.sql inputs at its top level; {} has an unsupported filesystem shape",
-                    source_path.display(),
+                    namespace_path.display(),
                     resource_path.display()
                 )));
             }
@@ -223,21 +221,21 @@ pub fn inventory_project_source_resources(
                 ProjectResourceName::new(resource_token, &resource_path.display().to_string())?;
             if discovered_resource_count == PROJECT_MANIFEST_MAX_INPUTS {
                 return Err(CdfError::contract(format!(
-                    "project source resources exceed the {PROJECT_MANIFEST_MAX_INPUTS}-input bound"
+                    "CDF resources exceed the {PROJECT_MANIFEST_MAX_INPUTS}-input bound"
                 )));
             }
             discovered_resource_count += 1;
-            source_resources.push((resource_name, resource_path));
+            namespace_resources.push((resource_name, resource_path));
         }
-        ensure_metadata_stable(&source_path, &source_before, "project source directory")?;
-        source_resources.sort_by(|left, right| left.0.cmp(&right.0));
-        if source_resources.is_empty() {
+        ensure_metadata_stable(&namespace_path, &namespace_before, "CDF resource namespace")?;
+        namespace_resources.sort_by(|left, right| left.0.cmp(&right.0));
+        if namespace_resources.is_empty() {
             return Err(CdfError::contract(format!(
-                "{} is configured but contains no valid regular <resource>.cdf.sql file",
-                source_path.display()
+                "{} contains no valid regular <resource>.cdf.sql file",
+                namespace_path.display()
             )));
         }
-        for (resource_name, resource_path) in source_resources {
+        for (resource_name, resource_path) in namespace_resources {
             let bytes = read_stable_resource_file(
                 &resource_path,
                 PROJECT_MANIFEST_MAX_BYTES.saturating_sub(total_authored_bytes),
@@ -251,15 +249,12 @@ pub fn inventory_project_source_resources(
             let content_hash = ManifestInputContentHash::new(bytes_hash(&bytes))?;
             let sql = String::from_utf8(bytes).map_err(|error| {
                 CdfError::data(format!(
-                    "project source resource {} is not UTF-8: {error}",
+                    "CDF resource {} is not UTF-8: {error}",
                     resource_path.display()
                 ))
             })?;
-            let resource_id = ResourceId::new(format!(
-                "{}.{}",
-                source_name.as_str(),
-                resource_name.as_str()
-            ))?;
+            let resource_id =
+                ResourceId::new(format!("{}.{}", namespace.as_str(), resource_name.as_str()))?;
             if !resource_ids.insert(resource_id.as_str().to_owned()) {
                 return Err(CdfError::contract(format!(
                     "duplicate project resource identity `{resource_id}` at {}",
@@ -268,23 +263,25 @@ pub fn inventory_project_source_resources(
             }
             let relative_path = format!(
                 "{}/{}/{}{}",
-                SOURCES_DIRECTORY,
-                source_name.as_str(),
+                CDF_DIRECTORY,
+                namespace.as_str(),
                 resource_name.as_str(),
                 RESOURCE_SUFFIX
             );
-            resources.push(ProjectSourceResourceInput {
+            let default_target = TargetName::new(resource_id.as_str())?;
+            resources.push(ProjectResourceInput {
                 relative_path,
                 content_hash,
-                source_name: source_name.clone(),
+                namespace: namespace.clone(),
                 resource_name,
                 resource_id,
+                default_target,
                 sql,
             });
         }
-        ensure_metadata_stable(&source_path, &source_before, "project source directory")?;
+        ensure_metadata_stable(&namespace_path, &namespace_before, "CDF resource namespace")?;
     }
-    ensure_metadata_stable(&sources_path, &sources_before, "project sources root")?;
+    ensure_metadata_stable(&cdf_path, &cdf_before, "CDF resource root")?;
 
     let mut sources = BTreeMap::new();
     for (source_name, base) in &configured_sources {
@@ -356,12 +353,25 @@ pub fn inventory_project_source_resources(
         );
     }
 
-    Ok(ProjectSourceResourceInventory {
+    Ok(ProjectResourceInventory {
         environment: environment.to_owned(),
         sources,
         resources,
         total_authored_bytes,
     })
+}
+
+fn reject_non_current_resource_roots(project_root: &Path) -> Result<()> {
+    for directory in REJECTED_RESOURCE_DIRECTORIES {
+        let path = project_root.join(directory);
+        if optional_symlink_metadata(&path)?.is_some() {
+            return Err(CdfError::contract(format!(
+                "{} is not a current CDF resource root; move query-first resources to cdf/<namespace>/<resource>.cdf.sql and remove the retired root",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn validate_source_configuration_shape(
@@ -390,7 +400,7 @@ fn validate_source_configuration_shape(
             }
             if !sources.contains_key(&source_name) {
                 return Err(CdfError::contract(format!(
-                    "{authority} may not add a source; declare [sources.{name}] and a matching sources/{name}/ resource directory"
+                    "{authority} may not add a source; declare [sources.{name}] in the base project and reference it explicitly from cdf/<namespace>/<resource>.cdf.sql"
                 )));
             }
         }
