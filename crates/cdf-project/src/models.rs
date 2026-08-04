@@ -165,6 +165,7 @@ pub struct DefaultsConfig {
     pub contract: Option<String>,
     pub trust: Option<TrustPreset>,
     pub write_disposition: Option<WriteDispositionPreset>,
+    pub execution: Option<cdf_declarative::ExecutionDeclaration>,
     pub retention: Option<RetentionPolicy>,
 }
 
@@ -207,8 +208,6 @@ pub struct ProjectFreshness {
 pub enum TrustPreset {
     Experimental,
     Governed,
-    Financial,
-    Serving,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,8 +215,6 @@ pub enum TrustPreset {
 pub enum WriteDispositionPreset {
     Append,
     Replace,
-    Merge,
-    CdcApply,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -69,19 +69,6 @@ impl SourceDriver for RestSourceDriver {
         &self.option_schema
     }
 
-    fn validate_option_compatibility(
-        &self,
-        _source: &BTreeMap<String, serde_json::Value>,
-        resource: &BTreeMap<String, serde_json::Value>,
-    ) -> Result<()> {
-        if resource.contains_key("records_transform") {
-            return Err(CdfError::contract(
-                "REST resource option `records_transform` is not supported; remove it because previous releases accepted but did not execute it",
-            ));
-        }
-        Ok(())
-    }
-
     fn validate_portable_plan(&self, plan: &CompiledSourcePlan) -> Result<()> {
         plan.validate()?;
         let physical: RestPhysicalPlan = serde_json::from_value(plan.physical_plan.clone())

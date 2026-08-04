@@ -225,6 +225,28 @@ impl SourceRegistry {
         Ok(driver.descriptor().clone())
     }
 
+    /// Resolves the immutable configured source kind and validates the relation-owned resource
+    /// arguments through that driver's closed resource schema. Project compilation calls this
+    /// only after the configured source itself has resolved and validated.
+    pub fn validate_resource_configuration(
+        &self,
+        source_kind: &str,
+        resource_options: &BTreeMap<String, serde_json::Value>,
+    ) -> Result<SourceDriverDescriptor> {
+        let driver = self.driver_for_kind(source_kind)?;
+        let resource_schema = driver.option_schema().get("resource").ok_or_else(|| {
+            CdfError::internal("registered source driver lost its resource option schema")
+        })?;
+        validate_option_instance(
+            resource_schema,
+            &serde_json::to_value(resource_options).map_err(|error| {
+                CdfError::internal(format!("serialize resource options: {error}"))
+            })?,
+            "$.resource",
+        )?;
+        Ok(driver.descriptor().clone())
+    }
+
     /// Verifies that an isolated worker can resolve the exact source driver named by a portable
     /// task before it fetches any referenced plan or payload artifact.
     pub fn validate_portable_source_binding(
@@ -891,7 +913,6 @@ fn validate_driver_options(
     source: &BTreeMap<String, serde_json::Value>,
     resource: &BTreeMap<String, serde_json::Value>,
 ) -> Result<()> {
-    driver.validate_option_compatibility(source, resource)?;
     let schema = driver.option_schema();
     let source_schema = schema.get("source").ok_or_else(|| {
         CdfError::internal("registered source driver lost its source option schema")

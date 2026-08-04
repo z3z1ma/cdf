@@ -80,6 +80,7 @@ mod observation_cache;
 mod project_files;
 mod project_inputs;
 mod promotion;
+mod query_compiler;
 mod resource_sql;
 mod runtime;
 #[cfg(test)]
@@ -186,6 +187,11 @@ pub use promotion::{
     inspect_local_package_promotion_availability, plan_schema_promotion,
     recompute_schema_promotion_id, select_correction_strategy,
     validate_schema_promotion_plan_identity,
+};
+pub use query_compiler::{
+    CompiledQueryProjectResource, EffectiveResourceEnvelope, ProjectConfiguredSourceIdentity,
+    ProjectInputSchemaAuthority, ProjectQueryCompilation, ResolutionOrigin, ResolvedResourceValue,
+    compile_query_project_resources, finalize_query_project_resource,
 };
 pub use resource_sql::{
     AuthoredDisposition, AuthoredResourceEnvelope, AuthoredResourceFile, AuthoredResourceForm,

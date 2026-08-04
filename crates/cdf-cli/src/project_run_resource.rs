@@ -173,8 +173,6 @@ fn trust_level(trust: &TrustPreset) -> cdf_kernel::TrustLevel {
     match trust {
         TrustPreset::Experimental => cdf_kernel::TrustLevel::Experimental,
         TrustPreset::Governed => cdf_kernel::TrustLevel::Governed,
-        TrustPreset::Financial => cdf_kernel::TrustLevel::Financial,
-        TrustPreset::Serving => cdf_kernel::TrustLevel::Serving,
     }
 }
 

@@ -60,7 +60,7 @@ pub use segmentation::{
 };
 pub use sql_analysis::{
     AnalyzedProjectQuery, ParsedProjectQuery, ParsedUpstreamRelation, ProjectSqlSpan,
-    analyze_project_query, parse_project_query,
+    analyze_project_query, analyze_project_query_at, parse_project_query, parse_project_query_at,
 };
 pub use standalone_host::StandaloneExecutionHost;
 pub use statistics_pruning::{

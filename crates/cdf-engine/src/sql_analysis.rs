@@ -64,7 +64,17 @@ pub struct AnalyzedProjectQuery {
 }
 
 pub fn parse_project_query(sql: &str, file: &str) -> Result<ParsedProjectQuery> {
+    parse_project_query_at(sql, file, 1, 1)
+}
+
+pub fn parse_project_query_at(
+    sql: &str,
+    file: &str,
+    start_line: u32,
+    start_column: u32,
+) -> Result<ParsedProjectQuery> {
     let (_, upstream, normalized_query) = parse_and_rewrite(sql, file)?;
+    let upstream = offset_upstream(upstream, start_line, start_column)?;
     let authored_ast_hash = cdf_runtime::artifact_hash(&normalized_query)?;
     Ok(ParsedProjectQuery {
         upstream,
@@ -79,7 +89,19 @@ pub fn analyze_project_query(
     input_schema: &Schema,
     control_fields: Vec<String>,
 ) -> Result<AnalyzedProjectQuery> {
+    analyze_project_query_at(sql, file, 1, 1, input_schema, control_fields)
+}
+
+pub fn analyze_project_query_at(
+    sql: &str,
+    file: &str,
+    start_line: u32,
+    start_column: u32,
+    input_schema: &Schema,
+    control_fields: Vec<String>,
+) -> Result<AnalyzedProjectQuery> {
     let (query, upstream, normalized_query) = parse_and_rewrite(sql, file)?;
+    let upstream = offset_upstream(upstream, start_line, start_column)?;
     let authored_ast_hash = cdf_runtime::artifact_hash(&normalized_query)?;
     let context = SessionContext::new();
     let table = MemTable::try_new(Arc::new(input_schema.clone()), vec![Vec::new()])
@@ -120,6 +142,47 @@ pub fn analyze_project_query(
         authored_ast_hash,
         relational_plan,
         output_schema,
+    })
+}
+
+fn offset_upstream(
+    mut upstream: ParsedUpstreamRelation,
+    start_line: u32,
+    start_column: u32,
+) -> Result<ParsedUpstreamRelation> {
+    if start_line == 0 || start_column == 0 {
+        return Err(CdfError::internal(
+            "project query offset must use one-based line and column",
+        ));
+    }
+    upstream.span = offset_span(&upstream.span, start_line, start_column)?;
+    Ok(upstream)
+}
+
+fn offset_span(
+    span: &ProjectSqlSpan,
+    start_line: u32,
+    start_column: u32,
+) -> Result<ProjectSqlSpan> {
+    let line_offset = start_line - 1;
+    let offset_line = |line: u32| {
+        line.checked_add(line_offset)
+            .ok_or_else(|| CdfError::contract("SQL source line offset overflowed u32"))
+    };
+    let offset_column = |line: u32, column: u32| {
+        if line == 1 {
+            column
+                .checked_add(start_column - 1)
+                .ok_or_else(|| CdfError::contract("SQL source column offset overflowed u32"))
+        } else {
+            Ok(column)
+        }
+    };
+    Ok(ProjectSqlSpan {
+        start_line: offset_line(span.start_line)?,
+        start_column: offset_column(span.start_line, span.start_column)?,
+        end_line: offset_line(span.end_line)?,
+        end_column: offset_column(span.end_line, span.end_column)?,
     })
 }
 

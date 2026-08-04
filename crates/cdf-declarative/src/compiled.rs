@@ -5,20 +5,20 @@ use std::{
 };
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use cdf_contract::{IdentifierPolicy, normalize_arrow_schema};
+use cdf_contract::{IdentifierPolicy, RelationalExpressionPlan, normalize_arrow_schema};
 use cdf_kernel::{
-    CanonicalArrowTimeUnit, CdfError, CommittedLogPosition, CompositePosition, ContractRef,
-    CursorOrderingClaim, CursorPosition, CursorSpec, CursorValue, DeduplicationSpec,
-    DrainTermination, EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, EpochClosureTrigger,
-    EventTimeDomain, ExecutionExtent, FileManifest, FilePosition, ForeignState, FreshnessSpec,
-    LateDataAction, MongoChangeStreamResumeToken, MongoChangeStreamScope, MongoResumeMode,
-    MongoResumeTokenSource, MongoWatchLevel, MySqlCommitPosition, MySqlLogScope, PageToken,
-    PartitionWatermarkAggregation, PostgresCommitPosition, PostgresLogScope, PushdownFidelity,
-    ResourceCapabilities, ResourceDescriptor, ResourceId, Result, ResumeTokenPosition,
-    SOURCE_POSITION_VERSION, STREAM_EPOCH_POLICY_VERSION, SafeFrontierPolicy, SchemaHash,
-    SchemaSource, ScopeKey, SourcePosition, StreamEpochPolicy, TrustLevel, TypePolicyAllowances,
-    WatermarkAuthority, WatermarkPolicy, WriteDisposition, parse_arrow_field_type,
-    with_cdf_metadata,
+    CanonicalArrowSchema, CanonicalArrowTimeUnit, CdfError, CommittedLogPosition,
+    CompositePosition, ContractRef, CursorOrderingClaim, CursorPosition, CursorSpec, CursorValue,
+    DeduplicationSpec, DrainTermination, EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime,
+    EpochClosureTrigger, EventTimeDomain, ExecutionExtent, FileManifest, FilePosition,
+    ForeignState, FreshnessSpec, LateDataAction, MongoChangeStreamResumeToken,
+    MongoChangeStreamScope, MongoResumeMode, MongoResumeTokenSource, MongoWatchLevel,
+    MySqlCommitPosition, MySqlLogScope, PageToken, PartitionWatermarkAggregation,
+    PostgresCommitPosition, PostgresLogScope, PushdownFidelity, ResourceCapabilities,
+    ResourceDescriptor, ResourceId, Result, ResumeTokenPosition, SOURCE_POSITION_VERSION,
+    STREAM_EPOCH_POLICY_VERSION, SafeFrontierPolicy, SchemaHash, SchemaSource, ScopeKey,
+    SourcePosition, StreamEpochPolicy, TrustLevel, TypePolicyAllowances, WatermarkAuthority,
+    WatermarkPolicy, WriteDisposition, parse_arrow_field_type, with_cdf_metadata,
 };
 use cdf_runtime::{
     CompiledSourcePlan, SourceCompileContext, SourceCompileRequest, SourceCursorPushdown,
@@ -42,6 +42,7 @@ pub struct CompiledResource {
     schema_discovery_sample_files: Option<u64>,
     type_policy_allowances: TypePolicyAllowances,
     execution_extent: ExecutionExtent,
+    relational_expression_plan: Option<RelationalExpressionPlan>,
 }
 
 impl CompiledResource {
@@ -89,6 +90,7 @@ impl CompiledResource {
             schema_discovery_sample_files: None,
             type_policy_allowances,
             execution_extent,
+            relational_expression_plan: None,
         })
     }
 
@@ -140,6 +142,23 @@ impl CompiledResource {
         &self.execution_extent
     }
 
+    pub fn relational_expression_plan(&self) -> Option<&RelationalExpressionPlan> {
+        self.relational_expression_plan.as_ref()
+    }
+
+    pub fn with_relational_expression_plan(&self, plan: RelationalExpressionPlan) -> Result<Self> {
+        plan.validate_recorded()?;
+        if plan.input_schema != CanonicalArrowSchema::from_arrow(&self.source_plan.schema)? {
+            return Err(CdfError::contract(
+                "relational expression plan input schema does not match the compiled source plan",
+            ));
+        }
+        let mut resource = self.clone();
+        resource.schema = Arc::new(plan.output_schema.to_arrow()?);
+        resource.relational_expression_plan = Some(plan);
+        Ok(resource)
+    }
+
     pub fn with_schema_source_and_schema(
         &self,
         schema_source: SchemaSource,
@@ -150,6 +169,7 @@ impl CompiledResource {
         resource.schema = Arc::clone(&schema);
         resource.source_plan.descriptor.schema_source = schema_source;
         resource.source_plan.schema = schema.as_ref().clone();
+        resource.relational_expression_plan = None;
         resource
     }
 
@@ -162,6 +182,7 @@ impl CompiledResource {
         let mut resource = self.clone();
         resource.schema = Arc::clone(&schema);
         resource.source_plan.schema = schema.as_ref().clone();
+        resource.relational_expression_plan = None;
         resource.source_plan.effective_schema_runtime = Some(runtime.clone());
         resource.effective_schema_runtime = Some(runtime);
         Ok(resource)
@@ -380,6 +401,7 @@ fn compile_resource(
         schema_discovery_sample_files: resource.sample_files,
         type_policy_allowances,
         execution_extent,
+        relational_expression_plan: None,
     })
 }
 

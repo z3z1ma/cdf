@@ -216,6 +216,17 @@ retired public authority rather than wrapping them.
   identifiers after RESOURCE, retired CREATE RESOURCE, repeated/out-of-order clauses, empty or
   duplicate merge/semantic bindings, zero drain limits, and incomplete drain policy with stable
   `CDF-D3-RESOURCE-*` diagnostics.
+- 2026-08-04: Added the typed query-first project compiler over the D1.5a inventory, D3 envelope,
+  driver registry, D2 analyzer, and C1 registry. It resolves configured source independently from
+  path namespace, validates the driver's closed resource-argument schema before any I/O, records
+  authored/project/built-in/path default origins and canonical identities, enforces the bounded
+  replayability precondition for the built-in `REPLACE`, compiles source plans with unresolved
+  discovery schema authority, and finalizes native relational plans after pinned/discovered schema
+  authority becomes available. Output merge keys/cursors and semantic annotations resolve against
+  the final projected schema. Removed the cross-driver REST compatibility hook: resource-option
+  validation is now the ordinary closed driver schema boundary. Extended relational-plan structural
+  validation to admit only the `cdf:semantic` metadata overlay applied after D2 analysis while
+  retaining all expression-derived physical metadata invariants.
 
 ## Blockers
 
@@ -245,6 +256,15 @@ evidence without reopening or re-verifying those tickets.
   `cargo test -p cdf-project --lib resource_file --locked -j 12` passed 6 focused tests. This proves
   bare/envelope parsing, canonical clause ordering, typed bounded/drain lowering, and the enumerated
   envelope rejection cases without running unrelated project tests.
+- With the existing local DuckDB dylib made available only to the linker,
+  `cargo test -p cdf-project --lib query_compiler --locked -j 12` passed 5 focused tests. This proves
+  explicit source/default resolution, namespace/source independence, driver-owned resource-option
+  rejection without secret-value echo, bounded-replay safety for the built-in disposition, native
+  SQL lowering, output semantic binding, and exact full-file query-span translation.
+- `cargo clippy -p cdf-contract -p cdf-project -p cdf-runtime -p cdf-source-rest --lib --locked -j
+  12 -- -D warnings` passed. This is strict lint evidence for the compiler/default/semantic-metadata
+  boundary and the removal of the obsolete source-option compatibility hook; it is not a whole-
+  workspace certificate.
 
 ## Review
 

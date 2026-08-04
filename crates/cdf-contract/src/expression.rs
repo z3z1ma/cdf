@@ -8,7 +8,7 @@ pub use cdf_kernel::{
     ScalarExpressionKind, ScalarExpressionNode, ScalarFunctionReference, ScalarFunctionVolatility,
     ScalarType, ScalarUnaryOperator,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use cdf_kernel::{CanonicalArrowSchema, CdfError, Result};
 use serde::{Deserialize, Serialize};
@@ -409,9 +409,9 @@ impl RelationalExpressionPlan {
             validate_scalar_columns(&projection.expression, &input)?;
             let metadata_matches = match &projection.expression.root.expression {
                 cdf_kernel::ScalarExpressionKind::Column { index, .. } => {
-                    field.metadata() == input.field(*index).metadata()
+                    output_metadata_matches(field.metadata(), input.field(*index).metadata())
                 }
-                _ => field.metadata().is_empty(),
+                _ => output_metadata_matches(field.metadata(), &HashMap::new()),
             };
             if projection.ordinal != ordinal
                 || projection.name.trim().is_empty()
@@ -492,6 +492,18 @@ impl RelationalExpressionPlan {
             &self.control_fields,
         ))
     }
+}
+
+fn output_metadata_matches(
+    output: &HashMap<String, String>,
+    expression_metadata: &HashMap<String, String>,
+) -> bool {
+    output
+        .iter()
+        .filter(|(key, _)| key.as_str() != cdf_kernel::SEMANTIC_METADATA_KEY)
+        .eq(expression_metadata
+            .iter()
+            .filter(|(key, _)| key.as_str() != cdf_kernel::SEMANTIC_METADATA_KEY))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
