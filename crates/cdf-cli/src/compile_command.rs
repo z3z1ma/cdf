@@ -50,6 +50,8 @@ fn compile_offline(cli: &Cli) -> Result<CommandOutput, CliError> {
         .clone();
     let entries = compiled_project_entries(&context)?;
     let inputs = authored_inputs(&context.root, &entries)?;
+    let selected_destination_id =
+        cdf_builtin_drivers::builtin_destination_id_for_uri(&context.environment.destination)?;
     let manifest = compile_project_manifest(ProjectManifestCompileRequest {
         config: &context.config,
         environment: &context.environment,
@@ -59,6 +61,7 @@ fn compile_offline(cli: &Cli) -> Result<CommandOutput, CliError> {
         authored_inputs: inputs,
         semantic_catalog: &context.semantic_catalog,
         semantic_sources: BTreeMap::new(),
+        selected_destination_id: &selected_destination_id,
         compilation_mode: ProjectCompilationMode::LockedOffline,
         generated_at_unix_ms: None,
         diagnostics: Vec::new(),
@@ -149,6 +152,8 @@ fn compile_refresh(cli: &Cli) -> Result<CommandOutput, CliError> {
         &context.semantic_catalog,
     )?;
     let lock_bytes = lock_to_toml(&lock)?.into_bytes();
+    let selected_destination_id =
+        cdf_builtin_drivers::builtin_destination_id_for_uri(&context.environment.destination)?;
     let manifest = compile_project_manifest(ProjectManifestCompileRequest {
         config: &context.config,
         environment: &context.environment,
@@ -158,6 +163,7 @@ fn compile_refresh(cli: &Cli) -> Result<CommandOutput, CliError> {
         authored_inputs: authored_inputs(&context.root, &entries)?,
         semantic_catalog: &context.semantic_catalog,
         semantic_sources: BTreeMap::<String, ManifestSemanticSource>::new(),
+        selected_destination_id: &selected_destination_id,
         compilation_mode: ProjectCompilationMode::Refresh,
         generated_at_unix_ms: None,
         diagnostics: Vec::new(),

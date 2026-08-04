@@ -151,6 +151,7 @@ fn manifest_fixture(
             "finance.currency@1".to_owned(),
             ManifestSemanticSource::Project,
         )]),
+        selected_destination_id: "duckdb",
         compilation_mode: ProjectCompilationMode::LockedOffline,
         generated_at_unix_ms,
         diagnostics: Vec::new(),

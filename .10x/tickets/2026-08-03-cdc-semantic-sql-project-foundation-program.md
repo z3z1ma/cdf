@@ -220,8 +220,8 @@ Depends-On: D0. Must use `.10x/skills/audit-project-file-publication/SKILL.md` d
 
 Owners:
 
-- `.10x/tickets/2026-08-03-d1-project-compilation-manifest-core.md`;
-- `.10x/tickets/2026-08-03-d1-compile-cli-and-manifest-sql.md`.
+- `.10x/tickets/done/2026-08-03-d1-project-compilation-manifest-core.md`;
+- `.10x/tickets/done/2026-08-03-d1-compile-cli-and-manifest-sql.md`.
 
 **D2. Native scalar/relational IR expansion**
 

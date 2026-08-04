@@ -127,6 +127,11 @@ For every input:
 - generated/explicit status and generator identity;
 - no absolute host paths in canonical identity unless the active project policy requires them.
 
+Manifest load MUST re-read every project-relative authored input under the project-root path
+fence and verify its recorded content hash. Missing, replaced, escaped, or changed input authority
+is stale manifest data and MUST fail before any manifest row is returned; query commands never
+silently serve the last compiled view of changed authored files.
+
 ### Resources
 
 For each canonical resource id:
@@ -151,6 +156,9 @@ For each canonical resource id:
 
 Large sub-artifacts MAY be external content-addressed references, but the manifest MUST carry exact
 type, byte count, hash, and required/optional semantics. A resident cache is never authority.
+Destination lock binding MUST use the built-in composition root's canonical destination id for the
+selected URI scheme; URI aliases such as `postgresql` and `clickhouses` are transport spellings,
+not lockfile identities.
 
 ### Semantic registry snapshot
 
@@ -297,13 +305,16 @@ compiler or reinterpret identity.
    value and changes only if existing compiled semantics intentionally include a redacted identity.
 5. Given missing schema authority, offline compile performs no network I/O and tells the user which
    explicit refresh is required.
-6. Given a crash during multi-file publication, project load recovers one coherent old or new
-   lock/manifest pair.
+6. Given a crash during multi-file publication, read-only project load and offline compile fail
+   without recovery, while an explicit `cdf compile --refresh` retry recovers one coherent old or
+   new lock/manifest pair.
 7. Given the manifest is tampered with, validation and `cdf sql` reject it before returning rows.
 8. Given `cdf sql` queries resources, semantics, or lineage, results come from the published
    artifact without recompiling or contacting a source.
 9. Given declarative and SQL front-ends lower to identical native plans, their resource compilation
    hashes match while authored-origin metadata remains distinguishable outside execution identity.
+10. Given any project-relative authored input changes after compilation, `cdf sql` rejects the
+    stale manifest without writing or recompiling.
 
 ## Explicit exclusions
 

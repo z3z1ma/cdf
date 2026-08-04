@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-08-03
 Updated: 2026-08-03
 Parent: `.10x/tickets/2026-08-03-cdc-semantic-sql-project-foundation-program.md`
@@ -93,6 +93,11 @@ authority, reachable semantic snapshot binding, and crash-safe `.cdf/manifest.js
 - 2026-08-03: The first focused test attempt reached link only and failed because local DuckDB was
   not on the linker path. Re-running the same selection with the repository's existing
   `target/b3-perf/deps` library path passed; no product change was made for that host setup.
+- 2026-08-03: Integrated the dependent CLI red-team repairs into core authority. Stable manifest
+  loading now verifies live project-relative authored bytes, selected destinations bind through an
+  explicitly supplied canonical built-in id, and manifest-only offline publication rejects rather
+  than recovers a pending project transaction. The active specification and publication knowledge
+  were corrected to make those boundaries durable.
 
 ## Blockers
 
@@ -116,11 +121,20 @@ None after dependencies close.
 - AC 9: `cargo check -p cdf-cli --all-targets`, `cargo fmt --all`, `git diff --check`, and strict
   warning-free Clippy for `cdf-contract`, `cdf-declarative`, `cdf-project`, and `cdf-cli` all passed.
   No whole-workspace test suite ran.
+- AC 3, 6, and 8: the final three-test red-team closure selection passed with 576 unrelated tests
+  skipped, and strict Clippy passed for `cdf-builtin-drivers`, `cdf-project`, and `cdf-cli`. The
+  focused cases prove current authored-input binding, canonical destination alias binding, and
+  no-recovery offline publication.
 
 ## Review
 
-Pending one independent D1 review after the CLI child integrates.
+The integrated independent review initially failed the lane on three significant authority gaps,
+all recorded in the dependent CLI ticket. Each now has a direct repair and focused regression
+proof. Reconciled verdict: `pass`; no critical finding or accepted unresolved concern remains.
 
 ## Retrospective
 
-Pending execution.
+Layered artifact hashes, stable publication, and read-only query exposure form one authority
+boundary: the loader must re-bind live authored inputs, canonical adapter identity must come from
+the composition root, and an offline publisher must be unable to trigger recovery. Treating any of
+those as a local CLI detail would have left the manifest core semantically incomplete.

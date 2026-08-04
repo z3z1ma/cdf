@@ -213,16 +213,47 @@ trust = "governed"
 }
 
 #[test]
-fn sql_mounts_verified_manifest_tables_with_canonical_nested_json() {
+fn compile_binds_destination_uri_aliases_to_canonical_ids() {
+    for (uri, expected_id) in [
+        ("postgresql://localhost/cdf", "postgres"),
+        ("clickhouses://localhost:8443/default", "clickhouse"),
+        ("parquet://.cdf/parquet", "parquet_object_store"),
+    ] {
+        let project = TestProject::new();
+        write_project_destination(&project, uri);
+        let result = run([
+            "cdf",
+            "--json",
+            "--project",
+            project.root_str(),
+            "compile",
+            "--refresh",
+        ]);
+        assert_eq!(result.exit_code, 0, "{uri}: {}", result.stderr);
+        let manifest =
+            parse_project_manifest(&fs::read(project.root.join(".cdf/manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            manifest.resources[0].destination.destination_id,
+            expected_id
+        );
+        assert_eq!(
+            manifest.resources[0]
+                .destination
+                .sheet
+                .sheet
+                .destination
+                .as_str(),
+            expected_id
+        );
+    }
+}
+
+#[test]
+fn sql_mounts_manifest_tables_then_rejects_stale_authored_inputs() {
     let project = TestProject::new();
     compile_test_project(&project);
-    fs::write(
-        project.root.join("resources/files.toml"),
-        "this input changed after compilation",
-    )
-    .unwrap();
-
-    let result = run([
+    let mounted = run([
         "cdf",
         "--json",
         "--project",
@@ -230,8 +261,8 @@ fn sql_mounts_verified_manifest_tables_with_canonical_nested_json() {
         "sql",
         "select r.resource_id, r.source_plan_json, f.path from manifest_resources r join manifest_fields f using (resource_id) order by f.ordinal",
     ]);
-    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
-    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(mounted.exit_code, 0, "stderr: {}", mounted.stderr);
+    let json = stderr_or_stdout_json(&mounted.stdout);
     assert_eq!(json["result"]["rows"].as_array().unwrap().len(), 2);
     assert_eq!(json["result"]["rows"][0][0], "local.events");
     let source_plan = json["result"]["rows"][0][1].as_str().unwrap();
@@ -244,6 +275,26 @@ fn sql_mounts_verified_manifest_tables_with_canonical_nested_json() {
             .iter()
             .any(|table| table == "manifest_semantics")
     );
+
+    fs::write(
+        project.root.join("resources/files.toml"),
+        "this input changed after compilation",
+    )
+    .unwrap();
+
+    let before = project_tree_snapshot(&project.root);
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "sql",
+        "select r.resource_id, r.source_plan_json, f.path from manifest_resources r join manifest_fields f using (resource_id) order by f.ordinal",
+    ]);
+    assert_ne!(result.exit_code, 0);
+    assert!(result.stderr.contains("authored input"));
+    assert!(result.stderr.contains("cdf compile"));
+    assert_eq!(project_tree_snapshot(&project.root), before);
 }
 
 #[test]

@@ -160,7 +160,7 @@ pub use observation_cache::{
 pub use project_files::{
     ProjectFileExpectation, ProjectFileTransactionReport, ProjectFileWrite,
     project_file_transaction_generation, publish_project_files_transactionally,
-    recover_project_file_transaction,
+    publish_project_files_transactionally_without_recovery, recover_project_file_transaction,
 };
 pub use promotion::{
     CorrectionStrategySelection, CorrectionStrategySelectionRule,

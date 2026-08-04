@@ -36,9 +36,7 @@ static PROCESS_CATALOGS: OnceLock<ProcessCatalogs> = OnceLock::new();
 static PROCESS_CATALOGS_INIT: Mutex<()> = Mutex::new(());
 
 struct BuiltinDestinationEntry {
-    #[cfg(test)]
     destination_id: &'static str,
-    #[cfg(test)]
     schemes: &'static [&'static str],
     #[cfg(test)]
     inspection_uri: &'static str,
@@ -47,51 +45,59 @@ struct BuiltinDestinationEntry {
 
 const BUILTIN_DESTINATIONS: &[BuiltinDestinationEntry] = &[
     BuiltinDestinationEntry {
-        #[cfg(test)]
         destination_id: "clickhouse",
-        #[cfg(test)]
         schemes: &["clickhouse", "clickhouses"],
         #[cfg(test)]
         inspection_uri: "clickhouse://localhost:8123/default",
         install: |registry| registry.register(ClickHouseRuntimeDriver),
     },
     BuiltinDestinationEntry {
-        #[cfg(test)]
         destination_id: "duckdb",
-        #[cfg(test)]
         schemes: &["duckdb"],
         #[cfg(test)]
         inspection_uri: "duckdb:///tmp/cdf-builtin-catalog.duckdb",
         install: |registry| registry.register(DuckDbRuntimeDriver),
     },
     BuiltinDestinationEntry {
-        #[cfg(test)]
         destination_id: "parquet_object_store",
-        #[cfg(test)]
         schemes: &["parquet"],
         #[cfg(test)]
         inspection_uri: "parquet:///tmp/cdf-builtin-catalog-parquet",
         install: |registry| registry.register(ParquetRuntimeDriver),
     },
     BuiltinDestinationEntry {
-        #[cfg(test)]
         destination_id: "postgres",
-        #[cfg(test)]
         schemes: &["postgres", "postgresql"],
         #[cfg(test)]
         inspection_uri: "postgres://localhost/cdf_builtin_catalog",
         install: |registry| registry.register(PostgresRuntimeDriver),
     },
     BuiltinDestinationEntry {
-        #[cfg(test)]
         destination_id: "sqlite",
-        #[cfg(test)]
         schemes: &["sqlite"],
         #[cfg(test)]
         inspection_uri: "sqlite:///tmp/cdf-builtin-catalog.sqlite",
         install: |registry| registry.register(SqliteRuntimeDriver),
     },
 ];
+
+pub fn builtin_destination_id_for_uri(uri: &str) -> Result<String> {
+    let scheme = cdf_runtime::destination_uri_scheme(uri)?;
+    BUILTIN_DESTINATIONS
+        .iter()
+        .find(|entry| {
+            entry
+                .schemes
+                .iter()
+                .any(|registered| registered.eq_ignore_ascii_case(scheme))
+        })
+        .map(|entry| entry.destination_id.to_owned())
+        .ok_or_else(|| {
+            CdfError::contract(format!(
+                "no built-in destination driver is registered for URI scheme `{scheme}`"
+            ))
+        })
+}
 
 /// Returns the process-scoped source registry shipped by the standard product.
 ///

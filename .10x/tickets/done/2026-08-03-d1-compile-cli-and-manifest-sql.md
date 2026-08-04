@@ -1,8 +1,8 @@
-Status: active
+Status: done
 Created: 2026-08-03
 Updated: 2026-08-03
 Parent: `.10x/tickets/2026-08-03-cdc-semantic-sql-project-foundation-program.md`
-Depends-On: `.10x/tickets/2026-08-03-d1-project-compilation-manifest-core.md`
+Depends-On: `.10x/tickets/done/2026-08-03-d1-project-compilation-manifest-core.md`
 
 # D1 compile CLI and manifest SQL
 
@@ -77,6 +77,20 @@ SQLite catalog. Update scaffold/docs/generated CLI artifacts and focused command
 - 2026-08-03: The scaffold now writes `.gitignore` with only `.cdf/`, preserving `cdf.lock` as
   committed authority. Generated help/man/completion/command-reference artifacts and operator docs
   describe offline versus refresh behavior.
+- 2026-08-03: Clarified the earlier no-recompile observation: a changed declarative input never
+  triggers implicit compilation, but must make manifest-backed SQL fail stale. The final red-team
+  review correctly found that the loader verified the manifest's recorded input identities without
+  re-reading those inputs, so the first implementation could serve an obsolete compiled view.
+- 2026-08-03: The same review found two further authority violations: destination URI aliases were
+  treated as lockfile ids instead of resolving through the built-in composition root, and the
+  offline manifest publisher delegated to the generic mutating publisher which could forward-
+  recover a pending transaction that appeared after initial load. The review verdict was `fail`
+  with three significant findings and no critical findings.
+- 2026-08-03: Closed those exact findings. Stable manifest load now securely re-reads and hashes
+  every project-relative authored input twice around the generation/public-file stability sample;
+  manifest compilation receives the canonical destination id resolved from built-in scheme
+  registrations; and manifest-only offline publication uses a fail-closed pending-marker policy
+  under the existing mutation guard. Explicit refresh remains the recovery path.
 
 ## Blockers
 
@@ -104,11 +118,31 @@ None after the manifest-core dependency closes.
   integration commit is not yet pushed at this evidence point.
 - `graphify update .` could not run because the `graphify` executable is unavailable in this
   environment; no graph freshness claim is made.
+- Red-team closure selection
+  `test(/fail_closed_publication_never_recovers|sql_mounts_manifest_tables_then_rejects_stale|compile_binds_destination_uri_aliases/)`
+  passed 3/3 with 576 tests skipped. It proves each named finding at its behavioral boundary:
+  pending publication is byte-for-byte unchanged by offline publication, changed authored input is
+  rejected without a write, and `postgresql`, `clickhouses`, and `parquet` bind to the canonical
+  `postgres`, `clickhouse`, and `parquet_object_store` lock identities.
+- Final `cargo clippy -p cdf-builtin-drivers -p cdf-project -p cdf-cli --all-targets -- -D warnings`
+  and `git diff --check` passed. This is targeted static/format evidence, not a whole-suite claim.
+- GitHub Actions `Fast Quality` completed successfully for CLI integration commit `19aafa0c`.
 
 ## Review
 
-Pending one independent D1 lane-boundary red-team review.
+The independent lane-boundary reviewer returned `fail` with three significant findings: stale
+authored inputs could remain queryable, aliased destination schemes did not bind to canonical lock
+ids, and offline manifest publication could recover a transaction created after initial load.
+Each finding is resolved by a direct production fence and a focused regression test. Final
+reconciled verdict: `pass`. Residual risk is limited to host-level races outside the existing
+stable-generation/double-read and mutation-guard model; no compatibility behavior was introduced.
 
 ## Retrospective
 
-Pending execution.
+- A hash recorded in a manifest proves compilation identity only when readers re-observe the
+  corresponding authored authority. Verification must join stored identity to current bytes.
+- URI schemes are routing aliases; canonical driver ids belong to the composition root and must be
+  supplied to artifact compilation rather than reconstructed from URI text.
+- Reusing a transactional publisher is insufficient when the caller has stricter side-effect
+  semantics. Recovery policy is part of the publication API, not an incidental implementation
+  detail.

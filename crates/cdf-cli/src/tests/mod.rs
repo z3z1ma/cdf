@@ -47,7 +47,7 @@ use cdf_project::{
     ResolvedProjectDestination, STRATIFIED_HASH_SELECTOR_V1, SchemaPromotionExecutionFailpoint,
     SchemaPromotionExecutionPhase, SchemaPromotionExecutionRequest, SchemaPromotionPlanReport,
     execute_schema_promotion, load_schema_promotion_recovery_status, parse_lock,
-    replay_package_from_artifacts,
+    parse_project_manifest, replay_package_from_artifacts,
 };
 use cdf_state_sqlite::{
     RunEventAppend, RunEventDetails, RunEventKind, RunEventValue, SecretReference,

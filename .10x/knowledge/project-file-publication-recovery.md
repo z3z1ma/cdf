@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-28
-Updated: 2026-07-28
+Updated: 2026-08-03
 
 # Project file publication recovery
 
@@ -26,10 +26,13 @@ journaled prior or new hash. Prior requires the verified managed temporary; new 
 accepted and its matching temporary is cleaned. Any third value is unrelated authority and must be
 preserved with a `Contract` failure.
 
-Read-only commands do not recover. They observe a committed generation before and after loading
-and fail closed on `pending`; otherwise plan, preview, inspect, and dry-run operations would mutate
-project authority. A real non-dry-run `cdf add` is the explicit recovery entry point and then
-performs the ordinary stable-generation load.
+Read-only commands and offline compilation do not recover. They observe a committed generation
+before and after loading and fail closed on `pending`; otherwise plan, preview, inspect, dry-run,
+and locked compile operations could mutate project authority. A real non-dry-run `cdf add` or an
+explicit `cdf compile --refresh` is a recovery entry point and then performs the ordinary
+stable-generation load. A publication helper used by an offline path must therefore select the
+fail-closed pending-marker policy under the mutation guard rather than calling the generic
+forward-recovery helper.
 
 Error kinds follow ownership: malformed/missing private marker or temporary state is `Internal`;
 host permissions, space, descriptors, and device failures are `Environment`; unrelated public

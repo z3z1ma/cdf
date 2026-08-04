@@ -143,23 +143,64 @@ pub fn publish_project_files_transactionally(
     )
 }
 
+pub fn publish_project_files_transactionally_without_recovery(
+    project_root: impl AsRef<Path>,
+    commit_relative_path: impl AsRef<Path>,
+    writes: Vec<ProjectFileWrite>,
+) -> Result<ProjectFileTransactionReport> {
+    publish_project_files_inner_with_policy(
+        project_root.as_ref(),
+        commit_relative_path.as_ref(),
+        writes,
+        None,
+        PendingTransactionPolicy::FailClosed,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum PendingTransactionPolicy {
+    Recover,
+    FailClosed,
+}
+
 fn publish_project_files_inner(
     project_root: &Path,
     commit_relative_path: &Path,
     writes: Vec<ProjectFileWrite>,
     fail_after_install_count: Option<usize>,
 ) -> Result<ProjectFileTransactionReport> {
-    publish_project_files_inner_with_hook(
+    publish_project_files_inner_with_policy(
         project_root,
         commit_relative_path,
         writes,
         fail_after_install_count,
-        &mut |_| Ok(()),
-        &mut |_, _| Ok(()),
-        &mut |_| Ok(()),
+        PendingTransactionPolicy::Recover,
     )
 }
 
+fn publish_project_files_inner_with_policy(
+    project_root: &Path,
+    commit_relative_path: &Path,
+    writes: Vec<ProjectFileWrite>,
+    fail_after_install_count: Option<usize>,
+    pending_policy: PendingTransactionPolicy,
+) -> Result<ProjectFileTransactionReport> {
+    let mut hooks = ProjectFileTransactionHooks {
+        before_install: &mut |_| Ok(()),
+        after_absent_install: &mut |_, _| Ok(()),
+        after_install: &mut |_| Ok(()),
+    };
+    publish_project_files_inner_with_hook_and_policy(
+        project_root,
+        commit_relative_path,
+        writes,
+        fail_after_install_count,
+        pending_policy,
+        &mut hooks,
+    )
+}
+
+#[cfg(test)]
 fn publish_project_files_inner_with_hook(
     project_root: &Path,
     commit_relative_path: &Path,
@@ -168,6 +209,29 @@ fn publish_project_files_inner_with_hook(
     before_install: &mut dyn FnMut(&Path) -> Result<()>,
     after_absent_install: &mut dyn FnMut(&Path, &Path) -> Result<()>,
     after_install: &mut dyn FnMut(&Path) -> Result<()>,
+) -> Result<ProjectFileTransactionReport> {
+    let mut hooks = ProjectFileTransactionHooks {
+        before_install,
+        after_absent_install,
+        after_install,
+    };
+    publish_project_files_inner_with_hook_and_policy(
+        project_root,
+        commit_relative_path,
+        writes,
+        fail_after_install_count,
+        PendingTransactionPolicy::Recover,
+        &mut hooks,
+    )
+}
+
+fn publish_project_files_inner_with_hook_and_policy(
+    project_root: &Path,
+    commit_relative_path: &Path,
+    writes: Vec<ProjectFileWrite>,
+    fail_after_install_count: Option<usize>,
+    pending_policy: PendingTransactionPolicy,
+    hooks: &mut ProjectFileTransactionHooks<'_>,
 ) -> Result<ProjectFileTransactionReport> {
     validate_relative_path(commit_relative_path)?;
     let Some(last) = writes.last() else {
@@ -194,16 +258,20 @@ fn publish_project_files_inner_with_hook(
     }
 
     let _guard = acquire_lock_file_mutation_guard(project_root.join("cdf.lock"))?;
-    let marker_authority = recover_project_file_transaction_under_guard(
-        project_root,
-        read_project_file_transaction_marker(project_root)?,
-    )?;
-    let mut created_directories = Vec::new();
-    let mut hooks = ProjectFileTransactionHooks {
-        before_install,
-        after_absent_install,
-        after_install,
+    let observed_marker = read_project_file_transaction_marker(project_root)?;
+    let marker_authority = match pending_policy {
+        PendingTransactionPolicy::Recover => {
+            recover_project_file_transaction_under_guard(project_root, observed_marker)?
+        }
+        PendingTransactionPolicy::FailClosed if observed_marker.is_pending() => {
+            return Err(CdfError::contract(format!(
+                "project publication is incomplete at {}; run `cdf compile --refresh` to recover it before offline compilation",
+                project_root.join(PROJECT_FILE_TRANSACTION_MARKER).display()
+            )));
+        }
+        PendingTransactionPolicy::FailClosed => observed_marker,
     };
+    let mut created_directories = Vec::new();
     let result = publish_under_guard(
         project_root,
         commit_relative_path,
@@ -211,7 +279,7 @@ fn publish_project_files_inner_with_hook(
         fail_after_install_count,
         &marker_authority,
         &mut created_directories,
-        &mut hooks,
+        hooks,
     );
     if result.is_err() {
         remove_empty_directories(&created_directories);
@@ -1542,6 +1610,48 @@ mod tests {
         assert!(!root.path().join("cdf.lock").exists());
         assert_eq!(recover_project_file_transaction(root.path()).unwrap(), 1);
         assert_eq!(fs::read(root.path().join("cdf.lock")).unwrap(), b"commit");
+    }
+
+    #[test]
+    fn fail_closed_publication_never_recovers_a_pending_transaction() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("cdf.toml"), b"before-project").unwrap();
+        let pending_writes = vec![
+            ProjectFileWrite::new(
+                "cdf.toml",
+                b"after-project".to_vec(),
+                ProjectFileExpectation::Exact(b"before-project".to_vec()),
+            ),
+            ProjectFileWrite::new(
+                "cdf.lock",
+                b"pending-lock".to_vec(),
+                ProjectFileExpectation::Absent,
+            ),
+        ];
+        publish_project_files_inner(root.path(), Path::new("cdf.lock"), pending_writes, Some(1))
+            .unwrap_err();
+        let marker_before = fs::read(root.path().join(PROJECT_FILE_TRANSACTION_MARKER)).unwrap();
+        assert!(!root.path().join("cdf.lock").exists());
+
+        let error = publish_project_files_transactionally_without_recovery(
+            root.path(),
+            "manifest.json",
+            vec![ProjectFileWrite::new(
+                "manifest.json",
+                b"manifest".to_vec(),
+                ProjectFileExpectation::Absent,
+            )],
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Contract);
+        assert!(error.message.contains("cdf compile --refresh"));
+        assert_eq!(
+            fs::read(root.path().join(PROJECT_FILE_TRANSACTION_MARKER)).unwrap(),
+            marker_before
+        );
+        assert!(!root.path().join("cdf.lock").exists());
+        assert!(!root.path().join("manifest.json").exists());
     }
 
     #[test]

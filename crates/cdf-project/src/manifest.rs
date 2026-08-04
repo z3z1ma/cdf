@@ -18,7 +18,7 @@ use crate::{
     LOCK_FILE_NAME, LockedDestination, PROJECT_FILE_NAME, ProjectConfig, ProjectFileExpectation,
     ProjectFileTransactionReport, ProjectFileWrite, ProjectResourceOrigin, lock_to_toml,
     parse_cdf_toml, parse_lock, project_file_transaction_generation,
-    publish_project_files_transactionally,
+    publish_project_files_transactionally, publish_project_files_transactionally_without_recovery,
     semantic_uses::{compiled_fields, semantic_pins_for_resources},
 };
 
@@ -350,6 +350,7 @@ pub struct ProjectManifestCompileRequest<'a> {
     pub authored_inputs: Vec<ProjectManifestAuthoredInput>,
     pub semantic_catalog: &'a SemanticCatalog,
     pub semantic_sources: BTreeMap<String, ManifestSemanticSource>,
+    pub selected_destination_id: &'a str,
     pub compilation_mode: ProjectCompilationMode,
     pub generated_at_unix_ms: Option<i64>,
     pub diagnostics: Vec<ManifestDiagnostic>,
@@ -411,7 +412,11 @@ pub fn compile_project_manifest(
         })?
         .input_id
         .clone();
-    let selected_destination = selected_destination(request.environment, request.lock)?;
+    let selected_destination = selected_destination(
+        request.environment,
+        request.lock,
+        request.selected_destination_id,
+    )?;
     let bare_resources = request
         .resources
         .iter()
@@ -738,7 +743,7 @@ pub fn publish_project_manifest(
         ));
     }
     let bytes = manifest.canonical_json_bytes_unchecked()?;
-    publish_project_files_transactionally(
+    publish_project_files_transactionally_without_recovery(
         project_root,
         PROJECT_MANIFEST_RELATIVE_PATH,
         vec![
@@ -814,7 +819,10 @@ pub fn load_project_manifest_snapshot(
         let lock = parse_lock(lock_text)?;
         let manifest = parse_project_manifest(&manifest_bytes)?;
         validate_project_manifest_authority(&manifest, &config, &environment, &lock, &lock_bytes)?;
+        let authored_inputs_before =
+            read_manifest_authored_inputs(root, &manifest, &project_bytes)?;
         let generation_after = project_file_transaction_generation(root)?;
+        let authored_inputs_after = read_manifest_authored_inputs(root, &manifest, &project_bytes)?;
         let stable = generation_before == generation_after
             && read_public_file(&root.join(PROJECT_FILE_NAME), "project configuration")?
                 == project_bytes
@@ -822,7 +830,8 @@ pub fn load_project_manifest_snapshot(
             && read_public_file(
                 &root.join(PROJECT_MANIFEST_RELATIVE_PATH),
                 "project manifest",
-            )? == manifest_bytes;
+            )? == manifest_bytes
+            && authored_inputs_before == authored_inputs_after;
         if stable {
             return Ok(ProjectManifestSnapshot {
                 config,
@@ -917,23 +926,27 @@ fn validate_compile_authority(request: &ProjectManifestCompileRequest<'_>) -> Re
             )));
         }
     }
-    selected_destination(request.environment, request.lock).map(drop)
+    selected_destination(
+        request.environment,
+        request.lock,
+        request.selected_destination_id,
+    )
+    .map(drop)
 }
 
 fn selected_destination<'a>(
     environment: &EffectiveEnvironment,
     lock: &'a CdfLock,
+    destination_id: &str,
 ) -> Result<(&'a str, &'a LockedDestination)> {
-    let destination_id = environment
-        .destination
-        .split_once("://")
-        .map_or(environment.destination.as_str(), |(scheme, _)| scheme);
     lock.destinations
         .get_key_value(destination_id)
+        .filter(|(id, destination)| destination.sheet.destination.as_str() == id.as_str())
         .map(|(id, destination)| (id.as_str(), destination))
         .ok_or_else(|| {
             CdfError::contract(format!(
-                "cdf.lock has no destination sheet for selected destination `{destination_id}`"
+                "cdf.lock has no canonical destination sheet `{destination_id}` for selected URI `{}`",
+                environment.destination
             ))
         })
 }
@@ -1782,6 +1795,78 @@ fn read_public_file(path: &Path, label: &str) -> Result<Vec<u8>> {
             CdfError::environment(format!("read {label} at {}: {error}", path.display()))
         }
     })
+}
+
+fn read_manifest_authored_inputs(
+    project_root: &Path,
+    manifest: &ProjectManifest,
+    project_bytes: &[u8],
+) -> Result<BTreeMap<String, Vec<u8>>> {
+    let mut observed = BTreeMap::new();
+    for input in &manifest.inputs {
+        let ManifestInputLocation::ProjectRelativePath { path } = &input.location else {
+            continue;
+        };
+        let bytes = if path == PROJECT_FILE_NAME {
+            project_bytes.to_vec()
+        } else {
+            read_project_relative_manifest_input(project_root, path)?
+        };
+        let actual = bytes_hash(&bytes);
+        if input.content_hash.as_str() != actual {
+            return Err(CdfError::data(format!(
+                "project manifest authored input `{path}` is stale: expected {}, observed {actual}",
+                input.content_hash.as_str()
+            )));
+        }
+        observed.insert(input.input_id.clone(), bytes);
+    }
+    Ok(observed)
+}
+
+fn read_project_relative_manifest_input(project_root: &Path, relative: &str) -> Result<Vec<u8>> {
+    validate_relative_manifest_path(relative, ManifestErrorAuthority::Artifact)?;
+    let canonical_root = fs::canonicalize(project_root)
+        .map_err(|error| manifest_input_io_error("resolve project root", project_root, error))?;
+    let path = project_root.join(relative);
+    let canonical_path = fs::canonicalize(&path)
+        .map_err(|error| manifest_input_io_error("resolve authored input", &path, error))?;
+    if !canonical_path.starts_with(&canonical_root) {
+        return Err(CdfError::data(format!(
+            "project manifest authored input `{relative}` resolves outside the project root"
+        )));
+    }
+    let metadata = fs::metadata(&canonical_path)
+        .map_err(|error| manifest_input_io_error("inspect authored input", &path, error))?;
+    if !metadata.is_file() {
+        return Err(CdfError::data(format!(
+            "project manifest authored input `{relative}` is not a regular file"
+        )));
+    }
+    fs::read(&canonical_path)
+        .map_err(|error| manifest_input_io_error("read authored input", &path, error))
+}
+
+fn manifest_input_io_error(action: &str, path: &Path, error: std::io::Error) -> CdfError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::IsADirectory
+            | std::io::ErrorKind::InvalidData
+            | std::io::ErrorKind::UnexpectedEof
+    ) || cdf_kernel::is_filesystem_loop(&error)
+    {
+        CdfError::data(format!(
+            "{action} for project manifest at {}: {error}",
+            path.display()
+        ))
+    } else {
+        CdfError::environment(format!(
+            "{action} for project manifest at {}: {error}; check project path permissions, device availability, and process file limits before retrying",
+            path.display()
+        ))
+    }
 }
 
 fn manifest_error(authority: ManifestErrorAuthority, message: impl Into<String>) -> Result<()> {
