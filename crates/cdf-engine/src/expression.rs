@@ -1,50 +1,240 @@
-use std::sync::Arc;
-
-use arrow_schema::{DataType, Schema};
-use cdf_contract::{
-    DATAFUSION_EXPRESSION_OPTIMIZER, DATAFUSION_EXPRESSION_PIN, Expression, ExpressionFidelity,
-    ExpressionLint, ExpressionLintCode, ExpressionLiteral, ExpressionNode, ExpressionUse,
-    FunctionReference, NATIVE_CONTRACT_OPTIMIZER, OptimizerIdentity, PlannedExpression,
-    SOURCE_EXACT_PUSHDOWN_OPTIMIZER,
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
 };
-use cdf_kernel::{CdfError, Result};
+
+use arrow_array::RecordBatch;
+use arrow_ipc::writer::StreamWriter;
+use arrow_schema::{DataType, Field, Schema};
+use cdf_contract::{
+    DATAFUSION_EXPRESSION_OPTIMIZER, DATAFUSION_EXPRESSION_PIN, DATAFUSION_SCALAR_CONFIG_IDENTITY,
+    DATAFUSION_SCALAR_FEATURE_SET, DATAFUSION_SCALAR_NAMESPACE, DeclarativeExpression,
+    DeclarativeExpressionLiteral, DeclarativeExpressionNode, DeclarativeFunctionReference,
+    ExpressionLint, ExpressionLintCode, ExpressionUse, NATIVE_CONTRACT_OPTIMIZER,
+    OptimizerIdentity, PlannedContractExpression, PlannedExpression, ProjectionExpression,
+    RelationalExpressionPlan, SOURCE_EXACT_PUSHDOWN_OPTIMIZER, ScalarBinaryOperator,
+    ScalarCastMode, ScalarExpression, ScalarExpressionKind, ScalarExpressionNode,
+    ScalarFunctionReference, ScalarFunctionVolatility, ScalarType, ScalarUnaryOperator,
+};
+use cdf_kernel::{CanonicalArrowSchema, CdfError, Result};
+use datafusion::{common::DataFusionError, logical_expr::expr::ScalarFunction};
 use datafusion::{
     common::{DFSchema, ScalarValue},
-    logical_expr::{BinaryExpr, Expr, Operator, simplify::SimplifyContext},
+    execution::SessionStateDefaults,
+    logical_expr::{
+        BinaryExpr, Cast, Expr, ExprSchemable, Operator, TryCast, Volatility,
+        simplify::SimplifyContext,
+    },
     optimizer::simplify_expressions::ExprSimplifier,
 };
 
+/// Child ordinals from the analyzed expression root. D3 records explicit SQL `CAST` nodes here;
+/// every unmarked DataFusion `Cast` is an analyzer-inserted implicit coercion.
+pub type ExpressionPath = Vec<usize>;
+
+/// Stable authored-source location supplied by the project compiler.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExpressionSourceLocation {
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+}
+
+impl ExpressionSourceLocation {
+    pub fn new(file: impl Into<String>, line: u32, column: u32) -> Result<Self> {
+        let location = Self {
+            file: file.into(),
+            line,
+            column,
+        };
+        location.validate()?;
+        Ok(location)
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.file.trim().is_empty() || self.line == 0 || self.column == 0 {
+            return Err(CdfError::contract(
+                "expression source location requires a file and one-based line/column",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Fully resolved and coerced DataFusion scalar authority supplied by the compiler. When
+/// DataFusion simplifies the execution graph, `admission_expression` retains the resolved graph
+/// from before simplification so deterministic-admission and cast-provenance gates cannot be
+/// optimized away. Runtime execution never receives either transient representation.
+#[derive(Clone, Debug)]
+pub struct AnalyzedScalarExpression {
+    pub expression: Expr,
+    pub admission_expression: Expr,
+    pub explicit_casts: BTreeSet<ExpressionPath>,
+    pub source_locations: BTreeMap<ExpressionPath, ExpressionSourceLocation>,
+}
+
+impl AnalyzedScalarExpression {
+    pub fn new(expression: Expr) -> Self {
+        Self {
+            admission_expression: expression.clone(),
+            expression,
+            explicit_casts: BTreeSet::new(),
+            source_locations: BTreeMap::new(),
+        }
+    }
+
+    pub fn with_admission_expression(mut self, expression: Expr) -> Self {
+        self.admission_expression = expression;
+        self
+    }
+
+    pub fn with_explicit_cast(mut self, path: ExpressionPath) -> Self {
+        self.explicit_casts.insert(path);
+        self
+    }
+
+    pub fn with_source_location(
+        mut self,
+        path: ExpressionPath,
+        location: ExpressionSourceLocation,
+    ) -> Self {
+        self.source_locations.insert(path, location);
+        self
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct AnalyzedProjectionExpression {
+    pub name: String,
+    pub scalar: AnalyzedScalarExpression,
+}
+
+pub fn lower_analyzed_scalar_expression(
+    analyzed: &AnalyzedScalarExpression,
+    schema: &Schema,
+) -> Result<ScalarExpression> {
+    for location in analyzed.source_locations.values() {
+        location.validate()?;
+    }
+    let df_schema = DFSchema::try_from(schema.clone()).map_err(datafusion_planning_error)?;
+    if analyzed.admission_expression != analyzed.expression {
+        // The resolved pre-simplification tree is a mandatory security/provenance gate. Its
+        // result is deliberately discarded; only the separately admitted optimized tree becomes
+        // durable execution identity.
+        lower_graph(
+            &analyzed.admission_expression,
+            &df_schema,
+            &BTreeSet::new(),
+            &analyzed.source_locations,
+        )?;
+    }
+    let root = lower_graph(
+        &analyzed.expression,
+        &df_schema,
+        &analyzed.explicit_casts,
+        &analyzed.source_locations,
+    )?;
+    let expression = ScalarExpression::current(root)?;
+    // Admission includes exact runtime rebinding. This invokes no optimizer or coercion pass.
+    crate::expression_execution::bind_scalar_expression(&expression, schema)?;
+    Ok(expression)
+}
+
+pub fn compile_relational_expression_plan(
+    input_schema: &Schema,
+    filter: Option<AnalyzedScalarExpression>,
+    projection: Vec<AnalyzedProjectionExpression>,
+    control_fields: Vec<String>,
+) -> Result<RelationalExpressionPlan> {
+    let filter = filter
+        .as_ref()
+        .map(|expression| lower_analyzed_scalar_expression(expression, input_schema))
+        .transpose()?;
+    if filter.as_ref().is_some_and(|expression| {
+        expression.root.scalar_type.data_type != cdf_kernel::CanonicalArrowType::Boolean
+    }) {
+        return Err(CdfError::contract(
+            "relational filter must resolve to Boolean",
+        ));
+    }
+    let projection = projection
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, projection)| {
+            let expression = lower_analyzed_scalar_expression(&projection.scalar, input_schema)?;
+            Ok(ProjectionExpression::new(
+                ordinal,
+                projection.name,
+                expression,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let output_schema = Schema::new_with_metadata(
+        projection
+            .iter()
+            .map(|projection| {
+                if let ScalarExpressionKind::Column { index, .. } =
+                    projection.expression.root.expression
+                {
+                    let field = input_schema.fields().get(index).ok_or_else(|| {
+                        CdfError::contract(format!(
+                            "projection {:?} has stale pass-through ordinal {index}",
+                            projection.name
+                        ))
+                    })?;
+                    Ok(field.as_ref().clone().with_name(&projection.name))
+                } else {
+                    Ok(Field::new(
+                        &projection.name,
+                        projection.expression.root.scalar_type.to_arrow()?,
+                        projection.expression.root.scalar_type.nullable,
+                    ))
+                }
+            })
+            .collect::<Result<Vec<_>>>()?,
+        input_schema.metadata().clone(),
+    );
+    RelationalExpressionPlan::current(
+        CanonicalArrowSchema::from_arrow(input_schema)?,
+        filter,
+        projection,
+        CanonicalArrowSchema::from_arrow(&output_schema)?,
+        control_fields,
+    )
+}
+
 pub(crate) fn plan_expression(
-    expression: Expression,
+    expression: DeclarativeExpression,
     use_kind: ExpressionUse,
     schema: &Schema,
 ) -> Result<PlannedExpression> {
     expression.validate()?;
-    let logical = to_datafusion(&expression.root)?;
-    let df_schema = Arc::new(DFSchema::try_from(schema.clone()).map_err(datafusion_error)?);
+    let logical = declarative_to_datafusion(&expression.root)?;
+    let df_schema =
+        Arc::new(DFSchema::try_from(schema.clone()).map_err(datafusion_planning_error)?);
     let context = SimplifyContext::builder()
         .with_schema(Arc::clone(&df_schema))
         .build();
     let simplifier = ExprSimplifier::new(context);
     let coerced = simplifier
         .coerce(logical, df_schema.as_ref())
-        .map_err(datafusion_error)?;
-    let optimized = simplifier.simplify(coerced).map_err(datafusion_error)?;
-    let optimized = Expression::new(from_datafusion(&optimized)?);
-    validate_native_filter_expression(&optimized.root, schema)?;
-    let mut lints = lint_expression(&expression);
-    for lint in lint_expression(&optimized) {
-        if !lints.iter().any(|existing| existing.code == lint.code) {
-            lints.push(lint);
-        }
+        .map_err(datafusion_planning_error)?;
+    let optimized = simplifier
+        .simplify(coerced.clone())
+        .map_err(datafusion_planning_error)?;
+    let typed = lower_analyzed_scalar_expression(
+        &AnalyzedScalarExpression::new(optimized).with_admission_expression(coerced),
+        schema,
+    )?;
+    if use_kind == ExpressionUse::Filter
+        && typed.root.scalar_type.data_type != cdf_kernel::CanonicalArrowType::Boolean
+    {
+        return Err(CdfError::contract(
+            "compiled filter expression does not produce Boolean",
+        ));
     }
-    let functions = optimized.function_dependencies();
-    let fidelity = ExpressionFidelity::Exact;
-    let residuals = Vec::new();
-    if optimized.root
-        == (ExpressionNode::Literal {
-            value: ExpressionLiteral::Boolean(true),
-        })
+    let mut lints = lint_expression(&expression);
+    if is_typed_true(&typed)
         && !lints
             .iter()
             .any(|lint| lint.code == ExpressionLintCode::AlwaysTrue)
@@ -58,26 +248,23 @@ pub(crate) fn plan_expression(
         use_kind,
         source_text: None,
         original: expression,
-        optimized: optimized.clone(),
+        functions: typed.function_dependencies().to_vec(),
+        expression: typed,
         optimizer: OptimizerIdentity {
             name: DATAFUSION_EXPRESSION_OPTIMIZER.to_owned(),
             version: DATAFUSION_EXPRESSION_PIN.to_owned(),
         },
-        functions,
-        fidelity,
-        residuals: residuals.clone(),
         lints,
-        substrait_version: None,
     })
 }
 
 pub(crate) fn record_native_contract_expression(
-    expression: Expression,
+    expression: DeclarativeExpression,
     schema: &Schema,
-) -> Result<PlannedExpression> {
+) -> Result<PlannedContractExpression> {
     expression.validate()?;
     let function = match &expression.root {
-        ExpressionNode::Call { function, .. } => function.name.as_str(),
+        DeclarativeExpressionNode::Call { function, .. } => function.name.as_str(),
         _ => "",
     };
     if !matches!(
@@ -94,195 +281,29 @@ pub(crate) fn record_native_contract_expression(
             "contract expression function {function:?} has no admitted native fused lowering"
         )));
     }
-    let functions = expression.function_dependencies();
     let mut lints = lint_expression(&expression);
     lints.extend(lint_contract_expression(&expression.root, schema));
-    let fidelity = ExpressionFidelity::Exact;
-    Ok(PlannedExpression {
-        use_kind: ExpressionUse::Contract,
-        source_text: None,
-        original: expression.clone(),
-        optimized: expression.clone(),
+    Ok(PlannedContractExpression {
+        functions: expression.function_dependencies(),
+        original: expression,
         optimizer: OptimizerIdentity {
             name: NATIVE_CONTRACT_OPTIMIZER.to_owned(),
             version: cdf_contract::CDF_FUNCTION_VERSION.to_owned(),
         },
-        functions,
-        fidelity,
-        residuals: Vec::new(),
         lints,
-        substrait_version: None,
     })
 }
 
-pub(crate) fn record_exact_source_expression(expression: Expression) -> Result<PlannedExpression> {
-    expression.validate()?;
-    Ok(PlannedExpression {
-        use_kind: ExpressionUse::Filter,
-        source_text: None,
-        original: expression.clone(),
-        optimized: expression.clone(),
-        optimizer: OptimizerIdentity {
-            name: SOURCE_EXACT_PUSHDOWN_OPTIMIZER.to_owned(),
-            version: cdf_contract::CDF_FUNCTION_VERSION.to_owned(),
-        },
-        functions: expression.function_dependencies(),
-        fidelity: ExpressionFidelity::Exact,
-        residuals: Vec::new(),
-        lints: lint_expression(&expression),
-        substrait_version: None,
-    })
-}
-
-fn validate_native_filter_expression(node: &ExpressionNode, schema: &Schema) -> Result<()> {
-    match node {
-        ExpressionNode::Literal {
-            value: ExpressionLiteral::Boolean(_) | ExpressionLiteral::Null,
-        } => Ok(()),
-        ExpressionNode::Column { name } => {
-            let field = schema.field_with_name(name).map_err(|_| {
-                CdfError::contract(format!(
-                    "predicate field {name:?} is absent from the planned schema"
-                ))
-            })?;
-            if field.data_type() == &DataType::Boolean {
-                Ok(())
-            } else {
-                Err(CdfError::contract(format!(
-                    "predicate field {name:?} has non-boolean type {}",
-                    field.data_type()
-                )))
-            }
-        }
-        ExpressionNode::Call {
-            function,
-            arguments,
-        } => match (function.name.as_str(), arguments.as_slice()) {
-            ("not", [value]) => validate_native_filter_expression(value, schema),
-            ("and" | "or", [left, right]) => {
-                validate_native_filter_expression(left, schema)?;
-                validate_native_filter_expression(right, schema)
-            }
-            ("is_null" | "is_not_null", [ExpressionNode::Column { name }]) => {
-                schema.field_with_name(name).map(|_| ()).map_err(|_| {
-                    CdfError::contract(format!(
-                        "predicate field {name:?} is absent from the planned schema"
-                    ))
-                })
-            }
-            (
-                "eq" | "neq" | "gt" | "gte" | "lt" | "lte",
-                [
-                    ExpressionNode::Column { name },
-                    ExpressionNode::Literal { value },
-                ],
-            ) => validate_native_comparison(name, function.name.as_str(), value, schema),
-            (name, _) => Err(CdfError::contract(format!(
-                "CDF expression function {name:?} has no native filter capability"
-            ))),
-        },
-        other => Err(CdfError::contract(format!(
-            "recorded expression {other:?} has no native boolean lowering"
-        ))),
-    }
-}
-
-fn validate_native_comparison(
-    name: &str,
-    operator: &str,
-    literal: &ExpressionLiteral,
+pub(crate) fn record_exact_source_expression(
+    expression: DeclarativeExpression,
     schema: &Schema,
-) -> Result<()> {
-    let field = schema.field_with_name(name).map_err(|_| {
-        CdfError::contract(format!(
-            "predicate field {name:?} is absent from the planned schema"
-        ))
-    })?;
-    let supported = match (field.data_type(), literal) {
-        (DataType::Int8, ExpressionLiteral::Signed(value)) => i8::try_from(*value).is_ok(),
-        (DataType::Int16, ExpressionLiteral::Signed(value)) => i16::try_from(*value).is_ok(),
-        (DataType::Int32, ExpressionLiteral::Signed(value)) => i32::try_from(*value).is_ok(),
-        (DataType::Int64, ExpressionLiteral::Signed(_)) => true,
-        (DataType::UInt8, ExpressionLiteral::Unsigned(value)) => u8::try_from(*value).is_ok(),
-        (DataType::UInt16, ExpressionLiteral::Unsigned(value)) => u16::try_from(*value).is_ok(),
-        (DataType::UInt32, ExpressionLiteral::Unsigned(value)) => u32::try_from(*value).is_ok(),
-        (DataType::UInt64, ExpressionLiteral::Unsigned(_)) => true,
-        (DataType::Float64, ExpressionLiteral::Float64Bits(bits)) => {
-            f64::from_bits(*bits).is_finite()
-        }
-        (DataType::Utf8 | DataType::LargeUtf8, ExpressionLiteral::String(_)) => true,
-        (DataType::Boolean, ExpressionLiteral::Boolean(_)) => matches!(operator, "eq" | "neq"),
-        (_, ExpressionLiteral::Null) => true,
-        _ => false,
+) -> Result<PlannedExpression> {
+    let mut planned = plan_expression(expression, ExpressionUse::Filter, schema)?;
+    planned.optimizer = OptimizerIdentity {
+        name: SOURCE_EXACT_PUSHDOWN_OPTIMIZER.to_owned(),
+        version: cdf_contract::CDF_FUNCTION_VERSION.to_owned(),
     };
-    if !supported {
-        return Err(CdfError::contract(format!(
-            "predicate field {name:?} with type {} and operator {operator:?} has no exact native filter lowering for {literal:?}",
-            field.data_type()
-        )));
-    }
-    Ok(())
-}
-
-fn lint_contract_expression(node: &ExpressionNode, schema: &Schema) -> Vec<ExpressionLint> {
-    let ExpressionNode::Call {
-        function,
-        arguments,
-    } = node
-    else {
-        return Vec::new();
-    };
-    match (function.name.as_str(), arguments.as_slice()) {
-        ("is_not_null", [ExpressionNode::Column { name }]) => schema
-            .field_with_name(name)
-            .ok()
-            .filter(|field| !field.is_nullable())
-            .map(|_| {
-                vec![ExpressionLint {
-                    code: ExpressionLintCode::AlwaysTrue,
-                    message: format!(
-                        "nullability rule for non-nullable field {name:?} is provably always true"
-                    ),
-                }]
-            })
-            .unwrap_or_default(),
-        (
-            "in_range",
-            [
-                ExpressionNode::Column { name },
-                ExpressionNode::Literal { value: min },
-                ExpressionNode::Literal { value: max },
-            ],
-        ) => {
-            if matches!(min, ExpressionLiteral::Null) && matches!(max, ExpressionLiteral::Null) {
-                return vec![ExpressionLint {
-                    code: ExpressionLintCode::AlwaysTrue,
-                    message: format!("unbounded range rule for {name:?} is always true"),
-                }];
-            }
-            let Some(field) = schema.field_with_name(name).ok() else {
-                return Vec::new();
-            };
-            let (ExpressionLiteral::String(min), ExpressionLiteral::String(max)) = (min, max)
-            else {
-                return Vec::new();
-            };
-            let impossible = cdf_contract::range_bounds_are_unsatisfiable(
-                field.data_type(),
-                Some(min),
-                Some(max),
-            )
-            .unwrap_or(false);
-            impossible
-                .then(|| ExpressionLint {
-                    code: ExpressionLintCode::UnsatisfiableRange,
-                    message: format!("range rule for {name:?} is provably empty"),
-                })
-                .into_iter()
-                .collect()
-        }
-        _ => Vec::new(),
-    }
+    Ok(planned)
 }
 
 pub(crate) fn validate_recorded_expressions(expressions: &[PlannedExpression]) -> Result<()> {
@@ -291,9 +312,112 @@ pub(crate) fn validate_recorded_expressions(expressions: &[PlannedExpression]) -
         .try_for_each(PlannedExpression::validate_recorded)
 }
 
+pub(crate) fn validate_recorded_contract_expressions(
+    expressions: &[PlannedContractExpression],
+) -> Result<()> {
+    expressions
+        .iter()
+        .try_for_each(PlannedContractExpression::validate_recorded)
+}
+
+pub(crate) fn lower_recorded_filter_for_pruning(
+    expression: &ScalarExpression,
+    schema: &Schema,
+) -> Result<Option<Expr>> {
+    expression.validate()?;
+    for dependency in expression.column_dependencies() {
+        let field = schema.fields().get(dependency.index).ok_or_else(|| {
+            CdfError::contract(format!(
+                "recorded pruning field {:?} has stale ordinal {}",
+                dependency.name, dependency.index
+            ))
+        })?;
+        if field.name() != &dependency.name
+            || dependency.scalar_type
+                != ScalarType::from_arrow(field.data_type(), field.is_nullable())?
+        {
+            return Err(CdfError::contract(format!(
+                "recorded pruning field {:?} changed name, type, or nullability",
+                dependency.name
+            )));
+        }
+        if !pruning_data_type_supported(field.data_type()) {
+            return Ok(None);
+        }
+    }
+    pruning_node_supported(&expression.root)?
+        .then(|| crate::expression_execution::reconstruct_node(&expression.root))
+        .transpose()
+}
+
+fn pruning_data_type_supported(data_type: &DataType) -> bool {
+    matches!(
+        data_type,
+        DataType::Null
+            | DataType::Boolean
+            | DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64
+            | DataType::Float64
+            | DataType::Utf8
+            | DataType::LargeUtf8
+    )
+}
+
+fn pruning_node_supported(node: &ScalarExpressionNode) -> Result<bool> {
+    if !pruning_data_type_supported(&node.scalar_type.to_arrow()?) {
+        return Ok(false);
+    }
+    Ok(match &node.expression {
+        ScalarExpressionKind::Column { .. } | ScalarExpressionKind::Literal { .. } => true,
+        ScalarExpressionKind::Unary { operator, argument } => {
+            matches!(
+                operator,
+                ScalarUnaryOperator::Not
+                    | ScalarUnaryOperator::IsNull
+                    | ScalarUnaryOperator::IsNotNull
+            ) && pruning_node_supported(argument)?
+        }
+        ScalarExpressionKind::Binary {
+            operator,
+            left,
+            right,
+        } => {
+            matches!(
+                operator,
+                ScalarBinaryOperator::Equal
+                    | ScalarBinaryOperator::NotEqual
+                    | ScalarBinaryOperator::Less
+                    | ScalarBinaryOperator::LessOrEqual
+                    | ScalarBinaryOperator::Greater
+                    | ScalarBinaryOperator::GreaterOrEqual
+                    | ScalarBinaryOperator::And
+                    | ScalarBinaryOperator::Or
+            ) && pruning_node_supported(left)?
+                && pruning_node_supported(right)?
+        }
+        ScalarExpressionKind::Cast {
+            source_type,
+            target_type,
+            argument,
+            ..
+        } => {
+            pruning_data_type_supported(&source_type.to_arrow()?)
+                && pruning_data_type_supported(&target_type.to_arrow()?)
+                && pruning_node_supported(argument)?
+        }
+        ScalarExpressionKind::Call { .. } => false,
+    })
+}
+
 pub(crate) fn mark_cursor_subsumed(expressions: &mut [PlannedExpression], cursor_field: &str) {
     for candidate in 0..expressions.len() {
-        let Some((field, operator, value)) = comparison(&expressions[candidate].optimized.root)
+        let Some((field, operator, value)) = comparison(&expressions[candidate].original.root)
         else {
             continue;
         };
@@ -304,8 +428,7 @@ pub(crate) fn mark_cursor_subsumed(expressions: &mut [PlannedExpression], cursor
             if other_index == candidate {
                 return false;
             }
-            let Some((other_field, other_operator, other_value)) =
-                comparison(&other.optimized.root)
+            let Some((other_field, other_operator, other_value)) = comparison(&other.original.root)
             else {
                 return false;
             };
@@ -322,269 +445,292 @@ pub(crate) fn mark_cursor_subsumed(expressions: &mut [PlannedExpression], cursor
     }
 }
 
-fn bound_subsumes(
-    stronger_operator: &str,
-    stronger: &ExpressionLiteral,
-    candidate_operator: &str,
-    candidate: &ExpressionLiteral,
-) -> bool {
-    match (stronger, candidate) {
-        (ExpressionLiteral::Signed(stronger), ExpressionLiteral::Signed(candidate)) => {
-            numeric_bound_subsumes(stronger_operator, *stronger, candidate_operator, *candidate)
+fn lower_graph(
+    expression: &Expr,
+    schema: &DFSchema,
+    explicit_casts: &BTreeSet<ExpressionPath>,
+    source_locations: &BTreeMap<ExpressionPath, ExpressionSourceLocation>,
+) -> Result<ScalarExpressionNode> {
+    let mut remaining_explicit_casts = explicit_casts.clone();
+    let mut failed_path = None;
+    let root = lower_node(
+        expression,
+        schema,
+        &mut remaining_explicit_casts,
+        &mut Vec::new(),
+        &mut failed_path,
+    )
+    .map_err(|error| {
+        attach_expression_location(
+            error,
+            failed_path.as_deref().unwrap_or_default(),
+            source_locations,
+        )
+    })?;
+    if let Some(path) = remaining_explicit_casts.into_iter().next() {
+        return Err(attach_expression_location(
+            CdfError::contract(format!(
+                "explicit CAST provenance at expression path {} does not identify a resolved CAST node",
+                display_expression_path(&path)
+            )),
+            &path,
+            source_locations,
+        ));
+    }
+    Ok(root)
+}
+
+fn lower_node(
+    expression: &Expr,
+    schema: &DFSchema,
+    explicit_casts: &mut BTreeSet<ExpressionPath>,
+    path: &mut ExpressionPath,
+    failed_path: &mut Option<ExpressionPath>,
+) -> Result<ScalarExpressionNode> {
+    let result = lower_node_inner(expression, schema, explicit_casts, path, failed_path);
+    if result.is_err() && failed_path.is_none() {
+        *failed_path = Some(path.clone());
+    }
+    result
+}
+
+fn lower_node_inner(
+    expression: &Expr,
+    schema: &DFSchema,
+    explicit_casts: &mut BTreeSet<ExpressionPath>,
+    path: &mut ExpressionPath,
+    failed_path: &mut Option<ExpressionPath>,
+) -> Result<ScalarExpressionNode> {
+    let scalar_type = expression_type(expression, schema)?;
+    match expression {
+        Expr::Alias(alias) => lower_node(&alias.expr, schema, explicit_casts, path, failed_path),
+        Expr::Column(column) => {
+            let index = schema
+                .index_of_column(column)
+                .map_err(datafusion_planning_error)?;
+            Ok(ScalarExpressionNode::column(
+                column.name.clone(),
+                index,
+                scalar_type,
+            ))
         }
-        (ExpressionLiteral::Unsigned(stronger), ExpressionLiteral::Unsigned(candidate)) => {
-            numeric_bound_subsumes(stronger_operator, *stronger, candidate_operator, *candidate)
+        Expr::Literal(value, _) => Ok(ScalarExpressionNode::literal(
+            scalar_type,
+            encode_scalar_literal(value)?,
+        )),
+        Expr::BinaryExpr(binary) => {
+            let left = lower_child(&binary.left, 0, schema, explicit_casts, path, failed_path)?;
+            let right = lower_child(&binary.right, 1, schema, explicit_casts, path, failed_path)?;
+            ScalarExpressionNode::binary(binary_operator(binary.op)?, left, right, scalar_type)
         }
-        _ => false,
+        Expr::Not(argument) => ScalarExpressionNode::unary(
+            ScalarUnaryOperator::Not,
+            lower_child(argument, 0, schema, explicit_casts, path, failed_path)?,
+            scalar_type,
+        ),
+        Expr::Negative(argument) => ScalarExpressionNode::unary(
+            ScalarUnaryOperator::Negative,
+            lower_child(argument, 0, schema, explicit_casts, path, failed_path)?,
+            scalar_type,
+        ),
+        Expr::IsNull(argument) => ScalarExpressionNode::unary(
+            ScalarUnaryOperator::IsNull,
+            lower_child(argument, 0, schema, explicit_casts, path, failed_path)?,
+            scalar_type,
+        ),
+        Expr::IsNotNull(argument) => ScalarExpressionNode::unary(
+            ScalarUnaryOperator::IsNotNull,
+            lower_child(argument, 0, schema, explicit_casts, path, failed_path)?,
+            scalar_type,
+        ),
+        Expr::Cast(Cast { expr, .. }) => {
+            let mode = if explicit_casts.remove(path) {
+                ScalarCastMode::Explicit
+            } else {
+                ScalarCastMode::Implicit
+            };
+            ScalarExpressionNode::cast(
+                mode,
+                lower_child(expr, 0, schema, explicit_casts, path, failed_path)?,
+                scalar_type,
+            )
+        }
+        Expr::TryCast(TryCast { expr, .. }) => ScalarExpressionNode::cast(
+            ScalarCastMode::Try,
+            lower_child(expr, 0, schema, explicit_casts, path, failed_path)?,
+            scalar_type,
+        ),
+        Expr::ScalarFunction(ScalarFunction { func, args }) => {
+            let builtin = SessionStateDefaults::default_scalar_functions()
+                .into_iter()
+                .find(|builtin| builtin.as_ref() == func.as_ref())
+                .ok_or_else(|| {
+                    CdfError::contract(format!(
+                        "scalar function {:?} failed admission: it is not the pinned DataFusion built-in implementation",
+                        func.name()
+                    ))
+                })?;
+            if builtin.signature().volatility != Volatility::Immutable {
+                return Err(CdfError::contract(format!(
+                    "scalar function {:?} failed admission: volatility is {:?}, expected Immutable",
+                    builtin.name(),
+                    builtin.signature().volatility
+                )));
+            }
+            let arguments = args
+                .iter()
+                .enumerate()
+                .map(|(index, argument)| {
+                    lower_child(argument, index, schema, explicit_casts, path, failed_path)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let function = ScalarFunctionReference {
+                namespace: DATAFUSION_SCALAR_NAMESPACE.to_owned(),
+                canonical_name: builtin.name().to_owned(),
+                implementation_version: DATAFUSION_EXPRESSION_PIN.to_owned(),
+                feature_set: DATAFUSION_SCALAR_FEATURE_SET.to_owned(),
+                config_identity: DATAFUSION_SCALAR_CONFIG_IDENTITY.to_owned(),
+                volatility: ScalarFunctionVolatility::Immutable,
+                argument_types: arguments
+                    .iter()
+                    .map(|argument| argument.scalar_type.clone())
+                    .collect(),
+                return_type: scalar_type.clone(),
+            };
+            ScalarExpressionNode::call(function, arguments, scalar_type)
+        }
+        other => Err(CdfError::contract(format!(
+            "DataFusion scalar node {} failed admission: the initial CDF scalar IR cannot represent it",
+            other.variant_name()
+        ))),
     }
 }
 
-fn numeric_bound_subsumes<T: Ord>(
-    stronger_operator: &str,
-    stronger: T,
-    candidate_operator: &str,
-    candidate: T,
-) -> bool {
-    match (stronger_operator, candidate_operator) {
-        ("gt" | "gte", "gt" | "gte") => {
-            stronger > candidate
-                || stronger == candidate
-                    && (stronger_operator == "gt" || candidate_operator == "gte")
-        }
-        ("lt" | "lte", "lt" | "lte") => {
-            stronger < candidate
-                || stronger == candidate
-                    && (stronger_operator == "lt" || candidate_operator == "lte")
-        }
-        _ => false,
-    }
+fn lower_child(
+    expression: &Expr,
+    ordinal: usize,
+    schema: &DFSchema,
+    explicit_casts: &mut BTreeSet<ExpressionPath>,
+    path: &mut ExpressionPath,
+    failed_path: &mut Option<ExpressionPath>,
+) -> Result<ScalarExpressionNode> {
+    path.push(ordinal);
+    let result = lower_node(expression, schema, explicit_casts, path, failed_path);
+    path.pop();
+    result
 }
 
-fn to_datafusion(node: &ExpressionNode) -> Result<Expr> {
+fn attach_expression_location(
+    mut error: CdfError,
+    path: &[usize],
+    source_locations: &BTreeMap<ExpressionPath, ExpressionSourceLocation>,
+) -> CdfError {
+    let location = (0..=path.len())
+        .rev()
+        .find_map(|length| source_locations.get(&path[..length]));
+    let path = display_expression_path(path);
+    error.message = match location {
+        Some(location) => format!(
+            "{} at {}:{}:{} (expression path {path})",
+            error.message, location.file, location.line, location.column
+        ),
+        None => format!("{} at expression path {path}", error.message),
+    };
+    error
+}
+
+fn display_expression_path(path: &[usize]) -> String {
+    if path.is_empty() {
+        return "root".to_owned();
+    }
+    path.iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+fn expression_type(expression: &Expr, schema: &DFSchema) -> Result<ScalarType> {
+    let (_, field) = expression
+        .to_field(schema)
+        .map_err(datafusion_planning_error)?;
+    ScalarType::from_arrow(field.data_type(), field.is_nullable())
+}
+
+fn encode_scalar_literal(value: &ScalarValue) -> Result<Vec<u8>> {
+    let array = value
+        .to_array_of_size(1)
+        .map_err(datafusion_planning_error)?;
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "value",
+        array.data_type().clone(),
+        true,
+    )]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![array]).map_err(CdfError::from)?;
+    let mut bytes = Vec::new();
+    {
+        let mut writer = StreamWriter::try_new(&mut bytes, schema.as_ref()).map_err(|error| {
+            CdfError::internal(format!("encode scalar literal schema: {error}"))
+        })?;
+        writer
+            .write(&batch)
+            .map_err(|error| CdfError::internal(format!("encode scalar literal batch: {error}")))?;
+        writer.finish().map_err(|error| {
+            CdfError::internal(format!("finish scalar literal encoding: {error}"))
+        })?;
+    }
+    Ok(bytes)
+}
+
+fn declarative_to_datafusion(node: &DeclarativeExpressionNode) -> Result<Expr> {
     match node {
-        ExpressionNode::Column { name } => Ok(datafusion::logical_expr::col(name)),
-        ExpressionNode::Literal { value } => Ok(Expr::Literal(to_scalar(value)?, None)),
-        ExpressionNode::Call {
+        DeclarativeExpressionNode::Column { name } => Ok(datafusion::logical_expr::col(name)),
+        DeclarativeExpressionNode::Literal { value } => {
+            Ok(Expr::Literal(declarative_scalar(value)?, None))
+        }
+        DeclarativeExpressionNode::Call {
             function,
             arguments,
         } => {
-            require_cdf_v1(function)?;
-            let mut arguments = arguments
-                .iter()
-                .map(to_datafusion)
-                .collect::<Result<Vec<_>>>()?;
-            match (function.name.as_str(), arguments.len()) {
-                ("not", 1) => Ok(Expr::Not(Box::new(arguments.remove(0)))),
-                ("is_null", 1) => Ok(Expr::IsNull(Box::new(arguments.remove(0)))),
-                ("is_not_null", 1) => Ok(Expr::IsNotNull(Box::new(arguments.remove(0)))),
-                (name, 2) => {
-                    let right = arguments.pop().ok_or_else(|| {
-                        CdfError::internal("validated binary expression omitted its right argument")
-                    })?;
-                    let left = arguments.pop().ok_or_else(|| {
-                        CdfError::internal("validated binary expression omitted its left argument")
-                    })?;
-                    Ok(Expr::BinaryExpr(BinaryExpr::new(
-                        Box::new(left),
-                        operator(name)?,
-                        Box::new(right),
-                    )))
+            require_current_declarative_function(function)?;
+            match (function.name.as_str(), arguments.as_slice()) {
+                ("not", [argument]) => {
+                    Ok(Expr::Not(Box::new(declarative_to_datafusion(argument)?)))
                 }
-                (name, arity) => Err(CdfError::contract(format!(
-                    "CDF expression function {name:?} has unsupported arity {arity}; identity-bearing planning admits unary null/not and binary comparison/boolean functions"
+                ("is_null", [argument]) => {
+                    Ok(Expr::IsNull(Box::new(declarative_to_datafusion(argument)?)))
+                }
+                ("is_not_null", [argument]) => Ok(Expr::IsNotNull(Box::new(
+                    declarative_to_datafusion(argument)?,
+                ))),
+                (name, [left, right]) => Ok(Expr::BinaryExpr(BinaryExpr::new(
+                    Box::new(declarative_to_datafusion(left)?),
+                    declarative_operator(name)?,
+                    Box::new(declarative_to_datafusion(right)?),
+                ))),
+                (name, _) => Err(CdfError::contract(format!(
+                    "declarative expression function {name:?} has unsupported arity"
                 ))),
             }
         }
-        other => Err(CdfError::contract(format!(
-            "expression node {other:?} is not admitted by this engine version"
-        ))),
+        _ => Err(CdfError::contract(
+            "declarative expression node is unsupported by this compiler",
+        )),
     }
 }
 
-/// Reconstructs the recorded filter with literal types resolved from its recorded Arrow schema.
-/// Unlike planning, this performs no simplification or optimization. `None` means the recorded
-/// predicate is valid but this engine version cannot use it as pruning proof, so callers retain.
-pub(crate) fn lower_recorded_filter_for_pruning(
-    node: &ExpressionNode,
-    schema: &Schema,
-) -> Result<Option<Expr>> {
-    match node {
-        ExpressionNode::Column { name } => {
-            schema.field_with_name(name).map_err(|_| {
-                CdfError::contract(format!(
-                    "recorded filter field {name:?} is absent from the recorded schema"
-                ))
-            })?;
-            Ok(Some(datafusion::logical_expr::col(name)))
-        }
-        ExpressionNode::Literal { value } => Ok(root_filter_literal(value)),
-        ExpressionNode::Call {
-            function,
-            arguments,
-        } => lower_recorded_filter_call(function, arguments, schema),
-        other => Err(CdfError::contract(format!(
-            "recorded filter expression node {other:?} is unsupported"
-        ))),
-    }
-}
-
-fn lower_recorded_filter_call(
-    function: &FunctionReference,
-    arguments: &[ExpressionNode],
-    schema: &Schema,
-) -> Result<Option<Expr>> {
-    require_cdf_v1(function)?;
-    match (function.name.as_str(), arguments) {
-        ("not", [value]) => Ok(lower_recorded_filter_for_pruning(value, schema)?
-            .map(|value| Expr::Not(Box::new(value)))),
-        ("is_null", [value]) => Ok(lower_recorded_filter_for_pruning(value, schema)?
-            .map(|value| Expr::IsNull(Box::new(value)))),
-        ("is_not_null", [value]) => Ok(lower_recorded_filter_for_pruning(value, schema)?
-            .map(|value| Expr::IsNotNull(Box::new(value)))),
-        ("and" | "or", [left, right]) => {
-            let Some(left) = lower_recorded_filter_for_pruning(left, schema)? else {
-                return Ok(None);
-            };
-            let Some(right) = lower_recorded_filter_for_pruning(right, schema)? else {
-                return Ok(None);
-            };
-            Ok(Some(Expr::BinaryExpr(BinaryExpr::new(
-                Box::new(left),
-                operator(function.name.as_str())?,
-                Box::new(right),
-            ))))
-        }
-        (
-            "eq" | "neq" | "gt" | "gte" | "lt" | "lte",
-            [
-                ExpressionNode::Column { name },
-                ExpressionNode::Literal { value },
-            ],
-        ) => {
-            let field = schema.field_with_name(name).map_err(|_| {
-                CdfError::contract(format!(
-                    "recorded filter field {name:?} is absent from the recorded schema"
-                ))
-            })?;
-            let Some(value) = typed_filter_literal(field.data_type(), value)? else {
-                return Ok(None);
-            };
-            Ok(Some(Expr::BinaryExpr(BinaryExpr::new(
-                Box::new(datafusion::logical_expr::col(name)),
-                operator(function.name.as_str())?,
-                Box::new(Expr::Literal(value, None)),
-            ))))
-        }
-        _ => Ok(None),
-    }
-}
-
-fn root_filter_literal(value: &ExpressionLiteral) -> Option<Expr> {
-    let scalar = match value {
-        ExpressionLiteral::Null => ScalarValue::Null,
-        ExpressionLiteral::Boolean(value) => ScalarValue::Boolean(Some(*value)),
-        _ => return None,
-    };
-    Some(Expr::Literal(scalar, None))
-}
-
-fn typed_filter_literal(
-    data_type: &DataType,
-    value: &ExpressionLiteral,
-) -> Result<Option<ScalarValue>> {
-    if matches!(value, ExpressionLiteral::Null) {
-        return ScalarValue::try_new_null(data_type)
-            .map(Some)
-            .map_err(datafusion_error);
-    }
-    Ok(match (data_type, value) {
-        (DataType::Boolean, ExpressionLiteral::Boolean(value)) => {
-            Some(ScalarValue::Boolean(Some(*value)))
-        }
-        (DataType::Int8, ExpressionLiteral::Signed(value)) => i8::try_from(*value)
-            .ok()
-            .map(|value| ScalarValue::Int8(Some(value))),
-        (DataType::Int16, ExpressionLiteral::Signed(value)) => i16::try_from(*value)
-            .ok()
-            .map(|value| ScalarValue::Int16(Some(value))),
-        (DataType::Int32, ExpressionLiteral::Signed(value)) => i32::try_from(*value)
-            .ok()
-            .map(|value| ScalarValue::Int32(Some(value))),
-        (DataType::Int64, ExpressionLiteral::Signed(value)) => {
-            Some(ScalarValue::Int64(Some(*value)))
-        }
-        (DataType::UInt8, ExpressionLiteral::Unsigned(value)) => u8::try_from(*value)
-            .ok()
-            .map(|value| ScalarValue::UInt8(Some(value))),
-        (DataType::UInt16, ExpressionLiteral::Unsigned(value)) => u16::try_from(*value)
-            .ok()
-            .map(|value| ScalarValue::UInt16(Some(value))),
-        (DataType::UInt32, ExpressionLiteral::Unsigned(value)) => u32::try_from(*value)
-            .ok()
-            .map(|value| ScalarValue::UInt32(Some(value))),
-        (DataType::UInt64, ExpressionLiteral::Unsigned(value)) => {
-            Some(ScalarValue::UInt64(Some(*value)))
-        }
-        (DataType::Float64, ExpressionLiteral::Float64Bits(bits)) => {
-            let value = f64::from_bits(*bits);
-            value
-                .is_finite()
-                .then_some(ScalarValue::Float64(Some(value)))
-        }
-        (DataType::Utf8, ExpressionLiteral::String(value)) => {
-            Some(ScalarValue::Utf8(Some(value.clone())))
-        }
-        (DataType::LargeUtf8, ExpressionLiteral::String(value)) => {
-            Some(ScalarValue::LargeUtf8(Some(value.clone())))
-        }
-        _ => None,
-    })
-}
-
-fn from_datafusion(expression: &Expr) -> Result<ExpressionNode> {
-    match expression {
-        Expr::Column(column) => Ok(ExpressionNode::Column {
-            name: column.name.clone(),
-        }),
-        Expr::Literal(value, _) => Ok(ExpressionNode::Literal {
-            value: from_scalar(value)?,
-        }),
-        Expr::BinaryExpr(binary) => Ok(ExpressionNode::Call {
-            function: FunctionReference::cdf(operator_name(binary.op)?),
-            arguments: vec![
-                from_datafusion(&binary.left)?,
-                from_datafusion(&binary.right)?,
-            ],
-        }),
-        Expr::Not(value) => unary("not", from_datafusion(value)?),
-        Expr::IsNull(value) => unary("is_null", from_datafusion(value)?),
-        Expr::IsNotNull(value) => unary("is_not_null", from_datafusion(value)?),
-        other => Err(CdfError::contract(format!(
-            "DataFusion simplified expression {other:?} has no exact CDF native lowering"
-        ))),
-    }
-}
-
-fn unary(name: &str, argument: ExpressionNode) -> Result<ExpressionNode> {
-    Ok(ExpressionNode::Call {
-        function: FunctionReference::cdf(name),
-        arguments: vec![argument],
-    })
-}
-
-fn require_cdf_v1(function: &FunctionReference) -> Result<()> {
+fn require_current_declarative_function(function: &DeclarativeFunctionReference) -> Result<()> {
     if function.namespace != cdf_contract::CDF_FUNCTION_NAMESPACE
         || function.version != cdf_contract::CDF_FUNCTION_VERSION
     {
         return Err(CdfError::contract(format!(
-            "unsupported expression function {}.{}@{}; identity-bearing planning requires cdf functions at version 1",
+            "unsupported declarative function {}.{}@{}",
             function.namespace, function.name, function.version
         )));
     }
     Ok(())
 }
 
-fn operator(name: &str) -> Result<Operator> {
+fn declarative_operator(name: &str) -> Result<Operator> {
     match name {
         "eq" => Ok(Operator::Eq),
         "neq" => Ok(Operator::NotEq),
@@ -595,81 +741,72 @@ fn operator(name: &str) -> Result<Operator> {
         "and" => Ok(Operator::And),
         "or" => Ok(Operator::Or),
         other => Err(CdfError::contract(format!(
-            "CDF expression function {other:?} has no native/DataFusion identity lowering"
+            "declarative function {other:?} has no DataFusion scalar lowering"
         ))),
     }
 }
 
-fn operator_name(operator: Operator) -> Result<&'static str> {
-    match operator {
-        Operator::Eq => Ok("eq"),
-        Operator::NotEq => Ok("neq"),
-        Operator::Gt => Ok("gt"),
-        Operator::GtEq => Ok("gte"),
-        Operator::Lt => Ok("lt"),
-        Operator::LtEq => Ok("lte"),
-        Operator::And => Ok("and"),
-        Operator::Or => Ok("or"),
-        other => Err(CdfError::contract(format!(
-            "DataFusion operator {other:?} has no admitted CDF native lowering"
-        ))),
-    }
+fn binary_operator(operator: Operator) -> Result<ScalarBinaryOperator> {
+    Ok(match operator {
+        Operator::Eq => ScalarBinaryOperator::Equal,
+        Operator::NotEq => ScalarBinaryOperator::NotEqual,
+        Operator::Lt => ScalarBinaryOperator::Less,
+        Operator::LtEq => ScalarBinaryOperator::LessOrEqual,
+        Operator::Gt => ScalarBinaryOperator::Greater,
+        Operator::GtEq => ScalarBinaryOperator::GreaterOrEqual,
+        Operator::Plus => ScalarBinaryOperator::Add,
+        Operator::Minus => ScalarBinaryOperator::Subtract,
+        Operator::Multiply => ScalarBinaryOperator::Multiply,
+        Operator::Divide => ScalarBinaryOperator::Divide,
+        Operator::Modulo => ScalarBinaryOperator::Modulo,
+        Operator::And => ScalarBinaryOperator::And,
+        Operator::Or => ScalarBinaryOperator::Or,
+        Operator::IsDistinctFrom => ScalarBinaryOperator::IsDistinctFrom,
+        Operator::IsNotDistinctFrom => ScalarBinaryOperator::IsNotDistinctFrom,
+        Operator::RegexMatch => ScalarBinaryOperator::RegexMatch,
+        Operator::RegexIMatch => ScalarBinaryOperator::RegexInsensitiveMatch,
+        Operator::RegexNotMatch => ScalarBinaryOperator::RegexNotMatch,
+        Operator::RegexNotIMatch => ScalarBinaryOperator::RegexNotInsensitiveMatch,
+        Operator::LikeMatch => ScalarBinaryOperator::Like,
+        Operator::ILikeMatch => ScalarBinaryOperator::InsensitiveLike,
+        Operator::NotLikeMatch => ScalarBinaryOperator::NotLike,
+        Operator::NotILikeMatch => ScalarBinaryOperator::NotInsensitiveLike,
+        Operator::BitwiseAnd => ScalarBinaryOperator::BitwiseAnd,
+        Operator::BitwiseOr => ScalarBinaryOperator::BitwiseOr,
+        Operator::BitwiseXor => ScalarBinaryOperator::BitwiseXor,
+        Operator::BitwiseShiftRight => ScalarBinaryOperator::BitwiseShiftRight,
+        Operator::BitwiseShiftLeft => ScalarBinaryOperator::BitwiseShiftLeft,
+        Operator::StringConcat => ScalarBinaryOperator::StringConcat,
+        Operator::AtArrow => ScalarBinaryOperator::ListContains,
+        Operator::ArrowAt => ScalarBinaryOperator::ListContainedBy,
+        other => {
+            return Err(CdfError::contract(format!(
+                "DataFusion operator {other:?} failed admission: no executable CDF scalar identity"
+            )));
+        }
+    })
 }
 
-fn to_scalar(value: &ExpressionLiteral) -> Result<ScalarValue> {
+fn declarative_scalar(value: &DeclarativeExpressionLiteral) -> Result<ScalarValue> {
     match value {
-        ExpressionLiteral::Null => Ok(ScalarValue::Null),
-        ExpressionLiteral::Boolean(value) => Ok(ScalarValue::Boolean(Some(*value))),
-        ExpressionLiteral::Signed(value) => Ok(ScalarValue::Int64(Some(*value))),
-        ExpressionLiteral::Unsigned(value) => Ok(ScalarValue::UInt64(Some(*value))),
-        ExpressionLiteral::Float64Bits(bits) => {
+        DeclarativeExpressionLiteral::Null => Ok(ScalarValue::Null),
+        DeclarativeExpressionLiteral::Boolean(value) => Ok(ScalarValue::Boolean(Some(*value))),
+        DeclarativeExpressionLiteral::Signed(value) => Ok(ScalarValue::Int64(Some(*value))),
+        DeclarativeExpressionLiteral::Unsigned(value) => Ok(ScalarValue::UInt64(Some(*value))),
+        DeclarativeExpressionLiteral::Float64Bits(bits) => {
             Ok(ScalarValue::Float64(Some(f64::from_bits(*bits))))
         }
-        ExpressionLiteral::String(value) => Ok(ScalarValue::Utf8(Some(value.clone()))),
-        ExpressionLiteral::StringList(_) => Err(CdfError::contract(
-            "list literals require a named native function lowering",
+        DeclarativeExpressionLiteral::String(value) => Ok(ScalarValue::Utf8(Some(value.clone()))),
+        DeclarativeExpressionLiteral::StringList(_) => Err(CdfError::contract(
+            "contract list literals are not scalar SQL expressions",
         )),
-        other => Err(CdfError::contract(format!(
-            "expression literal {other:?} is not admitted by this engine version"
-        ))),
+        _ => Err(CdfError::contract(
+            "declarative literal is unsupported by this compiler",
+        )),
     }
 }
 
-fn from_scalar(value: &ScalarValue) -> Result<ExpressionLiteral> {
-    match value {
-        ScalarValue::Null => Ok(ExpressionLiteral::Null),
-        ScalarValue::Boolean(Some(value)) => Ok(ExpressionLiteral::Boolean(*value)),
-        ScalarValue::Int8(Some(value)) => Ok(ExpressionLiteral::Signed(i64::from(*value))),
-        ScalarValue::Int16(Some(value)) => Ok(ExpressionLiteral::Signed(i64::from(*value))),
-        ScalarValue::Int32(Some(value)) => Ok(ExpressionLiteral::Signed(i64::from(*value))),
-        ScalarValue::Int64(Some(value)) => Ok(ExpressionLiteral::Signed(*value)),
-        ScalarValue::UInt8(Some(value)) => Ok(ExpressionLiteral::Unsigned(u64::from(*value))),
-        ScalarValue::UInt16(Some(value)) => Ok(ExpressionLiteral::Unsigned(u64::from(*value))),
-        ScalarValue::UInt32(Some(value)) => Ok(ExpressionLiteral::Unsigned(u64::from(*value))),
-        ScalarValue::UInt64(Some(value)) => Ok(ExpressionLiteral::Unsigned(*value)),
-        ScalarValue::Float64(Some(value)) => ExpressionLiteral::finite_float64(*value),
-        ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) => {
-            Ok(ExpressionLiteral::String(value.clone()))
-        }
-        ScalarValue::Boolean(None)
-        | ScalarValue::Int8(None)
-        | ScalarValue::Int16(None)
-        | ScalarValue::Int32(None)
-        | ScalarValue::Int64(None)
-        | ScalarValue::UInt8(None)
-        | ScalarValue::UInt16(None)
-        | ScalarValue::UInt32(None)
-        | ScalarValue::UInt64(None)
-        | ScalarValue::Float64(None)
-        | ScalarValue::Utf8(None)
-        | ScalarValue::LargeUtf8(None) => Ok(ExpressionLiteral::Null),
-        other => Err(CdfError::contract(format!(
-            "DataFusion literal {other:?} has no exact CDF serialized literal"
-        ))),
-    }
-}
-
-fn lint_expression(expression: &Expression) -> Vec<ExpressionLint> {
+fn lint_expression(expression: &DeclarativeExpression) -> Vec<ExpressionLint> {
     let mut lints = Vec::new();
     if is_unsatisfiable_range(&expression.root) {
         lints.push(ExpressionLint {
@@ -679,8 +816,8 @@ fn lint_expression(expression: &Expression) -> Vec<ExpressionLint> {
     }
     if matches!(
         expression.root,
-        ExpressionNode::Literal {
-            value: ExpressionLiteral::Boolean(true)
+        DeclarativeExpressionNode::Literal {
+            value: DeclarativeExpressionLiteral::Boolean(true)
         }
     ) {
         lints.push(ExpressionLint {
@@ -691,8 +828,82 @@ fn lint_expression(expression: &Expression) -> Vec<ExpressionLint> {
     lints
 }
 
-fn is_unsatisfiable_range(node: &ExpressionNode) -> bool {
-    let ExpressionNode::Call {
+fn is_typed_true(expression: &ScalarExpression) -> bool {
+    let cdf_kernel::ScalarExpressionKind::Literal { arrow_ipc } = &expression.root.expression
+    else {
+        return false;
+    };
+    crate::expression_execution::decode_scalar_literal(arrow_ipc)
+        .ok()
+        .is_some_and(|value| value == ScalarValue::Boolean(Some(true)))
+}
+
+fn lint_contract_expression(
+    node: &DeclarativeExpressionNode,
+    schema: &Schema,
+) -> Vec<ExpressionLint> {
+    let DeclarativeExpressionNode::Call {
+        function,
+        arguments,
+    } = node
+    else {
+        return Vec::new();
+    };
+    match (function.name.as_str(), arguments.as_slice()) {
+        ("is_not_null", [DeclarativeExpressionNode::Column { name }]) => schema
+            .field_with_name(name)
+            .ok()
+            .filter(|field| !field.is_nullable())
+            .map(|_| {
+                vec![ExpressionLint {
+                    code: ExpressionLintCode::AlwaysTrue,
+                    message: format!(
+                        "nullability rule for non-nullable field {name:?} is provably always true"
+                    ),
+                }]
+            })
+            .unwrap_or_default(),
+        (
+            "in_range",
+            [
+                DeclarativeExpressionNode::Column { name },
+                DeclarativeExpressionNode::Literal { value: min },
+                DeclarativeExpressionNode::Literal { value: max },
+            ],
+        ) => {
+            if matches!(min, DeclarativeExpressionLiteral::Null)
+                && matches!(max, DeclarativeExpressionLiteral::Null)
+            {
+                return vec![ExpressionLint {
+                    code: ExpressionLintCode::AlwaysTrue,
+                    message: format!("unbounded range rule for {name:?} is always true"),
+                }];
+            }
+            let Some(field) = schema.field_with_name(name).ok() else {
+                return Vec::new();
+            };
+            let (
+                DeclarativeExpressionLiteral::String(min),
+                DeclarativeExpressionLiteral::String(max),
+            ) = (min, max)
+            else {
+                return Vec::new();
+            };
+            cdf_contract::range_bounds_are_unsatisfiable(field.data_type(), Some(min), Some(max))
+                .unwrap_or(false)
+                .then(|| ExpressionLint {
+                    code: ExpressionLintCode::UnsatisfiableRange,
+                    message: format!("range rule for {name:?} is provably empty"),
+                })
+                .into_iter()
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn is_unsatisfiable_range(node: &DeclarativeExpressionNode) -> bool {
+    let DeclarativeExpressionNode::Call {
         function,
         arguments,
     } = node
@@ -720,468 +931,312 @@ fn is_unsatisfiable_range(node: &ExpressionNode) -> bool {
             return false;
         };
     match (lower, upper) {
-        (ExpressionLiteral::Signed(lower), ExpressionLiteral::Signed(upper)) => {
-            lower > upper || (lower == upper && (lower_op == "gt" || upper_op == "lt"))
-        }
-        (ExpressionLiteral::Unsigned(lower), ExpressionLiteral::Unsigned(upper)) => {
-            lower > upper || (lower == upper && (lower_op == "gt" || upper_op == "lt"))
-        }
+        (
+            DeclarativeExpressionLiteral::Signed(lower),
+            DeclarativeExpressionLiteral::Signed(upper),
+        ) => lower > upper || (lower == upper && (lower_op == "gt" || upper_op == "lt")),
+        (
+            DeclarativeExpressionLiteral::Unsigned(lower),
+            DeclarativeExpressionLiteral::Unsigned(upper),
+        ) => lower > upper || (lower == upper && (lower_op == "gt" || upper_op == "lt")),
         _ => false,
     }
 }
 
-fn comparison(node: &ExpressionNode) -> Option<(&str, &str, &ExpressionLiteral)> {
-    let ExpressionNode::Call {
+fn comparison(
+    node: &DeclarativeExpressionNode,
+) -> Option<(&str, &str, &DeclarativeExpressionLiteral)> {
+    let DeclarativeExpressionNode::Call {
         function,
         arguments,
     } = node
     else {
         return None;
     };
-    if arguments.len() != 2 {
-        return None;
-    }
-    let ExpressionNode::Column { name } = &arguments[0] else {
-        return None;
-    };
-    let ExpressionNode::Literal { value } = &arguments[1] else {
+    let [
+        DeclarativeExpressionNode::Column { name },
+        DeclarativeExpressionNode::Literal { value },
+    ] = arguments.as_slice()
+    else {
         return None;
     };
     Some((name, function.name.as_str(), value))
 }
 
-fn datafusion_error(error: impl std::fmt::Display) -> CdfError {
-    CdfError::contract(format!("DataFusion expression planning failed: {error}"))
+fn bound_subsumes(
+    stronger_operator: &str,
+    stronger: &DeclarativeExpressionLiteral,
+    candidate_operator: &str,
+    candidate: &DeclarativeExpressionLiteral,
+) -> bool {
+    match (stronger, candidate) {
+        (
+            DeclarativeExpressionLiteral::Signed(stronger),
+            DeclarativeExpressionLiteral::Signed(candidate),
+        ) => numeric_bound_subsumes(stronger_operator, *stronger, candidate_operator, *candidate),
+        (
+            DeclarativeExpressionLiteral::Unsigned(stronger),
+            DeclarativeExpressionLiteral::Unsigned(candidate),
+        ) => numeric_bound_subsumes(stronger_operator, *stronger, candidate_operator, *candidate),
+        _ => false,
+    }
+}
+
+fn numeric_bound_subsumes<T: Ord>(
+    stronger_operator: &str,
+    stronger: T,
+    candidate_operator: &str,
+    candidate: T,
+) -> bool {
+    match (stronger_operator, candidate_operator) {
+        ("gt" | "gte", "gt" | "gte") => {
+            stronger > candidate
+                || stronger == candidate
+                    && (stronger_operator == "gt" || candidate_operator == "gte")
+        }
+        ("lt" | "lte", "lt" | "lte") => {
+            stronger < candidate
+                || stronger == candidate
+                    && (stronger_operator == "lt" || candidate_operator == "lte")
+        }
+        _ => false,
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum DataFusionErrorPhase {
+    Planning,
+    Binding,
+    Execution,
+}
+
+impl DataFusionErrorPhase {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Planning => "analysis",
+            Self::Binding => "runtime binding",
+            Self::Execution => "execution",
+        }
+    }
+}
+
+pub(crate) fn classify_datafusion_error(
+    error: DataFusionError,
+    phase: DataFusionErrorPhase,
+) -> CdfError {
+    if let Some(mut embedded) = embedded_cdf_error(&error) {
+        embedded.message = format!(
+            "pinned DataFusion scalar {} failed: {}",
+            phase.label(),
+            embedded.message
+        );
+        return embedded;
+    }
+    let rendered = error.strip_backtrace();
+    let root = error.find_root();
+    let message = format!(
+        "pinned DataFusion scalar {} failed ({}): {rendered}",
+        phase.label(),
+        datafusion_error_variant(root)
+    );
+    match root {
+        DataFusionError::Plan(_)
+        | DataFusionError::Configuration(_)
+        | DataFusionError::SchemaError(_, _)
+        | DataFusionError::NotImplemented(_) => CdfError::contract(message),
+        DataFusionError::ResourcesExhausted(_) | DataFusionError::IoError(_) => {
+            CdfError::environment(message)
+        }
+        DataFusionError::Execution(_) | DataFusionError::ArrowError(_, _)
+            if matches!(phase, DataFusionErrorPhase::Execution) =>
+        {
+            CdfError::data(message)
+        }
+        _ => CdfError::internal(message),
+    }
+}
+
+fn datafusion_error_variant(error: &DataFusionError) -> &'static str {
+    match error {
+        DataFusionError::ArrowError(_, _) => "arrow",
+        DataFusionError::IoError(_) => "io",
+        DataFusionError::NotImplemented(_) => "not_implemented",
+        DataFusionError::Internal(_) => "internal",
+        DataFusionError::Plan(_) => "plan",
+        DataFusionError::Configuration(_) => "configuration",
+        DataFusionError::SchemaError(_, _) => "schema",
+        DataFusionError::Execution(_) => "execution",
+        DataFusionError::ExecutionJoin(_) => "execution_join",
+        DataFusionError::ResourcesExhausted(_) => "resources_exhausted",
+        DataFusionError::External(_) => "external",
+        DataFusionError::Context(_, _) => "context",
+        DataFusionError::Substrait(_) => "substrait",
+        DataFusionError::Diagnostic(_, _) => "diagnostic",
+        DataFusionError::Collection(_) => "collection",
+        DataFusionError::Shared(_) => "shared",
+        DataFusionError::Ffi(_) => "ffi",
+        _ => "dependency",
+    }
+}
+
+fn embedded_cdf_error(error: &(dyn std::error::Error + 'static)) -> Option<CdfError> {
+    let mut current = Some(error);
+    while let Some(source) = current {
+        if let Some(error) = source.downcast_ref::<CdfError>() {
+            return Some(error.clone());
+        }
+        if let Some(error) = source.downcast_ref::<std::io::Error>()
+            && let Some(error) = cdf_kernel::embedded_cdf_error(error)
+        {
+            return Some(error);
+        }
+        current = source.source();
+    }
+    None
+}
+
+fn datafusion_planning_error(error: DataFusionError) -> CdfError {
+    classify_datafusion_error(error, DataFusionErrorPhase::Planning)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use arrow_array::{Int64Array, RecordBatch, StringArray};
+    use arrow_schema::DataType;
+    use cdf_memory::{
+        ConsumerKey, DeterministicMemoryCoordinator, MemoryClass, MemoryCoordinator,
+        ReservationRequest,
+    };
+    use datafusion::{
+        common::DFSchema,
+        logical_expr::{ExprSchemable, col, lit},
+    };
 
-    use arrow_array::{
-        ArrayRef, BooleanArray, Float64Array, Int8Array, Int16Array, Int32Array, Int64Array,
-        LargeStringArray, RecordBatch, StringArray, UInt8Array, UInt16Array, UInt32Array,
-        UInt64Array,
-    };
-    use arrow_schema::{DataType, Field, Schema};
-    use arrow_select::filter::filter_record_batch;
-    use cdf_contract::{
-        Expression, ExpressionLintCode, ExpressionLiteral, ExpressionNode, ExpressionUse,
-        FunctionReference,
-    };
-    use datafusion::{common::DFSchema, execution::context::SessionContext};
-
-    use super::{
-        mark_cursor_subsumed, plan_expression, record_exact_source_expression,
-        record_native_contract_expression, to_datafusion,
-    };
-    use cdf_expression::{apply_bound_filters, bind_filter_expressions};
+    use super::*;
 
     fn schema() -> Schema {
-        Schema::new(vec![Field::new("id", DataType::Int64, true)])
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("name", DataType::Utf8, true),
+        ])
     }
 
     #[test]
-    fn expression_serialization_and_datafusion_round_trip_are_stable() {
-        let expression = Expression::parse_comparison("id >= 7").unwrap();
-        let encoded = serde_json::to_string(&expression).unwrap();
-        assert_eq!(
-            encoded,
-            r#"{"version":1,"root":{"kind":"call","function":{"namespace":"cdf","name":"gte","version":"1"},"arguments":[{"kind":"column","name":"id"},{"kind":"literal","value":{"kind":"signed","value":7}}]}}"#
-        );
-        let planned =
-            plan_expression(expression.clone(), ExpressionUse::Filter, &schema()).unwrap();
-        assert_eq!(planned.original, expression);
-        assert_eq!(planned.optimized, planned.original);
-        assert_eq!(planned.functions, vec![FunctionReference::cdf("gte")]);
-        assert_eq!(
-            planned.optimizer.version,
-            cdf_contract::DATAFUSION_EXPRESSION_PIN
-        );
-        assert_eq!(planned.substrait_version, None);
-    }
-
-    #[test]
-    fn exact_source_temporal_pushdown_records_compiled_plan_without_native_reparse() {
-        let expression =
-            Expression::parse_comparison("updated_at >= '2026-07-12T00:00:00Z'").unwrap();
-        let mut planned = record_exact_source_expression(expression.clone()).unwrap();
-        planned.source_text = Some("updated_at >= '2026-07-12T00:00:00Z'".to_owned());
-
-        planned.validate_recorded().unwrap();
-        assert_eq!(planned.original, expression);
-        assert_eq!(planned.optimized, expression);
-        assert_eq!(
-            planned.optimizer.name,
-            cdf_contract::SOURCE_EXACT_PUSHDOWN_OPTIMIZER
-        );
-    }
-
-    #[test]
-    fn expression_linter_is_conservative_for_ranges_and_constants() {
-        let empty_range = Expression::call(
-            "and",
-            vec![
-                Expression::call(
-                    "gte",
-                    vec![
-                        ExpressionNode::Column {
-                            name: "id".to_owned(),
-                        },
-                        ExpressionNode::Literal {
-                            value: ExpressionLiteral::Signed(10),
-                        },
-                    ],
-                )
-                .root,
-                Expression::call(
-                    "lt",
-                    vec![
-                        ExpressionNode::Column {
-                            name: "id".to_owned(),
-                        },
-                        ExpressionNode::Literal {
-                            value: ExpressionLiteral::Signed(10),
-                        },
-                    ],
-                )
-                .root,
-            ],
-        );
-        let planned = plan_expression(empty_range, ExpressionUse::Filter, &schema()).unwrap();
-        assert!(
-            planned
-                .lints
-                .iter()
-                .any(|lint| lint.code == ExpressionLintCode::UnsatisfiableRange)
-        );
-
-        let unknown = Expression::call(
-            "gte",
-            vec![
-                ExpressionNode::Column {
-                    name: "id".to_owned(),
-                },
-                ExpressionNode::Literal {
-                    value: ExpressionLiteral::Signed(10),
-                },
-            ],
-        );
-        let planned = plan_expression(unknown, ExpressionUse::Filter, &schema()).unwrap();
-        assert!(planned.lints.is_empty());
-
-        let temporal_range = Expression::call(
-            "and",
-            vec![
-                Expression::parse_comparison("updated_at >= '2026-07-12T01:00:00+01:00'")
-                    .unwrap()
-                    .root,
-                Expression::parse_comparison("updated_at < '2026-07-12T00:30:00Z'")
-                    .unwrap()
-                    .root,
-            ],
-        );
-        let planned = record_exact_source_expression(temporal_range).unwrap();
-        assert!(
-            !planned
-                .lints
-                .iter()
-                .any(|lint| lint.code == ExpressionLintCode::UnsatisfiableRange)
-        );
-    }
-
-    #[test]
-    fn unsupported_identity_function_fails_at_plan_time() {
-        let expression = Expression::call(
-            "mystery",
-            vec![ExpressionNode::Column {
-                name: "id".to_owned(),
-            }],
-        );
-        let error = plan_expression(expression, ExpressionUse::Filter, &schema()).unwrap_err();
-        assert!(error.to_string().contains("unsupported arity"));
-    }
-
-    #[test]
-    fn expression_linter_marks_only_provably_subsumed_cursor_bounds() {
-        let mut planned = ["id >= 10", "id >= 5", "id <= 20"]
-            .into_iter()
-            .map(|value| {
-                plan_expression(
-                    Expression::parse_comparison(value).unwrap(),
-                    ExpressionUse::Filter,
-                    &schema(),
-                )
-                .unwrap()
-            })
-            .collect::<Vec<_>>();
-        mark_cursor_subsumed(&mut planned, "id");
-        assert!(
-            !planned[0]
-                .lints
-                .iter()
-                .any(|lint| lint.code == ExpressionLintCode::CursorSubsumed)
-        );
-        assert!(
-            planned[1]
-                .lints
-                .iter()
-                .any(|lint| lint.code == ExpressionLintCode::CursorSubsumed)
-        );
-        assert!(
-            !planned[2]
-                .lints
-                .iter()
-                .any(|lint| lint.code == ExpressionLintCode::CursorSubsumed)
-        );
-
-        let mut temporal = [
-            "updated_at >= '2026-07-12T01:00:00+01:00'",
-            "updated_at >= '2026-07-12T00:30:00Z'",
-        ]
-        .into_iter()
-        .map(|value| {
-            let mut planned =
-                record_exact_source_expression(Expression::parse_comparison(value).unwrap())
-                    .unwrap();
-            planned.source_text = Some(value.to_owned());
-            planned
-        })
-        .collect::<Vec<_>>();
-        mark_cursor_subsumed(&mut temporal, "updated_at");
-        assert!(temporal.iter().all(|planned| {
-            !planned
-                .lints
-                .iter()
-                .any(|lint| lint.code == ExpressionLintCode::CursorSubsumed)
-        }));
-    }
-
-    #[test]
-    fn expression_linter_proves_contract_range_only_with_schema_type() {
-        let expression = Expression::call(
-            "in_range",
-            vec![
-                ExpressionNode::Column {
-                    name: "id".to_owned(),
-                },
-                ExpressionNode::Literal {
-                    value: ExpressionLiteral::String("10".to_owned()),
-                },
-                ExpressionNode::Literal {
-                    value: ExpressionLiteral::String("2".to_owned()),
-                },
-            ],
-        );
-        let planned = record_native_contract_expression(expression, &schema()).unwrap();
-        assert!(
-            planned
-                .lints
-                .iter()
-                .any(|lint| lint.code == ExpressionLintCode::UnsatisfiableRange)
-        );
-    }
-
-    #[test]
-    fn native_identity_filter_matches_datafusion_for_every_admitted_arrow_type_and_nulls() {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("i8", DataType::Int8, true),
-            Field::new("i16", DataType::Int16, true),
-            Field::new("i32", DataType::Int32, true),
-            Field::new("i64", DataType::Int64, true),
-            Field::new("u8", DataType::UInt8, true),
-            Field::new("u16", DataType::UInt16, true),
-            Field::new("u32", DataType::UInt32, true),
-            Field::new("u64", DataType::UInt64, true),
-            Field::new("f64", DataType::Float64, true),
-            Field::new("text", DataType::Utf8, true),
-            Field::new("large_text", DataType::LargeUtf8, true),
-            Field::new("flag", DataType::Boolean, true),
-        ]));
-        let batch = RecordBatch::try_new(
-            Arc::clone(&schema),
-            vec![
-                Arc::new(Int8Array::from(vec![Some(1), None, Some(3)])) as ArrayRef,
-                Arc::new(Int16Array::from(vec![Some(1), None, Some(3)])),
-                Arc::new(Int32Array::from(vec![Some(1), None, Some(3)])),
-                Arc::new(Int64Array::from(vec![Some(1), None, Some(3)])),
-                Arc::new(UInt8Array::from(vec![Some(1), None, Some(3)])),
-                Arc::new(UInt16Array::from(vec![Some(1), None, Some(3)])),
-                Arc::new(UInt32Array::from(vec![Some(1), None, Some(3)])),
-                Arc::new(UInt64Array::from(vec![Some(1), None, Some(3)])),
-                Arc::new(Float64Array::from(vec![Some(1.0), None, Some(3.0)])),
-                Arc::new(StringArray::from(vec![Some("a"), None, Some("c")])),
-                Arc::new(LargeStringArray::from(vec![Some("a"), None, Some("c")])),
-                Arc::new(BooleanArray::from(vec![Some(false), None, Some(true)])),
-            ],
-        )
-        .unwrap();
-        let df_schema = DFSchema::try_from(schema.as_ref().clone()).unwrap();
-        let session = SessionContext::new();
-        let assert_parity = |label: &str, expression: Expression| {
-            let planned =
-                plan_expression(expression, ExpressionUse::Filter, schema.as_ref()).unwrap();
-            let bound =
-                bind_filter_expressions(std::slice::from_ref(&planned), schema.as_ref()).unwrap();
-            let native = apply_bound_filters(&batch, &bound).unwrap();
-            let physical = session
-                .create_physical_expr(to_datafusion(&planned.optimized.root).unwrap(), &df_schema)
-                .unwrap();
-            let mask = physical
-                .evaluate(&batch)
-                .unwrap()
-                .into_array(batch.num_rows())
-                .unwrap();
-            let mask = mask.as_any().downcast_ref::<BooleanArray>().unwrap();
-            let reference = filter_record_batch(&batch, mask).unwrap();
-            assert_eq!(native, reference, "native/DataFusion drift for {label}");
-        };
-
-        for field in ["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"] {
-            for operator in ["=", "!=", ">", ">=", "<", "<="] {
-                let source = format!("{field} {operator} 2");
-                assert_parity(&source, Expression::parse_comparison(&source).unwrap());
-            }
-        }
-        for operator in ["=", "!=", ">", ">=", "<", "<="] {
-            let source = format!("f64 {operator} 2.5");
-            assert_parity(&source, Expression::parse_comparison(&source).unwrap());
-        }
-        for field in ["text", "large_text"] {
-            for operator in ["=", "!=", ">", ">=", "<", "<="] {
-                let source = format!("{field} {operator} 'b'");
-                assert_parity(&source, Expression::parse_comparison(&source).unwrap());
-            }
-        }
-        for operator in ["=", "!="] {
-            let source = format!("flag {operator} true");
-            assert_parity(&source, Expression::parse_comparison(&source).unwrap());
-        }
-        let unary = |name: &str, column: &str| {
-            Expression::call(
-                name,
-                vec![ExpressionNode::Column {
-                    name: column.to_owned(),
-                }],
-            )
-        };
-        assert_parity("is_null(i8)", unary("is_null", "i8"));
-        assert_parity("is_not_null(text)", unary("is_not_null", "text"));
-        assert_parity("not(flag)", unary("not", "flag"));
-        assert_parity(
-            "flag OR is_null(i8)",
-            Expression::call(
-                "or",
-                vec![
-                    ExpressionNode::Column {
-                        name: "flag".to_owned(),
-                    },
-                    unary("is_null", "i8").root,
-                ],
-            ),
-        );
-        assert_parity(
-            "flag AND is_not_null(text)",
-            Expression::call(
-                "and",
-                vec![
-                    ExpressionNode::Column {
-                        name: "flag".to_owned(),
-                    },
-                    unary("is_not_null", "text").root,
-                ],
-            ),
-        );
-    }
-
-    #[test]
-    fn identity_planning_rejects_types_without_native_lowering() {
-        let schema = Schema::new(vec![Field::new(
-            "amount",
-            DataType::Decimal128(38, 9),
-            true,
-        )]);
-        let error = plan_expression(
-            Expression::parse_comparison("amount >= 2").unwrap(),
-            ExpressionUse::Filter,
-            &schema,
-        )
-        .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("has no exact CDF serialized literal"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    #[ignore = "release-only expression throughput evidence"]
-    fn native_vector_filter_stays_within_datafusion_arrow_kernel_roofline() {
-        let rows = 64 * 1024;
-        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-        let batch = RecordBatch::try_new(
-            Arc::clone(&schema),
-            vec![Arc::new(Int64Array::from_iter_values(0..rows as i64))],
-        )
-        .unwrap();
+    fn declarative_filter_lowers_to_current_typed_ir() {
         let planned = plan_expression(
-            Expression::parse_comparison("id >= 32768").unwrap(),
+            DeclarativeExpression::parse_comparison("id >= 7").unwrap(),
             ExpressionUse::Filter,
-            schema.as_ref(),
+            &schema(),
         )
         .unwrap();
-        let df_schema = DFSchema::try_from(schema.as_ref().clone()).unwrap();
-        let physical = SessionContext::new()
-            .create_physical_expr(to_datafusion(&planned.optimized.root).unwrap(), &df_schema)
+        planned.validate_recorded().unwrap();
+        assert_eq!(planned.expression.version, 2);
+        assert_eq!(planned.expression.column_dependencies()[0].name, "id");
+    }
+
+    #[test]
+    fn scalar_function_admission_is_registry_and_volatility_based() {
+        let lower = SessionStateDefaults::default_scalar_functions()
+            .into_iter()
+            .find(|function| function.name() == "lower")
             .unwrap();
-        let bound =
-            bind_filter_expressions(std::slice::from_ref(&planned), schema.as_ref()).unwrap();
-        let measure = |iterations: usize, native: bool| {
-            let started = std::time::Instant::now();
-            for _ in 0..iterations {
-                if native {
-                    std::hint::black_box(apply_bound_filters(&batch, &bound).unwrap());
-                } else {
-                    let mask = physical
-                        .evaluate(&batch)
-                        .unwrap()
-                        .into_array(batch.num_rows())
-                        .unwrap();
-                    let mask = mask.as_any().downcast_ref::<BooleanArray>().unwrap();
-                    std::hint::black_box(filter_record_batch(&batch, mask).unwrap());
-                }
-            }
-            started.elapsed()
-        };
-        // Warm both implementations after linking, then alternate sample order to avoid
-        // attributing CPU frequency and cache transients to either implementation.
-        measure(50, true);
-        measure(50, false);
-        let iterations = 200;
-        let mut native_samples = Vec::with_capacity(7);
-        let mut reference_samples = Vec::with_capacity(7);
-        for sample in 0..7 {
-            if sample % 2 == 0 {
-                native_samples.push(measure(iterations, true));
-                reference_samples.push(measure(iterations, false));
-            } else {
-                reference_samples.push(measure(iterations, false));
-                native_samples.push(measure(iterations, true));
-            }
-        }
-        native_samples.sort_unstable();
-        reference_samples.sort_unstable();
-        let native = native_samples[native_samples.len() / 2];
-        let reference = reference_samples[reference_samples.len() / 2];
-        eprintln!(
-            "native_vector_filter_median={native:?} datafusion_physical_filter_median={reference:?} rows_per_sample={} iterations={iterations} samples={}",
-            rows * iterations,
-            native_samples.len()
+        let expression = lower.call(vec![col("name")]);
+        let typed =
+            lower_analyzed_scalar_expression(&AnalyzedScalarExpression::new(expression), &schema())
+                .unwrap();
+        assert_eq!(typed.function_dependencies()[0].canonical_name, "lower");
+        assert_eq!(
+            typed.function_dependencies()[0].volatility,
+            ScalarFunctionVolatility::Immutable
         );
-        assert!(
-            native.as_nanos() * 100 <= reference.as_nanos() * 115,
-            "native identity lowering exceeded the 15% DataFusion/Arrow roofline allowance: native={native:?} reference={reference:?}"
+    }
+
+    #[test]
+    fn explicit_and_try_casts_are_distinct_durable_nodes() {
+        let explicit = Expr::Cast(Cast::new(Box::new(col("name")), DataType::Int64));
+        let typed = lower_analyzed_scalar_expression(
+            &AnalyzedScalarExpression::new(explicit).with_explicit_cast(Vec::new()),
+            &schema(),
+        )
+        .unwrap();
+        assert!(matches!(
+            typed.root.expression,
+            cdf_kernel::ScalarExpressionKind::Cast {
+                mode: ScalarCastMode::Explicit,
+                ..
+            }
+        ));
+
+        let try_cast = Expr::TryCast(TryCast::new(Box::new(col("name")), DataType::Int64));
+        let typed =
+            lower_analyzed_scalar_expression(&AnalyzedScalarExpression::new(try_cast), &schema())
+                .unwrap();
+        assert!(matches!(
+            typed.root.expression,
+            cdf_kernel::ScalarExpressionKind::Cast {
+                mode: ScalarCastMode::Try,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn relational_plan_executes_filter_before_projection() {
+        let plan = compile_relational_expression_plan(
+            &schema(),
+            Some(AnalyzedScalarExpression::new(col("id").gt(lit(1_i64)))),
+            vec![AnalyzedProjectionExpression {
+                name: "normalized".to_owned(),
+                scalar: AnalyzedScalarExpression::new(col("name")),
+            }],
+            Vec::new(),
+        )
+        .unwrap();
+        let input = RecordBatch::try_new(
+            Arc::new(schema()),
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+        )
+        .unwrap();
+        let bytes = u64::try_from(input.get_array_memory_size())
+            .unwrap()
+            .saturating_mul(16);
+        let memory = DeterministicMemoryCoordinator::new(bytes, BTreeMap::new()).unwrap();
+        let lease = memory
+            .try_reserve(
+                &ReservationRequest::new(
+                    ConsumerKey::new("relational-expression-test", MemoryClass::Transform).unwrap(),
+                    bytes,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        let output = crate::expression_execution::execute_relational_expression_plan(
+            &plan,
+            &input,
+            &lease,
+            &cdf_runtime::RunCancellation::default(),
+        )
+        .unwrap();
+        assert_eq!(output.num_rows(), 2);
+        assert_eq!(output.schema().field(0).name(), "normalized");
+    }
+
+    #[test]
+    fn analyzed_output_field_agrees_with_recorded_type() {
+        let expr = col("id") + lit(1_i64);
+        let df_schema = DFSchema::try_from(schema()).unwrap();
+        let (_, field) = expr.to_field(&df_schema).unwrap();
+        let typed =
+            lower_analyzed_scalar_expression(&AnalyzedScalarExpression::new(expr), &schema())
+                .unwrap();
+        assert_eq!(
+            typed.root.scalar_type.to_arrow().unwrap(),
+            field.data_type().clone()
         );
+        assert_eq!(typed.root.scalar_type.nullable, field.is_nullable());
     }
 }

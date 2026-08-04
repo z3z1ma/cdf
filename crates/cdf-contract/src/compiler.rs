@@ -1009,24 +1009,24 @@ fn row_rule_program_from_policy(index: usize, rule: &RowRule) -> RowRuleProgram 
         ),
         RowRule::Domain { column, allowed } => (
             "domain",
-            crate::Expression::call(
+            crate::DeclarativeExpression::call(
                 "in_domain",
                 vec![
-                    crate::ExpressionNode::Column {
+                    crate::DeclarativeExpressionNode::Column {
                         name: column.clone(),
                     },
-                    crate::ExpressionNode::Literal {
-                        value: crate::ExpressionLiteral::StringList(allowed.clone()),
+                    crate::DeclarativeExpressionNode::Literal {
+                        value: crate::DeclarativeExpressionLiteral::StringList(allowed.clone()),
                     },
                 ],
             ),
         ),
         RowRule::Range { column, min, max } => (
             "range",
-            crate::Expression::call(
+            crate::DeclarativeExpression::call(
                 "in_range",
                 vec![
-                    crate::ExpressionNode::Column {
+                    crate::DeclarativeExpressionNode::Column {
                         name: column.clone(),
                     },
                     optional_bound(min),
@@ -1036,28 +1036,28 @@ fn row_rule_program_from_policy(index: usize, rule: &RowRule) -> RowRuleProgram 
         ),
         RowRule::Regex { column, pattern } => (
             "regex",
-            crate::Expression::call(
+            crate::DeclarativeExpression::call(
                 "matches_regex",
                 vec![
-                    crate::ExpressionNode::Column {
+                    crate::DeclarativeExpressionNode::Column {
                         name: column.clone(),
                     },
-                    crate::ExpressionNode::Literal {
-                        value: crate::ExpressionLiteral::String(pattern.clone()),
+                    crate::DeclarativeExpressionNode::Literal {
+                        value: crate::DeclarativeExpressionLiteral::String(pattern.clone()),
                     },
                 ],
             ),
         ),
         RowRule::Freshness { column, max_age_ms } => (
             "freshness",
-            crate::Expression::call(
+            crate::DeclarativeExpression::call(
                 "fresh_within",
                 vec![
-                    crate::ExpressionNode::Column {
+                    crate::DeclarativeExpressionNode::Column {
                         name: column.clone(),
                     },
-                    crate::ExpressionNode::Literal {
-                        value: crate::ExpressionLiteral::Unsigned(*max_age_ms),
+                    crate::DeclarativeExpressionNode::Literal {
+                        value: crate::DeclarativeExpressionLiteral::Unsigned(*max_age_ms),
                     },
                 ],
             ),
@@ -1082,21 +1082,21 @@ fn row_rule_program_from_policy(index: usize, rule: &RowRule) -> RowRuleProgram 
     }
 }
 
-fn unary_column_expression(function: &str, column: &str) -> crate::Expression {
-    crate::Expression::call(
+fn unary_column_expression(function: &str, column: &str) -> crate::DeclarativeExpression {
+    crate::DeclarativeExpression::call(
         function,
-        vec![crate::ExpressionNode::Column {
+        vec![crate::DeclarativeExpressionNode::Column {
             name: column.to_owned(),
         }],
     )
 }
 
-fn optional_bound(value: &Option<String>) -> crate::ExpressionNode {
-    crate::ExpressionNode::Literal {
+fn optional_bound(value: &Option<String>) -> crate::DeclarativeExpressionNode {
+    crate::DeclarativeExpressionNode::Literal {
         value: value
             .clone()
-            .map(crate::ExpressionLiteral::String)
-            .unwrap_or(crate::ExpressionLiteral::Null),
+            .map(crate::DeclarativeExpressionLiteral::String)
+            .unwrap_or(crate::DeclarativeExpressionLiteral::Null),
     }
 }
 
@@ -1104,20 +1104,20 @@ fn dedup_expression(
     function: &str,
     keys: Vec<String>,
     keep: DedupKeepProgram,
-) -> crate::Expression {
+) -> crate::DeclarativeExpression {
     let keep = match keep {
         DedupKeepProgram::First => "first",
         DedupKeepProgram::Last => "last",
         DedupKeepProgram::Fail => "fail",
     };
-    crate::Expression::call(
+    crate::DeclarativeExpression::call(
         function,
         vec![
-            crate::ExpressionNode::Literal {
-                value: crate::ExpressionLiteral::StringList(keys),
+            crate::DeclarativeExpressionNode::Literal {
+                value: crate::DeclarativeExpressionLiteral::StringList(keys),
             },
-            crate::ExpressionNode::Literal {
-                value: crate::ExpressionLiteral::String(keep.to_owned()),
+            crate::DeclarativeExpressionNode::Literal {
+                value: crate::DeclarativeExpressionLiteral::String(keep.to_owned()),
             },
         ],
     )

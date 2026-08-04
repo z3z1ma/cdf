@@ -5,8 +5,8 @@ use std::{
 
 use arrow_schema::{DataType, Field, SchemaRef};
 use cdf_kernel::{
-    CdfError, CompiledScanIntent, Expression, ExpressionLiteral, PartitionPlan, PushdownFidelity,
-    ResourceDescriptor, Result, SortDirection, SourcePosition,
+    CdfError, CompiledScanIntent, DeclarativeExpression, DeclarativeExpressionLiteral,
+    PartitionPlan, PushdownFidelity, ResourceDescriptor, Result, SortDirection, SourcePosition,
 };
 use rusqlite::types::Value;
 
@@ -283,7 +283,7 @@ pub(super) fn build_query(
 
 pub(super) fn parse_supported_predicate(
     schema: &SchemaRef,
-    expression: &Expression,
+    expression: &DeclarativeExpression,
 ) -> Option<SqliteStoredPredicate> {
     let (field_name, operator, literal) = expression.comparison()?;
     let operator = match operator {
@@ -297,26 +297,26 @@ pub(super) fn parse_supported_predicate(
     let field = field_by_name(schema, field_name)?;
     source_column_identifier(field).ok()?;
     let value = match (field.data_type(), literal) {
-        (DataType::Boolean, ExpressionLiteral::Boolean(value))
+        (DataType::Boolean, DeclarativeExpressionLiteral::Boolean(value))
             if operator == PredicateOperator::Eq =>
         {
             Value::Integer(i64::from(*value))
         }
-        (DataType::Int64, ExpressionLiteral::Signed(value)) => Value::Integer(*value),
-        (DataType::UInt64, ExpressionLiteral::Unsigned(value)) => {
+        (DataType::Int64, DeclarativeExpressionLiteral::Signed(value)) => Value::Integer(*value),
+        (DataType::UInt64, DeclarativeExpressionLiteral::Unsigned(value)) => {
             Value::Integer(i64::try_from(*value).ok()?)
         }
-        (DataType::UInt64, ExpressionLiteral::Signed(value)) if *value >= 0 => {
+        (DataType::UInt64, DeclarativeExpressionLiteral::Signed(value)) if *value >= 0 => {
             Value::Integer(*value)
         }
-        (DataType::Float64, ExpressionLiteral::Float64Bits(bits)) => {
+        (DataType::Float64, DeclarativeExpressionLiteral::Float64Bits(bits)) => {
             let value = f64::from_bits(*bits);
             if !value.is_finite() {
                 return None;
             }
             Value::Real(value)
         }
-        (DataType::Utf8, ExpressionLiteral::String(value)) => Value::Text(value.clone()),
+        (DataType::Utf8, DeclarativeExpressionLiteral::String(value)) => Value::Text(value.clone()),
         _ => return None,
     };
     let strict = field

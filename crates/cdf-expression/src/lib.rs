@@ -1,4 +1,4 @@
-#![doc = "Shared Arrow-native execution for CDF's compiled expression IR."]
+#![doc = "Arrow-native evaluation for bounded declarative adapter predicates."]
 
 use arrow_arith::boolean::{and_kleene, is_not_null, is_null, not, or_kleene};
 use arrow_array::{
@@ -7,11 +7,11 @@ use arrow_array::{
     UInt64Array,
 };
 use arrow_ord::cmp::{eq, gt, gt_eq, lt, lt_eq, neq};
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::{DataType, Schema};
 use arrow_select::filter::filter_record_batch;
 use cdf_contract::{
-    CDF_FUNCTION_NAMESPACE, CDF_FUNCTION_VERSION, ExpressionLiteral, ExpressionNode,
-    PlannedExpression, TransformDescription,
+    CDF_FUNCTION_NAMESPACE, CDF_FUNCTION_VERSION, DeclarativeExpression,
+    DeclarativeExpressionLiteral, DeclarativeExpressionNode,
 };
 use cdf_kernel::{CdfError, Result};
 
@@ -48,88 +48,6 @@ pub enum BoundComparisonOperator {
     LessOrEqual,
 }
 
-pub enum BoundExpressionTransform {
-    Derive {
-        column: String,
-        expression: BoundBooleanExpression,
-    },
-    Filter(BoundBooleanExpression),
-}
-
-pub fn bind_filter_expressions(
-    expressions: &[PlannedExpression],
-    schema: &Schema,
-) -> Result<Vec<BoundBooleanExpression>> {
-    expressions
-        .iter()
-        .map(|expression| bind_boolean_expression(&expression.optimized.root, schema))
-        .collect()
-}
-
-pub fn bind_expression_transforms(
-    transforms: &[TransformDescription],
-    planned: &[PlannedExpression],
-    schema: &Schema,
-) -> Result<Vec<BoundExpressionTransform>> {
-    let mut schema = schema.clone();
-    let mut planned = planned.iter();
-    let mut bound = Vec::new();
-    for transform in transforms {
-        match transform {
-            TransformDescription::Derive { column, .. } => {
-                let expression = planned.next().ok_or_else(|| {
-                    CdfError::contract("derive transform has no recorded compiled expression plan")
-                })?;
-                bound.push(BoundExpressionTransform::Derive {
-                    column: column.clone(),
-                    expression: bind_boolean_expression(&expression.optimized.root, &schema)?,
-                });
-                schema = schema_with_derived_boolean(&schema, column);
-            }
-            TransformDescription::Filter { .. } => {
-                let expression = planned.next().ok_or_else(|| {
-                    CdfError::contract("filter transform has no recorded compiled expression plan")
-                })?;
-                bound.push(BoundExpressionTransform::Filter(bind_boolean_expression(
-                    &expression.optimized.root,
-                    &schema,
-                )?));
-            }
-            _ => {}
-        }
-    }
-    if planned.next().is_some() {
-        return Err(CdfError::contract(
-            "recorded compiled expression plan has extra transform expressions",
-        ));
-    }
-    Ok(bound)
-}
-
-pub fn expression_transform_output_schema(
-    transforms: &[TransformDescription],
-    schema: &Schema,
-) -> Schema {
-    transforms.iter().fold(schema.clone(), |schema, transform| {
-        if let TransformDescription::Derive { column, .. } = transform {
-            schema_with_derived_boolean(&schema, column)
-        } else {
-            schema
-        }
-    })
-}
-
-fn schema_with_derived_boolean(schema: &Schema, column: &str) -> Schema {
-    let field = std::sync::Arc::new(Field::new(column, DataType::Boolean, true));
-    let mut fields = schema.fields().iter().cloned().collect::<Vec<_>>();
-    if let Ok(index) = schema.index_of(column) {
-        fields[index] = field;
-    } else {
-        fields.push(field);
-    }
-    Schema::new_with_metadata(fields, schema.metadata().clone())
-}
-
 pub fn apply_bound_filters(
     batch: &RecordBatch,
     expressions: &[BoundBooleanExpression],
@@ -151,59 +69,20 @@ pub fn apply_bound_filters(
     filter_record_batch(batch, &keep).map_err(CdfError::from)
 }
 
-pub fn apply_expression_transforms(
-    batch: RecordBatch,
-    transforms: &[TransformDescription],
-    planned: &[PlannedExpression],
-) -> Result<RecordBatch> {
-    let bound = bind_expression_transforms(transforms, planned, batch.schema().as_ref())?;
-    apply_bound_expression_transforms(batch, &bound)
-}
-
-pub fn apply_bound_expression_transforms(
-    mut batch: RecordBatch,
-    transforms: &[BoundExpressionTransform],
-) -> Result<RecordBatch> {
-    for transform in transforms {
-        match transform {
-            BoundExpressionTransform::Derive { column, expression } => {
-                let values = evaluate_bound_expression(&batch, expression)?;
-                let mut fields = batch.schema().fields().iter().cloned().collect::<Vec<_>>();
-                let mut columns = batch.columns().to_vec();
-                let field = std::sync::Arc::new(arrow_schema::Field::new(
-                    column,
-                    arrow_schema::DataType::Boolean,
-                    true,
-                ));
-                if let Ok(index) = batch.schema().index_of(column) {
-                    fields[index] = field;
-                    columns[index] = std::sync::Arc::new(values);
-                } else {
-                    fields.push(field);
-                    columns.push(std::sync::Arc::new(values));
-                }
-                batch = RecordBatch::try_new(
-                    std::sync::Arc::new(arrow_schema::Schema::new_with_metadata(
-                        fields,
-                        batch.schema().metadata().clone(),
-                    )),
-                    columns,
-                )?;
-            }
-            BoundExpressionTransform::Filter(expression) => {
-                batch = apply_bound_filters(&batch, std::slice::from_ref(expression))?;
-            }
-        }
-    }
-    Ok(batch)
-}
-
 pub fn bind_boolean_expression(
-    node: &ExpressionNode,
+    expression: &DeclarativeExpression,
+    schema: &Schema,
+) -> Result<BoundBooleanExpression> {
+    expression.validate()?;
+    bind_boolean_node(&expression.root, schema)
+}
+
+fn bind_boolean_node(
+    node: &DeclarativeExpressionNode,
     schema: &Schema,
 ) -> Result<BoundBooleanExpression> {
     match node {
-        ExpressionNode::Column { name } => {
+        DeclarativeExpressionNode::Column { name } => {
             let column = bind_column(name, schema)?;
             if column.data_type != DataType::Boolean {
                 return Err(CdfError::contract(format!(
@@ -212,13 +91,13 @@ pub fn bind_boolean_expression(
             }
             Ok(BoundBooleanExpression::Column(column))
         }
-        ExpressionNode::Literal {
-            value: ExpressionLiteral::Boolean(value),
+        DeclarativeExpressionNode::Literal {
+            value: DeclarativeExpressionLiteral::Boolean(value),
         } => Ok(BoundBooleanExpression::Literal(Some(*value))),
-        ExpressionNode::Literal {
-            value: ExpressionLiteral::Null,
+        DeclarativeExpressionNode::Literal {
+            value: DeclarativeExpressionLiteral::Null,
         } => Ok(BoundBooleanExpression::Literal(None)),
-        ExpressionNode::Call {
+        DeclarativeExpressionNode::Call {
             function,
             arguments,
         } => {
@@ -231,28 +110,28 @@ pub fn bind_boolean_expression(
                 )));
             }
             match (function.name.as_str(), arguments.as_slice()) {
-                ("not", [value]) => Ok(BoundBooleanExpression::Not(Box::new(
-                    bind_boolean_expression(value, schema)?,
-                ))),
+                ("not", [value]) => Ok(BoundBooleanExpression::Not(Box::new(bind_boolean_node(
+                    value, schema,
+                )?))),
                 ("and", [left, right]) => Ok(BoundBooleanExpression::And(
-                    Box::new(bind_boolean_expression(left, schema)?),
-                    Box::new(bind_boolean_expression(right, schema)?),
+                    Box::new(bind_boolean_node(left, schema)?),
+                    Box::new(bind_boolean_node(right, schema)?),
                 )),
                 ("or", [left, right]) => Ok(BoundBooleanExpression::Or(
-                    Box::new(bind_boolean_expression(left, schema)?),
-                    Box::new(bind_boolean_expression(right, schema)?),
+                    Box::new(bind_boolean_node(left, schema)?),
+                    Box::new(bind_boolean_node(right, schema)?),
                 )),
-                ("is_null", [ExpressionNode::Column { name }]) => {
+                ("is_null", [DeclarativeExpressionNode::Column { name }]) => {
                     Ok(BoundBooleanExpression::IsNull(bind_column(name, schema)?))
                 }
-                ("is_not_null", [ExpressionNode::Column { name }]) => Ok(
+                ("is_not_null", [DeclarativeExpressionNode::Column { name }]) => Ok(
                     BoundBooleanExpression::IsNotNull(bind_column(name, schema)?),
                 ),
                 (
                     operator @ ("eq" | "neq" | "gt" | "gte" | "lt" | "lte"),
                     [
-                        ExpressionNode::Column { name },
-                        ExpressionNode::Literal { value },
+                        DeclarativeExpressionNode::Column { name },
+                        DeclarativeExpressionNode::Literal { value },
                     ],
                 ) => {
                     let column = bind_column(name, schema)?;
@@ -357,16 +236,16 @@ fn bound_column_array<'a>(batch: &'a RecordBatch, column: &BoundColumn) -> Resul
 fn scalar_for_array(
     name: &str,
     data_type: &arrow_schema::DataType,
-    value: &ExpressionLiteral,
+    value: &DeclarativeExpressionLiteral,
 ) -> Result<ArrayRef> {
     macro_rules! signed {
         ($array:ty, $native:ty) => {{
             let value = match value {
-                ExpressionLiteral::Signed(value) => Some(
+                DeclarativeExpressionLiteral::Signed(value) => Some(
                     <$native>::try_from(*value)
                         .map_err(|_| literal_type(name, stringify!($native)))?,
                 ),
-                ExpressionLiteral::Null => None,
+                DeclarativeExpressionLiteral::Null => None,
                 _ => return Err(literal_type(name, "signed integer")),
             };
             std::sync::Arc::new(<$array>::from(vec![value])) as ArrayRef
@@ -375,15 +254,15 @@ fn scalar_for_array(
     macro_rules! unsigned {
         ($array:ty, $native:ty) => {{
             let value = match value {
-                ExpressionLiteral::Unsigned(value) => Some(
+                DeclarativeExpressionLiteral::Unsigned(value) => Some(
                     <$native>::try_from(*value)
                         .map_err(|_| literal_type(name, stringify!($native)))?,
                 ),
-                ExpressionLiteral::Signed(value) if *value >= 0 => Some(
+                DeclarativeExpressionLiteral::Signed(value) if *value >= 0 => Some(
                     <$native>::try_from(*value as u64)
                         .map_err(|_| literal_type(name, stringify!($native)))?,
                 ),
-                ExpressionLiteral::Null => None,
+                DeclarativeExpressionLiteral::Null => None,
                 _ => return Err(literal_type(name, "unsigned integer")),
             };
             std::sync::Arc::new(<$array>::from(vec![value])) as ArrayRef
@@ -400,32 +279,32 @@ fn scalar_for_array(
         arrow_schema::DataType::UInt64 => unsigned!(UInt64Array, u64),
         arrow_schema::DataType::Float64 => {
             let value = match value {
-                ExpressionLiteral::Float64Bits(bits) => Some(f64::from_bits(*bits)),
-                ExpressionLiteral::Null => None,
+                DeclarativeExpressionLiteral::Float64Bits(bits) => Some(f64::from_bits(*bits)),
+                DeclarativeExpressionLiteral::Null => None,
                 _ => return Err(literal_type(name, "float64")),
             };
             std::sync::Arc::new(Float64Array::from(vec![value]))
         }
         arrow_schema::DataType::Utf8 => {
             let value = match value {
-                ExpressionLiteral::String(value) => Some(value.as_str()),
-                ExpressionLiteral::Null => None,
+                DeclarativeExpressionLiteral::String(value) => Some(value.as_str()),
+                DeclarativeExpressionLiteral::Null => None,
                 _ => return Err(literal_type(name, "string")),
             };
             std::sync::Arc::new(StringArray::from(vec![value]))
         }
         arrow_schema::DataType::LargeUtf8 => {
             let value = match value {
-                ExpressionLiteral::String(value) => Some(value.as_str()),
-                ExpressionLiteral::Null => None,
+                DeclarativeExpressionLiteral::String(value) => Some(value.as_str()),
+                DeclarativeExpressionLiteral::Null => None,
                 _ => return Err(literal_type(name, "string")),
             };
             std::sync::Arc::new(LargeStringArray::from(vec![value]))
         }
         arrow_schema::DataType::Boolean => {
             let value = match value {
-                ExpressionLiteral::Boolean(value) => Some(*value),
-                ExpressionLiteral::Null => None,
+                DeclarativeExpressionLiteral::Boolean(value) => Some(*value),
+                DeclarativeExpressionLiteral::Null => None,
                 _ => return Err(literal_type(name, "boolean")),
             };
             std::sync::Arc::new(BooleanArray::from(vec![value]))

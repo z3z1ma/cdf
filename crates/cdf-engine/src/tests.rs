@@ -16,7 +16,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_contract::{
-    CDF_VARIANT_SEMANTIC, ContractPolicy, DedupKeep, Expression, FieldCoercionDecision,
+    CDF_VARIANT_SEMANTIC, ContractPolicy, DeclarativeExpression, DedupKeep, FieldCoercionDecision,
     NestedDataPolicy, ObservedSchema, RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME,
     RedactionDecision, RowRule, SchemaChangeKind, SchemaEvolutionMode, VARIANT_COLUMN_NAME,
     VerdictAction, compile_resource_validation_program, compile_validation_program,
@@ -73,6 +73,7 @@ fn semantic_field(field: Field, reference: &str) -> Field {
 
 mod determinism;
 mod execution;
+mod expression_ir;
 mod package_evidence;
 mod planning;
 mod retry_drain;

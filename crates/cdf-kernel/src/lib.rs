@@ -94,8 +94,14 @@ pub use execution_extent::{
     WatermarkValue, validate_partition_watermark_states,
 };
 pub use expression::{
-    CDF_FUNCTION_NAMESPACE, CDF_FUNCTION_VERSION, EXPRESSION_IR_VERSION, Expression,
-    ExpressionLiteral, ExpressionNode, FunctionReference,
+    CDF_FUNCTION_NAMESPACE, CDF_FUNCTION_VERSION, DATAFUSION_SCALAR_CONFIG_IDENTITY,
+    DATAFUSION_SCALAR_FEATURE_SET, DATAFUSION_SCALAR_IMPLEMENTATION_VERSION,
+    DATAFUSION_SCALAR_NAMESPACE, DECLARATIVE_EXPRESSION_VERSION, DeclarativeExpression,
+    DeclarativeExpressionLiteral, DeclarativeExpressionNode, DeclarativeFunctionReference,
+    SCALAR_EXPRESSION_EXECUTOR_VERSION, SCALAR_EXPRESSION_IR_VERSION, ScalarBinaryOperator,
+    ScalarCastMode, ScalarColumnDependency, ScalarDependencies, ScalarExpression,
+    ScalarExpressionKind, ScalarExpressionNode, ScalarFunctionReference, ScalarFunctionVolatility,
+    ScalarType, ScalarUnaryOperator,
 };
 pub use ids::{
     BatchId, CheckpointId, CommittedContentRootId, ContentClaimAttemptId, ContentDigestAlgorithm,

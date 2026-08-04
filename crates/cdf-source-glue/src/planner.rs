@@ -513,22 +513,23 @@ fn is_glue_expression_identifier(value: &str) -> bool {
         && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
 }
 
-fn glue_literal(value: &cdf_kernel::ExpressionLiteral) -> Result<String> {
+fn glue_literal(value: &cdf_kernel::DeclarativeExpressionLiteral) -> Result<String> {
     Ok(match value {
-        cdf_kernel::ExpressionLiteral::Boolean(value) => value.to_string(),
-        cdf_kernel::ExpressionLiteral::Signed(value) => value.to_string(),
-        cdf_kernel::ExpressionLiteral::Unsigned(value) => value.to_string(),
-        cdf_kernel::ExpressionLiteral::Float64Bits(bits) => {
+        cdf_kernel::DeclarativeExpressionLiteral::Boolean(value) => value.to_string(),
+        cdf_kernel::DeclarativeExpressionLiteral::Signed(value) => value.to_string(),
+        cdf_kernel::DeclarativeExpressionLiteral::Unsigned(value) => value.to_string(),
+        cdf_kernel::DeclarativeExpressionLiteral::Float64Bits(bits) => {
             let value = f64::from_bits(*bits);
             if !value.is_finite() {
                 return Err(CdfError::contract("Glue predicate floats must be finite"));
             }
             value.to_string()
         }
-        cdf_kernel::ExpressionLiteral::String(value) => {
+        cdf_kernel::DeclarativeExpressionLiteral::String(value) => {
             format!("'{}'", value.replace('\'', "''"))
         }
-        cdf_kernel::ExpressionLiteral::Null | cdf_kernel::ExpressionLiteral::StringList(_) => {
+        cdf_kernel::DeclarativeExpressionLiteral::Null
+        | cdf_kernel::DeclarativeExpressionLiteral::StringList(_) => {
             return Err(CdfError::contract(
                 "Glue partition predicate supports scalar boolean, numeric, or string literals",
             ));
@@ -581,14 +582,14 @@ mod tests {
         let unsafe_name = ScanPredicate::from_expression(
             cdf_kernel::PredicateId::new("unsafe-name-filter").unwrap(),
             "unsafe-name = 'x'",
-            cdf_kernel::Expression::call(
+            cdf_kernel::DeclarativeExpression::call(
                 "eq",
                 vec![
-                    cdf_kernel::ExpressionNode::Column {
+                    cdf_kernel::DeclarativeExpressionNode::Column {
                         name: "unsafe-name".to_owned(),
                     },
-                    cdf_kernel::ExpressionNode::Literal {
-                        value: cdf_kernel::ExpressionLiteral::String("x".to_owned()),
+                    cdf_kernel::DeclarativeExpressionNode::Literal {
+                        value: cdf_kernel::DeclarativeExpressionLiteral::String("x".to_owned()),
                     },
                 ],
             ),

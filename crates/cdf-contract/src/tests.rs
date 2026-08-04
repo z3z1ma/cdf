@@ -278,17 +278,17 @@ fn exact_row_dedup_compares_the_final_residual_variant_field() {
         compile_validation_program(&policy, &ObservedSchema::from_arrow(&schema)).unwrap();
     program.row_rules.push(RowRuleProgram {
         rule_id: "exact-final-output".to_owned(),
-        expression: Expression::call(
+        expression: DeclarativeExpression::call(
             "exact_row_dedup",
             vec![
-                ExpressionNode::Literal {
-                    value: ExpressionLiteral::StringList(vec![
+                DeclarativeExpressionNode::Literal {
+                    value: DeclarativeExpressionLiteral::StringList(vec![
                         "id".to_owned(),
                         VARIANT_COLUMN_NAME.to_owned(),
                     ]),
                 },
-                ExpressionNode::Literal {
-                    value: ExpressionLiteral::String("first".to_owned()),
+                DeclarativeExpressionNode::Literal {
+                    value: DeclarativeExpressionLiteral::String("first".to_owned()),
                 },
             ],
         ),

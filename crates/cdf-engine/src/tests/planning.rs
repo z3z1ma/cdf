@@ -42,7 +42,7 @@ fn tier_a_resource_runs_engine_projection_filter_limit_into_package() {
     for batch in &mut batches {
         batch.header.source_position = Some(terminal_file_position());
     }
-    let resource = MockResource::tier_a(batches);
+    let resource = MockResource::tier_a(batches).without_control_keys();
     let input = plan_input(
         vec!["id > 1", "active = true"],
         Some(vec!["name".to_owned()]),

@@ -7,9 +7,9 @@ use std::{
 use arrow_array::{Array, Int64Array, StringArray, TimestampMicrosecondArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_kernel::{
-    Batch, CdfError, CursorOrderingClaim, CursorSpec, CursorValue, Expression, PushdownFidelity,
-    ResourceDescriptor, ResourceId, ResourceStream, Result, ScanPredicate, ScanRequest, SchemaHash,
-    SchemaSource, ScopeKey, SourcePosition, TrustLevel, WriteDisposition,
+    Batch, CdfError, CursorOrderingClaim, CursorSpec, CursorValue, DeclarativeExpression,
+    PushdownFidelity, ResourceDescriptor, ResourceId, ResourceStream, Result, ScanPredicate,
+    ScanRequest, SchemaHash, SchemaSource, ScopeKey, SourcePosition, TrustLevel, WriteDisposition,
 };
 use cdf_runtime::RunCancellation;
 use futures_util::StreamExt;
@@ -228,7 +228,7 @@ fn declared_execution_observes_live_catalog_drift_without_changing_logical_outpu
 
 #[test]
 fn exact_and_inexact_pushdown_follow_strict_type_authority() {
-    let expression = Expression::parse_comparison("updated_at >= 10").unwrap();
+    let expression = DeclarativeExpression::parse_comparison("updated_at >= 10").unwrap();
     assert_eq!(
         sqlite_table_predicate_fidelity(&schema(true), &expression),
         PushdownFidelity::Exact
@@ -240,7 +240,7 @@ fn exact_and_inexact_pushdown_follow_strict_type_authority() {
     assert_eq!(
         sqlite_table_predicate_fidelity(
             &schema(true),
-            &Expression::parse_comparison("name = 'ada'").unwrap()
+            &DeclarativeExpression::parse_comparison("name = 'ada'").unwrap()
         ),
         PushdownFidelity::Inexact
     );

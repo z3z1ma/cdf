@@ -1,12 +1,12 @@
 use super::support::{
     Arc, ArrayRef, AtomicU64, Attributes, BTreeMap, BTreeSet, Batch, BatchHeader, BatchId,
     BooleanArray, CDF_VARIANT_SEMANTIC, CanonicalSegmentationPolicy, ContractPolicy,
-    DEDUP_SUMMARY_FILE, DataType, DedupKeep, DeduplicationSpec, DrainTermination,
-    EXECUTION_EXTENT_VERSION, EngineExecutionConfig, EnginePackageDraft, EnginePreviewLimits,
-    Event, ExecutionExtent, Expression, Field, FieldCoercionDecision, FileManifest, FilePosition,
-    HashMap, Id, Int32Array, Int32Builder, Int32Type, Int64Array, ListArray, MapBuilder, Metadata,
-    MockResource, Mutex, NestedDataPolicy, ObservedSchema, OperatorNode, Ordering, PackageStatus,
-    PartitionAttestation, PartitionId, Planner, PreContractObservedValue,
+    DEDUP_SUMMARY_FILE, DataType, DeclarativeExpression, DedupKeep, DeduplicationSpec,
+    DrainTermination, EXECUTION_EXTENT_VERSION, EngineExecutionConfig, EnginePackageDraft,
+    EnginePreviewLimits, Event, ExecutionExtent, Field, FieldCoercionDecision, FileManifest,
+    FilePosition, HashMap, Id, Int32Array, Int32Builder, Int32Type, Int64Array, ListArray,
+    MapBuilder, Metadata, MockResource, Mutex, NestedDataPolicy, ObservedSchema, OperatorNode,
+    Ordering, PackageStatus, PartitionAttestation, PartitionId, Planner, PreContractObservedValue,
     PreContractQuarantineFact, PreContractResidualCandidate, QuarantineObservedValue,
     RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME, Record, RecordBatch, ResourceId,
     RowRule, RunId, RunPhase, RunPhaseStatus, Schema, SchemaEvolutionMode, SchemaHash, SchemaRef,
@@ -561,7 +561,7 @@ fn contract_quarantine_preserves_source_ordinal_after_transform_filter() {
     let mut input = plan_input_for_schema(schema, vec![], None, None, ExecutionExtent::bounded());
     let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
     policy.transforms = vec![cdf_contract::TransformDescription::Filter {
-        expression: Expression::parse_comparison("id >= 2").unwrap(),
+        expression: DeclarativeExpression::parse_comparison("id >= 2").unwrap(),
     }];
     policy.rows.rules = vec![RowRule::Regex {
         column: "name".to_owned(),

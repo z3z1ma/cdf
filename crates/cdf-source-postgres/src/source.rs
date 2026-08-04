@@ -11,13 +11,13 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_kernel::{
     BackpressureSupport, Batch, BatchId, BatchStream, CapabilitySupport, CdfError,
-    CompiledScanIntent, CompiledSourcePlanHash, CursorPosition, CursorValue, DeliveryGuarantee,
-    EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, EstimateSupport, Expression,
-    ExpressionLiteral, FilterCapabilities, IncrementalShape, PartitionAuthority, PartitionId,
-    PartitionPlan, PartitioningCapabilities, PayloadRetention, PlanId, PushdownFidelity,
-    PushedPredicate, QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor,
-    ResourceStream, Result, ScanPlan, ScanPredicate, ScanRequest, SchemaHash, SchemaSource,
-    ScopeKind, SortDirection, SourcePosition, source_name,
+    CompiledScanIntent, CompiledSourcePlanHash, CursorPosition, CursorValue, DeclarativeExpression,
+    DeclarativeExpressionLiteral, DeliveryGuarantee, EffectiveSchemaCatalogEntry,
+    EffectiveSchemaRuntime, EstimateSupport, FilterCapabilities, IncrementalShape,
+    PartitionAuthority, PartitionId, PartitionPlan, PartitioningCapabilities, PayloadRetention,
+    PlanId, PushdownFidelity, PushedPredicate, QueryableResource, ReplaySupport,
+    ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, ScanPlan, ScanPredicate,
+    ScanRequest, SchemaHash, SchemaSource, ScopeKind, SortDirection, SourcePosition, source_name,
 };
 use postgres::{Client, IsolationLevel, NoTls, Statement};
 
@@ -464,7 +464,7 @@ pub fn validate_postgres_table_resource_shape(
 
 pub fn postgres_table_predicate_fidelity(
     schema: &SchemaRef,
-    expression: &Expression,
+    expression: &DeclarativeExpression,
 ) -> PushdownFidelity {
     match parse_supported_predicate(schema, expression) {
         Some(_) => PushdownFidelity::Exact,
@@ -1205,7 +1205,7 @@ impl TypedLiteral {
 
 fn parse_supported_predicate(
     schema: &SchemaRef,
-    expression: &Expression,
+    expression: &DeclarativeExpression,
 ) -> Option<PostgresStoredPredicate> {
     let (field_name, operator, literal) = expression.comparison()?;
     let operator = match operator {
@@ -1219,29 +1219,33 @@ fn parse_supported_predicate(
     let field = field_by_name(schema, field_name)?;
     source_column_identifier(field).ok()?;
     let exact_literal_type = match (field.data_type(), literal) {
-        (DataType::Utf8, ExpressionLiteral::String(_))
-        | (DataType::Date32, ExpressionLiteral::String(_))
+        (DataType::Utf8, DeclarativeExpressionLiteral::String(_))
+        | (DataType::Date32, DeclarativeExpressionLiteral::String(_))
         | (
             DataType::Timestamp(TimeUnit::Millisecond | TimeUnit::Microsecond, _),
-            ExpressionLiteral::String(_),
+            DeclarativeExpressionLiteral::String(_),
         )
-        | (DataType::Boolean, ExpressionLiteral::Boolean(_))
-        | (DataType::Int64, ExpressionLiteral::Signed(_))
-        | (DataType::UInt64, ExpressionLiteral::Unsigned(_))
-        | (DataType::Float32 | DataType::Float64, ExpressionLiteral::Float64Bits(_)) => true,
-        (DataType::UInt64, ExpressionLiteral::Signed(value)) => *value >= 0,
+        | (DataType::Boolean, DeclarativeExpressionLiteral::Boolean(_))
+        | (DataType::Int64, DeclarativeExpressionLiteral::Signed(_))
+        | (DataType::UInt64, DeclarativeExpressionLiteral::Unsigned(_))
+        | (DataType::Float32 | DataType::Float64, DeclarativeExpressionLiteral::Float64Bits(_)) => {
+            true
+        }
+        (DataType::UInt64, DeclarativeExpressionLiteral::Signed(value)) => *value >= 0,
         _ => false,
     };
     if !exact_literal_type {
         return None;
     }
     let literal = match literal {
-        ExpressionLiteral::Boolean(value) => value.to_string(),
-        ExpressionLiteral::Signed(value) => value.to_string(),
-        ExpressionLiteral::Unsigned(value) => value.to_string(),
-        ExpressionLiteral::Float64Bits(bits) => f64::from_bits(*bits).to_string(),
-        ExpressionLiteral::String(value) => value.clone(),
-        ExpressionLiteral::Null | ExpressionLiteral::StringList(_) => return None,
+        DeclarativeExpressionLiteral::Boolean(value) => value.to_string(),
+        DeclarativeExpressionLiteral::Signed(value) => value.to_string(),
+        DeclarativeExpressionLiteral::Unsigned(value) => value.to_string(),
+        DeclarativeExpressionLiteral::Float64Bits(bits) => f64::from_bits(*bits).to_string(),
+        DeclarativeExpressionLiteral::String(value) => value.clone(),
+        DeclarativeExpressionLiteral::Null | DeclarativeExpressionLiteral::StringList(_) => {
+            return None;
+        }
         _ => return None,
     };
     parse_literal_for_field(field, operator, &literal)?;
@@ -1694,7 +1698,7 @@ mod tests {
     #[test]
     fn predicate_parser_accepts_only_structured_literals() {
         let schema = schema();
-        let expression = |value| Expression::parse_comparison(value).unwrap();
+        let expression = |value| DeclarativeExpression::parse_comparison(value).unwrap();
         assert_eq!(
             postgres_table_predicate_fidelity(&schema, &expression("id = 1")),
             PushdownFidelity::Exact
@@ -1703,12 +1707,12 @@ mod tests {
             postgres_table_predicate_fidelity(&schema, &expression("name = 'ada'")),
             PushdownFidelity::Exact
         );
-        assert!(Expression::parse_comparison("name = ada").is_err());
+        assert!(DeclarativeExpression::parse_comparison("name = ada").is_err());
         assert_eq!(
             postgres_table_predicate_fidelity(&schema, &expression("id = '1'")),
             PushdownFidelity::Unsupported
         );
-        assert!(Expression::parse_comparison("id = 1 OR 1 = 1").is_err());
+        assert!(DeclarativeExpression::parse_comparison("id = 1 OR 1 = 1").is_err());
         assert_eq!(
             postgres_table_predicate_fidelity(&schema, &expression("missing = 1")),
             PushdownFidelity::Unsupported

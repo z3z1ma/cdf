@@ -18,7 +18,7 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_ipc::writer::FileWriter;
 use arrow_schema::{DataType, Field, Schema};
 use cdf_kernel::{
-    BoxFuture, CompiledScanIntent, ExpressionNode, PartitionId, ResourceId, ScopeKey,
+    BoxFuture, CompiledScanIntent, DeclarativeExpressionNode, PartitionId, ResourceId, ScopeKey,
     SourceReadMode,
 };
 use cdf_memory::{MemoryClass, MemoryCoordinator};
@@ -1186,18 +1186,18 @@ fn exact_predicate_negotiation_requires_the_shared_physical_lowering() {
     let hostile = cdf_kernel::ScanPredicate::from_expression(
         cdf_kernel::PredicateId::new("hostile-version").unwrap(),
         "id = 7",
-        cdf_kernel::Expression::new(ExpressionNode::Call {
-            function: cdf_kernel::FunctionReference {
+        cdf_kernel::DeclarativeExpression::new(DeclarativeExpressionNode::Call {
+            function: cdf_kernel::DeclarativeFunctionReference {
                 namespace: "other".to_owned(),
                 name: "eq".to_owned(),
                 version: "999".to_owned(),
             },
             arguments: vec![
-                ExpressionNode::Column {
+                DeclarativeExpressionNode::Column {
                     name: "id".to_owned(),
                 },
-                ExpressionNode::Literal {
-                    value: cdf_kernel::ExpressionLiteral::Signed(7),
+                DeclarativeExpressionNode::Literal {
+                    value: cdf_kernel::DeclarativeExpressionLiteral::Signed(7),
                 },
             ],
         }),

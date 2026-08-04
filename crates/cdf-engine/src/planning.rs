@@ -18,7 +18,8 @@ use crate::{
     EstimateExplain, ExplainData, OperatorNode, PartitionExplain, PredicateExplain,
     expression::{
         mark_cursor_subsumed, plan_expression, record_exact_source_expression,
-        record_native_contract_expression, validate_recorded_expressions,
+        record_native_contract_expression, validate_recorded_contract_expressions,
+        validate_recorded_expressions,
     },
     output_schema::compile_output_schema,
 };
@@ -228,7 +229,10 @@ impl Planner {
                         && pushed.fidelity == PushdownFidelity::Exact
                 });
                 let mut planned = if exact_source_pushdown {
-                    record_exact_source_expression(predicate.canonical_expression.clone())?
+                    record_exact_source_expression(
+                        predicate.canonical_expression.clone(),
+                        &finish.expression_schema,
+                    )?
                 } else {
                     plan_expression(
                         predicate.canonical_expression.clone(),
@@ -267,7 +271,7 @@ impl Planner {
                 record_native_contract_expression(rule.expression.clone(), &contract_schema)
             })
             .collect::<Result<Vec<_>>>()?;
-        validate_recorded_expressions(&contract_expressions)?;
+        validate_recorded_contract_expressions(&contract_expressions)?;
         cdf_contract::bind_vector_validation_plan(
             &input.validation_program,
             std::sync::Arc::new(contract_schema),
@@ -556,13 +560,14 @@ fn plan_transform_expressions(
         };
         let mut expression = plan_expression(expression, use_kind, &expression_schema)?;
         expression.source_text = source_text.clone();
+        let output_type = expression.expression.root.scalar_type.clone();
         planned.push(expression);
 
         if let Some(column) = source_text {
             let field = std::sync::Arc::new(arrow_schema::Field::new(
                 column,
-                arrow_schema::DataType::Boolean,
-                true,
+                output_type.to_arrow()?,
+                output_type.nullable,
             ));
             let mut fields = expression_schema
                 .fields()
@@ -627,7 +632,7 @@ pub(crate) fn rebind_validation_program(
         .iter()
         .map(|rule| record_native_contract_expression(rule.expression.clone(), &contract_schema))
         .collect::<Result<Vec<_>>>()?;
-    validate_recorded_expressions(&contracts)?;
+    validate_recorded_contract_expressions(&contracts)?;
     let compiled_expression_plan = cdf_contract::CompiledExpressionPlan::current(
         candidate.compiled_expression_plan.predicates.clone(),
         candidate.compiled_expression_plan.residuals.clone(),
@@ -1251,7 +1256,7 @@ mod expression_transform_tests {
     use arrow_array::{Array, BooleanArray, Int64Array, RecordBatch};
     use arrow_schema::{DataType, Field, Schema};
     use cdf_contract::{
-        CompiledExpressionPlan, ContractPolicy, Expression, ObservedSchema, RowRule,
+        CompiledExpressionPlan, ContractPolicy, DeclarativeExpression, ObservedSchema, RowRule,
         TransformDescription, compile_validation_program,
     };
     use cdf_kernel::{PredicateId, ResourceId, ScanPredicate, ScanRequest, ScopeKey};
@@ -1261,7 +1266,7 @@ mod expression_transform_tests {
         scan_expression_schema,
     };
     use crate::expression::plan_expression;
-    use cdf_expression::{
+    use crate::expression_execution::{
         apply_bound_filters, apply_expression_transforms, bind_filter_expressions,
     };
 
@@ -1275,7 +1280,7 @@ mod expression_transform_tests {
         let mut policy = ContractPolicy::evolve();
         policy.transforms = vec![TransformDescription::Derive {
             column: "selected".to_owned(),
-            expression: Expression::parse_comparison("id >= 2").unwrap(),
+            expression: DeclarativeExpression::parse_comparison("id >= 2").unwrap(),
         }];
         policy.rows.rules = vec![RowRule::Nullability {
             column: "selected".to_owned(),
@@ -1324,8 +1329,14 @@ mod expression_transform_tests {
             vec![Arc::new(Int64Array::from(vec![1_i64]))],
         )
         .unwrap();
-        let error = apply_bound_filters(&dishonest_projected_batch, &bound).unwrap_err();
-        assert!(error.to_string().contains("changed to \"other\""));
+        let error = apply_bound_filters(
+            &dishonest_projected_batch,
+            &bound,
+            None,
+            &cdf_runtime::RunCancellation::default(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("input schema differs"));
     }
 
     #[test]
@@ -1335,10 +1346,10 @@ mod expression_transform_tests {
         policy.transforms = vec![
             TransformDescription::Derive {
                 column: "selected".to_owned(),
-                expression: Expression::parse_comparison("id >= 2").unwrap(),
+                expression: DeclarativeExpression::parse_comparison("id >= 2").unwrap(),
             },
             TransformDescription::Filter {
-                expression: Expression::parse_comparison("selected = true").unwrap(),
+                expression: DeclarativeExpression::parse_comparison("selected = true").unwrap(),
             },
         ];
         policy.rows.rules = vec![RowRule::Nullability {
@@ -1382,8 +1393,14 @@ mod expression_transform_tests {
             vec![Arc::new(Int64Array::from(vec![Some(1), None, Some(3)]))],
         )
         .unwrap();
-        let transformed =
-            apply_expression_transforms(batch, &program.transforms, &planned).unwrap();
+        let transformed = apply_expression_transforms(
+            batch,
+            &program.transforms,
+            &planned,
+            None,
+            &cdf_runtime::RunCancellation::default(),
+        )
+        .unwrap();
         assert_eq!(transformed.num_rows(), 1);
         assert_eq!(
             transformed

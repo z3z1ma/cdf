@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use arrow_array::{ArrayRef, BooleanArray, UInt64Array};
 use arrow_schema::{DataType, SchemaRef, TimeUnit};
-use cdf_contract::{CompiledExpressionPlan, Expression, ExpressionUse, PlannedExpression};
+use cdf_contract::{
+    CompiledExpressionPlan, DeclarativeExpression, ExpressionUse, PlannedExpression,
+};
 use cdf_kernel::{
     CdfError, Result, STATISTICS_MODEL_VERSION, StatisticsArrowType, StatisticsCompleteness,
     TypedScalar, canonical_arrow_schema_hash,
@@ -61,7 +63,7 @@ pub struct StatisticsPruningDecision {
 struct StatisticsPruningReport {
     pub statistics_model_version: u16,
     pub schema_hash: String,
-    pub predicate: Expression,
+    pub predicate: DeclarativeExpression,
     pub container_count: u64,
     pub pruned_count: u64,
     pub decisions: Box<[StatisticsPruningDecision]>,
@@ -109,7 +111,7 @@ pub struct StatisticsPruningSummary {
     pub evidence_generation: String,
     pub evidence: StatisticsPruningEvidence,
     pub schema_hash: String,
-    pub predicate: Expression,
+    pub predicate: DeclarativeExpression,
     pub segment_count: u64,
     pub pruned_count: u64,
     pub pruned_rows: u64,
@@ -176,7 +178,7 @@ pub fn for_each_verified_package_segment_pruning(
         evidence_generation: verified.package_hash().to_owned(),
         evidence,
         schema_hash: schema_hash.clone(),
-        predicate: planned.optimized.clone(),
+        predicate: planned.original.clone(),
         segment_count: 0,
         pruned_count: 0,
         pruned_rows: 0,
@@ -190,7 +192,7 @@ pub fn for_each_verified_package_segment_pruning(
 
     if !profile_present {
         let conservative_fields = planned
-            .optimized
+            .original
             .column_dependencies()
             .into_iter()
             .map(Into::into)
@@ -396,16 +398,14 @@ fn evaluate_statistics_rows(
         return Ok(StatisticsPruningReport {
             statistics_model_version: STATISTICS_MODEL_VERSION,
             schema_hash: expected_schema_hash.to_owned(),
-            predicate: planned.optimized.clone(),
+            predicate: planned.original.clone(),
             container_count: 0,
             pruned_count: 0,
             decisions: Box::new([]),
         });
     }
-    let Some(logical) = crate::expression::lower_recorded_filter_for_pruning(
-        &planned.optimized.root,
-        schema.as_ref(),
-    )?
+    let Some(logical) =
+        crate::expression::lower_recorded_filter_for_pruning(&planned.expression, schema.as_ref())?
     else {
         return conservative_report(planned, expected_schema_hash, containers);
     };
@@ -421,7 +421,7 @@ fn evaluate_statistics_rows(
         ));
     }
 
-    let referenced_fields = planned.optimized.column_dependencies();
+    let referenced_fields = planned.original.column_dependencies();
     let mut pruned_count = 0_u64;
     let decisions = containers
         .into_iter()
@@ -461,7 +461,7 @@ fn evaluate_statistics_rows(
     Ok(StatisticsPruningReport {
         statistics_model_version: STATISTICS_MODEL_VERSION,
         schema_hash: expected_schema_hash.to_owned(),
-        predicate: planned.optimized.clone(),
+        predicate: planned.original.clone(),
         container_count,
         pruned_count,
         decisions,
@@ -777,7 +777,7 @@ fn conservative_report(
     containers: Vec<PruningContainer>,
 ) -> Result<StatisticsPruningReport> {
     let conservative_fields = planned
-        .optimized
+        .original
         .column_dependencies()
         .into_iter()
         .map(Into::into)
@@ -801,7 +801,7 @@ fn conservative_report(
     Ok(StatisticsPruningReport {
         statistics_model_version: STATISTICS_MODEL_VERSION,
         schema_hash: expected_schema_hash.to_owned(),
-        predicate: planned.optimized.clone(),
+        predicate: planned.original.clone(),
         container_count,
         pruned_count: 0,
         decisions,
@@ -941,7 +941,9 @@ mod tests {
 
     use arrow_array::{Array, Int32Array, RecordBatch};
     use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
-    use cdf_contract::{CompiledExpressionPlan, Expression, ExpressionNode, ExpressionUse};
+    use cdf_contract::{
+        CompiledExpressionPlan, DeclarativeExpression, DeclarativeExpressionNode, ExpressionUse,
+    };
     use cdf_kernel::{
         BatchStats, IncompleteStatisticsReason, SegmentId, StatisticsArrowType,
         StatisticsCompleteness, TypedScalar,
@@ -1019,14 +1021,17 @@ mod tests {
         }
     }
 
-    fn compiled(expression: Expression, schema: &Schema) -> CompiledExpressionPlan {
+    fn compiled(expression: DeclarativeExpression, schema: &Schema) -> CompiledExpressionPlan {
         let planned =
             crate::expression::plan_expression(expression, ExpressionUse::Filter, schema).unwrap();
         CompiledExpressionPlan::current(vec![planned], Vec::new(), Vec::new(), Vec::new()).unwrap()
     }
 
     fn planned(source: &str, schema: &Schema) -> CompiledExpressionPlan {
-        compiled(Expression::parse_comparison(source).unwrap(), schema)
+        compiled(
+            DeclarativeExpression::parse_comparison(source).unwrap(),
+            schema,
+        )
     }
 
     fn package_with_segment_statistics(
@@ -1253,9 +1258,9 @@ mod tests {
         );
 
         let is_null = compiled(
-            Expression::call(
+            DeclarativeExpression::call(
                 "is_null",
-                vec![ExpressionNode::Column {
+                vec![DeclarativeExpressionNode::Column {
                     name: "score".to_owned(),
                 }],
             ),
@@ -1311,7 +1316,8 @@ mod tests {
             ),
         ];
         let amount = crate::expression::record_exact_source_expression(
-            Expression::parse_comparison("amount >= 5").unwrap(),
+            DeclarativeExpression::parse_comparison("amount >= 5").unwrap(),
+            schema.as_ref(),
         )
         .unwrap();
         let amount =
@@ -1325,7 +1331,8 @@ mod tests {
         );
 
         let timestamp = crate::expression::record_exact_source_expression(
-            Expression::parse_comparison("occurred > '1970-01-01T00:00:02Z'").unwrap(),
+            DeclarativeExpression::parse_comparison("occurred > '1970-01-01T00:00:02Z'").unwrap(),
+            schema.as_ref(),
         )
         .unwrap();
         let timestamp =

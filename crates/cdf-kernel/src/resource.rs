@@ -565,13 +565,13 @@ pub struct ScanPredicate {
     /// Original operator text retained only for diagnostics and evidence.
     pub expression: String,
     /// Canonical source/engine execution authority parsed once at the trust boundary.
-    pub canonical_expression: crate::Expression,
+    pub canonical_expression: crate::DeclarativeExpression,
 }
 
 impl ScanPredicate {
     pub fn new(predicate_id: PredicateId, expression: impl Into<String>) -> Result<Self> {
         let expression = expression.into();
-        let canonical_expression = crate::Expression::parse_comparison(&expression)?;
+        let canonical_expression = crate::DeclarativeExpression::parse_comparison(&expression)?;
         Ok(Self {
             predicate_id,
             expression,
@@ -582,7 +582,7 @@ impl ScanPredicate {
     pub fn from_expression(
         predicate_id: PredicateId,
         diagnostic: impl Into<String>,
-        canonical_expression: crate::Expression,
+        canonical_expression: crate::DeclarativeExpression,
     ) -> Result<Self> {
         canonical_expression.validate()?;
         Ok(Self {

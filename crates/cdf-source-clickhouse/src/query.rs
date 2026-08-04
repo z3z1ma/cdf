@@ -2,9 +2,9 @@ use std::collections::BTreeSet;
 
 use arrow_schema::{DataType, Field, SchemaRef, TimeUnit};
 use cdf_kernel::{
-    CdfError, CompiledScanIntent, CursorValue, Expression, ExpressionLiteral, PartitionPlan,
-    PushdownFidelity, ResourceDescriptor, Result, SortDirection, SourcePosition, physical_type,
-    source_name,
+    CdfError, CompiledScanIntent, CursorValue, DeclarativeExpression, DeclarativeExpressionLiteral,
+    PartitionPlan, PushdownFidelity, ResourceDescriptor, Result, SortDirection, SourcePosition,
+    physical_type, source_name,
 };
 
 use crate::{
@@ -287,14 +287,17 @@ pub(crate) fn build_query(
     Ok(ClickHouseQuery { sql, parameters })
 }
 
-pub(crate) fn predicate_fidelity(schema: &SchemaRef, expression: &Expression) -> PushdownFidelity {
+pub(crate) fn predicate_fidelity(
+    schema: &SchemaRef,
+    expression: &DeclarativeExpression,
+) -> PushdownFidelity {
     parse_supported_predicate(schema, expression)
         .map_or(PushdownFidelity::Unsupported, |_| PushdownFidelity::Exact)
 }
 
 fn parse_supported_predicate(
     schema: &SchemaRef,
-    expression: &Expression,
+    expression: &DeclarativeExpression,
 ) -> Option<StoredPredicate> {
     let (field_name, operator, literal) = expression.comparison()?;
     let operator = match operator {
@@ -308,31 +311,34 @@ fn parse_supported_predicate(
     let field = field_by_name(schema, field_name)?;
     source_identifier(field).ok()?;
     let value = match (field.data_type(), literal) {
-        (DataType::Boolean, ExpressionLiteral::Boolean(value))
+        (DataType::Boolean, DeclarativeExpressionLiteral::Boolean(value))
             if operator == PredicateOperator::Eq =>
         {
             QueryParameter::Boolean(*value)
         }
         (
             DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
-            ExpressionLiteral::Signed(value),
+            DeclarativeExpressionLiteral::Signed(value),
         ) => QueryParameter::Signed(*value),
         (
             DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64,
-            ExpressionLiteral::Unsigned(value),
+            DeclarativeExpressionLiteral::Unsigned(value),
         ) => QueryParameter::Unsigned(*value),
         (
             DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64,
-            ExpressionLiteral::Signed(value),
+            DeclarativeExpressionLiteral::Signed(value),
         ) if *value >= 0 => QueryParameter::Unsigned((*value).try_into().ok()?),
-        (DataType::Float32 | DataType::Float64, ExpressionLiteral::Float64Bits(bits)) => {
+        (
+            DataType::Float32 | DataType::Float64,
+            DeclarativeExpressionLiteral::Float64Bits(bits),
+        ) => {
             let value = f64::from_bits(*bits);
             if !value.is_finite() {
                 return None;
             }
             QueryParameter::Float(value)
         }
-        (DataType::Utf8 | DataType::LargeUtf8, ExpressionLiteral::String(value)) => {
+        (DataType::Utf8 | DataType::LargeUtf8, DeclarativeExpressionLiteral::String(value)) => {
             QueryParameter::String(value.clone())
         }
         _ => return None,

@@ -2,7 +2,10 @@ use cdf_kernel::{BatchId, ResourceId, SchemaHash};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    expression::{Expression, ExpressionLiteral, ExpressionNode, FunctionReference},
+    expression::{
+        DeclarativeExpression, DeclarativeExpressionLiteral, DeclarativeExpressionNode,
+        DeclarativeFunctionReference,
+    },
     policy::{
         IdentifierPolicy, PiiRedactionPolicy, PromotionPolicy, RedactionDecision,
         TransformDescription, ValidationDepth, VerdictAction,
@@ -153,7 +156,7 @@ pub struct ColumnProgram {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RowRuleProgram {
     pub rule_id: String,
-    pub expression: Expression,
+    pub expression: DeclarativeExpression,
     #[serde(default, skip_serializing_if = "MissingColumnBehavior::is_error")]
     pub missing_column: MissingColumnBehavior,
 }
@@ -193,7 +196,7 @@ pub(crate) enum NativeRowRule<'a> {
 impl RowRuleProgram {
     pub fn expression_function(&self) -> Option<&str> {
         match &self.expression.root {
-            ExpressionNode::Call { function, .. } => Some(function.name.as_str()),
+            DeclarativeExpressionNode::Call { function, .. } => Some(function.name.as_str()),
             _ => None,
         }
     }
@@ -207,7 +210,7 @@ impl RowRuleProgram {
 
     pub(crate) fn native_rule(&self) -> cdf_kernel::Result<NativeRowRule<'_>> {
         self.expression.validate()?;
-        let ExpressionNode::Call {
+        let DeclarativeExpressionNode::Call {
             function,
             arguments,
         } = &self.expression.root
@@ -217,22 +220,22 @@ impl RowRuleProgram {
                 self.rule_id
             )));
         };
-        if function != &FunctionReference::cdf(function.name.clone()) {
+        if function != &DeclarativeFunctionReference::cdf(function.name.clone()) {
             return Err(cdf_kernel::CdfError::contract(format!(
                 "contract rule {:?} uses unsupported function {}.{}@{}",
                 self.rule_id, function.namespace, function.name, function.version
             )));
         }
         match (function.name.as_str(), arguments.as_slice()) {
-            ("is_not_null", [ExpressionNode::Column { name }]) => {
+            ("is_not_null", [DeclarativeExpressionNode::Column { name }]) => {
                 Ok(NativeRowRule::Nullability { column: name })
             }
             (
                 "in_domain",
                 [
-                    ExpressionNode::Column { name },
-                    ExpressionNode::Literal {
-                        value: ExpressionLiteral::StringList(allowed),
+                    DeclarativeExpressionNode::Column { name },
+                    DeclarativeExpressionNode::Literal {
+                        value: DeclarativeExpressionLiteral::StringList(allowed),
                     },
                 ],
             ) => Ok(NativeRowRule::Domain {
@@ -242,9 +245,9 @@ impl RowRuleProgram {
             (
                 "in_range",
                 [
-                    ExpressionNode::Column { name },
-                    ExpressionNode::Literal { value: min },
-                    ExpressionNode::Literal { value: max },
+                    DeclarativeExpressionNode::Column { name },
+                    DeclarativeExpressionNode::Literal { value: min },
+                    DeclarativeExpressionNode::Literal { value: max },
                 ],
             ) => Ok(NativeRowRule::Range {
                 column: name,
@@ -254,9 +257,9 @@ impl RowRuleProgram {
             (
                 "matches_regex",
                 [
-                    ExpressionNode::Column { name },
-                    ExpressionNode::Literal {
-                        value: ExpressionLiteral::String(pattern),
+                    DeclarativeExpressionNode::Column { name },
+                    DeclarativeExpressionNode::Literal {
+                        value: DeclarativeExpressionLiteral::String(pattern),
                     },
                 ],
             ) => Ok(NativeRowRule::Regex {
@@ -266,9 +269,9 @@ impl RowRuleProgram {
             (
                 "fresh_within",
                 [
-                    ExpressionNode::Column { name },
-                    ExpressionNode::Literal {
-                        value: ExpressionLiteral::Unsigned(max_age_ms),
+                    DeclarativeExpressionNode::Column { name },
+                    DeclarativeExpressionNode::Literal {
+                        value: DeclarativeExpressionLiteral::Unsigned(max_age_ms),
                     },
                 ],
             ) => Ok(NativeRowRule::Freshness {
@@ -278,11 +281,11 @@ impl RowRuleProgram {
             (
                 "dedup" | "exact_row_dedup",
                 [
-                    ExpressionNode::Literal {
-                        value: ExpressionLiteral::StringList(keys),
+                    DeclarativeExpressionNode::Literal {
+                        value: DeclarativeExpressionLiteral::StringList(keys),
                     },
-                    ExpressionNode::Literal {
-                        value: ExpressionLiteral::String(keep),
+                    DeclarativeExpressionNode::Literal {
+                        value: DeclarativeExpressionLiteral::String(keep),
                     },
                 ],
             ) => {
@@ -311,10 +314,10 @@ impl RowRuleProgram {
     }
 
     pub(crate) fn referenced_columns(&self) -> Vec<&str> {
-        fn visit<'a>(node: &'a ExpressionNode, output: &mut Vec<&'a str>) {
+        fn visit<'a>(node: &'a DeclarativeExpressionNode, output: &mut Vec<&'a str>) {
             match node {
-                ExpressionNode::Column { name } => output.push(name.as_str()),
-                ExpressionNode::Call { arguments, .. } => {
+                DeclarativeExpressionNode::Column { name } => output.push(name.as_str()),
+                DeclarativeExpressionNode::Call { arguments, .. } => {
                     for argument in arguments {
                         visit(argument, output);
                     }
@@ -328,10 +331,10 @@ impl RowRuleProgram {
     }
 }
 
-fn optional_string(value: &ExpressionLiteral) -> cdf_kernel::Result<Option<&str>> {
+fn optional_string(value: &DeclarativeExpressionLiteral) -> cdf_kernel::Result<Option<&str>> {
     match value {
-        ExpressionLiteral::Null => Ok(None),
-        ExpressionLiteral::String(value) => Ok(Some(value)),
+        DeclarativeExpressionLiteral::Null => Ok(None),
+        DeclarativeExpressionLiteral::String(value) => Ok(Some(value)),
         _ => Err(cdf_kernel::CdfError::contract(
             "contract range bounds must be string or null literals",
         )),

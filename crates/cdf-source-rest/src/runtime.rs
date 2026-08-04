@@ -18,14 +18,15 @@ use cdf_http::{
 };
 use cdf_kernel::{
     BackpressureSupport, Batch, BatchStream, BoxFuture, CapabilitySupport, CdfError,
-    CompiledScanIntent, CompiledSourcePlanHash, CursorPosition, CursorValue, DeliveryGuarantee,
-    EffectiveSchemaCatalogEntry, EffectiveSchemaRuntime, EstimateSupport, Expression,
-    ExpressionLiteral, FilterCapabilities, IncrementalShape, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
-    PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAuthority, PartitionId, PartitionPlan,
-    PartitioningCapabilities, PayloadRetention, PlanId, PreContractResidualCandidate,
-    PushdownFidelity, PushedPredicate, QueryableResource, ReplaySupport, ResourceCapabilities,
-    ResourceDescriptor, ResourceStream, Result, ScanPlan, ScanRequest, SchemaHash, SchemaSource,
-    ScopeKind, SourcePosition, TypePolicyAllowances, WriteDisposition, source_name,
+    CompiledScanIntent, CompiledSourcePlanHash, CursorPosition, CursorValue, DeclarativeExpression,
+    DeclarativeExpressionLiteral, DeliveryGuarantee, EffectiveSchemaCatalogEntry,
+    EffectiveSchemaRuntime, EstimateSupport, FilterCapabilities, IncrementalShape,
+    PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAuthority,
+    PartitionId, PartitionPlan, PartitioningCapabilities, PayloadRetention, PlanId,
+    PreContractResidualCandidate, PushdownFidelity, PushedPredicate, QueryableResource,
+    ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceStream, Result, ScanPlan,
+    ScanRequest, SchemaHash, SchemaSource, ScopeKind, SourcePosition, TypePolicyAllowances,
+    WriteDisposition, source_name,
 };
 use cdf_memory::MemoryCoordinator;
 use cdf_runtime::{
@@ -397,7 +398,7 @@ impl QueryableResource for RestResource {
 pub fn cursor_pushdown_value(
     descriptor: &ResourceDescriptor,
     plan: &RestResourcePlan,
-    expression: &Expression,
+    expression: &DeclarativeExpression,
 ) -> Option<String> {
     let cursor = descriptor.cursor.as_ref()?;
     let cursor_param = plan.cursor_param.as_deref()?;
@@ -407,14 +408,14 @@ pub fn cursor_pushdown_value(
         return None;
     }
     match literal {
-        ExpressionLiteral::Boolean(value) => Some(value.to_string()),
-        ExpressionLiteral::Signed(value) => Some(value.to_string()),
-        ExpressionLiteral::Unsigned(value) => Some(value.to_string()),
-        ExpressionLiteral::Float64Bits(bits) => Some(f64::from_bits(*bits).to_string()),
-        ExpressionLiteral::String(value) if !value.is_empty() => Some(value.clone()),
-        ExpressionLiteral::Null
-        | ExpressionLiteral::String(_)
-        | ExpressionLiteral::StringList(_) => None,
+        DeclarativeExpressionLiteral::Boolean(value) => Some(value.to_string()),
+        DeclarativeExpressionLiteral::Signed(value) => Some(value.to_string()),
+        DeclarativeExpressionLiteral::Unsigned(value) => Some(value.to_string()),
+        DeclarativeExpressionLiteral::Float64Bits(bits) => Some(f64::from_bits(*bits).to_string()),
+        DeclarativeExpressionLiteral::String(value) if !value.is_empty() => Some(value.clone()),
+        DeclarativeExpressionLiteral::Null
+        | DeclarativeExpressionLiteral::String(_)
+        | DeclarativeExpressionLiteral::StringList(_) => None,
         _ => None,
     }
 }
@@ -2116,7 +2117,8 @@ mod tests {
             cursor_pushdown_value(
                 &descriptor,
                 &plan,
-                &Expression::parse_comparison("updated_at >= \"2026-07-01T00:00:00Z\"").unwrap(),
+                &DeclarativeExpression::parse_comparison("updated_at >= \"2026-07-01T00:00:00Z\"")
+                    .unwrap(),
             ),
             Some("2026-07-01T00:00:00Z".to_owned())
         );
@@ -2124,7 +2126,7 @@ mod tests {
             cursor_pushdown_value(
                 &descriptor,
                 &plan,
-                &Expression::parse_comparison("id = 1").unwrap(),
+                &DeclarativeExpression::parse_comparison("id = 1").unwrap(),
             ),
             None
         );
@@ -2132,11 +2134,14 @@ mod tests {
             cursor_pushdown_value(
                 &descriptor,
                 &plan,
-                &Expression::parse_comparison("not_updated_at >= \"2026-07-01\"").unwrap(),
+                &DeclarativeExpression::parse_comparison("not_updated_at >= \"2026-07-01\"")
+                    .unwrap(),
             ),
             None
         );
-        assert!(Expression::parse_comparison("updated_at >= checkpoint.cursor").is_err());
+        assert!(
+            DeclarativeExpression::parse_comparison("updated_at >= checkpoint.cursor").is_err()
+        );
 
         let request = ScanRequest {
             resource_id: descriptor.resource_id.clone(),

@@ -500,7 +500,7 @@ fn parquet_row_filter(
                     .collect::<Vec<_>>(),
             );
             let compiled = cdf_expression::bind_boolean_expression(
-                &predicate.canonical_expression.root,
+                &predicate.canonical_expression,
                 &predicate_schema,
             )?;
             let projection = ProjectionMask::roots(parquet_schema, roots);

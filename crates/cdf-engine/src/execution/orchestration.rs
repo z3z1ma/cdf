@@ -6,6 +6,11 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use crate::expression_execution::{
+    BoundExpressionTransform, BoundScalarExpression, apply_bound_expression_transforms,
+    apply_bound_filters, apply_expression_transforms, bind_expression_transforms,
+    bind_filter_expressions, expression_transform_output_schema,
+};
 use arrow_array::{
     Array, ArrayRef, BooleanArray, RecordBatch, StringArray, UInt32Array, UInt64Array,
 };
@@ -19,11 +24,6 @@ use cdf_contract::{
     encode_package_dedup_keys, encode_residual_json_v1, encode_residual_json_v1_redacted,
     evaluate_package_order_dedup, materialize_schema_coercion, package_dedup_rule,
     reject_untrusted_schema_coercion_metadata, schema_coercion_plan_from_trusted_json,
-};
-use cdf_expression::{
-    BoundBooleanExpression, BoundExpressionTransform, apply_bound_expression_transforms,
-    apply_bound_filters, apply_expression_transforms, bind_expression_transforms,
-    bind_filter_expressions, expression_transform_output_schema,
 };
 use cdf_kernel::{
     Batch, CdfError, CompositePosition, ExecutablePartition, ExecutionExtent,
@@ -188,8 +188,26 @@ pub fn normalize_record_batch(
         CdfError::contract("validation program has no recorded compiled expression plan")
     })?;
     compiled.validate_program_binding(program)?;
+    let invocation = standalone_execution_options()?;
+    let memory = invocation
+        .services
+        .as_ref()
+        .ok_or_else(|| CdfError::internal("standalone expression execution omitted memory"))?
+        .memory();
+    let request = transform_working_set_request(&batch, &[])?;
+    let _expression_memory_lease = memory.try_reserve(&request)?.ok_or_else(|| {
+        CdfError::environment(
+            "standalone expression execution could not reserve its bounded working set",
+        )
+    })?;
     normalize_batch(
-        apply_expression_transforms(batch, &program.transforms, &compiled.transforms)?,
+        apply_expression_transforms(
+            batch,
+            &program.transforms,
+            &compiled.transforms,
+            Some(&_expression_memory_lease),
+            &cdf_runtime::RunCancellation::default(),
+        )?,
         program,
     )
 }
@@ -224,6 +242,12 @@ where
         )));
     }
     EnginePreviewLimits::new(limits.max_rows, limits.max_bytes, limits.max_batches)?;
+    let preview_invocation = standalone_execution_options()?;
+    let preview_memory = preview_invocation
+        .services
+        .as_ref()
+        .ok_or_else(|| CdfError::internal("preview expression execution omitted memory"))?
+        .memory();
     let effective_schema_evidence = validate_effective_schema_plan(plan, resource)?;
     crate::planning::validate_plan_schema_authority(resource, plan)?;
     let resource_schema = resource.schema();
@@ -238,6 +262,11 @@ where
     )?;
     let bound_residuals =
         bind_filter_expressions(&plan.compiled_expression_plan.residuals, &expression_schema)?;
+    let tracking_expression_schema = source_row_tracking_schema(&expression_schema)?;
+    let bound_tracked_residuals = bind_filter_expressions(
+        &plan.compiled_expression_plan.residuals,
+        &tracking_expression_schema,
+    )?;
     let bound_transforms = bind_expression_transforms(
         &plan.validation_program.transforms,
         &plan.compiled_expression_plan.transforms,
@@ -246,10 +275,13 @@ where
     let bound_tracked_transforms = bind_expression_transforms(
         &plan.validation_program.transforms,
         &plan.compiled_expression_plan.transforms,
-        &source_row_tracking_schema(&expression_schema)?,
+        &tracking_expression_schema,
     )?;
-    let contract_schema =
-        expression_transform_output_schema(&plan.validation_program.transforms, &expression_schema);
+    let contract_schema = expression_transform_output_schema(
+        &plan.validation_program.transforms,
+        &plan.compiled_expression_plan.transforms,
+        &expression_schema,
+    )?;
     let pre_contract_may_filter = !bound_residuals.is_empty()
         || plan.validation_program.transforms.iter().any(|transform| {
             matches!(transform, cdf_contract::TransformDescription::Filter { .. })
@@ -588,9 +620,24 @@ where
                             .map(|metadata| metadata.operation_field.clone());
                         let track_source_rows =
                             pre_contract_may_filter || !residual_candidates.is_empty();
+                        let transform_memory_lease = reserve_transform_working_set(
+                            Some(&preview_memory),
+                            &record_batch,
+                            &residual_candidates,
+                        )
+                        .await?;
                         let mut no_row_limit = None;
-                        let executed =
-                            execute_batch(&record_batch, &bound_residuals, track_source_rows)?;
+                        let executed = execute_batch(
+                            &record_batch,
+                            if track_source_rows {
+                                &bound_tracked_residuals
+                            } else {
+                                &bound_residuals
+                            },
+                            track_source_rows,
+                            transform_memory_lease.as_ref(),
+                            &cdf_runtime::RunCancellation::default(),
+                        )?;
                         let ExecutedBatch {
                             batch: output,
                             source_rows,
@@ -604,6 +651,8 @@ where
                             },
                             &mut no_row_limit,
                             track_source_rows,
+                            transform_memory_lease.as_ref(),
+                            &cdf_runtime::RunCancellation::default(),
                         )?;
                         let mut discard_quarantine = |_record: QuarantineRecord| Ok(());
                         let contract = apply_contract_exec(
@@ -622,7 +671,7 @@ where
                                     .map(|evidence| evidence.observation_id.as_str()),
                             },
                             TransformKernelMode::Fused,
-                            None,
+                            transform_memory_lease,
                         )?;
                         let projected =
                             apply_projection(&contract.accepted, plan.final_projection.as_deref())?;
@@ -3154,6 +3203,11 @@ where
     )?;
     let bound_residuals =
         bind_filter_expressions(&plan.compiled_expression_plan.residuals, &expression_schema)?;
+    let tracking_expression_schema = source_row_tracking_schema(&expression_schema)?;
+    let bound_tracked_residuals = bind_filter_expressions(
+        &plan.compiled_expression_plan.residuals,
+        &tracking_expression_schema,
+    )?;
     let bound_transforms = bind_expression_transforms(
         &plan.validation_program.transforms,
         &plan.compiled_expression_plan.transforms,
@@ -3162,10 +3216,13 @@ where
     let bound_tracked_transforms = bind_expression_transforms(
         &plan.validation_program.transforms,
         &plan.compiled_expression_plan.transforms,
-        &source_row_tracking_schema(&expression_schema)?,
+        &tracking_expression_schema,
     )?;
-    let contract_schema =
-        expression_transform_output_schema(&plan.validation_program.transforms, &expression_schema);
+    let contract_schema = expression_transform_output_schema(
+        &plan.validation_program.transforms,
+        &plan.compiled_expression_plan.transforms,
+        &expression_schema,
+    )?;
     let pre_contract_may_filter = !bound_residuals.is_empty()
         || plan.validation_program.transforms.iter().any(|transform| {
             matches!(transform, cdf_contract::TransformDescription::Filter { .. })
@@ -4153,7 +4210,23 @@ where
                 let track_source_rows = pre_contract_may_filter
                     || !residual_candidates.is_empty()
                     || late_data_policy.is_some();
-                let executed = execute_batch(&record_batch, &bound_residuals, track_source_rows)?;
+                let transform_memory_lease = reserve_transform_working_set(
+                    memory.as_ref(),
+                    &record_batch,
+                    &residual_candidates,
+                )
+                .await?;
+                let executed = execute_batch(
+                    &record_batch,
+                    if track_source_rows {
+                        &bound_tracked_residuals
+                    } else {
+                        &bound_residuals
+                    },
+                    track_source_rows,
+                    transform_memory_lease.as_ref(),
+                    &run_cancellation,
+                )?;
                 let ExecutedBatch {
                     batch: output,
                     source_rows,
@@ -4167,6 +4240,8 @@ where
                     },
                     &mut remaining_limit,
                     track_source_rows,
+                    transform_memory_lease.as_ref(),
+                    &run_cancellation,
                 )?;
                 let batch_source_position = normalize_source_position_for_partition(
                     batch.header.source_position.clone(),
@@ -4258,12 +4333,6 @@ where
                 let evaluation_context = package_evaluation_context
                     .clone()
                     .with_source_position(batch_source_position.clone());
-                let transform_memory_lease = reserve_transform_working_set(
-                    memory.as_ref(),
-                    &output,
-                    &residual_candidates,
-                )
-                .await?;
                 let quarantine_lease = if residual_candidates.is_empty()
                     && !program_may_quarantine(&validation_program)
                 {
@@ -6502,8 +6571,10 @@ fn partition_execution_span(context: &ExecutionTraceContext, partition_id: &str)
 
 fn execute_batch(
     batch: &RecordBatch,
-    residuals: &[BoundBooleanExpression],
+    residuals: &[BoundScalarExpression],
     track_source_rows: bool,
+    memory: Option<&MemoryLease>,
+    cancellation: &cdf_runtime::RunCancellation,
 ) -> Result<ExecutedBatch> {
     let tracked = if track_source_rows {
         if batch.schema().index_of(SOURCE_ROW_FIELD).is_ok() {
@@ -6531,7 +6602,7 @@ fn execute_batch(
     } else {
         batch.clone()
     };
-    let filtered = apply_bound_filters(&tracked, residuals)?;
+    let filtered = apply_bound_filters(&tracked, residuals, memory, cancellation)?;
     Ok(ExecutedBatch {
         batch: filtered,
         source_rows: None,
@@ -6544,8 +6615,10 @@ fn apply_pre_contract_expressions(
     transforms: &[BoundExpressionTransform],
     remaining_limit: &mut Option<u64>,
     track_source_rows: bool,
+    memory: Option<&MemoryLease>,
+    cancellation: &cdf_runtime::RunCancellation,
 ) -> Result<ExecutedBatch> {
-    let transformed = apply_bound_expression_transforms(batch, transforms)?;
+    let transformed = apply_bound_expression_transforms(batch, transforms, memory, cancellation)?;
     let transformed_rows = transformed.num_rows();
     let (transformed, limit_truncated) = match remaining_limit {
         Some(remaining) => {
@@ -6634,6 +6707,14 @@ async fn reserve_transform_working_set(
     let Some(memory) = memory else {
         return Ok(None);
     };
+    let request = transform_working_set_request(batch, residual_candidates)?;
+    Ok(Some(reserve(Arc::clone(memory), request).await?))
+}
+
+fn transform_working_set_request(
+    batch: &RecordBatch,
+    residual_candidates: &[PreContractResidualCandidate],
+) -> Result<ReservationRequest> {
     let input_bytes = u64::try_from(batch.get_array_memory_size())
         .map_err(|_| CdfError::data("transform input memory exceeds u64"))?;
     let residual_bytes = residual_candidates
@@ -6660,15 +6741,14 @@ async fn reserve_transform_working_set(
         })?;
     let bytes = input_bytes
         .max(1)
-        .checked_mul(2)
+        .checked_mul(4)
         .and_then(|bytes| bytes.checked_add(residual_bytes))
         .ok_or_else(|| CdfError::data("transform working set overflow"))?;
-    let request = ReservationRequest::new(
+    Ok(ReservationRequest::new(
         ConsumerKey::new("fused-transform", MemoryClass::Transform)?,
         bytes,
     )?
-    .as_minimum_working_set();
-    Ok(Some(reserve(Arc::clone(memory), request).await?))
+    .as_minimum_working_set())
 }
 
 fn apply_contract_exec(
@@ -7793,8 +7873,8 @@ mod transform_kernel_tests {
     use arrow_array::{BooleanArray, Int64Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use cdf_contract::{
-        ContractEvaluationContext, ContractPolicy, Expression, ExpressionUse, ObservedSchema,
-        SchemaEvolutionMode, TransformDescription, VectorValidationEvaluator,
+        ContractEvaluationContext, ContractPolicy, DeclarativeExpression, ExpressionUse,
+        ObservedSchema, SchemaEvolutionMode, TransformDescription, VectorValidationEvaluator,
         compile_validation_program,
     };
     use cdf_kernel::{BatchId, ErrorKind, PreContractResidualCandidate, TrustLevel, with_semantic};
@@ -7838,10 +7918,10 @@ mod transform_kernel_tests {
         let transforms = vec![
             TransformDescription::Derive {
                 column: "selected".to_owned(),
-                expression: Expression::parse_comparison("id >= 2").unwrap(),
+                expression: DeclarativeExpression::parse_comparison("id >= 2").unwrap(),
             },
             TransformDescription::Filter {
-                expression: Expression::parse_comparison("selected = true").unwrap(),
+                expression: DeclarativeExpression::parse_comparison("selected = true").unwrap(),
             },
         ];
         let derive = crate::expression::plan_expression(
@@ -7867,7 +7947,7 @@ mod transform_kernel_tests {
         )
         .unwrap();
         let tracked_schema = source_row_tracking_schema(schema.as_ref()).unwrap();
-        let bound = cdf_expression::bind_expression_transforms(
+        let bound = crate::expression_execution::bind_expression_transforms(
             &transforms,
             &[derive, filter],
             &tracked_schema,
@@ -7875,9 +7955,17 @@ mod transform_kernel_tests {
         .unwrap();
         let input =
             RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![1_i64, 2]))]).unwrap();
-        let tracked = execute_batch(&input, &[], true).unwrap();
-        let output =
-            apply_pre_contract_expressions(tracked.batch, &bound, &mut None, true).unwrap();
+        let cancellation = cdf_runtime::RunCancellation::default();
+        let tracked = execute_batch(&input, &[], true, None, &cancellation).unwrap();
+        let output = apply_pre_contract_expressions(
+            tracked.batch,
+            &bound,
+            &mut None,
+            true,
+            None,
+            &cancellation,
+        )
+        .unwrap();
 
         assert_eq!(output.batch.num_rows(), 1);
         assert_eq!(

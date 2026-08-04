@@ -43,10 +43,17 @@ pub use evaluator::{
 pub use expression::{
     CDF_FUNCTION_NAMESPACE, CDF_FUNCTION_VERSION, COMPILED_EXPRESSION_PLAN_VERSION,
     CompiledExpressionPlan, DATAFUSION_EXPRESSION_OPTIMIZER, DATAFUSION_EXPRESSION_PIN,
-    EXPRESSION_IR_VERSION, Expression, ExpressionFidelity, ExpressionLint, ExpressionLintCode,
-    ExpressionLiteral, ExpressionNode, ExpressionUse, FunctionReference, NATIVE_CONTRACT_OPTIMIZER,
-    NATIVE_FILTER_LOWERING_VERSION, OptimizerIdentity, PlannedExpression,
-    SOURCE_EXACT_PUSHDOWN_OPTIMIZER,
+    DATAFUSION_SCALAR_CONFIG_IDENTITY, DATAFUSION_SCALAR_FEATURE_SET,
+    DATAFUSION_SCALAR_IMPLEMENTATION_VERSION, DATAFUSION_SCALAR_NAMESPACE,
+    DECLARATIVE_EXPRESSION_VERSION, DeclarativeExpression, DeclarativeExpressionLiteral,
+    DeclarativeExpressionNode, DeclarativeFunctionReference, ExpressionLint, ExpressionLintCode,
+    ExpressionUse, NATIVE_CONTRACT_OPTIMIZER, NATIVE_FILTER_LOWERING_VERSION, OptimizerIdentity,
+    PlannedContractExpression, PlannedExpression, ProjectionExpression,
+    RELATIONAL_EXPRESSION_IR_VERSION, RelationalExpressionPlan, SCALAR_EXPRESSION_EXECUTOR_VERSION,
+    SCALAR_EXPRESSION_IR_VERSION, SOURCE_EXACT_PUSHDOWN_OPTIMIZER, ScalarBinaryOperator,
+    ScalarCastMode, ScalarColumnDependency, ScalarDependencies, ScalarExpression,
+    ScalarExpressionKind, ScalarExpressionNode, ScalarFunctionReference, ScalarFunctionVolatility,
+    ScalarType, ScalarUnaryOperator,
 };
 pub use lattice::assert_verdict_lattice_total;
 pub use normalization::{

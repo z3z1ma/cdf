@@ -341,7 +341,7 @@ pub(crate) fn sqlite_table_capabilities(descriptor: &ResourceDescriptor) -> Reso
 #[cfg(test)]
 pub(crate) fn sqlite_table_predicate_fidelity(
     schema: &SchemaRef,
-    expression: &cdf_kernel::Expression,
+    expression: &cdf_kernel::DeclarativeExpression,
 ) -> PushdownFidelity {
     parse_supported_predicate(schema, expression)
         .map_or(PushdownFidelity::Unsupported, |predicate| {

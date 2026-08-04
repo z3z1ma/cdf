@@ -644,7 +644,8 @@ fn predicate_matches_supported_operator(
     capabilities: &ResourceCapabilities,
     predicate: &ScanPredicate,
 ) -> bool {
-    let cdf_kernel::ExpressionNode::Call { function, .. } = &predicate.canonical_expression.root
+    let cdf_kernel::DeclarativeExpressionNode::Call { function, .. } =
+        &predicate.canonical_expression.root
     else {
         return false;
     };

@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use arrow_schema::Schema;
 use cdf_kernel::{
-    CdfError, CompiledScanIntent, ExpressionNode, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
+    CdfError, CompiledScanIntent, DeclarativeExpressionNode, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
     PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionId, PartitionPlan, ResourceDescriptor, ResourceId,
     Result, ScopeKey, SourcePosition, source_name,
 };
@@ -68,10 +68,9 @@ pub(super) fn physical_predicates(
         .iter()
         .map(|predicate| {
             let mut physical = predicate.clone();
-            physical.canonical_expression = cdf_kernel::Expression::new(physical_expression_node(
-                effective_schema,
-                &predicate.canonical_expression.root,
-            )?);
+            physical.canonical_expression = cdf_kernel::DeclarativeExpression::new(
+                physical_expression_node(effective_schema, &predicate.canonical_expression.root)?,
+            );
             physical.canonical_expression.validate()?;
             Ok(physical)
         })
@@ -80,28 +79,28 @@ pub(super) fn physical_predicates(
 
 pub(super) fn physical_expression_node(
     effective_schema: &Schema,
-    node: &ExpressionNode,
-) -> Result<ExpressionNode> {
+    node: &DeclarativeExpressionNode,
+) -> Result<DeclarativeExpressionNode> {
     match node {
-        ExpressionNode::Column { name } => {
+        DeclarativeExpressionNode::Column { name } => {
             let field = effective_schema.field_with_name(name).map_err(|_| {
                 CdfError::contract(format!(
                     "compiled file predicate field {name:?} is absent from the effective schema"
                 ))
             })?;
-            Ok(ExpressionNode::Column {
+            Ok(DeclarativeExpressionNode::Column {
                 name: source_name(field)
                     .unwrap_or_else(|| field.name())
                     .to_owned(),
             })
         }
-        ExpressionNode::Literal { value } => Ok(ExpressionNode::Literal {
+        DeclarativeExpressionNode::Literal { value } => Ok(DeclarativeExpressionNode::Literal {
             value: value.clone(),
         }),
-        ExpressionNode::Call {
+        DeclarativeExpressionNode::Call {
             function,
             arguments,
-        } => Ok(ExpressionNode::Call {
+        } => Ok(DeclarativeExpressionNode::Call {
             function: function.clone(),
             arguments: arguments
                 .iter()

@@ -11,6 +11,7 @@
 mod dedup_spill;
 mod execution;
 mod expression;
+mod expression_execution;
 mod graph_plan;
 mod late_data;
 mod memory;
@@ -35,6 +36,15 @@ pub use execution::{
     execute_to_package_with_segment_positions_and_pre_finalize,
     execute_to_package_with_streaming_hooks, normalize_record_batch,
     preview_partition_selector_candidate, preview_resource,
+};
+pub use expression::{
+    AnalyzedProjectionExpression, AnalyzedScalarExpression, ExpressionPath,
+    ExpressionSourceLocation, compile_relational_expression_plan, lower_analyzed_scalar_expression,
+};
+pub use expression_execution::{
+    BoundRelationalExpressionPlan, bind_relational_expression_plan,
+    execute_bound_relational_expression_plan, execute_relational_expression_plan,
+    execute_scalar_expression,
 };
 pub use graph_plan::compile_operator_graph;
 pub use memory::DataFusionMemoryCoordinator;

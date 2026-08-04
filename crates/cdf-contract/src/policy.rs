@@ -539,10 +539,10 @@ pub enum TransformDescription {
     },
     Derive {
         column: String,
-        expression: crate::Expression,
+        expression: crate::DeclarativeExpression,
     },
     Filter {
-        expression: crate::Expression,
+        expression: crate::DeclarativeExpression,
     },
     ExpandNested {
         column: String,

@@ -38,7 +38,7 @@ fn residual_limit_is_consumed_across_partitions() {
     for batch in &mut batches {
         batch.header.source_position = Some(terminal_file_position());
     }
-    let resource = MockResource::tier_b(batches);
+    let resource = MockResource::tier_b(batches).without_control_keys();
     let input = plan_input(
         vec!["active = true"],
         Some(vec!["name".to_owned()]),
@@ -371,7 +371,7 @@ fn preview_large_plan_selects_and_opens_at_most_the_global_batch_budget() {
 
 #[test]
 fn inexact_and_unsupported_predicates_are_reapplied_during_execution() {
-    let resource = MockResource::tier_b(sample_batches());
+    let resource = MockResource::tier_b(sample_batches()).without_control_keys();
     let input = plan_input(
         vec!["id > 1", "active = true", "name != 'three'"],
         Some(vec!["name".to_owned()]),

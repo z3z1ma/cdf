@@ -906,11 +906,8 @@ fn compile_file_scan(
                     .any(|item| item == operator)
             });
         let lowering_supported = descriptor.predicate_pushdown != PushdownFidelity::Exact
-            || cdf_expression::bind_boolean_expression(
-                &predicate.canonical_expression.root,
-                schema,
-            )
-            .is_ok();
+            || cdf_expression::bind_boolean_expression(&predicate.canonical_expression, schema)
+                .is_ok();
         let supported = operator_supported && lowering_supported;
         if supported && descriptor.predicate_pushdown != PushdownFidelity::Unsupported {
             pushed_predicates.push(PushedPredicate {
@@ -977,8 +974,10 @@ fn exact_predicate_is_partition_equivalent(
                 return Ok(false);
             }
         }
-        let physical =
-            physical_expression_node(effective_schema, &predicate.canonical_expression.root)?;
+        let physical = cdf_kernel::DeclarativeExpression::new(physical_expression_node(
+            effective_schema,
+            &predicate.canonical_expression.root,
+        )?);
         if cdf_expression::bind_boolean_expression(&physical, physical_schema.as_ref()).is_err() {
             return Ok(false);
         }

@@ -1,108 +1,108 @@
 pub use cdf_kernel::{
-    CDF_FUNCTION_NAMESPACE, CDF_FUNCTION_VERSION, EXPRESSION_IR_VERSION, Expression,
-    ExpressionLiteral, ExpressionNode, FunctionReference,
+    CDF_FUNCTION_NAMESPACE, CDF_FUNCTION_VERSION, DATAFUSION_SCALAR_CONFIG_IDENTITY,
+    DATAFUSION_SCALAR_FEATURE_SET, DATAFUSION_SCALAR_IMPLEMENTATION_VERSION,
+    DATAFUSION_SCALAR_NAMESPACE, DECLARATIVE_EXPRESSION_VERSION, DeclarativeExpression,
+    DeclarativeExpressionLiteral, DeclarativeExpressionNode, DeclarativeFunctionReference,
+    SCALAR_EXPRESSION_EXECUTOR_VERSION, SCALAR_EXPRESSION_IR_VERSION, ScalarBinaryOperator,
+    ScalarCastMode, ScalarColumnDependency, ScalarDependencies, ScalarExpression,
+    ScalarExpressionKind, ScalarExpressionNode, ScalarFunctionReference, ScalarFunctionVolatility,
+    ScalarType, ScalarUnaryOperator,
 };
-use cdf_kernel::{CdfError, Result};
+use std::collections::BTreeSet;
+
+use cdf_kernel::{CanonicalArrowSchema, CdfError, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const COMPILED_EXPRESSION_PLAN_VERSION: u16 = 1;
+pub const COMPILED_EXPRESSION_PLAN_VERSION: u16 = 2;
+pub const RELATIONAL_EXPRESSION_IR_VERSION: u16 = 1;
 pub const DATAFUSION_EXPRESSION_OPTIMIZER: &str = "datafusion-expr-simplifier";
-pub const DATAFUSION_EXPRESSION_PIN: &str = "54.0.0";
+pub const DATAFUSION_EXPRESSION_PIN: &str = DATAFUSION_SCALAR_IMPLEMENTATION_VERSION;
 pub const NATIVE_CONTRACT_OPTIMIZER: &str = "cdf-native-contract-lowering";
 pub const SOURCE_EXACT_PUSHDOWN_OPTIMIZER: &str = "cdf-source-exact-pushdown";
-pub const NATIVE_FILTER_LOWERING_VERSION: &str = "1";
+pub const NATIVE_FILTER_LOWERING_VERSION: &str = "2";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExpressionUse {
     Derive,
     Filter,
-    Contract,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExpressionFidelity {
-    Exact,
-    ResidualRequired,
-    Unsupported,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlannedExpression {
     pub use_kind: ExpressionUse,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_text: Option<String>,
-    pub original: Expression,
-    pub optimized: Expression,
+    pub original: DeclarativeExpression,
+    pub expression: ScalarExpression,
     pub optimizer: OptimizerIdentity,
-    pub functions: Vec<FunctionReference>,
-    pub fidelity: ExpressionFidelity,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub residuals: Vec<String>,
+    pub functions: Vec<ScalarFunctionReference>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lints: Vec<ExpressionLint>,
-    /// A standards-conformant Substrait encoding is not implemented yet.
-    /// `None` is the only supported value until one is round-trip verified.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub substrait_version: Option<String>,
 }
 
 impl PlannedExpression {
     pub fn validate_recorded(&self) -> Result<()> {
         self.original.validate()?;
-        self.optimized.validate()?;
-        let optimizer_is_datafusion = self.optimizer.name == DATAFUSION_EXPRESSION_OPTIMIZER
-            && self.optimizer.version == DATAFUSION_EXPRESSION_PIN;
-        let optimizer_is_native_contract = self.optimizer.name == NATIVE_CONTRACT_OPTIMIZER
-            && self.optimizer.version == CDF_FUNCTION_VERSION;
-        let optimizer_is_source_exact = self.optimizer.name == SOURCE_EXACT_PUSHDOWN_OPTIMIZER
-            && self.optimizer.version == CDF_FUNCTION_VERSION
-            && self.optimized == self.original;
-        let use_is_valid = match self.use_kind {
-            ExpressionUse::Derive => optimizer_is_datafusion,
-            ExpressionUse::Filter => optimizer_is_datafusion || optimizer_is_source_exact,
-            ExpressionUse::Contract => {
-                optimizer_is_native_contract
-                    && self.optimized == self.original
-                    && admitted_contract_root(&self.optimized.root)
-            }
-        };
-        if !use_is_valid {
+        self.expression.validate()?;
+        let supported_optimizer = (self.optimizer.name == DATAFUSION_EXPRESSION_OPTIMIZER
+            && self.optimizer.version == DATAFUSION_EXPRESSION_PIN)
+            || (self.use_kind == ExpressionUse::Filter
+                && self.optimizer.name == SOURCE_EXACT_PUSHDOWN_OPTIMIZER
+                && self.optimizer.version == CDF_FUNCTION_VERSION);
+        if !supported_optimizer {
             return Err(CdfError::contract(
-                "recorded expression use, optimizer, and native lowering tuple is not supported by this engine version",
+                "recorded scalar optimizer identity is unsupported; run `cdf compile`",
             ));
         }
-        let expected_functions = self.optimized.function_dependencies();
-        if self.functions != expected_functions
-            || self.functions.iter().any(|function| {
-                function.namespace != CDF_FUNCTION_NAMESPACE
-                    || function.version != CDF_FUNCTION_VERSION
-            })
+        if self.functions != self.expression.function_dependencies() {
+            return Err(CdfError::contract(
+                "recorded scalar function dependency tuple does not match the typed graph",
+            ));
+        }
+        if self.use_kind == ExpressionUse::Filter
+            && self.expression.root.scalar_type.data_type != cdf_kernel::CanonicalArrowType::Boolean
         {
             return Err(CdfError::contract(
-                "recorded expression function dependency tuple is stale or unsupported",
-            ));
-        }
-        if self.fidelity != ExpressionFidelity::Exact || !self.residuals.is_empty() {
-            return Err(CdfError::contract(
-                "identity execution requires exact recorded fidelity with no residuals",
-            ));
-        }
-        if self.substrait_version.is_some() {
-            return Err(CdfError::contract(
-                "recorded expression claims unsupported Substrait compatibility",
+                "recorded filter expression does not produce Boolean",
             ));
         }
         Ok(())
     }
 }
 
-fn admitted_contract_root(node: &ExpressionNode) -> bool {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlannedContractExpression {
+    pub original: DeclarativeExpression,
+    pub optimizer: OptimizerIdentity,
+    pub functions: Vec<DeclarativeFunctionReference>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lints: Vec<ExpressionLint>,
+}
+
+impl PlannedContractExpression {
+    pub fn validate_recorded(&self) -> Result<()> {
+        self.original.validate()?;
+        if self.optimizer.name != NATIVE_CONTRACT_OPTIMIZER
+            || self.optimizer.version != CDF_FUNCTION_VERSION
+            || !admitted_contract_root(&self.original.root)
+            || self.functions != self.original.function_dependencies()
+        {
+            return Err(CdfError::contract(
+                "recorded contract expression identity is stale or unsupported",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn admitted_contract_root(node: &DeclarativeExpressionNode) -> bool {
     matches!(
         node,
-        ExpressionNode::Call { function, .. }
+        DeclarativeExpressionNode::Call { function, .. }
             if matches!(
                 function.name.as_str(),
                 "is_not_null"
@@ -117,23 +117,27 @@ fn admitted_contract_root(node: &ExpressionNode) -> bool {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OptimizerIdentity {
     pub name: String,
     pub version: String,
 }
 
-/// Parsed, resolved, optimized, and frozen expressions. Execution and replay consume this plan;
-/// they never reparse or reoptimize its expressions.
+/// Resolved scalar authority used by execution and replay. This is a current-only artifact; the
+/// former untyped expression-v1 graph has no reader.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CompiledExpressionPlan {
     pub version: u16,
-    pub ir_version: u16,
+    pub scalar_ir_version: u16,
+    pub scalar_executor_version: u16,
+    pub datafusion_version: String,
+    pub datafusion_feature_set: String,
+    pub config_identity: String,
     pub native_filter_lowering_version: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub substrait_version: Option<String>,
     pub predicates: Vec<PlannedExpression>,
     pub residuals: Vec<PlannedExpression>,
-    pub contracts: Vec<PlannedExpression>,
+    pub contracts: Vec<PlannedContractExpression>,
     pub transforms: Vec<PlannedExpression>,
     pub content_sha256: String,
 }
@@ -142,14 +146,17 @@ impl CompiledExpressionPlan {
     pub fn current(
         predicates: Vec<PlannedExpression>,
         residuals: Vec<PlannedExpression>,
-        contracts: Vec<PlannedExpression>,
+        contracts: Vec<PlannedContractExpression>,
         transforms: Vec<PlannedExpression>,
     ) -> Result<Self> {
         let mut compiled = Self {
             version: COMPILED_EXPRESSION_PLAN_VERSION,
-            ir_version: EXPRESSION_IR_VERSION,
+            scalar_ir_version: SCALAR_EXPRESSION_IR_VERSION,
+            scalar_executor_version: SCALAR_EXPRESSION_EXECUTOR_VERSION,
+            datafusion_version: DATAFUSION_EXPRESSION_PIN.to_owned(),
+            datafusion_feature_set: DATAFUSION_SCALAR_FEATURE_SET.to_owned(),
+            config_identity: DATAFUSION_SCALAR_CONFIG_IDENTITY.to_owned(),
             native_filter_lowering_version: NATIVE_FILTER_LOWERING_VERSION.to_owned(),
-            substrait_version: None,
             predicates,
             residuals,
             contracts,
@@ -157,17 +164,21 @@ impl CompiledExpressionPlan {
             content_sha256: String::new(),
         };
         compiled.content_sha256 = compiled.compute_content_sha256()?;
+        compiled.validate_recorded()?;
         Ok(compiled)
     }
 
     pub fn validate_recorded(&self) -> Result<()> {
         if self.version != COMPILED_EXPRESSION_PLAN_VERSION
-            || self.ir_version != EXPRESSION_IR_VERSION
+            || self.scalar_ir_version != SCALAR_EXPRESSION_IR_VERSION
+            || self.scalar_executor_version != SCALAR_EXPRESSION_EXECUTOR_VERSION
+            || self.datafusion_version != DATAFUSION_EXPRESSION_PIN
+            || self.datafusion_feature_set != DATAFUSION_SCALAR_FEATURE_SET
+            || self.config_identity != DATAFUSION_SCALAR_CONFIG_IDENTITY
             || self.native_filter_lowering_version != NATIVE_FILTER_LOWERING_VERSION
-            || self.substrait_version.is_some()
         {
             return Err(CdfError::contract(
-                "recorded expression compatibility tuple is not supported by this engine version",
+                "recorded scalar plan is stale; run `cdf compile`",
             ));
         }
         if self.content_sha256 != self.compute_content_sha256()? {
@@ -178,9 +189,11 @@ impl CompiledExpressionPlan {
         self.predicates
             .iter()
             .chain(&self.residuals)
-            .chain(&self.contracts)
             .chain(&self.transforms)
-            .try_for_each(PlannedExpression::validate_recorded)
+            .try_for_each(PlannedExpression::validate_recorded)?;
+        self.contracts
+            .iter()
+            .try_for_each(PlannedContractExpression::validate_recorded)
     }
 
     pub fn validate_program_binding(&self, program: &crate::ValidationProgram) -> Result<()> {
@@ -195,14 +208,10 @@ impl CompiledExpressionPlan {
                 .contracts
                 .iter()
                 .zip(&program.row_rules)
-                .any(|(planned, rule)| {
-                    planned.use_kind != ExpressionUse::Contract
-                        || planned.original != rule.expression
-                        || planned.optimized != rule.expression
-                })
+                .any(|(planned, rule)| planned.original != rule.expression)
         {
             return Err(CdfError::contract(
-                "recorded contract compiled expression plan does not match the executable row-rule program",
+                "recorded contract expressions do not match the executable row-rule program",
             ));
         }
         let expression_transforms =
@@ -236,33 +245,31 @@ impl CompiledExpressionPlan {
     }
 
     fn compute_content_sha256(&self) -> Result<String> {
-        let bytes = serde_json::to_vec(&(
+        canonical_sha256(&(
             self.version,
-            self.ir_version,
+            self.scalar_ir_version,
+            self.scalar_executor_version,
+            &self.datafusion_version,
+            &self.datafusion_feature_set,
+            &self.config_identity,
             &self.native_filter_lowering_version,
-            &self.substrait_version,
             &self.predicates,
             &self.residuals,
             &self.contracts,
             &self.transforms,
         ))
-        .map_err(|error| {
-            CdfError::internal(format!("serialize compiled expression plan: {error}"))
-        })?;
-        Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
     }
 
     pub fn validate_predicate_bindings<'a>(
         &self,
-        bindings: impl IntoIterator<Item = (&'a str, &'a Expression, bool)>,
+        bindings: impl IntoIterator<Item = (&'a str, &'a DeclarativeExpression, bool)>,
     ) -> Result<()> {
-        let bindings = bindings.into_iter().collect::<Vec<_>>();
         validate_filter_bindings("scan predicate", bindings, &self.predicates)
     }
 
     pub fn validate_residual_bindings<'a>(
         &self,
-        bindings: impl IntoIterator<Item = (&'a str, &'a Expression)>,
+        bindings: impl IntoIterator<Item = (&'a str, &'a DeclarativeExpression)>,
     ) -> Result<()> {
         validate_filter_bindings(
             "residual predicate",
@@ -276,7 +283,7 @@ impl CompiledExpressionPlan {
 
 fn validate_filter_bindings<'a>(
     kind: &str,
-    bindings: impl IntoIterator<Item = (&'a str, &'a Expression, bool)>,
+    bindings: impl IntoIterator<Item = (&'a str, &'a DeclarativeExpression, bool)>,
     planned: &[PlannedExpression],
 ) -> Result<()> {
     let bindings = bindings.into_iter().collect::<Vec<_>>();
@@ -299,82 +306,246 @@ fn validate_filter_bindings<'a>(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelationalExpressionPlan {
+    pub version: u16,
+    pub scalar_ir_version: u16,
+    pub scalar_executor_version: u16,
+    pub datafusion_version: String,
+    pub datafusion_feature_set: String,
+    pub config_identity: String,
+    pub input_schema: CanonicalArrowSchema,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<ScalarExpression>,
+    pub projection: Vec<ProjectionExpression>,
+    pub output_schema: CanonicalArrowSchema,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub control_fields: Vec<String>,
+    pub content_sha256: String,
+}
 
-    fn contract_expression(function: &str) -> Expression {
-        Expression::call(
-            function,
-            vec![ExpressionNode::Column {
-                name: "id".to_owned(),
-            }],
-        )
-    }
-
-    fn planned_contract(expression: Expression) -> PlannedExpression {
-        PlannedExpression {
-            use_kind: ExpressionUse::Contract,
-            source_text: None,
-            functions: expression.function_dependencies(),
-            original: expression.clone(),
-            optimized: expression,
-            optimizer: OptimizerIdentity {
-                name: NATIVE_CONTRACT_OPTIMIZER.to_owned(),
-                version: CDF_FUNCTION_VERSION.to_owned(),
-            },
-            fidelity: ExpressionFidelity::Exact,
-            residuals: Vec::new(),
-            lints: Vec::new(),
-            substrait_version: None,
-        }
-    }
-
-    #[test]
-    fn compiled_contract_plan_rejects_optimizer_semantic_and_function_forgery() {
-        let original = contract_expression("is_not_null");
-
-        let mut divergent = planned_contract(original.clone());
-        divergent.optimized = Expression::call(
-            "in_domain",
-            vec![
-                ExpressionNode::Column {
-                    name: "id".to_owned(),
-                },
-                ExpressionNode::Literal {
-                    value: ExpressionLiteral::StringList(vec!["1".to_owned()]),
-                },
-            ],
-        );
-        divergent.functions = divergent.optimized.function_dependencies();
-        let compiled =
-            CompiledExpressionPlan::current(Vec::new(), Vec::new(), vec![divergent], Vec::new())
-                .unwrap();
-        assert!(compiled.validate_recorded().is_err());
-
-        let mut wrong_optimizer = planned_contract(original);
-        wrong_optimizer.optimizer = OptimizerIdentity {
-            name: DATAFUSION_EXPRESSION_OPTIMIZER.to_owned(),
-            version: DATAFUSION_EXPRESSION_PIN.to_owned(),
+impl RelationalExpressionPlan {
+    pub fn current(
+        input_schema: CanonicalArrowSchema,
+        filter: Option<ScalarExpression>,
+        projection: Vec<ProjectionExpression>,
+        output_schema: CanonicalArrowSchema,
+        mut control_fields: Vec<String>,
+    ) -> Result<Self> {
+        control_fields.sort();
+        let mut plan = Self {
+            version: RELATIONAL_EXPRESSION_IR_VERSION,
+            scalar_ir_version: SCALAR_EXPRESSION_IR_VERSION,
+            scalar_executor_version: SCALAR_EXPRESSION_EXECUTOR_VERSION,
+            datafusion_version: DATAFUSION_EXPRESSION_PIN.to_owned(),
+            datafusion_feature_set: DATAFUSION_SCALAR_FEATURE_SET.to_owned(),
+            config_identity: DATAFUSION_SCALAR_CONFIG_IDENTITY.to_owned(),
+            input_schema,
+            filter,
+            projection,
+            output_schema,
+            control_fields,
+            content_sha256: String::new(),
         };
-        let compiled = CompiledExpressionPlan::current(
-            Vec::new(),
-            Vec::new(),
-            vec![wrong_optimizer],
-            Vec::new(),
-        )
-        .unwrap();
-        assert!(compiled.validate_recorded().is_err());
+        plan.validate_structure()?;
+        plan.content_sha256 = plan.compute_content_sha256()?;
+        Ok(plan)
+    }
 
-        let unknown = planned_contract(contract_expression("unknown_contract_rule"));
-        let compiled =
-            CompiledExpressionPlan::current(Vec::new(), Vec::new(), vec![unknown], Vec::new())
-                .unwrap();
-        assert!(compiled.validate_recorded().is_err());
+    pub fn validate_recorded(&self) -> Result<()> {
+        if self.version != RELATIONAL_EXPRESSION_IR_VERSION
+            || self.scalar_ir_version != SCALAR_EXPRESSION_IR_VERSION
+            || self.scalar_executor_version != SCALAR_EXPRESSION_EXECUTOR_VERSION
+            || self.datafusion_version != DATAFUSION_EXPRESSION_PIN
+            || self.datafusion_feature_set != DATAFUSION_SCALAR_FEATURE_SET
+            || self.config_identity != DATAFUSION_SCALAR_CONFIG_IDENTITY
+        {
+            return Err(CdfError::contract(
+                "recorded relational expression plan is stale; run `cdf compile`",
+            ));
+        }
+        self.validate_structure()?;
+        if self.content_sha256 != self.compute_content_sha256()? {
+            return Err(CdfError::contract(
+                "recorded relational expression plan digest does not match its canonical payload",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_structure(&self) -> Result<()> {
+        let input = self.input_schema.to_arrow()?;
+        let output = self.output_schema.to_arrow()?;
+        if output.metadata() != input.metadata() {
+            return Err(CdfError::contract(
+                "relational output schema metadata differs from its input authority",
+            ));
+        }
+        if self.projection.is_empty() {
+            return Err(CdfError::contract(
+                "relational expression projection cannot be empty",
+            ));
+        }
+        if let Some(filter) = &self.filter {
+            filter.validate()?;
+            if filter.root.scalar_type.data_type != cdf_kernel::CanonicalArrowType::Boolean {
+                return Err(CdfError::contract(
+                    "relational expression filter does not produce Boolean",
+                ));
+            }
+            validate_scalar_columns(filter, &input)?;
+        }
+        if output.fields().len() != self.projection.len() {
+            return Err(CdfError::contract(
+                "relational projection and output schema cardinality differ",
+            ));
+        }
+        let mut names = BTreeSet::new();
+        for (ordinal, (projection, field)) in
+            self.projection.iter().zip(output.fields()).enumerate()
+        {
+            projection.expression.validate()?;
+            validate_scalar_columns(&projection.expression, &input)?;
+            let metadata_matches = match &projection.expression.root.expression {
+                cdf_kernel::ScalarExpressionKind::Column { index, .. } => {
+                    field.metadata() == input.field(*index).metadata()
+                }
+                _ => field.metadata().is_empty(),
+            };
+            if projection.ordinal != ordinal
+                || projection.name.trim().is_empty()
+                || !names.insert(projection.name.clone())
+                || field.name() != &projection.name
+                || field.data_type() != &projection.expression.root.scalar_type.to_arrow()?
+                || field.is_nullable() != projection.expression.root.scalar_type.nullable
+                || !metadata_matches
+                || projection.lineage != projection.expression.column_dependencies()
+            {
+                return Err(CdfError::contract(format!(
+                    "relational projection at ordinal {ordinal} has inconsistent name, type, nullability, metadata, or lineage"
+                )));
+            }
+        }
+        if self
+            .control_fields
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(CdfError::contract(
+                "control-critical fields are not in canonical lexical order",
+            ));
+        }
+        let mut control_fields = BTreeSet::new();
+        for control in &self.control_fields {
+            if !control_fields.insert(control) {
+                return Err(CdfError::contract(format!(
+                    "control-critical field {control:?} is repeated"
+                )));
+            }
+            let input_index = input.index_of(control).map_err(|_| {
+                CdfError::contract(format!(
+                    "control-critical field {control:?} is absent from the input schema"
+                ))
+            })?;
+            let Some(projected) = self.projection.iter().find(|item| item.name == *control) else {
+                return Err(CdfError::contract(format!(
+                    "control-critical field {control:?} cannot be removed"
+                )));
+            };
+            let cdf_kernel::ScalarExpressionKind::Column { name, index } =
+                &projected.expression.root.expression
+            else {
+                return Err(CdfError::contract(format!(
+                    "control-critical field {control:?} must be an unchanged pass-through column"
+                )));
+            };
+            if name != control
+                || *index != input_index
+                || projected.expression.root.scalar_type
+                    != ScalarType::from_arrow(
+                        input.field(input_index).data_type(),
+                        input.field(input_index).is_nullable(),
+                    )?
+                || output.field(projected.ordinal).metadata() != input.field(input_index).metadata()
+            {
+                return Err(CdfError::contract(format!(
+                    "control-critical field {control:?} changed identity, type, or metadata"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn compute_content_sha256(&self) -> Result<String> {
+        canonical_sha256(&(
+            self.version,
+            self.scalar_ir_version,
+            self.scalar_executor_version,
+            &self.datafusion_version,
+            &self.datafusion_feature_set,
+            &self.config_identity,
+            &self.input_schema,
+            &self.filter,
+            &self.projection,
+            &self.output_schema,
+            &self.control_fields,
+        ))
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectionExpression {
+    pub ordinal: usize,
+    pub name: String,
+    pub expression: ScalarExpression,
+    pub lineage: Vec<ScalarColumnDependency>,
+}
+
+impl ProjectionExpression {
+    pub fn new(ordinal: usize, name: impl Into<String>, expression: ScalarExpression) -> Self {
+        Self {
+            ordinal,
+            name: name.into(),
+            lineage: expression.column_dependencies().to_vec(),
+            expression,
+        }
+    }
+}
+
+fn validate_scalar_columns(
+    expression: &ScalarExpression,
+    schema: &arrow_schema::Schema,
+) -> Result<()> {
+    for dependency in expression.column_dependencies() {
+        let field = schema.fields().get(dependency.index).ok_or_else(|| {
+            CdfError::contract(format!(
+                "scalar input column {:?} has stale ordinal {}",
+                dependency.name, dependency.index
+            ))
+        })?;
+        if field.name() != &dependency.name
+            || dependency.scalar_type
+                != ScalarType::from_arrow(field.data_type(), field.is_nullable())?
+        {
+            return Err(CdfError::contract(format!(
+                "scalar input column {:?} does not match its recorded name/type/nullability",
+                dependency.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn canonical_sha256(value: &impl Serialize) -> Result<String> {
+    let bytes = serde_json::to_vec(value)
+        .map_err(|error| CdfError::internal(format!("serialize expression identity: {error}")))?;
+    Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExpressionLint {
     pub code: ExpressionLintCode,
     pub message: String,
@@ -386,4 +557,38 @@ pub enum ExpressionLintCode {
     UnsatisfiableRange,
     AlwaysTrue,
     CursorSubsumed,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn contract_expression(function: &str) -> DeclarativeExpression {
+        DeclarativeExpression::call(
+            function,
+            vec![DeclarativeExpressionNode::Column {
+                name: "id".to_owned(),
+            }],
+        )
+    }
+
+    #[test]
+    fn compiled_contract_plan_rejects_function_forgery() {
+        let expression = contract_expression("is_not_null");
+        let planned = PlannedContractExpression {
+            functions: expression.function_dependencies(),
+            original: expression,
+            optimizer: OptimizerIdentity {
+                name: NATIVE_CONTRACT_OPTIMIZER.to_owned(),
+                version: CDF_FUNCTION_VERSION.to_owned(),
+            },
+            lints: Vec::new(),
+        };
+        let mut forged = planned.clone();
+        forged.original = contract_expression("unknown_contract_rule");
+        assert!(
+            CompiledExpressionPlan::current(Vec::new(), Vec::new(), vec![forged], Vec::new())
+                .is_err()
+        );
+    }
 }
