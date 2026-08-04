@@ -12,6 +12,7 @@ mod dedup_spill;
 mod execution;
 mod expression;
 mod expression_execution;
+mod expression_memory;
 mod graph_plan;
 mod late_data;
 mod memory;

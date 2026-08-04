@@ -11,6 +11,7 @@ use crate::expression_execution::{
     apply_bound_filters, apply_expression_transforms, bind_expression_transforms,
     bind_filter_expressions, expression_transform_output_schema,
 };
+use crate::expression_memory::expression_working_set_bytes;
 use arrow_array::{
     Array, ArrayRef, BooleanArray, RecordBatch, StringArray, UInt32Array, UInt64Array,
 };
@@ -194,7 +195,14 @@ pub fn normalize_record_batch(
         .as_ref()
         .ok_or_else(|| CdfError::internal("standalone expression execution omitted memory"))?
         .memory();
-    let request = transform_working_set_request(&batch, &[])?;
+    let expression_bytes = expression_working_set_bytes(
+        compiled
+            .transforms
+            .iter()
+            .map(|planned| &planned.expression),
+        batch.num_rows(),
+    )?;
+    let request = transform_working_set_request(&batch, &[], expression_bytes)?;
     let _expression_memory_lease = memory.try_reserve(&request)?.ok_or_else(|| {
         CdfError::environment(
             "standalone expression execution could not reserve its bounded working set",
@@ -620,10 +628,19 @@ where
                             .map(|metadata| metadata.operation_field.clone());
                         let track_source_rows =
                             pre_contract_may_filter || !residual_candidates.is_empty();
+                        let expression_bytes = expression_working_set_bytes(
+                            plan.compiled_expression_plan
+                                .residuals
+                                .iter()
+                                .chain(plan.compiled_expression_plan.transforms.iter())
+                                .map(|planned| &planned.expression),
+                            record_batch.num_rows(),
+                        )?;
                         let transform_memory_lease = reserve_transform_working_set(
                             Some(&preview_memory),
                             &record_batch,
                             &residual_candidates,
+                            expression_bytes,
                         )
                         .await?;
                         let mut no_row_limit = None;
@@ -4210,10 +4227,19 @@ where
                 let track_source_rows = pre_contract_may_filter
                     || !residual_candidates.is_empty()
                     || late_data_policy.is_some();
+                let expression_bytes = expression_working_set_bytes(
+                    plan.compiled_expression_plan
+                        .residuals
+                        .iter()
+                        .chain(plan.compiled_expression_plan.transforms.iter())
+                        .map(|planned| &planned.expression),
+                    record_batch.num_rows(),
+                )?;
                 let transform_memory_lease = reserve_transform_working_set(
                     memory.as_ref(),
                     &record_batch,
                     &residual_candidates,
+                    expression_bytes,
                 )
                 .await?;
                 let executed = execute_batch(
@@ -6703,17 +6729,19 @@ async fn reserve_transform_working_set(
     memory: Option<&Arc<dyn MemoryCoordinator>>,
     batch: &RecordBatch,
     residual_candidates: &[PreContractResidualCandidate],
+    expression_bytes: u64,
 ) -> Result<Option<MemoryLease>> {
     let Some(memory) = memory else {
         return Ok(None);
     };
-    let request = transform_working_set_request(batch, residual_candidates)?;
+    let request = transform_working_set_request(batch, residual_candidates, expression_bytes)?;
     Ok(Some(reserve(Arc::clone(memory), request).await?))
 }
 
 fn transform_working_set_request(
     batch: &RecordBatch,
     residual_candidates: &[PreContractResidualCandidate],
+    expression_bytes: u64,
 ) -> Result<ReservationRequest> {
     let input_bytes = u64::try_from(batch.get_array_memory_size())
         .map_err(|_| CdfError::data("transform input memory exceeds u64"))?;
@@ -6743,6 +6771,7 @@ fn transform_working_set_request(
         .max(1)
         .checked_mul(4)
         .and_then(|bytes| bytes.checked_add(residual_bytes))
+        .and_then(|bytes| bytes.checked_add(expression_bytes))
         .ok_or_else(|| CdfError::data("transform working set overflow"))?;
     Ok(ReservationRequest::new(
         ConsumerKey::new("fused-transform", MemoryClass::Transform)?,

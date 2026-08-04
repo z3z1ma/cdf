@@ -23,13 +23,17 @@ use datafusion::{
     physical_expr::{PhysicalExpr, create_physical_expr},
 };
 
-use crate::expression::{DataFusionErrorPhase, classify_datafusion_error};
+use crate::{
+    expression::{DataFusionErrorPhase, classify_datafusion_error},
+    expression_memory::{expression_nodes_working_set_bytes, expression_working_set_bytes},
+};
 
 #[derive(Clone)]
 pub(crate) struct BoundScalarExpression {
     physical: Arc<dyn PhysicalExpr>,
     input_schema: Schema,
     output_type: ScalarType,
+    allocation_root: ScalarExpressionNode,
 }
 
 #[derive(Clone)]
@@ -74,6 +78,7 @@ pub(crate) fn bind_scalar_expression(
         physical,
         input_schema: schema.clone(),
         output_type: expression.root.scalar_type.clone(),
+        allocation_root: expression.root.clone(),
     })
 }
 
@@ -248,7 +253,9 @@ pub fn execute_scalar_expression(
     memory: &MemoryLease,
     cancellation: &RunCancellation,
 ) -> Result<ArrayRef> {
-    validate_expression_memory(batch, memory)?;
+    let expression_bytes =
+        expression_working_set_bytes(std::iter::once(expression), batch.num_rows())?;
+    validate_expression_memory(batch, expression_bytes, memory)?;
     let bound = bind_scalar_expression(expression, batch.schema().as_ref())?;
     evaluate_bound_scalar(batch, &bound, Some(memory), cancellation)
 }
@@ -259,8 +266,17 @@ pub fn execute_relational_expression_plan(
     memory: &MemoryLease,
     cancellation: &RunCancellation,
 ) -> Result<RecordBatch> {
+    let expression_bytes = expression_working_set_bytes(
+        plan.filter.iter().chain(
+            plan.projection
+                .iter()
+                .map(|projection| &projection.expression),
+        ),
+        batch.num_rows(),
+    )?;
+    validate_expression_memory(batch, expression_bytes, memory)?;
     let bound = bind_relational_expression_plan(plan)?;
-    execute_bound_relational_expression_plan(&bound, batch, memory, cancellation)
+    execute_bound_relational_expression_plan_inner(&bound, batch, memory, cancellation)
 }
 
 pub fn bind_relational_expression_plan(
@@ -293,7 +309,20 @@ pub fn execute_bound_relational_expression_plan(
     memory: &MemoryLease,
     cancellation: &RunCancellation,
 ) -> Result<RecordBatch> {
-    validate_expression_memory(batch, memory)?;
+    let expression_bytes = bound_expression_working_set_bytes(
+        plan.filter.iter().chain(plan.projection.iter()),
+        batch.num_rows(),
+    )?;
+    validate_expression_memory(batch, expression_bytes, memory)?;
+    execute_bound_relational_expression_plan_inner(plan, batch, memory, cancellation)
+}
+
+fn execute_bound_relational_expression_plan_inner(
+    plan: &BoundRelationalExpressionPlan,
+    batch: &RecordBatch,
+    memory: &MemoryLease,
+    cancellation: &RunCancellation,
+) -> Result<RecordBatch> {
     cancellation.check()?;
     if batch.schema().as_ref() != &plan.input_schema {
         return Err(CdfError::contract(
@@ -325,12 +354,17 @@ pub fn execute_bound_relational_expression_plan(
     Ok(output)
 }
 
-fn validate_expression_memory(batch: &RecordBatch, memory: &MemoryLease) -> Result<()> {
+fn validate_expression_memory(
+    batch: &RecordBatch,
+    expression_bytes: u64,
+    memory: &MemoryLease,
+) -> Result<()> {
     let input_bytes = u64::try_from(batch.get_array_memory_size())
         .map_err(|_| CdfError::data("scalar input memory exceeds u64"))?;
     let minimum = input_bytes
         .max(1)
         .checked_mul(4)
+        .and_then(|bytes| bytes.checked_add(expression_bytes))
         .ok_or_else(|| CdfError::data("scalar working-set memory overflow"))?;
     if memory.bytes() < minimum {
         return Err(CdfError::environment(format!(
@@ -339,6 +373,18 @@ fn validate_expression_memory(batch: &RecordBatch, memory: &MemoryLease) -> Resu
         )));
     }
     Ok(())
+}
+
+fn bound_expression_working_set_bytes<'a>(
+    expressions: impl IntoIterator<Item = &'a BoundScalarExpression>,
+    rows: usize,
+) -> Result<u64> {
+    expression_nodes_working_set_bytes(
+        expressions
+            .into_iter()
+            .map(|expression| &expression.allocation_root),
+        rows,
+    )
 }
 
 fn validate_expression_output_memory(

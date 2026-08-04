@@ -38,11 +38,11 @@ use crate::{
     lower_analyzed_scalar_expression,
 };
 
-fn expression_memory(batch: &RecordBatch) -> MemoryLease {
-    let bytes = u64::try_from(batch.get_array_memory_size())
-        .unwrap()
-        .max(1)
-        .saturating_mul(16);
+fn expression_memory(_batch: &RecordBatch) -> MemoryLease {
+    // The coordinator accounts authority, not resident allocation. Generic variable-width
+    // functions reserve their canonical Arrow maximum before execution, so this focused harness
+    // supplies enough virtual authority while the actual arrays remain deliberately tiny.
+    let bytes = 1_u64 << 50;
     let coordinator = DeterministicMemoryCoordinator::new(bytes, Default::default()).unwrap();
     coordinator
         .try_reserve(
@@ -560,6 +560,68 @@ fn public_expression_execution_requires_preacquired_cdf_memory() {
             .unwrap_err();
     assert_eq!(error.kind, cdf_kernel::ErrorKind::Environment);
     assert!(error.message.contains("pre-acquired CDF memory lease"));
+}
+
+#[test]
+fn expanding_scalar_and_prebound_plan_fail_before_an_undersized_lease() {
+    let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
+    let batch = RecordBatch::try_new(
+        Arc::new(schema.clone()),
+        vec![Arc::new(StringArray::from(vec!["cdf"]))],
+    )
+    .unwrap();
+    let repeat = analyzed(
+        builtin("repeat").call(vec![
+            datafusion::logical_expr::col("text"),
+            datafusion::logical_expr::lit(1_000_000_i64),
+        ]),
+        &schema,
+    );
+    let expression =
+        lower_analyzed_scalar_expression(&AnalyzedScalarExpression::new(repeat.clone()), &schema)
+            .unwrap();
+    let coordinator = DeterministicMemoryCoordinator::new(1_048_576, Default::default()).unwrap();
+    let lease = coordinator
+        .try_reserve(
+            &ReservationRequest::new(
+                ConsumerKey::new("expanding-expression", MemoryClass::Transform).unwrap(),
+                1_048_576,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+
+    let scalar_error =
+        crate::execute_scalar_expression(&expression, &batch, &lease, &RunCancellation::default())
+            .unwrap_err();
+    assert_eq!(scalar_error.kind, cdf_kernel::ErrorKind::Environment);
+    assert!(
+        scalar_error
+            .message
+            .contains("pre-acquired CDF memory lease")
+    );
+
+    let plan = compile_relational_expression_plan(
+        &schema,
+        None,
+        vec![AnalyzedProjectionExpression {
+            name: "expanded".to_owned(),
+            scalar: AnalyzedScalarExpression::new(repeat),
+        }],
+        Vec::new(),
+    )
+    .unwrap();
+    let bound = bind_relational_expression_plan(&plan).unwrap();
+    let plan_error = crate::expression_execution::execute_bound_relational_expression_plan(
+        &bound,
+        &batch,
+        &lease,
+        &RunCancellation::default(),
+    )
+    .unwrap_err();
+    assert_eq!(plan_error.kind, cdf_kernel::ErrorKind::Environment);
+    assert!(plan_error.message.contains("pre-acquired CDF memory lease"));
 }
 
 #[test]
