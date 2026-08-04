@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-08-03
-Updated: 2026-08-03
+Updated: 2026-08-04
 
 # CDC, semantic, and SQL-project foundation program
 
@@ -198,15 +198,19 @@ Depends-On: C1.
 
 - inventory current `cdf.toml`, declarative, driver schema, environment, destination-policy, lock,
   and publication ownership;
-- ratify SQL file/envelope/companion grammar, profile split, resource-id derivation, offline/refresh
-  compile behavior, and manifest path/commit policy;
+- ratify SQL/resource path authority, shared source configuration, environment overlay, relational
+  envelope boundary, offline/refresh compile behavior, and manifest path/commit policy;
 - remove the Postgres-special-cased destination policy only through a separately bounded generic
   policy-model ticket.
 
-Inventory/ratification closed by
+The initial explicit-id/profile decision was superseded on 2026-08-04 after the user rejected the
+spike-era taxonomy. Current authority is
+`.10x/decisions/filesystem-source-resource-and-configuration-authority.md` and
+`.10x/specs/project-source-resource-layout.md`. The original inventory remains historical evidence.
+Manifest policy remains closed by
 `.10x/research/2026-08-03-project-compiler-authority-inventory.md`,
 `.10x/decisions/project-manifest-path-compile-and-query-policy.md`, and
-`.10x/decisions/sql-resource-envelope-and-profile-boundary.md`. Postgres policy cleanup owner:
+the active manifest spec. Postgres policy cleanup owner:
 `.10x/tickets/done/2026-08-03-d0-remove-postgres-merge-dedup-policy.md`.
 
 **D1. Project compilation manifest**
@@ -224,22 +228,39 @@ Owners:
 - `.10x/tickets/done/2026-08-03-d1-project-compilation-manifest-core.md`;
 - `.10x/tickets/done/2026-08-03-d1-compile-cli-and-manifest-sql.md`.
 
+**D1.5. Project source/resource model replacement**
+
+- replace root wildcard resource maps and declarative resource file locators with deterministic
+  `sources/<source>/<resource>.cdf.sql` enumeration;
+- derive canonical id `<source>.<resource>` from the validated path and prohibit SQL id/source
+  repetition;
+- add typed `[sources.<source>]` base configurations plus selected-environment source option
+  overlays, with immutable source type and schema-validated source/resource option separation;
+- update compiler input inventory, manifest/lock bindings, scaffold, add/generate, examples,
+  validation, and inspection atomically;
+- reject the spike-era shape with no legacy reader, migration, dual authoring mode, or compatibility
+  shim.
+
+Depends-On: D1. Governed by `.10x/specs/project-source-resource-layout.md`. An executable child is
+opened only after the remaining path-token, configured-source-without-directory, and resource-
+envelope grammar checkpoints are ratified.
+
 **D2. Native scalar/relational IR expansion**
 
 - extend only the expression/cast/projection subset ratified for SQL v1;
 - prove DataFusion analysis-to-native lowering and vectorized execution equivalence;
 - no joins/aggregations/windows or runtime DataFusion plans in v1.
 
-Depends-On: D0; coordinates with C1 for semantic annotations.
+Depends-On: D0 and D1.5; coordinates with C1 for semantic annotations.
 
 **D3. SQL project front-end**
 
 - activate `.10x/specs/sql-project-authoring.md`;
 - parse exact CDF envelope/metadata plus DataFusion-compatible query body;
 - lower to native source/operator/contract/semantic/destination artifacts;
-- coexist with declarative front-end and publish D1 manifest.
+- replace the retired project declarative front-end and publish the D1 manifest.
 
-Depends-On: D1, D2, and C1 for first-class semantic syntax.
+Depends-On: D1, D1.5, D2, and C1 for first-class semantic syntax.
 
 **D4. Explicit generation; templating remains parked**
 
@@ -327,8 +348,8 @@ deferred lanes are explicitly parked with owners. For a full close:
 - B1 is used by the existing relational sources and MySQL without dialect leakage;
 - C1 resolves all current behavior-bearing semantic tags and binds lock/manifest/contract/
   destination authority;
-- D1/D2/D3 compile one explicit SQL resource to the ordinary native execution path with a
-  deterministic queryable manifest;
+- D1/D1.5/D2/D3 compile one path-derived SQL resource through one typed shared source configuration
+  to the ordinary native execution path with a deterministic queryable manifest;
 - E1 executes one ratified batch hook runtime under exact schema/memory/determinism rules, or hooks
   are explicitly parked if the user retains D-23;
 - F0 removes the current accepted-but-inert transform behavior;
@@ -354,7 +375,9 @@ deferred lanes are explicitly parked with owners. For a full close:
 - `.10x/specs/sql-source-commons.md`
 - `.10x/specs/semantic-type-registry.md`
 - `.10x/specs/project-compilation-manifest.md`
+- `.10x/specs/project-source-resource-layout.md`
 - `.10x/specs/sql-project-authoring.md`
+- `.10x/decisions/filesystem-source-resource-and-configuration-authority.md`
 - `.10x/specs/batch-transform-hooks.md`
 - `.10x/tickets/2026-08-03-rest-records-transform-contract-repair.md`
 - `.10x/tickets/2026-08-02-sqlite-clickhouse-mongodb-connector-program.md`
@@ -369,13 +392,21 @@ deferred lanes are explicitly parked with owners. For a full close:
 - MySQL and MongoDB are priority first-class connectors.
 - SQL-like explicit project definitions, semantic types, manifests, and inline hook capability are
   desired directions.
-- explicit resources are preferred over implicit templating.
+- explicit path-derived resources are preferred over implicit templating;
 - semantic references use the exact active canonical grammar, unknown semantics fail closed, and
   project definitions use the same data-only registry after built-in migration;
 - the generated manifest lives at `.cdf/manifest.json`; offline and explicit refresh compilation
   use existing crash-safe project publication, and `cdf sql` mounts rather than recompiles it;
-- SQL resources use one explicit typed `CREATE RESOURCE ... AS SELECT` envelope under
-  `resources/**/*.cdf.sql`; connection/profile authority remains outside SQL;
+- SQL resources live at exactly `sources/<source>/<resource>.cdf.sql`; the path is the sole
+  canonical source/resource identity, SQL repeats neither, shared typed source configuration lives
+  once in `cdf.toml`, and environment overlays may change admitted source option values but not
+  source name/type;
+- `SourceRegistry` is an internal implementation catalog, never a project namespace: path resolves
+  configured source, source type resolves driver, and the resource relation then resolves through
+  that driver;
+- root wildcard resource maps, declarative `resources/<source>.toml`, explicit SQL resource ids,
+  source sidecars, and arbitrary `${...}` interpolation are retired current-schema shapes with no
+  compatibility path;
 - correctness and throughput are non-negotiable; validation must also be economical.
 - implementation is owned by the primary agent; separate agents are reserved for red-team review.
 - source positions use protocol-specific PostgreSQL/MySQL committed variants and a distinct opaque
@@ -405,13 +436,26 @@ deferred lanes are explicitly parked with owners. For a full close:
 ### Unratified blockers
 
 - PostgreSQL/MySQL maximum single-transaction resource behavior;
+- exact safe source-directory/resource-file token grammar, exact D3 relation/envelope clause
+  spellings, and blocking versus deliberately inactive treatment of a configured source without a
+  resource directory, within the ratified path/config authority;
 - exact D2 native scalar/cast allowlist and IR version;
-- final named-profile TOML field model and exact D3 semantic-annotation tokens, within the active
-  profile/envelope boundaries;
+- exact D3 semantic-annotation tokens, which must reuse the canonical semantic reference grammar;
 - Python execution-substrate supersession and first hook runtime;
 - whether to reorder the remaining MongoDB destination around C1.
 
 ## Journal
+
+- 2026-08-04: The user challenged the undefined `source-driver catalog` phrase and the repeated
+  source/resource identities visible in the sandbox project, then ratified the recommended
+  replacement in full. `SourceRegistry` is now recorded as internal implementation authority only.
+  The canonical project layout is `sources/<source>/<resource>.cdf.sql`; path supplies
+  `<source>.<resource>`; root `cdf.toml` supplies one typed shared source configuration plus sparse
+  selected-environment source option overlays; SQL supplies only the upstream relation and
+  per-resource behavior. The prior explicit-id/profile decision was moved to `superseded/`, and the
+  new focused decision/spec explicitly reject wildcard resource maps, source sidecars, arbitrary
+  environment interpolation, retired declarative project resources, and compatibility machinery.
+  D1.5 now owns the current-only project-model replacement before D2/D3 execute.
 
 - 2026-08-03: The user accepted all C0/D0 recommendations. Semantic grammar/built-ins/unknown
   policy/project-definition scope, manifest path/compile/query/publication policy, and the typed SQL

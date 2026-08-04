@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-08-03
-Updated: 2026-08-03
+Updated: 2026-08-04
 
 # Semantic type registry
 
@@ -256,7 +256,7 @@ physical representation.
 
 ## Security and redaction
 
-- Semantic metadata is untrusted at source/declarative boundaries and must resolve against the
+- Semantic metadata is untrusted at source/authored-project boundaries and must resolve against the
   locked registry before it affects redaction.
 - A source cannot evade PII policy by supplying an unknown or misspelled semantic.
 - Registry definitions cannot contain credentials, executable code, filesystem paths, or network
@@ -293,10 +293,11 @@ physical representation.
    `cdf.pii@1(class="email")` while deleting prefix inference and rejecting the historical spelling.
 6. Given an unknown semantic, no adapter silently treats it as ordinary Utf8 when exact-value or
    privacy meaning may be lost.
-7. Given a project-defined semantic is not enabled in the first slice, the compiler emits an exact
-   remediation rather than accepting a free-form tag.
-8. Given SQL and declarative front-ends author the same field semantics, both lower to identical
-   resolved schema/contract/manifest identities.
+7. Given a project-defined parameterized semantic such as `finance.currency@1(code="USD")`, the
+   project compiler validates the closed data-only definition and parameters, binds it to the exact
+   output field, and snapshots the full definition/reference/usage in lock and manifest authority.
+8. Given SQL authors a semantic reference, it lowers through the same registry resolution and field
+   binding used by every compiler producer; there is no authoring-format-specific semantic model.
 
 ## Migration plan requirements
 
@@ -320,7 +321,9 @@ redaction changes.
 - D1 adds `CdfLock.semantics`, a map from each reachable canonical reference to its definition
   hash, while the manifest records the complete reachable definitions, normalized parameters, and
   per-field usage. The lock therefore pins expectation without duplicating the snapshot.
-- C2 adds project definition files through the project compiler after C1 and D1 are stable.
+- C2 adds project definition files through the Foundation D project compiler after C1 and D1 are
+  stable. Their exact authored file grammar/path remains a focused C2 contract, but they use the
+  existing data-only `SemanticDefinition` model and cannot add executable type behavior.
 - SQL annotation syntax remains owned by `.10x/specs/sql-project-authoring.md`; it resolves to the
   same canonical reference and introduces no alternate semantic model.
 
@@ -331,4 +334,5 @@ redaction changes.
 - `.10x/knowledge/type-policy-authority.md`
 - `.10x/decisions/compiled-output-schema-and-runtime-provenance.md`
 - `.10x/specs/destination-receipts-guarantees.md`
+- `.10x/specs/project-source-resource-layout.md`
 - `VISION.md` D-15

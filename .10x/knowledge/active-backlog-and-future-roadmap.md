@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-25
-Updated: 2026-08-03
+Updated: 2026-08-04
 
 # Active backlog and future roadmap
 
@@ -149,13 +149,24 @@ serialized and runtime identity. The initial language is one explicit source res
 bounded vectorized projection/filter/cast/scalar subset; joins, aggregation, scheduling, and
 runtime templates remain excluded.
 
+The project shape is now ratified: `sources/<source>/<resource>.cdf.sql` is the sole canonical
+source/resource identity, root `[sources.<source>]` holds one shared typed configuration, and the
+selected environment may sparsely override admitted source options but never source name/type.
+Path resolves configured source, source type resolves the internal driver, and only then does the
+driver resolve the upstream relation. Wildcard resource maps, declarative project resource files,
+source sidecars, explicit SQL ids/source names, and arbitrary environment interpolation are retired
+without compatibility readers.
+
 - `.10x/specs/semantic-type-registry.md`
 - `.10x/specs/project-compilation-manifest.md`
+- `.10x/specs/project-source-resource-layout.md`
 - `.10x/specs/sql-project-authoring.md`
+- `.10x/decisions/filesystem-source-resource-and-configuration-authority.md`
 
-SQL grammar/profile split, semantic namespace/project scope, and manifest path/publication behavior
-must be ratified before implementation. Existing declarative resources remain a coequal front-end
-during migration.
+Manifest path/publication, source/resource layout, configuration ownership, and semantic registry
+authority are ratified. Remaining Foundation D shaping is the exact safe path-token grammar, exact
+resource/relation/semantic SQL tokens, and the bounded D2 scalar/cast allowlist. The old declarative
+project surface is implementation drift to replace, not a coequal front-end or migration authority.
 
 ### Plan-declared hooks
 

@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-08-03
-Updated: 2026-08-03
+Updated: 2026-08-04
 
 # SQL project authoring and native CDF lowering
 
@@ -8,15 +8,18 @@ Updated: 2026-08-03
 
 The user has established a SQL-like project authoring experience as the preferred direction for
 CDF's configuration overhaul: project files resemble explicit SQL resources, DataFusion may
-parse/analyze them, and CDF executes an opaque native plan. The CDF-owned envelope, explicit-id
-rule, profile boundary, and absence of companion/generic-option files were ratified on 2026-08-03.
+parse/analyze them, and CDF executes an opaque native plan. On 2026-08-04 the user superseded the
+explicit-id/profile model with filesystem-derived source/resource identity and one typed shared
+source configuration in `cdf.toml`, governed by
+`.10x/decisions/filesystem-source-resource-and-configuration-authority.md` and
+`.10x/specs/project-source-resource-layout.md`.
 
 ## Purpose
 
 Add a second authoring front-end that lets users define extraction/load resources and bounded
 in-flight transformations in SQL-shaped files while preserving every existing CDF authority:
 
-- typed driver/profile options and secret references;
+- typed shared-source/driver options and secret references;
 - source discovery/capability truth;
 - native Arrow schemas, contracts, semantics, and normalization;
 - compiled source/operator/destination identities;
@@ -28,7 +31,7 @@ The SQL front-end is a compiler, not a runtime query engine and not a new schedu
 ## Non-negotiable boundary
 
 ```text
-authored SQL-shaped resource + typed project/profile metadata
+authoritative source/resource path + authored SQL resource + typed effective source configuration
 → CDF parse and source binding
 → DataFusion SQL analysis where useful
 → validation against CDF source/schema/contract/semantic authority
@@ -43,48 +46,50 @@ destination protocols. Runtime MUST NOT reparse, reoptimize, or reinterpret auth
 
 ## Authoring separation
 
-### Typed project/profile authority
+### Typed project/source authority
 
-The project configuration retains non-relational operational concerns:
+Root `cdf.toml` retains non-relational operational concerns:
 
-- named source connections and secret references;
+- named configured sources, their immutable source types, shared connection options, and secret
+  references;
 - named destinations and environment selection;
 - state/package roots and retention;
 - egress, retry/rate/quota, trust, and destination policies;
 - driver-specific capability options validated by driver JSON schemas;
 - compiler/dependency/semantic pins.
 
-These MUST NOT be embedded as arbitrary SQL strings or connection literals. SQL resources refer to
-named profiles/sources/destinations.
+These MUST NOT be embedded as arbitrary SQL strings or connection literals. A resource does not
+refer to its configured source by name: `sources/<source>/<resource>.cdf.sql` binds it before SQL is
+parsed. SQL may refer to logical destination targets as separately governed.
 
 ### SQL resource authority
 
 An explicit SQL resource defines:
 
-- one canonical resource id/origin;
-- one named source relation in the first language version;
+- one driver-owned upstream relation/selector in the first language version;
 - projection, aliases, deterministic scalar expressions, casts, and filters;
 - semantic annotations through the semantic registry;
 - resource contract/disposition/cursor/keys either in a typed CDF statement envelope or a typed
   companion declaration;
 - optional destination target binding where project policy permits it.
 
-The file path may supply the resource id only if path-to-id normalization and collision behavior is
-specified and manifest-recorded. Relying on incidental filenames without validation is forbidden.
+The authoritative path supplies source name, resource name, and canonical resource id exactly as
+specified by `.10x/specs/project-source-resource-layout.md`. SQL MUST NOT repeat or override them.
+Path validation, collision behavior, renames, and manifest evidence are compiler contracts, so the
+identity is filesystem-derived but never incidental.
 
 ## Ratified grammar boundary
 
-Each `resources/**/*.cdf.sql` file contains exactly one CDF-owned `CREATE RESOURCE ... AS SELECT`
-statement. The statement declares its canonical resource id explicitly; filename-to-id inference is
-forbidden and duplicate ids fail deterministically. CDF parses the typed envelope and DataFusion
-parses/analyzes only the `SELECT` body.
+Each `sources/<source>/<resource>.cdf.sql` file contains exactly one CDF-owned resource statement.
+The path declares canonical id `<source>.<resource>`; the statement cannot declare an id or source.
+CDF parses the typed envelope and DataFusion parses/analyzes only the `SELECT` body.
 
-The envelope has this required structural order; optional clauses are omitted rather than given
-sentinel values:
+The prior example repeated `CREATE RESOURCE github.issues` and `FROM SOURCE github`. Both are
+retired. The envelope instead has this structural ownership:
 
 ```sql
-CREATE RESOURCE github.issues
-FROM SOURCE github RESOURCE issues
+CREATE RESOURCE
+<RELATION CLAUSE> public.issues
 TARGET warehouse.issues
 DISPOSITION MERGE
 MERGE KEY (id)
@@ -96,15 +101,21 @@ FROM source
 WHERE state <> 'spam';
 ```
 
-Typed clauses cover source profile/relation, logical destination target, disposition, primary or
-merge keys, cursor, contract/trust, and execution extent. Unknown, repeated, contradictory, or
-out-of-order clauses fail with exact source location. Defaults may come only from the typed project
-model and are resolved into the manifest; no generic `WITH` map exists.
+`<RELATION CLAUSE>` is a grammar placeholder, not an accepted token. Its exact spelling, the
+compiler-provided query input name (`source` above), and remaining clause order are the next D3
+grammar checkpoint. That checkpoint may select syntax but cannot reintroduce source/id repetition
+or connection configuration.
 
-Named connection profiles, driver options, policy, and secret references live in `cdf.toml` and are
-validated by driver option schemas. SQL cannot contain a connection URI, credential, or secret
-value. Destination connection remains selected by the environment while the statement may declare
-only its logical target. Companion metadata files and metadata headers are forbidden in v1.
+Typed clauses cover driver-owned relation selection, logical destination target, disposition,
+primary or merge keys, cursor, contract/trust, and execution extent. Unknown, repeated,
+contradictory, or out-of-order clauses fail with exact source location. Defaults may come only from
+the typed project model and are resolved into the manifest; no generic `WITH` map exists.
+
+Named source configuration, driver options, policy, and secret references live once in `cdf.toml`
+and are validated by driver option schemas. SQL cannot contain a source name/type, connection URI,
+credential, secret reference/value, or source-level option. Destination connection remains selected
+by the environment while the statement may declare only its logical target. Companion metadata
+files and metadata headers are forbidden in v1.
 
 The chosen form MUST prove:
 
@@ -112,7 +123,7 @@ The chosen form MUST prove:
 - DataFusion compatibility for the relational query body;
 - typed, schema-validated non-relational options rather than stringly TOML-in-SQL;
 - no credentials or secret values;
-- explicit resource/source/destination identity;
+- exact path-derived resource/source identity and explicit logical destination identity;
 - canonical formatting/normalization for hashing without changing SQL semantics;
 - forward-compatible rejection of unknown CDF clauses.
 
@@ -124,7 +135,7 @@ convention.
 The first active language SHOULD support only the surface that can lower completely into reviewed
 native CDF operators:
 
-- one source relation per resource;
+- one upstream relation per resource, interpreted only by the path-bound source type;
 - explicit `SELECT` projection and aliases;
 - deterministic literals and scalar expressions from a versioned allowlist;
 - explicit Arrow-compatible casts;
@@ -174,7 +185,9 @@ supported alternatives. They do not remain opaque runtime expressions.
 
 ## Source and destination binding
 
-- `FROM` names resolve only against the project compilation environment and source-driver catalog.
+- the resource path resolves one configured project source before SQL parsing; that source's type
+  selects an internal driver, and only then does the relation clause resolve through driver-owned
+  semantics. SQL names never resolve directly against the source-driver registry.
 - One resource binds to one `CompiledSourcePlan`; SQL does not bypass driver option schemas,
   discovery, egress, health, or type policy.
 - Projection/filter requests flow through ordinary `QueryableResource`/source pushdown
@@ -202,7 +215,8 @@ record:
 
 - exact SQL input bytes/hash and normalized AST hash;
 - parser/DataFusion/native function-version tuple;
-- source/profile/resource bindings;
+- path-derived source/resource, effective source-configuration, driver, and upstream-relation
+  bindings;
 - lowered native expression/operator graph and hash;
 - output schema, contracts, semantics, destination plan, and lineage;
 - pushdown/residual decisions;
@@ -212,25 +226,22 @@ record:
 Two SQL spellings that normalize to the same semantics MAY share execution identity only if the
 canonicalization law is explicit and tested. Authored-origin hashes remain separately inspectable.
 
-## Coexistence and migration
+## Current-only authoring transition
 
-- Existing TOML/YAML declarative resources remain front-end 1 during migration.
-- SQL resources are front-end 2.
-- Both MUST lower to the same `CompiledResource`, `CompiledSourcePlan`, contract, operator graph,
-  destination plan, and manifest structures.
-- Runtime/destination code MUST NOT test the authoring front-end kind.
-- `cdf add` MAY generate explicit SQL resources once the grammar is active; it must use atomic
-  multi-file publication where companion metadata/lock/manifest changes together.
-- Conversion tooling must report unsupported declarative features and never silently drop options.
+CDF is net-new/customer zero. The spike-era TOML/YAML project resource front-end, root wildcard
+resource mappings, declaration-file locator, and explicit SQL id receive no coexistence period,
+migration reader, or compatibility schema. Foundation D replaces them together.
 
-Removing the old declarative front-end is out of scope until feature equivalence, migration, and
-artifact compatibility are separately ratified.
+Reusable declarative/compiler structures MAY remain internal lowering types if their authority and
+naming fit the new model. Runtime and destination code MUST remain authoring-format agnostic.
+`cdf add`/generation MUST write the source configuration and explicit SQL resource paths through
+atomic multi-file publication; it cannot emit the retired mapping/declaration shape.
 
 ## Explicitness, discovery, and templating
 
 Initial SQL authoring has no general Jinja/template runtime.
 
-- Catalog discovery may enumerate resources through existing source discovery authority.
+- Catalog discovery may enumerate upstream relations through existing source discovery authority.
 - `cdf add` or a future generate command materializes explicit resource files.
 - Wildcard mappings remain compile inputs only where their expansion is captured in the manifest.
 - Repeated explicit files are preferred until real duplication establishes a macro requirement.
@@ -248,9 +259,10 @@ Runtime string templating is permanently excluded.
 
 ## Security and error behavior
 
-- SQL containing a credential/DSN where only named profiles are permitted fails Contract with
-  remediation to secret references.
-- Unknown source/profile/resource/field/function/semantic references fail compilation before I/O.
+- SQL containing a source/type name, credential, DSN, secret reference, or source-level option
+  fails Contract with remediation to the path-bound `[sources.<name>]` configuration.
+- Unknown configured source, relation, resource field, function, or semantic reference fails
+  compilation before I/O.
 - Ambiguous names require qualification; resolution cannot depend on map iteration order.
 - Parser/type/lowering errors retain file, line, column, construct, and stable error code.
 - Source/destination discovery and execution errors retain adapter provenance.
@@ -261,19 +273,20 @@ Runtime string templating is permanently excluded.
 
 ## Acceptance scenarios
 
-1. Given a simple one-source SQL resource, compile produces the same native source/operator/
-   contract/destination behavior as an equivalent declarative resource.
+1. Given a simple one-source SQL resource, compile produces the expected native source/operator/
+   contract/destination artifacts without a runtime SQL or authoring-format branch.
 2. Given projection/filter/cast/alias expressions, DataFusion analysis and native CDF execution
    agree on Arrow schema, null behavior, values, and errors over property-generated batches.
 3. Given an inexact source pushdown, the manifest records it and native residual evaluation
    preserves results.
 4. Given a join/window/unknown function, compilation fails at the exact source location and no
    runtime plan or external I/O is produced.
-5. Given a named source profile, the SQL/manifest contain no resolved secret value.
-6. Given two files resolve to the same resource id, compilation fails deterministically before
-   manifest publication.
-7. Given SQL and declarative equivalents, runtime code receives indistinguishable native artifacts
-   and no authoring-kind branch executes.
+5. Given a path-bound named source configuration, the SQL/manifest contain no resolved secret
+   value.
+6. Given `sources/warehouse/orders.cdf.sql`, compilation derives exactly `warehouse.orders`; SQL
+   cannot override it, and canonical path collisions fail before manifest publication.
+7. Given a spike-era project mapping/declarative resource file, current validation rejects the
+   retired shape with regeneration guidance and no compatibility reader.
 8. Given a semantic annotation, its exact definition/version/hash and validation/destination
    effects appear in the manifest.
 9. Given an attempted transform of `_cdf_op` or a CDC key, compilation fails as control-critical.
@@ -294,8 +307,9 @@ Runtime string templating is permanently excluded.
 1. D1 publishes the active manifest before SQL parsing lands.
 2. D2 must activate a focused native scalar/cast allowlist and IR version before D3 accepts those
    expressions. That exact allowlist remains a D2 shaping checkpoint, not parser discretion.
-3. D0 removes the current Postgres-special-cased merge-dedup policy. General named connection
-   profiles receive a focused project-model ticket before D3; driver options stay schema-validated.
+3. D0 removed the current Postgres-special-cased merge-dedup policy. The path-derived source model,
+   typed base configuration, and selected-environment overlays are governed by
+   `.10x/specs/project-source-resource-layout.md`; driver options stay schema-validated.
 4. C1/C2 provide canonical semantic references. Exact SQL semantic-annotation token syntax remains
    a focused D3 shaping checkpoint; it cannot create a second reference grammar.
 5. SQL target is logical target authority only; environment configuration owns destination
@@ -305,6 +319,8 @@ Runtime string templating is permanently excluded.
 
 - `.10x/research/2026-08-03-cdc-semantic-dsl-core-readiness-audit.md`
 - `.10x/specs/project-compilation-manifest.md`
+- `.10x/specs/project-source-resource-layout.md`
+- `.10x/decisions/filesystem-source-resource-and-configuration-authority.md`
 - `.10x/specs/semantic-type-registry.md`
 - `.10x/decisions/datafusion-analysis-scheduling-identity-boundary.md`
 - `.10x/decisions/compiled-fused-streaming-operator-graph.md`

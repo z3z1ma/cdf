@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-08-03
-Updated: 2026-08-03
+Updated: 2026-08-04
 
 # Project compilation manifest
 
@@ -19,7 +19,7 @@ The core rule is:
 
 Current compilation facts are distributed across:
 
-- `cdf.toml` and declarative resource files;
+- `cdf.toml`, path-derived source SQL resources, and project semantic definitions;
 - `cdf.lock` dependency/resource/schema/contract/destination pins;
 - in-memory `CompiledSourcePlan` and compiler bindings;
 - compiled operator/contract/destination plans;
@@ -68,7 +68,7 @@ The compiler validates it against `cdf.lock`; it does not mutate lock expectatio
 
 The manifest MUST be:
 
-- versioned independently from `cdf.lock`, declarative documents, source plans, and packages;
+- versioned independently from `cdf.lock`, authored resource grammar, source plans, and packages;
 - canonically serialized with deterministic map/list ordering;
 - content-hashed over semantic content, excluding its own hash field and non-semantic timestamps;
 - secret-redacted using source/destination option-schema authority;
@@ -119,11 +119,11 @@ project publication contract. Refresh is never an implicit side effect of ordina
 For every input:
 
 - normalized project-relative path or typed non-file origin;
-- input kind (`project`, `resource_sql`, `declarative`, `semantic_definition`, `hook`, generated
+- input kind (`project`, `resource_sql`, `semantic_definition`, `hook`, generated
   expansion, etc.);
 - byte/content hash;
 - parser/schema version;
-- originating source/resource mapping;
+- path-derived source/resource identity and effective named-source configuration;
 - generated/explicit status and generator identity;
 - no absolute host paths in canonical identity unless the active project policy requires them.
 
@@ -136,7 +136,10 @@ silently serve the last compiled view of changed authored files.
 
 For each canonical resource id:
 
-- authored origin(s) and expansion origin;
+- authoritative `sources/<source>/<resource>.cdf.sql` origin, derived source/resource names, and
+  expansion origin when a future explicit generator is used;
+- selected source type, exact driver descriptor/option-schema hashes, driver-owned upstream
+  relation identity, and canonical secret-redacted base/overlay/effective source configurations;
 - complete `ResourceDescriptor` and resource capabilities;
 - execution extent and compiled stream policy;
 - driver descriptor and option-schema hash;
@@ -173,6 +176,7 @@ not lockfile identities.
 Lineage MUST be compiler-derived, not reconstructed from display SQL:
 
 - resource-to-source relation;
+- configured source-to-source-type/driver relation and source-to-upstream-relation selection;
 - output field to input field(s) and transform expression id;
 - contract rule to affected fields;
 - semantic definition to fields and destination mapping;
@@ -273,8 +277,8 @@ compiler or reinterpret identity.
 - Secret values and credentials MUST never enter authored-input excerpts, options, diagnostics,
   SQL text normalization, hook configuration, or lineage.
 - Named secret references may be recorded only under existing redaction rules.
-- SQL files that contain credential-shaped literals SHOULD fail compilation when the profile split
-  forbids them.
+- SQL files that contain source/type names, connection configuration, or credential-shaped literals
+  SHOULD fail compilation under the path/config authority split.
 - Absolute host paths, environment values, and usernames are excluded or normalized unless they
   are intentionally semantic project inputs.
 - Hook code is recorded by content hash and project-relative reference; embedded code bytes are a
@@ -311,8 +315,9 @@ compiler or reinterpret identity.
 7. Given the manifest is tampered with, validation and `cdf sql` reject it before returning rows.
 8. Given `cdf sql` queries resources, semantics, or lineage, results come from the published
    artifact without recompiling or contacting a source.
-9. Given declarative and SQL front-ends lower to identical native plans, their resource compilation
-   hashes match while authored-origin metadata remains distinguishable outside execution identity.
+9. Given two resources lower equivalent native operator fragments, the fragment hashes may match
+   only where typed identity excludes resource identity; their path-derived resource ids and
+   authored origins remain distinct.
 10. Given any project-relative authored input changes after compilation, `cdf sql` rejects the
     stale manifest without writing or recompiling.
 
@@ -339,6 +344,9 @@ compiler or reinterpret identity.
 - `CdfLock.semantics` pins reachable canonical reference → definition hash expectations. The
   manifest carries full reachable definition and usage snapshots.
 - The seven tables above are the complete D1 SQLite surface.
+- The final Foundation D project compiler uses
+  `.10x/specs/project-source-resource-layout.md`: there is no root wildcard resource map, retired
+  declarative project reader, or explicit SQL resource id in current authority.
 
 ## References
 
@@ -349,6 +357,8 @@ compiler or reinterpret identity.
 - `.10x/decisions/source-driver-registry-and-resource-plan-boundary.md`
 - `.10x/specs/datafusion-currency-bridges.md`
 - `.10x/specs/semantic-type-registry.md`
+- `.10x/specs/project-source-resource-layout.md`
+- `.10x/decisions/filesystem-source-resource-and-configuration-authority.md`
 - `.10x/knowledge/project-file-publication-recovery.md`
 - `.10x/knowledge/content-addressed-sidecar-publication.md`
 - `VISION.md` D-19

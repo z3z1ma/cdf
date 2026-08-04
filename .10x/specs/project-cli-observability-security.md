@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-13
+Updated: 2026-08-04
 
 # Project format, CLI, observability, and security
 
@@ -10,7 +10,14 @@ This specification governs the user-facing project format, lockfile, CLI command
 
 ## Project format
 
-`cdf.toml` MUST define project metadata, default environment, normalizer, environments, Python interpreter, defaults, and resource source mappings. Environments MUST overlay inherited settings. Secrets MUST appear only as `secret://provider/key` URIs.
+`cdf.toml` MUST define project metadata, default environment, normalizer, environments, Python
+interpreter, defaults, and one typed shared configuration for every filesystem-named source. It
+MUST NOT contain resource-to-file maps or wildcard resource mappings. Resources live at
+`sources/<source>/<resource>.cdf.sql`, derive canonical id `<source>.<resource>`, and bind to the
+same-named `[sources.<source>]` entry as governed by
+`.10x/specs/project-source-resource-layout.md`. Environments overlay inherited source option values
+but cannot change source name/type. Secrets MUST appear only as `secret://provider/key` URIs;
+arbitrary environment/string interpolation is forbidden.
 
 Environment destination URIs MUST use destination-specific schemes. `duckdb://<path>` names a local DuckDB database path. `parquet://<root>` names a filesystem Parquet destination root/prefix, not a single file; commits MAY create multiple Parquet files, manifests, pointers, and receipt-supporting objects below the root.
 
@@ -79,7 +86,8 @@ Supply-chain gates SHOULD include `cargo deny`, `cargo vet`, committed lockfiles
 
 ## Acceptance criteria
 
-- `cdf.toml` and `cdf.lock` parse into typed models and reject secret values where only references are allowed.
+- `cdf.toml` and `cdf.lock` parse into typed models, path/config source-resource joins are total,
+  and secret-bearing fields reject values where only references are allowed.
 - CLI commands provide stable JSON output where required and meaningful exit codes.
 - Redaction tests prove a resolved secret cannot appear in traces, error messages, plan output, or package traces.
 - `doctor` detects at least missing secrets, Python interpreter issues, DuckDB ICU status, and ledger/mirror drift when fixtures support them.

@@ -1,6 +1,7 @@
-Status: active
+Status: superseded
 Created: 2026-08-03
-Updated: 2026-08-03
+Updated: 2026-08-04
+Superseded-By: `.10x/decisions/filesystem-source-resource-and-configuration-authority.md`
 
 # SQL resource envelope and profile boundary
 
