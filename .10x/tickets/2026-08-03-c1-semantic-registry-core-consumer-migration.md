@@ -103,6 +103,13 @@ acceptable only if it preserves one resolver without moving project/driver code 
   CDF invariants, while authored and observed invalidity remain Contract and Data respectively.
 - 2026-08-03: Attempted the required post-edit `graphify update .`; the local `graphify`
   executable is unavailable (`command not found`), so no graph artifact was regenerated.
+- 2026-08-03: Fast Quality run `30871800891` passed locked metadata, formatting, core Clippy,
+  secret scanning, and every core library target except one stale `cdf-package` fixed-fixture hash.
+  CI and a local isolated rerun both produced
+  `sha256:f2d84641b917a373ad126b809fe314f08f07f67b23687e49152653d1c611f5ba` after the intentional
+  package-row semantic identity change. Updated only that expected artifact identity; the test's
+  first-vs-second build equality remained its independent determinism proof, and the isolated
+  locked rerun passed 1/1.
 
 ## Blockers
 
@@ -133,6 +140,10 @@ None.
    redaction, schema-admission, and package-evidence tests passed. The golden package hash changed
    from `5009…` to `13dac4da32ed673cbfbf4e0074da28abf5ca3a14760fdbf2055dad584b4f5817`;
    isolated one-batch/many-batch equality proved determinism before updating the expected identity.
+   CI surfaced the independent `cdf-package` fixed fixture, whose repeated-build equality likewise
+   proved the new stable identity
+   `sha256:f2d84641b917a373ad126b809fe314f08f07f67b23687e49152653d1c611f5ba`; its single locked test
+   passed after the expected hash was updated.
 7. PostgreSQL exact fidelity: `cargo test -p cdf-dest-postgres exact_` passed 8/8, including live
    exact/replay/correction coverage. With the existing local DuckDB dylib made visible to the
    linker, `cargo test -p cdf-conformance postgres_exact` passed the live binary-source to native-
