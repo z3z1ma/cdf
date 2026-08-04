@@ -245,8 +245,8 @@ Owners:
   shim.
 
 Depends-On: D1. Governed by `.10x/specs/project-source-resource-layout.md` and
-`.10x/decisions/project-path-tokens-and-upstream-relation-binding.md`. D1.5a owner:
-`.10x/tickets/2026-08-04-d1-5a-project-source-resource-input-authority.md`.
+`.10x/decisions/project-path-tokens-and-upstream-relation-binding.md`. D1.5a is complete:
+`.10x/tickets/done/2026-08-04-d1-5a-project-source-resource-input-authority.md`.
 
 **D2. Native scalar/relational IR expansion**
 
@@ -385,7 +385,7 @@ deferred lanes are explicitly parked with owners. For a full close:
 - `.10x/specs/sql-project-authoring.md`
 - `.10x/decisions/filesystem-source-resource-and-configuration-authority.md`
 - `.10x/decisions/project-path-tokens-and-upstream-relation-binding.md`
-- `.10x/tickets/2026-08-04-d1-5a-project-source-resource-input-authority.md`
+- `.10x/tickets/done/2026-08-04-d1-5a-project-source-resource-input-authority.md`
 - `.10x/specs/batch-transform-hooks.md`
 - `.10x/tickets/2026-08-03-rest-records-transform-contract-repair.md`
 - `.10x/tickets/2026-08-02-sqlite-clickhouse-mongodb-connector-program.md`

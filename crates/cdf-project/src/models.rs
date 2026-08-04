@@ -9,6 +9,8 @@ pub struct ProjectConfig {
     #[serde(default)]
     pub environments: BTreeMap<String, EnvironmentConfig>,
     #[serde(default)]
+    pub sources: BTreeMap<String, ProjectSourceConfig>,
+    #[serde(default)]
     pub defaults: DefaultsConfig,
     #[serde(default)]
     pub resources: BTreeMap<String, ProjectResource>,
@@ -59,6 +61,8 @@ pub struct EnvironmentConfig {
     pub packages: Option<String>,
     pub destination: Option<String>,
     #[serde(default)]
+    pub sources: BTreeMap<String, ProjectSourceOverlay>,
+    #[serde(default)]
     pub destination_policy: DestinationPolicy,
     pub retention: Option<RetentionPolicy>,
 }
@@ -75,12 +79,29 @@ impl EnvironmentConfig {
                 .destination
                 .clone()
                 .or_else(|| self.destination.clone()),
+            sources: override_config.sources.clone(),
             destination_policy: self
                 .destination_policy
                 .overlay(&override_config.destination_policy),
             retention: merge_retention(self.retention.clone(), override_config.retention.clone()),
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectSourceConfig {
+    #[serde(rename = "type")]
+    pub source_type: String,
+    #[serde(default, flatten)]
+    pub options: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectSourceOverlay {
+    #[serde(default, rename = "type")]
+    pub source_type: Option<String>,
+    #[serde(default, flatten)]
+    pub options: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

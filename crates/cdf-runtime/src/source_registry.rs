@@ -202,6 +202,29 @@ impl SourceRegistry {
             .collect()
     }
 
+    /// Resolves a configured source kind and validates only its source-level options.
+    ///
+    /// Project compilation uses this before it has parsed a resource's driver-owned relation.
+    /// Compatibility hooks and resource schemas therefore intentionally remain outside this seam.
+    pub fn validate_source_configuration(
+        &self,
+        source_kind: &str,
+        source_options: &BTreeMap<String, serde_json::Value>,
+    ) -> Result<SourceDriverDescriptor> {
+        let driver = self.driver_for_kind(source_kind)?;
+        let source_schema = driver.option_schema().get("source").ok_or_else(|| {
+            CdfError::internal("registered source driver lost its source option schema")
+        })?;
+        validate_option_instance(
+            source_schema,
+            &serde_json::to_value(source_options).map_err(|error| {
+                CdfError::internal(format!("serialize source options: {error}"))
+            })?,
+            "$.source",
+        )?;
+        Ok(driver.descriptor().clone())
+    }
+
     /// Verifies that an isolated worker can resolve the exact source driver named by a portable
     /// task before it fetches any referenced plan or payload artifact.
     pub fn validate_portable_source_binding(

@@ -78,6 +78,7 @@ mod manifest;
 mod models;
 mod observation_cache;
 mod project_files;
+mod project_inputs;
 mod promotion;
 mod runtime;
 #[cfg(test)]
@@ -147,8 +148,9 @@ pub use manifest::{
 };
 pub use models::{
     DefaultsConfig, DestinationPolicy, DurationSpec, EffectiveEnvironment, EnvironmentConfig,
-    ProjectConfig, ProjectFreshness, ProjectMetadata, ProjectResource, ResourceSourceKind,
-    RetentionPolicy, RetentionRule, TrustPreset, WriteDispositionPreset,
+    ProjectConfig, ProjectFreshness, ProjectMetadata, ProjectResource, ProjectSourceConfig,
+    ProjectSourceOverlay, ResourceSourceKind, RetentionPolicy, RetentionRule, TrustPreset,
+    WriteDispositionPreset,
 };
 pub use observation_cache::{
     DEFAULT_OBSERVATION_CACHE_MAX_BYTES, DEFAULT_OBSERVATION_CACHE_MAX_ENTRIES,
@@ -161,6 +163,10 @@ pub use project_files::{
     ProjectFileExpectation, ProjectFileTransactionReport, ProjectFileWrite,
     project_file_transaction_generation, publish_project_files_transactionally,
     publish_project_files_transactionally_without_recovery, recover_project_file_transaction,
+};
+pub use project_inputs::{
+    ProjectResourceName, ProjectSourceBinding, ProjectSourceConfigurationHash, ProjectSourceName,
+    ProjectSourceResourceInput, ProjectSourceResourceInventory, inventory_project_source_resources,
 };
 pub use promotion::{
     CorrectionStrategySelection, CorrectionStrategySelectionRule,

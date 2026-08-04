@@ -198,7 +198,7 @@ supported alternatives. They do not remain opaque runtime expressions.
 ## Source and destination binding
 
 - the resource path resolves one configured project source before SQL parsing; that source's type
-  selects an internal driver, and only then does the relation clause resolve through driver-owned
+  selects an internal driver, and only then does `upstream(...)` resolve through driver-owned
   semantics. SQL names never resolve directly against the source-driver registry.
 - One resource binds to one `CompiledSourcePlan`; SQL does not bypass driver option schemas,
   discovery, egress, health, or type policy.
