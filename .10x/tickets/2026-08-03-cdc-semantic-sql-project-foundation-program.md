@@ -260,8 +260,8 @@ Depends-On: D1. Governed by `.10x/specs/project-source-resource-layout.md` and
 Depends-On: D0 and D1; coordinates with C1 for semantic annotations. It may land after D1.5a but
 does not depend on the final project-authoring cutover.
 
-Status: executable. Owner:
-`.10x/tickets/2026-08-04-d2-datafusion-scalar-relational-ir.md`, governed by
+Status: complete. Closed at:
+`.10x/tickets/done/2026-08-04-d2-datafusion-scalar-relational-ir.md`, governed by
 `.10x/decisions/datafusion-deterministic-scalar-closure.md` and
 `.10x/specs/datafusion-scalar-relational-ir.md`.
 
@@ -542,14 +542,16 @@ deferred lanes are explicitly parked with owners. For a full close:
   free of uncaptured ambient semantics, canonically representable, and reproducibly executable in
   vectorized batches. Known output type is required but does not admit aggregate/window/table/UDF,
   `Stable`/`Volatile`, session-dependent, or opaque expressions. The accepted decision/spec and
-  executable child are `.10x/decisions/datafusion-deterministic-scalar-closure.md`,
+  completed child are `.10x/decisions/datafusion-deterministic-scalar-closure.md`,
   `.10x/specs/datafusion-scalar-relational-ir.md`, and
-  `.10x/tickets/2026-08-04-d2-datafusion-scalar-relational-ir.md`.
+  `.10x/tickets/done/2026-08-04-d2-datafusion-scalar-relational-ir.md`. D2 closed after focused
+  differential/performance validation, one independent adversarial review, bounded closure
+  repairs, and a same-reviewer final pass; D3 may now consume the current typed IR.
 
 ## Blockers
 
-The exact unratified choices listed above still govern D3/E1 and CDC A2. D1.5a is closed and D2 is
-executable; D3 then performs the single current-authoring cutover after D2. CDC A1 is closed; the
+The exact unratified choices listed above still govern D3/E1 and CDC A2. D1.5a and D2 are closed;
+D3 now performs the single current-authoring cutover. CDC A1 is closed; the
 large-transaction policy must be settled before A2 closes. F0 is closed at `3487de68`.
 
 ## Evidence

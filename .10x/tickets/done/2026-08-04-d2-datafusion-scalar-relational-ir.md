@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-08-04
 Updated: 2026-08-04
 Parent: `.10x/tickets/2026-08-03-cdc-semantic-sql-project-foundation-program.md`
@@ -226,6 +226,22 @@ manifest, and performs the current-authoring cutover.
   `.10x/evidence/.storage/d2-datafusion-error-{files.txt,ledger.md}`. Declaration/function authority
   moved directly to v2; the adapter executor now accepts only a validated whole declaration, so an
   extracted v1 node cannot bypass current validation.
+- 2026-08-04: The same reviewer rechecked exactly the seven original closure findings. Six passed;
+  memory remained open because a variable-width DataFusion kernel such as `repeat` could allocate
+  beyond the fixed input multiple before the post-kernel observation. CDF now derives a
+  function-name-independent allocation bound from the complete typed expression tree and canonical
+  Arrow output shapes, includes a two-buffer construction-overlap allowance, and adds that authority
+  to the ordinary transform reservation before any kernel runs. Bound relational plans retain the
+  original typed root specifically so callers cannot bypass this preflight after binding. The same
+  bound is used by public scalar/relational execution and standalone, preview, and package paths.
+  Variable-width maxima deliberately fail closed when the managed budget cannot prove capacity.
+- 2026-08-04: Focused closure validation passed: the expression module ran 26 tests, the production
+  inexact/unsupported residual-package test passed, strict engine Clippy passed for all targets with
+  warnings denied, formatting and `git diff --check` passed, and scalar/filter-projection rooflines
+  remained at `0.9433`/`0.9301` relative to direct DataFusion. GitHub Fast Quality run `30950283835`
+  passed commit `9e2b543c`. The repository-required `graphify update .` was attempted and could not
+  run because the executable is absent from this environment. The same reviewer then rechecked only
+  the memory finding and returned `PASS`; D2 closed without another review scope.
 
 ## Blockers
 
@@ -277,12 +293,17 @@ referenced active records.
    `tier_a_resource_runs_engine_projection_filter_limit_into_package` also passed after exact
    tracking-schema binding. The executor calls vectorized DataFusion/Arrow kernels and checks
    cancellation between calls; no row interpreter or scalar-cell loop was introduced.
+   `crates/cdf-engine/src/expression_memory.rs` additionally derives conservative allocation
+   authority for the complete typed graph before execution. The focused
+   `expanding_scalar_and_prebound_plan_fail_before_an_undersized_lease` regression proves both
+   public durable scalar and pre-bound relational entry points reject `repeat(text, 1000000)` under
+   a 1 MiB lease before a kernel can run. Production standalone, preview, and package reservations
+   consume the same bound and pass the acquired lease through residual and transform evaluation.
 6. **Performance (AC 14).** On this host with the same one-million-row batches and already-bound
    physical expressions, `cargo test -p cdf-engine roofline -- --nocapture` passed both guards and
-   recorded:
-   - scalar: direct DataFusion `142.474750 ms`, CDF `142.273250 ms`, ratio `0.9986`;
-   - filter plus projection: direct DataFusion/Arrow `132.103625 ms`, CDF `132.202666 ms`, ratio
-     `1.0007`.
+   recorded in the final run:
+   - scalar: ratio `0.9433`;
+   - filter plus projection: ratio `0.9301`.
    Both are below the allowed `1.15` ratio (with the test's fixed 50-microsecond timer allowance).
    These are debug-profile same-process comparative observations, not production capacity claims.
 7. **Focused build quality only (AC 15).** `cargo clippy` with `--all-targets -- -D warnings` passed
@@ -290,10 +311,9 @@ referenced active records.
    ClickHouse/files/Glue/Postgres/REST/SQLite sources. The final core rerun passed the same strict
    Clippy wall for kernel/contract/expression/engine. `cargo fmt --all -- --check` and
    `git diff --check` passed. No whole-workspace test suite was run. GitHub Actions `Fast Quality`
-   runs `30936388100` (`f8be7ed5`) and `30934680962` (`e14dff3c`) were both observed completed
-   successfully before this D2 commit; post-push CI remains to be observed.
+   run `30950283835` completed successfully on final implementation commit `9e2b543c`.
 8. **Closure-repair falsification (AC 3-8, 10, 12, 13, 15).** The final focused expression run
-   passed 25 tests, including stable-function simplification laundering, unmatched explicit-cast
+   passed 26 tests, including stable-function simplification laundering, unmatched explicit-cast
    provenance, exact nested source location, canonical alias resolution, UTF8 parse plus signed
    narrowing overflow/try-null casts, semantic/control metadata preservation and rejection,
    typed/nested error ownership, and pre-acquired-memory enforcement. The same run retained the
@@ -302,15 +322,21 @@ referenced active records.
    passed; production residual/package and pruning checks passed (`1`, `1`, and `7` tests); contract,
    Parquet predicate, and file-source predicate checks passed (`1`, `1`, and `3` tests). One batched
    strict Clippy command passed for the 12 named affected crates with `--all-targets -- -D warnings`;
-   formatting and `git diff --check` passed. No whole-workspace test suite ran.
+   formatting and `git diff --check` passed. No whole-workspace test suite ran. The same independent
+   reviewer rechecked only the previously unresolved memory finding after `9e2b543c` and returned
+   `PASS`, citing the typed-tree bound, retained pre-bound allocation root, production reservation
+   threading, and focused expanding-kernel regression.
 
 ## Review
 
 The independent final adversarial review initially returned `fail`: one critical provenance-
 laundering defect and six significant gaps in location, memory, metadata, error, version, and test
-authority. All named findings were repaired in one authorized closure tranche and mapped to focused
-regressions above. A narrow same-reviewer recheck of those exact findings is pending; it is not a
-new review scope.
+authority. All seven findings are closed. The same reviewer passed six repairs on the first narrow
+recheck, isolated only pre-kernel allocation authority, and returned `PASS` after commit `9e2b543c`
+added the canonical type-derived bound across every execution path. Residual risk is conservative
+availability: variable-width expressions reserve theoretical Arrow maxima, so a constrained
+deployment can fail before execution even when a particular batch would have been small. That is a
+deliberate fail-closed resource boundary, not an allocation escape or correctness exception.
 
 ## Retrospective
 
@@ -342,4 +368,8 @@ produce execution authority only after admission has inspected the resolved pre-
 graph. Carrying both transient graphs is smaller and safer than attempting to reconstruct
 provenance from optimized nodes. Exact-path consumption applies the same rule to parser-supplied
 cast claims. The memory repair likewise clarified that accounting must begin before the first
-kernel, not merely before downstream validation retains its output.
+kernel, not merely before downstream validation retains its output. DataFusion 54 provides no
+generic scalar allocation-bound contract, so a typical-size multiplier would only disguise an
+unproved premise. Keeping the bound in a dedicated `expression_memory` module preserves generic
+function admission while making conservative availability visible and keeping execution/binding
+code single-purpose.
