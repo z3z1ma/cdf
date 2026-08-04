@@ -95,8 +95,6 @@ pub struct EffectiveEnvironment {
 
 #[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DestinationPolicy {
-    #[serde(default)]
-    pub postgres: Option<PostgresDestinationPolicy>,
     #[serde(default, flatten)]
     pub adapters: BTreeMap<String, BTreeMap<String, String>>,
 }
@@ -104,10 +102,6 @@ pub struct DestinationPolicy {
 impl DestinationPolicy {
     fn overlay(&self, override_policy: &Self) -> Self {
         Self {
-            postgres: override_policy
-                .postgres
-                .clone()
-                .or_else(|| self.postgres.clone()),
             adapters: overlay_destination_policy_maps(&self.adapters, &override_policy.adapters),
         }
     }
@@ -115,12 +109,7 @@ impl DestinationPolicy {
 
 impl cdf_runtime::DestinationPolicyProvider for DestinationPolicy {
     fn value(&self, destination: &str, key: &str) -> Option<&str> {
-        match (destination, key) {
-            ("postgres", "merge_dedup") => match self.postgres.as_ref()?.merge_dedup {
-                PostgresMergeDedupPolicy::Fail => Some("fail"),
-            },
-            _ => self.adapters.get(destination)?.get(key).map(String::as_str),
-        }
+        self.adapters.get(destination)?.get(key).map(String::as_str)
     }
 
     fn entries<'a>(&'a self, destination: &str) -> Vec<(&'a str, &'a str)> {
@@ -148,18 +137,6 @@ fn overlay_destination_policy_maps(
             .extend(values.clone());
     }
     merged
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PostgresDestinationPolicy {
-    pub merge_dedup: PostgresMergeDedupPolicy,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PostgresMergeDedupPolicy {
-    Fail,
 }
 
 #[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]

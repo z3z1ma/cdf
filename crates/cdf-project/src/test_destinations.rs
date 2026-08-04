@@ -1,6 +1,6 @@
 use std::{path::Path, sync::Arc};
 
-use cdf_dest_postgres::{MergeDedupPolicy, PostgresExistingTable, PostgresTarget};
+use cdf_dest_postgres::{PostgresExistingTable, PostgresTarget};
 use cdf_kernel::{Result, ScopeLeaseStore, TargetName};
 
 use crate::ResolvedProjectDestination;
@@ -39,7 +39,6 @@ pub(crate) fn parquet_filesystem(
 pub(crate) fn postgres(
     database_url: impl Into<String>,
     target: PostgresTarget,
-    dedup: MergeDedupPolicy,
     existing_table: Option<PostgresExistingTable>,
 ) -> Result<ResolvedProjectDestination> {
     let services = execution_services()?;
@@ -49,7 +48,6 @@ pub(crate) fn postgres(
         Box::new(cdf_dest_postgres::PostgresRuntime::for_replay(
             &destination,
             target,
-            dedup,
             existing_table,
         )),
         target_name,

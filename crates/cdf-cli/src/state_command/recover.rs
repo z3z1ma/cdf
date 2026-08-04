@@ -30,7 +30,6 @@ pub(super) fn recover(
         PackageReplayDestinationArgs {
             destination_uri: Some(&args.destination_uri),
             target: args.target.as_deref(),
-            merge_dedup: args.merge_dedup.as_deref(),
         },
         &package.inputs,
         execution,

@@ -10,7 +10,7 @@ use super::{
     FileSourceDriver, FileTransportFacade, FilterCapabilities, HttpRequest, HttpResponse,
     HttpTransport, IdempotencySupport, IdentifierRules, InMemoryScopeLeaseStore, IncrementalShape,
     Int64Array, LATE_DATA_CARRYOVER_VERSION, LateDataCarryoverRef, LineageInputObservation,
-    LineageSummary, MergeDedupPolicy, MigrationRecord, Mutex, NoTls, ObservedSchema, Ordering,
+    LineageSummary, MigrationRecord, Mutex, NoTls, ObservedSchema, Ordering,
     PROCESSED_OBSERVATIONS_FILE, PackageBuilder, PackageHash, PackageManifest, PackageReader,
     PackageReplayInputs, PackageStatus, PartitionId, Path, PathBuf, PipelineId, PlanId, Planner,
     PostgresTarget, PreparedDestinationCommit, ProcessedObservationEvidenceArtifact,
@@ -1755,13 +1755,8 @@ pub(super) fn postgres_project_run_request<'a>(
     state_path: &Path,
     run_id: &str,
 ) -> ProjectRunRequest<'a> {
-    let destination = crate::test_destinations::postgres(
-        database_url.to_owned(),
-        target,
-        MergeDedupPolicy::Last,
-        None,
-    )
-    .unwrap();
+    let destination =
+        crate::test_destinations::postgres(database_url.to_owned(), target, None).unwrap();
     let identifier_policy = destination.column_identifier_policy().unwrap().unwrap();
     let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
     policy.normalization.identifier = identifier_policy;

@@ -189,9 +189,6 @@ retention = { default = "5 runs" }
 destination = "postgres://secret://env/PROD_DWH"
 retention = { default = "90d", financial = "400d" }
 
-[environments.prod.destination_policy.postgres]
-merge_dedup = "fail"
-
 [python]
 interpreter = ".venv/bin/python"
 

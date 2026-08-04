@@ -206,7 +206,7 @@ Inventory/ratification closed by
 `.10x/research/2026-08-03-project-compiler-authority-inventory.md`,
 `.10x/decisions/project-manifest-path-compile-and-query-policy.md`, and
 `.10x/decisions/sql-resource-envelope-and-profile-boundary.md`. Postgres policy cleanup owner:
-`.10x/tickets/2026-08-03-d0-remove-postgres-merge-dedup-policy.md`.
+`.10x/tickets/done/2026-08-03-d0-remove-postgres-merge-dedup-policy.md`.
 
 **D1. Project compilation manifest**
 

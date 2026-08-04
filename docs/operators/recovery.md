@@ -43,14 +43,13 @@ cdf --project /path/to/project state recover \
   --to duckdb://.cdf/dev.duckdb
 ```
 
-Postgres recovery requires the explicit target and merge-dedup policy:
+Postgres recovery requires the explicit target:
 
 ```bash
 cdf --project /path/to/project state recover \
   --package /path/to/package \
   --to postgres://secret://provider/key \
-  --target schema.table \
-  --merge-dedup fail
+  --target schema.table
 ```
 
 `state recover` verifies the selected package receipt and commits checkpoint

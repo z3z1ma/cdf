@@ -401,15 +401,14 @@ fn replay_package_command(
     package_dir: &Path,
     destination_uri: &str,
 ) -> cdf_cli_core::output::InvocationResult {
-    replay_package_command_with_postgres_options(project, package_dir, destination_uri, None, None)
+    replay_package_command_with_target(project, package_dir, destination_uri, None)
 }
 
-fn replay_package_command_with_postgres_options(
+fn replay_package_command_with_target(
     project: &TestProject,
     package_dir: &Path,
     destination_uri: &str,
     target: Option<&str>,
-    merge_dedup: Option<&str>,
 ) -> cdf_cli_core::output::InvocationResult {
     let mut command = vec![
         "cdf".to_owned(),
@@ -426,10 +425,6 @@ fn replay_package_command_with_postgres_options(
         command.push("--target".to_owned());
         command.push(target.to_owned());
     }
-    if let Some(merge_dedup) = merge_dedup {
-        command.push("--merge-dedup".to_owned());
-        command.push(merge_dedup.to_owned());
-    }
     run_dynamic(command)
 }
 
@@ -439,7 +434,6 @@ fn state_recover_command(
     destination_uri: &str,
     receipt_id: Option<&str>,
     target: Option<&str>,
-    merge_dedup: Option<&str>,
 ) -> cdf_cli_core::output::InvocationResult {
     let mut command = vec![
         "cdf".to_owned(),
@@ -460,10 +454,6 @@ fn state_recover_command(
     if let Some(target) = target {
         command.push("--target".to_owned());
         command.push(target.to_owned());
-    }
-    if let Some(merge_dedup) = merge_dedup {
-        command.push("--merge-dedup".to_owned());
-        command.push(merge_dedup.to_owned());
     }
     run_dynamic(command)
 }
@@ -882,20 +872,6 @@ fn write_project_destination(project: &TestProject, destination: &str) {
         ),
     )
     .unwrap();
-}
-
-fn write_project_destination_with_postgres_policy(
-    project: &TestProject,
-    destination: &str,
-    merge_dedup: &str,
-) {
-    let project_text = PROJECT.replace(
-        "destination = \"duckdb://.cdf/dev.duckdb\"",
-        &format!(
-            "destination = \"{destination}\"\n\n[environments.dev.destination_policy.postgres]\nmerge_dedup = \"{merge_dedup}\""
-        ),
-    );
-    fs::write(project.root.join("cdf.toml"), project_text).unwrap();
 }
 
 fn write_discovered_schema_resource(project: &TestProject) {

@@ -99,7 +99,6 @@ pub struct DestinationRuntimeCapabilities {
     pub bulk_evidence_version: Option<String>,
     pub replay_requires_explicit_target: bool,
     pub replay_target_hint: Option<String>,
-    pub replay_policy_values: BTreeMap<String, Vec<String>>,
 }
 
 impl Default for DestinationRuntimeCapabilities {
@@ -119,7 +118,6 @@ impl Default for DestinationRuntimeCapabilities {
             bulk_evidence_version: None,
             replay_requires_explicit_target: false,
             replay_target_hint: None,
-            replay_policy_values: BTreeMap::new(),
         }
     }
 }

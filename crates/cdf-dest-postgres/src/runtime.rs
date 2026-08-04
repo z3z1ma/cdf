@@ -23,7 +23,7 @@ use crate::{
     binary_copy::BINARY_COPY_BUFFER_BYTES,
     identifiers::{PostgresColumn, PostgresExistingTable},
     models::{PostgresCorrectionCommitRequest, PostgresCorrectionPlanInput, PostgresDestination},
-    plan::{MergeDedupPolicy, PostgresLoadPlanInput},
+    plan::PostgresLoadPlanInput,
     rows::postgres_columns_for_schema,
 };
 
@@ -64,15 +64,6 @@ impl DestinationDriver for PostgresRuntimeDriver {
         context: &DestinationResolutionContext<'_>,
     ) -> Result<Box<dyn DestinationRuntime>> {
         let raw = validate_postgres_uri(uri)?;
-        let dedup = match context.policy_value("postgres", "merge_dedup") {
-            Ok("fail") => MergeDedupPolicy::Fail,
-            _ => {
-                return Err(cdf_kernel::CdfError::contract(format!(
-                    "Postgres cdf run requires [environments.{}.destination_policy.postgres] merge_dedup = \"fail\"",
-                    context.environment_name()
-                )));
-            }
-        };
         let (database_url, secret_redaction) = if raw.starts_with("secret://") {
             let secret = SecretUri::new(raw.to_owned())?;
             let value = context
@@ -87,7 +78,7 @@ impl DestinationDriver for PostgresRuntimeDriver {
         let target = PostgresTarget::parse(context.target()?.as_str())?;
         let destination = PostgresDestination::connect(database_url)?;
         Ok(Box::new(
-            PostgresRuntime::for_replay(&destination, target, dedup, None)
+            PostgresRuntime::for_replay(&destination, target, None)
                 .with_secret_redaction(secret_redaction),
         ))
     }
@@ -120,7 +111,6 @@ pub struct PostgresRuntime {
 #[derive(Clone)]
 struct PostgresReplayPlanning {
     target: PostgresTarget,
-    dedup: MergeDedupPolicy,
     existing_table: Option<PostgresExistingTable>,
 }
 
@@ -128,14 +118,12 @@ impl PostgresRuntime {
     pub fn for_replay(
         destination: &PostgresDestination,
         target: PostgresTarget,
-        dedup: MergeDedupPolicy,
         existing_table: Option<PostgresExistingTable>,
     ) -> Self {
         Self {
             destination: destination.clone(),
             replay: Some(PostgresReplayPlanning {
                 target,
-                dedup,
                 existing_table,
             }),
             secret_redaction: None,
@@ -211,7 +199,6 @@ impl DestinationRuntime for PostgresRuntime {
         let input = load_plan_input_from_artifacts(
             &inputs,
             replay.target.clone(),
-            replay.dedup.clone(),
             replay.existing_table.clone(),
             postgres_columns_for_schema(output_schema)?,
         )?;
@@ -239,7 +226,6 @@ impl DestinationRuntime for PostgresRuntime {
         let load_input = load_plan_input_from_artifacts(
             &replay_inputs,
             replay.target.clone(),
-            replay.dedup.clone(),
             replay.existing_table.clone(),
             postgres_columns_for_schema(output_schema)?,
         )?;
@@ -297,7 +283,6 @@ impl cdf_runtime::FinalizedPackageIngress for PostgresRuntime {
         let load_input = load_plan_input_from_artifacts(
             inputs,
             replay.target.clone(),
-            replay.dedup.clone(),
             replay.existing_table.clone(),
             columns_from_package(context.verified_package.as_ref())?,
         )?;
@@ -396,9 +381,6 @@ pub(crate) fn postgres_runtime_capabilities() -> DestinationRuntimeCapabilities 
         bulk_evidence_version: Some("p3-d3-2026-07-11-v1".to_owned()),
         replay_requires_explicit_target: true,
         replay_target_hint: Some("schema.table".to_owned()),
-        replay_policy_values: [("merge_dedup".to_owned(), vec!["fail".to_owned()])]
-            .into_iter()
-            .collect(),
     }
 }
 
@@ -457,7 +439,6 @@ fn postgres_preflight_delta(
 fn load_plan_input_from_artifacts(
     inputs: &PackageReplayInputs,
     target: PostgresTarget,
-    dedup: MergeDedupPolicy,
     existing_table: Option<PostgresExistingTable>,
     columns: Vec<PostgresColumn>,
 ) -> Result<PostgresLoadPlanInput> {
@@ -475,7 +456,6 @@ fn load_plan_input_from_artifacts(
             .iter()
             .map(PostgresIdentifier::user)
             .collect::<Result<Vec<_>>>()?,
-        dedup,
         existing_table,
         resource_id: Some(inputs.state_delta.resource_id.clone()),
         state_delta: Some(inputs.state_delta.clone()),

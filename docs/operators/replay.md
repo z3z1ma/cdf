@@ -35,12 +35,11 @@ Postgres replay is intentionally explicit:
 cdf --project /path/to/project replay package \
   /path/to/package \
   --to postgres://secret://provider/key \
-  --target schema.table \
-  --merge-dedup fail
+  --target schema.table
 ```
 
-CDF does not infer the Postgres target, disposition, merge keys, or merge-dedup
-policy from destination introspection.
+CDF does not infer the Postgres target, disposition, or merge keys from destination
+introspection. Finalized packages already own keyed-effect winner selection.
 
 ## Inspect Replay Result
 

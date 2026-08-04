@@ -506,7 +506,6 @@ fn state_recover_commits_verified_package_receipt_without_destination_rows() {
         "duckdb://.cdf/dev.duckdb",
         None,
         None,
-        None,
     );
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
@@ -613,7 +612,6 @@ fn state_recover_explicit_receipt_disambiguates_multiple_package_receipts() {
         "duckdb://.cdf/dev.duckdb",
         Some(&selected_receipt_id),
         None,
-        None,
     );
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
@@ -638,7 +636,6 @@ fn state_recover_fails_closed_on_zero_or_ambiguous_package_receipts() {
         &project,
         &package_dir,
         "duckdb://.cdf/dev.duckdb",
-        None,
         None,
         None,
     );
@@ -667,7 +664,6 @@ fn state_recover_fails_closed_on_zero_or_ambiguous_package_receipts() {
         &ambiguous_project,
         &package_dir,
         "duckdb://.cdf/dev.duckdb",
-        None,
         None,
         None,
     );

@@ -43,7 +43,6 @@ struct ConformanceDestinationPolicy;
 impl DestinationPolicyProvider for ConformanceDestinationPolicy {
     fn value(&self, destination: &str, key: &str) -> Option<&str> {
         match (destination, key) {
-            ("postgres", "merge_dedup") => Some("fail"),
             ("clickhouse", "merge_mode") => Some("replacing_merge_tree"),
             _ => None,
         }
@@ -312,9 +311,7 @@ fn every_catalog_destination_publishes_measured_bulk_and_provenance_capabilities
 fn first_party_bulk_preflight_accepts_eligible_and_rejects_ineligible_schema_fixtures() {
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use cdf_dest_parquet::FilesystemParquetRuntime;
-    use cdf_dest_postgres::{
-        MergeDedupPolicy, PostgresDestination, PostgresRuntime, PostgresTarget,
-    };
+    use cdf_dest_postgres::{PostgresDestination, PostgresRuntime, PostgresTarget};
 
     let temp = tempfile::tempdir().unwrap();
     let eligible = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
@@ -324,7 +321,6 @@ fn first_party_bulk_preflight_accepts_eligible_and_rejects_ineligible_schema_fix
     let mut postgres = PostgresRuntime::for_replay(
         &postgres_destination,
         PostgresTarget::parse("public.orders").unwrap(),
-        MergeDedupPolicy::Fail,
         None,
     );
     let mut parquet = FilesystemParquetRuntime::with_execution_services(

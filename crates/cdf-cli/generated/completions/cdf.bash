@@ -1359,7 +1359,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__replay__subcmd__package)
-            opts="-q -v -h --to --target --merge-dedup --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
+            opts="-q -v -h --to --target --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1370,10 +1370,6 @@ _cdf() {
                     return 0
                     ;;
                 --target)
-                    COMPREPLY=($(compgen -f "${cur}"))
-                    return 0
-                    ;;
-                --merge-dedup)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -1835,7 +1831,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__state__subcmd__recover)
-            opts="-q -v -h --package --to --receipt --target --merge-dedup --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
+            opts="-q -v -h --package --to --receipt --target --quiet --verbose --color --progress --unicode --memory-budget --spill-budget --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1854,10 +1850,6 @@ _cdf() {
                     return 0
                     ;;
                 --target)
-                    COMPREPLY=($(compgen -f "${cur}"))
-                    return 0
-                    ;;
-                --merge-dedup)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;

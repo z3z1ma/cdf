@@ -11,7 +11,6 @@ Options:
       --target <TARGET>        Destination target or table
   -v, --verbose...             Show evidence detail; repeat for diagnostics
       --color <WHEN>           Color policy: auto, always, or never [possible values: auto, always, never]
-      --merge-dedup <POLICY>   Merge deduplication policy
       --progress <WHEN>        Progress policy: auto, always, or never [possible values: auto, always, never]
       --unicode <WHEN>         Unicode policy: auto, always, or never [possible values: auto, always, never]
       --memory-budget <BYTES>  Process memory budget, e.g. 4GiB or 512MiB

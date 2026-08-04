@@ -517,11 +517,7 @@ fn resume_finalized_postgres_package_without_receipt_replays_without_source_cont
     .unwrap();
     let target = "events";
     let package_dir = create_replay_package_fixture(&project);
-    write_project_destination_with_postgres_policy(
-        &project,
-        "postgres://secret://file/destination-dsn",
-        "fail",
-    );
+    write_project_destination(&project, "postgres://secret://file/destination-dsn");
     let mut reader = PackageReader::open(&package_dir).unwrap();
     let checkpoint_id = reader.replay_inputs().unwrap().state_delta.checkpoint_id;
     reader.update_status(PackageStatus::Packaged).unwrap();

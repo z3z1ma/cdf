@@ -52,8 +52,8 @@ pub use models::{
     PostgresDestination, PostgresDestinationSheet, PostgresTypeFidelity, PostgresTypeMapping,
 };
 pub use plan::{
-    MergeDedupPolicy, PostgresDriftHooks, PostgresLoadPlan, PostgresLoadPlanInput,
-    PostgresReceiptInput, PostgresStatement, StatementExpectation,
+    PostgresDriftHooks, PostgresLoadPlan, PostgresLoadPlanInput, PostgresReceiptInput,
+    PostgresStatement, StatementExpectation,
 };
 pub use rows::{postgres_columns_for_schema, postgres_type_for_arrow, postgres_type_for_field};
 pub use runtime::{PostgresRuntime, PostgresRuntimeDriver, validate_replay_target};

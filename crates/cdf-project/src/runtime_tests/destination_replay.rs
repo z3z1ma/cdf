@@ -4,17 +4,16 @@ use super::{
     DataType, DependencyTuple, DestinationCommitPlanPreimage, DestinationProtocol,
     DuckDbDestination, EnginePlan, Field, FileManifest, FilePosition, IdempotencyToken,
     IdentifierRules, InMemoryScopeLeaseStore, LineageInputObservation, LineageSummary,
-    MANIFEST_FILE, MergeDedupPolicy, Mutex, Ordering, PROCESSED_OBSERVATIONS_FILE,
-    PackageArtifactRecoveryRequest, PackageArtifactReplayRequest, PackageBuilder, PackageManifest,
-    PackageReader, PackageReplayHooks, PackageReplayStage, PackageStatus, ParquetDestination,
-    PartitionId, Path, PipelineId, PostgresDestination, PostgresTarget,
-    ProcessedObservationEvidenceArtifact, ProcessedObservationOutcome,
-    ProcessedObservationPosition, ProjectDestinationDescription, ProjectDestinationDriver,
-    ProjectDestinationRegistry, ProjectDestinationRuntime, ProjectReceiptSource,
-    ProjectResolutionContext, ProjectRunRequest, ProjectRunSource, QueryableResource,
-    RECEIPTS_FILE, Receipt, ReceiptId, ResolvedProjectDestination, ResourceId, ResourceStream,
-    Result, RewindReport, RewindRequest, RunEventKind, RunEventValue, RunId, RunPhase,
-    RunPhaseStatus, RunTelemetryConfig, RuntimeStage, STATE_INPUT_CHECKPOINT_FILE,
+    MANIFEST_FILE, Mutex, Ordering, PROCESSED_OBSERVATIONS_FILE, PackageArtifactRecoveryRequest,
+    PackageArtifactReplayRequest, PackageBuilder, PackageManifest, PackageReader,
+    PackageReplayHooks, PackageReplayStage, PackageStatus, ParquetDestination, PartitionId, Path,
+    PipelineId, PostgresDestination, PostgresTarget, ProcessedObservationEvidenceArtifact,
+    ProcessedObservationOutcome, ProcessedObservationPosition, ProjectDestinationDescription,
+    ProjectDestinationDriver, ProjectDestinationRegistry, ProjectDestinationRuntime,
+    ProjectReceiptSource, ProjectResolutionContext, ProjectRunRequest, ProjectRunSource,
+    QueryableResource, RECEIPTS_FILE, Receipt, ReceiptId, ResolvedProjectDestination, ResourceId,
+    ResourceStream, Result, RewindReport, RewindRequest, RunEventKind, RunEventValue, RunId,
+    RunPhase, RunPhaseStatus, RunTelemetryConfig, RuntimeStage, STATE_INPUT_CHECKPOINT_FILE,
     STATE_PROPOSED_DELTA_FILE, Schema, SchemaHash, ScopeKey, SegmentAck, SourcePosition,
     SqliteCheckpointStore, SqliteRunLedger, StateDelta, StateDeltaPreimage, TargetName,
     VerifyClause, WriteDisposition, canonical_json_bytes, fs,
@@ -1307,13 +1306,8 @@ fn postgres_artifact_recovery_after_durable_receipt_commits_without_source_conta
     assert_eq!(receipts.len(), 1);
     let report = recover_package_from_artifacts(PackageArtifactRecoveryRequest {
         package_dir: package_dir.clone(),
-        destination: crate::test_destinations::postgres(
-            postgres.url.clone(),
-            target,
-            MergeDedupPolicy::Last,
-            None,
-        )
-        .unwrap(),
+        destination: crate::test_destinations::postgres(postgres.url.clone(), target, None)
+            .unwrap(),
         checkpoint_store: &store,
         receipt: receipts[0].clone(),
         after_receipt_verified: None,
@@ -1373,13 +1367,8 @@ fn postgres_artifact_replay_after_source_loss_without_receipt_commits_checkpoint
     let store = SqliteCheckpointStore::open(&replay_state_path).unwrap();
     let report = replay_package_from_artifacts(PackageArtifactReplayRequest {
         package_dir: package_dir.clone(),
-        destination: crate::test_destinations::postgres(
-            postgres.url.clone(),
-            target,
-            MergeDedupPolicy::Last,
-            None,
-        )
-        .unwrap(),
+        destination: crate::test_destinations::postgres(postgres.url.clone(), target, None)
+            .unwrap(),
         checkpoint_store: &store,
         after_receipt_verified: None,
     })
@@ -1459,13 +1448,8 @@ fn postgres_artifact_replay_rejects_mismatched_explicit_target_before_mutation()
     let wrong_target = PostgresTarget::new(Some(&postgres.schema), "events_target_wrong").unwrap();
     let error = replay_package_from_artifacts(PackageArtifactReplayRequest {
         package_dir: package_dir.clone(),
-        destination: crate::test_destinations::postgres(
-            postgres.url.clone(),
-            wrong_target,
-            MergeDedupPolicy::Last,
-            None,
-        )
-        .unwrap(),
+        destination: crate::test_destinations::postgres(postgres.url.clone(), wrong_target, None)
+            .unwrap(),
         checkpoint_store: &store,
         after_receipt_verified: None,
     })

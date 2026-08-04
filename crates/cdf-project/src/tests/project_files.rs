@@ -2,10 +2,10 @@ use super::{
     BTreeMap, BTreeSet, DefaultSecretProvider, DependencyTuple, DestinationProtocol,
     DestinationProtocolCapabilities, DestinationSheetArtifact, DurationSpec, EnvSecretProvider,
     ExecutionExtent, FileResourceSourceResolver, FileSecretProvider,
-    InMemoryResourceSourceResolver, NORMALIZER_NAMECASE_V1, Path, PathBuf,
-    PostgresMergeDedupPolicy, ProjectScaffoldOptions, ResolvedProjectDestination, RetentionRule,
-    SecretProvider, SecretRef, SecretUri, SourceDeclaration, TargetName, TypeMappingFidelity,
-    Visit, compile_project_declarative_resources, compile_project_declarative_resources_with_root,
+    InMemoryResourceSourceResolver, NORMALIZER_NAMECASE_V1, Path, PathBuf, ProjectScaffoldOptions,
+    ResolvedProjectDestination, RetentionRule, SecretProvider, SecretRef, SecretUri,
+    SourceDeclaration, TargetName, TypeMappingFidelity, Visit,
+    compile_project_declarative_resources, compile_project_declarative_resources_with_root,
     diff_lockfiles, env, fs, generate_lockfile_with_destination_artifacts, lock_to_toml,
     parse_cdf_toml, parse_lock, semantic_hash,
     support::{
@@ -818,46 +818,48 @@ fn environment_overlays_inherit_unspecified_settings() {
             400 * 86_400_000
         )))
     );
-    assert_eq!(
-        prod.destination_policy
-            .postgres
-            .as_ref()
-            .unwrap()
-            .merge_dedup,
-        PostgresMergeDedupPolicy::Fail
-    );
 }
 
 #[test]
 fn destination_policy_overlays_from_default_environment() {
     let project = BOOK_PROJECT
         .replace(
-            "[environments.prod.destination_policy.postgres]\nmerge_dedup = \"fail\"\n\n",
-            "",
-        )
-        .replace(
             "retention = { default = \"5 runs\" }\n\n",
-            "retention = { default = \"5 runs\" }\n\n[environments.dev.destination_policy.postgres]\nmerge_dedup = \"fail\"\n\n",
+            "retention = { default = \"5 runs\" }\n\n[environments.dev.destination_policy.clickhouse]\nmerge_mode = \"replacing_merge_tree\"\n\n",
         );
     let config = parse_cdf_toml(&project).unwrap();
     let prod = config.effective_environment("prod").unwrap();
 
     assert_eq!(
-        prod.destination_policy
-            .postgres
-            .as_ref()
-            .unwrap()
-            .merge_dedup,
-        PostgresMergeDedupPolicy::Fail
+        cdf_runtime::DestinationPolicyProvider::value(
+            &prod.destination_policy,
+            "clickhouse",
+            "merge_mode"
+        ),
+        Some("replacing_merge_tree")
+    );
+}
+
+#[test]
+fn removed_postgres_merge_dedup_policy_is_rejected() {
+    let project = BOOK_PROJECT.replace(
+        "retention = { default = \"5 runs\" }\n",
+        "retention = { default = \"5 runs\" }\n\n[environments.dev.destination_policy.postgres]\nmerge_dedup = \"fail\"\n",
+    );
+
+    let error = parse_cdf_toml(&project).unwrap_err();
+    assert_eq!(error.kind, cdf_kernel::ErrorKind::Contract);
+    assert!(
+        error
+            .message
+            .contains("unsupported destination_policy.postgres")
     );
 }
 
 #[test]
 fn clickhouse_merge_mode_policy_uses_the_ratified_environment_shape() {
-    let project = BOOK_PROJECT.replace(
-        "[environments.prod.destination_policy.postgres]\nmerge_dedup = \"fail\"\n\n",
-        "[environments.prod.destination_policy.clickhouse]\nmerge_mode = \"atomic_copy_on_write\"\n\n",
-    );
+    let project = BOOK_PROJECT.to_owned()
+        + "\n[environments.prod.destination_policy.clickhouse]\nmerge_mode = \"atomic_copy_on_write\"\n";
     let config = parse_cdf_toml(&project).unwrap();
     let prod = config.effective_environment("prod").unwrap();
 

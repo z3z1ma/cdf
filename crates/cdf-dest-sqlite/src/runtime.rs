@@ -323,7 +323,6 @@ pub(crate) fn sqlite_runtime_capabilities() -> DestinationRuntimeCapabilities {
         bulk_evidence_version: Some("sqlite-destination-roofline-v1".to_owned()),
         replay_requires_explicit_target: true,
         replay_target_hint: Some("table".to_owned()),
-        replay_policy_values: Default::default(),
     }
 }
 

@@ -18,7 +18,7 @@ use cdf_contract::{
 };
 use cdf_dest_duckdb::DuckDbDestination;
 use cdf_dest_parquet::ParquetDestination;
-use cdf_dest_postgres::{MergeDedupPolicy, PostgresDestination, PostgresTarget};
+use cdf_dest_postgres::{PostgresDestination, PostgresTarget};
 use cdf_engine::{
     CompiledStreamAdmissionEvidence, EnginePlan, EnginePlanInput, EngineRunOutput,
     EngineRunOutputWithSegmentPositions, EngineSegmentPosition, ExecutionProfile,

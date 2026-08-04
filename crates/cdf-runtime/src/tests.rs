@@ -285,7 +285,6 @@ impl DestinationRuntime for MockStagedRuntime {
             bulk_evidence_version: Some("mock-staged-v1".to_owned()),
             replay_requires_explicit_target: false,
             replay_target_hint: None,
-            replay_policy_values: Default::default(),
         }
     }
 }
@@ -628,7 +627,6 @@ impl DestinationDriver for MockDriver {
                 bulk_evidence_version: Some("v1".to_owned()),
                 replay_requires_explicit_target: false,
                 replay_target_hint: None,
-                replay_policy_values: Default::default(),
             },
             health_probes: vec![DestinationHealthProbe {
                 probe_id: "reachable".to_owned(),
@@ -859,9 +857,6 @@ fn runtime_capabilities_are_serializable_plan_evidence() {
         bulk_evidence_version: Some("2026-07".to_owned()),
         replay_requires_explicit_target: true,
         replay_target_hint: Some("schema.table".to_owned()),
-        replay_policy_values: [("merge_dedup".to_owned(), vec!["fail".to_owned()])]
-            .into_iter()
-            .collect(),
     };
     let json = serde_json::to_string(&capabilities).unwrap();
     assert_eq!(
@@ -2343,7 +2338,6 @@ fn staged_capability_requires_cleanup_abort_and_byte_bounds() {
         bulk_evidence_version: None,
         replay_requires_explicit_target: false,
         replay_target_hint: None,
-        replay_policy_values: Default::default(),
     };
     capabilities.validate().unwrap();
     capabilities.max_in_flight_bytes = None;

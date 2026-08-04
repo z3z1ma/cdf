@@ -630,7 +630,6 @@ complete -c cdf -n "__fish_cdf_using_subcommand state; and __fish_seen_subcomman
 complete -c cdf -n "__fish_cdf_using_subcommand state; and __fish_seen_subcommand_from recover" -l to -d 'Destination URI or cursor upper bound, as shown in usage' -r
 complete -c cdf -n "__fish_cdf_using_subcommand state; and __fish_seen_subcommand_from recover" -l receipt -d 'Receipt identifier' -r
 complete -c cdf -n "__fish_cdf_using_subcommand state; and __fish_seen_subcommand_from recover" -l target -d 'Destination target or table' -r
-complete -c cdf -n "__fish_cdf_using_subcommand state; and __fish_seen_subcommand_from recover" -l merge-dedup -d 'Merge deduplication policy' -r
 complete -c cdf -n "__fish_cdf_using_subcommand state; and __fish_seen_subcommand_from recover" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
 always\t''
 never\t''"
@@ -676,7 +675,6 @@ complete -c cdf -n "__fish_cdf_using_subcommand replay; and not __fish_seen_subc
 complete -c cdf -n "__fish_cdf_using_subcommand replay; and not __fish_seen_subcommand_from package" -f -a "package" -d 'List, verify, archive, and collect packages'
 complete -c cdf -n "__fish_cdf_using_subcommand replay; and __fish_seen_subcommand_from package" -l to -d 'Destination URI or cursor upper bound, as shown in usage' -r
 complete -c cdf -n "__fish_cdf_using_subcommand replay; and __fish_seen_subcommand_from package" -l target -d 'Destination target or table' -r
-complete -c cdf -n "__fish_cdf_using_subcommand replay; and __fish_seen_subcommand_from package" -l merge-dedup -d 'Merge deduplication policy' -r
 complete -c cdf -n "__fish_cdf_using_subcommand replay; and __fish_seen_subcommand_from package" -l color -d 'Color policy: auto, always, or never' -r -f -a "auto\t''
 always\t''
 never\t''"

@@ -17,7 +17,6 @@ pub struct PostgresLoadPlanInput {
     pub segments: Vec<StateSegment>,
     pub columns: Vec<PostgresColumn>,
     pub merge_keys: Vec<PostgresIdentifier>,
-    pub dedup: MergeDedupPolicy,
     pub existing_table: Option<PostgresExistingTable>,
     pub resource_id: Option<ResourceId>,
     pub state_delta: Option<StateDelta>,
@@ -34,7 +33,6 @@ pub struct PostgresLoadPlan {
     pub stage_table: Option<PostgresIdentifier>,
     pub columns: Vec<PostgresColumn>,
     pub merge_keys: Vec<PostgresIdentifier>,
-    pub dedup: MergeDedupPolicy,
     pub resource_id: Option<ResourceId>,
     pub state_delta: Option<StateDelta>,
     pub system_ddl: Vec<PostgresStatement>,
@@ -117,14 +115,6 @@ pub enum StatementExpectation {
     ReturnsZeroRows,
     ReturnsVerifyRow,
     ReturnsMirrorRows,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MergeDedupPolicy {
-    First,
-    Last,
-    Fail,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

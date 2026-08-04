@@ -18,25 +18,6 @@ fn run_missing_resource_still_fails_before_writes() {
 }
 
 #[test]
-fn run_postgres_destination_missing_policy_fails_closed_before_writes() {
-    let project = TestProject::new();
-    write_project_destination(&project, "postgres://secret://env/WAREHOUSE");
-
-    let result = run_valid_run_args(&project);
-
-    assert_eq!(result.exit_code, 3);
-    assert_no_run_writes(&project);
-    let json = stderr_or_stdout_json(&result.stderr);
-    assert_eq!(json["error"]["not_supported"], false);
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("destination_policy.postgres")
-    );
-}
-
-#[test]
 fn run_rest_resource_fails_before_package_or_destination_writes() {
     let project = TestProject::new();
     write_secret_project(
@@ -642,65 +623,6 @@ fn run_parquet_malformed_uri_fails_before_writes() {
 }
 
 #[test]
-fn run_postgres_destination_secret_is_not_resolved_before_missing_policy_blocker() {
-    let project = TestProject::new();
-    fs::write(
-        project.root.join("destination-dsn"),
-        "postgres://user:destination-secret@localhost/db\n",
-    )
-    .unwrap();
-    write_project_destination(&project, "postgres://secret://file/destination-dsn");
-
-    let result = run_dynamic(vec![
-        "cdf".to_owned(),
-        "--json".to_owned(),
-        "--project".to_owned(),
-        project.root_str().to_owned(),
-        "run".to_owned(),
-        "local.events".to_owned(),
-    ]);
-
-    assert_eq!(result.exit_code, 3);
-    assert_no_run_writes(&project);
-    assert_secret_absent(&result, "destination-secret");
-    let json = stderr_or_stdout_json(&result.stderr);
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("destination_policy.postgres")
-    );
-}
-
-#[test]
-fn run_postgres_destination_unsupported_policy_fails_before_secret_resolution() {
-    let project = TestProject::new();
-    fs::write(
-        project.root.join("destination-dsn"),
-        "postgres://user:destination-secret@localhost/db\n",
-    )
-    .unwrap();
-    write_project_destination_with_postgres_policy(
-        &project,
-        "postgres://secret://file/destination-dsn",
-        "last",
-    );
-
-    let result = run_valid_run_args(&project);
-
-    assert_eq!(result.exit_code, 3);
-    assert_no_run_writes(&project);
-    assert_secret_absent(&result, "destination-secret");
-    let json = stderr_or_stdout_json(&result.stderr);
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("expected `fail`")
-    );
-}
-
-#[test]
 fn run_postgres_destination_resolves_secret_and_commits_checkpoint() {
     let Some(postgres) = LivePostgres::start() else {
         return;
@@ -714,11 +636,7 @@ fn run_postgres_destination_resolves_secret_and_commits_checkpoint() {
         ),
     )
     .unwrap();
-    write_project_destination_with_postgres_policy(
-        &project,
-        "postgres://secret://file/destination-dsn",
-        "fail",
-    );
+    write_project_destination(&project, "postgres://secret://file/destination-dsn");
     let target = "events";
 
     let result = run_valid_run_args(&project);

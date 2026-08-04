@@ -209,7 +209,6 @@ pub struct StateRecoverArgs {
     pub destination_uri: String,
     pub receipt_id: Option<String>,
     pub target: Option<String>,
-    pub merge_dedup: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -222,7 +221,6 @@ pub struct ReplayPackageArgs {
     pub package_dir: PathBuf,
     pub destination_uri: Option<String>,
     pub target: Option<String>,
-    pub merge_dedup: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -806,7 +804,6 @@ fn parse_state_recover(matches: &ArgMatches) -> Result<StateRecoverArgs, CliErro
             .ok_or_else(|| CliError::usage("state recover requires --to"))?,
         receipt_id: string_value(matches, "receipt"),
         target: string_value(matches, "target"),
-        merge_dedup: string_value(matches, "merge_dedup"),
     })
 }
 
@@ -846,7 +843,6 @@ fn parse_replay_package(matches: &ArgMatches) -> Result<ReplayPackageArgs, CliEr
         package_dir,
         destination_uri: string_value(matches, "to"),
         target: string_value(matches, "target"),
-        merge_dedup: string_value(matches, "merge_dedup"),
     })
 }
 
@@ -973,8 +969,7 @@ pub fn cli_command() -> ClapCommand {
                 cmd("package")
                     .arg(values_arg("package_dir").value_name("DIR"))
                     .arg(option("to", "to", "DEST"))
-                    .arg(option("target", "target", "TARGET"))
-                    .arg(option("merge_dedup", "merge-dedup", "POLICY")),
+                    .arg(option("target", "target", "TARGET")),
             ),
         )
         .subcommand(backfill_command())
@@ -1089,7 +1084,6 @@ fn state_command() -> ClapCommand {
                 .arg(option("to", "to", "DEST"))
                 .arg(option("receipt", "receipt", "ID"))
                 .arg(option("target", "target", "TARGET"))
-                .arg(option("merge_dedup", "merge-dedup", "POLICY"))
                 .arg(values_arg("values").hide(true)),
         )
 }
@@ -1249,7 +1243,6 @@ fn option_help(long: &str) -> &'static str {
         "type" => "Residual field pointer and Arrow type",
         "contract" => "Contract name",
         "trust" => "Trust level to show",
-        "merge-dedup" => "Merge deduplication policy",
         "name" => "Project name",
         "package" => "Package directory",
         "receipt" => "Receipt identifier",
@@ -1590,6 +1583,25 @@ mod run_jobs_tests {
             vec!["cdf", "schema", "show", "--resource", "local.events"],
             vec!["cdf", "contract", "show", "--trust", "governed"],
             vec!["cdf", "resume", "--run-id", "run"],
+            vec![
+                "cdf",
+                "replay",
+                "package",
+                "package-dir",
+                "--merge-dedup",
+                "fail",
+            ],
+            vec![
+                "cdf",
+                "state",
+                "recover",
+                "--package",
+                "package-dir",
+                "--to",
+                "duckdb://target",
+                "--merge-dedup",
+                "fail",
+            ],
             vec![
                 "cdf",
                 "state",

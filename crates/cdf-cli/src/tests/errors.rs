@@ -33,12 +33,11 @@ fn migrated_command_family_errors_include_code_and_remediation() {
 
     let replay_project = TestProject::new();
     let package_dir = create_replay_package_fixture(&replay_project);
-    let replay = replay_package_command_with_postgres_options(
+    let replay = replay_package_command_with_target(
         &replay_project,
         &package_dir,
         "postgres://localhost/db",
-        Some("public.events"),
-        Some("later"),
+        None,
     );
     assert_json_error_code(&replay, "CDF-PACKAGE-REPLAY-ARGUMENT");
 

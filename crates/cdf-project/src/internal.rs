@@ -49,6 +49,17 @@ pub(crate) fn validate_project_shape(config: &ProjectConfig) -> Result<()> {
             "cdf.toml must declare at least one resource source mapping",
         ));
     }
+    for (environment_name, environment) in &config.environments {
+        if environment
+            .destination_policy
+            .adapters
+            .contains_key("postgres")
+        {
+            return Err(CdfError::contract(format!(
+                "environment `{environment_name}` declares unsupported destination_policy.postgres; Postgres consumes finalized package winner authority and has no destination policy"
+            )));
+        }
+    }
     Ok(())
 }
 

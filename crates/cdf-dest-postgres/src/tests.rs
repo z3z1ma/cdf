@@ -43,7 +43,7 @@ fn segment(id: &str, rows: u64) -> StateSegment {
     }
 }
 
-fn input(disposition: WriteDisposition, dedup: MergeDedupPolicy) -> PostgresLoadPlanInput {
+fn input(disposition: WriteDisposition) -> PostgresLoadPlanInput {
     let segments = vec![segment("seg-0001", 3), segment("seg-0002", 2)];
     let state_delta = StateDelta {
         checkpoint_id: CheckpointId::new("chk-1").unwrap(),
@@ -77,7 +77,6 @@ fn input(disposition: WriteDisposition, dedup: MergeDedupPolicy) -> PostgresLoad
         segments,
         columns: columns(),
         merge_keys: vec![PostgresIdentifier::user("id").unwrap()],
-        dedup,
         existing_table: None,
         resource_id: Some(ResourceId::new("orders").unwrap()),
         state_delta: Some(state_delta),
@@ -85,7 +84,7 @@ fn input(disposition: WriteDisposition, dedup: MergeDedupPolicy) -> PostgresLoad
 }
 
 fn zero_data_input(disposition: WriteDisposition) -> PostgresLoadPlanInput {
-    let mut input = input(disposition, MergeDedupPolicy::Last);
+    let mut input = input(disposition);
     input.segments.clear();
     if let Some(state_delta) = &mut input.state_delta {
         state_delta.segments.clear();
@@ -155,7 +154,7 @@ fn sheet_declares_postgres_capabilities_and_full_mapping_fidelity() {
             .contains("\"corrections\"")
     );
 
-    let append_input = input(WriteDisposition::Append, MergeDedupPolicy::Last);
+    let append_input = input(WriteDisposition::Append);
     let create_target = target_migrations(&append_input)
         .unwrap()
         .into_iter()
@@ -576,7 +575,7 @@ fn framework_variant_column_is_system_owned_but_user_prefixed_columns_stay_rejec
 fn append_replace_and_merge_plans_include_transactional_sql() {
     let destination = PostgresDestination::new();
     let append = destination
-        .plan_load(input(WriteDisposition::Append, MergeDedupPolicy::Last))
+        .plan_load(input(WriteDisposition::Append))
         .unwrap();
     assert!(
         append
@@ -605,7 +604,7 @@ fn append_replace_and_merge_plans_include_transactional_sql() {
     );
 
     let replace = destination
-        .plan_load(input(WriteDisposition::Replace, MergeDedupPolicy::Last))
+        .plan_load(input(WriteDisposition::Replace))
         .unwrap();
     assert!(replace.stage_table.is_none());
     assert!(
@@ -624,7 +623,7 @@ fn append_replace_and_merge_plans_include_transactional_sql() {
     );
 
     let merge = destination
-        .plan_load(input(WriteDisposition::Merge, MergeDedupPolicy::Last))
+        .plan_load(input(WriteDisposition::Merge))
         .unwrap();
     assert!(merge.stage_table.is_some());
     let merge_sql = merge
@@ -684,24 +683,12 @@ fn zero_data_append_and_replace_plans_have_only_receipt_and_state_effects() {
 }
 
 #[test]
-fn merge_dedup_policy_is_explicit_and_can_fail_on_duplicates() {
+fn merge_rejects_duplicate_finalized_keys_before_target_mutation() {
     let destination = PostgresDestination::new();
-    let first = destination
-        .plan_load(input(WriteDisposition::Merge, MergeDedupPolicy::First))
+    let plan = destination
+        .plan_load(input(WriteDisposition::Merge))
         .unwrap();
-    let first_sql = first
-        .write_sql
-        .iter()
-        .find(|statement| statement.name == "merge_from_stage")
-        .unwrap()
-        .sql
-        .as_str();
-    assert!(first_sql.contains("ORDER BY \"_cdf_row_key\" ASC"));
-
-    let fail = destination
-        .plan_load(input(WriteDisposition::Merge, MergeDedupPolicy::Fail))
-        .unwrap();
-    let guard = fail
+    let guard = plan
         .write_sql
         .iter()
         .find(|statement| statement.name == "merge_duplicate_key_guard")
@@ -714,7 +701,7 @@ fn merge_dedup_policy_is_explicit_and_can_fail_on_duplicates() {
 fn receipt_contains_postgres_xid_verify_clause_and_segment_acks() {
     let destination = PostgresDestination::new();
     let plan = destination
-        .plan_load(input(WriteDisposition::Merge, MergeDedupPolicy::Last))
+        .plan_load(input(WriteDisposition::Merge))
         .unwrap();
     let receipt = build_receipt(
         &plan,
@@ -749,7 +736,7 @@ fn receipt_contains_postgres_xid_verify_clause_and_segment_acks() {
 #[test]
 fn receipt_preserves_legacy_lexicographic_segment_ack_order_from_typed_segments() {
     let destination = PostgresDestination::new();
-    let mut plan_input = input(WriteDisposition::Append, MergeDedupPolicy::Last);
+    let mut plan_input = input(WriteDisposition::Append);
     plan_input.segments = vec![segment("z-segment", 3), segment("a-segment", 2)];
     plan_input.state_delta.as_mut().unwrap().segments = plan_input.segments.clone();
     let plan = destination.plan_load(plan_input).unwrap();
@@ -784,7 +771,7 @@ fn receipt_preserves_legacy_lexicographic_segment_ack_order_from_typed_segments(
 fn mirror_and_drift_hooks_expose_load_and_state_tables() {
     let destination = PostgresDestination::new();
     let plan = destination
-        .plan_load(input(WriteDisposition::Append, MergeDedupPolicy::Last))
+        .plan_load(input(WriteDisposition::Append))
         .unwrap();
 
     assert!(
@@ -825,7 +812,7 @@ fn mirror_and_drift_hooks_expose_load_and_state_tables() {
 #[test]
 fn existing_table_migrations_add_only_safe_missing_columns() {
     let destination = PostgresDestination::new();
-    let mut nullable_add = input(WriteDisposition::Append, MergeDedupPolicy::Last);
+    let mut nullable_add = input(WriteDisposition::Append);
     nullable_add.existing_table = Some(
         PostgresExistingTable::new(
             vec![PostgresExistingColumn::new("id", "BIGINT", false).unwrap()],
@@ -840,7 +827,7 @@ fn existing_table_migrations_add_only_safe_missing_columns() {
     assert!(plan.target_ddl.iter().any(|statement| statement.sql
         == "ALTER TABLE \"raw\".\"orders\" ADD COLUMN \"_cdf_row_key\" BIGINT"));
 
-    let mut unsafe_add = input(WriteDisposition::Append, MergeDedupPolicy::Last);
+    let mut unsafe_add = input(WriteDisposition::Append);
     unsafe_add.existing_table = Some(PostgresExistingTable::new(Vec::new(), vec![]).unwrap());
     assert!(destination.plan_load(unsafe_add).is_err());
 }
@@ -859,14 +846,14 @@ fn exact_value_plan_retains_semantic_and_rejects_existing_text_target() {
     );
 
     let destination = PostgresDestination::new();
-    let mut compatible = input(WriteDisposition::Append, MergeDedupPolicy::Last);
+    let mut compatible = input(WriteDisposition::Append);
     compatible.columns = columns.clone();
     let plan = destination.plan_load(compatible).unwrap();
     let round_trip: PostgresLoadPlan =
         serde_json::from_str(&serde_json::to_string(&plan).unwrap()).unwrap();
     assert_eq!(round_trip.columns, columns);
 
-    let mut incompatible = input(WriteDisposition::Append, MergeDedupPolicy::Last);
+    let mut incompatible = input(WriteDisposition::Append);
     incompatible.columns = columns;
     incompatible.existing_table = Some(
         PostgresExistingTable::new(
@@ -883,11 +870,11 @@ fn exact_value_plan_retains_semantic_and_rejects_existing_text_target() {
 #[test]
 fn merge_requires_keys_and_rejects_existing_key_drift() {
     let destination = PostgresDestination::new();
-    let mut no_keys = input(WriteDisposition::Merge, MergeDedupPolicy::Last);
+    let mut no_keys = input(WriteDisposition::Merge);
     no_keys.merge_keys.clear();
     assert!(destination.plan_load(no_keys).is_err());
 
-    let mut drift = input(WriteDisposition::Merge, MergeDedupPolicy::Last);
+    let mut drift = input(WriteDisposition::Merge);
     drift.existing_table = Some(
         PostgresExistingTable::new(
             vec![

@@ -2,7 +2,7 @@ Status: open
 Created: 2026-08-03
 Updated: 2026-08-03
 Parent: `.10x/tickets/2026-08-03-cdc-semantic-sql-project-foundation-program.md`
-Depends-On: `.10x/tickets/2026-08-03-c1-semantic-registry-core-consumer-migration.md`, `.10x/tickets/2026-08-03-d0-remove-postgres-merge-dedup-policy.md`
+Depends-On: `.10x/tickets/done/2026-08-03-c1-semantic-registry-core-consumer-migration.md`, `.10x/tickets/done/2026-08-03-d0-remove-postgres-merge-dedup-policy.md`
 
 # D1 project compilation manifest core
 

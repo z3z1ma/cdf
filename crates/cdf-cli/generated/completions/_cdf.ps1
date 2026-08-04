@@ -628,7 +628,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('--to', '--to', [CompletionResultType]::ParameterName, 'Destination URI or cursor upper bound, as shown in usage')
             [CompletionResult]::new('--receipt', '--receipt', [CompletionResultType]::ParameterName, 'Receipt identifier')
             [CompletionResult]::new('--target', '--target', [CompletionResultType]::ParameterName, 'Destination target or table')
-            [CompletionResult]::new('--merge-dedup', '--merge-dedup', [CompletionResultType]::ParameterName, 'Merge deduplication policy')
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
             [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')
@@ -674,7 +673,6 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
         'cdf;replay;package' {
             [CompletionResult]::new('--to', '--to', [CompletionResultType]::ParameterName, 'Destination URI or cursor upper bound, as shown in usage')
             [CompletionResult]::new('--target', '--target', [CompletionResultType]::ParameterName, 'Destination target or table')
-            [CompletionResult]::new('--merge-dedup', '--merge-dedup', [CompletionResultType]::ParameterName, 'Merge deduplication policy')
             [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy: auto, always, or never')
             [CompletionResult]::new('--progress', '--progress', [CompletionResultType]::ParameterName, 'Progress policy: auto, always, or never')
             [CompletionResult]::new('--unicode', '--unicode', [CompletionResultType]::ParameterName, 'Unicode policy: auto, always, or never')

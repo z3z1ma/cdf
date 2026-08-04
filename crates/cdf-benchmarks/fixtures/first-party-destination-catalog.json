@@ -15,8 +15,7 @@
       "bulk_path": "canonical_segment_scan",
       "bulk_evidence_version": "p3-d14-stock-scan-2026-07-19-v1",
       "replay_requires_explicit_target": false,
-      "replay_target_hint": null,
-      "replay_policy_values": {}
+      "replay_target_hint": null
     }
   },
   {
@@ -40,8 +39,7 @@
       "bulk_path": "arrow_ipc_to_parquet_zstd",
       "bulk_evidence_version": "p3-parquet-compression-2026-07-26-v1",
       "replay_requires_explicit_target": false,
-      "replay_target_hint": null,
-      "replay_policy_values": {}
+      "replay_target_hint": null
     }
   },
   {
@@ -59,8 +57,7 @@
       "bulk_path": "copy_binary",
       "bulk_evidence_version": "p3-d3-2026-07-11-v1",
       "replay_requires_explicit_target": true,
-      "replay_target_hint": "schema.table",
-      "replay_policy_values": {"merge_dedup":["fail"]}
+      "replay_target_hint": "schema.table"
     }
   }
 ]

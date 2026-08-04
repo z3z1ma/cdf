@@ -16,22 +16,14 @@ use cdf_kernel::{
 use cdf_postgres::{PostgresIdentifier, PostgresTarget, quote_identifier};
 
 use crate::{
-    CDF_LOADED_AT_COLUMN, CDF_QUARANTINE_TABLE, CDF_ROW_KEY_ALLOCATOR_TABLE, CDF_ROW_KEY_COLUMN,
-    CDF_SEGMENTS_TABLE, CDF_STATE_TABLE,
+    CDF_QUARANTINE_TABLE, CDF_ROW_KEY_ALLOCATOR_TABLE, CDF_SEGMENTS_TABLE, CDF_STATE_TABLE,
     api::{PostgresCommitRequest, PostgresReceiptVerification, build_receipt},
     binary_copy::BinaryCopyEncoder,
-    dml::{order_expression, stage_select_list},
-    identifiers::{
-        quote_identifier_unchecked, quote_system_identifier, quote_user_identifier,
-        validated_target_sql,
-    },
+    identifiers::{quote_identifier_unchecked, quote_user_identifier, validated_target_sql},
     mirrors::decode_postgres_load_row,
     models::PostgresDestination,
     package::PostgresExpectedSegment,
-    plan::{
-        MergeDedupPolicy, PostgresLoadPlan, PostgresReceiptInput, PostgresStatement,
-        StatementExpectation,
-    },
+    plan::{PostgresLoadPlan, PostgresReceiptInput, PostgresStatement, StatementExpectation},
     rows::validate_schema_matches_plan,
     sheet::postgres_destination_sheet,
     validate::{disposition_name, plan_segment_acks, token_suffix},
@@ -628,7 +620,7 @@ fn apply_write_plan_after_payload(
                 })?;
                 if !duplicates.is_empty() {
                     return Err(CdfError::data(
-                        "Postgres merge package contains duplicate merge keys and dedup policy is fail",
+                        "Postgres finalized merge package contains duplicate merge keys",
                     ));
                 }
             }
@@ -854,29 +846,16 @@ fn count_target_rows(client: &mut Client, target: &PostgresTarget) -> Result<u64
 
 fn count_merge_source_rows(client: &mut Client, plan: &PostgresLoadPlan) -> Result<u64> {
     let stage_table = merge_stage_table(plan)?;
-    let sql = match plan.dedup {
-        MergeDedupPolicy::First | MergeDedupPolicy::Last => format!(
-            "{}SELECT COUNT(*)::bigint FROM \"_cdf_dedup\"",
-            merge_dedup_cte(plan)?
-        ),
-        MergeDedupPolicy::Fail => {
-            format!("SELECT COUNT(*)::bigint FROM {}", stage_table.quoted())
-        }
-    };
+    let sql = format!("SELECT COUNT(*)::bigint FROM {}", stage_table.quoted());
     query_count(client, &sql, "count Postgres merge source rows")
 }
 
 fn count_merge_updates(client: &mut Client, plan: &PostgresLoadPlan) -> Result<u64> {
     let stage_table = merge_stage_table(plan)?;
-    let (cte, source) = match plan.dedup {
-        MergeDedupPolicy::First | MergeDedupPolicy::Last => {
-            (merge_dedup_cte(plan)?, "\"_cdf_dedup\"".to_owned())
-        }
-        MergeDedupPolicy::Fail => (String::new(), stage_table.quoted()),
-    };
     let sql = format!(
-        "{cte}SELECT COUNT(*)::bigint FROM {} AS \"target\" WHERE EXISTS (SELECT 1 FROM {source} AS \"stage\" WHERE {})",
+        "SELECT COUNT(*)::bigint FROM {} AS \"target\" WHERE EXISTS (SELECT 1 FROM {} AS \"stage\" WHERE {})",
         validated_target_sql(&plan.target)?,
+        stage_table.quoted(),
         merge_match_predicate(&plan.merge_keys)?
     );
     query_count(client, &sql, "count Postgres merge updates")
@@ -888,24 +867,6 @@ fn query_count(client: &mut Client, sql: &str, context: &str) -> Result<u64> {
         .map(|row| row.get(0))
         .map_err(|error| postgres_error(context, error))?;
     u64::try_from(count).map_err(|_| CdfError::internal("Postgres count was negative"))
-}
-
-fn merge_dedup_cte(plan: &PostgresLoadPlan) -> Result<String> {
-    let stage_table = merge_stage_table(plan)?;
-    let conflict_columns = plan
-        .merge_keys
-        .iter()
-        .map(quote_user_identifier)
-        .collect::<Result<Vec<_>>>()?
-        .join(", ");
-    Ok(format!(
-        "WITH \"_cdf_ranked\" AS (\n  SELECT {}, ROW_NUMBER() OVER (PARTITION BY {} ORDER BY {}, {}) AS \"_cdf_rank\"\n  FROM {}\n), \"_cdf_dedup\" AS (\n  SELECT * FROM \"_cdf_ranked\" WHERE \"_cdf_rank\" = 1\n)\n",
-        stage_select_list(&plan.columns)?,
-        conflict_columns,
-        order_expression(CDF_ROW_KEY_COLUMN, &plan.dedup),
-        order_expression(CDF_LOADED_AT_COLUMN, &plan.dedup),
-        quote_system_identifier(stage_table)?
-    ))
 }
 
 fn merge_stage_table(plan: &PostgresLoadPlan) -> Result<&PostgresIdentifier> {

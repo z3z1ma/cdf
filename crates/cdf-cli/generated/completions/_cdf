@@ -708,7 +708,6 @@ _arguments "${_arguments_options[@]}" : \
 '--to=[Destination URI or cursor upper bound, as shown in usage]:DEST:_default' \
 '--receipt=[Receipt identifier]:ID:_default' \
 '--target=[Destination target or table]:TARGET:_default' \
-'--merge-dedup=[Merge deduplication policy]:POLICY:_default' \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \
@@ -770,7 +769,6 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '--to=[Destination URI or cursor upper bound, as shown in usage]:DEST:_default' \
 '--target=[Destination target or table]:TARGET:_default' \
-'--merge-dedup=[Merge deduplication policy]:POLICY:_default' \
 '--color=[Color policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--progress=[Progress policy\: auto, always, or never]:WHEN:(auto always never)' \
 '--unicode=[Unicode policy\: auto, always, or never]:WHEN:(auto always never)' \

@@ -121,9 +121,8 @@ pub use lockfile::{
 };
 pub use models::{
     DefaultsConfig, DestinationPolicy, DurationSpec, EffectiveEnvironment, EnvironmentConfig,
-    PostgresDestinationPolicy, PostgresMergeDedupPolicy, ProjectConfig, ProjectFreshness,
-    ProjectMetadata, ProjectResource, ResourceSourceKind, RetentionPolicy, RetentionRule,
-    TrustPreset, WriteDispositionPreset,
+    ProjectConfig, ProjectFreshness, ProjectMetadata, ProjectResource, ResourceSourceKind,
+    RetentionPolicy, RetentionRule, TrustPreset, WriteDispositionPreset,
 };
 pub use observation_cache::{
     DEFAULT_OBSERVATION_CACHE_MAX_BYTES, DEFAULT_OBSERVATION_CACHE_MAX_ENTRIES,

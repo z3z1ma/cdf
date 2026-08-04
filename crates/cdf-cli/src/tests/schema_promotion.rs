@@ -759,11 +759,7 @@ fn schema_promote_failure_reports_persisted_recovery_status_without_secret_leak(
         free_port()
     );
     fs::write(project.root.join("destination-dsn"), format!("{secret}\n")).unwrap();
-    write_project_destination_with_postgres_policy(
-        &project,
-        "postgres://secret://file/destination-dsn",
-        "fail",
-    );
+    write_project_destination(&project, "postgres://secret://file/destination-dsn");
     write_parquet_discover_resource(&project, "*.parquet");
     let source_path = project.root.join("data/events.parquet");
     write_vendor_parquet(&source_path);
@@ -1308,11 +1304,7 @@ fn schema_promote_execute_updates_postgres_through_generic_command_dispatch() {
         format!("{}\n", postgres.url),
     )
     .unwrap();
-    write_project_destination_with_postgres_policy(
-        &project,
-        "postgres://secret://file/destination-dsn",
-        "fail",
-    );
+    write_project_destination(&project, "postgres://secret://file/destination-dsn");
     write_parquet_discover_resource(&project, "*.parquet");
     let source_path = project.root.join("data/events.parquet");
     write_vendor_parquet(&source_path);

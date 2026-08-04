@@ -12,7 +12,7 @@ use crate::{
         quote_validated_identifier, validated_system_column_definition, validated_target_sql,
         validated_user_column_definition,
     },
-    plan::{MergeDedupPolicy, PostgresLoadPlanInput, PostgresStatement, StatementExpectation},
+    plan::{PostgresLoadPlanInput, PostgresStatement, StatementExpectation},
 };
 
 pub(crate) fn write_statements(
@@ -47,13 +47,11 @@ pub(crate) fn write_statements(
                     binary_copy_sql(&quote_system_identifier(stage_table)?, &input.columns)?,
                 ),
             ];
-            if input.dedup == MergeDedupPolicy::Fail {
-                statements.push(PostgresStatement::query(
-                    "merge_duplicate_key_guard",
-                    duplicate_key_guard_sql(stage_table, &input.merge_keys)?,
-                    StatementExpectation::ReturnsZeroRows,
-                ));
-            }
+            statements.push(PostgresStatement::query(
+                "merge_duplicate_key_guard",
+                duplicate_key_guard_sql(stage_table, &input.merge_keys)?,
+                StatementExpectation::ReturnsZeroRows,
+            ));
             statements.push(PostgresStatement::execute(
                 "merge_from_stage",
                 merge_sql(input, stage_table)?,
@@ -113,25 +111,10 @@ pub(crate) fn merge_sql(
         .join(", ");
     let assignments = merge_assignments(&input.columns, &input.merge_keys)?.join(", ");
 
-    let source = match input.dedup {
-        MergeDedupPolicy::First | MergeDedupPolicy::Last => format!(
-            "WITH \"_cdf_ranked\" AS (\n  SELECT {}, ROW_NUMBER() OVER (PARTITION BY {} ORDER BY {}, {}) AS \"_cdf_rank\"\n  FROM {}\n), \"_cdf_dedup\" AS (\n  SELECT * FROM \"_cdf_ranked\" WHERE \"_cdf_rank\" = 1\n)\n",
-            stage_select_list(&input.columns)?,
-            conflict_columns,
-            order_expression(CDF_ROW_KEY_COLUMN, &input.dedup),
-            order_expression(CDF_LOADED_AT_COLUMN, &input.dedup),
-            quote_system_identifier(stage_table)?
-        ),
-        MergeDedupPolicy::Fail => String::new(),
-    };
-
-    let source_table = match input.dedup {
-        MergeDedupPolicy::First | MergeDedupPolicy::Last => "\"_cdf_dedup\"".to_owned(),
-        MergeDedupPolicy::Fail => quote_system_identifier(stage_table)?,
-    };
+    let source_table = quote_system_identifier(stage_table)?;
 
     Ok(format!(
-        "{source}INSERT INTO {} ({})\nSELECT {} FROM {}\nON CONFLICT ({}) DO UPDATE SET {}",
+        "INSERT INTO {} ({})\nSELECT {} FROM {}\nON CONFLICT ({}) DO UPDATE SET {}",
         validated_target_sql(&input.target)?,
         target_columns.join(", "),
         selected_columns.join(", "),
@@ -139,28 +122,6 @@ pub(crate) fn merge_sql(
         conflict_columns,
         assignments
     ))
-}
-
-pub(crate) fn stage_select_list(columns: &[PostgresColumn]) -> Result<String> {
-    let mut selected = quoted_column_names(columns)?;
-    selected.extend(quoted_system_target_column_names());
-    Ok(selected.join(", "))
-}
-
-pub(crate) fn order_expression(column: &'static str, policy: &MergeDedupPolicy) -> String {
-    let direction = match policy {
-        MergeDedupPolicy::First => "ASC",
-        MergeDedupPolicy::Last => "DESC",
-        MergeDedupPolicy::Fail => "ASC",
-    };
-    format!(
-        "{} {}",
-        quote_validated_identifier(
-            &cdf_dest_sql::ValidatedSqlIdentifier::system(&postgres_identifier_rules(), column)
-                .expect("framework column must satisfy Postgres sheet rules"),
-        ),
-        direction
-    )
 }
 
 pub(crate) fn duplicate_key_guard_sql(

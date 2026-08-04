@@ -1045,18 +1045,9 @@ fn plan(
     table: &str,
     manifest: &PackageManifest,
     disposition: WriteDisposition,
-    dedup: MergeDedupPolicy,
     state_delta: Option<StateDelta>,
 ) -> PostgresLoadPlan {
-    plan_with_columns(
-        env,
-        table,
-        manifest,
-        disposition,
-        dedup,
-        state_delta,
-        columns(),
-    )
+    plan_with_columns(env, table, manifest, disposition, state_delta, columns())
 }
 
 fn plan_with_columns(
@@ -1064,7 +1055,6 @@ fn plan_with_columns(
     table: &str,
     manifest: &PackageManifest,
     disposition: WriteDisposition,
-    dedup: MergeDedupPolicy,
     state_delta: Option<StateDelta>,
     columns: Vec<PostgresColumn>,
 ) -> PostgresLoadPlan {
@@ -1074,7 +1064,6 @@ fn plan_with_columns(
             table,
             manifest,
             disposition,
-            dedup,
             state_delta,
             columns,
         ))
@@ -1086,7 +1075,6 @@ fn load_input(
     table: &str,
     manifest: &PackageManifest,
     disposition: WriteDisposition,
-    dedup: MergeDedupPolicy,
     state_delta: Option<StateDelta>,
     columns: Vec<PostgresColumn>,
 ) -> PostgresLoadPlanInput {
@@ -1104,7 +1092,6 @@ fn load_input(
         segments: state_segments(manifest),
         columns,
         merge_keys,
-        dedup,
         existing_table: None,
         resource_id: Some(ResourceId::new("orders").unwrap()),
         state_delta,
@@ -1116,7 +1103,7 @@ struct LiveCommitObservation {
 }
 
 fn commit(env: &LivePostgres, package_dir: &Path, table: &str) -> LiveCommitObservation {
-    let receipt = try_session_commit(env, package_dir, table, MergeDedupPolicy::Last).unwrap();
+    let receipt = try_session_commit(env, package_dir, table).unwrap();
     LiveCommitObservation { receipt }
 }
 
@@ -1130,14 +1117,9 @@ fn commit_request(manifest: &PackageManifest, plan: &PostgresLoadPlan) -> Destin
     }
 }
 
-fn try_session_commit(
-    env: &LivePostgres,
-    package_dir: &Path,
-    table: &str,
-    dedup: MergeDedupPolicy,
-) -> Result<Receipt> {
+fn try_session_commit(env: &LivePostgres, package_dir: &Path, table: &str) -> Result<Receipt> {
     let destination = env.destination();
-    let mut runtime = PostgresRuntime::for_replay(&destination, env.target(table), dedup, None);
+    let mut runtime = PostgresRuntime::for_replay(&destination, env.target(table), None);
     let reader = PackageReader::open(package_dir)?;
     let verified = reader.verify_for_consumption()?;
     let package = Arc::new(reader.clone().with_verification(verified.clone())?);
@@ -1272,13 +1254,7 @@ fn live_begin_session_returns_verifiable_receipt_and_preserves_duplicate_noop() 
         "chk-live-session-append",
         vec![("seg-000001", batch(&[(1, Some("ada")), (2, Some("grace"))]))],
     );
-    let receipt = try_session_commit(
-        &env,
-        package_dir.path(),
-        "orders_session_append",
-        MergeDedupPolicy::Last,
-    )
-    .unwrap();
+    let receipt = try_session_commit(&env, package_dir.path(), "orders_session_append").unwrap();
     assert_eq!(receipt.counts.rows_written, 2);
     assert!(env.destination().verify_receipt(&receipt).unwrap().verified);
     assert!(
@@ -1286,13 +1262,7 @@ fn live_begin_session_returns_verifiable_receipt_and_preserves_duplicate_noop() 
             .is_empty()
     );
 
-    let duplicate = try_session_commit(
-        &env,
-        package_dir.path(),
-        "orders_session_append",
-        MergeDedupPolicy::Last,
-    )
-    .unwrap();
+    let duplicate = try_session_commit(&env, package_dir.path(), "orders_session_append").unwrap();
     assert_eq!(duplicate.receipt_id, receipt.receipt_id);
     assert!(
         collect_package_receipts(&cdf_package::PackageReader::open(package_dir.path()).unwrap())
@@ -1325,13 +1295,7 @@ fn live_begin_session_returns_verifiable_receipt_and_preserves_duplicate_noop() 
                 .as_str()],
         )
         .unwrap();
-    let error = try_session_commit(
-        &env,
-        package_dir.path(),
-        "orders_session_append",
-        MergeDedupPolicy::Last,
-    )
-    .unwrap_err();
+    let error = try_session_commit(&env, package_dir.path(), "orders_session_append").unwrap_err();
     assert!(
         error
             .to_string()
@@ -1356,7 +1320,6 @@ fn live_begin_session_abort_rolls_back_system_migrations() {
         "orders_session_abort",
         &manifest,
         WriteDisposition::Append,
-        MergeDedupPolicy::Last,
         None,
     );
     let request = commit_request(&manifest, &plan);
@@ -1606,7 +1569,43 @@ fn live_replace_is_atomic_and_reports_deleted_rows() {
 }
 
 #[test]
-fn live_merge_deduplicates_last_row_and_updates_existing_keys() {
+fn live_merge_rejects_duplicate_finalized_keys_before_target_mutation() {
+    let Some(env) = LivePostgres::start() else {
+        return;
+    };
+    let package_dir = tempfile::tempdir().unwrap();
+    let table = "orders_merge_duplicate_rejected";
+    build_replay_package(
+        package_dir.path(),
+        "pkg-live-merge-duplicate-rejected",
+        env.target(table).target_name().unwrap(),
+        WriteDisposition::Merge,
+        "chk-live-merge-duplicate-rejected",
+        vec![
+            ("seg-000001", batch(&[(1, Some("old"))])),
+            ("seg-000002", batch(&[(1, Some("new"))])),
+        ],
+    );
+
+    let error = try_session_commit(&env, package_dir.path(), table).unwrap_err();
+    assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+    assert!(error.message.contains("duplicate merge keys"));
+    let target_exists = env
+        .client()
+        .query_one(
+            "SELECT to_regclass($1)::text",
+            &[&env.target(table).display_name()],
+        )
+        .unwrap()
+        .get::<_, Option<String>>(0);
+    assert_eq!(
+        target_exists, None,
+        "failed merge must roll back target DDL"
+    );
+}
+
+#[test]
+fn live_merge_applies_finalized_unique_rows_and_updates_existing_keys() {
     let Some(env) = LivePostgres::start() else {
         return;
     };
@@ -1617,10 +1616,7 @@ fn live_merge_deduplicates_last_row_and_updates_existing_keys() {
         env.target("orders_merge").target_name().unwrap(),
         WriteDisposition::Merge,
         "chk-live-merge-first",
-        vec![
-            ("seg-000001", batch(&[(1, Some("old")), (2, Some("two"))])),
-            ("seg-000002", batch(&[(1, Some("new"))])),
-        ],
+        vec![("seg-000001", batch(&[(1, Some("new")), (2, Some("two"))]))],
     );
     let first = commit(&env, first_dir.path(), "orders_merge");
     assert_eq!(first.receipt.counts.rows_written, 2);
@@ -1751,21 +1747,9 @@ fn live_exact_value_text_round_trips_all_dispositions_and_rolls_back_rejections(
             ),
         )],
     );
-    let append = try_session_commit(
-        &env,
-        append_dir.path(),
-        "exact_values",
-        MergeDedupPolicy::Last,
-    )
-    .unwrap();
+    let append = try_session_commit(&env, append_dir.path(), "exact_values").unwrap();
     assert_eq!(append.counts.rows_written, 3);
-    let replay = try_session_commit(
-        &env,
-        append_dir.path(),
-        "exact_values",
-        MergeDedupPolicy::Last,
-    )
-    .unwrap();
+    let replay = try_session_commit(&env, append_dir.path(), "exact_values").unwrap();
     assert_eq!(replay.receipt_id, append.receipt_id);
 
     let mut client = env.client();
@@ -1824,13 +1808,7 @@ fn live_exact_value_text_round_trips_all_dispositions_and_rolls_back_rejections(
             ),
         )],
     );
-    let replaced = try_session_commit(
-        &env,
-        replace_dir.path(),
-        "exact_values",
-        MergeDedupPolicy::Last,
-    )
-    .unwrap();
+    let replaced = try_session_commit(&env, replace_dir.path(), "exact_values").unwrap();
     assert_eq!(replaced.counts.rows_written, 1);
     assert_eq!(replaced.counts.rows_deleted, Some(3));
     let replaced_row = client
@@ -1867,13 +1845,7 @@ fn live_exact_value_text_round_trips_all_dispositions_and_rolls_back_rejections(
             ),
         )],
     );
-    let merged = try_session_commit(
-        &env,
-        merge_dir.path(),
-        "exact_merge",
-        MergeDedupPolicy::Last,
-    )
-    .unwrap();
+    let merged = try_session_commit(&env, merge_dir.path(), "exact_merge").unwrap();
     assert_eq!(merged.counts.rows_written, 2);
     let merged_rows = client
         .query(
@@ -1928,8 +1900,7 @@ fn live_exact_value_text_round_trips_all_dispositions_and_rolls_back_rejections(
                 ),
             )],
         );
-        let error = try_session_commit(&env, rejected_dir.path(), table, MergeDedupPolicy::Last)
-            .unwrap_err();
+        let error = try_session_commit(&env, rejected_dir.path(), table).unwrap_err();
         assert_eq!(error.kind, cdf_kernel::ErrorKind::Data, "{error}");
         assert!(error.message.contains(expected_fragment), "{error}");
         let target_exists: bool = client
@@ -1982,7 +1953,6 @@ fn live_rollback_after_direct_copy_leaves_no_target_or_mirror_partial_commit() {
         "orders_rollback",
         &manifest,
         WriteDisposition::Append,
-        MergeDedupPolicy::Last,
         Some(state_delta(&manifest, "chk-live-rollback")),
     );
     rollback_plan.target_ddl = target_migrations(&PostgresLoadPlanInput {
@@ -1994,7 +1964,6 @@ fn live_rollback_after_direct_copy_leaves_no_target_or_mirror_partial_commit() {
         segments: state_segments(&manifest),
         columns: columns(),
         merge_keys: vec![PostgresIdentifier::user("id").unwrap()],
-        dedup: MergeDedupPolicy::Last,
         existing_table: Some(
             PostgresExistingTable::new(
                 vec![

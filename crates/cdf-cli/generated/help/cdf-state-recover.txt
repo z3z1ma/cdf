@@ -11,7 +11,6 @@ Options:
       --receipt <ID>           Receipt identifier
       --progress <WHEN>        Progress policy: auto, always, or never [possible values: auto, always, never]
       --target <TARGET>        Destination target or table
-      --merge-dedup <POLICY>   Merge deduplication policy
       --unicode <WHEN>         Unicode policy: auto, always, or never [possible values: auto, always, never]
       --memory-budget <BYTES>  Process memory budget, e.g. 4GiB or 512MiB
       --spill-budget <BYTES>   Spill/disk budget, e.g. 64GiB or 512MiB

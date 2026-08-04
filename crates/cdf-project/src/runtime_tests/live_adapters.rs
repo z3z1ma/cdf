@@ -1,6 +1,6 @@
 use super::{
     Arc, BTreeMap, CheckpointId, CheckpointStatus, ContractPolicy, CursorValue, DEDUP_SUMMARY_FILE,
-    DedupKeep, DeliveryGuarantee, HttpResponse, IdempotencySupport, MergeDedupPolicy, Ordering,
+    DedupKeep, DeliveryGuarantee, HttpResponse, IdempotencySupport, Ordering,
     PackageArtifactReplayRequest, PackageReader, PackageStatus, ParquetDestination, Path,
     PipelineId, PostgresDestination, PostgresTarget, ProjectDestinationRegistry,
     ProjectReceiptSource, ProjectResolutionContext, ProjectRunReport, ProjectRunRequest,
@@ -912,13 +912,8 @@ fn postgres_destination_policy_truncates_package_and_committed_column_identicall
     let package_root = temp.path().join(".cdf/packages");
     let state_path = temp.path().join(".cdf/state.db");
     let target = PostgresTarget::new(Some(&postgres.schema), "normalized_events").unwrap();
-    let destination = crate::test_destinations::postgres(
-        postgres.url.clone(),
-        target,
-        MergeDedupPolicy::Last,
-        None,
-    )
-    .unwrap();
+    let destination =
+        crate::test_destinations::postgres(postgres.url.clone(), target, None).unwrap();
     let identifier_policy = destination.column_identifier_policy().unwrap().unwrap();
     let expected = cdf_contract::normalize_identifier(LONG_SOURCE, &identifier_policy).unwrap();
     assert_eq!(expected.len(), 63);

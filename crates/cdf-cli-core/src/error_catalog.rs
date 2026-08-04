@@ -210,7 +210,7 @@ pub const REPLAY_ARGUMENT: ErrorMapping = ErrorMapping {
     exit_code: 2,
     remediation: Some(RemediationTemplate {
         summary: "Provide the replay package destination arguments required by the destination.",
-        steps: &["For Postgres replay, pass `--target schema.table --merge-dedup fail`."],
+        steps: &["For Postgres replay, pass `--target schema.table`."],
     }),
 };
 

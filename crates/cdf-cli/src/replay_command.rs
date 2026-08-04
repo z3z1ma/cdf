@@ -1,7 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use cdf_kernel::{
     CdfError, Checkpoint, PackageHash, Receipt, RunEvent, RunEventAppend, RunEventDetails,
@@ -34,7 +31,6 @@ use crate::{
 pub(crate) struct PackageReplayDestinationArgs<'a> {
     pub(crate) destination_uri: Option<&'a str>,
     pub(crate) target: Option<&'a str>,
-    pub(crate) merge_dedup: Option<&'a str>,
 }
 
 pub(crate) struct ReplayDestination {
@@ -432,12 +428,6 @@ pub(crate) fn build_replay_destination(
             error_catalog::REPLAY_ARGUMENT,
         ));
     }
-    let replay_policy = ReplayPolicy::from_requirements(
-        inspection.description.destination_id.as_str(),
-        &display_name,
-        &inspection.runtime.replay_policy_values,
-        args,
-    )?;
     let target = if inspection.runtime.replay_requires_explicit_target {
         let target_hint = inspection
             .runtime
@@ -469,15 +459,9 @@ pub(crate) fn build_replay_destination(
     } else {
         inputs.destination_commit.target.clone()
     };
-    let destination_policy: &dyn cdf_runtime::DestinationPolicyProvider =
-        if replay_policy.is_empty() {
-            &context.environment.destination_policy
-        } else {
-            &replay_policy
-        };
     let destination_context = ProjectResolutionContext::for_project_run(&context.root, &target)
         .with_environment_name(&context.environment.name)
-        .with_destination_policy(destination_policy)
+        .with_destination_policy(&context.environment.destination_policy)
         .with_secret_provider(&secret_provider)
         .with_execution_services(execution);
     let destination = resolve_project_run_destination(registry, uri, &destination_context)
@@ -493,65 +477,6 @@ pub(crate) fn build_replay_destination(
         receipt_source_kind: description.product_receipt_source,
         secret_redaction,
     })
-}
-
-struct ReplayPolicy {
-    destination_id: String,
-    values: BTreeMap<String, String>,
-}
-
-impl ReplayPolicy {
-    fn from_requirements(
-        destination_id: &str,
-        display_name: &str,
-        requirements: &BTreeMap<String, Vec<String>>,
-        args: PackageReplayDestinationArgs<'_>,
-    ) -> Result<Self, CliError> {
-        let mut values = BTreeMap::new();
-        for (key, allowed) in requirements {
-            let supplied = match key.as_str() {
-                "merge_dedup" => args.merge_dedup,
-                _ => None,
-            };
-            let value = supplied.ok_or_else(|| {
-                CliError::usage_with(
-                    format!(
-                        "replay package to {display_name} requires --{} {}",
-                        key.replace('_', "-"),
-                        allowed.join("|")
-                    ),
-                    error_catalog::REPLAY_ARGUMENT,
-                )
-            })?;
-            if !allowed.iter().any(|allowed| allowed == value) {
-                return Err(CliError::usage_with(
-                    format!(
-                        "unsupported {display_name} replay --{} `{value}`; supported value is `{}`",
-                        key.replace('_', "-"),
-                        allowed.join("|"),
-                    ),
-                    error_catalog::REPLAY_ARGUMENT,
-                ));
-            }
-            values.insert(key.clone(), value.to_owned());
-        }
-        Ok(Self {
-            destination_id: destination_id.to_owned(),
-            values,
-        })
-    }
-
-    fn is_empty(&self) -> bool {
-        self.values.is_empty()
-    }
-}
-
-impl cdf_runtime::DestinationPolicyProvider for ReplayPolicy {
-    fn value(&self, destination: &str, key: &str) -> Option<&str> {
-        (destination == self.destination_id)
-            .then(|| self.values.get(key).map(String::as_str))
-            .flatten()
-    }
 }
 
 fn destination_display_name(label: &str) -> String {
@@ -615,7 +540,6 @@ pub(crate) fn replay_package(
         PackageReplayDestinationArgs {
             destination_uri: args.destination_uri.as_deref(),
             target: args.target.as_deref(),
-            merge_dedup: args.merge_dedup.as_deref(),
         },
         &package.inputs,
         execution,

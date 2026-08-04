@@ -435,7 +435,6 @@ pub(crate) fn parquet_runtime_capabilities(
         bulk_evidence_version: Some("p3-parquet-compression-2026-07-26-v1".to_owned()),
         replay_requires_explicit_target: false,
         replay_target_hint: None,
-        replay_policy_values: Default::default(),
     }
 }
 

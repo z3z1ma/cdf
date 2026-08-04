@@ -13,7 +13,7 @@ use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
 use cdf_declarative::{
     CompiledResource, compile_document, compile_document_with_project_root, parse_toml,
 };
-use cdf_dest_postgres::{MergeDedupPolicy, PostgresTarget};
+use cdf_dest_postgres::PostgresTarget;
 use cdf_engine::{
     EngineExecutionConfig, EnginePackageDraft, EnginePlanInput, Planner, execute_to_package,
     execute_to_package_with_segment_positions_and_pre_finalize,
@@ -1084,7 +1084,6 @@ pub fn run_prepared_file_to_destination(
                 Box::new(cdf_dest_postgres::PostgresRuntime::for_replay(
                     &destination,
                     postgres_target,
-                    MergeDedupPolicy::Last,
                     None,
                 )),
                 target,
@@ -1419,7 +1418,6 @@ fn run_package_replay(
                 Box::new(cdf_dest_postgres::PostgresRuntime::for_replay(
                     &destination,
                     postgres_target,
-                    MergeDedupPolicy::Last,
                     None,
                 )),
                 target,

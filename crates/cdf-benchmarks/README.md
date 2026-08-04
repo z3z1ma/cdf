@@ -67,7 +67,7 @@ Full opt-in Criterion pass, intended deep/weekly budget under 15 minutes:
 CDF_BENCH_SUITE=full cargo bench -p cdf-benchmarks --bench baseline --locked
 ```
 
-Postgres package replay is a separate opt-in suite because it requires and mutates a live disposable database. It replays the package fixture to target table `orders` through `ResolvedProjectDestination::postgres(...)` with `MergeDedupPolicy::Last`:
+Postgres package replay is a separate opt-in suite because it requires and mutates a live disposable database. It replays the finalized package fixture to target table `orders` through the Postgres destination runtime:
 
 ```bash
 CDF_BENCH_POSTGRES_URL=postgres://localhost/cdf_bench CDF_BENCH_SUITE=postgres cargo bench -p cdf-benchmarks --bench baseline --locked

@@ -363,7 +363,6 @@ fn replay_package_human_rich_render_uses_duplicate_receipt_checkpoint_panels() {
             package_dir,
             destination_uri: Some("duckdb://.cdf/replay-rich.duckdb".to_owned()),
             target: None,
-            merge_dedup: None,
         },
         &test_execution_services(),
         &test_destination_registry(),
@@ -425,84 +424,17 @@ fn replay_package_postgres_destination_fails_closed_before_mutation() {
 }
 
 #[test]
-fn replay_package_postgres_missing_merge_dedup_fails_closed_before_mutation() {
-    let project = TestProject::new();
-    fs::write(
-        project.root.join("destination-dsn"),
-        "postgres://user:destination-secret@localhost/db\n",
-    )
-    .unwrap();
-    let package_dir = create_replay_package_fixture(&project);
-    let receipts = package_receipt_count(&package_dir);
-    let status = package_status(&package_dir);
-
-    let result = replay_package_command_with_postgres_options(
-        &project,
-        &package_dir,
-        "postgres://secret://file/destination-dsn",
-        Some("public.events"),
-        None,
-    );
-
-    assert_eq!(result.exit_code, 2);
-    assert_secret_absent(&result, "destination-secret");
-    assert_no_replay_mutation(&project, &package_dir, receipts, status, None);
-    let json = stderr_or_stdout_json(&result.stderr);
-    assert_eq!(json["error"]["kind"], "contract");
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("requires --merge-dedup fail")
-    );
-}
-
-#[test]
-fn replay_package_postgres_unsupported_merge_dedup_fails_closed_before_mutation() {
-    let project = TestProject::new();
-    fs::write(
-        project.root.join("destination-dsn"),
-        "postgres://user:destination-secret@localhost/db\n",
-    )
-    .unwrap();
-    let package_dir = create_replay_package_fixture(&project);
-    let receipts = package_receipt_count(&package_dir);
-    let status = package_status(&package_dir);
-
-    let result = replay_package_command_with_postgres_options(
-        &project,
-        &package_dir,
-        "postgres://secret://file/destination-dsn",
-        Some("public.events"),
-        Some("last"),
-    );
-
-    assert_eq!(result.exit_code, 2);
-    assert_secret_absent(&result, "destination-secret");
-    assert_no_replay_mutation(&project, &package_dir, receipts, status, None);
-    let json = stderr_or_stdout_json(&result.stderr);
-    assert_eq!(json["error"]["kind"], "contract");
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("supported value is `fail`")
-    );
-}
-
-#[test]
 fn replay_package_postgres_target_mismatch_fails_closed_before_state_creation() {
     let project = TestProject::new();
     let package_dir = create_replay_package_fixture(&project);
     let receipts = package_receipt_count(&package_dir);
     let status = package_status(&package_dir);
 
-    let result = replay_package_command_with_postgres_options(
+    let result = replay_package_command_with_target(
         &project,
         &package_dir,
         "postgres://localhost/cdf",
         Some("public.events"),
-        Some("fail"),
     );
 
     assert_eq!(result.exit_code, 3, "stderr: {}", result.stderr);
@@ -529,12 +461,11 @@ fn replay_package_postgres_secret_backed_uri_redacts_resolved_dsn_on_target_mism
     let receipts = package_receipt_count(&package_dir);
     let status = package_status(&package_dir);
 
-    let result = replay_package_command_with_postgres_options(
+    let result = replay_package_command_with_target(
         &project,
         &package_dir,
         "postgres://secret://file/destination-dsn",
         Some("public.events"),
-        Some("fail"),
     );
 
     assert_eq!(result.exit_code, 3, "stderr: {}", result.stderr);
@@ -572,12 +503,11 @@ fn replay_package_postgres_replays_from_artifacts_without_source_contact() {
         .clone();
     let receipts_before = package_receipt_count(&package_dir);
 
-    let result = replay_package_command_with_postgres_options(
+    let result = replay_package_command_with_target(
         &project,
         &package_dir,
         "postgres://secret://file/destination-dsn",
         Some(target),
-        Some("fail"),
     );
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);

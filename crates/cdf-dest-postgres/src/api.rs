@@ -105,7 +105,6 @@ pub fn plan_postgres_load(
         stage_table,
         columns: input.columns,
         merge_keys: input.merge_keys,
-        dedup: input.dedup,
         resource_id: input.resource_id,
         state_delta: input.state_delta,
         system_ddl: system_table_ddl(),
