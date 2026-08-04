@@ -460,47 +460,49 @@ fn compile_source_position(position: &SourcePositionDeclaration) -> SourcePositi
                 },
             })
         }
-        SourcePositionDeclaration::Log { position } => SourcePosition::Log(match position {
-            CommittedLogPositionDeclaration::PostgreSql {
-                scope,
-                commit_lsn,
-                end_lsn,
-                xid,
-            } => CommittedLogPosition::PostgreSql(PostgresCommitPosition {
-                version: SOURCE_POSITION_VERSION,
-                scope: PostgresLogScope {
-                    system_identifier: scope.system_identifier.clone(),
-                    database_oid: scope.database_oid,
-                    slot: scope.slot.clone(),
-                    output_plugin: scope.output_plugin.clone(),
-                    semantics_sha256: scope.semantics_sha256.clone(),
-                },
-                commit_lsn: *commit_lsn,
-                end_lsn: *end_lsn,
-                xid: *xid,
-            }),
-            CommittedLogPositionDeclaration::MySql {
-                scope,
-                binlog_file,
-                file_sequence,
-                end_log_position,
-                executed_gtid_set,
-                transaction_gtid,
-            } => CommittedLogPosition::MySql(MySqlCommitPosition {
-                version: SOURCE_POSITION_VERSION,
-                scope: MySqlLogScope {
-                    source_binding: scope.source_binding.clone(),
-                    active_server_uuid: scope.active_server_uuid.clone(),
-                    binlog_basename: scope.binlog_basename.clone(),
-                    semantics_sha256: scope.semantics_sha256.clone(),
-                },
-                binlog_file: binlog_file.clone(),
-                file_sequence: *file_sequence,
-                end_log_position: *end_log_position,
-                executed_gtid_set: executed_gtid_set.clone(),
-                transaction_gtid: transaction_gtid.clone(),
-            }),
-        }),
+        SourcePositionDeclaration::Log { position } => {
+            SourcePosition::committed_log(match position {
+                CommittedLogPositionDeclaration::PostgreSql {
+                    scope,
+                    commit_lsn,
+                    end_lsn,
+                    xid,
+                } => CommittedLogPosition::PostgreSql(PostgresCommitPosition {
+                    version: SOURCE_POSITION_VERSION,
+                    scope: PostgresLogScope {
+                        system_identifier: scope.system_identifier.clone(),
+                        database_oid: scope.database_oid,
+                        slot: scope.slot.clone(),
+                        output_plugin: scope.output_plugin.clone(),
+                        semantics_sha256: scope.semantics_sha256.clone(),
+                    },
+                    commit_lsn: *commit_lsn,
+                    end_lsn: *end_lsn,
+                    xid: *xid,
+                }),
+                CommittedLogPositionDeclaration::MySql {
+                    scope,
+                    binlog_file,
+                    file_sequence,
+                    end_log_position,
+                    executed_gtid_set,
+                    transaction_gtid,
+                } => CommittedLogPosition::MySql(MySqlCommitPosition {
+                    version: SOURCE_POSITION_VERSION,
+                    scope: MySqlLogScope {
+                        source_binding: scope.source_binding.clone(),
+                        active_server_uuid: scope.active_server_uuid.clone(),
+                        binlog_basename: scope.binlog_basename.clone(),
+                        semantics_sha256: scope.semantics_sha256.clone(),
+                    },
+                    binlog_file: binlog_file.clone(),
+                    file_sequence: *file_sequence,
+                    end_log_position: *end_log_position,
+                    executed_gtid_set: executed_gtid_set.clone(),
+                    transaction_gtid: transaction_gtid.clone(),
+                }),
+            })
+        }
         SourcePositionDeclaration::FileManifest { files } => {
             SourcePosition::FileManifest(FileManifest {
                 version: SOURCE_POSITION_VERSION,
@@ -541,7 +543,7 @@ fn compile_source_position(position: &SourcePositionDeclaration) -> SourcePositi
             blob_sha256: blob_sha256.clone(),
         }),
         SourcePositionDeclaration::ResumeToken { position } => {
-            SourcePosition::ResumeToken(match position {
+            SourcePosition::resume_token(match position {
                 ResumeTokenPositionDeclaration::MongoChangeStream {
                     scope,
                     token_bson_base64,

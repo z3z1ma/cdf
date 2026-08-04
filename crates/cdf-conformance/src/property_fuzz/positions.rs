@@ -42,7 +42,7 @@ fn active_source_positions() -> Vec<SourcePosition> {
             micros: -1,
             timezone: None,
         }),
-        SourcePosition::Log(CommittedLogPosition::PostgreSql(PostgresCommitPosition {
+        SourcePosition::committed_log(CommittedLogPosition::PostgreSql(PostgresCommitPosition {
             version: SOURCE_POSITION_VERSION,
             scope: PostgresLogScope {
                 system_identifier: "7421938841407953395".to_owned(),
@@ -57,7 +57,7 @@ fn active_source_positions() -> Vec<SourcePosition> {
             end_lsn: u64::MAX,
             xid: u32::MAX,
         })),
-        SourcePosition::Log(CommittedLogPosition::MySql(MySqlCommitPosition {
+        SourcePosition::committed_log(CommittedLogPosition::MySql(MySqlCommitPosition {
             version: SOURCE_POSITION_VERSION,
             scope: MySqlLogScope {
                 source_binding: "orders-primary".to_owned(),
@@ -77,7 +77,7 @@ fn active_source_positions() -> Vec<SourcePosition> {
             .to_owned(),
             transaction_gtid: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:7".to_owned(),
         })),
-        SourcePosition::ResumeToken(ResumeTokenPosition::MongoChangeStream(
+        SourcePosition::resume_token(ResumeTokenPosition::MongoChangeStream(
             MongoChangeStreamResumeToken {
                 version: SOURCE_POSITION_VERSION,
                 scope: MongoChangeStreamScope {

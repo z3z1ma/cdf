@@ -743,7 +743,7 @@ mod tests {
     const UUID_B: &str = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
 
     fn postgres(end_lsn: u64) -> SourcePosition {
-        SourcePosition::Log(CommittedLogPosition::PostgreSql(PostgresCommitPosition {
+        SourcePosition::committed_log(CommittedLogPosition::PostgreSql(PostgresCommitPosition {
             version: SOURCE_POSITION_VERSION,
             scope: PostgresLogScope {
                 system_identifier: "7421938841407953395".to_owned(),
@@ -764,7 +764,7 @@ mod tests {
         executed: &str,
         transaction_sequence: u64,
     ) -> SourcePosition {
-        SourcePosition::Log(CommittedLogPosition::MySql(MySqlCommitPosition {
+        SourcePosition::committed_log(CommittedLogPosition::MySql(MySqlCommitPosition {
             version: SOURCE_POSITION_VERSION,
             scope: MySqlLogScope {
                 source_binding: "orders-primary".to_owned(),
@@ -781,7 +781,7 @@ mod tests {
     }
 
     fn mongo(bytes: &[u8], mode: MongoResumeMode) -> SourcePosition {
-        SourcePosition::ResumeToken(ResumeTokenPosition::MongoChangeStream(
+        SourcePosition::resume_token(ResumeTokenPosition::MongoChangeStream(
             MongoChangeStreamResumeToken {
                 version: SOURCE_POSITION_VERSION,
                 scope: MongoChangeStreamScope {
@@ -823,8 +823,10 @@ mod tests {
         );
 
         let mut conflicting = terminal.clone();
-        let SourcePosition::Log(CommittedLogPosition::PostgreSql(position)) = &mut conflicting
-        else {
+        let SourcePosition::Log(position) = &mut conflicting else {
+            unreachable!();
+        };
+        let CommittedLogPosition::PostgreSql(position) = position.as_mut() else {
             unreachable!();
         };
         position.xid = 43;
@@ -845,8 +847,10 @@ mod tests {
         );
 
         let mut regression = terminal.clone();
-        let SourcePosition::Log(CommittedLogPosition::MySql(regressed_position)) = &mut regression
-        else {
+        let SourcePosition::Log(position) = &mut regression else {
+            unreachable!();
+        };
+        let CommittedLogPosition::MySql(regressed_position) = position.as_mut() else {
             unreachable!();
         };
         regressed_position.executed_gtid_set = format!("{UUID_A}:1-2");
@@ -859,7 +863,10 @@ mod tests {
         );
 
         let mut conflicting = terminal.clone();
-        let SourcePosition::Log(CommittedLogPosition::MySql(position)) = &mut conflicting else {
+        let SourcePosition::Log(log) = &mut conflicting else {
+            unreachable!();
+        };
+        let CommittedLogPosition::MySql(position) = log.as_mut() else {
             unreachable!();
         };
         position.transaction_gtid = format!("{UUID_B}:blue:6");
@@ -908,20 +915,18 @@ mod tests {
         assert_eq!(token.advance_ordered_prefix(&distinct).unwrap(), distinct);
 
         let mut same_restart_authority = token.clone();
-        let SourcePosition::ResumeToken(ResumeTokenPosition::MongoChangeStream(position)) =
-            &mut same_restart_authority
-        else {
+        let SourcePosition::ResumeToken(resume_token) = &mut same_restart_authority else {
             unreachable!();
         };
+        let ResumeTokenPosition::MongoChangeStream(position) = resume_token.as_mut();
         position.token_source = MongoResumeTokenSource::PostBatch;
         assert!(same_restart_authority.equivalent(&token).unwrap());
 
         let mut tampered = token.clone();
-        let SourcePosition::ResumeToken(ResumeTokenPosition::MongoChangeStream(tampered)) =
-            &mut tampered
-        else {
+        let SourcePosition::ResumeToken(resume_token) = &mut tampered else {
             unreachable!();
         };
+        let ResumeTokenPosition::MongoChangeStream(tampered) = resume_token.as_mut();
         tampered.token_bson_base64 = STANDARD.encode([9, 9, 9]);
         assert!(tampered.validate().is_err());
 

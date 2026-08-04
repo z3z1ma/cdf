@@ -1505,19 +1505,21 @@ fn source_position_version_returns_embedded_variant_version() {
             2,
         ),
         (
-            SourcePosition::Log(CommittedLogPosition::PostgreSql(PostgresCommitPosition {
-                version: 3,
-                scope: PostgresLogScope {
-                    system_identifier: "1".to_owned(),
-                    database_oid: 1,
-                    slot: "orders".to_owned(),
-                    output_plugin: "pgoutput".to_owned(),
-                    semantics_sha256: format!("sha256:{}", "a".repeat(64)),
+            SourcePosition::committed_log(CommittedLogPosition::PostgreSql(
+                PostgresCommitPosition {
+                    version: 3,
+                    scope: PostgresLogScope {
+                        system_identifier: "1".to_owned(),
+                        database_oid: 1,
+                        slot: "orders".to_owned(),
+                        output_plugin: "pgoutput".to_owned(),
+                        semantics_sha256: format!("sha256:{}", "a".repeat(64)),
+                    },
+                    commit_lsn: 41,
+                    end_lsn: 42,
+                    xid: 7,
                 },
-                commit_lsn: 41,
-                end_lsn: 42,
-                xid: 7,
-            })),
+            )),
             3,
         ),
         (

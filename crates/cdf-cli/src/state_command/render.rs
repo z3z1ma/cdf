@@ -186,34 +186,37 @@ fn checkpoint_panel(title: &str, checkpoint: &cdf_kernel::Checkpoint) -> KeyValu
                 )
                 .row("metadata generation", position.metadata_generation.clone());
         }
-        SourcePosition::Log(CommittedLogPosition::PostgreSql(position)) => {
-            panel = panel
-                .row("log protocol", "postgresql")
-                .row(
-                    "system identifier",
-                    position.scope.system_identifier.clone(),
-                )
-                .row("database OID", position.scope.database_oid.to_string())
-                .row("slot", position.scope.slot.clone())
-                .row("output plugin", position.scope.output_plugin.clone())
-                .row("commit LSN", position.commit_lsn.to_string())
-                .row("end LSN", position.end_lsn.to_string())
-                .row("transaction ID", position.xid.to_string())
-                .row("capture semantics", position.scope.semantics_sha256.clone());
-        }
-        SourcePosition::Log(CommittedLogPosition::MySql(position)) => {
-            panel = panel
-                .row("log protocol", "mysql")
-                .row("source binding", position.scope.source_binding.clone())
-                .row("server UUID", position.scope.active_server_uuid.clone())
-                .row("binlog file", position.binlog_file.clone())
-                .row("binlog sequence", position.file_sequence.to_string())
-                .row("end log position", position.end_log_position.to_string())
-                .row("transaction GTID", position.transaction_gtid.clone())
-                .row("executed GTID set", position.executed_gtid_set.clone())
-                .row("capture semantics", position.scope.semantics_sha256.clone());
-        }
-        SourcePosition::ResumeToken(ResumeTokenPosition::MongoChangeStream(position)) => {
+        SourcePosition::Log(position) => match position.as_ref() {
+            CommittedLogPosition::PostgreSql(position) => {
+                panel = panel
+                    .row("log protocol", "postgresql")
+                    .row(
+                        "system identifier",
+                        position.scope.system_identifier.clone(),
+                    )
+                    .row("database OID", position.scope.database_oid.to_string())
+                    .row("slot", position.scope.slot.clone())
+                    .row("output plugin", position.scope.output_plugin.clone())
+                    .row("commit LSN", position.commit_lsn.to_string())
+                    .row("end LSN", position.end_lsn.to_string())
+                    .row("transaction ID", position.xid.to_string())
+                    .row("capture semantics", position.scope.semantics_sha256.clone());
+            }
+            CommittedLogPosition::MySql(position) => {
+                panel = panel
+                    .row("log protocol", "mysql")
+                    .row("source binding", position.scope.source_binding.clone())
+                    .row("server UUID", position.scope.active_server_uuid.clone())
+                    .row("binlog file", position.binlog_file.clone())
+                    .row("binlog sequence", position.file_sequence.to_string())
+                    .row("end log position", position.end_log_position.to_string())
+                    .row("transaction GTID", position.transaction_gtid.clone())
+                    .row("executed GTID set", position.executed_gtid_set.clone())
+                    .row("capture semantics", position.scope.semantics_sha256.clone());
+            }
+        },
+        SourcePosition::ResumeToken(position) => {
+            let ResumeTokenPosition::MongoChangeStream(position) = position.as_ref();
             panel = panel
                 .row("resume protocol", "mongodb_change_stream")
                 .row("source binding", position.scope.source_binding.clone())

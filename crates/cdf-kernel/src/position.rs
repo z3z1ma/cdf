@@ -48,16 +48,24 @@ impl SourcePositionKind {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SourcePosition {
     Cursor(CursorPosition),
-    Log(CommittedLogPosition),
+    Log(Box<CommittedLogPosition>),
     FileManifest(FileManifest),
     TableSnapshot(Box<TableSnapshotPosition>),
     PageToken(PageToken),
     Composite(CompositePosition),
     ForeignState(ForeignState),
-    ResumeToken(ResumeTokenPosition),
+    ResumeToken(Box<ResumeTokenPosition>),
 }
 
 impl SourcePosition {
+    pub fn committed_log(position: CommittedLogPosition) -> Self {
+        Self::Log(Box::new(position))
+    }
+
+    pub fn resume_token(position: ResumeTokenPosition) -> Self {
+        Self::ResumeToken(Box::new(position))
+    }
+
     pub fn version(&self) -> u16 {
         match self {
             Self::Cursor(position) => position.version,
@@ -261,7 +269,7 @@ impl SourcePosition {
         self.validate()?;
         terminal.validate()?;
         match (self, terminal) {
-            (Self::ResumeToken(previous), Self::ResumeToken(successor)) => Ok(Self::ResumeToken(
+            (Self::ResumeToken(previous), Self::ResumeToken(successor)) => Ok(Self::resume_token(
                 previous.ordered_prefix_successor(successor)?,
             )),
             _ => Err(CdfError::data(
@@ -313,7 +321,9 @@ impl SourcePosition {
             (Self::Cursor(left), Self::Cursor(right)) => {
                 join_cursor_positions(left, right).map(Self::Cursor)
             }
-            (Self::Log(left), Self::Log(right)) => Some(Self::Log(left.join_successor(right)?)),
+            (Self::Log(left), Self::Log(right)) => {
+                Some(Self::committed_log(left.join_successor(right)?))
+            }
             (Self::FileManifest(left), Self::FileManifest(right)) => {
                 Some(Self::FileManifest(join_file_manifests(left, right)?))
             }

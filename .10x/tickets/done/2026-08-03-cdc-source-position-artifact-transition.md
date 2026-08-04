@@ -1,6 +1,6 @@
 Status: done
 Created: 2026-08-03
-Updated: 2026-08-03
+Updated: 2026-08-04
 Parent: `.10x/tickets/2026-08-03-cdc-semantic-sql-project-foundation-program.md`
 
 # CDC source-position artifact transition
@@ -111,6 +111,18 @@ renderer/fixture updated atomically with no backward compatibility.
   branch-history conformance includes the explicit rewind marker introduced to construct a valid
   second branch under the stricter live-head gate. These were expectation drift, not weakened
   assertions or changes to product semantics.
+- 2026-08-04: Reopened after Fast Quality run `30883179234` falsified closure with three direct A1
+  regressions: `SourcePosition` exceeded the established 96-byte compact-layout invariant, the
+  table-snapshot canonical JSON/hash golden still expected source-position version 1, and the fixed
+  package fixture still expected the pre-transition package hash. Core Clippy and the other 327
+  kernel/package/runtime tests in that job were green. The authorized focused repair boxes the two
+  large CDC enum payloads without changing serde, adds explicit constructors, and updates only the
+  two current golden identities implied by source-position version 2.
+- 2026-08-04: Closure repair passed the three exact failing tests, an affected nine-crate all-target
+  check, and strict affected-crate Clippy. `Log` and `ResumeToken` now own boxed payloads through
+  explicit `committed_log`/`resume_token` constructors; serde and source-position hashes are changed
+  only by the already-ratified version-2 schema, not by the representation repair. The ticket is
+  reclosed with CI-derived expectations recorded rather than hidden.
 
 ## Blockers
 
@@ -139,6 +151,13 @@ None.
 - AC7: `cargo fmt --all -- --check`, `git diff --check`, and strict `cargo clippy` over the 16
   affected crates with `--all-targets --locked -- -D warnings` passed. No workspace-wide test
   suite was run.
+- CI closure repair: Fast Quality run `30883179234` failed only
+  `table_snapshot_position_is_canonical_exact_and_batch_slice_invariant`,
+  `table_snapshot_position_has_stable_canonical_json_and_hash`, and
+  `fixed_fixture_hash_is_deterministic_across_repeated_runs` in the affected kernel/package targets.
+  The exact three-test nextest selector passed 3/3 after repair. `cargo check` and strict Clippy over
+  kernel, package, runtime, declarative, CLI, project, SQLite state, conformance, and Python with all
+  targets/locked dependencies also passed.
 - Error-ownership inventory reproduction:
   `xargs rg -n -- 'CdfError::internal|\.internal\(|ErrorKind::Internal|\bInternal\b' < .10x/evidence/.storage/2026-08-03-a1-error-ownership-files.txt`.
 - Limit: `graphify update .` could not run because the executable is not installed. The existing
@@ -159,9 +178,10 @@ The consolidated independent red-team review initially returned `fail` with:
   generic log position.
 
 Every finding was repaired in one authorized batch and mapped to focused passing evidence above.
-Closure adjudication: `pass`. Residual risk is limited to live protocol integration behavior, which
-is explicitly outside A1 and must be proven by the dedicated CDC source tickets; no known artifact,
-algebra, checkpoint, capability, or replay correctness finding remains.
+The initial closure adjudication was invalidated by Fast Quality run `30883179234`. The failing
+invariants and current golden identities were repaired and the exact failures plus affected compile/
+Clippy boundary are green. Final closure adjudication: `pass`. Residual live-protocol integration
+risk remains explicitly outside A1 and must be proven by the dedicated CDC source tickets.
 
 ## Retrospective
 
@@ -180,3 +200,6 @@ algebra, checkpoint, capability, or replay correctness finding remains.
 - Opaque resume tokens need no invented total order, but the source can still attest one terminal
   prefix successor per closed aggregation. Keeping that operation distinct from equality-only join
   preserves Mongo correctness without transaction grouping.
+- Artifact version transitions require updating direct canonical JSON/hash tests even when larger
+  generated goldens are regenerated. Compact-layout invariants are runtime representation laws and
+  need their own exact test because serde and Clippy cannot prove the enum-size ceiling.

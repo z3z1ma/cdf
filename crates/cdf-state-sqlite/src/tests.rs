@@ -83,7 +83,7 @@ fn table_snapshot_position() -> SourcePosition {
 }
 
 fn postgres_log_position(end_lsn: u64) -> SourcePosition {
-    SourcePosition::Log(CommittedLogPosition::PostgreSql(PostgresCommitPosition {
+    SourcePosition::committed_log(CommittedLogPosition::PostgreSql(PostgresCommitPosition {
         version: SOURCE_POSITION_VERSION,
         scope: PostgresLogScope {
             system_identifier: "7421938841407953395".to_owned(),
@@ -100,7 +100,7 @@ fn postgres_log_position(end_lsn: u64) -> SourcePosition {
 }
 
 fn mongo_resume_token(token_bson_base64: &str, token_sha256: &str) -> SourcePosition {
-    SourcePosition::ResumeToken(ResumeTokenPosition::MongoChangeStream(
+    SourcePosition::resume_token(ResumeTokenPosition::MongoChangeStream(
         MongoChangeStreamResumeToken {
             version: SOURCE_POSITION_VERSION,
             scope: MongoChangeStreamScope {

@@ -569,21 +569,23 @@ mod tests {
         let incompatible = drain(
             WatermarkPolicy::Disabled,
             DrainTermination::SourceFrontier {
-                position: SourcePosition::Log(cdf_kernel::CommittedLogPosition::PostgreSql(
-                    cdf_kernel::PostgresCommitPosition {
-                        version: cdf_kernel::SOURCE_POSITION_VERSION,
-                        scope: cdf_kernel::PostgresLogScope {
-                            system_identifier: "7421938841407953395".to_owned(),
-                            database_oid: 16_384,
-                            slot: "cdf_events".to_owned(),
-                            output_plugin: "pgoutput".to_owned(),
-                            semantics_sha256: format!("sha256:{}", "a".repeat(64)),
+                position: SourcePosition::committed_log(
+                    cdf_kernel::CommittedLogPosition::PostgreSql(
+                        cdf_kernel::PostgresCommitPosition {
+                            version: cdf_kernel::SOURCE_POSITION_VERSION,
+                            scope: cdf_kernel::PostgresLogScope {
+                                system_identifier: "7421938841407953395".to_owned(),
+                                database_oid: 16_384,
+                                slot: "cdf_events".to_owned(),
+                                output_plugin: "pgoutput".to_owned(),
+                                semantics_sha256: format!("sha256:{}", "a".repeat(64)),
+                            },
+                            commit_lsn: 41,
+                            end_lsn: 42,
+                            xid: 7,
                         },
-                        commit_lsn: 41,
-                        end_lsn: 42,
-                        xid: 7,
-                    },
-                )),
+                    ),
+                ),
             },
         );
         let error = CompiledStreamPolicy::compile(&incompatible, &source).unwrap_err();

@@ -760,7 +760,7 @@ mod tests {
     fn mongo_token(value: &str) -> SourcePosition {
         let bytes = bson::doc! { "_data": value };
         let bytes = bson::serialize_to_vec(&bytes).unwrap();
-        SourcePosition::ResumeToken(crate::ResumeTokenPosition::MongoChangeStream(
+        SourcePosition::resume_token(crate::ResumeTokenPosition::MongoChangeStream(
             crate::MongoChangeStreamResumeToken {
                 version: crate::SOURCE_POSITION_VERSION,
                 scope: crate::MongoChangeStreamScope {

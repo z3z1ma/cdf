@@ -344,7 +344,7 @@ mode = "disabled"
             },
             ..
         } if matches!(
-            position,
+            position.as_ref(),
             cdf_kernel::CommittedLogPosition::PostgreSql(position)
                 if position.scope.slot == "cdf_events" && position.end_lsn == 4_242
         )

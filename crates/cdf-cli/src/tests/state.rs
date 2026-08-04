@@ -461,20 +461,22 @@ fn state_show_renders_typed_table_snapshot_authority() {
 #[test]
 fn state_show_renders_typed_postgres_commit_authority() {
     let project = TestProject::new();
-    let position = SourcePosition::Log(CommittedLogPosition::PostgreSql(PostgresCommitPosition {
-        version: cdf_kernel::SOURCE_POSITION_VERSION,
-        scope: PostgresLogScope {
-            system_identifier: "7421938841407953395".to_owned(),
-            database_oid: 16_384,
-            slot: "cdf_events".to_owned(),
-            output_plugin: "pgoutput".to_owned(),
-            semantics_sha256:
-                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
-        },
-        commit_lsn: 4_241,
-        end_lsn: 4_242,
-        xid: 7,
-    }));
+    let position =
+        SourcePosition::committed_log(CommittedLogPosition::PostgreSql(PostgresCommitPosition {
+            version: cdf_kernel::SOURCE_POSITION_VERSION,
+            scope: PostgresLogScope {
+                system_identifier: "7421938841407953395".to_owned(),
+                database_oid: 16_384,
+                slot: "cdf_events".to_owned(),
+                output_plugin: "pgoutput".to_owned(),
+                semantics_sha256:
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .to_owned(),
+            },
+            commit_lsn: 4_241,
+            end_lsn: 4_242,
+            xid: 7,
+        }));
     let package_hash = "package-postgres-commit";
     let mut delta = status_delta("cdf-run", "checkpoint-postgres-commit", package_hash);
     delta.output_position = position.clone();

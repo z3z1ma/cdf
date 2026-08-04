@@ -115,12 +115,12 @@ fn table_snapshot_position_has_stable_canonical_json_and_hash() {
             "\"sequence_number\":7,",
             "\"snapshot_id\":42,",
             "\"table\":\"orders\",",
-            "\"version\":1}"
+            "\"version\":2}"
         )
     );
     assert_eq!(
         hex::encode(sha2::Sha256::digest(&bytes)),
-        "0e6d4a51d3cb81ce0ba7ba73b4684c9ac501886fe720ee1ee29087f19175e623"
+        "16e05ced533d8bb6c70819272bc5bc9c7fdd5973fd6732c408a559bbe6b628a4"
     );
 }
 
@@ -1307,7 +1307,7 @@ fn fixed_fixture_hash_is_deterministic_across_repeated_runs() {
     assert_eq!(first_manifest.package_hash, second_manifest.package_hash);
     assert_eq!(
         first_manifest.package_hash,
-        "sha256:f2d84641b917a373ad126b809fe314f08f07f67b23687e49152653d1c611f5ba"
+        "sha256:195a6870e5d7ddfa596f3a6dd5d1984824dc0df9660a54fcc348d66e161d2926"
     );
 }
 

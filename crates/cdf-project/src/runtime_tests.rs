@@ -46,7 +46,7 @@ use cdf_kernel::{
 };
 
 fn postgres_log_position(slot: &str, end_lsn: u64) -> SourcePosition {
-    SourcePosition::Log(CommittedLogPosition::PostgreSql(PostgresCommitPosition {
+    SourcePosition::committed_log(CommittedLogPosition::PostgreSql(PostgresCommitPosition {
         version: cdf_kernel::SOURCE_POSITION_VERSION,
         scope: PostgresLogScope {
             system_identifier: "7421938841407953395".to_owned(),

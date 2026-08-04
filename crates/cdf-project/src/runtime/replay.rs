@@ -2996,19 +2996,21 @@ mod stream_admission_replay_tests {
     #[test]
     fn partial_stream_position_binding_requires_full_restart_scope() {
         let postgres = |semantics: &str, end_lsn: u64| {
-            SourcePosition::Log(CommittedLogPosition::PostgreSql(PostgresCommitPosition {
-                version: cdf_kernel::SOURCE_POSITION_VERSION,
-                scope: PostgresLogScope {
-                    system_identifier: "7421938841407953395".to_owned(),
-                    database_oid: 16_384,
-                    slot: "orders".to_owned(),
-                    output_plugin: "pgoutput".to_owned(),
-                    semantics_sha256: semantics.to_owned(),
+            SourcePosition::committed_log(CommittedLogPosition::PostgreSql(
+                PostgresCommitPosition {
+                    version: cdf_kernel::SOURCE_POSITION_VERSION,
+                    scope: PostgresLogScope {
+                        system_identifier: "7421938841407953395".to_owned(),
+                        database_oid: 16_384,
+                        slot: "orders".to_owned(),
+                        output_plugin: "pgoutput".to_owned(),
+                        semantics_sha256: semantics.to_owned(),
+                    },
+                    commit_lsn: end_lsn.saturating_sub(1).max(1),
+                    end_lsn,
+                    xid: 7,
                 },
-                commit_lsn: end_lsn.saturating_sub(1).max(1),
-                end_lsn,
-                xid: 7,
-            }))
+            ))
         };
         let hash_a = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let hash_b = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -3033,7 +3035,7 @@ mod stream_admission_replay_tests {
         ));
 
         let mongo = |mode: MongoResumeMode, pipeline_sha256: &str| {
-            SourcePosition::ResumeToken(ResumeTokenPosition::MongoChangeStream(
+            SourcePosition::resume_token(ResumeTokenPosition::MongoChangeStream(
                 MongoChangeStreamResumeToken {
                     version: cdf_kernel::SOURCE_POSITION_VERSION,
                     scope: MongoChangeStreamScope {
